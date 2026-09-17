@@ -480,9 +480,8 @@
 .composer {
   flex-shrink: 0;
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
   padding: 10px 14px 16px;
   background: color-mix(in srgb, var(--color-bg-2) 92%, transparent);
@@ -491,7 +490,6 @@
 .composerHint,
 .composerDone {
   margin: 0;
-  flex: 1;
   color: var(--color-text-3);
   font-size: 11px;
   line-height: 1.45;
@@ -502,13 +500,48 @@
   padding: 8px 0 4px;
 }
 
-.sendIdle,
-.sendBusy {
-  color: var(--color-bg-1);
+.sendBar {
+  display: inline-flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  outline: none;
+  box-shadow:
+    0 0.5px 0.5px color-mix(in srgb, currentColor 22%, transparent),
+    0 1px 2px color-mix(in srgb, #000 10%, transparent);
+  transition: opacity 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.sendBar:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+.sendBar:active:not(:disabled) {
+  opacity: 0.86;
+}
+
+.sendBar:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 28%, transparent);
+}
+
+.sendBar:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  box-shadow: none;
 }
 
 .sendIdle {
   background: var(--color-text-1);
+  color: var(--color-bg-1);
 }
 
 .sendBusy {
@@ -516,9 +549,10 @@
   color: var(--color-text-1);
 }
 
-.sendIcon {
-  width: 12px;
-  height: 12px;
+.sendBarLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .actionSpinner {

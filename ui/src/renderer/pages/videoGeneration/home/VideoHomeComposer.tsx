@@ -45,7 +45,6 @@ import { useVerticalSkillHub } from './useVerticalSkillHub';
 import type { VimaxWorkflow } from '../types';
 import type { VideoCreateDraft, VideoHomeMode } from './types';
 import { usesCanvasReferences, usesLookPicker } from './types';
-import { retargetMentionsAfterRemove } from './imageMentions';
 import { generationPreferencesSummary } from '../preferenceSummary';
 import {
   hasSelectedVisualStyle,
@@ -70,7 +69,6 @@ import {
 } from '../prefetch';
 import styles from './home.module.css';
 
-const CameoCastEditor = lazy(() => import('../components/CameoCastEditor'));
 const loadGenerationPreferencesPopover = () => import('./GenerationPreferencesPopover');
 const GenerationPreferencesPopover = lazy(loadGenerationPreferencesPopover);
 const VerticalSkillMenu = lazy(() => import('./VerticalSkillMenu'));
@@ -1114,35 +1112,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           </div>
         </div>
       </div>
-      {mode === 'agent' && draft.cameos.length > 0 ? (
-        <div className={styles.cameoPanel}>
-          <Suspense fallback={null}>
-            <CameoCastEditor
-              value={draft.cameos}
-              disabled={loading}
-              onChange={(cameos) =>
-                setDraft((current) => {
-                  const removedIndex = current.cameos.findIndex(
-                    (item) => !cameos.some((next) => next.localId === item.localId),
-                  );
-                  const removedOne = cameos.length === current.cameos.length - 1 && removedIndex >= 0;
-                  return {
-                    ...current,
-                    cameos,
-                    sourceText: removedOne
-                      ? retargetMentionsAfterRemove(
-                          current.sourceText,
-                          removedIndex,
-                          current.cameos.length,
-                        )
-                      : current.sourceText,
-                  };
-                })
-              }
-            />
-          </Suspense>
-        </div>
-      ) : null}
 
       {skillCreateOpen ? (
         <Suspense fallback={null}>

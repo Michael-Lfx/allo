@@ -1,6 +1,5 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowUp } from 'lucide-react';
 import type { StudioComposerAction } from './types';
 import styles from './index.module.css';
 
@@ -33,9 +32,9 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
     action === 'plan'
       ? t('videoGeneration.agentSession.send.plan', { defaultValue: '开始规划' })
       : action === 'continue'
-        ? t('videoGeneration.agentSession.send.continue', { defaultValue: '从断点继续' })
-        : action === 'render'
-          ? t('videoGeneration.agentSession.send.render', { defaultValue: '确认并生成成片' })
+        ? t('videoGeneration.agentSession.send.continue', { defaultValue: '继续' })
+        : action === 'render' || action === 'none'
+          ? t('videoGeneration.agentSession.send.render', { defaultValue: '生成成片' })
           : busyKind === 'planning'
             ? t('videoGeneration.agentSession.action.planning', { defaultValue: '正在规划…' })
             : busyKind === 'rendering'
@@ -52,22 +51,20 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
     );
   }
 
+  const hint = assetsBlocked
+    ? t('videoGeneration.agentSession.hint.needAssets', {
+        defaultValue: '请先在左侧上传角色图和参考视频',
+      })
+    : busy
+      ? stopHint
+      : null;
+
   return (
     <div className={styles.composer}>
-      {assetsBlocked ? (
-        <p className={styles.composerHint}>
-          {t('videoGeneration.agentSession.hint.needAssets', {
-            defaultValue: '请先在左侧上传角色图和参考视频',
-          })}
-        </p>
-      ) : busy ? (
-        <p className={styles.composerHint}>{stopHint}</p>
-      ) : (
-        <p className={styles.composerHint}>{label}</p>
-      )}
+      {hint ? <p className={styles.composerHint}>{hint}</p> : null}
       <button
         type='button'
-        className={`canvas-send-token ${busy ? styles.sendBusy : styles.sendIdle}`}
+        className={`${styles.sendBar} ${busy ? styles.sendBusy : styles.sendIdle}`}
         disabled={disabled}
         aria-busy={showSpinner}
         aria-label={busy ? `${label}，${stopHint}` : label}
@@ -79,7 +76,8 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
           else onSend();
         }}
       >
-        {showSpinner ? <span className={styles.actionSpinner} aria-hidden /> : <ArrowUp className={styles.sendIcon} />}
+        {showSpinner ? <span className={styles.actionSpinner} aria-hidden /> : null}
+        <span className={styles.sendBarLabel}>{label}</span>
       </button>
     </div>
   );

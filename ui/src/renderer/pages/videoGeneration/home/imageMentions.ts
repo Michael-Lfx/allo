@@ -64,14 +64,34 @@ export function rewriteHomeImageMentionsToNodeTokens(text: string, nodeIds: stri
 export function appendHomeImageLegend(prompt: string, names: string[]): string {
   const materialized = materializeHomeImageMentions(prompt);
   if (names.length === 0) return materialized;
+  const plateOnly = names.every((name) => !name.trim() || isHomeImagePlateLabel(name));
+  if (plateOnly) {
+    const labels = names.map((_, index) => homeImageLabel(index)).join('、');
+    return `${materialized}\n\n图片对照：${labels} 是用户上传的角色外观参考（可含三视图或服饰变体）。请锁定剧本中已有角色的外观，不要把这些标签当成新角色名。`;
+  }
   const legend = names
     .map((name, index) => {
       const label = homeImageLabel(index);
       const trimmed = name.trim();
-      return trimmed ? `${label} → ${trimmed}` : label;
+      if (!trimmed || isHomeImagePlateLabel(trimmed)) return `${label}＝角色外观参考`;
+      return `${label} → ${trimmed}`;
     })
     .join('、');
   return `${materialized}\n\n图片对照：${legend}`;
+}
+
+function isHomeImagePlateLabel(name: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) return true;
+  if (/^(参考图|图片|image)\s*\d*$/i.test(trimmed)) return true;
+  if (
+    /(三视图|三视|turnaround|three[-_ ]?view|设定图|设定板|角色设定|分身|服饰变体|服装变体|造型参考|外观参考|outfit)/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+  return /\d种|[几各多]种/.test(trimmed);
 }
 
 export function splitHomeImageMentionParts(

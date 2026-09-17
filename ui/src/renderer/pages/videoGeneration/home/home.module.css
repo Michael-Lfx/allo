@@ -1199,10 +1199,6 @@
   white-space: nowrap;
 }
 
-.cameoPanel {
-  width: min(100%, 880px);
-}
-
 .gallerySection {
   display: flex;
   flex-direction: column;
