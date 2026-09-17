@@ -41,6 +41,9 @@ struct DeviceStateFile {
     /// Persisted CPU chip id (or hashed fallback); avoids re-spawning platform readers.
     #[serde(default)]
     cpu_chip_id: String,
+    /// Persisted GPU / accelerator brand; empty means never collected.
+    #[serde(default)]
+    xpu_brand: String,
     /// user_id → app versions already reported successfully for that user.
     #[serde(default)]
     activations_by_user: HashMap<String, HashSet<String>>,
@@ -109,11 +112,17 @@ impl DeviceActivation {
             mac: state.mac.clone(),
             sn: state.sn.clone(),
             cpu_chip_id: state.cpu_chip_id.clone(),
+            xpu_brand: state.xpu_brand.clone(),
         };
         let fingerprint = collect_fingerprint(&persisted)?;
         state.mac = fingerprint.mac.clone();
         state.sn = fingerprint.sn.clone();
         state.cpu_chip_id = fingerprint.cpu_chip_id.clone();
+        state.xpu_brand = match &fingerprint.xpu_brand {
+            Some(brand) => brand.clone(),
+            None if state.xpu_brand.is_empty() => "unknown".into(),
+            None => state.xpu_brand.clone(),
+        };
 
         // When already activated for this version, bypass geo cache so we can detect IP changes.
         let force_fresh_geo = already_activated(&state, user_id, app_version);
@@ -378,12 +387,14 @@ mod tests {
         state.sn = "SN-TEST".into();
         state.mac = "AA:BB:CC:DD:EE:FF".into();
         state.cpu_chip_id = "CPU-TEST".into();
+        state.xpu_brand = "NVIDIA GeForce RTX 4090".into();
         activation.save_state(&state).await.expect("save");
 
         let loaded = activation.load_state().await.expect("load");
         assert_eq!(loaded.sn, "SN-TEST");
         assert_eq!(loaded.mac, "AA:BB:CC:DD:EE:FF");
         assert_eq!(loaded.cpu_chip_id, "CPU-TEST");
+        assert_eq!(loaded.xpu_brand, "NVIDIA GeForce RTX 4090");
     }
 
     #[test]
