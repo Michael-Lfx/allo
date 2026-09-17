@@ -117,12 +117,16 @@ impl AuthManager {
             .poll_or_submit(&self.auth_context(), pending, input)
             .await?;
         if let AuthPollResult::Success(tokens) = &result {
-            self.finish_login(tokens.clone()).await?;
+            self.finish_login(tokens.clone(), pending.method).await?;
         }
         Ok(result)
     }
 
-    async fn finish_login(&self, tokens: ServerTokens) -> Result<(), ServerClientError> {
+    async fn finish_login(
+        &self,
+        tokens: ServerTokens,
+        method: LoginMethod,
+    ) -> Result<(), ServerClientError> {
         self.session.save_tokens(tokens).await?;
         let profile = self.api.get_user_me(&self.session).await?;
         self.profile_store.save(&profile).await?;
@@ -137,6 +141,7 @@ impl AuthManager {
             self.session.clone(),
             profile.id,
             self.host_runtime,
+            Some(method.as_str().to_string()),
         );
         Ok(())
     }
@@ -181,6 +186,7 @@ impl AuthManager {
                 &self.session,
                 profile.id,
                 host_runtime_label(self.host_runtime),
+                None,
             )
             .await
     }

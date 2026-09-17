@@ -44,6 +44,9 @@ struct DeviceStateFile {
     /// Persisted GPU / accelerator brand; empty means never collected.
     #[serde(default)]
     xpu_brand: String,
+    /// Last successful login method (`wechat_qr` / `email_otp`).
+    #[serde(default)]
+    last_signup_method: String,
     /// user_id → app versions already reported successfully for that user.
     #[serde(default)]
     activations_by_user: HashMap<String, HashSet<String>>,
@@ -108,6 +111,7 @@ impl DeviceActivation {
         session: &ServerSession,
         user_id: i64,
         host_runtime: &str,
+        signup_method: Option<&str>,
     ) -> Result<bool, ServerClientError> {
         let app_version = env!("CARGO_PKG_VERSION");
         let mut state = self.load_state().await?;
@@ -127,6 +131,9 @@ impl DeviceActivation {
             None if state.xpu_brand.is_empty() => "unknown".into(),
             None => state.xpu_brand.clone(),
         };
+        if let Some(method) = signup_method.map(str::trim).filter(|m| !m.is_empty()) {
+            state.last_signup_method = method.to_string();
+        }
 
         // When already activated for this version, bypass geo cache so we can detect IP changes.
         let force_fresh_geo = already_activated(&state, user_id, app_version);
@@ -167,6 +174,11 @@ impl DeviceActivation {
         if request.host_runtime != "desktop" && request.host_runtime != "web" {
             request.host_runtime.clear();
         }
+        request.invite_code = api.config().invite_code.trim().to_string();
+        request.utm_source = std::env::var("NOMIFUN_UTM_SOURCE").unwrap_or_default();
+        request.utm_medium = std::env::var("NOMIFUN_UTM_MEDIUM").unwrap_or_default();
+        request.utm_campaign = std::env::var("NOMIFUN_UTM_CAMPAIGN").unwrap_or_default();
+        request.signup_method = state.last_signup_method.clone();
 
         match api.device_activate(session, &request).await {
             Ok(()) => {
@@ -420,6 +432,7 @@ mod tests {
         state.mac = "AA:BB:CC:DD:EE:FF".into();
         state.cpu_chip_id = "CPU-TEST".into();
         state.xpu_brand = "NVIDIA GeForce RTX 4090".into();
+        state.last_signup_method = "email_otp".into();
         activation.save_state(&state).await.expect("save");
 
         let loaded = activation.load_state().await.expect("load");
@@ -427,6 +440,7 @@ mod tests {
         assert_eq!(loaded.mac, "AA:BB:CC:DD:EE:FF");
         assert_eq!(loaded.cpu_chip_id, "CPU-TEST");
         assert_eq!(loaded.xpu_brand, "NVIDIA GeForce RTX 4090");
+        assert_eq!(loaded.last_signup_method, "email_otp");
     }
 
     #[test]

@@ -376,6 +376,18 @@ pub struct DeviceActivateRequest {
     /// Host composition: `desktop` | `web`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub host_runtime: String,
+    /// Invite / referral code from server config when present.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub invite_code: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_medium: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_campaign: String,
+    /// Last successful login method: `wechat_qr` | `email_otp`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub signup_method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xpu_brand: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]

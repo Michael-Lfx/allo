@@ -113,6 +113,7 @@ pub async fn run_doctor(
                                             nomifun_api_types::RuntimeKind::Desktop => "desktop",
                                             nomifun_api_types::RuntimeKind::Web => "web",
                                         },
+                                        None,
                                     )
                                     .await
                                 {

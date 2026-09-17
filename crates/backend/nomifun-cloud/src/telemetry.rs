@@ -62,6 +62,7 @@ pub fn spawn_post_login_telemetry(
     session: ServerSession,
     user_id: i64,
     host_runtime: nomifun_api_types::RuntimeKind,
+    signup_method: Option<String>,
 ) {
     tokio::spawn(async move {
         let api = match FlowyApiClient::new(&config) {
@@ -76,7 +77,13 @@ pub fn spawn_post_login_telemetry(
             nomifun_api_types::RuntimeKind::Web => "web",
         };
         if let Err(err) = DeviceActivation::new(&data_dir)
-            .try_activate_for_user(&api, &session, user_id, host)
+            .try_activate_for_user(
+                &api,
+                &session,
+                user_id,
+                host,
+                signup_method.as_deref(),
+            )
             .await
         {
             warn!(error = %err, "device activation failed after login");
