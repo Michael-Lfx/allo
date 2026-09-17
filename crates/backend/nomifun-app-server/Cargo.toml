@@ -27,6 +27,10 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
+# Default-marketplace warm-up: an unknown `source_kind` in the host config is
+# skipped rather than guessed at, and that has to be visible to whoever wrote
+# the config (doc 30).
+tracing.workspace = true
 toml_edit.workspace = true
 
 [dev-dependencies]

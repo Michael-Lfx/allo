@@ -16,13 +16,47 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use futures_util::future::join_all;
+use futures_util::StreamExt;
 use git2::Repository;
 use reqwest::StatusCode;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 
 pub const MARKET_MANIFEST_A: &str = ".codebuddy-skill/marketplace.json";
 pub const MARKET_MANIFEST_B: &str = ".codebuddy-connector/connectors.json";
 pub const MARKET_MANIFEST_PLUGIN: &str = ".codebuddy-plugin/plugin.json";
+/// Plugin-**market** manifest (`.codebuddy-plugin/marketplace.json`) — a market
+/// root listing `plugins[]`. Distinct from [`MARKET_MANIFEST_PLUGIN`], which is
+/// a single plugin's own manifest.
+pub const MARKET_MANIFEST_PLUGIN_MARKET: &str = ".codebuddy-plugin/marketplace.json";
+
+/// Total request budget for one `zip` market archive.
+///
+/// Deliberately *not* [`http_client`]'s 15s: that is a total-request timeout,
+/// so it aborts every real archive (the official `experts` bundle is ~289 MiB).
+/// Matches the managed-runtime precedent for large archives
+/// (`nomi-config/src/runtime_dep_install/ffmpeg.rs`, 300s); raised because a
+/// market archive is bigger than a toolchain build and is fetched on a user's
+/// first store open.
+pub const ARCHIVE_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Compressed-size cap for one archive (both the declared `Content-Length` and
+/// the bytes actually written). Far above any real market (the three official
+/// bundles are 17-289 MiB) and far below "filled the user's disk".
+pub const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Uncompressed-size cap for one market archive extraction.
+///
+/// [`nomifun_common::zip_safe::ZipExtractionBudget`]'s default is 256 MiB,
+/// which the official `experts` bundle already exceeds (611 MiB of JSON, CSV
+/// and DuckDB payloads) — a zip source that kept the default would fail on
+/// every real market.
+pub const MAX_MARKET_ZIP_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Entry-count cap for one market archive. `experts` ships 14,714 entries.
+pub const MAX_MARKET_ZIP_ENTRIES: usize = 200_000;
+
 
 /// The fetched + validated materialization for one remote marketplace.
 #[derive(Debug, Clone)]
@@ -74,15 +108,33 @@ pub fn normalize_source_url(source_kind: &str, source: &str) -> Result<String, S
             }
             Err(format!("expected an HTTP(S) URL, got `{source}`"))
         }
+        // Doc 30: an archive whose root is the market root. Same URL shape as
+        // `url` — the kind, not the suffix, decides how it is fetched, so a
+        // signed/extension-less archive URL keeps working.
+        "zip" => {
+            if source.starts_with("https://") || source.starts_with("http://") {
+                return Ok(source.to_owned());
+            }
+            Err(format!("expected an HTTP(S) URL to a market archive, got `{source}`"))
+        }
         other => Err(format!("unsupported remote source kind `{other}`")),
     }
 }
 
 /// Directories that make a checkout look like a valid marketplace catalog.
+///
+/// Must stay in sync with the discovery order `probe_directory` implements
+/// (doc 18 §3). `.codebuddy-plugin/marketplace.json` was missing here while
+/// `probe_directory` has always accepted it — and that is *the* layout the
+/// official `experts` market uses (`.codebuddy-plugin/marketplace.json` at the
+/// root, nothing else), so a `github`/`git` checkout or a `zip` archive of that
+/// market was refused as "not a marketplace" even though every entry in it is
+/// perfectly importable.
 pub fn looks_like_market(root: &Path) -> bool {
     root.join(MARKET_MANIFEST_A).is_file()
         || root.join(MARKET_MANIFEST_B).is_file()
         || root.join(MARKET_MANIFEST_PLUGIN).is_file()
+        || root.join(MARKET_MANIFEST_PLUGIN_MARKET).is_file()
         || root.join("marketplace.json").is_file()
         || root.join("cli.json").is_file()
 }
@@ -197,6 +249,194 @@ pub async fn mirror_http_tree(manifest_url: &str, staging: &Path) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// Client for archive transfers: same UA as the manifest client (doc 18 §5.2),
+/// but with a budget a multi-hundred-MiB body can actually finish inside.
+fn archive_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("flowy-agent-store/1.0")
+        .timeout(ARCHIVE_DOWNLOAD_TIMEOUT)
+        .build()
+        .map_err(|error| format!("build http client: {error}"))
+}
+
+/// A server-supplied content digest for an archive, when it sent one.
+///
+/// ModelScope answers the stable download URL with the archive's **sha256** in
+/// `X-Linked-Etag` (verified against a locally computed digest), and answers
+/// `HEAD` with it directly — no redirect, no body. That makes it both the
+/// freshness marker and a free integrity check for the downloaded archive.
+///
+/// Only a 64-hex value is accepted: the header is not a standard contract, and
+/// a host that puts something else there must not be able to poison the
+/// revision marker.
+fn linked_etag_digest(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let value = headers.get("x-linked-etag")?.to_str().ok()?.trim().trim_matches('"');
+    let lowered = value.to_ascii_lowercase();
+    (lowered.len() == 64 && lowered.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(lowered)
+}
+
+/// Cheap freshness probe for a `zip` source: the digest the server reports for
+/// the archive, without transferring it.
+///
+/// `None` means "the server did not tell us" — the caller must then fall back
+/// to downloading and hashing locally, never to "assume unchanged".
+///
+/// Conditional requests are deliberately unused: the origin ignores
+/// `If-None-Match` for non-LFS files, and for LFS files a `304` only exists
+/// after following the cross-origin redirect, which is a much narrower
+/// contract than a plain `HEAD`.
+pub async fn probe_archive_digest(url: &str) -> Option<String> {
+    let client = http_client().ok()?;
+    let response = client.head(url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    linked_etag_digest(response.headers())
+}
+
+/// Stream `url` into `dest`, returning `(local sha256, server digest)`.
+///
+/// Streamed rather than buffered: the official bundles are 17-289 MiB, and
+/// hashing while writing means the archive never has to be read twice.
+pub async fn download_archive(
+    url: &str,
+    dest: &Path,
+) -> Result<(String, Option<String>), String> {
+    let client = archive_http_client()?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("fetch {url}: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("fetch {url}: HTTP {status}"));
+    }
+    let server_digest = linked_etag_digest(response.headers());
+    if let Some(declared) = response.content_length() {
+        if declared > MAX_ARCHIVE_BYTES {
+            return Err(format!(
+                "archive {url} declares {declared} bytes, over the {MAX_ARCHIVE_BYTES}-byte cap"
+            ));
+        }
+    }
+    let Some(parent) = dest.parent() else {
+        return Err(format!("archive destination {} has no parent", dest.display()));
+    };
+    fs::create_dir_all(parent).map_err(|error| format!("create {}: {error}", parent.display()))?;
+
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|error| format!("create {}: {error}", dest.display()))?;
+    let mut hasher = Sha256::new();
+    let mut written: u64 = 0;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("read {url}: {error}"))?;
+        written = written.saturating_add(chunk.len() as u64);
+        // Enforced on bytes actually received, not on the declared length: a
+        // chunked or lying response must not be able to fill the disk.
+        if written > MAX_ARCHIVE_BYTES {
+            drop(file);
+            let _ = fs::remove_file(dest);
+            return Err(format!(
+                "archive {url} passed the {MAX_ARCHIVE_BYTES}-byte cap while downloading"
+            ));
+        }
+        hasher.update(&chunk);
+        file.write_all(&chunk)
+            .await
+            .map_err(|error| format!("write {}: {error}", dest.display()))?;
+    }
+    file.flush()
+        .await
+        .map_err(|error| format!("flush {}: {error}", dest.display()))?;
+    drop(file);
+    Ok((hex::encode(hasher.finalize()), server_digest))
+}
+
+/// Extract a market archive into `staging`, returning how many files were
+/// written.
+///
+/// Safety comes from [`nomifun_common::zip_safe`]: zip-slip names, symlink
+/// entries and drive-prefixed names are rejected, and a decompression-bomb
+/// budget caps both entry count and bytes *actually written*. The policies the
+/// callers own are chosen here: [`ZipColonPolicy::RejectDrivePrefix`] (market
+/// trees embed real upstream file names, so a non-prefix colon is a legal Unix
+/// name — but it is an alternate-data-stream reference on Windows), and
+/// last-entry-wins for a duplicate name.
+pub fn extract_zip_market(archive_path: &Path, staging: &Path) -> Result<usize, String> {
+    use nomifun_common::zip_safe::ZipExtractionBudget;
+
+    extract_zip_market_with_budget(
+        archive_path,
+        staging,
+        ZipExtractionBudget::new(MAX_MARKET_ZIP_UNCOMPRESSED_BYTES, MAX_MARKET_ZIP_ENTRIES),
+    )
+}
+
+/// [`extract_zip_market`] with an injectable budget.
+///
+/// The caps are a parameter for the same reason
+/// [`nomifun_common::zip_safe::ZipExtractionBudget::new`] accepts them: the
+/// guards must be testable without a multi-hundred-MiB fixture.
+fn extract_zip_market_with_budget(
+    archive_path: &Path,
+    staging: &Path,
+    mut budget: nomifun_common::zip_safe::ZipExtractionBudget,
+) -> Result<usize, String> {
+    use nomifun_common::zip_safe::{
+        safe_zip_entry_path, zip_entry_is_symlink, ZipColonPolicy,
+    };
+
+    let file = fs::File::open(archive_path)
+        .map_err(|error| format!("open {}: {error}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("read archive {}: {error}", archive_path.display()))?;
+    budget
+        .check_entry_count(archive.len())
+        .map_err(|error| error.to_string())?;
+
+    let mut written = 0usize;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("read archive entry {index}: {error}"))?;
+        if entry.is_dir() {
+            continue;
+        }
+        if zip_entry_is_symlink(entry.unix_mode()) {
+            return Err(format!(
+                "archive entry `{}` is a symlink; refusing to extract",
+                entry.name()
+            ));
+        }
+        let Some(relative) = safe_zip_entry_path(entry.name(), ZipColonPolicy::RejectDrivePrefix)
+        else {
+            return Err(format!(
+                "archive entry `{}` is not a safe relative path",
+                entry.name()
+            ));
+        };
+        let target = staging.join(&relative);
+        let Some(parent) = target.parent() else {
+            continue;
+        };
+        fs::create_dir_all(parent).map_err(|error| format!("create {}: {error}", parent.display()))?;
+        let mut out = fs::File::create(&target)
+            .map_err(|error| format!("create {}: {error}", target.display()))?;
+        // `io::copy`'s byte count, never the entry's self-declared size.
+        let bytes = std::io::copy(&mut entry, &mut out)
+            .map_err(|error| format!("extract {}: {error}", target.display()))?;
+        budget
+            .record_written(bytes)
+            .map_err(|error| error.to_string())?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 /// Shallow-clone `url` into `staging` (a fresh directory) and return the raw
@@ -653,5 +893,232 @@ mod tests {
         // Second clone resolves the same commit (idempotent revision).
         let (hash2, _) = clone_git(bare.to_str().unwrap(), &remote).unwrap();
         assert_eq!(hash, hash2);
+    }
+
+    // ---------------------------------------------------------------- zip (doc 30)
+
+    /// Build a market archive off-disk. `unix_permissions` is separate so the
+    /// symlink case can set `S_IFLNK` without a second helper.
+    fn write_zip(path: &Path, entries: &[(&str, &str)]) {
+        use std::io::Write;
+        let file = fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, body) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn normalize_zip_requires_http() {
+        assert_eq!(
+            normalize_source_url("zip", "https://host.example/experts.zip").unwrap(),
+            "https://host.example/experts.zip"
+        );
+        assert_eq!(
+            normalize_source_url("zip", "http://127.0.0.1:8080/m.zip").unwrap(),
+            "http://127.0.0.1:8080/m.zip"
+        );
+        // A local path is `directory`'s job; the kind decides, not the suffix.
+        assert!(normalize_source_url("zip", "/tmp/experts.zip").is_err());
+        assert!(normalize_source_url("zip", "experts.zip").is_err());
+    }
+
+    #[test]
+    fn linked_etag_digest_accepts_only_a_sha256() {
+        let sha = "18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45";
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-linked-etag", sha.parse().unwrap());
+        assert_eq!(linked_etag_digest(&headers).as_deref(), Some(sha));
+
+        // A quoted, upper-case digest is the same digest.
+        headers.insert(
+            "x-linked-etag",
+            format!("\"{}\"", sha.to_uppercase()).parse().unwrap(),
+        );
+        assert_eq!(linked_etag_digest(&headers).as_deref(), Some(sha));
+
+        // Anything that is not 64 hex chars is refused rather than trusted as a
+        // revision marker (the header is not a standard contract).
+        for bad in [
+            "",
+            "abc",
+            // 63 hex chars.
+            "18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff4",
+            // 64 chars, not hex.
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+            // An OSS multipart etag is not a content digest.
+            "\"CB1C0FF4FE3E122F0F501EE704A54655-377\"",
+        ] {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("x-linked-etag", bad.parse().unwrap());
+            assert_eq!(linked_etag_digest(&headers), None, "must refuse {bad:?}");
+        }
+
+        // Absent header → not told, which the caller must not read as "unchanged".
+        assert_eq!(linked_etag_digest(&reqwest::header::HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn extract_zip_market_unpacks_a_tree_at_the_archive_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("market.zip");
+        write_zip(
+            &archive,
+            &[
+                (
+                    ".codebuddy-plugin/marketplace.json",
+                    r#"{"name":"zip-market","plugins":[{"name":"demo","source":"./plugins/demo"}]}"#,
+                ),
+                ("plugins/demo/.codebuddy-plugin/plugin.json", r#"{"name":"demo"}"#),
+                ("plugins/demo/agents/demo.md", "---\nname: demo\n---\n"),
+            ],
+        );
+        let staging = temp.path().join("staging");
+        let written = extract_zip_market(&archive, &staging).unwrap();
+        assert_eq!(written, 3);
+        assert!(looks_like_market(&staging), "the archive root must be the market root");
+        assert!(staging.join("plugins/demo/agents/demo.md").is_file());
+    }
+
+    /// Regression: the official `experts` market root carries **only**
+    /// `.codebuddy-plugin/marketplace.json`, and `looks_like_market` used to
+    /// omit it while `probe_directory` accepted it. Every `github`/`git`/`zip`
+    /// fetch of that market therefore failed validation before this was fixed.
+    #[test]
+    fn looks_like_market_accepts_a_plugin_market_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("experts");
+        fs::create_dir_all(root.join(".codebuddy-plugin")).unwrap();
+        fs::write(
+            root.join(".codebuddy-plugin/marketplace.json"),
+            r#"{"name":"experts","plugins":[]}"#,
+        )
+        .unwrap();
+        assert!(
+            looks_like_market(&root),
+            "a `.codebuddy-plugin/marketplace.json` root is a market"
+        );
+
+        // A bare plugin manifest is also accepted (unchanged behaviour).
+        let plugin_root = temp.path().join("plugin");
+        fs::create_dir_all(plugin_root.join(".codebuddy-plugin")).unwrap();
+        fs::write(plugin_root.join(".codebuddy-plugin/plugin.json"), r#"{"name":"p"}"#).unwrap();
+        assert!(looks_like_market(&plugin_root));
+
+        // And a directory with neither stays rejected.
+        let empty = temp.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(!looks_like_market(&empty));
+    }
+
+    #[test]
+    fn extract_zip_market_rejects_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+
+        // Zip-slip: the entry must be refused and, above all, nothing written
+        // outside the destination.
+        let escape = temp.path().join("escape.zip");
+        write_zip(&escape, &[("../evil.txt", "owned")]);
+        let staging = temp.path().join("staging-escape");
+        let err = extract_zip_market(&escape, &staging).unwrap_err();
+        assert!(err.contains("not a safe relative path"), "{err}");
+        assert!(
+            !temp.path().join("evil.txt").exists(),
+            "a traversal entry escaped the destination"
+        );
+
+        // A symlink entry would be refused the same way, but it cannot be
+        // constructed here: `SimpleFileOptions::unix_permissions` masks the
+        // mode to `mode & 0o777` (zip 2.4.2 `src/write.rs`), so the `S_IFLNK`
+        // type bits never reach the archive. The detection itself is pinned by
+        // `nomifun_common::zip_safe::symlink_mode_detection`.
+    }
+
+    #[test]
+    fn extract_zip_market_refuses_a_decompression_bomb() {
+        use nomifun_common::zip_safe::ZipExtractionBudget;
+
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("bomb.zip");
+        write_zip(&archive, &[("big.bin", "0123456789abcdef")]);
+
+        // Written bytes, not the entry's self-declared size: an 8-byte cap
+        // trips on a 16-byte payload.
+        let err = extract_zip_market_with_budget(
+            &archive,
+            &temp.path().join("staging-bytes"),
+            ZipExtractionBudget::new(8, 100),
+        )
+        .unwrap_err();
+        assert!(err.contains("expands beyond"), "{err}");
+
+        // Entry count is checked up front, before anything is written.
+        let err = extract_zip_market_with_budget(
+            &archive,
+            &temp.path().join("staging-entries"),
+            ZipExtractionBudget::new(u64::MAX, 0),
+        )
+        .unwrap_err();
+        assert!(err.contains("too many entries"), "{err}");
+        assert!(!temp.path().join("staging-entries").exists());
+    }
+
+    /// Live check of the whole `zip` client path against the **real** market
+    /// host (public internet, ~18 MiB).
+    ///
+    /// Ignored by default. Run it whenever the market host or this fetch path
+    /// changes:
+    ///
+    /// ```text
+    /// cargo test -p nomifun-app --lib market_source -- --ignored
+    /// ```
+    ///
+    /// It deliberately pins **no digest**: a market is a moving target, so a
+    /// pinned value would fail on the next publish. What it pins is the
+    /// contract this client depends on — the URL in
+    /// `builtin_default_marketplaces()` answers `HEAD` with a 64-hex content
+    /// digest, the body is reachable through the host's redirect, the received
+    /// bytes hash to exactly that digest, and what comes out of the archive is
+    /// a market. That last assertion is the one that would have caught
+    /// `looks_like_market` omitting `.codebuddy-plugin/marketplace.json`.
+    #[tokio::test]
+    #[ignore = "live network test: needs the public market host"]
+    async fn live_official_zip_market_probe_download_and_extract_agree() {
+        let official = nomifun_app_server::AgentStoreConfig::builtin_default_marketplaces();
+        assert_eq!(official.len(), 3, "three official markets are configured");
+
+        // Every official source must be a zip and must report a digest; only the
+        // smallest one is downloaded (the other two are 18x and 16x its size).
+        let mut target = None;
+        for (id, kind, url) in &official {
+            assert_eq!(kind, "zip", "{id} must be a zip source");
+            let probed = probe_archive_digest(url)
+                .await
+                .unwrap_or_else(|| panic!("{url} must report X-Linked-Etag"));
+            assert_eq!(probed.len(), 64, "{url} digest must be a sha256");
+            if id == "connectors" {
+                target = Some((url.clone(), probed));
+            }
+        }
+        let (url, probed) = target.expect("the official connectors market is configured");
+
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("market.zip");
+        let (local, server) = download_archive(&url, &archive).await.expect("download archive");
+        assert_eq!(local, probed, "downloaded bytes must hash to the HEAD digest");
+        if let Some(server) = server {
+            assert_eq!(server, local, "the GET response's digest must agree as well");
+        }
+
+        let staging = temp.path().join("staging");
+        let written = extract_zip_market(&archive, &staging).unwrap();
+        assert!(written > 0, "the archive must contain files");
+        assert!(
+            looks_like_market(&staging),
+            "an official archive must be recognised as a market"
+        );
     }
 }

@@ -43,10 +43,10 @@ pub enum RemoteFetchOutcome {
 
 /// Resolve a remote source into a local, validated tree.
 ///
-/// `source_kind` is `github` | `git` | `url`; directory sources are handled
-/// by the caller before this point. When `current_revision` is provided, an
-/// unchanged server revision short-circuits to `Unchanged` (git: same HEAD
-/// commit; http: `304 Not Modified`).
+/// `source_kind` is `github` | `git` | `url` | `zip`; directory sources are
+/// handled by the caller before this point. When `current_revision` is
+/// provided, an unchanged server revision short-circuits to `Unchanged` (git:
+/// same HEAD commit; http: `304 Not Modified`; zip: same archive digest).
 pub async fn fetch_remote(
     source_kind: &str,
     source: &str,
@@ -71,7 +71,8 @@ pub async fn fetch_remote(
     let mut staging_guard = StagingGuard::new(staging.clone());
 
     // Fetch into staging; validate the tree looks like a market after the
-    // fetch (git clones the whole repo; http downloads the manifest only).
+    // fetch (git clones the whole repo; http downloads the manifest only; zip
+    // downloads one archive and unpacks it).
     let (revision, manifest_only, validators) = match source_kind {
         "github" | "git" => {
             let (hash, _repo) = market_source::clone_git(&normalized, &staging)
@@ -133,13 +134,66 @@ pub async fn fetch_remote(
                 }
             }
         }
+        // Doc 30: one archive whose root is the market root. Replaces the
+        // `url` full-tree mirror for the official bundles, where `experts` cost
+        // 14,714 requests / 611 MiB per first fetch.
+        "zip" => {
+            // Freshness first: when the host reports the archive digest (a
+            // `HEAD`, no body), an unchanged archive short-circuits before a
+            // multi-hundred-MiB transfer. `None` means "not told" — never
+            // "unchanged"; the download below is the fallback.
+            let probed = market_source::probe_archive_digest(&normalized).await;
+            if let (Some(probed), Some(current)) = (probed.as_deref(), current_revision) {
+                if probed == current {
+                    return Ok(RemoteFetchOutcome::Unchanged {
+                        revision: probed.to_owned(),
+                    });
+                }
+            }
+            // The archive is a sibling of staging, never inside it: `promote`
+            // renames staging into the live root, so an archive placed inside
+            // would be promoted as market content (289 MiB of it).
+            let archive =
+                marketplace_root.join(format!("download-{}.zip", nomifun_common::generate_id()));
+            let mut archive_guard = ArchiveGuard::new(archive.clone());
+            let (local_digest, server_digest) =
+                market_source::download_archive(&normalized, &archive)
+                    .await
+                    .map_err(AppError::Internal)?;
+            // The digest doubles as a free integrity check: when the host
+            // advertised one, the bytes we received must hash to it.
+            if let Some(server) = server_digest.as_deref() {
+                if server != local_digest {
+                    return Err(AppError::Internal(format!(
+                        "archive digest mismatch for {source}: host reports {server}, \
+                         downloaded bytes hash to {local_digest}"
+                    )));
+                }
+            }
+            if current_revision == Some(local_digest.as_str()) {
+                return Ok(RemoteFetchOutcome::Unchanged {
+                    revision: local_digest,
+                });
+            }
+            std::fs::create_dir_all(&staging)
+                .map_err(|error| AppError::Internal(format!("create staging: {error}")))?;
+            market_source::extract_zip_market(&archive, &staging)
+                .map_err(AppError::Internal)?;
+            archive_guard.remove();
+            if !market_source::looks_like_market(&staging) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(AppError::BadRequest(format!(
+                    "source {source} does not look like a marketplace (no manifest in the archive)"
+                )));
+            }
+            (local_digest, false, None)
+        }
         other => {
             return Err(AppError::BadRequest(format!(
                 "unsupported remote source kind `{other}`"
             )));
         }
     };
-
     // Probe the staged content (URL markets have only marketplace.json; their
     // entries are inlined relative paths and must resolve inside the same
     // fetch — CodeBuddy document semantics).
@@ -188,6 +242,40 @@ impl Drop for StagingGuard {
     fn drop(&mut self) {
         if self.armed {
             let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// RAII cleanup for a downloaded market archive.
+///
+/// The archive is a *sibling* of the staging dir, not a child, because
+/// `promote` renames staging into the live root — an archive inside staging
+/// would be promoted as market content. Being outside staging, it also falls
+/// outside `StagingGuard`'s reach, so it gets its own guard: an early return, a
+/// `?` failure, or an outer `tokio::time::timeout` cancellation all have to
+/// reclaim it, or every failed fetch strands a multi-hundred-MiB file under the
+/// market root.
+struct ArchiveGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl ArchiveGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// Delete now (the success path) and disarm.
+    fn remove(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        self.armed = false;
+    }
+}
+
+impl Drop for ArchiveGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
         }
     }
 }

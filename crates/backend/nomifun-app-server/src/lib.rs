@@ -148,7 +148,11 @@ use tokio::sync::mpsc;
 /// The scope is the conversation (send) / the run (agent/run), not "one turn":
 /// the Nomi runtime is built from the persisted row, so what a caller passes is
 /// a sticky switch that takes effect on that very turn (doc 29 §4).
-pub const PROTOCOL_VERSION: &str = "fp-6";
+/// **`fp-7` adds the `zip` marketplace source kind**: `market/add` accepts
+/// `source_kind: "zip"` — one archive whose root *is* the market root — and the
+/// official bundles move to it, because the old `url` form made a first fetch
+/// mirror 14,714 files (611 MiB) for `experts` alone (doc 30).
+pub const PROTOCOL_VERSION: &str = "fp-7";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2132,14 +2136,23 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) -> bool {
     };
     let mut complete = true;
     for (marketplace_id, source_kind, source) in sources {
+        // An unknown kind must not be guessed at: `parse` returns `None` and
+        // the source is skipped, so a config naming a kind this build does not
+        // have is visibly incomplete rather than silently fetched as `url`.
+        let Some(kind) =
+            nomifun_api_types::AppServerMarketplaceSourceKind::parse(source_kind.as_str())
+        else {
+            tracing::warn!(
+                marketplace_id = %marketplace_id,
+                source_kind = %source_kind,
+                "skipping default marketplace with an unknown source kind"
+            );
+            complete = false;
+            continue;
+        };
         let request = AppServerMarketplaceAddRequest {
             name: Some(marketplace_id.clone()),
-            source_kind: match source_kind.as_str() {
-                "github" => nomifun_api_types::AppServerMarketplaceSourceKind::Github,
-                "git" => nomifun_api_types::AppServerMarketplaceSourceKind::Git,
-                "directory" => nomifun_api_types::AppServerMarketplaceSourceKind::Directory,
-                _ => nomifun_api_types::AppServerMarketplaceSourceKind::Url,
-            },
+            source_kind: kind,
             source,
         };
         // Best effort: default sources are convenience, never a hard failure.

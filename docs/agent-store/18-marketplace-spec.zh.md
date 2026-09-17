@@ -36,8 +36,11 @@
 | `github` | `owner/repo` | `https://github.com/{owner}/{repo}.git` | 非两段路径 / 空段 |
 | `git` | `https://` `http://` `git@` `ssh://` `git://` 前缀 | 原样 | 其他前缀且非 `.git` 结尾、且不是已存在目录 |
 | `url` | HTTP(S) 清单地址 | 原样 | 非 `http(s)://` |
+| `zip` | HTTP(S) 归档地址 | 原样 | 非 `http(s)://` |
 
-> `directory` 之外的三种均为**远程源**，走 §5 的获取与晋升流程。
+> `directory` 之外的四种均为**远程源**，走 §5 的获取与晋升流程。
+>
+> **`zip`（2026-09-17 加入，doc 30）**：一个归档，**归档根目录即市场根**（清单在归档根，不套一层目录）。用于官方源——`url` 形态下 `experts` 的首次获取要发 **14,714 次请求 / 611 MiB**（逐文件镜像），归档是 **1 次请求 / 289 MiB**，且是同样那些字节。新鲜度与完整性见 §5.3。`url` / `git` / `github` **全部保留**，第三方源继续可用整树镜像。
 
 ---
 
@@ -57,10 +60,13 @@
 ```
 .codebuddy-skill/marketplace.json
 .codebuddy-connector/connectors.json
+.codebuddy-plugin/marketplace.json
 .codebuddy-plugin/plugin.json
 marketplace.json
 cli.json
 ```
+
+> **订正（2026-09-17，doc 30）**：`.codebuddy-plugin/marketplace.json` 原先**只在上面的发现顺序里、不在这一份校验清单里**，而 `probe_directory` 一直认它。后果比「少一条」严重：官方 `experts` 市场的根目录**只有**这一个文件，所以 `github` / `git` / `zip` 三种远程获取拿到的正是这种布局，却被 `looks_like_market` 判成「不像市场」而拒绝——发现顺序注释里举的 `marketplaces/experts/.codebuddy-plugin/marketplace.json` 就是被拒的那个例子。已修（`market_source::MARKET_MANIFEST_PLUGIN_MARKET`），回归钉 `looks_like_market_accepts_a_plugin_market_root`。
 
 **「像插件」的判定**（子目录）——存在以下任一即通过：`.codebuddy-plugin/plugin.json`、`cli.json`、`SKILL.md`。
 
@@ -177,11 +183,22 @@ cli.json
 4. `Fresh` → 全量校验清单 → 与当前 revision 相同则丢弃；否则晋升；
 5. **若源暴露 `_files.txt`**，镜像整棵条目树（见 §6）；否则条目保持 `manifest-only`，按条目类型标记来源：`skills` / `connectors` 条目解析不到时标 **`external`**（不可镜像），`plugins[]` 条目保留 `directory` + 相对 `source`（导入时再解析并给出缺失报错，§11 D6）。
 
-### 5.3 staging 生命周期
+### 5.3 zip 源（归档，官方源现用形态）
+
+1. **新鲜度先探，不带正文**：对稳定 URL 发 `HEAD`，读 `X-Linked-Etag`——ModelScope 在该头返回归档内容的 **sha256**（已本地复算核对）。与库中 `resolved_revision` 相同 → `Unchanged`，**不下载**。**不使用条件请求**：modelscope.cn 那层对非 LFS 文件忽略 `If-None-Match`；LFS 文件虽有 CDN `304`，但要走一次跨源重定向，契约比一次 `HEAD` 窄得多。头缺失 = 「没被告知」，**绝不等价于「未变化」**——此时以下载后本地 sha256 兜底；
+2. **下载**：`GET` 稳定 URL，**跟随重定向**（LFS 首发 `302`，`Location` 带**临时签名** `auth_key`，**不得固化任何 CDN 地址**），**流式落盘**并顺带计算 sha256。压缩体积上限 **2 GiB**，按**实际收到**的字节判定（声明的 `Content-Length` 只用于提前拒绝）；
+3. **完整性**：服务器给了摘要时，本地 sha256 必须与之相同，否则报错且不动 last-good；
+4. **解压**：安全原语取自 `nomifun-common::zip_safe`（zip-slip、符号链接条目、盘符前缀均拒绝；`ZipColonPolicy::RejectDrivePrefix`，重名后者胜）。解压预算**必须显式给**——`ZipExtractionBudget` 默认 20,000 条目 / **256 MiB** 不够：官方 `experts` 是 14,714 条目 / **611 MiB**。本模块给 200,000 条目 / 4 GiB；
+5. **归档不得进入 staging**：`promote` 把 staging 整体重命名进 live root，归档若放在 staging 内就会**被当成市场内容晋升**（289 MiB）。它下载到 staging 的**兄弟路径**，由独立守卫在成功/失败/外层超时三条路径上都回收；
+6. 解压后 `looks_like_market` 校验 → `probe_directory` → 原子晋升（同 §5.1 第 5 步）。
+
+**超时**：归档不用清单那套 15s（那是**整请求**超时，会掐断任何真实归档），改用 **900s**；仓内先例是托管运行时归档的 300s（`runtime_dep_install/ffmpeg.rs`）。
+
+### 5.4 staging 生命周期
 
 staging 目录由本次获取独占：正常完成时晋升并解除守卫；提前返回或外层超时**必须清理**，避免 `staging-*` 残留堆积。
 
-### 5.4 `content_digest` 算法
+### 5.5 `content_digest` 算法
 
 ✅ **已统一为一套实现（2026-09-10，D2 收口 / T20）**：
 

@@ -54,13 +54,15 @@ export const SEMANTIC_KEYS: Record<string, string> = {
   pending_legal_review: "catalog.semantic_pending_legal_review",
 };
 
-/** `source_kind` is a wire enum (`directory` / `github` / `git` / `url`), not a
- *  label — the registry surfaces printed it raw, so a zh-CN panel read `url`. */
+/** `source_kind` is a wire enum (`directory` / `github` / `git` / `url` / `zip`),
+ *  not a label — the registry surfaces printed it raw, so a zh-CN panel read
+ *  `url`. */
 export const MARKET_KIND_KEYS: Record<string, string> = {
   directory: "catalog.marketKindDirectory",
   github: "catalog.marketKindGithub",
   git: "catalog.marketKindGit",
   url: "catalog.marketKindUrl",
+  zip: "catalog.marketKindZip",
 };
 
 type Translate = (key: string, opts?: Record<string, unknown>) => string;

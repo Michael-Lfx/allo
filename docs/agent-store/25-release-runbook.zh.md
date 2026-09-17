@@ -11,7 +11,7 @@
 |---|---|---|---|
 | npm | `@flowy-agent-store/protocol` / `client` / `sdk` / `runtime-win32-x64`，**同一个版本号** | 本仓 `web/scripts/publish-packages.ts` | `npm view @flowy-agent-store/sdk dist-tags versions --json` |
 | GitHub Release | `flowy-agent-store-v<版本>-windows-x86_64.zip` + `SHA256SUMS.txt` + `RELEASE_NOTES.md`，**一律标 prerelease** | 站点仓 `scripts/release.mjs` | `bun run release:status` |
-| 站点上线 | 官网 + 双语文档站 + 三个市场源（`push main` 触发 EdgeOne Makers 构建） | 站点仓 | 线上页面与 `/source/**` |
+| 站点上线 | 官网 + 双语文档站（`push main` 触发 EdgeOne Makers 构建）；三个市场源自 doc 30 起迁至 ModelScope 归档，**不在站点产物里** | 站点仓 | 线上页面 + 产物文件数不超限（自检见 S7） |
 
 > **发布刚完成时不要信 `npm view`**（实测 2026-09-16）：注册表读取侧有 CDN 缓存——四个包都打印 `✓ published` 之后的一两分钟里，`npm view` 仍可能返回旧值，甚至对新版本返回**假 404**。复核用 canonical packument URL：`https://registry.npmjs.org/@flowy-agent-store%2Fsdk`——**不要**给它加查询串（某些缓存节点会对带查询串的请求直接 404）；某个版本的 tarball 是否真的在，用 `HEAD .../-/<pkg>-<version>.tgz`，并先用一个**不存在的版本**确认这个探针确实会返回 404。
 
@@ -117,8 +117,9 @@ git push origin main
 推送即由 EdgeOne Makers 构建上线。**部署后自检**（顺序即用户体验顺序）：
 
 1. `/<lang>/docs/typescript-sdk` 中英两页都有正文（不是 SPA 空壳——空壳说明该页没进 `react-router.config.ts` 的 `prerender()`）；
-2. `/source/skills/_files.txt`、`/source/experts/_files.txt`、`/source/connectors/_files.txt` 可访问且响应头带 `cache-control: no-cache`；
-3. 首页/兼容性页的下载直链真能下到 zip：`https://github.com/szStarWave/agent-store-site/releases/download/v<版本>/flowy-agent-store-v<版本>-windows-x86_64.zip`。
+2. **站点产物文件数**：EdgeOne Makers 构建日志里没有 `File count exceeds project limit`。上限是 20,000 个文件——`market-source/` 三个市场合计 22,612 个，所以自 doc 30 起整树**不再进产物**，产物里只应有站点自身约 94 个文件 + 目录页头像约 648 个（本地 `bun run build` 后数 `build/client` 即可预检）。⚠️ **`/source/<market>/…` 与 `/source/<market>/_files.txt` 已退役**，不要再把它们当作部署自检项；
+3. **市场归档可达且摘要一致**：`bun run publish:market -- --verify-only` 三个市场全绿（它 `HEAD` 每个稳定 URL，比对 `X-Linked-Etag` 与 `content/market-hosts.json` 记录的 sha256）。归档在 ModelScope，**不在本站产物里**；
+4. 首页/兼容性页的下载直链真能下到 zip：`https://github.com/szStarWave/agent-store-site/releases/download/v<版本>/flowy-agent-store-v<版本>-windows-x86_64.zip`。
 
 ### S8 发布后台账
 
@@ -143,6 +144,8 @@ git push origin main
 | 同页 §8「已发布产物的差异与自查方法」 | 未发布项清零时同步改写 | 人工（S8） |
 | `content/docs/{zh-CN,en-US}/examples-sdk.md` | 对外用法（新子客户端、错误处理）变化 | 人工 |
 | `content/docs/{zh-CN,en-US}/compatibility.md` | 已发布平台变化 | 人工（与站点 `app/lib/platform.ts` 的 `RELEASED_PLATFORMS` 同改） |
+| `content/docs/{zh-CN,en-US}/{configuration,plugins-market}.md` | 市场源**类型**（`source_kind` 取值表）或**官方默认源地址**变化 | 人工（两页都写这两件事，必须同改；`30` §7 的迁移口径也在此） |
+| `content/market-hosts.json` + `dist-market/*.zip` | 市场内容变化 | `bun run pack:market` 产出、`bun run publish:market` 上传并回验（**不要手改**） |
 | `content/release.json` | 每次发版 | `bun run check:release-sync` |
 | 所有页的双语结构 | 任何时候 | 站点 `bun run check:docs-sync` |
 

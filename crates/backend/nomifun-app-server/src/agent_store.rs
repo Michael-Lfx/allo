@@ -686,23 +686,24 @@ impl AgentStoreConfig {
     /// and are covered by the auto-update sweep. Moving a URL here therefore
     /// re-classifies the old address as third-party.
     pub fn builtin_default_marketplaces() -> Vec<(String, String, String)> {
-        vec![
-            (
-                "experts".to_owned(),
-                "url".to_owned(),
-                "https://agent-store.flowyaipc.cn/source/experts/.codebuddy-plugin/marketplace.json".to_owned(),
-            ),
-            (
-                "skills".to_owned(),
-                "url".to_owned(),
-                "https://agent-store.flowyaipc.cn/source/skills/.codebuddy-skill/marketplace.json".to_owned(),
-            ),
-            (
-                "connectors".to_owned(),
-                "url".to_owned(),
-                "https://agent-store.flowyaipc.cn/source/connectors/.codebuddy-connector/connectors.json".to_owned(),
-            ),
-        ]
+        // Doc 30: the official bundles ship as **one archive per market** on
+        // ModelScope, not as a file-per-entry tree on the site. The `url` form
+        // cost a first fetch 14,714 requests / 611 MiB for `experts` alone
+        // (the site mirrors every listed file); the archive is 1 request /
+        // 289 MiB and is the same bytes the mirror would have pulled.
+        //
+        // `master` is deliberate, not sloppiness: a market is a *moving*
+        // target, so pinning a commit sha here would freeze every client at
+        // whatever was current when this binary was built, and shipping a new
+        // binary would be the only way to publish a market change. Clients
+        // detect the change with a `HEAD` (`X-Linked-Etag` = content sha256),
+        // so an unchanged archive is never re-downloaded.
+        const MARKET_HOST: &str =
+            "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master";
+        ["experts", "skills", "connectors"]
+            .into_iter()
+            .map(|id| (id.to_owned(), "zip".to_owned(), format!("{MARKET_HOST}/{id}.zip")))
+            .collect()
     }
 
     /// Default location: `~/.agent-store/config.toml` (Windows then POSIX).
@@ -1462,23 +1463,24 @@ model = "mimo-v2.5-free"
         let ids: Vec<&str> = builtin.iter().map(|(id, _, _)| id.as_str()).collect();
         assert_eq!(ids, ["experts", "skills", "connectors"]);
         for (id, kind, source) in &builtin {
-            assert_eq!(kind, "url");
-            assert!(source.ends_with("marketplace.json") || source.ends_with("connectors.json"));
-            assert!(source.starts_with("http"), "{id} source must be absolute: {source}");
+            assert_eq!(kind, "zip");
+            assert!(source.ends_with(&format!("/{id}.zip")), "{id} source: {source}");
+            assert!(source.starts_with("https://"), "{id} source must be absolute: {source}");
         }
-        // The release default is the product's own market site over HTTPS.
-        // Pinned because a typo'd or moved host would (a) point every fresh
-        // install at a dead mirror and (b) silently re-classify the real
-        // sources as third-party via `is_official_source` (auto-update off).
-        // Paths are the site's published `/source/<market>/…` mount, each
-        // carrying a `_files.txt` listing.
+        // The release default is the product's own market host. Pinned because
+        // a typo'd or moved host would (a) point every fresh install at a dead
+        // mirror and (b) silently re-classify the real sources as third-party
+        // via `is_official_source` (auto-update off). Since doc 30 each market
+        // ships as **one archive** (not a file-per-entry tree on the site), and
+        // `master` is the mutable market tip — publishing a market must not
+        // require shipping a new binary.
         let sources: Vec<&str> = builtin.iter().map(|(_, _, source)| source.as_str()).collect();
         assert_eq!(
             sources,
             [
-                "https://agent-store.flowyaipc.cn/source/experts/.codebuddy-plugin/marketplace.json",
-                "https://agent-store.flowyaipc.cn/source/skills/.codebuddy-skill/marketplace.json",
-                "https://agent-store.flowyaipc.cn/source/connectors/.codebuddy-connector/connectors.json",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/experts.zip",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/skills.zip",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/connectors.zip",
             ]
         );
     }

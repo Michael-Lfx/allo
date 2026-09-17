@@ -2093,6 +2093,132 @@ async fn importer_market_http_source_validates_manifest_and_mirrors_inlined_entr
     assert_eq!(refreshed["changed"], false, "{refreshed}");
 }
 
+/// Doc 30: a market shipped as **one archive** instead of a file-per-entry tree.
+///
+/// What this pins beyond "it unpacks": the archive root must become the market
+/// root (so entries resolve exactly as they would from a `git` clone), the
+/// archive itself must not be promoted into the live root as market content,
+/// and an unchanged archive must be detected from a body-less `HEAD` rather
+/// than by re-downloading it.
+#[tokio::test]
+async fn importer_market_zip_source_unpacks_one_archive_and_short_circuits_on_the_digest() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // One entry per file, with the manifest at the archive root.
+    let temp = tempfile::tempdir().unwrap();
+    let archive_path = temp.path().join("experts.zip");
+    {
+        use std::io::Write;
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, body) in [
+            (
+                ".codebuddy-plugin/marketplace.json",
+                r#"{"name":"zip-market","plugins":[{"name":"demo","source":"./plugins/demo"}]}"#,
+            ),
+            (
+                "plugins/demo/.codebuddy-plugin/plugin.json",
+                r#"{"name":"demo","displayName":"Demo","agents":["./agents"]}"#,
+            ),
+            ("plugins/demo/agents/demo.md", "---\nname: demo\n---\n"),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let bytes = std::fs::read(&archive_path).unwrap();
+    let digest = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(&bytes))
+    };
+
+    // The freshness probe: `HEAD` reports the archive's sha256 and sends no body.
+    let mock = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/experts.zip"))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-linked-etag", digest.as_str()))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/experts.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
+        .mount(&mock)
+        .await;
+
+    let url = format!("{}/experts.zip", mock.uri());
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({ "source_kind": "zip", "source": url }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "zip market add: {}", body_json(add).await);
+    let added = body_json(add).await;
+    assert_eq!(added["source_kind"], "zip");
+    let marketplace_id = added["marketplace_id"].as_str().unwrap().to_owned();
+
+    // The archive was unpacked into the live root…
+    let live_root = services
+        .work_dir
+        .join("agent-store-markets")
+        .join(&marketplace_id)
+        .join("live");
+    assert!(
+        live_root.join(".codebuddy-plugin/marketplace.json").is_file(),
+        "the archive root must become the market root"
+    );
+    assert!(live_root.join("plugins/demo/agents/demo.md").is_file());
+    // …and the archive itself is not market content.
+    assert!(
+        !live_root.join("experts.zip").exists(),
+        "the downloaded archive must not be promoted into the live root"
+    );
+
+    let detail = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/markets/{marketplace_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    let detail_json = body_json(detail).await;
+    let entries = detail_json["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{detail_json}");
+    assert_eq!(entries[0]["name"], "demo");
+
+    // Same digest on the next probe → unchanged, no second download.
+    let refresh = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/markets/{marketplace_id}/refresh"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let refreshed = body_json(refresh).await;
+    assert_eq!(refreshed["changed"], false, "{refreshed}");
+}
+
 /// @mention resolution: an imported + installed agent exposes its `preset_id`
 /// on `agent/list`, and `agent/run` with a structured agent mention reaches
 /// the runtime gate once the preset resolved (docs/agent-store/05 §4.7).

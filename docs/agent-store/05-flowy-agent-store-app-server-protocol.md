@@ -1,12 +1,17 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-6`** —— 2026-09-23 起承载**随调用指定模型与思考等级**：`conversation/send` 与
+> 指纹：**`fp-7`** —— 2026-09-23 起承载 **`zip` 市场源类型**：`AppServerMarketplaceSourceKind`
+> 新增 `Zip`，`market/add` 可接受 `source_kind: "zip"`——一个归档，**归档根目录即市场根**。
+> 官方三个市场（`experts` / `skills` / `connectors`）改用它：`url` 形态下 `experts` 的首次获取
+> 要发 **14,714 次请求 / 611 MiB**（逐文件镜像），归档是 **1 次请求 / 289 MiB**。规格见 §4.6 与
+> `18-marketplace-spec.zh.md` §5.3；方案与实测见 `30-market-zip-hosting.zh.md`。
+> 上一值 **`fp-6`**（2026-09-23）：承载**随调用指定模型与思考等级**：`conversation/send` 与
 > `agent/run` 各新增可选的 `model` / `reasoning_effort`（现有 DTO 加字段），`ConversationView`
 > 新增 `reasoning_effort` 把会话当前的等级读回来。语义是**粘性**的：`send` 上带的值写进会话行、
 > **从本轮起**生效（运行时按会话行构建，故不存在"只影响这一轮"），`agent/run` 上带的值只作用于
 > 那次运行。规格见 §12.1 / §12.4 / §5.1；方案与理由见 `29-send-model-and-effort-plan.zh.md`。
-> 上一值 **`fp-5`**（2026-09-23）：**以专家团开场**——`conversation/create` 新增可选的
+> 再上一值 **`fp-5`**（2026-09-23）：**以专家团开场**——`conversation/create` 新增可选的
 > `team_id`（现有 DTO 加字段），用 `team/run` 的同一段编排（成员校验 → 物化/复用执行模板 →
 > Leader 会话栅栏）打开一个**可继续对话**的 Leader 会话，区别只有一处：**不发 `goal` 首轮**。
 > 与 `agent_id` 互斥。规格见本文 §12.2。
@@ -713,13 +718,18 @@ POST   /api/app-server/markets/{marketplace_id}/entries/{entry}/import  # 条目
 `market/add` 请求体：
 
 ```text
-{ "name": "<可选稳定名>", "source_kind": "directory|github|git|url", "source": "<源>" }
+{ "name": "<可选稳定名>", "source_kind": "directory|github|git|url|zip", "source": "<源>" }
 ```
 
 - `marketplace_id` 从 `name` 推导（无则源 basename），kebab-case 稳定名（内部唯一）；
 - 同源重复添加幂等：返回既有市场行，不报错；
-- 远端源（github/git/url）添加时**同步获取**：克隆/下载到 staging → 完整清单校验 →
+- 远端源（github/git/url/zip）添加时**同步获取**：克隆/下载到 staging → 完整清单校验 →
   原子晋升到 live 根（backup+rename）；失败不注册且 last-good 不被触碰。
+- **`zip`（`fp-7` 加入）**：`source` 是一个 HTTP(S) 归档地址，**归档根目录即市场根**。
+  与 `url` 的区别只在传输：`url` 按 `_files.txt` 逐文件镜像，`zip` 取一个归档再解压。
+  官方三个市场都走 `zip`（`experts` 由 14,714 次请求降为 1 次）。归档下载**跟随重定向**，
+  用 `HEAD` 的 `X-Linked-Etag`（内容 sha256）判新旧与校验完整性；解压沿
+  `nomifun-common::zip_safe` 的 zip-slip / 符号链接 / 预算防护。见 `18` §5.3。
 
 `market/refresh` 响应（`AppServerMarketplaceRefreshResult`）：
 
@@ -731,6 +741,8 @@ POST   /api/app-server/markets/{marketplace_id}/entries/{entry}/import  # 条目
   stale staging 丢弃；
 - URL：带 `If-None-Match` 条件请求；`304` → `changed=false`；200 时校验清单并比较
   ETag/Last-Modified 摘要，相同 → no-op；
+- ZIP：`HEAD` 取归档内容 sha256；与已记录 `resolved_revision` 相同 → `changed=false`
+  （**不下载归档**）；
 - `directory`：重新探测目录，内容摘要变化才更新投影；
 - `resolved_revision` 仅内部追溯，不是公共身份标识。
 

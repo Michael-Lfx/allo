@@ -345,6 +345,13 @@ nomifun-browser-platform = { workspace = true, optional = true }
 sysinfo = { workspace = true, optional = true }
 nomi-tools = { workspace = true, optional = true }
 nomi-types = { workspace = true, optional = true }
+# `zip` source kind (doc 30): a market shipped as one archive. The archive is
+# streamed to disk and hashed while it downloads, so `hex` is a direct dep
+# rather than routed through `nomifun-importer::digest` (whose helpers take an
+# in-memory `&[u8]`, i.e. would buffer a 289 MiB archive). `sha2` is already a
+# dependency of this crate.
+zip.workspace = true
+hex.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

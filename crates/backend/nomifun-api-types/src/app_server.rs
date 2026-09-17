@@ -685,6 +685,13 @@ pub enum AppServerMarketplaceSourceKind {
     /// HTTP(S) `marketplace.json`.
     #[serde(rename = "url")]
     Url,
+    /// HTTP(S) zip archive whose root **is** the market root (doc 30).
+    ///
+    /// One request instead of one-per-file: the official mirror serves
+    /// `experts` as 14,714 individual files (611 MiB) that a `url` source
+    /// mirrors one by one, versus a single 289 MiB archive here.
+    #[serde(rename = "zip")]
+    Zip,
 }
 
 impl AppServerMarketplaceSourceKind {
@@ -694,6 +701,25 @@ impl AppServerMarketplaceSourceKind {
             Self::Github => "github",
             Self::Git => "git",
             Self::Url => "url",
+            Self::Zip => "zip",
+        }
+    }
+
+    /// Parse the wire string back into the enum.
+    ///
+    /// Lives next to [`Self::as_str`] on purpose: the host resolves configured
+    /// source kinds by string, and the previous hand-written `match` in that
+    /// resolver ended in `_ => Url`, so adding a variant here silently mapped
+    /// the new kind onto `url` instead of failing. `None` (never a guess) is
+    /// what callers must handle.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "directory" => Some(Self::Directory),
+            "github" => Some(Self::Github),
+            "git" => Some(Self::Git),
+            "url" => Some(Self::Url),
+            "zip" => Some(Self::Zip),
+            _ => None,
         }
     }
 }

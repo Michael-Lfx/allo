@@ -55,10 +55,10 @@ const TEMPLATE_BODY: &str = r#"
 # capabilities = ["thinking", "tool_use"]
 
 # ── Marketplace sources ────────────────────────────────────────
-# The three sources above are the official ones, hosted by the product's own
-# market site (https://agent-store.flowyaipc.cn/source/<market>/…); each ships
-# a _files.txt listing, so the whole entry tree is mirrored, not just the
-# manifest. Registered automatically before the first store/market call.
+# The three sources above are the official ones: each market ships as **one
+# archive** hosted on ModelScope, and the archive's root *is* the market root.
+# Registered automatically before the first store/market call. A refresh only
+# downloads an archive whose content digest changed.
 # Remove a line to stop using that source; add your own mirrors here.
 "#;
 

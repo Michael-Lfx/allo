@@ -506,7 +506,11 @@ mod tests {
     /// default; an unchanged source keeps whatever the operator toggled.
     #[tokio::test]
     async fn reactivate_recomputes_auto_update_only_when_the_source_changes() {
-        const OFFICIAL: &str = "https://agent-store.flowyaipc.cn/source/experts/.codebuddy-plugin/marketplace.json";
+        // The concrete URL is arbitrary (the auto-update default is a parameter
+        // here, not derived), but it is kept equal to the real official shape
+        // so the fixture cannot read as "the official address" while naming a
+        // host that stopped being one (doc 30: the official bundles are zips).
+        const OFFICIAL: &str = "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/experts.zip";
         let (repo, _db) = setup().await;
         repo.insert_marketplace(sample("experts", "/tmp/experts-dev"))
             .await
@@ -520,7 +524,7 @@ mod tests {
         // Re-pointed at the official source → the caller's default applies.
         repo.reactivate_marketplace(
             "experts",
-            "url",
+            "zip",
             OFFICIAL,
             &[sample_entry("formatter")],
             "digest-official",
@@ -530,7 +534,7 @@ mod tests {
         .await
         .unwrap();
         let row = repo.get_marketplace("experts").await.unwrap().unwrap();
-        assert_eq!(row.source_kind, "url");
+        assert_eq!(row.source_kind, "zip");
         assert_eq!(row.source_uri, OFFICIAL);
         assert_eq!(row.auto_update, 1, "a re-sourced row takes the new default");
 
@@ -540,7 +544,7 @@ mod tests {
         repo.soft_remove_marketplace("experts", 99).await.unwrap();
         repo.reactivate_marketplace(
             "experts",
-            "url",
+            "zip",
             OFFICIAL,
             &[sample_entry("formatter")],
             "digest-official-2",

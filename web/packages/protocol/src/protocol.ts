@@ -52,8 +52,12 @@
  * effect on that very turn (doc `29` §4). `ConversationView` also gains
  * `reasoning_effort`, because a setting that can be written by three methods but
  * read back by none is not a setting a client can honour (doc `29` §5.5).
+ * **`fp-7` adds the `zip` marketplace source kind**: `market/add` accepts
+ * `source_kind: "zip"`, one archive whose root *is* the market root. The
+ * official bundles move to it because the old `url` form made a first fetch
+ * mirror 14,714 files (611 MiB) for `experts` alone (doc `30`).
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-6";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-7";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -1134,13 +1138,13 @@ export interface InstallOutcome {
 // Marketplace (docs/agent-store/05 §4.6, roadmap Phase 2)
 // ---------------------------------------------------------------------------
 
-/** Wire-marketplace source kinds (Phase A: directory only). */
-export type MarketplaceSourceKind = "directory" | "github" | "git" | "url";
+/** Wire-marketplace source kinds (Phase A: directory only; `zip` since `fp-7`). */
+export type MarketplaceSourceKind = "directory" | "github" | "git" | "url" | "zip";
 
 export interface MarketplaceAddRequest {
   name?: string;
   source_kind: MarketplaceSourceKind;
-  /** Local directory path / owner/repo / Git URL / HTTP URL. */
+  /** Local directory path / owner/repo / Git URL / HTTP URL / archive URL. */
   source: string;
 }
 
