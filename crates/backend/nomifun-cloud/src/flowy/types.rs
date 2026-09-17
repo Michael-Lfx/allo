@@ -364,6 +364,48 @@ pub struct DeviceActivateRequest {
     pub app_version: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub os_version: String,
+    /// Stable anonymous install id (`client_id` on disk).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub install_id: String,
+    /// Why this activation was sent: `first_install` | `upgrade` | `ip_change`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub activate_reason: String,
+    /// CPU architecture (`x64` / `arm64`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub arch: String,
+    /// Host composition: `desktop` | `web`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_runtime: String,
+    /// Invite / referral code from server config when present.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub invite_code: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_medium: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_campaign: String,
+    /// Last successful login method: `wechat_qr` | `email_otp`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub signup_method: String,
+    /// Total physical RAM in MiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ram_mb: Option<u64>,
+    /// Largest free disk space in GiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_free_gb: Option<u64>,
+    /// Credits balance snapshot at activate time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits_balance: Option<i64>,
+    /// Current plan code from `/user/me` when available.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub plan_code: String,
+    /// First time this install wrote device state (epoch ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_launch_at_ms: Option<i64>,
+    /// Milliseconds from last login success to this activate upload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_to_activate_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xpu_brand: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]

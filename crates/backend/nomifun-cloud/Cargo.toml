@@ -34,10 +34,14 @@ aes-gcm.workspace = true
 base64.workspace = true
 getrandom.workspace = true
 rqrr = "0.9"
+sysinfo = { workspace = true, features = ["system", "disk"] }
 
 [features]
 default = []
 http3-experimental = ["reqwest/http3"]
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [dev-dependencies]
 clap = { workspace = true }

@@ -10,12 +10,14 @@ use super::GeoIpInfo;
 use crate::error::ServerClientError;
 use crate::flowy::DeviceActivateRequest;
 use crate::platform;
+use crate::resources;
 
 #[derive(Debug, Clone)]
 pub struct DeviceFingerprint {
     pub mac: String,
     pub sn: String,
     pub cpu_chip_id: String,
+    pub xpu_brand: Option<String>,
 }
 
 /// Fingerprint values already persisted on this device. Empty strings mean
@@ -26,17 +28,21 @@ pub struct PersistedFingerprint {
     pub mac: String,
     pub sn: String,
     pub cpu_chip_id: String,
+    pub xpu_brand: String,
 }
 
 pub fn collect_fingerprint(
     persisted: &PersistedFingerprint,
 ) -> Result<DeviceFingerprint, ServerClientError> {
-    let (new_mac, new_sn, new_cpu) =
-        if persisted.mac.is_empty() || persisted.sn.is_empty() || persisted.cpu_chip_id.is_empty() {
-            collect_unpersisted()
-        } else {
-            (None, None, None)
-        };
+    let needs_hw = persisted.mac.is_empty()
+        || persisted.sn.is_empty()
+        || persisted.cpu_chip_id.is_empty()
+        || persisted.xpu_brand.is_empty();
+    let (new_mac, new_sn, new_cpu, new_xpu) = if needs_hw {
+        collect_unpersisted()
+    } else {
+        (None, None, None, None)
+    };
 
     let mac = if persisted.mac.is_empty() {
         new_mac.unwrap_or_else(|| {
@@ -59,32 +65,46 @@ pub fn collect_fingerprint(
     } else {
         persisted.cpu_chip_id.clone()
     };
+    let xpu_brand = if persisted.xpu_brand.is_empty() {
+        new_xpu.filter(|value| !value.is_empty())
+    } else if persisted.xpu_brand.eq_ignore_ascii_case("unknown") {
+        None
+    } else {
+        Some(persisted.xpu_brand.clone())
+    };
 
     Ok(DeviceFingerprint {
         mac,
         sn,
         cpu_chip_id,
+        xpu_brand,
     })
 }
 
-/// Reads the three raw fingerprint sources. On Windows each read spawns a
-/// PowerShell process, so they run concurrently and are joined here instead of
-/// paying three sequential process startups.
-fn collect_unpersisted() -> (Option<String>, Option<String>, Option<String>) {
+/// Reads raw fingerprint sources. On Windows each read spawns a PowerShell
+/// process, so they run concurrently and are joined here.
+fn collect_unpersisted() -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     #[cfg(target_os = "windows")]
     {
         let mac = std::thread::spawn(read_mac_address);
         let sn = std::thread::spawn(read_serial_number);
         let cpu = std::thread::spawn(read_cpu_chip_id);
+        let xpu = std::thread::spawn(read_xpu_brand);
         (
             mac.join().ok().flatten(),
             sn.join().ok().flatten(),
             cpu.join().ok().flatten(),
+            xpu.join().ok().flatten(),
         )
     }
     #[cfg(not(target_os = "windows"))]
     {
-        (read_mac_address(), read_serial_number(), read_cpu_chip_id())
+        (
+            read_mac_address(),
+            read_serial_number(),
+            read_cpu_chip_id(),
+            read_xpu_brand(),
+        )
     }
 }
 
@@ -103,7 +123,22 @@ pub fn build_activate_request(
         cpu_chip_id: fingerprint.cpu_chip_id.clone(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         os_version: platform::os_version_string(),
-        xpu_brand: None,
+        install_id: String::new(),
+        activate_reason: String::new(),
+        arch: platform::cpu_arch().to_string(),
+        host_runtime: String::new(),
+        invite_code: String::new(),
+        utm_source: String::new(),
+        utm_medium: String::new(),
+        utm_campaign: String::new(),
+        signup_method: String::new(),
+        ram_mb: resources::total_ram_mb(),
+        disk_free_gb: resources::largest_disk_free_gb(),
+        credits_balance: None,
+        plan_code: String::new(),
+        first_launch_at_ms: None,
+        login_to_activate_ms: None,
+        xpu_brand: fingerprint.xpu_brand.clone(),
         public_ip: String::new(),
         country: String::new(),
         country_code: String::new(),
@@ -278,6 +313,52 @@ fn read_cpu_chip_id() -> Option<String> {
     }
 }
 
+fn read_xpu_brand() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        run_powershell(
+            "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic|Remote Desktop|Virtual' } | Select-Object -First 1 -ExpandProperty Name",
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("system_profiler")
+            .args(["SPDisplaysDataType", "-detailLevel", "mini"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let trimmed = line.trim();
+            for prefix in ["Chipset Model:", "Chipset Model："] {
+                if let Some(rest) = trimmed.strip_prefix(prefix) {
+                    let value = rest.trim();
+                    if !value.is_empty() {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let out = Command::new("lspci").output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        text.lines()
+            .find(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("vga compatible") || lower.contains("3d controller")
+            })
+            .and_then(|line| line.split(": ").nth(1))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn run_powershell(script: &str) -> Option<String> {
     let out = nomi_process_runtime::hidden_std_command("powershell")
@@ -321,11 +402,25 @@ mod tests {
             mac: "aa-bb-cc-dd-ee-ff".into(),
             sn: "SN123".into(),
             cpu_chip_id: "CPUABC123".into(),
+            xpu_brand: "NVIDIA GeForce RTX 4090".into(),
         };
         let fp = collect_fingerprint(&persisted).expect("fingerprint");
         assert_eq!(fp.mac, "AA:BB:CC:DD:EE:FF");
         assert_eq!(fp.sn, "SN123");
         assert_eq!(fp.cpu_chip_id, "CPUABC123");
+        assert_eq!(fp.xpu_brand.as_deref(), Some("NVIDIA GeForce RTX 4090"));
+    }
+
+    #[test]
+    fn collect_fingerprint_skips_unknown_xpu_sentinel() {
+        let persisted = PersistedFingerprint {
+            mac: "aa-bb-cc-dd-ee-ff".into(),
+            sn: "SN123".into(),
+            cpu_chip_id: "CPUABC123".into(),
+            xpu_brand: "unknown".into(),
+        };
+        let fp = collect_fingerprint(&persisted).expect("fingerprint");
+        assert_eq!(fp.xpu_brand, None);
     }
 
     #[test]
@@ -347,6 +442,7 @@ mod tests {
             mac: raw.0.clone().unwrap_or_default(),
             sn: raw.1.clone().unwrap_or_default(),
             cpu_chip_id: raw.2.clone().unwrap_or_default(),
+            xpu_brand: raw.3.clone().unwrap_or_default(),
         };
         let fp = collect_fingerprint(&persisted).expect("fingerprint");
         if let Some(mac) = raw.0 {
@@ -358,6 +454,9 @@ mod tests {
         if let Some(cpu) = raw.2 {
             assert_eq!(fp.cpu_chip_id, cpu);
         }
+        if let Some(xpu) = raw.3 {
+            assert_eq!(fp.xpu_brand.as_deref(), Some(xpu.as_str()));
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -365,13 +464,15 @@ mod tests {
     fn windows_collection_runs_readers_concurrently() {
         let source = include_str!("fingerprint.rs");
         let start = source.find("fn collect_unpersisted").expect("helper fn");
-        let end = source
-            .find("#[cfg(not(target_os = \"windows\"))]")
-            .expect("non-windows branch");
+        let end = source[start..]
+            .find("pub fn build_activate_request")
+            .map(|offset| start + offset)
+            .expect("build_activate_request follows collect_unpersisted");
         let body = &source[start..end];
         assert!(body.contains("std::thread::spawn(read_mac_address)"));
         assert!(body.contains("std::thread::spawn(read_serial_number)"));
         assert!(body.contains("std::thread::spawn(read_cpu_chip_id)"));
+        assert!(body.contains("std::thread::spawn(read_xpu_brand)"));
         assert!(body.contains(".join().ok().flatten()"));
     }
 

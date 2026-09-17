@@ -33,10 +33,18 @@ pub struct CloudService {
     data_dir: PathBuf,
     config: Arc<Mutex<GatewayConfig>>,
     pending: Arc<DashMap<String, PendingEntry>>,
+    host_runtime: nomifun_api_types::RuntimeKind,
 }
 
 impl CloudService {
     pub fn new(data_dir: PathBuf) -> Result<Self, AppError> {
+        Self::new_with_host(data_dir, nomifun_api_types::RuntimeKind::Web)
+    }
+
+    pub fn new_with_host(
+        data_dir: PathBuf,
+        host_runtime: nomifun_api_types::RuntimeKind,
+    ) -> Result<Self, AppError> {
         let path = config_yaml_path(Some(&data_dir));
         let mut config = load_user_config_file(&path).map_err(|e| AppError::Internal(e))?;
         // Persist when the file is missing OR when base_url/provider were empty —
@@ -57,6 +65,7 @@ impl CloudService {
             data_dir,
             config: Arc::new(Mutex::new(config)),
             pending: Arc::new(DashMap::new()),
+            host_runtime,
         })
     }
 
@@ -70,7 +79,7 @@ impl CloudService {
 
     pub(crate) fn auth_manager(&self) -> Result<AuthManager, AppError> {
         let cfg = self.gateway_config();
-        AuthManager::new(cfg.server.clone(), &self.data_dir)
+        AuthManager::new_with_host(cfg.server.clone(), &self.data_dir, self.host_runtime)
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
