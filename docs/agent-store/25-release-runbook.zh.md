@@ -11,7 +11,7 @@
 |---|---|---|---|
 | npm | `@flowy-agent-store/protocol` / `client` / `sdk` / `runtime-win32-x64`，**同一个版本号** | 本仓 `web/scripts/publish-packages.ts` | `npm view @flowy-agent-store/sdk dist-tags versions --json` |
 | GitHub Release | `flowy-agent-store-v<版本>-windows-x86_64.zip` + `SHA256SUMS.txt` + `RELEASE_NOTES.md`，**一律标 prerelease** | 站点仓 `scripts/release.mjs` | `bun run release:status` |
-| 站点上线 | 官网 + 双语文档站（`push main` 触发 EdgeOne Makers 构建）；三个市场源自 doc 30 起迁至 ModelScope 归档，**不在站点产物里** | 站点仓 | 线上页面 + 产物文件数不超限（自检见 S7） |
+| 站点上线 | 官网 + 双语文档站；**GitHub 自动触发自 2026-09-17 起失效，推送后需按站点仓 `docs/deploy-trigger.md` 手动触发一次构建**；三个市场源自 doc 30 起迁至 ModelScope 归档，**不在站点产物里** | 站点仓 | 线上页面 + 产物文件数不超限（自检见 S7） |
 
 > **发布刚完成时不要信 `npm view`**（实测 2026-09-16）：注册表读取侧有 CDN 缓存——四个包都打印 `✓ published` 之后的一两分钟里，`npm view` 仍可能返回旧值，甚至对新版本返回**假 404**。复核用 canonical packument URL：`https://registry.npmjs.org/@flowy-agent-store%2Fsdk`——**不要**给它加查询串（某些缓存节点会对带查询串的请求直接 404）；某个版本的 tarball 是否真的在，用 `HEAD .../-/<pkg>-<version>.tgz`，并先用一个**不存在的版本**确认这个探针确实会返回 404。
 
@@ -114,7 +114,10 @@ git commit -m "docs(release): 发布 0.1.0-beta.4"
 git push origin main
 ```
 
-推送即由 EdgeOne Makers 构建上线。**部署后自检**（顺序即用户体验顺序）：
+推送后**不会**自动上线：EdgeOne Makers 的 GitHub 自动触发**自 2026-09-17 起失效**，且本站项目是
+`Github` 型（`edgeone makers deploy` 的上传通道对它不可用）。所以推送后要**手动触发一次构建**——
+接口形状、实测与失败定位见站点仓 `docs/deploy-trigger.md`。触发的提交必须是刚推上去的那个 sha。
+然后做**部署后自检**（顺序即用户体验顺序）：
 
 1. `/<lang>/docs/typescript-sdk` 中英两页都有正文（不是 SPA 空壳——空壳说明该页没进 `react-router.config.ts` 的 `prerender()`）；
 2. **站点产物文件数**：EdgeOne Makers 构建日志里没有 `File count exceeds project limit`。上限是 20,000 个文件——`market-source/` 三个市场合计 22,612 个，所以自 doc 30 起整树**不再进产物**，产物里只应有站点自身约 94 个文件 + 目录页头像约 648 个（本地 `bun run build` 后数 `build/client` 即可预检）。⚠️ **`/source/<market>/…` 与 `/source/<market>/_files.txt` 已退役**，不要再把它们当作部署自检项；
