@@ -29,7 +29,7 @@ use crate::tool_execution::{
 };
 use crate::output::{OutputSink, ToolCallExecutionContext, ToolCallRetryContext};
 use crate::plan::prompt as plan_prompt;
-use crate::plan::state::PlanState;
+use crate::plan::state::{PlanPhase, PlanState};
 use crate::round;
 use crate::session::{EditableTurnCheckpoint, Session, SessionManager};
 
@@ -603,11 +603,16 @@ pub struct AgentEngine {
     compact_config: CompactConfig,
     /// Runtime compaction state (circuit breaker, last input tokens)
     compact_state: CompactState,
-    /// Runtime plan mode state (active flag, pre-plan allow-list, plan file path)
+    /// Runtime plan mode state (active flag, pre-plan allow-list, approval latch)
     plan_state: PlanState,
     /// Shared flag read by EnterPlanMode/ExitPlanMode tools to validate transitions.
     /// Updated by the engine when processing PlanModeTransition modifiers.
     plan_active_flag: Option<Arc<AtomicBool>>,
+    /// Shared with ExitPlanMode: true once a verifiable plan is waiting for
+    /// the next user message. Prevents a second Exit from restoring writes.
+    plan_exit_latch: Option<Arc<AtomicBool>>,
+    /// Unique owner of Goal auto-continue and office Plan overlay.
+    horizon: crate::horizon::HorizonController,
     /// Prompt cache break detector for diagnostics.
     cache_detector: CacheBreakDetector,
     compaction_level: nomi_compact::CompactionLevel,
@@ -732,6 +737,8 @@ impl AgentEngine {
             compact_state: CompactState::new(),
             plan_state: PlanState::default(),
             plan_active_flag: None,
+            plan_exit_latch: None,
+            horizon: crate::horizon::HorizonController::default(),
             cache_detector: CacheBreakDetector::new(),
             compaction_level: config.compact.compaction,
             toon_enabled: config.compact.toon,
@@ -825,6 +832,8 @@ impl AgentEngine {
             compact_state,
             plan_state: PlanState::default(),
             plan_active_flag: None,
+            plan_exit_latch: None,
+            horizon: crate::horizon::HorizonController::default(),
             cache_detector: CacheBreakDetector::new(),
             compaction_level: config.compact.compaction,
             toon_enabled: config.compact.toon,
@@ -937,10 +946,14 @@ impl AgentEngine {
                 rt.shared_state(),
             )));
         self.goal = Some(rt);
+        self.horizon.reset();
+        self.horizon.configure_goal(max_auto_continuations, None);
     }
 
     /// Restore-semantics counterpart of [`Self::set_goal`].
     pub fn set_goal_state(&mut self, state: crate::goal::state::GoalState) {
+        self.horizon
+            .configure_goal(state.max_auto_continuations, state.contract.as_ref());
         match self.goal.as_ref() {
             Some(rt) => rt.restore(state),
             None => {
@@ -1348,6 +1361,77 @@ impl AgentEngine {
         self.plan_active_flag = Some(flag);
     }
 
+    pub fn set_plan_exit_latch(&mut self, flag: Arc<AtomicBool>) {
+        self.plan_exit_latch = Some(flag);
+    }
+
+    /// Cursor-style Build: the next user message after a latched plan restores
+    /// write tools. No-op unless a plan is waiting for approval.
+    fn approve_pending_plan(&mut self) {
+        if !self.plan_state.awaiting_approval() {
+            return;
+        }
+        self.plan_state.phase = PlanPhase::Idle;
+        self.plan_state.pending_plan = None;
+        self.plan_state.is_active = false;
+        self.allow_list = self.plan_state.pre_plan_allow_list.clone();
+        if let Some(ref flag) = self.plan_active_flag {
+            flag.store(false, Ordering::Release);
+        }
+        if let Some(ref latch) = self.plan_exit_latch {
+            latch.store(false, Ordering::Release);
+        }
+    }
+
+    fn horizon_observe_tools(&mut self, tool_calls: &[ContentBlock], results: &[ContentBlock]) {
+        let mut observations = Vec::new();
+        for call in tool_calls {
+            let ContentBlock::ToolUse { id, name, input, .. } = call else {
+                continue;
+            };
+            let success = results.iter().any(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } if tool_use_id == id => !is_error,
+                _ => false,
+            });
+            let command = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            observations.push(crate::horizon::ToolObservation {
+                name: name.clone(),
+                command,
+                success,
+            });
+        }
+        self.horizon.observe_tools(&observations);
+        self.sync_goal_progress();
+    }
+
+    fn sync_goal_progress(&mut self) {
+        let snap = self.horizon.progress();
+        if let Some(g) = self.goal.as_ref() {
+            g.sync_progress(
+                snap.mutated,
+                snap.verify_ok,
+                snap.workspace_changed,
+                snap.no_progress_streak,
+            );
+        }
+    }
+
+    fn emit_horizon_decision(&self, decision: &crate::horizon::HorizonDecision) {
+        if let Some(obs) = self.observation.as_ref() {
+            let _ = obs.emit(
+                nomi_agent_trace::EVENT_HORIZON_DECISION,
+                self.horizon.observation_payload(decision),
+            );
+        }
+    }
+
     /// Default thinking budget when "enabled" is requested without a specific budget.
     const DEFAULT_THINKING_BUDGET: u32 = 10_000;
 
@@ -1652,6 +1736,8 @@ impl AgentEngine {
         // instruction starts with a clean progress window.
         self.stagnation_guard.reset();
         self.harness_runtime.reset_for_user_request();
+        self.horizon.on_user_request();
+        self.approve_pending_plan();
         if let Some(harness) = self.coding_harness.as_mut() {
             harness.reset_for_user_request();
         }
@@ -1748,6 +1834,15 @@ impl AgentEngine {
             // prompt so toggling plan mode doesn't break the prefix cache.
             if self.plan_state.is_active {
                 turn_tail_extras.push(plan_prompt::plan_mode_instructions().to_string());
+            }
+            if self.coding_harness.is_none() {
+                if let Some(text) = self
+                    .horizon
+                    .observe_office_plan_turn(self.plan_state.is_active)
+                    .text()
+                {
+                    turn_tail_extras.push(text.to_string());
+                }
             }
             if let Some(harness) = self.coding_harness.as_mut() {
                 if let Some(plan_nudge) = harness.before_provider_turn(self.plan_state.is_active) {
@@ -2796,41 +2891,66 @@ impl AgentEngine {
                 }
 
                 // Goal-driven continuation (opt-in). Coding mode disables
-                // fail-open auto-continue by default — incomplete work is handled
-                // by the coding harness todo/explore gates instead.
+                // auto-continue by default — incomplete work is handled by the
+                // coding harness todo/explore gates instead.
                 let skip_goal = self
                     .coding_harness
                     .as_ref()
                     .is_some_and(|h| h.disables_goal_auto_continue());
+                self.horizon.record_usage(
+                    turn_usage.input_tokens,
+                    turn_usage.output_tokens,
+                );
+                let cwd = self.workspace_cwd();
+                self.horizon
+                    .observe_end_turn(&assistant_text, cwd.as_deref(), 0);
+                self.sync_goal_progress();
+                self.horizon.consume_turn_scoped();
                 let continuation = if skip_goal {
                     None
-                } else {
-                    match self.goal.as_ref() {
-                        Some(g) => {
-                            let mut judge = crate::goal::judge::ProviderJudgeClient::new(
-                                Arc::clone(&self.provider),
-                                self.model.clone(),
-                            );
-                            if let Some(session) = self.observation.clone() {
-                                judge = judge.with_observation(session);
-                            }
-                            g.evaluate_and_continue(&assistant_text, &judge).await
-                        }
-                        None => None,
+                } else if let Some(snap) = self.goal.as_ref().map(|g| g.snapshot()) {
+                    self.horizon.align_budget(
+                        snap.max_auto_continuations,
+                        snap.contract.as_ref(),
+                        snap.auto_continuations,
+                    );
+                    let awaiting = self.plan_state.awaiting_approval();
+                    let decision = self.horizon.decide(self.plan_state.is_active, awaiting);
+                    self.emit_horizon_decision(&decision);
+                    let delta = self.horizon.continuation_delta(
+                        &snap.objective,
+                        snap.contract.as_ref(),
+                        &crate::goal::state::render_subgoals_block(&snap.subgoals),
+                    );
+                    let gate = crate::goal::runtime::GoalContinueGate {
+                        allow_continue: decision.allow_continue,
+                        pause_on_veto: decision.pause_goal,
+                        veto_reason: Some(decision.reason.clone()),
+                        continuation_delta: Some(delta),
+                        observed: true,
+                    };
+                    let mut judge = crate::goal::judge::ProviderJudgeClient::new(
+                        Arc::clone(&self.provider),
+                        self.model.clone(),
+                    );
+                    if let Some(session) = self.observation.clone() {
+                        judge = judge.with_observation(session);
                     }
+                    self.goal
+                        .as_ref()
+                        .unwrap()
+                        .evaluate_and_continue_with(&assistant_text, &judge, gate)
+                        .await
+                } else {
+                    None
                 };
                 if let Some(cont) = continuation {
+                    self.horizon.record_continuation();
                     self.messages.push(cont);
                     self.save_session();
-                    // Each goal round gets a fresh internal-iteration budget:
-                    // the continuation opens a new logical turn. Carrying the
-                    // previous round's tool-loop count forward would let a
-                    // thorough first round starve every later round into the
-                    // MaxTurns exit — which returns without consulting the
-                    // judge. Total work stays bounded: rounds are capped by
-                    // the goal's auto-continuation limit, iterations per
-                    // round by `limit`.
-                    turn = 0;
+                    // Do not reset `turn`: the 200-turn net budget is global.
+                    // Goal auto-continue is additionally capped by HorizonBudget.
+                    turn += 1;
                     continue; // don't return — run another turn toward the goal
                 }
                 if stop_reason == StopReason::EndTurn {
@@ -3206,6 +3326,7 @@ impl AgentEngine {
             if self.coding_harness.is_none() {
                 self.observe_office_tool_turn(&tool_calls, &outcome.results);
             }
+            self.horizon_observe_tools(&tool_calls, &outcome.results);
 
             // Apply any context modifiers from skill executions before the next turn
             self.apply_context_modifiers(&outcome.modifiers);
@@ -3750,15 +3871,22 @@ impl AgentEngine {
                     PlanModeTransition::Enter => {
                         self.plan_state.pre_plan_allow_list = self.allow_list.clone();
                         self.plan_state.is_active = true;
+                        self.plan_state.phase = PlanPhase::Exploring;
+                        self.plan_state.pending_plan = None;
                         if let Some(ref flag) = self.plan_active_flag {
                             flag.store(true, Ordering::Release);
                         }
+                        if let Some(ref latch) = self.plan_exit_latch {
+                            latch.store(false, Ordering::Release);
+                        }
                     }
-                    PlanModeTransition::Exit { .. } => {
-                        self.plan_state.is_active = false;
-                        self.allow_list = self.plan_state.pre_plan_allow_list.clone();
-                        if let Some(ref flag) = self.plan_active_flag {
-                            flag.store(false, Ordering::Release);
+                    PlanModeTransition::Exit { plan_content } => {
+                        // Valid Exit latches for user approval; write tools stay locked.
+                        self.plan_state.phase = PlanPhase::AwaitingApproval;
+                        self.plan_state.pending_plan = plan_content.clone();
+                        self.plan_state.is_active = true;
+                        if let Some(ref latch) = self.plan_exit_latch {
+                            latch.store(true, Ordering::Release);
                         }
                     }
                 }

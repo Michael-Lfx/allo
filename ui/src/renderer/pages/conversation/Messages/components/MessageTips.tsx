@@ -103,12 +103,7 @@ const useTruncatedContinuation = (message: IMessageTips) => {
   const conversationContext = useConversationContextSafe();
   const [state, setState] = useState<ContinueState>('idle');
   const recovery = message.content.recovery;
-  const expectedUiErrorCode =
-    recovery?.failure_code === 'output_truncated'
-      ? 'OUTPUT_TRUNCATED'
-      : recovery?.failure_code === 'turn_requests_exhausted'
-        ? 'TURN_REQUESTS_EXHAUSTED'
-        : undefined;
+  const expectedUiErrorCode = recovery ? recovery.failure_code.toUpperCase() : undefined;
   const visible = Boolean(
     message.content.type === 'error' &&
       message.content.error?.retryable === true &&

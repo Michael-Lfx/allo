@@ -426,6 +426,28 @@ describe('transformMessage runtime field normalization', () => {
       failure_code: 'output_truncated',
     });
 
+    const networkRecovered = transformMessage(
+      baseWire({
+        type: 'tips',
+        data: {
+          content: 'provider dropped',
+          type: 'error',
+          error: { message: 'provider dropped', code: 'USER_LLM_PROVIDER_NETWORK_ERROR', retryable: true },
+          recovery: {
+            kind: 'continue_truncated',
+            source_message_id: SECOND_MESSAGE_ID,
+            failure_code: 'user_llm_provider_network_error',
+          },
+        },
+      })
+    );
+    if (networkRecovered?.type !== 'tips') throw new Error('expected tips');
+    expect(networkRecovered.content.recovery).toEqual({
+      kind: 'continue_truncated',
+      source_message_id: SECOND_MESSAGE_ID,
+      failure_code: 'user_llm_provider_network_error',
+    });
+
     const malformed = transformMessage(
       baseWire({
         type: 'tips',

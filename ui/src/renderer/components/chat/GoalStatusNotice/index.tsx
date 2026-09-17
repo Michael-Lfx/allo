@@ -219,6 +219,12 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
           />
         </div>
       )}
+      {(goal.status === 'active' || goal.status === 'waiting') &&
+        (goal.no_progress_streak ?? 0) >= 1 && (
+          <div className='text-t-tertiary' data-testid='goal-no-progress'>
+            {t('conversation.goal.notice.noProgress', { streak: goal.no_progress_streak })}
+          </div>
+        )}
       {isWaiting && (
         <div className='flex items-center gap-8px text-t-tertiary' data-testid='goal-wait-barrier'>
           {barrierLines.length > 0 && <span className='truncate'>{barrierLines.join(' · ')}</span>}

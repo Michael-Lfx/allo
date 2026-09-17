@@ -63,7 +63,8 @@ pub use repository::customer_service::{
 };
 pub use repository::SqliteCustomerServiceRepository;
 pub use repository::conversation::{
-    ConversationDeliveryReceiptClaim, ConversationFilters, ConversationMessageProjection,
+    is_resumable_source_error_code, ConversationDeliveryReceiptClaim, ConversationFilters,
+    ConversationMessageProjection,
     ConversationSkillLoadCommit, EditResubmitStateSnapshot,
     ConversationTurnAdmissionState,
     ConversationRowUpdate, MessageDayBucket, MessageRowUpdate, MessageSearchRow, SortOrder,

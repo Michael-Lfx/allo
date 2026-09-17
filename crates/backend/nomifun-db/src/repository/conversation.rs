@@ -7,6 +7,22 @@ use crate::models::{
     ConversationSkillLoad, MessageRow, NewConversationSkillLoad,
 };
 
+/// Receipt codes whose correct recovery is another round against the existing
+/// transcript and workspace — never rewind-and-resubmit from the original user
+/// message. Truncation, request-budget exhaustion, and retryable provider
+/// transport faults all leave genuine completed tool work in place.
+pub fn is_resumable_source_error_code(code: &str) -> bool {
+    matches!(
+        code,
+        "output_truncated"
+            | "turn_requests_exhausted"
+            | "user_llm_provider_network_error"
+            | "user_llm_provider_timeout"
+            | "user_llm_provider_empty_response"
+            | "user_llm_provider_gateway_error"
+    )
+}
+
 /// Remove only runtime/session instance state that can resume work after an
 /// explicit Conversation reset. User-authored configuration and execution
 /// policy remain untouched.
@@ -482,8 +498,8 @@ pub trait IConversationRepository: Send + Sync {
     ///
     /// A fresh claim is valid only when `source_message_id` still identifies
     /// the latest projected public `turn` receipt for this Conversation and
-    /// that receipt is a completed, retryable `output_truncated` or
-    /// `turn_requests_exhausted` failure with the exact immutable request
+    /// that receipt is a completed, retryable resumable failure
+    /// ([`is_resumable_source_error_code`]) with the exact immutable request
     /// payload supplied by the caller. Existing matching operation receipts
     /// are absorbing replays and do not revalidate or mutate lifecycle.
     #[allow(clippy::too_many_arguments)]
@@ -1412,7 +1428,23 @@ pub struct MessageSearchRow {
 
 #[cfg(test)]
 mod tests {
-    use super::RequirementConversationTurnAuthority;
+    use super::{is_resumable_source_error_code, RequirementConversationTurnAuthority};
+
+    #[test]
+    fn resumable_source_error_codes_cover_truncation_and_retryable_provider_faults() {
+        for code in [
+            "output_truncated",
+            "turn_requests_exhausted",
+            "user_llm_provider_network_error",
+            "user_llm_provider_timeout",
+            "user_llm_provider_empty_response",
+            "user_llm_provider_gateway_error",
+        ] {
+            assert!(is_resumable_source_error_code(code), "{code}");
+        }
+        assert!(!is_resumable_source_error_code("user_llm_provider_auth_failed"));
+        assert!(!is_resumable_source_error_code("channel_closed"));
+    }
 
     #[test]
     fn requirement_conversation_turn_authority_debug_redacts_claim_token() {

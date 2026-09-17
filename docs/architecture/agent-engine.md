@@ -202,3 +202,27 @@ without the coding overlay.
 - **KPIs** (logged at EndTurn): `tools_per_turn`, `recon_turns`, `serial_recon`,
   `time_to_first_edit`, `unique_path_reread_rate`, `verify_before_end`,
   `contributor_ms`, `checkpoint_ms`, `ttft_ms`, `tool_wall_ms`.
+
+## Horizon (Goal auto-continue + office Plan)
+
+`HorizonController` is the unique owner of Goal auto-continue and the office
+Plan overlay. Coding sessions keep `CodingHarness::on_natural_end` (todo /
+verify) and typically set `disable_goal_auto_continue`.
+
+- **Progress ledger:** a mutating tool, a verification-like command, a pending
+  step increase, or a workspace fingerprint change (git HEAD + porcelain, else
+  write-root mtime/size) counts as progress. Recon-only tools do not. Near-
+  duplicate assistant text is idle. After GoalState copies the snapshot, round-
+  scoped mutation/verify flags are consumed so the next auto-continue EndTurn
+  is judged independently.
+- **Fail-closed judge:** parse or transport failure pauses immediately. Wait
+  barriers without a liveness probe still fail-open. Judge *done* without
+  mechanical evidence is treated as *continue*.
+- **Budgets compose and do not reset `turn`:** the engine 200-turn net stays
+  monotonic; Horizon caps Goal auto-continues (free-form min(requested, 3);
+  with Verification, the requested cap, default 8) plus a 2h wall clock.
+- **Plan gate:** `ExitPlanMode` requires a verifiable plan. A valid Exit latches
+  `PlanPhase::AwaitingApproval` and keeps writes locked. The next user message
+  is the Build approval. Office Plan nudges at 8 provider turns and hard-stops
+  at 12 (ExitPlanMode remains available).
+- Observation event: `horizon/decision`.

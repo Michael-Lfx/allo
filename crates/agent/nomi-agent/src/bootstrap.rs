@@ -952,12 +952,14 @@ impl AgentBootstrap {
         )));
 
         let plan_active_flag = Arc::new(AtomicBool::new(false));
+        let plan_exit_latch = Arc::new(AtomicBool::new(false));
         if self.config.plan.enabled {
             registry.register(Box::new(crate::plan::tools::EnterPlanModeTool::new(
                 Arc::clone(&plan_active_flag),
             )));
-            registry.register(Box::new(crate::plan::tools::ExitPlanModeTool::new(
+            registry.register(Box::new(crate::plan::tools::ExitPlanModeTool::with_latch(
                 Arc::clone(&plan_active_flag),
+                Arc::clone(&plan_exit_latch),
             )));
         }
 
@@ -1161,6 +1163,7 @@ impl AgentBootstrap {
             )
         };
         engine.set_plan_active_flag(plan_active_flag);
+        engine.set_plan_exit_latch(plan_exit_latch);
         engine.set_process_supervisor(Arc::clone(&process_supervisor));
         engine.set_system_prompt_sections(prompt_cache.sections);
         engine.set_file_cache(file_cache);

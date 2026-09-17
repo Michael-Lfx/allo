@@ -111,6 +111,10 @@ pub struct GoalStatusResponse {
     /// The goal's completion contract, when one was drafted or set.
     #[serde(default)]
     pub contract: Option<GoalContractDto>,
+    /// Consecutive judged EndTurns without mechanical progress. Not persisted;
+    /// restarts at 0 with a new process.
+    #[serde(default)]
+    pub no_progress_streak: Option<u64>,
 }
 
 #[cfg(test)]

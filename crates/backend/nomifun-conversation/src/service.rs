@@ -8080,12 +8080,14 @@ impl ConversationService {
         .await
     }
 
-    /// Starts one explicit continuation of the latest retryable truncation.
+    /// Starts one explicit continuation of the latest retryable interrupted turn.
     ///
-    /// The client supplies only the immutable source message identity and an
-    /// idempotency key. The original requirement and attachments are recovered
-    /// from the server-owned receipt, then re-admitted as a new hidden public
-    /// turn without rewinding any transcript or mutating the failed receipt.
+    /// Eligible failures are truncation, request-budget exhaustion, and retryable
+    /// provider transport faults. The client supplies only the immutable source
+    /// message identity and an idempotency key. The original requirement and
+    /// attachments are recovered from the server-owned receipt, then re-admitted
+    /// as a new hidden public turn without rewinding any transcript or mutating
+    /// the failed receipt.
     pub async fn continue_truncated_turn_with_idempotency_key(
         &self,
         user_id: &str,
@@ -8131,7 +8133,7 @@ impl ConversationService {
         let source_error_code = source
             .result_error_code
             .as_deref()
-            .filter(|code| matches!(*code, "output_truncated" | "turn_requests_exhausted"))
+            .filter(|code| nomifun_db::is_resumable_source_error_code(code))
             .map(str::to_owned)
             .ok_or_else(|| {
                 AppError::Conflict(
@@ -8184,9 +8186,8 @@ impl ConversationService {
                 continuation.original_delivery.content
             );
             if continuation.workflow != "continue-truncated"
-                || !matches!(
+                || !nomifun_db::is_resumable_source_error_code(
                     continuation.source_error_code.as_str(),
-                    "output_truncated" | "turn_requests_exhausted"
                 )
                 || MessageId::parse(&continuation.source_message_id).is_err()
                 || !continuation.delivery.hidden

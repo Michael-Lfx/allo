@@ -9,7 +9,8 @@ use futures_util::FutureExt;
 use nomifun_ai_agent::{
     AgentSendError, AgentStreamEvent,
     artifact_store::ArtifactStore,    protocol::events::{
-        FinishEventData, PlanEventData, TextEventData, ThinkingEventData, TurnStopReason,
+        ErrorEventData, FinishEventData, PlanEventData, TextEventData, ThinkingEventData,
+        TurnStopReason,
         tool_call::{
             AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData,
             ToolCallStatus, validate_artifact_receipt_integrity,
@@ -3760,6 +3761,14 @@ impl StreamRelay {
         // force every object key down the tree to snake_case so the
         // wire contract stays uniform.
         normalize_keys_to_snake_case(&mut event_data);
+        if let AgentStreamEvent::Error(data) = event
+            && let Some(recovery) = self.provider_interrupt_recovery(data)
+            && let Some(object) = event_data
+                .get_mut("data")
+                .and_then(Value::as_object_mut)
+        {
+            object.insert("recovery".to_owned(), recovery);
+        }
 
         let payload = json!({
             "conversation_id": self.conv_id(),
@@ -4329,6 +4338,25 @@ impl StreamRelay {
         outcome
     }
 
+    /// Continue-from-progress surface for a retryable provider interrupt.
+    /// Truncation already uses a dedicated Finish tip; this path covers the
+    /// Error terminal that otherwise offered only rewind-and-resubmit.
+    fn provider_interrupt_recovery(&self, data: &ErrorEventData) -> Option<Value> {
+        if data.retryable != Some(true) {
+            return None;
+        }
+        let source_message_id = self.source_user_message_id.as_deref()?;
+        let failure_code = crate::relay_error_code::agent_error_code_token(data.code?);
+        if !nomifun_db::is_resumable_source_error_code(&failure_code) {
+            return None;
+        }
+        Some(json!({
+            "kind": "continue_truncated",
+            "source_message_id": source_message_id,
+            "failure_code": failure_code,
+        }))
+    }
+
     fn truncated_recovery_tip(
         stop_reason: Option<TurnStopReason>,
     ) -> Option<(&'static str, &'static str, &'static str)> {
@@ -4422,15 +4450,21 @@ impl StreamRelay {
     async fn persist_error_tips(
         &self,
         message_id: &str,
-        data: &nomifun_ai_agent::protocol::events::ErrorEventData,
+        data: &ErrorEventData,
     ) {
-        let content = json!({
+        let mut content = json!({
             "content": &data.message,
             "type": "error",
             "error": &data,
             "turn_id": &self.root_turn_id,
-        })
-        .to_string();
+        });
+        if let Some(recovery) = self.provider_interrupt_recovery(data) {
+            content
+                .as_object_mut()
+                .expect("error tips content is an object")
+                .insert("recovery".to_owned(), recovery);
+        }
+        let content = content.to_string();
         let row = MessageRow {
             id: 0,
             message_id: message_id.to_owned(),
@@ -6238,6 +6272,7 @@ mod tests {
         ErrorEventData, FinishEventData, OutputDiscardedEventData, PlanEventData, StartEventData,
         TextEventData, ThinkingEventData,
     };
+    use nomifun_api_types::{AgentErrorOwnership, AgentErrorResolution, AgentErrorResolutionKind};
     use nomifun_common::{ConversationId, MessageId, PersistedArtifactId};
     use nomifun_db::DbError;
     use std::sync::{
@@ -11993,6 +12028,62 @@ mod tests {
                     || event.data["data"].get("recovery").is_none()
             }));
         }
+    }
+
+    #[tokio::test]
+    async fn retryable_provider_network_error_persists_continue_recovery() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(32));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(32);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        )
+        .with_root_turn_id(TEST_TURN_A)
+        .with_source_user_message_id(Some(TEST_TURN_B.to_owned()));
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Error(ErrorEventData::classified(
+            "The model provider could not be reached",
+            AgentErrorCode::UserLlmProviderNetworkError,
+            AgentErrorOwnership::UserLlmProvider,
+            Some("connection reset".into()),
+            true,
+            false,
+            Some(AgentErrorResolution::new(
+                AgentErrorResolutionKind::Retry,
+                None,
+            )),
+        )))
+        .unwrap();
+
+        relay.consume(rx).await;
+
+        let tips = repo
+            .take_inserts()
+            .into_iter()
+            .filter(|row| row.r#type == "tips")
+            .collect::<Vec<_>>();
+        assert_eq!(tips.len(), 1);
+        let content: Value = serde_json::from_str(&tips[0].content).unwrap();
+        assert_eq!(
+            content["recovery"],
+            json!({
+                "kind": "continue_truncated",
+                "source_message_id": TEST_TURN_B,
+                "failure_code": "user_llm_provider_network_error",
+            })
+        );
+        assert_eq!(content["error"]["retryable"], true);
+
+        let live_error = std::iter::from_fn(|| ws_rx.try_recv().ok())
+            .find(|event| event.name == "message.stream" && event.data["type"] == "error")
+            .expect("terminal error must be broadcast");
+        assert_eq!(live_error.data["data"]["recovery"], content["recovery"]);
     }
 
     #[tokio::test]
