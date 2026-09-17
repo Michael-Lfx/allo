@@ -8,8 +8,9 @@
  * 调用之前**拦截并压缩会话上下文（与桌面端同一套引擎命令）。
  */
 
-/** 面板行的语义分类（图标与分组由组件决定）。 */
-export type PaletteItemKind = "compact" | "agent" | "skill" | "connector";
+/** 面板行的语义分类（图标与分组由组件决定）。连接器**不是**面板行：它换的是
+ *  宿主的工具面，改在 `+` 菜单里以开关呈现（doc `28`）。 */
+export type PaletteItemKind = "compact" | "agent" | "skill";
 
 export interface PaletteItem {
   /** Stable key; for catalog items this is the mention id. */

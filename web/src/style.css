@@ -312,13 +312,26 @@ button:disabled { cursor: default; opacity: .48; }
 .plan-panel-title { flex: 0 0 auto; font-size: 13px; font-weight: 560; }
 .plan-panel-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .plan-panel-caret { flex: 0 0 auto; margin-left: auto; color: var(--muted); }
-.plan-panel-steps { display: grid; gap: 6px; margin: 0; padding: 0 14px 12px 33px; list-style: none; }
-.plan-panel-step { display: flex; min-width: 0; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.6; }
-.plan-panel-glyph { flex: 0 0 auto; margin-top: 3px; color: var(--muted-faint); }
-.plan-panel-step.is-completed .plan-panel-glyph { color: var(--green); }
-.plan-panel-step.is-in-progress .plan-panel-glyph { color: var(--amber); }
-.plan-panel-step.is-completed .plan-panel-step-text { color: var(--muted); }
-.plan-panel-step-text { min-width: 0; color: var(--ink-strong); word-break: break-word; }
+.plan-steps { display: grid; gap: 6px; margin: 0; list-style: none; }
+/* 面板里缩进对齐标题下方；会话流里的历史行另有缩进（`.plan-item .plan-steps`）。 */
+.plan-panel .plan-steps { padding: 0 14px 12px 33px; }
+.plan-step { display: flex; min-width: 0; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.6; }
+.plan-glyph { flex: 0 0 auto; margin-top: 3px; color: var(--muted-faint); }
+.plan-step.is-completed .plan-glyph { color: var(--green); }
+.plan-step.is-in-progress .plan-glyph { color: var(--amber); }
+.plan-step.is-completed .plan-step-text { color: var(--muted); }
+.plan-step-text { min-width: 0; color: var(--ink-strong); word-break: break-word; }
+/* 会话流里的历史行（`messages/PlanItem`）：与 `.tool-call` / `.thinking-card` 同一套折叠范式。 */
+.plan-item { margin: -20px 0 23px; border: 0; background: transparent; color: var(--ink-strong); }
+.plan-item summary { display: flex; min-height: 34px; align-items: center; gap: 8px; cursor: pointer; list-style: none; padding: 0 2px; font-size: 12px; }
+.plan-item summary::-webkit-details-marker { display: none; }
+.plan-item summary:hover { background: transparent; }
+.plan-item-icon { display: grid; color: var(--muted); }
+.plan-item-title { flex: 0 0 auto; font-size: 12px; font-weight: 560; }
+.plan-item-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.plan-item-caret { flex: 0 0 auto; margin-left: auto; color: var(--muted); transition: transform .16s ease; }
+.plan-item[open] .plan-item-caret { transform: rotate(90deg); }
+.plan-item .plan-steps { padding: 2px 0 12px 21px; }
 .tip-card { margin: -20px 0 24px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); color: var(--ink-strong); overflow: hidden; }
 .tip-card summary { display: flex; min-height: 43px; align-items: center; gap: 9px; cursor: pointer; list-style: none; padding: 0 12px; font-size: 12px; }
 .tip-card summary::-webkit-details-marker { display: none; }
@@ -596,10 +609,18 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .catalog-submenu-item-text { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .catalog-submenu-item-name { overflow: hidden; color: var(--ink-strong); font-size: 12.5px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-submenu-item-desc { overflow: hidden; color: var(--muted-light); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.catalog-submenu-switch { position: relative; display: inline-block; width: 30px; height: 17px; flex: 0 0 auto; border-radius: 999px; background: var(--border-strong); transition: background .14s ease; }
+/* The connector switch is a real `<button role="switch">` (doc `28`), so it needs
+   the UA button box reset — the same visual as before, now clickable. */
+.catalog-submenu-switch { position: relative; display: inline-block; width: 30px; height: 17px; flex: 0 0 auto; border: 0; padding: 0; border-radius: 999px; background: var(--border-strong); cursor: pointer; transition: background .14s ease; }
 .catalog-submenu-switch.is-on { background: #4bb57a; }
+.catalog-submenu-switch:disabled { cursor: default; opacity: .55; }
 .catalog-submenu-switch-knob { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; transition: transform .14s ease; }
 .catalog-submenu-switch.is-on .catalog-submenu-switch-knob { transform: translateX(13px); }
+/* OAuth 「连接」: an inline action sitting left of the switch (nested buttons are
+   invalid HTML, so the row is a div holding two siblings). */
+.catalog-submenu-connect { flex: 0 0 auto; border: 0; border-radius: 7px; background: transparent; color: var(--primary); padding: 4px 7px; font-size: 12px; font-weight: 570; cursor: pointer; }
+.catalog-submenu-connect:hover { background: var(--surface-raised); }
+.catalog-submenu-connect:disabled { cursor: default; opacity: .55; }
 .catalog-submenu-footer { border-top: 1px solid var(--border); padding-top: 6px; }
 .catalog-submenu-footer-btn { display: flex; min-height: 34px; align-items: center; gap: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); padding: 0 9px; font-size: 12px; }
 .catalog-submenu-footer-btn:hover { background: var(--surface-raised); color: var(--primary); }

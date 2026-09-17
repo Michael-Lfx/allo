@@ -426,6 +426,48 @@ export function CatalogView() {
     }
   }, [client]);
 
+  /**
+   * Flip one connector's host-level `enabled` (doc `28` §4.5).
+   *
+   * Same first-party route as the composer's switch. The switch's own value comes
+   * from the **response** (the route is a toggle, so the value we asked for is
+   * not an answer); the host-derived `status` is then re-read from
+   * `connector/list` so the drawer's status chip and the card's status dot agree
+   * with the new state instead of keeping the pre-toggle projection.
+   */
+  const toggleConnectorEnabled = useCallback(async (connectorId: string) => {
+    if (!client) return;
+    setDetailBusy(connectorId);
+    try {
+      const result = await client.toggleMcpServerEnabled(connectorId);
+      if (!activeRef.current) return;
+      setConnectors((current) =>
+        current?.map((connector) =>
+          connector.id === connectorId ? { ...connector, enabled: result.enabled } : connector,
+        ) ?? current,
+      );
+      setConnectorDetail((current) =>
+        current && current.id === connectorId ? { ...current, enabled: result.enabled } : current,
+      );
+      const fresh = await client.connectors.list();
+      if (!activeRef.current) return;
+      setConnectors(fresh);
+      const updated = fresh.find((connector) => connector.id === connectorId);
+      if (updated) {
+        setConnectorDetail((current) =>
+          current && current.id === connectorId
+            ? { ...current, enabled: updated.enabled, status: updated.status }
+            : current,
+        );
+      }
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setDetailBusy(null);
+    }
+  }, [client]);
+
   const openAgent = useCallback(async (agentId: string) => {
     if (!client) return;
     setDrawer("agent");
@@ -1126,6 +1168,7 @@ export function CatalogView() {
                 onAuthStart={() => void startAuth(connectorDetail.id)}
                 onAuthRefresh={() => void refreshAuth(connectorDetail.id)}
                 onLogout={() => void logoutConnector(connectorDetail.id)}
+                onToggleEnabled={() => void toggleConnectorEnabled(connectorDetail.id)}
               />
             )}
             {drawer === "agent" && agentDetail && <AgentDrawer detail={agentDetail} />}
@@ -1310,6 +1353,7 @@ function ConnectorDrawer({
   onAuthStart,
   onAuthRefresh,
   onLogout,
+  onToggleEnabled,
 }: {
   detail: ConnectorDetail;
   authState?: string;
@@ -1318,6 +1362,7 @@ function ConnectorDrawer({
   onAuthStart: () => void;
   onAuthRefresh: () => void;
   onLogout: () => void;
+  onToggleEnabled: () => void;
 }) {
   const { t } = useTranslation();
   const authenticated = authState === "authenticated";
@@ -1342,6 +1387,21 @@ function ConnectorDrawer({
         <MetaRow label={t("catalog.fieldNamespace")} value={detail.tool_filter ?? undefined} mono />
       </dl>
       <div className="drawer-actions">
+        {/* Host-level enable/disable (doc `28` §4.5) — the same action as the
+            composer's switch, on the same first-party route. The chip above keeps
+            describing the state; this is the control. */}
+        <button
+          className={`switch-pill ${detail.enabled ? "is-on" : ""}`}
+          type="button"
+          role="switch"
+          aria-checked={detail.enabled}
+          aria-label={t("composer.connectorToggleAria", { name: detail.name })}
+          title={t("composer.connectorToggleAria", { name: detail.name })}
+          disabled={busy}
+          onClick={onToggleEnabled}
+        >
+          <span className="switch-pill-knob" aria-hidden="true" />
+        </button>
         {detail.auth_mode === "oauth" ? (
           <>
             <span className={`market-tag is-status ${authenticated ? "is-success" : "is-warn"}`}>

@@ -93,6 +93,31 @@ export function installStateLabel(t: ReturnType<typeof useTranslation>["t"], sta
   }
 }
 
+/**
+ * Whether a connector row should offer the OAuth 「连接」 action.
+ *
+ * The summary status already folds OAuth readiness in (`summary_status` in
+ * `nomifun-app/src/app_server_catalog.rs`: oauth + most recent probe not
+ * connected → `authorization_required`), so this needs no per-row
+ * `connector/status` call — N rows must not become N requests.
+ */
+export function connectorNeedsAuth(connector: { auth_mode: string; status: string }): boolean {
+  return connector.auth_mode === "oauth" && connector.status === "authorization_required";
+}
+
+/**
+ * A connector row's second line (`status`, localized).
+ *
+ * A **disabled** connector reports `installed` on the wire, which would render
+ * 「已安装」 while the switch beside it is off — so the disabled state wins.
+ */
+export function connectorRowStatusLabel(
+  t: Translate,
+  connector: { enabled: boolean; status: string },
+): string {
+  return connector.enabled ? stateLabel(t, CONNECTOR_STATE_KEYS, connector.status) : t("catalog.disabled");
+}
+
 /** Which install transition a component row offers. */
 export type InstallToggleKind = "enable" | "disable" | "uninstall";
 

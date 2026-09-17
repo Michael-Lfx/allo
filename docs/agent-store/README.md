@@ -38,6 +38,8 @@
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | `25-release-runbook.zh.md` | **发布操作手册（本文）**：一次发布的两个出口（npm 四包 / 站点仓 GitHub Release）、7 条不变量及其机械判据、有序清单 S0–S8、**站点文档同步清单**、失败与回退、已知缺口 | ✅ 现行（每次发版照做；不含产品准入判定） |
+| `28-webui-composer-connector-switch-plan.zh.md` | **WebUI 输入区**：连接器退出 `@` 提及、`+` 菜单与连接器抽屉改为真正的启用开关（宿主级 `enabled`，走第一方 `POST /api/mcp/servers/:id/toggle`，零 wire 变更）；行内「连接」＝发起 OAuth；含语义边界、验收与偏差 | ✅ 已落地（2026-09-23；4 处实现期偏差见 §9.1，手测项待用户验证） |
+| `27-conversation-binding-plan.zh.md` | **会话绑定**：每轮技能（`conversation/send` 收 `mentions`）+ 会话级专家 / 专家团（`conversation/create` 收 `agent_id` / `team_id`）；含**不做每轮连接器**的理由与将来的两条路、验收口径、指纹与跨仓步骤 | 📋 已立项（2026-09-23），未动工 |
 | `16-sdk-webui-site-priority-plan.zh.md` | **当前执行顺序（四方向）**：① SDK + 站点（配对） ② 插件与市场规范 ③ WebUI ④ 待立项 | 🔧 批 0–7 已收口（三闭环验收通过、`17`/`18` 现行正文）；剩余见 §5.2 剩余任务总表 **R1–R34**（✅ 23 · 🟡 4 · ⏸ 7）；C 档已于 2026-09-11 二次复核改判 |
 | `21-open-decisions.zh.md` | **开放决策书**：D1–D16，逐条带 ⭐ 默认建议与解锁范围（`16` §5.2 剩余任务总表的拍板入口） | ✅ 已拍板（2026-09-10；D13 卡点四档已批准，含 2026-09-11 C 档二次复核改判；D14 MCP 声明文件接入路径 2026-09-12 拍板 ①A ②C ③C；D15 skill 的 `disable` ＝目录标记、D16 商店假「更新」控件摘除，均 2026-09-15） |
 | `22-webui-productionization.zh.md` | **WebUI 生产化立项**（方向四 + WP-5 协议词汇与概念对齐，来源 `16` R33）：11 项拆为**安全类 / 可观测类 / 功能类 / 协议词汇对齐**，逐条给「可验收条目 + 边界 + 依赖」；含**不做假保护**红线与 V1–V4 未决 | 📋 已立项（2026-09-11），未排期 |
@@ -92,6 +94,17 @@
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
+## 本轮（2026-09-16 发布 `0.1.0-beta.4`）
+
+**首次按 `25-release-runbook.zh.md` 走完整条发布链**（npm 四包 + 站点仓 GitHub Release + 站点上线），并把当次实测出的坑写回了手册：
+
+1. **npm**：`protocol` / `client` / `runtime-win32-x64` / `sdk` 四包同为 `0.1.0-beta.4`，dist-tag `beta`；`latest` 仍指 `0.1.0-beta.2`（按手册**有意不动**）。包内顺序 protocol → client → runtime → sdk。
+2. **同一个 exe 服务两个出口**：`target/release/agent-store.exe`（构建带 `--features static-webui`，`sha256 fbe3d892…`）既进 npm runtime 包（tarball 72.3 MB），又以**同一哈希**经 `release:pack --expect-sha256` 打进站点 Release 资产（zip 69.1 MB，服务端 `digest` 与本地字节一致）。
+3. **跨仓站点文档同步**：`changelog` 新增 §2.1 条目并把 §4 未发布台账清空；`upgrade` 新增 §6.3（`beta.3` → `beta.4` 的破坏性升级步骤）、§8 改为「已发布产物的差异与自查方法」；`typescript-sdk` §1 的协议面口径改为「自 `beta.4` 起与已发布产物一致」。**`48 / 71` 与 `fp-1` 已用已发布产物实测复核**（`httpRouteTable()` 键数 = 48；声明里 event_type 的 `| string` 兜底消失、`APP_SERVER_PROTOCOL_VERSION = "fp-1"`）。
+4. **口径修订（用户决定）**：站点 `changelog` §3 与 `upgrade` §1/§9 的「破坏性变更走 minor 号」改为「beta 线内随下一个预发布序号发布，minor 号留给退出 beta 之后」——原口径与 `0.1.0-beta.4` 实际承载的破坏性变更（`ConversationEvent.event_type` 收窄 + 严格相等的指纹）相矛盾；修订记录写在站点 `changelog` §3。
+5. **手册新增三条实测坑**（`25` §1 / §3 S5·S6 / §7）：npm 读取侧 CDN 滞后（发布成功后 `npm view` 可能给旧值甚至假 404，复核要用 canonical packument URL 且**不要**加查询串）；GitHub Release 的慢点在**下载回验**而非上传，国内网络需 `HTTPS_PROXY`；npm 2FA 账号必须用「带 bypass 2FA 的 granular token」，否则在第一个包就以 `E403` 中止（注册表未被改动）。
+6. **本仓改动**：四个 `package.json` 的版本与 sdk 的依赖 pin（由 `publish-packages.ts` 按 `VERSION` 重写）+ `25` 的上述三条坑记录。
+
 ## 本轮（2026-09-16 ~ 2026-09-18）
 
 三批落地 + 两轮收尾（站点迁出、仓库级整理），逐条记录与全部读数在 `16` §8；本索引只登记**受影响的文档**与**跨仓事项**：
@@ -114,6 +127,54 @@
    `changelog` §4）；顺带把 `changelog` §4 那张未发布表的「协议方法面增量」一行补上三个 MCP 方法
    与 `store/list` 的 `published_at`。**版本号口径未动**：工作区仍是 `0.1.0-beta.3`，与文档
    「本文与仓库当前对应 `0.1.0-beta.3`」一致——有张力的是 **wire 面**，不是版本号。
+
+## 本轮（2026-09-22）
+
+1. **连接器工具签名读面 + 授权单位上移（`fp-1` → `fp-2`）**（方案：
+   `26-connector-schema-and-grant-policy.zh.md`；规格：`05` §4.3.2 / §4.3.3）。两件事其实是一件：
+   **要人同意一个工具，就得让他看得见这个工具收什么参数。**
+   1. **`ConnectorTool.input_schema`**（上游 `tools/list` 的 `inputSchema` 逐字）。宿主**早已**解析并
+      随探针落库（`McpToolResponse.input_schema`），缺的只是映射；字段挂在既有 DTO 上，所以
+      `connector/get`（自上次探针的缓存）与 `connector/test`（现场探针并落库）两条读面**同时**生效，
+      **不新增方法**，计数守卫仍是 `48 / 23`。体积预算 `MAX_CONNECTOR_TOOLS_BYTES` = 1 MiB：
+      `name` / `description` **永不省略**，放不下的 schema **整份**省略并置 `tools_truncated`
+      ——**绝不截半个 JSON Schema**。这里刻意**不复用** `response_too_large`：该码管的是调用方会
+      parse 并相信的**载荷**被截断，而目录面缺的是**显式标记的缺席**。
+   2. **`[connector_proxy]` 的授权单位由「逐个工具」改为「连接器」**：`enabled` 为真即默认可调，
+      `allow` 变**可选收窄**、新增 `deny` 为**可选减法**（在 `allow` 之后应用，与 `[tools]` 同序），
+      条目词汇与 `[tools]` 统一为 `mcp__<连接器>__<工具>`（只有 `mcp__` 条目是 glob，`<连接器>` 可写
+      注册名或 id）。**表这一层仍 fail-closed**（缺表 / 缺 `enabled` = 关），且 `allow` 的
+      **缺席（全放）**与**空表（全不放）**刻意不合并。旧写法 `<连接器>__<工具>` 在新词汇下不再命中
+      → 收窄到零，是 fail-closed 的方向；宿主启动时就它、以及「开了代理却没写任何名单」各给一条 warn
+      （`ConnectorProxyPolicy::warnings`，纯函数，照 `NomiToolPolicy::syntax_warnings` 的先例）。
+      匹配器与引擎**共用同一个 `glob` crate**，并照抄引擎 `registry.rs` 的用例表，防止两侧语义漂移。
+   3. **代价写进正文，不留在代码注释里**：默认全放之后，「第三方可调」与 `enabled`（本机 agent
+      会话可用）不再分离，而 UI 的「导入本机 agent 的 MCP 配置」会**自动 enable**
+      （`mcpImportUtils.ts:144` + `useMcpServerCRUD.ts:76`）——即**导入即授权第三方**。这是本轮
+      最实的代价，登记在 `26` §4.5；可审计的抓手是 `connector/list` 已带的 `enabled` 与新增的 `deny`。
+   4. **命名决定：`connectors.test()` 不改名**（`26` §6）。本仓的分工是 `test` = 动作
+      （wire `connector/test`、`test_connection`）、`probe` = 产物（`ConnectorProbeResult`、
+      `probe_status`）；只改客户端那一半会得到 `probe()` → `ProbeResult` 这种动词名词同词、且与
+      wire / 路由 / Rust 全都不一致的形状。真要改就**连 wire 一起改**——本次指纹无论如何都要 bump，
+      所以那时的兼容性代价为零。备选与落点登记在 `26` §10，不在本轮做。
+   5. **门禁读数**：`bun run check:fingerprint` → `✓ "fp-2" consistent across **10** landing point(s)
+      in **7** file(s) here and **2** file(s) in the docs site`；两侧都只是 DTO 加字段，
+      **无方法增删**，故站点的方法计数（`48 / 71`）与路由守卫（`48 / 23`）**都不用动**。
+      **顺带补上一个门禁盲区**：`scripts/probe-agent-store-runtime.mjs` 此前停在 `2026-09-14`
+      ——**跨了两次形状都没人发现**，因为没有任何东西指向它；本轮把它的值改为 `fp-2` **并把它列进
+      `MIRRORS`**，此后 bump 会在这里响亮地失败，而不是留下一个连不上的探针脚本。
+   6. **顺带订正两处会撒谎的注释**：`services.rs` 里「`allow` 为空也一律拒绝」与
+      `connectors.ts` 里「`policy_denied` 是默认状态」——两句在改动后都变成假话，已按新语义改写
+      （这类注释在本仓是承重的，不是装饰）。
+   7. **补上方案里那条真实性闸门**（`connector_tools_e2e`）：真组合根 + **真 MCP server**
+      （跨平台 stdio 夹具，由宿主自己 spawn）→ 注册 → app-server 握手 →
+      `POST /api/app-server/connectors/{id}/test`，断言 schema **与夹具声明逐字相等**、
+      **没声明 schema 的工具不凭空长出一个**（只断言「有值」的实现也能过，所以这条是必须的）、
+      `tools_truncated === false`，且读面在连接器**未启用**时同样工作。为此外加夹具的
+      `tools/list`——它此前只答 `initialize` 与 `tools/call`，**根本没法做成功探针**。
+      读数：新 e2e **1 passed**；夹具既有使用者 `connection_test_integration` **25 passed**
+      （加 `tools/list` 零回归）；登记门禁 1 passed。站点 `check:docs-sync` 仍 **10 页 0 drift**，
+      `examples-sdk` 新增 §8.1「先读签名，再调用」（中英同构）。
 
 ## 本轮（2026-09-21）
 

@@ -1,11 +1,12 @@
-import { AtSign, Lamp, Minimize2, Wrench, type LucideIcon } from "lucide-react";
+import { Lamp, Minimize2, Wrench, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { PaletteItem, PaletteItemKind } from "../lib/palette-model";
 
 /**
  * W1 command palette（doc 19 §3 W1）—— 收敛后 `/` 模式只剩 `/compact`，`@` 模式
- * 仍是 agents / skills / connectors 三组目录。
+ * 只剩 agents / skills 两组目录：连接器不能用 `@` 引用（它换的是宿主的工具面，
+ * 不是一条随消息解析的引用），改在 `+` 菜单里以开关呈现（doc `28`）。
  *
  * Presentational only: the composer keeps DOM focus in the textarea and owns
  * the query (derived from the draft after the `/` or `@` trigger) plus the
@@ -22,7 +23,6 @@ const ICONS: Record<PaletteItemKind, LucideIcon> = {
   compact: Minimize2,
   agent: Lamp,
   skill: Wrench,
-  connector: AtSign,
 };
 
 export function CommandPalette({

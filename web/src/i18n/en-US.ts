@@ -104,6 +104,9 @@ const enUS: Resources = {
     expert: "Expert",
     skill: "Skill",
     connector: "Connector",
+    connectorConnect: "Connect",
+    connectorToggleAria: "Enable or disable connector {{name}}",
+    connectorToggleFailed: "Could not switch the connector: {{error}}",
     noWorkspace: "No workspace selected",
     workspacePicker: "Select workspace",
     recentFolders: "Recent folders",
@@ -512,9 +515,10 @@ const enUS: Resources = {
     mcpGroup: "MCP servers",
     mcpFileTitle: "Declaration file ~/.agent-store/mcp.json",
     mcpFileDesc:
-      "Read-only: MCP servers are added by editing that file by hand; settings does not provide editing",
+      "MCP servers are declared in this file only — settings offers no \"add server\" form; the text itself is read and edited on demand via \"Configure MCP\"",
     mcpAdoptionTitle: "Whether this host uses it",
-    mcpAdopted: "In use: new sessions inject the servers above (still bounded by the host's [tools])",
+    mcpAdopted:
+      "In use: this boot read the declaration, so sessions created afterwards inject the servers above (still bounded by the host's [tools]); edits made after this boot need a host restart",
     mcpNotAdopted: "Not used: this host does not read this declaration, so none of the servers above reach a session",
     mcpAdoptionUnknown: "Unknown: the host did not report this (older build)",
     mcpLoading: "Reading the declaration file…",

@@ -42,7 +42,6 @@ import { attachmentName, classifyAttachment } from "../lib/attachments";
 import { pickLocalized, useLocalizedLang } from "../ui/localize";
 import type {
   AgentSummary,
-  ConnectorSummary,
   ConversationModelOptions,
   ConversationView,
   LocalizedText,
@@ -137,9 +136,12 @@ export function Composer(props: {
 
   /** Pick a catalog entry: record it as a structured mention and backfill the
    *  draft with `@name` so the user sees the reference (docs/agent-store/05
-   *  §4.7). The whole pick is resolved on send. */
-  const pickCatalogItem = (kind: "agents" | "skills" | "connectors", item: { id: string; name: string }) => {
-    const mentionKind: MentionKind = kind === "agents" ? "agent" : kind === "skills" ? "skill" : "connector";
+   *  §4.7). The whole pick is resolved on send.
+   *
+   *  只有专家与技能走这条路径：连接器没有 `@` 语义——它换的是宿主的工具面，
+   *  所以 `+` 菜单里的连接器行是开关，不产生 mention（见 ComposerCatalogMenu，doc `28`）。 */
+  const pickCatalogItem = (kind: "agents" | "skills", item: { id: string; name: string }) => {
+    const mentionKind: MentionKind = kind === "agents" ? "agent" : "skill";
     const mentions = composerMentions ?? [];
     const existing = mentions.findIndex((m) => m.id === item.id && m.kind === mentionKind);
     const next =
@@ -167,7 +169,6 @@ export function Composer(props: {
   const [catalogs, setCatalogs] = useState<{
     agents: AgentSummary[];
     skills: SkillSummary[];
-    connectors: ConnectorSummary[];
   } | null>(null);
   const [paletteLoading, setPaletteLoading] = useState(false);
   /** Caret index, tracked outside React state (read synchronously on keydown). */
@@ -179,17 +180,20 @@ export function Composer(props: {
   const lang = useLocalizedLang();
   const localize = (text: LocalizedText | null | undefined): string => pickLocalized(text, lang);
 
-  // Mention mode: load the three catalogs once per connection.
+  // Mention mode: load the two `@`-mentionable catalogs once per connection.
+  // Connectors are deliberately absent — they are switched in the "+" menu, not
+  // mentioned (an `@连接器` token would promise a binding `conversation/send`
+  // has no field for; doc `28` §4.1).
   useEffect(() => {
     if (palette?.mode !== "mention" || catalogs || !client) return;
     let cancelled = false;
     setPaletteLoading(true);
-    void Promise.all([client.agents.list(), client.skills.list(), client.connectors.list()])
-      .then(([agents, skills, connectorList]) => {
-        if (!cancelled) setCatalogs({ agents, skills, connectors: connectorList });
+    void Promise.all([client.agents.list(), client.skills.list()])
+      .then(([agents, skills]) => {
+        if (!cancelled) setCatalogs({ agents, skills });
       })
       .catch(() => {
-        if (!cancelled) setCatalogs({ agents: [], skills: [], connectors: [] });
+        if (!cancelled) setCatalogs({ agents: [], skills: [] });
       })
       .finally(() => {
         if (!cancelled) setPaletteLoading(false);
@@ -259,7 +263,6 @@ export function Composer(props: {
       [
         ...rowsFor("agent", catalogs.agents),
         ...rowsFor("skill", catalogs.skills),
-        ...rowsFor("connector", catalogs.connectors),
       ],
       paletteQuery,
     );
@@ -283,7 +286,7 @@ export function Composer(props: {
       setPalette(null);
       return;
     }
-    const kind: MentionKind = item.kind === "agent" ? "agent" : item.kind === "skill" ? "skill" : "connector";
+    const kind: MentionKind = item.kind === "agent" ? "agent" : "skill";
     const token = `@${item.label}`;
     replaceTrigger(`${token} `);
     const ref: MentionRef = { kind, id: item.id };

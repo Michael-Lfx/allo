@@ -80,6 +80,18 @@ interface ApiResponse<T> {
 }
 
 /**
+ * `/api/mcp/servers/{id}/toggle` response, trimmed to what the UI reads.
+ *
+ * The route returns the whole `McpServerResponse`; only the new `enabled` value
+ * is part of this face's contract, and it is the **authority** on the resulting
+ * state — the route toggles, so the value we asked for is not an answer.
+ */
+export interface McpServerToggleResult {
+  mcp_server_id: string;
+  enabled: boolean;
+}
+
+/**
  * `config/get` / `config/set` view of the host's `~/.agent-store/config.toml`.
  *
  * Host management surface (`16` §6): the shape exists so the Web UI can render
@@ -367,6 +379,31 @@ export class AppServerClient extends BaseClient {
    */
   async setAgentStoreMcpEnabled(name: string, enabled: boolean): Promise<AgentStoreConfigView> {
     return this.transport.request<AgentStoreConfigView>("config/set-mcp-enabled", { name, enabled });
+  }
+
+  /**
+   * Flip one connector's host-level `enabled`
+   * (`POST /api/mcp/servers/:id/toggle`, doc `28`).
+   *
+   * A **first-party MCP route, not an App Server method**: `connector/list`
+   * publishes `enabled`, but the protocol has no way to set it —
+   * `install/enable` addresses a snapshot *component*, and
+   * `config/set-mcp-enabled` only edits the operator's `mcp.json`. So the
+   * connector switch talks to the host's own route, exactly like the `/api/fs/*`
+   * helpers above (same origin, same connection header).
+   *
+   * `enabled` means "this host's sessions may use the connector", **not** "this
+   * conversation uses it": a conversation's Connector fence is frozen at
+   * creation, so flipping this changes which connectors a *new* session can
+   * bind — never an open conversation's tool surface.
+   */
+  async toggleMcpServerEnabled(connectorId: string): Promise<McpServerToggleResult> {
+    const payload = await this.httpPostRoot<McpServerToggleResult>(
+      `/api/mcp/servers/${encodeURIComponent(connectorId)}/toggle`,
+      {},
+    );
+    if (!payload.data) throw new Error("toggle returned no data");
+    return payload.data;
   }
 
   /**

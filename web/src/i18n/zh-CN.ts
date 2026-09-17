@@ -103,6 +103,9 @@ const zhCN = {
     expert: "专家",
     skill: "技能",
     connector: "连接器",
+    connectorConnect: "连接",
+    connectorToggleAria: "启用或停用连接器 {{name}}",
+    connectorToggleFailed: "切换连接器启用状态失败：{{error}}",
     noWorkspace: "未选择工作区",
     workspacePicker: "选择工作区",
     recentFolders: "最近的文件夹",
@@ -512,9 +515,10 @@ const zhCN = {
     mcpGroup: "MCP 服务器",
     mcpFileTitle: "声明文件 ~/.agent-store/mcp.json",
     mcpFileDesc:
-      "只读：MCP server 仅能通过手工编辑该文件添加，设置中不提供编辑功能",
+      "MCP server 只能通过这个文件声明——设置里没有「新增 server」的表单；正文用「配置 MCP」按需读取与编辑",
     mcpAdoptionTitle: "本宿主是否启用该声明",
-    mcpAdopted: "使用中：新会话将注入上述 server（仍受宿主 [tools] 约束）",
+    mcpAdopted:
+      "使用中：本次启动已读取该声明，之后新建的会话会注入上述 server（仍受宿主 [tools] 约束）；本次启动之后对文件的改动要重启宿主才生效",
     mcpNotAdopted: "未使用：本宿主不会读取该声明，上述 server 不会进入任何会话",
     mcpAdoptionUnknown: "无法判断：宿主未上报该信息（构建版本较旧）",
     mcpLoading: "正在读取声明文件…",
