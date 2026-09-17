@@ -388,6 +388,12 @@ pub struct DeviceActivateRequest {
     /// Last successful login method: `wechat_qr` | `email_otp`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub signup_method: String,
+    /// Total physical RAM in MiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ram_mb: Option<u64>,
+    /// Largest free disk space in GiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_free_gb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xpu_brand: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]

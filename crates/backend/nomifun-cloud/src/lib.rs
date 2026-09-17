@@ -18,6 +18,7 @@ pub mod paths;
 pub mod platform;
 pub mod profile;
 pub mod provider_sync;
+pub mod resources;
 pub mod session;
 pub mod telemetry;
 pub mod token_store;

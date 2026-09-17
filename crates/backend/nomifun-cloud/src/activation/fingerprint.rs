@@ -10,6 +10,7 @@ use super::GeoIpInfo;
 use crate::error::ServerClientError;
 use crate::flowy::DeviceActivateRequest;
 use crate::platform;
+use crate::resources;
 
 #[derive(Debug, Clone)]
 pub struct DeviceFingerprint {
@@ -131,6 +132,8 @@ pub fn build_activate_request(
         utm_medium: String::new(),
         utm_campaign: String::new(),
         signup_method: String::new(),
+        ram_mb: resources::total_ram_mb(),
+        disk_free_gb: resources::largest_disk_free_gb(),
         xpu_brand: fingerprint.xpu_brand.clone(),
         public_ip: String::new(),
         country: String::new(),
