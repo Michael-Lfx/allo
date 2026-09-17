@@ -3479,6 +3479,7 @@ export type I18nKey =
   | 'learning.reviewUnarchived'
   | 'learning.reviewWrongMarkedAgain'
   | 'learning.reviews'
+  | 'learning.sectionDegradedWarning'
   | 'learning.sectionDialogCancel'
   | 'learning.sectionEdit'
   | 'learning.sectionEditConfirm'

@@ -1,7 +1,8 @@
 //! Two-loop agent engine for lesson content generation — the lesson sibling
 //! of [`crate::course_outline_loop`]. The generation loop (`ls_start` →
-//! `ls_set_document` → batched `ls_patch_activities` → `ls_audit` self-check)
-//! drives the draft, then audit-gated repair rounds drive publishing.
+//! `ls_set_section_manifest` → per-section `ls_set_section_body` → batched
+//! `ls_patch_activities` → `ls_audit` self-check) drives the draft, then
+//! audit-gated repair rounds drive publishing.
 //!
 //! Same layering as the outline engine: nomifun-learning holds only
 //! [`LessonContentAgentEngine`]; this crate provides the provider-backed
@@ -340,7 +341,7 @@ impl FlowCycle for LiveLessonContentAgentEngine {
     }
 
     fn tools(&self, ctx: Arc<LoopContext>, repair_face: bool) -> Vec<OneShotTool> {
-        lesson_content_tools(ctx, !repair_face)
+        lesson_content_tools(ctx, repair_face)
     }
 
     async fn finish(&self, _ctx: &LoopContext, draft_id: &str) -> Result<LessonOutput, AppError> {
@@ -369,9 +370,13 @@ impl FlowCycle for LiveLessonContentAgentEngine {
         loop_label: &str,
         round: Option<usize>,
     ) -> serde_json::Value {
+        // visual 声明分布随发布帧披露（ADR-0008）：整课「无」独占即可疑的
+        // 纯文字课时，事后定位同事反馈这类问题时有据可查。
+        let visuals = nomifun_learning::visual_distribution(&output.sections);
         let mut frame = serde_json::json!({
             "phase": loop_label,
             "activities": output.activities.len(),
+            "visuals": visuals,
         });
         if let Some(round) = round {
             frame["round"] = serde_json::json!(round);
@@ -638,18 +643,23 @@ fn compose_resume_user_text(
 
 // ── Tool set ───────────────────────────────────────────────────────────────
 
-/// The `ls_*` whitelist. `with_start` adds `ls_start` (generation loop only
-/// — the repair loop must never re-scope the draft, and an unlisted tool
-/// name fails closed at the loop level).
-fn lesson_content_tools(ctx: Arc<LoopContext>, with_start: bool) -> Vec<OneShotTool> {
+/// The `ls_*` whitelist. `repair_face` selects the loop's tool face: the
+/// generation face carries `ls_start` (the repair loop must never re-scope
+/// the draft) while the repair face additionally carries `ls_set_document`
+/// for legacy single-document drafts. Generation must plan sections — the
+/// single-document contract carries no visual promise at all, so exposing it
+/// to fresh runs is a zero-visualization escape hatch (ADR-0008). An
+/// unlisted tool name fails closed at the loop level.
+fn lesson_content_tools(ctx: Arc<LoopContext>, repair_face: bool) -> Vec<OneShotTool> {
     let mut tools = Vec::with_capacity(8);
-    if with_start {
+    if !repair_face {
         tools.push(ls_start(Arc::clone(&ctx)));
+    } else {
+        tools.push(ls_set_document(Arc::clone(&ctx)));
     }
     tools.push(ls_inspect(Arc::clone(&ctx)));
     tools.push(ls_set_section_manifest(Arc::clone(&ctx)));
     tools.push(ls_set_section_body(Arc::clone(&ctx)));
-    tools.push(ls_set_document(Arc::clone(&ctx)));
     tools.push(ls_patch_activities(Arc::clone(&ctx)));
     tools.push(ls_audit(Arc::clone(&ctx)));
     tools.push(ls_finish(Arc::clone(&ctx)));
@@ -811,7 +821,7 @@ fn ls_set_section_body(ctx: Arc<LoopContext>) -> OneShotTool {
 fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_set_document".into(),
-        description: "写入（或整体重写）学习文档：一次给全文的纯 Markdown——直接以第一个 `## ` 标题行开头，以衔接下一课的收尾句结束；不要 JSON、不要包裹围栏。返回应用结果与最新审计 findings。".into(),
+        description: "写入（或整体重写）学习文档（旧单篇契约，仅修复轮提供——新草稿请走分节）：一次给全文的纯 Markdown——直接以第一个 `## ` 标题行开头，以衔接下一课的收尾句结束；不要 JSON、不要包裹围栏。返回应用结果与最新审计 findings。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -964,6 +974,32 @@ mod tests {
         ] })
     }
 
+    /// Two-section manifest: one concept section (visual promise 表格) plus
+    /// the mandatory closing practice section.
+    fn section_manifest_ops() -> serde_json::Value {
+        serde_json::json!({ "sections": [
+            { "section_key": "s1", "kind": "concept", "title": "概念：期权的定义", "points": "权利义务不对称", "visual": "表格" },
+            { "section_key": "s2", "kind": "practice", "title": "练习：期权判断", "points": "判断题自测", "visual": "无" }
+        ] })
+    }
+
+    /// A concept body that clears the section gate: Markdown table delivers
+    /// the declared 表格 promise, prose clears the length floor.
+    fn concept_body() -> String {
+        format!(
+            "## 概念：期权的定义\n\n| 头寸 | 权利 |\n| --- | --- |\n| 买方 | 有 |\n\n{}\n",
+            "这是一个足够长的正文段落，用于通过节级质检门的长度下限要求。".repeat(12)
+        )
+    }
+
+    /// A practice body that clears the section gate (capability goal +
+    /// answering guidance only, under the 250-character cap).
+    fn practice_body() -> String {
+        "## 练习：期权判断\n\n完成以下判断题，检验你对权利义务不对称与四类基本头寸的理解；\
+         作答后阅读解析，回顾买方权利与卖方义务的关键区别。"
+            .into()
+    }
+
     fn lesson_context() -> LessonGenerationContext {
         LessonGenerationContext {
             lesson_id: "lesson-1".into(),
@@ -1094,32 +1130,34 @@ mod tests {
     }
 
     /// 安全不变量：发给模型的工具注册面恰等于构造的工具集——每一轮都如此；
-    /// 生成 loop 携带全部 6 个工具（含 ls_start），修复 loop 省略 ls_start。
+    /// 生成 loop 携带 7 个工具（含 ls_start，不含 ls_set_document——单篇契约
+    /// 无可视化承诺，不给新草稿绕过分节的路径）；修复 loop 反过来：省略
+    /// ls_start，保留 ls_set_document 以修复旧单篇草稿。
     #[tokio::test]
     async fn lesson_loop_exposes_exactly_the_whitelist() {
         let (service, _dir) = test_service().await;
         let (ctx, _draft, _published) = context(service.clone());
-        let names: Vec<String> = lesson_content_tools(Arc::clone(&ctx), true)
+        let generation: Vec<String> = lesson_content_tools(Arc::clone(&ctx), false)
             .iter()
             .map(|tool| tool.name.clone())
             .collect();
         assert_eq!(
-            names,
+            generation,
             vec![
                 "ls_start", "ls_inspect", "ls_set_section_manifest", "ls_set_section_body",
-                "ls_set_document", "ls_patch_activities", "ls_audit", "ls_finish"
+                "ls_patch_activities", "ls_audit", "ls_finish"
             ]
         );
-        // Repair loop: no ls_start.
-        let repair_names: Vec<String> = lesson_content_tools(Arc::clone(&ctx), false)
+        // Repair face: no ls_start, but ls_set_document for legacy drafts.
+        let repair_names: Vec<String> = lesson_content_tools(Arc::clone(&ctx), true)
             .iter()
             .map(|tool| tool.name.clone())
             .collect();
         assert_eq!(
             repair_names,
             vec![
-                "ls_inspect", "ls_set_section_manifest", "ls_set_section_body",
-                "ls_set_document", "ls_patch_activities", "ls_audit", "ls_finish"
+                "ls_set_document", "ls_inspect", "ls_set_section_manifest", "ls_set_section_body",
+                "ls_patch_activities", "ls_audit", "ls_finish"
             ]
         );
 
@@ -1137,7 +1175,7 @@ mod tests {
             "test-model",
             GENERATE_LESSON_AGENT_SYSTEM.as_str(),
             &lesson_user_text(&ctx.context),
-            &lesson_content_tools(Arc::clone(&ctx), true),
+            &lesson_content_tools(Arc::clone(&ctx), false),
             BUDGETS.generate_max_rounds,
             BUDGETS.round_tokens,
             ThinkingConfig::Disabled,
@@ -1151,7 +1189,7 @@ mod tests {
         let seen = provider.seen_tool_names.lock().unwrap();
         assert_eq!(seen.len(), 2, "two model rounds");
         for round in seen.iter() {
-            assert_eq!(round, &names, "tool registry must be exactly the whitelist on every round");
+            assert_eq!(round, &generation, "tool registry must be exactly the whitelist on every round");
         }
         let thinking = provider.seen_thinking.lock().unwrap();
         assert!(
@@ -1168,31 +1206,43 @@ mod tests {
         ));
     }
 
-    /// 只写文档就过早 ls_finish（活动缺失 danger）→ 发布被门禁拒绝 →
-    /// 修复 loop 补齐活动 → 下一轮门禁通过并发布。
+    /// 分节草稿缺节就过早 ls_finish（section_body_missing danger）→ 发布被
+    /// 门禁拒绝 → 修复 loop 补齐剩余节与活动 → 下一轮门禁通过并发布。
     #[tokio::test]
-    async fn document_only_draft_is_blocked_until_repaired_and_published() {
+    async fn incomplete_sectioned_draft_is_blocked_until_repaired_and_published() {
         let (service, _dir) = test_service().await;
         let (ctx, _draft, _published) = context(Arc::clone(&service));
 
         let provider = ScriptedProvider::new(vec![
-            // ── generation loop: ls_start, the document, premature ls_finish ──
+            // ── generation loop: plan two sections, write one, finish early ──
             vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
             vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![
                 tool_use(
-                    "ls_set_document",
-                    serde_json::json!({ "document": long_document() }),
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
                 ),
                 done(StopReason::ToolUse),
             ],
             vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
             vec![
-                LlmEvent::TextDelta("发布被拒，需要先补活动".into()),
+                LlmEvent::TextDelta("发布被拒，还有节与题目没写".into()),
                 done(StopReason::EndTurn),
             ],
-            // ── repair loop 1: add the activities ──
+            // ── repair loop 1: write the remaining section ──
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            // ── repair loop 2: add the activities ──
             vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
-            vec![LlmEvent::TextDelta("已补齐活动".into()), done(StopReason::EndTurn)],
+            vec![LlmEvent::TextDelta("已补齐".into()), done(StopReason::EndTurn)],
         ]);
         let output = run_loops(
             &engine(Arc::clone(&service)),
@@ -1204,7 +1254,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(output.summary.contains("## 描述"));
+        assert!(output.summary.contains("## 练习"));
+        assert_eq!(output.sections.len(), 2, "both section bodies survived");
         assert_eq!(output.activities.len(), 3, "repaired lesson publishes");
         assert_eq!(output.estimated_minutes, 15);
         // The premature ls_finish was rejected with the blocking report.
@@ -1213,33 +1264,44 @@ mod tests {
             matches!(
                 &message.content[0],
                 ContentBlock::ToolResult { is_error: true, content, .. }
-                    if content.contains("audit gate")
+                    if content.contains("audit gate") && content.contains("section_body_missing")
             )
         });
-        assert!(rejected, "a document-only draft must be rejected by the audit gate");
+        assert!(rejected, "an incomplete sectioned draft must be rejected by the audit gate");
     }
 
-    /// 修复 loop：生成 loop 只写了文档就宣告完成——发布被门禁阻塞；修复
-    /// loop 补齐活动后直接 ls_finish 也能发布。修复 loop 的工具面必须不含
-    /// ls_start。
+    /// 修复 loop：生成 loop 规划并写完全部节但没有题目就宣告完成——发布被
+    /// 门禁阻塞；修复 loop 补齐活动后由门禁放行发布。修复 loop 的工具面
+    /// 必须不含 ls_start。
     #[tokio::test]
     async fn repair_loop_fixes_danger_findings_before_publish() {
         let (service, _dir) = test_service().await;
         let (ctx, _draft, _published) = context(Arc::clone(&service));
 
         let provider = ScriptedProvider::new(vec![
-            // ── generation loop ──
+            // ── generation loop: sections complete, activities missing ──
             vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
             vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![
                 tool_use(
-                    "ls_set_document",
-                    serde_json::json!({ "document": long_document() }),
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
                 ),
                 done(StopReason::ToolUse),
             ],
-            // The model declares the generation done WITHOUT ls_finish; the
-            // gate blocks the publish (no activities) and the repair loop
-            // starts.
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            // The model declares the generation done WITHOUT activities and
+            // WITHOUT ls_finish; the gate blocks the publish and the repair
+            // loop starts.
             vec![LlmEvent::TextDelta("done".into()), done(StopReason::EndTurn)],
             // ── repair loop: add the activities and publish in-loop ──
             vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
@@ -1259,12 +1321,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(output.summary.contains("## 验证"));
+        assert!(output.summary.contains("## 验证") || output.summary.contains("## 练习"));
         assert_eq!(output.activities.len(), 3);
 
         let seen = provider.seen_tool_names.lock().unwrap();
-        assert_eq!(seen.len(), 6, "3 generation rounds + 3 repair rounds");
-        for round in &seen[3..] {
+        assert_eq!(seen.len(), 8, "4 generation rounds + 3 repair rounds + 1 wrap-up");
+        for round in &seen[5..] {
             assert!(
                 !round.iter().any(|name| name == "ls_start"),
                 "the repair loop must never expose ls_start: {round:?}"
@@ -1299,15 +1361,12 @@ mod tests {
     #[tokio::test]
     async fn repair_budget_exhaustion_reports_blocking_findings() {
         let (service, _dir) = test_service().await;
-        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let (ctx, _draft, _published) = context(service.clone());
         let provider = ScriptedProvider::new(vec![
-            // generation loop: document only, never the activities
+            // generation loop: manifest only, never the bodies or activities
             vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
             vec![
-                tool_use(
-                    "ls_set_document",
-                    serde_json::json!({ "document": long_document() }),
-                ),
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
                 done(StopReason::ToolUse),
             ],
             vec![LlmEvent::TextDelta("done".into()), done(StopReason::EndTurn)],
@@ -1317,7 +1376,7 @@ mod tests {
             vec![LlmEvent::TextDelta("cannot fix".into()), done(StopReason::EndTurn)],
         ]);
         let error = run_loops(
-            &engine(Arc::clone(&service)),
+            &engine(service),
             provider.clone(),
             "test-model",
             &lesson_user_text(&ctx.context),
@@ -1327,9 +1386,69 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(&error, AppError::UnprocessableEntity(message) if message.contains("exhausted 3 repair loops")));
-        assert!(error.to_string().contains("activities_too_few"), "the blocking report names the finding");
+        assert!(
+            error.to_string().contains("section_body_missing"),
+            "the blocking report names the finding"
+        );
         let seen = provider.seen_tool_names.lock().unwrap();
         assert_eq!(seen.len(), 6, "2 generation rounds + 1 idle round + 3 repair rounds");
+    }
+
+    /// 旧单篇草稿的修复路径仍然可用：ls_set_document 只保留在修复工具面，
+    /// 续跑遗留的单篇草稿时，修复轮重写文档、补活动后照常过门发布。
+    #[tokio::test]
+    async fn repair_face_still_offers_ls_set_document_for_legacy_drafts() {
+        let (service, _dir) = test_service().await;
+        let engine = engine(Arc::clone(&service));
+
+        // 预置遗留草稿：旧单篇契约（文档已过文档门，活动缺失）。
+        let view = service.create_lesson_draft(lesson_context()).unwrap();
+        let draft_id = view.draft_id.clone();
+        service
+            .patch_lesson_draft(
+                &draft_id,
+                vec![LessonOp::SetDocument {
+                    document: long_document(),
+                }],
+            )
+            .unwrap();
+
+        let ctx = Arc::new(LoopContext {
+            service: Arc::clone(&service),
+            context: lesson_context(),
+            draft_slot: Arc::new(Mutex::new(Some(draft_id))),
+            published_slot: Arc::new(Mutex::new(None)),
+            channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
+        });
+        let provider = ScriptedProvider::new(vec![
+            // ── generation loop: finish immediately, blocked (no activities) ──
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("需要补活动".into()), done(StopReason::EndTurn)],
+            // ── repair loop 1: rewrite the document via the legacy contract ──
+            vec![
+                tool_use(
+                    "ls_set_document",
+                    serde_json::json!({ "document": long_document() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![LlmEvent::TextDelta("文档已重写".into()), done(StopReason::EndTurn)],
+            // ── repair loop 2: add the activities ──
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已补齐活动".into()), done(StopReason::EndTurn)],
+        ]);
+        let output = run_loops(
+            &engine,
+            provider,
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            ctx,
+            BUDGETS.round_tokens,
+            )
+            .await
+            .unwrap();
+        assert!(output.summary.contains("## 描述"));
+        assert_eq!(output.activities.len(), 3);
     }
 
     /// 续跑：预置存活草稿（manifest 已规划、部分节已写）后重入生成循环
@@ -1430,5 +1549,42 @@ mod tests {
         // 新会话（无日志）不出现该段。
         let fresh = lesson_user_text(&context);
         assert!(!fresh.contains("上次会话进度"), "{fresh}");
+    }
+
+    /// 发布帧披露 visual 声明分布（ADR-0008）：整课「无」独占即可疑的
+    /// 纯文字课时，事后定位「没生成图表」类反馈时有据可查。
+    #[test]
+    fn publish_frame_discloses_visual_distribution() {
+        use crate::learning_loop::FlowCycle;
+        use nomifun_learning::{SectionKind, SectionPack};
+
+        let pack = |key: &str, kind: SectionKind, visual: &str| SectionPack {
+            section_key: key.into(),
+            kind,
+            title: "t".into(),
+            points: String::new(),
+            visual: visual.into(),
+            body_md: String::new(),
+        };
+        let output = LessonOutput {
+            summary: String::new(),
+            estimated_minutes: 15,
+            activities: Vec::new(),
+            sections: vec![
+                pack("s1", SectionKind::Concept, "表格"),
+                pack("s2", SectionKind::Practice, "无"),
+                pack("s3", SectionKind::Summary, "无"),
+            ],
+            degraded_keys: Vec::new(),
+        };
+        let frame = <LiveLessonContentAgentEngine as FlowCycle>::publish_frame(
+            &output,
+            "repair",
+            Some(2),
+        );
+        assert_eq!(frame["phase"], "repair");
+        assert_eq!(frame["round"], 2);
+        assert_eq!(frame["visuals"]["表格"], 1);
+        assert_eq!(frame["visuals"]["无"], 2);
     }
 }

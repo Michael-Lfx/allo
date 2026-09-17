@@ -513,6 +513,29 @@ function SectionedLessonBody({
                 {t('learning.sectionStatusPending')}
               </Text>
             )}
+            {step.section.status !== 'failed' && step.section.degraded && (
+              // 降级兜底可见（ADR-0008）：正文是 visual=无 的纯文字保底，
+              // 持久标记 + 重写入口，而不是只在生成期推一条瞬时事件。
+              <Alert
+                type='warning'
+                content={
+                  <div className='flex items-center justify-between gap-8px'>
+                    <span>{t('learning.sectionDegradedWarning')}</span>
+                    {onRewriteSection && (
+                      <Button
+                        size='mini'
+                        loading={sectionBusyKey === step.section.section_key}
+                        onClick={() => {
+                          if (step.section) onRewriteSection(step.section);
+                        }}
+                      >
+                        {t('learning.sectionRewriteAi')}
+                      </Button>
+                    )}
+                  </div>
+                }
+              />
+            )}
             {step.section.body_md && (onSuggestRewriteSection || onEditSection) && (
               <div className='flex items-center justify-end gap-8px'>
                 {onSuggestRewriteSection && (

@@ -393,6 +393,7 @@
   "sectionStatusPending": "待生成",
   "sectionStatusReady": "已生成",
   "sectionStatusFailed": "生成失败",
+  "sectionDegradedWarning": "本节的可视化承诺未能兑现，已降级为纯文字保底；可尝试 AI 重写恢复图表。",
   "sectionRewrite": "重写本节",
   "sectionRewriteDone": "本节已重写完成",
   "sectionRewriteAi": "AI 重写",
