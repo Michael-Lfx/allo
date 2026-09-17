@@ -2498,10 +2498,7 @@ impl IConversationRepository for SqliteConversationRepository {
         now: i64,
     ) -> Result<ConversationDeliveryReceiptClaim, DbError> {
         if expected_admission_epoch < 0
-            || !matches!(
-                source_error_code,
-                "output_truncated" | "turn_requests_exhausted"
-            )
+            || !crate::is_resumable_source_error_code(source_error_code)
         {
             return Err(DbError::Conflict(
                 "Truncated-turn continuation requires an exact retryable source failure"

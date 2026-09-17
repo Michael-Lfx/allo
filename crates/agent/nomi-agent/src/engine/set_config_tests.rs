@@ -1000,6 +1000,8 @@ fn make_engine(model: &str) -> super::AgentEngine {
         process_supervisor: None,
         editable_turn: None,
         observation: None,
+        horizon: Default::default(),
+        plan_exit_latch: None,
     }
 }
 

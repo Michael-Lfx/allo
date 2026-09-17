@@ -299,15 +299,15 @@
       },
       "USER_LLM_PROVIDER_TIMEOUT": {
         "title": "模型服务商响应超时",
-        "body": "服务商没有及时返回结果。请稍后重试，或切换到更稳定的服务商。"
+        "body": "这次请求在等待结果时超时。已完成的步骤仍然保留。请点「继续执行」从断点接着做，不要重置会话。"
       },
       "USER_LLM_PROVIDER_NETWORK_ERROR": {
         "title": "无法连接模型服务商",
-        "body": "网络或 DNS 错误导致无法访问服务商。请检查网络、代理和 Base URL。"
+        "body": "模型请求在传输中被中断，常见于长任务的网关、代理或空闲超时，不一定是本机没网。已完成的步骤仍然保留。请点「继续执行」从断点接着做，不要重置会话。"
       },
       "USER_LLM_PROVIDER_GATEWAY_ERROR": {
         "title": "模型服务商暂不可用",
-        "body": "当前可用模型通道全部失败。请稍后重试，或切换到其他服务商/模型后再发送。"
+        "body": "当前模型通道暂时失败。已完成的步骤仍然保留。请点「继续执行」从断点接着做，或稍后再试。"
       },
       "USER_LLM_PROVIDER_PERMISSION_DENIED": {
         "title": "模型服务商无权处理请求",
@@ -339,7 +339,7 @@
       },
       "USER_LLM_PROVIDER_EMPTY_RESPONSE": {
         "title": "模型服务商返回了空响应",
-        "body": "服务商完成了请求，但没有返回可用内容。请先重试一次；如果反复出现，可切换服务商。"
+        "body": "服务商完成了请求，但没有返回可用内容。已完成的步骤仍然保留。请点「继续执行」从断点接着做。"
       },
       "WORKSPACE_PATH_EDGE_WHITESPACE_RUNTIME_UNSUPPORTED": {
         "title": "该工作区路径无法运行",
@@ -545,7 +545,8 @@
       "waitingOnPid": "等待进程 {{pid}} 退出",
       "unwait": "解除等待",
       "contractToggle": "完成合约",
-      "subgoalsToggle": "子目标 {{count}} 项"
+      "subgoalsToggle": "子目标 {{count}} 项",
+      "noProgress": "暂无机械进展（连续 {{streak}} 轮）。下一轮必须改工作区或跑验证，不要只复述计划。"
     },
     "chip": {
       "label": "目标",

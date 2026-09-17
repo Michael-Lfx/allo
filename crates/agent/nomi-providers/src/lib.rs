@@ -185,6 +185,7 @@ impl ProviderError {
             ProviderError::RateLimited { .. }
             | ProviderError::Connection(_)
             | ProviderError::StreamTruncated(_) => true,
+            ProviderError::Http(err) => retry::is_transient_reqwest_transport(err),
             // Transient server-side faults (500/502/503/504) from an overloaded
             // gateway are the most common spurious failure and are safe to retry
             // on the pre-response / empty-content paths. 4xx are terminal.
@@ -408,7 +409,12 @@ pub(crate) async fn send_initial(
                 .headers(headers.clone())
                 .json(body)
                 .send()
-                .await?;
+                .await
+                // Connection reset / broken pipe after TCP is up is a request
+                // error, not `is_connect()`. Mapping it here matches
+                // `send_and_check` so the initial-request retry loop can
+                // recover a long Goal round instead of failing the whole turn.
+                .map_err(|e| ProviderError::Connection(e.to_string()))?;
             let status = response.status();
             if status.is_success() {
                 return Ok(response);

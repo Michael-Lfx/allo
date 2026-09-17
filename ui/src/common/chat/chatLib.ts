@@ -205,7 +205,25 @@ export type AgentStreamErrorInfo = {
   resolution?: AgentErrorResolution;
 };
 
-export type TruncatedTurnFailureCode = 'output_truncated' | 'turn_requests_exhausted';
+export type TruncatedTurnFailureCode =
+  | 'output_truncated'
+  | 'turn_requests_exhausted'
+  | 'user_llm_provider_network_error'
+  | 'user_llm_provider_timeout'
+  | 'user_llm_provider_empty_response'
+  | 'user_llm_provider_gateway_error';
+
+const TRUNCATED_TURN_FAILURE_CODES: readonly TruncatedTurnFailureCode[] = [
+  'output_truncated',
+  'turn_requests_exhausted',
+  'user_llm_provider_network_error',
+  'user_llm_provider_timeout',
+  'user_llm_provider_empty_response',
+  'user_llm_provider_gateway_error',
+];
+
+const isTruncatedTurnFailureCode = (value: unknown): value is TruncatedTurnFailureCode =>
+  typeof value === 'string' && TRUNCATED_TURN_FAILURE_CODES.includes(value as TruncatedTurnFailureCode);
 
 export type TruncatedTurnRecovery = {
   kind: 'continue_truncated';
@@ -872,7 +890,7 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
 
 export const normalizeTruncatedTurnRecovery = (value: unknown): TruncatedTurnRecovery | undefined => {
   if (!isObject(value) || value.kind !== 'continue_truncated') return undefined;
-  if (value.failure_code !== 'output_truncated' && value.failure_code !== 'turn_requests_exhausted') {
+  if (!isTruncatedTurnFailureCode(value.failure_code)) {
     return undefined;
   }
   try {

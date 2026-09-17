@@ -7,6 +7,28 @@ use crate::goal::state::{
     GoalContract, GoalState, GoalStatus, GoalVerdict, MAX_CONSECUTIVE_PARSE_FAILURES,
     MAX_CONSECUTIVE_TRANSPORT_FAILURES, epoch_ms, render_contract_block, render_subgoals_block,
 };
+use crate::horizon::{render_continuation_delta, ContinuationDelta};
+
+/// Gate Horizon applies around Goal auto-continue. Default is the historical
+/// path used by unit tests (allow continue; do not require mechanical evidence).
+#[derive(Debug, Clone, Default)]
+pub struct GoalContinueGate {
+    pub allow_continue: bool,
+    pub pause_on_veto: bool,
+    pub veto_reason: Option<String>,
+    pub continuation_delta: Option<ContinuationDelta>,
+    /// When true, `update_goal`/`judge` Done must pass the mechanical gate.
+    pub observed: bool,
+}
+
+impl GoalContinueGate {
+    pub fn allow() -> Self {
+        Self {
+            allow_continue: true,
+            ..Default::default()
+        }
+    }
+}
 
 const CONTINUATION_TEMPLATE: &str = include_str!("templates/continuation.md");
 /// Variant rendered when the user added `/subgoal` criteria. A separate file
@@ -131,6 +153,22 @@ impl GoalRuntime {
         ))
     }
 
+    /// Copy Horizon's mechanical snapshot onto the shared goal state.
+    pub fn sync_progress(
+        &self,
+        mutated: bool,
+        verify_ok: bool,
+        workspace_changed: bool,
+        no_progress_streak: usize,
+    ) {
+        self.state.lock().unwrap().apply_progress(
+            mutated,
+            verify_ok,
+            workspace_changed,
+            no_progress_streak,
+        );
+    }
+
     /// Per-turn goal-awareness block the engine rides on the turn tail so
     /// the model knows — from its very first turn — that a standing goal
     /// exists, an external judge audits every natural termination, and the
@@ -152,29 +190,26 @@ impl GoalRuntime {
 
     /// Called at the engine's natural-termination point. Runs the judge on
     /// the assistant's last response and returns `Some(message)` to inject a
-    /// continuation (verdict = continue), or `None` to stop:
+    /// continuation (verdict = continue), or `None` to stop.
     ///
-    /// - non-Active status (incl. a terminal state the model already declared
-    ///   via `update_goal` — first terminal state wins, no judge call) → None
-    /// - parked on a live wait barrier (`Waiting` with a future deadline, a
-    ///   pid the probe reports alive, or a session the probe reports active)
-    ///   → None without a judge call or budget burn; once the barrier
-    ///   releases (deadline passed / pid dead / session done / no probe
-    ///   wired) it lazily clears and this same call resumes normal judging
-    ///   (hermes lazy auto-clear, fail-open without a probe)
-    /// - auto-continuation budget exhausted → None
-    /// - judge says done → status becomes `Complete`, None
-    /// - judge says wait with a directive → status becomes `Waiting` with the
-    ///   matching barrier field + `waiting_reason` set, None — no budget
-    ///   consumed
-    /// - circuit breaker tripped (parse/transport failures) → `Paused`, None
-    ///
-    /// The judge call is a one-shot side request that never touches the main
-    /// conversation history or system prompt.
+    /// Judge parse/transport failures are **fail-closed**: the goal pauses
+    /// immediately instead of injecting another identical continuation.
+    /// Wait barriers without a probe still fail-open (a stale barrier must
+    /// never wedge the loop).
     pub async fn evaluate_and_continue(
         &self,
         last_response: &str,
         judge_client: &dyn GoalJudgeClient,
+    ) -> Option<Message> {
+        self.evaluate_and_continue_with(last_response, judge_client, GoalContinueGate::allow())
+            .await
+    }
+
+    pub async fn evaluate_and_continue_with(
+        &self,
+        last_response: &str,
+        judge_client: &dyn GoalJudgeClient,
+        gate: GoalContinueGate,
     ) -> Option<Message> {
         // Snapshot what the judge needs, then release the lock — it must not
         // be held across the await below.
@@ -183,14 +218,8 @@ impl GoalRuntime {
             if g.status == GoalStatus::Waiting {
                 let probe = self.probe.lock().unwrap().clone();
                 if wait_barrier_holds(&g, probe.as_deref()) {
-                    // Parked on a live barrier: quiesce — no judge call, no
-                    // budget burn. The engine stops naturally this turn.
                     return None;
                 }
-                // Barrier released: deadline passed, pid dead, session done,
-                // or no probe wired (fail open — a stale barrier must never
-                // wedge the loop). Lazily clear it, go back to Active and
-                // fall through to normal judging right here.
                 g.status = GoalStatus::Active;
                 g.clear_wait_barrier();
             }
@@ -201,7 +230,7 @@ impl GoalRuntime {
         };
         let background = self.background.lock().unwrap().clone();
 
-        let outcome = judge::judge_goal(
+        let mut outcome = judge::judge_goal(
             &objective,
             &subgoals,
             contract.as_ref(),
@@ -212,8 +241,6 @@ impl GoalRuntime {
         .await;
 
         let mut g = self.state.lock().unwrap();
-        // Re-check: a terminal state declared via `update_goal` mid-flight
-        // wins over the judge verdict.
         if !g.should_continue() {
             return None;
         }
@@ -222,9 +249,6 @@ impl GoalRuntime {
         g.last_reason = Some(outcome.reason.clone());
         g.last_turn_at = Some(epoch_ms());
 
-        // Each breaker resets independently on its own success dimension
-        // (hermes semantics): a flaky network must not trip the parse breaker
-        // meant for weak judge models, and vice versa.
         if outcome.parse_failed {
             g.consecutive_parse_failures += 1;
         } else {
@@ -236,13 +260,38 @@ impl GoalRuntime {
             g.consecutive_transport_failures = 0;
         }
 
-        if outcome.verdict == GoalVerdict::Done {
-            g.status = GoalStatus::Complete;
+        // Fail-closed: an unusable judge must not reopen the loop.
+        if outcome.parse_failed || outcome.transport_failed {
+            g.status = GoalStatus::Paused;
+            g.paused_reason = Some(if outcome.transport_failed {
+                format!(
+                    "judge API unreachable ({} consecutive transport failure(s))",
+                    g.consecutive_transport_failures
+                )
+            } else {
+                format!(
+                    "judge model returned unparseable output ({} consecutive parse failure(s))",
+                    g.consecutive_parse_failures
+                )
+            });
             return None;
         }
 
-        // Circuit breakers: a permanently broken judge must not burn the
-        // remaining continuation budget.
+        if outcome.verdict == GoalVerdict::Done {
+            if gate.observed && !g.satisfies_complete_gate() {
+                outcome.verdict = GoalVerdict::Continue;
+                outcome.reason = format!(
+                    "judge claimed done without mechanical evidence ({})",
+                    outcome.reason
+                );
+                g.last_verdict = Some(GoalVerdict::Continue);
+                g.last_reason = Some(outcome.reason.clone());
+            } else {
+                g.status = GoalStatus::Complete;
+                return None;
+            }
+        }
+
         if g.consecutive_transport_failures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES {
             g.status = GoalStatus::Paused;
             g.paused_reason = Some(format!(
@@ -260,11 +309,6 @@ impl GoalRuntime {
             return None;
         }
 
-        // Park on the wait barrier the directive names. Deliberately does
-        // NOT consume turns_used / auto_continuations — waiting is not
-        // progress, and the budget should measure real agent work (task
-        // contract; hermes parks without burning a continuation either).
-        // Skipped (judge couldn't run) still fails open to Continue.
         if outcome.verdict == GoalVerdict::Wait
             && let Some(directive) = outcome.wait_directive.clone()
         {
@@ -283,14 +327,26 @@ impl GoalRuntime {
             return None;
         }
 
+        if !gate.allow_continue {
+            if gate.pause_on_veto {
+                g.status = GoalStatus::Paused;
+                g.paused_reason = gate.veto_reason.clone();
+            }
+            return None;
+        }
+
         g.turns_used += 1;
         g.auto_continuations += 1;
-        let prompt = render_continuation(
-            &g.objective,
-            g.blocked_threshold,
-            &g.subgoals,
-            g.contract.as_ref(),
-        );
+        let prompt = if let Some(delta) = gate.continuation_delta.as_ref() {
+            render_continuation_delta(delta)
+        } else {
+            render_continuation(
+                &g.objective,
+                g.blocked_threshold,
+                &g.subgoals,
+                g.contract.as_ref(),
+            )
+        };
         Some(Message::now(
             Role::User,
             vec![ContentBlock::Text { text: prompt }],
@@ -798,59 +854,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parse_failures_trip_breaker_into_paused() {
+    async fn parse_failures_pause_immediately() {
         let rt = GoalRuntime::new("ship the feature".into(), 20);
-        let judge = MockJudgeClient::new(vec![
-            Ok("prose, not json".to_string()),
-            Ok("still prose".to_string()),
-            Ok("and again".to_string()),
-        ]);
-        // Failures 1 and 2 fail open (continuation still fires)…
-        assert!(rt.evaluate_and_continue("progress", &judge).await.is_some());
-        assert!(rt.evaluate_and_continue("progress", &judge).await.is_some());
-        // …failure 3 trips the breaker: Paused, no continuation.
+        let judge = MockJudgeClient::new(vec![Ok("prose, not json".to_string())]);
         assert!(rt.evaluate_and_continue("progress", &judge).await.is_none());
         let s = rt.snapshot();
         assert_eq!(s.status, GoalStatus::Paused);
-        assert_eq!(s.consecutive_parse_failures, 3);
+        assert_eq!(s.consecutive_parse_failures, 1);
         assert!(s.paused_reason.as_deref().unwrap().contains("unparseable"));
+        assert_eq!(s.auto_continuations, 0);
     }
 
     #[tokio::test]
-    async fn transport_failures_trip_breaker_into_paused() {
+    async fn transport_failures_pause_immediately() {
         let rt = GoalRuntime::new("ship the feature".into(), 20);
-        let judge = MockJudgeClient::new(vec![
-            Err("401".to_string()),
-            Err("401".to_string()),
-            Err("401".to_string()),
-            Err("401".to_string()),
-            Err("401".to_string()),
-        ]);
-        for _ in 0..4 {
-            assert!(rt.evaluate_and_continue("progress", &judge).await.is_some());
-        }
+        let judge = MockJudgeClient::new(vec![Err("401".to_string())]);
         assert!(rt.evaluate_and_continue("progress", &judge).await.is_none());
         let s = rt.snapshot();
         assert_eq!(s.status, GoalStatus::Paused);
-        assert_eq!(s.consecutive_transport_failures, 5);
+        assert_eq!(s.consecutive_transport_failures, 1);
         assert!(s.paused_reason.as_deref().unwrap().contains("unreachable"));
+        assert_eq!(s.auto_continuations, 0);
     }
 
     #[tokio::test]
-    async fn successful_judgement_resets_both_breakers() {
+    async fn successful_judgement_after_resume_from_parse_pause() {
         let rt = GoalRuntime::new("ship the feature".into(), 20);
         let judge = MockJudgeClient::new(vec![
-            Ok("prose".to_string()),      // parse failure #1
-            Err("timeout".to_string()),   // transport failure #1, parse resets
-            continue_reply(),             // clean → both reset
+            Ok("prose".to_string()),
+            continue_reply(),
         ]);
-        assert!(rt.evaluate_and_continue("p", &judge).await.is_some());
-        assert!(rt.evaluate_and_continue("p", &judge).await.is_some());
+        assert!(rt.evaluate_and_continue("p", &judge).await.is_none());
+        assert_eq!(rt.snapshot().status, GoalStatus::Paused);
+        rt.resume();
         assert!(rt.evaluate_and_continue("p", &judge).await.is_some());
         let s = rt.snapshot();
         assert_eq!(s.consecutive_parse_failures, 0);
         assert_eq!(s.consecutive_transport_failures, 0);
         assert_eq!(s.status, GoalStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn observed_done_without_mechanical_evidence_does_not_complete() {
+        let rt = GoalRuntime::new("ship the feature".into(), 8);
+        let judge = MockJudgeClient::new(vec![done_reply()]);
+        let gate = GoalContinueGate {
+            allow_continue: true,
+            observed: true,
+            ..Default::default()
+        };
+        let msg = rt
+            .evaluate_and_continue_with("all done", &judge, gate)
+            .await;
+        assert!(msg.is_some());
+        let s = rt.snapshot();
+        assert_eq!(s.status, GoalStatus::Active);
+        assert_eq!(s.last_verdict, Some(GoalVerdict::Continue));
     }
 
     #[tokio::test]

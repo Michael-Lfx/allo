@@ -14,5 +14,5 @@ pub use judge::{
     BackgroundProcessInfo, ContractDraftError, GoalJudgeClient, JudgeOutcome, ProviderJudgeClient,
     WaitDirective, draft_contract,
 };
-pub use runtime::{GoalRuntime, GoalSpec, GoalWaitProbe};
+pub use runtime::{GoalContinueGate, GoalRuntime, GoalSpec, GoalWaitProbe};
 pub use state::{GoalContract, GoalState, GoalStatus, GoalVerdict};

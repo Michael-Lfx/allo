@@ -14,6 +14,12 @@ use nomi_tools::registry::ToolRegistry;
 use nomi_types::skill_types::PlanModeTransition;
 use serde_json::json;
 
+fn verifiable_plan() -> serde_json::Value {
+    json!({
+        "plan": "# Goal\nFix the parser.\nFiles: src/parser.rs\nVerification: cargo test -p parser\nHow to test: cargo test -p parser"
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -147,11 +153,11 @@ async fn tc_3_6_e2e_01_full_plan_mode_lifecycle() {
 
     // Step 6: LLM calls ExitPlanMode
     let exit_tool = ExitPlanModeTool::new(Arc::clone(&flag));
-    let exit_result = exit_tool.execute(json!({})).await;
+    let exit_result = exit_tool.execute(verifiable_plan()).await;
     assert!(!exit_result.is_error, "ExitPlanMode should succeed");
 
     // Verify context modifier signals Exit transition
-    let exit_cm = exit_tool.context_modifier_for(&json!({})).unwrap();
+    let exit_cm = exit_tool.context_modifier_for(&verifiable_plan()).unwrap();
     assert!(matches!(
         exit_cm.plan_mode_transition,
         Some(PlanModeTransition::Exit { .. })
@@ -215,6 +221,7 @@ fn tc_3_6_e2e_02_plan_mode_and_compaction_independent() {
     let plan_state = PlanState {
         is_active: true,
         pre_plan_allow_list: vec!["Read".to_string(), "Grep".to_string()],
+        ..Default::default()
     };
 
     // Actually run microcompact
@@ -288,6 +295,7 @@ fn tc_3_6_e2e_04_plan_state_not_persisted_across_sessions() {
     let active_state = PlanState {
         is_active: true,
         pre_plan_allow_list: vec!["Read".into(), "Bash".into()],
+        ..Default::default()
     };
     assert!(active_state.is_active);
 
@@ -349,7 +357,7 @@ async fn multiple_plan_mode_cycles_consistent() {
         flag.store(true, Ordering::Release);
 
         // Exit should succeed
-        let r = exit.execute(json!({})).await;
+        let r = exit.execute(verifiable_plan()).await;
         assert!(!r.is_error, "exit should succeed on cycle {cycle}");
 
         flag.store(false, Ordering::Release);
@@ -376,7 +384,7 @@ fn plan_mode_modifiers_do_not_interfere_with_other_fields() {
     );
 
     // Exit modifier should only set plan_mode_transition
-    let exit_cm = exit.context_modifier_for(&json!({})).unwrap();
+    let exit_cm = exit.context_modifier_for(&verifiable_plan()).unwrap();
     assert!(exit_cm.model.is_none());
     assert!(exit_cm.effort.is_none());
     assert!(exit_cm.allowed_tools.is_empty());

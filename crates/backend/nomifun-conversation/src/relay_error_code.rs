@@ -160,7 +160,7 @@ pub fn map_turn_failure(
 
 /// The snake_case wire token for one `AgentErrorCode` variant: its serde name
 /// (SCREAMING_SNAKE_CASE in `agent_error.rs`) lowercased.
-fn agent_error_code_token(code: AgentErrorCode) -> String {
+pub(crate) fn agent_error_code_token(code: AgentErrorCode) -> String {
     match serde_json::to_value(code) {
         Ok(serde_json::Value::String(name)) => name.to_ascii_lowercase(),
         _ => UNKNOWN_UPSTREAM_ERROR.to_owned(),

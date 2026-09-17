@@ -4058,6 +4058,8 @@ export interface GoalStatusResponse {
   waiting_on_session?: string;
   /** The goal's completion contract, when one was drafted or set. */
   contract?: GoalContractDto;
+  /** Consecutive judged EndTurns without mechanical progress. */
+  no_progress_streak?: number;
 }
 
 interface IBridgeResponse<D = {}> {

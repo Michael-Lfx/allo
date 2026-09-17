@@ -87,7 +87,7 @@ the goal stays visible and `/goal resume` restarts it with a fresh budget.
 Waiting on a barrier does **not** burn budget, and the budget window restarts
 with a new backend process.
 
-The judge itself is deliberately cheap and safe:
+The judge itself is deliberately cheap. Runtime auto-continue is **fail-closed**:
 
 - It is a **one-shot side request** on the session's main model — no tools, no
   thinking, and it never touches the conversation history or system prompt, so
@@ -95,12 +95,28 @@ The judge itself is deliberately cheap and safe:
 - It sees the objective, subgoals/contract, a bounded tail of the agent's last
   response, and a snapshot of live background processes, and must answer with
   a strict one-line JSON verdict.
-- It is **fail-open, never falsely done**: an unparseable or failed judge call
-  degrades to *continue*. Repeated parse or transport failures trip separate
-  circuit breakers that pause the goal instead of looping forever.
+- **Parse or transport failure pauses immediately.** The parser still refuses
+  to invent *done* (unparseable output is never treated as complete), but the
+  Goal runtime no longer auto-continues on a broken judge. Resume after the
+  outage; a later successful verdict continues as usual.
+- **Mechanical evidence is required to finish.** `update_goal complete` (and a
+  judge *done* while Horizon is observing) needs a successful verification
+  command, a workspace fingerprint change, or — for free-form goals without a
+  Verification contract — a mutating tool. A *done* with no world change is
+  treated as *continue* with a delta prompt, not as success.
+- **Idle auto-continue stops after two empty EndTurns.** Horizon records
+  mutations, verification, pending-step changes, and workspace fingerprints.
+  Recon-only tools and near-duplicate assistant text do not reset that streak.
+  The first idle EndTurn still gets one delta continuation; the second pauses.
+- **Continuation prompts are per-turn deltas**, not a byte-identical "keep
+  going" blob. The standing-goal *context* on the turn tail stays cache-stable.
+- Free-form goals (no Verification field) auto-continue at most **3** times
+  even if `max_turns` is 8. With a Verification contract the requested budget
+  is used. The engine's 200-turn net budget is never reset to 0 on continue.
 
 A message typed by *you* always takes priority: the loop yields to user input
-rather than racing it.
+rather than racing it. After Plan Mode submits a verifiable plan, write tools
+stay locked until that next user message — it is the approval to implement.
 
 ## Wait barriers
 
@@ -150,26 +166,32 @@ it as extra criteria.
 
 ## Configuration
 
-There is no config-file surface for goals. The only knob is the turn budget:
-pass `max_turns` with the API `set` action (default **8**, clamped to 1..100).
-Slash commands always use the default.
+There is no config-file surface for goals. The API `max_turns` field (default
+**8**, clamped to 1..100) is the requested budget. Free-form goals without a
+Verification contract are additionally capped at **3** auto-continuations.
+Slash commands always use the default 8 (then the free-form cap applies unless
+you set a contract).
 
 ## Persistence
 
 Goal state (objective, status, budget, subgoals, contract, verdicts) is
 persisted per conversation and survives restarts. Counters that describe a
-*live* run — the auto-continuation window and breaker counts — intentionally
-start fresh with a new process.
+*live* run — the auto-continuation window, breaker counts, and no-progress
+streak — intentionally start fresh with a new process.
 
 ## Origin and differences from hermes
 
 The goal loop is a port of the hermes agent's goals feature (itself inspired
-by the "Ralph loop" pattern). Behavior matches hermes' semantics — the judge
-prompts, three-verdict contract, lazy barrier release, and fail-open probes
-are direct ports — with these deliberate differences:
+by the "Ralph loop" pattern). Judge prompts, three-verdict contract, lazy
+barrier release, and **fail-open wait probes** are direct ports — with these
+deliberate differences:
 
+- Runtime auto-continue is **fail-closed** on judge parse/transport failure
+  (hermes / earlier Nomi fail-open to *continue*).
 - Default turn budget is **8** (hermes: 20), and it is set per request via the
-  API instead of a `config.yaml`.
+  API instead of a `config.yaml`. Free-form goals clamp to 3 auto-continues.
+- Horizon owns Goal auto-continue and office Plan overlay; coding sessions
+  keep the coding harness todo/verify path (`disable_goal_auto_continue`).
 - Contracts are set via `/goal draft` or the API only — there is no inline
   `field: value` contract syntax in the objective text.
 - `/goal wait <pid>` takes no free-text reason argument.

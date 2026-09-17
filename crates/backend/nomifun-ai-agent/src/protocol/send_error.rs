@@ -669,8 +669,8 @@ fn classify_provider_api(lower: &str) -> Option<ClassifiedError> {
             "The model provider could not be reached",
             AgentErrorCode::UserLlmProviderNetworkError,
             true,
-            AgentErrorResolutionKind::CheckProviderBaseUrl,
-            Some(AgentErrorResolutionTarget::ProviderSettings),
+            AgentErrorResolutionKind::Retry,
+            None,
         ));
     }
     // 图片不支持:上游对 image_url 内容反序列化失败 / 明确拒绝图片。必须排在
@@ -1411,13 +1411,13 @@ mod tests {
             "Nomi agent error: API error: Connection error: error decoding response body",
             AgentErrorCode::UserLlmProviderNetworkError,
             AgentErrorOwnership::UserLlmProvider,
-            AgentErrorResolutionKind::CheckProviderBaseUrl,
+            AgentErrorResolutionKind::Retry,
         );
         assert_classification(
             "Nomi agent error: API error: error sending request for url",
             AgentErrorCode::UserLlmProviderNetworkError,
             AgentErrorOwnership::UserLlmProvider,
-            AgentErrorResolutionKind::CheckProviderBaseUrl,
+            AgentErrorResolutionKind::Retry,
         );
         assert_classification(
             "Autocompact failed: Empty response from LLM",

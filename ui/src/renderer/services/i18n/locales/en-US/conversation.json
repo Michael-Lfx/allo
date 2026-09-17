@@ -299,15 +299,15 @@
       },
       "USER_LLM_PROVIDER_TIMEOUT": {
         "title": "Model provider request timed out",
-        "body": "The provider did not respond in time. Retry later or switch to a more stable provider."
+        "body": "The provider did not respond in time. Completed work is kept; use Continue to resume instead of resetting the conversation."
       },
       "USER_LLM_PROVIDER_NETWORK_ERROR": {
         "title": "Could not reach the model provider",
-        "body": "A network or DNS error prevented access to the provider. Check your network, proxy, and Base URL."
+        "body": "The provider connection dropped mid-request — often a gateway, proxy, or idle timeout on a long Goal run, not a missing local network. Completed work is kept; use Continue to resume instead of resetting the conversation."
       },
       "USER_LLM_PROVIDER_GATEWAY_ERROR": {
         "title": "Model provider service is unavailable",
-        "body": "All available model channels failed. Retry shortly, or switch to another provider/model and send again."
+        "body": "The current model channel failed. Completed work is kept; use Continue to resume, or retry shortly."
       },
       "USER_LLM_PROVIDER_PERMISSION_DENIED": {
         "title": "Model provider permission denied",
@@ -339,7 +339,7 @@
       },
       "USER_LLM_PROVIDER_EMPTY_RESPONSE": {
         "title": "Model provider returned an empty response",
-        "body": "The provider completed the request without usable content. Retry once or switch providers if it repeats."
+        "body": "The provider completed the request without usable content. Completed work is kept; use Continue to resume."
       },
       "WORKSPACE_PATH_EDGE_WHITESPACE_RUNTIME_UNSUPPORTED": {
         "title": "This workspace path cannot be used for execution",
@@ -545,7 +545,8 @@
       "waitingOnPid": "Waiting for process {{pid}} to exit",
       "unwait": "Unwait",
       "contractToggle": "Completion contract",
-      "subgoalsToggle": "Subgoals ({{count}})"
+      "subgoalsToggle": "Subgoals ({{count}})",
+      "noProgress": "No mechanical progress for {{streak}} turn(s). Next turn must change the workspace or run verification — do not restate the plan."
     },
     "chip": {
       "label": "Goal",

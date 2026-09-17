@@ -1656,6 +1656,7 @@ export type I18nKey =
   | 'conversation.goal.notice.cleared'
   | 'conversation.goal.notice.complete'
   | 'conversation.goal.notice.contractToggle'
+  | 'conversation.goal.notice.noProgress'
   | 'conversation.goal.notice.pause'
   | 'conversation.goal.notice.paused'
   | 'conversation.goal.notice.reason'

@@ -96,12 +96,27 @@ fn retry_log_classification(error: &ProviderError) -> (&'static str, Option<u16>
     }
 }
 
+/// Transport failures that are safe to replay before any response body has
+/// been consumed. `reqwest::Error::is_connect()` is only the TCP handshake;
+/// a later `connection reset` / `error sending request` is `is_request()`.
+pub(crate) fn is_transient_reqwest_transport(err: &reqwest::Error) -> bool {
+    if err.is_connect() || err.is_timeout() || err.is_request() {
+        return true;
+    }
+    let message = err.to_string().to_ascii_lowercase();
+    message.contains("connection reset")
+        || message.contains("connection abort")
+        || message.contains("broken pipe")
+        || message.contains("error sending request")
+        || message.contains("connection error")
+}
+
 fn is_retryable_initial_request_error(
     error: &ProviderError,
     context: InitialRequestContext,
 ) -> bool {
     match error {
-        ProviderError::Http(err) => err.is_connect(),
+        ProviderError::Http(err) => is_transient_reqwest_transport(err),
         ProviderError::Connection(_) => true,
         ProviderError::Api { status, .. } => {
             matches!(status, 500 | 502 | 503 | 504)
