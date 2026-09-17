@@ -54,6 +54,12 @@ describe('home image mentions', () => {
     expect(appendHomeImageLegend('hello', [])).toBe('hello');
   });
 
+  test('does not treat plate filenames as extra character names in the legend', () => {
+    expect(appendHomeImageLegend('团子出门', ['5种小猫', '猫猫三视图'])).toBe(
+      '团子出门\n\n图片对照：图片1、图片2 是用户上传的角色外观参考（可含三视图或服饰变体）。请锁定剧本中已有角色的外观，不要把这些标签当成新角色名。',
+    );
+  });
+
   test('filters mention candidates by label or name', () => {
     const items = [
       { index: 0, label: '图片1', name: 'Alice' },

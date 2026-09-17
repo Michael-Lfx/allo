@@ -106,7 +106,7 @@ const VideoStatusPlaceholder: React.FC<{
                 defaultValue: 'This shot is rendering now…',
               })
             : t('videoGeneration.studio.storyboard.videoPendingHint', {
-                defaultValue: 'Shot videos appear here after film generation',
+                defaultValue: 'Click Generate film or Continue at the bottom right — the clip appears here',
               })}
         </div>
       )}

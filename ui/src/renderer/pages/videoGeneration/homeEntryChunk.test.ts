@@ -59,7 +59,7 @@ describe('video generation home entry chunk', () => {
     expect(prefetch.includes('./home/VerticalSkillMenu')).toBe(true);
     expect(prefetch.includes('./styleCatalog/LookPicker')).toBe(true);
     expect(composer.includes("import VerticalSkillCreateModal from")).toBe(false);
-    expect(composer.includes("import CameoCastEditor from")).toBe(false);
+    expect(composer.includes('CameoCastEditor')).toBe(false);
     expect(composer.includes('onPasteCapture')).toBe(true);
     expect(composer.includes('filesFromClipboardData')).toBe(true);
     expect(upload.includes("from 'fflate'")).toBe(false);

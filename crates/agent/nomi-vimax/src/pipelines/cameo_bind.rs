@@ -44,6 +44,8 @@ const PRIVACY_SKIP_NO_FACE_PREFIX: &str = "skip_no_human_face:";
 
 const REG_PRIVACY: &str = "privacy";
 const REG_SOURCE_FP: &str = "source_fp";
+const REG_SOURCE: &str = "source";
+const SOURCE_USER: &str = "user";
 const PRIVACY_SKIP: &str = "skip_no_face";
 const PRIVACY_SANITIZED: &str = "sanitized";
 
@@ -102,11 +104,11 @@ fn classification_cache_covers(
     })
 }
 
-/// Hint appended to character-extraction input so LLM keeps user-provided names.
+/// Hint appended to character-extraction input so LLM locks looks to user plates.
 ///
-/// Only photos classified as **character** participate. Skips anonymous names
-/// (camera file stems like `05382109`) so we do not force the extractor to invent
-/// cast ids from WeChat/phone filenames.
+/// Only photos classified as **character** participate. Filenames like `5种小猫` /
+/// `猫猫三视图` / `参考图1` are identity plates, not extra cast members — never
+/// force the extractor to invent characters from those labels.
 pub(crate) fn cameo_extractor_hint(session_root: &Path) -> String {
     let Ok(photos) = cameo::list_photos(session_root) else {
         return String::new();
@@ -119,37 +121,51 @@ pub(crate) fn cameo_extractor_hint(session_root: &Path) -> String {
     if cast.is_empty() {
         return String::new();
     }
-    let names: Vec<String> = cast
+    let by_id = report.by_id();
+    let named: Vec<String> = cast
         .iter()
         .map(|p| p.character_name.trim().to_string())
         .filter(|n| !n.is_empty() && !is_anonymous_cameo_name(n))
         .collect();
-    let anon_count = cast
-        .iter()
-        .filter(|p| is_anonymous_cameo_name(p.character_name.trim()))
-        .count();
-    if names.is_empty() && anon_count == 0 {
+    let mut plates: Vec<String> = Vec::new();
+    for (i, photo) in cast.iter().enumerate() {
+        let label = photo.character_name.trim();
+        let shown = if label.is_empty() || is_anonymous_cameo_name(label) {
+            format!("图片{}", i + 1)
+        } else {
+            label.to_string()
+        };
+        let summary = by_id
+            .get(&photo.id)
+            .map(|c| c.summary.trim())
+            .filter(|s| !s.is_empty() && *s != label)
+            .unwrap_or("");
+        if summary.is_empty() {
+            plates.push(shown);
+        } else {
+            plates.push(format!("{shown}（{summary}）"));
+        }
+    }
+    if named.is_empty() && plates.is_empty() {
         return String::new();
     }
-    let mut parts = Vec::new();
-    if !names.is_empty() {
-        parts.push(format!(
-            "You MUST include each as a visible character and keep identifier_in_scene equal (or an obvious \
-variant of) these names: {}.",
-            names.join(", ")
+    let mut body = String::from(
+        "User-uploaded images are visual identity plates for characters already in the story. \
+Do NOT invent extra characters from photo filenames, 图片N labels, 三视图/设定/服饰拼图 captions, or 图片对照. \
+Multiple plates of the same subject (outfit board + three-view, etc.) MUST map to ONE story character \
+and keep that character's identifier_in_scene as the story-native name. \
+Lock appearance to the plates; do not generate a conflicting new 主体.",
+    );
+    if !named.is_empty() {
+        body.push_str(&format!(
+            " Named plate labels that look like real character names (bind to that story character, do not duplicate): {}.",
+            named.join(", ")
         ));
     }
-    if anon_count > 0 {
-        parts.push(format!(
-            "The user also uploaded {anon_count} cast reference photo(s) without a real character name \
-(camera/file id only). Keep the story's natural character names; Cameo photos will be bound by \
-fallback to the matching cast member -- do NOT invent identifiers from numeric filenames."
-        ));
+    if !plates.is_empty() {
+        body.push_str(&format!(" Identity plates: {}.", plates.join("; ")));
     }
-    format!(
-        "\n\n[CAMEO CAST LOCK]\nThe user uploaded reference photos for cast identity. {}\n",
-        parts.join(" ")
-    )
+    format!("\n\n[CAMEO CAST LOCK]\n{body}\n")
 }
 
 /// Load film registry, bind **character-classified** session Cameos, privacy-anonymize
@@ -454,7 +470,12 @@ fn scrub_redundant_portrait_artifacts(
             .map(|s| s.as_str() == PRIVACY_SANITIZED)
             .unwrap_or(false);
         scrub_cameo_clutter(&plate, keep_raw);
-        if views.get("sheet").is_some() {
+        let sheet_is_user = views
+            .get("sheet")
+            .and_then(|i| i.get(REG_SOURCE))
+            .map(|s| s.as_str() == SOURCE_USER)
+            .unwrap_or(false);
+        if views.get("sheet").is_some() && !sheet_is_user {
             drop_sheet.push(identifier.clone());
         }
     }
@@ -484,6 +505,9 @@ fn scrub_portrait_dir_clutter(dir: &Path) {
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
     let has_cameo = names.iter().any(|n| n.ends_with("_cameo.png"));
+    let has_generated_three_view = names
+        .iter()
+        .any(|n| n.ends_with("_three_view_generation_prompt.txt"));
     for name in names {
         let path = dir.join(&name);
         let drop = name.ends_with("_three_view_generation_prompt.txt")
@@ -495,6 +519,7 @@ fn scrub_portrait_dir_clutter(dir: &Path) {
             || name.ends_with("atmosphere_tmp.png")
             || name.ends_with("ai_sanitize_tmp.png")
             || (has_cameo
+                && has_generated_three_view
                 && (name.ends_with("_three_view.png") || name == "asset_three_view.png"));
         if drop {
             let _ = std::fs::remove_file(&path);
@@ -651,39 +676,55 @@ pub(crate) fn bind_cameos_to_registry(
     let visible: Vec<&CharacterInScene> = characters.iter().filter(|c| c.is_visible).collect();
     let mut used_chars: HashSet<String> = HashSet::new();
     let mut bindings: Vec<(String, String)> = Vec::new();
+    let report = resolve_classification_report(session_root, photos);
+    let by_id = report.by_id();
 
     for photo in photos {
         let matched = match_cameo_to_character(photo, &visible, &used_chars)?;
         used_chars.insert(matched.identifier_in_scene.clone());
-        let dest = write_cameo_portrait(
+        let cls = by_id.get(&photo.id).copied();
+        let view_key = if is_three_view_plate(photo, cls) {
+            "sheet"
+        } else {
+            "cameo"
+        };
+        let dest = write_identity_plate(
             film_root,
             matched,
             photo,
-            registry.get(&matched.identifier_in_scene).and_then(|v| v.get("cameo")),
+            view_key,
+            registry
+                .get(&matched.identifier_in_scene)
+                .and_then(|v| v.get(view_key)),
         )?;
         let src = session_photo_abs(film_root, photo)?;
         let src_fp = file_fingerprint(&src).unwrap_or_default();
-        let desc = cameo_registry_description(matched, photo, &dest);
+        let desc = cameo_registry_description(matched, photo, &dest, view_key);
         let mut item = HashMap::new();
         item.insert("path".into(), dest.to_string_lossy().to_string());
         item.insert("description".into(), desc);
-        if let Some(prior) = registry
-            .get(&matched.identifier_in_scene)
-            .and_then(|v| v.get("cameo"))
-        {
-            if cameo_privacy_reusable(&dest, &src_fp, prior) {
-                if let Some(p) = prior.get(REG_PRIVACY) {
-                    item.insert(REG_PRIVACY.into(), p.clone());
-                }
-                if let Some(fp) = prior.get(REG_SOURCE_FP) {
-                    item.insert(REG_SOURCE_FP.into(), fp.clone());
+        item.insert(REG_SOURCE.into(), SOURCE_USER.into());
+        if view_key == "cameo" {
+            if let Some(prior) = registry
+                .get(&matched.identifier_in_scene)
+                .and_then(|v| v.get("cameo"))
+            {
+                if cameo_privacy_reusable(&dest, &src_fp, prior) {
+                    if let Some(p) = prior.get(REG_PRIVACY) {
+                        item.insert(REG_PRIVACY.into(), p.clone());
+                    }
+                    if let Some(fp) = prior.get(REG_SOURCE_FP) {
+                        item.insert(REG_SOURCE_FP.into(), fp.clone());
+                    }
                 }
             }
+        } else {
+            item.insert(REG_SOURCE_FP.into(), src_fp);
         }
         registry
             .entry(matched.identifier_in_scene.clone())
             .or_default()
-            .insert("cameo".into(), item);
+            .insert(view_key.into(), item);
         bindings.push((photo.id.clone(), matched.identifier_in_scene.clone()));
     }
 
@@ -749,26 +790,25 @@ fn match_cameo_to_character<'a>(
         }
     }
 
+    // 3) Identity plates / anonymous uploads lock the story lead (not body-part extras),
+    // and additional plates of the same subject stay on that lead.
+    if anonymous || descriptive {
+        if let Some(host) = preferred_identity_host(visible, used) {
+            return Ok(host);
+        }
+    }
+
     let remaining: Vec<&&CharacterInScene> = visible
         .iter()
         .filter(|c| !used.contains(&c.identifier_in_scene))
         .collect();
 
-    // 3) Single remaining cast member — always safe (covers camera-filename cameos).
+    // 4) Single remaining / sole visible cast member — always safe.
     if remaining.len() == 1 {
         return Ok(remaining[0]);
     }
-
-    // 4) Only one visible cast in the whole scene (extra photos overwrite the same cameo).
     if visible.len() == 1 {
         return Ok(visible[0]);
-    }
-
-    // 5) Anonymous / descriptive / prompt-stem multi-photo / multi-cast: bind by ascending idx.
-    if (anonymous || descriptive) && !remaining.is_empty() {
-        let mut ordered = remaining;
-        ordered.sort_by_key(|c| c.idx);
-        return Ok(ordered[0]);
     }
 
     Err(VimaxError::InvalidParams(format!(
@@ -876,7 +916,150 @@ pub(crate) fn is_anonymous_cameo_name(name: &str) -> bool {
     if is_descriptive_role_label(t) {
         return true;
     }
+    // Outfit boards / three-views / 参考图N — visual plates, not extra cast names.
+    if is_reference_plate_label(t) {
+        return true;
+    }
     false
+}
+
+/// True when the upload label is a reference plate (三视图, 5种小猫, 参考图1), not a character id.
+pub(crate) fn is_reference_plate_label(name: &str) -> bool {
+    let t = name.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    if t.starts_with("参考图") || t.starts_with("图片") {
+        let rest = t
+            .trim_start_matches("参考图")
+            .trim_start_matches("图片")
+            .trim();
+        if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    if lower.starts_with("image") {
+        let rest = lower
+            .trim_start_matches("image")
+            .trim_matches(|c: char| c.is_ascii_whitespace() || c == '_' || c == '-');
+        if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    const NEEDLES: &[&str] = &[
+        "三视图",
+        "三视",
+        "turnaround",
+        "three-view",
+        "three_view",
+        "threeview",
+        "character sheet",
+        "charactersheet",
+        "设定图",
+        "设定板",
+        "角色设定",
+        "分身",
+        "服饰变体",
+        "服装变体",
+        "造型参考",
+        "外观参考",
+        "outfit board",
+        "outfits",
+    ];
+    if NEEDLES.iter().any(|n| t.contains(n) || lower.contains(n)) {
+        return true;
+    }
+    looks_like_variant_board_label(t)
+}
+
+fn looks_like_variant_board_label(name: &str) -> bool {
+    let t = name.trim();
+    if t.contains("多种") || t.contains("几种") || t.contains("各种") {
+        return true;
+    }
+    let chars: Vec<char> = t.chars().collect();
+    for i in 1..chars.len() {
+        if chars[i] == '种' && chars[i - 1].is_ascii_digit() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Hands / paws / close-up extras should not steal the lead's identity plates.
+pub(crate) fn is_body_part_character(character: &CharacterInScene) -> bool {
+    let id = character.identifier_in_scene.trim();
+    if id.ends_with("的手")
+        || id.ends_with("的脚")
+        || id.ends_with("的爪")
+        || matches!(id, "手" | "脚" | "爪" | "手部" | "脚部")
+    {
+        return true;
+    }
+    let feats = format!(
+        "{} {}",
+        character.static_features,
+        character.dynamic_features.as_deref().unwrap_or("")
+    );
+    const MARKERS: &[&str] = &["手部特写", "脚部特写", "特写手", "特写脚"];
+    MARKERS.iter().any(|m| id.contains(m) || feats.contains(m))
+}
+
+fn is_three_view_plate(
+    photo: &CameoPhotoEntry,
+    classification: Option<&crate::agents::ReferenceImageClassification>,
+) -> bool {
+    let mut blob = format!("{} {}", photo.character_name, photo.description);
+    if let Some(c) = classification {
+        blob.push(' ');
+        blob.push_str(&c.suggested_label);
+        blob.push(' ');
+        blob.push_str(&c.summary);
+    }
+    let lower = blob.to_ascii_lowercase();
+    lower.contains("三视图")
+        || lower.contains("三视")
+        || lower.contains("turnaround")
+        || lower.contains("three-view")
+        || lower.contains("three_view")
+        || (blob.contains("正面") && blob.contains("侧面") && blob.contains("背面"))
+}
+
+fn preferred_identity_host<'a>(
+    visible: &[&'a CharacterInScene],
+    used: &HashSet<String>,
+) -> Option<&'a CharacterInScene> {
+    let real: Vec<&'a CharacterInScene> = visible
+        .iter()
+        .copied()
+        .filter(|c| !is_body_part_character(c))
+        .collect();
+    let pool: Vec<&'a CharacterInScene> = if real.is_empty() {
+        visible.to_vec()
+    } else {
+        real
+    };
+    let unused: Vec<&'a CharacterInScene> = pool
+        .iter()
+        .copied()
+        .filter(|c| !used.contains(&c.identifier_in_scene))
+        .collect();
+    let used_pool: Vec<&'a CharacterInScene> = pool
+        .iter()
+        .copied()
+        .filter(|c| used.contains(&c.identifier_in_scene))
+        .collect();
+    if pool.len() == 1 {
+        return Some(pool[0]);
+    }
+    if unused.len() == 1 {
+        return Some(unused[0]);
+    }
+    if unused.is_empty() {
+        return used_pool.into_iter().min_by_key(|c| c.idx);
+    }
+    unused.into_iter().min_by_key(|c| c.idx)
 }
 
 /// Casting shorthand / demographic label rather than a script `identifier_in_scene`.
@@ -1116,6 +1299,16 @@ fn write_cameo_portrait(
     photo: &CameoPhotoEntry,
     prior: Option<&HashMap<String, String>>,
 ) -> VimaxResult<PathBuf> {
+    write_identity_plate(film_root, character, photo, "cameo", prior)
+}
+
+fn write_identity_plate(
+    film_root: &Path,
+    character: &CharacterInScene,
+    photo: &CameoPhotoEntry,
+    view: &str,
+    prior: Option<&HashMap<String, String>>,
+) -> VimaxResult<PathBuf> {
     let src = session_photo_abs(film_root, photo)?;
     if !is_usable_image_file(&src) {
         return Err(VimaxError::InvalidParams(format!(
@@ -1129,18 +1322,30 @@ fn write_cameo_portrait(
         safe_component(&character.identifier_in_scene)
     ));
     std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(format!(
-        "{}_cameo.png",
-        safe_component(&character.identifier_in_scene)
-    ));
+    let id_safe = safe_component(&character.identifier_in_scene);
+    let dest = if view == "sheet" {
+        dir.join(format!("{id_safe}_three_view.png"))
+    } else {
+        dir.join(format!("{id_safe}_cameo.png"))
+    };
     let src_fp = file_fingerprint(&src).unwrap_or_default();
-    if prior.is_some_and(|p| cameo_privacy_reusable(&dest, &src_fp, p)) {
+    if view == "cameo" && prior.is_some_and(|p| cameo_privacy_reusable(&dest, &src_fp, p)) {
+        return Ok(dest);
+    }
+    if view == "sheet"
+        && prior.is_some_and(|p| {
+            p.get(REG_SOURCE_FP).map(String::as_str) == Some(src_fp.as_str())
+                && is_usable_image_file(&dest)
+        })
+    {
         return Ok(dest);
     }
     // Cameo uploads are already normalized PNG — copy instead of decode/re-encode
     // (phone photos are often 20–50MP; re-encoding OOM / Windows rename flakes).
     copy_image_file_atomic(&src, &dest)?;
-    scrub_cameo_clutter(&dest, false);
+    if view == "cameo" {
+        scrub_cameo_clutter(&dest, false);
+    }
     Ok(dest)
 }
 
@@ -1355,6 +1560,7 @@ fn cameo_registry_description(
     character: &CharacterInScene,
     photo: &CameoPhotoEntry,
     dest: &Path,
+    view: &str,
 ) -> String {
     let file_name = dest
         .file_name()
@@ -1367,8 +1573,13 @@ fn cameo_registry_description(
     } else {
         format!(" User note: {user_desc}.")
     };
+    let kind = if view == "sheet" {
+        "USER three-view character sheet"
+    } else {
+        "USER CAMEO identity plate"
+    };
     format!(
-        "File [{file_name}] = USER CAMEO identity plate for <{}> (privacy-safe face pending/applied). \
+        "File [{file_name}] = {kind} for <{}>. \
 Match body, hair silhouette, wardrobe, and overall look. Face is a generic unrecognizable virtual \
 face — do NOT restore a real-person likeness. Features: {feats}.{extra}",
         character.identifier_in_scene
@@ -1378,7 +1589,7 @@ face — do NOT restore a real-person likeness. Features: {feats}.{extra}",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::has_usable_cameo;
+    use crate::agents::{has_usable_cameo, has_usable_portrait_sheet};
     use image::{ImageFormat, Rgb, RgbImage};
 
     fn jpeg_bytes() -> Vec<u8> {
@@ -1511,11 +1722,45 @@ mod tests {
         assert!(!is_anonymous_cameo_name("Alice"));
         assert!(!is_anonymous_cameo_name("陈树生"));
         assert!(!is_anonymous_cameo_name("Mary Jane Watson"));
+        assert!(is_anonymous_cameo_name("参考图1"));
+        assert!(is_anonymous_cameo_name("图片2"));
+        assert!(is_anonymous_cameo_name("5种小猫"));
+        assert!(is_anonymous_cameo_name("猫猫三视图"));
+        assert!(is_body_part_character(&char(1, "顺毛的手")));
+        assert!(!is_body_part_character(&char(0, "团子")));
         assert!(is_descriptive_role_label("中年男人"));
         assert!(is_descriptive_role_label("年轻女人"));
         assert!(is_anonymous_cameo_name("中年男人"));
         assert!(!is_descriptive_role_label("陈树生"));
         assert!(!is_descriptive_role_label("林秀兰"));
+    }
+
+    #[test]
+    fn identity_plates_bind_to_story_lead_not_body_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("script2video");
+        std::fs::create_dir_all(&film).unwrap();
+        cameo::upload_photo(session, &jpeg_bytes(), "5种小猫", "").unwrap();
+        cameo::upload_photo(session, &jpeg_bytes(), "猫猫三视图", "").unwrap();
+        let characters = vec![
+            char_with_features(0, "团子", "一只圆滚滚的布偶猫，蓝眼睛"),
+            char_with_features(1, "顺毛的手", "一只毛茸茸的布偶猫前爪，手部特写"),
+        ];
+        let mut registry = HashMap::new();
+        let bindings = bind_all(session, &film, &characters, &mut registry).unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert!(bindings.iter().all(|(_, id)| id == "团子"));
+        assert!(has_usable_cameo(&registry, "团子"));
+        assert!(has_usable_portrait_sheet(&registry, "团子"));
+        assert!(!has_usable_cameo(&registry, "顺毛的手"));
+        let sheet = registry.get("团子").and_then(|v| v.get("sheet")).unwrap();
+        assert_eq!(sheet.get("source").map(String::as_str), Some("user"));
+        let hint = cameo_extractor_hint(session);
+        assert!(hint.contains("CAMEO CAST LOCK"));
+        assert!(!hint.contains("You MUST include each as a visible character"));
+        assert!(!hint.contains("5种小猫"));
+        assert!(!hint.contains("keep identifier_in_scene equal"));
     }
 
     #[test]

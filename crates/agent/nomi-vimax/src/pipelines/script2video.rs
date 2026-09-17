@@ -714,6 +714,9 @@ impl Script2VideoPipeline {
             if !character.is_visible {
                 continue;
             }
+            if super::cameo_bind::is_body_part_character(character) {
+                continue;
+            }
             // Skip when user Cameo or a usable three-view sheet already exists.
             if has_usable_portrait(&registry, &character.identifier_in_scene) {
                 continue;
@@ -1530,29 +1533,35 @@ fn portrait_pairs(
         if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
             if let Some(views) = registry.get(&ch.identifier_in_scene) {
                 let feats = ch.static_features.trim();
-                // Prefer user Cameo, then the single three-view sheet.
-                let preferred = views
-                    .get("cameo")
-                    .or_else(|| views.get("sheet"))
-                    .or_else(|| views.get("front"));
-                if let Some(sheet) = preferred {
-                    if let Some(p) = sheet.get("path") {
-                        let path = crate::session::resolve_stored_asset_path(p, film_root);
-                        if media_local::is_usable_image_file(&path) {
-                            let file_name = path
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("portrait.png");
-                            let desc = sheet.get("description").cloned().unwrap_or_else(|| {
-                                format!(
-                                    "File [{file_name}] = GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
-                                    ch.identifier_in_scene
-                                )
-                            });
-                            available.push((path, desc));
-                            continue;
-                        }
+                // Prefer the user three-view sheet, then Cameo, then generated front.
+                // Keep both user plates when present so wardrobe + turnaround both lock identity.
+                let mut pushed = false;
+                for key in ["sheet", "cameo", "front"] {
+                    let Some(item) = views.get(key) else {
+                        continue;
+                    };
+                    let Some(p) = item.get("path") else {
+                        continue;
+                    };
+                    let path = crate::session::resolve_stored_asset_path(p, film_root);
+                    if !media_local::is_usable_image_file(&path) {
+                        continue;
                     }
+                    let file_name = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("portrait.png");
+                    let desc = item.get("description").cloned().unwrap_or_else(|| {
+                        format!(
+                            "File [{file_name}] = GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
+                            ch.identifier_in_scene
+                        )
+                    });
+                    available.push((path, desc));
+                    pushed = true;
+                }
+                if pushed {
+                    continue;
                 }
                 for (view, item) in views {
                     if view == "cameo" || view == "sheet" || view == "front" {
