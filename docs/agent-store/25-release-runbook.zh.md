@@ -13,13 +13,15 @@
 | GitHub Release | `flowy-agent-store-v<版本>-windows-x86_64.zip` + `SHA256SUMS.txt` + `RELEASE_NOTES.md`，**一律标 prerelease** | 站点仓 `scripts/release.mjs` | `bun run release:status` |
 | 站点上线 | 官网 + 双语文档站 + 三个市场源（`push main` 触发 EdgeOne Makers 构建） | 站点仓 | 线上页面与 `/source/**` |
 
+> **发布刚完成时不要信 `npm view`**（实测 2026-09-16）：注册表读取侧有 CDN 缓存——四个包都打印 `✓ published` 之后的一两分钟里，`npm view` 仍可能返回旧值，甚至对新版本返回**假 404**。复核用 canonical packument URL：`https://registry.npmjs.org/@flowy-agent-store%2Fsdk`——**不要**给它加查询串（某些缓存节点会对带查询串的请求直接 404）；某个版本的 tarball 是否真的在，用 `HEAD .../-/<pkg>-<version>.tgz`，并先用一个**不存在的版本**确认这个探针确实会返回 404。
+
 **不属于本流程**：桌面端 Flowy 的发版（`RELEASING.md`）；P0 准入判定（`09`）；市场树刷新（`bun run sync`，站点 `docs/market-maintenance.md`——`16` R6② 已延后，只有本次发布确实改了市场树才做）；`14-binary-size-trimming.zh.md` 的瘦身验证。
 
 ## 2. 不变量（发布前必须同时成立）
 
 | # | 不变量 | 为什么 | 判据 |
 |---|---|---|---|
-| 1 | 协议指纹处处一致（现行 `fp-1`） | 握手与 SDK 对它做**严格相等**校验，漏一处那个夹具/mock/SDK 就直接连不上 | `bun run check:fingerprint` |
+| 1 | 协议指纹处处一致 | 握手与 SDK 对它做**严格相等**校验，漏一处那个夹具/mock/SDK 就直接连不上。**别把当前值抄进文档**：它是计数器，权威只有 `nomifun-app-server::PROTOCOL_VERSION` 与 `protocol.ts` 的 `APP_SERVER_PROTOCOL_VERSION` | `bun run check:fingerprint` |
 | 2 | 版本锁步：四个 `package.json` + sdk 的 2 个依赖 pin + 5 个平台 runtime pin + 站点 `content/release.json` 全部同值 | `publish-packages.ts` 用一个 `VERSION` 发布四个包，站点用 `release.json` 生成下载链接 | `bun run check:release-sync` |
 | 3 | 站点两语言文档引用的方法计数与实际路由表一致（现行 `48 / 71`） | 这是对消费者承诺的覆盖面 | `bun run check:release-sync` |
 | 4 | **同一份 exe 服务两个出口**（npm runtime 包内的二进制 = Release zip 内的二进制） | 同版本号对应两个不同二进制，等于两类用户拿到不同的东西 | `release:pack --expect-sha256` |
@@ -89,6 +91,7 @@ npm view @flowy-agent-store/sdk dist-tags versions --json
 - `TAG` **必须显式给**：预发布只挂 `beta`，绝不能落到 `latest`（脚本注释里已写明这条的理由）。
 - **不带 `VERSION` 直接跑会写回脚本内置的默认版本**——那会同时打坏版本锁步（`check:release-sync` 会红）。所以每次都显式给 `VERSION`。
 - 发布失败或中断：见 §5。
+- **复核时注意读取侧 CDN 滞后**（见 §1 的提示）：刚发完 `npm view` 可能给旧值或假 404，用 canonical packument URL 复核，别据此判断发布失败。
 
 ### S6 GitHub Release（站点仓）
 
@@ -100,6 +103,8 @@ bun run release:status
 ```
 
 `--expect-sha256` 请填 **`web/packages/runtime/vendor/flowy-agent-store.exe` 的哈希**：那才是 npm 里真正发布出去的那份字节。想先人工核对，就加 `--keep-draft` 停在草稿态。
+
+> **慢点在「下载回验」而不是上传**（实测 2026-09-16）：上传 69 MB 资产只用 59 秒，但 `release:publish` 最后要把资产从 GitHub **下载回来**算 sha256——国内网络会在这里长时间挂住。给 `gh` 配 `HTTPS_PROXY=http://127.0.0.1:7890` 再跑；也可以先用 GitHub API 里该资产的 `digest`（服务端算的 sha256）与本地文件比对确认完整性，再决定是否重跑回验。
 
 ### S7 站点上线
 
@@ -129,10 +134,13 @@ git push origin main
 |---|---|---|
 | `content/docs/{zh-CN,en-US}/typescript-sdk.md` §2 常量行 | 协议指纹 bump（任何 wire 增量） | `bun run check:fingerprint` |
 | 同页 §5.3「HTTP 绑定」的 `**48 / 71**` 与路由表外方法名单 | 路由表映射数变化 | `bun run check:release-sync` |
+| 同页 §1 的「版本状态」注（当前版本号 + `latest` / `beta` 指向） | **每次发版** | 人工 |
 | 同页 §5/§7 的方法签名、子客户端、错误码 | 新增/删除 wire 方法或错误码 | 人工 |
 | 同页 §8 MCP 接入指南 | 工具面 / allowlist / 声明文件语义变化 | 人工 |
-| `content/docs/{zh-CN,en-US}/changelog.md` §4 未发布台账 | 任何未发布项的增删；发布后转 §2 | 人工（S8） |
-| `content/docs/{zh-CN,en-US}/upgrade.md` §8「未发布的差异」 | 同上 | 人工（S8） |
+| `content/docs/{zh-CN,en-US}/changelog.md` §2（已发布事实 + JSON 块）与 §4 台账 | 每次发版：§4 清零并把条目转正；JSON 块用注册表输出逐字更新 | 人工（S8） |
+| `content/docs/{zh-CN,en-US}/upgrade.md` §2 发布序列 + §3 dist-tag/JSON | 每次发版 | 人工（S8） |
+| 同页 §6 逐版本升级步骤（**带破坏性变更的发布必须新增一节**） | 任何破坏性发布 | 人工（S8） |
+| 同页 §8「已发布产物的差异与自查方法」 | 未发布项清零时同步改写 | 人工（S8） |
 | `content/docs/{zh-CN,en-US}/examples-sdk.md` | 对外用法（新子客户端、错误处理）变化 | 人工 |
 | `content/docs/{zh-CN,en-US}/compatibility.md` | 已发布平台变化 | 人工（与站点 `app/lib/platform.ts` 的 `RELEASED_PLATFORMS` 同改） |
 | `content/release.json` | 每次发版 | `bun run check:release-sync` |
@@ -184,3 +192,4 @@ git push origin main
 3. **资产名与已发布平台是两处字面量**：站点 `app/lib/platform.ts` 的 `RELEASED_PLATFORMS` / `assetName()` 与站点 `scripts/release.mjs` 的 `PLATFORM = "windows-x86_64"` 必须人工保持一致，换平台时两处同改（`check:release-sync` 只守版本号，不守这个）。
 4. **站点域名与 HTTPS 未定**：EdgeOne 预览域名带签名 `eo_token` 会过期，不能长期作为对外公布的市场源地址（站点 `README.md` §部署「待定」）。
 5. **`web/scripts/verify-published-sdk.ts` 里的 `VERSION = "0.1.0-beta.1"` 是遗留字面量**（只作为客户端的自称名，不影响判据），发版时别被它误导。
+6. **npm 发布需要「带 bypass 2FA」的凭据**：账号开了 2FA 写保护时，`npm login` 得到的 token 会在**第一个包**上失败（`E403 … Two-factor authentication or granular access token with bypass 2fa enabled is required`）——脚本在第一个包就中止，所以**注册表未被改动**（2026-09-16 实测）。改用 **Granular Access Token**（Scope 选 `@flowy-agent-store` 的 Read and write、勾 **Bypass 2FA**），用一个临时 `npm_config_userconfig` 指向的文件注入即可，不必改全局 `~/.npmrc`。
