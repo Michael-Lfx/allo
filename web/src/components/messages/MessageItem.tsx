@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { IconButton } from "../IconButton";
 import { Markdown } from "../Markdown";
 import { ActivityItem } from "./ActivityItem";
+import { PlanItem } from "./PlanItem";
 import { contentToText, isActivityMessageType } from "../../lib/activity";
 import { messageRetryable } from "../../lib/turn-actions";
 import { useAppStore } from "../../store/appStore";
@@ -26,10 +27,16 @@ export const MessageItem = memo(function MessageItem({
   message,
   isLastUserTurn = false,
   isLastAssistantTurn = false,
+  isLivePlan = false,
 }: {
   message: ConversationMessage;
   isLastUserTurn?: boolean;
   isLastAssistantTurn?: boolean;
+  /**
+   * 这一行是不是**面板此刻正在显示**的那份计划（`lib/plan.ts::livePlanRowId`）。
+   * 是则让位——同一份计划不该同时在面板和流里各占一块。
+   */
+  isLivePlan?: boolean;
 }) {
   const { t } = useTranslation();
   const actionBusy = useAppStore((s) => s.turnActionBusy);
@@ -68,6 +75,12 @@ export const MessageItem = memo(function MessageItem({
     const capped = Math.min(element.scrollHeight, Math.round(window.innerHeight * 0.4));
     element.style.height = `${capped}px`;
   }, [editing, editDraft]);
+
+  // 计划行有自己的两种归宿：面板正在显示这一份时它让位（`isLivePlan`），否则它就是流里
+  // 那条历史行。两者都不走 `ActivityItem`——那边的兜底会把 `plan` 整块藏掉。
+  if (message.message_type === "plan") {
+    return isLivePlan ? null : <PlanItem message={message} />;
+  }
 
   if (message.role === "activity" || isActivityMessageType(message.message_type)) {
     return <ActivityItem activity={{ id: message.message_id, kind: message.message_type, createdAt: message.created_at, content: message.content, status: message.status }} />;

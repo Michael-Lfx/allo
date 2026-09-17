@@ -5,8 +5,11 @@ import { describe, expect, it, vi } from "vitest";
  *
  * 回归：这些行原本落在会话流里，没有渲染器时会掉进 `ActivityItem` 的兜底分支，把 wire
  * 上的原始类型名和状态当文案印出来（「Agent 活动：plan」+ 一个红色 `error` 徽章），而
- * 真正的步骤——`entries[].{content,status}`——一条都不显示。现在它挪到输入框上方常驻，
- * 并且**不再**在会话流里占一行。
+ * 真正的步骤——`entries[].{content,status}`——一条都不显示。
+ *
+ * 现在这份计划有**两个**归宿，互斥：输入框上方的面板管「当下」（`planPanelVisible`），
+ * 会话流里那条折叠行管「历史」（`messages/PlanItem`），「谁让位」由 `livePlanRowId`
+ * 判定。`PlanItem` 自己的渲染测试在同目录的 `messages/PlanItem.render.test.tsx`。
  *
  * 取数规则（`latestPlan`）与画面分开测：`PlanPanel` 走 store，而
  * `renderToStaticMarkup` 下 `useSyncExternalStore` 取的是 store 的**初始**快照
@@ -18,7 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {}, removeItem: () => {} });
 vi.stubGlobal("navigator", { language: "zh-CN" });
 
-const [{ renderToStaticMarkup }, { createElement }, { PlanPanelCard }, { latestPlan, planPanelVisible }, { planData }, { default: i18n }] =
+const [{ renderToStaticMarkup }, { createElement }, { PlanPanelCard }, { latestPlan, livePlanRowId, planPanelVisible }, { planData }, { default: i18n }] =
   await Promise.all([
     import("react-dom/server"),
     import("react"),
@@ -100,6 +103,29 @@ describe("planPanelVisible · 什么时候该出现", () => {
 
   it("没有计划就没什么可显示", () => {
     expect(planPanelVisible(null, true, null)).toBe(false);
+  });
+});
+
+describe("livePlanRowId · 面板与流里那条历史行的让位", () => {
+  const current = () => latestPlan([message(ENTRIES, "work")] as never[]);
+  const allDone = () => latestPlan([message(ENTRIES.map((e) => ({ ...e, status: "completed" })), "finish")] as never[]);
+
+  it("面板正在显示这一份时返回它的行 id（流里那一行让位）", () => {
+    expect(livePlanRowId(current(), true)).toBe("plan-1");
+  });
+
+  it("回合结束 / 计划走完就返回 null —— 于是流里的历史行出现", () => {
+    expect(livePlanRowId(current(), false)).toBeNull();
+    expect(livePlanRowId(allDone(), true)).toBeNull();
+  });
+
+  it("没有计划就是 null", () => {
+    expect(livePlanRowId(null, true)).toBeNull();
+  });
+
+  it("用户关掉**面板**不影响它 —— 关的是面板，不是把这条计划从历史里删掉", () => {
+    // 判定里传的是 `dismissedId = null`：关闭只作用于面板，历史行照旧出现。
+    expect(livePlanRowId(current(), true)).toBe("plan-1");
   });
 });
 

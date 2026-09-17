@@ -3,7 +3,7 @@
  * 规则留在可单测的函数里，组件只负责画。
  */
 
-import { planData, type PlanData } from "./activity";
+import { planData, type PlanData, type PlanStepStatus } from "./activity";
 import type { ConversationMessage } from "./protocol";
 
 export type CurrentPlan = { plan: PlanData; message: ConversationMessage };
@@ -45,4 +45,28 @@ export function planPanelVisible(
   if (!current || !isProcessing) return false;
   if (dismissedId === current.message.message_id) return false;
   return current.plan.entries.some((entry) => entry.status !== "completed");
+}
+
+/**
+ * 各状态的步骤数。
+ *
+ * 面板与流里那条历史行**共用同一份口径**：同一份计划在屏幕上出现两次报数不同的样子，
+ * 比不显示更糟。状态在解码时已归一化（未知一律算「待开始」，见 `planData`）。
+ */
+export function planCounts(plan: PlanData): Record<PlanStepStatus, number> {
+  const counts: Record<PlanStepStatus, number> = { completed: 0, in_progress: 0, pending: 0 };
+  for (const entry of plan.entries) counts[entry.status] += 1;
+  return counts;
+}
+
+/**
+ * 面板**此刻正在显示**的那一份计划的行 id；没有就 `null`。
+ *
+ * 会话流用它让路：同一份计划不能同时在面板和流里各占一块。判定里故意传
+ * `dismissedId = null`——用户关掉的是**面板**，不是要求把这条计划从历史里删掉；
+ * 关掉之后流里那一行照常出现（它本来就是那份记录的家）。
+ */
+export function livePlanRowId(current: CurrentPlan | null, isProcessing: boolean): string | null {
+  if (!current) return null;
+  return planPanelVisible(current, isProcessing, null) ? current.message.message_id : null;
 }

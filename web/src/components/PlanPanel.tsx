@@ -1,30 +1,19 @@
 import { useId, useMemo, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Circle, ListChecks, Loader2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ListChecks, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { latestPlan, planPanelVisible } from "../lib/plan";
-import type { PlanData, PlanStepStatus } from "../lib/activity";
+import { latestPlan, planCounts, planPanelVisible } from "../lib/plan";
+import { PlanSteps, PlanSummary } from "./PlanSteps";
+import type { PlanData } from "../lib/activity";
 import { useAppStore } from "../store/appStore";
 
-/** 摘要里的分组顺序：先做完的，再在做的，最后还没开始的。 */
-const SUMMARY_ORDER: readonly PlanStepStatus[] = ["completed", "in_progress", "pending"];
-
-/** Step marker. The status word is announced separately (see the `sr-only` span). */
-function StepGlyph({ status }: { status: PlanStepStatus }) {
-  if (status === "completed") return <Check className="plan-panel-glyph" size={13} strokeWidth={2.4} aria-hidden="true" />;
-  if (status === "in_progress") return <Loader2 className="plan-panel-glyph spin" size={13} strokeWidth={2} aria-hidden="true" />;
-  return <Circle className="plan-panel-glyph" size={12} strokeWidth={1.8} aria-hidden="true" />;
-}
-
 /**
- * 输入框上方的任务面板（`update_plan` 的步骤清单）。
+ * 输入框上方的任务面板（`update_plan` 的步骤清单）—— 它是**当下状态**的指示器：
+ * 「这一轮还剩哪几步」。与它互补的是会话流里那条**历史行**（`messages/PlanItem`）：
+ * 面板收起之后（回合结束 / 计划走完 / 用户关掉），那份计划仍然在流里查得到，而
+ * 「同一份计划同时在两处各占一块」由 `lib/plan.ts` 的 `livePlanRowId` 挡掉。
  *
- * 计划原本作为一条会话行渲染（`messages/PlanItem`），会随历史滚走；而「这一轮还剩
- * 哪几步」是**当下状态**，不是历史内容，所以放到输入框上方，与 `ApprovalCard`
- * 同一个位置、同一套容器宽度。
- *
- * 什么时候出现由 `lib/plan.ts` 的 `planPanelVisible` 决定（回合结束 / 计划走完 /
- * 用户关掉都不再出现）。`key` 用计划行的 `message_id`：新计划回到默认展开态，
- * 也不继承上一条的关闭与折叠。
+ * 什么时候出现由 `planPanelVisible` 决定。`key` 用计划行的 `message_id`：新计划回到
+ * 默认展开态，也不继承上一条的关闭与折叠。
  */
 export function PlanPanel() {
   const messages = useAppStore((s) => s.stream.messages);
@@ -44,12 +33,7 @@ export function PlanPanel() {
 export function PlanPanelCard({ plan, onClose }: { plan: PlanData; onClose?: () => void }) {
   const { t } = useTranslation();
   const stepsId = useId();
-  const counts: Record<PlanStepStatus, number> = { completed: 0, in_progress: 0, pending: 0 };
-  for (const entry of plan.entries) counts[entry.status] += 1;
-  // 只列非零分组：全做完时「0 进行中 · 0 待开始」是噪音。
-  const summary = SUMMARY_ORDER.filter((key) => counts[key] > 0)
-    .map((key) => `${counts[key]} ${t(`activity.planStep.${key}`)}`)
-    .join(" · ");
+  const counts = planCounts(plan);
 
   // 「计划还没走完」直接由**步骤本身**判定，不看行状态：流式中的活动行没有 `status`
   // （只有 `persist_plan` 落库时才写），照行状态判会让进行中的计划默认收起。步骤是
@@ -70,7 +54,7 @@ export function PlanPanelCard({ plan, onClose }: { plan: PlanData; onClose?: () 
       >
         <ListChecks className="plan-panel-icon" size={15} strokeWidth={1.7} aria-hidden="true" />
         <span className="plan-panel-title">{t("activity.plan")}</span>
-        <span className="plan-panel-summary">{summary}</span>
+        <PlanSummary plan={plan} className="plan-panel-summary" />
         {expanded
           ? <ChevronDown className="plan-panel-caret" size={15} strokeWidth={1.7} aria-hidden="true" />
           : <ChevronRight className="plan-panel-caret" size={15} strokeWidth={1.7} aria-hidden="true" />}
@@ -85,15 +69,6 @@ export function PlanPanelCard({ plan, onClose }: { plan: PlanData; onClose?: () 
         <X size={14} strokeWidth={1.8} aria-hidden="true" />
       </button>}
     </div>
-    {expanded && <ol className="plan-panel-steps" id={stepsId}>
-      {plan.entries.map((entry, index) => (
-        <li className={`plan-panel-step is-${entry.status.replace(/_/g, "-")}`} key={`${index}:${entry.content}`}>
-          <StepGlyph status={entry.status} />
-          {/* 图形是 aria-hidden 的，状态词必须另给读屏，否则「哪几步完成」只有视力用户拿得到。 */}
-          <span className="sr-only">{t(`activity.planStep.${entry.status}`)}</span>
-          <span className="plan-panel-step-text">{entry.content}</span>
-        </li>
-      ))}
-    </ol>}
+    {expanded && <PlanSteps plan={plan} id={stepsId} />}
   </section>;
 }

@@ -25,9 +25,10 @@ const PLAN_TOOL_NAME = "update_plan";
 export function ActivityItem({ activity }: { activity: Activity }) {
   const { t } = useTranslation();
   if (isNoiseActivityKind(activity.kind)) return null;
-  // 计划不占会话流里的一行：它由输入框上方的 `PlanPanel` 常驻显示（同一份 `entries`
-  // 换个位置，不再随历史滚走）。**一律**不渲染——兜底成「Agent 活动：plan」对用户
-  // 没有任何信息量，正是这次要消掉的那一行。
+  // 计划行**不经过这里**：它有两个归宿，都由 `MessageItem` 直达——输入框上方的
+  // `PlanPanel`（当下）与会话流里的 `PlanItem`（历史）。这条判断留作调度器自己的不变量：
+  // 一旦有谁把 `plan` 递进来，兜底成「Agent 活动：plan」+ 状态徽章对用户毫无信息量，
+  // 正是当初要消掉的那一行。
   if (activity.kind === "plan") return null;
   const thinking = thinkingData(activity.content);
   if (activity.kind === "thinking") return <ThinkingItem activity={activity} thinking={thinking} />;

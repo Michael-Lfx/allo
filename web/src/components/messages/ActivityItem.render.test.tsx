@@ -22,7 +22,7 @@ function render(activity: unknown) {
 }
 
 describe("ActivityItem · 计划行", () => {
-  it("计划行不渲染——它由输入框上方的 PlanPanel 代表，不是「Agent 活动：plan」", () => {
+  it("计划行不渲染——它由 PlanPanel（当下）与 PlanItem（历史）代表，不是「Agent 活动：plan」", () => {
     const html = render({
       id: "plan-1",
       kind: "plan",

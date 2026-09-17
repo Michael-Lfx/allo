@@ -6,6 +6,7 @@ import { EmptyChatPanel } from "./messages/EmptyStates";
 import { MessageItem } from "./messages/MessageItem";
 import { useAppStore } from "../store/appStore";
 import { isConnectionFailureKey } from "../lib/connect-error";
+import { latestPlan, livePlanRowId } from "../lib/plan";
 import type { ProviderWithModel } from "../lib/protocol";
 
 /** Stay pinned to the bottom until the user scrolls more than this far from it. */
@@ -128,6 +129,10 @@ export function MessageList() {
     return -1;
   })();
 
+  // 面板正在显示的那一份计划的行 id：会话流里那一行据此让位，避免同一份计划出现两次。
+  // 与上面两个 `last*Index` 一样是纯派生，随渲染算（消息数组本来就每帧都要扫）。
+  const livePlanId = livePlanRowId(latestPlan(messages), isProcessing);
+
   return <div className={`chat-content ${selectedConversationId === null ? "is-empty" : ""}`}>
     <div ref={scrollerRef} className="message-scroller" role="log" aria-live="polite" aria-label={t("messageList.ariaLabel")} tabIndex={0}>
       {!hasTranscript && !isProcessing ? (
@@ -156,6 +161,7 @@ export function MessageList() {
                     message={messages[virtualItem.index]}
                     isLastUserTurn={virtualItem.index === lastUserIndex}
                     isLastAssistantTurn={virtualItem.index === lastAssistantIndex}
+                    isLivePlan={messages[virtualItem.index].message_id === livePlanId}
                   />
                 : <div className="sr-only">{t(wrapUp ? "common.wrappingUp" : "common.processing")}</div>}
             </div>
