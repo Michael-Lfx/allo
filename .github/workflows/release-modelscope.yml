@@ -511,12 +511,24 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  # ── Linux ─────────────────────────────────────────────────────────────────
+  # ── Linux: build x64 and arm64 in parallel (native; no cross-compile) ─────
   build-linux:
-    name: Build Linux
+    name: Build Linux (${{ matrix.arch }})
     needs: [release-context, build-ui]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            rust_targets: x86_64-unknown-linux-gnu
+            artifact_name: linux-x64-dist
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            rust_targets: aarch64-unknown-linux-gnu
+            artifact_name: linux-arm64-dist
     steps:
       - uses: actions/checkout@v5
         with:
@@ -527,13 +539,15 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
 
       - name: Use crates.io from GitHub
         run: bun scripts/ci-use-crates-io.mjs
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-x64-updater
+          shared-key: linux-${{ matrix.arch }}-updater
           workspaces: ". -> build.noindex"
           cache-on-failure: true
 
@@ -561,7 +575,7 @@ jobs:
           name: ui-dist
           path: ui/dist
 
-      - name: Build Linux updater
+      - name: Build Linux updater (${{ matrix.arch }})
         env:
           NODE_OPTIONS: --max-old-space-size=8192
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -571,12 +585,15 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           }
-          bun run build:linux --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.linux.conf.json --config apps/desktop/tauri.ci-skip-ui.conf.json
+          bun run build:linux ${{ matrix.arch }} \
+            --config apps/desktop/tauri.updater.conf.json \
+            --config apps/desktop/tauri.channel.linux.conf.json \
+            --config apps/desktop/tauri.ci-skip-ui.conf.json
           bun run make:latest --host modelscope --channel linux --collect
 
       - uses: actions/upload-artifact@v7
         with:
-          name: linux-dist
+          name: ${{ matrix.artifact_name }}
           path: dist/desktop/
           retention-days: 3
           if-no-files-found: error
@@ -607,8 +624,21 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
-          name: linux-dist
-          path: dist/desktop
+          name: linux-x64-dist
+          path: staging/linux-x64
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: linux-arm64-dist
+          path: staging/linux-arm64
+
+      - name: Merge Linux dist and refresh manifest
+        run: |
+          mkdir -p dist/desktop
+          cp -a staging/linux-x64/. dist/desktop/
+          cp -a staging/linux-arm64/. dist/desktop/
+          bun run make:latest --host modelscope --channel linux --from-dir dist/desktop --collect
+          ls -lah dist/desktop
 
       - name: Upload Linux artifacts (phase 1)
         env:
@@ -644,7 +674,8 @@ jobs:
             --channel linux \
             --version "$EXPECTED_VERSION" \
             --platform linux-x86_64 \
-            --check-artifacts \
+            --platform linux-aarch64 \
+            --check-sizes \
             --metadata dist/desktop/release-metadata.json
 
       - uses: actions/upload-artifact@v7
