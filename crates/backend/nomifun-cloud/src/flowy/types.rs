@@ -367,6 +367,9 @@ pub struct DeviceActivateRequest {
     /// Stable anonymous install id (`client_id` on disk).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub install_id: String,
+    /// Why this activation was sent: `first_install` | `upgrade` | `ip_change`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub activate_reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xpu_brand: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]

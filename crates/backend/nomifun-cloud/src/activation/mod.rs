@@ -161,6 +161,7 @@ impl DeviceActivation {
         );
         request.sn = state.sn.clone();
         request.install_id = load_or_create_client_id(&self.data_dir);
+        request.activate_reason = activate_reason(&state, user_id, app_version).to_string();
 
         match api.device_activate(session, &request).await {
             Ok(()) => {
@@ -239,6 +240,19 @@ fn already_activated(state: &DeviceStateFile, user_id: i64, app_version: &str) -
         .is_some_and(|versions| versions.contains(app_version))
 }
 
+/// Classify why activation is being reported for this user.
+fn activate_reason(state: &DeviceStateFile, user_id: i64, app_version: &str) -> &'static str {
+    let versions = state.activations_by_user.get(&user_id.to_string());
+    let had_any = versions.is_some_and(|set| !set.is_empty());
+    if !had_any {
+        return "first_install";
+    }
+    if !already_activated(state, user_id, app_version) {
+        return "upgrade";
+    }
+    "ip_change"
+}
+
 fn should_skip_activation(
     state: &DeviceStateFile,
     user_id: i64,
@@ -312,6 +326,15 @@ mod tests {
         assert!(already_activated(&state, 42, "0.16.0"));
         assert!(!already_activated(&state, 43, "0.16.0"));
         assert!(!already_activated(&state, 42, "0.17.0"));
+    }
+
+    #[test]
+    fn activate_reason_classifies_first_upgrade_and_ip_change() {
+        let mut state = DeviceStateFile::default();
+        assert_eq!(activate_reason(&state, 42, "0.16.0"), "first_install");
+        record_activation(&mut state, 42, "0.16.0", "203.0.113.1");
+        assert_eq!(activate_reason(&state, 42, "0.17.0"), "upgrade");
+        assert_eq!(activate_reason(&state, 42, "0.16.0"), "ip_change");
     }
 
     #[test]
