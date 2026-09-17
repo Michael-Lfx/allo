@@ -370,6 +370,12 @@ pub struct DeviceActivateRequest {
     /// Why this activation was sent: `first_install` | `upgrade` | `ip_change`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub activate_reason: String,
+    /// CPU architecture (`x64` / `arm64`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub arch: String,
+    /// Host composition: `desktop` | `web`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_runtime: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xpu_brand: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]

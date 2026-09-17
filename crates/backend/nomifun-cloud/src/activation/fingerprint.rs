@@ -124,6 +124,8 @@ pub fn build_activate_request(
         os_version: platform::os_version_string(),
         install_id: String::new(),
         activate_reason: String::new(),
+        arch: platform::cpu_arch().to_string(),
+        host_runtime: String::new(),
         xpu_brand: fingerprint.xpu_brand.clone(),
         public_ip: String::new(),
         country: String::new(),

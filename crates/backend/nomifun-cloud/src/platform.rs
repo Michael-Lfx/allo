@@ -12,6 +12,15 @@ pub fn client_platform() -> String {
     }
 }
 
+/// CPU arch label aligned with `SystemInfoResponse.arch` (`x64` / `arm64`).
+pub fn cpu_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
 pub fn os_version_string() -> String {
     if cfg!(target_os = "windows") {
         format!("Windows_NT {}", windows_release_hint())

@@ -107,6 +107,7 @@ impl DeviceActivation {
         api: &FlowyApiClient,
         session: &ServerSession,
         user_id: i64,
+        host_runtime: &str,
     ) -> Result<bool, ServerClientError> {
         let app_version = env!("CARGO_PKG_VERSION");
         let mut state = self.load_state().await?;
@@ -162,6 +163,10 @@ impl DeviceActivation {
         request.sn = state.sn.clone();
         request.install_id = load_or_create_client_id(&self.data_dir);
         request.activate_reason = activate_reason(&state, user_id, app_version).to_string();
+        request.host_runtime = host_runtime.trim().to_ascii_lowercase();
+        if request.host_runtime != "desktop" && request.host_runtime != "web" {
+            request.host_runtime.clear();
+        }
 
         match api.device_activate(session, &request).await {
             Ok(()) => {

@@ -3164,8 +3164,11 @@ impl AppServices {
         let briefing_service = Arc::new(briefing_api);
         let video_canvas_service = nomifun_canvas::CanvasService::new(data_dir.clone());
         let cloud_service = Arc::new(
-            nomifun_cloud::CloudService::new(data_dir.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
+            nomifun_cloud::CloudService::new_with_host(
+                data_dir.clone(),
+                capabilities.runtime_capabilities.runtime,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
         );
 
         // Persist the last-known catalog for the model selector; refresh the

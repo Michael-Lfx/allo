@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nomi_config::ServerConfig;
+use nomifun_api_types::RuntimeKind;
 use tracing::debug;
 
 use super::email_otp::EmailOtpAuthProvider;
@@ -25,12 +26,21 @@ pub struct AuthManager {
     data_dir: PathBuf,
     profile_store: ProfileStore,
     providers: Vec<Arc<dyn AuthProvider>>,
+    host_runtime: RuntimeKind,
 }
 
 impl AuthManager {
     pub fn new(
         config: ServerConfig,
         data_dir: impl AsRef<std::path::Path>,
+    ) -> Result<Self, ServerClientError> {
+        Self::new_with_host(config, data_dir, RuntimeKind::Web)
+    }
+
+    pub fn new_with_host(
+        config: ServerConfig,
+        data_dir: impl AsRef<std::path::Path>,
+        host_runtime: RuntimeKind,
     ) -> Result<Self, ServerClientError> {
         if !config.api_ready() {
             return Err(ServerClientError::MissingBaseUrl);
@@ -50,6 +60,7 @@ impl AuthManager {
             data_dir,
             profile_store,
             providers,
+            host_runtime,
         })
     }
 
@@ -63,6 +74,10 @@ impl AuthManager {
 
     pub fn config(&self) -> &ServerConfig {
         &self.config
+    }
+
+    pub fn host_runtime(&self) -> RuntimeKind {
+        self.host_runtime
     }
 
     pub fn resolve_method(&self, override_method: Option<LoginMethod>) -> LoginMethod {
@@ -121,6 +136,7 @@ impl AuthManager {
             self.data_dir.clone(),
             self.session.clone(),
             profile.id,
+            self.host_runtime,
         );
         Ok(())
     }
@@ -160,7 +176,12 @@ impl AuthManager {
         }
         let profile = self.fetch_profile().await?;
         DeviceActivation::new(&self.data_dir)
-            .try_activate_for_user(&self.api, &self.session, profile.id)
+            .try_activate_for_user(
+                &self.api,
+                &self.session,
+                profile.id,
+                host_runtime_label(self.host_runtime),
+            )
             .await
     }
 
@@ -234,6 +255,13 @@ impl WhoamiStatus {
             .as_ref()
             .map(|t| t.is_expired(0))
             .unwrap_or(false)
+    }
+}
+
+fn host_runtime_label(runtime: RuntimeKind) -> &'static str {
+    match runtime {
+        RuntimeKind::Desktop => "desktop",
+        RuntimeKind::Web => "web",
     }
 }
 
