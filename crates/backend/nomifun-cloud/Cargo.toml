@@ -39,6 +39,9 @@ rqrr = "0.9"
 default = []
 http3-experimental = ["reqwest/http3"]
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [dev-dependencies]
 clap = { workspace = true }
 tempfile.workspace = true

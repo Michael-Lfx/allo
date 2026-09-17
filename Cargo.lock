@@ -7239,6 +7239,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "winreg 0.55.0",
  "wiremock",
 ]
 
