@@ -130,6 +130,17 @@ impl Novel2VideoPipeline {
                     event.index
                 ))
                 .is_file();
+            let base = 60.0 + 35.0 * (event_i as f32 / event_count as f32);
+            emit_pct(
+                &progress,
+                "event_rag",
+                &format!(
+                    "检索事件相关片段（事件 {}/{}）",
+                    event.index,
+                    event_count
+                ),
+                base,
+            );
             let relevant = rag::retrieve_relevant_chunks(
                 &self.backends.chat,
                 self.backends.flowy.as_ref(),
@@ -148,17 +159,6 @@ impl Novel2VideoPipeline {
             if chars_ready && sidecar_matches(&scenes_path, &scenes_fp).await {
                 continue;
             }
-            let base = 60.0 + 35.0 * (event_i as f32 / event_count as f32);
-            emit_pct(
-                &progress,
-                "event_rag",
-                &format!(
-                    "检索事件相关片段（事件 {}/{}）",
-                    event.index,
-                    event_count
-                ),
-                base,
-            );
             let rel_dir = self
                 .working_dir
                 .join("relevant_chunks")
