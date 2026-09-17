@@ -142,6 +142,7 @@ impl AuthManager {
             profile.id,
             self.host_runtime,
             Some(method.as_str().to_string()),
+            Some(chrono::Utc::now().timestamp_millis()),
         );
         Ok(())
     }
@@ -186,6 +187,7 @@ impl AuthManager {
                 &self.session,
                 profile.id,
                 host_runtime_label(self.host_runtime),
+                None,
                 None,
             )
             .await

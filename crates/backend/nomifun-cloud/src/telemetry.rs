@@ -63,6 +63,7 @@ pub fn spawn_post_login_telemetry(
     user_id: i64,
     host_runtime: nomifun_api_types::RuntimeKind,
     signup_method: Option<String>,
+    login_at_ms: Option<i64>,
 ) {
     tokio::spawn(async move {
         let api = match FlowyApiClient::new(&config) {
@@ -83,6 +84,7 @@ pub fn spawn_post_login_telemetry(
                 user_id,
                 host,
                 signup_method.as_deref(),
+                login_at_ms,
             )
             .await
         {

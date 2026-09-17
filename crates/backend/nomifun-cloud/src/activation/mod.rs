@@ -47,6 +47,12 @@ struct DeviceStateFile {
     /// Last successful login method (`wechat_qr` / `email_otp`).
     #[serde(default)]
     last_signup_method: String,
+    /// First time this install created/loaded device state (epoch ms).
+    #[serde(default)]
+    first_launch_at_ms: i64,
+    /// Last successful login timestamp (epoch ms).
+    #[serde(default)]
+    last_login_at_ms: i64,
     /// user_id → app versions already reported successfully for that user.
     #[serde(default)]
     activations_by_user: HashMap<String, HashSet<String>>,
@@ -112,9 +118,17 @@ impl DeviceActivation {
         user_id: i64,
         host_runtime: &str,
         signup_method: Option<&str>,
+        login_at_ms: Option<i64>,
     ) -> Result<bool, ServerClientError> {
         let app_version = env!("CARGO_PKG_VERSION");
         let mut state = self.load_state().await?;
+        let now_ms = Utc::now().timestamp_millis();
+        if state.first_launch_at_ms <= 0 {
+            state.first_launch_at_ms = now_ms;
+        }
+        if let Some(login_at) = login_at_ms.filter(|ts| *ts > 0) {
+            state.last_login_at_ms = login_at;
+        }
 
         let persisted = PersistedFingerprint {
             mac: state.mac.clone(),
@@ -179,6 +193,21 @@ impl DeviceActivation {
         request.utm_medium = std::env::var("NOMIFUN_UTM_MEDIUM").unwrap_or_default();
         request.utm_campaign = std::env::var("NOMIFUN_UTM_CAMPAIGN").unwrap_or_default();
         request.signup_method = state.last_signup_method.clone();
+        request.first_launch_at_ms = Some(state.first_launch_at_ms).filter(|ts| *ts > 0);
+        if state.last_login_at_ms > 0 {
+            request.login_to_activate_ms =
+                Some(now_ms.saturating_sub(state.last_login_at_ms).max(0));
+        }
+        if let Ok(balance) = api.get_credits_balance(session).await {
+            request.credits_balance = Some(balance.balance);
+        }
+        if let Ok(profile) = api.get_user_me(session).await {
+            request.plan_code = profile
+                .current_plan
+                .as_ref()
+                .and_then(|plan| plan.code.clone())
+                .unwrap_or_default();
+        }
 
         match api.device_activate(session, &request).await {
             Ok(()) => {
@@ -352,6 +381,15 @@ mod tests {
         record_activation(&mut state, 42, "0.16.0", "203.0.113.1");
         assert_eq!(activate_reason(&state, 42, "0.17.0"), "upgrade");
         assert_eq!(activate_reason(&state, 42, "0.16.0"), "ip_change");
+    }
+
+    #[test]
+    fn login_to_activate_uses_persisted_login_timestamp() {
+        let mut state = DeviceStateFile::default();
+        state.first_launch_at_ms = 1_000;
+        state.last_login_at_ms = 2_000;
+        assert_eq!(state.first_launch_at_ms, 1_000);
+        assert_eq!(2_500i64.saturating_sub(state.last_login_at_ms), 500);
     }
 
     #[test]

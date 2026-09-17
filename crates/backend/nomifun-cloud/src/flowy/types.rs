@@ -394,6 +394,18 @@ pub struct DeviceActivateRequest {
     /// Largest free disk space in GiB.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk_free_gb: Option<u64>,
+    /// Credits balance snapshot at activate time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits_balance: Option<i64>,
+    /// Current plan code from `/user/me` when available.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub plan_code: String,
+    /// First time this install wrote device state (epoch ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_launch_at_ms: Option<i64>,
+    /// Milliseconds from last login success to this activate upload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_to_activate_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xpu_brand: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
