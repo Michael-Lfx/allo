@@ -17,7 +17,7 @@ pub use geoip::{GeoIpInfo, resolve_geo_ip};
 
 use crate::error::{CloudError, ServerClientError};
 use crate::flowy::FlowyApiClient;
-use crate::paths::device_state_path;
+use crate::paths::{device_state_path, load_or_create_client_id};
 use crate::session::ServerSession;
 
 /// Reuse geo lookups for this long to avoid hammering external APIs on repeated logins.
@@ -69,13 +69,16 @@ pub struct DeviceActivationStatus {
 }
 
 pub struct DeviceActivation {
+    data_dir: std::path::PathBuf,
     state_path: std::path::PathBuf,
 }
 
 impl DeviceActivation {
     pub fn new(data_dir: impl AsRef<Path>) -> Self {
+        let data_dir = data_dir.as_ref().to_path_buf();
         Self {
-            state_path: device_state_path(data_dir.as_ref()),
+            state_path: device_state_path(&data_dir),
+            data_dir,
         }
     }
 
@@ -157,6 +160,7 @@ impl DeviceActivation {
             geo.as_ref(),
         );
         request.sn = state.sn.clone();
+        request.install_id = load_or_create_client_id(&self.data_dir);
 
         match api.device_activate(session, &request).await {
             Ok(()) => {

@@ -122,6 +122,7 @@ pub fn build_activate_request(
         cpu_chip_id: fingerprint.cpu_chip_id.clone(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         os_version: platform::os_version_string(),
+        install_id: String::new(),
         xpu_brand: fingerprint.xpu_brand.clone(),
         public_ip: String::new(),
         country: String::new(),
