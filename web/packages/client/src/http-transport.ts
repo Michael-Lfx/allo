@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "fp-1";
+const PROTOCOL_VERSION = "fp-6";
 
 type Verb = "GET" | "POST" | "DELETE";
 
@@ -111,7 +111,7 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
   "conversation/send": {
     verb: "POST",
     path: "/conversations/:conversation_id/messages",
-    body: ["content", "idempotency_key", "attachments"],
+    body: ["content", "idempotency_key", "attachments", "mentions", "model", "reasoning_effort"],
     source: "conversation_send() -> send_conversation_message_for_user (shared with the WS arm)",
   },
   "conversation/cancel": {

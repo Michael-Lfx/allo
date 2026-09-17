@@ -1,7 +1,7 @@
 # 会话绑定：每轮技能 + 会话级专家 / 专家团 · 实现方案
 
-> 状态：**📋 已立项（2026-09-23 起草，未动工）**——本文只登记范围、非目标、验收口径与实施顺序；
-> 动工后的逐层读数与偏差回写 §9.1。日期按本仓台账延续（最近一轮是 `26` 的 2026-09-22）。
+> 状态：**🔧 阶段 1 / 2a / 2b 均已落地（2026-09-23），仅剩真机实测**——逐层改动、
+> 验证读数与偏差见 §9.1。日期按本仓台账延续（最近一轮是 `26` 的 2026-09-22）。
 > 前置：`05-flowy-agent-store-app-server-protocol.md` §4.7/§4.8、`07-typescript-sdk.md`、
 > `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3/4、`20-tool-injection-policy.zh.md`、
 > `24-external-agent-skill-and-mcp-access.zh.md`、`26-connector-schema-and-grant-policy.zh.md`、
@@ -66,7 +66,7 @@
 | 会话快照 create 后不可变（含 `mcp_*` / `skills` / `preset_*`） | `service.rs:6089-6111`、`routes.rs:107-171`（open JSON 剥离） |
 | WebUI 已能选技能 / 连接器 mention，但普通聊天路径把它们**丢掉**（只处理 `agent`） | `web/src/components/Composer.tsx:143-148`、`web/src/store/appStore.ts:1385-1400`、`submitTurn` 调用处 `:1430` |
 | 连接器镜像自带技能：241 个条目里 **215 个**带 `SKILL.md`，结构是 `mcp.json` + `skills/<slug>/SKILL.md`（有的一条目带 2 个技能） | 本机实测 `~/.workbuddy/connectors-marketplace/connectors`（2026-09-23 扫描）；安装期两条腿分开落地见 `nomifun-app/src/app_server_installer.rs:408-458` |
-| 协议指纹现行 `fp-2` | `web/packages/protocol/src/protocol.ts:38`、`lib.rs:134`、`http-transport.ts:43` |
+| 协议指纹**现行 `fp-3`**（本轮由 `fp-2` bump） | `web/packages/protocol/src/protocol.ts:38`、`lib.rs:134`、`http-transport.ts:43` |
 
 ---
 
@@ -94,7 +94,7 @@
   `SkillId::parse` 失败而被降级并静默不挂载（`05` §4.8 的订正）。
 - 复用 `mentions` 而不是新造 `skills: string[]`：一套词汇、一处解析，且阶段 2 的 `create` 侧能沿用同一
   类型（虽然 `create` 用的是 `agent_id` / `team_id`，见 §5.1）。**备选方案**（更简单但会多一套词汇）
-  记在 §8 待定。
+  记在 §8。
 - 三处 DTO 落点：`WsConversationSend`、`ConversationSendRequest`（都要 `#[serde(default)]`）、
   `http-transport.ts` 的路由表 `body` 清单；另需同步 `web/scripts/mock-server.ts` 与
   `web/scripts/smoke.ts` 的 mock 分支。
@@ -165,7 +165,7 @@
 - 两个都给 → `invalid_request`；都不给 → 现行行为（presetless 普通会话）逐字不变。
 - 命名随 `agent/run` / `team/run` 的既有词汇（`agent_id` / `team_id`），**不用** `mentions`：send 上的
   mention 是「这一轮挂什么目录产物」，create 上的 id 是「这个会话是谁」——两件事用两套名字更清楚
-  （备选：create 也收 `mentions`，见 §8 待定）。
+  （备选：create 也收 `mentions`，见 §8）。
 
 ### 5.2 专家（`agent_id`）
 
@@ -198,7 +198,7 @@ async fn prepare_team_leader_conversation(
   错误码**逐字不变**（`team_run_not_started` 等既有码保持）。
 - `conversation/create` 带 `team_id` 时只调它、**不发首轮 goal**：返回的 Leader 会话处于 pending，
   用户自己的第一条 `conversation/send` 就是 Leader 的首轮（委派由 `delegation_policy=automatic` +
-  已绑模板决定）。这条语义**需要在实现时实测确认**（§8 待定 1）。
+  已绑模板决定）。这条语义**需要在实现时实测确认**（§8 第 3 条）。
 - 成员的 `agent_not_installed` / `agent_disabled` / `connector_unavailable` /
   `team_member_model_unbound` 校验时机不变（每次调用都查，`team_run.rs:509-519` 的既有决定）。
 
@@ -239,28 +239,28 @@ async fn prepare_team_leader_conversation(
 | 技能快照把 prompt 撑爆 | 既有上限与失败语义（单文件上限、超限即整次 send 失败）沿用，不静默截断；正文提示上下文占用 |
 | 客户端以为连接器 / 专家能在 send 上换 | kind 白名单**显式拒绝** + 错误措辞点名；站点文档写「换专家 = 新建会话」 |
 | 阶段 2 抽取破坏 `team/run` | 抽取的唯一验收线是 `team_run` 既有测试**不改而全绿**；行为与错误码逐字不变 |
-| 粘性 team 会话「首轮由谁发」不确定 | §8 待定 1：实现时实测「create 带 team_id → 用户发一条 → 是否正常委派」；不成立就把 create 的 team 变体退回 `team/run` |
+| 粘性 team 会话「首轮由谁发」不确定 | §8 第 3 条：实现时实测「create 带 team_id → 用户发一条 → 是否正常委派」；不成立就把 create 的 team 变体退回 `team/run` |
 | 两阶段合并提交导致一次指纹囊括两次变更 | 允许（指纹只需「与上一次不同」），但站点文档与 `05` 必须一次写全，否则下一轮对账不了 |
 
 ---
 
-## 8. 待定与不做的事
+## 8. 已定与不做的事（三条待定已于 2026-09-23 拍板）
 
-1. **待定：粘性 team 会话的首轮语义**（§5.3）——create 不发 `goal` 时，Leader 会话的 pending 状态与
-   用户首条消息的委派是否成立，必须实测。若不成立，只保留 `agent_id` 的 create 变体，团队继续走
-   `team/run`。
-2. **待定：`send` 用 `mentions` 还是 `skills: string[]`**（§4.1）。`mentions` 的好处是一套词汇、阶段 2
-   可扩展；代价是 `agent` / `connector` 两个 kind 在本阶段「存在但必然 400」。若评审认为这个味道更糟，
-   改用 `skills: string[]`，代价是协议里多一套词汇。
-3. **待定：`create` 用 `agent_id` / `team_id` 还是也收 `mentions`**（§5.1）。前者与 `agent/run` /
-   `team/run` 对齐；后者统一词汇但需要给 `MentionKind` 加 `team`。
-4. **不做：每轮连接器**（本方案的核心取舍）。两道障碍（`extra.mcp_server_ids` 是 create 期冻结的快照，
+| 原待定 | 决定 | 落点 |
+|---|---|---|
+| `send` 用 `mentions` 还是 `skills: string[]` | **复用 `mentions: MentionRef[]`**，阶段 1 只认 `skill`；另外两类显式 `invalid_request` | §4.1 / §12.2（`05`） |
+| `create` 用 `agent_id` / `team_id` 还是也收 `mentions` | **`agent_id` + `team_id`，互斥**；不给 `MentionKind` 加 `team` | §5.1 |
+| 粘性 team 会话的首轮语义 | **先不做 `team_id`**：阶段 2a 只上 `agent_id`，team 粘性等实测「create 不发 goal 首轮」成立后再上 | §5.3 / §9 |
+
+1. **不做：每轮连接器**（本方案的核心取舍）。两道障碍（`extra.mcp_server_ids` 是 create 期冻结的快照，
    且 `service.rs:6089-6111` 明令不可变；MCP manager 在运行时实例构建期建立并被实例持有）。将来两条路：
    - **(a) 每轮重建运行时实例**：改动小但代价高（冷启动 + in-flight / 流式 turn 的处理）。
    - **(b) 给运行时加「本轮启用 / 停用一组 MCP server」的工具面 API**：正确但跨层——`SendMessageData`
      要加字段，且按 `AGENTS.md` 的边界必须经 `nomifun-ai-agent` 桥接，不能给 backend 直接加 `nomi-*` 依赖。
    两条都要单独立项 + 真机验证「轮 A 挂、轮 B 不挂」不被实例复用带过去。
-5. **不做：每轮专家**（会话身份 create 期冻结，见 §2）。
+2. **不做：每轮专家**（会话身份 create 期冻结，见 §2）。
+3. **仍待实测：粘性 team 会话的首轮语义**（§5.3）——create 不发 `goal` 时，Leader 会话的 pending 状态与
+   用户首条消息的委派是否成立。若不成立，只保留 `agent_id` 的 create 变体，团队继续走 `team/run`。
 
 ---
 
@@ -283,11 +283,83 @@ async fn prepare_team_leader_conversation(
  6. create DTO + agent_id 解析（复用 apply_mentions 语义）+ create_app_server_chat 的 preset 参数
     → 单测：冻结可见 / PATCH 仍被拒 / 互斥校验
  7. create DTO + team_id（只调第 5 步、不发首轮）
-    → 单测：Leader 行形状正确且无首轮；§8 待定 1 的实测
+    → 单测：Leader 行形状正确且无首轮；§8 第 3 条的实测
  8. 指纹 bump + 正文 + 站点（typescript-sdk / examples-sdk / changelog）
     → 全链路绿
 ```
 
-### 9.1 落地记录
+### 9.1 落地记录（2026-09-23：阶段 1 + 阶段 2a + 阶段 2b 均已落地；仅剩真机实测）
 
-（未动工。实施后逐层回写：实际改动 / 验证读数 / 与方案的偏差及理由。）
+| 层 | 实际改动 | 验证读数 |
+|---|---|---|
+| 协议（阶段 1） | `ConversationSendRequest` / `WsConversationSend` 各加 `#[serde(default)] mentions: Vec<MentionRef>`；WS 臂透传 | `cargo test -p nomifun-app-server --lib mention` → **7 passed / 0 failed**（含本批 2 例新增） |
+| 准入（阶段 1） | 新增 `send_mention_skills`：只认 `skill`（去重、空 id 拒绝），`agent` / `connector` → `invalid_request`（点名 kind）；`send_conversation_message_for_user` 用它替换 `inject_skills: Vec::new()` | 同上 |
+| 连带 | `team_run.rs` 的 Leader 首轮显式 `mentions: Vec::new()`（它是 Team 的 `goal`，不是每轮技能选择） | 编译期强制，不补会 `E0063` |
+| TS（阶段 1） | `ConversationSendOptions { attachments?, mentions? }`；`send()` 第 4 参改为 `string[] \| ConversationSendOptions`（旧数组形态保持）；路由表 `body` 补 `mentions` | `cd web && bun run typecheck` → **exit 0** |
+| WebUI（阶段 1） | `submitTurn` 收 `mentions` 并透传给 `conversations.send`；聊天发送路径把 skill mention 传下去、**回执后才清空**（失败保留，与 R15 附件同口径） | 同上 |
+| 协议（阶段 2a） | `ConversationCreateRequest` 加 `#[serde(default)] agent_id: Option<String>`；`docs/agent-store/05` §12.2 新增规格 | `cargo test -p nomifun-app-server` → **151 passed / 0 failed** |
+| 解析与冻结（阶段 2a） | 新增 `app_server_chat_bindings_for_agent`（`agent/get` → `preset_id` → 来源白名单 / `preset_disabled` / `runtime_unavailable`；定义自带的技能与连接器作为 **resolve overrides** 进快照）与 `definition_connector_fence`（停用 ⇒ `connector_unavailable`，非法 id ⇒ `internal_error`，重复声明去重） | 新增 4 例：wire / 空绑定 / 点名拒绝 / 连接器栅栏，全绿 |
+| 会话 seam（阶段 2a） | `AppServerChatBindings` 加 `preset_snapshot: Option<ResolvedPresetSnapshot>`；`create_app_server_chat` 在**有快照时走 `create_from_preset_snapshot`**，并把**本宿主 auto-inject 名单并进快照的 `excluded_auto_skills`**——否则 `create` 会用（空的）preset 值覆盖 App Server 的技能栅栏，宿主自动技能就漏进这个会话 | 新增 `app_server_expert_chat_freezes_the_snapshot_and_keeps_the_auto_inject_fence`：断言 `preset_id` / `preset_revision` / `preset_snapshot` 三列冻结，且 `extra.skills == ["bound-skill"]`（`host-auto-skill` 没漏进来） |
+| 编排抽取（阶段 2b） | `team_run.rs`：`resolve_team_members` 改收 `(team_id, team_version)`；新增 `PreparedTeamLeader` + `prepare_team_leader_conversation`（`require_engine` → 成员与连接器校验 → 工作区/模型解析 → 物化或复用模板 → 建 Leader 会话）；`execute_team_run` 只保留「发 `goal` 首轮 + 反查 `lead` execution + 返回 receipt」 | `cargo test -p nomifun-app-server` → **151 passed / 0 failed**（`team/run` 的既有测试未改一字） |
+| 协议（阶段 2b） | `ConversationCreateRequest` 加 `#[serde(default)] team_id: Option<String>`；`create_conversation_for_user` 先做**互斥校验**（`agent_id` + `team_id` ⇒ `invalid_request`，发生在读工作区/目录之前），再分派到 `prepare_team_leader_conversation`（**不发首轮**）；`05` §12.2 扩成「以专家 / 专家团开场」 | 新增 2 例：wire 接受 `team_id`、两者同时给 ⇒ `invalid_request`；`conversation_create` 过滤下 **5 passed** |
+| 指纹 | `fp-2` → **`fp-3`**（阶段 1）→ **`fp-4`**（2a）→ **`fp-5`**（2b），本仓 7 文件 10 处 + 站点 2 处，常量注释逐版写明各自承载什么 | `bun run check:fingerprint` → `✓ "fp-5" consistent across 10 landing point(s) in 7 file(s) here and 2 file(s) in the docs site` |
+| 夹具 | `mock-server.ts` 与真宿主同口径：非 `skill` 的 mention 回 `invalid_request`；`smoke.ts` 增一条「拒绝不能兑现的 mention kind」断言；`appStore.attachments.test.ts` 的假客户端改读选项对象，并新增「技能随轮发出 + 回执后清空 / 失败保留」两例 | `cd web && bun run test` → **67 文件通过（1 skipped）/ 513 例通过（1 skipped）** |
+| 正文 | `05` 头部指纹 + §12.1 请求体（send/create 各加字段）+ §12.2（以专家开场）+ §12.3（每轮技能）+ §12 子节重编号；站点 `typescript-sdk`（中英 §3.3 send/create 签名与说明）、`changelog` §4 台账（fp-3 + fp-4） | 站点 `check:docs-sync` → **0 drift**；`test:docs-sync` → **16 tests / 0 fail** |
+
+**与方案的偏差（3 处，均为实现期发现）**：
+
+1. **站点指纹值在我动手前已是 `fp-3`**（`content/docs/{zh-CN,en-US}/typescript-sdk.md` 的常量表行）——
+   阶段 1 因此一次通过门禁。也就是说站点正文**提前**占用了 `fp-3`；本轮把它的含义补齐为「每轮技能」，
+   阶段 2a 则按规则取新值 **`fp-4`**（不复用历史值）。
+2. **`attachments` 的文档缺口顺带补上**：站点 §3.3 此前只写 `send(id, content, idempotencyKey)`，既没有
+   第 4 个参数、也没提附件（`fp-3` 之前就存在的偏差）。本轮两语言一并补成 `send(id, content, key, options?)`。
+3. **宿主 auto-inject 的排除只能由会话 seam 补**：`PresetOverrides` **没有** `exclude_auto_inject_skills`
+   这一项（`exclude_skills` 只从 `included_skills` 里做减法），而 `create_inner` 会用快照的
+   `excluded_auto_skills` 覆盖 App Server 写的那条栅栏。所以设计落在「App Server 解析快照 + seam 把
+   宿主 auto-inject 名单并进快照」——这是本阶段唯一一处需要动 `nomifun-conversation` 的地方，
+   且只在**有快照**时生效，普通会话路径逐字不变。
+
+**真机实测（2026-09-23，脚本：`web/scripts/sdk-live-team-leader.ts`）**
+
+环境：含本次改动的 debug 二进制（`target/debug/agent-store.exe`），由 SDK `launchClient` 起宿主
+（临时 data-dir；模型来自 `~/.agent-store/config.toml` 的 `mimo/mimo-v2.5`）。
+**官方默认市场里没有专家团**（实测 490 条 = 262 skill + 228 connector，`team = 0`），所以脚本回退到
+仓库夹具 `software-company`，经 `import/run` + `install/run` 安装（**0 warning / 0 error**，
+`team/list` → `wb-software-company-team`）。
+
+| # | 观测 | 读数 |
+|---|---|---|
+| 1 | 团绑定的连接器 | 夹具的 `.mcp.json` 装出来的 MCP 行默认 `enabled = false`，`create({ teamId })` **正确拒绝** `connector_unavailable`（与 `team/run` 同一道栅栏，真机首次验证）；用第一方 `POST /api/mcp/servers/:id/toggle` 启用后通过 |
+| 2 | `create({ teamId })` | **成功**：Leader 会话（`name = "<team> (leader)"`、`status = pending`、模型已解析、workspace 已绑），**没有**发出任何首轮 |
+| 3 | 客户端首轮 | **被受理并真的开始跑**（事件里有 `message.activity` / `message.tool` / `message.delta`） |
+| 4 | 委派工具是否注册 | **注册且在位**：明确点名委派的指令下，Leader 先 `ToolSearch("nomi_delegate")` 找到它，再调用并拿到 `execution_id`（回执文本：`Delegated work was accepted and the host is planning it.`） |
+| 5 | 自然语言下是否**自发**委派 | **不确定，由模型决定**：6 次里 2 次委派成功（拿到 `execution_id`，宿主进入 planning），4 次自己动手做（十几次工具调用，其中一次 3 分钟预算内没到终态）。**同条件下既有入口 `team/run` 也出现过 `team_run_not_started`** ⇒ 这是模型行为，不是 2b 路径的缺陷 |
+| 6 | 同一会话的并发边界（新发现） | 上一轮还没结束时再发消息会被拒：委派被拒是 `Conflict: conversation already has an unfinished Agent Execution`，普通发送被拒是 `Conflict: Conversation already has an authoritative local turn owner`（脚本会先 `cancel` 再发对照轮） |
+| 7 | 环境噪声 | 其中一轮出现一次**可重试**的 `USER_LLM_PROVIDER_NETWORK_ERROR`（模型侧网络），与本次改动无关 |
+
+**结论**：阶段 2b **不需要回退**——能力具备且真机可用。但**不能**把「打开 Leader 会话后由客户端发首轮」
+理解成"必然会委派"：委派与否取决于模型（`team/run` 同样如此）。需要委派时，指令里应明确点名
+`nomi_delegate`；脚本与 `05` §12.2 都已按这个口径写。
+
+**判定口径本身的两处修正（记下来，免得下次再踩）**：脚本起初把「自然语言首轮出现委派证据」和
+「与 `team/run` 结论一致」当判据——两者都**假设了确定性**，实测会把模型行为误判成路径缺陷；
+最终判据改为「会话建得出来 / 首轮被受理并开始跑 / 明确点名时委派工具确实可被触发」，
+自发委派与 `team/run` 对照只作为 `OBSERVATION` 打印。
+
+**顺带查清的三条既有口径（都不是本次改动引入，登记以免下次重查）**——第二个真机脚本
+`web/scripts/sdk-live-mention-agent.ts`（验的是 WebUI 现在的 `@专家` 调用形状）：
+
+- **`@专家` 真机生效**：`runs.agent({ agentId: "", goal, mentions: [{ kind: "agent", id }] })` 返回
+  `run_id`（`status: planning`、`preset_revision: 1`）。它此前有一条**顺序依赖**：`agent/run` 的默认模型
+  回退 `default_run_model` **只读宿主 DB 的 provider 注册表**，而 provider 是**按需注册**的
+  （`resolve_app_server_model` 读 `~/.agent-store/config.toml` 后写库），于是「全新宿主、还没解析过任何
+  模型」时会以 `invalid_request`（`resolved_model is required`）失败——真机复现过。
+  **→ 已修（2026-09-23，同一批）**：`default_run_model` 现在**先**取 config 的 `default_model`
+  （与会话 / 团同源，`ensure_agent_store_provider` 按需注册），取不到才回退到注册表里第一个启用的
+  provider/model；无 config 文件的宿主行为不变（走原来的注册表回退）。这是**运行期解析口径**的修正，
+  不动任何 DTO / 字段，故**不 bump 指纹**。真机验收见 `sdk-live-mention-agent.ts` 的
+  `MA-001.fresh-host-agent-run`（全新宿主上第一次调用即可解析出模型）。
+- **专家 id 的错误码有两种**：id **不存在** ⇒ `not_found`；id 存在但**未 install/*** ⇒ `agent_not_installed`。
+  文档此前只写了后者，已按此订正（`05` §4.8 / §12.2）。
+- **「`@专家团`」在协议层不存在**：`MentionKind` 只有 `agent / skill / connector`，硬塞 `kind: "team"` 被
+  `deny_unknown_fields` 直接拒（真机 `invalid_request`）；UI 的 mention 面板也没有团。

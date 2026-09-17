@@ -20,6 +20,7 @@ pub use catalog::{
     AgentCatalogProvider, ConnectorAuthProvider, ConnectorCallError, ConnectorCallProvider,
     ConnectorCatalogProvider, ImportProvider,
     InstallProvider, MarketplaceProvider, ModelCatalogProvider, MAX_CONNECTOR_CALL_RESULT_BYTES,
+    MAX_CONNECTOR_TOOLS_BYTES,
     MAX_SKILL_FILE_BYTES,
     SkillCatalogProvider, SkillFileBytes, SkillFileError, SkillFileProvider, StoreProvider,
     TeamCatalogProvider,
@@ -85,11 +86,11 @@ use nomifun_api_types::{
     AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary,
     AppServerStoreInstallResult,
     AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
-    AnswerExecutionDecisionRequest, CreateProviderRequest, ListMessagesQuery, MessageResponse,
+    AnswerExecutionDecisionRequest, CreateProviderRequest, ListMessagesQuery, McpServerId, MessageResponse,
     PresetOverrides, PresetSource,
     PresetTarget, SendMessageRequest,
 };
-use nomifun_conversation::{ConversationService, IdempotentMessageDelivery};
+use nomifun_conversation::{AppServerChatBindings, ConversationService, IdempotentMessageDelivery};
 use nomifun_preset::PresetService;
 use nomifun_realtime::{BroadcastEventBus, UserEventEnvelope};
 use nomifun_system::ProviderService;
@@ -124,8 +125,30 @@ use tokio::sync::mpsc;
 /// party can run an installed MCP tool while the connection, its headers and its
 /// credentials stay on the host (doc 24 §5). **`fp-1` changes the shape only**
 /// (date stamp → counter): a `2026-…` value invites being read as a release date,
-/// and no wire behaviour changed with the rename.
-pub const PROTOCOL_VERSION: &str = "fp-1";
+/// and no wire behaviour changed with the rename. **`fp-2` carries the tools'
+/// parameters**: `ConnectorTool.input_schema` plus `tools_truncated` on
+/// `ConnectorDetail` and `AppServerConnectorProbeResult`, so a caller that has to
+/// name a tool in order to be granted it can read what that tool takes — the
+/// counterpart of the `[connector_proxy]` grant moving from one tool at a time to
+/// the connector (doc 26 §5). **`fp-3` makes a Skill selectable per turn**:
+/// `conversation/send` gains an optional `mentions` list whose only honoured kind
+/// is `skill`, so a caller can mount a Skill's instructions for one turn without
+/// rewriting the conversation's create-time snapshot (doc 27 阶段 1).
+/// **`fp-4` lets a conversation be created as an installed expert**:
+/// `conversation/create` gains an optional `agent_id`, whose Definition supplies
+/// the chat's preset identity plus its own Skill and Connector fences — frozen at
+/// creation, because nothing about a conversation's preset snapshot is mutable
+/// afterwards (doc 27 阶段 2a). **`fp-5` opens a Team's Leader the same way**: an
+/// optional `team_id` runs the `team/run` orchestration (members, template,
+/// fences) but stops before the goal turn, so the client speaks first; the two
+/// fields are mutually exclusive (doc 27 阶段 2b). **`fp-6` makes the model and
+/// the reasoning level selectable per call**: `conversation/send` and
+/// `agent/run` each gain an optional `model` and `reasoning_effort`, and
+/// `ConversationView` gains `reasoning_effort` so the value can be read back.
+/// The scope is the conversation (send) / the run (agent/run), not "one turn":
+/// the Nomi runtime is built from the persisted row, so what a caller passes is
+/// a sticky switch that takes effect on that very turn (doc 29 §4).
+pub const PROTOCOL_VERSION: &str = "fp-6";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3067,6 +3090,9 @@ async fn execute_agent_run(
     // - skill mentions mount into `included_skills`;
     // - connector mentions attach MCP servers (validated enabled below).
     apply_mentions(state, &mut resolved_preset_id, &mut overrides, &request.mentions).await?;
+    // doc `29` §6.1：思考等级先校验。这只是词表判定（`low`/`medium`/`high`/`xhigh`，空串＝不指定），
+    // 一个坏值不该等到快照解析完、模板物化之后才报。
+    let reasoning_effort = normalize_reasoning_effort(request.reasoning_effort)?;
     let preset = preset_service.get(&resolved_preset_id).await?;
     validate_agent_store_preset_source(preset.source, preset.source_key.as_deref(), Some(&preset.name))?;
     // A Preset that `install/disable` switched off must be named as such.
@@ -3088,26 +3114,43 @@ async fn execute_agent_run(
             overrides.clone(),
         )
         .await?;
-    // Installed agent-store presets are created without a model binding
-    // (the definition payload has no model mandate). A run without a
-    // resolved model is rejected at the runtime boundary, so fall back to
-    // the owner's first enabled provider/model when the preset left the
-    // model unbound. The fallback must keep every mention override
-    // (`include_skills`, `mcp_server_ids`, ...): re-resolving from
-    // `PresetOverrides::default()` silently drops them.
-    if snapshot.resolved_model.is_none() {
+    // doc `29` §6.2：调用方显式给的模型**无条件**赢过 preset 自带的那个，所以先解析它并重新
+    // resolve 一次。手法与下面的宿主默认回退**完全相同**（把模型并进 `overrides` 再解析一遍），
+    // 因此走的是同一条权威校验，且每个 mention override 都保住。
+    if let Some(model) = request.model {
+        let model = resolve_app_server_model(state, Some(model.into_provider_with_model())).await?;
+        let preference = team_run::provider_model_preference(&model);
+        snapshot = preset_service
+            .resolve(
+                &resolved_preset_id,
+                PresetTarget::ExecutionStep,
+                None,
+                with_model(overrides, &preference),
+            )
+            .await?;
+    } else if snapshot.resolved_model.is_none() {
+        // Installed agent-store presets are created without a model binding
+        // (the definition payload has no model mandate). A run without a
+        // resolved model is rejected at the runtime boundary, so fall back to
+        // the owner's first enabled provider/model when the preset left the
+        // model unbound. The fallback must keep every mention override
+        // (`include_skills`, `mcp_server_ids`, ...): re-resolving from
+        // `PresetOverrides::default()` silently drops them.
         if let Some(model) = default_run_model(state).await? {
             let retry = preset_service
                 .resolve(
                     &resolved_preset_id,
                     PresetTarget::ExecutionStep,
                     None,
-                    with_default_model(overrides, &model),
+                    with_model(overrides, &model),
                 )
                 .await?;
             snapshot = retry;
         }
     }
+    // doc `29` §6.3：运行级思考等级挂在**快照**上（免迁移的 JSON 载体），由 attempt runner
+    // 投影进尝试会话的 `extra.reasoning_effort`；preset 解析自己永不设置这个字段。
+    snapshot.reasoning_effort = reasoning_effort;
     validate_nomi_runtime_type(snapshot.resolved_agent_type.as_deref())?;
     // Preset MCP references must exist and be enabled before the run starts.
     // The attempt runner projects them into the attempt conversation later;
@@ -3271,7 +3314,7 @@ async fn resolve_workspace_for_run(
 /// name from `~/.agent-store/config.toml`, which is resolved/registered
 /// server-side. Validating UUID-ness during deserialization would reject the
 /// config-key convenience surface before resolution can run.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationModelRef {
     pub provider_id: String,
@@ -3306,6 +3349,20 @@ pub struct ConversationCreateRequest {
     /// applied to the conversation's Nomi runtime via `extra.reasoning_effort`.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// doc `27` §5.2：把「这个会话是谁」绑定成一个**专家**（AgentDefinition 的 `agent/list` id）。
+    ///
+    /// 解析走 `agent/run` 的同一套语义（未安装 → `agent_not_installed`、被停用 → `preset_disabled`、
+    /// 来源白名单），并且**只在创建时**生效：会话的 preset 快照此后只读，换专家 = 新建会话。
+    /// 专家的技能与连接器随之冻结（见 `app_server_chat_bindings_for_agent`）。
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// doc `27` §5.3：把会话建成某个**专家团**的 Leader（`team/list` 的 id）。
+    ///
+    /// 与 `team/run` 共用同一段编排（成员校验 → 物化/复用模板 → 建 Leader 会话），区别只有一处：
+    /// **不发 `goal` 首轮**——第一句话由客户端自己说。与 `agent_id` **互斥**（同时给是
+    /// `invalid_request`：会话要么是某个专家，要么是某个团的 Leader）。
+    #[serde(default)]
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3378,6 +3435,30 @@ pub struct ConversationSendRequest {
     /// 该字段时行为逐字不变（`files` 仍是空）。
     #[serde(default)]
     pub attachments: Vec<String>,
+    /// doc `27` 阶段 1：**本轮挂载的技能**，形状与 `agent/run` 的 `mentions` 一致。
+    ///
+    /// 只接受 `kind: "skill"`。连接器是宿主的工具面开关、专家是会话身份，两者都没有
+    /// 随消息走的载体，所以这里**显式拒绝**（`invalid_request`）而不是静默忽略——
+    /// 静默忽略会让调用方以为自己挂上了。`#[serde(default)]` 保持纯加法。
+    #[serde(default)]
+    pub mentions: Vec<MentionRef>,
+    /// doc `29` §5.1：**从本轮起**生效的模型（会话级设置，被这条消息顺带切换）。
+    ///
+    /// 与会话级模型同一形状、同一解析（`ConversationModelRef` + `resolve_app_server_model`）：
+    /// `provider_id` 可以是已注册的 provider UUID，也可以是 `~/.agent-store/config.toml` 里
+    /// `[providers.<key>]` 的名字（服务端幂等注册后改写为规范 UUID）。
+    ///
+    /// **没有"只影响这一轮"的模式**：值写进会话行，此后每轮沿用；要还原就再发一次带旧值的
+    /// 调用。真·一次性需要引擎级的每轮模型通道，而运行时是会话级、按行构建的（`29` §4.2）。
+    #[serde(default)]
+    pub model: Option<ConversationModelRef>,
+    /// doc `29` §5.1：**从本轮起**生效的 OpenAI 风格思考等级（`low`/`medium`/`high`/`xhigh`）。
+    ///
+    /// 与 `conversation/create` / `update` 共用 `normalize_reasoning_effort`（空串＝不指定）。
+    /// 同为粘性。引擎是否**真的**用上取决于 catalog 是否为该模型声明了等级，没声明时静默
+    /// 退回模型默认——与 create/update 同一口径（`29` §9.3）。
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 /// R15：单次发送允许的附件条数上限。
@@ -3402,6 +3483,12 @@ pub struct ConversationView {
     pub conversation_id: String,
     pub name: String,
     pub model: ProviderWithModel,
+    /// doc `29` §5.5：该会话当前的思考等级（`conversation.extra.reasoning_effort` 的纯投影）。
+    ///
+    /// 缺席＝未指定（引擎按模型默认走）。**必须能读回**：`create` / `update` / `send` 三条路
+    /// 都能写等级，若这里不投影，等级就是一个只写不读的设置，调用方无法确认自己设了什么。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub status: String,
     pub created_at: i64,
     pub modified_at: i64,
@@ -3558,6 +3645,21 @@ fn conversation_workspace_id(extra: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The conversation's persisted reasoning effort (`extra.reasoning_effort`).
+///
+/// One reader for both consumers (doc `29`): the `ConversationView` projection (§5.5) and the
+/// `conversation/send` difference check (§5.2). A blank value reads as "not specified" — the same
+/// normalization `normalize_reasoning_effort` applies on the way in, so a stored `""` never
+/// differs from an absent key and never triggers a pointless write.
+fn conversation_extra_reasoning_effort(extra: &serde_json::Value) -> Option<String> {
+    extra
+        .get("reasoning_effort")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 /// Project a conversation together with its workspace lineage and the latest
 /// measured context occupancy (best-effort: a missing usage row or a read
 /// failure simply leaves `context_usage` absent).
@@ -3596,6 +3698,7 @@ fn project_conversation(
         conversation_id: conversation.conversation_id,
         name: conversation.name,
         model,
+        reasoning_effort: conversation_extra_reasoning_effort(&conversation.extra),
         status: serde_json::to_value(conversation.status)
             .ok()
             .and_then(|value| value.as_str().map(str::to_owned))
@@ -3692,6 +3795,37 @@ async fn create_conversation_for_user(
     user: &CurrentUser,
     request: ConversationCreateRequest,
 ) -> Result<ConversationView, AppServerError> {
+    let agent_id = request
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let team_id = request
+        .team_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if agent_id.is_some() && team_id.is_some() {
+        return Err(AppServerError::new(
+            "invalid_request",
+            "agent_id and team_id are mutually exclusive: a conversation is opened either as an expert or as a team's leader",
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    // doc `27` §5.3：专家团走 `team/run` 的同一段编排，但**不发 goal 首轮**——Leader 的第一句话
+    // 由客户端自己说。这条路径自带工作区与模型解析（与 `team/run` 同源），所以先于下面的共用解析返回。
+    if let Some(team_id) = team_id {
+        let prepared = team_run::prepare_team_leader_conversation(
+            state,
+            user,
+            team_id,
+            None,
+            request.workspace.as_ref(),
+        )
+        .await?;
+        return project_conversation_view(state, prepared.conversation).await;
+    }
     let workspace = resolved_chat_workspace(state, user, request.workspace.as_ref()).await?;
     let model = resolve_app_server_model(
         state,
@@ -3700,6 +3834,9 @@ async fn create_conversation_for_user(
     .await?;
     let reasoning_effort = normalize_reasoning_effort(request.reasoning_effort)?;
     let workspace_id = workspace.workspace_id().to_owned();
+    // doc `27` §5.2：绑定的专家（若有）在这里解析成「定义自带的技能 / 连接器 + 已解析 preset 快照」。
+    // 没有 `agent_id` 时是空绑定——与既有行为逐字一致。
+    let bindings = app_server_chat_bindings_for_agent(state, agent_id).await?;
     let conversation = conversation_service(state)?
         .create_app_server_nomi_chat(
             user.id.as_str(),
@@ -3708,14 +3845,127 @@ async fn create_conversation_for_user(
             workspace.path().to_string_lossy().into_owned(),
             Some(workspace_id),
             reasoning_effort,
-            // No Definition-bound Connector/Skill surface yet: an empty fence is
-            // "bind nothing", which is the pre-existing behaviour. The Definition
-            // path (team/run) fills these in.
-            nomifun_conversation::AppServerChatBindings::default(),
+            bindings,
         )
         .await
         .map_err(AppServerError::from)?;
     project_conversation_view(state, conversation).await
+}
+
+/// The create-time bindings of one App Server chat (doc `27` §5.2).
+///
+/// `agent_id` is an **AgentDefinition** id: its installed `preset_id` becomes the conversation's
+/// identity, and the Definition's own Skills and Connectors become the conversation's fences.
+/// Resolution mirrors `agent/run` — not installed, disabled, or a non agent-store preset source all
+/// fail here rather than producing a chat that quietly runs as somebody else.
+///
+/// Everything is frozen at creation: `ConversationService::update` refuses preset / skill / MCP
+/// keys afterwards, so **changing the expert means creating another conversation**.
+async fn app_server_chat_bindings_for_agent(
+    state: &AppServerRouterState,
+    agent_id: Option<&str>,
+) -> Result<AppServerChatBindings, AppServerError> {
+    let Some(agent_id) = agent_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        // No Definition: an empty fence is "bind nothing", which is the pre-existing behaviour.
+        return Ok(AppServerChatBindings::default());
+    };
+    let agent = agent_catalog_provider(state)?
+        .get(agent_id)
+        .await
+        .map_err(AppServerError::from)?;
+    let Some(preset_id) = agent.summary.preset_id.as_deref() else {
+        return Err(AppServerError::new(
+            "agent_not_installed",
+            format!("agent {agent_id} is not installed; run install/* before creating a conversation with it"),
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    };
+    let preset_service = state.preset_service.as_ref().ok_or_else(|| {
+        AppServerError::new(
+            "runtime_unavailable",
+            "App Server Preset service is unavailable",
+            StatusCode::SERVICE_UNAVAILABLE,
+            true,
+        )
+    })?;
+    let preset = preset_service.get(preset_id).await?;
+    validate_agent_store_preset_source(preset.source, preset.source_key.as_deref(), Some(&preset.name))?;
+    // A Preset that `install/disable` switched off must be named as such, exactly as `agent/run`
+    // does — "you turned this off" is not "this is broken".
+    if !preset.enabled {
+        return Err(AppServerError::new(
+            "preset_disabled",
+            format!("preset {preset_id} is disabled"),
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    let connector_ids = definition_connector_fence(state, agent_id, &agent.summary.connectors).await?;
+    // The Definition's Skills and Connectors ride in as **resolve overrides**: the resolved snapshot
+    // (not the raw preset) is what `create` freezes into `preset_enabled_skills`. The auto-inject
+    // exclusion is added by the conversation seam, which owns that knowledge.
+    let overrides = PresetOverrides {
+        include_skills: agent.summary.skills.clone(),
+        mcp_server_ids: Some(connector_ids.iter().map(|id| id.as_str().to_owned()).collect()),
+        ..PresetOverrides::default()
+    };
+    let snapshot = preset_service
+        .resolve(
+            preset_id,
+            nomifun_api_types::PresetTarget::Conversation,
+            None,
+            overrides,
+        )
+        .await?;
+    Ok(AppServerChatBindings {
+        connector_ids,
+        skill_names: agent.summary.skills.clone(),
+        preset_snapshot: Some(snapshot),
+    })
+}
+
+/// Validate a Definition's declared Connectors and return them as canonical ids.
+///
+/// Same rule as the Team fence (`team_run.rs`): a declared Connector that is disabled must surface
+/// as `connector_unavailable` instead of silently binding nothing — a pinned dependency that is
+/// missing has to be visible.
+async fn definition_connector_fence(
+    state: &AppServerRouterState,
+    definition_id: &str,
+    declared: &[String],
+) -> Result<Vec<McpServerId>, AppServerError> {
+    if declared.is_empty() {
+        return Ok(Vec::new());
+    }
+    let connectors = connector_catalog_provider(state)?;
+    let mut fence: Vec<McpServerId> = Vec::with_capacity(declared.len());
+    for raw in declared {
+        let id = McpServerId::parse(raw).map_err(|error| {
+            AppServerError::new(
+                "internal_error",
+                format!("agent {definition_id} declares an invalid connector id: {error}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                false,
+            )
+        })?;
+        let detail = connectors
+            .get(id.as_str())
+            .await
+            .map_err(AppServerError::from)?;
+        if !detail.summary.enabled {
+            return Err(AppServerError::new(
+                "connector_unavailable",
+                format!("connector {raw} bound by the agent is disabled"),
+                StatusCode::BAD_REQUEST,
+                false,
+            ));
+        }
+        if !fence.contains(&id) {
+            fence.push(id);
+        }
+    }
+    Ok(fence)
 }
 
 /// Validate the public OpenAI-style reasoning effort vocabulary. Empty values
@@ -4526,6 +4776,20 @@ async fn send_conversation_message_for_user(
     let files =
         resolve_conversation_attachments(state, user, &conversation.extra, &request.attachments)
             .await?;
+    // doc `27` §4.1：本轮的技能来自结构化 mention（只认 skill）。解析沿用会话层既有
+    // 语义——`inject_skills` 会在占用 durable receipt **之前**被解析成不可变快照，
+    // 缺失/超限的技能让整次 send 失败，而不是悄悄少挂一个。
+    let inject_skills = send_mention_skills(&request.mentions)?;
+    // doc `29` §5.2：模型 / 思考等级的**粘性**切换排在所有可预期拒绝之后、真正发送之前。
+    // 解析先做（纯校验 + provider 幂等注册，不写库），落库交给下面那个 helper。
+    let preferred_model = match request.model {
+        Some(model) => {
+            Some(resolve_app_server_model(state, Some(model.into_provider_with_model())).await?)
+        }
+        None => None,
+    };
+    let preferred_effort = normalize_reasoning_effort(request.reasoning_effort)?;
+    apply_send_preferences(state, user, &conversation, preferred_model, preferred_effort).await?;
     let delivery = service
         .send_message_with_idempotency_key(
             user.id.as_str(),
@@ -4534,7 +4798,7 @@ async fn send_conversation_message_for_user(
             SendMessageRequest {
                 content: request.content,
                 files,
-                inject_skills: Vec::new(),
+                inject_skills,
                 hidden: false,
                 origin: None,
                 channel_platform: None,
@@ -4544,6 +4808,144 @@ async fn send_conversation_message_for_user(
         .await
         .map_err(AppServerError::from)?;
     Ok(project_delivery(conversation_id, delivery))
+}
+
+/// `conversation/send` 的模型 / 思考等级切换（doc `29` §5.2）。
+///
+/// 语义是**粘性**的：值落进会话行，**从本轮起**生效，此后每轮沿用——没有"只这一轮"的模式。
+/// 三件事的顺序本身就是契约：
+///
+/// 1. **忙判定在最前**：`ConversationService::update` 换模型会**立即拆运行时**，而拆运行时
+///    不看有没有在跑的 turn；send 的准入随后又会以 `Conflict` 拒绝（本地 turn owner，或未证明
+///    的 durable running generation）。先落库再被拒 = 用户同时丢掉正在跑的回合和这条消息。
+/// 2. **差异判定**：与行上现值全相同就完全不写库、不广播。不带新参数的调用必须**零副作用**——
+///    这条不能靠 `#[serde(default)]` 自己成立。
+/// 3. **复用 `update`**：它是权威 seam（模型权威校验、preset/skill/MCP 冻结、执行尝试会话拒绝）。
+///    另写一条"只改模型/等级"的路等于让模型有两个写入点。
+///
+/// 残余窗口（如实记录，`29` §5.2）：落库与 turn 准入不在同一个 preparation gate 之下，所以
+/// 内部错误仍可能造成"配置已切换、消息未发出"。可预期拒绝已全部前置。
+async fn apply_send_preferences(
+    state: &AppServerRouterState,
+    user: &CurrentUser,
+    conversation: &nomifun_api_types::ConversationResponse,
+    model: Option<ProviderWithModel>,
+    reasoning_effort: Option<String>,
+) -> Result<(), AppServerError> {
+    if model.is_none() && reasoning_effort.is_none() {
+        return Ok(());
+    }
+    // 1. 忙判定：两条都要判。`Running` 覆盖 durable running generation（`service.rs:4135`），
+    //    `is_processing` 覆盖本地 turn owner（`service.rs:4129`）。宁可 fail-closed 多拒一次，
+    //    也不要拆掉一个可能还在跑的运行时。
+    if conversation.status == nomifun_common::ConversationStatus::Running
+        || conversation
+            .runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.is_processing)
+    {
+        return Err(AppServerError::from(nomifun_common::AppError::Conflict(
+            "the conversation is processing a turn; model and reasoning_effort can only be switched while it is idle"
+                .to_owned(),
+        )));
+    }
+    // 2. 差异判定：一项都没变就什么都不做（不写库、不广播）。
+    let (model_changed, effort_changed) = send_preference_changes(
+        model.as_ref(),
+        conversation.model.as_ref(),
+        reasoning_effort.as_deref(),
+        conversation_extra_reasoning_effort(&conversation.extra).as_deref(),
+    );
+    if !model_changed && !effort_changed {
+        return Ok(());
+    }
+    // 3. 落库：只带真正变化的那一项，避免 `update` 把未变化的值再写一遍。
+    let extra = if effort_changed {
+        reasoning_effort.map(|effort| serde_json::json!({ "reasoning_effort": effort }))
+    } else {
+        None
+    };
+    conversation_service(state)?
+        .update(
+            user.id.as_str(),
+            &conversation.conversation_id,
+            nomifun_api_types::UpdateConversationRequest {
+                name: None,
+                pinned: None,
+                model: if model_changed { model } else { None },
+                delegation_policy: None,
+                execution_model_pool: None,
+                decision_policy: None,
+                execution_template_id: None,
+                extra,
+            },
+            conversation_runtime_registry(state)?,
+        )
+        .await
+        .map_err(AppServerError::from)?;
+    Ok(())
+}
+
+/// 差异判定的纯函数形式（doc `29` §5.2）：`(model_changed, effort_changed)`。
+///
+/// 抽出来是为了让「不带新参数的调用**不写库、不广播**」这条不变量能被单测直接钉住——
+/// 否则它只能靠一个需要整套 `ConversationService` 的集成测试来保证，而那条路在本 crate 里
+/// 没有夹具（见 `29` §10.1 的验收说明）。
+///
+/// `None` 一律表示"调用方没提这一项"，因此不算变化：只有**明确给出且与现值不同**才算。
+fn send_preference_changes(
+    requested_model: Option<&ProviderWithModel>,
+    current_model: Option<&ProviderWithModel>,
+    requested_effort: Option<&str>,
+    current_effort: Option<&str>,
+) -> (bool, bool) {
+    (
+        requested_model.is_some_and(|requested| current_model != Some(requested)),
+        requested_effort.is_some_and(|requested| current_effort != Some(requested)),
+    )
+}
+
+/// `conversation/send` 的 mention 准入（doc `27` §4.1）。
+///
+/// 阶段 1 **只认 `skill`**：技能是每轮载荷（`inject_skills` + 不可变快照），
+/// 而连接器是宿主的工具面开关、专家是会话身份——两者都没有随消息走的载体。
+/// 因此另外两类是显式 `invalid_request`，不是静默忽略：调用方必须知道
+/// "这一轮没挂上"，否则它会以为自己挂上了。
+fn send_mention_skills(mentions: &[MentionRef]) -> Result<Vec<String>, AppServerError> {
+    let mut skills: Vec<String> = Vec::new();
+    for mention in mentions {
+        match mention.kind {
+            MentionKind::Skill => {
+                if mention.id.trim().is_empty() {
+                    return Err(send_mention_rejection("a skill mention must name a skill"));
+                }
+                // 同一轮重复点同一技能只算一次（会话层也会去重；这里让 payload 规范）。
+                if !skills.contains(&mention.id) {
+                    skills.push(mention.id.clone());
+                }
+            }
+            MentionKind::Agent => {
+                return Err(send_mention_rejection(
+                    "`agent` mentions are not accepted by conversation/send: an expert is bound when the conversation is created, not per turn",
+                ));
+            }
+            MentionKind::Connector => {
+                return Err(send_mention_rejection(
+                    "`connector` mentions are not accepted by conversation/send: a connector is enabled on the host, not selected per turn",
+                ));
+            }
+        }
+    }
+    Ok(skills)
+}
+
+fn send_mention_rejection(message: &str) -> AppServerError {
+    AppServerError::new(
+        "invalid_request",
+        message.to_owned(),
+        StatusCode::BAD_REQUEST,
+        false,
+    )
 }
 
 /// R15（W10）附件准入：把客户端给的绝对路径收敛成「**本会话工作区内**的真实文件」。
@@ -5150,6 +5552,23 @@ pub struct AgentRunRequest {
     /// (docs/agent-store/05 §4.7).
     #[serde(default)]
     pub mentions: Vec<MentionRef>,
+    /// doc `29` §6.1：本次运行显式指定的模型。
+    ///
+    /// 优先级 = **显式 > preset 自带 > 宿主默认**（§6.2）。形状与解析与
+    /// `conversation/create` 完全相同（`ConversationModelRef`，`provider_id` 可以是注册过的 UUID
+    /// 或 `config.toml` 的 `[providers.<key>]` 名）。
+    ///
+    /// `skip_serializing_if`：本结构体会被 `request_fingerprint` 序列化，缺席的新字段**不得**
+    /// 进入指纹——否则一次纯升级就会让所有既有 `agent/run` 幂等收据失配并重跑。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ConversationModelRef>,
+    /// doc `29` §6.1：本次运行的 OpenAI 风格思考等级（`low`/`medium`/`high`/`xhigh`）。
+    ///
+    /// 它通过 `ResolvedPresetSnapshot.reasoning_effort` 随参与者落到**尝试会话**的 `extra`
+    /// （§6.3/§6.4），因此一次运行的每个 attempt 都用同一个等级。preset 自身不带这个字段。
+    /// `skip_serializing_if` 同上：缺席不进指纹。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// One resolved `@` mention reference. `id` is an opaque catalog id
@@ -5277,12 +5696,43 @@ async fn apply_mentions(
     Ok(())
 }
 
-/// First enabled provider/model pair for the run model fallback. Returns
-/// `None` when no provider is available; the run then fails at the runtime
-/// boundary with the standard `InvalidSnapshot` (no silently wrong model).
+/// Default model for the run fallback: the **host's own** `default_model` first
+/// (`~/.agent-store/config.toml` — the same source `conversation/create` and
+/// `team/run` resolve through, via `resolve_app_server_model`), then the first
+/// enabled provider/model in the provider registry.
+///
+/// Reading only the registry made `agent/run` fail with `resolved_model is
+/// required` on a host whose providers live **solely** in the config file: the
+/// config provider is registered into that registry **on demand**, so a fresh
+/// Agent Store data dir had none until something else resolved a model first.
+/// A run must not depend on another call having happened before it.
+///
+/// Returns `Ok(None)` when neither source yields a model; the run then fails at
+/// the runtime boundary with the standard `InvalidSnapshot` (no silently wrong
+/// model).
 async fn default_run_model(
     state: &AppServerRouterState,
 ) -> Result<Option<nomifun_api_types::ModelPreference>, AppServerError> {
+    if let Ok(config) = load_agent_store_config(state, None)
+        && let Some((provider_key, model_name)) = config.default_selection()
+        && let Some(provider_service) = state.provider_service.as_ref()
+    {
+        // Register (or reuse) the config provider row, exactly as the
+        // conversation and team paths do — one resolution, one behaviour.
+        let provider_id = ensure_agent_store_provider(
+            provider_service,
+            &config,
+            &provider_key,
+            Some(&model_name),
+        )
+        .await?;
+        return Ok(Some(nomifun_api_types::ModelPreference {
+            provider_id: Some(provider_id),
+            model: model_name,
+            required: true,
+        }));
+    }
+
     let Some(provider_service) = state.provider_service.as_ref() else {
         return Ok(None);
     };
@@ -5297,11 +5747,17 @@ async fn default_run_model(
         }))
 }
 
-/// Merge the owner's default model into an existing override set. Mention
-/// overrides (`include_skills`, `mcp_server_ids`, ...) must survive the model
-/// fallback: re-resolving from a fresh `PresetOverrides` silently drops them
-/// and the run loses every skill/connector the caller mentioned (WP-2 B5).
-fn with_default_model(
+/// Merge an explicitly chosen model into an existing override set.
+///
+/// Two callers, one behaviour (doc `29` §6.2): the host `default_model` fallback and a caller's
+/// explicit `model` on `agent/run`. The provenance is deliberately not part of the name — both
+/// routes need exactly this, and the caller decides which model wins.
+///
+/// Mention overrides (`include_skills`, `mcp_server_ids`, ...) must survive: re-resolving from a
+/// fresh `PresetOverrides` silently drops them and the run loses every skill/connector the caller
+/// mentioned (WP-2 B5). `resolve` then routes the model through `resolve_model_preference`, so the
+/// explicit path gets the same authority checks as the fallback.
+fn with_model(
     base: PresetOverrides,
     model: &nomifun_api_types::ModelPreference,
 ) -> PresetOverrides {
@@ -6045,6 +6501,9 @@ async fn dispatch_connection_request(
                     content: params.content,
                     idempotency_key: params.idempotency_key,
                     attachments: params.attachments,
+                    mentions: params.mentions,
+                    model: params.model,
+                    reasoning_effort: params.reasoning_effort,
                 },
             )
             .await?;
@@ -6910,6 +7369,15 @@ struct WsConversationSend {
     /// R15（W10）：会话工作区内的绝对路径附件（纯加法，缺省为空）。
     #[serde(default)]
     attachments: Vec<String>,
+    /// doc `27` 阶段 1：本轮挂载的技能（只认 `skill`，见 `send_mention_skills`）。
+    #[serde(default)]
+    mentions: Vec<MentionRef>,
+    /// doc `29` §5.1：从本轮起生效的模型（与 HTTP arm 同形）。
+    #[serde(default)]
+    model: Option<ConversationModelRef>,
+    /// doc `29` §5.1：从本轮起生效的思考等级（与 HTTP arm 同形）。
+    #[serde(default)]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -7415,6 +7883,369 @@ mod tests {
         .is_err());
     }
 
+    /// doc `29` §6.1：`agent/run` 收可选的 `model` 与 `reasoning_effort`（现有 DTO 加字段）。
+    #[test]
+    fn agent_run_wire_accepts_an_optional_model_and_reasoning_effort() {
+        let request: AgentRunRequest = serde_json::from_value(serde_json::json!({
+            "agent_id": "x",
+            "goal": "g",
+            "model": {"provider_id": "opencode", "model": "mimo-v2.5"},
+            "reasoning_effort": "high"
+        }))
+        .unwrap();
+        assert_eq!(
+            request.model.as_ref().map(|model| model.model.as_str()),
+            Some("mimo-v2.5")
+        );
+        assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+
+        // Omitted = absent (the precedence chain stays untouched).
+        let bare: AgentRunRequest =
+            serde_json::from_value(serde_json::json!({"agent_id": "x"})).unwrap();
+        assert!(bare.model.is_none());
+        assert!(bare.reasoning_effort.is_none());
+    }
+
+    /// doc `29` §6.1：`AgentRunRequest` 会被 `request_fingerprint` 序列化，所以**缺席的新字段
+    /// 不得进入指纹**——否则一次纯升级就会让所有既有 `agent/run` 幂等收据失配并重跑。
+    #[test]
+    fn an_absent_run_model_and_effort_stay_out_of_the_idempotency_fingerprint() {
+        let bare = AgentRunRequest {
+            preset_id: "x".into(),
+            agent_version: None,
+            goal: "g".into(),
+            input: None,
+            work_dir: None,
+            workspace: None,
+            steps: None,
+            command_id: None,
+            idempotency_key: None,
+            mentions: Vec::new(),
+            model: None,
+            reasoning_effort: None,
+        };
+        let encoded = serde_json::to_string(&bare).unwrap();
+        assert!(!encoded.contains("\"model\""), "{encoded}");
+        assert!(!encoded.contains("reasoning_effort"), "{encoded}");
+
+        // A run that does carry them changes the fingerprint — that is the point.
+        let switched = AgentRunRequest {
+            model: Some(ConversationModelRef {
+                provider_id: "opencode".into(),
+                model: "mimo-v2.5".into(),
+                use_model: None,
+            }),
+            reasoning_effort: Some("high".into()),
+            ..bare
+        };
+        let switched_encoded = serde_json::to_string(&switched).unwrap();
+        assert!(switched_encoded.contains("reasoning_effort"), "{switched_encoded}");
+    }
+
+    /// doc `27` §4.1：`conversation/send` 收结构化 mention，但**只认 skill**。
+    #[test]
+    fn conversation_send_wire_accepts_skill_mentions_only() {
+        let request: ConversationSendRequest = serde_json::from_value(serde_json::json!({
+            "content": "write the release notes",
+            "idempotency_key": "client-op-01",
+            "mentions": [
+                {"kind": "skill", "id": "release-notes"},
+                {"kind": "skill", "id": "release-notes"}
+            ]
+        }))
+        .unwrap();
+        // Duplicates collapse: the same skill selected twice is one skill.
+        assert_eq!(
+            send_mention_skills(&request.mentions).unwrap(),
+            vec!["release-notes".to_owned()]
+        );
+
+        // Omitted mentions default to the empty vec (byte-identical old behaviour).
+        let bare: ConversationSendRequest = serde_json::from_value(serde_json::json!({
+            "content": "hi",
+            "idempotency_key": "k"
+        }))
+        .unwrap();
+        assert!(bare.mentions.is_empty());
+        assert!(send_mention_skills(&bare.mentions).unwrap().is_empty());
+
+        // The WS arm shares the shape.
+        let ws: WsConversationSend = serde_json::from_value(serde_json::json!({
+            "conversation_id": "0190f5fe-7c00-7a00-8000-000000000001",
+            "content": "hi",
+            "idempotency_key": "k",
+            "mentions": [{"kind": "skill", "id": "a"}]
+        }))
+        .unwrap();
+        assert_eq!(send_mention_skills(&ws.mentions).unwrap(), vec!["a".to_owned()]);
+    }
+
+    /// 另外两类 mention 在 send 上没有载体：必须显式拒绝，而不是静默不挂。
+    #[test]
+    fn conversation_send_rejects_mentions_it_cannot_honour() {
+        for kind in [MentionKind::Agent, MentionKind::Connector] {
+            let error = send_mention_skills(&[MentionRef { kind, id: "x".into() }]).unwrap_err();
+            assert_eq!(error.code, "invalid_request");
+            assert_eq!(error.status, StatusCode::BAD_REQUEST);
+            assert!(!error.retryable);
+        }
+        // An unnamed skill is not a skill.
+        let unnamed = send_mention_skills(&[MentionRef {
+            kind: MentionKind::Skill,
+            id: "  ".into(),
+        }])
+        .unwrap_err();
+        assert_eq!(unnamed.code, "invalid_request");
+    }
+
+    /// doc `29` §5.1：`conversation/send` 收可选的 `model` 与 `reasoning_effort`（HTTP 与 WS 同形）。
+    #[test]
+    fn conversation_send_wire_accepts_an_optional_model_and_reasoning_effort() {
+        let request: ConversationSendRequest = serde_json::from_value(serde_json::json!({
+            "content": "switch models",
+            "idempotency_key": "k",
+            "model": {"provider_id": "opencode", "model": "mimo-v2.5"},
+            "reasoning_effort": "xhigh"
+        }))
+        .unwrap();
+        assert_eq!(
+            request.model.as_ref().map(|model| model.provider_id.as_str()),
+            Some("opencode")
+        );
+        assert_eq!(request.reasoning_effort.as_deref(), Some("xhigh"));
+
+        // Absent = absent: the pre-`fp-6` wire shape has to keep working verbatim.
+        let bare: ConversationSendRequest = serde_json::from_value(serde_json::json!({
+            "content": "hi",
+            "idempotency_key": "k"
+        }))
+        .unwrap();
+        assert!(bare.model.is_none());
+        assert!(bare.reasoning_effort.is_none());
+
+        // The WS arm shares the shape.
+        let ws: WsConversationSend = serde_json::from_value(serde_json::json!({
+            "conversation_id": "0190f5fe-7c00-7a00-8000-000000000001",
+            "content": "hi",
+            "idempotency_key": "k",
+            "model": {"provider_id": "opencode", "model": "mimo-v2.5"},
+            "reasoning_effort": "low"
+        }))
+        .unwrap();
+        assert!(ws.model.is_some());
+        assert_eq!(ws.reasoning_effort.as_deref(), Some("low"));
+    }
+
+    /// doc `29` §5.2：差异判定——`None` 是"调用方没提这一项"，**不算变化**；
+    /// 只有明确给出且与现值不同才算。这条不变量保证不带新参数的调用零副作用（不写库、不广播）。
+    #[test]
+    fn send_preferences_only_change_when_the_value_actually_differs() {
+        let current = ProviderWithModel {
+            provider_id: "0190f5fe-7c00-7a00-8000-000000000001".into(),
+            model: "mimo-v2.5".into(),
+            use_model: None,
+        };
+        let other = ProviderWithModel {
+            model: "mimo-v2.5-pro".into(),
+            ..current.clone()
+        };
+
+        // Nothing asked for: no change at all.
+        assert_eq!(
+            send_preference_changes(None, Some(&current), None, Some("high")),
+            (false, false)
+        );
+        // Asked for, but identical to what the row already holds: still no write.
+        assert_eq!(
+            send_preference_changes(Some(&current), Some(&current), Some("high"), Some("high")),
+            (false, false)
+        );
+        // A real difference in either field is a write (and only that field).
+        assert_eq!(
+            send_preference_changes(Some(&other), Some(&current), None, Some("high")),
+            (true, false)
+        );
+        assert_eq!(
+            send_preference_changes(None, Some(&current), Some("low"), Some("high")),
+            (false, true)
+        );
+        // A row with no effort yet: asking for one is a change.
+        assert_eq!(
+            send_preference_changes(None, Some(&current), Some("low"), None),
+            (false, true)
+        );
+    }
+
+    /// doc `29` §5.5：等级的唯一读取口径。空串/空白与缺席**等价**——否则一个存成 `""` 的行
+    /// 会与"没指定"永远判为不同，每次 send 都白写一遍。
+    #[test]
+    fn conversation_extra_reasoning_effort_reads_one_normalized_value() {
+        assert_eq!(
+            conversation_extra_reasoning_effort(&serde_json::json!({"reasoning_effort": " high "})),
+            Some("high".to_owned())
+        );
+        assert_eq!(
+            conversation_extra_reasoning_effort(&serde_json::json!({"reasoning_effort": "  "})),
+            None
+        );
+        assert_eq!(
+            conversation_extra_reasoning_effort(&serde_json::json!({"reasoning_effort": ""})),
+            None
+        );
+        assert_eq!(conversation_extra_reasoning_effort(&serde_json::json!({})), None);
+        // A non-string value is "unreadable", not "some effort".
+        assert_eq!(
+            conversation_extra_reasoning_effort(&serde_json::json!({"reasoning_effort": 3})),
+            None
+        );
+    }
+
+    /// doc `27` §5.2：`conversation/create` 收可选的 `agent_id`（现有 DTO 加字段）。
+    #[test]
+    fn conversation_create_wire_accepts_an_optional_agent_id() {
+        let bound: ConversationCreateRequest =
+            serde_json::from_value(serde_json::json!({"agent_id": "wb-demo-software-architect"}))
+                .unwrap();
+        assert_eq!(bound.agent_id.as_deref(), Some("wb-demo-software-architect"));
+        // Omitting it is the plain conversation it always was.
+        let bare: ConversationCreateRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(bare.agent_id.is_none());
+    }
+
+    /// 没有 `agent_id`（或只有空白）时是**空绑定**——与既有行为逐字一致。
+    #[tokio::test]
+    async fn conversation_create_without_an_agent_binds_nothing() {
+        let state = AppServerRouterState::default();
+        for agent_id in [None, Some("   ")] {
+            let bindings = app_server_chat_bindings_for_agent(&state, agent_id)
+                .await
+                .unwrap();
+            assert!(bindings.connector_ids.is_empty());
+            assert!(bindings.skill_names.is_empty());
+            assert!(bindings.preset_snapshot.is_none());
+        }
+    }
+
+    /// 未安装的专家、以及宿主没接预设服务，都必须**点名原因**，而不是开出一个悄悄以别人身份跑的会话。
+    #[tokio::test]
+    async fn conversation_create_names_why_an_expert_cannot_be_bound() {
+        let summary = |id: &str, preset_id: Option<&str>| nomifun_api_types::AppServerAgentSummary {
+            id: id.into(),
+            version: "1.0.0".into(),
+            name: id.into(),
+            preset_id: preset_id.map(str::to_owned),
+            description: None,
+            skills: vec![],
+            connectors: vec![],
+            model_summary: None,
+            tool_policy_summary: None,
+            source: "imported".into(),
+            compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+            display_name: None,
+            profession: None,
+            avatar_url: None,
+        };
+        let mut state = AppServerRouterState::default();
+        state.agent_catalog = Some(Arc::new(crate::catalog::FakeAgentCatalog {
+            agents: vec![
+                summary("wb-not-installed", None),
+                summary("wb-installed", Some("0190f5fe-7c00-7a00-8000-000000000030")),
+            ],
+        }));
+
+        let error = app_server_chat_bindings_for_agent(&state, Some("wb-not-installed"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "agent_not_installed");
+
+        // Installed, but this host wired no preset service: a named refusal, not a panic.
+        let error = app_server_chat_bindings_for_agent(&state, Some("wb-installed"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "runtime_unavailable");
+    }
+
+    /// 定义声明的连接器栅栏：停用 ⇒ `connector_unavailable`（不是悄悄不绑），非法 id ⇒ 内部错误。
+    #[tokio::test]
+    async fn definition_connector_fence_refuses_disabled_and_malformed_ids() {
+        let bindable = "0190f5fe-7c00-7a00-8000-000000000321";
+        let disabled = "0190f5fe-7c00-7a00-8000-000000000322";
+        let summary = |id: &str, enabled: bool| AppServerConnectorSummary {
+            id: id.to_owned(),
+            name: format!("server-{id}"),
+            description: None,
+            kind: "mcp".into(),
+            transport_summary: "stdio".into(),
+            auth_mode: "none".into(),
+            enabled,
+            status: if enabled {
+                nomifun_api_types::AppServerConnectorStatus::Configured
+            } else {
+                nomifun_api_types::AppServerConnectorStatus::Installed
+            },
+            avatar_url: None,
+        };
+        let mut state = AppServerRouterState::default();
+        state.connectors = Some(Arc::new(crate::catalog::FakeConnectorCatalog {
+            connectors: vec![summary(bindable, true), summary(disabled, false)],
+            auth_required_ids: vec![],
+            probe_fail_ids: vec![],
+        }));
+
+        let fence = definition_connector_fence(
+            &state,
+            "wb-demo",
+            &[bindable.to_owned(), bindable.to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(fence.len(), 1, "the same Connector declared twice is one fence entry");
+
+        let error = definition_connector_fence(&state, "wb-demo", &[disabled.to_owned()])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "connector_unavailable");
+
+        let error = definition_connector_fence(&state, "wb-demo", &["not-a-uuid".to_owned()])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "internal_error");
+    }
+
+    /// doc `27` §5.3：`conversation/create` 也收 `team_id`（与 `agent_id` 互斥）。
+    #[test]
+    fn conversation_create_wire_accepts_an_optional_team_id() {
+        let bound: ConversationCreateRequest = serde_json::from_value(
+            serde_json::json!({"team_id": "wb-demo-software-company"}),
+        )
+        .unwrap();
+        assert_eq!(bound.team_id.as_deref(), Some("wb-demo-software-company"));
+        assert!(bound.agent_id.is_none());
+    }
+
+    /// 一个会话要么是某个专家，要么是某个团的 Leader——同时给两个是 `invalid_request`，
+    /// 且这个判定发生在读任何工作区 / 目录之前。
+    #[tokio::test]
+    async fn conversation_create_refuses_an_agent_and_a_team_together() {
+        let state = AppServerRouterState::default();
+        let user = CurrentUser {
+            id: UserId::new(),
+            username: "test-user".into(),
+        };
+        let request = ConversationCreateRequest {
+            name: None,
+            model: None,
+            workspace: None,
+            reasoning_effort: None,
+            agent_id: Some("wb-demo-software-architect".into()),
+            team_id: Some("wb-demo-software-company".into()),
+        };
+        let error = create_conversation_for_user(&state, &user, request)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+    }
+
     #[tokio::test]
     async fn apply_mentions_resolves_agent_to_installed_preset() {
         let mut state = AppServerRouterState::default();
@@ -7472,7 +8303,7 @@ mod tests {
             model: "mimo-v2.5".into(),
             required: true,
         };
-        let merged = with_default_model(base, &model);
+        let merged = with_model(base, &model);
         assert_eq!(merged.model.as_deref(), Some("mimo-v2.5"));
         assert_eq!(
             merged.provider_id.as_deref(),

@@ -12,10 +12,13 @@
 //! 1. **Host policy** (`[connector_proxy]`): off unless the host's own
 //!    operator turned it on. Checked before any lookup, so a host that never
 //!    opted in does no work at all on a caller's behalf.
-//! 2. **Allowlist**: the connector/tool pair must be named explicitly. MCP
-//!    tools carry no danger annotation (`DangerTier` is the *gateway's*
-//!    vocabulary, for capabilities this codebase wrote), so there is nothing to
-//!    infer a default from — the answer has to be written down.
+//! 2. **Narrowing**: the optional `allow` list must admit the pair, and the
+//!    optional `deny` list must not exclude it. Neither is required — turning
+//!    the proxy on is itself the grant (doc `26` §4) — so this gate exists to
+//!    let an operator bound the surface, not to make them enumerate it. `deny`
+//!    is the tool for pinning one dangerous tool across a connector upgrade,
+//!    because an MCP server's `tools/list` is dynamic and a new tool would
+//!    otherwise become callable on its own.
 //! 3. **Enabled**: a registered-but-switched-off connector is not callable,
 //!    exactly as `agent/run` refuses one.
 //!
@@ -90,8 +93,10 @@ impl ConnectorCallProvider for AppServerConnectorCall {
             other => ConnectorCallError::Failed(format!("connector lookup failed: {other}")),
         })?;
 
-        // Gate 2: explicit allowlist. `decide` accepts the id (precise) or the
-        // registered name (convenient) — see its doc for why both are offered.
+        // Gate 2: narrowing. `allow` is absent unless the operator narrowed, and
+        // `deny` subtracts afterwards. Entries use the engine's `mcp__` tool
+        // vocabulary and match the connector by id (precise) or by registered
+        // name (convenient) — see `decide`'s doc for why both are offered.
         if let Err(reason) = self.policy.decide(connector_id, &server.name, tool) {
             tracing::warn!(
                 target: AUDIT_TARGET,

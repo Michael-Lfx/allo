@@ -17,7 +17,7 @@ import type { ServerWebSocket } from "bun";
 import { decodeHistoryCursor } from "../src/lib/history-cursor";
 
 const PORT = Number(process.argv[2] ?? 17860);
-const PROTOCOL_VERSION = "fp-1";
+const PROTOCOL_VERSION = "fp-6";
 const AGENT_ID = "0190f5fe-7c00-7a00-8000-000000000004";
 
 interface MockRun {
@@ -152,7 +152,7 @@ interface MockConnector {
   transport_summary: string;
   auth_mode: "none" | "oauth";
   enabled: boolean;
-  tools: Array<{ name: string; description: string | null }>;
+  tools: Array<{ name: string; description: string | null; input_schema?: unknown }>;
   /** Last probe outcome; `false` must never surface as `connected`. */
   probe_success: boolean;
 }
@@ -215,7 +215,7 @@ const catalogConnectors: MockConnector[] = [
     auth_mode: "none",
     enabled: true,
     tools: [
-      { name: "browser_navigate", description: "打开页面" },
+      { name: "browser_navigate", description: "打开页面", input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
       { name: "browser_click", description: "点击元素" },
       { name: "browser_snapshot", description: "获取页面快照" },
     ],
@@ -231,7 +231,7 @@ const catalogConnectors: MockConnector[] = [
     enabled: true,
     tools: [
       { name: "github_list_repos", description: "列出仓库" },
-      { name: "github_create_issue", description: "创建 Issue" },
+      { name: "github_create_issue", description: "创建 Issue", input_schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"] } },
     ],
     probe_success: false,
   },
@@ -281,6 +281,7 @@ function connectorDetail(connector: MockConnector) {
     ...connectorSummary(connector),
     tool_filter: `connector__${connector.name}__<tool>`,
     tools: connector.tools,
+    tools_truncated: false,
     auth_status: connector.auth_mode === "oauth"
       ? { state: connectorAuth.get(connector.id) ? "authenticated" : "not_authenticated", error: null }
       : null,
@@ -427,6 +428,8 @@ function conversationView(conversation: MockConversation) {
     conversation_id: conversation.id,
     name: conversation.name,
     model: conversation.model,
+    // doc `29` §5.5：真实宿主的 `ConversationView` 会投影当前的思考等级（缺席＝未指定）。
+    reasoning_effort: conversation.reasoning_effort ?? null,
     status: conversation.status,
     created_at: conversation.created_at,
     modified_at: conversation.modified_at,
@@ -646,6 +649,37 @@ function handleConversationMethod(socket: ServerWebSocket, id: unknown, method: 
   }
   else if (method === "conversation/messages" && conversation) respond(socket, id, conversationMessages(conversation, { page_size: params?.page_size, cursor: params?.cursor }));
   else if (method === "conversation/send" && conversation) {
+    // doc `27` §4.1: the real host accepts structured mentions but only honours
+    // `skill` per turn. The mock mirrors that contract instead of quietly
+    // accepting what the server would refuse.
+    const mentions = Array.isArray(params?.mentions) ? params.mentions : [];
+    const unsupported = mentions.find(
+      (mention: { kind?: unknown }) => mention?.kind !== "skill",
+    );
+    if (unsupported) {
+      reject(socket, id, "invalid_request", "`agent` and `connector` mentions are not accepted by conversation/send");
+      return true;
+    }
+    // doc `29` §5.2：真实宿主把随 send 带来的 model / reasoning_effort 当成**粘性**的会话切换
+    // （在 turn 被准入之前落库，且只有与现值不同才写），并且在会话正跑着一个 turn 时**拒绝**。
+    // mock 照这个契约走——不能默默接受服务端会拒绝的东西，尤其是"跑着的时候改模型"。
+    if (params?.model !== undefined || params?.reasoning_effort !== undefined) {
+      if (conversation.processing || conversation.status === "running") {
+        reject(
+          socket,
+          id,
+          "conflict",
+          "the conversation is processing a turn; model and reasoning_effort can only be switched while it is idle",
+        );
+        return true;
+      }
+      if (params.model !== undefined) {
+        conversation.model = params.model as { provider_id: string; model: string };
+      }
+      if (typeof params.reasoning_effort === "string" && params.reasoning_effort) {
+        conversation.reasoning_effort = params.reasoning_effort;
+      }
+    }
     const key = String(params?.idempotency_key ?? "");
     const replay = conversationIdempotent.get(key);
     if (replay) respond(socket, id, replay);
@@ -710,6 +744,15 @@ function handleWsMessage(socket: ServerWebSocket, raw: string) {
       if (agentId !== AGENT_ID) {
         reject(socket, id, "invalid_request", `unknown or unsupported agent_id: ${agentId}`);
         return;
+      }
+      // doc `29` §6.1：宿主在运行入口先校验等级词表（`low`/`medium`/`high`/`xhigh`，空串＝不指定）。
+      // mock 不能比服务端宽松——否则本地跑绿的调用到了真机会拿到 `invalid_request`。
+      const effort = params?.reasoning_effort;
+      if (effort !== undefined && effort !== null && effort !== "") {
+        if (typeof effort !== "string" || !["low", "medium", "high", "xhigh"].includes(effort.trim())) {
+          reject(socket, id, "invalid_request", "reasoning_effort must be one of low/medium/high/xhigh");
+          return;
+        }
       }
       const key = typeof params?.idempotency_key === "string" ? params.idempotency_key : null;
       if (key && idempotent.has(key)) {
@@ -865,6 +908,7 @@ function handleWsMessage(socket: ServerWebSocket, raw: string) {
           connector_id: connector.id,
           success: false,
           tools: [],
+          tools_truncated: false,
           error: "connection refused",
           code: "MCP_CONNECTION_FAILED",
         });
@@ -875,6 +919,7 @@ function handleWsMessage(socket: ServerWebSocket, raw: string) {
         connector_id: connector.id,
         success: true,
         tools: connector.tools,
+        tools_truncated: false,
         error: null,
         code: null,
       });

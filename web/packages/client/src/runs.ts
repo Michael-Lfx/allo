@@ -417,6 +417,12 @@ function toWire(input: AgentRunInput): AgentRunRequestWire {
     command_id: input.commandId,
     idempotency_key: input.idempotencyKey,
     mentions: input.mentions,
+    // doc `29` §6.1: run-scoped model + reasoning level. Absent leaves the
+    // precedence chain untouched (explicit > preset > host default).
+    model: input.model
+      ? { provider_id: input.model.provider_id, model: input.model.model }
+      : undefined,
+    reasoning_effort: input.reasoningEffort || undefined,
   };
 }
 

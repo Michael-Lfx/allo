@@ -31,16 +31,19 @@ use axum::http::StatusCode;
 use nomifun_agent_execution::TeamRunReceipt;
 use nomifun_api_types::{
     AgentExecutionTemplateParticipantInput, AppServerAgentDetail, AppServerTeamDetail,
-    ModelPreference, PresetOverrides, ResolvedPresetSnapshot,
+    ConversationResponse, ModelPreference, PresetOverrides, ResolvedPresetSnapshot,
 };
+use nomifun_auth::CurrentUser;
 use nomifun_common::{McpServerId, ProviderWithModel, UserId, generate_id};
+use nomifun_conversation::AppServerTeamLeaderBindings;
 use nomifun_preset::PresetService;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AppServerError, AppServerRouterState, ConversationSendRequest, TeamCatalogProvider,
-    agent_catalog_provider, conversation_service, map_public_run_id, resolve_app_server_model,
-    resolved_chat_workspace, send_conversation_message_for_user, team_catalog_provider,
+    WorkspaceRef, agent_catalog_provider, conversation_service, map_public_run_id,
+    resolve_app_server_model, resolved_chat_workspace, send_conversation_message_for_user,
+    team_catalog_provider,
 };
 
 /// Public `team/run` request (`docs/agent-store/05` §5.2).
@@ -133,7 +136,10 @@ fn declared_max_parallel(team: &AppServerTeamDetail) -> Option<i64> {
 /// `use_model` is the effective request model when set (the same rule
 /// `agent/run` uses when it builds a preset `ModelPreference`), so the fallback
 /// names the model that will actually be called, not the catalog alias.
-fn provider_model_preference(model: &ProviderWithModel) -> ModelPreference {
+///
+/// `pub(crate)` because `agent/run` reuses it verbatim for its own explicit `model` (doc `29` §6.2):
+/// the two entry points must not drift into two different "which name is actually called" rules.
+pub(crate) fn provider_model_preference(model: &ProviderWithModel) -> ModelPreference {
     ModelPreference {
         provider_id: Some(model.provider_id.clone()),
         model: model
@@ -350,11 +356,12 @@ fn require_engine(
 /// Resolve the Team and its member AgentDefinitions, Leader first.
 async fn resolve_team_members(
     state: &AppServerRouterState,
-    request: &TeamRunRequest,
+    team_id: &str,
+    team_version: Option<&str>,
 ) -> Result<(AppServerTeamDetail, Vec<(String, AppServerAgentDetail)>), AppServerError> {
     let teams: std::sync::Arc<dyn TeamCatalogProvider> = team_catalog_provider(state)?;
-    let team = teams.get(&request.team_id).await.map_err(AppServerError::from)?;
-    if let Some(requested) = request.team_version.as_deref().map(str::trim)
+    let team = teams.get(team_id).await.map_err(AppServerError::from)?;
+    if let Some(requested) = team_version.map(str::trim)
         && !requested.is_empty()
         && requested != team.summary.version
     {
@@ -482,6 +489,78 @@ async fn team_connector_fence(
     Ok(fence)
 }
 
+/// A Team's Leader Conversation, built and bound but **not yet spoken to**.
+///
+/// `team/run` sends the Team's `goal` into it as the first turn; `conversation/create`
+/// (doc `27` §5.3) hands it back to a client that wants to open a Team's own chat and
+/// type the first message itself. Both share this one definition of what makes a
+/// Leader a Leader, so the two entry points cannot drift.
+pub(crate) struct PreparedTeamLeader {
+    pub conversation: ConversationResponse,
+    /// The Leader's resolved model — the same resolution the template participants
+    /// inherited, so a receipt and its template agree by construction.
+    pub model: ProviderWithModel,
+}
+
+/// Steps 1–3 of a Team Run (`05` §5.2): resolve the members, materialize/reuse the
+/// execution template, and create the Leader Conversation with its typed bindings.
+///
+/// Deliberately stops **before** the first turn — see [`PreparedTeamLeader`].
+pub(crate) async fn prepare_team_leader_conversation(
+    state: &AppServerRouterState,
+    user: &CurrentUser,
+    team_id: &str,
+    team_version: Option<&str>,
+    workspace: Option<&WorkspaceRef>,
+) -> Result<PreparedTeamLeader, AppServerError> {
+    let owner = UserId::parse(user.id.as_str())
+        .map_err(|error| invalid(format!("invalid owner: {error}")))?;
+    let owner_id = owner.as_str();
+    // Same first gate as `team/run`: a host without an engine refuses before it reads
+    // any Definition, so which entry point a caller used cannot change the error.
+    require_engine(state)?;
+
+    let (team, members) = resolve_team_members(state, team_id, team_version).await?;
+    let connector_ids = team_connector_fence(state, &team).await?;
+
+    // Resolve the Leader's model **before** materializing the template, and use it
+    // as the participants' fallback. One resolution means the Leader Conversation
+    // and every model-less member preset agree by construction instead of by
+    // coincidence — two independent "host default" lookups could disagree.
+    let workspace = resolved_chat_workspace(state, user, workspace).await?;
+    let model: ProviderWithModel = resolve_app_server_model(state, None).await?;
+    let leader_model = provider_model_preference(&model);
+    let template_id = ensure_team_template(state, owner_id, &team, &members, Some(&leader_model)).await?;
+
+    // The Leader's own Skills are the Lead AgentDefinition's; each member's Skills
+    // travel with that member's template participant instead.
+    let leader_skills = members
+        .first()
+        .map(|(_, lead)| lead.summary.skills.clone())
+        .unwrap_or_default();
+
+    let conversation = conversation_service(state)?
+        .create_app_server_team_leader_chat(
+            owner_id,
+            Some(format!("{} (leader)", team.summary.name)),
+            model.clone(),
+            workspace.path().to_string_lossy().into_owned(),
+            Some(workspace.workspace_id().to_owned()),
+            None,
+            AppServerTeamLeaderBindings {
+                connector_ids,
+                skill_names: leader_skills,
+                execution_template_id: template_id,
+                // The Team tier. Server-computed, never from the request: a Store
+                // client can ask for a Team Run, not for a delegation policy.
+                delegation_policy: nomifun_common::DelegationPolicy::Automatic,
+            },
+        )
+        .await
+        .map_err(AppServerError::from)?;
+    Ok(PreparedTeamLeader { conversation, model })
+}
+
 /// Execute one `team/run`, from Definition to public run receipt.
 ///
 /// Idempotency is handled by the caller (it owns the connection context), so this
@@ -506,45 +585,15 @@ pub(crate) async fn execute_team_run(
         )
     })?;
 
-    let (team, members) = resolve_team_members(state, &request).await?;
-    let connector_ids = team_connector_fence(state, &team).await?;
-
-    // Resolve the Leader's model **before** materializing the template, and use it
-    // as the participants' fallback. One resolution means the Leader Conversation
-    // and every model-less member preset agree by construction instead of by
-    // coincidence — two independent "host default" lookups could disagree.
-    let workspace = resolved_chat_workspace(state, user, request.workspace.as_ref()).await?;
-    let model: ProviderWithModel = resolve_app_server_model(state, None).await?;
-    let leader_model = provider_model_preference(&model);
-    let template_id = ensure_team_template(state, owner_id, &team, &members, Some(&leader_model)).await?;
-
-    // The Leader's own Skills are the Lead AgentDefinition's; each member's Skills
-    // travel with that member's template participant instead.
-    let leader_skills = members
-        .first()
-        .map(|(_, lead)| lead.summary.skills.clone())
-        .unwrap_or_default();
-
-    let leader = conversation_service(state)?
-        .create_app_server_team_leader_chat(
-            owner_id,
-            Some(format!("{} (leader)", team.summary.name)),
-            model,
-            workspace.path().to_string_lossy().into_owned(),
-            Some(workspace.workspace_id().to_owned()),
-            None,
-            nomifun_conversation::AppServerTeamLeaderBindings {
-                connector_ids,
-                skill_names: leader_skills,
-                execution_template_id: template_id,
-                // The Team tier. Server-computed, never from the request: a Store
-                // client can ask for a Team Run, not for a delegation policy.
-                delegation_policy: nomifun_common::DelegationPolicy::Automatic,
-            },
-        )
-        .await
-        .map_err(AppServerError::from)?;
-    let leader_id = leader.conversation_id.clone();
+    let prepared = prepare_team_leader_conversation(
+        state,
+        user,
+        &request.team_id,
+        request.team_version.as_deref(),
+        request.workspace.as_ref(),
+    )
+    .await?;
+    let leader_id = prepared.conversation.conversation_id.clone();
 
     // One turn. The Leader's contract for this turn is "call the delegate tool once
     // and end the turn", so waiting for it does not mean waiting for the Team: the
@@ -559,6 +608,14 @@ pub(crate) async fn execute_team_run(
             content: goal,
             idempotency_key: generate_id(),
             attachments: Vec::new(),
+            // The Leader's first turn is the Team's `goal`, not a per-turn Skill
+            // selection: member Skills travel with the Team template (doc `27` §2).
+            mentions: Vec::new(),
+            // doc `29` §9.1：`team/run` 与 `conversation/create(team_id)` 的 Leader 仍由宿主默认模型
+            // 开场，也没有等级参数——团队入口的模型/等级是另一个决定（会牵动成员的模板回退模型）。
+            // Leader 会话之后的每一轮可以走客户端自己的 `conversation/send` 切换（粘性）。
+            model: None,
+            reasoning_effort: None,
         },
     )
     .await;

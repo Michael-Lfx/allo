@@ -39,7 +39,8 @@
 |---|---|---|
 | `25-release-runbook.zh.md` | **发布操作手册（本文）**：一次发布的两个出口（npm 四包 / 站点仓 GitHub Release）、7 条不变量及其机械判据、有序清单 S0–S8、**站点文档同步清单**、失败与回退、已知缺口 | ✅ 现行（每次发版照做；不含产品准入判定） |
 | `28-webui-composer-connector-switch-plan.zh.md` | **WebUI 输入区**：连接器退出 `@` 提及、`+` 菜单与连接器抽屉改为真正的启用开关（宿主级 `enabled`，走第一方 `POST /api/mcp/servers/:id/toggle`，零 wire 变更）；行内「连接」＝发起 OAuth；含语义边界、验收与偏差 | ✅ 已落地（2026-09-23；4 处实现期偏差见 §9.1，手测项待用户验证） |
-| `27-conversation-binding-plan.zh.md` | **会话绑定**：每轮技能（`conversation/send` 收 `mentions`）+ 会话级专家 / 专家团（`conversation/create` 收 `agent_id` / `team_id`）；含**不做每轮连接器**的理由与将来的两条路、验收口径、指纹与跨仓步骤 | 📋 已立项（2026-09-23），未动工 |
+| `27-conversation-binding-plan.zh.md` | **会话绑定**：每轮技能（`conversation/send` 收 `mentions`）+ 会话级专家 / 专家团（`conversation/create` 收互斥的 `agent_id` / `team_id`）；含**不做每轮连接器**的理由与将来的两条路、验收口径、指纹与跨仓步骤 | ✅ 阶段 1 / 2a / 2b 均已落地（`fp-3`/`fp-4`/`fp-5`）；仅剩「Leader 首轮委派」真机实测 |
+| `29-send-model-and-effort-plan.zh.md` | **随调用指定模型与思考等级**：`conversation/send` 与 `agent/run` 各收可选的 `model` / `reasoning_effort`；口径＝**粘性（从本轮起生效）**，`agent/run` 的等级挂 `ResolvedPresetSnapshot.reasoning_effort`（免迁移）；含顺序论证、指纹 `fp-6` 落点、团队一侧的边界 | ✅ 已落地（2026-09-23，`fp-6`）；门禁与真机 `SM-001`–`SM-010` 读数见 §10.1 |
 | `16-sdk-webui-site-priority-plan.zh.md` | **当前执行顺序（四方向）**：① SDK + 站点（配对） ② 插件与市场规范 ③ WebUI ④ 待立项 | 🔧 批 0–7 已收口（三闭环验收通过、`17`/`18` 现行正文）；剩余见 §5.2 剩余任务总表 **R1–R34**（✅ 23 · 🟡 4 · ⏸ 7）；C 档已于 2026-09-11 二次复核改判 |
 | `21-open-decisions.zh.md` | **开放决策书**：D1–D16，逐条带 ⭐ 默认建议与解锁范围（`16` §5.2 剩余任务总表的拍板入口） | ✅ 已拍板（2026-09-10；D13 卡点四档已批准，含 2026-09-11 C 档二次复核改判；D14 MCP 声明文件接入路径 2026-09-12 拍板 ①A ②C ③C；D15 skill 的 `disable` ＝目录标记、D16 商店假「更新」控件摘除，均 2026-09-15） |
 | `22-webui-productionization.zh.md` | **WebUI 生产化立项**（方向四 + WP-5 协议词汇与概念对齐，来源 `16` R33）：11 项拆为**安全类 / 可观测类 / 功能类 / 协议词汇对齐**，逐条给「可验收条目 + 边界 + 依赖」；含**不做假保护**红线与 V1–V4 未决 | 📋 已立项（2026-09-11），未排期 |
@@ -127,6 +128,81 @@
    `changelog` §4）；顺带把 `changelog` §4 那张未发布表的「协议方法面增量」一行补上三个 MCP 方法
    与 `store/list` 的 `published_at`。**版本号口径未动**：工作区仍是 `0.1.0-beta.3`，与文档
    「本文与仓库当前对应 `0.1.0-beta.3`」一致——有张力的是 **wire 面**，不是版本号。
+
+## 本轮（2026-09-23）
+
+1. **每轮技能（`fp-2` → `fp-3`）**（方案：`27-conversation-binding-plan.zh.md` 阶段 1；规格：`05` §12.3）。
+   `conversation/send` 新增可选的 `mentions`（**现有 DTO 加字段**），**只认 `kind: "skill"`**：技能是
+   每轮载荷（正文与不可变快照随这一轮走），而会话的技能/MCP/预设快照在 create 之后只读，所以「一轮挂
+   技能」不需要、也不允许改写那个快照。`agent` / `connector` 两类**显式 `invalid_request`**——专家是
+   会话身份、连接器是宿主级开关，两者在 `send` 上都没有载体；拒绝而不是静默忽略，否则调用方会以为挂上了。
+   失败仍早于占用幂等键。**无方法增删**，计数守卫仍是 `48 / 71`。
+2. **以专家开场（`fp-3` → `fp-4`）**（方案：`27` 阶段 2a；规格：`05` §12.2）。`conversation/create`
+   新增可选的 `agent_id`：解析走 `agent/run` 的同一套语义（`agent_not_installed` / `preset_disabled` /
+   来源白名单 / `runtime_unavailable`），然后把该专家的 **preset 快照**与**它自己声明的技能、连接器**
+   一并冻进这一行。两个实现要点：**技能是「已解析快照」的可信通道**（`create_from_preset_snapshot`），
+   而**宿主 auto-inject 的排除由会话层补**——agent-store 装出来的 preset 这一项是空的
+   （`app_server_installer` 写死 `vec![]`），不补就会让宿主自动技能漏进会话。连接器停用 ⇒
+   `connector_unavailable`。**换专家 = 新建会话**（PATCH 拒绝 preset/技能/MCP 三类键）。仍无方法增删。
+3. **以专家团开场（`fp-4` → `fp-5`）**（方案：`27` 阶段 2b；规格：`05` §12.2）。`conversation/create`
+   新增可选的 `team_id`，与 `agent_id` **互斥**。实现方式是**抽取**而不是复制：`team/run` 的前三步
+   （成员校验 → 连接器栅栏 → 物化/复用执行模板 → 建 Leader 会话）成了
+   `team_run::prepare_team_leader_conversation`，两个入口共用它，唯一区别是 `create` **不发 `goal` 首轮**——
+   客户端自己的第一条 `conversation/send` 就是 Leader 的首轮。抽取的判据是 `team/run` 行为与错误码
+   逐字不变（`execute_team_run` 只接管「发首轮 + 反查 execution」）。仍无方法增删。
+4. **WebUI 侧同批收口**（方案：`28-webui-composer-connector-switch-plan.zh.md`）：连接器退出 `@` 提及，
+   改在 `+` 菜单与连接器抽屉里以**启用开关**呈现（宿主级 `enabled`，走既有第一方
+   `POST /api/mcp/servers/:id/toggle`，零 wire 变更）；行内「连接」＝发起 OAuth；次行改用 `status` 文案。
+   聊天发送路径终于把 skill mention 真正传下去（此前 mention 在聊天路径上被丢掉）。
+5. **站点同步**：`typescript-sdk` 两语言的 `send()` 签名补第 4 个参数（既有 `attachments` 与新增
+   `mentions`，顺带补上此前缺失的附件文档）、`create()` 补 `agentId` / `teamId`、`examples-sdk` §7 增三条配方、
+   `changelog` §4 未发布台账叠加 `fp-3` / `fp-4` / `fp-5` 三条。
+6. **已知偏差（登记）**：站点正文在我动手前已把常量写成 `fp-3`（提前占名），本轮把它的**含义**补齐为
+   「每轮技能」；`fp-3`/`fp-4`/`fp-5` 是代码侧真正落地的值（代码此前仍是 `fp-2`）。
+7. **真机实测（阶段 2b）**：脚本 `web/scripts/sdk-live-team-leader.ts` + 含本次改动的 debug 二进制。
+   官方默认市场**没有专家团**（实测 262 skill + 228 connector，`team = 0`），故用仓库夹具
+   `software-company`（`import/run` + `install/run`，0 warning / 0 error）。读数：`create({ teamId })`
+   成功建出 Leader 会话；客户端首轮被受理并真的开始跑；明确点名时 Leader 会 `ToolSearch` 找到
+   `nomi_delegate` 并调用（拿到 `execution_id`）。**自然语言下是否自发委派由模型决定**（6 次里 2 次委派成功，
+   4 次自己动手做）；同条件 `team/run` 也会 `team_run_not_started` ⇒ 2b 无需回退，但**不能**假定"发首轮就会委派"。
+   另有两条真机契约：夹具团的连接器默认 `enabled=false`，`create` 会（正确地）以
+   `connector_unavailable` 拒绝；同一会话上一轮未结束时不能再委派（`Conflict: … unfinished Agent Execution`）。
+   逐条读数与判定口径的两处修正见 `27` §9.1。
+8. **修掉一个既有缺陷：`agent/run` 的默认模型回退口径不一致**（真机发现）。它此前**只**读宿主 DB 的
+   provider 注册表，而 config.toml 里的 provider 是**按需注册**的（其它路径解析模型时才写库），于是
+   「全新宿主、还没解析过任何模型」时 `@专家`（`agent/run`）会以 `invalid_request`
+   （`resolved_model is required`）失败——真机复现。现在 `default_run_model` **先**取 config 的
+   `default_model`（与会话创建 / `team/run` 同源，`ensure_agent_store_provider` 按需注册），取不到才回退
+   注册表；没有 config 文件的宿主行为不变。**运行期解析口径的修正，不动 DTO/字段，故不 bump 指纹。**
+   真机验收：`web/scripts/sdk-live-mention-agent.ts` 的 `MA-001.fresh-host-agent-run` 在全新宿主上
+   **PASS**（第一次调用即拿到 `run_id`），同批还钉住「未知 id ⇒ `not_found`」与「团 mention ⇒
+   `invalid_request`（wire 上没有 team 这个 kind）」。
+9. **仍未做**：WebUI 尚无「以专家 / 以专家团开会话」的入口（本轮只做协议面与 SDK）。
+10. **随调用指定模型与思考等级（`fp-5` → `fp-6`）**（方案：`29-send-model-and-effort-plan.zh.md`；
+    规格：`05` §12.1 / §12.4 / §5.2）。`conversation/send` 与 `agent/run` 各新增可选的 `model` /
+    `reasoning_effort`，`ConversationView` 新增 `reasoning_effort`。**口径是「从本轮起生效（粘性）」**，
+    不是「只影响这一轮」：运行时按会话行构建（换模型立即重建、换等级在下一个 turn 边界重建），
+    所以 `send` 上带的值写进会话行、本轮就是新设置的第一轮；真·一次性需要引擎级的每轮模型通道。
+    `send` 的三条顺序是契约：**忙判定（`running` / `is_processing` ⇒ `conflict`）→ 差异判定
+    （全相同则不写库、不广播）→ 复用 `conversation/update`**（不新开第二条写模型的路）。之所以要
+    忙判定在前：`update` 换模型会**立即拆运行时**且不看有没有在跑的 turn，而 send 的准入随后会以
+    `Conflict` 拒绝——先落库再被拒就是"既丢回合又丢消息"。`agent/run` 一侧的 `model` 优先级是
+    **显式 > preset 自带 > 宿主默认**（复用 `with_model`，即原 `with_default_model`，改名是因为
+    显式调用点让"默认"这个名字说谎），`reasoning_effort` 走**免迁移**的载体
+    `ResolvedPresetSnapshot.reasoning_effort`（参与者行的快照本来就是 JSON 列，与 `resolved_model`
+    同位同性质；preset 解析永不设置它，故既有行/既有生产者的序列化逐字不变），由 attempt runner
+    投影进尝试会话的 `extra`，此后与普通会话走**同一条**运行时读取路径。`AgentRunRequest` 会被幂等
+    指纹序列化，所以两个新字段带 `skip_serializing_if`——缺席即不进指纹，纯升级不会让既有收据失配。
+    **无方法增删**，计数守卫仍是 `48 / 71`。测试：`cargo test -p nomifun-app-server` **158 passed**
+    （+5 条新增：wire 同形、差异判定、等级唯一读取口径、`agent/run` 新字段与指纹稳定性）。
+11. **站点同步（`fp-6`）**：`typescript-sdk` 两语言 §2 常量、`send()` 的 `model` / `reasoningEffort`
+    与「粘性、且从本轮起生效」的说明、`runs.agent()` 的显式模型/等级与优先级、`changelog` §4 台账
+    叠加 `fp-5` → `fp-6`；`check:docs-sync` 报 0 drift。
+12. **真机验收（`web/scripts/sdk-live-send-model.ts`）**：读数见 `29` §10.1。
+13. **仍未做（登记为独立一轮）**：WebUI 选择器仍是「立即 `conversation/update`」。**不顺手改**的原因
+    写进了 `29` §9.4：`selectedModelKey` / `selectedEffort` 是**全局** localStorage 设置而非每会话，
+    改成随 send 携带会**静默改写用户没瞄准的会话**的模型；正确做法需要三个前置（读回字段[本轮已加]、
+    选择器改每会话、只在必要时挂到 send），故单列一轮。
 
 ## 本轮（2026-09-22）
 

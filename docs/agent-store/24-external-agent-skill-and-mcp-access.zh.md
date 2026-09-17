@@ -153,6 +153,14 @@ adapter 落 `nomifun-app/src/app_server_catalog.rs`（与 `AppServerSkillCatalog
 
 ### 5.1 权限模型（先于协议面定）
 
+> **已修订（`fp-2`，2026-09-22）：本节下面的「强制逐工具 allowlist」不再是现行形状。** 现行形状是
+> **表 fail-closed、表内默认可调**：`enabled` 一旦为真，**已启用的连接器即可调用**，`allow` 是
+> **可选收窄**、`deny` 是**可选减法**（条目词汇与 `[tools]` 同为 `mcp__<连接器>__<工具>`，可写
+> 注册名或 id，只有 `mcp__` 条目是 glob）。改动理由与代价见
+> `26-connector-schema-and-grant-policy.zh.md`（§3.1 一句话：逐工具白名单是在**看不到参数**的
+> 前提下签字，而同一批改动补上了工具 schema 读面，授权单位因此上移到连接器）。下面的原文保留，
+> 以便对照当时的判断——**它解释的是「为什么最初选全关」，不是现在的行为**。
+
 对齐 `nomifun-gateway` 的分级思路，但**工具没有 `DangerTier` 标注，所以不猜**——改用宿主显式 allowlist、默认全关：
 
 ```toml
@@ -163,7 +171,7 @@ allow = ["github__create_issue", "docs__search"]    # 缺省空 = 无工具可�
 ```
 
 - env 覆盖 `AGENT_STORE_CONNECTOR_PROXY`（JSON，同表形状，**整份替换**），与 `AGENT_STORE_TOOLS` 完全同构——复用既有机制，不发明第二个。
-- 判定顺序：`!enabled` → `policy_denied`；工具不在 `allow` → `policy_denied`（**不是** `not_found`：必须能区分「不存在」与「不允许」）；连接器 `enabled == false` → `connector_unavailable`（与 `agent/run` 前置校验同码同义）。
+- 判定顺序：`!enabled` → `policy_denied`；工具不在 `allow` → `policy_denied`（**不是** `not_found`：必须能区分「不存在」与「不允许」）；连接器 `enabled == false` → `connector_unavailable`（与 `agent/run` 前置校验同码同义）。**（`fp-2` 现行顺序**：`!enabled` → 连接器不存在 → `allow` 若非空则须命中 → `deny` 不得命中 → 连接器 `enabled`；两道 `policy_denied` 的 reason 措辞分开。）
 - 审计：每调用一条 `tracing`（principal / connector / tool / 结果 / 耗时 / 字节数）。**不记 arguments 原文**（可能含用户数据），只记 hash 与长度。
 
 ### 5.2 协议面新增 1 个方法
@@ -221,14 +229,15 @@ pub struct AppServerConnectorCallResult {
 **两阶段各执行一次**（不合并，可分别发布），按 `web/AGENTS.md` §5 四步：
 
 1. 改两个常量 → **旧值全仓 grep** 收尾。重点夹具：`web/scripts/mock-server.ts`、`web/scripts/smoke.ts`、`web/packages/sdk/src/readiness.test.ts`。
-   **这步现在有机械门禁（2026-09-21 补）**：`bun run check:fingerprint`（`scripts/check-protocol-fingerprint.mjs`，已进 `bun run check`）按**标识符**比对全部落点——本仓 6 文件 9 处 + 站点 2 处。**任一落点不一致会失败；某个抽取模式一处都匹配不到也会失败**（后者刻意：模式失配意味着门禁其实什么都没查）。新增落点 = 往脚本的 `MIRRORS`（站点 `SITE_MIRRORS`）加一行。详见 `web/AGENTS.md` §5。
+   **这步现在有机械门禁（2026-09-21 补）**：`bun run check:fingerprint`（`scripts/check-protocol-fingerprint.mjs`，已进 `bun run check`）按**标识符**比对全部落点——本仓 7 文件 10 处 + 站点 2 处（`fp-2` 起把 `scripts/probe-agent-store-runtime.mjs` 也纳入了：它此前停在 `2026-09-14`，**跨了两次形状都没人发现**，因为没有任何东西指向它）。**任一落点不一致会失败；某个抽取模式一处都匹配不到也会失败**（后者刻意：模式失配意味着门禁其实什么都没查）。新增落点 = 往脚本的 `MIRRORS`（站点 `SITE_MIRRORS`）加一行。详见 `web/AGENTS.md` §5。
 2. 正文：`05` 头部指纹 + 对应章节；本文档 §9 进度；`README.md` 本轮记录。
 3. **跨仓 `C:\workspace\agent-store-site`**：`content/docs/{zh-CN,en-US}/typescript-sdk.md` §2 常量示例（中英各一处）、**方法计数**（`46 / 68` → 阶段 1 **`47 / 70`** → 阶段 2 **`48 / 71`**——阶段 1 只让**映射**数 +1：`skill/files` 映射，而 `skill/file` 的 HTTP 绑定**非 JSON**，按守卫口径计入**未映射**）、新错误码、`changelog` §4 未发布台账；两语言结构一致。并在 `examples-sdk.md` 补对外用法（现 §9 只有 `skills.list()` 一行）。
 4. 完成标准：旧值在代码里归零；`cargo test -p nomifun-app-server` 与 `cd web && bun run typecheck && bun run test` 绿；站点 `check:docs-sync` 报 `0 drift`、`test:docs-sync` 通过。
 
 > **规划期快照（已过时，保留以对照）**：写本文时指纹是 `2026-09-19`（当日 `2026-09-16`），按「只需与上一次不同」预计下一次取 **`2026-09-20`**；落地前核对 `16` §7 决策 4 台账末尾，**以台账为准**。
 > **实际取值依次为**：`2026-09-19`（通知 `conversation/list-changed`）→ `2026-09-20`（阶段 1）→ `2026-09-21`（阶段 2）。上面那句「下一次取 09-20」是对的，但没预见到阶段 2 会紧接在次日落地。订正与逐次落点见 §9.1。
-> **再之后（2026-09-21 同日）**：形状从日期戳换成 **`fp-<n>` 计数器**，当前值 **`fp-1`**（`2026-09-21` 成了历史值）。理由是日期戳会被误读成发布日期——`2026-…` 既不是变更日也不是发布日。**不改任何 wire 行为**，但严格相等意味着每个客户端都要更新；且这一改**必须在 `beta.4` 之前**做，`2026-09-21` 还没随任何版本发出去。门禁的形状常量是 `scripts/check-protocol-fingerprint.mjs` 的 `FP_SHAPE`。
+> **再之后（2026-09-21 同日）**：形状从日期戳换成 **`fp-<n>` 计数器**，该轮取值 **`fp-1`**（`2026-09-21` 成了历史值）。理由是日期戳会被误读成发布日期——`2026-…` 既不是变更日也不是发布日。**不改任何 wire 行为**，但严格相等意味着每个客户端都要更新；且这一改**必须在 `beta.4` 之前**做，`2026-09-21` 还没随任何版本发出去。门禁的形状常量是 `scripts/check-protocol-fingerprint.mjs` 的 `FP_SHAPE`。
+> **最新（2026-09-22）**：**`fp-1` → `fp-2`**——工具 schema 上 wire（`ConnectorTool.input_schema` + `ConnectorDetail` / `ConnectorProbeResult` 的 `tools_truncated`），同一批把授权单位改为连接器级（§5.1 的修订提示、`05` §4.3.2/§4.3.3、方案 `26-connector-schema-and-grant-policy.zh.md`）。仍**无方法增删**，`48 / 23` 计数守卫未动。
 
 ---
 
@@ -438,6 +447,14 @@ wire 变更**）。要点：
 | adapter | `nomifun-app/src/app_server_connector_call.rs`：三道门 → 调用 → 体积上限 → 审计 |
 | TS | `ConnectorCallResult` + `Capabilities.connector_calls`；`connectors.call()`；路由表 +1 |
 | 指纹 | `2026-09-20` → `2026-09-21`；计数守卫 `47 / 23` → **`48 / 23`** |
+
+> **`fp-2` 修订（2026-09-22，`26` 方案）**：`[connector_proxy]` 的**授权单位由「逐个工具」改为
+> 「连接器」**——`enabled` 为真即默认可调，`allow` 变可选收窄、`deny` 为可选减法，条目词汇与
+> `[tools]` 统一为 `mcp__<连接器>__<工具>`（只有 `mcp__` 条目是 glob）。**表这一层的 fail-closed
+> 不变**（缺表或缺 `enabled` 仍是关），第 2 条「同时接受 id 与注册名」也继续成立。但下面第 1 条
+> 那句「`allow` 为空也一律拒绝」**只描述当时的形状**：现在 `allow` **缺席**表示全放，只有显式写成
+> `allow = []` 才是「什么都不放」。同时新增工具 schema 读面（`ConnectorTool.input_schema`），
+> 让「同意一个工具」不再是盲签。
 
 **几个刻意的设计选择（都有理由，不只是实现细节）**：
 

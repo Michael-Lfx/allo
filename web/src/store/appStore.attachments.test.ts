@@ -30,14 +30,22 @@ const { initialConversationStream } = await import("../lib/conversation-events")
 
 const ROOT = "C:/ws";
 
-type Sent = { content: string; attachments: string[] };
+type Sent = { content: string; attachments: string[]; mentions: Array<{ kind: string; id: string }> };
 
 function fakeClient(sent: Sent[], fail = false) {
   return {
     conversations: {
-      send: async (_conversationId: string, content: string, _key: string, attachments: string[] = []) => {
+      // doc `27`：第 4 参是「这一轮的选项」（附件 + 本轮技能），旧数组形态仍兼容。
+      send: async (
+        _conversationId: string,
+        content: string,
+        _key: string,
+        options: string[] | { attachments?: string[]; mentions?: Array<{ kind: string; id: string }> } = {},
+      ) => {
+        const attachments = Array.isArray(options) ? options : (options.attachments ?? []);
+        const mentions = Array.isArray(options) ? [] : (options.mentions ?? []);
         if (fail) throw new Error("boom");
-        sent.push({ content, attachments });
+        sent.push({ content, attachments, mentions });
         return {
           conversation_id: "c1",
           message_id: "m1",
@@ -97,8 +105,44 @@ describe("appStore · 附件（R15）", () => {
 
     await useAppStore.getState().send();
 
-    expect(sent).toEqual([{ content: "看看这张图", attachments: [`${ROOT}/a.png`, `${ROOT}/b.webp`] }]);
+    expect(sent).toEqual([
+      { content: "看看这张图", attachments: [`${ROOT}/a.png`, `${ROOT}/b.webp`], mentions: [] },
+    ]);
     expect(useAppStore.getState().composerAttachments).toEqual([]);
+  });
+
+  it("发送时把技能 mention 交给 send（doc 27），并在拿到回执后清空", async () => {
+    const sent: Sent[] = [];
+    useAppStore.setState({
+      client: fakeClient(sent),
+      draft: "按这个技能做",
+      selectedConversationId: "c1",
+      composerMentions: [{ kind: "skill", id: "release-notes" }] as never,
+    });
+
+    await useAppStore.getState().send();
+
+    expect(sent).toEqual([
+      { content: "按这个技能做", attachments: [], mentions: [{ kind: "skill", id: "release-notes" }] },
+    ]);
+    // 回执之后清空：否则下一条消息会再挂一次同一个技能。
+    expect(useAppStore.getState().composerMentions).toBeNull();
+  });
+
+  it("发送失败时保留技能 mention（重发不会少挂技能）", async () => {
+    const sent: Sent[] = [];
+    useAppStore.setState({
+      client: fakeClient(sent, true),
+      draft: "按这个技能做",
+      selectedConversationId: "c1",
+      composerMentions: [{ kind: "skill", id: "release-notes" }] as never,
+    });
+
+    await useAppStore.getState().send();
+
+    expect(sent).toEqual([]);
+    expect(useAppStore.getState().composerMentions).toEqual([{ kind: "skill", id: "release-notes" }]);
+    expect(useAppStore.getState().error).toBeTruthy();
   });
 
   it("发送失败时保留附件（可以直接重发，不丢选择）", async () => {

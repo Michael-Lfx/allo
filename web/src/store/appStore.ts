@@ -188,11 +188,19 @@ function announceRunTerminal(
 async function submitTurn(
   set: StoreSet,
   get: () => AppState,
-  options: { conversationId: string; content: string; idempotencyKey: string; attachments?: string[] },
+  options: {
+    conversationId: string;
+    content: string;
+    idempotencyKey: string;
+    attachments?: string[];
+    /** doc `27` §4.1：**本轮**挂载的技能。会话的技能快照在创建时冻结且不可变，
+     *  所以技能唯一的作用域就是一轮（空数组不上 wire）。 */
+    mentions?: MentionRef[];
+  },
 ): Promise<void> {
   const client = get().client;
   if (!client) throw new Error("not connected");
-  const { conversationId, content, idempotencyKey, attachments = [] } = options;
+  const { conversationId, content, idempotencyKey, attachments = [], mentions = [] } = options;
   const pendingId = `pending:${idempotencyKey}`;
   // 先记账再发请求：发送**失败**时这条 pending 行就是「重发」的目标，而复用它必须
   // 拿到同一个键（`turn-actions.ts` 的 resend 分支）；等到回执再记就晚了。
@@ -210,7 +218,10 @@ async function submitTurn(
     },
   });
   try {
-    const receipt = await client.conversations.send(conversationId, content, idempotencyKey, attachments);
+    const receipt = await client.conversations.send(conversationId, content, idempotencyKey, {
+      attachments,
+      mentions,
+    });
     // Reconciliation lives in the reducer, next to the event merge it has
     // to agree with (see `reconcilePending` there).
     get().dispatchStream({
@@ -1426,11 +1437,22 @@ export const useAppStore = create<AppState>()((set, get) => ({
     // all four turn actions share) — appending one here too would add a second
     // row under the same `pending:<key>` id, and `appendPending` does not dedup.
     set({ draft: "" });
+    // 走到这里的 mention 只剩技能：专家在上面已经转成一次 Run（doc `27` §4.1 只让
+    // 技能随轮走，连接器在 WebUI 侧根本不产生 mention）。空数组不上 wire。
+    const turnMentions = (composerMentions ?? []).filter((mention) => mention.kind === "skill");
     try {
-      await submitTurn(set, get, { conversationId, content, idempotencyKey: key, attachments: composerAttachments });
+      await submitTurn(set, get, {
+        conversationId,
+        content,
+        idempotencyKey: key,
+        attachments: composerAttachments,
+        mentions: turnMentions,
+      });
       // R15：附件只在**拿到回执**后清空——发送失败时保留，用户可以直接重发
-      // （重发复用原幂等键，见 `turn-actions.ts`）。
+      // （重发复用原幂等键，见 `turn-actions.ts`）。技能 mention 同理：留着，
+      // 否则失败后用户再按一次发送就悄悄少了技能。
       if (composerAttachments.length > 0) set({ composerAttachments: [] });
+      if (turnMentions.length > 0) set({ composerMentions: null });
     } catch (caught) {
       set({ error: formatError(caught) });
     } finally {

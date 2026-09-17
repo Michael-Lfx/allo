@@ -166,13 +166,23 @@ impl AppServerConnectorStatus {
     }
 }
 
-/// One namespaced tool exposed by a Connector. Only the public (namespaced)
-/// name is returned; upstream tool structures and schemas stay internal.
+/// One namespaced tool exposed by a Connector.
+///
+/// The public (namespaced) name, the upstream description and the upstream
+/// parameter schema are returned; the connection and its credentials stay on
+/// the host. The schema is here because a caller that has to *name* a tool in
+/// order to be granted it should be able to read what that tool takes — a grant
+/// to a name nobody can inspect is a blind signature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerConnectorTool {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The upstream `tools/list` `inputSchema`, **verbatim**; `None` when the
+    /// server published none, or when it was omitted to stay inside the tools
+    /// budget (see [`AppServerConnectorDetail::tools_truncated`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
 }
 
 /// Public Connector summary (`01-domain-model.md` §7).
@@ -208,6 +218,14 @@ pub struct AppServerConnectorDetail {
     /// Always serialized (empty before the first successful probe).
     #[serde(default)]
     pub tools: Vec<AppServerConnectorTool>,
+    /// Some `input_schema` values were omitted to stay inside the tools budget.
+    ///
+    /// Reported rather than silently dropped: names and descriptions are always
+    /// kept (they are what a caller chooses by), while a schema is only ever
+    /// included whole — a half-truncated JSON Schema would be parsed and
+    /// believed. `false` also means "nothing was omitted".
+    #[serde(default)]
+    pub tools_truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_status: Option<AppServerOAuthStatusView>,
     pub source: String,
@@ -237,6 +255,10 @@ pub struct AppServerConnectorProbeResult {
     /// Stable machine code (e.g. `MCP_CONNECTION_FAILED`); never raw internals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    /// Some `input_schema` values were omitted to stay inside the tools budget
+    /// (same rule as [`AppServerConnectorDetail::tools_truncated`]).
+    #[serde(default)]
+    pub tools_truncated: bool,
 }
 
 /// Result of one MCP tool call through the connector call proxy

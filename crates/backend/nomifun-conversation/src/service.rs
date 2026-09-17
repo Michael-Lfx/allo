@@ -4851,6 +4851,13 @@ pub const APP_SERVER_CHAT_EXTRA_KEY: &str = "app_server_chat";
 pub struct AppServerChatBindings {
     pub connector_ids: Vec<McpServerId>,
     pub skill_names: Vec<String>,
+    /// 专家（AgentDefinition）的身份，doc `27` §5.2。
+    ///
+    /// 由 App Server 解析后交进来（它已经查过来源白名单与 `enabled`）：`create` 会把它冻进
+    /// 会话的 `preset_snapshot` / `preset_revision` 列，运行时据此投影专家的提示词。
+    /// **只在创建时接受**——`ConversationService::update` 明确拒绝改动 preset 快照，
+    /// 「换专家 = 新建会话」是刻意的语义。
+    pub preset_snapshot: Option<ResolvedPresetSnapshot>,
 }
 
 /// What an installed Team Definition binds into its **Leader Conversation**
@@ -4907,6 +4914,7 @@ impl ConversationService {
         let AppServerChatBindings {
             connector_ids,
             skill_names,
+            preset_snapshot,
         } = bindings;
         self.create_app_server_chat(
             user_id,
@@ -4919,6 +4927,7 @@ impl ConversationService {
             skill_names,
             DelegationPolicy::Disabled,
             None,
+            preset_snapshot,
         )
         .await
     }
@@ -4970,6 +4979,9 @@ impl ConversationService {
             skill_names,
             delegation_policy,
             Some(execution_template_id),
+            // A Team Leader's identity is the Team template, not an expert preset:
+            // member presets travel with the template participants (doc `27` §5.3).
+            None,
         )
         .await
     }
@@ -4994,6 +5006,8 @@ impl ConversationService {
         skill_names: Vec<String>,
         delegation_policy: DelegationPolicy,
         execution_template_id: Option<String>,
+        // doc `27` §5.2：专家身份（已解析快照）。`None` = 普通会话。
+        preset_snapshot: Option<ResolvedPresetSnapshot>,
     ) -> Result<ConversationResponse, AppError> {
         model
             .validate()
@@ -5029,24 +5043,39 @@ impl ConversationService {
         if let Some(effort) = reasoning_effort {
             extra["reasoning_effort"] = serde_json::Value::String(effort);
         }
-        self.create(
-            user_id,
-            CreateConversationRequest {
-                r#type: AgentType::Nomi,
-                name,
-                model: Some(model),
-                source: Some(ConversationSource::Nomifun),
-                channel_chat_id: None,
-                preset_id: None,
-                preset_overrides: None,
-                delegation_policy,
-                execution_model_pool: None,
-                decision_policy: DecisionPolicy::Automatic,
-                execution_template_id,
-                extra,
-            },
-        )
-        .await
+        let request = CreateConversationRequest {
+            r#type: AgentType::Nomi,
+            name,
+            model: Some(model),
+            source: Some(ConversationSource::Nomifun),
+            channel_chat_id: None,
+            preset_id: None,
+            preset_overrides: None,
+            delegation_policy,
+            execution_model_pool: None,
+            decision_policy: DecisionPolicy::Automatic,
+            execution_template_id,
+            extra,
+        };
+        match preset_snapshot {
+            // doc `27` §5.2：专家（AgentDefinition）的身份只在**创建时**绑定，且走「已解析
+            // 快照」的可信通道——快照由 App Server 解析（来源白名单与 enabled 它已经查过）。
+            //
+            // 这里唯一要补的是**本宿主的 auto-inject 名单**：`create_inner` 会用快照的
+            // `excluded_auto_skills` 覆盖上面那条栅栏，而 agent-store 专家装出来的 preset
+            // 这一项是空的（`app_server_installer` 写的是 `vec![]`）——不并进来，宿主的自动
+            // 技能就会漏进这个会话，正是 `app_server_chat_binds_exactly_the_definition_*`
+            // 当初要挡的那件事。
+            Some(mut snapshot) => {
+                for name in &excluded_auto_skills {
+                    if !snapshot.excluded_auto_skills.contains(name) {
+                        snapshot.excluded_auto_skills.push(name.clone());
+                    }
+                }
+                self.create_from_preset_snapshot(user_id, request, snapshot).await
+            }
+            None => self.create(user_id, request).await,
+        }
     }
 
     /// Read an App Server-owned chat without exposing arbitrary first-party
@@ -16260,6 +16289,7 @@ mod tests {
             resolved_agent_type: Some("nomi".to_owned()),
             resolved_agent_backend: None,
             resolved_model: None,
+            reasoning_effort: None,
             included_skills: Vec::new(),
             excluded_auto_skills: Vec::new(),
             knowledge_policy: Default::default(),

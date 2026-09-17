@@ -1970,6 +1970,7 @@ async fn preset_resolved_nomi_model_reconciles_and_persists_the_finite_pool() {
             model: preset_model.to_owned(),
             required: true,
         }),
+        reasoning_effort: None,
         included_skills: Vec::new(),
         excluded_auto_skills: Vec::new(),
         knowledge_policy: PresetKnowledgePolicy::default(),
@@ -2175,6 +2176,7 @@ async fn preset_resolved_nomi_model_does_not_bypass_explicit_template_authority(
             model: "preset-model".to_owned(),
             required: true,
         }),
+        reasoning_effort: None,
         included_skills: Vec::new(),
         excluded_auto_skills: Vec::new(),
         knowledge_policy: PresetKnowledgePolicy::default(),
@@ -17346,6 +17348,8 @@ async fn app_server_chat_binds_exactly_the_definition_connectors_and_skills() {
             AppServerChatBindings {
                 connector_ids: vec![nomifun_api_types::McpServerId::parse(bindable).unwrap()],
                 skill_names: vec!["bound-skill".into()],
+                // No expert identity: this is the plain Definition-bound chat (doc `27` §5.2).
+                preset_snapshot: None,
             },
         )
         .await
@@ -17408,6 +17412,90 @@ async fn app_server_chat_binds_exactly_the_definition_connectors_and_skills() {
     );
     assert_eq!(unbound.extra["mcp_servers"], json!([]));
     assert_eq!(unbound.extra["skills"], json!([]));
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+/// doc `27` §5.2：会话可以**以某个专家开场**——身份走「已解析快照」通道，而宿主的
+/// auto-inject 排除**不能**被那份快照覆盖掉。
+///
+/// 这是「谁负责补那道栅栏」的回归守卫：agent-store 装出来的专家 preset 的
+/// `excluded_auto_skills` 是空的（`app_server_installer` 写死 `vec![]`），所以补的人只能是
+/// 会话 seam 自己。少了它，`host-auto-skill` 就会漏进这个会话。
+#[tokio::test]
+async fn app_server_expert_chat_freezes_the_snapshot_and_keeps_the_auto_inject_fence() {
+    let (svc, _broadcaster, _repo, _runtime_registry) = make_service_with_resolver(Arc::new(
+        FixedSkillResolver {
+            names: vec!["host-auto-skill".into()],
+        },
+    ));
+
+    let workspace = std::env::temp_dir().join("app-server-expert-snapshot");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let model = ProviderWithModel {
+        provider_id: PROVIDER_ID_1.to_owned(),
+        model: "m1".to_owned(),
+        use_model: None,
+    };
+
+    // The expert's resolved preset: Skills come from the Definition (passed as a resolve
+    // override, which is why they are already in `included_skills` here), and the auto-inject
+    // exclusion is empty — exactly the shape the installer produces.
+    let snapshot = ResolvedPresetSnapshot {
+        preset_id: "0190f5fe-7c00-7a00-8000-000000000301".to_owned(),
+        preset_revision: 7,
+        preset_name: "agent-store: software-architect".to_owned(),
+        target: PresetTarget::Conversation,
+        routing_description: None,
+        instructions: "You are a software architect.".to_owned(),
+        resolved_agent_id: None,
+        resolved_agent_type: Some("nomi".to_owned()),
+        resolved_agent_backend: None,
+        resolved_model: None,
+        reasoning_effort: None,
+        included_skills: vec!["bound-skill".into()],
+        excluded_auto_skills: Vec::new(),
+        knowledge_policy: PresetKnowledgePolicy::default(),
+        knowledge_base_ids: Vec::new(),
+        mcp_server_ids: Vec::new(),
+        warnings: Vec::new(),
+    };
+
+    let conversation = svc
+        .create_app_server_nomi_chat(
+            TEST_USER_1,
+            Some("expert-chat".to_owned()),
+            model,
+            workspace.to_string_lossy().into_owned(),
+            None,
+            None,
+            AppServerChatBindings {
+                connector_ids: Vec::new(),
+                skill_names: vec!["bound-skill".into()],
+                preset_snapshot: Some(snapshot.clone()),
+            },
+        )
+        .await
+        .expect("create must succeed");
+
+    // The expert identity is frozen into the conversation (all three are first-class columns).
+    assert_eq!(
+        conversation.preset_id.as_deref(),
+        Some(snapshot.preset_id.as_str()),
+        "{conversation:?}"
+    );
+    assert_eq!(conversation.preset_revision, Some(snapshot.preset_revision));
+    assert!(
+        conversation.preset_snapshot.is_some(),
+        "the expert's snapshot must be frozen: {conversation:?}"
+    );
+    // …and the host's auto-inject Skill stays excluded even though the snapshot excluded nothing.
+    assert_eq!(
+        conversation.extra["skills"],
+        json!(["bound-skill"]),
+        "the Definition's Skill only; host-auto-skill must not leak in: {conversation:?}"
+    );
+    assert_eq!(conversation.extra["mcp_server_ids"], json!([]));
 
     let _ = std::fs::remove_dir_all(&workspace);
 }

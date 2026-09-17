@@ -12,9 +12,14 @@
 //
 //   start:<pid>            process came up
 //   initialize:<pid>       completed the handshake
+//   tools/list:<pid>       answered a tools/list
 //   call:<pid>:<tool>      received a tools/call
 //
 // Tools:
+//   tools/list            → two tools: `echo` (with an `inputSchema`) and `bare`
+//                           (deliberately without one), so a caller can pin
+//                           "the schema is the server's own, verbatim" and
+//                           "no schema stays absent" against a real handshake
 //   anything              → a normal result
 //   boom                  → a tool-level failure (`isError: true`)
 //   rpc-error             → a JSON-RPC error response
@@ -67,6 +72,35 @@ lines.on("line", (line) => {
   }
 
   if (message.method === "notifications/initialized") return;
+
+  // A real MCP server answers `tools/list`; this one does too, because the
+  // connector tool read face (doc 26 §5) is only proven against a handshake
+  // that carries an `inputSchema` the test did not invent on the wire.
+  if (message.method === "tools/list") {
+    note(`tools/list:${process.pid}`);
+    reply({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        tools: [
+          {
+            name: "echo",
+            description: "echo the arguments back",
+            inputSchema: {
+              type: "object",
+              properties: { message: { type: "string", description: "text to echo" } },
+              required: ["message"],
+            },
+          },
+          // `inputSchema` is optional in the protocol, so the fixture publishes
+          // one tool without it: "the server declared no schema" and "the server
+          // declared an empty one" must stay distinguishable to a caller.
+          { name: "bare", description: "declares no schema" },
+        ],
+      },
+    });
+    return;
+  }
 
   if (message.method === "tools/call") {
     const tool = message.params?.name;

@@ -1184,11 +1184,14 @@ pub struct AppServices {
     /// [`nomifun_api_types::NomiToolPolicy::default`], which constrains nothing.
     pub tool_policy: nomifun_api_types::NomiToolPolicy,
     /// The host's `[connector_proxy]` policy, resolved once at startup (doc `24`
-    /// §5.1).
+    /// §5.1, doc `26`).
     ///
-    /// Fail-closed: every host that does not declare the table carries
+    /// Fail-closed at the table: every host that does not declare
+    /// `[connector_proxy]` carries
     /// [`nomifun_app_server::agent_store::ConnectorProxyPolicy::deny_all`], so
-    /// the call proxy is off unless an operator wrote the allowlist down.
+    /// the call proxy is off unless an operator turned it on. Inside a table
+    /// that *is* on, `allow` narrows and `deny` subtracts — an absent `allow`
+    /// lets the enabled connectors through (doc `26` §4).
     pub connector_proxy_policy: nomifun_app_server::agent_store::ConnectorProxyPolicy,
     /// The raw `--adopt-store-mcp-declarations` flag the resolved
     /// `mcp_declarations` below came from.
@@ -1599,7 +1602,7 @@ const TOOLS_ENV: &str = "AGENT_STORE_TOOLS";
 /// call proxy through the environment either.
 const CONNECTOR_PROXY_ENV: &str = "AGENT_STORE_CONNECTOR_PROXY";
 
-/// Resolve this host's connector call policy (doc `24` §5.1).
+/// Resolve this host's connector call policy (doc `24` §5.1, doc `26`).
 ///
 /// Two deliberate properties, both load-bearing:
 ///
@@ -1607,12 +1610,14 @@ const CONNECTOR_PROXY_ENV: &str = "AGENT_STORE_CONNECTOR_PROXY";
 ///   `[tools]` (`--adopt-store-tool-policy`, set only by `apps/agent-store`), so
 ///   the desktop and web hosts — which read the same file for providers and
 ///   marketplaces — never expose a call proxy because of it.
-/// - **Fail-closed, unlike the tool policy.** A missing file, a missing table or
-///   an unparseable override all yield [`ConnectorProxyPolicy::deny_all`]. The
-///   tool policy fails *open* because it only ever subtracts from a surface the
-///   host already had; this one fails *closed* because it grants a third party
-///   the ability to execute tools on the host's connections. A typo must never
-///   be the difference between "nothing callable" and "everything callable".
+/// - **Fail-closed about the decision to grant.** A missing file, a missing
+///   table or an unparseable override all yield
+///   [`ConnectorProxyPolicy::deny_all`]. The tool policy fails *open* because it
+///   only ever subtracts from a surface the host already had; this one grants a
+///   third party the ability to execute tools on the host's connections, so a
+///   typo must never be the difference between "the proxy is off" and "the proxy
+///   is on". (What the *contents* of an enabled table allow is a separate
+///   question, answered by `allow`/`deny` — doc `26` §4.)
 ///
 /// Kept pure so the rule above is testable without booting a database.
 fn resolve_connector_proxy_policy(
@@ -3221,9 +3226,12 @@ impl AppServices {
 
         // Host-owned connector call policy, read at startup from the same file
         // (`[connector_proxy]`, doc `24` §5.1). Same host gating as `[tools]`:
-        // only the dedicated Store host exposes a call proxy, and only for the
-        // pairs its operator allowlisted. `AGENT_STORE_CONNECTOR_PROXY` (JSON)
-        // precedes the file so a spawned host gets the policy it asked for.
+        // only the dedicated Store host exposes a call proxy. Inside an enabled
+        // table `allow` narrows and `deny` subtracts, so the operator's own
+        // config is the whole story — including the case where they narrowed a
+        // stale spelling, which `warnings()` names out loud (doc `26` §4.4).
+        // `AGENT_STORE_CONNECTOR_PROXY` (JSON) precedes the file so a spawned
+        // host gets the policy it asked for.
         let proxy_env = std::env::var(CONNECTOR_PROXY_ENV).ok();
         let connector_proxy_policy = resolve_connector_proxy_policy(
             config.adopt_store_tool_policy,
@@ -3235,6 +3243,13 @@ impl AppServices {
                 target: "agent_store_connector_proxy",
                 "connector call proxy enabled for this host"
             );
+            // Once per boot, like the `mcp.json` report below: whether a call
+            // reaches a connector is per-session work, but *what the policy
+            // allows* is a single fact — and the permissive default is
+            // invisible without being said out loud.
+            for warning in connector_proxy_policy.warnings() {
+                tracing::warn!(target: "agent_store_connector_proxy", "{warning}");
+            }
         }
 
         // Host-owned MCP server declarations, read once at startup from

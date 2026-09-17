@@ -160,7 +160,7 @@ function fakeHost(options: FakeOptions = {}) {
       },
       async test(id: string) {
         calls.push(`connectors.test:${id}`);
-        const list = options.probe ?? [{ connector_id: id, success: true }];
+        const list = options.probe ?? [{ connector_id: id, success: true, tools_truncated: false }];
         const answer = list[Math.min(probeIndex, list.length - 1)];
         probeIndex += 1;
         return answer;
@@ -330,7 +330,7 @@ describe("StoreClient · waitForReady", () => {
   it("returns immediately when a connector needs authorization", async () => {
     const { host, calls } = fakeHost({
       statuses: [status([{ id: "conn-1", kind: "connector", name: "Mail", state: "installed" }])],
-      probe: [{ connector_id: "conn-1", success: false, code: "authorization_required" }],
+      probe: [{ connector_id: "conn-1", success: false, code: "authorization_required", tools_truncated: false }],
       connectorStatus: [{ connector_id: "conn-1", status: "authorization_required" }],
     });
     const client = new StoreClient(host, { readyPollMs: 1, readyTimeoutMs: 2_000 });
@@ -346,7 +346,7 @@ describe("StoreClient · waitForReady", () => {
   it("enables a connector before probing it", async () => {
     const { host, calls } = fakeHost({
       statuses: [status([{ id: "conn-1", kind: "connector", name: "Mail", state: "installed" }])],
-      probe: [{ connector_id: "conn-1", success: true }],
+      probe: [{ connector_id: "conn-1", success: true, tools_truncated: false }],
     });
     const client = new StoreClient(host, { readyPollMs: 1, readyTimeoutMs: 50 });
 

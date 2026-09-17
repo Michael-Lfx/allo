@@ -101,19 +101,30 @@ pub struct AgentStoreConfig {
     #[serde(default)]
     pub tools: Option<NomiToolPolicy>,
     /// `[connector_proxy]` — which MCP tools this host will **call on a third
-    /// party's behalf** (doc `24` §5).
+    /// party's behalf** (doc `24` §5, shape revised by doc `26`).
     ///
     /// ```toml
     /// [connector_proxy]
     /// enabled = true
-    /// allow = ["github__create_issue", "docs__search"]   # "<name>__<tool>" or "<id>__<tool>"
+    /// allow = ["mcp__github__*"]           # optional narrowing; absent = everything
+    /// deny = ["mcp__*__delete_*"]          # optional subtraction, applied after `allow`
     /// ```
     ///
-    /// **Fail-closed, and deliberately opt-in.** An absent table, an absent
-    /// `enabled`, or an empty `allow` all mean *no tool may be called*: MCP
-    /// tools carry no danger annotation of their own, so there is nothing to
-    /// infer a default from. The only way a tool becomes callable is for the
-    /// host's own operator to write it down.
+    /// **Fail-closed about the table, permissive about its contents.** An absent
+    /// table or an absent `enabled` still means *the proxy is off*. But once the
+    /// host's operator has turned it on, the default is that the enabled
+    /// connectors are callable: `allow` is an **optional** narrowing (present but
+    /// empty = nothing callable) and `deny` subtracts afterwards.
+    ///
+    /// This replaced a mandatory per-tool allowlist. The reason is in doc `26`
+    /// §3.1: a grant to a tool name nobody could inspect was a blind signature,
+    /// and the fix for that (exposing the schema, §5 there) is what makes the
+    /// larger unit defensible.
+    ///
+    /// Entries use the engine's tool vocabulary — `mcp__<connector>__<tool>`,
+    /// where `<connector>` may be the registered name or the id, and only
+    /// `mcp__…` entries are globs (`mcp__github__*` for a whole connector). The
+    /// same rule `[tools].enabled`/`disabled` use.
     ///
     /// Like `[tools]`, **only the `agent-store` host adopts this**; the desktop
     /// and web hosts read the same file for providers/marketplaces and never
@@ -139,7 +150,7 @@ pub struct AgentStoreConfig {
     pub credentials: HashMap<String, String>,
 }
 
-/// `[connector_proxy]` in `~/.agent-store/config.toml` (doc `24` §5.1).
+/// `[connector_proxy]` in `~/.agent-store/config.toml` (doc `24` §5.1, doc `26`).
 ///
 /// Hand-edited, and **not** on the `config/set` whitelist: this table decides
 /// what a third party is allowed to execute through this host, which is not a
@@ -150,21 +161,63 @@ pub struct AgentStoreConnectorProxy {
     /// Absent or `false` = the call proxy is off entirely.
     #[serde(default)]
     pub enabled: Option<bool>,
-    /// Entries of the form `<connector>__<tool>`, where `<connector>` is either
-    /// the connector's registered **name** (what `connector/list` shows) or its
-    /// **id** (the unambiguous spelling).
+    /// **Optional narrowing.** Entries are `mcp__<connector>__<tool>` patterns
+    /// (`mcp__github__*` for a whole connector); `<connector>` may be the
+    /// registered name or the id.
     ///
-    /// No wildcards: an allowlist that can be widened by a typo is not an
-    /// allowlist. Absent or empty = nothing callable.
+    /// **Absent = every tool of every enabled connector is callable.** Present
+    /// but empty (`allow = []`) = nothing is callable, which is why the field
+    /// stays an `Option`: "I did not narrow" and "I narrowed to nothing" are
+    /// different statements and must not collapse into one.
+    ///
+    /// The old spelling was `<connector>__<tool>` without the `mcp__` prefix.
+    /// Those entries no longer match anything (fail-closed, i.e. they narrow to
+    /// nothing rather than widening); [`ConnectorProxyPolicy::warnings`] names
+    /// them so the operator can rewrite them.
     #[serde(default)]
     pub allow: Option<Vec<String>>,
+    /// **Optional subtraction**, applied *after* `allow` — the same order
+    /// `[tools].disabled` uses. Absent or empty subtracts nothing.
+    #[serde(default)]
+    pub deny: Option<Vec<String>>,
 }
+
+/// Whether a policy entry selects `tool_name`.
+///
+/// The rule is the engine's (`nomi-tools/src/registry.rs`), and it is
+/// deliberately not re-invented here: builtin-style names are compared exactly
+/// and case-sensitively, and only entries in the `mcp__` namespace are globs.
+/// Both sides use the same `glob` crate, so the semantics cannot drift; the
+/// engine's own case table is copied into this file's tests so that even the
+/// wrapper cannot drift silently.
+///
+/// Every candidate name this module builds starts with `mcp__`, so a non-`mcp__`
+/// entry can never match — which is exactly the stale-allowlist case
+/// [`ConnectorProxyPolicy::warnings`] reports.
+fn tool_name_matches(pattern: &str, tool_name: &str) -> bool {
+    if pattern.starts_with(MCP_TOOL_PREFIX) {
+        glob::Pattern::new(pattern)
+            .map(|parsed| parsed.matches(tool_name))
+            .unwrap_or(false)
+    } else {
+        pattern == tool_name
+    }
+}
+
+fn matches_any(patterns: &std::collections::HashSet<String>, tool_name: &str) -> bool {
+    patterns.iter().any(|pattern| tool_name_matches(pattern, tool_name))
+}
+
+/// The reserved prefix for MCP proxy tool names.
+const MCP_TOOL_PREFIX: &str = "mcp__";
 
 /// The `[connector_proxy]` table, resolved into the form the call gate uses.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConnectorProxyPolicy {
     enabled: bool,
-    allow: std::collections::HashSet<String>,
+    /// `None` = no narrowing was declared (everything is callable).
+    allow: Option<std::collections::HashSet<String>>,
+    deny: std::collections::HashSet<String>,
 }
 
 impl ConnectorProxyPolicy {
@@ -177,16 +230,11 @@ impl ConnectorProxyPolicy {
     pub fn from_declared(declared: &AgentStoreConnectorProxy) -> Self {
         Self {
             enabled: declared.enabled.unwrap_or(false),
-            allow: declared
-                .allow
+            allow: declared.allow.as_ref().map(|entries| clean_entries(entries)),
+            deny: declared
+                .deny
                 .as_ref()
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .map(|entry| entry.trim().to_owned())
-                        .filter(|entry| !entry.is_empty())
-                        .collect()
-                })
+                .map(|entries| clean_entries(entries))
                 .unwrap_or_default(),
         }
     }
@@ -195,13 +243,50 @@ impl ConnectorProxyPolicy {
         self.enabled
     }
 
+    /// Configuration states worth telling the operator about, as
+    /// caller-rendered messages (same shape as
+    /// `NomiToolPolicy::syntax_warnings`, and for the same reason: a pure
+    /// function is testable, a log inside a constructor is not).
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !self.enabled {
+            return warnings;
+        }
+        match self.allow.as_ref() {
+            None => warnings.push(
+                "[connector_proxy] is enabled with neither `allow` nor `deny`: every tool of \
+                 every enabled connector is callable by third parties."
+                    .to_owned(),
+            ),
+            Some(allow) if allow.is_empty() => warnings.push(
+                "[connector_proxy].allow is present but empty, which allows nothing (an absent \
+                 `allow` would allow everything)."
+                    .to_owned(),
+            ),
+            Some(_) => {}
+        }
+        for (field, entries) in [("allow", self.allow.as_ref()), ("deny", Some(&self.deny))] {
+            for entry in entries.into_iter().flatten() {
+                if !entry.starts_with(MCP_TOOL_PREFIX) {
+                    warnings.push(format!(
+                        "[connector_proxy].{field} entry `{entry}` is not an `mcp__` pattern and \
+                         can never match; write `mcp__{entry}` (a whole connector is \
+                         `mcp__{entry}__*`)."
+                    ));
+                }
+            }
+        }
+        warnings
+    }
+
     /// May `tool` be called on this connector?
     ///
-    /// `Ok(())` only for an explicitly allowlisted pair. The connector may be
-    /// named by **id** (precise) or by **name** (convenient) — id is offered
-    /// because Agent Store upserts MCP servers *by name*, so a later install
-    /// can legitimately take over a name and would otherwise inherit its
-    /// permission.
+    /// `allow` narrows, `deny` subtracts afterwards. Neither is required: an
+    /// enabled proxy with no `allow` lets the enabled connectors through, which
+    /// is the point of doc `26`. The connector may be named by **id** (precise)
+    /// or by **name** (convenient) — id is offered because Agent Store upserts
+    /// MCP servers *by name*, so a later install can legitimately take over a
+    /// name and would otherwise inherit its permission.
     pub fn decide(&self, connector_id: &str, connector_name: &str, tool: &str) -> Result<(), String> {
         if !self.enabled {
             return Err(
@@ -209,23 +294,47 @@ impl ConnectorProxyPolicy {
                     .to_owned(),
             );
         }
-        let by_id = format!("{connector_id}__{tool}");
-        let by_name = format!("{connector_name}__{tool}");
-        if self.allow.contains(&by_id) || self.allow.contains(&by_name) {
-            return Ok(());
+        let candidates = [
+            format!("{MCP_TOOL_PREFIX}{connector_id}__{tool}"),
+            format!("{MCP_TOOL_PREFIX}{connector_name}__{tool}"),
+        ];
+        if let Some(allow) = self.allow.as_ref()
+            && !candidates.iter().any(|name| matches_any(allow, name))
+        {
+            return Err(format!(
+                "tool `{tool}` on connector `{connector_name}` is not in [connector_proxy].allow"
+            ));
         }
-        Err(format!(
-            "tool `{tool}` on connector `{connector_name}` is not in [connector_proxy].allow"
-        ))
+        if candidates.iter().any(|name| matches_any(&self.deny, name)) {
+            return Err(format!(
+                "tool `{tool}` on connector `{connector_name}` is excluded by [connector_proxy].deny"
+            ));
+        }
+        Ok(())
     }
+}
+
+/// Trim entries and drop the blank ones, so `allow = ["", "  "]` is an empty
+/// narrowing rather than a pattern that could match something.
+fn clean_entries(entries: &[String]) -> std::collections::HashSet<String> {
+    entries
+        .iter()
+        .map(|entry| entry.trim().to_owned())
+        .filter(|entry| !entry.is_empty())
+        .collect()
 }
 
 impl AgentStoreConfig {
     /// The `[connector_proxy]` policy, defaults filled in.
     ///
-    /// Absent table → [`ConnectorProxyPolicy::deny_all`]. There is deliberately
-    /// no "unset means permissive" arm: the permissive reading is what would
-    /// turn every installed connector into a callable surface.
+    /// Absent **table** → [`ConnectorProxyPolicy::deny_all`]: there is
+    /// deliberately no "unset means permissive" arm at this level, because the
+    /// permissive reading here is what would turn every installed connector
+    /// into a callable surface without anyone asking for it.
+    ///
+    /// Inside a table that *is* enabled, an absent `allow` is permissive by
+    /// design (doc `26` §4): the operator opted in, and `allow`/`deny` are the
+    /// optional narrowing and subtraction.
     pub fn connector_proxy_policy(&self) -> ConnectorProxyPolicy {
         match self.connector_proxy.as_ref() {
             Some(declared) => ConnectorProxyPolicy::from_declared(declared),
@@ -970,13 +1079,14 @@ impl AgentStoreConfigPatch {
 mod tests {
     use super::*;
 
-    // ---- [connector_proxy] (doc 24 §5.1) --------------------------------
+    // ---- [connector_proxy] (doc 24 §5.1, doc 26) ------------------------
 
-    fn declared(enabled: bool, allow: &[&str]) -> AgentStoreConnectorProxy {
-        AgentStoreConnectorProxy {
-            enabled: Some(enabled),
-            allow: Some(allow.iter().map(|entry| (*entry).to_owned()).collect()),
-        }
+    fn enabled_proxy(allow: Option<&[&str]>, deny: &[&str]) -> ConnectorProxyPolicy {
+        ConnectorProxyPolicy::from_declared(&AgentStoreConnectorProxy {
+            enabled: Some(true),
+            allow: allow.map(|entries| entries.iter().map(|entry| (*entry).to_owned()).collect()),
+            deny: Some(deny.iter().map(|entry| (*entry).to_owned()).collect()),
+        })
     }
 
     #[test]
@@ -995,17 +1105,29 @@ mod tests {
         assert!(!config.connector_proxy_policy().is_enabled());
     }
 
+    /// The behaviour change of doc `26` §4.4, stated as a test: turning the
+    /// proxy on *is* the grant now, and `allow` only narrows it.
     #[test]
-    fn enabling_without_an_allowlist_still_grants_nothing() {
-        // `enabled = true` alone is not a wildcard.
-        let policy = ConnectorProxyPolicy::from_declared(&declared(true, &[]));
+    fn enabling_without_an_allow_grants_every_enabled_connector() {
+        let policy = enabled_proxy(None, &[]);
         assert!(policy.is_enabled());
-        assert!(policy.decide("id-1", "github", "create_issue").is_err());
+        assert!(policy.decide("id-1", "github", "create_issue").is_ok());
+        assert!(policy.decide("id-1", "github", "delete_repo").is_ok());
+        assert!(policy.decide("id-2", "anything-at-all", "whatever").is_ok());
+    }
+
+    /// "I did not narrow" and "I narrowed to nothing" are different statements.
+    #[test]
+    fn an_empty_allow_narrows_to_nothing_but_an_absent_one_does_not() {
+        assert!(enabled_proxy(Some(&[]), &[]).decide("id-1", "github", "create_issue").is_err());
+        assert!(enabled_proxy(None, &[]).decide("id-1", "github", "create_issue").is_ok());
+        // Blank entries are blanks, not wildcards.
+        assert!(enabled_proxy(Some(&["", "   "]), &[]).decide("id-1", "github", "x").is_err());
     }
 
     #[test]
-    fn an_allowlisted_pair_is_callable_by_name_or_by_id() {
-        let by_name = ConnectorProxyPolicy::from_declared(&declared(true, &["github__create_issue"]));
+    fn allow_narrows_to_the_named_patterns_and_matches_by_name_or_by_id() {
+        let by_name = enabled_proxy(Some(&["mcp__github__create_issue"]), &[]);
         assert!(by_name.decide("some-id", "github", "create_issue").is_ok());
         // A different tool on the same connector is not covered.
         assert!(by_name.decide("some-id", "github", "delete_repo").is_err());
@@ -1015,21 +1137,97 @@ mod tests {
         // The id spelling is offered because servers are upserted *by name*: a
         // later install can take over a name, and the id form is the pin that
         // survives it.
-        let by_id = ConnectorProxyPolicy::from_declared(&declared(true, &["some-id__create_issue"]));
+        let by_id = enabled_proxy(Some(&["mcp__some-id__create_issue"]), &[]);
         assert!(by_id.decide("some-id", "github", "create_issue").is_ok());
         assert!(by_id.decide("some-id", "renamed-later", "create_issue").is_ok());
+
+        // A whole connector at once — the unit doc `26` moved the grant to.
+        let whole = enabled_proxy(Some(&["mcp__github__*"]), &[]);
+        assert!(whole.decide("some-id", "github", "create_issue").is_ok());
+        assert!(whole.decide("some-id", "github", "delete_repo").is_ok());
+        assert!(whole.decide("some-id", "gitlab", "create_issue").is_err());
     }
 
     #[test]
-    fn a_disabled_proxy_refuses_even_an_allowlisted_pair() {
-        let policy = ConnectorProxyPolicy::from_declared(&declared(false, &["github__create_issue"]));
-        assert!(policy.decide("id-1", "github", "create_issue").is_err());
+    fn deny_subtracts_after_allow() {
+        // Allow everything, subtract one tool.
+        let policy = enabled_proxy(None, &["mcp__github__delete_repo"]);
+        assert!(policy.decide("id-1", "github", "create_issue").is_ok());
+        assert!(policy.decide("id-1", "github", "delete_repo").is_err());
+
+        // Subtract across every connector by glob.
+        let by_glob = enabled_proxy(None, &["mcp__*__delete_*"]);
+        assert!(by_glob.decide("id-1", "github", "create_issue").is_ok());
+        assert!(by_glob.decide("id-1", "github", "delete_repo").is_err());
+        assert!(by_glob.decide("id-2", "gitlab", "delete_project").is_err());
+
+        // `deny` wins over a narrowing that would have allowed the pair, and the
+        // message says which gate refused.
+        let both = enabled_proxy(Some(&["mcp__github__*"]), &["mcp__github__delete_repo"]);
+        assert!(both.decide("id-1", "github", "create_issue").is_ok());
+        let refused = both.decide("id-1", "github", "delete_repo").expect_err("denied");
+        assert!(refused.contains("deny"), "{refused}");
+        let not_allowed = both.decide("id-1", "gitlab", "create_issue").expect_err("denied");
+        assert!(not_allowed.contains("allow"), "{not_allowed}");
     }
 
     #[test]
-    fn blank_allowlist_entries_are_not_wildcards() {
-        let policy = ConnectorProxyPolicy::from_declared(&declared(true, &["", "   "]));
+    fn a_disabled_proxy_refuses_even_a_declared_pair() {
+        let policy = ConnectorProxyPolicy::from_declared(&AgentStoreConnectorProxy {
+            enabled: Some(false),
+            allow: Some(vec!["mcp__github__*".to_owned()]),
+            deny: None,
+        });
         assert!(policy.decide("id-1", "github", "create_issue").is_err());
+    }
+
+    /// The matching rule is the engine's, so its case table is copied verbatim
+    /// from `nomi-tools/src/registry.rs` — if the wrapper here ever diverges,
+    /// this fails rather than silently widening or narrowing a real grant.
+    #[test]
+    fn policy_entries_match_exactly_except_in_the_mcp_namespace() {
+        assert!(tool_name_matches("mcp__github__list_issues", "mcp__github__list_issues"));
+        assert!(
+            !tool_name_matches("*", "mcp__github__list_issues"),
+            "a bare wildcard is not a glob outside mcp__, so it selects nothing"
+        );
+        assert!(
+            !tool_name_matches("mcp__github", "mcp__github__list_issues"),
+            "an mcp__ name without a tool segment can never match"
+        );
+        assert!(
+            !tool_name_matches("mcp__[", "mcp__github__list_issues"),
+            "a malformed pattern is a non-match, not a panic"
+        );
+        assert!(tool_name_matches("mcp__github__*", "mcp__github__list_issues"));
+        assert!(tool_name_matches("mcp__*", "mcp__github__list_issues"));
+        assert!(!tool_name_matches("mcp__notion__*", "mcp__github__list_issues"));
+    }
+
+    /// The migration trap of doc `26` §4.4: pre-`mcp__` entries are dead, and
+    /// the operator has to be told rather than left guessing why nothing works.
+    #[test]
+    fn warnings_name_configuration_that_cannot_do_what_it_looks_like() {
+        // The whole point: enabling with no lists is a real grant, so say so.
+        let open = enabled_proxy(None, &[]);
+        assert_eq!(open.warnings().len(), 1);
+        assert!(open.warnings()[0].contains("every tool"), "{:?}", open.warnings());
+
+        // The stale spelling from before doc `26`.
+        let stale = enabled_proxy(Some(&["github__create_issue"]), &[]);
+        let warnings = stale.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("mcp__github__create_issue"), "{warnings:?}");
+
+        // Present but empty is not the same as absent, and is worth a word.
+        let empty = enabled_proxy(Some(&[]), &[]);
+        assert_eq!(empty.warnings().len(), 1);
+        assert!(empty.warnings()[0].contains("allows nothing"), "{:?}", empty.warnings());
+
+        // A well-formed narrowing says nothing.
+        assert!(enabled_proxy(Some(&["mcp__github__*"]), &["mcp__*__delete_*"]).warnings().is_empty());
+        // And a disabled proxy says nothing at all.
+        assert!(ConnectorProxyPolicy::deny_all().warnings().is_empty());
     }
 
     #[test]
@@ -1038,13 +1236,15 @@ mod tests {
         let source = r#"
 [connector_proxy]
 enabled = true
-allow = ["github__create_issue"]
+allow = ["mcp__github__*"]
+deny = ["mcp__github__delete_repo"]
 "#;
         let config: AgentStoreConfig = toml::from_str(source).expect("config parses");
         let policy = config.connector_proxy_policy();
         assert!(policy.is_enabled());
         assert!(policy.decide("id", "github", "create_issue").is_ok());
-        assert!(policy.decide("id", "github", "other").is_err());
+        assert!(policy.decide("id", "github", "delete_repo").is_err());
+        assert!(policy.decide("id", "gitlab", "create_issue").is_err());
     }
 
     const SAMPLE: &str = r#"

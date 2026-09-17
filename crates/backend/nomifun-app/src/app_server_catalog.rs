@@ -14,11 +14,12 @@ use nomifun_api_types::{
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerConnectorTool, AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult, McpTransport,
+    AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult, McpToolResponse,
+    McpTransport,
 };
 use nomifun_app_server::{
     agent_store::AgentStoreConfig, ConnectorAuthProvider, ConnectorCatalogProvider,
-    ModelCatalogProvider, SkillCatalogProvider,
+    ModelCatalogProvider, SkillCatalogProvider, MAX_CONNECTOR_TOOLS_BYTES,
 };
 use nomifun_common::{AppError, McpServerStatus};
 use nomifun_extension::skill_service::{
@@ -348,18 +349,12 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
         } else {
             None
         };
+        let (tools, tools_truncated) = connector_tools(server.tools);
         Ok(AppServerConnectorDetail {
             summary,
             tool_filter: Some(format!("connector__{connector_id}__<tool>")),
-            tools: server
-                .tools
-                .unwrap_or_default()
-                .into_iter()
-                .map(|tool| AppServerConnectorTool {
-                    name: tool.name,
-                    description: tool.description,
-                })
-                .collect(),
+            tools: tools.unwrap_or_default(),
+            tools_truncated,
             auth_status,
             source: if server.builtin { "builtin".into() } else { "system".into() },
             compatibility_status: AppServerCompatibilityStatus::Compatible,
@@ -415,21 +410,58 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
     }
 }
 
+/// Project upstream tools onto the wire shape (doc `26` §5).
+///
+/// Names and descriptions always survive; `input_schema` is carried **whole** or
+/// not at all, and the running budget is [`MAX_CONNECTOR_TOOLS_BYTES`]. The
+/// returned flag is what makes an omission honest instead of silent.
+fn connector_tools(
+    tools: Option<Vec<McpToolResponse>>,
+) -> (Option<Vec<AppServerConnectorTool>>, bool) {
+    let Some(tools) = tools else {
+        return (None, false);
+    };
+    let mut budget = MAX_CONNECTOR_TOOLS_BYTES;
+    let mut truncated = false;
+    let projected = tools
+        .into_iter()
+        .map(|tool| {
+            let input_schema = match tool.input_schema {
+                Some(schema) => {
+                    // A schema that cannot be serialized cannot travel either, so
+                    // it is treated as an omission rather than an error.
+                    let size = serde_json::to_vec(&schema)
+                        .map(|bytes| bytes.len())
+                        .unwrap_or(usize::MAX);
+                    if size <= budget {
+                        budget -= size;
+                        Some(schema)
+                    } else {
+                        truncated = true;
+                        None
+                    }
+                }
+                None => None,
+            };
+            AppServerConnectorTool {
+                name: tool.name,
+                description: tool.description,
+                input_schema,
+            }
+        })
+        .collect();
+    (Some(projected), truncated)
+}
+
 fn probe_result(connector_id: String, result: McpConnectionTestResult) -> AppServerConnectorProbeResult {
+    let (tools, tools_truncated) = connector_tools(result.tools);
     AppServerConnectorProbeResult {
         connector_id,
         success: result.success,
-        tools: result.tools.map(|tools| {
-            tools
-                .into_iter()
-                .map(|tool| AppServerConnectorTool {
-                    name: tool.name,
-                    description: tool.description,
-                })
-                .collect()
-        }),
+        tools,
         error: result.error,
         code: result.code.map(|code| code.as_str().to_owned()),
+        tools_truncated,
     }
 }
 
@@ -824,5 +856,80 @@ max_context_size = 1000000
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod connector_tools_tests {
+    use super::*;
+
+    fn tool(name: &str, schema: Option<serde_json::Value>) -> McpToolResponse {
+        McpToolResponse {
+            name: name.to_owned(),
+            description: Some(format!("{name} description")),
+            input_schema: schema,
+        }
+    }
+
+    /// The point of the read face: what the caller sees is what the server said,
+    /// byte for byte — not a re-rendering of it.
+    #[test]
+    fn schemas_are_carried_verbatim() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "url": { "type": "string" } },
+            "required": ["url"],
+        });
+        let (tools, truncated) = connector_tools(Some(vec![
+            tool("navigate", Some(schema.clone())),
+            tool("click", None),
+        ]));
+        let tools = tools.expect("tools");
+        assert_eq!(tools[0].input_schema.as_ref(), Some(&schema));
+        assert_eq!(
+            tools[1].input_schema, None,
+            "a tool the server published no schema for keeps none"
+        );
+        assert!(!truncated);
+    }
+
+    /// A failed probe reports no tool list at all, which is not an empty list.
+    #[test]
+    fn an_absent_tool_list_stays_absent() {
+        let (tools, truncated) = connector_tools(None);
+        assert!(tools.is_none());
+        assert!(!truncated);
+    }
+
+    /// Oversized schemas are dropped **whole** (never halved) and the flag says
+    /// so; names and descriptions are never the thing that gets sacrificed.
+    #[test]
+    fn oversized_schemas_are_omitted_whole_and_reported() {
+        let huge = serde_json::json!({ "description": "x".repeat(MAX_CONNECTOR_TOOLS_BYTES) });
+        let (tools, truncated) = connector_tools(Some(vec![
+            tool("small", None),
+            tool("huge", Some(huge)),
+        ]));
+        let tools = tools.expect("tools");
+        assert_eq!(tools.len(), 2, "every tool keeps its name and description");
+        assert!(tools[0].input_schema.is_none());
+        assert!(tools[1].input_schema.is_none());
+        assert_eq!(tools[1].description.as_deref(), Some("huge description"));
+        assert!(truncated);
+    }
+
+    /// The budget is spent in list order, so which schema survives is
+    /// deterministic rather than dependent on iteration order.
+    #[test]
+    fn the_budget_is_spent_in_order() {
+        let take = MAX_CONNECTOR_TOOLS_BYTES * 3 / 5;
+        let first = serde_json::json!({ "description": "y".repeat(take) });
+        let second = serde_json::json!({ "description": "y".repeat(take) });
+        let (tools, truncated) =
+            connector_tools(Some(vec![tool("a", Some(first.clone())), tool("b", Some(second))]));
+        let tools = tools.expect("tools");
+        assert_eq!(tools[0].input_schema.as_ref(), Some(&first));
+        assert!(tools[1].input_schema.is_none());
+        assert!(truncated);
     }
 }

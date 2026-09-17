@@ -394,7 +394,11 @@ impl PresetService {
             preset_id: preset.preset_id, preset_revision: preset.revision, preset_name: preset.name,
             target, routing_description: preset.routing_description, instructions,
             resolved_agent_id, resolved_agent_type, resolved_agent_backend,
-            resolved_model, included_skills: skills,
+            resolved_model,
+            // doc `29` §6.3：preset 解析**永不**设置运行级思考等级——它只属于 App Server 的
+            // 运行入口。留在这里显式写 `None` 是为了让下一个人看到"这里是权威来源"。
+            reasoning_effort: None,
+            included_skills: skills,
             excluded_auto_skills: preset.excluded_auto_skills, knowledge_policy,
             knowledge_base_ids, mcp_server_ids, warnings,
         })

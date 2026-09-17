@@ -210,6 +210,13 @@ connector_call_failed     # 调用在到达工具之前就失败了：传输 / �
 的调用**，走结果对象里的 `is_error` 字段，不产生错误码——把两者混为一谈会让调用方分不清
 「工具说不行」和「根本没够着工具」。
 
+**连接器工具签名面（`fp-2`）不是错误码，而是两个 additive 字段**（`05` §4.3.3）：工具 schema
+的总量有 1 MiB 预算（`MAX_CONNECTOR_TOOLS_BYTES`），放不下的 `input_schema` **整份省略**并置
+`ConnectorDetail.tools_truncated` / `ConnectorProbeResult.tools_truncated`。这里刻意**不复用**
+`response_too_large`：该码管的是「调用方会 parse 并相信的**载荷**被截断」，而目录面上 `name` /
+`description` 一个都没少，缺的是**显式标记的缺席**——把一个大连接器变成「目录完全读不出来」
+是更糟的失败。**绝不截半个 JSON Schema** 这条规则不变。
+
 
 `import_source_not_found`：`import/run` 的本地来源目录不存在或不可读（HTTP 404，对应 `NotFound`）；`import_blocked` / `import_failed`：快照因路径安全、清单身份缺失或 digest 冲突而阻断，或导入器内部失败。阻断原因以结构化 `ImportResult.errors` 返回，错误文本只含清单相对值与原因码，**不得包含绝对来源路径或凭据**（02 §9）。
 

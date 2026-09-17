@@ -28,9 +28,32 @@
  * party can run an installed MCP tool while the connection and its credentials
  * stay on the host. **`fp-1` changes the shape only** (date stamp → counter): a
  * `2026-…` value invites being read as a release date, and no wire behaviour
- * changed with the rename.
+ * changed with the rename. **`fp-2` carries the tools' parameters**
+ * (`ConnectorTool.input_schema`, plus `tools_truncated` on `ConnectorDetail`
+ * and `ConnectorProbeResult`): a caller that must *name* a tool to be granted it
+ * should be able to read what that tool takes. It is the counterpart of the
+ * host's `[connector_proxy]` grant moving from one tool at a time to the
+ * connector (doc `26`). **`fp-3` makes a Skill selectable per turn**:
+ * `conversation/send` gains an optional `mentions` list whose only honoured kind
+ * is `skill`, so one turn can mount a Skill's instructions without rewriting the
+ * conversation's create-time snapshot (doc `27` 阶段 1). **`fp-4` lets a
+ * conversation be created as an installed expert**: `conversation/create` gains
+ * an optional `agent_id`, whose Definition supplies the chat's preset identity
+ * plus its own Skill and Connector fences — frozen at creation, since none of
+ * those keys is mutable afterwards (doc `27` 阶段 2a). **`fp-5` opens a Team's
+ * Leader the same way**: an optional `team_id` runs the `team/run` orchestration
+ * (members, template, fences) but stops before the goal turn, so the client
+ * speaks first; `agent_id` and `team_id` are mutually exclusive (阶段 2b).
+ * **`fp-6` makes the model and the reasoning level selectable per call**:
+ * `conversation/send` and `agent/run` each gain an optional `model` and
+ * `reasoning_effort`. The scope is deliberately the **conversation** (send) and
+ * the **run** (agent/run), not "just this turn": the Nomi runtime is built from
+ * the persisted row, so a send-carried value is a sticky switch that takes
+ * effect on that very turn (doc `29` §4). `ConversationView` also gains
+ * `reasoning_effort`, because a setting that can be written by three methods but
+ * read back by none is not a setting a client can honour (doc `29` §5.5).
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-1";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-6";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -151,10 +174,10 @@ export interface Capabilities {
    * The connector **call proxy** (`connector/call`, doc 24 §5).
    *
    * Separate from `connectors` on purpose: the catalog can be wired without the
-   * proxy, and — more importantly — a host may wire the proxy while its
-   * `[connector_proxy]` allowlist is empty, in which case every call answers
-   * `policy_denied`. This flag says the *method* exists, not that any tool is
-   * callable; only the host operator can make a pair callable.
+   * proxy, and a host may wire the proxy while its `[connector_proxy]` table is
+   * absent or disabled, in which case every call answers `policy_denied`. This
+   * flag says the *method* exists, not that any tool is callable; the host
+   * operator's own config decides that (doc `26` §4).
    */
   connector_calls: boolean;
   run_notifications: boolean;
@@ -255,6 +278,13 @@ export interface AgentRunInput {
   idempotencyKey?: string;
   /** Structured `@` mentions resolved by the composer (docs/agent-store/05 §4.7). */
   mentions?: MentionRef[];
+  /**
+   * Run-scoped model (doc `29` §6.1). Wins over the preset's own model **and**
+   * over the host default: explicit > preset > `~/.agent-store/config.toml`.
+   */
+  model?: ProviderWithModel;
+  /** Run-scoped OpenAI-style reasoning effort (doc `29` §6.1); applies to every attempt of the run. */
+  reasoningEffort?: ReasoningEffort | string;
 }
 
 export interface AgentRunRequestWire {
@@ -268,6 +298,8 @@ export interface AgentRunRequestWire {
   command_id?: string;
   idempotency_key?: string;
   mentions?: MentionRef[];
+  model?: ProviderWithModel;
+  reasoning_effort?: string;
 }
 
 export interface RunReceipt {
@@ -417,7 +449,7 @@ export interface RunPlanAttempt {
 export interface RunPlanDependency { blocker_step_id: string; blocked_step_id: string }
 
 export interface ProviderWithModel { provider_id: string; model: string; use_model?: string }
-export interface ConversationCreateInput { name?: string; model?: ProviderWithModel; workspaceId?: string; reasoningEffort?: string }
+export interface ConversationCreateInput { name?: string; model?: ProviderWithModel; workspaceId?: string; reasoningEffort?: string; agentId?: string; teamId?: string }
 export interface ConversationUpdateInput { name?: string; model?: ProviderWithModel; reasoningEffort?: string }
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export interface ConversationModelOption {
@@ -445,6 +477,12 @@ export interface ConversationView {
   conversation_id: string;
   name: string;
   model: ProviderWithModel;
+  /**
+   * The conversation's current reasoning effort (doc `29` §5.5). Absent = not
+   * specified. `create` / `update` / `send` can all write it, so the view has to
+   * say what it is — otherwise the setting is write-only.
+   */
+  reasoning_effort?: string | null;
   status: string;
   created_at: number;
   modified_at: number;
@@ -870,6 +908,14 @@ export interface ConnectorSummary {
 export interface ConnectorTool {
   name: string;
   description?: string | null;
+  /**
+   * The upstream `tools/list` `inputSchema`, **verbatim** (doc `26` §5).
+   *
+   * Absent when the server published none, or when it was omitted to stay
+   * inside the host's tools budget — see `tools_truncated` on the response. It
+   * carries no transport, header or env value: only the tool's own parameters.
+   */
+  input_schema?: unknown;
 }
 
 export interface OAuthStatusView {
@@ -881,6 +927,12 @@ export interface OAuthStatusView {
 export interface ConnectorDetail extends ConnectorSummary {
   tool_filter?: string | null;
   tools: ConnectorTool[];
+  /**
+   * Some `input_schema` values were omitted to stay inside the host's tools
+   * budget. Names and descriptions are always kept, and a schema is only ever
+   * carried whole — never truncated. `false` also means "nothing was omitted".
+   */
+  tools_truncated: boolean;
   auth_status?: OAuthStatusView | null;
   source: string;
   compatibility_status: CompatibilityStatus;
@@ -897,6 +949,8 @@ export interface ConnectorProbeResult {
   connector_id: string;
   success: boolean;
   tools?: ConnectorTool[] | null;
+  /** Same rule as `ConnectorDetail.tools_truncated`: an honest omission. */
+  tools_truncated: boolean;
   error?: string | null;
   code?: string | null;
 }

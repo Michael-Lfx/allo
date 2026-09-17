@@ -191,6 +191,12 @@ path = "tests/importer_e2e.rs"
 name = "skill_files_e2e"
 path = "tests/skill_files_e2e.rs"
 
+# Truth gate for the connector tool read face (doc 26 §5): a real MCP server,
+# probed through the real App Server surface.
+[[test]]
+name = "connector_tools_e2e"
+path = "tests/connector_tools_e2e.rs"
+
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot", "bedrock", "silero-vad"]
 telegram = ["nomifun-channel/telegram"]

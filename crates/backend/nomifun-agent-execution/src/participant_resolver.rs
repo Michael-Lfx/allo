@@ -553,6 +553,7 @@ mod tests {
             resolved_agent_type: None,
             resolved_agent_backend: None,
             resolved_model: None,
+            reasoning_effort: None,
             included_skills: vec![],
             excluded_auto_skills: vec![],
             knowledge_policy: PresetKnowledgePolicy::default(),

@@ -6959,6 +6959,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "futures-util",
+ "glob",
  "http-body-util",
  "nomifun-agent-execution",
  "nomifun-ai-agent",

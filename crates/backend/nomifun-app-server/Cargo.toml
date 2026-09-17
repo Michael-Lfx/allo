@@ -11,6 +11,7 @@ nomifun-agent-execution.workspace = true
 nomifun-api-types.workspace = true
 nomifun-preset.workspace = true
 futures-util.workspace = true
+glob.workspace = true
 nomifun-auth.workspace = true
 nomifun-common.workspace = true
 nomifun-extension.workspace = true

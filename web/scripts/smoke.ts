@@ -66,7 +66,7 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          protocol_version: "fp-1",
+          protocol_version: "fp-6",
           client: { name: "smoke", version: "0.0.0" },
           capabilities: {},
         }),
@@ -246,6 +246,19 @@ async function runRealConversationFlow(
     fail("conversation/update", String(error));
   }
 
+  // doc `29` §5.5：等级必须**读得回来**。写它的方法有三个（create/update/send），
+  // 而 `ConversationView` 过去只投影 `model`——一个只写不读的设置没法让调用方核对。
+  try {
+    const readBack = await client.conversations.get(created.conversation_id);
+    if (readBack.reasoning_effort === "high") {
+      ok("conversation/get reads back the reasoning effort (doc 29 §5.5)");
+    } else {
+      fail("conversation/get reasoning_effort", JSON.stringify(readBack));
+    }
+  } catch (error) {
+    fail("conversation/get reasoning_effort", String(error));
+  }
+
   try {
     const receipt = await client.conversations.send(
       created.conversation_id,
@@ -262,6 +275,22 @@ async function runRealConversationFlow(
       ok(`conversation/send surfaces provider/environment errors structurally (${error.code})`);
     } else {
       fail("conversation/send", String(error));
+    }
+  }
+
+  // doc `27` §4.1: `conversation/send` accepts structured mentions but only the
+  // `skill` kind is honoured per turn. The negative case needs no installed Skill
+  // and no provider call, so it is deterministic on any host.
+  try {
+    await client.conversations.send(created.conversation_id, "no-op", `chat-mention-${Date.now()}`, {
+      mentions: [{ kind: "connector", id: "0190f5fe-7c00-7a00-8000-000000000020" }],
+    });
+    fail("conversation/send mention guard", "a connector mention was accepted");
+  } catch (error) {
+    if (error instanceof AppServerError && error.code === "invalid_request") {
+      ok("conversation/send refuses mention kinds it cannot honour (invalid_request)");
+    } else {
+      fail("conversation/send mention guard", String(error));
     }
   }
 
@@ -370,6 +399,15 @@ async function runCatalogPath(client: AppServerClient, real: boolean): Promise<v
     ok("connector/test probes tools for a healthy connector");
   } else {
     fail("connector/test", JSON.stringify(probe));
+  }
+
+  // The tool parameters ride the same response (doc 26 §5): a caller that has to
+  // name a tool to call it should be able to read what it takes.
+  const withSchema = probe.tools?.find((tool) => tool.input_schema !== undefined);
+  if (withSchema && probe.tools_truncated === false) {
+    ok(`connector/test carries tool parameters verbatim (${withSchema.name})`);
+  } else {
+    fail("connector/test tool schema", JSON.stringify(probe));
   }
 
   // OAuth round trip: start → poll authenticated → logout.
@@ -508,6 +546,24 @@ async function runConversationPath(client: AppServerClient, workspaceId: string,
     fail("conversation/messages", JSON.stringify(history));
   }
   await subscription.close();
+
+  // doc `29` §5.1：随 send 携带的模型 / 思考等级是**粘性**的会话设置，且**从本轮起**生效。
+  // 这条断言刻意用一条**新建**会话：它是 idle 的，因此不依赖上面那一轮是否已经跑完
+  // （"正跑着的时候必须被拒"是另一条判据，由真机脚本 sdk-live-send-model.ts 验）。
+  const switchChat = await client.conversations.create({
+    name: "Send switch smoke",
+    model: { provider_id: "0190f5fe-7c00-7a00-8000-000000000004", model: "mock-model" },
+  });
+  await client.conversations.send(switchChat.conversation_id, "switch it", `chat-switch-${Date.now()}`, {
+    model: { provider_id: "0190f5fe-7c00-7a00-8000-000000000004", model: "mock-model-2" },
+    reasoningEffort: "xhigh",
+  });
+  const switched = await client.conversations.get(switchChat.conversation_id);
+  if (switched.model.model === "mock-model-2" && switched.reasoning_effort === "xhigh") {
+    ok("conversation/send switches the conversation's model and reasoning effort (doc 29 §5.1)");
+  } else {
+    fail("conversation/send model/effort switch", JSON.stringify(switched));
+  }
 }
 
 async function runWorkspaceLifecycle(client: AppServerClient, workspaceId: string): Promise<void> {
@@ -668,7 +724,7 @@ async function main() {
 
     // --- handshake ---------------------------------------------------------
     const handshake = await client.connect();
-    if (handshake.protocol_version === "fp-1" && handshake.capabilities.agents) {
+    if (handshake.protocol_version === "fp-6" && handshake.capabilities.agents) {
       ok("initialize handshake returns protocol version and single-agent capabilities");
     } else {
       fail("initialize handshake", JSON.stringify(handshake.capabilities));

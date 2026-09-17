@@ -11,8 +11,51 @@ import type {
   ConversationSendReceipt,
   ConversationUpdateInput,
   ConversationView,
+  MentionRef,
+  ProviderWithModel,
   ServerNotification,
 } from "@flowy-agent-store/protocol";
+
+/**
+ * Options for `send()`.
+ *
+ * Two scopes, deliberately different (doc `27` §4.1 and doc `29` §5.1):
+ *
+ * - **per turn** — `attachments` and `mentions` are this turn's payload, and
+ *   nothing else changes;
+ * - **per conversation, taking effect this turn** — `model` and
+ *   `reasoningEffort` are *sticky*: they are written to the conversation and
+ *   every later turn keeps them, because the Nomi runtime is built from the
+ *   persisted row. The host refuses them while a turn is running (`conflict`).
+ *
+ * Every field is **additive**: absent means the exact wire shape callers sent
+ * before that field existed, and a plain `send()` never writes the conversation.
+ */
+export interface ConversationSendOptions {
+  /** Absolute paths inside the conversation's workspace (images only). */
+  attachments?: string[];
+  /**
+   * Skills to mount for **this turn** (`kind: "skill"`).
+   *
+   * The ids are `skill/list`'s ids (the skill's own name, not an
+   * `install/status` component id). A turn is the only scope a Skill has here:
+   * the conversation's frozen snapshot is create-time and immutable.
+   */
+  mentions?: MentionRef[];
+  /**
+   * Model to switch the conversation to **from this turn on** (doc `29` §5.1).
+   *
+   * Sticky, not per-turn: the Nomi runtime is built from the persisted row, so
+   * the value is written to the conversation and every later turn keeps it.
+   * Omit it and the conversation's current model stays untouched.
+   */
+  model?: ProviderWithModel;
+  /**
+   * Reasoning level to switch the conversation to **from this turn on**
+   * (doc `29` §5.1). Same sticky scope as `model`.
+   */
+  reasoningEffort?: string;
+}
 
 export class ConversationClient {
   constructor(private readonly transport: Transport) {}
@@ -28,6 +71,15 @@ export class ConversationClient {
       model,
       workspace: input.workspaceId ? { id: input.workspaceId } : undefined,
       reasoning_effort: input.reasoningEffort || undefined,
+      // doc `27` §5.2: an expert is the conversation's **identity**, decided once at
+      // creation (the preset snapshot is read-only afterwards — changing the expert
+      // means creating another conversation).
+      agent_id: input.agentId || undefined,
+      // doc `27` §5.3: a team opens its **Leader** conversation instead — same
+      // orchestration as `team/run` (members, template, fences) but without a first
+      // goal turn, so the client types the first message itself. Mutually exclusive
+      // with `agent_id` (the server answers `invalid_request` if both are sent).
+      team_id: input.teamId || undefined,
     });
   }
 
@@ -65,22 +117,38 @@ export class ConversationClient {
 
   /**
    * R15（W10）：`attachments` 是**会话工作区内的绝对路径**（图片附件）。
+   * doc `27` §4.1：`mentions` 是**本轮挂载的技能**（`kind: "skill"`）——技能的正文与
+   * 不可变快照都随这一轮走；`agent` / `connector` 在 send 上没有载体，服务端会以
+   * `invalid_request` **明确拒绝**（不是静默不挂）。
    *
-   * 缺省不传，保持老调用方的 wire 形状逐字不变；服务端只接受会话工作区内的真实
-   * 文件（越界 / 相对路径 / 不存在一律拒），具体准入见
-   * `nomifun-app-server` 的 `resolve_conversation_attachments`。
+   * 两者缺省都不上 wire，保持老调用方的形状逐字不变；服务端只接受会话工作区内的真实
+   * 文件（越界 / 相对路径 / 不存在一律拒），准入见 `nomifun-app-server` 的
+   * `resolve_conversation_attachments` 与 `send_mention_skills`。
+   *
+   * 第 4 个参数同时接受旧的 `string[]`（附件）与选项对象——再堆一个位置参数会让调用点
+   * 变成一串没有名字的布尔/数组。
    */
   send(
     conversationId: string,
     content: string,
     idempotencyKey: string,
-    attachments: string[] = [],
+    options: string[] | ConversationSendOptions = {},
   ): Promise<ConversationSendReceipt> {
+    const attachments = Array.isArray(options) ? options : (options.attachments ?? []);
+    const mentions = Array.isArray(options) ? [] : (options.mentions ?? []);
+    const model = Array.isArray(options) ? undefined : options.model;
+    const reasoningEffort = Array.isArray(options) ? undefined : options.reasoningEffort;
     return this.transport.request<ConversationSendReceipt>("conversation/send", {
       conversation_id: conversationId,
       content,
       idempotency_key: idempotencyKey,
       ...(attachments.length > 0 ? { attachments } : {}),
+      ...(mentions.length > 0 ? { mentions } : {}),
+      // Absent = "do not touch": the host only writes when the value differs
+      // from the conversation's own, so a plain send stays byte-identical
+      // (doc `29` §5.2).
+      ...(model ? { model: { provider_id: model.provider_id, model: model.model } } : {}),
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     });
   }
 

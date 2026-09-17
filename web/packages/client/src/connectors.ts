@@ -39,7 +39,19 @@ export class ConnectorClient {
     });
   }
 
-  /** Run a connection probe; the server persists the result. */
+  /**
+   * Run a connection probe and report what the connector currently offers —
+   * including each tool's `input_schema`.
+   *
+   * It really connects: a stdio connector gets its child process spawned, an
+   * HTTP/SSE one gets `initialize` + `tools/list`. The result is **persisted**,
+   * so this is also what refreshes the tool list `get()` reads back.
+   *
+   * Named `test` and not `probe` on purpose: this repo's split is `test` for the
+   * action (wire `connector/test`, `test_connection`) and `probe` for its
+   * artifact (`ConnectorProbeResult`, `probe_status`), and every method here is
+   * the last segment of its wire method.
+   */
   test(connectorId: string): Promise<ConnectorProbeResult> {
     return this.transport.request<ConnectorProbeResult>("connector/test", {
       connector_id: connectorId,
@@ -76,9 +88,17 @@ export class ConnectorClient {
    * The host holds the transport, its headers and its OAuth token; this sends a
    * tool name and an argument object and nothing else — you cannot name a URL,
    * a command or a header. Whether the pair is callable at all is the host's
-   * `[connector_proxy]` allowlist, so expect `policy_denied` on a host whose
-   * operator has not listed this tool (that is the default, not a
-   * misconfiguration).
+   * `[connector_proxy]` policy: once its operator turns the proxy on, the
+   * enabled connectors are callable, and `allow` / `deny` are that operator's
+   * optional narrowing and subtraction. So `policy_denied` means either that
+   * the host never turned the proxy on, or that this pair was narrowed out or
+   * explicitly denied — not that a tool name was misspelled in a list you were
+   * supposed to maintain.
+   *
+   * Arguments are passed through verbatim (there is no client-side schema
+   * check); `get()` / `test()` return each tool's `input_schema` so you can see
+   * what it takes, and a parameter the server rejects comes back as
+   * `is_error: true`, not as a rejected promise.
    *
    * Resolves even when the tool itself failed — check `is_error`. It rejects
    * only when the call never reached the tool: `connector_call_timeout`,

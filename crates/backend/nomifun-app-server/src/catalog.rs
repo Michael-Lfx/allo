@@ -114,6 +114,17 @@ pub trait ConnectorAuthProvider: Send + Sync {
 /// caller would parse and believe.
 pub const MAX_CONNECTOR_CALL_RESULT_BYTES: usize = 1024 * 1024;
 
+/// Largest total size of the tool **schemas** a connector catalog response will
+/// carry (`connector/get` / `connector/test`, doc `26` §5.2).
+///
+/// Names and descriptions are always kept — they are what a caller chooses by,
+/// and they are cheap. Only `input_schema` values are dropped to stay inside
+/// this budget, and each one is dropped **whole**: a half-truncated JSON Schema
+/// would be parsed and believed, whereas an omitted one is reported through
+/// `tools_truncated`. Refusing the whole response instead would turn one
+/// outsized connector into a catalog that cannot be listed at all.
+pub const MAX_CONNECTOR_TOOLS_BYTES: usize = 1024 * 1024;
+
 /// Why a connector call produced no result, at the seam.
 ///
 /// A dedicated type rather than [`AppError`] for the same reason as
@@ -152,7 +163,9 @@ pub enum ConnectorCallError {
 /// row and the host policy:
 ///
 /// 1. the connector must be registered **and enabled**;
-/// 2. the `[connector_proxy]` allowlist must name the connector/tool pair.
+/// 2. the `[connector_proxy]` policy must admit the pair — `enabled` is the
+///    grant, and the optional `allow` / `deny` lists are the operator's
+///    narrowing and subtraction (doc `26` §4).
 ///
 /// A caller may not name a URL, a command, or a header: the addressable surface
 /// is one registered connector id.
@@ -383,6 +396,7 @@ impl ConnectorCatalogProvider for FakeConnectorCatalog {
             summary,
             tool_filter: Some("connector__<name>__<tool>".into()),
             tools: vec![],
+            tools_truncated: false,
             auth_status: None,
             source: "system".into(),
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::Compatible,
@@ -426,6 +440,7 @@ impl ConnectorCatalogProvider for FakeConnectorCatalog {
             tools: None,
             error: if failed { Some("mock probe failed".into()) } else { None },
             code: if failed { Some("MCP_CONNECTION_FAILED".into()) } else { None },
+            tools_truncated: false,
         })
     }
 }

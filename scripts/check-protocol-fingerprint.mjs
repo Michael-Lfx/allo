@@ -78,6 +78,13 @@ const MIRRORS = [
       new RegExp(String.raw`protocol_version:\s*"${FP_VALUE}"`, "g"),
     ],
   },
+  {
+    // Missed for two shapes (it sat on `2026-09-14` while the fingerprint had
+    // already become `fp-1`), because nothing pointed the guard at it. Added
+    // when `fp-2` landed, per the convention above.
+    file: "scripts/probe-agent-store-runtime.mjs",
+    patterns: [new RegExp(String.raw`const PROTOCOL_VERSION\s*=\s*process\.argv\[3\]\s*\|\|\s*"${FP_VALUE}"`, "g")],
+  },
 ];
 
 /** 文档站点仓库中的落地点（独立的检出目录，存在时才检查）。 */

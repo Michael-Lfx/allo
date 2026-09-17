@@ -1,7 +1,24 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-1`** —— 2026-09-21 起由日期戳改为 **`fp-<n>` 计数器**（改前是 `2026-09-21`）。
+> 指纹：**`fp-6`** —— 2026-09-23 起承载**随调用指定模型与思考等级**：`conversation/send` 与
+> `agent/run` 各新增可选的 `model` / `reasoning_effort`（现有 DTO 加字段），`ConversationView`
+> 新增 `reasoning_effort` 把会话当前的等级读回来。语义是**粘性**的：`send` 上带的值写进会话行、
+> **从本轮起**生效（运行时按会话行构建，故不存在"只影响这一轮"），`agent/run` 上带的值只作用于
+> 那次运行。规格见 §12.1 / §12.4 / §5.1；方案与理由见 `29-send-model-and-effort-plan.zh.md`。
+> 上一值 **`fp-5`**（2026-09-23）：**以专家团开场**——`conversation/create` 新增可选的
+> `team_id`（现有 DTO 加字段），用 `team/run` 的同一段编排（成员校验 → 物化/复用执行模板 →
+> Leader 会话栅栏）打开一个**可继续对话**的 Leader 会话，区别只有一处：**不发 `goal` 首轮**。
+> 与 `agent_id` 互斥。规格见本文 §12.2。
+> 再上一值 **`fp-4`**（2026-09-23）：**以专家开场**——`conversation/create` 新增 `agent_id`，
+> 专家的 preset 身份、自带的技能与连接器一并冻结进会话（规格见 §12.2）。
+> 再上一值 **`fp-3`**（2026-09-23）：**每轮技能**——`conversation/send` 新增可选的 `mentions`，
+> 只认 `kind: "skill"`（规格见 §12.3）。
+> 更早的 **`fp-2`**（2026-09-22）：承载**工具参数**（`ConnectorTool.input_schema` +
+> `ConnectorDetail`/`ConnectorProbeResult` 的 `tools_truncated`），与宿主 `[connector_proxy]`
+> 授权单位由「逐个工具」上移到「连接器」是同一件事的两半：要人同意一个工具，就得让他看得见
+> 这个工具收什么参数。规格见本文 §4.3.3，方案见 `26-connector-schema-and-grant-policy.zh.md`。
+> 最早的 **`fp-1`**（2026-09-21）：由日期戳改为 **`fp-<n>` 计数器**（改前是 `2026-09-21`）。
 > 这是**形状变更，不改任何 wire 行为**；但校验是严格相等，所以每个客户端都必须跟着更新。
 > 动机：`2026-…` 会被误读成发布日期——日期戳本来就只是标签，连续改动每次加一天，常超前于
 > 日历。旧值在下方历史里保留。
@@ -195,7 +212,7 @@ Server Request   服务端向客户端请求审批/输入/确认
 }
 ```
 
-`run_notifications` 仅在 WebSocket 传输且服务端事件源可用时为 `true`；`agents` 在 Runtime 或 Agent Catalog provider 注入时为 `true`。`skills`/`connectors`/`oauth` 仅在对应 Catalog/OAuth provider 注入时启用（生产装配注入系统 Skill/MCP 服务适配器）；**`skill_files` 与 `connector_calls` 各自独立**（§4.3.1 / §4.3.2）：前者对应技能**文件树**读面、后者对应**连接器调用代理**，两者都刻意不与同名目录位合并——查 `skills` 不足以判断 `skill/files` 是否可用，查 `connectors` 同样不足以判断 `connector/call` 是否可用（且调用代理还有一个上游闸门：宿主 `[connector_proxy]` 的 allowlist 为空时，方法在但每个调用都回 `policy_denied`）；`imports` 仅在 Importer provider 注入时启用，`teams` 仅在 Team Catalog provider 注入时启用；未注入时对应方法返回 `unsupported_operation`。Approval、Artifact 能力在当前单 Agent Phase 保持 `false`，由后续 Phase 逐个启用。
+`run_notifications` 仅在 WebSocket 传输且服务端事件源可用时为 `true`；`agents` 在 Runtime 或 Agent Catalog provider 注入时为 `true`。`skills`/`connectors`/`oauth` 仅在对应 Catalog/OAuth provider 注入时启用（生产装配注入系统 Skill/MCP 服务适配器）；**`skill_files` 与 `connector_calls` 各自独立**（§4.3.1 / §4.3.2）：前者对应技能**文件树**读面、后者对应**连接器调用代理**，两者都刻意不与同名目录位合并——查 `skills` 不足以判断 `skill/files` 是否可用，查 `connectors` 同样不足以判断 `connector/call` 是否可用（且调用代理还有上游闸门：宿主 `[connector_proxy]` 表缺席或未启用时代理整体关闭，这一对被 `allow` 收窄出局或被 `deny` 排除时也各自回 `policy_denied`——三个 `policy_denied` 情形的 reason 措辞不同）；`imports` 仅在 Importer provider 注入时启用，`teams` 仅在 Team Catalog provider 注入时启用；未注入时对应方法返回 `unsupported_operation`。Approval、Artifact 能力在当前单 Agent Phase 保持 `false`，由后续 Phase 逐个启用。
 
 `team_runtime=true` 仅表示 V1 最小 Team Runtime：固定成员、Planning Context、planned DAG、局部并行、retry/replan；不表示完整 Mailbox/成员直连能力。
 
@@ -381,14 +398,20 @@ HTTP POST /api/app-server/connectors/{connector_id}/call   body: { tool, argumen
 | # | 门 | 不过时的码 |
 |---|---|---|
 | 1 | 宿主 `[connector_proxy]` 策略；未声明即关 | `policy_denied` |
-| 2 | 显式 allowlist 命中该 连接器/工具 对 | `policy_denied` |
+| 2 | 可选**收窄**：`allow` 若存在则必须命中该 连接器/工具 对；随后 `deny` 不得命中 | `policy_denied` |
 | 3 | 连接器已注册**且已启用** | `connector_unavailable` |
 
-- **默认全关且 opt-in**：MCP 工具自身没有危险度标注（`DangerTier` 是 gateway 那套
-  自建能力的词汇），所以没有可推断的默认值——唯一让某个工具可调的办法，就是宿主操作者
-  把它写下来。allowlist 条目形如 `<连接器>__<工具>`，连接器可用**注册名**或 **id** 表示
-  （id 是精确写法：MCP server 按**名字** upsert，后来安装的同名者会接管名字并因此继承
-  授权）。
+- **表 fail-closed，表内默认可调（`fp-2` 起）**：缺表或缺 `enabled` 仍然是「关」；但操作者一旦
+  开启代理，**已启用的连接器即可被调用**，`allow` 是**可选收窄**（写了就只放命中的；写成空表
+  `allow = []` 表示「什么都不放」）、`deny` 是**可选减法**（在 `allow` 之后应用，与 `[tools]`
+  的 `disabled` 同序）。这取代了此前的**强制逐工具白名单**——理由是它让人**盲签**：见 §4.3.3
+  与 `26-connector-schema-and-grant-policy.zh.md` §3.1。
+- **条目的词汇与 `[tools]` 完全相同**：`mcp__<连接器>__<工具>`，`<连接器>` 可写**注册名**或
+  **id**（id 是精确写法：MCP server 按**名字** upsert，后来安装的同名者会接管名字并因此继承
+  授权），且**只有 `mcp__` 条目是 glob**（`mcp__github__*` 表示整个连接器）。匹配实现与引擎
+  共用同一个 `glob` crate，并照抄了引擎的用例表，所以两侧语义不会各自漂移；**旧写法
+  `<连接器>__<工具>`（无 `mcp__` 前缀）在新词汇下不再命中任何东西**，即收窄到零——这是
+  fail-closed 的方向，宿主启动时会就这条与「开了代理但没写任何名单」各给一条 warn。
 - **调用方只能点名一个已注册的 `connector_id`**：请求里给 `url` / `command` / `headers` /
   `env` 一律 `invalid_request`（`deny_unknown_fields`），因此这条通路**不构成 SSRF**
   ——地址永远来自宿主自己的配置。
@@ -403,7 +426,7 @@ HTTP POST /api/app-server/connectors/{connector_id}/call   body: { tool, argumen
   schema，只做体积上限——半脱敏的载荷比经审计的原样载荷更危险。
 - **鉴权**：与其它 `/api/app-server/*` 一致，需就绪连接（`require_ready`）。
 - **能力位是独立的 `connector_calls`**：它表示**方法存在**，不表示有工具可调——宿主可以
-  接了代理而 allowlist 为空，此时每次调用都回 `policy_denied`。这是**默认状态**，不是配错。
+  接了代理而 `allow` 为空表，此时每次调用都回 `policy_denied`。
 - **三种传输都支持**：stdio、Streamable HTTP 与 legacy SSE。SSE 的调用面与探针共用同一套
   流式握手（`wait_for_endpoint` / `sse_post_with_auth` / `wait_for_jsonrpc_response`），
   并同样带一次性 401 刷新重试；三者都走同一份「一个客户端、两个入口」的实现，不是三份客户端。
@@ -420,6 +443,43 @@ allowlist 收 id 同一条理由）；**env 按 `secret:` 解析后的值比较*
 引用名不变、值变了）会换新会话，而不是拿旧凭据继续跑。调用**超时**或管道**断裂**时该会话
 被丢弃：那时请求/响应是否还对得上已无从判断，复用会让**下一次**调用读到上一次还留在管道里
 的答复。池满且都在忙时退回**一次性调用**——复用是优化，从来不是正确性前提。
+
+#### 4.3.3 连接器工具签名读面（`ConnectorTool.input_schema`，`fp-2` 加入）
+
+`connector/get` 与 `connector/test` 返回的每个工具带上**上游参数 schema**：
+
+```text
+ConnectorTool {
+  name,            # 命名空间后的公开名
+  description,     # 上游工具描述逐字
+  input_schema,    # fp-2 新增：上游 tools/list 的 inputSchema，**逐字**
+}
+ConnectorDetail.tools_truncated        # fp-2 新增
+ConnectorProbeResult.tools_truncated   # fp-2 新增
+```
+
+**为什么**：要人同意一个工具，就得让他看得见这个工具收什么参数。此前授权单位是逐个工具名，
+而调用方只能在**看不到参数**的前提下把名字写进白名单（`26` §3.1 的「盲签」）。schema 上 wire
+之后，授权单位才上移到连接器（§4.3.2）。
+
+规则：
+
+- **不新增方法**：`input_schema` 挂在既有的 `ConnectorTool` 上，于是 `connector/get`（自上次
+  探针的缓存）与 `connector/test`（现场探针并落库，顺手刷新 get）两条既有读面**同时**生效；
+  HTTP 路由与方法计数**不变**（`48 / 23`）。
+- **逐字透传**：值就是上游 `tools/list` 的 `inputSchema`。宿主**早已**解析它并随探针落库
+  （`McpToolResponse.input_schema`），这一层不改写、不裁剪、不注入，只做体积预算。
+- **体积预算 `MAX_CONNECTOR_TOOLS_BYTES` = 1 MiB**：按 tools 的既有顺序累加；`name` /
+  `description` **永远保留**（它们是「选哪个」的依据，且便宜），放不下的 `input_schema`
+  **整份省略**并置 `tools_truncated: true`。**绝不截半个 JSON Schema**——半截 schema 会被
+  调用方解析并相信。为什么不是整个响应回 `response_too_large`：仓里「拒绝优于静默截断」针对
+  的是调用方会 parse 并相信的**载荷**；这里缺的是**显式标记的缺席**，而把一个大连接器变成
+  「目录完全读不出来」是更糟的失败。
+- **读面不加门**：`connector/get` / `connector/test` 走 `ConnectorCatalogProvider`，与
+  `ConnectorCallProvider` 是两个 seam，`connector_calls` 只管 `connector/call`。工具**名字**
+  早已在这个面上，schema 是同一能力的更高分辨率，**不是新面**；加门反而会弄坏既有 catalog UI。
+- **新鲜度**：`connector/get` 的 tools 来自**上次探针落库**的结果，可能很旧、也可能是空数组
+  （首次探针成功前恒为空）。要新鲜就先调 `connector/test`——零额外机制。
 
 ### 4.4 Import 与 PluginSnapshot（roadmap Phase 1）
 
@@ -821,7 +881,7 @@ Composer 的 `@` 引用以**结构化 mention** 传入 `agent/run`，客户端�
 
 | kind | 注入点 | 约束 |
 |---|---|---|
-| `agent` | 通过 `agent/get` 的 `preset_id` 选择运行 preset（替换 `agent_id` 字段）；overrides 沿 preset resolve 面展开 | 至多一个；target AgentDefinition 必须已 `install/*`（否则 `agent_not_installed`）；与显式 `agent_id` 冲突返回 `invalid_mentions` |
+| `agent` | 通过 `agent/get` 的 `preset_id` 选择运行 preset（替换 `agent_id` 字段）；overrides 沿 preset resolve 面展开 | 至多一个；target AgentDefinition 必须已 `install/*`（`agent_not_installed`；**id 根本不存在则是 `not_found`**——两者语义不同，2026-09-23 真机确认）；与显式 `agent_id` 冲突返回 `invalid_mentions` |
 | `skill` | 挂载到 `included_skills`（冻结进 `ResolvedPresetSnapshot`，随 run 上下文交给 Agent） | 只记录/挂载；不执行、不展开正文 |
 | `connector` | 追加到 `mcp_server_ids`（经既有的 connector 存在+enabled 校验后注入 run） | 必须是存在的已启用 MCP server |
 
@@ -831,10 +891,15 @@ Composer 的 `@` 引用以**结构化 mention** 传入 `agent/run`，客户端�
 - 未知 kind 反序列化失败（严格 wire 契约）；
 - agent-store 安装 preset（`agent-store: <name>` 命名）在 `validate_agent_store_preset_source`
   白名单内（Builtin+builtin-office 保持不变）；任意用户 preset 仍被拒绝；
-- preset 未绑定 model 时，服务端回退到 owner 的第一个启用 provider/model
-  （`default_run_model`），避免 `resolved_model=None` 在运行时边界被拒；
+- preset 未绑定 model 时，服务端**先取宿主自己的** `default_model`
+  （`~/.agent-store/config.toml`，与会话创建 / `team/run` 同源），再回退到 provider 注册表里第一个启用的
+  provider/model（`default_run_model`），避免 `resolved_model=None` 在运行时边界被拒；
   回退重解析**保留 mention overrides**（`include_skills` / `mcp_server_ids`
   不丢失）。
+  > **2026-09-23 修（既有缺陷）**：此前这条回退**只**读 provider 注册表，而 config 里的 provider 是
+  > **按需注册**的（其它路径解析模型时才写库）。于是「全新宿主、还没解析过任何模型」时 `agent/run`
+  > 会以 `invalid_request`（`resolved_model is required`）失败——真机上复现过。现在它与会话 / 团走
+  > 同一个来源，**不再依赖"别的调用先发生过"**。
 
 ### 4.9 模型目录（models/list，REQ-PAR-05b）
 
@@ -1118,9 +1183,20 @@ WS   workspace/revoke             移除（注销）owner 的一个 workspace
   "input": {"text": "..."},
   "workspace": {"id": "ws_01..."},
   "idempotency_key": "client-op-01",
-  "mentions": [{"kind": "skill", "id": "wb-demo-release-notes"}]
+  "mentions": [{"kind": "skill", "id": "wb-demo-release-notes"}],
+  "model": {"provider_id": "opencode", "model": "mimo-v2.5"},
+  "reasoning_effort": "high"
 }
 ```
+
+`agent/run` 的 `model` / `reasoning_effort`（`fp-6` 加入）是**运行级**选择，可选：`model` 的
+优先级是 **显式 > preset 自带 > 宿主默认**（`~/.agent-store/config.toml` 的 `default_model`）——
+给出即**无条件**覆盖 preset 里绑定的模型，解析与 `conversation/*` 同一函数（已注册 provider UUID
+原样使用，`config.toml` 的 provider 名幂等注册）；`reasoning_effort` 作用**整次运行**（随冻结快照
+落到每个 attempt 的会话 `extra.reasoning_effort`，因此每个 attempt 用同一个等级），词表与
+`conversation/*` 相同，引擎是否真的用上取决于该模型在目录里是否声明了等级。两者缺省时行为与
+从前逐字一致；由于请求体会被**幂等指纹**序列化，缺席的字段不进入指纹（`skip_serializing_if`），
+一次纯升级不会让既有收据失配。
 
 `agent/run` 的稳定错误码：`invalid_request`、`version_mismatch`、
 `agent_not_installed`、**`preset_disabled`**（解析出的目标 Preset 处于 disabled
@@ -1361,9 +1437,9 @@ preset-backed 执行面相互独立：聊天直接复用 Allo 的 Conversation �
 | `conversation/model-options` | 可选模型目录：config.toml 的 provider/模型/默认选择与思考等级词表（不含凭据） |
 | `conversation/update` | 更新名称、模型（`model`）或思考等级（`reasoning_effort`）；Nomi 运行时在下一次回复时生效 |
 | `conversation/list` | 该 owner 的 App Server 聊天列表（按 modified_at 倒序） |
-| `conversation/get` | 单会话视图 |
+| `conversation/get` | 单会话视图（含当前的 `reasoning_effort`，`fp-6` 加入；缺席＝未指定） |
 | `conversation/messages` | 分页历史（升序，`page_size` 1..=200）。响应体为 `{ "items": [...], "has_more": bool }`：`items` 为消息数组（升序），`has_more` 是服务端 keyset 算出的精确标志——还有更旧消息时为 `true`。客户端以 `cursor: ""` 取最新窗口，以最旧已加载消息的 `created_at:message_id` 翻更早页；"向上加载"应直接读 `has_more`，不要以"页是否装满"近似推断 |
-| `conversation/send` | 发送消息，必带 `idempotency_key`；可选 `attachments`（见下） |
+| `conversation/send` | 发送消息，必带 `idempotency_key`；可选 `attachments`、`mentions`（见下）、`model` / `reasoning_effort`（`fp-6`，**粘性**切换，见 §12.4） |
 | `conversation/cancel` | 停止当前 turn |
 | `conversation/delete` | 删除 App Server 会话（HTTP 为 `DELETE /api/app-server/conversations/:id`）；委托既有会话删除语义：运行中先按 stop/orphan fence 处理，保留的 execution transcript 拒绝删除，删除失败返回稳定错误码 |
 | `conversation/subscribe` / `conversation/unsubscribe` | 实时事件订阅 |
@@ -1375,7 +1451,10 @@ preset-backed 执行面相互独立：聊天直接复用 Allo 的 Conversation �
   "conversation_id": "<会话 id>",
   "content": "消息正文",
   "idempotency_key": "<客户端幂等键>",
-  "attachments": ["<会话工作区内的绝对路径>"]
+  "attachments": ["<会话工作区内的绝对路径>"],
+  "mentions": [{ "kind": "skill", "id": "<skill/list 的 id>" }],
+  "model": { "provider_id": "<已注册 UUID 或 config.toml 的 provider 名>", "model": "<模型名>" },
+  "reasoning_effort": "high"
 }
 ```
 
@@ -1392,6 +1471,65 @@ preset-backed 执行面相互独立：聊天直接复用 Allo 的 Conversation �
 （模型看不到它，客户端应在正文里给出路径）。客户端的前置校验口径与运行时逐条对齐，
 见 `web/src/lib/attachments.ts`。
 
+### 12.2 以专家 / 专家团开场（`conversation/create` 的 `agent_id` · `team_id`，`fp-4` / `fp-5` 加入）
+
+`agent_id` 是 `agent/list` 的 AgentDefinition id、`team_id` 是 `team/list` 的 id；两者**互斥**
+（同时给是 `invalid_request`：一个会话要么属于某个专家，要么是某个团的 Leader）。语义与
+`agent/run` / `team/run` 一致，但**作用域是整个会话**：
+
+**专家（`agent_id`）**
+
+- **解析**：`agent/get` → 它的 `preset_id`；未 `install/*` ⇒ `agent_not_installed`，
+  **id 不存在 ⇒ `not_found`**（2026-09-23 真机确认的两种码），
+  Preset 被 `install/disable` ⇒ `preset_disabled`，来源不在 agent-store 白名单 ⇒ 与
+  `agent/run` 同一处校验拒绝。宿主未接预设服务 ⇒ `runtime_unavailable`。
+- **冻结什么**：该专家的 preset **快照**（`preset_id` / `preset_revision` / `preset_snapshot` 三列）
+  与**它自己声明的技能、连接器**一起冻进这一行。技能走 `preset_enabled_skills`，连接器走显式
+  id 栅栏；宿主 auto-inject 的技能**照旧排除**——专家的 preset 自己不带排除名单（安装器写的是空），
+  所以这道栅栏由会话层补，不能被快照覆盖。
+- **连接器不可用**：专家声明的连接器若被停用 ⇒ `connector_unavailable`（**不是**悄悄少绑一个）。
+
+**专家团（`team_id`）**
+
+- **同一段编排**：复用 `team/run` 的 `prepare_team_leader_conversation`（解析成员 →
+  逐个查 `agent_not_installed` / `agent_disabled` → 连接器栅栏 → 物化或复用执行模板 →
+  建 Leader 会话），因此**不会**出现「`create` 建的 Leader 与 `team/run` 建的不是一回事」。
+- **唯一区别**：**不发 `goal` 首轮**。客户端自己的第一条 `conversation/send` 就是 Leader 的首轮，
+  `delegation_policy` 已是 `automatic`、模板已绑好——Leader 在这一轮里**可以**调用 `nomi_delegate`。
+  > **实测口径（2026-09-23）**：是否委派**由模型决定**，不是这一轮的强制契约——同一条自然语言指令
+  > 真机 6 次里 2 次委派（拿到 `execution_id`、宿主进入 planning）、4 次自己动手做；既有入口
+  > `team/run` 在同一条件下也会 `team_run_not_started`。逐条读数见
+  > `27-conversation-binding-plan.zh.md` §9.1。
+  > 需要委派时请在指令里明确点名 `nomi_delegate`（真机验证过：那会稳定触发，拿到 `execution_id`）。
+  > 另：同一会话在上一轮执行未完成时再委派会被拒（`Conflict: conversation already has an unfinished
+  > Agent Execution`），普通消息则会被拒为 `Conflict: Conversation already has an authoritative local turn owner`。
+- **错误时机**：成员与连接器的检查都在**创建时**发生，不会先开出一个残缺的 Leader 会话。
+- **边界**：`conversation/create` 只接受 `team_id`，**不接受** `team_version`（版本钉住走
+  `team/run`）；Leader 会话的模板按 `team_id` 复用，与该 Team 后续的 `team/run` 共用同一份。
+
+**两者共同**
+
+- **之后不可改写**：`conversation/update` 明确拒绝 preset / 技能 / MCP 三类键，所以
+  **换专家或换团 = 新建会话**。这是刻意的语义，不是欠账。
+- **纯加法**：两个字段都不传时是普通会话，wire 形状与行为逐字不变。
+
+### 12.3 每轮技能（`conversation/send` 的 `mentions`，`fp-3` 加入）
+
+`mentions` 与 `agent/run` 同形（`{ "kind", "id" }`），但**只认 `kind: "skill"`**：
+
+- **技能是每轮载荷**：`id` 交给会话层既有的显式技能路径解析成不可变快照
+  （`resolve_requested_skill_snapshots`），正文随这一轮的 prompt 走。**创建时冻结的技能快照
+  不受影响、也不可改写**——会话的技能/MCP/预设快照在 create 之后是只读的
+  （`ConversationService::update` 明确拒绝这三类键）。
+- **`id` 用 `skill/list` 公布的 id（即技能名）**，不是 `install/status` 的组件 id；
+  传组件 id 会在 `SkillId::parse` 处降级、随后按名查不到而**不挂载**（`05` §4.8 的同一处口径）。
+- **另外两类显式拒绝**：`kind: "agent"` 与 `kind: "connector"` 返回 `invalid_request`。
+  它们在 `send` 上没有载体——专家是会话身份、连接器是宿主级开关——**拒绝而不是静默忽略**，
+  否则调用方会以为自己挂上了。
+- **失败早于占用幂等键**：技能不存在、快照超限、内容非法都会让整次 send 失败，且失败发生在
+  durable receipt 落库与会话转 Running 之前。
+- **纯加法**：不传 `mentions` 时 wire 形状与行为逐字不变；同一轮里重复点同一技能只算一次。
+
 `conversation/create` 请求体：
 
 ```json
@@ -1399,7 +1537,9 @@ preset-backed 执行面相互独立：聊天直接复用 Allo 的 Conversation �
   "name": "可选名称",
   "model": { "provider_id": "<已注册 UUIDv7>", "model": "mimo-v2.5-free" },
   "workspace": { "id": "<可选已注册 workspace>" },
-  "reasoning_effort": "可选 low / medium / high / xhigh"
+  "reasoning_effort": "可选 low / medium / high / xhigh",
+  "agent_id": "<可选：agent/list 的 id，把会话建成该专家>",
+  "team_id": "<可选：team/list 的 id，打开该专家团的 Leader 会话；与 agent_id 互斥>"
 }
 ```
 
@@ -1433,7 +1573,7 @@ create 相同的模型解析（已注册 UUID 直通或 config.toml provider key
 }
 ```
 
-### 12.2 模型解析与 agent-store 配置
+### 12.4 模型解析与 agent-store 配置
 
 `model` 省略时，后端按以下顺序解析；显式给出时，`provider_id` 接受**已注册
 的 provider UUID**（原样使用）或 **config.toml 中 `[providers.<key>]` 的名字**
@@ -1453,7 +1593,29 @@ provider 名幂等：同一 key 多次 create 复用同一 provider。未找到�
 `model` 显式给出时，已注册的 provider UUID 原样使用；未注册的
 provider_id 会按 config provider 名尝试解析。
 
-### 12.3 实时事件
+**随消息切换（`conversation/send` 的 `model` · `reasoning_effort`，`fp-6` 加入）**
+
+`send` 也接受这两个字段，语义是**会话级设置的粘性切换**——**不是**「只影响这一轮」：
+
+1. 值被写进会话行，**从这条消息起生效**，此后每一轮沿用。Nomi 运行时是按会话行构建的
+   （换模型立即重建运行时、换等级在下一个 turn 边界重建），所以「发送前把设置切好」恰好
+   就是本轮生效；要还原就再发一次带旧值的调用。真·一次性需要引擎级的每轮模型通道，
+   不是本协议的语义（`29-send-model-and-effort-plan.zh.md` §4）。
+2. **只在值真的不同时才写**：与行上现值逐项比较，全相同则**不写库、不广播**
+   `conversation.listChanged`。因此不带这两个字段的调用与从前**逐字一致**（零副作用）。
+3. **会话正跑着一个 turn 时拒绝**（`conflict`）：换模型要拆掉运行时，不能在轮中做。
+   其余可预期拒绝（附件越界、mention 非法、模型/等级解析失败）都发生在写库**之前**。
+4. 带同一个 `idempotency_key` 的重放会**再写一遍同样的值**（幂等）：receipt 仍是
+   `replayed: true`——重放不代表发生了一次新 turn，但配置确实已经是新值。
+5. **读回**：`ConversationView.reasoning_effort`（`conversation/get` / `list` / `create` /
+   `update` 都返回该字段；缺席＝未指定）。这条是必需的——`create` / `update` / `send`
+   三条路都能写等级，若视图不投影它，这个设置就是只写不读。
+6. **是否真的生效取决于模型能力**：引擎只在 catalog 为该模型声明了等级时才把
+   `reasoning_effort` 送上 wire，否则**静默退回模型默认**（与 `create` / `update` 同一口径，
+   本协议不为它新增错误码）。词表仍是 `low` / `medium` / `high` / `xhigh`，非法值
+   `invalid_request`。
+
+### 12.5 实时事件
 
 订阅后事件经 `conversation/event` 通知投递，`sequence` 为连接内单调递增：
 
@@ -1507,14 +1669,14 @@ execution/session/attempt ID。事件流 lag 时发送
 
 - **不要求订阅**该会话：用户此刻往往正看着另一个会话，而列表是全局的；
 - **不带 `sequence`**，客户端不得据此推进 `lastSeenSequence`（它不是转写帧，也不参与
-  §12.3 的缺口检测）；
+  §12.5 的缺口检测）；
 - **尽力而为**：丢一条只是界面晚一步刷新，`conversation/list` 始终是权威来源。
 
 `action` 只承认上述三态（`created` / `updated` / `deleted`；将来新增第四态属于 wire 变更，
 要动协议指纹）。触发场景：`conversation/create` → `created`；重命名与**自动标题**（首条消息
 几秒后由服务端异步生成）→ `updated`；`conversation/delete` → `deleted`。
 
-### 12.4 能力边界
+### 12.6 能力边界
 
 - `conversation/create`（单 Agent 聊天）使用 `DelegationPolicy::Disabled`：一轮
   单 Agent 对话没有 `nomi_delegate`。**Team 层是唯一的例外**，且它由

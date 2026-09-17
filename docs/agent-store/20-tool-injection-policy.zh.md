@@ -370,9 +370,9 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 | 维度 | 对齐 | 必须保留的差异 |
 |---|---|---|
 | 文件与 schema | `~/.agent-store/mcp.json`，`mcpServers` 同名同形，三类传输判定规则一致 | **只做用户级**：项目级整体不做（Store 是常驻服务端、无交互式信任面，`21` D14 ③=C） |
-| 可选字段 | 参考实现文档里的九个字段**全部支持**（`env` / `cwd` / `headers` / `bearerTokenEnvVar` / `enabled` / `startupTimeoutMs` / `toolTimeoutMs` / `enabledTools` / `disabledTools`，落点见 §7.9.1） | **唯一的有界差异**：两个超时参考实现允许到 `2147483647` ms，我们按引擎自己的上界卡在 `≤ 600000` ms 并**拒绝**越界值（不夹取、不静默改小）；**未知字段**仍**拒绝该条目**并点名——静默忽略会改变用户声明的安全语义（`enabledTools` 被忽略 = 用户以为排除掉的工具仍可调用） |
+| 可选字段 | 本文成文时参考实现文档化的九个字段**全部支持**（`env` / `cwd` / `headers` / `bearerTokenEnvVar` / `enabled` / `startupTimeoutMs` / `toolTimeoutMs` / `enabledTools` / `disabledTools`，落点见 §7.9.1） | **唯一的有界差异**：两个超时参考实现允许到 `2147483647` ms，我们按引擎自己的上界卡在 `≤ 600000` ms 并**拒绝**越界值（不夹取、不静默改小）；**未知字段**仍**拒绝该条目**并点名——静默忽略会改变用户声明的安全语义（`enabledTools` 被忽略 = 用户以为排除掉的工具仍可调用）。参考实现成文之后新增的第十个字段 `deferred` **不在支持范围内**，它正是靠这条规则被拒，理由与落地前提见 §7.9.4 |
 | 工具命名与权限 | 同一 `mcp__` 命名空间；server 级 `enabledTools` / `disabledTools` 在**注册之前**裁剪（§7.9.2），宿主 `[tools]` 仍在最后求交 | 不引入第三种工具级写法：整组关闭既可以写在声明里（`disabledTools: ["mcp__<key>__*"]`），也可以写在宿主 `[tools] disabled = ["mcp__<key>__*"]`——后者是全局策略，前者只作用于本 server |
-| 生效时机 | 「只对新会话生效」天然满足（每会话构建时读盘、落内存） | 没有 `removed` 墓碑态：删除后新会话直接看不到，已开会话也没有可见标记（登记为未做） |
+| 生效时机 | **比参考实现更严格**：宿主**启动时读一次**（`resolve_host_mcp_declarations` 是全仓唯一调用点，`nomifun-app/src/services.rs`），落内存后随 factory deps 传入每个会话；因此新增 / 编辑 / 删除都要**重启宿主**才生效，UI 里的编辑与开关也一样（2026-09-19 订正：本文原写「每会话构建时读盘」，与实现不符） | 没有 `removed` 墓碑态：删除后重启即彻底不可见，已开会话更没有可见标记（登记为未做）；参考实现的「改动只对新会话生效」在这里是更严的一档 |
 | 来源优先级 | 参考实现是 项目级 > 用户级 | 我们是 **`mcp.json` > `mcp_servers` DB 行**；请求级绑定（`resolve_mcp_servers`）保持既有优先级排在声明之前 |
 | 凭据 | `env` 支持 `secret:NAME` 引用 + `config.toml [credentials]`（比参考实现更强） | 明文值只存在于用户自己的文件里；不进备份 / 快照 / DB（因为不投影进 DB，见下） |
 
@@ -426,6 +426,20 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 第四批拒绝了 `bearerTokenEnvVar` 并把 header 凭据指向 `secret:NAME`，于是**声明路径**必须真的解析 header 里的引用；但 DB 行（`row_to_mcp_server_config`）与会话快照路径当时只解析 `env`，把 `headers` 原样下发。这个不一致是**静默的**：写到 header 里的引用会被当字面量发出去，远端 401，本地没有任何线索。
 
 本批把三条路径统一走 `resolve_header_secrets`（`factory/nomi.rs`）：按整值引用解析（`secret_ref::parse_secret_ref` 是**整值**精确匹配），解析不到的条目**丢弃并点名**，普通值原样透传。另外补一条针对最常见误写的告警：值里**含** `secret:` 但**不是**整值引用（典型 `Authorization: Bearer secret:TOKEN`）会原样发出，故 warn 出 server 名与 header 名——**只记 header 名，不记值**。这个形状的正确写法是 `bearerTokenEnvVar`，或把 `Bearer ` 前缀放进凭据值本身。
+
+#### 7.9.4 `deferred`：参考实现的第十个字段，我们**拒绝**（登记为未做）
+
+参考实现在本文成文之后给 `mcp.json` 加了第十个可选字段 `deferred`——它的「按需加载工具」：该 server 的工具不进模型顶层列表，模型改用内置 `select_tools` 按需加载完整定义，且要同时满足实验开关（`KIMI_CODE_EXPERIMENTAL_TOOL_SELECT` / `[experimental] tool-select`）与该模型声明 `dynamically_loaded_tools` 能力。
+
+**我们不在声明里接受它**：`RawServer` 是 `deny_unknown_fields` 的，`deferred` 因此按 §7.9.1 的未知字段规则**拒绝该条目**并点名。除两个超时的上界（§7.9.1）之外，它是照抄参考实现的 `mcp.json` 时**唯一**会被整条目拒绝的字段，所以我们把这条登记写得比一个「未知字段」更清楚，避免用户以为是自己写错了。
+
+**为什么是「未做」而不是「顺手接上」**：引擎侧有同一套机制的另一半（`McpServerConfig.deferred` + `ToolSearch` 目录），但**声明路径固定写 `Some(false)`**，与 `mcp_servers` 行同口径——`merge_host_declared_mcp_servers`（`factory/nomi.rs`）的三个传输分支都是。把它接进来等于**新增一个可选能力**，而不是补一个被漏掉的字段；且必须一并决定三件事，缺一件都会变成静默降级：
+
+1. `deferred` 要不要进读面（`AppServerConfigMcpServerView`，现在只报 `name` / `transport` / `enabled`，见 `05` §4.10）。进 = 读面加字段 = 指纹 bump 加两仓同步；不进则用户在界面上看不到自己声明的状态。
+2. 与 `[tools] disabled` 的相互作用。`ToolSearch` 被点名关掉时 deferred 工具不可达（`nomifun-api-types` 的 `NomiToolPolicy::disabled` 已就此告警）。今天宿主侧唯一的 deferred 来源是**自家接线**——gateway MCP 是 `factory/nomi.rs` 里唯一写 `Some(true)` 的一处，其余（DB 行、会话快照、声明）全是 `Some(false)`；声明一旦接受 `deferred`，就等于把这个状态第一次交给用户可写的一份文件，那条告警的适用面随之改变。
+3. 参考实现「前提不满足时该字段被忽略」的**静默降级**我们不采纳（同 §7.9.1 的理由：声明文件是用户唯一的意图表达）。要支持就得给出拒绝或告警的判据，而不是忽略。
+
+在上述三点有结论之前，用户侧的写法是：**不要写 `deferred`**；要按 server 收敛工具面用 `enabledTools` / `disabledTools`（§7.9.2），要全局收敛用宿主 `[tools] disabled`。
 
 ### 7.10 环境变量覆盖：`AGENT_STORE_TOOLS`
 
