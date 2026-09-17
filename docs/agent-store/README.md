@@ -96,6 +96,20 @@
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
+## 本轮（2026-09-17 发布 `0.1.0-beta.5`）
+
+**第二次走完整发布链**，且是第一次**一口气清掉积压的多次指纹递增**：
+
+1. **npm**：`protocol` / `client` / `runtime-win32-x64` / `sdk` 四包同为 `0.1.0-beta.5`，dist-tag `beta`；`latest` 仍指 `0.1.0-beta.2`（按手册**有意不动**）。包内顺序 protocol → client → runtime → sdk。注册表发布时间 `2026-09-17T11:41:10.171Z`。
+2. **同一个 exe 服务两个出口**：`target/release/agent-store.exe`（`--features static-webui`，`sha256 2b1c099c…`）既进 npm runtime 包（tarball 72.3 MB），又以**同一哈希**经 `release:pack --expect-sha256` 打进站点 Release 资产（zip 69.2 MB / 72,510,453 B，`release:publish` 的下载回验 sha256 一致）。
+3. **本版一次发布了 `fp-1` → `fp-7` 六次递增**（`beta.4` 之后积累的全部）：连接器工具的 `input_schema` / `tools_truncated`、按轮挂载技能、`agent_id` / `team_id`、`model` / `reasoning_effort`、市场源 `zip`。**无方法增删**，`48 / 71` 不变。
+4. **`beta.5` 是破坏性发布**，判据是**指纹严格相等**而不是类型收窄：`beta.4` 的客户端连不上本版运行时。与已发布产物对读可证**不需要改代码**——两版 `index.d.mts` 的导出名都是 **141 个**，一个不多一个不少，新增的只有可选字段。
+5. **订正上一版的一处台账**：`MentionKind` / `MentionRef` 与两处 `mentions` **在 `beta.4` 的已发布声明里就已经存在**，所以 `beta.5` 的条目把它写成宿主侧**语义**变化，不声称是新增字段。更正记在站点 `changelog` §4。
+6. **发布前修掉一个会让「配置文件声明 zip 市场源」静默变空店的缺陷**（`30` §9.8）：`AgentStoreMarketplace::resolved()` 自带第二份 kind 白名单，不认识 `zip`，导致 config 源被 `filter_map` 丢掉而 `complete` 仍报真；`agent-store init` 的向导产物同样中招。已删白名单、把判定权收归 `AppServerMarketplaceSourceKind::parse`，补三个回归钉。
+7. **手册新增一条实测坑**（`25` §3 S5）：发布步骤会把 181 MiB 二进制写进 `web/packages/runtime/vendor/`，Windows 写入期锁文件，Vite 的 watcher 会以 `EBUSY` 退出——已把该目录加进 `web/vite.config.ts` 的 `watch.ignored`。
+8. **跨仓站点文档同步**：`changelog` 新增 §2.1 并把 §4 未发布台账清空；`upgrade` 新增 §6.4（`beta.4` → `beta.5`）、§8 改为「无未发布差异」并补 `beta.4` → `beta.5` 的对读示例；`typescript-sdk` §1 的版本状态改为 `0.1.0-beta.5`。`content/release.json` 同值。
+9. **本仓改动**：四个 `package.json` 的版本与 sdk 的依赖 pin + `web/vite.config.ts` 的 watcher 排除 + 上述缺陷修复 + `25` 的坑记录。
+
 ## 本轮（2026-09-16 发布 `0.1.0-beta.4`）
 
 **首次按 `25-release-runbook.zh.md` 走完整条发布链**（npm 四包 + 站点仓 GitHub Release + 站点上线），并把当次实测出的坑写回了手册：

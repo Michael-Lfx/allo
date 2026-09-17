@@ -1,7 +1,7 @@
 # Agent Store 发布流程（npm + agent-store-site）
 
 > 定位：**发一次版的操作手册**——回答「怎么发」，不回答「能不能发」。产品准入（P0 门禁与发布结论等级）见 `09-release-readiness.md`；桌面端 Flowy 的发版见仓库根 `RELEASING.md`；市场树刷新见站点仓 `docs/market-maintenance.md`。三者互不替代。
-> 最后核对：2026-09-16
+> 最后核对：2026-09-17
 > 适用范围：Agent Store 预览版（`0.1.0-beta.N`）——**npm 四个包** + **站点仓的 GitHub Release 资产** + **站点上线**
 > 前置阅读：`web/AGENTS.md` §5（协议指纹与跨仓同步）· `12-sdk-packaging.md` §6（发行形态）· `18-marketplace-spec.zh.md` §8（市场发布门禁）
 
@@ -55,7 +55,7 @@ Get-FileHash target\release\agent-store.exe -Algorithm SHA256
 ### S2 版本锁步预演（dry-run）
 
 ```powershell
-$env:DRY_RUN="1"; $env:VERSION="0.1.0-beta.4"; $env:TAG="beta"
+$env:DRY_RUN="1"; $env:VERSION="0.1.0-beta.5"; $env:TAG="beta"
 bun web/scripts/publish-packages.ts
 Remove-Item Env:DRY_RUN,Env:VERSION,Env:TAG
 
@@ -80,7 +80,7 @@ bun run release:check:site       # 站点半边：docs-sync + market + typecheck
 ### S5 npm 发布
 
 ```powershell
-$env:VERSION="0.1.0-beta.4"; $env:TAG="beta"
+$env:VERSION="0.1.0-beta.5"; $env:TAG="beta"
 bun web/scripts/publish-packages.ts
 Remove-Item Env:VERSION,Env:TAG
 
@@ -92,6 +92,8 @@ npm view @flowy-agent-store/sdk dist-tags versions --json
 - **不带 `VERSION` 直接跑会写回脚本内置的默认版本**——那会同时打坏版本锁步（`check:release-sync` 会红）。所以每次都显式给 `VERSION`。
 - 发布失败或中断：见 §5。
 - **复核时注意读取侧 CDN 滞后**（见 §1 的提示）：刚发完 `npm view` 可能给旧值或假 404，用 canonical packument URL 复核，别据此判断发布失败。
+- **发布前先确认 `bun run dev` 不会被打死**（2026-09-17 实测）：本步会把约 181 MiB 的二进制写进 `web/packages/runtime/vendor/`。Windows 在写入期间锁住该文件，Vite 的 watcher 抛 `EBUSY: resource busy or locked, watch '…/runtime/vendor/…exe'`，而这是 FSWatcher 的未捕获 error —— **整个 dev server 连同 Vite 一起退出**，看起来像发布把开发环境搞崩了。该目录已加进 `web/vite.config.ts` 的 `watch.ignored`；换 checkout 或回退那份配置后会复现。
+- **认证用 granular token，别依赖全局 `~/.npmrc`**（§7 第 6 条的落地做法）：本机全局 `~/.npmrc` 的 `registry` 指 npmmirror，而 `//registry.npmjs.org/:_authToken` 只对 npmjs 生效，所以裸 `npm whoami` 会报 `ENEEDAUTH`——那是**注册表不匹配**，不是没凭据。用 `npm_config_userconfig` 指一个只含 `registry=https://registry.npmjs.org/` 与该 token 的临时文件即可（`whoami` 应能打印用户名）。
 
 ### S6 GitHub Release（站点仓）
 
@@ -110,7 +112,7 @@ bun run release:status
 
 ```powershell
 git add content/docs content/release.json
-git commit -m "docs(release): 发布 0.1.0-beta.4"
+git commit -m "docs(release): 发布 0.1.0-beta.5"
 git push origin main
 ```
 
@@ -169,14 +171,14 @@ git push origin main
 ```powershell
 # ── 本仓 C:\workspace\allo ──────────────────────────────────────────
 bun run agent-store:build
-$env:DRY_RUN="1"; $env:VERSION="0.1.0-beta.4"; $env:TAG="beta"
+$env:DRY_RUN="1"; $env:VERSION="0.1.0-beta.5"; $env:TAG="beta"
 bun web/scripts/publish-packages.ts
 Remove-Item Env:DRY_RUN,Env:VERSION,Env:TAG
 bun web/scripts/verify-published-sdk.ts web/packages/runtime/vendor/flowy-agent-store.exe
 # 改站点 content/release.json + 站点文档（§4 清单）
 bun run release:check
 bun run release:check:site
-$env:VERSION="0.1.0-beta.4"; $env:TAG="beta"
+$env:VERSION="0.1.0-beta.5"; $env:TAG="beta"
 bun web/scripts/publish-packages.ts
 Remove-Item Env:VERSION,Env:TAG
 npm view @flowy-agent-store/sdk dist-tags versions --json
@@ -186,7 +188,7 @@ bun run release:pack -- --exe C:\workspace\allo\target\release\agent-store.exe -
 bun run release:publish
 bun run release:status
 git add content/docs content/release.json
-git commit -m "docs(release): 发布 0.1.0-beta.4"
+git commit -m "docs(release): 发布 0.1.0-beta.5"
 git push origin main
 # 部署后自检（§3 S7）→ changelog §2 / README「本轮」台账（§3 S8）
 ```
