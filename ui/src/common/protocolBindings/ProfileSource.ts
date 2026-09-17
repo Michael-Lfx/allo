@@ -3,4 +3,4 @@
 /**
  * Provenance of a [`ModelProfile`]. User-authored profiles override inferred values.
  */
-export type ProfileSource = "inferred" | "user";
+export type ProfileSource = "inferred" | "user" | "catalog";
