@@ -173,6 +173,44 @@ impl RenderStatus {
     }
 }
 
+/// User-facing job failure. Keep the inner error as the source of truth.
+///
+/// Pipelines already emit progress (`stage` + `message`) and then return `Err`.
+/// Repeating both in the terminal string triples checkpoint boilerplate and
+/// truncates the provider reason (copyright / privacy / empty-set path) in the UI.
+pub fn compose_job_failure_message(prev_stage: &str, prev_message: &str, detail: &str) -> String {
+    let detail = detail.trim();
+    let prev_stage = prev_stage.trim();
+    let prev_message = prev_message.trim();
+
+    if detail.is_empty() {
+        if prev_stage.is_empty() {
+            return prev_message.to_string();
+        }
+        if prev_message.is_empty() {
+            return format!("Failed at stage `{prev_stage}`");
+        }
+        return format!("Failed at stage `{prev_stage}`: {prev_message}");
+    }
+
+    let stage_is_failure_echo = prev_stage.ends_with("_failed")
+        || prev_stage.ends_with("_partial")
+        || prev_stage.ends_with("_skip");
+    let detail_already_has_status = !prev_message.is_empty() && detail.contains(prev_message);
+
+    if stage_is_failure_echo || detail_already_has_status {
+        return detail.to_string();
+    }
+
+    if prev_stage.is_empty() {
+        return detail.to_string();
+    }
+    if prev_message.is_empty() {
+        return format!("Failed at stage `{prev_stage}`\n\n{detail}");
+    }
+    format!("Failed at stage `{prev_stage}`\nPrevious status: {prev_message}\n\n{detail}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +238,41 @@ mod tests {
         assert_eq!(status.stage, "video_poll");
         assert_eq!(status.events.len(), 2);
         assert_eq!(status.events[1].stage, "cancelled");
+    }
+
+    #[test]
+    fn compose_failure_keeps_inner_error_when_stage_already_failed() {
+        let detail = "video generation failed: Scene 1/5 render failed (0 scene(s) already on disk — resume from checkpoint): Shot 0: copyright";
+        let out = compose_job_failure_message(
+            "render_scene_failed",
+            "Scene 1/5 failed; 0 scene(s) already on disk — resume from checkpoint",
+            detail,
+        );
+        assert_eq!(out, detail);
+        assert!(out.contains("Shot 0: copyright"));
+    }
+
+    #[test]
+    fn compose_failure_keeps_world_stage_when_people_check_fails() {
+        let out = compose_job_failure_message(
+            "world_assets_start",
+            "世界参考图生成失败",
+            "image generation failed: empty-set plate still contains people after retries: C:\\film\\env.png",
+        );
+        assert!(out.contains("Failed at stage `world_assets_start`"));
+        assert!(out.contains("empty-set plate still contains people"));
+    }
+
+    #[test]
+    fn compose_failure_keeps_working_stage_context() {
+        let out = compose_job_failure_message(
+            "render_scene",
+            "正在渲染场景（1/5）· 含图片与视频模型",
+            "video generation failed: Shot 0: OutputVideoSensitiveContentDetected",
+        );
+        assert!(out.contains("Failed at stage `render_scene`"));
+        assert!(out.contains("正在渲染场景（1/5）"));
+        assert!(out.contains("OutputVideoSensitiveContentDetected"));
     }
 
     #[test]

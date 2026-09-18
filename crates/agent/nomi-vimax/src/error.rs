@@ -48,6 +48,14 @@ impl VimaxError {
         matches!(self, VimaxError::Cancelled)
     }
 
+    /// Vacant env/prop plate still showed people after text-only retries.
+    pub fn is_occupied_empty_set_plate(&self) -> bool {
+        match self {
+            VimaxError::Image(s) => s.contains("empty-set plate still contains people"),
+            _ => false,
+        }
+    }
+
     /// Turn a `catch_unwind` payload into a readable error (panics often hide the cause).
     pub fn from_panic_payload(ctx: &str, payload: Box<dyn std::any::Any + Send>) -> Self {
         let detail = panic_payload_message(payload);

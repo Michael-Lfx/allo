@@ -17,8 +17,8 @@ use nomifun_cloud::{
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local::{
-    image_magic_kind, is_usable_audio_file, is_usable_video_file, load_return_last_frame_url,
-    probe_media_duration_secs, scrub_unusable_video, trim_audio_to_max_secs,
+    fit_audio_to_duration, image_magic_kind, is_usable_audio_file, is_usable_video_file,
+    load_return_last_frame_url, probe_media_duration_secs, scrub_unusable_video,
     write_image_bytes_atomic, write_return_last_frame_url, write_video_bytes_atomic,
 };
 
@@ -330,8 +330,7 @@ impl VimaxVideo for FlowyVideo {
         // Seedance: reference_audio cannot be the only reference input — need ≥1
         // image or reference_video. Pure T2V must omit voice refs.
         let has_visual_ref = !images.is_empty() || reference_video_url.is_some();
-        let max_audio = crate::video_quality::max_reference_audio(&model);
-        let capped_audios = cap_reference_audio_paths(ref_audios, is_wan3, max_audio).await;
+        let capped_audios = cap_reference_audio_paths(ref_audios, &model).await;
         if !capped_audios.is_empty() && capped_audios.len() < ref_audios.len() {
             local_frame_notes.push(format!(
                 "reference_audio_budget_{}_of_{}",
@@ -510,7 +509,7 @@ impl VimaxVideo for FlowyVideo {
                         model = %model_for_err,
                         remaining = params.reference_audio_urls_merged().len(),
                         error = %last_err,
-                        "Wan 3.0 reference_audio total duration over 15s; retrying with one fewer clip"
+                        "combined reference_audio duration over the model cap; retrying with one fewer clip"
                     );
                     local_frame_notes.push("reference_audio_dropped_wan3_over_15s".into());
                     log_video_create_params(&params, &local_frame_notes, out_path);
@@ -700,7 +699,7 @@ impl VimaxVideo for FlowyVideo {
                 model = %model_for_err,
                 remaining = params.reference_audio_urls_merged().len(),
                 detail = %video_task_failure_message(&record),
-                "Wan 3.0 reference_audio total duration over 15s; retrying with one fewer clip"
+                "combined reference_audio duration over the model cap; retrying with one fewer clip"
             );
             local_frame_notes.push("reference_audio_dropped_wan3_over_15s".into());
             log_video_create_params(&params, &local_frame_notes, out_path);
@@ -748,10 +747,8 @@ impl VimaxVideo for FlowyVideo {
                 VimaxError::Video("video task succeeded but no video_url".into())
             } else {
                 let raw = video_task_failure_message(&record);
-                if is_ref_audio_duration_limit_text(&raw) {
-                    VimaxError::Video(format!(
-                        "{raw}\nHint: Wan 3.0 caps combined reference_audio at 15s. Voice refs are trimmed for Wan only; extra speakers are dropped. Resume from checkpoint, or open the shot in Canvas."
-                    ))
+                if let Some(hinted) = ref_audio_failure_hint(&raw) {
+                    VimaxError::Video(hinted)
                 } else {
                     // Surface the upstream failure reason (e.g. InputTextSensitiveContentDetected)
                     // instead of a misleading success message.
@@ -800,60 +797,80 @@ impl VimaxVideo for FlowyVideo {
     }
 }
 
-/// Wan 3.0 only: Σ `reference_audio` duration must stay under 15s.
-/// Per-clip trim is `min(4s, 14.5 / n)` so five Wan slots still fit the budget.
-const WAN3_VOICE_REF_MAX_SECS: f64 = 4.0;
-const WAN3_REF_AUDIO_TOTAL_BUDGET_SECS: f64 = 14.5;
-
-fn count_refs_within_budget(durations: &[f64], max_count: usize, max_total: f64) -> usize {
-    let mut sum = 0.0;
-    let mut n = 0usize;
-    for &d in durations.iter().take(max_count) {
-        let d = if d.is_finite() && d > 0.0 { d } else { 0.0 };
-        if n > 0 && sum + d > max_total {
-            break;
-        }
-        sum += d;
-        n += 1;
-    }
-    n
+fn fitted_audio_sidecar(src: &Path, target_secs: f64) -> PathBuf {
+    let parent = src.parent().unwrap_or_else(|| Path::new("."));
+    let stem = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("audio");
+    let cents = (target_secs * 100.0).round() as i64;
+    parent.join(format!("{stem}.refaudio_{cents}c.wav"))
 }
 
-async fn cap_reference_audio_paths(
-    paths: &[&Path],
-    wan3_duration_budget: bool,
-    max_count: usize,
-) -> Vec<PathBuf> {
-    if max_count == 0 {
+/// Size `reference_audio` for the selected model on **sidecar copies**.
+///
+/// Canonical TTS wavs stay untouched so a Wan 3.0 trim cannot leave a clip
+/// under Seedance 2.0's 1.8s R2V floor (and a Seedance pad cannot inflate
+/// Wan's combined 15s budget).
+async fn cap_reference_audio_paths(paths: &[&Path], model: &str) -> Vec<PathBuf> {
+    let policy = crate::video_quality::reference_audio_policy(model);
+    if policy.max_count == 0 {
         return Vec::new();
     }
-    let candidates: Vec<&Path> = paths
+    let mut usable: Vec<(PathBuf, f64)> = Vec::new();
+    for path in paths
         .iter()
         .copied()
         .filter(|path| is_usable_audio_file(path))
-        .take(max_count)
-        .collect();
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-    if !wan3_duration_budget {
-        return candidates.into_iter().map(Path::to_path_buf).collect();
-    }
-    let n = candidates.len().max(1);
-    let per = (WAN3_REF_AUDIO_TOTAL_BUDGET_SECS / n as f64).min(WAN3_VOICE_REF_MAX_SECS);
-    let mut kept: Vec<(PathBuf, f64)> = Vec::new();
-    for path in candidates {
-        let _ = trim_audio_to_max_secs(path, per).await;
+        .take(policy.max_count)
+    {
         let dur = probe_media_duration_secs(path)
             .await
             .filter(|d| d.is_finite() && *d > 0.0)
-            .unwrap_or(per);
-        kept.push((path.to_path_buf(), dur));
+            .unwrap_or(0.0);
+        usable.push((path.to_path_buf(), dur));
     }
-    let durs: Vec<f64> = kept.iter().map(|(_, d)| *d).collect();
-    let n = count_refs_within_budget(&durs, max_count, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS);
-    kept.truncate(n);
-    kept.into_iter().map(|(p, _)| p).collect()
+    if usable.is_empty() {
+        return Vec::new();
+    }
+    let durations: Vec<f64> = usable.iter().map(|(_, d)| *d).collect();
+    let targets = crate::video_quality::plan_reference_audio_targets(&durations, policy);
+    let mut out = Vec::new();
+    for ((src, dur), target) in usable.into_iter().zip(targets) {
+        if target <= 0.0 {
+            continue;
+        }
+        let meets_floor = policy.min_clip_secs <= 0.0 || dur + 1e-3 >= policy.min_clip_secs;
+        if (dur - target).abs() <= 0.05 && meets_floor {
+            out.push(src);
+            continue;
+        }
+        let dest = fitted_audio_sidecar(&src, target);
+        let reusable = is_usable_audio_file(&dest)
+            && probe_media_duration_secs(&dest)
+                .await
+                .is_some_and(|existing| (existing - target).abs() <= 0.08);
+        if reusable || fit_audio_to_duration(&src, &dest, target).await {
+            out.push(dest);
+            continue;
+        }
+        if meets_floor {
+            tracing::warn!(
+                src = %src.display(),
+                target,
+                "could not fit voice ref copy; submitting the original wav"
+            );
+            out.push(src);
+        } else {
+            tracing::warn!(
+                src = %src.display(),
+                duration = dur,
+                min = policy.min_clip_secs,
+                "dropping voice ref below the model floor after fit failed"
+            );
+        }
+    }
+    out
 }
 
 fn is_ref_audio_duration_limit_text(s: &str) -> bool {
@@ -861,6 +878,31 @@ fn is_ref_audio_duration_limit_text(s: &str) -> bool {
     lower.contains("reference_audio")
         && (lower.contains("exceeds max")
             || (lower.contains("total duration") && lower.contains("15")))
+}
+
+/// Seedance 2.0 R2V: each audio content part must be ≥ 1.8s.
+/// Ark often names `content[N]` rather than `reference_audio`.
+fn is_ref_audio_clip_too_short_text(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    let mentions_audio = lower.contains("audio duration") || lower.contains("reference_audio");
+    let mentions_floor = lower.contains("greater than or equal")
+        || lower.contains("must be greater")
+        || lower.contains("at least");
+    mentions_audio && mentions_floor && (lower.contains("1.8") || lower.contains("1.80"))
+}
+
+fn ref_audio_failure_hint(raw: &str) -> Option<String> {
+    if is_ref_audio_clip_too_short_text(raw) {
+        Some(format!(
+            "{raw}\nHint: Seedance 2.0 R2V requires each reference_audio clip ≥ 1.8s. The client loop-pads a sidecar copy at submit and leaves the original TTS wav unchanged. Resume from checkpoint."
+        ))
+    } else if is_ref_audio_duration_limit_text(raw) {
+        Some(format!(
+            "{raw}\nHint: Combined reference_audio must stay ≤ 15s (Wan 3.0 and Seedance 2.0). The client trims sidecar copies per model and drops extra speakers if needed. Resume from checkpoint, or open the shot in Canvas."
+        ))
+    } else {
+        None
+    }
 }
 
 fn is_ref_audio_duration_limit_err(err: &nomifun_cloud::ServerClientError) -> bool {
@@ -1137,23 +1179,16 @@ reference_audio cannot be the only reference input. Request id: abc)"
     }
 
     #[test]
-    fn count_refs_within_budget_keeps_prefix_under_15s() {
-        assert_eq!(
-            count_refs_within_budget(&[5.2, 5.2, 5.2], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
-            2
+    fn plan_reference_audio_keeps_wan3_speakers_under_budget() {
+        let policy = crate::video_quality::reference_audio_policy("flowy/wan3.0-video");
+        let targets = crate::video_quality::plan_reference_audio_targets(&[5.2, 5.2, 5.2], policy);
+        assert_eq!(targets.len(), 3);
+        assert!(
+            targets.iter().sum::<f64>()
+                <= crate::video_quality::WAN3_REF_AUDIO_TOTAL_BUDGET_SECS + 1e-6
         );
-        assert_eq!(
-            count_refs_within_budget(&[4.0, 4.0, 4.0], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
-            3
-        );
-        assert_eq!(
-            count_refs_within_budget(&[16.0], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
-            1
-        );
-        assert_eq!(
-            count_refs_within_budget(&[2.9, 2.9, 2.9, 2.9, 2.9], 5, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
-            5
-        );
+        let five = crate::video_quality::plan_reference_audio_targets(&[2.9; 5], policy);
+        assert_eq!(five.len(), 5);
     }
 
     #[test]
@@ -1169,6 +1204,9 @@ reference_audio cannot be the only reference input. Request id: abc)"
         assert!(!is_ref_audio_duration_limit_text(
             "reference_audio cannot be the only reference input"
         ));
+        let seedance_short = "The parameter `content[4]` specified in the request is not valid: the parameter audio duration (seconds) specified in the request must be greater than or equal to 1.8 for model doubao-seedance-2-0-fast in r2v.";
+        assert!(is_ref_audio_clip_too_short_text(seedance_short));
+        assert!(!is_ref_audio_duration_limit_text(seedance_short));
     }
 
     #[tokio::test]

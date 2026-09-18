@@ -529,11 +529,16 @@ pub(crate) fn map_model_err(
         || lower.contains("may contain real person")
     {
         "Input frame/reference was flagged as a real-person likeness. The client auto-locates content[N], swaps faces to an AI face (or erases face details), and retries; if it still fails, use a more illustrated style and resume."
+    } else if lower.contains("audio duration")
+        && (lower.contains("greater than or equal") || lower.contains("must be greater"))
+        && lower.contains("1.8")
+    {
+        "Seedance 2.0 R2V requires each reference_audio clip ≥ 1.8s. The client loop-pads a sidecar copy at submit without rewriting the original TTS wav. Resume from checkpoint."
     } else if lower.contains("reference_audio")
         && (lower.contains("exceeds max")
             || (lower.contains("total duration") && lower.contains("15")))
     {
-        "Wan 3.0 caps combined reference_audio at 15s. Voice refs are trimmed for Wan 3.0 only; extra speakers are dropped. Resume from checkpoint, or open the shot in Canvas."
+        "Combined reference_audio must stay ≤ 15s (Wan 3.0 and Seedance 2.0). The client trims sidecar copies per model and drops extra speakers if needed. Resume from checkpoint, or open the shot in Canvas."
     } else if lower.contains("reference_audio cannot be the only")
         || (lower.contains("reference_audio") && lower.contains("only reference"))
     {
