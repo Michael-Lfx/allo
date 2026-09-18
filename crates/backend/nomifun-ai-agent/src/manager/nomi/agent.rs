@@ -6459,7 +6459,23 @@ mod tests {
         // engine's own section says so, and deliberately does not restate it)
         // instead of appending a host-authored "continue where you left off"
         // prompt.
+        // The restart no longer re-pushes the requirement into the tail: the
+        // engine keeps it where it already sits and appends a cache-stable
+        // `[Context]`-only user message instead (see the `[Context]`-only tail
+        // handling in `nomi-agent`'s resumable-round path). The guarantees below
+        // are therefore asserted over the whole request, not just its last user
+        // message; the tail is asserted separately for the deleted host prompt.
         let continuation_text = requests[1]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tail_user_text = requests[1]
             .messages
             .iter()
             .rev()
@@ -6482,7 +6498,8 @@ mod tests {
             "the restart must restate the original requirement: {continuation_text}"
         );
         assert!(
-            !continuation_text.contains("continue where you left off"),
+            !continuation_text.contains("continue where you left off")
+                && !tail_user_text.contains("continue where you left off"),
             "the deleted host auto-continue prompt must not come back: {continuation_text}"
         );
         assert!(
