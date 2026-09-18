@@ -10,6 +10,7 @@ dependencies = [
  "async-trait",
  "clap",
  "gtk",
+ "iana-time-zone",
  "junction",
  "keepawake",
  "nomifun-app",
@@ -18,6 +19,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "open",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sys-locale",
@@ -35,6 +37,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "url",
  "windows 0.61.3",
  "winreg 0.55.0",
 ]

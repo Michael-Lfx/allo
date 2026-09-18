@@ -102,6 +102,7 @@ mod taskbar_badge;
 #[cfg(windows)]
 mod windows_aumid;
 mod updater_install_context;
+mod ota_mirrors;
 
 /// Build the webview initialization script. Injects the loopback backend port
 /// (`window.__backendPort`), the OS tag, the host OS UI locale
@@ -382,6 +383,8 @@ struct DownloadUpdateProgress {
     chunk_length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content_length: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cdn_host: Option<String>,
 }
 
 /// Marker prefix on `install_update` errors that mean the package was NEVER
@@ -663,6 +666,113 @@ fn coalesce_progress_chunk(
     Some(pending)
 }
 
+fn ota_region_bucket() -> ota_mirrors::RegionBucket {
+    let tz = iana_time_zone::get_timezone().ok();
+    let locale = sys_locale::get_locale();
+    ota_mirrors::region_bucket(tz.as_deref(), locale.as_deref())
+}
+
+fn parse_ota_endpoints() -> Result<Vec<url::Url>, String> {
+    ota_mirrors::check_endpoints(ota_region_bucket(), ota_mirrors::host_channel())
+        .into_iter()
+        .map(|endpoint| {
+            endpoint
+                .parse::<url::Url>()
+                .map_err(|error| format!("invalid OTA endpoint {endpoint}: {error}"))
+        })
+        .collect()
+}
+
+async fn probe_one_ota_mirror(
+    client: &reqwest::Client,
+    host: ota_mirrors::OtaHost,
+    url: &str,
+) -> Option<(ota_mirrors::OtaHost, u64)> {
+    let start = Instant::now();
+    let response = client
+        .get(url)
+        .header("Range", format!("bytes=0-{}", ota_mirrors::PROBE_RANGE_END))
+        .send()
+        .await
+        .ok()?;
+    if !(response.status().is_success()
+        || response.status() == reqwest::StatusCode::PARTIAL_CONTENT)
+    {
+        return None;
+    }
+    let bytes = response.bytes().await.ok()?;
+    let bps = ota_mirrors::probe_bps(bytes.len() as u64, start.elapsed())?;
+    Some((host, bps))
+}
+
+async fn select_ota_artifact_url(
+    version: &str,
+    download_url: &url::Url,
+) -> (url::Url, Option<String>) {
+    let url_str = download_url.as_str();
+    let Some(filename) = ota_mirrors::artifact_filename(url_str) else {
+        return (download_url.clone(), ota_mirrors::OtaHost::from_url(url_str).map(|h| h.cdn_host().to_owned()));
+    };
+    let folder = ota_mirrors::channel_folder_from_url(url_str).unwrap_or_else(ota_mirrors::host_channel);
+    let candidates = ota_mirrors::candidate_artifact_urls(version, folder, &filename);
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .user_agent("flowy-ota-probe")
+        .build()
+    else {
+        return (download_url.clone(), ota_mirrors::OtaHost::from_url(url_str).map(|h| h.cdn_host().to_owned()));
+    };
+    let (first, rest) = candidates.split_first().expect("three OTA mirrors");
+    let (a, b, c) = tokio::join!(
+        probe_one_ota_mirror(&client, first.0, &first.1),
+        probe_one_ota_mirror(&client, rest[0].0, &rest[0].1),
+        probe_one_ota_mirror(&client, rest[1].0, &rest[1].1),
+    );
+    let samples: Vec<(ota_mirrors::OtaHost, u64)> = [a, b, c].into_iter().flatten().collect();
+    if let Some(host) = ota_mirrors::pick_fastest(&samples) {
+        if let Some((_, winner)) = candidates.iter().find(|(item, _)| *item == host) {
+            if let Ok(parsed) = winner.parse() {
+                tracing::info!(cdn_host = host.cdn_host(), url = %winner, "selected OTA artifact mirror");
+                return (parsed, Some(host.cdn_host().to_owned()));
+            }
+        }
+    }
+    (
+        download_url.clone(),
+        ota_mirrors::OtaHost::from_url(url_str).map(|h| h.cdn_host().to_owned()),
+    )
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckUpdateInfo {
+    version: String,
+    current_version: String,
+    release_notes: Option<String>,
+    release_date: Option<String>,
+}
+
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<Option<CheckUpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app
+        .updater_builder()
+        .endpoints(parse_ota_endpoints()?)
+        .map_err(|error| error.to_string())?
+        .build()
+        .map_err(|error| error.to_string())?;
+    let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    Ok(Some(CheckUpdateInfo {
+        version: update.version,
+        current_version: update.current_version,
+        release_notes: update.body,
+        release_date: update.date.map(|date| date.to_string()),
+    }))
+}
+
 /// Download and verify the exact update selected by the renderer, retaining the
 /// native Update handle and verified bytes together until installation. This is
 /// the only command that performs package network I/O.
@@ -685,6 +795,7 @@ async fn download_update(
                 phase: "downloaded",
                 chunk_length: None,
                 content_length: Some(retained_len),
+                cdn_host: None,
             });
             return Ok(());
         }
@@ -702,6 +813,7 @@ async fn download_update(
         phase: "checking",
         chunk_length: None,
         content_length: None,
+        cdn_host: None,
     });
 
     let shutdown_server = server.inner().clone();
@@ -709,6 +821,8 @@ async fn download_update(
     let result = async {
         let updater = app
             .updater_builder()
+            .endpoints(parse_ota_endpoints()?)
+            .map_err(|error| error.to_string())?
             .on_before_exit(move || {
                 let verified = updater_before_exit_until_verified(
                     || shutdown_server.shutdown_all_blocking(),
@@ -733,7 +847,7 @@ async fn download_update(
             })
             .build()
             .map_err(|error| error.to_string())?;
-        let update = updater
+        let mut update = updater
             .check()
             .await
             .map_err(|error| error.to_string())?
@@ -744,6 +858,17 @@ async fn download_update(
                 update.version
             ));
         }
+
+        let (download_url, cdn_host) = select_ota_artifact_url(&update.version, &update.download_url).await;
+        update.download_url = download_url;
+        let progress_cdn_host = cdn_host.clone();
+        let finish_cdn_host = cdn_host.clone();
+        let _ = on_event.send(DownloadUpdateProgress {
+            phase: "checking",
+            chunk_length: None,
+            content_length: None,
+            cdn_host: cdn_host.clone(),
+        });
 
         let download_progress = on_event.clone();
         let download_finished = on_event.clone();
@@ -775,6 +900,7 @@ async fn download_update(
                         phase: "downloading",
                         chunk_length: Some(pending as usize),
                         content_length,
+                        cdn_host: progress_cdn_host.clone(),
                     });
                 },
                 move || {
@@ -789,12 +915,14 @@ async fn download_update(
                             phase: "downloading",
                             chunk_length: Some(tail as usize),
                             content_length,
+                            cdn_host: finish_cdn_host.clone(),
                         });
                     }
                     let _ = download_finished.send(DownloadUpdateProgress {
                         phase: "downloaded",
                         chunk_length: None,
                         content_length,
+                        cdn_host: finish_cdn_host.clone(),
                     });
                 },
             )
@@ -3191,6 +3319,7 @@ fn main() -> std::process::ExitCode {
         .manage(DownloadedUpdateState::default())
         .invoke_handler(tauri::generate_handler![
             download_update,
+            check_update,
             install_update,
             update_package_status,
             companion_pointer::get_companion_local_pointer,

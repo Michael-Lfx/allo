@@ -24,10 +24,10 @@ PLATFORM_FOLDERS = {
 PLATFORM_CHANNELS = ("windows", "macos", "linux")
 
 
-def channel_manifest_url(channel: str) -> str:
+def channel_manifest_url(channel: str, repo: str = "flowy2025/flowyaipc", api_host: str = "modelscope.cn") -> str:
     path = f"allo/channels/{channel}/latest.json"
     return (
-        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo"
+        f"https://{api_host}/api/v1/models/{repo}/repo"
         f"?Revision=master&FilePath={quote(path, safe='/')}"
     )
 
@@ -120,6 +120,12 @@ def main() -> None:
         help="OTA channel (sets default --url to allo/channels/<channel>/latest.json)",
     )
     parser.add_argument("--url", default=None, help="Updater manifest URL")
+    parser.add_argument("--repo", default="flowy2025/flowyaipc", help="ModelScope model repo")
+    parser.add_argument(
+        "--api-host",
+        default="modelscope.cn",
+        help="Public ModelScope host: modelscope.cn or modelscope.ai",
+    )
     parser.add_argument("--attempts", type=int, default=5, help="Maximum fetch attempts")
     parser.add_argument("--retry-delay", type=float, default=10, help="Seconds between attempts")
     parser.add_argument(
@@ -148,12 +154,12 @@ def main() -> None:
     if args.url:
         url = args.url
     elif args.channel:
-        url = channel_manifest_url(args.channel)
+        url = channel_manifest_url(args.channel, args.repo, args.api_host)
     else:
         folder = PLATFORM_FOLDERS.get(args.platform[0])
         if not folder:
             raise SystemExit(f"ERROR: unsupported platform key: {args.platform[0]}")
-        url = channel_manifest_url(folder)
+        url = channel_manifest_url(folder, args.repo, args.api_host)
 
     last_error = "manifest was not fetched"
     for attempt in range(1, args.attempts + 1):

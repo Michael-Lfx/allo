@@ -92,7 +92,40 @@ class UploadHelpersTest(unittest.TestCase):
             "allo/windows/v1.1.1",
         )
 
-    def test_channel_yml_and_sha256(self):
+    def test_rewrite_manifest_urls_switches_host_and_repo(self):
+        manifest = {
+            "version": "1.2.3",
+            "platforms": {
+                "windows-x86_64": {
+                    "url": "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/windows/v1.2.3/Flowy_1.2.3_x64-setup.exe",
+                    "signature": "sig",
+                }
+            },
+        }
+        rewritten = mod.rewrite_manifest_urls(
+            manifest,
+            api_host="modelscope.ai",
+            repo="flowy2025/flowy",
+            prefix="allo",
+            version_tag="v1.2.3",
+        )
+        url = rewritten["platforms"]["windows-x86_64"]["url"]
+        self.assertIn("modelscope.ai", url)
+        self.assertIn("flowy2025/flowy", url)
+        self.assertIn("allo/windows/v1.2.3/Flowy_1.2.3_x64-setup.exe", url)
+        self.assertEqual(rewritten["platforms"]["windows-x86_64"]["signature"], "sig")
+        self.assertEqual(
+            mod.normalize_api_host("https://www.modelscope.cn/foo"),
+            "modelscope.cn",
+        )
+
+    def test_file_url_and_token_env(self):
+        self.assertEqual(mod.default_token_env("modelscope.ai"), "MODELSCOPE_AI_TOKEN")
+        self.assertEqual(mod.default_token_env("modelscope.cn"), "MODELSCOPE_CN_TOKEN")
+        self.assertIn(
+            "modelscope.ai/api/v1/models/flowy2025/flowy/repo",
+            mod.modelscope_file_url("flowy2025/flowy", "allo/linux/v1.0.0/x.AppImage", "modelscope.ai"),
+        )
         yml = mod.build_channel_yml({"version": "1.0.0", "pub_date": "t", "notes": "n"}, "linux")
         self.assertIn('version: "1.0.0"', yml)
         self.assertIn("channel: linux", yml)

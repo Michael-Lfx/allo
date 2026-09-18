@@ -5,6 +5,7 @@ import {
   INSTALL_NOT_ATTEMPTED_ERROR,
 } from '@/common/adapter/tauriUpdateInstall';
 import { trackFunnelEvent, trackFunnelEventOnce, type FunnelEvent } from './productFunnel';
+import { getUpdateCdnHost, resetUpdateCdnHostForTests } from '@/common/update/cdnHost';
 
 export type UpdateTelemetrySource =
   | 'startup'
@@ -38,8 +39,7 @@ function normalizeVersion(version?: string | null): string | null {
   return trimmed.startsWith('v') ? trimmed.slice(1) : trimmed;
 }
 
-/** ModelScope is the only OTA origin today; keep host explicit for CDN iteration. */
-export const UPDATE_CDN_HOST = 'modelscope.cn';
+import { getUpdateCdnHost } from '@/common/update/cdnHost';
 
 /** Below this sustained rate, mark download/check as slow for growth dashboards. */
 export const SLOW_DOWNLOAD_BPS = 256_000; // 250 KiB/s
@@ -108,7 +108,7 @@ export function classifyCheckNetwork(durationMs: number, status: UpdateCheckStat
 function accessContextProps(extra?: UpdateTelemetryProps): UpdateTelemetryProps {
   return {
     feature: 'desktop_update',
-    cdn_host: UPDATE_CDN_HOST,
+    cdn_host: extra?.cdn_host ?? getUpdateCdnHost(),
     locale: clientLocale(),
     tz_offset_min: clientTimezoneOffsetMinutes(),
     ...extra,
@@ -421,4 +421,5 @@ export async function maybeTrackUpdateApplied(): Promise<FunnelEvent | null> {
 
 export function resetUpdateTelemetryForTests(): void {
   clearPendingUpdateApply();
+  resetUpdateCdnHostForTests();
 }

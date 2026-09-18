@@ -21,6 +21,8 @@ from urllib.parse import quote
 
 DEFAULT_REPO = "flowy2025/flowyaipc"
 DEFAULT_PREFIX = "allo"
+DEFAULT_API_HOST = "modelscope.cn"
+KNOWN_API_HOSTS = ("modelscope.cn", "modelscope.ai")
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / "apps/desktop/signing/.env.modelscope"
 PLATFORM_CHANNELS = ("windows", "macos", "linux")
 
@@ -43,9 +45,40 @@ def load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
-def modelscope_file_url(repo: str, path_in_repo: str) -> str:
+def normalize_api_host(host: str) -> str:
+    value = host.strip().lower()
+    for prefix in ("https://", "http://"):
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+    if value.startswith("www."):
+        value = value[4:]
+    value = value.split("/", 1)[0]
+    if value not in KNOWN_API_HOSTS:
+        raise ValueError(f"unsupported ModelScope API host: {host}")
+    return value
+
+
+def hub_endpoint(api_host: str) -> str:
+    return f"https://www.{normalize_api_host(api_host)}"
+
+
+def default_token_env(api_host: str) -> str:
+    return "MODELSCOPE_AI_TOKEN" if normalize_api_host(api_host) == "modelscope.ai" else "MODELSCOPE_CN_TOKEN"
+
+
+def resolve_modelscope_token(token_env: str, api_host: str) -> str:
+    token = os.environ.get(token_env, "").strip()
+    if not token and token_env != "MODELSCOPE_TOKEN" and normalize_api_host(api_host) == "modelscope.cn":
+        token = os.environ.get("MODELSCOPE_TOKEN", "").strip()
+    if not token:
+        raise SystemExit(f"ERROR: {token_env} not set")
+    return token
+
+
+def modelscope_file_url(repo: str, path_in_repo: str, api_host: str = DEFAULT_API_HOST) -> str:
+    host = normalize_api_host(api_host)
     return (
-        f"https://modelscope.cn/api/v1/models/{repo}/repo"
+        f"https://{host}/api/v1/models/{repo}/repo"
         f"?Revision=master&FilePath={quote(path_in_repo, safe='/')}"
     )
 
@@ -77,6 +110,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Roll back ModelScope channel pointer")
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--prefix", default=DEFAULT_PREFIX)
+    parser.add_argument("--api-host", default=DEFAULT_API_HOST)
+    parser.add_argument("--endpoint", default=None)
+    parser.add_argument("--token-env", default=None)
     parser.add_argument("--channel", required=True, choices=PLATFORM_CHANNELS)
     parser.add_argument(
         "--to-version",
@@ -93,11 +129,17 @@ def main() -> None:
         version = version[1:]
     version_tag = f"v{version}"
     prefix = args.prefix.strip("/")
+    try:
+        api_host = normalize_api_host(args.api_host)
+    except ValueError as exc:
+        raise SystemExit(f"ERROR: {exc}") from exc
+    endpoint = (args.endpoint or hub_endpoint(api_host)).rstrip("/")
+    token_env = args.token_env or default_token_env(api_host)
     repo = args.repo
     channel = args.channel
 
     history_path = f"{prefix}/channels/{channel}/history/{version_tag}.json"
-    history_url = modelscope_file_url(repo, history_path)
+    history_url = modelscope_file_url(repo, history_path, api_host)
     try:
         manifest = fetch_json(history_url)
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
@@ -116,9 +158,7 @@ def main() -> None:
         print("Dry run — no uploads performed.")
         return
 
-    token = os.environ.get("MODELSCOPE_TOKEN")
-    if not token:
-        raise SystemExit("ERROR: MODELSCOPE_TOKEN not set")
+    token = resolve_modelscope_token(token_env, api_host)
 
     try:
         from modelscope.hub.api import HubApi
@@ -132,7 +172,7 @@ def main() -> None:
     latest_local.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     channel_local.write_text(build_channel_yml(manifest, channel), encoding="utf-8")
 
-    api = HubApi()
+    api = HubApi(endpoint=endpoint)
     api.login(token)
     for local, remote, label in (
         (channel_local, f"{prefix}/channels/{channel}/channel.yml", "channel.yml"),

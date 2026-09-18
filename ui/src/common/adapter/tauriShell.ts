@@ -197,6 +197,7 @@ export interface TauriDownloadUpdateProgress {
   phase: TauriDownloadUpdatePhase;
   chunkLength?: number;
   contentLength?: number;
+  cdnHost?: string;
 }
 
 /** Download and retain a signature-verified update in the Rust-owned cache. */
