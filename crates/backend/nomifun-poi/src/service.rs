@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use nomi_config::{
-    GatewayConfig, InterestConfig, config_yaml_path, load_user_config_file, save_config_yaml,
+    GatewayConfig, InterestConfig, config_yaml_path, load_user_config_file,
+    load_user_config_file_for_boot, save_config_yaml,
 };
 use nomi_poi::{InterestStarter, InterestStore, TopicStatus};
 use nomifun_api_types::{
@@ -26,7 +27,9 @@ pub struct PoiService {
 impl PoiService {
     /// Open POI service loading interest settings from `{data_dir}/../config.yaml`.
     pub fn new(data_dir: PathBuf) -> Result<Self, AppError> {
-        let gateway = load_gateway_for_data_dir(&data_dir)?;
+        // Boot path: an unreadable `config.yaml` must not take the host down with
+        // it (`load_gateway_for_boot` moves the bad file aside and defaults).
+        let gateway = load_gateway_for_boot(&data_dir);
         Self::from_gateway(data_dir, gateway)
     }
 
@@ -272,6 +275,18 @@ fn load_gateway_for_data_dir(data_dir: &Path) -> Result<GatewayConfig, AppError>
     load_user_config_file(&path).map_err(|e| AppError::Internal(e))
 }
 
+/// Boot-path sibling of [`load_gateway_for_data_dir`].
+///
+/// A `config.yaml` that cannot be parsed used to fail `PoiService::new`, which
+/// `services.rs` wraps as "Failed to open POI service" and propagates out of
+/// `main` — so one hand-editing typo meant the product could not start at all.
+/// The bad file is moved aside (never silently overwritten) and defaults are
+/// used, so the host boots and `update_settings` can write a fresh file.
+fn load_gateway_for_boot(data_dir: &Path) -> GatewayConfig {
+    let path = config_yaml_path(Some(&config_root_for_data_dir(data_dir)));
+    load_user_config_file_for_boot(&path)
+}
+
 fn starter_to_dto(starter: InterestStarter) -> PoiStarterResponse {
     PoiStarterResponse {
         id: starter.id,
@@ -405,6 +420,44 @@ fn normalize_extract_mode(mode: &str) -> String {
 mod tests {
     use super::*;
     use nomi_config::save_config_yaml;
+
+    /// A typo in a hand-edited `config.yaml` must not take the host down.
+    ///
+    /// `PoiService::new` used to propagate the YAML error and `services.rs`
+    /// wrapped it as "Failed to open POI service" on its way out of `main`, so
+    /// the whole product refused to start. It now boots on defaults, and moves
+    /// the unreadable file aside rather than defaulting in place — a later
+    /// `update_settings` write must not silently destroy what the user wrote.
+    #[test]
+    fn corrupt_config_yaml_boots_with_defaults_and_quarantines_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let poi_dir = root.path().join("poi");
+        let config_path = root.path().join("config.yaml");
+        let broken = "server:\n  port: [unclosed\nmodel: *undefined_alias\n";
+        std::fs::write(&config_path, broken).unwrap();
+
+        let service =
+            PoiService::new(poi_dir).expect("boot must survive an unreadable config.yaml");
+        assert_eq!(
+            service.interest_config().auto_extract_min_turns,
+            GatewayConfig::default().interest.auto_extract_min_turns,
+            "a quarantined config means defaults, not a half-applied file"
+        );
+
+        assert!(!config_path.exists(), "the unreadable file must be moved aside");
+        let quarantined: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .collect();
+        assert_eq!(quarantined.len(), 1, "exactly one quarantine file: {quarantined:?}");
+        assert_eq!(
+            std::fs::read_to_string(&quarantined[0]).unwrap(),
+            broken,
+            "the user's bytes must survive verbatim"
+        );
+    }
 
     #[test]
     fn update_settings_persists_to_config_yaml_and_reload() {

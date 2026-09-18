@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use nomi_config::{
-    GatewayConfig, config_yaml_path, load_user_config_file, save_config_yaml,
+    GatewayConfig, config_yaml_path, load_user_config_file_for_boot, save_config_yaml,
 };
 use crate::config_defaults::ensure_gateway_defaults;
 use crate::{
@@ -46,7 +46,10 @@ impl CloudService {
         host_runtime: nomifun_api_types::RuntimeKind,
     ) -> Result<Self, AppError> {
         let path = config_yaml_path(Some(&data_dir));
-        let mut config = load_user_config_file(&path).map_err(|e| AppError::Internal(e))?;
+        // Boot path: an unreadable `config.yaml` must not abort startup — it is
+        // moved aside and defaults are used (`load_user_config_file_for_boot`),
+        // and `should_persist` below then writes a fresh one.
+        let mut config = load_user_config_file_for_boot(&path);
         // Persist when the file is missing OR when base_url/provider were empty —
         // otherwise other services that read yaml from disk (media/vimax) stay
         // gated off by `api_ready() == false` for the whole process lifetime.
