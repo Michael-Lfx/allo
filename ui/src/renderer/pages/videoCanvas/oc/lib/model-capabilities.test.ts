@@ -118,6 +118,8 @@ describe("video model reference capabilities", () => {
         expect(profile.video?.duration.min).toBe(5);
         expect(profile.video?.duration.max).toBe(15);
         expect(profile.video?.resolutions).toEqual(["480p", "720p", "1080p"]);
+        expect(profile.video?.references.minAudioDurationSeconds).toBe(1.8);
+        expect(profile.video?.references.maxAudioDurationSeconds).toBe(15);
     });
 
     test("legacy stored maxVideos: 0 does not disable reference video", () => {

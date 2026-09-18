@@ -11,9 +11,10 @@ use super::voice_profile_generator::canonical_tts_voice;
 
 const VOICE_REF_VIEW: &str = "voice_ref";
 const DEFAULT_TTS_VOICE: &str = "Cherry";
-/// Cache suffix for the shorter phonetic samples. Duration caps are model-specific
-/// and applied at video submit (Wan 3.0 only), not by rewriting these wavs.
-const VOICE_REF_CACHE_VER: &str = "_s4";
+/// Cache suffix for phonetic samples long enough for Seedance 2.0's 1.8s
+/// R2V floor. Duration caps (Wan sum ≤ 15s, Seedance per-clip ≥ 1.8s) are
+/// applied at video submit on sidecar copies, not by rewriting these wavs.
+const VOICE_REF_CACHE_VER: &str = "_s5";
 
 pub struct VoiceReferenceGenerator {
     services: FlowyVimaxServices,
@@ -310,14 +311,14 @@ fn voice_reference_sample_line(ch: &CharacterInScene) -> String {
             .is_some_and(|s| s.chars().any(is_cjk_char));
     if cjk {
         if child {
-            "妈妈，我们回家吧。".into()
+            "妈妈，我们回家吧。天黑了，我想吃饭。".into()
         } else {
-            "今晚别等我，我们把话说开。".into()
+            "今晚别等我。我们把话说开，这件事不能再拖了。".into()
         }
     } else if child {
-        "Mom, let's go home.".into()
+        "Mom, let's go home. It's getting dark and I want dinner.".into()
     } else {
-        "Don't wait up. Let's talk this through.".into()
+        "Don't wait up tonight. Let's talk this through before it gets worse.".into()
     }
 }
 

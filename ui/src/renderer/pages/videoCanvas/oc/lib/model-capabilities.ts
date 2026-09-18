@@ -41,6 +41,8 @@ export type VideoCapabilityConfig = {
         maxAudios: number;
         maxAudioBytes: number;
         maxAudioDurationSeconds: number;
+        /** Per-clip floor. Seedance 2.0 R2V rejects clips shorter than 1.8s. */
+        minAudioDurationSeconds?: number;
     };
     duration: {
         selection: "range" | "enum";
@@ -254,6 +256,7 @@ function seedanceVideoCapability(model: string): VideoCapabilityConfig {
             maxAudios: SEEDANCE_REFERENCE_LIMITS.audios,
             maxAudioBytes: SEEDANCE_REFERENCE_LIMITS.audioMaxBytes,
             maxAudioDurationSeconds: 15,
+            minAudioDurationSeconds: 1.8,
         },
         duration: { selection: "range", min: caps.durationMin, max: caps.durationMax, step: 1, default: caps.durationDefault },
         ratios: [...SEEDANCE_ASPECT_RATIOS],
@@ -402,6 +405,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol): ModelCap
         video.references.maxAudioBytes = 15 * 1024 * 1024;
         video.references.maxVideoDurationSeconds = 15;
         video.references.maxAudioDurationSeconds = 15;
+        video.references.minAudioDurationSeconds = 1.8;
         video.generateAudio = { supported: true, default: true };
     }
     if (protocol === "volcengine-ark-video") {

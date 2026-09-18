@@ -6,6 +6,7 @@ export const CONTENT_MODERATION_MESSAGE = "内容审核未通过，本次平台�
 export const COPYRIGHT_RESTRICTION_MESSAGE = "提示词可能涉及版权受限内容，内容审核未通过。请修改提示词后重新生成。";
 export const REFERENCE_IMAGE_MODERATION_MESSAGE = "参考图未通过内容审核（可能含真人肖像等）。请更换参考图或调整提示词后重试。";
 export const REF_AUDIO_DURATION_MESSAGE = "参考音频总时长不能超过 15 秒。请缩短或减少角色参考音后重试。";
+export const REF_AUDIO_TOO_SHORT_MESSAGE = "每段参考音频不能短于 1.8 秒。系统会在提交时加长副本；请重试。";
 
 const DEFAULT_GENERATION_ERROR_MESSAGE = "生成失败，请稍后重试。";
 const NETWORK_ERROR_MESSAGE = "网络异常。";
@@ -17,6 +18,7 @@ const GENERATION_ERROR_DISPLAY_KEYS: ReadonlyArray<readonly [string, string]> = 
     ["videoCanvas.genError.copyright", COPYRIGHT_RESTRICTION_MESSAGE],
     ["videoCanvas.genError.referenceModeration", REFERENCE_IMAGE_MODERATION_MESSAGE],
     ["videoCanvas.genError.refAudioDuration", REF_AUDIO_DURATION_MESSAGE],
+    ["videoCanvas.genError.refAudioTooShort", REF_AUDIO_TOO_SHORT_MESSAGE],
     ["videoCanvas.genError.network", NETWORK_ERROR_MESSAGE],
     ["videoCanvas.genError.busy", "服务当前繁忙，请稍后重试。"],
     ["videoCanvas.genError.authFailed", "生成服务鉴权失败，请检查渠道配置。"],
@@ -59,6 +61,9 @@ export function generationErrorMessage(error: unknown) {
     const providerMessage = extractStructuredProviderMessage(unwrapped) || extractWrappedProviderMessage(unwrapped) || extractStructuredProviderMessage(raw) || extractWrappedProviderMessage(raw);
     const displayMessage = providerMessage || unwrapped || raw;
     if (isContentModerationError(displayMessage)) return contentModerationMessage(displayMessage);
+    if (isRefAudioClipTooShortError(displayMessage) || isRefAudioClipTooShortError(unwrapped) || isRefAudioClipTooShortError(raw)) {
+        return REF_AUDIO_TOO_SHORT_MESSAGE;
+    }
     if (isRefAudioDurationError(displayMessage) || isRefAudioDurationError(unwrapped) || isRefAudioDurationError(raw)) {
         return REF_AUDIO_DURATION_MESSAGE;
     }
@@ -109,6 +114,16 @@ function contentModerationMessage(raw: string) {
     if (isCopyrightRestriction(lower) || raw.includes("版权受限")) return COPYRIGHT_RESTRICTION_MESSAGE;
     if (isReferenceImageModeration(lower) || raw.includes("参考图未通过内容审核")) return REFERENCE_IMAGE_MODERATION_MESSAGE;
     return CONTENT_MODERATION_MESSAGE;
+}
+
+function isRefAudioClipTooShortError(raw: string) {
+    const lower = raw.toLowerCase();
+    const mentionsAudio = lower.includes("audio duration") || lower.includes("reference_audio");
+    const mentionsFloor =
+        lower.includes("greater than or equal")
+        || lower.includes("must be greater")
+        || lower.includes("at least");
+    return mentionsAudio && mentionsFloor && (lower.includes("1.8") || lower.includes("1.80"));
 }
 
 function isRefAudioDurationError(raw: string) {

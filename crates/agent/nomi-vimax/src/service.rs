@@ -18,8 +18,8 @@ use crate::pipelines::{
     PipelineBackends, ScriptFilmPipeline,
 };
 use crate::progress::{
-    duration_ms_from_status, film_event_name, INTERRUPTED_SUMMARY, RenderStatus, RunStatus,
-    VimaxTerminalTelemetry,
+    compose_job_failure_message, duration_ms_from_status, film_event_name, INTERRUPTED_SUMMARY,
+    RenderStatus, RunStatus, VimaxTerminalTelemetry,
 };
 use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
@@ -1073,13 +1073,8 @@ impl VimaxService {
                     let prev_stage = st.stage.clone();
                     let prev_message = st.message.clone();
                     st.status = RunStatus::Failed;
-                    let composed = if prev_stage.is_empty() {
-                        detail.clone()
-                    } else {
-                        format!(
-                            "Failed at stage `{prev_stage}`\nPrevious status: {prev_message}\n\n{detail}"
-                        )
-                    };
+                    let composed =
+                        compose_job_failure_message(&prev_stage, &prev_message, &detail);
                     st.error = Some(composed.clone());
                     st.message = composed.clone();
                     // Keep prev_stage on `st.stage` for resume routing.

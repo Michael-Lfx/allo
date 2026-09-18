@@ -596,7 +596,7 @@ impl ScriptFilmPipeline {
                 serde_json::json!({ "scene_idx": i }),
             );
             let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_dir.clone());
-            match s2v
+            let video = s2v
                 .render_with_prior_continuity(
                     scene_script,
                     &scene_req,
@@ -604,25 +604,14 @@ impl ScriptFilmPipeline {
                     progress.clone(),
                     reel.tail_frame(),
                 )
-                .await
-            {
-                Ok(video) => {
-                    reel.push(video, &scene_dir).await;
-                    emit_pct(
-                        &progress,
-                        "render_scene_done",
-                        &format!("场次 {}/{scene_total} 渲染完成", i + 1),
-                        20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
-                    );
-                }
-                Err(e) => {
-                    return Err(crate::error::VimaxError::Video(format!(
-                        "场次 {}/{scene_total} 渲染失败（已完成 {} 场，可从断点续跑）: {e}",
-                        i + 1,
-                        reel.len()
-                    )));
-                }
-            }
+                .await?;
+            reel.push(video, &scene_dir).await;
+            emit_pct(
+                &progress,
+                "render_scene_done",
+                &format!("场次 {}/{scene_total} 渲染完成", i + 1),
+                20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
+            );
         }
 
         let final_path = self.working_dir.join("final_video.mp4");

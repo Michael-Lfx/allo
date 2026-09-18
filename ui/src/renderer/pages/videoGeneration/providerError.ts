@@ -89,6 +89,17 @@ export function isReferenceImageModeration(blob: string): boolean {
   );
 }
 
+export function isRefAudioClipTooShort(blob: string): boolean {
+  const lower = blob.toLowerCase();
+  const mentionsAudio =
+    lower.includes('audio duration') || lower.includes('reference_audio');
+  const mentionsFloor =
+    lower.includes('greater than or equal') ||
+    lower.includes('must be greater') ||
+    lower.includes('at least');
+  return mentionsAudio && mentionsFloor && (lower.includes('1.8') || lower.includes('1.80'));
+}
+
 export function isRefAudioDurationLimit(blob: string): boolean {
   const lower = blob.toLowerCase();
   return (
