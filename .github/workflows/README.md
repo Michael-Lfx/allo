@@ -9,7 +9,7 @@ Two workflows live here:
 
 ## PR CI (`ci.yml`)
 
-Two jobs, both on `ubuntu-24.04` with the same toolchain setup the release
+Three jobs, all on `ubuntu-24.04` with the same toolchain setup the release
 workflow uses (`oven-sh/setup-bun`, `dtolnay/rust-toolchain`, `Swatinem/rust-cache`,
 `bun scripts/ci-use-crates-io.mjs`, `bun install --frozen-lockfile`):
 
@@ -25,6 +25,20 @@ workflow uses (`oven-sh/setup-bun`, `dtolnay/rust-toolchain`, `Swatinem/rust-cac
   `check:market`, `check:fingerprint`, `check:release-sync`, `bun run help --check`.
   Plus, only when `web/package.json` exists, the Agent Store frontend's
   `typecheck` + `test`.
+- **tests** — actually *runs* two suites: `cargo test -p nomi-agent --lib` and
+  `cargo test -p nomifun-conversation --lib`. This is the job that catches
+  "compiles but the assertion is stale", which `rust-compile` structurally cannot.
+  It starts deliberately narrow: two crates whose suites are fast and
+  deterministic. Widen it once the rest of the workspace is trustworthy enough to
+  gate.
+
+### Quarantined test
+
+`nomifun-conversation --lib` runs with one `--skip`:
+`stalled_terminal_artifact_correction_withholds_enclosing_terminal`. It is red on
+`main` itself and pins a **real** gap rather than a stale expectation — fail-closed
+is not visible on the wire while the durable correction is wedged (issue #233).
+Remove the `--skip` in the pull request that closes that issue.
 
 ### Deliberately not wired in yet
 
