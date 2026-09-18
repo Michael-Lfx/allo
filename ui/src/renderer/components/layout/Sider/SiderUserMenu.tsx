@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
 import { Check, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
@@ -54,6 +54,10 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   const [languageVisible, setLanguageVisible] = useState(false);
   const [creditsHovered, setCreditsHovered] = useState(false);
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
+
+  useEffect(() => {
+    if (!authenticated) setCreditsHovered(false);
+  }, [authenticated]);
 
   const handleMenuVisibleChange = (visible: boolean) => {
     setMenuVisible(visible);

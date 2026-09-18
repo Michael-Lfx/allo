@@ -32,6 +32,7 @@ describe('sider account layout stability', () => {
     expect(userMenuSource.includes('creditsHovered')).toBe(true);
     expect(userMenuSource.includes('disabled={creditsHovered}')).toBe(true);
     expect(userMenuSource.includes('setCreditsHovered(true)')).toBe(true);
+    expect(userMenuSource.includes('if (!authenticated) setCreditsHovered(false)')).toBe(true);
   });
 });
 
