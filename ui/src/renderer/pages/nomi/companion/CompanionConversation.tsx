@@ -1,7 +1,7 @@
 
 
-import React, { useCallback } from 'react';
-import type { IProvider, TChatConversation } from '@/common/config/storage';
+import React, { useCallback, useMemo } from 'react';
+import type { IProvider, TChatConversation, TProviderWithModel } from '@/common/config/storage';
 import NomiChat from '@/renderer/pages/conversation/platforms/nomi/NomiChat';
 import { useNomiModelSelection } from '@/renderer/pages/conversation/platforms/nomi/useNomiModelSelection';
 import type { useCompanion } from '../useNomi';
@@ -52,8 +52,18 @@ const CompanionConversation: React.FC<Props> = ({ conversation, companion }) => 
     [patchCompanion]
   );
 
+  const effectiveModel = useMemo(() => {
+    if (profile?.model) {
+      return {
+        id: profile.model.provider_id,
+        use_model: profile.model.model,
+      } as TProviderWithModel;
+    }
+    return conversation.model;
+  }, [profile?.model, conversation.model]);
+
   const modelSelection = useNomiModelSelection({
-    initialModel: conversation.model,
+    initialModel: effectiveModel,
     onSelectModel: handleSelectModel,
   });
 

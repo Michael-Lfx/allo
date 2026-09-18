@@ -199,8 +199,34 @@ const CompanionSessionGroup: React.FC<Props> = ({
     overflowToggleKey
   );
 
-  // 无伙伴时不渲染分组（避免对不使用伙伴的用户造成噪音；创建后经 WS 刷新即出现）。
-  if (companions.length === 0) return null;
+  // 无伙伴时：若在独立桌宠 Tab 下，提供创建引导空状态；若在混排会话列表中则静默隐藏。
+  if (companions.length === 0) {
+    if (hideHeader) {
+      return (
+        <div className='flex flex-col items-center justify-center p-16px text-center gap-10px rd-10px bg-fill-1 border border-dashed border-[var(--color-border-2)] my-8px'>
+          <div className='text-24px leading-none'>🐱</div>
+          <div className='flex flex-col gap-4px'>
+            <span className='text-12px font-medium text-t-primary'>
+              {t('nomi.companions.emptyTitle', { defaultValue: '还没有桌面伙伴' })}
+            </span>
+            <span className='text-11px text-t-tertiary leading-normal'>
+              {t('nomi.companions.emptyHint', {
+                defaultValue: '创建一个伙伴，给它一个名字和形象，然后配置模型就可以开始对话了。',
+              })}
+            </span>
+          </div>
+          <button
+            type='button'
+            onClick={() => void navigate('/nomi?tab=overview')}
+            className='mt-4px px-12px py-5px text-11px font-medium rd-6px bg-primary-6 text-white hover:bg-primary-5 active:bg-primary-7 border-none cursor-pointer transition-colors flex items-center gap-4px shadow-xs'
+          >
+            <span>{t('nomi.companions.create', { defaultValue: '新建伙伴' })}</span>
+          </button>
+        </div>
+      );
+    }
+    return null;
+  }
 
   if (collapsed) {
     return (
@@ -341,11 +367,13 @@ const CompanionSessionGroup: React.FC<Props> = ({
       sessionMap.get(c.companion_id) === activeConversationId;
     const modelReady = modelReadyOf(c);
     const companionRobots = robotsByCompanion.get(c.companion_id) ?? [];
-    const levelKey = `nomi.levels.l${Math.min(Math.max(1, c.status.level), 5)}`;
+    const statusLevel = c.status?.level ?? 1;
+    const levelKey = `nomi.levels.l${Math.min(Math.max(1, statusLevel), 5)}`;
     const levelTitle = t(levelKey, { defaultValue: '' });
-    const moodKey = `nomi.moods.${c.status.mood || 'content'}`;
-    const moodText = t(moodKey, { defaultValue: c.status.mood || '平静' });
-    const moodEmoji = MOOD_EMOJIS[c.status.mood] || '😊';
+    const mood = c.status?.mood || 'content';
+    const moodKey = `nomi.moods.${mood}`;
+    const moodText = t(moodKey, { defaultValue: mood });
+    const moodEmoji = (mood && MOOD_EMOJIS[mood]) || '😊';
     const modelLabel = c.model?.model || t('nomi.chat.modelUnset', { defaultValue: '未配置模型' });
     const isDesktopOn = Boolean(c.appearance?.companion_enabled);
 
@@ -367,7 +395,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
                 character={c.character}
                 companionId={c.companion_id}
                 customFigure={customFigureMetaOf(c)}
-                mood={(c.status.mood as CompanionMood) || 'content'}
+                mood={(mood as CompanionMood) || 'content'}
                 activity='idle'
                 size={32}
               />
@@ -389,7 +417,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
                   {c.name}
                 </span>
                 <span className='shrink-0 text-10px px-5px py-0.5px rd-full bg-primary-1 text-primary-6 font-medium border border-solid border-primary-2'>
-                  Lv{c.status.level} {levelTitle}
+                  Lv{statusLevel} {levelTitle}
                 </span>
               </div>
               <div className='flex items-center gap-6px text-11px leading-14px text-t-tertiary'>
@@ -439,13 +467,13 @@ const CompanionSessionGroup: React.FC<Props> = ({
             <div className='flex items-center gap-4px bg-fill-2/60 px-6px py-2px rd-4px truncate'>
               <span>🧠</span>
               <span className='truncate'>
-                <span className='font-600 text-t-primary'>{c.status.memories_active ?? 0}</span> {t('nomi.overview.memories', { defaultValue: '记忆' })}
+                <span className='font-600 text-t-primary'>{c.status?.memories_active ?? 0}</span> {t('nomi.overview.memories', { defaultValue: '记忆' })}
               </span>
             </div>
             <div className='flex items-center gap-4px bg-fill-2/60 px-6px py-2px rd-4px truncate'>
               <span>⚡</span>
               <span className='truncate'>
-                <span className='font-600 text-t-primary'>{c.status.skills_active ?? 0}</span> {t('nomi.overview.skillsActive', { defaultValue: '技能' })}
+                <span className='font-600 text-t-primary'>{c.status?.skills_active ?? 0}</span> {t('nomi.overview.skillsActive', { defaultValue: '技能' })}
               </span>
             </div>
           </div>
