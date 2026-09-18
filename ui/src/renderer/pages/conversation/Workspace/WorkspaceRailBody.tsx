@@ -256,11 +256,8 @@ const WorkspaceRailBody: React.FC<{ source: WorkspaceSource; messageApi?: Messag
     [openPreview, workspace]
   );
 
-  // Auto-refresh changes when switching to changes tab. Also re-run once the
-  // snapshot finishes initializing: with lazy init (enabled gate), the very
-  // first tab-open fires before `fileSnapshot.init` resolves, so `refreshChanges`
-  // would no-op (initializedRef still false). Depending on `snapshotInfo` makes
-  // the effect re-run after init lands and actually load the comparison.
+  // Auto-refresh when switching to the Changes tab. Init already compares once
+  // it lands; this covers tab switches after that first load.
   useEffect(() => {
     if (activeTab === 'changes') {
       fileChangesHook.refreshChanges();

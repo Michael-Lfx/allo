@@ -12,23 +12,12 @@ type PlanTodoEntry = PinnedPlanData['entries'][number];
 
 export type PlanTodoListVariant = 'compact' | 'panel';
 
-export type PlanOrbState = 'working' | 'settled';
-
 type PlanTodoListProps = {
   entries: PinnedPlanData['entries'];
   variant: PlanTodoListVariant;
   listTestId?: string;
   inProgressRowRef?: React.Ref<HTMLDivElement>;
 };
-
-export const PlanThinkingOrb: React.FC<{ state: PlanOrbState; className?: string }> = ({ state, className }) => (
-  <span
-    className={`${styles.node} ${state === 'settled' ? styles.nodeSettled : styles.nodeWorking} ${className ?? ''}`.trim()}
-    data-testid='conversation-plan-orb'
-    data-state={state}
-    aria-hidden='true'
-  />
-);
 
 const statusRowClass = (status: PlanTodoEntry['status']): string => {
   switch (status) {
@@ -48,11 +37,23 @@ const statusRowClass = (status: PlanTodoEntry['status']): string => {
 const PlanTodoStatusGlyph: React.FC<{ status: PlanTodoEntry['status'] }> = ({ status }) => {
   switch (status) {
     case 'completed':
-      return <PlanThinkingOrb state='settled' />;
+      return (
+        <span
+          className={`${styles.check} ${styles.checkCompleted}`}
+          data-testid='conversation-plan-check'
+          data-state='completed'
+        />
+      );
     case 'in_progress':
-      return <PlanThinkingOrb state='working' />;
+      return (
+        <span
+          className={`${styles.check} ${styles.checkWorking}`}
+          data-testid='conversation-plan-check'
+          data-state='working'
+        />
+      );
     case 'pending':
-      return <span className={styles.orbPending} />;
+      return <span className={styles.check} data-testid='conversation-plan-check' data-state='pending' />;
     default: {
       const _exhaustive: never = status;
       return _exhaustive;

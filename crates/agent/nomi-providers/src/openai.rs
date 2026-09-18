@@ -91,37 +91,7 @@ impl OpenAIProvider {
         })?;
         headers.insert(AUTHORIZATION, auth);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        // Flowy cloud expects the raw JWT mirrored into a legacy `token` header.
-        if let Some(name) = self
-            .compat
-            .mirror_bearer_header
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                .map_err(|e| {
-                    ProviderError::Connection(format!("Invalid mirror bearer header name: {e}"))
-                })?;
-            let value = HeaderValue::from_str(api_key).map_err(|e| {
-                ProviderError::Connection(format!("Invalid mirror bearer header value: {e}"))
-            })?;
-            headers.insert(header_name, value);
-
-            // Only attach turn attribution on Flowy-proxied providers (signaled
-            // by mirror_bearer_header). Local / third-party OpenAI endpoints
-            // must not receive X-Flowy-Turn-Id.
-            if let Some(turn_id) = crate::current_flowy_billing_turn_id() {
-                let value = HeaderValue::from_str(&turn_id).map_err(|e| {
-                    ProviderError::Connection(format!("Invalid X-Flowy-Turn-Id header: {e}"))
-                })?;
-                headers.insert(
-                    reqwest::header::HeaderName::from_static(crate::FLOWY_TURN_ID_HEADER),
-                    value,
-                );
-            }
-        }
+        crate::apply_flowy_proxy_headers(&mut headers, &self.compat, api_key)?;
 
         Ok(headers)
     }

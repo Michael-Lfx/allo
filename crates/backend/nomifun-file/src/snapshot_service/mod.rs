@@ -1,11 +1,14 @@
 //! Git-based workspace snapshot service.
 //!
 //! Supports two modes:
-//! - **git-repo**: directory already has `.git` — uses it directly.
-//! - **snapshot**: no `.git` — creates a temporary git repo that tracks the
-//!   workspace via a separate worktree.
+//! - **git-repo**: directory already has `.git` and no session snapshot exists.
+//! - **snapshot**: durable shadow git repo that tracks the workspace via a
+//!   separate worktree. Stored under the app data dir so the baseline survives
+//!   leaving a session and restarting the process.
 
 mod helpers;
+
+use std::path::PathBuf;
 
 use dashmap::DashMap;
 use git2::Repository;
@@ -14,10 +17,11 @@ use nomifun_common::{AppError, FileChangeOperation};
 use crate::types::{CompareResult, SnapshotInfo, SnapshotMode, TurnCheckpoint};
 
 use helpers::{
-    SNAPSHOT_DIR_PREFIX, WorkspaceState, build_info, create_turn_checkpoint_commit, discard_single_file,
-    init_snapshot_repo, open_repo, parse_statuses, read_baseline, reset_single_file, resolve_workspace,
-    restore_turn_checkpoint_tree, snapshot_guard, stage_all_with_deletions, stage_single_file, temp_repo_path,
-    turn_checkpoint_exists, unstage_all_files, unstage_single_file,
+    SNAPSHOT_DIR_PREFIX, WorkspaceState, adopt_snapshot_repo, build_info, create_turn_checkpoint_commit,
+    discard_single_file, find_legacy_os_temp_snapshot, init_snapshot_repo, open_repo, parse_statuses, read_baseline,
+    reset_single_file, resolve_workspace, restore_turn_checkpoint_tree, snapshot_guard, snapshot_repo_path,
+    stage_all_with_deletions, stage_single_file, try_reuse_snapshot_repo, turn_checkpoint_exists, unstage_all_files,
+    unstage_single_file,
 };
 
 // ---------------------------------------------------------------------------
@@ -27,6 +31,8 @@ use helpers::{
 /// Git-based workspace snapshot service.
 pub struct SnapshotService {
     workspaces: DashMap<String, WorkspaceState>,
+    /// Parent directory for snapshot-mode shadow git repos.
+    snapshot_root: PathBuf,
 }
 
 impl Default for SnapshotService {
@@ -36,9 +42,25 @@ impl Default for SnapshotService {
 }
 
 impl SnapshotService {
+    /// Tests and callers without an app data dir store snapshots under the
+    /// process temp directory.
     pub fn new() -> Self {
+        Self::with_snapshot_root(std::env::temp_dir())
+    }
+
+    /// Production constructor: persist snapshot repos under `snapshot_root`
+    /// (typically `{data_dir}/file-snapshots`).
+    pub fn with_snapshot_root(snapshot_root: PathBuf) -> Self {
+        if let Err(e) = std::fs::create_dir_all(&snapshot_root) {
+            tracing::warn!(
+                path = %snapshot_root.display(),
+                error = %e,
+                "Failed to create snapshot root; first snapshot init may fail"
+            );
+        }
         Self {
             workspaces: DashMap::new(),
+            snapshot_root,
         }
     }
 
@@ -58,7 +80,7 @@ impl SnapshotService {
     /// The git/temp repo path backing a tracked workspace, if any.
     /// Test/observability helper.
     #[doc(hidden)]
-    pub fn repo_path_for(&self, workspace: &str) -> Option<std::path::PathBuf> {
+    pub fn repo_path_for(&self, workspace: &str) -> Option<PathBuf> {
         self.workspaces.get(&workspace_key(workspace)).map(|s| s.repo_path.clone())
     }
 
@@ -154,8 +176,40 @@ impl crate::traits::ISnapshotService for SnapshotService {
             .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))?;
         }
 
+        let snapshot_root = self.snapshot_root.clone();
         let result = tokio::task::spawn_blocking(move || {
             let canonical_str = canonical.to_string_lossy().to_string();
+            let snapshot_dir = snapshot_repo_path(&snapshot_root, &canonical_str);
+
+            // Prefer an existing session snapshot even if the workspace later
+            // grew a `.git` (agent `git init`) or the tree is now large enough
+            // that the safety guard would refuse a fresh capture.
+            if try_reuse_snapshot_repo(&canonical, &snapshot_dir) {
+                let mode = SnapshotMode::Snapshot;
+                let state = WorkspaceState {
+                    mode: mode.clone(),
+                    repo_path: snapshot_dir.clone(),
+                    workspace_path: canonical,
+                    refcount: 1,
+                };
+                let repo = open_repo(&state)?;
+                let info = build_info(mode, &repo);
+                return Ok::<(Option<WorkspaceState>, SnapshotInfo), AppError>((Some(state), info));
+            }
+
+            if let Some(legacy) = find_legacy_os_temp_snapshot(&canonical) {
+                let repo_path = adopt_snapshot_repo(&legacy, &snapshot_dir);
+                let mode = SnapshotMode::Snapshot;
+                let state = WorkspaceState {
+                    mode: mode.clone(),
+                    repo_path,
+                    workspace_path: canonical,
+                    refcount: 1,
+                };
+                let repo = open_repo(&state)?;
+                let info = build_info(mode, &repo);
+                return Ok::<(Option<WorkspaceState>, SnapshotInfo), AppError>((Some(state), info));
+            }
 
             let git_dir = canonical.join(".git");
             if git_dir.exists() {
@@ -174,8 +228,8 @@ impl crate::traits::ISnapshotService for SnapshotService {
                 return Ok::<(Option<WorkspaceState>, SnapshotInfo), AppError>((Some(state), info));
             }
 
-            // Snapshot branch: run the safety guard BEFORE creating any temp
-            // repo. On refusal, return a Disabled info and track nothing.
+            // Snapshot branch: run the safety guard BEFORE creating any repo.
+            // On refusal, return a Disabled info and track nothing.
             if let Some(reason) = snapshot_guard(&canonical) {
                 let info = SnapshotInfo {
                     mode: SnapshotMode::Disabled { reason },
@@ -184,17 +238,15 @@ impl crate::traits::ISnapshotService for SnapshotService {
                 return Ok((None, info));
             }
 
-            let temp = temp_repo_path(&canonical_str);
-            init_snapshot_repo(&canonical, &temp)?;
+            init_snapshot_repo(&canonical, &snapshot_dir)?;
             let mode = SnapshotMode::Snapshot;
             let state = WorkspaceState {
                 mode: mode.clone(),
-                repo_path: temp.clone(),
+                repo_path: snapshot_dir,
                 workspace_path: canonical,
                 refcount: 1,
             };
-            let repo = Repository::open(&temp)
-                .map_err(|e| AppError::Internal(format!("Failed to open repo after init: {}", e)))?;
+            let repo = open_repo(&state)?;
             let info = build_info(mode, &repo);
 
             Ok::<(Option<WorkspaceState>, SnapshotInfo), AppError>((Some(state), info))
@@ -329,37 +381,18 @@ impl crate::traits::ISnapshotService for SnapshotService {
         let key = workspace_key(workspace);
 
         // Decrement the refcount under the shard lock. Only the call that
-        // drops it to 0 proceeds to actually remove the entry and clean up.
-        // `remove_if` holds the lock across the predicate, so the decrement and
-        // the remove decision are atomic w.r.t. a concurrent `init` bump.
-        let removed = self.workspaces.remove_if_mut(&key, |_, state| {
+        // drops it to 0 removes the DashMap entry. `remove_if` holds the lock
+        // across the predicate, so the decrement and the remove decision are
+        // atomic w.r.t. a concurrent `init` bump. The snapshot temp repo stays
+        // on disk for the next init to reopen.
+        let _removed = self.workspaces.remove_if_mut(&key, |_, state| {
             state.refcount = state.refcount.saturating_sub(1);
             state.refcount == 0
         });
-
-        let state = match removed {
-            // refcount hit 0 -> entry removed, proceed to clean up.
-            Some((_, s)) => s,
-            // Either not tracked (idempotent) or refcount still > 0 -> keep it.
-            None => return Ok(()),
-        };
-
-        if state.mode == SnapshotMode::Snapshot {
-            let repo_path = state.repo_path.clone();
-            tokio::task::spawn_blocking(move || {
-                if repo_path.exists() {
-                    std::fs::remove_dir_all(&repo_path).map_err(|e| {
-                        AppError::Internal(format!("Failed to remove snapshot dir {}: {}", repo_path.display(), e))
-                    })?;
-                }
-                Ok(())
-            })
-            .await
-            .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))?
-        } else {
-            // git-repo mode: nothing to clean up
-            Ok(())
-        }
+        // Snapshot-mode repos live under `{data_dir}/file-snapshots` and are
+        // reused on the next init (including after process restart). Deleting
+        // them here recaptured the current tree (including agent edits) as HEAD.
+        Ok(())
     }
 
     async fn create_turn_checkpoint(

@@ -12,9 +12,10 @@ const nomiChatSource = readFileSync(new URL('../../platforms/nomi/NomiChat.tsx',
 const nomiSendBoxSource = readFileSync(new URL('../../platforms/nomi/NomiSendBox.tsx', import.meta.url), 'utf8');
 const sendBoxSource = readFileSync(new URL('../../../../components/chat/SendBox/index.tsx', import.meta.url), 'utf8');
 const planListSource = readFileSync(new URL('./PlanTodoList.tsx', import.meta.url), 'utf8');
+const css = readFileSync(new URL('./planTodoList.module.css', import.meta.url), 'utf8');
 
 describe('PinnedPlan composer chip', () => {
-  test('uses the conversation surface with a content-fit queue capsule and fixed text spacing', () => {
+  test('uses a content-fit material capsule with in-flow checklist expansion', () => {
     expect(source.includes("data-testid='pinned-plan-bar'")).toBe(true);
     expect(source.includes("data-testid='pinned-plan-summary'")).toBe(true);
     expect(source.includes("data-testid='pinned-plan-progress'")).toBe(false);
@@ -23,25 +24,18 @@ describe('PinnedPlan composer chip', () => {
     expect(source.includes('sm:w-[56%]')).toBe(false);
     expect(source.includes('max-w-[520px]')).toBe(false);
     expect(source.includes('w-fit max-w-[calc(100vw-32px)]')).toBe(true);
-    expect(source.includes('h-28px')).toBe(true);
-    expect(source.includes('rd-full')).toBe(true);
-    expect(source.includes('rd-999px')).toBe(false);
-    expect(source.includes("aria-hidden='true' className='h-12px w-1px shrink-0 bg-[var(--color-border-2)]'")).toBe(true);
-    expect(source.includes('min-w-0')).toBe(true);
-    expect(source.includes("background: 'var(--color-bg-1)'")).toBe(true);
-    expect(source.includes("boxShadow: 'none'")).toBe(true);
-    expect(source.includes('h-3px w-full')).toBe(false);
-    expect(source.includes("from 'thinking-orbs'")).toBe(true);
-    expect(source.includes("state='working'")).toBe(true);
-    expect(source.includes('size={20}')).toBe(true);
-    expect(source.includes('animate-spin')).toBe(false);
+    expect(source.includes('flex flex-col items-center')).toBe(true);
+    expect(source.includes("from 'thinking-orbs'")).toBe(false);
     expect(source.includes("from '@icon-park/react'")).toBe(false);
     expect(source.includes('{active && done < total && (')).toBe(true);
-    expect(source.includes("className='ml-18px whitespace-nowrap text-12px leading-none tabular-nums'")).toBe(false);
-    expect(source.includes("className='whitespace-nowrap text-12px leading-none tabular-nums'")).toBe(true);
     expect(source.includes("data-testid='pinned-plan-popover'")).toBe(true);
-    expect(source.includes('absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-full z-10 pb-4px')).toBe(true);
-    expect(source.includes('w-full max-w-800px')).toBe(false);
+    expect(source.includes('absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-full')).toBe(
+      false
+    );
+    expect(source.includes('w-[min(320px,calc(100vw-32px))] mb-6px')).toBe(true);
+    expect(css.includes('backdrop-filter: saturate(180%) blur(20px)')).toBe(true);
+    expect(css.includes('.chip {')).toBe(true);
+    expect(planListSource.includes('conversation-plan-check')).toBe(true);
   });
 
   test('opens the workspace plan tab on desktop instead of a hover popover', () => {
@@ -55,7 +49,7 @@ describe('PinnedPlan composer chip', () => {
     expect(planListSource.includes("variant: PlanTodoListVariant")).toBe(true);
   });
 
-  test('is centered above the sendbox panel rather than inside its status row', () => {
+  test('is centered above the sendbox panel in document flow', () => {
     expect(nomiChatSource.includes('<PinnedPlan />')).toBe(false);
     expect(nomiSendBoxSource.includes('showPinnedPlan')).toBe(true);
     expect(sendBoxSource.includes('showPinnedPlan?: boolean')).toBe(true);
@@ -68,7 +62,8 @@ describe('PinnedPlan composer chip', () => {
     expect(sendBoxSource.includes("data-testid='sendbox-internal-status-row'")).toBe(true);
     expect(sendBoxSource.includes("data-testid='sendbox-internal-plan'")).toBe(false);
     expect(sendBoxSource.includes("data-testid='sendbox-internal-context-tools'")).toBe(true);
-    expect(sendBoxSource.includes('absolute left-1/2 bottom-[calc(100%+8px)] -translate-x-1/2')).toBe(true);
+    expect(sendBoxSource.includes('absolute left-1/2 bottom-[calc(100%+8px)] -translate-x-1/2')).toBe(false);
+    expect(sendBoxSource.includes('relative z-1 mb-8px flex justify-center')).toBe(true);
     expect(sendBoxSource.includes('max-w-[420px]')).toBe(false);
     expect(sendBoxSource.includes('flex-[1_1_340px]')).toBe(false);
     expect(sendBoxSource.includes("data-testid='sendbox-top-row'")).toBe(false);

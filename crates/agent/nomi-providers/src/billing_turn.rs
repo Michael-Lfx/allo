@@ -1,11 +1,17 @@
 //! Flowy cloud billing turn attribution (`X-Flowy-Turn-Id`).
 //!
 //! The conversation layer mints one UUID per user send / Agent Run and scopes
-//! it with [`with_flowy_billing_turn_id`] around the engine turn. OpenAI-compatible
-//! Flowy proxy requests (and Flowy `HttpTransport` side calls) read the value and
-//! attach it as a header so the server can aggregate multi-call credit usage.
+//! it with [`with_flowy_billing_turn_id`] around the engine turn. Flowy-proxied
+//! provider HTTP (OpenAI-compatible, Anthropic, Responses) and Flowy
+//! `HttpTransport` side calls read the value and attach it as a header so the
+//! server can aggregate multi-call credit usage.
 
 use std::future::Future;
+
+use nomi_config::compat::ProviderCompat;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+
+use crate::ProviderError;
 
 /// Header name expected by Flowy model proxy / credits aggregation.
 pub const FLOWY_TURN_ID_HEADER: &str = "x-flowy-turn-id";
@@ -53,6 +59,42 @@ where
         Some(id) => with_flowy_billing_turn_id(id, fut).await,
         None => fut.await,
     }
+}
+
+/// Attach Flowy proxy headers: the configured bearer mirror (legacy `token`)
+/// plus `X-Flowy-Turn-Id` when a billing turn is scoped.
+///
+/// No-op when `compat.mirror_bearer_header` is unset. That field is the signal
+/// that this request goes to a Flowy-proxied endpoint; local / third-party
+/// providers must not receive the turn header.
+pub fn apply_flowy_proxy_headers(
+    headers: &mut HeaderMap,
+    compat: &ProviderCompat,
+    api_key: &str,
+) -> Result<(), ProviderError> {
+    let Some(name) = compat
+        .mirror_bearer_header
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(());
+    };
+    let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+        ProviderError::Connection(format!("Invalid mirror bearer header name: {e}"))
+    })?;
+    let value = HeaderValue::from_str(api_key).map_err(|e| {
+        ProviderError::Connection(format!("Invalid mirror bearer header value: {e}"))
+    })?;
+    headers.insert(header_name, value);
+
+    if let Some(turn_id) = current_flowy_billing_turn_id() {
+        let value = HeaderValue::from_str(&turn_id).map_err(|e| {
+            ProviderError::Connection(format!("Invalid X-Flowy-Turn-Id header: {e}"))
+        })?;
+        headers.insert(HeaderName::from_static(FLOWY_TURN_ID_HEADER), value);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -107,5 +149,32 @@ mod tests {
         })
         .await;
         assert_eq!(observed.as_deref(), Some("turn-parent"));
+    }
+
+    #[tokio::test]
+    async fn apply_headers_attaches_turn_id_only_on_flowy_proxy() {
+        let mut local = HeaderMap::new();
+        apply_flowy_proxy_headers(&mut local, &ProviderCompat::default(), "sk-test")
+            .expect("local compat");
+        assert!(local.get(FLOWY_TURN_ID_HEADER).is_none());
+
+        let mut compat = ProviderCompat::default();
+        compat.mirror_bearer_header = Some("token".into());
+        let headers = with_flowy_billing_turn_id("turn-parent", async {
+            let mut headers = HeaderMap::new();
+            apply_flowy_proxy_headers(&mut headers, &compat, "sk-test").expect("flowy compat");
+            headers
+        })
+        .await;
+        assert_eq!(
+            headers.get("token").and_then(|v| v.to_str().ok()),
+            Some("sk-test")
+        );
+        assert_eq!(
+            headers
+                .get(FLOWY_TURN_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("turn-parent")
+        );
     }
 }

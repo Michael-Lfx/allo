@@ -1,18 +1,21 @@
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ThinkingOrb } from 'thinking-orbs';
 import { useMessageList } from '@renderer/pages/conversation/Messages/hooks';
 import { useConversationPlan } from './conversationPlanContext';
 import PlanTodoList from './PlanTodoList';
 import { derivePinnedPlan, type PinnedPlanData } from './pinnedPlanModel';
+import styles from './planTodoList.module.css';
 
 /**
- * Pinned plan bar: centered above the composer, it surfaces the conversation's
- * current plan (the latest `plan` message) without competing with the command
- * queue. Desktop (with a workspace) opens the right-rail plan tab; mobile and
- * workspace-less surfaces expand the compact checklist in place. Renders
- * nothing when there is no active plan.
+ * Pinned plan bar: sits in document flow above the composer so it never covers
+ * the last messages. Desktop (with a workspace) opens the right-rail plan tab;
+ * mobile and workspace-less surfaces expand the compact checklist in place.
  */
 const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; className?: string }> = ({
   plan: suppliedPlan,
@@ -50,49 +53,39 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
   };
 
   return (
-    <div data-testid='pinned-plan-bar' className={`relative ${className}`}>
+    <div data-testid='pinned-plan-bar' className={`flex flex-col items-center ${className}`}>
+      {showInPlaceList && (
+        <div
+          data-testid='pinned-plan-popover'
+          className='w-[min(320px,calc(100vw-32px))] mb-6px'
+        >
+          <PlanTodoList entries={entries} variant='compact' listTestId='pinned-plan-list' />
+        </div>
+      )}
       <div
         role='button'
         tabIndex={0}
         aria-expanded={canOpenPlanTab ? undefined : expanded}
         data-testid='pinned-plan-summary'
-        className='flex h-28px items-center gap-6px rd-full px-10px cursor-pointer select-none'
-        style={{
-          background: 'var(--color-bg-1)',
-          border: '1px solid color-mix(in srgb, rgb(var(--primary-6)) 14%, var(--color-border-2))',
-          boxShadow: 'none',
-          color: 'var(--text-secondary)',
-        }}
+        className={styles.chip}
         onClick={handleSummaryActivate}
         onKeyDown={handleSummaryKeyDown}
       >
         {active && done < total && (
-          <ThinkingOrb
+          <span
             aria-hidden='true'
             data-testid='pinned-plan-progress-indicator'
-            state='working'
-            size={20}
-            theme='auto'
-            className='block shrink-0'
+            className={styles.chipPulse}
           />
         )}
-        <span className='min-w-0 truncate text-12px font-600 leading-none'>
+        <span className={styles.chipLabel}>
           {t('messages.planTodoList', { defaultValue: 'Task queue' })}
         </span>
-        <span aria-hidden='true' className='h-12px w-1px shrink-0 bg-[var(--color-border-2)]' />
-        <span className='whitespace-nowrap text-12px leading-none tabular-nums'>
+        <span aria-hidden='true' className={styles.chipDivider} />
+        <span className={styles.chipMeta}>
           {t('messages.planProgress', { done, total, defaultValue: '{{done}}/{{total}}' })}
         </span>
       </div>
-
-      {showInPlaceList && (
-        <div
-          data-testid='pinned-plan-popover'
-          className='absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-full z-10 pb-4px'
-        >
-          <PlanTodoList entries={entries} variant='compact' listTestId='pinned-plan-list' />
-        </div>
-      )}
     </div>
   );
 };
