@@ -10343,11 +10343,22 @@ mod tests {
             rows.iter().filter(|row| row.r#type == "tool_call").count(),
             MAX_TERMINAL_ACTIVE_ITEMS + 1
         );
+        // The cap bounds the *tool-call* corrections. The turn's own row is also
+        // stamped `error` once the turn fails closed, so counting every error
+        // update would fold an unbounded row into a bounded assertion — the
+        // invariant being pinned here is "the untracked 257th call gets no
+        // durable correction", not "exactly N rows in the whole table".
+        let type_by_id: std::collections::HashMap<&str, &str> = rows
+            .iter()
+            .map(|row| (row.message_id.as_str(), row.r#type.as_str()))
+            .collect();
         assert_eq!(
             repo.take_updates()
                 .iter()
-                .filter(|(_, update)| {
-                    update.status.as_ref().map(|status| status.as_deref()) == Some(Some("error"))
+                .filter(|(id, update)| {
+                    type_by_id.get(id.as_str()).copied() == Some("tool_call")
+                        && update.status.as_ref().map(|status| status.as_deref())
+                            == Some(Some("error"))
                 })
                 .count(),
             MAX_TERMINAL_ACTIVE_ITEMS
