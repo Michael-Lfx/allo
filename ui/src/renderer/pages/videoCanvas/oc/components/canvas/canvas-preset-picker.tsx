@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { LayoutGrid, Search, WandSparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -137,7 +138,7 @@ export function CanvasPresetPicker({
                             </button>
                         ) : null}
                     </div>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </>

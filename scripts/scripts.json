@@ -130,6 +130,7 @@
     "check:i18n":    { "group": "check", "desc": "校验 i18n 类型与 locale 键是否一致" },
     "check:theme":   { "group": "check", "desc": "校验预设 CSS 主题契约" },
     "check:icons":   { "group": "check", "desc": "校验 @icon-park/react 导入禁别名/禁命名空间（别名会被图标包装插件改写成非法代码，tsc 抓不到）" },
+    "check:css-scope": { "group": "check", "desc": "校验画布子系统 CSS 全部挂在 .oc-root 作用域（禁裸 :root/html/body/*、禁全量 tailwind 与全局 antd reset）" },
     "check:dead-css": { "group": "check", "desc": "扫描 CSS 工具类死代码（check-dead-css-utilities.mjs）" },
     "gen:i18n":      { "group": "gen",   "desc": "由 locale 重新生成 i18n 类型声明" },
     "clean":         { "group": "maint", "desc": "深度回收构建空间（debug 产物 + flycheck + 旧安装包）" },

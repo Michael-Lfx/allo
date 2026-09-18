@@ -23,31 +23,17 @@ import { useCanvasStore } from '@oc/stores/canvas/use-canvas-store';
 import { useThemeStore } from '@oc/stores/use-theme-store';
 import { useUserStore } from '@oc/stores/use-user-store';
 import { setActiveUserScope } from '@oc/lib/user-scope';
+import { getOcPortalHost, disposeOcPortalHost } from '@oc/lib/oc-scope';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import styles from './index.module.css';
 
-// Ant Design styles for the ported open-ai-canvas workspace.
-import 'antd/dist/reset.css';
+// Ant Design component styles are configured through ConfigProvider; the
+// global reset.css is replaced by the scoped `.oc-root` baseline.
 import '@oc/styles/globals.css';
 import '@oc/components/video-player.css';
 
-function useVideoCanvasThemeSync() {
-  const theme = useThemeStore((s) => s.theme);
-  useEffect(() => {
-    const root = document.documentElement;
-    const prevDark = root.classList.contains('dark');
-    const prevScheme = root.style.colorScheme;
-    const apply = (next: 'light' | 'dark') => {
-      root.classList.toggle('dark', next === 'dark');
-      root.style.colorScheme = next;
-    };
-    apply(theme);
-    return () => {
-      root.classList.toggle('dark', prevDark);
-      root.style.colorScheme = prevScheme;
-    };
-  }, [theme]);
-  return theme;
+function useVideoCanvasTheme() {
+  return useThemeStore((s) => s.theme);
 }
 
 const VideoCanvasProjectPage: React.FC = () => {
@@ -60,7 +46,12 @@ const VideoCanvasProjectPage: React.FC = () => {
   const [modelCatalogFailed, setModelCatalogFailed] = useState(false);
   const [catalogRetrying, setCatalogRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const colorTheme = useVideoCanvasThemeSync();
+  const colorTheme = useVideoCanvasTheme();
+  useEffect(() => {
+    if (!ready || !canvasId || error) return;
+    getOcPortalHost();
+    return () => disposeOcPortalHost();
+  }, [ready, canvasId, error]);
   const { whoami, authState } = useCloudAuth();
   const catalogSyncGeneration = useRef(0);
 
@@ -215,9 +206,9 @@ const VideoCanvasProjectPage: React.FC = () => {
   }
 
   return (
-    <div className={`${styles.ocShell}${colorTheme === 'dark' ? ' dark' : ''}`}>
+    <div className={`${styles.ocShell} oc-root oc-shell oc-canvas${colorTheme === 'dark' ? ' dark' : ''}`}>
       <QueryClientProvider client={videoCanvasQueryClient}>
-        <ConfigProvider theme={getVideoCanvasAntTheme(colorTheme === 'dark')}>
+        <ConfigProvider theme={getVideoCanvasAntTheme(colorTheme === 'dark')} getPopupContainer={getOcPortalHost}>
           <AntApp>
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
               <VimaxProvenanceBar projectId={canvasId} />

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, BookOpen, Bot, Clapperboard, Coins, Download, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Share2, Trash2, Undo2, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -347,7 +348,7 @@ function TopBarOverflowMenu({
                         <CanvasMenuRow icon={<Undo2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.undo", "撤销")} shortcut={canvasAccel.undo()} disabled={!canUndo} onClick={() => run(onUndo)} />
                         <CanvasMenuRow icon={<Redo2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.redo", "重做")} shortcut={canvasAccel.redo()} disabled={!canRedo} onClick={() => run(onRedo)} />
                     </div>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </>

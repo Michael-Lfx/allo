@@ -17,6 +17,7 @@ import { CanvasNodeType, type CanvasAssistantMessage, type CanvasAssistantRefere
 import { AgentChatEmptyState } from "./canvas-agent-panel-chrome";
 import { AgentChatMessage, AgentWorkingMessage, type CanvasAgentChatMessage } from "./canvas-agent-chat-ui";
 import type { OnlineAgentLog } from "./canvas-online-agent-loop";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 
 export type OnlineAgentLogContext = { model: string; running: boolean; confirmTools: boolean; messages: number; nodes: number; connections: number };
 
@@ -38,7 +39,7 @@ export function AgentTextModelPicker({ config, value, onChange }: { config: AiCo
                 className="agent-text-model-select w-full"
                 popupMatchSelectWidth={288}
                 listHeight={280}
-                getPopupContainer={() => document.body}
+                getPopupContainer={getOcPortalHost}
                 classNames={{ popup: { root: "agent-text-model-select-dropdown" } }}
                 options={options.map((model) => ({ value: model, label: modelDisplayName(config, model) }))}
                 notFoundContent={<span className="block py-2 text-center text-xs text-foreground/48">{canvasT("videoCanvas.agent.noTextModels", "暂无文本模型")}</span>}

@@ -456,6 +456,7 @@ bun run test       # Rust 测试（日常可用 test:fast 跑 nextest）
 | `bun run check:process-runtime-boundary` | Enforce the supervised process runtime boundary and exact hand-off allowlist. |
 | `bun run check:browser-platform-boundary` | Enforce the single BrowserSessionHub ownership boundary and reject private browser launch paths. |
 | `bun run check:agent-vocabulary` | Enforce AgentExecution as the only active collaboration aggregate and permit only exact migration fences. |
+| `bun run check:windows-console-hide` | Require nomi-process-runtime hide helpers for tool spawns and Windows Pipe-only shell transport. |
 | `bun run check:codemirror-runtime` | Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package. |
 | `bun run check:market` | Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject. |
 | `bun run check:fingerprint` | Verify the App Server protocol fingerprint is identical at every landing point, here and in the docs site. |
@@ -466,17 +467,22 @@ bun run test       # Rust 测试（日常可用 test:fast 跑 nextest）
 | `bun run check:button-layout` | 使用 Windows Edge 矩阵验证 Arco 与 Icon Park 按钮的横向布局和对齐契约 |
 | `bun run check:error-surface` | 使用 Windows Edge 矩阵验证错误诊断摘要、详情展开、复制入口和窄屏溢出 |
 | `bun run check:error-surface-contract` | 静态校验错误面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限 |
+| `bun run check:support-surface` | 使用 Windows Edge 矩阵验证客服入口、摘要与窄屏布局 |
+| `bun run check:support-surface-contract` | 静态校验客服面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限 |
+| `bun run check:dead-css` | 扫描 CSS 工具类死代码（check-dead-css-utilities.mjs） |
 | `bun run check:button-layout-contract` | 扫描所有 Arco 图标文字按钮并校验共享横向布局契约 |
 | `bun run check` | 聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 协议指纹 + 跨仓发布同步 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑） |
 | `bun run typecheck` | 前端 TypeScript 类型检查（tsc --noEmit） |
 | `bun run check:i18n` | 校验 i18n 类型与 locale 键是否一致 |
 | `bun run check:theme` | 校验预设 CSS 主题契约 |
 | `bun run check:icons` | 校验 @icon-park/react 导入禁别名/禁命名空间（别名会被图标包装插件改写成非法代码，tsc 抓不到） |
-| `bun run check:dead-css` | 扫描 CSS 工具类死代码（check-dead-css-utilities.mjs） |
+| `bun run check:css-scope` | 校验画布子系统 CSS 全部挂在 .oc-root 作用域（禁裸 :root/html/body/*、禁全量 tailwind 与全局 antd reset） |
 | **代码生成** | |
 | `bun run gen:i18n` | 由 locale 重新生成 i18n 类型声明 |
 | **维护 / 工具** | |
 | `bun run setup:git-hooks` | Enable this repository's human-only Git attribution hooks without changing global Git config. |
+| `bun run rollback:modelscope` | 回滚 ModelScope 上的桌面发布指针（需 MODELSCOPE_TOKEN） |
+| `bun run verify:modelscope` | 校验 ModelScope 桌面发布清单与制品（需 MODELSCOPE_TOKEN） |
 | `bun run clean` | 深度回收构建空间（debug 产物 + flycheck + 旧安装包） |
 | `bun run seed:dev` | 用生产数据目录播种 dev 数据目录 |
 | `bun run reset:dev` | 为 dev 数据目录写入显式 factory reset 请求（迁移校验失败无法启动时一键恢复，下次启动重建空数据集） |

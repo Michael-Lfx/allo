@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { App } from "antd";
 import { ChevronDown, Ellipsis, Lock, Plus, Settings2, Unlock, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -523,7 +524,7 @@ function NodeDockMenuButton({
                             />
                         ))}
                     </div>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </>

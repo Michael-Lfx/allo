@@ -1,5 +1,10 @@
-@import "tailwindcss";
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "..";
+@source "../../videoGeneration";
 @import "tw-animate-css";
+@import "./oc-scoped-preflight.css" layer(base);
 @import "./quiet-chrome.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -13,7 +18,7 @@
 /* -------------------------------------------------------------------------
    Layer 1: Primitive — 纯值，无语义，不随主题变（所有维度的基础）
    ------------------------------------------------------------------------- */
-:root {
+.oc-root {
     /* --- 1. 色彩（oklch 色板）--- */
     --color-neutral-0: oklch(1 0 0);
     --color-neutral-50: oklch(0.985 0 0);
@@ -168,7 +173,7 @@
 
 /* prefers-reduced-motion 降级（对应 #99 三级降级策略 L1）*/
 @media (prefers-reduced-motion: reduce) {
-    :root {
+    .oc-root {
         --motion-scale: 0.3;
     }
 }
@@ -188,7 +193,7 @@
 }
 
 /* 动效计算函数（实际 duration = base * motion-scale）*/
-:root {
+.oc-root {
     --motion-dur-instant-calc: calc(var(--motion-dur-instant) * var(--motion-scale));
     --motion-dur-fast-calc: calc(var(--motion-dur-fast) * var(--motion-scale));
     --motion-dur-base-calc: calc(var(--motion-dur-base) * var(--motion-scale));
@@ -282,7 +287,7 @@
     --font-size-display: var(--fs-display);
 }
 
-:root {
+.oc-root {
     --radius: 0.5rem;
     --motion-instant: 120ms;
     --motion-state: 180ms;
@@ -393,7 +398,7 @@
     --sidebar-ring: oklch(0.708 0 0);
 }
 
-.dark {
+.oc-root.dark {
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --border: oklch(1 0 0 / 10%);
@@ -488,7 +493,7 @@
 /* -------------------------------------------------------------------------
    Layer 3: Component — 引用 Semantic，某组件专属
    ------------------------------------------------------------------------- */
-:root {
+.oc-root {
     /* Dock 组件（FloatingDock、悬停工具栏，对应 #95 工具栏方案）*/
     --dock-radius: var(--r-xl);            /* 14px */
     --dock-padding: var(--space-2);       /* 8px */
@@ -595,39 +600,37 @@
 }
 
 @layer base {
-    * {
+    .oc-root * {
         @apply border-border outline-ring/50;
     }
-    html,
-    body,
-    #root,
-    .ant-app {
-        width: 100%;
-        height: 100%;
-        margin: 0;
-        padding: 0;
-        border: 0;
-        overflow: hidden;
-        overscroll-behavior: none;
-        background: var(--workspace-page);
-    }
-    body {
+    .oc-shell {
         background: var(--workspace-page);
         color: var(--foreground);
+        overflow: hidden;
+        overscroll-behavior: none;
     }
-    #root {
-        position: fixed;
-        inset: 0;
-        isolation: isolate;
-    }
-    textarea {
+    .oc-root textarea {
         resize: none;
     }
-    textarea::-webkit-resizer {
+    .oc-root textarea::-webkit-resizer {
         display: none;
     }
-    html {
-        @apply font-sans;
+    .oc-root {
+        font-family: var(--font-sans);
+        color-scheme: light;
+    }
+    .oc-root.dark {
+        color-scheme: dark;
+    }
+    /* Portal targets live outside `.oc-root`, so they carry the scope class
+       themselves and must not inherit the shell's background or sizing. */
+    .oc-portal-host {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+    }
+    .oc-portal-host > * {
+        pointer-events: auto;
     }
 }
 
@@ -1505,7 +1508,7 @@
         transition: transform 150ms var(--motion-ease-out), border-color 150ms ease, background-color 150ms ease;
     }
 
-    html:not(.dark) .creation-model-picker.canvas-composer-model-picker {
+    .oc-root:not(.dark) .creation-model-picker.canvas-composer-model-picker {
         border-color: rgba(32, 37, 45, .12) !important;
         background: #f0f2f5 !important;
         color: #20242a !important;
@@ -1518,7 +1521,7 @@
         transform: translateY(-1px);
     }
 
-    html:not(.dark) .creation-model-picker.canvas-composer-model-picker:hover, html:not(.dark) .creation-model-picker.canvas-composer-model-picker[aria-expanded="true"] { background: #e7eaee !important; border-color: rgba(32, 37, 45, .22) !important; }
+    .oc-root:not(.dark) .creation-model-picker.canvas-composer-model-picker:hover, .oc-root:not(.dark) .creation-model-picker.canvas-composer-model-picker[aria-expanded="true"] { background: #e7eaee !important; border-color: rgba(32, 37, 45, .22) !important; }
 
     
     
@@ -1615,8 +1618,8 @@
     .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { width: min(196px, 26vw) !important; justify-content: flex-start; }
     .creation-chat-composer .creation-model-picker .canvas-model-picker-trigger-icon { width: 19px; height: 19px; border-radius: 5px; }
 
-    html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { border-color: transparent !important; background: #f1f3f5 !important; color: #262b32 !important; }
-    html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { border-color: rgba(20, 26, 35, .2) !important; background: #e9edf1 !important; }
+    .oc-root:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { border-color: transparent !important; background: #f1f3f5 !important; color: #262b32 !important; }
+    .oc-root:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { border-color: rgba(20, 26, 35, .2) !important; background: #e9edf1 !important; }
 
     
     
@@ -1653,7 +1656,7 @@
     
     
     
-    html:not(.dark) .creation-choice-grid button.is-selected { background: #e8ecf0; color: #20242a; }
+    .oc-root:not(.dark) .creation-choice-grid button.is-selected { background: #e8ecf0; color: #20242a; }
     
 
     @keyframes creation-intro-mark {
@@ -2932,17 +2935,17 @@
         color: color-mix(in srgb, var(--workspace-accent) 72%, var(--foreground));
     }
 
-    html:not(.dark) .canvas-composer-model-picker,
-    html:not(.dark) .canvas-generation-settings-trigger.ant-btn {
+    .oc-root:not(.dark) .canvas-composer-model-picker,
+    .oc-root:not(.dark) .canvas-generation-settings-trigger.ant-btn {
         background: rgba(15, 23, 42, 0.045) !important;
         color: #1f2937 !important;
     }
 
-    html:not(.dark) .canvas-composer-model-picker:hover,
-    html:not(.dark) .canvas-composer-model-picker[aria-expanded="true"],
-    html:not(.dark) .canvas-generation-settings-trigger.ant-btn:hover,
-    html:not(.dark) .canvas-generation-settings-trigger.ant-btn:focus-visible,
-    html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"] {
+    .oc-root:not(.dark) .canvas-composer-model-picker:hover,
+    .oc-root:not(.dark) .canvas-composer-model-picker[aria-expanded="true"],
+    .oc-root:not(.dark) .canvas-generation-settings-trigger.ant-btn:hover,
+    .oc-root:not(.dark) .canvas-generation-settings-trigger.ant-btn:focus-visible,
+    .oc-root:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"] {
         background: rgba(15, 23, 42, 0.075) !important;
     }
 
@@ -3031,7 +3034,7 @@
         background: var(--workspace-surface-strong) !important;
     }
 
-    html:not(.dark) body.app-spatial-overlays .canvas-composer-popover-surface {
+    .oc-root:not(.dark) body.app-spatial-overlays .canvas-composer-popover-surface {
         background: #ffffff !important;
         box-shadow: 0 14px 34px rgba(15, 23, 42, 0.13) !important;
     }
@@ -3478,7 +3481,7 @@
     mix-blend-mode: normal;
 }
 
-html[data-theme-switching="true"] :where(.canvas-node-shell, .aceternity-comet-card, .aceternity-floating-panel, .canvas-connection-flow, .canvas-connection-draft) {
+.oc-root[data-theme-switching="true"] :where(.canvas-node-shell, .aceternity-comet-card, .aceternity-floating-panel, .canvas-connection-flow, .canvas-connection-draft) {
     animation: none !important;
     transition: none !important;
 }
@@ -3563,8 +3566,8 @@ html[data-theme-switching="true"] :where(.canvas-node-shell, .aceternity-comet-c
 .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { width: min(180px, 30vw) !important; justify-content: flex-start; }
 .creation-chat-composer .creation-model-picker .canvas-model-picker-trigger-icon { width: 16px; height: 16px; border-radius: 4px; background: transparent !important; }
 
-html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { background: transparent !important; color: var(--creation-muted) !important; }
-html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { background: rgba(29, 33, 37, .06) !important; color: var(--creation-text) !important; }
+.oc-root:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { background: transparent !important; color: var(--creation-muted) !important; }
+.oc-root:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { background: rgba(29, 33, 37, .06) !important; color: var(--creation-text) !important; }
 
 
 
@@ -3644,13 +3647,13 @@ html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-m
 
 
 
-html:not(.dark) .creation-model-picker-surface { background: rgba(255, 255, 255, .94) !important; box-shadow: 0 16px 38px rgba(28, 32, 37, .12) !important; }
-html:not(.dark) .creation-model-picker-menu { color: #727980 !important; }
+.oc-root:not(.dark) .creation-model-picker-surface { background: rgba(255, 255, 255, .94) !important; box-shadow: 0 16px 38px rgba(28, 32, 37, .12) !important; }
+.oc-root:not(.dark) .creation-model-picker-menu { color: #727980 !important; }
 
 
-html:not(.dark) .creation-choice-grid button.is-selected { background: rgba(28, 32, 37, .09); color: #20242a; }
-html:not(.dark) .creation-model-picker-heading strong { color: #20242a; }
-html:not(.dark) .creation-mode-picker-menu button.is-selected, html:not(.dark) .creation-model-picker-menu .canvas-model-picker-option > span:first-child > span:first-child { background: rgba(28, 32, 37, .06) !important; }
+.oc-root:not(.dark) .creation-choice-grid button.is-selected { background: rgba(28, 32, 37, .09); color: #20242a; }
+.oc-root:not(.dark) .creation-model-picker-heading strong { color: #20242a; }
+.oc-root:not(.dark) .creation-mode-picker-menu button.is-selected, .oc-root:not(.dark) .creation-model-picker-menu .canvas-model-picker-option > span:first-child > span:first-child { background: rgba(28, 32, 37, .06) !important; }
 
 @keyframes creation-composer-arrive {
     from { opacity: 0; transform: translateY(8px); }
@@ -4199,9 +4202,9 @@ html:not(.dark) .creation-mode-picker-menu button.is-selected, html:not(.dark) .
     background: var(--workspace-page) !important;
 }
 
-html:not(.dark) .app-workspace-shell.is-creation-workspace,
-html:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-sidebar,
-html:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-stage {
+.oc-root:not(.dark) .app-workspace-shell.is-creation-workspace,
+.oc-root:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-sidebar,
+.oc-root:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-stage {
     background: var(--workspace-page) !important;
 }
 
@@ -4247,7 +4250,7 @@ html:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-stage 
 
 
 
-html:not(.dark) .creation-duration-choices button.is-selected { background: rgba(28, 32, 37, .10); color: #23272c; }
+.oc-root:not(.dark) .creation-duration-choices button.is-selected { background: rgba(28, 32, 37, .10); color: #23272c; }
 
 @keyframes creation-intro-arrive {
     from { opacity: 0; transform: translateY(6px); }
@@ -4287,7 +4290,7 @@ html:not(.dark) .creation-duration-choices button.is-selected { background: rgba
 
 
 
-html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { background: rgba(28, 32, 37, .06) !important; }
+.oc-root:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { background: rgba(28, 32, 37, .06) !important; }
 
 
 
@@ -4361,7 +4364,7 @@ html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.ca
 
 
 
-html:not(.dark) .creation-media-preview-modal .ant-modal-content { background: #1f2227; }
+.oc-root:not(.dark) .creation-media-preview-modal .ant-modal-content { background: #1f2227; }
 
 
 @keyframes creation-intro-emphasis {
@@ -4516,8 +4519,8 @@ html:not(.dark) .creation-media-preview-modal .ant-modal-content { background: #
 
 
 
-html:not(.dark) .creation-choice-grid button.is-selected,
-html:not(.dark) .creation-duration-choices button.is-selected { background: rgba(28, 32, 37, .09) !important; }
+.oc-root:not(.dark) .creation-choice-grid button.is-selected,
+.oc-root:not(.dark) .creation-duration-choices button.is-selected { background: rgba(28, 32, 37, .09) !important; }
 
 
 /* 历史对话使用右侧时间轴，避免重新引入占据主舞台的常驻会话栏。 */

@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { SlidersHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -99,7 +100,7 @@ export function CanvasPortraitTexturePopover({ value, placement = "topLeft", onC
                             </div>
                         </div>
                     </div>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </>

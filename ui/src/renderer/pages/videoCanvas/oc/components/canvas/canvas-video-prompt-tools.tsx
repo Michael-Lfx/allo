@@ -1,5 +1,6 @@
 import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { Check, ChevronDown, Image as ImageIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -215,7 +216,7 @@ function CompactMenuButton({
                           })}
                       </div>
                   </div>,
-                  document.body,
+                  getOcPortalHost(),
               )
             : null;
 
