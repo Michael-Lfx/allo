@@ -33,22 +33,7 @@ import '@oc/styles/globals.css';
 import '@oc/components/video-player.css';
 
 function useVideoCanvasThemeSync() {
-  const theme = useThemeStore((s) => s.theme);
-  useEffect(() => {
-    const root = document.documentElement;
-    const prevDark = root.classList.contains('dark');
-    const prevScheme = root.style.colorScheme;
-    const apply = (next: 'light' | 'dark') => {
-      root.classList.toggle('dark', next === 'dark');
-      root.style.colorScheme = next;
-    };
-    apply(theme);
-    return () => {
-      root.classList.toggle('dark', prevDark);
-      root.style.colorScheme = prevScheme;
-    };
-  }, [theme]);
-  return theme;
+  return useThemeStore((s) => s.theme);
 }
 
 const VideoCanvasProjectPage: React.FC = () => {

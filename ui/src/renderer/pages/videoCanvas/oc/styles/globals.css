@@ -615,6 +615,10 @@
     }
     .oc-root {
         font-family: var(--font-sans);
+        color-scheme: light;
+    }
+    .oc-root.dark {
+        color-scheme: dark;
     }
     /* Portal targets live outside `.oc-root`, so they carry the scope class
        themselves and must not inherit the shell's background or sizing. */
@@ -1502,7 +1506,7 @@
         transition: transform 150ms var(--motion-ease-out), border-color 150ms ease, background-color 150ms ease;
     }
 
-    html:not(.dark) .creation-model-picker.canvas-composer-model-picker {
+    .oc-root:not(.dark) .creation-model-picker.canvas-composer-model-picker {
         border-color: rgba(32, 37, 45, .12) !important;
         background: #f0f2f5 !important;
         color: #20242a !important;
@@ -1515,7 +1519,7 @@
         transform: translateY(-1px);
     }
 
-    html:not(.dark) .creation-model-picker.canvas-composer-model-picker:hover, html:not(.dark) .creation-model-picker.canvas-composer-model-picker[aria-expanded="true"] { background: #e7eaee !important; border-color: rgba(32, 37, 45, .22) !important; }
+    .oc-root:not(.dark) .creation-model-picker.canvas-composer-model-picker:hover, .oc-root:not(.dark) .creation-model-picker.canvas-composer-model-picker[aria-expanded="true"] { background: #e7eaee !important; border-color: rgba(32, 37, 45, .22) !important; }
 
     
     
@@ -1612,8 +1616,8 @@
     .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { width: min(196px, 26vw) !important; justify-content: flex-start; }
     .creation-chat-composer .creation-model-picker .canvas-model-picker-trigger-icon { width: 19px; height: 19px; border-radius: 5px; }
 
-    html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { border-color: transparent !important; background: #f1f3f5 !important; color: #262b32 !important; }
-    html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { border-color: rgba(20, 26, 35, .2) !important; background: #e9edf1 !important; }
+    .oc-root:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { border-color: transparent !important; background: #f1f3f5 !important; color: #262b32 !important; }
+    .oc-root:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { border-color: rgba(20, 26, 35, .2) !important; background: #e9edf1 !important; }
 
     
     
@@ -1650,7 +1654,7 @@
     
     
     
-    html:not(.dark) .creation-choice-grid button.is-selected { background: #e8ecf0; color: #20242a; }
+    .oc-root:not(.dark) .creation-choice-grid button.is-selected { background: #e8ecf0; color: #20242a; }
     
 
     @keyframes creation-intro-mark {
@@ -2929,17 +2933,17 @@
         color: color-mix(in srgb, var(--workspace-accent) 72%, var(--foreground));
     }
 
-    html:not(.dark) .canvas-composer-model-picker,
-    html:not(.dark) .canvas-generation-settings-trigger.ant-btn {
+    .oc-root:not(.dark) .canvas-composer-model-picker,
+    .oc-root:not(.dark) .canvas-generation-settings-trigger.ant-btn {
         background: rgba(15, 23, 42, 0.045) !important;
         color: #1f2937 !important;
     }
 
-    html:not(.dark) .canvas-composer-model-picker:hover,
-    html:not(.dark) .canvas-composer-model-picker[aria-expanded="true"],
-    html:not(.dark) .canvas-generation-settings-trigger.ant-btn:hover,
-    html:not(.dark) .canvas-generation-settings-trigger.ant-btn:focus-visible,
-    html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"] {
+    .oc-root:not(.dark) .canvas-composer-model-picker:hover,
+    .oc-root:not(.dark) .canvas-composer-model-picker[aria-expanded="true"],
+    .oc-root:not(.dark) .canvas-generation-settings-trigger.ant-btn:hover,
+    .oc-root:not(.dark) .canvas-generation-settings-trigger.ant-btn:focus-visible,
+    .oc-root:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"] {
         background: rgba(15, 23, 42, 0.075) !important;
     }
 
@@ -3028,7 +3032,7 @@
         background: var(--workspace-surface-strong) !important;
     }
 
-    html:not(.dark) body.app-spatial-overlays .canvas-composer-popover-surface {
+    .oc-root:not(.dark) body.app-spatial-overlays .canvas-composer-popover-surface {
         background: #ffffff !important;
         box-shadow: 0 14px 34px rgba(15, 23, 42, 0.13) !important;
     }
@@ -3475,7 +3479,7 @@
     mix-blend-mode: normal;
 }
 
-html[data-theme-switching="true"] :where(.canvas-node-shell, .aceternity-comet-card, .aceternity-floating-panel, .canvas-connection-flow, .canvas-connection-draft) {
+.oc-root[data-theme-switching="true"] :where(.canvas-node-shell, .aceternity-comet-card, .aceternity-floating-panel, .canvas-connection-flow, .canvas-connection-draft) {
     animation: none !important;
     transition: none !important;
 }
@@ -3560,8 +3564,8 @@ html[data-theme-switching="true"] :where(.canvas-node-shell, .aceternity-comet-c
 .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { width: min(180px, 30vw) !important; justify-content: flex-start; }
 .creation-chat-composer .creation-model-picker .canvas-model-picker-trigger-icon { width: 16px; height: 16px; border-radius: 4px; background: transparent !important; }
 
-html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { background: transparent !important; color: var(--creation-muted) !important; }
-html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { background: rgba(29, 33, 37, .06) !important; color: var(--creation-text) !important; }
+.oc-root:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker { background: transparent !important; color: var(--creation-muted) !important; }
+.oc-root:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { background: rgba(29, 33, 37, .06) !important; color: var(--creation-text) !important; }
 
 
 
@@ -3641,13 +3645,13 @@ html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-m
 
 
 
-html:not(.dark) .creation-model-picker-surface { background: rgba(255, 255, 255, .94) !important; box-shadow: 0 16px 38px rgba(28, 32, 37, .12) !important; }
-html:not(.dark) .creation-model-picker-menu { color: #727980 !important; }
+.oc-root:not(.dark) .creation-model-picker-surface { background: rgba(255, 255, 255, .94) !important; box-shadow: 0 16px 38px rgba(28, 32, 37, .12) !important; }
+.oc-root:not(.dark) .creation-model-picker-menu { color: #727980 !important; }
 
 
-html:not(.dark) .creation-choice-grid button.is-selected { background: rgba(28, 32, 37, .09); color: #20242a; }
-html:not(.dark) .creation-model-picker-heading strong { color: #20242a; }
-html:not(.dark) .creation-mode-picker-menu button.is-selected, html:not(.dark) .creation-model-picker-menu .canvas-model-picker-option > span:first-child > span:first-child { background: rgba(28, 32, 37, .06) !important; }
+.oc-root:not(.dark) .creation-choice-grid button.is-selected { background: rgba(28, 32, 37, .09); color: #20242a; }
+.oc-root:not(.dark) .creation-model-picker-heading strong { color: #20242a; }
+.oc-root:not(.dark) .creation-mode-picker-menu button.is-selected, .oc-root:not(.dark) .creation-model-picker-menu .canvas-model-picker-option > span:first-child > span:first-child { background: rgba(28, 32, 37, .06) !important; }
 
 @keyframes creation-composer-arrive {
     from { opacity: 0; transform: translateY(8px); }
@@ -4196,9 +4200,9 @@ html:not(.dark) .creation-mode-picker-menu button.is-selected, html:not(.dark) .
     background: var(--workspace-page) !important;
 }
 
-html:not(.dark) .app-workspace-shell.is-creation-workspace,
-html:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-sidebar,
-html:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-stage {
+.oc-root:not(.dark) .app-workspace-shell.is-creation-workspace,
+.oc-root:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-sidebar,
+.oc-root:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-stage {
     background: var(--workspace-page) !important;
 }
 
@@ -4244,7 +4248,7 @@ html:not(.dark) .app-workspace-shell.is-creation-workspace .app-workspace-stage 
 
 
 
-html:not(.dark) .creation-duration-choices button.is-selected { background: rgba(28, 32, 37, .10); color: #23272c; }
+.oc-root:not(.dark) .creation-duration-choices button.is-selected { background: rgba(28, 32, 37, .10); color: #23272c; }
 
 @keyframes creation-intro-arrive {
     from { opacity: 0; transform: translateY(6px); }
@@ -4284,7 +4288,7 @@ html:not(.dark) .creation-duration-choices button.is-selected { background: rgba
 
 
 
-html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { background: rgba(28, 32, 37, .06) !important; }
+.oc-root:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.canvas-composer-model-picker:hover { background: rgba(28, 32, 37, .06) !important; }
 
 
 
@@ -4358,7 +4362,7 @@ html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.ca
 
 
 
-html:not(.dark) .creation-media-preview-modal .ant-modal-content { background: #1f2227; }
+.oc-root:not(.dark) .creation-media-preview-modal .ant-modal-content { background: #1f2227; }
 
 
 @keyframes creation-intro-emphasis {
@@ -4513,8 +4517,8 @@ html:not(.dark) .creation-media-preview-modal .ant-modal-content { background: #
 
 
 
-html:not(.dark) .creation-choice-grid button.is-selected,
-html:not(.dark) .creation-duration-choices button.is-selected { background: rgba(28, 32, 37, .09) !important; }
+.oc-root:not(.dark) .creation-choice-grid button.is-selected,
+.oc-root:not(.dark) .creation-duration-choices button.is-selected { background: rgba(28, 32, 37, .09) !important; }
 
 
 /* 历史对话使用右侧时间轴，避免重新引入占据主舞台的常驻会话栏。 */
