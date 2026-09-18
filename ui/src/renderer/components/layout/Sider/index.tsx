@@ -512,9 +512,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
               {/* 三段式会话分类切换器：区分项目、视频创作、桌宠（与功能 Dock 栏等宽满铺） */}
               <div className='w-full my-2px shrink-0'>
-                <div className='flex items-center p-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'>
+                <div
+                  role='tablist'
+                  aria-label={t('common.titlebar.sections.workspaces', { defaultValue: '工作区' })}
+                  className='flex items-center p-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
+                >
                   <button
                     type='button'
+                    role='tab'
+                    aria-selected={activeHistoryTab === 'workspaces'}
                     onClick={() => handleTabClick('workspaces')}
                     className={classNames(
                       'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
@@ -527,6 +533,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                   </button>
                   <button
                     type='button'
+                    role='tab'
+                    aria-selected={activeHistoryTab === 'video'}
                     onClick={() => handleTabClick('video')}
                     className={classNames(
                       'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
@@ -539,6 +547,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                   </button>
                   <button
                     type='button'
+                    role='tab'
+                    aria-selected={activeHistoryTab === 'companions'}
                     onClick={() => handleTabClick('companions')}
                     className={classNames(
                       'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
