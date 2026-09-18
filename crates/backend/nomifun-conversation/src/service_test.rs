@@ -6280,10 +6280,56 @@ impl AgentRuntimeRegistry for MockAgentRuntimeRegistry {
     }
 }
 
+/// Deterministic control over one `SlowAgentRuntimeRegistry` build.
+///
+/// A fixed `delay` makes "the build is still in flight" a wall-clock bet: on a
+/// loaded runner the sleep can elapse before the test reaches its pending
+/// assertions. Tests that need the build to stay pending hold this gate and
+/// release it explicitly.
+#[derive(Default)]
+struct RuntimeBuildGate {
+    entered: AtomicBool,
+    entered_notify: Notify,
+    released: AtomicBool,
+    release_notify: Notify,
+}
+
+impl RuntimeBuildGate {
+    async fn wait_entered(&self) {
+        loop {
+            let notified = self.entered_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.entered.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        self.release_notify.notify_waiters();
+    }
+
+    async fn wait_released(&self) {
+        loop {
+            let notified = self.release_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.released.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
 struct SlowAgentRuntimeRegistry {
     delay: Duration,
     built: AtomicBool,
     build_calls: AtomicUsize,
+    gate: Option<Arc<RuntimeBuildGate>>,
 }
 
 impl SlowAgentRuntimeRegistry {
@@ -6292,7 +6338,15 @@ impl SlowAgentRuntimeRegistry {
             delay,
             built: AtomicBool::new(false),
             build_calls: AtomicUsize::new(0),
+            gate: None,
         }
+    }
+
+    /// Keep every build parked after recording its call until the returned gate
+    /// is released, so "still building" no longer depends on elapsed wall time.
+    fn with_build_gate(mut self, gate: Arc<RuntimeBuildGate>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     fn was_built(&self) -> bool {
@@ -6316,6 +6370,11 @@ impl AgentRuntimeRegistry for SlowAgentRuntimeRegistry {
         options: AgentRuntimeBuildOptions,
     ) -> Result<AgentRuntimeHandle, AppError> {
         self.build_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = self.gate.as_ref() {
+            gate.entered.store(true, Ordering::Release);
+            gate.entered_notify.notify_waiters();
+            gate.wait_released().await;
+        }
         tokio::time::sleep(self.delay).await;
         self.built.store(true, Ordering::SeqCst);
         let mut agent = MockAgent::new(conversation_id);
@@ -6932,6 +6991,40 @@ async fn wait_for_turn_released(svc: &ConversationService, conversation_id: &str
             .await,
         "turn completion should publish and release its cleanup fence"
     );
+}
+
+/// Wait until the detached first-turn auto-title attempt has settled.
+///
+/// `maybe_autotitle` is fire-and-forget, so a test that asserts "nothing else
+/// reached the broadcaster" must first prove that background task finished.
+/// Otherwise its `conversation.listChanged(updated)` can land after the drain
+/// and be misread as a leak from the path under test. The settle signal is the
+/// terminal title state, which the task writes strictly after that broadcast.
+async fn wait_for_auto_title_settled(
+    repo: &SqliteConversationRepository,
+    conversation_id: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let state = repo
+                .get(conversation_id)
+                .await
+                .unwrap()
+                .and_then(|row| serde_json::from_str::<serde_json::Value>(&row.extra).ok())
+                .and_then(|extra| {
+                    extra
+                        .get("autoTitleState")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                });
+            if matches!(state.as_deref(), Some("done" | "failed")) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the detached first-turn auto-title attempt must settle");
 }
 
 #[tokio::test]
@@ -8040,7 +8133,13 @@ async fn public_idempotent_send_reuses_one_turn_and_never_restarts_after_complet
     let database = init_database_memory().await.unwrap();
     let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
     let broadcaster = Arc::new(MockBroadcaster::new());
-    let slow_registry = Arc::new(SlowAgentRuntimeRegistry::new(Duration::from_millis(250)));
+    // Every "while pending" assertion below must hold by construction; the turn's
+    // runtime build stays parked until this test releases the gate.
+    let build_gate = Arc::new(RuntimeBuildGate::default());
+    let slow_registry = Arc::new(
+        SlowAgentRuntimeRegistry::new(Duration::from_millis(250))
+            .with_build_gate(build_gate.clone()),
+    );
     let runtime_registry: Arc<dyn AgentRuntimeRegistry> = slow_registry.clone();
     let svc = ConversationService::new(
         Arc::<str>::from(USER_ID),
@@ -8086,6 +8185,11 @@ async fn public_idempotent_send_reuses_one_turn_and_never_restarts_after_complet
         .unwrap();
     assert!(!first.replayed);
     assert!(!first.completed);
+    // The first turn's model build is now parked, so every "still pending"
+    // assertion from here on is guaranteed rather than merely likely.
+    tokio::time::timeout(Duration::from_secs(5), build_gate.wait_entered())
+        .await
+        .expect("first turn must enter its runtime build");
     let replay_while_pending = svc
         .send_message_with_idempotency_key(
             USER_ID,
@@ -8149,7 +8253,12 @@ async fn public_idempotent_send_reuses_one_turn_and_never_restarts_after_complet
     assert!(accepted_after_restart.replayed);
     assert!(!accepted_after_restart.completed);
 
+    // All pending-state contracts are asserted; let the turn finish.
+    build_gate.release();
     wait_for_turn_released(&svc, &conversation.conversation_id).await;
+    // The first turn's own auto-title pass is fire-and-forget; settle it before
+    // draining so the later "no events" assertion cannot catch its listChanged.
+    wait_for_auto_title_settled(&repo, &conversation.conversation_id).await;
     assert_eq!(
         slow_registry.build_calls(),
         1,
@@ -8394,6 +8503,10 @@ async fn delayed_initial_delivery_cannot_cross_a_completed_turn_generation() {
             .as_deref(),
         Some("finished")
     );
+    // The winner turn's auto-title task is fire-and-forget; let it settle so the
+    // "no leaked projection" assertion below measures the rejected initial
+    // delivery rather than a still-running background title pass.
+    wait_for_auto_title_settled(&repo, &conversation.conversation_id).await;
     broadcaster.take_events();
 
     let error = service
