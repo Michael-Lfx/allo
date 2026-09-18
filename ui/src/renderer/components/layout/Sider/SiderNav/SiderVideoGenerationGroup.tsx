@@ -76,6 +76,8 @@ export interface SiderVideoGenerationGroupProps {
   /** Current briefing session id, if any. */
   activeBriefingId: string | null;
   collapsed: boolean;
+  dock?: boolean;
+  flat?: boolean;
   siderTooltipProps: SiderTooltipProps;
   /** Open the video-generation home (list). */
   onEnterHome: () => void;
@@ -97,6 +99,8 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
   activeCanvasProjectId,
   activeBriefingId,
   collapsed,
+  dock = false,
+  flat = false,
   siderTooltipProps,
   onEnterHome,
   onOpenProject,
@@ -215,6 +219,41 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
     onEnterHome();
   }, [onEnterHome]);
 
+  if (dock) {
+    return (
+      <Tooltip {...siderTooltipProps} content={label} position='bottom'>
+        <div
+          className={classNames(
+            'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary relative',
+            moduleActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+          )}
+          onClick={onEnterHome}
+          onPointerEnter={() => prefetchVideoGenerationHome()}
+          aria-current={moduleActive ? 'page' : undefined}
+          data-sider-nav-entry
+          data-active={moduleActive ? 'true' : 'false'}
+          data-sider-selection-static='true'
+        >
+          <VideoOne
+            theme='outline'
+            size='15'
+            fill='currentColor'
+            className='block leading-none shrink-0'
+            style={{ lineHeight: 0 }}
+          />
+          {items.length > 0 && (
+            <span
+              className='absolute -top-1px -right-1px min-w-10px h-10px px-2px bg-primary text-white text-8px rd-full flex items-center justify-center font-bold leading-none select-none'
+              style={{ fontSize: 8 }}
+            >
+              {items.length}
+            </span>
+          )}
+        </div>
+      </Tooltip>
+    );
+  }
+
   if (collapsed) {
     return (
       <Tooltip {...siderTooltipProps} content={label} position='right'>
@@ -239,6 +278,163 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
           />
         </div>
       </Tooltip>
+    );
+  }
+
+  if (flat) {
+    return (
+      <div className='flex flex-col min-w-0' data-testid='sider-video-generation-group'>
+        <div className='flex items-center justify-between px-6px py-4px mb-2px'>
+          <span className='text-11px font-[500] text-t-tertiary select-none'>
+            {t('videoGeneration.nav.recentCreations', { defaultValue: '最近创作' })}
+          </span>
+          {items.length > 0 ? (
+            <span className='text-11px text-t-tertiary tabular-nums select-none'>{items.length}</span>
+          ) : null}
+        </div>
+
+        {items.length === 0 ? (
+          <div className='flex flex-col items-center justify-center py-24px px-8px text-center gap-8px'>
+            <span className='text-12px text-t-tertiary'>
+              {t('videoGeneration.list.empty', { defaultValue: '暂无创作记录' })}
+            </span>
+            <button
+              type='button'
+              onClick={onEnterHome}
+              onPointerEnter={() => prefetchVideoGenerationHome()}
+              className='h-26px px-10px rd-6px text-11px font-[500] bg-fill-2 hover:bg-fill-3 active:bg-fill-4 text-t-primary border border-solid border-[var(--color-border-2)] cursor-pointer transition-colors select-none'
+            >
+              + {t('videoGeneration.nav.newProject', { defaultValue: '新建视频工程' })}
+            </button>
+          </div>
+        ) : (
+          <div
+            className='flex flex-col gap-2px'
+            data-testid='sider-video-generation-recents'
+          >
+            {items.map((item) => {
+              const fullTitle =
+                item.title.trim() ||
+                t('videoGeneration.list.untitled', { defaultValue: '未命名任务' });
+              const short = truncateTitle(fullTitle, 16);
+              const active =
+                item.source === 'task'
+                  ? activeClipTaskId === item.id
+                  : item.source === 'canvas'
+                    ? activeCanvasProjectId === item.id
+                    : item.source === 'briefing'
+                      ? activeBriefingId === item.id
+                      : activeSessionId === item.id;
+              const busy = isActiveStatus(item.status);
+              const busyHint =
+                item.status === 'planning'
+                  ? t('videoGeneration.status.planning', { defaultValue: '规划中' })
+                  : item.status === 'rendering'
+                    ? t('videoGeneration.status.rendering', { defaultValue: '生成中' })
+                    : item.status === 'queued'
+                      ? t('videoGeneration.clip.status.queued', { defaultValue: '排队中' })
+                      : item.status === 'running'
+                        ? t('videoGeneration.clip.status.running', { defaultValue: '生成中' })
+                        : item.status === 'researching' ||
+                            item.status === 'scripting' ||
+                            item.status === 'aligning' ||
+                            item.status === 'composing'
+                          ? t('videoGeneration.briefing.runningTitle', { defaultValue: '生成中' })
+                          : '';
+              const openItem = () => {
+                if (item.source === 'task') {
+                  rememberVideoGenerationTask(item.id, fullTitle);
+                  onOpenClipTask(item.id);
+                } else if (item.source === 'canvas') {
+                  rememberVideoGenerationCanvas(item.id, fullTitle);
+                  onOpenCanvasProject(item.id);
+                } else if (item.source === 'briefing') {
+                  rememberVideoGenerationBriefing(item.id, fullTitle);
+                  onOpenBriefing(item.id);
+                } else {
+                  rememberVideoGenerationSession(item.id, fullTitle);
+                  onOpenProject(item.id);
+                }
+              };
+              const row = (
+                <div
+                  role='button'
+                  tabIndex={0}
+                  data-testid={`sider-video-generation-recent-${item.id}`}
+                  data-busy={busy ? 'true' : 'false'}
+                  data-source={item.source}
+                  className={classNames(
+                    'chat-history__item conversation-item h-34px rd-8px flex items-center group cursor-pointer relative overflow-hidden shrink-0 min-w-0 transition-colors justify-start gap-8px px-8px',
+                    isMobile && 'sider-action-btn-mobile',
+                    {
+                      'hover:bg-fill-2': !active,
+                      'session-list-active-row !text-t-primary !bg-fill-3 font-semibold': active,
+                    }
+                  )}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openItem();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    openItem();
+                  }}
+                >
+                  <span
+                    className={classNames(
+                      'size-18px flex items-center justify-center shrink-0 text-t-secondary transition-colors',
+                      active && '!text-primary-6'
+                    )}
+                  >
+                    <VideoOne
+                      theme='outline'
+                      size={14}
+                      fill='currentColor'
+                      className='block leading-none'
+                      style={{ lineHeight: 0 }}
+                    />
+                  </span>
+                  <span className='chat-history__item-name min-w-0 flex-1 truncate text-13px font-[450] leading-20px text-t-primary text-left'>
+                    {short}
+                  </span>
+                  {busy ? (
+                    <span className='shrink-0 flex items-center gap-2px text-10px text-primary-6 bg-primary-1 px-4px py-1px rd-4px font-normal'>
+                      <Loading
+                        theme='outline'
+                        size={11}
+                        fill='currentColor'
+                        className='block shrink-0 animate-spin text-[rgb(var(--primary-6))]'
+                        style={{ lineHeight: 0 }}
+                        aria-label={busyHint}
+                      />
+                      <span>{busyHint || t('videoGeneration.status.rendering', { defaultValue: '生成中' })}</span>
+                    </span>
+                  ) : null}
+                </div>
+              );
+              return (
+                <Popover
+                  key={item.id}
+                  trigger='hover'
+                  position='right'
+                  content={
+                    <VideoGenerationHoverCard
+                      id={item.id}
+                      title={fullTitle}
+                      status={item.status}
+                    />
+                  }
+                  triggerProps={{ mouseEnterDelay: 400 }}
+                >
+                  {row}
+                </Popover>
+              );
+            })}
+          </div>
+        )}
+      </div>
     );
   }
 

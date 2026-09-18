@@ -15,13 +15,14 @@ interface SiderKnowledgeEntryProps {
   onClick: () => void;
   /** Red dot — set when there are unreviewed knowledge write-back proposals. */
   dot?: boolean;
+  dock?: boolean;
 }
 
 /** Small red badge dot for the "unreviewed proposals" signal. */
 const RedDot: React.FC = () => (
   <span
     className='absolute rounded-full bg-red-500'
-    style={{ width: 7, height: 7, top: -1, right: -1 }}
+    style={{ width: 6, height: 6, top: -1, right: -1 }}
   />
 );
 
@@ -29,11 +30,35 @@ const SiderKnowledgeEntry: React.FC<SiderKnowledgeEntryProps> = ({
   isMobile,
   isActive,
   collapsed,
+  dock = false,
   siderTooltipProps,
   onClick,
   dot = false,
 }) => {
   const { t } = useTranslation();
+
+  if (dock) {
+    return (
+      <Tooltip {...siderTooltipProps} content={t('knowledge.title')} position='bottom'>
+        <div
+          className={classNames(
+            'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
+            isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+          )}
+          onClick={onClick}
+          aria-current={isActive ? 'page' : undefined}
+          data-sider-nav-entry
+          data-active={isActive ? 'true' : 'false'}
+          data-sider-selection-static='true'
+        >
+          <span className='relative block leading-none shrink-0' style={{ lineHeight: 0 }}>
+            <BookOne theme='outline' size='15' fill='currentColor' className='block leading-none' />
+            {dot && <RedDot />}
+          </span>
+        </div>
+      </Tooltip>
+    );
+  }
 
   if (collapsed) {
     return (

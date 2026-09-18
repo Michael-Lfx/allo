@@ -1,4 +1,5 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -11,12 +12,16 @@ import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import { safeDecodeUriComponent } from '@/common/utils/localPath';
 import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
+import CompanionSessionGroup from '@renderer/pages/conversation/SessionList/CompanionSessionGroup';
+import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import { useSlidingSelectionIndicator } from '@renderer/hooks/ui/useSlidingSelectionIndicator';
 import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
 import {
   ConversationSiderActions,
   SiderConversationEntry,
+  SiderNewConversationEntry,
+  SiderSearchEntry,
   SiderKnowledgeEntry,
   SiderLearningEntry,
   SiderEvalEntry,
@@ -86,6 +91,36 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
   const planLabel = whoami?.plan ?? '';
 
+  const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
+  const activeConversationId = activeRoute?.kind === 'conversation' ? activeRoute.id : null;
+
+  const [activeHistoryTab, setActiveHistoryTab] = useState<'workspaces' | 'companions' | 'video'>(() => {
+    try {
+      const saved = window.localStorage.getItem('flowy.sider.historyTab');
+      if (saved === 'companions' || saved === 'video' || saved === 'workspaces') return saved;
+    } catch {
+      /* ignore */
+    }
+    return 'workspaces';
+  });
+
+  const handleSelectHistoryTab = useCallback((tab: 'workspaces' | 'companions' | 'video') => {
+    setActiveHistoryTab(tab);
+    try {
+      window.localStorage.setItem('flowy.sider.historyTab', tab);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (pathname.startsWith('/video-generation')) {
+      handleSelectHistoryTab('video');
+    } else if (pathname.startsWith('/nomi')) {
+      handleSelectHistoryTab('companions');
+    }
+  }, [pathname, handleSelectHistoryTab]);
+
   const isSessionRoute =
     pathname === '/guid' ||
     pathname.startsWith('/conversation/') ||
@@ -134,9 +169,51 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   );
 
   const handleConversationClick = () => navTo('/guid');
-  const handleVideoGenerationHome = () => {
+  const handleNewChat = useCallback(() => {
+    cleanupSiderTooltips();
+    blurActiveElement();
+    Promise.resolve(navigate('/guid', { state: { resetPreset: true } })).catch((error) => {
+      console.error('Navigation failed:', error);
+    });
+    if (onSessionClick) {
+      onSessionClick();
+    }
+  }, [navigate, onSessionClick]);
+
+  const handleConversationSelect = useCallback(() => {
+    if (onSessionClick) {
+      onSessionClick();
+    }
+  }, [onSessionClick]);
+
+  const compactDisplayPreferences = useMemo(() => {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('nomifun:session-sidebar-display-preferences')) {
+      return displayPreferences;
+    }
+    return {
+      ...displayPreferences,
+      preset: 'compact' as const,
+      workpathNameMode: 'folder' as const,
+      showGitBranch: false,
+      sessionMetaMode: 'none' as const,
+    };
+  }, [displayPreferences]);
+
+  const handleVideoGenerationHome = useCallback(() => {
     navTo('/video-generation');
-  };
+  }, [navTo]);
+
+  const handleTabClick = useCallback(
+    (tab: 'workspaces' | 'companions' | 'video') => {
+      handleSelectHistoryTab(tab);
+      if (tab === 'workspaces') {
+        handleNewChat();
+      } else if (tab === 'video') {
+        handleVideoGenerationHome();
+      }
+    },
+    [handleNewChat, handleSelectHistoryTab, handleVideoGenerationHome]
+  );
 
   const activeVideoGenerationSessionId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
@@ -308,69 +385,115 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
             data-testid='sider-primary-nav'
             className={`${styles.primaryNav} shrink-0 flex flex-col gap-2px`}
           >
-            <SiderSectionHeader label={t('common.titlebar.sections.work')} collapsed={collapsed} />
-            <SiderConversationEntry
-              isMobile={isMobile}
-              isActive={isSessionRoute}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleConversationClick}
-            />
-            <SiderVideoGenerationGroup
-              isMobile={isMobile}
-              moduleActive={pathname.startsWith('/video-generation')}
-              activeSessionId={activeVideoGenerationSessionId}
-              activeClipTaskId={activeClipTaskId}
-              activeCanvasProjectId={activeCanvasProjectId}
-              activeBriefingId={activeBriefingId}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onEnterHome={handleVideoGenerationHome}
-              onOpenProject={handleOpenRecentVideoGeneration}
-              onOpenClipTask={handleOpenRecentClipTask}
-              onOpenCanvasProject={handleOpenRecentCanvasProject}
-              onOpenBriefing={handleOpenRecentBriefing}
-            />
-
-            <SiderSectionHeader label={t('common.titlebar.sections.resources')} collapsed={collapsed} />
-            <SiderKnowledgeEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/knowledge')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleKnowledgeClick}
-            />
-            <SiderLearningEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/learn')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleLearningClick}
-            />
-            {developerMode === true && (
-              <SiderEvalEntry
+            {/* 顶层高频操作：新建会话与搜索 */}
+            <div className='flex flex-col gap-4px mb-4px'>
+              <SiderNewConversationEntry
                 isMobile={isMobile}
-                isActive={pathname.startsWith('/eval')}
                 collapsed={collapsed}
                 siderTooltipProps={siderTooltipProps}
-                onClick={handleEvalClick}
+                onClick={handleNewChat}
               />
-            )}
-            <SiderSectionHeader label={t('common.titlebar.sections.automation')} collapsed={collapsed} />
-            <SiderScheduledEntry
-              isMobile={isMobile}
-              isActive={pathname === '/scheduled'}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleScheduledClick}
-            />
-            <SiderMeetingEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/meeting')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleMeetingClick}
-            />
+              <SiderSearchEntry
+                isMobile={isMobile}
+                collapsed={collapsed}
+                siderTooltipProps={siderTooltipProps}
+                onConversationSelect={handleConversationSelect}
+                onSessionClick={onSessionClick}
+              />
+            </div>
+
+            {/* 业务功能横向 Dock 栏（展开态下高度仅 34px，容纳 5 个无历史纯功能模块；收起态下恢复纵向一列） */}
+            <div
+              className={classNames(
+                collapsed
+                  ? 'flex flex-col gap-2px'
+                  : 'flex items-center justify-between px-6px py-3px my-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
+              )}
+            >
+              <SiderSectionHeader label={t('common.titlebar.sections.work')} collapsed={collapsed} compact hidden />
+              {collapsed && (
+                <>
+                  <SiderConversationEntry
+                    isMobile={isMobile}
+                    isActive={isSessionRoute}
+                    collapsed={collapsed}
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={handleConversationClick}
+                  />
+                  <SiderVideoGenerationGroup
+                    isMobile={isMobile}
+                    moduleActive={pathname.startsWith('/video-generation')}
+                    activeSessionId={activeVideoGenerationSessionId}
+                    activeClipTaskId={activeClipTaskId}
+                    activeCanvasProjectId={activeCanvasProjectId}
+                    activeBriefingId={activeBriefingId}
+                    collapsed={collapsed}
+                    siderTooltipProps={siderTooltipProps}
+                    onEnterHome={handleVideoGenerationHome}
+                    onOpenProject={handleOpenRecentVideoGeneration}
+                    onOpenClipTask={handleOpenRecentClipTask}
+                    onOpenCanvasProject={handleOpenRecentCanvasProject}
+                    onOpenBriefing={handleOpenRecentBriefing}
+                  />
+                </>
+              )}
+
+              <SiderSectionHeader
+                label={t('common.titlebar.sections.resources')}
+                collapsed={collapsed}
+                compact
+                hidden
+              />
+              <SiderKnowledgeEntry
+                isMobile={isMobile}
+                isActive={pathname.startsWith('/knowledge')}
+                collapsed={collapsed}
+                dock={!collapsed}
+                siderTooltipProps={siderTooltipProps}
+                onClick={handleKnowledgeClick}
+              />
+              <SiderLearningEntry
+                isMobile={isMobile}
+                isActive={pathname.startsWith('/learn')}
+                collapsed={collapsed}
+                dock={!collapsed}
+                siderTooltipProps={siderTooltipProps}
+                onClick={handleLearningClick}
+              />
+
+              <SiderSectionHeader
+                label={t('common.titlebar.sections.automation')}
+                collapsed={collapsed}
+                compact
+                hidden
+              />
+              <SiderScheduledEntry
+                isMobile={isMobile}
+                isActive={pathname === '/scheduled'}
+                collapsed={collapsed}
+                dock={!collapsed}
+                siderTooltipProps={siderTooltipProps}
+                onClick={handleScheduledClick}
+              />
+              <SiderMeetingEntry
+                isMobile={isMobile}
+                isActive={pathname.startsWith('/meeting')}
+                collapsed={collapsed}
+                dock={!collapsed}
+                siderTooltipProps={siderTooltipProps}
+                onClick={handleMeetingClick}
+              />
+              {developerMode === true && (
+                <SiderEvalEntry
+                  isMobile={isMobile}
+                  isActive={pathname.startsWith('/eval')}
+                  collapsed={collapsed}
+                  dock={!collapsed}
+                  siderTooltipProps={siderTooltipProps}
+                  onClick={handleEvalClick}
+                />
+              )}
+            </div>
           </div>
           {/* 项目/工作路径树 — 独立滚动，一级菜单保持固定 */}
           {!collapsed && (
@@ -384,27 +507,111 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 label={t('common.titlebar.sections.workspaces')}
                 collapsed={false}
                 compact
-                className={styles.workspaceSectionHeader}
-                actions={
-                  <span
-                    ref={setWorkspaceActionsTarget}
-                    data-testid='sider-workspace-actions-target'
-                  />
-                }
+                hidden
               />
+
+              {/* 三段式会话分类切换器：区分项目、视频创作、桌宠（与功能 Dock 栏等宽满铺） */}
+              <div className='w-full my-2px shrink-0'>
+                <div className='flex items-center p-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'>
+                  <button
+                    type='button'
+                    onClick={() => handleTabClick('workspaces')}
+                    className={classNames(
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
+                      activeHistoryTab === 'workspaces'
+                        ? 'bg-fill-3 text-t-primary shadow-xs font-semibold'
+                        : 'bg-transparent text-t-secondary hover:text-t-primary hover:bg-fill-2'
+                    )}
+                  >
+                    <span>{t('sessionList.projectsTab', { defaultValue: '项目' })}</span>
+                  </button>
+                  <button
+                    type='button'
+                    onClick={() => handleTabClick('video')}
+                    className={classNames(
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
+                      activeHistoryTab === 'video'
+                        ? 'bg-fill-3 text-t-primary shadow-xs font-semibold'
+                        : 'bg-transparent text-t-secondary hover:text-t-primary hover:bg-fill-2'
+                    )}
+                  >
+                    <span>{t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}</span>
+                  </button>
+                  <button
+                    type='button'
+                    onClick={() => handleTabClick('companions')}
+                    className={classNames(
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
+                      activeHistoryTab === 'companions'
+                        ? 'bg-fill-3 text-t-primary shadow-xs font-semibold'
+                        : 'bg-transparent text-t-secondary hover:text-t-primary hover:bg-fill-2'
+                    )}
+                  >
+                    <span>{t('nomi.shortTitle', { defaultValue: '桌宠' })}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 当处于项目 Tab 时，展示专门的操作工具条（左侧显示「项目/工作路径」，右侧折叠全部 / 添加工作区），在其他两个 tab 下完全隐藏 */}
+              <div
+                style={{ display: activeHistoryTab === 'workspaces' ? 'flex' : 'none' }}
+                className='items-center justify-between px-8px pt-3px pb-2px text-11px text-t-tertiary select-none shrink-0'
+              >
+                <span className='font-[500]'>{t('sessionList.workpathSection', { defaultValue: '工作区' })}</span>
+                <span
+                  ref={setWorkspaceActionsTarget}
+                  data-testid='sider-workspace-actions-target'
+                  className='flex items-center gap-2px'
+                />
+              </div>
+
               <div
                 data-testid='sider-workspaces-scroll-area'
                 className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pt-0 pb-8px`}
               >
-                <WorkpathSessionList
-                  collapsed={false}
-                  tooltipEnabled={false}
-                  batchMode={batchMode}
-                  displayPreferences={displayPreferences}
-                  onBatchModeChange={setBatchMode}
-                  workspaceActionsTarget={workspaceActionsTarget}
-                  embeddedInPrimarySider
-                />
+                {activeHistoryTab === 'workspaces' && (
+                  <WorkpathSessionList
+                    collapsed={false}
+                    tooltipEnabled={false}
+                    batchMode={batchMode}
+                    displayPreferences={compactDisplayPreferences}
+                    onBatchModeChange={setBatchMode}
+                    workspaceActionsTarget={workspaceActionsTarget}
+                    embeddedInPrimarySider
+                    hideCompanionGroup={true}
+                  />
+                )}
+                {activeHistoryTab === 'companions' && (
+                  <div className='px-4px py-2px'>
+                    <CompanionSessionGroup
+                      activeConversationId={activeConversationId}
+                      onSessionClick={onSessionClick}
+                      expanded={true}
+                      hideHeader={true}
+                    />
+                  </div>
+                )}
+                {activeHistoryTab === 'video' && (
+                  <div className='px-4px py-2px'>
+                    <SiderVideoGenerationGroup
+                      isMobile={isMobile}
+                      moduleActive={pathname.startsWith('/video-generation')}
+                      activeSessionId={activeVideoGenerationSessionId}
+                      activeClipTaskId={activeClipTaskId}
+                      activeCanvasProjectId={activeCanvasProjectId}
+                      activeBriefingId={activeBriefingId}
+                      collapsed={false}
+                      dock={false}
+                      flat={true}
+                      siderTooltipProps={siderTooltipProps}
+                      onEnterHome={handleVideoGenerationHome}
+                      onOpenProject={handleOpenRecentVideoGeneration}
+                      onOpenClipTask={handleOpenRecentClipTask}
+                      onOpenCanvasProject={handleOpenRecentCanvasProject}
+                      onOpenBriefing={handleOpenRecentBriefing}
+                    />
+                  </div>
+                )}
               </div>
             </section>
           )}

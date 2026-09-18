@@ -1,5 +1,7 @@
 {
   "title": "会话",
+  "chatTab": "对话",
+  "projectsTab": "项目",
   "companionGroup": "桌面伙伴",
   "companionManage": "管理桌面伙伴",
   "companionTip": "陪伴/总控为主，工作请创建会话/项目",
@@ -7,7 +9,7 @@
   "expandWorkspaces": "展开工作区",
   "collapseWorkspaces": "收起工作区",
   "addWorkspace": "添加工作区",
-  "workpathSection": "项目/工作路径",
+  "workpathSection": "工作区",
   "defaultWorkpath": "默认工作路径",
   "interactiveGroup": "交互会话",
   "terminalGroup": "终端会话",

@@ -13,17 +13,47 @@ interface SiderConversationEntryProps {
   collapsed: boolean;
   siderTooltipProps: SiderTooltipProps;
   onClick: () => void;
+  dock?: boolean;
 }
 
 const SiderConversationEntry: React.FC<SiderConversationEntryProps> = ({
   isMobile,
   isActive,
   collapsed,
+  dock = false,
   siderTooltipProps,
   onClick,
 }) => {
   const { t } = useTranslation();
   const label = t('sessionList.title');
+
+  if (dock) {
+    return (
+      <Tooltip {...siderTooltipProps} content={label} position='bottom'>
+        <button
+          type='button'
+          className={classNames(
+            'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary b-none bg-transparent p-0',
+            isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+          )}
+          onClick={onClick}
+          aria-current={isActive ? 'page' : undefined}
+          aria-label={label}
+          data-sider-nav-entry
+          data-active={isActive ? 'true' : 'false'}
+          data-sider-selection-static='true'
+        >
+          <MessageOne
+            theme='outline'
+            size='15'
+            fill='currentColor'
+            className='block leading-none shrink-0'
+            style={{ lineHeight: 0 }}
+          />
+        </button>
+      </Tooltip>
+    );
+  }
 
   if (collapsed) {
     return (

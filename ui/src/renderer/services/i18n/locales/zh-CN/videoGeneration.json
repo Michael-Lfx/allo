@@ -15,6 +15,10 @@
   },
   "nav": {
     "entry": "视频生成",
+    "shortTitle": "视频",
+    "recentCreations": "最近创作",
+    "enterHome": "创作主页",
+    "newProject": "新建视频工程",
     "hoverCard": {
       "name": "项目名",
       "id": "项目 ID",

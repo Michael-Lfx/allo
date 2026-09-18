@@ -9,6 +9,7 @@ interface SiderEvalEntryProps {
   isMobile: boolean;
   isActive: boolean;
   collapsed: boolean;
+  dock?: boolean;
   siderTooltipProps: SiderTooltipProps;
   onClick: () => void;
 }
@@ -17,6 +18,7 @@ const SiderEvalEntry: React.FC<SiderEvalEntryProps> = ({
   isMobile,
   isActive,
   collapsed,
+  dock = false,
   siderTooltipProps,
   onClick,
 }) => {
@@ -33,6 +35,32 @@ const SiderEvalEntry: React.FC<SiderEvalEntryProps> = ({
       style={{ lineHeight: 0 }}
     />
   );
+
+  if (dock) {
+    return (
+      <Tooltip {...siderTooltipProps} content={tooltipContent} position='bottom'>
+        <div
+          className={classNames(
+            'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
+            isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+          )}
+          onClick={onClick}
+          aria-current={isActive ? 'page' : undefined}
+          data-sider-nav-entry
+          data-active={isActive ? 'true' : 'false'}
+          data-sider-selection-static='true'
+        >
+          <Experiment
+            theme='outline'
+            size='15'
+            fill='currentColor'
+            className='block leading-none'
+            style={{ lineHeight: 0 }}
+          />
+        </div>
+      </Tooltip>
+    );
+  }
 
   return (
     <Tooltip {...siderTooltipProps} content={tooltipContent} position='right'>
