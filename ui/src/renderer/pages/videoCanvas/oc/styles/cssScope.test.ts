@@ -12,7 +12,7 @@ describe('oc css scope containment', () => {
     test('globals.css never imports full tailwind or leaks bare root selectors', () => {
         expect(/@import\s+["']tailwindcss["']/.test(globals)).toBe(false);
         expect(globals.includes('@import "tailwindcss/theme.css" layer(theme);')).toBe(true);
-        expect(globals.includes('@import "tailwindcss/utilities.css" layer(utilities);')).toBe(true);
+        expect(globals.includes('@import "tailwindcss/utilities.css" layer(utilities) source(none);')).toBe(true);
         expect(/^\s*(:root|html|body|#root|\*)\s*[,{]/m.test(globals)).toBe(false);
         expect(/^\s*\.dark\s*\{/m.test(globals)).toBe(false);
         expect(globals.includes('.oc-root.dark {')).toBe(true);
@@ -25,6 +25,12 @@ describe('oc css scope containment', () => {
             .filter((selector) => !selector.startsWith('@'));
         expect(selectors.length).toBeGreaterThan(30);
         expect(selectors.every((selector) => selector.includes('.oc-root'))).toBe(true);
+    });
+
+    test('tailwind only scans the ported canvas trees', () => {
+        expect(globals.includes('source(none)')).toBe(true);
+        expect(globals.includes('@source "..";')).toBe(true);
+        expect(globals.includes('@source "../../videoGeneration";')).toBe(true);
     });
 
     test('canvas route keeps the scope class and portals through the shared host', () => {
