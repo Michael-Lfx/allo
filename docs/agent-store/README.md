@@ -98,6 +98,18 @@
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
+## 本轮（2026-09-18 发布 `0.1.0-beta.6`）
+
+**第三次走完整发布链**，也是第一次**发版前先做文档事实核验**：
+
+1. **npm**：`protocol` / `client` / `runtime-win32-x64` / `sdk` 四包同为 `0.1.0-beta.6`，dist-tag `beta`；`latest` 仍指 `0.1.0-beta.2`（按手册**有意不动**）。包内顺序 protocol → client → runtime → sdk。注册表 `time`（sdk 口径）`2026-09-18T11:08:21.813Z`；另三包 protocol `11:06:44.679Z` / client `11:06:28.854Z` / runtime `11:08:13.963Z`。**发布刚结束时 canonical packument 仍是旧值、tarball 甚至假 404，约 2 分钟后转正**——与手册 §1 的告警一致。
+2. **同一个 exe 服务两个出口**：`target/release/agent-store.exe`（`--features static-webui`，构建 **25m29s**，`sha256 823A9492…DB7DB146`）经两个出口发布——npm runtime 包里**从干净目录 `npm i` 装回来复核，包内 exe 与本地构建逐字节相同**；站点 Release 资产 zip 76,169,002 B，GitHub 服务端 `digest` 与本地 `SHA256SUMS.txt` 一致。
+3. **本版唯一破坏性变更是 SDK 入口**（方案与取舍：`31` §5 方案 B + §10）：`launchClient` → **`launchHarness`**、`LaunchedClient` → **`Harness`**、`LaunchOptions` → **`HarnessOptions`**，返回值不再有 `.client` 一跳，`initializeResult` → **`handshake`**，`close()` 语义变强。**wire 面未动**——指纹仍 `fp-7`、方法计数仍 `48 / 71`，所以这是**纯 TS 侧**破坏性变更，不触发指纹流程；发布前 `verify-published-sdk` 对自建 exe 报 `VERIFY-OK { fp-7, 1.4.3, models: 5, storeItems: 0 }`。
+4. **发版前修正站点 API 参考 13 处事实错误**（子代理审计 + 逐条对源码核验，全部属实）：`7 个子客户端`→**9**、protocol「无任何运行时代码」、`request_id`→**`requestId`**、`readiness.url` 被当成 API 根、`catchUp()` 被当成手动追平、市场「整棵树镜像 / 约 90 秒」、`requestTimeoutMs` 的错误建议、`experimental` 标记不存在、`ReasoningEffort` 缺 `max`、§5.2 缺 `runs.plan` / `connectors.call` / `skills.files·readFile`、就绪超时消息缺 `after ${timeoutMs}ms`、`sequence` 是**连接本地**、`initialize`/`initialized` 也有 HTTP 路由。另**自行扫出 6 处同源过时说法**（`examples-sdk` §3.3/§12/§14 的"首个 `store/list` 会镜像市场树、要放宽超时"与 `configuration.md` 的"整棵树"，`plugins-market.md` §48 说的是第三方 `url` 源的逐文件镜像，**正确，不动**）。
+5. **站点同步**：`changelog` 新增 §2.1（破坏性 + 升级影响），JSON 块与版本表按注册表输出逐字更新，旧 §2.1–§2.5 顺延为 §2.2–§2.6 并把交叉引用同步，§4 台账清零；`upgrade` §2 版本表、§3 dist-tag/JSON、**新增 §6.5**（`beta.5` → `beta.6` 迁移）、§8 清零；`typescript-sdk` §1 版本状态。站点提交 `62dacb26` → 部署 `dpasuwboeo01`（`Success` / `UsedInProd`）。
+6. **两处实测偏差已登记进手册 §7**（第 7、8 条）：① **S1 基于工作树构建**——工作树里别人未提交的 546 行 provider 改动（`agent_store.rs` / `lib.rs` / `routes.rs`）被烧进了本版 exe（发布基线 `219383745`），用户知情后选择如此，**不是默认做法**；② **`release:check` 第 1 环（`ui/` typecheck）恒红**（73 个既有错误 / 28 个文件，全在已提交代码里），所以 S4 只能在**逐环**层面成立。
+7. **自检读数**：`check:fingerprint` / `check:release-sync`（`beta.6` 四 manifest + 8 pin + 站点 release.json）/ `web typecheck` / `web test`（513 passed, 1 skipped）/ `cargo test -p nomifun-app-server`（**165 passed**）/ 站点 `release:check:site` **全绿**；`release:check` **EXIT=2**（见第 6 条②）。**部署后线上自检**：两语言文档页是真内容（非 SPA 空壳）且 `launchHarness` 与 `beta.6` 已上线、`session.client` 残留清零、zip 直链 200、三个市场归档摘要回验全绿、站点产物 742 文件（上限 20,000）。
+
 ## 本轮（2026-09-17 发布 `0.1.0-beta.5`）
 
 **第二次走完整发布链**，且是第一次**一口气清掉积压的多次指纹递增**：
