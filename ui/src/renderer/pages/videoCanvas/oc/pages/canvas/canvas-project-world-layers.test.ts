@@ -49,7 +49,8 @@ describe("canvas project world layers isolation", () => {
         expect(stage.includes("<CanvasToolbar")).toBe(true);
         expect(chrome.includes("<CanvasToolbar")).toBe(false);
         expect(stage.includes("!focusMode || focusDockRevealed")).toBe(true);
-        expect(toolbar.includes("document.body")).toBe(true);
+        expect(toolbar.includes("getOcPortalHost")).toBe(true);
+        expect(toolbar.includes("document.body")).toBe(false);
         expect(toolbar.includes("readCanvasNodeToolbarAnchor")).toBe(true);
         expect(toolbar.includes("resolveNodeDockPrimaryIds")).toBe(true);
     });

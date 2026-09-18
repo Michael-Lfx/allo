@@ -23,11 +23,12 @@ import { useCanvasStore } from '@oc/stores/canvas/use-canvas-store';
 import { useThemeStore } from '@oc/stores/use-theme-store';
 import { useUserStore } from '@oc/stores/use-user-store';
 import { setActiveUserScope } from '@oc/lib/user-scope';
+import { getOcPortalHost } from '@oc/lib/oc-scope';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import styles from './index.module.css';
 
-// Ant Design styles for the ported open-ai-canvas workspace.
-import 'antd/dist/reset.css';
+// Ant Design component styles are configured through ConfigProvider; the
+// global reset.css is replaced by the scoped `.oc-root` baseline.
 import '@oc/styles/globals.css';
 import '@oc/components/video-player.css';
 
@@ -215,9 +216,9 @@ const VideoCanvasProjectPage: React.FC = () => {
   }
 
   return (
-    <div className={`${styles.ocShell}${colorTheme === 'dark' ? ' dark' : ''}`}>
+    <div className={`${styles.ocShell} oc-root oc-shell${colorTheme === 'dark' ? ' dark' : ''}`}>
       <QueryClientProvider client={videoCanvasQueryClient}>
-        <ConfigProvider theme={getVideoCanvasAntTheme(colorTheme === 'dark')}>
+        <ConfigProvider theme={getVideoCanvasAntTheme(colorTheme === 'dark')} getPopupContainer={getOcPortalHost}>
           <AntApp>
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
               <VimaxProvenanceBar projectId={canvasId} />

@@ -967,6 +967,7 @@ const VideoGenerationListPage: React.FC = () => {
     <div
       ref={pageScrollRef}
       className={[
+        'oc-root',
         styles.page,
         'flex-1 min-h-0 size-full box-border overflow-y-auto',
         isMobile ? 'px-12px py-12px' : 'px-16px py-24px md:px-36px md:py-32px',

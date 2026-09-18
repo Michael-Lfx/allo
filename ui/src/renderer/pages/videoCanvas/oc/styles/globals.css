@@ -1,5 +1,8 @@
-@import "tailwindcss";
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
 @import "tw-animate-css";
+@import "./oc-scoped-preflight.css" layer(base);
 @import "./quiet-chrome.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -13,7 +16,7 @@
 /* -------------------------------------------------------------------------
    Layer 1: Primitive — 纯值，无语义，不随主题变（所有维度的基础）
    ------------------------------------------------------------------------- */
-:root {
+.oc-root {
     /* --- 1. 色彩（oklch 色板）--- */
     --color-neutral-0: oklch(1 0 0);
     --color-neutral-50: oklch(0.985 0 0);
@@ -168,7 +171,7 @@
 
 /* prefers-reduced-motion 降级（对应 #99 三级降级策略 L1）*/
 @media (prefers-reduced-motion: reduce) {
-    :root {
+    .oc-root {
         --motion-scale: 0.3;
     }
 }
@@ -188,7 +191,7 @@
 }
 
 /* 动效计算函数（实际 duration = base * motion-scale）*/
-:root {
+.oc-root {
     --motion-dur-instant-calc: calc(var(--motion-dur-instant) * var(--motion-scale));
     --motion-dur-fast-calc: calc(var(--motion-dur-fast) * var(--motion-scale));
     --motion-dur-base-calc: calc(var(--motion-dur-base) * var(--motion-scale));
@@ -282,7 +285,7 @@
     --font-size-display: var(--fs-display);
 }
 
-:root {
+.oc-root {
     --radius: 0.5rem;
     --motion-instant: 120ms;
     --motion-state: 180ms;
@@ -393,7 +396,7 @@
     --sidebar-ring: oklch(0.708 0 0);
 }
 
-.dark {
+.oc-root.dark {
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --border: oklch(1 0 0 / 10%);
@@ -488,7 +491,7 @@
 /* -------------------------------------------------------------------------
    Layer 3: Component — 引用 Semantic，某组件专属
    ------------------------------------------------------------------------- */
-:root {
+.oc-root {
     /* Dock 组件（FloatingDock、悬停工具栏，对应 #95 工具栏方案）*/
     --dock-radius: var(--r-xl);            /* 14px */
     --dock-padding: var(--space-2);       /* 8px */
@@ -595,39 +598,33 @@
 }
 
 @layer base {
-    * {
+    .oc-root * {
         @apply border-border outline-ring/50;
     }
-    html,
-    body,
-    #root,
-    .ant-app {
-        width: 100%;
-        height: 100%;
-        margin: 0;
-        padding: 0;
-        border: 0;
-        overflow: hidden;
-        overscroll-behavior: none;
-        background: var(--workspace-page);
-    }
-    body {
+    .oc-shell {
         background: var(--workspace-page);
         color: var(--foreground);
+        overflow: hidden;
+        overscroll-behavior: none;
     }
-    #root {
-        position: fixed;
-        inset: 0;
-        isolation: isolate;
-    }
-    textarea {
+    .oc-root textarea {
         resize: none;
     }
-    textarea::-webkit-resizer {
+    .oc-root textarea::-webkit-resizer {
         display: none;
     }
-    html {
-        @apply font-sans;
+    .oc-root {
+        font-family: var(--font-sans);
+    }
+    /* Portal targets live outside `.oc-root`, so they carry the scope class
+       themselves and must not inherit the shell's background or sizing. */
+    .oc-portal-host {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+    }
+    .oc-portal-host > * {
+        pointer-events: auto;
     }
 }
 

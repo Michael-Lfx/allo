@@ -1287,6 +1287,7 @@ const WorkspacePage: React.FC = () => {
     <div
       ref={studioShellRef}
       className={[
+        'oc-root',
         styles.studioPage,
         styles.studioShell,
         'flex-1 min-h-0 size-full box-border',

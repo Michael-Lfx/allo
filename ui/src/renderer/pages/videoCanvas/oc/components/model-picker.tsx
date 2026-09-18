@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { Check, ChevronDown, Coins, Cpu } from "lucide-react";
 
 import { overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
@@ -194,7 +195,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     >
                         {content}
                     </div>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </div>

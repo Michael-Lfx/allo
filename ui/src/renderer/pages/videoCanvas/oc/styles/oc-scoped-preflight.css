@@ -1,0 +1,265 @@
+/**
+ * Scoped copy of Tailwind CSS v4.3.3 preflight.
+ *
+ * The ported canvas app originally pulled preflight in globally through
+ * `@import "tailwindcss"`, which leaked element resets (svg display, border
+ * style, margins) into the rest of the app once the canvas chunk loaded.
+ * Keep the canvas defaults, but bind every rule to the `.oc-root` scope so
+ * the stylesheet stays inert outside the canvas subtree.
+ */
+
+.oc-root *,
+.oc-root ::after,
+.oc-root ::before,
+.oc-root ::backdrop,
+.oc-root ::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid;
+}
+
+.oc-root {
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        'Segoe UI',
+        Roboto,
+        'Helvetica Neue',
+        'Noto Sans',
+        Arial,
+        sans-serif,
+        'Apple Color Emoji',
+        'Segoe UI Emoji',
+        'Segoe UI Symbol',
+        'Noto Color Emoji';
+    -webkit-tap-highlight-color: transparent;
+}
+
+.oc-root hr {
+    height: 0;
+    color: inherit;
+    border-top-width: 1px;
+}
+
+.oc-root abbr:where([title]) {
+    -webkit-text-decoration: underline dotted;
+    text-decoration: underline dotted;
+}
+
+.oc-root h1,
+.oc-root h2,
+.oc-root h3,
+.oc-root h4,
+.oc-root h5,
+.oc-root h6 {
+    font-size: inherit;
+    font-weight: inherit;
+}
+
+.oc-root a {
+    color: inherit;
+    -webkit-text-decoration: inherit;
+    text-decoration: inherit;
+}
+
+.oc-root b,
+.oc-root strong {
+    font-weight: bolder;
+}
+
+.oc-root code,
+.oc-root kbd,
+.oc-root samp,
+.oc-root pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+    font-size: 1em;
+}
+
+.oc-root small {
+    font-size: 80%;
+}
+
+.oc-root sub,
+.oc-root sup {
+    font-size: 75%;
+    line-height: 0;
+    position: relative;
+    vertical-align: baseline;
+}
+
+.oc-root sub {
+    bottom: -0.25em;
+}
+
+.oc-root sup {
+    top: -0.5em;
+}
+
+.oc-root table {
+    text-indent: 0;
+    border-color: inherit;
+    border-collapse: collapse;
+}
+
+.oc-root :-moz-focusring:where(:not(iframe)) {
+    outline: auto;
+}
+
+.oc-root progress {
+    vertical-align: baseline;
+}
+
+.oc-root summary {
+    display: list-item;
+}
+
+.oc-root ol,
+.oc-root ul,
+.oc-root menu {
+    list-style: none;
+}
+
+.oc-root img,
+.oc-root svg,
+.oc-root video,
+.oc-root canvas,
+.oc-root audio,
+.oc-root iframe,
+.oc-root embed,
+.oc-root object {
+    display: block;
+    vertical-align: middle;
+}
+
+.oc-root img,
+.oc-root video {
+    max-width: 100%;
+    height: auto;
+}
+
+.oc-root button,
+.oc-root input,
+.oc-root select,
+.oc-root optgroup,
+.oc-root textarea,
+.oc-root ::file-selector-button {
+    font: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+}
+
+.oc-root :where(select:is([multiple], [size])) optgroup {
+    font-weight: bolder;
+}
+
+.oc-root :where(select:is([multiple], [size])) optgroup option {
+    padding-inline-start: 20px;
+}
+
+.oc-root ::file-selector-button {
+    margin-inline-end: 4px;
+}
+
+.oc-root ::placeholder {
+    opacity: 1;
+}
+
+@supports (not (-webkit-appearance: -apple-pay-button)) or (contain-intrinsic-size: 1px) {
+    .oc-root ::placeholder {
+        color: color-mix(in oklab, currentcolor 50%, transparent);
+    }
+}
+
+.oc-root textarea {
+    resize: vertical;
+}
+
+.oc-root ::-webkit-search-decoration {
+    -webkit-appearance: none;
+}
+
+.oc-root ::-webkit-date-and-time-value {
+    min-height: 1lh;
+    text-align: inherit;
+}
+
+.oc-root ::-webkit-datetime-edit {
+    display: inline-flex;
+}
+
+.oc-root ::-webkit-datetime-edit-fields-wrapper {
+    padding: 0;
+}
+
+.oc-root ::-webkit-datetime-edit,
+.oc-root ::-webkit-datetime-edit-year-field,
+.oc-root ::-webkit-datetime-edit-month-field,
+.oc-root ::-webkit-datetime-edit-day-field,
+.oc-root ::-webkit-datetime-edit-hour-field,
+.oc-root ::-webkit-datetime-edit-minute-field,
+.oc-root ::-webkit-datetime-edit-second-field,
+.oc-root ::-webkit-datetime-edit-millisecond-field,
+.oc-root ::-webkit-datetime-edit-meridiem-field {
+    padding-block: 0;
+}
+
+.oc-root ::-webkit-calendar-picker-indicator {
+    line-height: 1;
+}
+
+.oc-root :-moz-ui-invalid {
+    box-shadow: none;
+}
+
+.oc-root button,
+.oc-root input:where([type='button'], [type='reset'], [type='submit']),
+.oc-root ::file-selector-button {
+    appearance: button;
+}
+
+.oc-root ::-webkit-inner-spin-button,
+.oc-root ::-webkit-outer-spin-button {
+    height: auto;
+}
+
+.oc-root [hidden]:where(:not([hidden='until-found'])) {
+    display: none !important;
+}
+
+/* Baseline parity with antd/dist/reset.css (MIT), which this app used to load
+   globally for the canvas subtree. */
+.oc-root h1,
+.oc-root h2,
+.oc-root h3,
+.oc-root h4,
+.oc-root h5,
+.oc-root h6 {
+    margin-top: 0;
+    margin-bottom: 0.5em;
+    font-weight: 500;
+}
+
+.oc-root p {
+    margin-top: 0;
+    margin-bottom: 1em;
+}
+
+.oc-root ol,
+.oc-root ul,
+.oc-root dl {
+    margin-top: 0;
+    margin-bottom: 1em;
+}
+
+.oc-root [tabindex='-1']:focus {
+    outline: none;
+}

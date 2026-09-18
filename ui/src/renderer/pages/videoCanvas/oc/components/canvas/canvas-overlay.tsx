@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type HTMLAttributes, type ReactNode, type Ref, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { ChevronRight, X } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
@@ -140,7 +141,7 @@ export function CanvasHoverHint({
                     >
                         {hint}
                     </span>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </span>
@@ -289,7 +290,7 @@ export function CanvasSheet({
                 ) : null}
             </div>
         </div>,
-        document.body,
+        getOcPortalHost(),
     );
 }
 

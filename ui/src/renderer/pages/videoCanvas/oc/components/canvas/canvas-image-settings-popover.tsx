@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { useTranslation } from "react-i18next";
 
 import { CanvasChromeButton, overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
@@ -67,7 +68,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
                     >
                         <ImageSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={false} showCount={showCount} className="thin-scrollbar max-h-[min(72vh,640px)] space-y-2.5 overflow-y-auto pr-0.5" />
                     </div>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </>

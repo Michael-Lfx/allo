@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, KeyboardEvent, MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { FileText, Image as ImageIcon, Music2, Pencil, UserRound, Video } from "lucide-react";
 
 import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
@@ -478,7 +479,7 @@ function MentionMenu({ anchor, references, activeIndex, theme, preferredWidth, o
                 </button>
             ))}
         </div>,
-        document.body,
+        getOcPortalHost(),
     );
 }
 

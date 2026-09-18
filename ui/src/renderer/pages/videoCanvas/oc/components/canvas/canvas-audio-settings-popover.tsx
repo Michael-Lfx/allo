@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { useTranslation } from "react-i18next";
 
 import { CanvasChromeButton, overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
@@ -54,7 +55,7 @@ export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClass
                     >
                         <AudioSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={false} className="space-y-4" />
                     </div>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </>
