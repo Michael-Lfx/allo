@@ -56,7 +56,7 @@ async fn discover_by_names_selects_only_requested_skills() {
     let paths = Arc::new(resolve_skill_paths(tmp.path(), &data_dir));
     let mgr = AcpSkillManager::new(paths);
 
-    let idx = mgr.discover_by_names(&["my-skill".to_owned()]).await;
+    let idx = mgr.discover_by_names(&["my-skill".to_owned()]).await.unwrap();
     let names: std::collections::HashSet<&str> = idx.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains("my-skill"), "requested skill missing: got {names:?}");
     assert!(!names.contains("cron"), "unrequested skill leaked into the index");
@@ -78,7 +78,7 @@ async fn discover_by_names_empty_returns_empty_index() {
 
     let paths = Arc::new(resolve_skill_paths(tmp.path(), &data_dir));
     let mgr = AcpSkillManager::new(paths);
-    assert!(mgr.discover_by_names(&[]).await.is_empty());
+    assert!(mgr.discover_by_names(&[]).await.unwrap().is_empty());
 }
 
 // ---------------------------------------------------------------------------

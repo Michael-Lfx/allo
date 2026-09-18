@@ -61,6 +61,7 @@ nomi-providers.workspace = true
 nomi-memory.workspace = true
 nomi-redact.workspace = true
 nomi-media.workspace = true
+nomi-briefing.workspace = true
 # Rendering page-fetch backend for knowledge URL sources. This adapter consumes
 # the application-owned Browser Session Hub while the knowledge crate remains
 # independent of the browser platform.

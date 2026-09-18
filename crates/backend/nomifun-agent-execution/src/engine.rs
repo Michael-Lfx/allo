@@ -43,6 +43,7 @@ use nomifun_db::{
     UpdateAgentExecutionTemplateParams,
 };
 use nomifun_preset::PresetService;
+use nomifun_conversation::ConversationService;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -135,6 +136,7 @@ pub(crate) struct AgentExecutionEngineDeps {
     pub(crate) provider_repository: Arc<dyn IProviderRepository>,
     pub(crate) provider_model_repository: Arc<dyn nomifun_db::IProviderModelRepository>,
     pub(crate) preset_service: Arc<PresetService>,
+    pub(crate) conversation: ConversationService,
     pub(crate) planner: Arc<dyn PlanProducer>,
     pub(crate) attempt_runner: Arc<dyn AttemptRunner>,
     pub(crate) publisher: AgentExecutionEventPublisher,
@@ -151,6 +153,7 @@ impl AgentExecutionEngineDeps {
         provider_repository: Arc<dyn IProviderRepository>,
         provider_model_repository: Arc<dyn nomifun_db::IProviderModelRepository>,
         preset_service: Arc<PresetService>,
+        conversation: ConversationService,
         planner: Arc<dyn PlanProducer>,
         attempt_runner: Arc<dyn AttemptRunner>,
         conversation_effects: Arc<dyn ConversationEffects>,
@@ -163,6 +166,7 @@ impl AgentExecutionEngineDeps {
             provider_repository,
             provider_model_repository,
             preset_service,
+            conversation,
             planner,
             attempt_runner,
             publisher,
@@ -190,6 +194,7 @@ impl AgentExecutionEngine {
             deps.provider_repository.clone(),
             deps.provider_model_repository.clone(),
             deps.preset_service.clone(),
+            deps.conversation.clone(),
         );
         let mut scheduler_deps = ExecutionSchedulerDeps::new(
             deps.repository.clone(),

@@ -765,10 +765,9 @@ export const useNomiMessage = (
             if (timingKey) markTurnFirstStatus(timingKey, 'waiting_permission');
             dispatchPresentationEvent({ type: 'waitingPermission' });
           }
-          // Backend nomi emits wire type 'acp_permission' but the payload is
-          // Confirmation-shaped (legacy), which matches MessagePermission, not
-          // MessageAcpPermission. Re-tag so transformMessage routes it correctly.
-          addOrUpdateMessage(transformMessage({ ...message, type: 'permission' }));
+          // transformMessage selects the legacy or native renderer from the
+          // payload shape while preserving the wire event type.
+          addOrUpdateMessage(transformMessage(message));
           break;
         case 'moa_reference':
           // One advisor suggestion; composeMessage folds repeated frames into a

@@ -10,15 +10,18 @@ import ApprovalCard from '@renderer/components/beautifulUi/approvalCard/Approval
 import { kindFromConfirmationType } from '@renderer/components/beautifulUi/approvalCard/approvalCardModel';
 import { ToolChip } from '@renderer/components/beautifulUi/toolChips/ToolChips';
 import { resolveToolChipStatusFromToolGroup } from '@renderer/components/beautifulUi/toolChips/toolChipModel';
+import InlineDiff from '@renderer/components/beautifulUi/inlineDiff/InlineDiff';
+import {
+  countDiffStats,
+  hunksFromUnifiedDiff,
+} from '@renderer/components/beautifulUi/inlineDiff/inlineDiffModel';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import FeedbackButton from '@/renderer/components/base/FeedbackButton';
-import FileChangesPanel from '@/renderer/components/base/FileChangesPanel';
-import { useDiffPreviewHandlers } from '@/renderer/hooks/file/useDiffPreviewHandlers';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { parseDiff } from '@/renderer/utils/file/diffUtils';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import MessageFileChanges from '../MessageFileChanges';
+import { BriefingToolCard, isBriefingToolName } from './BriefingToolCard';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import MarkdownView from '@renderer/components/Markdown';
@@ -143,27 +146,22 @@ const useConfirmationButtons = (
   }, [confirmationDetails, t]);
 };
 
-const EditConfirmationDiff: React.FC<{ diff: string; file_name: string; title: string }> = ({
+const EditConfirmationDiff: React.FC<{ diff: string; file_name: string }> = ({
   diff,
   file_name,
-  title,
 }) => {
-  const fileInfo = useMemo(() => parseDiff(diff, file_name), [diff, file_name]);
+  const hunks = useMemo(() => hunksFromUnifiedDiff(diff), [diff]);
+  const { insertions, deletions } = countDiffStats(hunks);
   const display_name = file_name.split(/[/\\]/).pop() || file_name;
-  const { handleFileClick, handleDiffClick } = useDiffPreviewHandlers({
-    diffText: diff,
-    display_name,
-    file_path: file_name,
-    title,
-  });
+  if (!hunks.length) return null;
 
   return (
-    <FileChangesPanel
-      title={title}
-      files={[fileInfo]}
-      onFileClick={handleFileClick}
-      onDiffClick={handleDiffClick}
-      defaultExpanded={true}
+    <InlineDiff
+      filename={display_name}
+      hunks={hunks}
+      insertions={insertions}
+      deletions={deletions}
+      defaultExpanded
     />
   );
 };
@@ -206,13 +204,11 @@ const ConfirmationDetails: React.FC<{
 
   const [selected, setSelected] = useState<ToolConfirmationOutcome | null>(null);
 
-  const isConfirm = content.status === 'Confirming';
   const details =
     confirmationDetails.type === 'edit' ? (
       <EditConfirmationDiff
         diff={toDisplayText(confirmationDetails?.file_diff)}
         file_name={toDisplayText(confirmationDetails.file_name)}
-        title={isConfirm ? toDisplayText(confirmationDetails.title) : toDisplayText(content.description)}
       />
     ) : (
       node
@@ -374,6 +370,11 @@ const ToolResultDisplay: React.FC<{
     }
   }
 
+  if (isBriefingToolName(toolName)) {
+    const card = <BriefingToolCard result={result_display} />;
+    if (card) return card;
+  }
+
   // 将结果转换为字符串 Convert result to string
   const display = toDisplayText(result_display);
 
@@ -494,6 +495,22 @@ const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
           if (videoUrl) {
             return <VideoDisplay key={call_id} videoUrl={videoUrl} relativePath={result.local_path} />;
           }
+        }
+
+        if (isBriefingToolName(nameText) && result_display) {
+          return (
+            <div key={callIdText}>
+              <ToolChip
+                id={callIdText}
+                name={nameText}
+                detail={statusText === 'Canceled' ? t('messages.canceledExecution') : undefined}
+                status={resolveToolChipStatusFromToolGroup(status)}
+              />
+              <div className='mt-8px'>
+                <BriefingToolCard result={result_display} />
+              </div>
+            </div>
+          );
         }
 
         // 通用工具调用展示 Generic tool call display

@@ -150,7 +150,15 @@ function normalizeAcpStatus(status: unknown): NormalizedToolStatus {
   }
 }
 
-const shellCommandTitles = new Set(['bash', 'shell', 'terminal', 'command', 'cmd', 'powershell']);
+const shellCommandTitles = new Set([
+  'bash',
+  'shell',
+  'terminal',
+  'command',
+  'cmd',
+  'powershell',
+  'exec_command',
+]);
 const shellCommandFieldNames = ['command', 'cmd', 'script', 'shell', 'bash'];
 
 const pickStringField = (record: Record<string, unknown>, fields: string[]): string | undefined => {
@@ -314,20 +322,29 @@ function normalizeToolCallStatus(status?: unknown, output?: string): NormalizedT
   }
 }
 
+const parseOrdinaryShellExitCode = (output: unknown): number | undefined => {
+  const text = toDisplayText(output);
+  const bashMatch = /^Exit code:\s*(-?\d+)(?:\r?\n|$)/.exec(text);
+  const execMatch = /^\(process exited, exit_code=(-?\d+)\)(?:\r?\n|$)/.exec(text);
+  const raw = bashMatch?.[1] ?? execMatch?.[1];
+  if (raw === undefined) return undefined;
+  const exitCode = Number(raw);
+  return Number.isInteger(exitCode) ? exitCode : undefined;
+};
+
 const isOrdinaryShellExit = (name: unknown, status: unknown, output: unknown): boolean => {
   if (status !== 'error') return false;
   if (!shellCommandTitles.has(toDisplayText(name).trim().toLowerCase())) return false;
 
   const text = toDisplayText(output);
-  const match = /^Exit code:\s*(-?\d+)(?:\r?\n|$)/.exec(text);
-  if (!match) return false;
+  const exitCode = parseOrdinaryShellExitCode(output);
+  if (exitCode === undefined) return false;
 
-  const exitCode = Number(match[1]);
   return (
-    Number.isInteger(exitCode) &&
     exitCode !== 0 &&
     exitCode !== -1 &&
     !/(?:^|\r?\n)Signal:/m.test(text) &&
+    !/(?:^|\r?\n)signal=/m.test(text) &&
     !/(?:^|\r?\n)Cleanup diagnostics:/m.test(text)
   );
 };
@@ -360,7 +377,7 @@ const isOrdinaryDirectProbeFailure = (name: unknown, status: unknown, output: un
 const skippedAfterPriorErrorPrefix = 'Skipped because a previous tool call in this assistant turn failed.';
 
 const isSkippedAfterPriorError = (status: unknown, output: unknown): boolean =>
-  status === 'error' && toDisplayText(output).trimStart().startsWith(skippedAfterPriorErrorPrefix);
+  status === 'error' && toDisplayText(output).includes(skippedAfterPriorErrorPrefix);
 
 const invalidArgumentsNotExecutedSuffix =
   'Correct the arguments and retry; the tool was not executed.';

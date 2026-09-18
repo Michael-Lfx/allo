@@ -16,8 +16,15 @@ pub use aider::{aider_zip_to_manifest, SUITE_AIDER_POLYGLOT};
 pub use classeval::{classeval_json_to_manifest, SUITE_CLASSEVAL};
 
 pub const SUITE_OFFICE_TASKS: &str = "office_tasks";
+pub const SUITE_OFFICE_CORE: &str = "office_core";
 pub const SUITE_AGENT_WORKFLOWS: &str = "agent_workflows";
+pub const SUITE_CODING_LOCAL: &str = "coding_local";
 pub const SUITE_HARNESS_CONTROL: &str = "harness_control";
+pub const SUITE_HARNESS_SMOKE: &str = "harness_smoke";
+pub const SUITE_BROWSER_SMOKE: &str = "browser_smoke";
+pub const SUITE_MCP_FIXTURE: &str = "mcp_fixture";
+pub const SUITE_PRIVATE_BADCASES: &str = "private_badcases";
+pub const SUITE_HARBOR: &str = "harbor_terminal_bench";
 
 /// Legacy offline-demo corpus id. Not listed in the live lab catalog.
 pub const SUITE_SESSION_DIALOGUE: &str = "session_dialogue";
@@ -39,6 +46,10 @@ pub enum DatasetError {
     Download { url: String, message: String },
     #[error("failed to read archive: {0}")]
     Archive(String),
+    #[error("suite {0} requires a sandbox runner (not implemented)")]
+    RequiresSandbox(String),
+    #[error("suite {0} has no cases")]
+    EmptySuite(String),
 }
 
 /// Catalog row shown in the eval lab UI.
@@ -54,70 +65,207 @@ pub struct SuiteDescriptor {
     pub max_limit: usize,
     pub notes: String,
     pub requires_download: bool,
+    /// `smoke` | `capability` | `advanced` | `sandbox`.
+    #[serde(default = "default_tier")]
+    pub tier: String,
+    #[serde(default = "default_trials")]
+    pub default_trials: u32,
+    #[serde(default)]
+    pub requires_sandbox: bool,
+}
+
+fn default_tier() -> String {
+    "capability".into()
+}
+
+fn default_trials() -> u32 {
+    1
+}
+
+/// Map legacy suite ids onto the current catalog.
+pub fn canonical_suite_id(id: &str) -> &str {
+    match id.trim() {
+        SUITE_OFFICE_TASKS => SUITE_OFFICE_CORE,
+        SUITE_HARNESS_CONTROL => SUITE_HARNESS_SMOKE,
+        SUITE_AGENT_WORKFLOWS => SUITE_CODING_LOCAL,
+        other => other,
+    }
+}
+
+pub fn default_trials_for_suite(id: &str) -> u32 {
+    suite_descriptor(id)
+        .map(|s| s.default_trials)
+        .unwrap_or(1)
+}
+
+fn desc(
+    id: &str,
+    title: &str,
+    kind: &str,
+    profile: &str,
+    source_url: Option<String>,
+    default_limit: usize,
+    max_limit: usize,
+    notes: &str,
+    requires_download: bool,
+    tier: &str,
+    default_trials: u32,
+    requires_sandbox: bool,
+) -> SuiteDescriptor {
+    SuiteDescriptor {
+        id: id.into(),
+        title: title.into(),
+        kind: kind.into(),
+        default_task_profile: profile.into(),
+        source_url,
+        default_limit,
+        max_limit,
+        notes: notes.into(),
+        requires_download,
+        tier: tier.into(),
+        default_trials,
+        requires_sandbox,
+    }
 }
 
 pub fn list_suites() -> Vec<SuiteDescriptor> {
     vec![
-        SuiteDescriptor {
-            id: SUITE_OFFICE_TASKS.into(),
-            title: "Office tasks".into(),
-            kind: "bundled".into(),
-            default_task_profile: "office".into(),
-            source_url: None,
-            default_limit: 5,
-            max_limit: 5,
-            notes: "Primary office-agent suite: memo, minutes, CSV budget, client email, rewrite. Uses Office profile (Read/Write/Edit), not CodingHarness.".into(),
-            requires_download: false,
-        },
-        SuiteDescriptor {
-            id: SUITE_AGENT_WORKFLOWS.into(),
-            title: "Agent workflows".into(),
-            kind: "bundled".into(),
-            default_task_profile: "coding".into(),
-            source_url: None,
-            default_limit: 5,
-            max_limit: 5,
-            notes: "Multi-step agent KPI: multi-file briefing, debug+pytest, CSV→JSON pipeline, refactor+docs, constrained policy edit. Replaces marker-style Q&A floors.".into(),
-            requires_download: false,
-        },
-        SuiteDescriptor {
-            id: SUITE_AIDER_POLYGLOT.into(),
-            title: "Aider Polyglot (Python)".into(),
-            kind: "agent".into(),
-            default_task_profile: "coding".into(),
-            source_url: Some(aider::POLYGLOT_ZIP_URL.into()),
-            default_limit: DEFAULT_DOWNLOAD_LIMIT,
-            max_limit: MAX_DOWNLOAD_LIMIT,
-            notes: "Primary coding-agent suite: Exercism Python from Aider polyglot. Stub + tests in the workspace; pytest is the oracle. Canonical example.py is stripped. Needs Python + pytest. Not an official Aider leaderboard score (no Docker harness).".into(),
-            requires_download: true,
-        },
-        SuiteDescriptor {
-            id: SUITE_CLASSEVAL.into(),
-            title: "ClassEval".into(),
-            kind: "agent".into(),
-            default_task_profile: "coding".into(),
-            source_url: Some(classeval::CLASSEVAL_URL.into()),
-            default_limit: DEFAULT_DOWNLOAD_LIMIT,
-            max_limit: MAX_DOWNLOAD_LIMIT,
-            notes: "Class-level Python (100 tasks). Agent edits the skeleton in solution.py; hidden unittests are the oracle. Harder than HumanEval-style floors; still closer to codegen than SWE-bench.".into(),
-            requires_download: true,
-        },
-        SuiteDescriptor {
-            id: SUITE_HARNESS_CONTROL.into(),
-            title: "Harness control".into(),
-            kind: "bundled".into(),
-            default_task_profile: "coding".into(),
-            source_url: None,
-            default_limit: 2,
-            max_limit: 2,
-            notes: "Smoke tests for CodingHarness + write_root. Not an agent capability KPI.".into(),
-            requires_download: false,
-        },
+        desc(
+            SUITE_HARNESS_SMOKE,
+            "Harness smoke",
+            "bundled",
+            "coding",
+            None,
+            2,
+            2,
+            "Runtime regression: Write/Edit + write_root. Not a capability KPI.",
+            false,
+            "smoke",
+            1,
+            false,
+        ),
+        desc(
+            SUITE_OFFICE_CORE,
+            "Office core",
+            "bundled",
+            "office",
+            None,
+            7,
+            7,
+            "Office capability: memo, minutes, CSV budget, email, rewrite, briefing, policy. Structural oracles, no magic tokens.",
+            false,
+            "capability",
+            3,
+            false,
+        ),
+        desc(
+            SUITE_CODING_LOCAL,
+            "Coding local",
+            "bundled",
+            "coding",
+            None,
+            3,
+            3,
+            "Local coding loop: pytest, CSV→JSON, refactor. No Docker.",
+            false,
+            "capability",
+            3,
+            false,
+        ),
+        desc(
+            SUITE_BROWSER_SMOKE,
+            "Browser smoke",
+            "bundled",
+            "office",
+            None,
+            2,
+            2,
+            "Opens the browser tool against a local HTML fixture. No public internet.",
+            false,
+            "capability",
+            1,
+            false,
+        ),
+        desc(
+            SUITE_MCP_FIXTURE,
+            "MCP fixture",
+            "bundled",
+            "office",
+            None,
+            2,
+            2,
+            "Injects a stdio CRM MCP server. Suite-level overlay; host MCP stays off.",
+            false,
+            "capability",
+            1,
+            false,
+        ),
+        desc(
+            SUITE_AIDER_POLYGLOT,
+            "Aider Polyglot (Python)",
+            "agent",
+            "coding",
+            Some(aider::POLYGLOT_ZIP_URL.into()),
+            DEFAULT_DOWNLOAD_LIMIT,
+            MAX_DOWNLOAD_LIMIT,
+            "Advanced coding-agent suite. Not a default KPI and not an official Aider leaderboard score.",
+            true,
+            "advanced",
+            1,
+            false,
+        ),
+        desc(
+            SUITE_CLASSEVAL,
+            "ClassEval",
+            "agent",
+            "coding",
+            Some(classeval::CLASSEVAL_URL.into()),
+            DEFAULT_DOWNLOAD_LIMIT,
+            MAX_DOWNLOAD_LIMIT,
+            "Advanced class-level Python. Hidden unittests. Not a default KPI.",
+            true,
+            "advanced",
+            1,
+            false,
+        ),
+        desc(
+            SUITE_HARBOR,
+            "Harbor / Terminal-Bench",
+            "sandbox",
+            "coding",
+            None,
+            0,
+            0,
+            "Placeholder. Official Harbor scores need a Docker farm (P2). This suite cannot run.",
+            false,
+            "sandbox",
+            1,
+            true,
+        ),
+        desc(
+            SUITE_PRIVATE_BADCASES,
+            "Private badcases",
+            "private",
+            "office",
+            None,
+            20,
+            50,
+            "Promoted cloud badcases synced to diagnostics/agent-evals/private/.",
+            false,
+            "capability",
+            1,
+            false,
+        ),
     ]
 }
 
 pub fn suite_descriptor(id: &str) -> Option<SuiteDescriptor> {
-    list_suites().into_iter().find(|s| s.id == id)
+    let canonical = canonical_suite_id(id);
+    list_suites().into_iter().find(|s| s.id == canonical)
+}
+
+pub fn private_corpus_dir(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join("diagnostics/agent-evals/private")
 }
 
 /// Whether a downloadable suite already has a cache file under `cache_dir`.
@@ -153,16 +301,55 @@ pub async fn load_suite_manifest(
     cache_dir: &Path,
     limit: Option<usize>,
 ) -> Result<Manifest, DatasetError> {
-    match suite.trim() {
-        SUITE_OFFICE_TASKS | SUITE_AGENT_WORKFLOWS | SUITE_HARNESS_CONTROL => {
+    let suite = canonical_suite_id(suite.trim());
+    match suite {
+        SUITE_HARNESS_SMOKE
+        | SUITE_OFFICE_CORE
+        | SUITE_CODING_LOCAL
+        | SUITE_BROWSER_SMOKE
+        | SUITE_MCP_FIXTURE => {
             let mut manifest = load_bundled_manifest(suite)?;
             apply_limit(&mut manifest, limit);
             Ok(manifest)
         }
+        SUITE_PRIVATE_BADCASES => load_private_manifest(cache_dir, limit),
+        SUITE_HARBOR => Err(DatasetError::RequiresSandbox(suite.to_owned())),
         SUITE_AIDER_POLYGLOT => aider::load_aider_polyglot(cache_dir, limit).await,
         SUITE_CLASSEVAL => classeval::load_classeval(cache_dir, limit).await,
         other => Err(DatasetError::UnknownSuite(other.to_owned())),
     }
+}
+
+fn load_private_manifest(cache_dir: &Path, limit: Option<usize>) -> Result<Manifest, DatasetError> {
+    let dir = cache_dir
+        .parent()
+        .unwrap_or(cache_dir)
+        .join("private");
+    let mut cases = Vec::new();
+    if dir.is_dir() {
+        let mut files: Vec<_> = fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+            .collect();
+        files.sort();
+        for path in files {
+            let mut manifest = crate::corpus::load_manifest(&path)?;
+            cases.append(&mut manifest.cases);
+        }
+    }
+    if cases.is_empty() {
+        return Err(DatasetError::EmptySuite(SUITE_PRIVATE_BADCASES.into()));
+    }
+    let mut manifest = Manifest {
+        schema_version: crate::types::SCHEMA_VERSION,
+        corpus_version: "private-badcases".into(),
+        suite: SUITE_PRIVATE_BADCASES.into(),
+        cases,
+    };
+    crate::corpus::validate_manifest(&manifest)?;
+    apply_limit(&mut manifest, limit);
+    Ok(manifest)
 }
 
 pub(crate) fn clamp_limit(limit: Option<usize>) -> usize {
@@ -261,15 +448,22 @@ mod tests {
     #[test]
     fn catalog_lists_agent_suites_not_unit_floors() {
         let ids: Vec<_> = list_suites().into_iter().map(|s| s.id).collect();
-        assert_eq!(ids[0], SUITE_OFFICE_TASKS);
-        assert!(ids.contains(&SUITE_AGENT_WORKFLOWS.to_string()));
+        assert_eq!(ids[0], SUITE_HARNESS_SMOKE);
+        assert!(ids.contains(&SUITE_OFFICE_CORE.to_string()));
+        assert!(ids.contains(&SUITE_CODING_LOCAL.to_string()));
+        assert!(ids.contains(&SUITE_BROWSER_SMOKE.to_string()));
+        assert!(ids.contains(&SUITE_MCP_FIXTURE.to_string()));
         assert!(ids.contains(&SUITE_AIDER_POLYGLOT.to_string()));
         assert!(ids.contains(&SUITE_CLASSEVAL.to_string()));
+        assert!(ids.contains(&SUITE_HARBOR.to_string()));
         assert!(!ids.iter().any(|id| id == "humaneval" || id == "mbpp"));
         assert!(!ids.iter().any(|id| id == SUITE_SESSION_DIALOGUE));
         load_bundled_manifest(SUITE_HARNESS_CONTROL).unwrap();
         load_bundled_manifest(SUITE_OFFICE_TASKS).unwrap();
         load_bundled_manifest(SUITE_AGENT_WORKFLOWS).unwrap();
+        assert_eq!(canonical_suite_id(SUITE_OFFICE_TASKS), SUITE_OFFICE_CORE);
+        assert!(list_suites().iter().any(|s| s.id == SUITE_AIDER_POLYGLOT && s.tier == "advanced"));
+        assert!(list_suites().iter().any(|s| s.id == SUITE_HARBOR && s.requires_sandbox));
     }
 
     #[test]
@@ -278,6 +472,6 @@ mod tests {
         assert!(!is_download_cached(SUITE_AIDER_POLYGLOT, dir.path()));
         std::fs::write(dir.path().join("aider-polyglot.zip"), b"pk").unwrap();
         assert!(is_download_cached(SUITE_AIDER_POLYGLOT, dir.path()));
-        assert!(is_download_cached(SUITE_AGENT_WORKFLOWS, dir.path()));
+        assert!(is_download_cached(SUITE_OFFICE_CORE, dir.path()));
     }
 }

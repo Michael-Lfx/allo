@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use nomifun_common::AppError;
+
 use crate::capability::skill_manager::{AcpSkillManager, prepare_first_message_with_skills_index};
 
 /// Configuration for the first-message injector.
@@ -35,24 +37,27 @@ pub async fn inject_first_message_prefix(
     content: &str,
     manager: &Arc<AcpSkillManager>,
     config: InjectionConfig<'_>,
-) -> String {
+) -> Result<String, AppError> {
+    // Native ACP discovery changes how the prompt is rendered, not whether
+    // the requested snapshot is valid. Resolve every binding before either
+    // light or heavy mode so a missing Skill can never be silently skipped.
+    let skills = manager.discover_by_names(config.skills).await?;
     let use_native = config.native_skill_support && !config.custom_workspace;
 
     if use_native {
         return match config.preset_context {
             Some(ctx) if !ctx.is_empty() => {
-                format!("[Assistant Rules]\n{ctx}\n[/Assistant Rules]\n\n{content}")
+                Ok(format!("[Assistant Rules]\n{ctx}\n[/Assistant Rules]\n\n{content}"))
             }
-            _ => content.to_string(),
+            _ => Ok(content.to_string()),
         };
     }
 
-    let skills = manager.discover_by_names(config.skills).await;
     let has_context = config.preset_context.is_some_and(|s| !s.is_empty());
     if skills.is_empty() && !has_context {
-        return content.to_string();
+        return Ok(content.to_string());
     }
-    prepare_first_message_with_skills_index(content, &skills, config.preset_context)
+    Ok(prepare_first_message_with_skills_index(content, &skills, config.preset_context))
 }
 
 #[cfg(test)]
@@ -100,7 +105,8 @@ mod tests {
                 custom_workspace: false,
             },
         )
-        .await;
+        .await
+        .unwrap();
 
         assert!(out.contains("[Assistant Rules]"));
         assert!(out.contains("Be concise."));
@@ -122,7 +128,8 @@ mod tests {
                 custom_workspace: false,
             },
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(out, "Hello");
     }
 
@@ -142,7 +149,8 @@ mod tests {
                 custom_workspace: false,
             },
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(out, "Hello");
     }
 
@@ -162,11 +170,56 @@ mod tests {
                 custom_workspace: false,
             },
         )
-        .await;
+        .await
+        .unwrap();
 
         assert!(out.contains("[Assistant Rules]"));
         assert!(out.contains("Rule 1."));
         assert!(out.ends_with("Go."));
+    }
+
+    #[tokio::test]
+    async fn heavy_mode_missing_skill_fails_even_with_preset_context() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = EmptyBuiltinGuard::new(tmp.path());
+        let mgr = test_mgr(tmp.path());
+
+        let error = inject_first_message_prefix(
+            "Go.",
+            &mgr,
+            InjectionConfig {
+                preset_context: Some("Rule 1."),
+                skills: &["missing-skill".to_owned()],
+                native_skill_support: false,
+                custom_workspace: false,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("missing-skill"));
+    }
+
+    #[tokio::test]
+    async fn native_mode_missing_skill_fails_before_prompt_passthrough() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = EmptyBuiltinGuard::new(tmp.path());
+        let mgr = test_mgr(tmp.path());
+
+        let error = inject_first_message_prefix(
+            "Go.",
+            &mgr,
+            InjectionConfig {
+                preset_context: None,
+                skills: &["missing-skill".to_owned()],
+                native_skill_support: true,
+                custom_workspace: false,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("missing-skill"));
     }
 
     #[tokio::test]
@@ -199,7 +252,8 @@ mod tests {
                 custom_workspace: false,
             },
         )
-        .await;
+        .await
+        .unwrap();
         assert!(out.contains("cron"));
         assert!(!out.contains("pdf"));
         assert!(out.ends_with("Hello"));
@@ -221,7 +275,8 @@ mod tests {
                 custom_workspace: true, // <-- overrides native
             },
         )
-        .await;
+        .await
+        .unwrap();
 
         assert!(out.contains("[Assistant Rules]"));
         assert!(out.contains("Custom rule"));

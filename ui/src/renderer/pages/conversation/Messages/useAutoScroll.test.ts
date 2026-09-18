@@ -19,13 +19,7 @@ const sliceBetween = (start: string, end: string): string => {
   return source.slice(startIndex, endIndex);
 };
 
-const resizeObserverCallback = (): string => {
-  const observeIndex = source.indexOf('new ResizeObserver');
-  expect(observeIndex).toBeGreaterThan(-1);
-  const bodyStart = source.indexOf('{', observeIndex);
-  const bodyEnd = source.indexOf('});', bodyStart);
-  return source.slice(bodyStart, bodyEnd);
-};
+const resizeObserverEffect = (): string => sliceBetween('let frameId: number | null = null;', 'observer.observe(scrollerEl);');
 
 const scrollToBottomBody = (): string =>
   sliceBetween('const scrollToBottom', 'const resolveFollowOutput');
@@ -84,8 +78,8 @@ describe('useAutoScroll scroll ownership', () => {
     expect(followOutput.includes('return false')).toBe(true);
   });
 
-  test('pins the outer scroller synchronously when tool rows grow the list', () => {
-    const observer = resizeObserverCallback();
+  test('coalesces resize follow work into one cancellable animation frame', () => {
+    const observer = resizeObserverEffect();
     const growth = sliceBetween('const followContentGrowth', 'const scrollToBottom');
 
     expect(observer.includes('followContentGrowth()')).toBe(true);
@@ -93,6 +87,9 @@ describe('useAutoScroll scroll ownership', () => {
     expect(growth.includes('if (virtuosoMode) return')).toBe(false);
     expect(growth.includes("querySelector('.message-list-end-spacer')")).toBe(true);
     expect(growth.includes('scrollerEl.scrollTop += delta')).toBe(true);
+    expect(observer.includes('window.requestAnimationFrame(flushResizeWork)')).toBe(true);
+    expect(observer.includes('window.cancelAnimationFrame(frameId)')).toBe(true);
+    expect(observer.includes('if (disposed) return')).toBe(true);
     expect(observer.includes('scheduleAutoFollow()')).toBe(false);
   });
 

@@ -47,7 +47,7 @@ the root `Cargo.toml`.
 
 | Command | Use when | What runs |
 | --- | --- | --- |
-| `bun run dev:ui` | UI-only work that can tolerate missing API calls | Vite on `http://localhost:5173`; no backend. |
+| `bun run dev:ui` | UI-only work that can tolerate missing API calls | Vite on `http://127.0.0.1:5173`; no backend. |
 | `bun run dev:web` | Browser + backend iteration with auth disabled | `NOMI_CHANNEL=dev` `nomifun-web --port 8787 --dist ui/dist --insecure-no-auth` plus Vite dev server. |
 | `bun run serve:web` | Running the production-style web host from source | `nomifun-web` on `http://127.0.0.1:8787`; serves built `ui/dist`; auth on by default. |
 | `bun run dev` | Desktop/Tauri work | `NOMI_CHANNEL=dev` Tauri shell, Vite, and embedded backend under the desktop local-trust policy. |

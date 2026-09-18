@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Button, Modal } from "antd";
-import { Check, Lock, LockOpen, X } from "lucide-react";
+import { Check, Lock, LockOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasThemes } from "@oc/lib/canvas-theme";
 import { readImageMeta } from "@oc/lib/image-utils";
+import { useThemeStore } from "@oc/stores/use-theme-store";
+import { ChoiceChip } from "@oc/components/generation-settings-chrome";
+import { CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
 export type CanvasImageCropRect = {
     x: number;
@@ -33,6 +36,7 @@ const cropAspectPresets: Array<{ value: CropAspectPreset; labelKey?: string; lab
 
 export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (crop: CanvasImageCropRect) => void }) {
     useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const boxRef = useRef<HTMLDivElement>(null);
     const [crop, setCrop] = useState<CanvasImageCropRect>(defaultCrop);
     const [lockedRatio, setLockedRatio] = useState<number | null>(null);
@@ -104,7 +108,24 @@ export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { da
     };
 
     return (
-        <Modal title={canvasT("videoCanvas.dialog.cropTitle", "裁剪图片")} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={780} centered destroyOnHidden>
+        <CanvasSheet
+            open={open && Boolean(dataUrl)}
+            theme={theme}
+            width="min(780px, 94vw)"
+            title={canvasT("videoCanvas.dialog.cropTitle", "裁剪图片")}
+            onClose={onClose}
+            footer={
+                <>
+                    <CanvasSheetButton theme={theme} onClick={resetCrop}>{canvasT("videoCanvas.dialog.cropReset", "重置")}</CanvasSheetButton>
+                    <span className="flex-1" />
+                    <CanvasSheetButton theme={theme} onClick={onClose}>{canvasT("videoCanvas.dialog.cancel", "取消")}</CanvasSheetButton>
+                    <CanvasSheetButton theme={theme} variant="primary" onClick={() => onConfirm(crop)}>
+                        <Check className="size-3.5" />
+                        {canvasT("videoCanvas.dialog.cropConfirm", "确认裁剪")}
+                    </CanvasSheetButton>
+                </>
+            }
+        >
             <div className="space-y-4">
                 <div className="flex justify-center">
                     <div ref={boxRef} className="relative inline-block max-w-full overflow-hidden rounded-lg bg-black select-none">
@@ -124,11 +145,11 @@ export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { da
 
                 <div>
                     <div className="mb-2 text-sm font-medium">{canvasT("videoCanvas.dialog.cropCommonRatios", "常用比例")}</div>
-                    <div className="grid grid-cols-4 gap-2 sm:grid-cols-8">
+                    <div className="flex flex-wrap gap-1.5">
                         {cropAspectPresets.map((preset) => (
-                            <Button key={preset.value} size="small" type={activePreset === preset.value ? "primary" : "default"} disabled={!image} aria-pressed={activePreset === preset.value} onClick={() => selectAspectPreset(preset)}>
+                            <ChoiceChip key={preset.value} selected={activePreset === preset.value} theme={theme} disabled={!image} onClick={() => selectAspectPreset(preset)}>
                                 {preset.labelKey === "original" ? canvasT("videoCanvas.dialog.cropOriginal", "原图") : preset.label}
-                            </Button>
+                            </ChoiceChip>
                         ))}
                     </div>
                 </div>
@@ -143,22 +164,14 @@ export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { da
                             </span>
                         ) : null}
                     </div>
-                    <Button disabled={!image} icon={lockedRatio !== null ? <Lock className="size-4" /> : <LockOpen className="size-4" />} onClick={toggleAspectLock}>
+                    <CanvasSheetButton theme={theme} disabled={!image} onClick={toggleAspectLock}>
+                        {lockedRatio !== null ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}
                         {lockedRatio !== null ? canvasT("videoCanvas.dialog.cropUnlockRatio", "解除比例锁定") : canvasT("videoCanvas.dialog.cropLockRatio", "锁定当前比例")}
-                    </Button>
+                    </CanvasSheetButton>
                 </div>
 
-                <div className="flex items-center justify-end gap-2">
-                    <Button onClick={resetCrop}>{canvasT("videoCanvas.dialog.cropReset", "重置")}</Button>
-                    <Button icon={<X className="size-4" />} onClick={onClose}>
-                        {canvasT("videoCanvas.dialog.cancel", "取消")}
-                    </Button>
-                    <Button type="primary" icon={<Check className="size-4" />} onClick={() => onConfirm(crop)}>
-                        {canvasT("videoCanvas.dialog.cropConfirm", "确认裁剪")}
-                    </Button>
-                </div>
             </div>
-        </Modal>
+        </CanvasSheet>
     );
 }
 

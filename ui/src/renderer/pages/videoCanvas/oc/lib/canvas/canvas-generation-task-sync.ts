@@ -7,7 +7,9 @@ import { parseBackendGenerationResult } from "@oc/services/api/generation-task";
 import type { GenerationTask } from "@oc/services/api/task-center";
 import { resolveMediaUrl, type UploadedFile } from "@oc/services/file-storage";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@oc/services/image-storage";
+import { resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
+import { fireGenerationTemplateEvent } from "@oc/lib/canvas/generation-template/api";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata } from "@oc/types/canvas";
 
 export function generationTaskInput(task: GenerationTask) {
@@ -36,19 +38,58 @@ export function generationTaskMode(task: GenerationTask, fallback?: CanvasGenera
 /** 任务已在当前服务端成功且仍保留媒体结果时，允许按原 taskId 重新落盘，避免再跑一遍生成。 */
 export function generationTaskCanReloadResource(task: GenerationTask) {
     const mode = generationTaskMode(task);
-    return task.status === "succeeded" && (mode === "image" || mode === "video" || mode === "audio") && (Boolean(task.resultJson) || Boolean(task.outputs?.length));
+    return task.status === "succeeded" && (mode === "image" || mode === "video" || mode === "audio") && Boolean(task.resultJson);
 }
 
 export function imageMetadata(image: UploadedImage): CanvasNodeMetadata {
-    return { content: image.url, storageKey: image.storageKey, status: "success", naturalWidth: image.width, naturalHeight: image.height, bytes: image.bytes, mimeType: image.mimeType, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined };
+    const mediaId = resourceIdFromStorageKey(image.storageKey) || undefined;
+    return {
+        content: image.url,
+        storageKey: image.storageKey,
+        mediaId,
+        status: "success",
+        naturalWidth: image.width,
+        naturalHeight: image.height,
+        bytes: image.bytes,
+        mimeType: image.mimeType,
+        errorDetails: undefined,
+        generationErrorCode: undefined,
+        failedPromptFingerprint: undefined,
+        resourceReloadAvailable: undefined,
+    };
 }
 
 export function videoMetadata(video: UploadedFile): CanvasNodeMetadata {
-    return { content: video.url, storageKey: video.storageKey, status: "success", naturalWidth: video.width, naturalHeight: video.height, bytes: video.bytes, mimeType: video.mimeType || "video/mp4", durationMs: video.durationMs, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined };
+    const mediaId = resourceIdFromStorageKey(video.storageKey) || undefined;
+    return {
+        content: video.url,
+        storageKey: video.storageKey,
+        mediaId,
+        status: "success",
+        naturalWidth: video.width,
+        naturalHeight: video.height,
+        bytes: video.bytes,
+        mimeType: video.mimeType || "video/mp4",
+        durationMs: video.durationMs,
+        hasAudio: video.hasAudio,
+        videoPreview: video.preview ? {
+            content: video.preview.url,
+            storageKey: video.preview.storageKey,
+            width: video.preview.width,
+            height: video.preview.height,
+            bytes: video.preview.bytes,
+            mimeType: video.preview.mimeType,
+        } : undefined,
+        errorDetails: undefined,
+        generationErrorCode: undefined,
+        failedPromptFingerprint: undefined,
+        resourceReloadAvailable: undefined,
+    };
 }
 
 export function audioMetadata(audio: UploadedFile): CanvasNodeMetadata {
-    return { content: audio.url, storageKey: audio.storageKey, status: "success", bytes: audio.bytes, mimeType: audio.mimeType || "audio/mpeg", durationMs: audio.durationMs, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined };
+    const mediaId = resourceIdFromStorageKey(audio.storageKey) || undefined;
+    return { content: audio.url, storageKey: audio.storageKey, mediaId, status: "success", bytes: audio.bytes, mimeType: audio.mimeType || "audio/mpeg", durationMs: audio.durationMs, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined };
 }
 
 export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: GenerationTask, nodes: CanvasNodeData[] = [node]): Promise<CanvasNodeData> {
@@ -103,7 +144,9 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
             bytes: result.video.bytes,
             durationMs: result.video.durationMs,
         });
-        const videoSize = fitNodeSize(video.width || node.width || VIDEO_NODE_MAX_SIZE.width, video.height || node.height || VIDEO_NODE_MAX_SIZE.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+        const videoSize = node.metadata?.locked
+            ? { width: node.width, height: node.height }
+            : fitNodeSize(video.width || node.width || VIDEO_NODE_MAX_SIZE.width, video.height || node.height || VIDEO_NODE_MAX_SIZE.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
         return {
             ...node,
             type: CanvasNodeType.Video,
@@ -130,12 +173,26 @@ export async function applyGenerationTaskResultToNodes(nodes: CanvasNodeData[], 
     const node = findGenerationTaskNode(nodes, task, targetNodeId);
     if (!node) return { nodes, updated: false, nodeId: "", node: null };
     const updatedNode = await buildGenerationTaskNodeResult(node, task, nodes);
+    if (updatedNode.metadata?.status === "success") {
+        fireGenerationTemplateEvent(updatedNode.metadata.appliedTemplate?.id, "succeed");
+    }
     return {
-        nodes: nodes.map((item) => (item.id === node.id ? updatedNode : item)),
+        nodes: applySuccessfulVersionSelection(nodes, updatedNode),
         updated: true,
         nodeId: node.id,
         node: updatedNode,
     };
+}
+
+function applySuccessfulVersionSelection(nodes: CanvasNodeData[], updatedNode: CanvasNodeData) {
+    const versionRootId = updatedNode.metadata?.versionOfNodeId;
+    return nodes.map((item) => {
+        if (item.id === updatedNode.id) {
+            return versionRootId ? { ...updatedNode, metadata: { ...updatedNode.metadata, versionPrimary: true } } : updatedNode;
+        }
+        if (!versionRootId || (item.metadata?.versionOfNodeId || item.id) !== versionRootId) return item;
+        return { ...item, metadata: { ...item.metadata, versionPrimary: false } };
+    });
 }
 
 export async function syncGenerationTaskToCanvasStore(task: GenerationTask) {

@@ -60,7 +60,7 @@ describe("useNodeResourceUrl display policy", () => {
     test("remote media render immediately from the HTTP content URL", () => {
         expect(
             nodeSource.includes(
-                'useState(() => (isRemoteResource && deferUntilInteraction ? "" : fallback))'
+                'useState(() => (isRemoteResource && deferUntilInteraction ? "" : mediaUrl))'
             )
         ).toBe(true);
     });
@@ -68,7 +68,7 @@ describe("useNodeResourceUrl display policy", () => {
     test("eager images keep the HTTP src; only deferred media promote cached blobs", () => {
         expect(
             nodeSource.includes(
-                "if (!cancelled && cached && (deferUntilInteraction || !fallback)) setUrl(cached)"
+                "if (!cancelled && cached && (deferUntilInteraction || !mediaUrl)) setUrl(cached)"
             )
         ).toBe(true);
         expect(nodeSource.includes("deferUntilInteraction = node.type !== CanvasNodeType.Image")).toBe(
@@ -81,12 +81,12 @@ describe("useNodeResourceUrl display policy", () => {
         // URL — that would bypass the explicit "load and cache" button.
         expect(
             nodeSource.includes(
-                "if (!deferUntilInteraction) setUrl(fallback);"
+                "if (!deferUntilInteraction) setUrl(mediaUrl);"
             )
         ).toBe(true);
         expect(
             nodeSource.includes(
-                'useState(() => (isRemoteResource && deferUntilInteraction ? "" : fallback))'
+                'useState(() => (isRemoteResource && deferUntilInteraction ? "" : mediaUrl))'
             )
         ).toBe(true);
     });

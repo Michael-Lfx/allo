@@ -63,7 +63,7 @@ bun install
 bun run dev
 ```
 
-这会执行 `tauri dev --config apps/desktop/tauri.conf.json`。它启动 Vite 开发服务器 (`http://localhost:5173`) 来托管 SPA，构建并启动 `nomifun-desktop`，并在每次启动时在一个全新的空闲 localhost 端口上启动嵌入的后端。
+这会执行 `tauri dev --config apps/desktop/tauri.conf.json`。它启动 Vite 开发服务器 (`http://127.0.0.1:5173`) 来托管 SPA，构建并启动 `nomifun-desktop`，并在每次启动时在一个全新的空闲 localhost 端口上启动嵌入的后端。
 
 ### 构建发布包
 

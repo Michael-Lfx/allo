@@ -1,15 +1,17 @@
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { FolderOpen, FileText, Pic, VideoOne } from '@icon-park/react';
+import { FolderOpen, FileText, Music, Pic, VideoOne } from '@icon-park/react';
 import type { ArtifactNode } from '../types';
+import { isAudioArtifactPath, isImageArtifactPath, isVideoArtifactPath } from '../artifactPresentation';
 
-function guessKind(node: ArtifactNode): 'dir' | 'image' | 'video' | 'text' {
+function guessKind(node: ArtifactNode): 'dir' | 'image' | 'video' | 'audio' | 'text' {
   if (node.is_dir) return 'dir';
   const mime = (node.mime ?? '').toLowerCase();
-  const p = node.path.toLowerCase();
-  if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/.test(p)) return 'image';
-  if (mime.startsWith('video/') || /\.(mp4|webm|mov|avi|mkv)$/.test(p)) return 'video';
+  const p = node.path;
+  if (mime.startsWith('image/') || isImageArtifactPath(p)) return 'image';
+  if (mime.startsWith('video/') || isVideoArtifactPath(p)) return 'video';
+  if (mime.startsWith('audio/') || isAudioArtifactPath(p)) return 'audio';
   return 'text';
 }
 
@@ -58,6 +60,8 @@ function NodeIcon({ kind }: { kind: ReturnType<typeof guessKind> }) {
       return <Pic {...props} />;
     case 'video':
       return <VideoOne {...props} />;
+    case 'audio':
+      return <Music {...props} />;
     default:
       return <FileText {...props} />;
   }
@@ -107,7 +111,11 @@ const TreeRow: React.FC<TreeRowProps> = ({ node, depth, selectedPath, onSelect }
         )}
       </button>
       {node.is_dir && open && node.children?.length
-        ? node.children.map((child) => (
+        ? node.children
+            .filter(
+              (child) => child.name !== '_absorbed' && !child.name.startsWith('.reloc-')
+            )
+            .map((child) => (
             <TreeRow
               key={child.path}
               node={child}

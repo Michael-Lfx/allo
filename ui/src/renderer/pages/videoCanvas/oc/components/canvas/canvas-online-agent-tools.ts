@@ -1,117 +1,179 @@
 import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
+import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH } from "@oc/lib/canvas/canvas-frame";
+import { buildCanvasAgentAliasMap, resolveCanvasAgentNodeId } from "@oc/lib/canvas/canvas-agent-ids";
+import { buildCanvasAgentPlan, type CanvasAgentPlan } from "@oc/lib/canvas/canvas-agent-plan";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
-import { previewCanvasAgentOps, type CanvasAgentOp, type CanvasAgentOperationImpact, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@oc/lib/canvas/canvas-agent-workflow";
+import { compileCanvasApplyOps, compileCanvasRepairOps } from "@oc/lib/canvas/canvas-agent-intent";
+import { compileSpecApplyOps, compileStoryboardApplyOps } from "@oc/lib/canvas/creation-agent-intent";
 import { normalizeModelOptionValue, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
-import { type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@oc/services/api/image";
+import { CANVAS_IMAGE_BATCH_MAX_COUNT, CANVAS_VIDEO_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
+import { encodeToolArguments, parseToolArguments } from "@oc/lib/canvas/canvas-tool-arguments";
+import { type CanvasAgentFunctionTool as ResponseFunctionTool, type CanvasAgentInputMessage as ResponseInputMessage, type CanvasAgentToolCall as ResponseToolCall } from "@oc/lib/canvas/canvas-agent-llm";
+import { CANVAS_AGENT_CONSTITUTION, CANVAS_AGENT_MAX_STEPS, CANVAS_AGENT_READ_TOOLS } from "@oc/lib/canvas/canvas-agent-harness";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
-export const ONLINE_AGENT_MAX_STEPS = 4;
-export const ONLINE_AGENT_PROMPT =
-    "你是影策网页内置在线画布助手。当前画布 JSON 会随用户消息提供。首轮必须调用工具：只读问题调用 canvas_get_state，需要改动画布时调用和本地 Agent 一致的 infinite-canvas 工具。需要生成内容时直接调用 canvas_generate_text、canvas_generate_image、canvas_generate_video、canvas_generate_audio 或 canvas_create_generation_flow；需要精确批量操作时调用 canvas_apply_ops。不要输出 JSON ops，不要编造执行结果。工具参数涉及已有节点时必须使用当前画布 JSON 中真实存在的 id；缺少必要 id 或用户意图不明确时直接说明需要用户明确选择或说明，不要猜测。工具返回结果后，再根据真实结果回答用户。";
-export const ONLINE_READ_TOOLS = new Set(["canvas_get_state", "canvas_get_selection", "canvas_export_snapshot"]);
+export { parseToolArguments } from "@oc/lib/canvas/canvas-tool-arguments";
+
+export const ONLINE_AGENT_MAX_STEPS = CANVAS_AGENT_MAX_STEPS;
+export const ONLINE_AGENT_PROMPT = CANVAS_AGENT_CONSTITUTION;
+export const ONLINE_READ_TOOLS = CANVAS_AGENT_READ_TOOLS;
 
 export type OnlineToolResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
 
 const JSON_RECORD_SCHEMA = { type: "object", additionalProperties: true };
 const POSITION_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"], additionalProperties: false };
-const VIEWPORT_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, k: { type: "number" } }, required: ["x", "y", "k"], additionalProperties: false };
-const NODE_TYPE_SCHEMA = { type: "string", enum: ["image", "text", "skill", "video", "audio"] };
-const GENERATION_MODE_SCHEMA = { type: "string", enum: ["text", "image", "video", "audio"] };
-const GENERATION_OPTION_PROPERTIES = {
-    model: { type: "string" },
-    size: { type: "string" },
-    quality: { type: "string" },
-    transparentBackground: { type: "string", enum: ["true", "false"] },
-    count: { type: "number" },
-    seconds: { type: "string" },
-    vquality: { type: "string" },
-    generateAudio: { type: "string" },
-    watermark: { type: "string" },
-    audioVoice: { type: "string" },
-    audioFormat: { type: "string" },
-    audioSpeed: { type: "string" },
-    audioInstructions: { type: "string" },
-};
-const CANVAS_OP_SCHEMA = {
+const WORKFLOW_NODE_KIND_SCHEMA = { type: "string", enum: ["text", "script", "image", "video", "audio", "character_cards", "character_three_view", "storyboard_video"] };
+const PIPELINE_NODE_SCHEMA = {
     type: "object",
     properties: {
-        type: { type: "string", enum: ["add_node", "update_node", "delete_node", "delete_connections", "connect_nodes", "set_viewport", "select_nodes", "run_generation"] },
-        id: { type: "string" },
-        ids: { type: "array", items: { type: "string" } },
-        nodeType: NODE_TYPE_SCHEMA,
+        ref: { type: "string" },
+        kind: WORKFLOW_NODE_KIND_SCHEMA,
         title: { type: "string" },
-        x: { type: "number" },
-        y: { type: "number" },
+        content: { type: "string" },
+        prompt: { type: "string" },
+        description: { type: "string" },
+        referenceRefs: { type: "array", items: { type: "string" } },
+        referenceNodeIds: { type: "array", items: { type: "string" } },
+        runGeneration: { type: "boolean" },
         width: { type: "number" },
         height: { type: "number" },
-        position: POSITION_SCHEMA,
-        metadata: JSON_RECORD_SCHEMA,
-        patch: JSON_RECORD_SCHEMA,
-        all: { type: "boolean" },
-        fromNodeId: { type: "string" },
-        toNodeId: { type: "string" },
-        viewport: VIEWPORT_SCHEMA,
-        nodeId: { type: "string" },
-        mode: GENERATION_MODE_SCHEMA,
-        prompt: { type: "string" },
+        seconds: { type: "string" },
+        shots: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    plotDescription: { type: "string" },
+                    dialogue: { type: "string" },
+                    durationSeconds: { type: "number" },
+                    imagePrompt: { type: "string" },
+                    videoPrompt: { type: "string" },
+                },
+                additionalProperties: false,
+            },
+        },
     },
-    required: ["type"],
+    required: ["ref", "kind", "title"],
     additionalProperties: false,
+};
+const PIPELINE_EDGE_SCHEMA = { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"], additionalProperties: false };
+const PIPELINE_PATCH_SCHEMA = {
+    type: "object",
+    properties: {
+        id: { type: "string" },
+        title: { type: "string" },
+        content: { type: "string" },
+        prompt: { type: "string" },
+        seconds: { type: "string" },
+        metadata: JSON_RECORD_SCHEMA,
+    },
+    required: ["id"],
+    additionalProperties: false,
+};
+
+const STORYBOARD_APPLY_SHOT_SCHEMA = {
+    type: "object",
+    properties: {
+        id: { type: "string" },
+        index: { type: "number" },
+        plot: { type: "string" },
+        plotDescription: { type: "string" },
+        durationSeconds: { type: "number" },
+        durationSecs: { type: "number" },
+        dialogue: { type: "string" },
+        imagePrompt: { type: "string" },
+        videoPrompt: { type: "string" },
+        stillRole: { type: "string", enum: ["first", "last", "reference"] },
+    },
+    additionalProperties: false,
+};
+const APPLY_PROPERTIES = {
+    title: { type: "string" },
+    description: { type: "string" },
+    nodes: { type: "array", items: PIPELINE_NODE_SCHEMA },
+    edges: { type: "array", items: PIPELINE_EDGE_SCHEMA },
+    patches: { type: "array", items: PIPELINE_PATCH_SCHEMA },
+    deleteIds: { type: "array", items: { type: "string" } },
+    direction: { type: "string", enum: ["horizontal", "vertical"] },
+    start: POSITION_SCHEMA,
+    gap: { type: "number" },
+    run: { type: "boolean" },
+    autoRun: { type: "boolean" },
 };
 
 function toolDefinition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], strict = false): ResponseFunctionTool {
     return { type: "function", function: { name, description, parameters: { type: "object", properties, required, additionalProperties: false }, strict } };
 }
 
-function generationToolDefinition(name: string, description: string, mode?: "text" | "image" | "video" | "audio") {
-    return toolDefinition(
-        name,
-        description,
-        { prompt: { type: "string" }, title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, referenceNodeIds: { type: "array", items: { type: "string" } }, ...(mode ? {} : { mode: GENERATION_MODE_SCHEMA }), autoRun: { type: "boolean" }, ...GENERATION_OPTION_PROPERTIES },
-        ["prompt"],
-    );
-}
-
 export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
-    toolDefinition("canvas_get_state", "读取当前网页画布的节点、连线、选区和视口。", {}),
-    toolDefinition("canvas_get_selection", "读取当前网页画布选中的节点。", {}),
-    toolDefinition("canvas_export_snapshot", "导出当前画布快照，用于理解布局。", {}),
-    toolDefinition("canvas_apply_ops", "批量操作当前网页画布。ops 支持 add_node、update_node、delete_node、delete_connections、connect_nodes、set_viewport、select_nodes、run_generation。", { ops: { type: "array", items: CANVAS_OP_SCHEMA } }, ["ops"], false),
-    toolDefinition("canvas_create_node", "创建任意类型节点：text、image、video、audio。适合创建文本、媒体占位或自定义 metadata 节点。", { nodeType: NODE_TYPE_SCHEMA, title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" }, metadata: JSON_RECORD_SCHEMA }, ["nodeType"]),
-    toolDefinition("canvas_create_text_node", "在当前画布创建单个文本节点。", { text: { type: "string" }, x: { type: "number" }, y: { type: "number" }, title: { type: "string" }, width: { type: "number" }, height: { type: "number" } }),
-    toolDefinition("canvas_create_text_nodes", "批量创建文本节点，适合生成标题、段落、脚本、说明等内容块。", { items: { type: "array", minItems: 1, items: { type: "object", properties: { text: { type: "string" }, title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["text"], additionalProperties: false } }, x: { type: "number" }, y: { type: "number" }, gap: { type: "number" }, direction: { type: "string", enum: ["row", "column"] } }, ["items"]),
-    // 影视会话曾依赖 OC 服务端 Agent；allo 仅代理模型对话，业务工具一律走客户端 canvas_* ops。
-    toolDefinition("canvas_create_image_prompt_flow", "创建提示词文本节点和图片目标节点并自动连线，可选择立即触发生图。", { prompt: { type: "string" }, x: { type: "number" }, y: { type: "number" }, autoRun: { type: "boolean" }, ...GENERATION_OPTION_PROPERTIES }, ["prompt"]),
-    generationToolDefinition("canvas_create_generation_flow", "创建通用生成流程：提示词文本节点、对应类型的生成目标节点和参考节点连线，可用于文案、生图、视频或音频。"),
-    generationToolDefinition("canvas_generate_text", "创建通用文本生成流程并立即触发生成。", "text"),
-    generationToolDefinition("canvas_generate_image", "创建通用图片生成流程并立即触发生成。", "image"),
-    generationToolDefinition("canvas_generate_video", "创建通用视频生成流程并立即触发生成。", "video"),
-    generationToolDefinition("canvas_generate_audio", "创建通用音频生成流程并立即触发生成。", "audio"),
-    toolDefinition("canvas_update_node", "更新节点基础字段或 metadata。", { id: { type: "string" }, patch: JSON_RECORD_SCHEMA, metadata: JSON_RECORD_SCHEMA }, ["id"]),
-    toolDefinition("canvas_update_node_text", "更新文本节点内容和标题。", { id: { type: "string" }, text: { type: "string" }, title: { type: "string" } }, ["id", "text"]),
-    toolDefinition("canvas_move_nodes", "移动一个或多个节点，支持绝对坐标或 dx/dy 偏移。", { items: { type: "array", minItems: 1, items: { type: "object", properties: { id: { type: "string" }, x: { type: "number" }, y: { type: "number" }, dx: { type: "number" }, dy: { type: "number" } }, required: ["id"], additionalProperties: false } } }, ["items"]),
-    toolDefinition("canvas_resize_node", "调整节点尺寸。", { id: { type: "string" }, width: { type: "number" }, height: { type: "number" }, freeResize: { type: "boolean" } }, ["id", "width", "height"]),
-    toolDefinition("canvas_delete_nodes", "删除指定节点及相关连线。", { ids: { type: "array", items: { type: "string" }, minItems: 1 } }, ["ids"]),
-    toolDefinition("canvas_connect_nodes", "批量连接节点。", { connections: { type: "array", minItems: 1, items: { type: "object", properties: { fromNodeId: { type: "string" }, toNodeId: { type: "string" } }, required: ["fromNodeId", "toNodeId"], additionalProperties: false } } }, ["connections"]),
-    toolDefinition("canvas_select_nodes", "设置当前选中节点。", { ids: { type: "array", items: { type: "string" } } }, ["ids"]),
-    toolDefinition("canvas_set_viewport", "调整画布视口。", { viewport: VIEWPORT_SCHEMA }, ["viewport"]),
-    toolDefinition("canvas_run_generation", "触发指定节点生成，通常用于配置节点或文本/图片/视频/音频节点。", { nodeId: { type: "string" }, mode: GENERATION_MODE_SCHEMA, prompt: { type: "string" } }, ["nodeId"]),
+    toolDefinition("canvas_list_skills", "列出画布手册：已放置的 Skill 节点 ∪ 16 本内置手册。只返回元数据。", {}),
+    toolDefinition("canvas_get_skill", "按 skillId（builtin:name / hub:id）或名称加载手册正文。Look 只是视觉槽。未放置的内置手册也可读。", { skillId: { type: "string" }, name: { type: "string" } }),
+    toolDefinition("canvas_list_templates", "列出云端镜头生成模板（封面、任务、节点类型、预估积分）。套用前先选 id 再 canvas_apply_template。不是 Skill Hub 手册。", { keyword: { type: "string" }, nodeType: { type: "string", enum: ["image", "video"] } }),
+    toolDefinition("storyboard_inspect", "读取现有 Script 分镜：镜头、缺口、主体引用。不要另起空分镜。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
+    toolDefinition("storyboard_apply", "把镜头写进已有 Script 节点 rows。按 id 或 index 修补 plot/duration/prompts/stillRole；replace=true 时整表替换。禁止只为了分镜去 canvas_apply 新建 Script。", { shots: { type: "array", items: STORYBOARD_APPLY_SHOT_SCHEMA }, replace: { type: "boolean" } }, ["shots"]),
+    toolDefinition("subject_inspect", "读取已标注主体（角色/场景/道具）及缺口。保持面孔与场景，不要另造替换身份。", {}),
+    toolDefinition("spec_inspect", "读取有约束力的 Video Spec（画幅、时长、分辨率、模型）以及规格快照版本。", {}),
+    toolDefinition("spec_apply", "更新生成配置节点上的 Video Spec。只改给出的字段。", { aspectRatio: { type: "string" }, resolution: { type: "string" }, durationSecs: { type: "number" }, model: { type: "string" }, mediaKind: { type: "string", enum: ["image", "video"] } }),
+    toolDefinition("timeline_inspect", "读取镜头时序（每镜时长与视频节点）。成片导出走宿主时间线对话框，不要另造剪辑器。", {}),
+    toolDefinition(
+        "canvas_inspect",
+        "读取画布观察：图、选区、生成队列、相对上次的 NEW/MODIFIED。可按 query/ids/types 深查节点，或 focus=resources|storyboard|subjects|spec|timeline。每轮消息已含观察摘要，仅在需要细节时调用。",
+        { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, types: { type: "array", items: { type: "string" } }, focus: { type: "string", enum: ["graph", "queue", "resources", "storyboard", "subjects", "spec", "timeline"] }, limit: { type: "number" } },
+    ),
+    toolDefinition(
+        "canvas_propose",
+        "只编译计划，不写画布。用语义节点和边描述你想搭的图，返回阶段、花费和将创建的节点数。同批新节点用 ref，互相引用写 referenceRefs 或 edges；画布已有节点用短 ID（n1）放进 referenceNodeIds。复杂创作可先 propose 再 apply。",
+        APPLY_PROPERTIES,
+    ),
+    toolDefinition(
+        "canvas_apply",
+        "按你设计的节点和连线更新画布。第一次调用就必须包含 nodes（kind/title/prompt）和 edges；只传 description 不会改画布。同批新节点互相引用用 ref/referenceRefs/edges，已有画布节点用短 ID。编译器会补 @ 引用、把 3 张及以上关键帧编成多图参考、拟合时长。patches 改已有节点，deleteIds 删除。run=true 时同时提交生成（仍建议随后 canvas_run 等待）。不要手写底层 ops，不要套固定流水线。",
+        APPLY_PROPERTIES,
+    ),
+    toolDefinition(
+        "canvas_apply_template",
+        "把镜头生成模板物化到画布：写入提示词和模型参数，并按合同创建参考图节点与合法 videoEditOperation（首尾帧存在时不会再混入 extra reference_image）。templateId 必填；可选 nodeId、slotValues。不要当成手册或固定影视流水线。",
+        {
+            templateId: { type: "number" },
+            id: { type: "number" },
+            nodeId: { type: "string" },
+            applyPolicy: { type: "string", enum: ["replace", "merge", "slot-fill"] },
+            slotValues: JSON_RECORD_SCHEMA,
+        },
+    ),
+    toolDefinition(
+        "canvas_run",
+        "对指定节点提交生成并等待终态。nodeIds 可省略：默认跑仍有 prompt 且未成功的媒体节点。wait 默认 true；超时返回 timedOut 和当前队列，不要把未完成说成已完成。",
+        { nodeIds: { type: "array", items: { type: "string" } }, wait: { type: "boolean" }, timeoutMs: { type: "number" } },
+    ),
+    toolDefinition(
+        "canvas_critique",
+        "根据画布真实产物做检查：状态、资源是否就绪、视频是否 @ 了全部入边关键帧、上游是否为空。返回 issues 和错误码，供 repair 使用。",
+        { nodeIds: { type: "array", items: { type: "string" } } },
+    ),
+    toolDefinition(
+        "canvas_repair",
+        "按错误码修复现有画布：rewire_refs 给视频补 @ 引用和参考图；patch 改 prompt/content；rerun 只重跑失败或指定节点。优先修现有图，不要整图重建。",
+        {
+            action: { type: "string", enum: ["rerun", "patch", "rewire_refs"] },
+            nodeIds: { type: "array", items: { type: "string" } },
+            patches: { type: "array", items: PIPELINE_PATCH_SCHEMA },
+            edges: { type: "array", items: PIPELINE_EDGE_SCHEMA },
+        },
+    ),
 ];
 
-export function parseToolArguments(value: string) {
-    try {
-        const parsed = JSON.parse(value || "{}");
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("工具参数必须是 JSON 对象");
-        return parsed as Record<string, unknown>;
-    } catch {
-        throw new Error("工具参数不是合法 JSON 对象");
-    }
-}
-
 export function onlineToolToOps(name: string, input: Record<string, unknown>, snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentOp[] {
+    if (name === "canvas_list_templates" || name === "canvas_apply_template") return [];
     if (name === "canvas_apply_ops") return requireOps(input.ops);
+    if (name === "storyboard_apply") return compileStoryboardApplyOps(input, snapshot);
+    if (name === "spec_apply") return compileSpecApplyOps(input, snapshot);
+    if (name === "canvas_apply" || name === "canvas_create_workflow") return compileCanvasApplyOps(input as unknown as CanvasWorkflowInput & { run?: boolean; patches?: never; deleteIds?: string[] }, snapshot, config);
+    if (name === "canvas_repair") return compileCanvasRepairOps(input, snapshot);
     if (name === "canvas_create_node") {
         const nodeType = requireNodeType(input.nodeType);
         const x = numberOr(input.x, nextCanvasX(snapshot));
@@ -121,6 +183,8 @@ export function onlineToolToOps(name: string, input: Record<string, unknown>, sn
     if (name === "canvas_create_text_node") return [textNodeOp(input, numberOr(input.x, nextCanvasX(snapshot)), numberOr(input.y, 0))];
     if (name === "canvas_create_text_nodes") {
         const items = requireRecordArray(input.items, "items");
+        const textBatch = items.map((item) => `${String(item.title || "")} ${String(item.text || "")}`).join(" ");
+        if (looksLikeWorkflowRequest(textBatch)) throw new Error("检测到流水线/工作流意图，请使用 canvas_apply 创建真实类型节点和连线。");
         const x = numberOr(input.x, nextCanvasX(snapshot));
         const y = numberOr(input.y, 0);
         const gap = numberOr(input.gap, 40);
@@ -133,21 +197,38 @@ export function onlineToolToOps(name: string, input: Record<string, unknown>, sn
     if (name === "canvas_generate_image") return generationFlowOps({ ...input, mode: "image", autoRun: true }, snapshot, config);
     if (name === "canvas_generate_video") return generationFlowOps({ ...input, mode: "video", autoRun: true }, snapshot, config);
     if (name === "canvas_generate_audio") return generationFlowOps({ ...input, mode: "audio", autoRun: true }, snapshot, config);
-    if (name === "canvas_update_node") return [{ type: "update_node", id: requireString(input.id, "id"), patch: recordOptional(input.patch) as Partial<CanvasNodeData> | undefined, metadata: recordOptional(input.metadata) as CanvasNodeData["metadata"] }];
-    if (name === "canvas_update_node_text") return [{ type: "update_node", id: requireString(input.id, "id"), patch: stringOptional(input.title) ? { title: stringOptional(input.title) } : undefined, metadata: { content: requireString(input.text, "text"), status: "success" } }];
+    if (name === "canvas_update_node") return [{ type: "update_node", id: resolveId(snapshot, requireString(input.id, "id")), patch: recordOptional(input.patch) as Partial<CanvasNodeData> | undefined, metadata: recordOptional(input.metadata) as CanvasNodeData["metadata"] }];
+    if (name === "canvas_update_node_text") return [{ type: "update_node", id: resolveId(snapshot, requireString(input.id, "id")), patch: stringOptional(input.title) ? { title: stringOptional(input.title) } : undefined, metadata: { content: requireString(input.text, "text"), status: "success" } }];
     if (name === "canvas_move_nodes") {
         return requireRecordArray(input.items, "items").map((item) => {
-            const id = requireString(item.id, "id");
+            const id = resolveId(snapshot, requireString(item.id, "id"));
             const current = snapshot.nodes.find((node) => node.id === id);
             return { type: "update_node", id, patch: { position: { x: numberOr(item.x, (current?.position.x || 0) + numberOr(item.dx, 0)), y: numberOr(item.y, (current?.position.y || 0) + numberOr(item.dy, 0)) } } };
         });
     }
-    if (name === "canvas_resize_node") return [{ type: "update_node", id: requireString(input.id, "id"), patch: { width: requireNumber(input.width, "width"), height: requireNumber(input.height, "height") }, metadata: typeof input.freeResize === "boolean" ? { freeResize: input.freeResize } : undefined }];
-    if (name === "canvas_delete_nodes") return [{ type: "delete_node", ids: requireStringArray(input.ids, "ids") }];
-    if (name === "canvas_connect_nodes") return requireRecordArray(input.connections, "connections").map((connection) => ({ type: "connect_nodes", fromNodeId: requireString(connection.fromNodeId, "fromNodeId"), toNodeId: requireString(connection.toNodeId, "toNodeId") }));
-    if (name === "canvas_select_nodes") return [{ type: "select_nodes", ids: requireStringArray(input.ids, "ids") }];
+    if (name === "canvas_resize_node") return [{ type: "update_node", id: resolveId(snapshot, requireString(input.id, "id")), patch: { width: requireNumber(input.width, "width"), height: requireNumber(input.height, "height") }, metadata: typeof input.freeResize === "boolean" ? { freeResize: input.freeResize } : undefined }];
+    if (name === "canvas_delete_nodes") return [{ type: "delete_node", ids: requireStringArray(input.ids, "ids").map((id) => resolveId(snapshot, id)) }];
+    if (name === "canvas_connect_nodes") return requireRecordArray(input.connections, "connections").map((connection) => ({ type: "connect_nodes", fromNodeId: resolveId(snapshot, requireString(connection.fromNodeId, "fromNodeId")), toNodeId: resolveId(snapshot, requireString(connection.toNodeId, "toNodeId")) }));
+    if (name === "canvas_select_nodes") return [{ type: "select_nodes", ids: requireStringArray(input.ids, "ids").map((id) => resolveId(snapshot, id)) }];
     if (name === "canvas_set_viewport") return [{ type: "set_viewport", viewport: requireViewport(input.viewport) }];
-    if (name === "canvas_run_generation") return [runGenerationOp(requireString(input.nodeId, "nodeId"), generationMode(input.mode), stringOptional(input.prompt))];
+    if (name === "canvas_run_generation") return [runGenerationOp(resolveId(snapshot, requireString(input.nodeId, "nodeId")), generationMode(input.mode), stringOptional(input.prompt))];
+    if (name === "canvas_create_folder") return folderOps(input, snapshot);
+    if (name === "canvas_create_frame") {
+        const x = numberOr(input.x, nextCanvasX(snapshot));
+        const y = numberOr(input.y, 0);
+        return [{ type: "add_node", nodeType: CanvasNodeType.Frame, title: stringOptional(input.title) || canvasT("videoCanvas.node.frame", "画框"), position: { x, y }, width: numberOptional(input.width), height: numberOptional(input.height) }];
+    }
+    if (name === "canvas_set_video_frames") return videoFrameOps(input, snapshot);
+    if (name === "canvas_create_variants") {
+        const id = resolveId(snapshot, requireString(input.nodeId, "nodeId"));
+        const count = Math.max(1, Math.min(15, Math.floor(requireNumber(input.count, "count"))));
+        const node = snapshot.nodes.find((item) => item.id === id);
+        return [
+            { type: "update_node", id, metadata: { count } },
+            runGenerationOp(id, generationMode(node?.metadata?.generationMode || input.mode), stringOptional(input.prompt)),
+        ];
+    }
+    if (name === "canvas_extract_frames") return [{ type: "extract_frames", nodeId: resolveId(snapshot, requireString(input.nodeId, "nodeId")), timesMs: Array.isArray(input.timesMs) ? input.timesMs.filter((item): item is number => typeof item === "number" && Number.isFinite(item)) : [] }];
     throw new Error(`不支持的工具：${name}`);
 }
 
@@ -197,7 +278,11 @@ function generationTargetNodeOp(id: string, input: Record<string, unknown>, x: n
             size: stringOptional(input.size) || config.size,
             quality: stringOptional(input.quality) || config.quality,
             transparentBackground: stringOptional(input.transparentBackground) || config.transparentBackground,
-            count: numberOptional(input.count) ?? generationCount(mode === "image" ? config.canvasImageCount || config.count : config.count),
+            count: numberOptional(input.count) ?? (mode === "image"
+                ? getCanvasBatchCount(config.canvasImageCount || config.count, CANVAS_IMAGE_BATCH_MAX_COUNT)
+                : mode === "video"
+                    ? getCanvasBatchCount(config.count, CANVAS_VIDEO_BATCH_MAX_COUNT)
+                    : generationCount(config.count)),
             seconds: stringOptional(input.seconds) || config.videoSeconds,
             vquality: stringOptional(input.vquality) || config.vquality,
             generateAudio: stringOptional(input.generateAudio) || config.videoGenerateAudio,
@@ -234,53 +319,86 @@ export function isWritableToolCall(call: ResponseToolCall) {
 }
 
 export function toolCallsFromDetail(detail: Record<string, unknown>): ResponseToolCall[] {
-    return Array.isArray(detail.toolCalls) ? (detail.toolCalls.filter(isResponseToolCall) as ResponseToolCall[]) : [];
+    return Array.isArray(detail.toolCalls) ? detail.toolCalls.flatMap((item) => {
+        const call = normalizeResponseToolCall(item);
+        return call ? [call] : [];
+    }) : [];
+}
+
+export function normalizeResponseToolCall(value: unknown): ResponseToolCall | null {
+    const item = objectDetail(value);
+    const fn = objectDetail(item.function);
+    if (typeof item.id !== "string" || !item.id || item.type !== "function" || typeof fn.name !== "string" || !fn.name) return null;
+    return {
+        id: item.id,
+        type: "function",
+        function: { name: fn.name, arguments: encodeToolArguments(fn.arguments) },
+        ...(typeof item.thoughtSignature === "string" && item.thoughtSignature ? { thoughtSignature: item.thoughtSignature } : {}),
+    };
 }
 
 function isResponseToolCall(value: unknown): value is ResponseToolCall {
-    const item = objectDetail(value);
-    const fn = objectDetail(item.function);
-    return typeof item.id === "string" && item.type === "function" && typeof fn.name === "string" && typeof fn.arguments === "string";
+    return Boolean(normalizeResponseToolCall(value));
 }
 
 export function toolCallToResponseInput(call: ResponseToolCall): ResponseInputMessage {
-    return { type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments, ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}) };
+    return { type: "function_call", call_id: call.id, name: call.function.name, arguments: encodeToolArguments(call.function.arguments), ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}) };
 }
 
 export function summarizeToolCalls(calls: ResponseToolCall[]) {
-    return calls.map((call) => toolCallLabel(call.function.name)).join("，") || "工具调用";
+    return calls.map((call) => describeOnlineToolActivity(call.function.name)).join("，") || "工具调用";
 }
 
-export function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentOperationImpact {
+export function describeOnlineToolActivity(name: string) {
+    return toolCallLabel(name);
+}
+
+export function describeOnlineToolProgress(name: string) {
+    return canvasT("videoCanvas.agent.activityTool", "正在{{label}}…", { label: toolCallLabel(name) });
+}
+
+export function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentPlan {
     const ops: CanvasAgentOp[] = [];
-    let deferredCinematicCount = 0;
     calls.filter(isWritableToolCall).forEach((call) => {
-        if (call.function.name === "canvas_create_cinematic_session") {
-            deferredCinematicCount += 1;
-            return;
-        }
         try {
             ops.push(...onlineToolToOps(call.function.name, parseToolArguments(call.function.arguments), snapshot, config));
         } catch {
             // 参数错误会在真正执行时显式失败；预览阶段只展示可确定的影响。
         }
     });
-    const impact = previewCanvasAgentOps(ops, snapshot);
-    if (!deferredCinematicCount) return impact;
-    return {
-        ...impact,
-        operationCount: impact.operationCount + deferredCinematicCount,
-        items: [...impact.items, canvasT("videoCanvas.agent.impactCinematicItem", "启动影视 Agent，会话完成后将剧本、分镜和生成节点写回当前画布")].slice(0, 8),
-        warning: [impact.warning, canvasT("videoCanvas.agent.impactCinematicWarning", "影视 Agent 的具体写回范围将在后端完成拆解后确定。")].filter(Boolean).join(" "),
-    };
+    return buildCanvasAgentPlan(ops, snapshot, config);
 }
 
 function toolCallLabel(name: string) {
+    if (name === "canvas_list_skills") return canvasT("videoCanvas.agent.tlListSkills", "列出技能");
+    if (name === "canvas_get_skill") return canvasT("videoCanvas.agent.tlGetSkill", "加载技能");
+    if (name === "canvas_list_templates") return canvasT("videoCanvas.agent.tlListTemplates", "列出生成模板");
+    if (name === "canvas_apply_template") return canvasT("videoCanvas.agent.tlApplyTemplate", "套用生成模板");
+    if (name === "storyboard_inspect") return canvasT("videoCanvas.agent.tlStoryboardInspect", "观察分镜");
+    if (name === "storyboard_apply") return canvasT("videoCanvas.agent.tlStoryboardApply", "更新分镜");
+    if (name === "subject_inspect") return canvasT("videoCanvas.agent.tlSubjectInspect", "观察主体");
+    if (name === "spec_inspect") return canvasT("videoCanvas.agent.tlSpecInspect", "观察规格");
+    if (name === "spec_apply") return canvasT("videoCanvas.agent.tlSpecApply", "更新规格");
+    if (name === "timeline_inspect") return canvasT("videoCanvas.agent.tlTimelineInspect", "观察时间线");
+    if (name === "canvas_inspect") return canvasT("videoCanvas.agent.tlInspect", "观察画布");
+    if (name === "canvas_propose") return canvasT("videoCanvas.agent.tlPropose", "提出计划");
+    if (name === "canvas_apply") return canvasT("videoCanvas.agent.tlApply", "更新画布");
+    if (name === "canvas_run") return canvasT("videoCanvas.agent.tlRun", "提交并等待生成");
+    if (name === "canvas_critique") return canvasT("videoCanvas.agent.tlCritique", "评价产物");
+    if (name === "canvas_repair") return canvasT("videoCanvas.agent.tlRepair", "修复画布");
     if (name === "canvas_apply_ops") return canvasT("videoCanvas.agent.tlApplyOps", "画布操作");
     if (name === "canvas_get_state") return canvasT("videoCanvas.agent.tlGetState", "读取画布");
+    if (name === "canvas_get_context") return canvasT("videoCanvas.agent.tlGetContext", "读取上下文");
+    if (name === "canvas_find_nodes") return canvasT("videoCanvas.agent.tlFindNodes", "检索节点");
+    if (name === "canvas_get_node") return canvasT("videoCanvas.agent.tlGetNode", "读取节点");
+    if (name === "canvas_get_connection") return canvasT("videoCanvas.agent.tlGetConnection", "读取连线");
+    if (name === "canvas_get_generation_tasks") return canvasT("videoCanvas.agent.tlGetGenerationTasks", "读取生成任务");
+    if (name === "canvas_wait_generation") return canvasT("videoCanvas.agent.tlWaitGeneration", "等待生成");
+    if (name === "canvas_get_resources") return canvasT("videoCanvas.agent.tlGetResources", "读取资源");
+    if (name === "canvas_validate_ops") return canvasT("videoCanvas.agent.tlValidateOps", "校验操作");
     if (name === "canvas_get_selection") return canvasT("videoCanvas.agent.tlGetSelection", "读取选区");
     if (name === "canvas_export_snapshot") return canvasT("videoCanvas.agent.tlExportSnapshot", "导出快照");
-    if (name === "canvas_create_cinematic_session") return canvasT("videoCanvas.agent.tlCreateCinematic", "创建影视项目");
+    if (name === "canvas_create_workflow") return canvasT("videoCanvas.agent.tlCreateWorkflow", "创建工作流");
     if (name === "canvas_create_node") return canvasT("videoCanvas.agent.tlCreateNode", "创建节点");
     if (name === "canvas_create_text_node") return canvasT("videoCanvas.agent.tlCreateTextNode", "创建文本");
     if (name === "canvas_create_text_nodes") return canvasT("videoCanvas.agent.tlCreateTextNodes", "批量创建文本");
@@ -299,12 +417,41 @@ function toolCallLabel(name: string) {
     if (name === "canvas_select_nodes") return canvasT("videoCanvas.agent.tlSelectNodes", "选择节点");
     if (name === "canvas_set_viewport") return canvasT("videoCanvas.agent.tlSetViewport", "调整视口");
     if (name === "canvas_run_generation") return canvasT("videoCanvas.agent.tlRunGeneration", "触发生成");
+    if (name === "canvas_create_folder") return canvasT("videoCanvas.agent.tlCreateFolder", "创建文件夹");
+    if (name === "canvas_create_frame") return canvasT("videoCanvas.agent.tlCreateFrame", "创建画框");
+    if (name === "canvas_set_video_frames") return canvasT("videoCanvas.agent.tlSetVideoFrames", "指定首尾帧");
+    if (name === "canvas_create_variants") return canvasT("videoCanvas.agent.tlCreateVariants", "生成变体");
+    if (name === "canvas_extract_frames") return canvasT("videoCanvas.agent.tlExtractFrames", "提取画面");
     return name;
 }
 
 export function requireOps(value: unknown): CanvasAgentOp[] {
     if (!Array.isArray(value)) throw new Error("ops 必须是数组");
     return value.map(toCanvasAgentOp);
+}
+
+export function inspectCanvasOps(value: unknown): { ops: CanvasAgentOp[]; issues: string[] } {
+    if (!Array.isArray(value)) return { ops: [], issues: ["ops 必须是数组"] };
+    const ops: CanvasAgentOp[] = [];
+    const issues: string[] = [];
+    value.forEach((item, index) => {
+        try {
+            ops.push(toCanvasAgentOp(item));
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "操作参数无效";
+            const hint = malformedOpHint(item);
+            issues.push(`ops[${index}] ${message}${hint ? `。${hint}` : ""}`);
+        }
+    });
+    return { ops, issues };
+}
+
+function malformedOpHint(value: unknown) {
+    const item = objectDetail(value);
+    if (item.type === "run_generation") return "run_generation 需要已有节点的 nodeId；若节点还不存在，请改用 canvas_apply";
+    if (item.type === "update_node") return "update_node 需要已有节点的 id";
+    if (item.type === "connect_nodes") return "connect_nodes 需要 fromNodeId 和 toNodeId";
+    return "";
 }
 
 function toCanvasAgentOp(value: unknown): CanvasAgentOp {
@@ -321,6 +468,7 @@ function toCanvasAgentOp(value: unknown): CanvasAgentOp {
             y: numberOptional(item.y),
             width: numberOptional(item.width),
             height: numberOptional(item.height),
+            parentId: stringOptional(item.parentId) || undefined,
             metadata: recordOptional(item.metadata) as CanvasNodeData["metadata"],
         };
     }
@@ -331,6 +479,7 @@ function toCanvasAgentOp(value: unknown): CanvasAgentOp {
     if (type === "set_viewport") return { type, viewport: requireViewport(item.viewport) };
     if (type === "select_nodes") return { type, ids: requireStringArray(item.ids, "ids") };
     if (type === "run_generation") return { type, nodeId: requireString(item.nodeId, "nodeId"), mode: generationMode(item.mode), prompt: stringOptional(item.prompt) };
+    if (type === "extract_frames") return { type, nodeId: requireString(item.nodeId, "nodeId"), timesMs: Array.isArray(item.timesMs) ? (item.timesMs as unknown[]).filter((value): value is number => typeof value === "number" && Number.isFinite(value)) : [] };
     throw new Error("不支持的画布操作类型");
 }
 
@@ -349,7 +498,7 @@ function requireRecordArray(value: unknown, field: string): Record<string, unkno
     });
 }
 
-function requireString(value: unknown, field: string) {
+export function requireString(value: unknown, field: string) {
     if (typeof value !== "string" || !value) throw new Error(`${field} 必须是非空字符串`);
     return value;
 }
@@ -387,6 +536,51 @@ function numberOptional(value: unknown) {
 
 function numberOr(value: unknown, fallback: number) {
     return numberOptional(value) ?? fallback;
+}
+
+function folderOps(input: Record<string, unknown>, snapshot: CanvasAgentSnapshot): CanvasAgentOp[] {
+    const folderId = `folder-${nanoid()}`;
+    const x = numberOr(input.x, nextCanvasX(snapshot));
+    const y = numberOr(input.y, 0);
+    const childIds = Array.isArray(input.childNodeIds) ? input.childNodeIds.filter((id): id is string => typeof id === "string").map((id) => resolveId(snapshot, id)) : [];
+    return [
+        {
+            type: "add_node",
+            id: folderId,
+            nodeType: CanvasNodeType.Frame,
+            title: stringOptional(input.title) || canvasT("videoCanvas.node.folderDefault", "我的文件"),
+            position: { x, y },
+            width: FOLDER_COLLAPSED_WIDTH,
+            height: FOLDER_COLLAPSED_HEIGHT,
+            metadata: {
+                frame: { collapsed: true, expandedWidth: FOLDER_COLLAPSED_WIDTH, expandedHeight: FOLDER_COLLAPSED_HEIGHT },
+                folder: { style: "glass", theme: "aurora", createdAt: new Date().toISOString() },
+            },
+        },
+        ...childIds.map((id) => ({ type: "update_node" as const, id, patch: { parentId: folderId } })),
+        { type: "select_nodes", ids: [folderId] },
+    ];
+}
+
+function videoFrameOps(input: Record<string, unknown>, snapshot: CanvasAgentSnapshot): CanvasAgentOp[] {
+    const nodeId = resolveId(snapshot, requireString(input.nodeId, "nodeId"));
+    const startId = stringOptional(input.startFrameNodeId) ? resolveId(snapshot, stringOptional(input.startFrameNodeId)) : "";
+    const endId = stringOptional(input.endFrameNodeId) ? resolveId(snapshot, stringOptional(input.endFrameNodeId)) : "";
+    const ops: CanvasAgentOp[] = [{
+        type: "update_node",
+        id: nodeId,
+        metadata: cleanRecord({
+            videoStartFrameNodeId: startId || undefined,
+            videoEndFrameNodeId: endId || undefined,
+        }) as CanvasNodeData["metadata"],
+    }];
+    if (startId) ops.push({ type: "connect_nodes", fromNodeId: startId, toNodeId: nodeId });
+    if (endId) ops.push({ type: "connect_nodes", fromNodeId: endId, toNodeId: nodeId });
+    return ops;
+}
+
+function resolveId(snapshot: CanvasAgentSnapshot, token: string) {
+    return resolveCanvasAgentNodeId(snapshot, token, buildCanvasAgentAliasMap(snapshot.nodes)) || token;
 }
 
 function nextCanvasX(snapshot: CanvasAgentSnapshot) {

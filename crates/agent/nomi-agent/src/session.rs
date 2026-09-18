@@ -51,6 +51,11 @@ pub struct Session {
     /// messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editable_turn: Option<EditableTurnCheckpoint>,
+    /// When the last user-facing engine turn finished. Used on resume and
+    /// the next send to decide idle compact after prefix-cache expiry.
+    /// Legacy sessions omit this field; resume falls back to `updated_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_ended_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +119,7 @@ impl SessionManager {
             owner_token: None,
             activated_deferred_tools: Vec::new(),
             editable_turn: None,
+            last_turn_ended_at: None,
         };
         self.save(&session)?;
         self.update_index(&session)?;
@@ -123,6 +129,16 @@ impl SessionManager {
 
     /// Save current session state (called after each turn)
     pub fn save(&self, session: &Session) -> anyhow::Result<()> {
+        self.write_session_file(session, true)
+    }
+
+    /// Compact JSON, used on intermediate tool rounds so checkpoint IO does not
+    /// sit on the next-turn TTFT path. Callers skip index updates.
+    pub fn save_coalesced(&self, session: &Session) -> anyhow::Result<()> {
+        self.write_session_file(session, false)
+    }
+
+    fn write_session_file(&self, session: &Session, pretty: bool) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.directory)?;
         let filename = format!(
             "{}_{}.json",
@@ -130,7 +146,11 @@ impl SessionManager {
             session.id
         );
         let path = self.directory.join(&filename);
-        let json = serde_json::to_string_pretty(session)?;
+        let json = if pretty {
+            serde_json::to_string_pretty(session)?
+        } else {
+            serde_json::to_string(session)?
+        };
         std::fs::write(path, json)?;
         Ok(())
     }
@@ -191,7 +211,8 @@ impl SessionManager {
     fn update_index(&self, session: &Session) -> anyhow::Result<()> {
         let mut index = self.load_index()?;
 
-        // Extract summary from first user message
+        // Extract summary from first user message, skipping persisted
+        // turn-tail `[Context]` so the index shows what the user typed.
         let summary = session
             .messages
             .iter()
@@ -199,6 +220,9 @@ impl SessionManager {
             .and_then(|m| {
                 m.content.iter().find_map(|c| {
                     if let nomi_types::message::ContentBlock::Text { text } = c {
+                        if crate::context_contributor::is_turn_tail_context_text(text) {
+                            return None;
+                        }
                         Some(truncate_str(text, 80))
                     } else {
                         None
@@ -361,6 +385,24 @@ mod tests {
         assert_eq!(loaded.cwd, "/home");
         assert_eq!(loaded.activated_deferred_tools, session.activated_deferred_tools);
         assert_eq!(loaded.editable_turn, session.editable_turn);
+        assert_eq!(loaded.last_turn_ended_at, None);
+    }
+
+    #[test]
+    fn last_turn_ended_at_roundtrips() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let mut session = manager
+            .create("anthropic", "claude-3", "/home", None)
+            .unwrap();
+        let ended = Utc::now();
+        session.last_turn_ended_at = Some(ended);
+        manager.save(&session).unwrap();
+        let loaded = manager.load(&session.id).unwrap();
+        assert_eq!(
+            loaded.last_turn_ended_at.map(|t| t.timestamp()),
+            Some(ended.timestamp())
+        );
     }
 
     #[test]

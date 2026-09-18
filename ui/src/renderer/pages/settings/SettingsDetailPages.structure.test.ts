@@ -37,10 +37,9 @@ describe('settings detail-page visual contracts', () => {
     const skills = read('./SkillsSettingsPage.tsx');
     const presets = read('./PresetSettings/index.tsx');
     const mcp = read('../mcp/index.tsx');
-    const plugins = read('../mcp/PluginSettingsPage.tsx');
     const tools = read('../../components/settings/SettingsModal/contents/ToolsModalContent.tsx');
 
-    for (const source of [skills, presets, mcp, plugins]) {
+    for (const source of [skills, presets, mcp]) {
       expect(source).toContain('CapabilityHubShell');
       expect(source).not.toContain('flowy-settings-tabs');
     }

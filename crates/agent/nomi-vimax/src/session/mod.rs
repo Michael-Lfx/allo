@@ -12,6 +12,10 @@ use crate::domain::WorkflowKind;
 use crate::error::{VimaxError, VimaxResult};
 use crate::progress::{RenderStatus, RunStatus};
 
+/// Sidecar under `{working_dir}/` so Agent session history + live credits survive
+/// process restart. Hidden from the artifact tree.
+pub const RUN_STATUS_FILENAME: &str = "run_status.json";
+
 pub mod action_assets;
 pub mod archive;
 pub mod cameo;
@@ -20,6 +24,18 @@ pub use action_assets::ActionAssetsInfo;
 pub use archive::{ARCHIVE_EXTENSION, ArchiveManifest};
 pub use cameo::{CameoManifest, CameoPhotoEntry, CameoUpdate};
 pub use path_remap::{remap_imported_working_paths, resolve_stored_asset_path};
+
+/// Display title cap shared with the task-details editor.
+const SESSION_TITLE_MAX_CHARS: usize = 80;
+
+fn normalize_session_title(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.chars().count() <= SESSION_TITLE_MAX_CHARS {
+        trimmed.to_string()
+    } else {
+        trimmed.chars().take(SESSION_TITLE_MAX_CHARS).collect()
+    }
+}
 
 const STALE_KEYS: &[&str] = &[
     "story",
@@ -320,7 +336,7 @@ impl SessionIndex {
         let record = SessionRecord {
             session_id: session_id.clone(),
             working_dir: working_rel,
-            title: title.unwrap_or_else(|| format!("{} session", workflow.as_str())),
+            title: normalize_session_title(&title.unwrap_or_default()),
             workflow,
             idea: String::new(),
             script: String::new(),
@@ -365,6 +381,14 @@ impl SessionIndex {
         }
         record.updated_at = chrono::Local::now().to_rfc3339();
         self.save(&data)
+    }
+
+    /// Set the display title. Empty after trim is allowed (UI shows 未命名任务).
+    pub fn rename(&self, session_id: &str, title: &str) -> VimaxResult<SessionRecord> {
+        let title = normalize_session_title(title);
+        self.update_fields(session_id, |record| {
+            record.title = title;
+        })
     }
 
     pub fn update_fields<F>(&self, session_id: &str, mutator: F) -> VimaxResult<SessionRecord>
@@ -428,6 +452,23 @@ impl SessionIndex {
         }
         std::fs::create_dir_all(&path)?;
         Ok(path)
+    }
+
+    fn run_status_path(&self, session_id: &str) -> VimaxResult<PathBuf> {
+        Ok(self.working_dir(session_id)?.join(RUN_STATUS_FILENAME))
+    }
+
+    /// Load the persisted pipeline log for a session (empty after first create).
+    pub fn load_run_status(&self, session_id: &str) -> Option<RenderStatus> {
+        let path = self.run_status_path(session_id).ok()?;
+        let raw = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// Atomically write the pipeline log next to session artifacts.
+    pub fn save_run_status(&self, session_id: &str, status: &RenderStatus) -> VimaxResult<()> {
+        let path = self.run_status_path(session_id)?;
+        atomic_write_json(&path, status)
     }
 
     /// Artifact presence checklist (ViMax `SessionIndex.artifact_checklist`).
@@ -684,6 +725,9 @@ fn walk_tree(root: &Path, dir: &Path) -> VimaxResult<Vec<ArtifactNode>> {
     for entry in read {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        if name == RUN_STATUS_FILENAME || name == "run_status.json.tmp" {
+            continue;
+        }
         let rel = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -724,8 +768,18 @@ fn guess_mime(path: &Path) -> Option<String> {
         "png" => Some("image/png".into()),
         "jpg" | "jpeg" => Some("image/jpeg".into()),
         "webp" => Some("image/webp".into()),
+        "gif" => Some("image/gif".into()),
+        "bmp" => Some("image/bmp".into()),
         "mp4" => Some("video/mp4".into()),
         "webm" => Some("video/webm".into()),
+        "mov" => Some("video/quicktime".into()),
+        "wav" => Some("audio/wav".into()),
+        "mp3" => Some("audio/mpeg".into()),
+        "m4a" => Some("audio/mp4".into()),
+        "aac" => Some("audio/aac".into()),
+        "ogg" | "oga" => Some("audio/ogg".into()),
+        "flac" => Some("audio/flac".into()),
+        "opus" => Some("audio/opus".into()),
         "json" => Some("application/json".into()),
         "txt" | "md" => Some("text/plain".into()),
         _ => None,
@@ -773,19 +827,118 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> VimaxResult<()> {
     Ok(())
 }
 
-/// Persist JSON artifact helper used by pipelines.
+fn unique_part_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact.json");
+    path.with_file_name(format!("{name}.{}.part", Uuid::new_v4().simple()))
+}
+
+/// Persist JSON via a unique temp file + rename so concurrent readers never
+/// observe a truncated empty body (`EOF while parsing a value at line 1 column 0`).
 pub async fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> VimaxResult<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     let raw = serde_json::to_string_pretty(value)?;
-    tokio::fs::write(path, raw).await?;
-    Ok(())
+    let tmp = unique_part_path(path);
+    tokio::fs::write(&tmp, &raw).await?;
+    // Unix `rename` replaces the dest atomically. Windows cannot replace, so only
+    // then remove+rename — readers retry `NotFound` across that tiny window.
+    match tokio::fs::rename(&tmp, path).await {
+        Ok(()) => Ok(()),
+        Err(_) if path.exists() => {
+            let _ = tokio::fs::remove_file(path).await;
+            if let Err(e) = tokio::fs::rename(&tmp, path).await {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return Err(e.into());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(e.into())
+        }
+    }
 }
 
 pub async fn read_json_artifact<T: for<'de> Deserialize<'de>>(path: &Path) -> VimaxResult<T> {
-    let raw = tokio::fs::read_to_string(path).await?;
-    Ok(serde_json::from_str(&raw)?)
+    const ATTEMPTS: u32 = 6;
+    let mut last_err: Option<String> = None;
+    for attempt in 1..=ATTEMPTS {
+        let raw = match tokio::fs::read_to_string(path).await {
+            Ok(raw) => raw,
+            Err(e)
+                if attempt < ATTEMPTS
+                    && (e.kind() == std::io::ErrorKind::NotFound
+                        || e.kind() == std::io::ErrorKind::Interrupted) =>
+            {
+                last_err = Some(format!("JSON artifact missing at {}: {e}", path.display()));
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            last_err = Some(format!(
+                "empty JSON artifact at {} (interrupted write or concurrent planner)",
+                path.display()
+            ));
+            if attempt < ATTEMPTS {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                continue;
+            }
+            break;
+        }
+        match serde_json::from_str(trimmed) {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < ATTEMPTS && e.is_eof() => {
+                last_err = Some(format!("JSON error at {}: {e}", path.display()));
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(e) => {
+                return Err(VimaxError::msg(format!(
+                    "JSON error at {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Err(VimaxError::msg(last_err.unwrap_or_else(|| {
+        format!("unreadable JSON artifact at {}", path.display())
+    })))
+}
+
+/// Copy JSON only when the source parses. Destination is written atomically so
+/// concurrent readers never see a truncated empty file.
+pub async fn copy_json_artifact_if_readable(src: &Path, dest: &Path) -> VimaxResult<bool> {
+    if !src.is_file() {
+        return Ok(false);
+    }
+    if tokio::fs::metadata(src)
+        .await
+        .map(|m| m.len() == 0)
+        .unwrap_or(false)
+    {
+        return Ok(false);
+    }
+    match read_json_artifact::<Value>(src).await {
+        Ok(value) => {
+            write_json_artifact(dest, &value).await?;
+            Ok(true)
+        }
+        Err(e) => {
+            tracing::warn!(
+                src = %src.display(),
+                dest = %dest.display(),
+                error = %e,
+                "skipping copy of unreadable JSON artifact"
+            );
+            Ok(false)
+        }
+    }
 }
 
 pub async fn write_text_artifact(path: &Path, text: &str) -> VimaxResult<()> {
@@ -835,6 +988,21 @@ pub fn apply_video_task_credits(
     true
 }
 
+/// Credits on `video_poll` heartbeats are in-flight snapshots and must not hit
+/// the ledger — only the terminal `video_credits` event is authoritative.
+pub fn video_task_credit_delta(
+    stage: &str,
+    meta: Option<&Value>,
+) -> Option<(i64, i64)> {
+    if stage != "video_credits" {
+        return None;
+    }
+    let m = meta?;
+    let credits = m.get("credits_consumed")?.as_i64().filter(|c| *c > 0)?;
+    let task_id = m.get("task_id")?.as_i64().filter(|t| *t > 0)?;
+    Some((task_id, credits))
+}
+
 /// Convenience: empty metadata object for progress events.
 pub fn meta_json(map: impl IntoIterator<Item = (&'static str, Value)>) -> Option<Value> {
     let mut obj = serde_json::Map::new();
@@ -850,6 +1018,30 @@ mod import_export_tests {
     use crate::domain::WorkflowKind;
     use crate::progress::{INTERRUPTED_SUMMARY, RunStatus};
     use tempfile::tempdir;
+
+    #[test]
+    fn create_without_title_stays_untitled_and_rename_persists() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let record = index.create(WorkflowKind::Idea2Video, None).unwrap();
+        assert!(record.title.is_empty());
+
+        let blank = index
+            .create(WorkflowKind::Idea2Video, Some("   ".into()))
+            .unwrap();
+        assert!(blank.title.is_empty());
+
+        let renamed = index.rename(&record.session_id, "  雨夜车站  ").unwrap();
+        assert_eq!(renamed.title, "雨夜车站");
+        assert_eq!(index.get(&record.session_id).unwrap().title, "雨夜车站");
+
+        let cleared = index.rename(&record.session_id, "   ").unwrap();
+        assert!(cleared.title.is_empty());
+
+        let long = "标".repeat(100);
+        let truncated = index.rename(&record.session_id, &long).unwrap();
+        assert_eq!(truncated.title.chars().count(), SESSION_TITLE_MAX_CHARS);
+    }
 
     #[test]
     fn reconcile_orphaned_active_runs_preserves_stage() {
@@ -1098,5 +1290,113 @@ mod import_export_tests {
         assert_eq!(record.credits_consumed, 6000);
         assert!(!apply_video_task_credits(&mut record, 12, 0));
         assert_eq!(record.credits_consumed, 6000);
+    }
+
+    #[test]
+    fn video_poll_heartbeats_do_not_enter_the_credit_ledger() {
+        let poll = serde_json::json!({"task_id": 10, "credits_consumed": 5200});
+        assert!(video_task_credit_delta("video_poll", Some(&poll)).is_none());
+        assert_eq!(
+            video_task_credit_delta("video_credits", Some(&poll)),
+            Some((10, 5200))
+        );
+    }
+
+    #[test]
+    fn run_status_sidecar_roundtrips_events_and_credits() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let record = index
+            .create(WorkflowKind::Script2Video, Some("t".into()))
+            .unwrap();
+        let mut status = RenderStatus::default();
+        status.status = RunStatus::Succeeded;
+        status.credits_consumed = 5200;
+        status.emit("extract_characters", "ok", None);
+        status.emit("character_portraits_done", "ok", None);
+        status.emit("planned", "ok", None);
+        index.save_run_status(&record.session_id, &status).unwrap();
+        let loaded = index.load_run_status(&record.session_id).unwrap();
+        assert_eq!(loaded.credits_consumed, 5200);
+        assert_eq!(loaded.events.len(), 3);
+        assert_eq!(loaded.events[0].stage, "extract_characters");
+        let tree = index.list_artifacts(&record.session_id).unwrap();
+        let names: Vec<_> = tree.iter().map(|n| n.name.as_str()).collect();
+        assert!(!names.contains(&RUN_STATUS_FILENAME));
+    }
+
+    #[tokio::test]
+    async fn write_json_artifact_is_never_empty_on_disk() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("characters.json");
+        write_json_artifact(&path, &serde_json::json!({"ok": true}))
+            .await
+            .unwrap();
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(!raw.trim().is_empty());
+        let value: serde_json::Value = read_json_artifact(&path).await.unwrap();
+        assert_eq!(value["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn read_json_artifact_rejects_empty_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.json");
+        tokio::fs::write(&path, "").await.unwrap();
+        let err = read_json_artifact::<serde_json::Value>(&path)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("empty JSON artifact"), "{msg}");
+        assert!(
+            !msg.contains("EOF while parsing a value at line 1 column 0"),
+            "{msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_json_artifact_skips_empty_source() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("empty.json");
+        let dest = dir.path().join("dest.json");
+        tokio::fs::write(&src, "").await.unwrap();
+        assert!(!copy_json_artifact_if_readable(&src, &dest).await.unwrap());
+        assert!(!dest.exists());
+    }
+
+    #[tokio::test]
+    async fn json_artifact_readers_never_see_empty_during_overwrite() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("shared.json");
+        write_json_artifact(&path, &serde_json::json!({"n": 0}))
+            .await
+            .unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let path_w = path.clone();
+        let writer = tokio::spawn(async move {
+            for i in 1..=30 {
+                write_json_artifact(&path_w, &serde_json::json!({ "n": i }))
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let path = path.clone();
+            let stop = std::sync::Arc::clone(&stop);
+            readers.push(tokio::spawn(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    let value: serde_json::Value = read_json_artifact(&path).await.unwrap();
+                    assert!(value.get("n").is_some(), "{value}");
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+        writer.await.unwrap();
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.await.unwrap();
+        }
     }
 }

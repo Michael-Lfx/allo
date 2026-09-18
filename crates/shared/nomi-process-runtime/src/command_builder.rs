@@ -683,6 +683,49 @@ fn strip_process_environment(command: &mut Command) {
         .env_remove("CLAUDECODE");
 }
 
+/// Hide console windows for console-subsystem CLIs under a Windows GUI host.
+///
+/// No-op on non-Windows. Does **not** attach Job objects, strip env, or change
+/// Unix process groups — use [`ChildProcessBuilder`] / [`crate::ProcessSupervisor`]
+/// when you need managed-tree lifecycle.
+pub fn apply_hidden_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
+/// [`std::process::Command`] counterpart of [`apply_hidden_console`].
+pub fn apply_hidden_console_std(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
+/// One-shot tokio spawn helper with Windows console hide applied.
+pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program.as_ref());
+    apply_hidden_console(&mut command);
+    command
+}
+
+/// One-shot `std::process::Command` helper with Windows console hide applied.
+pub fn hidden_std_command(program: impl AsRef<OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program.as_ref());
+    apply_hidden_console_std(&mut command);
+    command
+}
+
 #[cfg(unix)]
 fn configure_platform_spawn(command: &mut Command) {
     command.process_group(0);
@@ -690,7 +733,7 @@ fn configure_platform_spawn(command: &mut Command) {
 
 #[cfg(windows)]
 fn configure_platform_spawn(command: &mut Command) {
-    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    apply_hidden_console(command);
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -786,6 +829,14 @@ pub async fn kill_process_tree(child: &mut Child) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_command_builders_construct() {
+        let tokio_cmd = hidden_command("git");
+        assert!(format!("{tokio_cmd:?}").contains("git"));
+        let std_cmd = hidden_std_command("git");
+        assert!(format!("{std_cmd:?}").contains("git"));
+    }
 
     #[test]
     fn merge_process_path_preserves_order_and_deduplicates() {

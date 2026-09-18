@@ -474,10 +474,9 @@ async fn test_post_hook_runs_after_tool() {
     }
 }
 
-/// Results that exceed max_result_size are truncated with a "[truncated N chars]" marker
+/// Results that exceed the 32KB provider output cap are truncated.
 #[tokio::test]
 async fn test_tool_result_truncation() {
-    // Default max_result_size is 50_000; build a result that exceeds it
     let long_result: String = "x".repeat(60_000);
 
     let mut registry = ToolRegistry::new();

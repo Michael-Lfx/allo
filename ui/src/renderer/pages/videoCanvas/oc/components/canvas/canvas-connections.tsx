@@ -3,7 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
-import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
+import { STORYBOARD_COMPOSER_MIN_HEIGHT, STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@oc/types/canvas";
 
 export const ConnectionPath = React.memo(function ConnectionPath({
@@ -14,6 +14,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     toScrollTop = 0,
     active,
     visualMode = "full",
+    hideVisual = false,
     onSelect,
     onContextMenu,
 }: {
@@ -24,6 +25,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     toScrollTop?: number;
     active: boolean;
     visualMode?: "full" | "hover-only";
+    hideVisual?: boolean;
     onSelect: () => void;
     onContextMenu?: (event: ReactMouseEvent<SVGPathElement>) => void;
 }) {
@@ -31,12 +33,13 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     const [hovered, setHovered] = useState(false);
     const { pathD, startX, startY, endX, endY } = canvasConnectionPath(connection, from, to, fromScrollTop, toScrollTop);
     const emphasized = active || hovered;
-    const showVisual = visualMode === "full" || hovered;
+    const showVisual = !hideVisual && (visualMode === "full" || hovered);
+    const showEmphasis = !hideVisual && emphasized;
     const gradientId = `canvas-flow-${connection.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
     return (
         <g>
-            {emphasized ? <defs>
+            {showEmphasis ? <defs>
                 <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1={startX} y1={startY} x2={endX} y2={endY}>
                     <stop offset="0%" stopColor={theme.node.muted} stopOpacity={0.18} />
                     <stop offset="48%" stopColor={theme.accent.primary} stopOpacity={0.58} />
@@ -50,7 +53,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
                 </linearGradient>
             </defs> : null}
             {/* 光晕：只在强调态渲染。blur 成本随线条数量线性上升，常态全开会掉帧。 */}
-            {emphasized ? <path
+            {showEmphasis ? <path
                 d={pathD}
                 stroke={theme.accent.primary}
                 strokeWidth="8"
@@ -120,7 +123,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
                 style={{ pointerEvents: "none" }}
             /> : null}
             {/* 流光：一小段高亮沿路径跑。周期与虚线流动刻意不同（2.1s vs 1.25s），错拍才像有光在走。 */}
-            {emphasized ? <path
+            {showEmphasis ? <path
                 className="canvas-connection-comet"
                 d={pathD}
                 stroke={`url(#${gradientId}-comet)`}
@@ -133,7 +136,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
             /> : null}
         </g>
     );
-}, (previous, next) => previous.connection === next.connection && previous.from === next.from && previous.to === next.to && previous.active === next.active && previous.visualMode === next.visualMode && previous.fromScrollTop === next.fromScrollTop && previous.toScrollTop === next.toScrollTop);
+}, (previous, next) => previous.connection === next.connection && previous.from === next.from && previous.to === next.to && previous.active === next.active && previous.visualMode === next.visualMode && previous.hideVisual === next.hideVisual && previous.fromScrollTop === next.fromScrollTop && previous.toScrollTop === next.toScrollTop);
 
 export function canvasConnectionPath(connection: CanvasConnection, from: CanvasNodeData, to: CanvasNodeData, fromScrollTop = 0, toScrollTop = 0) {
     const startX = from.position.x + from.width;
@@ -166,7 +169,7 @@ export function activeConnectionPath(node: CanvasNodeData | undefined, handle: C
  * 视觉上像节点有很多端口。真正的多端口只存在于分镜脚本的 `row:` 句柄。
  */
 export function connectionHandleY(node: CanvasNodeData, handleId?: string, scrollTop = 0) {
-    if (handleId === "storyboard:context") return node.position.y + node.height - (node.metadata?.storyboardComposerHeight || 104) / 2;
+    if (handleId === "storyboard:context") return node.position.y + node.height - (node.metadata?.storyboardComposerHeight || STORYBOARD_COMPOSER_MIN_HEIGHT) / 2;
     if (!handleId?.startsWith("row:")) return node.position.y + node.height / 2;
     const rowId = handleId.slice(4);
     const index = (node.metadata?.storyboard?.rows || []).findIndex((row) => row.id === rowId);

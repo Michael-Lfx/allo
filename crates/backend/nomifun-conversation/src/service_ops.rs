@@ -105,11 +105,17 @@ impl ConversationService {
         conversation_id: &str,
         req: SetModelRequest,
     ) -> Result<(), AppError> {
-        self.require_owned_conversation(user_id, conversation_id)
+        let conversation = self
+            .require_owned_conversation(user_id, conversation_id)
             .await?;
         if req.model_id.trim().is_empty() {
             return Err(AppError::BadRequest("model_id must not be empty".into()));
         }
+        let configuration_guard = self.try_acquire_runtime_configuration_guard(
+            conversation_id,
+            conversation.status.as_deref(),
+        )
+        .await?;
         let runtime = match self.runtime_handle(conversation_id) {
             Ok(runtime) => runtime,
             Err(err) => {
@@ -122,7 +128,9 @@ impl ConversationService {
                 return Err(err);
             }
         };
-        runtime.set_model(&req.model_id).await
+        let result = runtime.set_model(&req.model_id).await;
+        drop(configuration_guard);
+        result
     }
 
     // ── Usage / Slash commands ──────────────────────────────────────

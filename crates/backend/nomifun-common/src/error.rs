@@ -79,6 +79,13 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    /// A public turn lost the Conversation's durable admission race. The
+    /// status/code remain compatible with generic conflicts, while the
+    /// structured details let clients reconcile and retry the same operation
+    /// without matching display text.
+    #[error("Conversation lifecycle rejected durable turn admission")]
+    ConversationTurnAdmissionConflict,
+
     /// A conversation deletion was rejected or moved to background work for
     /// a typed lifecycle reason.
     #[error("{0}")]
@@ -163,6 +170,7 @@ impl AppError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::ConversationTurnAdmissionConflict => StatusCode::CONFLICT,
             Self::ConversationDelete(kind) => kind.status_code(),
             Self::ProviderInUse(_) => StatusCode::CONFLICT,
             Self::ProviderUnavailable(_) => StatusCode::BAD_REQUEST,
@@ -192,6 +200,7 @@ impl AppError {
                 }
             }
             Self::Conflict(_) => "CONFLICT",
+            Self::ConversationTurnAdmissionConflict => "CONFLICT",
             Self::ConversationDelete(kind) => kind.code(),
             Self::ProviderInUse(_) => "PROVIDER_IN_USE",
             Self::ProviderUnavailable(_) => "PROVIDER_UNAVAILABLE",
@@ -219,6 +228,11 @@ impl AppError {
             }
             Self::ProviderInUse(details) => Some(json!({ "usages": details.usages })),
             Self::ConversationDelete(kind) => Some(kind.details()),
+            Self::ConversationTurnAdmissionConflict => Some(json!({
+                "kind": "conversation_turn_admission",
+                "retryable": true,
+                "reconcile": "conversation.get",
+            })),
             _ => None,
         }
     }
@@ -328,6 +342,10 @@ mod tests {
         assert_eq!(AppError::Forbidden("x".into()).status_code(), StatusCode::FORBIDDEN);
         assert_eq!(AppError::Conflict("x".into()).status_code(), StatusCode::CONFLICT);
         assert_eq!(
+            AppError::ConversationTurnAdmissionConflict.status_code(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
             AppError::conversation_attempt_retained().status_code(),
             StatusCode::CONFLICT
         );
@@ -372,6 +390,7 @@ mod tests {
             "PATH_OUTSIDE_SANDBOX"
         );
         assert_eq!(AppError::Conflict("x".into()).error_code(), "CONFLICT");
+        assert_eq!(AppError::ConversationTurnAdmissionConflict.error_code(), "CONFLICT");
         assert_eq!(
             AppError::conversation_attempt_retained().error_code(),
             "CONVERSATION_ATTEMPT_RETAINED"
@@ -433,6 +452,36 @@ mod tests {
                 "background": true,
                 "authoritative_event": "conversation.listChanged(deleted)",
             }))
+        );
+    }
+
+    #[test]
+    fn conversation_turn_admission_conflict_exposes_structured_details() {
+        assert_eq!(
+            AppError::ConversationTurnAdmissionConflict.error_details(),
+            Some(json!({
+                "kind": "conversation_turn_admission",
+                "retryable": true,
+                "reconcile": "conversation.get",
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_turn_admission_conflict_response_keeps_conflict_compatibility() {
+        let response = AppError::ConversationTurnAdmissionConflict.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["success"], false);
+        assert_eq!(body["code"], "CONFLICT");
+        assert_eq!(
+            body["details"],
+            json!({
+                "kind": "conversation_turn_admission",
+                "retryable": true,
+                "reconcile": "conversation.get",
+            })
         );
     }
 

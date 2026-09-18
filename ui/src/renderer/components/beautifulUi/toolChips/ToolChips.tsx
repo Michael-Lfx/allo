@@ -1,5 +1,6 @@
 import { Ban, Check, ChevronRight, Clock, Minus, TriangleAlert, X } from 'lucide-react';
 import React from 'react';
+import shimmerStyles from '../textShimmer.module.css';
 import styles from './toolChips.module.css';
 
 export type ToolChipStatus = 'pending' | 'running' | 'completed' | 'error' | 'canceled' | 'skipped' | 'invalid_arguments';
@@ -84,7 +85,7 @@ export const ToolChip: React.FC<ToolChipItem> = ({
       <span className={styles.icon} aria-hidden='true'>
         {statusIcon(status)}
       </span>
-      <span className={`${styles.name} ${status === 'running' ? styles.shimmer : ''}`}>{name}</span>
+      <span className={`${styles.name} ${status === 'running' ? shimmerStyles.shimmer : ''}`}>{name}</span>
       {detail ? (
         <span className={styles.detail} title={detail}>
           {detail}

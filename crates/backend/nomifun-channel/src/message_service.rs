@@ -1800,13 +1800,13 @@ mod tests {
                 AcpPermissionOptionData {
                     option_id: "allow".into(),
                     name: "Allow once".into(),
-                    kind: AcpPermissionOptionKind::AllowOnce,
+                    kind: Some(AcpPermissionOptionKind::AllowOnce),
                     meta: None,
                 },
                 AcpPermissionOptionData {
                     option_id: "reject".into(),
                     name: "Reject".into(),
-                    kind: AcpPermissionOptionKind::RejectOnce,
+                    kind: Some(AcpPermissionOptionKind::RejectOnce),
                     meta: None,
                 },
             ],

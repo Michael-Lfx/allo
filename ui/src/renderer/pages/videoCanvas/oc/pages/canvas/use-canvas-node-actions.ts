@@ -4,7 +4,6 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { App } from "antd";
 import { CanvasNodeType, type CanvasNodeData, type ContextMenuState } from "@oc/types/canvas";
 import type { useCanvasGeneration } from "./use-canvas-generation";
-import type { useCanvasUpload } from "./use-canvas-upload";
 import type { useCanvasViewportController } from "./use-canvas-viewport-controller";
 
 type CanvasNodeActionsInput = {
@@ -20,7 +19,6 @@ type CanvasNodeActionsInput = {
     setVersionCompareRootId: Dispatch<SetStateAction<string | null>>;
     setPreviewNodeId: Dispatch<SetStateAction<string | null>>;
     openNodeTaskDetails: ReturnType<typeof useCanvasGeneration>["openNodeTaskDetails"];
-    handleUploadRequest: ReturnType<typeof useCanvasUpload>["handleUploadRequest"];
     nodesRef: RefObject<CanvasNodeData[]>;
     focusCanvasNode: ReturnType<typeof useCanvasViewportController>["focusCanvasNode"];
     message: ReturnType<typeof App.useApp>["message"];
@@ -40,7 +38,6 @@ export function useCanvasNodeActions(input: CanvasNodeActionsInput) {
         setVersionCompareRootId,
         setPreviewNodeId,
         openNodeTaskDetails,
-        handleUploadRequest,
         nodesRef,
         focusCanvasNode,
         message,
@@ -62,6 +59,8 @@ export function useCanvasNodeActions(input: CanvasNodeActionsInput) {
             setDrawingNodeId(node.id);
         } else if (node.type === CanvasNodeType.Script) {
             setDialogNodeId(null);
+        } else if (node.type === CanvasNodeType.ArtCritique) {
+            setDialogNodeId(null);
         } else if (node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Frame) {
             setDialogNodeId((current) => (current === node.id ? current : null));
         } else {
@@ -75,16 +74,21 @@ export function useCanvasNodeActions(input: CanvasNodeActionsInput) {
         setDialogNodeId(null);
     }, []);
     const openTextNodeEditor = useCallback((node: CanvasNodeData) => {
+        if (node.metadata?.workflowKind === "character" && node.metadata.characterAssetId) {
+            setSelectedNodeIds(new Set([node.id]));
+            setSelectedConnectionId(null);
+            setContextMenu(null);
+            setDialogNodeId(null);
+            setToolbarNodeId(null);
+            setCharacterReferenceNodeId(node.id);
+            return;
+        }
         if (node.type !== CanvasNodeType.Text) return;
         setSelectedNodeIds(new Set([node.id]));
         setSelectedConnectionId(null);
         setContextMenu(null);
         setDialogNodeId(null);
         setToolbarNodeId(null);
-        if (node.metadata?.workflowKind === "character" && node.metadata.characterAssetId) {
-            setCharacterReferenceNodeId(node.id);
-            return;
-        }
         setTextEditorNodeId(node.id);
     }, []);
     const openDrawingNode = useCallback((node: CanvasNodeData) => {
@@ -104,9 +108,6 @@ export function useCanvasNodeActions(input: CanvasNodeActionsInput) {
     );
     const openCanvasNodeVersions = useCallback((node: CanvasNodeData) => setVersionCompareRootId(node.metadata?.versionOfNodeId || node.id), []);
     const viewCanvasNodeImage = useCallback((node: CanvasNodeData) => setPreviewNodeId(node.id), []);
-    const handleReplaceMedia = useCallback((node: CanvasNodeData) => {
-        handleUploadRequest(node.id);
-    }, [handleUploadRequest]);
     const locateProjectStyleNode = useCallback(() => {
         const styleNode = nodesRef.current.find((node) => node.type === CanvasNodeType.Text && node.metadata?.workflowKind === "styleboard");
         if (!styleNode) {
@@ -126,7 +127,6 @@ export function useCanvasNodeActions(input: CanvasNodeActionsInput) {
         openCanvasNodeTaskDetails,
         openCanvasNodeVersions,
         viewCanvasNodeImage,
-        handleReplaceMedia,
         locateProjectStyleNode,
     };
 }

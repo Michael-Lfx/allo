@@ -3,6 +3,7 @@ import { parseConfirmationCorrelationId, type IMessagePermission } from '@/commo
 import { optionalDisplayText, toDisplayText } from '@/common/chat/displayText';
 import { ipcBridge } from '@/common';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
+import type { I18nKey } from '@/renderer/services/i18n';
 import ApprovalCard from '@renderer/components/beautifulUi/approvalCard/ApprovalCard';
 import { kindFromPermissionAction } from '@renderer/components/beautifulUi/approvalCard/approvalCardModel';
 import { Image, Typography } from '@arco-design/web-react';
@@ -10,6 +11,26 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const { Text } = Typography;
+
+const PERMISSION_OPTION_I18N_KEYS: Record<string, I18nKey> = {
+  allow_once: 'messages.confirmation.yesAllowOnce',
+  'allow-once': 'messages.confirmation.yesAllowOnce',
+  'Allow once': 'messages.confirmation.yesAllowOnce',
+  allow_always: 'messages.confirmation.yesAllowAlways',
+  'allow-always': 'messages.confirmation.yesAllowAlways',
+  'Allow always': 'messages.confirmation.yesAllowAlways',
+  reject_once: 'messages.confirmation.rejectOnce',
+  'reject-once': 'messages.confirmation.rejectOnce',
+  'Reject once': 'messages.confirmation.rejectOnce',
+  deny: 'messages.confirmation.rejectOnce',
+  deny_once: 'messages.confirmation.rejectOnce',
+  'deny-once': 'messages.confirmation.rejectOnce',
+  reject_always: 'messages.confirmation.rejectAlways',
+  'reject-always': 'messages.confirmation.rejectAlways',
+  'Reject always': 'messages.confirmation.rejectAlways',
+  deny_always: 'messages.confirmation.rejectAlways',
+  'deny-always': 'messages.confirmation.rejectAlways',
+};
 
 interface MessagePermissionProps {
   message: IMessagePermission;
@@ -33,10 +54,14 @@ const MessagePermission: React.FC<MessagePermissionProps> = React.memo(({ messag
   const cardDescription = descriptionText && descriptionText !== displayTitle ? descriptionText : undefined;
   const approvalOptions =
     !readOnly && !hasResponded
-      ? options.map((option, index) => ({
-          id: String(option.value) || `option_${index}`,
-          label: t(toDisplayText(option.label), { ...option.params, defaultValue: toDisplayText(option.label) }),
-        }))
+      ? options.map((option, index) => {
+          const optionLabel = toDisplayText(option.label);
+          const translationKey = PERMISSION_OPTION_I18N_KEYS[optionLabel] ?? optionLabel;
+          return {
+            id: String(option.value) || `option_${index}`,
+            label: t(translationKey, { ...option.params, defaultValue: optionLabel }),
+          };
+        })
       : [];
 
   const handleConfirm = async () => {

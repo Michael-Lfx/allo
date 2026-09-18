@@ -19,6 +19,9 @@ describe('PresetSettings page shell', () => {
 
     expect(source.includes('<CapabilityHubShell')).toBe(true);
     expect(source.includes("hub='presets'")).toBe(true);
+    expect(source.includes('marketEnabled={false}')).toBe(true);
+    expect(source.includes('<PresetListPanel')).toBe(true);
+    expect(source.includes('PresetPackageMarketSettings')).toBe(false);
     expect(source.includes('flowy-settings-tabs')).toBe(false);
   });
 
@@ -27,5 +30,16 @@ describe('PresetSettings page shell', () => {
 
     expect(source.includes('<HubPageShell')).toBe(false);
     expect(source.includes("title={t('settings.presetsHub.title'")).toBe(false);
+  });
+
+  test('uses the theme-aware primary action for creating a preset', () => {
+    const source = readSource(new URL('./index.tsx', import.meta.url));
+    const styles = readSource(new URL('../components/settings.css', import.meta.url));
+
+    expect(source).toContain("type='primary'");
+    expect(source).toContain('capability-hub-action-btn--primary');
+    expect(styles).toContain('.capability-hub-action-btn.arco-btn:not(.capability-hub-action-btn--primary)');
+    expect(styles).toContain('.capability-hub-action-btn--primary.arco-btn');
+    expect(styles).toContain('font-weight: 600 !important;');
   });
 });

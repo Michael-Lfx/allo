@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
 import { CheckCircle2, CloudUpload, Eye, LoaderCircle, RotateCcw, TriangleAlert, X } from "lucide-react";
 
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import type { GenerationTask } from "@oc/services/api/task-center";
 import type { MergeVideoProgress } from "@oc/lib/canvas/canvas-video-merge";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
@@ -31,13 +32,10 @@ export function CanvasUploadStatusToast({ status, theme }: { status: CanvasUploa
             initial={{ opacity: 0, x: 22, scale: 0.94 }}
             animate={{ opacity: 1, x: 0, scale: 1 }}
             transition={aceternityMotion.spring.panel}
-            className="pointer-events-none absolute right-4 top-20 z-[var(--z-panel-floating)] w-[var(--panel-width-compact)] overflow-hidden rounded-[var(--panel-radius-wide-tight)] border px-4 py-4 backdrop-blur-2xl"
-            style={{
-                background: theme.spatial.elevated,
+            className="canvas-overlay pointer-events-none absolute right-4 top-20 z-[var(--z-panel-floating)] w-[var(--panel-width-compact)] overflow-hidden px-4 py-4"
+            style={canvasOverlayStyle(theme, {
                 borderColor: status.error ? `${theme.accent.danger}66` : status.done ? "rgba(34,197,94,.4)" : theme.spatial.glowStrong,
-                color: theme.node.text,
-                boxShadow: `0 24px 72px ${theme.spatial.shadow}, inset 0 1px 0 rgba(255,255,255,.14)`,
-            }}
+            })}
         >
             <div className="absolute inset-x-0 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${accent}, transparent)` }} />
             <div className="flex items-start gap-3">

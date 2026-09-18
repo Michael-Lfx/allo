@@ -33,7 +33,9 @@ const AcpModelSelector: React.FC<{
   initialModelId?: string;
   /** Wait for ACP warmup before reading runtime model info. */
   waitForWarmup?: boolean;
-}> = ({ conversation_id, backend, initialModelId, waitForWarmup = false }) => {
+  /** Disable model mutation while the conversation has an active turn. */
+  disabled?: boolean;
+}> = ({ conversation_id, backend, initialModelId, waitForWarmup = false, disabled = false }) => {
   const { t } = useTranslation();
   const layout = useLayoutContext();
   const isMobileHeaderCompact = Boolean(layout?.isMobile);
@@ -51,6 +53,7 @@ const AcpModelSelector: React.FC<{
     initialModelId,
     prepareRuntime: waitForWarmup ? prepareRuntimeForRead : undefined,
     prepareRuntimeForMutation: waitForWarmup ? prepareRuntimeForMutation : undefined,
+    disabled,
     onSelectModelSuccess: () => Message.success(t('agent.model.switchSuccess')),
     onSelectModelFailed: () => Message.error(t('agent.model.switchFailed')),
   });
@@ -79,6 +82,8 @@ const AcpModelSelector: React.FC<{
           className='sendbox-model-btn header-model-btn agent-mode-compact-pill flowy-icon-text-btn'
           shape='round'
           size='small'
+          disabled={disabled}
+          aria-disabled={disabled || undefined}
           style={{ cursor: 'default' }}
         >
           <span className='flowy-button-inline-content flex items-center gap-6px min-w-0 leading-none'>
@@ -97,6 +102,8 @@ const AcpModelSelector: React.FC<{
           className='sendbox-model-btn header-model-btn agent-mode-compact-pill flowy-icon-text-btn'
           shape='round'
           size='small'
+          disabled={disabled}
+          aria-disabled={disabled || undefined}
           style={{ cursor: 'default' }}
         >
           <span className='flowy-button-inline-content flex items-center gap-6px min-w-0 leading-none'>

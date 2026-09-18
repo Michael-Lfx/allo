@@ -1,48 +1,68 @@
+/* ==========================================================================
+   ClipResultPage — Video Generation Detail Page
+   ========================================================================== */
+
 .page {
   min-height: 100vh;
   background:
     radial-gradient(1200px 420px at 50% -80px, rgba(var(--primary-6), 0.07), transparent 70%),
     var(--color-bg-1);
-  padding: 24px;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
 }
 
-/* Header */
-.header {
+.page :global(.arco-btn) {
+  display: inline-flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+}
+
+/* ==========================================================================
+   Sticky Header
+   ========================================================================== */
+
+.stickyHeader {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background:
+    linear-gradient(to bottom, var(--color-bg-1) 60%, transparent),
+    var(--color-bg-1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 14px 24px 8px;
+  border-bottom: 1px solid var(--color-border-2);
+}
+
+.headerInner {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 32px;
-  max-width: 960px;
-  width: 100%;
-  margin-left: auto;
-  margin-right: auto;
+  gap: 12px;
+  max-width: 1280px;
+  margin: 0 auto;
 }
 
 .backBtn {
   flex-shrink: 0;
+  font-size: 13px !important;
+  height: 32px !important;
+  padding: 0 12px !important;
+  white-space: nowrap;
 }
 
-.titleSection {
+.headerTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex: 1;
   min-width: 0;
 }
 
 .title {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--color-text-1);
-  margin: 0 0 4px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.prompt {
-  font-size: 14px;
-  color: var(--color-text-3);
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -51,60 +71,80 @@
 
 .taskIdBadge {
   flex-shrink: 0;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 10px;
+  padding: 3px 8px;
   background: var(--color-fill-2);
+  border: 1px solid var(--color-border-1);
   border-radius: 6px;
-  font-size: 12px;
-}
-
-.taskIdLabel {
+  font-size: 11px;
   color: var(--color-text-4);
-}
-
-.taskIdValue {
-  color: var(--color-text-3);
+  cursor: pointer;
+  transition: all 0.15s ease;
   font-family: monospace;
 }
 
-/* Main Content */
+.taskIdBadge:hover {
+  background: var(--color-fill-3);
+  color: var(--color-text-3);
+  border-color: var(--color-border-2);
+}
+
+.taskIdText {
+  letter-spacing: 0.02em;
+}
+
+.copyIcon {
+  color: inherit;
+  opacity: 0.6;
+}
+
+/* ==========================================================================
+   Main Content
+   ========================================================================== */
+
 .content {
   flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  max-width: 960px;
+  align-items: flex-start;
+  padding: 24px;
+  max-width: 1280px;
   width: 100%;
-  margin-left: auto;
-  margin-right: auto;
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 
-/* Loading State */
+/* ==========================================================================
+   Loading State
+   ========================================================================== */
+
 .loadingState {
-  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 16px;
   padding: 80px 0;
+  width: 100%;
 }
 
-.loadingPulse {
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+.loadingIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border-radius: 24px;
+  background: rgba(var(--primary-6), 0.08);
+  color: rgb(var(--primary-6));
 }
 
 .loadingText {
   color: var(--color-text-1);
   font-size: 16px;
-  font-weight: 500;
+  font-weight: 600;
   margin: 0;
 }
 
@@ -114,173 +154,457 @@
   margin: 0;
 }
 
-/* Error State */
+/* ==========================================================================
+   Error State
+   ========================================================================== */
+
 .errorState {
-  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px 0;
-  gap: 24px;
+  gap: 16px;
+  padding: 60px 0;
+  width: 100%;
+  text-align: center;
+}
+
+.errorIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border-radius: 24px;
+  background: rgba(var(--danger-6), 0.08);
+  color: rgb(var(--danger-6));
+}
+
+.errorTitle {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-1);
+  margin: 0;
+}
+
+.errorMessage {
+  font-size: 13px;
+  color: var(--color-text-3);
+  margin: 0;
+  max-width: 400px;
 }
 
 .errorActions {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: nowrap;
+  margin-top: 8px;
 }
 
-/* Status Card */
-.statusCard {
+/* ==========================================================================
+   Layout (Two-column: main + sidebar)
+   ========================================================================== */
+
+.layout {
   display: flex;
-  align-items: flex-start;
-  gap: 24px;
-  padding: 32px;
-  background: var(--color-bg-2);
-  border: 1px solid var(--color-border-2);
-  border-radius: 16px;
+  gap: 20px;
   width: 100%;
-  box-sizing: border-box;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
-  transition: all 0.3s ease;
+  align-items: flex-start;
 }
 
-.statusCardDefault {
-  border-color: var(--color-border-2);
+.mainColumn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
-.statusCardRunning {
-  border-color: rgba(var(--primary-6), 0.3);
-  background: linear-gradient(135deg, var(--color-bg-2) 0%, rgba(var(--primary-6), 0.05) 100%);
-}
-
-.statusCardSuccess {
-  border-color: rgba(var(--success-6), 0.3);
-  background: linear-gradient(135deg, var(--color-bg-2) 0%, rgba(var(--success-6), 0.05) 100%);
-}
-
-.statusCardError {
-  border-color: rgba(var(--danger-6), 0.3);
-  background: linear-gradient(135deg, var(--color-bg-2) 0%, rgba(var(--danger-6), 0.05) 100%);
-}
-
-.statusIconWrapper {
+.sidebar {
+  width: 240px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
 }
 
-.statusIcon {
+/* ==========================================================================
+   Video Container
+   ========================================================================== */
+
+.videoContainer {
+  position: relative;
+  width: 100%;
+  /* Aspect ratio is set inline from the video's intrinsic dimensions so the
+     preview frame matches the actual footage. Until loadedMetadata fires we
+     fall back to 16/9, which is the most common video generation aspect. */
+  aspect-ratio: 16 / 9;
+  max-height: 70vh;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #0a0a0f;
+  box-shadow:
+    0 8px 32px rgba(15, 23, 42, 0.18),
+    0 2px 8px rgba(15, 23, 42, 0.1);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Video Placeholder (during generation) */
+.videoPlaceholder {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 16px;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      ellipse at center,
+      rgba(var(--primary-6), 0.08) 0%,
+      transparent 70%
+    ),
+    var(--color-bg-2);
+  border: 1px solid var(--color-border-2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.placeholderSpinner {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 64px;
   height: 64px;
-  border-radius: 16px;
-  background: var(--color-fill-1);
-  color: var(--color-text-3);
-  transition: all 0.3s ease;
-}
-
-.statusCardSuccess .statusIcon {
-  background: rgba(var(--success-6), 0.1);
-  color: rgb(var(--success-6));
-}
-
-.statusCardError .statusIcon {
-  background: rgba(var(--danger-6), 0.1);
-  color: rgb(var(--danger-6));
-}
-
-.statusCardRunning .statusIcon {
+  border-radius: 50%;
   background: rgba(var(--primary-6), 0.1);
   color: rgb(var(--primary-6));
+  flex-shrink: 0;
 }
 
-.statusIconPulse {
-  animation: iconPulse 2s ease-in-out infinite;
-}
-
-@keyframes iconPulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-}
-
-.statusInfo {
-  flex: 1;
-  min-width: 0;
-}
-
-.statusTitle {
-  font-size: 20px;
+.placeholderTitle {
+  font-size: 15px;
   font-weight: 600;
   color: var(--color-text-1);
-  margin: 0 0 8px 0;
-}
-
-.statusSubtitle {
-  font-size: 14px;
-  color: var(--color-text-3);
-  margin: 0 0 16px 0;
-}
-
-/* Progress Section */
-.progressSection {
-  margin-bottom: 12px;
-}
-
-.progressBar {
   margin: 0;
 }
 
-.progressLabels {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 8px;
+.videoFullscreen {
+  border-radius: 0;
 }
 
-.progressPercent {
-  font-size: 13px;
-  font-weight: 600;
-  color: rgb(var(--primary-6));
+.videoPlayer {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  /* The container is sized to the video's intrinsic aspect ratio via inline
+     style, so `contain` and `fill` look identical here. We keep `contain`
+     to be safe against any 1px rounding between the video's intrinsic size
+     and the rendered box — `fill` would stretch that single pixel. */
+  object-fit: contain;
 }
 
-.progressTime {
-  font-size: 12px;
-  color: var(--color-text-4);
+/* ==========================================================================
+   Video Controls
+   ========================================================================== */
+
+.videoControls {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  padding: 40px 16px 12px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
 }
 
-/* Step Indicator */
-.stepIndicator {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: rgba(var(--primary-6), 0.08);
-  border-radius: 20px;
-  margin-top: 8px;
+.videoControlsVisible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
-.stepDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+/* Scrubber */
+.scrubber {
+  position: relative;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  cursor: pointer;
+  margin-bottom: 10px;
+  transition: height 0.15s ease;
+}
+
+.scrubber:hover {
+  height: 6px;
+}
+
+.scrubberBuffer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+}
+
+.scrubberProgress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
   background: rgb(var(--primary-6));
-  animation: stepDotPulse 1.5s ease-in-out infinite;
+  border-radius: 999px;
 }
 
-@keyframes stepDotPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.6; transform: scale(0.8); }
+.scrubberThumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
-.stepText {
+.scrubber:hover .scrubberThumb {
+  opacity: 1;
+}
+
+.controlsBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.controlsLeft,
+.controlsRight {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.controlBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.controlBtn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.controlBtn:active {
+  transform: scale(0.92);
+}
+
+/* Volume */
+.volumeControl {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.volumeSlider {
+  width: 0;
+  opacity: 0;
+  transition: width 0.2s ease, opacity 0.2s ease;
+  height: 3px;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+}
+
+.volumeControl:hover .volumeSlider {
+  width: 60px;
+  opacity: 1;
+}
+
+.volumeSlider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.timeDisplay {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+  font-family: monospace;
+  letter-spacing: 0.02em;
+}
+
+/* Big Play Button */
+.bigPlayBtn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 72px;
+  height: 72px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  z-index: 2;
+}
+
+.bigPlayBtn:hover {
+  background: rgba(255, 255, 255, 0.25);
+  transform: translate(-50%, -50%) scale(1.08);
+}
+
+.bigPlayBtn:active {
+  transform: translate(-50%, -50%) scale(0.96);
+}
+
+/* ==========================================================================
+   Error Banner
+   ========================================================================== */
+
+.errorBanner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: rgba(var(--danger-6), 0.08);
+  border: 1px solid rgba(var(--danger-6), 0.2);
+  border-radius: 12px;
+  color: rgb(var(--danger-6));
   font-size: 13px;
-  color: rgb(var(--primary-6));
+}
+
+.errorBannerIcon {
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Sidebar
+   ========================================================================== */
+
+.actionList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.actionItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-1);
+  font-size: 13px;
+  line-height: 1.3;
+  cursor: pointer;
+  text-align: left;
+  box-sizing: border-box;
+}
+
+.actionItem > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actionItem > svg,
+.actionItem :global(span[role='img']),
+.actionItem :global(.i-icon) {
+  flex-shrink: 0;
+}
+
+.actionItem:hover:not(:disabled) {
+  background: var(--color-fill-2);
+}
+
+.actionItem:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.metaList {
+  margin: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--color-border-2);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.metaRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.metaRow dt {
+  font-size: 11px;
+  color: var(--color-text-4);
   font-weight: 500;
 }
 
-/* Spinning animation for loading icon */
+.metaRow dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-2);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.metaMono {
+  font-size: 11px !important;
+  color: var(--color-text-3) !important;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  word-break: break-all;
+}
+
+/* ==========================================================================
+   Animations
+   ========================================================================== */
+
 .spinning {
   animation: spin 1.5s linear infinite;
 }
@@ -290,162 +614,43 @@
   to { transform: rotate(360deg); }
 }
 
-/* Video Container */
-.videoContainer {
-  width: 100%;
-  margin-top: 24px;
-  border-radius: 16px;
-  overflow: hidden;
-  background: #000;
-  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.15);
+/* ==========================================================================
+   Responsive
+   ========================================================================== */
+
+@media (max-width: 900px) {
+  .layout {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+  }
 }
 
-.videoWrapper {
-  position: relative;
-  width: 100%;
-}
-
-.videoPlayer {
-  display: block;
-  width: 100%;
-  max-height: 540px;
-  object-fit: contain;
-}
-
-.videoOverlay {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 12px;
-  padding: 16px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.6));
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-.videoWrapper:hover .videoOverlay {
-  opacity: 1;
-}
-
-.videoControlBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  border: none;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.videoControlBtn:hover {
-  background: rgba(255, 255, 255, 0.3);
-  transform: scale(1.1);
-}
-
-/* Error Banner */
-.errorBanner {
-  width: 100%;
-  margin-top: 24px;
-}
-
-.errorBannerContent {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 20px;
-  background: rgba(var(--danger-6), 0.1);
-  border: 1px solid rgba(var(--danger-6), 0.2);
-  border-radius: 12px;
-  color: rgb(var(--danger-6));
-  font-size: 14px;
-}
-
-.errorBannerIcon {
-  flex-shrink: 0;
-}
-
-/* Actions */
-.actions {
-  display: flex;
-  gap: 16px;
-  justify-content: center;
-  margin-top: 32px;
-  flex-wrap: nowrap;
-}
-
-.actionBtn {
-  /* Prevent button text wrapping */
-  white-space: nowrap;
-}
-
-.btnIcon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.btnText {
-  display: inline;
-}
-
-/* Responsive */
-@media (max-width: 768px) {
+@media (max-width: 640px) {
   .page {
+    padding: 0;
+  }
+
+  .stickyHeader {
+    padding: 12px 16px 6px;
+  }
+
+  .content {
     padding: 16px;
   }
 
-  .header {
-    flex-wrap: wrap;
-    gap: 12px;
+  .headerInner {
+    gap: 10px;
   }
 
-  .backBtn {
-    order: -1;
+  .title {
+    font-size: 14px;
   }
 
-  .titleSection {
-    width: 100%;
-    order: 1;
-  }
-
-  .taskIdBadge {
-    order: 2;
-    margin-left: auto;
-  }
-
-  .statusCard {
-    padding: 20px;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-  }
-
-  .statusTitle {
-    font-size: 18px;
-  }
-
-  .statusSubtitle {
-    font-size: 13px;
-  }
-
-  .actions {
-    flex-direction: column;
-    width: 100%;
-    gap: 12px;
-  }
-
-  .actionBtn {
-    width: 100%;
-    justify-content: center;
+  .videoContainer {
+    border-radius: 12px;
   }
 
   .errorActions {

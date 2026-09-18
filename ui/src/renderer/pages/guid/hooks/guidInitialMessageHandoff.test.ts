@@ -31,6 +31,7 @@ describe('Guid initial Skill handoff', () => {
         conversationId: CONVERSATION_ID,
         input: '',
         files: [],
+        workspacePath: 'C:/workspace',
         initialSkillIds: ['user:pdf', 'project:workspace:review'],
         idempotencyKey: `guid-skill-only-${feature}`,
       });
@@ -40,6 +41,7 @@ describe('Guid initial Skill handoff', () => {
         conversation_id: CONVERSATION_ID,
         initial_admission_epoch: 0,
         input: '',
+        workspace_path: 'C:/workspace',
         inject_skills: ['user:pdf', 'project:workspace:review'],
         idempotency_key: `guid-skill-only-${feature}`,
       });
@@ -48,6 +50,7 @@ describe('Guid initial Skill handoff', () => {
         initial_admission_epoch: 0,
         input: '',
         files: [],
+        workspace_path: 'C:/workspace',
         inject_skills: ['user:pdf', 'project:workspace:review'],
         idempotency_key: `guid-skill-only-${feature}`,
       });

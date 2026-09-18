@@ -25,13 +25,7 @@
 //!    Clone of `states.skill.skill_paths` (from `SkillRouterState`).
 //!    Crate: `nomifun-extension`, type: `nomifun_extension::skill_service::SkillPaths`.
 //!
-//! ## SKIPPED tools (listed at the bottom of this file):
-//!
-//! - `nomi_mcp_test_connection` — requires building a `McpServerTransport`
-//!   from the API `McpTransport` enum (tagged union with three variants), which
-//!   is awkward to expose in a flat JSON schema for an LLM. The route handler
-//!   also persists test results back to the config service by server id. Skipped
-//!   until a clear agent use case emerges.
+//! ## SKIPPED tool (listed at the bottom of this file):
 //!
 //! - `nomi_skill_set_tags` — needs `skill_tag_repo` + `builtin_skill_tags`;
 //!   low agent utility (user-facing tagging).
@@ -130,6 +124,22 @@ struct McpDeleteServerParams {
 #[serde(deny_unknown_fields)]
 struct McpToggleServerParams {
     /// Stable MCP server business id to toggle enabled/disabled.
+    #[schemars(schema_with = "crate::id_schema::canonical_uuid_v7_schema")]
+    mcp_server_id: McpServerId,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct McpTestConnectionParams {
+    /// Stable MCP server business id whose persisted configuration is tested.
+    #[schemars(schema_with = "crate::id_schema::canonical_uuid_v7_schema")]
+    mcp_server_id: McpServerId,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct McpActivateServerParams {
+    /// Stable MCP server business id to test and enable on success.
     #[schemars(schema_with = "crate::id_schema::canonical_uuid_v7_schema")]
     mcp_server_id: McpServerId,
 }
@@ -261,6 +271,36 @@ async fn mcp_toggle_server(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: McpToggle
     {
         Ok(server) => ok(server),
         Err(e) => json!({ "error": e.to_string() }),
+    }
+}
+
+async fn mcp_test_connection(
+    deps: Arc<GatewayDeps>,
+    _ctx: CallerCtx,
+    p: McpTestConnectionParams,
+) -> Value {
+    match deps
+        .mcp_activation_service
+        .test_server_by_id(&p.mcp_server_id)
+        .await
+    {
+        Ok(response) => ok(response),
+        Err(error) => json!({ "error": error.to_string() }),
+    }
+}
+
+async fn mcp_activate_server(
+    deps: Arc<GatewayDeps>,
+    _ctx: CallerCtx,
+    p: McpActivateServerParams,
+) -> Value {
+    match deps
+        .mcp_activation_service
+        .test_and_enable(&p.mcp_server_id)
+        .await
+    {
+        Ok(response) => ok(response),
+        Err(error) => json!({ "error": error.to_string() }),
     }
 }
 
@@ -430,6 +470,26 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
         |deps, ctx, p| mcp_toggle_server(deps, ctx, p),
     ));
 
+    out.push(Capability::new::<McpTestConnectionParams, _, _>(
+        CapabilityMeta::new(
+            "nomi_mcp_test_connection",
+            "mcp",
+            "Test a saved MCP server by mcp_server_id using the latest persisted configuration and return structured connection status and discovered tools.",
+            DangerTier::Sensitive,
+        ),
+        |deps, ctx, p| mcp_test_connection(deps, ctx, p),
+    ));
+
+    out.push(Capability::new::<McpActivateServerParams, _, _>(
+        CapabilityMeta::new(
+            "nomi_mcp_activate_server",
+            "mcp",
+            "Test a saved MCP server by mcp_server_id and enable it only when the connection succeeds without a configuration change.",
+            DangerTier::Sensitive,
+        ),
+        |deps, ctx, p| mcp_activate_server(deps, ctx, p),
+    ));
+
     // ── Extensions ───────────────────────────────────────────────────────
 
     out.push(Capability::new::<ExtensionListParams, _, _>(
@@ -522,15 +582,7 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
 // SKIPPED tools
 // ══════════════════════════════════════════════════════════════════════════════
 //
-// 1. `nomi_mcp_test_connection` (Read/Write)
-//    Service: `McpConnectionTestService::test_connection(&self, name: &str, transport: &McpServerTransport)`
-//    Issue: The `McpServerTransport` is a domain enum built from the tagged
-//    `McpTransport` API type. Exposing a tagged-union transport in the flat
-//    JSON schema would be confusing for an LLM (requires `type` + variant-
-//    specific fields). The route handler also persists test results back.
-//    Agent use case unclear — the user can trigger a test from the UI.
-//
-// 2. `nomi_skill_set_tags` (Write)
+// 1. `nomi_skill_set_tags` (Write)
 //    Service: `ISkillTagRepository::upsert(...)` + `builtin_skill_tags` map.
 //    Issue: Tags are audience/scenario classifications for UI filtering, not
 //    something an agent typically needs to set. Low priority.
@@ -558,6 +610,14 @@ mod tests {
         let toggle: McpToggleServerParams =
             serde_json::from_value(json!({"mcp_server_id": MCP_SERVER_ID})).unwrap();
         assert_eq!(toggle.mcp_server_id.as_str(), MCP_SERVER_ID);
+
+        let test: McpTestConnectionParams =
+            serde_json::from_value(json!({"mcp_server_id": MCP_SERVER_ID})).unwrap();
+        assert_eq!(test.mcp_server_id.as_str(), MCP_SERVER_ID);
+
+        let activate: McpActivateServerParams =
+            serde_json::from_value(json!({"mcp_server_id": MCP_SERVER_ID})).unwrap();
+        assert_eq!(activate.mcp_server_id.as_str(), MCP_SERVER_ID);
     }
 
     #[test]
@@ -593,6 +653,20 @@ mod tests {
                 .is_err(),
                 "toggle accepted invalid MCP server id: {invalid}"
             );
+            assert!(
+                serde_json::from_value::<McpTestConnectionParams>(json!({
+                    "mcp_server_id": invalid.clone()
+                }))
+                .is_err(),
+                "test accepted invalid MCP server id: {invalid}"
+            );
+            assert!(
+                serde_json::from_value::<McpActivateServerParams>(json!({
+                    "mcp_server_id": invalid.clone()
+                }))
+                .is_err(),
+                "activate accepted invalid MCP server id: {invalid}"
+            );
         }
 
         assert!(serde_json::from_value::<McpEditServerParams>(json!({
@@ -606,6 +680,14 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<McpToggleServerParams>(json!({"id": MCP_SERVER_ID}))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<McpTestConnectionParams>(json!({"id": MCP_SERVER_ID}))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<McpActivateServerParams>(json!({"id": MCP_SERVER_ID}))
                 .is_err()
         );
     }
@@ -651,6 +733,8 @@ mod tests {
             "nomi_mcp_edit_server",
             "nomi_mcp_delete_server",
             "nomi_mcp_toggle_server",
+            "nomi_mcp_test_connection",
+            "nomi_mcp_activate_server",
         ] {
             let spec = specs
                 .iter()

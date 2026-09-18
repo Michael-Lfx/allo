@@ -148,6 +148,9 @@ pub struct VerticalSkill {
     /// Director playbook markdown body (also folded into requirement overlay).
     #[serde(default)]
     pub playbook: String,
+    /// Executable packing / duration policy. Overlay prose cannot change this.
+    #[serde(default)]
+    pub director: DirectorSpec,
     /// Absolute directory containing SKILL.md (empty for pure builtins).
     #[serde(default)]
     pub dir: String,
@@ -246,6 +249,89 @@ pub struct SkillOverlay {
     pub user_requirement: String,
     pub style: String,
     pub applied_skill_ids: Vec<String>,
+    pub director: DirectorSpec,
+}
+
+/// How adjacent storyboard rows become video jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackPolicy {
+    /// Pack adjacent rows that fit the model window (current default).
+    #[default]
+    Dense,
+    /// Only pack reverse / over-shoulder coverage; every other row is a clip.
+    Coverage,
+}
+
+impl PackPolicy {
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "coverage" | "coverage-first" | "coveragefirst" => Self::Coverage,
+            _ => Self::Dense,
+        }
+    }
+}
+
+/// What to do when the planned list exceeds the duration budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverBudget {
+    /// Keep overflow text by folding it into the last kept unit. Never drop the tail.
+    #[default]
+    Fold,
+    /// Keep every unit; the film may run longer than the target.
+    Extend,
+    /// Drop the tail (legacy). Skills must opt in.
+    Truncate,
+}
+
+impl OverBudget {
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "extend" => Self::Extend,
+            "truncate" => Self::Truncate,
+            _ => Self::Fold,
+        }
+    }
+}
+
+/// Skill-owned planning policy that actually changes packing and budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct DirectorSpec {
+    pub pack_policy: PackPolicy,
+    pub over_budget: OverBudget,
+}
+
+impl DirectorSpec {
+    /// Last skill wins fields it actually set (non-default).
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            pack_policy: if other.pack_policy != PackPolicy::default() {
+                other.pack_policy
+            } else {
+                self.pack_policy
+            },
+            over_budget: if other.over_budget != OverBudget::default() {
+                other.over_budget
+            } else {
+                self.over_budget
+            },
+        }
+    }
+
+    /// Scene dir first, then film root. Missing file → default (dense + fold).
+    pub fn load_from_dir(dir: &std::path::Path) -> Self {
+        for candidate in [dir, dir.parent().unwrap_or(dir)] {
+            let path = candidate.join("director_spec.json");
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(spec) = serde_json::from_str(&raw) {
+                    return spec;
+                }
+            }
+        }
+        Self::default()
+    }
 }
 
 /// Lowercase kebab-case skill directory / id name.
@@ -276,5 +362,21 @@ mod tests {
         assert_eq!(id.source, SkillSource::Builtin);
         assert_eq!(id.name, "luxury-tvc");
         assert_eq!(id.qualified(), "builtin:luxury-tvc");
+    }
+
+    #[test]
+    fn director_merge_last_non_default_wins() {
+        let dense_fold = DirectorSpec::default();
+        let coverage = DirectorSpec {
+            pack_policy: PackPolicy::Coverage,
+            over_budget: OverBudget::Fold,
+        };
+        let extend = DirectorSpec {
+            pack_policy: PackPolicy::Dense,
+            over_budget: OverBudget::Extend,
+        };
+        let merged = dense_fold.merge(coverage).merge(extend);
+        assert_eq!(merged.pack_policy, PackPolicy::Coverage);
+        assert_eq!(merged.over_budget, OverBudget::Extend);
     }
 }

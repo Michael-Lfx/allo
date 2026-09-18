@@ -23,6 +23,7 @@ struct Frontmatter {
     visibility: SkillVisibility,
     requirement_overlay: Option<String>,
     style_overlay: Option<String>,
+    director: crate::skills::DirectorSpec,
 }
 
 /// Split YAML frontmatter (`---` … `---`) from markdown body.
@@ -88,6 +89,9 @@ fn parse_frontmatter_yaml(fm: &str) -> VimaxResult<Frontmatter> {
             "style-overlay" | "style_overlay" | "style" => {
                 out.style_overlay = yaml_block_string(v);
             }
+            "director" => {
+                out.director = parse_director(v);
+            }
             _ => {}
         }
     }
@@ -108,6 +112,35 @@ fn yaml_string_list(v: &serde_yaml::Value) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn parse_director(v: &serde_yaml::Value) -> crate::skills::DirectorSpec {
+    use crate::skills::{DirectorSpec, OverBudget, PackPolicy};
+    let Some(map) = v.as_mapping() else {
+        return DirectorSpec::default();
+    };
+    let mut spec = DirectorSpec::default();
+    for (k, val) in map {
+        let key = k
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .replace('_', "-");
+        match key.as_str() {
+            "pack-policy" | "pack" => {
+                if let Some(s) = val.as_str() {
+                    spec.pack_policy = PackPolicy::parse(s);
+                }
+            }
+            "over-budget" | "overbudget" => {
+                if let Some(s) = val.as_str() {
+                    spec.over_budget = OverBudget::parse(s);
+                }
+            }
+            _ => {}
+        }
+    }
+    spec
 }
 
 fn yaml_block_string(v: &serde_yaml::Value) -> Option<String> {
@@ -165,6 +198,7 @@ pub fn parse_skill_md(
         requirement_overlay: meta.requirement_overlay.unwrap_or_default(),
         style_overlay: meta.style_overlay.unwrap_or_default(),
         playbook: body.trim().to_string(),
+        director: meta.director,
         dir: dir.into(),
         id,
     })
@@ -328,6 +362,7 @@ fn yaml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::{SkillId, SkillSource};
 
     #[test]
     fn parses_full_skill_md() {
@@ -360,5 +395,27 @@ Shoot like a luxury house film.
         assert!(skill.style_overlay.contains("luxury"));
         assert!(skill.playbook.contains("luxury house"));
         assert_eq!(skill.compatible_modes.len(), 2);
+    }
+
+    #[test]
+    fn parses_director_block() {
+        let raw = r#"---
+name: horror-suspense
+description: dread
+director:
+  pack-policy: coverage
+  over-budget: extend
+---
+
+# Playbook
+"#;
+        let skill = parse_skill_md(
+            raw,
+            SkillId::new(SkillSource::Builtin, "horror-suspense"),
+            "",
+        )
+        .unwrap();
+        assert_eq!(skill.director.pack_policy, crate::skills::PackPolicy::Coverage);
+        assert_eq!(skill.director.over_budget, crate::skills::OverBudget::Extend);
     }
 }

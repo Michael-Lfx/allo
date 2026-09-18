@@ -1,3 +1,7 @@
+/**
+ * One-off port helper from open-ai-canvas. Do not reintroduce photo lookbook packs:
+ * canvas style covers are CSS palettes from canvas-style-system.ts.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,13 +12,6 @@ const dest = path.resolve(root, 'src/renderer/pages/videoCanvas/oc/components/ca
 
 let s = fs.readFileSync(src, 'utf8');
 s = s.replaceAll('from "@/', 'from "@oc/').replaceAll("from '@/", "from '@oc/");
-if (!s.includes('canvasStyleAssetUrl')) {
-  s = s.replace(
-    'compatibleProjectStyleCharacters,',
-    'canvasStyleAssetUrl,\n    compatibleProjectStyleCharacters,',
-  );
-}
-s = s.replace(/imageUrl:\s*"\/short-drama-styles\/([^"]+)"/g, 'imageUrl: canvasStyleAssetUrl("$1")');
 
 // Ensure Modal mounts on body and sits above canvas chrome.
 s = s.replace(
@@ -27,4 +24,4 @@ s = s.replace(
 );
 
 fs.writeFileSync(dest, s);
-console.log('wrote', dest, 'asset urls', (s.match(/canvasStyleAssetUrl\(/g) || []).length);
+console.log('wrote', dest);

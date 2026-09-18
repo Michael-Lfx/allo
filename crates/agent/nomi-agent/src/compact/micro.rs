@@ -10,6 +10,10 @@ use chrono::Utc;
 use nomi_config::compact::CompactConfig;
 use nomi_types::message::{ContentBlock, Message, Role};
 
+/// Protect this many tokens of the most recent compactable tool output
+/// (OpenCode-style prune). Older results beyond this tail are cleared.
+pub const PRUNE_PROTECT_TOKENS: usize = 40_000;
+
 /// Placeholder that replaces cleared tool result content.
 pub const CLEARED_TOOL_RESULT: &str = "[Tool result cleared]";
 
@@ -90,7 +94,7 @@ pub fn microcompact(messages: &mut [Message], config: &CompactConfig) -> Microco
     // tool results, in conversation order.
     let targets = collect_compactable_locations(messages, &tool_names, &compactable_set);
 
-    let keep = config.micro_keep_recent.max(1);
+    let keep = keep_recent_count(&targets, messages, config.micro_keep_recent.max(1));
     if targets.len() <= keep {
         return MicrocompactResult {
             cleared_count: 0,
@@ -209,6 +213,45 @@ fn collect_compactable_locations(
         }
     }
     locations
+}
+
+/// How many of the newest compactable results to keep.
+///
+/// Floor is `min_keep` (config.micro_keep_recent). When the live tool-output
+/// tail is larger than [`PRUNE_PROTECT_TOKENS`], keep additional recent
+/// results so ~40k tokens of that tail stay intact — a handful of huge
+/// 32KB reads is not reduced to `min_keep` items. A thin tail still prunes
+/// down to `min_keep` so dozens of tiny results do not linger forever.
+fn keep_recent_count(
+    targets: &[(usize, usize)],
+    messages: &[Message],
+    min_keep: usize,
+) -> usize {
+    if targets.is_empty() {
+        return 0;
+    }
+    let min_keep = min_keep.min(targets.len());
+    let mut total = 0usize;
+    for &(mi, bi) in targets {
+        if let ContentBlock::ToolResult { content, .. } = &messages[mi].content[bi] {
+            total += content.len() / 4;
+        }
+    }
+    if total <= PRUNE_PROTECT_TOKENS {
+        return min_keep;
+    }
+    let mut keep = 0usize;
+    let mut tokens = 0usize;
+    for &(mi, bi) in targets.iter().rev() {
+        keep += 1;
+        if let ContentBlock::ToolResult { content, .. } = &messages[mi].content[bi] {
+            tokens += content.len() / 4;
+        }
+        if tokens >= PRUNE_PROTECT_TOKENS || keep == targets.len() {
+            break;
+        }
+    }
+    keep.max(min_keep)
 }
 
 /// A tool result is "compactable and live" when:
@@ -474,6 +517,25 @@ mod tests {
             };
             assert_eq!(content, expected);
         }
+    }
+
+    #[test]
+    fn keep_budget_protects_recent_tool_token_tail() {
+        // 10 × 20_000 chars ≈ 5k tokens each. Protect 40k tokens → keep 8,
+        // min_keep=2 → clear the 2 oldest.
+        let blob = "x".repeat(20_000);
+        let mut msgs = Vec::new();
+        for i in 0..10 {
+            let id = format!("t{i}");
+            msgs.push(assistant_msg(vec![tool_use_block(&id, "Read")]));
+            msgs.push(user_msg(vec![tool_result_block(&id, &blob)]));
+        }
+        let config = CompactConfig {
+            micro_keep_recent: 2,
+            ..default_config()
+        };
+        let result = microcompact(&mut msgs, &config);
+        assert_eq!(result.cleared_count, 2);
     }
 
     #[test]

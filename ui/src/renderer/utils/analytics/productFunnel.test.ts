@@ -12,14 +12,17 @@ import {
   markTurnFirstToken,
   markTurnIdle,
   markTurnStreamFinished,
+  maybeTrackRetention,
   resetFunnelForTests,
   resetTurnTimingForTests,
   trackFunnelEvent,
+  trackFunnelEventOnce,
 } from './productFunnel';
 import {
-  listQueuedVideoGrowthEventsForTests,
-  resetVideoGrowthUploadForTests,
-} from './videoGrowthUpload';
+  listQueuedTelemetryEventsForTests,
+  resetTelemetryOutboxForTests,
+} from './telemetryOutbox';
+import { resetTelemetryForTests, setTelemetryOptOut } from './telemetry';
 
 describe('product funnel', () => {
   test('records auth and accepted first-task events with a stable cohort', () => {
@@ -56,11 +59,22 @@ describe('product funnel', () => {
     expect(hasFunnelEvent('first_value_confirmed')).toBe(false);
     expect(confirmFirstValue({ source: 'follow_up' })).not.toBeNull();
     expect(hasFunnelEvent('first_value_confirmed')).toBe(true);
+    expect(hasFunnelEvent('value_confirmed')).toBe(true);
+  });
+
+  test('emits app_opened once per session instead of fake d1/d7 flags', () => {
+    resetFunnelForTests();
+    const first = maybeTrackRetention();
+    const second = maybeTrackRetention();
+    expect(first.map((event) => event.name)).toEqual(['app_opened']);
+    expect(second).toEqual([]);
+    expect(hasFunnelEvent('d1_retained')).toBe(false);
+    expect(hasFunnelEvent('d7_retained')).toBe(false);
   });
 
   test('records video value once per session while preserving first-value semantics', () => {
     resetFunnelForTests();
-    resetVideoGrowthUploadForTests();
+    resetTelemetryOutboxForTests();
     expect(
       confirmFirstValue({
         feature: 'video_generation',
@@ -81,7 +95,7 @@ describe('product funnel', () => {
       listFunnelEvents().filter((event) => event.name === 'first_value_confirmed')
     ).toHaveLength(1);
     expect(
-      listQueuedVideoGrowthEventsForTests().filter(
+      listQueuedTelemetryEventsForTests().filter(
         (event) => event.name === 'value_confirmed'
       )
     ).toHaveLength(2);
@@ -89,16 +103,120 @@ describe('product funnel', () => {
 
   test('queues only allow-listed video metadata', () => {
     resetFunnelForTests();
-    resetVideoGrowthUploadForTests();
+    resetTelemetryOutboxForTests();
     trackFunnelEvent('render_started', {
       feature: 'video_generation',
       session_id: 'session-private',
       workflow: 'idea2video',
       prompt: 'must not upload',
     });
-    const [queued] = listQueuedVideoGrowthEventsForTests();
+    const [queued] = listQueuedTelemetryEventsForTests();
     expect(queued?.properties.session_id).toBe('session-private');
     expect(queued?.properties.workflow).toBe('idea2video');
     expect('prompt' in (queued?.properties ?? {})).toBe(false);
+  });
+
+  test('queues expert package failures as sanitized platform metadata', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    trackFunnelEvent('expert_package_install_failed', {
+      market_source: 'skillhub_packages',
+      package_slug: 'tech-test-automation',
+      skill_slug: 'afrexai-qa-test-plan',
+      failure_class: 'deterministic',
+      failure_code: 'INVALID_FRONTMATTER',
+      http_status: 200,
+      prompt: 'must not upload',
+    });
+    const [queued] = listQueuedTelemetryEventsForTests();
+    expect(queued?.name).toBe('expert_package_install_failed');
+    expect(queued?.module).toBe('platform');
+    expect(queued?.properties.package_slug).toBe('tech-test-automation');
+    expect(queued?.properties.failure_class).toBe('deterministic');
+    expect(queued?.properties.failure_code).toBe('INVALID_FRONTMATTER');
+    expect(queued?.properties.http_status).toBe(200);
+    expect('prompt' in (queued?.properties ?? {})).toBe(false);
+  });
+
+  test('keeps briefing metadata and never maps briefing success to film_succeeded', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    trackFunnelEvent('briefing_succeeded', {
+      feature: 'video_generation',
+      mode: 'briefing',
+      workflow: 'news_briefing',
+      briefing_id: 'brief-1',
+      research_depth: 'fast',
+      beat_count: 2,
+      citation_count: 2,
+      prompt: 'must not upload',
+    });
+    const [queued] = listQueuedTelemetryEventsForTests();
+    expect(queued?.name).toBe('briefing_succeeded');
+    expect(queued?.properties.briefing_id).toBe('brief-1');
+    expect(queued?.properties.research_depth).toBe('fast');
+    expect(queued?.properties.beat_count).toBe(2);
+    expect(queued?.properties.citation_count).toBe(2);
+    expect('prompt' in (queued?.properties ?? {})).toBe(false);
+    expect(hasFunnelEvent('film_succeeded')).toBe(false);
+  });
+
+  test('queues app_opened as platform telemetry', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    maybeTrackRetention();
+    const queued = listQueuedTelemetryEventsForTests();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.name).toBe('app_opened');
+    expect(queued[0]?.module).toBe('platform');
+  });
+
+  test('queues auth_completed, home_interactive, and non-video home_viewed as platform', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    trackFunnelEvent('auth_completed', { method: 'email_otp' });
+    trackFunnelEvent('home_interactive', { source: 'guid' });
+    trackFunnelEvent('home_viewed', { feature: 'guid', source: 'guid' });
+    trackFunnelEvent('home_viewed', {
+      feature: 'video_generation',
+      mode: 'idea2video',
+      source: 'video',
+    });
+    const queued = listQueuedTelemetryEventsForTests();
+    expect(queued.map((event) => [event.name, event.module])).toEqual([
+      ['auth_completed', 'platform'],
+      ['home_interactive', 'platform'],
+      ['home_viewed', 'platform'],
+      ['home_viewed', 'video_generation'],
+    ]);
+  });
+
+  test('trackFunnelEventOnce dedupes by stable id', () => {
+    resetFunnelForTests();
+    const first = trackFunnelEventOnce('update_applied', 'update:update_applied:1->2', {
+      feature: 'desktop_update',
+      from_version: '1',
+      to_version: '2',
+    });
+    const second = trackFunnelEventOnce('update_applied', 'update:update_applied:1->2', {
+      feature: 'desktop_update',
+      from_version: '1',
+      to_version: '2',
+    });
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+  });
+
+  test('opt-out skips first-party telemetry upload', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    resetTelemetryForTests();
+    setTelemetryOptOut(true);
+    trackFunnelEvent('render_started', {
+      feature: 'video_generation',
+      session_id: 'session-opt-out',
+    });
+    expect(listQueuedTelemetryEventsForTests()).toEqual([]);
+    setTelemetryOptOut(false);
   });
 });

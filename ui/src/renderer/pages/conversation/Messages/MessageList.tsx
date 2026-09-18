@@ -47,6 +47,8 @@ import {
   buildFirstWinOutcomeSnapshot,
   shouldShowFirstWinOutcomeCard,
 } from './components/firstWinOutcomeModel';
+import { TaskGroup } from '@renderer/components/beautifulUi/taskRows/TaskRows';
+import { resolveTaskGroupStatus } from '@renderer/components/beautifulUi/taskRows/taskRowModel';
 import TurnProcessDisclosure from './components/TurnProcessDisclosure';
 import TurnProcessReceipt, { type TurnProcessReceiptIcon } from './components/TurnProcessReceipt';
 import {
@@ -86,6 +88,10 @@ import {
   buildUserPrefixFingerprint,
   findLastUserTextIndex,
 } from './buildProcessedMessageList';
+import {
+  getActiveStreamingTextIndex,
+  type StreamingTextCandidate,
+} from './streamingMessageModel';
 
 type SourceMessageId = MessageId;
 
@@ -1304,15 +1310,31 @@ const MessageList: React.FC<{
     [displayList]
   );
 
+  const activeStreamingTextIndex = useMemo(() => {
+    const candidates: StreamingTextCandidate[] = displayList.map((item) => {
+      if ('type' in item && item.type === 'text') {
+        return item;
+      }
+      return { type: 'synthetic' };
+    });
+
+    return getActiveStreamingTextIndex(candidates, {
+      isProcessing: conversationContext?.isProcessing === true,
+      activeTurnId: conversationContext?.activeTurnId,
+      activeRequestMessageId: conversationContext?.activeRequestMessageId,
+      lastUserTextIndex,
+    });
+  }, [
+    conversationContext?.activeRequestMessageId,
+    conversationContext?.activeTurnId,
+    conversationContext?.isProcessing,
+    displayList,
+    lastUserTextIndex,
+  ]);
+
   const isActiveProcessTextItem = useCallback(
-    (item: IProcessedItem, index: number): boolean =>
-      conversationContext?.isProcessing === true &&
-      index > lastUserTextIndex &&
-      !('type' in item &&
-        ['turn_process_disclosure', 'process_receipt', 'process_group', 'artifact', 'turn_live_step'].includes(item.type)) &&
-      (item as TMessage).type === 'text' &&
-      (item as TMessage).position === 'left',
-    [conversationContext?.isProcessing, lastUserTextIndex]
+    (_item: IProcessedItem, index: number): boolean => index === activeStreamingTextIndex,
+    [activeStreamingTextIndex]
   );
   const movedActionMessageIds = useMemo(
     () =>
@@ -1691,17 +1713,10 @@ const MessageList: React.FC<{
           className='min-w-0 message-item px-8px max-w-full md:max-w-780px mx-auto turn_live_step'
         >
           <div className='turn-live-step'>
-            <TurnProcessReceipt
-              receipt={{
-                id: item.id,
-                item,
-                label: item.label,
-                state: item.state,
-                icon: item.icon,
-                defaultExpanded: false,
-                hasDetail: false,
-              }}
-              renderProcessItem={() => null}
+            <TaskGroup
+              title={item.label}
+              status={resolveTaskGroupStatus(item.state)}
+              className='turn-live-step__row'
             />
           </div>
         </div>

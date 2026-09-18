@@ -11,7 +11,7 @@ export const resolveTitlebarStaticTitleKey = (pathname: string): string | null =
   if (pathname.startsWith('/conversation/')) return 'common.titlebar.conversation';
   if (pathname === '/terminal-new' || pathname.startsWith('/terminal/')) return 'common.titlebar.terminal';
   if (pathname.startsWith('/settings')) return 'common.titlebar.settings';
-  if (pathname.startsWith('/mcp') || pathname.startsWith('/presets') || pathname.startsWith('/skills') || pathname.startsWith('/plugins')) {
+  if (pathname.startsWith('/mcp') || pathname.startsWith('/presets') || pathname.startsWith('/skills')) {
     return 'common.titlebar.capabilityHub';
   }
   if (pathname.startsWith('/video-generation')) return 'common.titlebar.videoGeneration';

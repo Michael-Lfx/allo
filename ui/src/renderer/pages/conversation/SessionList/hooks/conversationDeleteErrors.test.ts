@@ -56,10 +56,10 @@ describe('conversation deletion errors', () => {
     expect(summary.successCount).toBe(1);
     expect(summary.failureCounts.get('attemptRetained')).toBe(1);
     expect(summary.failureCounts.get('unknown')).toBe(2);
-    expect(summary.failures).toEqual([
-      { kind: 'unknown', reason: undefined },
-      { kind: 'attemptRetained', reason: retainedError },
-      { kind: 'unknown', reason: expect.any(Error) },
-    ]);
+    expect(summary.failures).toHaveLength(3);
+    expect(summary.failures[0]).toEqual({ kind: 'unknown', reason: undefined });
+    expect(summary.failures[1]).toEqual({ kind: 'attemptRetained', reason: retainedError });
+    expect(summary.failures[2]?.kind).toBe('unknown');
+    expect(summary.failures[2]?.reason instanceof Error).toBe(true);
   });
 });

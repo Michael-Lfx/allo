@@ -42,8 +42,29 @@ export function supportChatReducer(
 ): SupportChatState {
   switch (action.type) {
     case 'open':
+      if (state.status === 'closed' && state.cached) {
+        return {
+          status: 'ready',
+          unreadCount: state.unreadCount,
+          conversation: state.cached.conversation,
+          messages: state.cached.messages,
+          syncWarning: state.cached.syncWarning,
+        };
+      }
       return { status: 'loading', unreadCount: state.unreadCount };
     case 'close':
+      if (state.status === 'closed') return state;
+      if (state.status === 'ready') {
+        return {
+          status: 'closed',
+          unreadCount: state.unreadCount,
+          cached: {
+            conversation: state.conversation,
+            messages: state.messages,
+            syncWarning: state.syncWarning,
+          },
+        };
+      }
       return { status: 'closed', unreadCount: state.unreadCount };
     case 'ready':
       return {
@@ -68,44 +89,94 @@ export function supportChatReducer(
           unreadCount,
         };
       }
+      if (state.status === 'closed' && state.cached) {
+        return {
+          ...state,
+          unreadCount,
+          cached: { ...state.cached, conversation: action.conversation },
+        };
+      }
       return withUnread(state, unreadCount);
     }
     case 'messages-merged': {
-      if (state.status !== 'ready') return state;
-      return {
-        ...state,
-        messages: mergeServerMessages(state.messages, action.incoming),
-        syncWarning: false,
-      };
+      if (state.status === 'ready') {
+        return {
+          ...state,
+          messages: mergeServerMessages(state.messages, action.incoming),
+          syncWarning: false,
+        };
+      }
+      if (state.status === 'closed' && state.cached) {
+        return {
+          ...state,
+          cached: {
+            ...state.cached,
+            messages: mergeServerMessages(state.cached.messages, action.incoming),
+            syncWarning: false,
+          },
+        };
+      }
+      return state;
     }
     case 'pending-added': {
-      if (state.status !== 'ready') return state;
-      return {
-        ...state,
-        messages: mergeServerMessages([...state.messages, action.message], []),
-      };
+      if (state.status === 'ready') {
+        return {
+          ...state,
+          messages: mergeServerMessages([...state.messages, action.message], []),
+        };
+      }
+      if (state.status === 'closed' && state.cached) {
+        return {
+          ...state,
+          cached: {
+            ...state.cached,
+            messages: mergeServerMessages([...state.cached.messages, action.message], []),
+          },
+        };
+      }
+      return state;
     }
     case 'pending-failed': {
-      if (state.status !== 'ready') return state;
-      return {
-        ...state,
-        messages: state.messages.map((item) =>
+      const markFailed = (messages: SupportMessage[]) =>
+        messages.map((item) =>
           item.kind === 'pending' && item.clientMsgId === action.clientMsgId
             ? { ...item, delivery: 'failed' as const }
             : item
-        ),
-      };
+        );
+      if (state.status === 'ready') return { ...state, messages: markFailed(state.messages) };
+      if (state.status === 'closed' && state.cached) {
+        return { ...state, cached: { ...state.cached, messages: markFailed(state.cached.messages) } };
+      }
+      return state;
     }
     case 'pending-replaced': {
-      if (state.status !== 'ready') return state;
-      return {
-        ...state,
-        messages: replacePendingMessage(state.messages, action.clientMsgId, action.message),
-      };
+      if (state.status === 'ready') {
+        return {
+          ...state,
+          messages: replacePendingMessage(state.messages, action.clientMsgId, action.message),
+        };
+      }
+      if (state.status === 'closed' && state.cached) {
+        return {
+          ...state,
+          cached: {
+            ...state.cached,
+            messages: replacePendingMessage(
+              state.cached.messages,
+              action.clientMsgId,
+              action.message
+            ),
+          },
+        };
+      }
+      return state;
     }
     case 'sync-warning': {
-      if (state.status !== 'ready') return state;
-      return { ...state, syncWarning: action.syncWarning };
+      if (state.status === 'ready') return { ...state, syncWarning: action.syncWarning };
+      if (state.status === 'closed' && state.cached) {
+        return { ...state, cached: { ...state.cached, syncWarning: action.syncWarning } };
+      }
+      return state;
     }
     case 'reset':
       return initialSupportChatState;

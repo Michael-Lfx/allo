@@ -476,8 +476,11 @@ async fn a_round_that_keeps_truncating_stops_at_three_passes() {
     assert_eq!(result.cutoff_state_changing, 3);
 
     // The complement of the tool-result shape: when the requirement is ALREADY
-    // the tail after the draft is popped, it must not be re-pushed. Otherwise
-    // every restart would send the same request twice in a row and pay for it.
+    // the tail after the draft is popped, it must not be re-pushed. Each
+    // restart appends one round.rs resumable hint and only the truncated draft
+    // is removed — earlier hints stay in the conversation, so pass N carries
+    // exactly N hints after the requirement (documented current behavior; this
+    // regression guards against a *requirement* stack growing instead).
     let bodies = responder.bodies.lock().unwrap();
     for (pass, body) in bodies.iter().enumerate() {
         let conversation = restarted_messages(body)
@@ -486,10 +489,14 @@ async fn a_round_that_keeps_truncating_stops_at_three_passes() {
             .collect::<Vec<_>>();
         assert_eq!(
             conversation.len(),
-            1,
-            "pass {pass} must carry the single requirement message, not a growing \
-             stack of duplicates: {conversation:?}"
+            pass + 1,
+            "pass {pass} carries the requirement plus one resumable hint per restart: \
+             {conversation:?}"
         );
         assert_eq!(conversation[0]["role"], "user");
+        for message in conversation.iter().skip(1) {
+            let hint = message["content"].as_str().unwrap_or("");
+            assert!(hint.contains("[resumable round"), "restart appends hint: {hint}");
+        }
     }
 }

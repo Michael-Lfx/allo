@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Flowy"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -17,6 +17,7 @@ dependencies = [
  "nomifun-runtime",
  "objc2",
  "objc2-app-kit",
+ "open",
  "serde",
  "serde_json",
  "sys-locale",
@@ -36,6 +37,15 @@ dependencies = [
  "tracing",
  "windows 0.61.3",
  "winreg 0.55.0",
+]
+
+[[package]]
+name = "addr2line"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
+dependencies = [
+ "gimli",
 ]
 
 [[package]]
@@ -128,7 +138,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "jsonrpcmsg",
- "rmcp",
+ "rmcp 1.8.0",
  "rustc-hash",
  "schemars 1.2.2",
  "serde",
@@ -168,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "agent-store"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1147,6 +1157,21 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "backtrace"
+version = "0.3.76"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
+dependencies = [
+ "addr2line",
+ "cfg-if",
+ "libc",
+ "miniz_oxide",
+ "object",
+ "rustc-demangle",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -2655,6 +2680,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7eed2c4702fa172d1ce21078faa7c5203e69f5394d48cc436d25928394a867a2"
 
 [[package]]
+name = "debugid"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef552e6f588e446098f6ba40d89ac146c8c7b64aade83c051ee00bb5d2bc18d"
+dependencies = [
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "deflate64"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3549,7 +3584,7 @@ dependencies = [
 
 [[package]]
 name = "flowy-ssh"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "regex",
@@ -3564,7 +3599,7 @@ dependencies = [
 
 [[package]]
 name = "flowy-web"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3585,6 +3620,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
  "wiremock",
@@ -4120,6 +4156,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "gimli"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
+
+[[package]]
 name = "gio"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4380,6 +4422,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "h3"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10872b55cfb02a821b69dc7cf8dc6a71d6af25eb9a79662bec4a9d016056b3be"
+dependencies = [
+ "bytes",
+ "fastrand",
+ "futures-util",
+ "http 1.5.0",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "h3-quinn"
+version = "0.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2e732c8d91a74731663ac8479ab505042fbf547b9a207213ab7fbcbfc4f8b4"
+dependencies = [
+ "bytes",
+ "futures",
+ "h3",
+ "quinn",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4537,6 +4607,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -5383,9 +5464,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.4.0"
+version = "10.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
+checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",
@@ -5395,7 +5476,6 @@ dependencies = [
  "serde_json",
  "signature 2.2.0",
  "simple_asn1",
- "zeroize",
 ]
 
 [[package]]
@@ -5746,9 +5826,9 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.18.1"
+version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b6180140927ee907000b0aa540091f6ea512ead4447c92b8fc35bc72788a5a6"
+checksum = "ff9840bcc50b71349309900da0ce7279aa336ae71d73250b07998932c7d97c25"
 dependencies = [
  "hashbrown 0.17.1",
 ]
@@ -6205,7 +6285,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-a11y"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "atspi",
  "core-foundation 0.10.1",
@@ -6227,7 +6307,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-agent"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6272,7 +6352,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-agent-eval"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6293,7 +6373,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-agent-trace"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6308,7 +6388,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-auxiliary"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "nomi-types",
@@ -6318,8 +6398,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomi-briefing"
+version = "1.4.2"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "nomi-config",
+ "nomi-process-runtime",
+ "nomi-protocol",
+ "nomi-tools",
+ "nomi-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "nomi-browser"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6341,7 +6443,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-browser-engine"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6377,7 +6479,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-cli"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -6395,7 +6497,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-coding"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6403,7 +6505,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-compact"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "regex",
  "serde",
@@ -6412,7 +6514,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-computer"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6422,6 +6524,7 @@ dependencies = [
  "image",
  "nomi-a11y",
  "nomi-config",
+ "nomi-process-runtime",
  "nomi-protocol",
  "nomi-tools",
  "nomi-types",
@@ -6435,7 +6538,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-config"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -6468,7 +6571,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-insights-core"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "chrono",
  "hex",
@@ -6492,7 +6595,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-mcp"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6517,7 +6620,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-media"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6525,6 +6628,7 @@ dependencies = [
  "image",
  "indexmap 2.14.0",
  "nomi-config",
+ "nomi-process-runtime",
  "nomi-protocol",
  "nomi-tools",
  "nomi-types",
@@ -6543,7 +6647,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-memory"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "chrono",
  "nomi-config",
@@ -6559,7 +6663,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-poi"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "chrono",
  "hex",
@@ -6578,7 +6682,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-process-runtime"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6599,7 +6703,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-protocol"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "rstest",
  "serde",
@@ -6610,7 +6714,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-providers"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -6621,10 +6725,11 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "http 1.5.0",
- "jsonwebtoken 10.4.0",
+ "jsonwebtoken 10.3.0",
  "nomi-config",
  "nomi-types",
  "nomifun-net",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -6638,14 +6743,14 @@ dependencies = [
 
 [[package]]
 name = "nomi-redact"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "nomi-skills"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "dirs 6.0.0",
@@ -6668,7 +6773,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-tools"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6676,7 +6781,7 @@ dependencies = [
  "indexmap 2.14.0",
  "jsonschema",
  "libc",
- "lru 0.18.1",
+ "lru 0.18.4",
  "nomi-coding",
  "nomi-config",
  "nomi-process-runtime",
@@ -6691,6 +6796,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "walkdir",
  "which 7.0.3",
  "windows-sys 0.61.2",
  "zip 2.4.2",
@@ -6698,7 +6804,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-types"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6711,7 +6817,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-vimax"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6719,6 +6825,7 @@ dependencies = [
  "futures",
  "image",
  "nomi-config",
+ "nomi-process-runtime",
  "nomi-providers",
  "nomifun-cloud",
  "regex",
@@ -6739,7 +6846,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-agent-execution"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -6767,7 +6874,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-ai-agent"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -6789,6 +6896,7 @@ dependencies = [
  "nomi-agent-eval",
  "nomi-agent-trace",
  "nomi-auxiliary",
+ "nomi-briefing",
  "nomi-browser",
  "nomi-config",
  "nomi-insights-core",
@@ -6848,7 +6956,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-api-types"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "nomifun-common",
  "serde",
@@ -6860,7 +6968,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-app"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6889,6 +6997,7 @@ dependencies = [
  "nomifun-assets",
  "nomifun-audio",
  "nomifun-auth",
+ "nomifun-briefing",
  "nomifun-browser-platform",
  "nomifun-canvas",
  "nomifun-channel",
@@ -6931,7 +7040,9 @@ dependencies = [
  "nomifun-workshop",
  "percent-encoding",
  "reqwest 0.12.28",
- "rmcp",
+ "rmcp 2.0.0",
+ "sentry",
+ "sentry-tracing",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -6955,7 +7066,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-app-server"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -6988,7 +7099,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-assets"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "http 1.5.0",
@@ -7003,7 +7114,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-audio"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7028,7 +7139,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-auth"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7051,8 +7162,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomifun-briefing"
+version = "1.4.2"
+dependencies = [
+ "axum",
+ "chrono",
+ "flowy-web",
+ "mime_guess",
+ "nomi-briefing",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-cloud",
+ "nomifun-common",
+ "nomifun-db",
+ "nomifun-model-invoke",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "nomifun-browser-platform"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -7066,10 +7200,11 @@ dependencies = [
 
 [[package]]
 name = "nomifun-canvas"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
+ "chrono",
  "futures",
  "mime_guess",
  "nomi-config",
@@ -7078,6 +7213,7 @@ dependencies = [
  "nomifun-auth",
  "nomifun-cloud",
  "nomifun-common",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -7086,11 +7222,12 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]
 name = "nomifun-channel"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "aes 0.8.4",
  "async-trait",
@@ -7128,19 +7265,21 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cloud"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",
+ "clap",
  "dashmap",
  "futures",
  "getrandom 0.2.17",
  "hex",
  "image",
  "nomi-config",
+ "nomi-process-runtime",
  "nomi-providers",
  "nomi-types",
  "nomifun-api-types",
@@ -7153,6 +7292,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sysinfo",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -7160,12 +7300,13 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "winreg 0.55.0",
  "wiremock",
 ]
 
 [[package]]
 name = "nomifun-common"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-trait",
@@ -7175,6 +7316,7 @@ dependencies = [
  "dunce",
  "getrandom 0.2.17",
  "hmac 0.12.1",
+ "junction",
  "libc",
  "nomi-types",
  "serde",
@@ -7191,7 +7333,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-companion"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7225,7 +7367,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-conversation"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7256,7 +7398,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-creation"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7279,7 +7421,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cron"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7306,7 +7448,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-customer-service"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7327,7 +7469,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-db"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "fs2",
@@ -7348,10 +7490,11 @@ dependencies = [
 
 [[package]]
 name = "nomifun-extension"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
+ "chrono",
  "dirs 6.0.0",
  "fs2",
  "http-body-util",
@@ -7381,7 +7524,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-file"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7410,7 +7553,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-gateway"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7453,7 +7596,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-idmm"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7477,7 +7620,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-importer"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "hex",
@@ -7498,7 +7641,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-insights"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "nomi-config",
@@ -7514,7 +7657,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-knowledge"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anydoc",
  "async-trait",
@@ -7558,12 +7701,13 @@ dependencies = [
 
 [[package]]
 name = "nomifun-learning"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
  "chrono",
  "fsrs",
+ "futures",
  "nomifun-api-types",
  "nomifun-auth",
  "nomifun-common",
@@ -7575,12 +7719,14 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tracing",
  "url",
+ "walkdir",
 ]
 
 [[package]]
 name = "nomifun-mcp"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7605,7 +7751,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-media"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "nomi-config",
@@ -7622,7 +7768,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-model-invoke"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -7640,7 +7786,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-models-dev"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "dirs 6.0.0",
  "nomifun-net",
@@ -7656,8 +7802,9 @@ dependencies = [
 
 [[package]]
 name = "nomifun-net"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
+ "nomi-process-runtime",
  "reqwest 0.12.28",
  "tracing",
  "windows-registry 0.6.1",
@@ -7665,7 +7812,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-notify"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "nomifun-db",
@@ -7676,7 +7823,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-office"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7701,7 +7848,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-poi"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "nomi-config",
@@ -7720,7 +7867,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-preset"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7741,7 +7888,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-public"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "futures",
@@ -7749,7 +7896,7 @@ dependencies = [
  "nomifun-browser-platform",
  "nomifun-common",
  "nomifun-gateway",
- "rmcp",
+ "rmcp 2.0.0",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -7761,7 +7908,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-realtime"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "dashmap",
@@ -7776,7 +7923,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-requirement"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7801,7 +7948,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-robot"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7837,7 +7984,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-runtime"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "dirs 6.0.0",
  "fs2",
@@ -7858,7 +8005,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-secret"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "getrandom 0.2.17",
@@ -7878,7 +8025,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-shell"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7910,7 +8057,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-ssh"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7936,7 +8083,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-system"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -7970,7 +8117,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-terminal"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7998,7 +8145,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-vimax"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -8024,7 +8171,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-web"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -8042,7 +8189,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-webhook"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -8065,7 +8212,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-workshop"
-version = "1.0.11"
+version = "1.4.2"
 dependencies = [
  "axum",
  "image",
@@ -8718,6 +8865,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "oboe"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8832,6 +8988,22 @@ dependencies = [
  "hmac-sha256",
  "lzma-rust2",
  "ureq 3.3.0",
+]
+
+[[package]]
+name = "os_info"
+version = "3.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cf20a545b305cf1da722b236b5155c9bb35f1d5ceb28c048bd96ca842f41b5b"
+dependencies = [
+ "android_system_properties",
+ "log",
+ "nix 0.31.3",
+ "objc2",
+ "objc2-foundation",
+ "objc2-ui-kit",
+ "serde",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9696,6 +9868,7 @@ checksum = "0c1a41e437b6bbd489372cd4971de128e85c855f56c57f283d20ff016cf7c0a8"
 dependencies = [
  "bytes",
  "cfg_aliases",
+ "futures-io",
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
@@ -10017,6 +10190,9 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
+ "h2",
+ "h3",
+ "h3-quinn",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
@@ -10030,6 +10206,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -10144,6 +10321,28 @@ checksum = "1d1f571c72940a19d9532fe52dbea8bc9912bf1d766c2970bb824056b86f3f59"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "chrono",
+ "futures",
+ "pastey",
+ "pin-project-lite",
+ "rmcp-macros 1.8.0",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "rmcp"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d52d21e5b342699bc4de690e6104fc4e43255e4e8420ff0f2cbb963aac09da6f"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "futures",
@@ -10153,7 +10352,7 @@ dependencies = [
  "pastey",
  "pin-project-lite",
  "rand 0.10.2",
- "rmcp-macros",
+ "rmcp-macros 2.2.0",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -10172,6 +10371,19 @@ name = "rmcp-macros"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aad0035b69380782d78ea95b508327e6deaa2235909053e596eea8f27b5e1d5"
+dependencies = [
+ "darling 0.23.0",
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "rmcp-macros"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "783d787bf21813b285f13019adc49e11af501c658890c1e519f31f937c68b7e3"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -10412,6 +10624,12 @@ dependencies = [
  "cfg-if",
  "ordered-multimap",
 ]
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "rustc-hash"
@@ -10799,6 +11017,101 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 dependencies = [
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "sentry"
+version = "0.38.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a505499b38861edd82b5a688fa06ba4ba5875bb832adeeeba22b7b23fc4bc39a"
+dependencies = [
+ "httpdate",
+ "reqwest 0.12.28",
+ "rustls",
+ "sentry-backtrace",
+ "sentry-contexts",
+ "sentry-core",
+ "sentry-panic",
+ "sentry-tracing",
+ "tokio",
+ "ureq 2.12.1",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "sentry-backtrace"
+version = "0.38.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dace796060e4ad10e3d1405b122ae184a8b2e71dce05ae450e4f81b7686b0d9"
+dependencies = [
+ "backtrace",
+ "regex",
+ "sentry-core",
+]
+
+[[package]]
+name = "sentry-contexts"
+version = "0.38.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87bd9e6b51ffe2bc7188ebe36cb67557cb95749c08a3f81f33e8c9b135e0d1bc"
+dependencies = [
+ "hostname",
+ "libc",
+ "os_info",
+ "rustc_version",
+ "sentry-core",
+ "uname",
+]
+
+[[package]]
+name = "sentry-core"
+version = "0.38.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7426d4beec270cfdbb50f85f0bb2ce176ea57eed0b11741182a163055a558187"
+dependencies = [
+ "rand 0.9.5",
+ "sentry-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "sentry-panic"
+version = "0.38.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c92beed69b776a162b6d269bef1eaa3e614090b6df45a88d9b239c4fdbffdfba"
+dependencies = [
+ "sentry-backtrace",
+ "sentry-core",
+]
+
+[[package]]
+name = "sentry-tracing"
+version = "0.38.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55c323492795de90824f3198562e33dd74ae3bc852fbb13c0cabec54a1cf73cd"
+dependencies = [
+ "sentry-backtrace",
+ "sentry-core",
+ "tracing-core",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "sentry-types"
+version = "0.38.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04b6c9287202294685cb1f749b944dbbce8160b81a1061ecddc073025fed129f"
+dependencies = [
+ "debugid",
+ "hex",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "time",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -13298,6 +13611,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "uname"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b72f89f0ca32e4db1c04e2a72f5345d59796d4866a1ee0609084569f73683dc8"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

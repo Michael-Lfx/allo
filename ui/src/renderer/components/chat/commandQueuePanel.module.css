@@ -1,0 +1,318 @@
+/* Radius: composer 20px pill, panel 12px, row 6px, control 6px. */
+
+.root {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 6px;
+}
+
+.card {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border-2, #e5e6eb) 72%, transparent);
+  border-radius: 12px;
+  background: var(--dialog-fill-0, var(--color-bg-1, #fff));
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-1, #1d2129) 5%, transparent);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px 2px;
+}
+
+.count,
+.card button.headerAction,
+.card button.headerAction span {
+  color: var(--color-text-2, #4e5969);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+.count {
+  min-width: 0;
+}
+
+.headerAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 1px 2px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: color 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card button.headerAction:hover,
+.card button.headerAction:focus-visible {
+  color: var(--color-text-1, #1d2129);
+  background: transparent;
+}
+
+.card button.headerAction:hover span,
+.card button.headerAction:focus-visible span {
+  color: var(--color-text-1, #1d2129);
+}
+
+.headerAction:active {
+  transform: scale(0.98);
+}
+
+.card button.headerAction:focus-visible {
+  outline: 2px solid var(--color-primary-6, #165dff);
+  outline-offset: 2px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 5px 5px;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  min-height: 26px;
+  padding: 1px 4px 1px 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), border-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.item:focus-within {
+  background: var(--color-fill-2, #f2f3f5);
+}
+
+.item.itemDragging,
+.item.itemDragging:hover,
+.item.itemDragging:focus-within {
+  background: var(--color-bg-1, #fff);
+  border-color: color-mix(in srgb, var(--color-border-2, #e5e6eb) 60%, transparent);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1, #1d2129) 6%, transparent);
+}
+
+.body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dragSlot {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+.dragHandle {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  overflow: hidden;
+  background: transparent;
+  color: var(--color-text-3, #86909c);
+  outline: none;
+  cursor: grab;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.item:hover .dragHandle,
+.item:focus-within .dragHandle,
+.dragHandle:focus-visible,
+.itemDragging .dragHandle {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.itemDragging .dragHandle {
+  cursor: grabbing;
+}
+
+.dragHandle:disabled {
+  cursor: default;
+  opacity: 0;
+}
+
+.dragHandle:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-primary-6, #165dff);
+  outline-offset: 1px;
+}
+
+.preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.previewText {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--color-text-1, #1d2129);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileCount {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--color-text-3, #86909c);
+  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 40%, transparent);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.deliveryStatus {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--color-text-3, #86909c);
+  font-size: 10px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 0;
+}
+
+.sendNow,
+.iconBtn {
+  transition: color 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sendNow {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  margin: 0;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-3, #86909c);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.item:hover .sendNow,
+.item:focus-within .sendNow {
+  color: var(--color-text-2, #4e5969);
+}
+
+.sendNow:hover,
+.sendNow:focus-visible {
+  color: var(--color-text-1, #1d2129);
+  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 35%, transparent);
+}
+
+.sendNow:active,
+.iconBtn:active {
+  transform: scale(0.96);
+}
+
+.sendNow:focus-visible,
+.iconBtn:focus-visible {
+  outline: 2px solid var(--color-primary-6, #165dff);
+  outline-offset: 1px;
+}
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-3, #86909c);
+  cursor: pointer;
+}
+
+.iconBtn:hover,
+.iconBtn:focus-visible {
+  color: var(--color-text-1, #1d2129);
+  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 35%, transparent);
+}
+
+.iconBtnDanger:hover,
+.iconBtnDanger:focus-visible {
+  color: var(--color-danger-6, #f53f3f);
+  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 35%, transparent);
+}
+
+.iconBtn :global(svg) {
+  color: inherit;
+}
+
+@media (hover: hover) {
+  .item:hover {
+    background: var(--color-fill-2, #f2f3f5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .item,
+  .dragHandle,
+  .sendNow,
+  .iconBtn,
+  .headerAction,
+  .actions {
+    transition-duration: 0.01ms;
+  }
+
+  .headerAction:active,
+  .sendNow:active,
+  .iconBtn:active {
+    transform: none;
+  }
+}

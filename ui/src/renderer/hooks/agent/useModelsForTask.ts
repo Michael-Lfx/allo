@@ -7,7 +7,7 @@
 import { ipcBridge } from '@/common';
 import type { IProvider, ModelTask, ModelTrait } from '@/common/config/storage';
 import type { CatalogModelRef, ResolveModelsRequest } from '@/common/types/provider/providerApi';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import useSWR, { type SWRConfiguration } from 'swr';
 import { useModelProviderList } from './useModelProviderList';
 
@@ -111,6 +111,22 @@ export function useModelsForTask(
     () => (enabled ? buildTaskModelGroups(data ?? [], providers) : []),
     [data, providers, enabled]
   );
+  const lastResolvedGroupsRef = useRef<TaskModelGroup[]>([]);
+
+  useEffect(() => {
+    if (Array.isArray(data)) {
+      lastResolvedGroupsRef.current = groups;
+    }
+  }, [data, groups]);
+
+  // SWR can temporarily expose undefined data during a revalidation or after
+  // a failed refresh. Keep the last authoritative catalog visible so a
+  // transient sync error cannot turn the picker into an empty list.
+  const stableGroups = !enabled
+    ? []
+    : Array.isArray(data)
+      ? groups
+      : lastResolvedGroupsRef.current;
 
   const refresh = useCallback(() => {
     if (!enabled) return;
@@ -118,7 +134,7 @@ export function useModelsForTask(
   }, [mutate, enabled]);
 
   return {
-    groups,
+    groups: stableGroups,
     // Mirror useModelProviderList's fail-safe: after an error SWR clears
     // `isLoading` while `data` stays undefined. Keep the catalog unresolved in
     // that state so consumers never treat a failed resolve as an authoritative

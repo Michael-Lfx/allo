@@ -128,18 +128,18 @@ fn format_hit(h: &MeetingTranscriptHit) -> String {
 }
 
 pub const MEETING_TOOL_NAMES: &[&str] = &[
-    "meeting.list",
-    "meeting.get",
-    "meeting.search_transcript",
-    "meeting.get_notes",
-    "meeting.captions_recent",
-    "meeting.start",
-    "meeting.pause",
-    "meeting.resume",
-    "meeting.stop",
-    "meeting.ask",
-    "meeting.listen_start",
-    "meeting.listen_stop",
+    "meeting_list",
+    "meeting_get",
+    "meeting_search_transcript",
+    "meeting_get_notes",
+    "meeting_captions_recent",
+    "meeting_start",
+    "meeting_pause",
+    "meeting_resume",
+    "meeting_stop",
+    "meeting_ask",
+    "meeting_listen_start",
+    "meeting_listen_stop",
 ];
 
 /// `meeting.list` — list this owner's meeting sessions.
@@ -156,7 +156,7 @@ impl MeetingListTool {
 #[async_trait]
 impl Tool for MeetingListTool {
     fn name(&self) -> &str {
-        "meeting.list"
+        "meeting_list"
     }
 
     fn description(&self) -> &str {
@@ -194,7 +194,7 @@ impl Tool for MeetingListTool {
                 let lines: Vec<String> = items.iter().map(format_session).collect();
                 ok(lines.join("\n"))
             }
-            Err(e) => err(format!("meeting.list failed: {e}")),
+            Err(e) => err(format!("meeting_list failed: {e}")),
         }
     }
 
@@ -217,7 +217,7 @@ impl MeetingGetTool {
 #[async_trait]
 impl Tool for MeetingGetTool {
     fn name(&self) -> &str {
-        "meeting.get"
+        "meeting_get"
     }
 
     fn description(&self) -> &str {
@@ -242,7 +242,7 @@ impl Tool for MeetingGetTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
-            return err("meeting.get requires: session_id".into());
+            return err("meeting_get requires: session_id".into());
         };
         match self.sink.get(session_id).await {
             Ok(s) => {
@@ -258,7 +258,7 @@ impl Tool for MeetingGetTool {
                 }
                 ok(out)
             }
-            Err(e) => err(format!("meeting.get failed: {e}")),
+            Err(e) => err(format!("meeting_get failed: {e}")),
         }
     }
 
@@ -281,7 +281,7 @@ impl MeetingSearchTranscriptTool {
 #[async_trait]
 impl Tool for MeetingSearchTranscriptTool {
     fn name(&self) -> &str {
-        "meeting.search_transcript"
+        "meeting_search_transcript"
     }
 
     fn description(&self) -> &str {
@@ -315,7 +315,7 @@ impl Tool for MeetingSearchTranscriptTool {
             input.get("session_id").and_then(|v| v.as_str()),
             input.get("query").and_then(|v| v.as_str()),
         ) else {
-            return err("meeting.search_transcript requires: session_id, query".into());
+            return err("meeting_search_transcript requires: session_id, query".into());
         };
         let limit = input
             .get("limit")
@@ -328,7 +328,7 @@ impl Tool for MeetingSearchTranscriptTool {
                 let lines: Vec<String> = hits.iter().map(format_hit).collect();
                 ok(lines.join("\n"))
             }
-            Err(e) => err(format!("meeting.search_transcript failed: {e}")),
+            Err(e) => err(format!("meeting_search_transcript failed: {e}")),
         }
     }
 
@@ -351,7 +351,7 @@ impl MeetingGetNotesTool {
 #[async_trait]
 impl Tool for MeetingGetNotesTool {
     fn name(&self) -> &str {
-        "meeting.get_notes"
+        "meeting_get_notes"
     }
 
     fn description(&self) -> &str {
@@ -375,11 +375,11 @@ impl Tool for MeetingGetNotesTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
-            return err("meeting.get_notes requires: session_id".into());
+            return err("meeting_get_notes requires: session_id".into());
         };
         match self.sink.get_notes(session_id).await {
             Ok(notes) => ok(notes),
-            Err(e) => err(format!("meeting.get_notes failed: {e}")),
+            Err(e) => err(format!("meeting_get_notes failed: {e}")),
         }
     }
 
@@ -402,7 +402,7 @@ impl MeetingCaptionsRecentTool {
 #[async_trait]
 impl Tool for MeetingCaptionsRecentTool {
     fn name(&self) -> &str {
-        "meeting.captions_recent"
+        "meeting_captions_recent"
     }
 
     fn description(&self) -> &str {
@@ -433,7 +433,7 @@ impl Tool for MeetingCaptionsRecentTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
-            return err("meeting.captions_recent requires: session_id".into());
+            return err("meeting_captions_recent requires: session_id".into());
         };
         let limit = input
             .get("limit")
@@ -446,7 +446,7 @@ impl Tool for MeetingCaptionsRecentTool {
                 let lines: Vec<String> = hits.iter().map(format_hit).collect();
                 ok(lines.join("\n"))
             }
-            Err(e) => err(format!("meeting.captions_recent failed: {e}")),
+            Err(e) => err(format!("meeting_captions_recent failed: {e}")),
         }
     }
 
@@ -469,7 +469,7 @@ impl MeetingStartTool {
 #[async_trait]
 impl Tool for MeetingStartTool {
     fn name(&self) -> &str {
-        "meeting.start"
+        "meeting_start"
     }
 
     fn description(&self) -> &str {
@@ -503,7 +503,7 @@ impl Tool for MeetingStartTool {
         let title = input.get("title").and_then(|v| v.as_str());
         match self.sink.start(session_id, title).await {
             Ok(s) => ok(format!("Started: {}", format_session(&s))),
-            Err(e) => err(format!("meeting.start failed: {e}")),
+            Err(e) => err(format!("meeting_start failed: {e}")),
         }
     }
 
@@ -526,7 +526,7 @@ impl MeetingPauseTool {
 #[async_trait]
 impl Tool for MeetingPauseTool {
     fn name(&self) -> &str {
-        "meeting.pause"
+        "meeting_pause"
     }
 
     fn description(&self) -> &str {
@@ -549,11 +549,11 @@ impl Tool for MeetingPauseTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
-            return err("meeting.pause requires: session_id".into());
+            return err("meeting_pause requires: session_id".into());
         };
         match self.sink.pause(session_id).await {
             Ok(s) => ok(format!("Paused: {}", format_session(&s))),
-            Err(e) => err(format!("meeting.pause failed: {e}")),
+            Err(e) => err(format!("meeting_pause failed: {e}")),
         }
     }
 
@@ -576,7 +576,7 @@ impl MeetingResumeTool {
 #[async_trait]
 impl Tool for MeetingResumeTool {
     fn name(&self) -> &str {
-        "meeting.resume"
+        "meeting_resume"
     }
 
     fn description(&self) -> &str {
@@ -599,11 +599,11 @@ impl Tool for MeetingResumeTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
-            return err("meeting.resume requires: session_id".into());
+            return err("meeting_resume requires: session_id".into());
         };
         match self.sink.resume(session_id).await {
             Ok(s) => ok(format!("Resumed: {}", format_session(&s))),
-            Err(e) => err(format!("meeting.resume failed: {e}")),
+            Err(e) => err(format!("meeting_resume failed: {e}")),
         }
     }
 
@@ -626,7 +626,7 @@ impl MeetingStopTool {
 #[async_trait]
 impl Tool for MeetingStopTool {
     fn name(&self) -> &str {
-        "meeting.stop"
+        "meeting_stop"
     }
 
     fn description(&self) -> &str {
@@ -649,11 +649,11 @@ impl Tool for MeetingStopTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
-            return err("meeting.stop requires: session_id".into());
+            return err("meeting_stop requires: session_id".into());
         };
         match self.sink.stop(session_id).await {
             Ok(s) => ok(format!("Stopped: {}", format_session(&s))),
-            Err(e) => err(format!("meeting.stop failed: {e}")),
+            Err(e) => err(format!("meeting_stop failed: {e}")),
         }
     }
 
@@ -676,7 +676,7 @@ impl MeetingAskTool {
 #[async_trait]
 impl Tool for MeetingAskTool {
     fn name(&self) -> &str {
-        "meeting.ask"
+        "meeting_ask"
     }
 
     fn description(&self) -> &str {
@@ -704,11 +704,11 @@ impl Tool for MeetingAskTool {
             input.get("session_id").and_then(|v| v.as_str()),
             input.get("question").and_then(|v| v.as_str()),
         ) else {
-            return err("meeting.ask requires: session_id, question".into());
+            return err("meeting_ask requires: session_id, question".into());
         };
         match self.sink.ask(session_id, question).await {
             Ok(answer) => ok(answer),
-            Err(e) => err(format!("meeting.ask failed: {e}")),
+            Err(e) => err(format!("meeting_ask failed: {e}")),
         }
     }
 
@@ -731,7 +731,7 @@ impl MeetingListenStartTool {
 #[async_trait]
 impl Tool for MeetingListenStartTool {
     fn name(&self) -> &str {
-        "meeting.listen_start"
+        "meeting_listen_start"
     }
 
     fn description(&self) -> &str {
@@ -761,12 +761,12 @@ impl Tool for MeetingListenStartTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
-            return err("meeting.listen_start requires: session_id".into());
+            return err("meeting_listen_start requires: session_id".into());
         };
         let conversation_id = input.get("conversation_id").and_then(|v| v.as_str());
         match self.sink.listen_start(session_id, conversation_id).await {
             Ok(msg) => ok(msg),
-            Err(e) => err(format!("meeting.listen_start failed: {e}")),
+            Err(e) => err(format!("meeting_listen_start failed: {e}")),
         }
     }
 
@@ -789,7 +789,7 @@ impl MeetingListenStopTool {
 #[async_trait]
 impl Tool for MeetingListenStopTool {
     fn name(&self) -> &str {
-        "meeting.listen_stop"
+        "meeting_listen_stop"
     }
 
     fn description(&self) -> &str {
@@ -813,11 +813,11 @@ impl Tool for MeetingListenStopTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
-            return err("meeting.listen_stop requires: session_id".into());
+            return err("meeting_listen_stop requires: session_id".into());
         };
         match self.sink.listen_stop(session_id).await {
             Ok(msg) => ok(msg),
-            Err(e) => err(format!("meeting.listen_stop failed: {e}")),
+            Err(e) => err(format!("meeting_listen_stop failed: {e}")),
         }
     }
 

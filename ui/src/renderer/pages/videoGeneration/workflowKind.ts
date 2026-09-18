@@ -16,6 +16,20 @@ export function normalizeWorkflow(workflow: string | null | undefined): VimaxWor
   return 'idea2video';
 }
 
+export function isCanvasWorkflow(workflow: string | null | undefined): boolean {
+  const raw = (workflow ?? '').trim().toLowerCase().replace(/_/g, '');
+  return raw === 'canvas' || raw === 'creation' || raw === 'nomiccanvas';
+}
+
+export function isCanvasTvShow(video: {
+  workflow?: string | null;
+  packageUrl?: string | null;
+  style?: string | null;
+}): boolean {
+  if (isCanvasWorkflow(video.workflow) || isCanvasWorkflow(video.style)) return true;
+  return /\.nomiccanvas(\?|#|$)/i.test(String(video.packageUrl ?? ''));
+}
+
 export function isActionImitationWorkflow(workflow: string | null | undefined): boolean {
   return normalizeWorkflow(workflow) === 'action2video';
 }

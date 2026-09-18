@@ -16,7 +16,8 @@ mod supervisor;
 
 pub use capability::{CapabilityPolicy, SandboxPolicy};
 pub use command_builder::{
-    ChildProcessBuilder, ChildProcessCleanup, ManagedChildProcess, kill_process_tree,
+    ChildProcessBuilder, ChildProcessCleanup, ManagedChildProcess, apply_hidden_console,
+    apply_hidden_console_std, hidden_command, hidden_std_command, kill_process_tree,
     merge_process_path, resolve_command_in, resolve_command_path,
 };
 pub use io::{OutputBuffer, OutputObserver};

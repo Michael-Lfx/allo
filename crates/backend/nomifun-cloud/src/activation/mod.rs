@@ -17,7 +17,7 @@ pub use geoip::{GeoIpInfo, resolve_geo_ip};
 
 use crate::error::{CloudError, ServerClientError};
 use crate::flowy::FlowyApiClient;
-use crate::paths::device_state_path;
+use crate::paths::{device_state_path, load_or_create_client_id};
 use crate::session::ServerSession;
 
 /// Reuse geo lookups for this long to avoid hammering external APIs on repeated logins.
@@ -41,6 +41,18 @@ struct DeviceStateFile {
     /// Persisted CPU chip id (or hashed fallback); avoids re-spawning platform readers.
     #[serde(default)]
     cpu_chip_id: String,
+    /// Persisted GPU / accelerator brand; empty means never collected.
+    #[serde(default)]
+    xpu_brand: String,
+    /// Last successful login method (`wechat_qr` / `email_otp`).
+    #[serde(default)]
+    last_signup_method: String,
+    /// First time this install created/loaded device state (epoch ms).
+    #[serde(default)]
+    first_launch_at_ms: i64,
+    /// Last successful login timestamp (epoch ms).
+    #[serde(default)]
+    last_login_at_ms: i64,
     /// user_id → app versions already reported successfully for that user.
     #[serde(default)]
     activations_by_user: HashMap<String, HashSet<String>>,
@@ -66,13 +78,16 @@ pub struct DeviceActivationStatus {
 }
 
 pub struct DeviceActivation {
+    data_dir: std::path::PathBuf,
     state_path: std::path::PathBuf,
 }
 
 impl DeviceActivation {
     pub fn new(data_dir: impl AsRef<Path>) -> Self {
+        let data_dir = data_dir.as_ref().to_path_buf();
         Self {
-            state_path: device_state_path(data_dir.as_ref()),
+            state_path: device_state_path(&data_dir),
+            data_dir,
         }
     }
 
@@ -101,19 +116,38 @@ impl DeviceActivation {
         api: &FlowyApiClient,
         session: &ServerSession,
         user_id: i64,
+        host_runtime: &str,
+        signup_method: Option<&str>,
+        login_at_ms: Option<i64>,
     ) -> Result<bool, ServerClientError> {
         let app_version = env!("CARGO_PKG_VERSION");
         let mut state = self.load_state().await?;
+        let now_ms = Utc::now().timestamp_millis();
+        if state.first_launch_at_ms <= 0 {
+            state.first_launch_at_ms = now_ms;
+        }
+        if let Some(login_at) = login_at_ms.filter(|ts| *ts > 0) {
+            state.last_login_at_ms = login_at;
+        }
 
         let persisted = PersistedFingerprint {
             mac: state.mac.clone(),
             sn: state.sn.clone(),
             cpu_chip_id: state.cpu_chip_id.clone(),
+            xpu_brand: state.xpu_brand.clone(),
         };
         let fingerprint = collect_fingerprint(&persisted)?;
         state.mac = fingerprint.mac.clone();
         state.sn = fingerprint.sn.clone();
         state.cpu_chip_id = fingerprint.cpu_chip_id.clone();
+        state.xpu_brand = match &fingerprint.xpu_brand {
+            Some(brand) => brand.clone(),
+            None if state.xpu_brand.is_empty() => "unknown".into(),
+            None => state.xpu_brand.clone(),
+        };
+        if let Some(method) = signup_method.map(str::trim).filter(|m| !m.is_empty()) {
+            state.last_signup_method = method.to_string();
+        }
 
         // When already activated for this version, bypass geo cache so we can detect IP changes.
         let force_fresh_geo = already_activated(&state, user_id, app_version);
@@ -148,6 +182,32 @@ impl DeviceActivation {
             geo.as_ref(),
         );
         request.sn = state.sn.clone();
+        request.install_id = load_or_create_client_id(&self.data_dir);
+        request.activate_reason = activate_reason(&state, user_id, app_version).to_string();
+        request.host_runtime = host_runtime.trim().to_ascii_lowercase();
+        if request.host_runtime != "desktop" && request.host_runtime != "web" {
+            request.host_runtime.clear();
+        }
+        request.invite_code = api.config().invite_code.trim().to_string();
+        request.utm_source = std::env::var("NOMIFUN_UTM_SOURCE").unwrap_or_default();
+        request.utm_medium = std::env::var("NOMIFUN_UTM_MEDIUM").unwrap_or_default();
+        request.utm_campaign = std::env::var("NOMIFUN_UTM_CAMPAIGN").unwrap_or_default();
+        request.signup_method = state.last_signup_method.clone();
+        request.first_launch_at_ms = Some(state.first_launch_at_ms).filter(|ts| *ts > 0);
+        if state.last_login_at_ms > 0 {
+            request.login_to_activate_ms =
+                Some(now_ms.saturating_sub(state.last_login_at_ms).max(0));
+        }
+        if let Ok(balance) = api.get_credits_balance(session).await {
+            request.credits_balance = Some(balance.balance);
+        }
+        if let Ok(profile) = api.get_user_me(session).await {
+            request.plan_code = profile
+                .current_plan
+                .as_ref()
+                .and_then(|plan| plan.code.clone())
+                .unwrap_or_default();
+        }
 
         match api.device_activate(session, &request).await {
             Ok(()) => {
@@ -226,6 +286,19 @@ fn already_activated(state: &DeviceStateFile, user_id: i64, app_version: &str) -
         .is_some_and(|versions| versions.contains(app_version))
 }
 
+/// Classify why activation is being reported for this user.
+fn activate_reason(state: &DeviceStateFile, user_id: i64, app_version: &str) -> &'static str {
+    let versions = state.activations_by_user.get(&user_id.to_string());
+    let had_any = versions.is_some_and(|set| !set.is_empty());
+    if !had_any {
+        return "first_install";
+    }
+    if !already_activated(state, user_id, app_version) {
+        return "upgrade";
+    }
+    "ip_change"
+}
+
 fn should_skip_activation(
     state: &DeviceStateFile,
     user_id: i64,
@@ -299,6 +372,24 @@ mod tests {
         assert!(already_activated(&state, 42, "0.16.0"));
         assert!(!already_activated(&state, 43, "0.16.0"));
         assert!(!already_activated(&state, 42, "0.17.0"));
+    }
+
+    #[test]
+    fn activate_reason_classifies_first_upgrade_and_ip_change() {
+        let mut state = DeviceStateFile::default();
+        assert_eq!(activate_reason(&state, 42, "0.16.0"), "first_install");
+        record_activation(&mut state, 42, "0.16.0", "203.0.113.1");
+        assert_eq!(activate_reason(&state, 42, "0.17.0"), "upgrade");
+        assert_eq!(activate_reason(&state, 42, "0.16.0"), "ip_change");
+    }
+
+    #[test]
+    fn login_to_activate_uses_persisted_login_timestamp() {
+        let mut state = DeviceStateFile::default();
+        state.first_launch_at_ms = 1_000;
+        state.last_login_at_ms = 2_000;
+        assert_eq!(state.first_launch_at_ms, 1_000);
+        assert_eq!(2_500i64.saturating_sub(state.last_login_at_ms), 500);
     }
 
     #[test]
@@ -378,12 +469,16 @@ mod tests {
         state.sn = "SN-TEST".into();
         state.mac = "AA:BB:CC:DD:EE:FF".into();
         state.cpu_chip_id = "CPU-TEST".into();
+        state.xpu_brand = "NVIDIA GeForce RTX 4090".into();
+        state.last_signup_method = "email_otp".into();
         activation.save_state(&state).await.expect("save");
 
         let loaded = activation.load_state().await.expect("load");
         assert_eq!(loaded.sn, "SN-TEST");
         assert_eq!(loaded.mac, "AA:BB:CC:DD:EE:FF");
         assert_eq!(loaded.cpu_chip_id, "CPU-TEST");
+        assert_eq!(loaded.xpu_brand, "NVIDIA GeForce RTX 4090");
+        assert_eq!(loaded.last_signup_method, "email_otp");
     }
 
     #[test]

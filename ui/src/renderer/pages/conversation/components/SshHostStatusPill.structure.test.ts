@@ -23,7 +23,11 @@ describe('SshHostStatusPill structure', () => {
     expect(pillSource.includes("shape='round'")).toBe(true);
     expect(pillSource.includes("type='secondary'")).toBe(true);
     expect(pillSource.includes("<Popover trigger='click' position='br'")).toBe(true);
-    expect(pillSource.includes("<span className='inline-flex items-center gap-6px leading-none'>")).toBe(true);
+    expect(
+      pillSource.includes(
+        "<span className='flowy-button-inline-content inline-flex items-center gap-6px leading-none'>"
+      )
+    ).toBe(true);
     expect(pillSource.includes("import { Server } from '@icon-park/react';")).toBe(true);
     expect(pillSource.includes('text-12px')).toBe(true);
     expect(pillSource.includes("data-testid='ssh-host-status-pill'")).toBe(true);

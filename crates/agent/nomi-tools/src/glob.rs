@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use walkdir::{DirEntry, WalkDir};
 
 use nomi_protocol::events::ToolCategory;
 use nomi_types::tool::{JsonSchema, ToolResult};
@@ -11,7 +12,8 @@ use crate::Tool;
 const MAX_RESULTS: usize = 100;
 
 /// Stop walking after this many candidate paths so Glob cannot hang forever on
-/// enormous trees (e.g. accidental recursion into `node_modules`).
+/// enormous source trees. Vendor dirs are skipped *before* descent, so this
+/// cap no longer burns out on `node_modules`.
 const MAX_WALKED: usize = 50_000;
 
 const SKIP_DIR_NAMES: &[&str] = &[
@@ -26,13 +28,51 @@ const SKIP_DIR_NAMES: &[&str] = &[
     "vendor",
 ];
 
-fn path_has_skipped_component(path: &Path) -> bool {
-    path.components().any(|component| {
-        component
-            .as_os_str()
+fn should_skip_dir(entry: &DirEntry) -> bool {
+    entry.file_type().is_dir()
+        && entry
+            .file_name()
             .to_str()
             .is_some_and(|name| SKIP_DIR_NAMES.contains(&name))
-    })
+}
+
+fn relative_slash_path(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn glob_matches(pattern: &str, relative: &str) -> bool {
+    let pattern = pattern.replace('\\', "/");
+    let relative = relative.replace('\\', "/");
+    // Patterns without a path segment (`*.rs`, `Cargo.toml`) are root-only.
+    // The `glob` crate otherwise lets `*` consume `/` on Windows.
+    if !pattern.contains('/') && !pattern.contains("**") {
+        if relative.contains('/') {
+            return false;
+        }
+        return glob::Pattern::new(&pattern)
+            .ok()
+            .is_some_and(|matcher| matcher.matches(&relative));
+    }
+    let Ok(matcher) = glob::Pattern::new(&pattern) else {
+        return false;
+    };
+    if matcher.matches(&relative) {
+        return true;
+    }
+    let Some(rest) = pattern.strip_prefix("**/") else {
+        return false;
+    };
+    let Ok(inner) = glob::Pattern::new(rest) else {
+        return false;
+    };
+    inner.matches(&relative)
+        || relative
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| inner.matches(name))
 }
 
 pub struct GlobTool {
@@ -56,7 +96,8 @@ impl Tool for GlobTool {
          - Supports glob patterns like \"**/*.rs\" or \"src/**/*.ts\".\n\
          - Returns matching file paths sorted by modification time (newest first).\n\
          - Returns at most 100 results. Only returns files, not directories.\n\
-         - Skips common vendor/build directories (node_modules, target, dist, …).\n\
+         - Skips common vendor/build directories during the walk (node_modules, target, dist, …) \
+         rather than scanning them and filtering afterwards.\n\
          - The path parameter defaults to the current working directory.\n\
          - Use this OS-agnostic tool to list files in the current directory or workspace on every operating system: \"*\" lists top-level files and \"**/*\" lists files recursively.\n\
          - Use this tool when you need to find files by name or extension patterns, and prefer it over Bash for directory file listings."
@@ -101,48 +142,44 @@ impl Tool for GlobTool {
 
         tracing::debug!(cwd = %self.cwd.display(), resolved_root = %root_path.display(), pattern = %pattern, "GlobTool scanning");
 
-        // Build full glob pattern
-        let full_pattern = if pattern.starts_with('/') {
-            pattern.to_string()
-        } else {
-            format!("{}/{}", root_path.display(), pattern)
-        };
-
-        let entries = match glob::glob(&full_pattern) {
-            Ok(paths) => paths,
-            Err(e) => {
-                return ToolResult {
-                    content: format!("Invalid glob pattern: {}", e),
-                    is_error: true,
-                    images: Vec::new(),
-                };
-            }
-        };
+        let pattern = pattern.replace('\\', "/");
+        if glob::Pattern::new(&pattern).is_err() {
+            return ToolResult {
+                content: format!("Invalid glob pattern: {pattern}"),
+                is_error: true,
+                images: Vec::new(),
+            };
+        }
 
         let mut files: Vec<(std::time::SystemTime, String)> = Vec::new();
         let mut total_matched = 0usize;
         let mut walked = 0usize;
         let mut walk_capped = false;
 
-        for entry in entries {
+        let walker = WalkDir::new(&root_path)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !should_skip_dir(entry));
+
+        for entry in walker {
             walked += 1;
             if walked > MAX_WALKED {
                 walk_capped = true;
                 break;
             }
-            let Ok(path) = entry else {
+            let Ok(entry) = entry else {
                 continue;
             };
-            if path_has_skipped_component(&path) {
+            if !entry.file_type().is_file() {
                 continue;
             }
-            if !path.is_file() {
+            let path = entry.path();
+            let relative = relative_slash_path(path, &root_path);
+            if !glob_matches(&pattern, &relative) {
                 continue;
             }
             total_matched += 1;
             if files.len() >= MAX_RESULTS {
-                // Keep counting the true total so truncation is reported
-                // accurately, but stop storing to bound memory on huge matches.
                 continue;
             }
 
@@ -151,14 +188,7 @@ impl Tool for GlobTool {
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-            // Make path relative to root
-            let display_path = path
-                .strip_prefix(&root_path)
-                .unwrap_or(&path)
-                .display()
-                .to_string();
-
-            files.push((mtime, display_path));
+            files.push((mtime, relative));
         }
 
         // Sort by modification time, newest first
@@ -365,5 +395,42 @@ mod tests {
             "should find marker.txt, got: {}",
             result.content
         );
+    }
+
+    #[tokio::test]
+    async fn glob_does_not_descend_into_node_modules() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let vendor = base.join("node_modules").join("pkg");
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(vendor.join("icons.generated.ts"), "vendor").unwrap();
+        fs::write(base.join("icons.generated.ts"), "ok").unwrap();
+
+        let started = std::time::Instant::now();
+        let result = run_glob("**/icons.generated.ts", base.to_str().unwrap()).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "vendor skip should keep glob fast, took {:?}",
+            started.elapsed()
+        );
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(
+            result.content.contains("icons.generated.ts"),
+            "should find the workspace file, got: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("node_modules"),
+            "must not return vendor hits, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn glob_matches_starstar_at_root() {
+        assert!(glob_matches("**/*.txt", "root.txt"));
+        assert!(glob_matches("**/*.txt", "a/b.txt"));
+        assert!(!glob_matches("*.txt", "a/b.txt"));
+        assert!(glob_matches("**/icons.generated.ts", "apps/desktop/icons.generated.ts"));
     }
 }

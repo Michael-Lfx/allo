@@ -35,6 +35,7 @@ use nomifun_poi::poi_routes;
 use nomifun_insights::insights_routes;
 use nomifun_media::media_routes;
 use nomifun_vimax::vimax_routes;
+use nomifun_briefing::briefing_routes;
 use nomifun_cloud::cloud_routes;
 use nomifun_mcp::mcp_routes;
 use nomifun_office::{office_proxy_routes, office_routes};
@@ -330,6 +331,7 @@ pub async fn create_router(services: &AppServices) -> Router {
         file_service: states.file.file_service.clone(),
         shell_service: states.shell.shell_service.clone(),
         mcp_config_service: states.mcp.config_service.clone(),
+        mcp_activation_service: states.mcp.activation_service.clone(),
         extension_registry: states.extension.registry.clone(),
         hub_index_manager: states.hub.index_manager.clone(),
         hub_installer: states.hub.installer.clone(),
@@ -943,6 +945,12 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    let briefing_authenticated = protect_instance_owner(
+        briefing_routes(states.briefing),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
     let video_canvas_authenticated = protect_instance_owner(
         video_canvas_routes(states.video_canvas.clone()),
         &auth_mw_state,
@@ -1393,6 +1401,7 @@ pub fn create_router_with_all_state(
         .merge(insights_authenticated)
         .merge(media_authenticated)
         .merge(vimax_authenticated)
+        .merge(briefing_authenticated)
         .merge(video_canvas_authenticated)
         .merge(cloud_authenticated)
         .merge(webhook_authenticated)
@@ -1488,6 +1497,13 @@ pub fn create_router_with_all_state(
     // a cookie), so an `Any`-origin attacker page can neither read it nor read
     // cross-origin responses. Remote browsers are served same-origin and do not
     // rely on CORS.
+    //
+    // `allow_private_network(true)` is required for Chromium/WebView2 Private
+    // Network Access: the desktop page origin (`http://tauri.localhost`) treating
+    // a fetch to `http://127.0.0.1:<port>` as a public→private hop will preflight
+    // with `Access-Control-Request-Private-Network: true`. Without the matching
+    // allow header the preflight fails as TypeError "Failed to fetch", which the
+    // renderer surfaces as "backend unreachable" on first `/api/system/info`.
     if services.auth_policy.allows_local_webview() {
         let cors = CorsLayer::new()
             .allow_origin(Any)
@@ -1506,7 +1522,8 @@ pub fn create_router_with_all_state(
             // response is misread as a failure ("http 200 from app-server").
             .expose_headers([
                 axum::http::header::HeaderName::from_static("x-app-server-connection-id"),
-            ]);
+            ])
+            .allow_private_network(true);
         router.layer(cors)
     } else {
         router

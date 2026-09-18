@@ -6,13 +6,6 @@ use crate::backends::VimaxImage;
 use crate::domain::CharacterInScene;
 use crate::error::VimaxResult;
 
-/// Instruction when a vacant production look plate is passed as img2img.
-/// Match medium only — copying the look-plate location would destroy the studio turnaround.
-const LOOK_PLATE_REF_INSTRUCTION: &str = "\n\
-LOOK BIBLE (reference image): match ONLY the rendering medium, color science, lighting quality, \
-and material treatment. Do NOT copy its location, architecture, or composition. \
-Output remains a clean studio three-view turnaround on a light seamless backdrop.";
-
 pub struct CharacterPortraitsGenerator {
     image: Arc<dyn VimaxImage>,
 }
@@ -51,22 +44,15 @@ impl CharacterPortraitsGenerator {
 
     /// One character → one `{id}_three_view.png` (meaningful name for multi-ref prompts).
     ///
-    /// `style_refs` is the vacant production look plate (and never a cast portrait).
+    /// Always text-to-image. Style lives in the prompt (`production_look_lock`);
+    /// never pass a look plate or other image as img2img.
     pub async fn generate_all_views(
         &self,
         character: &CharacterInScene,
         style: &str,
         _theme: &str,
         character_dir: &Path,
-        style_refs: &[&Path],
     ) -> VimaxResult<HashMap<String, HashMap<String, HashMap<String, String>>>> {
-        let style_refs: Vec<&Path> = style_refs
-            .iter()
-            .copied()
-            .filter(|p| crate::media_local::is_usable_image_file(p))
-            .collect();
-        let style_refs = style_refs.as_slice();
-
         tokio::fs::create_dir_all(character_dir).await?;
         let id_safe = safe_file_stem(&character.identifier_in_scene);
         let sheet_name = format!("{id_safe}_three_view.png");
@@ -74,38 +60,33 @@ impl CharacterPortraitsGenerator {
 
         // Drop leftover discrete views from older pipelines.
         Self::cleanup_legacy_files(character_dir).await;
-        // Migrate legacy generic `three_view.png` → meaningful name.
+        // Migrate legacy generic `three_view.png` / CJK-stripped `asset_three_view.png`.
         let legacy = character_dir.join("three_view.png");
         if !sheet.exists() && legacy.exists() {
             let _ = tokio::fs::rename(&legacy, &sheet).await;
         }
+        let asset_legacy = character_dir.join("asset_three_view.png");
+        if id_safe != "asset" && !sheet.exists() && asset_legacy.exists() {
+            let _ = tokio::fs::rename(&asset_legacy, &sheet).await;
+        }
+        // Prompt sidecars are not user-facing assets — drop leftovers.
+        let _ = tokio::fs::remove_file(
+            character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
+        )
+        .await;
+        let _ = tokio::fs::remove_file(
+            character_dir.join("asset_three_view_generation_prompt.txt"),
+        )
+        .await;
 
         if !sheet.exists() {
-            let prompt = Self::prompt_with_look_refs(character, style, style_refs);
-            let _ = crate::session::write_text_artifact(
-                &character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
-                &prompt,
-            )
-            .await;
-            self.image.generate(&prompt, style_refs, &sheet).await?;
+            let prompt = Self::build_three_view_prompt(character, style);
+            self.image.generate(&prompt, &[], &sheet).await?;
         } else if !crate::media_local::is_usable_image_file(&sheet) {
             // e.g. JPEG bytes saved as .png without decode support — regenerate.
             let _ = tokio::fs::remove_file(&sheet).await;
-            let prompt = Self::prompt_with_look_refs(character, style, style_refs);
-            let _ = crate::session::write_text_artifact(
-                &character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
-                &prompt,
-            )
-            .await;
-            self.image.generate(&prompt, style_refs, &sheet).await?;
-        } else {
-            // Backfill editable prompt for sheets generated before sidecar support.
-            let sidecar =
-                character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt"));
-            if !sidecar.is_file() {
-                let prompt = Self::build_three_view_prompt(character, style);
-                let _ = crate::session::write_text_artifact(&sidecar, &prompt).await;
-            }
+            let prompt = Self::build_three_view_prompt(character, style);
+            self.image.generate(&prompt, &[], &sheet).await?;
         }
 
         let id = &character.identifier_in_scene;
@@ -132,18 +113,6 @@ impl CharacterPortraitsGenerator {
         registry.insert(character.identifier_in_scene.clone(), views);
         Ok(registry)
     }
-
-    fn prompt_with_look_refs(
-        character: &CharacterInScene,
-        style: &str,
-        style_refs: &[&Path],
-    ) -> String {
-        let mut prompt = Self::build_three_view_prompt(character, style);
-        if !style_refs.is_empty() {
-            prompt.push_str(LOOK_PLATE_REF_INSTRUCTION);
-        }
-        prompt
-    }
 }
 
 /// Shared three-view prompt so revise / sidecar rebuild matches first generation.
@@ -152,26 +121,37 @@ pub fn three_view_image_prompt(identifier: &str, features: &str, style: &str) ->
     include_str!("../../prompts/character_portraits_generator__prompt_template_three_view.txt")
         .replace("{identifier}", identifier)
         .replace("{features}", &features)
-        .replace("{style}", &crate::planning::resolve_visual_style(style))
+        .replace("{style}", &crate::planning::style_for_three_view_image(style))
 }
 
 fn safe_file_stem(s: &str) -> String {
-    let raw: String = s
+    let mut out: String = s
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || is_path_safe_ideograph(c) {
                 c
             } else {
                 '_'
             }
         })
         .collect();
-    let trimmed = raw.trim_matches('_');
-    if trimmed.is_empty() {
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    let out = out.trim_matches('_').chars().take(80).collect::<String>();
+    if out.is_empty() {
         "asset".into()
     } else {
-        trimmed.chars().take(48).collect()
+        out
     }
+}
+
+fn is_path_safe_ideograph(c: char) -> bool {
+    let u = c as u32;
+    (0x4E00..=0x9FFF).contains(&u)
+        || (0x3400..=0x4DBF).contains(&u)
+        || (0x3040..=0x30FF).contains(&u)
+        || (0xAC00..=0xD7AF).contains(&u)
 }
 
 fn view_item(path: &Path, description: &str) -> HashMap<String, String> {
@@ -257,7 +237,9 @@ mod tests {
         assert!(prompt.contains("一定要使用AI人脸"));
         assert!(prompt.contains("仅限原创虚构人物"));
         assert!(prompt.contains("不得套用现实真人、明星长相"));
-        assert!(prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.to_ascii_lowercase().contains("topology mesh"));
+        assert!(!prompt.contains("of character "));
         assert!(!prompt.contains("{look_lock}"));
         assert!(!prompt.contains("{medium_lock}"));
         assert!(!prompt.contains("{face_guidance}"));
@@ -280,7 +262,16 @@ mod tests {
         assert!(prompt.contains("人物安全约束"));
         assert!(prompt.contains("一定要使用AI人脸"));
         assert!(prompt.contains("不得套用现实真人、明星长相"));
-        assert!(prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.to_ascii_lowercase().contains("topology mesh"));
+        assert!(!prompt.to_ascii_lowercase().contains("designed characters"));
+        assert!(!prompt.to_ascii_lowercase().contains("clean healthy facial skin"));
+        assert!(!prompt.contains("of character "));
+        let defaulted = three_view_image_prompt("李薇", "(static) red hanfu", "");
+        let defaulted_l = defaulted.to_ascii_lowercase();
+        assert!(!defaulted_l.contains("designed characters"));
+        assert!(!defaulted_l.contains("clean healthy facial skin"));
+        assert!(!defaulted.contains("蓝色拓扑网格"));
     }
 
     #[test]
@@ -299,6 +290,15 @@ mod tests {
         assert!(!prompt.contains("CHILD FACE LOCK"));
         assert!(prompt.contains("人物安全约束"));
         assert!(prompt.contains("一定要使用AI人脸"));
-        assert!(prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.to_ascii_lowercase().contains("topology mesh"));
+        assert!(!prompt.contains("of character "));
+    }
+
+    #[test]
+    fn cjk_character_id_keeps_readable_three_view_stem() {
+        assert_eq!(safe_file_stem("小表姐"), "小表姐");
+        assert_ne!(safe_file_stem("小表姐"), "asset");
+        assert_eq!(safe_file_stem("Alice"), "Alice");
     }
 }

@@ -209,6 +209,15 @@
   -webkit-app-region: no-drag;
 }
 
+/* Windows/Linux desktop: keep the right toolbar outside WebView2's native drag
+   plane. WebView2 does not inherit -webkit-app-region from parents, so button-
+   level no-drag is not enough once the titlebar root is a drag surface — clicks
+   on min/max/close are swallowed as window drags instead of reaching React. The
+   left menu column and center brand blanks stay draggable via the titlebar root. */
+.app-titlebar--desktop:not(.app-titlebar--mac) .app-titlebar__toolbar {
+  -webkit-app-region: no-drag;
+}
+
 /* Mobile slot for chat-header actions (model picker, cron, etc.). */
 .app-titlebar__actions-slot {
   display: inline-flex;
@@ -301,14 +310,16 @@
   display: flex;
   align-items: stretch;
   align-self: stretch;
+  position: relative;
+  z-index: 1;
   -webkit-app-region: no-drag;
 }
 
-/* WebView2 does not reliably inherit -webkit-app-region. The desktop titlebar
-   is a drag plane, so every clickable descendant must set no-drag itself or
-   minimize / maximize / close clicks become window drags. */
-.app-window-controls__button,
-.app-window-controls__button * {
+/* WebView2 does not inherit -webkit-app-region. Mark the whole control island
+   and every descendant (icon SVGs included) as no-drag so native drags cannot
+   beat the button handlers. */
+.app-window-controls,
+.app-window-controls * {
   -webkit-app-region: no-drag;
 }
 

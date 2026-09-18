@@ -31,7 +31,11 @@ impl ConversationEvalSessionBridge {
 #[async_trait]
 impl EvalSessionBridge for ConversationEvalSessionBridge {
     async fn open_case_session(&self, req: OpenEvalCaseSession) -> Result<String, AppError> {
-        let creation_key = format!("eval:{}:{}", req.run_id, req.case_id);
+        let creation_key = if req.trial <= 1 {
+            format!("eval:{}:{}", req.run_id, req.case_id)
+        } else {
+            format!("eval:{}:{}:t{}", req.run_id, req.case_id, req.trial)
+        };
         // Bind the conversation shell to the run's business-named parent
         // workspace so SessionList groups all cases under that workpath
         // (not 默认工作空间). Agent cwd / write_root still use the case subdir.

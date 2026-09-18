@@ -11,7 +11,11 @@ import {
   setProviderCatalogContext,
   type ProviderCatalogRefreshResult,
 } from '@renderer/hooks/agent/useModelProviderList';
-import { setVideoGrowthCloudAuthenticated } from '@renderer/utils/analytics/videoGrowthUpload';
+import { setTelemetryCloudAuthenticated } from '@renderer/utils/analytics/telemetryOutbox';
+import {
+  identifyCloudUser,
+  resetCloudUserIdentity,
+} from '@renderer/utils/analytics/telemetry';
 import {
   classifyCloudModelEnvironment,
   type CloudModelEnvironmentClassification,
@@ -46,7 +50,7 @@ export type ModelEnvironmentState = {
   error?: Error;
 };
 
-interface CloudAuthContextValue {
+export interface CloudAuthContextValue {
   ready: boolean;
   authState: CloudAuthState;
   /** @deprecated Use authState.phase and its account identity. */
@@ -61,7 +65,7 @@ interface CloudAuthContextValue {
   logout: () => Promise<void>;
 }
 
-const CloudAuthContext = createContext<CloudAuthContextValue | undefined>(undefined);
+export const CloudAuthContext = createContext<CloudAuthContextValue | undefined>(undefined);
 
 const emptyModelEnvironment = (): ModelEnvironmentState => ({
   phase: 'restoring',
@@ -107,8 +111,15 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
   whoamiRef.current = whoami;
 
   useEffect(() => {
-    setVideoGrowthCloudAuthenticated(authState.phase === 'authenticated');
-  }, [authState.phase]);
+    setTelemetryCloudAuthenticated(authState.phase === 'authenticated');
+    if (authState.phase === 'authenticated') {
+      identifyCloudUser(authState.accountId);
+      return;
+    }
+    if (authState.phase === 'unauthenticated') {
+      resetCloudUserIdentity();
+    }
+  }, [authState]);
 
   const isCurrentRun = useCallback((runId: number, controller: AbortController): boolean => {
     return !controller.signal.aborted && runId === restoreRunRef.current;

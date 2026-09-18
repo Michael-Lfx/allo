@@ -73,7 +73,7 @@ bun run dev
 What this does, end-to-end:
 
 1. Tauri's `beforeDevCommand` runs `bun run --filter=./ui dev` to start the
-   Vite dev server on `http://localhost:5173`.
+   Vite dev server on `http://127.0.0.1:5173`.
 2. `cargo` compiles `nomifun-desktop` (and the workspace it depends on).
 3. The shell starts, picks a free port, spawns the embedded backend, and
    loads the Vite dev URL. Hot-reload works on the renderer side; the backend

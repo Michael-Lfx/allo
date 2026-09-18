@@ -2,30 +2,74 @@ import { ipcBridge } from '@/common';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
 import useSWR from 'swr';
 import ChatConversation from './components/ChatConversation';
 import MessageListSkeleton from './Messages/components/MessageListSkeleton';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
-import { parseConversationId } from '@/common/types/ids';
+import { tryParseEntityId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
+import { clearConversationAttention } from '@/renderer/utils/attention';
 
 const ChatConversationIndex: React.FC = () => {
   const { id } = useParams();
   // Validate the route string once at the boundary; every downstream layer
   // keeps the same canonical conversation entity ID.
-  const conversationId = id != null ? parseConversationId(id) : undefined;
+  const conversationId = id != null ? tryParseEntityId('conversation', id) ?? undefined : undefined;
+  const invalidRoute = id != null && conversationId == null;
   const { t } = useTranslation();
+  const location = useLocation();
   const navigate = useNavigate();
   const notFoundHandledIdRef = useRef<string | undefined>(undefined);
   const deletedHandledIdRef = useRef<string | undefined>(undefined);
 
-  const { data, isLoading, mutate } = useSWR(id ? `conversation/${id}` : null, () => {
+  const { data, isLoading, mutate } = useSWR(conversationId ? `conversation/${conversationId}` : null, () => {
     return getConversationOrNull(conversationId!);
   });
 
   useEffect(() => {
-    if (!id) return;
+    if (!conversationId || isLoading || !data) return;
+    const clearCurrentConversationAttention = () => {
+      const requestedAttentionId = new URLSearchParams(location.search).get('attention_id');
+      const exactAttentionId = requestedAttentionId?.startsWith(`conversation:${conversationId}:`)
+        ? requestedAttentionId
+        : undefined;
+      // A supplied but foreign/malformed attention id must never fall back to
+      // a conversation-wide clear: another turn may still need attention.
+      if (requestedAttentionId !== null && !exactAttentionId) return;
+      // Always re-issue the clear. The native attention set can gain an item
+      // while this page is mounted but the app is unfocused, and the shell-side
+      // clears are idempotent no-ops when nothing matches. De-duplicating once
+      // per mount prevented the badge number from ever clearing when the user
+      // returned to the still-open conversation without clicking the toast.
+      if (exactAttentionId) {
+        void ipcBridge.attention.clear.invoke({ attention_id: exactAttentionId }).catch(() => {
+          // Keep native attention if the renderer cannot confirm the page load.
+        });
+        return;
+      }
+      void clearConversationAttention(conversationId);
+    };
+
+    // If a completion arrived while another app had focus, the page was
+    // already mounted and the initial load effect has nothing new to observe.
+    // Retry the precise conversation clear when the user returns to this page.
+    clearCurrentConversationAttention();
+    const onWindowFocus = () => clearCurrentConversationAttention();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') clearCurrentConversationAttention();
+    };
+    window.addEventListener('focus', onWindowFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', onWindowFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [conversationId, data, isLoading, location.search]);
+
+  useEffect(() => {
+    if (!id || !conversationId) return;
 
     return ipcBridge.conversation.listChanged.on((event) => {
       if (event.conversation_id !== conversationId) {
@@ -63,12 +107,13 @@ const ChatConversationIndex: React.FC = () => {
   // browser history): show a toast and replace the route with home, so we
   // don't render an empty skeleton. Fire at most once per id.
   useEffect(() => {
-    if (!id || isLoading || data || notFoundHandledIdRef.current === id) return;
+    if (invalidRoute || !id || isLoading || data || notFoundHandledIdRef.current === id) return;
     notFoundHandledIdRef.current = id;
     Message.warning(t('conversation.notFound'));
     navigate('/', { replace: true });
-  }, [id, isLoading, data, navigate, t]);
+  }, [id, invalidRoute, isLoading, data, navigate, t]);
 
+  if (invalidRoute) return <Navigate to='/guid' replace />;
   if (isLoading) return <MessageListSkeleton />;
   return <ChatConversation conversation={data ?? undefined}></ChatConversation>;
 };

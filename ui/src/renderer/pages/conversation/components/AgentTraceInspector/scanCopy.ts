@@ -8,6 +8,11 @@ import type { ProjectedRequestSummary, ProjectedResponseSummary } from './useAge
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+export function toolTileTitle(t: Translate, tool: { name?: string | null }): string {
+  const name = tool.name?.trim();
+  return name || t('conversation.agentTrace.tools');
+}
+
 function requestOmitted(summary: ProjectedRequestSummary): boolean {
   return Boolean(summary.system_omitted || summary.messages_omitted || summary.tools_omitted);
 }

@@ -22,11 +22,20 @@ fn fence_re() -> &'static Regex {
 /// Strip markdown fences and extract the outermost JSON object/array.
 pub fn extract_json_str(raw: &str) -> VimaxResult<String> {
     let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(VimaxError::Llm("empty LLM response (no JSON)".into()));
+    }
     if let Some(caps) = fence_re().captures(trimmed) {
-        return Ok(caps
+        let inner = caps
             .get(1)
             .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default());
+            .unwrap_or_default();
+        if inner.is_empty() {
+            return Err(VimaxError::Llm(
+                "empty JSON fence in LLM response".into(),
+            ));
+        }
+        return Ok(inner);
     }
     if let Some(start) = trimmed.find('{') {
         if let Some(end) = trimmed.rfind('}') {
@@ -139,8 +148,10 @@ pub fn strip_trailing_commas(s: &str) -> String {
     re.replace_all(s, "$1").into_owned()
 }
 
-/// If the model truncated mid-object, close open strings / braces / brackets.
-pub fn repair_truncated_json(s: &str) -> String {
+/// Closing a truncated payload makes serde succeed by dropping unread tail
+/// (a storyboard array cut after shot 8 becomes a "valid" 8-shot board).
+/// Detect that and refuse — the chat retry must return the full JSON.
+pub fn json_is_structurally_truncated(s: &str) -> bool {
     let mut in_string = false;
     let mut escape = false;
     let mut stack: Vec<char> = Vec::new();
@@ -169,24 +180,19 @@ pub fn repair_truncated_json(s: &str) -> String {
             _ => {}
         }
     }
-    let mut out = s.to_string();
-    if in_string {
-        out.push('"');
-    }
-    while let Some(closer) = stack.pop() {
-        out.push(closer);
-    }
-    out
+    in_string || !stack.is_empty()
 }
 
 fn prepare_candidates(extracted: &str) -> Vec<String> {
     let sanitized = sanitize_llm_json_text(extracted);
     let cleaned = strip_trailing_commas(&sanitized);
     let escaped = escape_inner_unescaped_quotes(&cleaned);
-    let repaired = repair_truncated_json(&escaped);
     let mut out = Vec::new();
-    for c in [cleaned, escaped, repaired] {
+    for c in [cleaned, escaped] {
         let c = strip_trailing_commas(&c);
+        if json_is_structurally_truncated(&c) {
+            continue;
+        }
         if !out.iter().any(|x| x == &c) {
             out.push(c);
         }
@@ -206,12 +212,22 @@ fn parse_error(e: impl std::fmt::Display, body: &str) -> VimaxError {
 /// - fullwidth structural punctuation
 /// - unescaped ASCII quotes inside string values
 /// - trailing commas
-/// - lightly truncated braces/brackets
 /// - **duplicate object keys** (keep the last value; typed `serde` rejects these)
+///
+/// Truncated JSON (unclosed string or brackets) is rejected. Auto-closing it
+/// would drop the unread tail — a cut-off storyboard array must not parse as a
+/// shorter valid board. The chat retry has to finish the payload.
 pub fn parse_llm_json<T: DeserializeOwned>(raw: &str) -> VimaxResult<T> {
     let extracted = extract_json_str(raw)?;
     let mut last_err: Option<VimaxError> = None;
-    for candidate in prepare_candidates(&extracted) {
+    let candidates = prepare_candidates(&extracted);
+    if candidates.is_empty() {
+        return Err(VimaxError::Llm(
+            "truncated LLM JSON (unclosed string or brackets); refusing to drop the unread tail"
+                .into(),
+        ));
+    }
+    for candidate in candidates {
         match serde_json::from_str::<Value>(&candidate) {
             Ok(value) => match serde_json::from_value::<T>(value) {
                 Ok(v) => return Ok(v),
@@ -252,6 +268,12 @@ pub async fn complete_and_parse_llm_json<T: DeserializeOwned>(
             Some(err) => retry_user_prompt(user, attempt, err),
         };
         match chat.complete_text(system, &prompted).await {
+            Ok(raw) if raw.trim().is_empty() => {
+                tracing::warn!(attempt, "LLM chat complete returned empty body");
+                last_err = Some(VimaxError::Llm(
+                    "empty chat completion (model returned no content)".into(),
+                ));
+            }
             Ok(raw) => match parse_llm_json::<T>(&raw) {
                 Ok(v) => {
                     if attempt > 1 {
@@ -290,6 +312,12 @@ pub async fn complete_vision_and_parse_llm_json<T: DeserializeOwned>(
             .complete_vision(system, &prompted, image_paths)
             .await
         {
+            Ok(raw) if raw.trim().is_empty() => {
+                tracing::warn!(attempt, "LLM vision complete returned empty body");
+                last_err = Some(VimaxError::Llm(
+                    "empty vision completion (model returned no content)".into(),
+                ));
+            }
             Ok(raw) => match parse_llm_json::<T>(&raw) {
                 Ok(v) => {
                     if attempt > 1 {
@@ -359,10 +387,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_llm_json_repairs_truncated_object() {
+    fn parse_llm_json_rejects_truncated_object() {
         let raw = r#"{"ff_desc":"a","ff_vis_char_idxs":[0],"lf_desc":"b","lf_vis_char_idxs":[],"motion_desc":"c"#;
-        let d: Decomp = parse_llm_json(raw).expect("parse truncated");
-        assert_eq!(d.motion_desc, "c");
+        let err = parse_llm_json::<Decomp>(raw).unwrap_err().to_string();
+        assert!(err.contains("truncated"), "{err}");
+    }
+
+    #[test]
+    fn parse_llm_json_rejects_truncated_storyboard_array() {
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        struct Board {
+            storyboard: Vec<serde_json::Value>,
+        }
+        let raw = r#"{"storyboard":[{"idx":0,"visual_desc":"open"},{"idx":1,"visual_desc":"mid""#;
+        let err = parse_llm_json::<Board>(raw).unwrap_err().to_string();
+        assert!(err.contains("truncated"), "{err}");
     }
 
     #[test]
@@ -391,5 +431,22 @@ mod tests {
         let s = sanitize_llm_json_text(r#"{"a":"他说「你好」"}"#);
         assert!(s.contains('「'));
         assert!(!s.contains(r#"他说""#));
+    }
+
+    #[test]
+    fn extract_json_str_rejects_empty_and_empty_fence() {
+        assert!(extract_json_str("").is_err());
+        assert!(extract_json_str("   ").is_err());
+        assert!(extract_json_str("```json\n\n```").is_err());
+        assert!(extract_json_str("```\n```").is_err());
+    }
+
+    #[test]
+    fn parse_llm_json_empty_is_llm_error_not_serde_eof() {
+        let err = parse_llm_json::<serde_json::Value>("")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("empty LLM"), "{err}");
+        assert!(!err.starts_with("JSON error:"), "{err}");
     }
 }

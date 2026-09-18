@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomifun_db::models::RequirementRow;
+use nomifun_db::ISettingsRepository;
 use nomifun_requirement::CompletionNotifier;
 use tracing::warn;
 
@@ -13,11 +14,18 @@ use crate::{NotificationStatus, SystemNotification, SystemTaskNotifier};
 /// Bridges requirement terminal transitions to a [`SystemTaskNotifier`].
 pub struct SystemCompletionNotifier {
     inner: Arc<dyn SystemTaskNotifier>,
+    settings_repo: Arc<dyn ISettingsRepository>,
 }
 
 impl SystemCompletionNotifier {
-    pub fn new(inner: Arc<dyn SystemTaskNotifier>) -> Self {
-        Self { inner }
+    pub fn new(
+        inner: Arc<dyn SystemTaskNotifier>,
+        settings_repo: Arc<dyn ISettingsRepository>,
+    ) -> Self {
+        Self {
+            inner,
+            settings_repo,
+        }
     }
 
     pub fn into_arc(self) -> Arc<dyn CompletionNotifier> {
@@ -67,6 +75,18 @@ fn urlencoding_lite(value: &str) -> String {
 #[async_trait]
 impl CompletionNotifier for SystemCompletionNotifier {
     async fn notify_completion(&self, requirement: &RequirementRow) {
+        match self.settings_repo.get_settings().await {
+            Ok(Some(settings)) if !settings.notification_enabled => return,
+            Ok(_) => {}
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    requirement_id = %requirement.requirement_id,
+                    "failed to read notification setting; keeping notifications enabled"
+                );
+            }
+        }
+
         let Some(message) = build_notification(requirement) else {
             return;
         };
@@ -84,7 +104,51 @@ impl CompletionNotifier for SystemCompletionNotifier {
 mod tests {
     use super::*;
     use crate::{LogNotifier, NotifyError};
+    use nomifun_db::models::SystemSettings;
+    use nomifun_db::{DbError, ISettingsRepository};
     use std::sync::Mutex;
+
+    struct TestSettings {
+        notification_enabled: bool,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl ISettingsRepository for TestSettings {
+        async fn get_settings(&self) -> Result<Option<SystemSettings>, DbError> {
+            if self.fail {
+                return Err(DbError::Init("settings unavailable".into()));
+            }
+            Ok(Some(SystemSettings {
+                id: 1,
+                singleton_key: "default".into(),
+                language: "zh-CN".into(),
+                notification_enabled: self.notification_enabled,
+                cron_notification_enabled: false,
+                command_queue_enabled: true,
+                save_upload_to_workspace: false,
+                updated_at: 0,
+            }))
+        }
+
+        async fn upsert_settings(
+            &self,
+            _language: &str,
+            _notification_enabled: bool,
+            _cron_notification_enabled: bool,
+            _command_queue_enabled: bool,
+            _save_upload_to_workspace: bool,
+        ) -> Result<SystemSettings, DbError> {
+            unimplemented!("test settings are read-only")
+        }
+    }
+
+    fn enabled_settings() -> Arc<dyn ISettingsRepository> {
+        Arc::new(TestSettings {
+            notification_enabled: true,
+            fail: false,
+        })
+    }
 
     fn row(status: &str) -> RequirementRow {
         RequirementRow {
@@ -131,7 +195,7 @@ mod tests {
     #[tokio::test]
     async fn maps_done_title_and_status() {
         let recorder = Arc::new(Recording::default());
-        let notifier = SystemCompletionNotifier::new(recorder.clone());
+        let notifier = SystemCompletionNotifier::new(recorder.clone(), enabled_settings());
         notifier.notify_completion(&row("done")).await;
         assert_eq!(recorder.titles.lock().unwrap().as_slice(), ["优化查询"]);
         let built = build_notification(&row("done")).unwrap();
@@ -174,14 +238,42 @@ mod tests {
     #[tokio::test]
     async fn skips_non_terminal_status() {
         let recorder = Arc::new(Recording::default());
-        let notifier = SystemCompletionNotifier::new(recorder.clone());
+        let notifier = SystemCompletionNotifier::new(recorder.clone(), enabled_settings());
         notifier.notify_completion(&row("pending")).await;
         assert!(recorder.titles.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn log_notifier_never_fails() {
-        let notifier = SystemCompletionNotifier::new(Arc::new(LogNotifier));
+        let notifier = SystemCompletionNotifier::new(Arc::new(LogNotifier), enabled_settings());
         notifier.notify_completion(&row("failed")).await;
+    }
+
+    #[tokio::test]
+    async fn disabled_system_notifications_do_not_reach_the_sink() {
+        let recorder = Arc::new(Recording::default());
+        let notifier = SystemCompletionNotifier::new(
+            recorder.clone(),
+            Arc::new(TestSettings {
+                notification_enabled: false,
+                fail: false,
+            }),
+        );
+        notifier.notify_completion(&row("done")).await;
+        assert!(recorder.titles.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn settings_read_failure_preserves_enabled_default() {
+        let recorder = Arc::new(Recording::default());
+        let notifier = SystemCompletionNotifier::new(
+            recorder.clone(),
+            Arc::new(TestSettings {
+                notification_enabled: true,
+                fail: true,
+            }),
+        );
+        notifier.notify_completion(&row("done")).await;
+        assert_eq!(recorder.titles.lock().unwrap().as_slice(), ["优化查询"]);
     }
 }

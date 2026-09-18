@@ -15,6 +15,13 @@ pub enum DbError {
     #[error("Duplicate record: {0}")]
     Conflict(String),
 
+    /// A public turn could not acquire the Conversation's durable lifecycle
+    /// admission fence. This is distinct from ordinary data conflicts so the
+    /// HTTP layer can expose a stable, recoverable client contract without
+    /// making clients parse the error display text.
+    #[error("Conversation lifecycle rejected durable turn admission")]
+    ConversationTurnAdmissionConflict,
+
     #[error("Database initialization failed: {0}")]
     Init(String),
 
@@ -30,6 +37,7 @@ impl From<DbError> for AppError {
         match err {
             DbError::NotFound(msg) => AppError::NotFound(msg),
             DbError::Conflict(msg) => AppError::Conflict(msg),
+            DbError::ConversationTurnAdmissionConflict => AppError::ConversationTurnAdmissionConflict,
             DbError::Query(e) => AppError::Internal(format!("Database error: {e}")),
             DbError::Migration(e) => AppError::Internal(format!("Migration error: {e}")),
             DbError::Init(msg) => AppError::Internal(format!("Database init error: {msg}")),
@@ -56,6 +64,12 @@ mod tests {
         let db_err = DbError::Conflict("duplicate".into());
         let app_err: AppError = db_err.into();
         assert!(matches!(app_err, AppError::Conflict(msg) if msg == "duplicate"));
+    }
+
+    #[test]
+    fn turn_admission_conflict_converts_to_typed_app_error() {
+        let app_err: AppError = DbError::ConversationTurnAdmissionConflict.into();
+        assert!(matches!(app_err, AppError::ConversationTurnAdmissionConflict));
     }
 
     #[test]

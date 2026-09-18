@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026-09-09-coding-local-v1",
+  "suite": "coding_local",
+  "cases": [
+    {
+      "id": "fix-failing-tests",
+      "category": "debug_loop",
+      "task_profile": "coding",
+      "timeout_secs": 300,
+      "prompt": "The workspace is a tiny Python package. `calculator.py` is buggy and `test_calculator.py` currently fails.\n\nFix `calculator.py` so that `python -m pytest -q` exits 0. Do not weaken or delete the tests. Do not rewrite the test file except if a typo blocks collection (prefer fixing production code).",
+      "enabled": true,
+      "budgets": { "max_turns": 20, "max_tokens": 65536 },
+      "workspace_files": {
+        "calculator.py": "def add(a, b):\n    \"\"\"Return the sum of a and b.\"\"\"\n    return a - b\n\n\ndef clamp(value, low, high):\n    \"\"\"Clamp value into [low, high].\"\"\"\n    if value < low:\n        return high\n    if value > high:\n        return low\n    return value\n",
+        "test_calculator.py": "from calculator import add, clamp\n\n\ndef test_add():\n    assert add(2, 3) == 5\n    assert add(-1, 1) == 0\n\n\ndef test_clamp():\n    assert clamp(5, 0, 10) == 5\n    assert clamp(-1, 0, 10) == 0\n    assert clamp(99, 0, 10) == 10\n"
+      },
+      "scorers": [
+        { "type": "tool_called", "name": "Read" },
+        { "type": "python_module", "args": ["-m", "pytest", "-q"] },
+        { "type": "file_contains", "path": "test_calculator.py", "marker": "assert add(2, 3) == 5" }
+      ],
+      "notes": "Read → edit → verify with pytest. Local coding-agent loop without Docker."
+    },
+    {
+      "id": "csv-to-json-pipeline",
+      "category": "data_transform",
+      "task_profile": "coding",
+      "timeout_secs": 240,
+      "prompt": "Transform inventory.csv into inventory.json.\n\nRules:\n- inventory.json must be a JSON array of objects with keys sku, name, qty (qty as integer)\n- Skip the header row\n- Preserve row order\n- The file must be valid JSON\n\nUse tools; do not only paste the answer in chat.",
+      "enabled": true,
+      "budgets": { "max_turns": 16, "max_tokens": 65536 },
+      "workspace_files": {
+        "inventory.csv": "sku,name,qty\nA-1,Widget,3\nB-2,Gadget,10\nC-3,Doohickey,0\n"
+      },
+      "scorers": [
+        { "type": "tool_called", "name": "Read" },
+        {
+          "type": "json_array",
+          "path": "inventory.json",
+          "min_len": 3,
+          "required_keys": ["sku", "name", "qty"]
+        },
+        {
+          "type": "python_module",
+          "args": [
+            "-c",
+            "import json; data=json.load(open('inventory.json')); assert isinstance(data, list) and len(data)==3; assert data[0]['sku']=='A-1' and data[0]['qty']==3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "refactor-and-document",
+      "category": "repo_hygiene",
+      "task_profile": "coding",
+      "timeout_secs": 300,
+      "prompt": "The workspace has messy.py with duplicated logic and a README.md that is stale.\n\nTasks:\n1. Refactor messy.py so helpers live in helpers.py (import them from messy.py). Keep `run()` behavior identical.\n2. Update README.md Usage section to mention helpers.py\n3. Ensure `python -m pytest -q` passes",
+      "enabled": true,
+      "budgets": { "max_turns": 22, "max_tokens": 65536 },
+      "workspace_files": {
+        "messy.py": "def _double(x):\n    return x * 2\n\n\ndef _label(n):\n    return f\"n={n}\"\n\n\ndef run(values):\n    out = []\n    for v in values:\n        out.append(_label(_double(v)))\n    return out\n",
+        "test_messy.py": "from messy import run\n\n\ndef test_run():\n    assert run([1, 2]) == [\"n=2\", \"n=4\"]\n",
+        "README.md": "# Tiny demo\n\n## Usage\n\nCall `messy.run` with a list of ints.\n"
+      },
+      "scorers": [
+        { "type": "file_exists", "path": "helpers.py" },
+        { "type": "file_contains", "path": "messy.py", "marker": "helpers" },
+        { "type": "file_contains", "path": "README.md", "marker": "helpers.py" },
+        { "type": "python_module", "args": ["-m", "pytest", "-q"] }
+      ]
+    }
+  ]
+}

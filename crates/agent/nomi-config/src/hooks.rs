@@ -54,6 +54,10 @@ impl HookEngine {
         }
     }
 
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
     /// Attach hooks to the Agent engine's shared turn process authority.
     pub fn set_process_supervisor(
         &mut self,

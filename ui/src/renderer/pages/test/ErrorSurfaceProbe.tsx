@@ -27,6 +27,7 @@ type ErrorSurfaceFixture = {
   id: string;
   title: string;
   body: string;
+  modelId?: string;
   code?: string;
   incidentId?: string;
   ownership?: AgentErrorOwnership;
@@ -72,6 +73,7 @@ const fixtures: ErrorSurfaceFixture[] = [
     id: 'provider-schema',
     title: '模型服务商拒绝了工具定义',
     body: '服务商拒绝了本次请求中的工具定义。请更新 Agent，或禁用不兼容的工具后重试。',
+    modelId: 'claude-sonnet-4-20250514',
     code: 'USER_LLM_PROVIDER_INVALID_TOOL_SCHEMA',
     incidentId: 'err_probe_01',
     ownership: 'user_llm_provider',
@@ -135,6 +137,7 @@ const buildProbeMessages = (fixture: ErrorSurfaceFixture): { messages: TMessage[
       ? undefined
       : {
           message: fixture.body,
+          ...(fixture.modelId ? { model_id: fixture.modelId } : {}),
           ...(fixture.code ? { code: fixture.code } : {}),
           ...(fixture.incidentId ? { incident_id: fixture.incidentId } : {}),
           ...(fixture.ownership ? { ownership: fixture.ownership } : {}),
@@ -392,6 +395,7 @@ const ErrorSurfaceProbe: React.FC = () => {
             <ErrorDiagnosticContent
               diagnostic={buildErrorDiagnostic({
                 message: selectedFixture.body,
+                modelId: selectedFixture.modelId,
                 code: selectedFixture.code,
                 incidentId: selectedFixture.incidentId,
                 ownership: selectedFixture.ownership,

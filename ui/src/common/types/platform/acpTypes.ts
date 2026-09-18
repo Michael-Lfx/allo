@@ -237,10 +237,12 @@ export interface AcpModelInfo {
 
 // ===== Permission request (session/request_permission) =====
 
+export type AcpPermissionOptionKind = 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+
 export interface AcpPermissionOption {
   option_id: string;
   name: string;
-  kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+  kind?: AcpPermissionOptionKind;
 }
 
 export interface AcpPermissionRequest {

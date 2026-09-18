@@ -98,6 +98,12 @@ impl AgentErrorResolution {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentStreamErrorData {
     pub message: String,
+    /// Effective model used by the failed turn attempt, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    /// Provider owning the effective model, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub incident_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,6 +131,8 @@ impl AgentStreamErrorData {
     pub fn legacy(message: impl Into<String>, code: Option<AgentErrorCode>) -> Self {
         Self {
             message: message.into(),
+            model_id: None,
+            provider_id: None,
             incident_id: Some(uuid::Uuid::now_v7().to_string()),
             code,
             ownership: None,
@@ -147,6 +155,8 @@ impl AgentStreamErrorData {
     ) -> Self {
         Self {
             message: message.into(),
+            model_id: None,
+            provider_id: None,
             incident_id: Some(uuid::Uuid::now_v7().to_string()),
             code: Some(code),
             ownership: Some(ownership),
@@ -186,6 +196,8 @@ mod tests {
 
         let json = serde_json::to_value(payload).unwrap();
         assert_eq!(json["message"], "The model provider rejected the request");
+        assert!(json.get("model_id").is_none());
+        assert!(json.get("provider_id").is_none());
         assert!(json["incident_id"].as_str().is_some_and(|value| !value.is_empty()));
         assert_eq!(json["code"], "USER_LLM_PROVIDER_AUTH_FAILED");
         assert_eq!(json["ownership"], "user_llm_provider");
@@ -193,6 +205,20 @@ mod tests {
         assert_eq!(json["retryable"], false);
         assert_eq!(json["feedback_recommended"], false);
         assert!(json.get("resolution").is_none());
+    }
+
+    #[test]
+    fn model_context_serializes_for_diagnostics() {
+        let mut payload = AgentStreamErrorData::legacy(
+            "The model provider could not be reached",
+            Some(AgentErrorCode::UserLlmProviderNetworkError),
+        );
+        payload.model_id = Some("claude-sonnet-4-20250514".into());
+        payload.provider_id = Some("flowyai".into());
+
+        let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json["model_id"], "claude-sonnet-4-20250514");
+        assert_eq!(json["provider_id"], "flowyai");
     }
 
     #[test]
@@ -248,6 +274,8 @@ mod tests {
     fn workspace_path_field_uses_camel_case_wire_key_and_accepts_legacy_snake_case() {
         let payload = AgentStreamErrorData {
             message: "workspace path rejected".into(),
+            model_id: None,
+            provider_id: None,
             incident_id: Some("019c0000-0000-7000-8000-000000000001".into()),
             code: Some(AgentErrorCode::WorkspacePathEdgeWhitespaceRuntimeUnsupported),
             ownership: Some(AgentErrorOwnership::Nomifun),

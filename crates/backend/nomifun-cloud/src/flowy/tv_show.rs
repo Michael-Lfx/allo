@@ -22,15 +22,27 @@ impl FlowyApiClient {
 
     pub async fn tv_show_list(
         &self,
-        session: &ServerSession,
+        session: Option<&ServerSession>,
         page: Option<i32>,
         page_size: Option<i32>,
         workflow: Option<&str>,
         keyword: Option<&str>,
         sort: Option<&str>,
+        campaign_id: Option<i64>,
+        award_level: Option<&str>,
     ) -> Result<TvShowListResponse, ServerClientError> {
-        let path = build_tv_show_list_path("/vimax/tv-show/list", page, page_size, workflow, keyword, sort, None);
-        self.get_data(&path, Some(session)).await
+        let path = build_tv_show_list_path(
+            "/vimax/tv-show/list",
+            page,
+            page_size,
+            workflow,
+            keyword,
+            sort,
+            None,
+            campaign_id,
+            award_level,
+        );
+        self.get_data(&path, session).await
     }
 
     pub async fn tv_show_mine(
@@ -39,6 +51,7 @@ impl FlowyApiClient {
         page: Option<i32>,
         page_size: Option<i32>,
         status: Option<&str>,
+        campaign_id: Option<i64>,
     ) -> Result<TvShowListResponse, ServerClientError> {
         let path = build_tv_show_list_path(
             "/vimax/tv-show/mine",
@@ -48,17 +61,19 @@ impl FlowyApiClient {
             None,
             None,
             status,
+            campaign_id,
+            None,
         );
         self.get_data(&path, Some(session)).await
     }
 
     pub async fn tv_show_detail(
         &self,
-        session: &ServerSession,
+        session: Option<&ServerSession>,
         id: i64,
     ) -> Result<TvShowVideo, ServerClientError> {
         let path = format!("/vimax/tv-show/{id}");
-        self.get_data(&path, Some(session)).await
+        self.get_data(&path, session).await
     }
 
     pub async fn tv_show_like(
@@ -122,7 +137,7 @@ impl FlowyApiClient {
     }
 }
 
-fn build_tv_show_list_path(
+pub(super) fn build_tv_show_list_path(
     base: &str,
     page: Option<i32>,
     page_size: Option<i32>,
@@ -130,6 +145,8 @@ fn build_tv_show_list_path(
     keyword: Option<&str>,
     sort: Option<&str>,
     status: Option<&str>,
+    campaign_id: Option<i64>,
+    award_level: Option<&str>,
 ) -> String {
     let mut pairs: Vec<(String, String)> = Vec::new();
     if let Some(p) = page.filter(|v| *v > 0) {
@@ -149,6 +166,12 @@ fn build_tv_show_list_path(
     }
     if let Some(st) = status.map(str::trim).filter(|s| !s.is_empty()) {
         pairs.push(("status".into(), st.to_string()));
+    }
+    if let Some(cid) = campaign_id.filter(|v| *v >= 0) {
+        pairs.push(("campaignId".into(), cid.to_string()));
+    }
+    if let Some(level) = award_level.map(str::trim).filter(|s| !s.is_empty()) {
+        pairs.push(("awardLevel".into(), level.to_string()));
     }
     if pairs.is_empty() {
         return base.to_string();

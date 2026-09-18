@@ -82,6 +82,8 @@ mod tests {
             output: &output,
             registry: &registry,
             observation: None,
+            workspace_cwd: None,
+            session_id: None,
         };
 
         let cmd = ClearCommand;
@@ -111,6 +113,8 @@ mod tests {
             output: &output,
             registry: &registry,
             observation: None,
+            workspace_cwd: None,
+            session_id: None,
         };
 
         let cmd = ClearCommand;

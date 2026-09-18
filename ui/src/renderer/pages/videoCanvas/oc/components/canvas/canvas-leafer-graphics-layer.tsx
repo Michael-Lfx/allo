@@ -3,8 +3,8 @@ import { Group, Leafer, Path, Rect } from "leafer-ui";
 
 import { activeConnectionPath, canvasConnectionPath } from "@oc/components/canvas/canvas-connections";
 import type { CanvasBatchConnectionPreview } from "@oc/lib/canvas/canvas-batch-connection";
-import { applyDragPreviewToDisplayConnections, diffConnectionDrawList } from "@oc/lib/canvas/canvas-connection-draw-list";
-import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasSelectionPreview } from "@oc/lib/canvas/canvas-live-viewport";
+import { diffConnectionDrawList } from "@oc/lib/canvas/canvas-connection-draw-list";
+import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview, subscribeCanvasSelectionPreview, type CanvasNodeDragPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { calculateCanvasPreviewTransform, sameCanvasViewport, shouldRebaseCanvasRaster } from "@oc/lib/canvas/canvas-leafer-viewport";
 import { canvasActiveNodeId, canvasRelatedHighlight } from "@oc/lib/canvas/canvas-related-highlight";
 import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
@@ -46,6 +46,10 @@ type LeaferScene = {
 
 type UnderlayScene = LeaferScene & {
     connections: Group;
+    displayById: Map<string, CanvasDisplayConnection>;
+    connectionIdsByNodeId: Map<string, Set<string>>;
+    dragPreview: CanvasNodeDragPreview | null;
+    dragPreviewConnectionIds: Set<string>;
 };
 
 type OverlayScene = LeaferScene & {
@@ -65,7 +69,6 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
     const viewportRef = useRef(props.viewport);
     const rasterViewportRef = useRef(props.viewport);
     const hoveredNodeId = useCanvasInteractionStore((state) => state.hoveredNodeId);
-    const dragPreview = useCanvasInteractionStore((state) => state.dragPreview);
     const alignmentGuides = useCanvasInteractionStore((state) => state.alignmentGuides);
     const connectingParams = useCanvasInteractionStore((state) => state.connectingParams);
     const mouseWorld = useCanvasInteractionStore((state) => state.mouseWorld);
@@ -76,13 +79,9 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         () => canvasRelatedHighlight(canvasActiveNodeId(hoveredNodeId, props.selectedNodeIds), props.connections),
         [hoveredNodeId, props.connections, props.selectedNodeIds],
     );
-    const displayConnections = useMemo(
-        () => applyDragPreviewToDisplayConnections(props.displayConnections, dragPreview),
-        [dragPreview, props.displayConnections],
-    );
     const resolvedProps: ResolvedLeaferProps = {
         ...props,
-        displayConnections,
+        displayConnections: props.displayConnections,
         relatedConnectionIds: relatedHighlight.connectionIds,
         alignmentGuides,
         connectingParams,
@@ -145,12 +144,16 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const unsubscribeSelection = subscribeCanvasSelectionPreview(container, (selection) => {
             syncSelection(overlay.selection, selection, propsRef.current.theme);
         });
+        const unsubscribeNodeDrag = subscribeCanvasNodeDragPreview(container, (preview) => {
+            applyConnectionDragPreview(underlay, propsRef.current, connectionPathsRef.current, preview);
+        });
         resize();
         syncConnectionPaths(underlay, propsRef.current, connectionPathsRef.current);
 
         return () => {
             unsubscribe();
             unsubscribeSelection();
+            unsubscribeNodeDrag();
             resizeObserver.disconnect();
             window.removeEventListener("resize", resize);
             connectionPathsRef.current.clear();
@@ -165,7 +168,8 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const underlay = underlayRef.current;
         if (!underlay) return;
         syncConnectionPaths(underlay, resolvedProps, connectionPathsRef.current);
-    }, [displayConnections, props.scriptScrollTopById, props.selectedConnectionId, props.theme, relatedHighlight.connectionIds]);
+        if (underlay.dragPreview) applyConnectionDragPreview(underlay, resolvedProps, connectionPathsRef.current, underlay.dragPreview);
+    }, [props.displayConnections, props.scriptScrollTopById, props.selectedConnectionId, props.theme, relatedHighlight.connectionIds]);
 
     useLayoutEffect(() => {
         const overlay = overlayRef.current;
@@ -216,7 +220,7 @@ function createUnderlayScene(host: HTMLDivElement): UnderlayScene {
     const connections = new Group({ hittable: false });
     world.add(connections);
     leafer.add(world);
-    return { leafer, world, host, connections };
+    return { leafer, world, host, connections, displayById: new Map(), connectionIdsByNodeId: new Map(), dragPreview: null, dragPreviewConnectionIds: new Set() };
 }
 
 function createOverlayScene(host: HTMLDivElement): OverlayScene {
@@ -292,6 +296,60 @@ function syncConnectionPaths(scene: UnderlayScene, props: ResolvedLeaferProps, p
         if (!path) continue;
         const appearance = connectionAppearance(item, props);
         if (sameConnectionAppearance(connectionPathAppearance.get(path), appearance)) continue;
+        path.set({
+            path: appearance.pathD,
+            stroke: appearance.stroke,
+            strokeWidth: appearance.strokeWidth,
+            opacity: appearance.opacity,
+        });
+        connectionPathAppearance.set(path, appearance);
+    }
+
+    scene.displayById = new Map(props.displayConnections.map((item) => [item.connection.id, item]));
+    scene.connectionIdsByNodeId = new Map();
+    for (const item of props.displayConnections) {
+        for (const nodeId of [item.from.id, item.to.id]) {
+            const ids = scene.connectionIdsByNodeId.get(nodeId) || new Set<string>();
+            ids.add(item.connection.id);
+            scene.connectionIdsByNodeId.set(nodeId, ids);
+        }
+    }
+}
+
+function translatePreviewNode(node: CanvasNodeData, previewIds: ReadonlySet<string> | null, preview: CanvasNodeDragPreview | null) {
+    if (!preview || !previewIds?.has(node.id) || (preview.x === 0 && preview.y === 0)) return node;
+    return { ...node, position: { x: node.position.x + preview.x, y: node.position.y + preview.y } };
+}
+
+function collectPreviewConnectionIds(scene: UnderlayScene, preview: CanvasNodeDragPreview | null) {
+    const connectionIds = new Set<string>();
+    if (!preview) return connectionIds;
+    for (const nodeId of preview.nodeIds) {
+        scene.connectionIdsByNodeId.get(nodeId)?.forEach((connectionId) => connectionIds.add(connectionId));
+    }
+    return connectionIds;
+}
+
+function applyConnectionDragPreview(scene: UnderlayScene, props: ResolvedLeaferProps, paths: Map<string, Path>, preview: CanvasNodeDragPreview | null) {
+    const affectedConnectionIds = new Set(scene.dragPreviewConnectionIds);
+    const previewIds = preview?.nodeIds || null;
+    collectPreviewConnectionIds(scene, preview).forEach((connectionId) => affectedConnectionIds.add(connectionId));
+    scene.dragPreview = preview;
+    scene.dragPreviewConnectionIds = collectPreviewConnectionIds(scene, preview);
+    for (const connectionId of affectedConnectionIds) {
+        const item = scene.displayById.get(connectionId);
+        const path = paths.get(connectionId);
+        if (!item || !path) continue;
+        const from = translatePreviewNode(item.from, previewIds, preview);
+        const to = translatePreviewNode(item.to, previewIds, preview);
+        const emphasized = props.selectedConnectionId === item.connection.id || props.relatedConnectionIds.has(item.connection.id);
+        const appearance: ConnectionPathAppearance = {
+            pathD: canvasConnectionPath(item.connection, from, to, props.scriptScrollTopById[from.id] || 0, props.scriptScrollTopById[to.id] || 0).pathD,
+            emphasized,
+            stroke: emphasized ? props.theme.accent.primary : props.theme.node.muted,
+            strokeWidth: emphasized ? 1.6 : 1,
+            opacity: emphasized ? 0.52 : 0.24,
+        };
         path.set({
             path: appearance.pathD,
             stroke: appearance.stroke,

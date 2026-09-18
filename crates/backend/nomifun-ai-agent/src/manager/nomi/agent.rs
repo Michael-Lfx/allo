@@ -974,6 +974,13 @@ impl NomiAgentManager {
         config.tools.browser.headless = false;
         config.tools.browser.source = config_extra.browser_source.clone();
 
+        // News briefing tools talk to the same file-backed engine as /api/briefing.
+        // Allow-list before bootstrap so Default mode does not park on approval.
+        config.tools.allow_list.extend([
+            "briefing_create".to_owned(),
+            "briefing_status".to_owned(),
+        ]);
+
         // Companion memory tools only touch the companion's own memory.db — never
         // user files — so they skip the approval gate in every session mode
         // (Default mode auto-approves nothing by category, which would park
@@ -1380,6 +1387,12 @@ impl NomiAgentManager {
                 );
             }
         }
+        if nomi_briefing::wire_briefing_tools(engine.registry_mut(), &gateway_data_dir) {
+            debug!(
+                conversation_id = %conversation_id,
+                "Registered briefing_create + briefing_status tools"
+            );
+        }
 
         if !is_resume && let Err(e) = engine.init_session(&provider_label, &workspace, Some(&conversation_id)) {
             error!(
@@ -1605,6 +1618,11 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
 
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         let started_at = now_ms();
+        // Prefer a host-scoped wire turn id (conversation spawn wraps this
+        // future with the admission `turn_id`) so failover/continuation
+        // segments still aggregate under GET /credits/usageByTurn.
+        let billing_turn_id = nomi_providers::current_flowy_billing_turn_id()
+            .unwrap_or_else(|| data.msg_id.clone());
         let source_message_id = data
             .source_message_id
             .as_deref()
@@ -1723,7 +1741,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             let preparation = tokio::select! {
                 biased;
                 _ = turn_cancel.cancelled() => break 'accepted None,
-                prepared = prepare_turn => prepared,
+                prepared = nomi_providers::with_flowy_billing_turn_id(
+                    billing_turn_id.clone(),
+                    prepare_turn,
+                ) => prepared,
             };
 
             let (supports_image, image_blocks, image_analysis, knowledge_hits, mut engine) = match preparation {
@@ -1829,10 +1850,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                         break 'accepted None;
                     }
                     res = nomi_providers::with_flowy_billing_turn_id(
-                        // Reuse the turn's root msg_id as Flowy billing turnId so
-                        // every model/media call in this Agent Run aggregates under
-                        // the same GET /credits/usageByTurn key.
-                        data.msg_id.clone(),
+                        // Wire/billing root (`X-Flowy-Turn-Id`), not a continuation
+                        // segment id, so every model/media call in this Agent Run
+                        // aggregates under the same GET /credits/usageByTurn key.
+                        billing_turn_id.clone(),
                         engine.execute_turn_with_content_for_source(
                             current_content,
                             &data.msg_id,
@@ -2089,6 +2110,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     // `false` = the token was already cancelled; the cancel
                     // branch below is then the terminal owner.
                     let _spawned = super::distill::spawn_distill_exact_turn(
+                        billing_turn_id.clone(),
                         turn_cancel.clone(),
                         cfg,
                         dir,
@@ -2135,18 +2157,27 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     if !hooks.is_empty() {
                         let conv_id = self.runtime.conversation_id().to_string();
                         let user_prompt = data.content.clone();
+                        let review_billing_turn_id = billing_turn_id.clone();
                         for hook in hooks {
                             let conv_id = conv_id.clone();
                             let user_prompt = user_prompt.clone();
                             let transcript = transcript.clone();
+                            let review_billing_turn_id = review_billing_turn_id.clone();
                             tokio::spawn(async move {
-                                let ctx = TurnContext {
-                                    conversation_id: &conv_id,
-                                    session_id: &conv_id,
-                                    user_prompt: &user_prompt,
-                                    origin_is_human: true,
-                                };
-                                hook.on_post_turn_review(&ctx, &transcript, &[]).await;
+                                nomi_providers::with_flowy_billing_turn_id(
+                                    review_billing_turn_id,
+                                    async {
+                                        let ctx = TurnContext {
+                                            conversation_id: &conv_id,
+                                            session_id: &conv_id,
+                                            user_prompt: &user_prompt,
+                                            origin_is_human: true,
+                                        };
+                                        hook.on_post_turn_review(&ctx, &transcript, &[])
+                                            .await;
+                                    },
+                                )
+                                .await;
                             });
                         }
                     }
@@ -4618,9 +4649,10 @@ mod tests {
     }
 
     /// Advertises the production `Write` route for stream-boundary tests that
-    /// never commit or execute the call. Tool progress from an unadvertised
-    /// name is intentionally rejected by the engine, so those fixtures must
-    /// model the same request authority as a real desktop Nomi session.
+    /// never commit or execute the call. Unadvertised tool *progress* is only
+    /// warned and ignored by the engine (SEP-1), while a final unadvertised
+    /// `ToolUse` is still rejected, so those fixtures must model the same
+    /// request authority as a real desktop Nomi session.
     struct PreviewOnlyWriteTool;
 
     #[async_trait::async_trait]
@@ -5404,21 +5436,22 @@ mod tests {
         let requests = provider.requests();
         assert_eq!(requests.len(), 1);
         assert!(
-            requests[0]
+            !requests[0]
                 .system
-                .contains("terminal term-idle transitioned to exited (exit_code=0)")
+                .contains("terminal term-idle transitioned to exited (exit_code=0)"),
+            "resource notices must not mutate the cached system prefix"
         );
         assert!(
-            requests[0].messages.iter().all(|message| {
-                message.content.iter().all(|block| {
-                    !matches!(
+            requests[0].messages.iter().any(|message| {
+                message.content.iter().any(|block| {
+                    matches!(
                         block,
                         ContentBlock::Text { text }
                             if text.contains("terminal term-idle transitioned to exited")
                     )
                 })
             }),
-            "resource state must not be presented as a user message"
+            "resource state rides the persisted turn tail"
         );
     }
 

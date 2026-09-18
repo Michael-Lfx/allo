@@ -5,6 +5,7 @@ export const CONTENT_MODERATION_ERROR_CODE = "sensitive_words_detected";
 export const CONTENT_MODERATION_MESSAGE = "内容审核未通过，本次平台积分未扣除或已退还。请修改提示词后重新生成。";
 export const COPYRIGHT_RESTRICTION_MESSAGE = "提示词可能涉及版权受限内容，内容审核未通过。请修改提示词后重新生成。";
 export const REFERENCE_IMAGE_MODERATION_MESSAGE = "参考图未通过内容审核（可能含真人肖像等）。请更换参考图或调整提示词后重试。";
+export const REF_AUDIO_DURATION_MESSAGE = "参考音频总时长不能超过 15 秒。请缩短或减少角色参考音后重试。";
 
 const DEFAULT_GENERATION_ERROR_MESSAGE = "生成失败，请稍后重试。";
 const NETWORK_ERROR_MESSAGE = "网络异常。";
@@ -15,6 +16,7 @@ const GENERATION_ERROR_DISPLAY_KEYS: ReadonlyArray<readonly [string, string]> = 
     ["videoCanvas.genError.moderation", CONTENT_MODERATION_MESSAGE],
     ["videoCanvas.genError.copyright", COPYRIGHT_RESTRICTION_MESSAGE],
     ["videoCanvas.genError.referenceModeration", REFERENCE_IMAGE_MODERATION_MESSAGE],
+    ["videoCanvas.genError.refAudioDuration", REF_AUDIO_DURATION_MESSAGE],
     ["videoCanvas.genError.network", NETWORK_ERROR_MESSAGE],
     ["videoCanvas.genError.busy", "服务当前繁忙，请稍后重试。"],
     ["videoCanvas.genError.authFailed", "生成服务鉴权失败，请检查渠道配置。"],
@@ -49,22 +51,30 @@ export function generationFailureMetadata(error: unknown, prompt: string): Gener
 
 export function generationErrorMessage(error: unknown) {
     const raw = rawGenerationError(error);
-    if (isContentModerationError(raw)) return contentModerationMessage(raw);
+    const unwrapped = unwrapGenerationErrorLayers(raw);
+    if (isContentModerationError(raw) || isContentModerationError(unwrapped)) {
+        return contentModerationMessage(isContentModerationError(raw) ? raw : unwrapped);
+    }
 
-    const providerMessage = extractStructuredProviderMessage(raw) || extractWrappedProviderMessage(raw);
-    const displayMessage = providerMessage || raw;
+    const providerMessage = extractStructuredProviderMessage(unwrapped) || extractWrappedProviderMessage(unwrapped) || extractStructuredProviderMessage(raw) || extractWrappedProviderMessage(raw);
+    const displayMessage = providerMessage || unwrapped || raw;
     if (isContentModerationError(displayMessage)) return contentModerationMessage(displayMessage);
-    if (isNetworkFailure(displayMessage)) return NETWORK_ERROR_MESSAGE;
-    if (!providerMessage) {
-        if (hasHttpStatus(raw, 429)) return "服务当前繁忙，请稍后重试。";
-        if (hasHttpStatus(raw, 401, 403)) return "生成服务鉴权失败，请检查渠道配置。";
-        if (hasHttpStatus(raw, 404)) return "生成服务地址不可用，请检查渠道配置。";
-        // 上游常把业务拒绝包成 HTTP 5xx；有明确业务语义时不要误报「网络异常」。
-        if ((hasHttpStatus(raw, 500, 502, 503, 504) || containsInfrastructureDetails(raw)) && !looksLikeProviderBusinessRejection(raw)) {
-            return NETWORK_ERROR_MESSAGE;
-        }
+    if (isRefAudioDurationError(displayMessage) || isRefAudioDurationError(unwrapped) || isRefAudioDurationError(raw)) {
+        return REF_AUDIO_DURATION_MESSAGE;
+    }
+    if (isNetworkFailure(displayMessage) || isNetworkFailure(raw)) return NETWORK_ERROR_MESSAGE;
+    if (hasHttpStatus(raw, 429) || hasHttpStatus(unwrapped, 429)) return "服务当前繁忙，请稍后重试。";
+    if (hasHttpStatus(raw, 401, 403) || hasHttpStatus(unwrapped, 401, 403)) return "生成服务鉴权失败，请检查渠道配置。";
+    if (hasHttpStatus(raw, 404) || hasHttpStatus(unwrapped, 404)) return "生成服务地址不可用，请检查渠道配置。";
+    // Only true transport / bare gateway failures are "网络异常". Provider 5xx with a remaining sentence stays visible.
+    if (isBareInfrastructureFailure(displayMessage) && !looksLikeProviderBusinessRejection(displayMessage) && !looksLikeProviderBusinessRejection(unwrapped)) {
+        return NETWORK_ERROR_MESSAGE;
     }
     return displayMessage || DEFAULT_GENERATION_ERROR_MESSAGE;
+}
+
+export function logCanvasGenerationFailure(scope: string, error: unknown) {
+    console.error(`[canvas] ${scope}`, rawGenerationError(error), error);
 }
 
 export function isContentModerationError(value: unknown) {
@@ -99,6 +109,14 @@ function contentModerationMessage(raw: string) {
     if (isCopyrightRestriction(lower) || raw.includes("版权受限")) return COPYRIGHT_RESTRICTION_MESSAGE;
     if (isReferenceImageModeration(lower) || raw.includes("参考图未通过内容审核")) return REFERENCE_IMAGE_MODERATION_MESSAGE;
     return CONTENT_MODERATION_MESSAGE;
+}
+
+function isRefAudioDurationError(raw: string) {
+    const lower = raw.toLowerCase();
+    return (
+        lower.includes("reference_audio") &&
+        (lower.includes("exceeds max") || (lower.includes("total duration") && lower.includes("15")))
+    );
 }
 
 /** 与后端 nomi-vimax / nomifun-cloud 的敏感内容判定对齐。 */
@@ -142,19 +160,48 @@ function looksLikeProviderBusinessRejection(raw: string) {
         isProviderContentPolicyRejection(lower)
         || lower.includes("invalidparameter")
         || lower.includes("invalid parameter")
+        || /\binvalid\b/.test(lower)
+        || lower.includes("last_frame")
+        || lower.includes("first_frame")
+        || lower.includes("model call failed")
         || lower.includes("insufficient_credit")
         || lower.includes("insufficient credit")
         || lower.includes("credit balance is too low")
         || lower.includes("积分不足")
         || lower.includes("余额不足")
         || lower.includes("额度")
+        || (lower.includes("reference_audio") && (lower.includes("exceeds max") || lower.includes("total duration")))
     );
 }
 
-function rawGenerationError(error: unknown) {
+export function rawGenerationError(error: unknown) {
     if (error instanceof Error) return error.message.trim();
     if (typeof error === "string") return error.trim();
     return providerPayloadMessage(error);
+}
+
+function unwrapGenerationErrorLayers(raw: string) {
+    let text = raw.trim();
+    if (!text) return "";
+    text = text.replace(/^Internal error:\s*/i, "");
+    text = text.replace(/^(?:video|image) generation failed:\s*/i, "");
+    const cause = text.match(/(?:^|\n)Cause:\s*(.+?)(?:\nHint:|\nRequest id:|$)/is);
+    if (cause?.[1]) text = cause[1].trim();
+    text = text.replace(/^API error \d{3}:\s*/i, "");
+    text = text.replace(/\s*Request id:\s*\S+[\s\S]*$/i, "");
+    text = text.replace(/\s*Hint:\s[\s\S]*$/i, "");
+    return text.trim();
+}
+
+function isBareInfrastructureFailure(value: string) {
+    const text = value.trim();
+    if (!text) return true;
+    if (isNetworkFailure(text)) return true;
+    if (/<!DOCTYPE|<\/html>/i.test(text)) return true;
+    if (/^(?:Bad Gateway|Service Unavailable|Gateway Timeout|Internal Server Error)$/i.test(text)) return true;
+    if (/^Request failed with status code (?:502|503|504)\b/i.test(text)) return true;
+    if (containsInfrastructureDetails(text) && text.length < 96 && !looksLikeProviderBusinessRejection(text)) return true;
+    return false;
 }
 
 function extractStructuredProviderMessage(raw: string) {

@@ -1,0 +1,11 @@
+{
+  "title": "Usage analytics",
+  "description": "Product events and crash reports go to PostHog and Sentry. Message bodies, file paths, and secrets are not sent. You can turn this off at any time.",
+  "enabled": "Share usage analytics",
+  "enabledHint": "Covers funnels, retention, and crash reports. First-party video growth events follow the same switch.",
+  "sdkStatus": "Build configuration",
+  "notConfigured": "This build has no PostHog or Sentry keys. Local funnel events still run for first-win UX.",
+  "configured": "This build will send events when the switch is on.",
+  "installId": "Install ID",
+  "installIdHint": "Anonymous id shared with presence heartbeats."
+}

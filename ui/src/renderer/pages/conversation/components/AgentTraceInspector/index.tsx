@@ -18,14 +18,22 @@ import { useTranslation } from 'react-i18next';
 import { Button, Empty, Popover, Spin, Tooltip } from '@arco-design/web-react';
 import { Bug, ExpandLeft, ExpandRight, Info, Refresh, SortAmountDown, SortAmountUp } from '@icon-park/react';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
+import { useContainerWidth } from '@/renderer/hooks/ui/useContainerWidth';
 import type { ConversationId } from '@/common/types/ids';
 import {
   capabilityHeaderButtonClass,
   capabilityHeaderButtonStyle,
 } from '../CapabilityHeaderButton';
 import { CallDetailLru, callCacheKey } from './callDetailCache';
+import ObservationTimeline, {
+  buildTimelineRows,
+  findTimelineEventSeq,
+  type TimelineRow,
+} from './ObservationTimeline';
 import ObservationWorkflow, { type InspectTarget } from './ObservationWorkflow';
+import type { TraceSelection } from './traceSelection';
 import {
   formatClock,
   formatDurationMs,
@@ -38,6 +46,8 @@ import './session-logs.css';
 import {
   getSessionObservationCall,
   getSessionObservationTurn,
+  downloadSessionObservation,
+  isObservationSaveLocationError,
   isObservationRetentionError,
   listSessionObservations,
   type ObservationSummary,
@@ -602,6 +612,7 @@ export const AgentTraceTrigger: React.FC = () => {
 export const SessionLogWorkspace: React.FC = () => {
   const { t } = useTranslation();
   const {
+    conversationId,
     developerMode,
     loading,
     errorKey,
@@ -613,22 +624,113 @@ export const SessionLogWorkspace: React.FC = () => {
     detail,
     detailLoading,
     detailErrorKey,
-    inspectTarget,
+    inspectTarget: loadedInspectTarget,
     setInspectTarget,
     callDetail,
     callLoading,
     callErrorKey,
     refreshWorkspace,
   } = useSessionLogs();
+  const { ref: workspaceRef } = useContainerWidth<HTMLDivElement>({
+    fallbackToWindowWidth: true,
+  });
+  const [downloadState, setDownloadState] = useState<
+    'idle' | 'loading' | 'error' | 'saveLocationUnavailable'
+  >('idle');
+  const downloadAbortRef = useRef<AbortController | null>(null);
   const [newestFirst, setNewestFirst] = useState(true);
   const [navCollapsed, setNavCollapsed] = useState(false);
+  const [navCollapseTooltipVisible, setNavCollapseTooltipVisible] = useState(false);
+  const navCollapseTooltipSuppressedRef = useRef(false);
+  const [selection, setSelection] = useState<TraceSelection | null>(null);
+  const [timelineCollapsed, setTimelineCollapsed] = useState(true);
   const rounds = useMemo(() => assignTurnRounds(entries), [entries]);
   const displayed = useMemo(
     () => (newestFirst ? [...entries].reverse() : entries),
     [entries, newestFirst]
   );
+  const timelineRows = useMemo(
+    () => (detail ? buildTimelineRows(detail.timeline, detail.model_calls, detail.gaps) : []),
+    [detail]
+  );
+  const selectedEventSeq = selection?.eventSeq ?? null;
+  const inspectTarget = selection ? selection.inspectTarget : loadedInspectTarget;
+  const selectedEvent = useMemo(
+    () => timelineRows.find((row) => row.eventSeqs.includes(selectedEventSeq ?? -1)) ?? null,
+    [selectedEventSeq, timelineRows]
+  );
+
+  useEffect(() => {
+    setSelection(null);
+    setTimelineCollapsed(true);
+  }, [conversationId]);
+
+  useEffect(() => {
+    setSelection(null);
+    setDownloadState('idle');
+    return () => {
+      downloadAbortRef.current?.abort();
+      downloadAbortRef.current = null;
+    };
+  }, [conversationId, selectedId]);
+
+  useEffect(() => {
+    setNavCollapseTooltipVisible(false);
+  }, [navCollapsed]);
+
+  useEffect(() => {
+    if (selection?.inspectTarget == null && selectedEventSeq != null && selectedEvent == null) {
+      setSelection(null);
+    }
+  }, [selectedEvent, selectedEventSeq, selection?.inspectTarget]);
 
   const retryWorkspace = () => void refreshWorkspace({ showListLoading: true });
+  const downloadSelectedTurn = useCallback(async () => {
+    if (!selectedId || downloadState === 'loading') return;
+    const controller = new AbortController();
+    downloadAbortRef.current?.abort();
+    downloadAbortRef.current = controller;
+    setDownloadState('loading');
+    try {
+      const filename = await downloadSessionObservation(String(conversationId), selectedId, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || filename == null) {
+        setDownloadState('idle');
+        return;
+      }
+      setDownloadState('idle');
+      Message.success(t('conversation.agentTrace.downloadSuccess', { filename }));
+    } catch (error) {
+      if (controller.signal.aborted || isAbortError(error)) {
+        setDownloadState('idle');
+        return;
+      }
+      setDownloadState(
+        isObservationSaveLocationError(error) ? 'saveLocationUnavailable' : 'error'
+      );
+    } finally {
+      if (downloadAbortRef.current === controller) downloadAbortRef.current = null;
+    }
+  }, [conversationId, downloadState, selectedId, t]);
+  const handleTimelineSelect = useCallback((row: TimelineRow) => {
+    setSelection({ eventSeq: row.eventSeq, inspectTarget: row.target });
+    setInspectTarget(row.target);
+  }, []);
+
+  const handleInspect = useCallback(
+    (target: InspectTarget | null) => {
+      if (target) {
+        const eventSeq = findTimelineEventSeq(timelineRows, target);
+        setSelection({ eventSeq: eventSeq ?? -1, inspectTarget: target });
+      } else {
+        setSelection(null);
+      }
+      setInspectTarget(target);
+    },
+    [setInspectTarget, timelineRows]
+  );
+
   const errorMessage = errorKey ? t(`conversation.agentTrace.${errorKey}`) : null;
   const retryControl = (
     <Button
@@ -650,6 +752,7 @@ export const SessionLogWorkspace: React.FC = () => {
 
   return (
     <div
+      ref={workspaceRef}
       className='session-logs-workspace'
       role='region'
       aria-label={t('conversation.agentTrace.workspaceTitle')}
@@ -703,6 +806,45 @@ export const SessionLogWorkspace: React.FC = () => {
                         <dt>{t('conversation.agentTrace.glossaryNotes')}</dt>
                         <dd>{t('conversation.agentTrace.notesHint')}</dd>
                       </div>
+                      <div className='session-logs-glossary__section'>
+                        {t('conversation.agentTrace.timelineIconLegend')}
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.collapseRegion')}</dt>
+                        <dd>{t('conversation.agentTrace.collapseRegionHint')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.expandRegion')}</dt>
+                        <dd>{t('conversation.agentTrace.expandRegionHint')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.timelineCompactStart')}</dt>
+                        <dd>{t('conversation.agentTrace.timelineIconStart')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.timelineCompactRequestShort')}</dt>
+                        <dd>{t('conversation.agentTrace.timelineIconRequest')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.responseStage')}</dt>
+                        <dd>{t('conversation.agentTrace.timelineIconResponse')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.timelineCompactTool')}</dt>
+                        <dd>{t('conversation.agentTrace.timelineIconTool')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.timelineWaiting', { duration: '...' })}</dt>
+                        <dd>{t('conversation.agentTrace.timelineIconWaiting')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.timelineCompactGap')}</dt>
+                        <dd>{t('conversation.agentTrace.timelineIconGap')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.timelineCompactEnd')}</dt>
+                        <dd>{t('conversation.agentTrace.timelineIconEnd')}</dd>
+                      </div>
                     </dl>
                   }
                 >
@@ -753,13 +895,24 @@ export const SessionLogWorkspace: React.FC = () => {
                       aria-label={t('conversation.agentTrace.refresh')}
                     />
                   </Tooltip>
-                  <span className='session-logs-nav__collapse'>
+                  <span
+                    className='session-logs-nav__collapse'
+                    onMouseLeave={() => {
+                      navCollapseTooltipSuppressedRef.current = false;
+                      setNavCollapseTooltipVisible(false);
+                    }}
+                  >
                     <Tooltip
                       content={
                         navCollapsed
                           ? t('conversation.agentTrace.expandRoundList')
                           : t('conversation.agentTrace.collapseRoundList')
                       }
+                      popupVisible={navCollapseTooltipVisible}
+                      onVisibleChange={(visible) => {
+                        if (visible && navCollapseTooltipSuppressedRef.current) return;
+                        setNavCollapseTooltipVisible(visible);
+                      }}
                     >
                       <Button
                         type='text'
@@ -779,7 +932,15 @@ export const SessionLogWorkspace: React.FC = () => {
                             ? t('conversation.agentTrace.expandRoundList')
                             : t('conversation.agentTrace.collapseRoundList')
                         }
-                        onClick={() => setNavCollapsed((value) => !value)}
+                        onClick={() => {
+                          navCollapseTooltipSuppressedRef.current = true;
+                          setNavCollapseTooltipVisible(false);
+                          setNavCollapsed((value) => !value);
+                        }}
+                        onBlur={() => {
+                          navCollapseTooltipSuppressedRef.current = false;
+                          setNavCollapseTooltipVisible(false);
+                        }}
                       />
                     </Tooltip>
                   </span>
@@ -898,27 +1059,45 @@ export const SessionLogWorkspace: React.FC = () => {
             </div>
           </div>
 
-          <div className='session-logs-detail'>
-            {detailLoading && !detail ? (
-              <div className='flex justify-center py-24px'>
-                <Spin />
-              </div>
-            ) : detail ? (
-              <ObservationWorkflow
-                turn={detail}
-                inspectTarget={inspectTarget}
-                callDetail={callDetail}
-                callLoading={callLoading}
-                callErrorKey={callErrorKey}
-                onInspect={setInspectTarget}
+          <div className='session-logs-trace'>
+            {detail ? (
+              <ObservationTimeline
+                rootTurnId={detail.root_turn_id}
+                events={detail.timeline}
+                calls={detail.model_calls}
+                gaps={detail.gaps}
+                selectedEventSeq={selectedEventSeq}
+                collapsed={timelineCollapsed}
+                onToggleCollapsed={() => setTimelineCollapsed((value) => !value)}
+                onSelect={handleTimelineSelect}
               />
-            ) : detailErrorKey ? (
-              <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
-                {t(`conversation.agentTrace.${detailErrorKey}`)}
-              </div>
-            ) : (
-              <Empty className='py-24px' description={t('conversation.agentTrace.empty')} />
-            )}
+            ) : null}
+            <div className='session-logs-detail'>
+              {detailLoading && !detail ? (
+                <div className='flex justify-center py-24px'>
+                  <Spin />
+                </div>
+              ) : detail ? (
+                <ObservationWorkflow
+                  turn={detail}
+                  roundNumber={rounds.get(detail.root_turn_id)}
+                  selectedEvent={selectedEvent}
+                  inspectTarget={inspectTarget}
+                  callDetail={callDetail}
+                  callLoading={callLoading}
+                  callErrorKey={callErrorKey}
+                  onInspect={handleInspect}
+                  onDownload={() => void downloadSelectedTurn()}
+                  downloadState={downloadState}
+                />
+              ) : detailErrorKey ? (
+                <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
+                  {t(`conversation.agentTrace.${detailErrorKey}`)}
+                </div>
+              ) : (
+                <Empty className='py-24px' description={t('conversation.agentTrace.empty')} />
+              )}
+            </div>
           </div>
         </div>
       )}

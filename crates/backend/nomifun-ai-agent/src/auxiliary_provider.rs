@@ -17,7 +17,7 @@ use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use tracing::{debug, warn};
 
 use crate::factory::provider_config::{one_shot_completion_no_thinking, resolve_provider_config, user_message};
-use crate::knowledge_completer::first_enabled_model;
+use crate::knowledge_completer::first_enabled_cloud_model;
 
 /// Built-in Flowy cloud provider — the only LLM source for auxiliary tasks.
 pub use nomifun_common::FLOWY_BUILTIN_PROVIDER_ID as FLOWY_CLOUD_PROVIDER_ID;
@@ -188,7 +188,7 @@ async fn resolve_auxiliary_model(
         .list_for_provider(FLOWY_CLOUD_PROVIDER_ID)
         .await
         .ok()?;
-    first_enabled_model(models.iter())
+    first_enabled_cloud_model(models.iter())
         .map(|model| (FLOWY_CLOUD_PROVIDER_ID.to_string(), model))
 }
 

@@ -74,6 +74,48 @@ pub trait IMcpServerRepository: Send + Sync {
     /// Updates only the tools JSON for a server.
     /// Returns `DbError::NotFound` if the ID doesn't exist.
     async fn update_tools(&self, mcp_server_id: &str, tools: Option<&str>) -> Result<(), DbError>;
+
+    /// Returns the revision of the persisted MCP configuration.
+    ///
+    /// Implementations that predate the revision column use zero so existing
+    /// in-memory repositories remain usable in unit tests.
+    async fn config_revision(&self, mcp_server_id: &str) -> Result<i64, DbError> {
+        self.find_by_id(mcp_server_id)
+            .await?
+            .map(|_| 0)
+            .ok_or_else(|| DbError::NotFound(format!("MCP server '{mcp_server_id}' not found")))
+    }
+
+    /// Atomically persists a test result and the requested enabled state when
+    /// the saved configuration still has `expected_revision`.
+    ///
+    /// Returns `Ok(false)` when the configuration changed while the external
+    /// connection test was running. SQLite overrides this with one conditional
+    /// UPDATE; the default exists for lightweight test repositories.
+    async fn complete_activation(
+        &self,
+        mcp_server_id: &str,
+        expected_revision: i64,
+        status: &str,
+        last_connected: Option<nomifun_common::TimestampMs>,
+        tools: Option<&str>,
+        enabled: bool,
+    ) -> Result<bool, DbError> {
+        if self.config_revision(mcp_server_id).await? != expected_revision {
+            return Ok(false);
+        }
+        self.update_status(mcp_server_id, status, last_connected).await?;
+        self.update_tools(mcp_server_id, tools).await?;
+        self.update(
+            mcp_server_id,
+            UpdateMcpServerParams {
+                enabled: Some(enabled),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(true)
+    }
 }
 
 /// Parameters for creating a new MCP server.
@@ -102,6 +144,8 @@ pub struct UpdateMcpServerParams<'a> {
     pub transport_type: Option<&'a str>,
     pub transport_config: Option<&'a str>,
     pub tools: Option<Option<&'a str>>,
+    pub last_test_status: Option<&'a str>,
+    pub last_connected: Option<Option<nomifun_common::TimestampMs>>,
     pub original_json: Option<Option<&'a str>>,
     pub builtin: Option<bool>,
     pub deleted_at: Option<Option<nomifun_common::TimestampMs>>,

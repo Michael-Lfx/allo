@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useSettingsNavigationTransition } from '@/renderer/components/layout/SettingsNavigationTransition';
 import {
   buildCapabilityHubLocation,
   parseCapabilityHubView,
@@ -11,6 +12,7 @@ import {
 export const useCapabilityHubRoute = (hub: CapabilityHubId) => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { navigateWithSettingsTransition } = useSettingsNavigationTransition();
   const [searchParams, setSearchParams] = useSearchParams();
   const inSettings = location.pathname.startsWith('/settings/');
   const redirectTo = resolveLegacyCapabilityLocation(location.pathname, location.search);
@@ -21,7 +23,7 @@ export const useCapabilityHubRoute = (hub: CapabilityHubId) => {
     (nextView: CapabilityHubView) => {
       const next = new URLSearchParams(searchParams);
       next.delete('tab');
-      if (nextView === 'installed') next.set('view', 'installed');
+      if (hub !== 'presets' && nextView === 'installed') next.set('view', 'installed');
       else next.delete('view');
       setSearchParams(next, { replace: true });
     },
@@ -30,9 +32,10 @@ export const useCapabilityHubRoute = (hub: CapabilityHubId) => {
 
   const goToHub = useCallback(
     (nextHub: CapabilityHubId) => {
-      navigate(buildCapabilityHubLocation({ hub: nextHub, inSettings }));
+      const target = buildCapabilityHubLocation({ hub: nextHub, inSettings });
+      navigateWithSettingsTransition(target, () => navigate(target));
     },
-    [inSettings, navigate]
+    [inSettings, navigate, navigateWithSettingsTransition]
   );
 
   const consumeHighlight = useCallback(() => {

@@ -29,10 +29,14 @@ export function useReviewSession({
   const [sessionQueue, setSessionQueue] = useState<DueReview[]>([]);
 
   const answerReview = useCallback(
-    async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
+    async (
+      review: DueReview,
+      response: unknown,
+      elapsedMs?: number
+    ): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
       try {
-        return await learningApi.answerReview(review.source, review.id, response, false);
+        return await learningApi.answerReview(review.source, review.id, response, false, elapsedMs);
       } catch (actionError) {
         Message.error(errorMessage(t, actionError));
         return undefined;
@@ -44,10 +48,10 @@ export function useReviewSession({
   );
 
   const forgetReview = useCallback(
-    async (review: DueReview): Promise<ReviewAnswerResult | undefined> => {
+    async (review: DueReview, elapsedMs?: number): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
       try {
-        return await learningApi.answerReview(review.source, review.id, null, true);
+        return await learningApi.answerReview(review.source, review.id, null, true, elapsedMs);
       } catch (actionError) {
         Message.error(errorMessage(t, actionError));
         return undefined;
@@ -62,8 +66,13 @@ export function useReviewSession({
     async (review: DueReview, rating: ReviewRating): Promise<boolean> => {
       setBusyId(review.id);
       try {
-        await learningApi.rateReview(review.source, review.id, rating);
-        Message.success(t('learning.reviewRecorded'));
+        const result = await learningApi.rateReview(review.source, review.id, rating);
+        // 到期门：本学习日已推进过且未到期的过期重复不再推进排期
+        if (result.advanced) {
+          Message.success(t('learning.reviewRecorded'));
+        } else {
+          Message.info(t('learning.reviewGateBlocked'));
+        }
         await load();
         return true;
       } catch (actionError) {

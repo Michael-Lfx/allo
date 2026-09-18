@@ -74,6 +74,9 @@ describe('MessageList turn completion disclosure structure', () => {
 
   test('suppresses copy and timestamp actions for active process text', () => {
     expect(source.includes('isActiveProcessTextItem')).toBe(true);
+    expect(source.includes("from './streamingMessageModel'")).toBe(true);
+    expect(source.includes('getActiveStreamingTextIndex')).toBe(true);
+    expect(source.includes('activeStreamingTextIndex')).toBe(true);
     expect(source.includes('lastUserTextIndex')).toBe(true);
     expect(source.includes("conversationContext?.isProcessing === true")).toBe(true);
     expect(source.includes('<MessageText message={message} hideActions={hideActions} isStreaming={isStreaming}></MessageText>')).toBe(

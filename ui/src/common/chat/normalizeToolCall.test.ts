@@ -110,6 +110,22 @@ describe('normalizeToolCall', () => {
     expect(result?.nonFatalFailure).toBe(true);
   });
 
+  it('marks ordinary non-zero exec_command exits as non-fatal process outcomes', () => {
+    const result = normalizeToolCall({
+      type: 'tool_call',
+      content: {
+        call_id: 'call-exec',
+        name: 'exec_command',
+        status: 'error',
+        args: { command: 'bun run check:quick' },
+        output: '(process exited, exit_code=1)\ntransport=pipe\nOUTPUT:\nerror',
+      },
+    } as any);
+
+    expect(result?.status).toBe('error');
+    expect(result?.nonFatalFailure).toBe(true);
+  });
+
   it('marks prior-error barrier results as skipped cancellations', () => {
     const result = normalizeToolCall({
       type: 'tool_call',

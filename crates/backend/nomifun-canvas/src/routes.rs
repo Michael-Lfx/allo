@@ -1,22 +1,25 @@
 //! `/api/video-canvas/*` HTTP surface.
 
+use std::path::PathBuf;
+
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use serde::Deserialize;
 use serde_json::Value;
 use tower_http::limit::RequestBodyLimitLayer;
 
-use nomifun_api_types::ApiResponse;
+use nomifun_api_types::{ApiResponse, TvShowPublishSessionRequest};
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
 
 use crate::MAX_MEDIA_BYTES;
-use crate::dto::{CanvasMediaMeta, CanvasProjectMeta, GenerationTaskView};
+use crate::archive::MAX_EXTRAS_BYTES;
+use crate::dto::{CanvasMediaMeta, CanvasProjectMeta, GenerationTaskView, TimelineExportClip};
 use crate::service::NewGenerationRequest;
 use crate::state::CanvasRouterState;
 
@@ -29,11 +32,21 @@ pub fn video_canvas_routes(state: CanvasRouterState) -> Router {
         .layer(RequestBodyLimitLayer::new(MAX_MEDIA_BYTES))
         .with_state(state.clone());
 
+    let extras = Router::new()
+        .route(
+            "/api/video-canvas/projects/{project_id}/extras",
+            put(put_extras).get(get_extras),
+        )
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(MAX_EXTRAS_BYTES as usize))
+        .with_state(state.clone());
+
     Router::new()
         .route(
             "/api/video-canvas/projects",
             get(list_projects).post(create_project),
         )
+        .route("/api/video-canvas/projects/import", post(import_project))
         .route(
             "/api/video-canvas/projects/{project_id}",
             get(get_project)
@@ -44,11 +57,35 @@ pub fn video_canvas_routes(state: CanvasRouterState) -> Router {
             "/api/video-canvas/projects/{project_id}/doc",
             axum::routing::put(put_doc),
         )
+        .route(
+            "/api/video-canvas/projects/{project_id}/export",
+            post(export_project),
+        )
+        .route(
+            "/api/video-canvas/projects/{project_id}/tv-show/publish",
+            post(publish_tv_show),
+        )
+        .route(
+            "/api/video-canvas/tv-show/{id}/import",
+            post(import_tv_show),
+        )
         .route("/api/video-canvas/media", get(list_media))
         .route("/api/video-canvas/media/concat", post(concat_media))
         .route(
+            "/api/video-canvas/media/export-timeline",
+            post(export_timeline),
+        )
+        .route(
+            "/api/video-canvas/media/{media_id}/transcribe",
+            post(transcribe_media),
+        )
+        .route(
             "/api/video-canvas/media/{media_id}",
             axum::routing::delete(delete_media),
+        )
+        .route(
+            "/api/video-canvas/media/{media_id}/path",
+            get(get_media_path),
         )
         .route("/api/video-canvas/tasks", post(create_task).get(list_tasks))
         .route("/api/video-canvas/tasks/{task_id}", get(get_task).delete(delete_task))
@@ -62,6 +99,7 @@ pub fn video_canvas_routes(state: CanvasRouterState) -> Router {
         )
         .with_state(state)
         .merge(upload)
+        .merge(extras)
 }
 
 /// Auth-exempt binary serve (same rationale as workshop public files).
@@ -160,6 +198,109 @@ async fn delete_project(
     Ok(Json(ApiResponse::ok(())))
 }
 
+#[derive(Deserialize)]
+struct ExportBody {
+    dest_path: String,
+}
+
+async fn export_project(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(project_id): Path<String>,
+    body: Result<Json<ExportBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let dest = body.dest_path.trim();
+    if dest.is_empty() {
+        return Err(AppError::BadRequest("dest_path is required".into()));
+    }
+    let path = state
+        .service
+        .export_project(&project_id, PathBuf::from(dest))
+        .await?;
+    Ok(Json(ApiResponse::ok(serde_json::json!({
+        "dest_path": path.to_string_lossy(),
+    }))))
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    source_path: String,
+}
+
+async fn import_project(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<ImportBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<CanvasProjectMeta>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let source = body.source_path.trim();
+    if source.is_empty() {
+        return Err(AppError::BadRequest("source_path is required".into()));
+    }
+    let imported = state
+        .service
+        .import_project(PathBuf::from(source))
+        .await?;
+    Ok(Json(ApiResponse::ok(imported.meta)))
+}
+
+async fn put_extras(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(project_id): Path<String>,
+    body: Bytes,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    if body.is_empty() {
+        return Err(AppError::BadRequest("extras zip required".into()));
+    }
+    state
+        .service
+        .put_project_extras(&project_id, body.to_vec())
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn get_extras(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(project_id): Path<String>,
+) -> Result<Response, AppError> {
+    let bytes = state.service.project_extras_zip(&project_id).await?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(header::CONTENT_LENGTH, bytes.len().to_string())
+        .header(header::CACHE_CONTROL, "private, no-store")
+        .body(Body::from(bytes))
+        .map_err(|e| AppError::Internal(format!("build extras response: {e}")))
+}
+
+async fn publish_tv_show(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(project_id): Path<String>,
+    body: Result<Json<TvShowPublishSessionRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowPublishResponse>>, AppError> {
+    let req = body
+        .map(|Json(v)| v)
+        .unwrap_or_default();
+    let result = state
+        .service
+        .publish_project_to_tv_show(&project_id, req)
+        .await?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+async fn import_tv_show(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<CanvasProjectMeta>>, AppError> {
+    let imported = state.service.import_tv_show(id).await?;
+    Ok(Json(ApiResponse::ok(imported.meta)))
+}
+
 #[derive(serde::Serialize)]
 struct MediaListResponse {
     items: Vec<CanvasMediaMeta>,
@@ -232,6 +373,22 @@ async fn delete_media(
     Ok(Json(ApiResponse::ok(())))
 }
 
+/// `GET /api/video-canvas/media/{media_id}/path` — returns the local filesystem path
+/// so the renderer can open the containing folder via Tauri.
+async fn get_media_path(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(media_id): Path<String>,
+) -> Result<Json<ApiResponse<MediaPathResponse>>, AppError> {
+    let path = state.service.media_file_path(&media_id).await?;
+    Ok(Json(ApiResponse::ok(MediaPathResponse { path: path.to_string_lossy().into_owned() })))
+}
+
+#[derive(serde::Serialize)]
+struct MediaPathResponse {
+    path: String,
+}
+
 #[derive(Deserialize)]
 struct ConcatMediaBody {
     media_ids: Vec<String>,
@@ -248,6 +405,50 @@ async fn concat_media(
     let meta = state
         .service
         .concat_media(body.media_ids, body.title)
+        .await?;
+    Ok((StatusCode::CREATED, Json(ApiResponse::ok(meta))))
+}
+
+#[derive(Deserialize)]
+struct TranscribeMediaBody {
+    #[serde(default)]
+    language: Option<String>,
+}
+
+async fn transcribe_media(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(media_id): Path<String>,
+    body: Result<Json<TranscribeMediaBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<crate::dto::CanvasTranscription>>, AppError> {
+    let language = match body {
+        Ok(Json(payload)) => payload.language,
+        Err(_) => None,
+    };
+    let result = state.service.transcribe_media(&media_id, language).await?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+#[derive(Deserialize)]
+struct ExportTimelineBody {
+    clips: Vec<TimelineExportClip>,
+    #[serde(default)]
+    srt: Option<String>,
+    #[serde(default)]
+    burn_subtitles: bool,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+async fn export_timeline(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<ExportTimelineBody>, JsonRejection>,
+) -> Result<impl axum::response::IntoResponse, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let meta = state
+        .service
+        .export_timeline(body.clips, body.srt, body.burn_subtitles, body.title)
         .await?;
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(meta))))
 }
@@ -299,6 +500,8 @@ struct CreateTaskBody {
     first_frame_media_id: Option<String>,
     #[serde(default)]
     last_frame_media_id: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
 }
 
 async fn create_task(
@@ -319,6 +522,7 @@ async fn create_task(
             reference_media_ids: body.reference_media_ids,
             first_frame_media_id: body.first_frame_media_id,
             last_frame_media_id: body.last_frame_media_id,
+            project_id: body.project_id,
         })
         .await?;
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(view))))
@@ -339,6 +543,9 @@ struct ListTasksQuery {
     limit: usize,
     #[serde(default)]
     offset: usize,
+    /// When true, omit tasks that belong to a canvas project (node generations).
+    #[serde(default)]
+    standalone: bool,
 }
 
 fn default_task_limit() -> usize {
@@ -357,12 +564,14 @@ async fn list_tasks(
     Query(params): Query<ListTasksQuery>,
 ) -> Result<Json<ApiResponse<TaskListResponse>>, AppError> {
     // Cap to a sane upper bound so a runaway client can't enumerate everything
-    // in one request — the in-memory store is small today, but this keeps the
-    // contract honest if the persistence layer changes later.
+    // in one request.
     let limit = params.limit.clamp(1, 200);
     let offset = params.offset.min(10_000);
-    let tasks = state.service.list_tasks(limit, offset).await;
-    let total = state.service.task_count().await;
+    let tasks = state
+        .service
+        .list_tasks(limit, offset, params.standalone)
+        .await;
+    let total = state.service.task_count(params.standalone).await;
     Ok(Json(ApiResponse::ok(TaskListResponse { tasks, total })))
 }
 

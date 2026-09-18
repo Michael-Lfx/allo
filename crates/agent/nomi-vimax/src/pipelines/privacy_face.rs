@@ -63,6 +63,8 @@ No text, watermark, or logo.";
 /// Bump when denoise/prompt recipe changes so stale weak edits are re-run.
 const MARKER_SOFT: &str = "soft_cinematic_v2";
 const MARKER_STRONG: &str = "strong_cinematic_v2";
+/// Vision gate said this plate has no photographic human face — do not img2img it.
+const MARKER_NO_FACE: &str = "no_real_face";
 
 /// Soft ≈ 0.42, Strong ≈ 0.48 (recommended 0.42–0.48 band for Seedance privacy).
 const DENOISE_SOFT: f32 = 0.42;
@@ -314,7 +316,7 @@ pub(crate) async fn ensure_seedance_privacy_face(
     Ok(PrivacyFaceOutcome::Rewritten)
 }
 
-/// Paths that typically carry human faces in multi-ref R2V (cast / continuity / cameo).
+/// Paths that typically carry human faces in multi-ref R2V (cast / continuity).
 /// Env/prop plates are lower priority and skipped in blind sweeps to save cost.
 pub(crate) fn is_likely_face_bearing_ref(path: &Path) -> bool {
     let s = path.to_string_lossy().to_ascii_lowercase();
@@ -325,6 +327,16 @@ pub(crate) fn is_likely_face_bearing_ref(path: &Path) -> bool {
         || s.contains("first_frame")
         || s.contains("last_frame")
         || s.contains("portrait")
+}
+
+/// Cameo identity plates are privacy-handled at bind time; skip render preflight.
+fn is_cameo_identity_plate(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name.ends_with("_cameo.png") && !name.contains("atmosphere")
 }
 
 fn cameo_privacy_marker_path(path: &Path) -> PathBuf {
@@ -350,27 +362,106 @@ fn has_seedance_privacy_at_least_soft(path: &Path) -> bool {
     read_marker_tier(&marker, &raw_fp).is_some()
 }
 
+/// Skip policy for a hypothetical pre-submit privacy pass.
+///
+/// Render does not call this; tests pin last-frame / cameo skip rules so a
+/// future caller cannot accidentally vision-scan continuity stills.
+#[allow(dead_code)]
 pub(crate) fn should_preflight_video_ref(path: &Path) -> bool {
+    if is_cameo_identity_plate(path) {
+        return false;
+    }
     if has_cameo_privacy_marker(path) {
+        return false;
+    }
+    if has_no_real_face_marker(path) {
         return false;
     }
     if has_seedance_privacy_at_least_soft(path) {
         return false;
     }
+    // AI last-frame stills: never rewrite before submit. They are already model
+    // output; a vision pass between shots wastes a call and can break match-cuts.
+    // Repair remains available after a real-person privacy reject (`privacy_repair_targets`).
     if is_continuity_ref(path) {
-        return true;
+        return false;
     }
     is_likely_face_bearing_ref(path)
 }
 
-/// Soft-tier privacy pass on refs before the first video create (and per-shot refs).
+fn has_no_real_face_marker(path: &Path) -> bool {
+    let marker = privacy_marker_path(path);
+    let fp = file_fingerprint(path).unwrap_or_default();
+    let Ok(raw) = std::fs::read_to_string(&marker) else {
+        return false;
+    };
+    let s = raw.trim();
+    let Some((stored_fp, tag)) = s.split_once('|') else {
+        return false;
+    };
+    stored_fp == fp && tag == MARKER_NO_FACE
+}
+
+fn write_no_real_face_marker(path: &Path) {
+    let fp = file_fingerprint(path).unwrap_or_default();
+    let _ = std::fs::write(
+        privacy_marker_path(path),
+        format!("{fp}|{MARKER_NO_FACE}").as_bytes(),
+    );
+}
+
+/// Soft-tier privacy pass on refs before a video create.
+///
+/// Render (`generate_video_for_shot`) must **not** call this: shot video
+/// generation submits first and only inspects/repairs faces after the video
+/// model returns a real-person privacy reject. Continuity last-frame stills
+/// (`video_last_frame.png`) are skipped even if a caller invokes this helper.
+/// Cameo identity plates are sanitized at bind.
+///
+/// Only photographic / live-action human faces are rewritten. Animals, anime,
+/// CGI, and other stylized plates stay as the user uploaded them. Without a
+/// vision `chat` backend the pass is skipped — never img2img blindly.
+#[allow(dead_code)]
 pub(crate) async fn preflight_video_ref_privacy(
     image: &dyn VimaxImage,
+    chat: Option<Arc<dyn VimaxChat>>,
     ref_paths: &[&Path],
 ) -> VimaxResult<()> {
     for path in ref_paths {
-        if should_preflight_video_ref(path) && is_usable_image_file(path) {
-            let _ = ensure_seedance_privacy_face(image, path, PrivacyFaceTier::Soft, false).await?;
+        if !should_preflight_video_ref(path) || !is_usable_image_file(path) {
+            continue;
+        }
+        let Some(chat) = chat.as_ref() else {
+            tracing::info!(
+                path = %path.display(),
+                "privacy preflight skipped: no vision gate (will not rewrite without a real-face check)"
+            );
+            continue;
+        };
+        match ai_face_sanitizer::detect_human_face(Arc::clone(chat), path).await {
+            Ok(false) => {
+                write_no_real_face_marker(path);
+                tracing::info!(
+                    path = %path.display(),
+                    "privacy preflight: no real photographic human face, keeping original"
+                );
+            }
+            Ok(true) => {
+                let _ = ensure_seedance_privacy_face(
+                    image,
+                    path,
+                    PrivacyFaceTier::Soft,
+                    false,
+                )
+                .await?;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "privacy preflight: face detection failed, keeping original"
+                );
+            }
         }
     }
     Ok(())
@@ -720,24 +811,21 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
     }
 
     #[test]
-    fn preflight_skips_cameo_privacy_marker() {
+    fn preflight_skips_cameo_identity_plate() {
         let dir = tempfile::tempdir().unwrap();
         let plate = dir.path().join("Alice_cameo.png");
         std::fs::write(&plate, b"png").unwrap();
-        std::fs::write(
-            super::cameo_privacy_marker_path(&plate),
-            b"fp",
-        )
-        .unwrap();
         assert!(!should_preflight_video_ref(&plate));
     }
 
     #[test]
-    fn preflight_includes_continuity_without_marker() {
+    fn preflight_skips_continuity_last_frame() {
         let dir = tempfile::tempdir().unwrap();
         let frame = dir.path().join("video_last_frame.png");
         std::fs::write(&frame, b"png").unwrap();
-        assert!(should_preflight_video_ref(&frame));
+        assert!(!should_preflight_video_ref(&frame));
+        // After a model privacy reject, last frames stay eligible for repair.
+        assert!(is_likely_face_bearing_ref(&frame));
     }
 
     fn write_test_png(path: &Path) {
@@ -748,7 +836,7 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
     }
 
     #[tokio::test]
-    async fn preflight_calls_image_for_bare_continuity() {
+    async fn preflight_does_not_rewrite_without_real_face_gate() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
@@ -788,14 +876,18 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let frame = dir.path().join("video_last_frame.png");
-        write_test_png(&frame);
+        let portrait = dir.path().join("three_view.png");
+        write_test_png(&portrait);
         let calls = Arc::new(AtomicUsize::new(0));
         let image = CountingImage(Arc::clone(&calls));
-        preflight_video_ref_privacy(&image, &[frame.as_path()])
+        preflight_video_ref_privacy(&image, None, &[portrait.as_path()])
             .await
             .unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "without a real-face vision gate, preflight must not rewrite face-bearing plates"
+        );
     }
 
     #[tokio::test]
@@ -844,7 +936,7 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
         std::fs::write(super::cameo_privacy_marker_path(&plate), b"fp").unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let image = CountingImage(Arc::clone(&calls));
-        preflight_video_ref_privacy(&image, &[plate.as_path()])
+        preflight_video_ref_privacy(&image, None, &[plate.as_path()])
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 0);

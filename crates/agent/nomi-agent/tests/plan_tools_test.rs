@@ -13,6 +13,12 @@ use nomi_protocol::events::ToolCategory;
 use nomi_tools::Tool;
 use nomi_types::skill_types::PlanModeTransition;
 
+fn verifiable_plan() -> serde_json::Value {
+    json!({
+        "plan": "# Goal\nFix the parser.\nFiles: src/parser.rs\nVerification: cargo test -p parser\nHow to test: cargo test -p parser"
+    })
+}
+
 // ---------------------------------------------------------------------------
 // TC-3.3-01  PlanState initial state
 // ---------------------------------------------------------------------------
@@ -74,12 +80,12 @@ async fn tc_3_3_04_exit_plan_mode_succeeds_when_active() {
     let flag = Arc::new(AtomicBool::new(true));
     let tool = ExitPlanModeTool::new(flag);
 
-    let result = tool.execute(json!({})).await;
+    let result = tool.execute(verifiable_plan()).await;
 
     assert!(!result.is_error, "should succeed when in plan mode");
     assert!(
-        result.content.contains("Exited plan mode"),
-        "confirmation message should mention exiting"
+        result.content.contains("submitted for approval"),
+        "confirmation message should mention approval"
     );
 }
 
@@ -130,7 +136,7 @@ fn tc_3_3_07_exit_context_modifier_returns_exit_transition() {
     let flag = Arc::new(AtomicBool::new(true));
     let tool = ExitPlanModeTool::new(flag);
 
-    let modifier = tool.context_modifier_for(&json!({}));
+    let modifier = tool.context_modifier_for(&verifiable_plan());
 
     assert!(modifier.is_some(), "should return a context modifier");
     let cm = modifier.unwrap();
@@ -237,7 +243,7 @@ async fn enter_exit_cycle_with_shared_flag() {
     assert!(r.is_error);
 
     // Phase 3: exit should succeed
-    let r = exit.execute(json!({})).await;
+    let r = exit.execute(verifiable_plan()).await;
     assert!(!r.is_error);
 
     // Simulate engine applying the transition
@@ -267,8 +273,8 @@ fn enter_context_modifier_other_fields_are_default() {
 
 #[test]
 fn exit_context_modifier_other_fields_are_default() {
-    let tool = ExitPlanModeTool::new(Arc::new(AtomicBool::new(false)));
-    let cm = tool.context_modifier_for(&json!({})).unwrap();
+    let tool = ExitPlanModeTool::new(Arc::new(AtomicBool::new(true)));
+    let cm = tool.context_modifier_for(&verifiable_plan()).unwrap();
     assert!(cm.model.is_none());
     assert!(cm.effort.is_none());
     assert!(cm.allowed_tools.is_empty());

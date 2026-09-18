@@ -65,6 +65,7 @@ async fn fixture() -> Fixture {
         skill_paths: paths.clone(),
         external_paths_manager: Arc::new(ExternalPathsManager::with_file(root.join("paths.json")).await),
         preset_dispatcher: None,
+        market_package_preset_installer: None,
         skill_tag_repo: Arc::new(nomifun_db::SqliteSkillTagRepository::new(db.pool().clone())),
         builtin_skill_tags: Arc::new(std::collections::HashMap::new()),
     };

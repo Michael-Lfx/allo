@@ -1,4 +1,5 @@
-import React, { useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useMcpServers } from '@/renderer/hooks/mcp';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import {
@@ -9,6 +10,13 @@ import CapabilityHubShell, { useCapabilityHubSearch } from '@/renderer/pages/set
 import { useCapabilityHubRoute } from '@/renderer/pages/settings/capabilityHub/useCapabilityHubRoute';
 import McpAddServerButton from './McpAddServerButton';
 import McpMarketSettings from './McpMarketSettings';
+import type { McpActivationNavigationState } from '@/renderer/hooks/mcp/useMcpActivationFlow';
+
+/** One-shot navigation state handed over by the market "add and enable" flow. */
+export type McpInstalledNavState = {
+  mcpFocusIds?: string[];
+  activation?: McpActivationNavigationState;
+};
 
 const McpHubBody: React.FC<{
   panelRef: React.RefObject<McpInstalledPanelHandle | null>;
@@ -18,6 +26,9 @@ const McpHubBody: React.FC<{
   extensionMcpServers: ReturnType<typeof useMcpServers>['extensionMcpServers'];
   saveMcpServers: ReturnType<typeof useMcpServers>['saveMcpServers'];
   setMcpServers: ReturnType<typeof useMcpServers>['setMcpServers'];
+  isMcpServersLoading: ReturnType<typeof useMcpServers>['isUserMcpServersLoading'];
+  mcpServersLoadFailed: ReturnType<typeof useMcpServers>['userMcpServersLoadFailed'];
+  reloadMcpServers: ReturnType<typeof useMcpServers>['reloadMcpServers'];
   addedStateLoading: boolean;
 }> = ({
   panelRef,
@@ -27,10 +38,34 @@ const McpHubBody: React.FC<{
   extensionMcpServers,
   saveMcpServers,
   setMcpServers,
+  isMcpServersLoading,
+  mcpServersLoadFailed,
+  reloadMcpServers,
   addedStateLoading,
 }) => {
   const { view } = useCapabilityHubRoute('mcp');
   const { searchQuery, setSearchQuery } = useCapabilityHubSearch();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const navState = (location.state ?? null) as McpInstalledNavState | null;
+
+  // Snapshot the one-shot navigation state before stripping it from history so
+  // back/forward or re-mounts cannot re-trigger the auto activation.
+  const pendingRef = useRef<McpInstalledNavState | null | undefined>(undefined);
+  const navStateKey = navState?.activation?.operationId ?? navState?.mcpFocusIds?.join('|') ?? null;
+  const pendingStateKey = pendingRef.current?.activation?.operationId ?? pendingRef.current?.mcpFocusIds?.join('|') ?? null;
+  if (navState && navStateKey !== pendingStateKey) {
+    pendingRef.current = navState;
+  }
+
+  useEffect(() => {
+    if (!navState) return;
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+  }, [location.pathname, location.search, navigate, navState]);
+
+  const clearPendingNavState = useCallback(() => {
+    pendingRef.current = null;
+  }, []);
 
   return (
     <>
@@ -42,9 +77,17 @@ const McpHubBody: React.FC<{
         extensionMcpServers={extensionMcpServers}
         saveMcpServers={saveMcpServers}
         setMcpServers={setMcpServers}
+        isMcpServersLoading={isMcpServersLoading}
+        mcpServersLoadFailed={mcpServersLoadFailed}
+        reloadMcpServers={reloadMcpServers}
         hideChrome
         searchQuery={searchQuery}
         showList={view === 'installed'}
+        pendingActivation={
+          pendingRef.current?.activation
+        }
+        pendingFocusIds={pendingRef.current?.mcpFocusIds}
+        onPendingConsumed={clearPendingNavState}
       />
       {view !== 'installed' && (
         <McpMarketSettings
@@ -66,8 +109,9 @@ const McpPage: React.FC = () => {
   const {
     mcpServers,
     extensionMcpServers,
-    isMcpServersLoading,
-    mcpServersLoadFailed,
+    isUserMcpServersLoading,
+    userMcpServersLoadFailed,
+    reloadMcpServers,
     saveMcpServers,
     setMcpServers,
   } = useMcpServers();
@@ -86,7 +130,10 @@ const McpPage: React.FC = () => {
         extensionMcpServers={extensionMcpServers}
         saveMcpServers={saveMcpServers}
         setMcpServers={setMcpServers}
-        addedStateLoading={isMcpServersLoading || mcpServersLoadFailed}
+        isMcpServersLoading={isUserMcpServersLoading}
+        mcpServersLoadFailed={userMcpServersLoadFailed}
+        reloadMcpServers={reloadMcpServers}
+        addedStateLoading={isUserMcpServersLoading}
       />
     </CapabilityHubShell>
   );

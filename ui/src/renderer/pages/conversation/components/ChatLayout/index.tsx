@@ -49,11 +49,18 @@ import {
 } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { Layout as ArcoLayout } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
+import { ListCheckbox } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { uuid } from '@/renderer/utils/common';
 import type { WorkspaceExtraTab, WorkspaceTab } from '@/renderer/pages/conversation/Workspace/types';
+import ConversationPlanPanel from '@/renderer/pages/conversation/Messages/components/ConversationPlanPanel';
+import {
+  CONVERSATION_PLAN_WORKSPACE_TAB,
+  ConversationPlanProvider,
+  useConversationPlan,
+} from '@/renderer/pages/conversation/Messages/components/conversationPlanContext';
 import './chat-layout.css';
 
 // headerExtra allows injecting custom actions (e.g., model picker) into the header's right area
@@ -146,6 +153,22 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const layout = useLayoutContext();
   const isDesktop = !layout?.isMobile;
   const isMobile = Boolean(layout?.isMobile);
+  const { plan } = useConversationPlan();
+  const planPanel = useMemo(() => <ConversationPlanPanel />, []);
+  const mergedExtraTabs = useMemo(() => {
+    const base = (props.workspaceExtraTabs ?? []).filter((tab) => tab.key !== CONVERSATION_PLAN_WORKSPACE_TAB);
+    if (!plan || !workspaceEnabled) return base;
+    return [
+      {
+        key: CONVERSATION_PLAN_WORKSPACE_TAB,
+        title: t('conversation.workspace.plan.tab', { defaultValue: 'Task queue' }),
+        icon: <ListCheckbox size={18} />,
+        badge: plan.active && plan.done < plan.total ? <span className='workspace-tool-rail__badge' /> : undefined,
+        content: planPanel,
+      },
+      ...base,
+    ];
+  }, [plan, planPanel, props.workspaceExtraTabs, t, workspaceEnabled]);
 
   // Preview panel state
   const { isOpen: isPreviewOpen, activeTab, openWorkspaceTab, openTerminalTab, tabs } = usePreviewContext();
@@ -157,18 +180,18 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
       ? props.siderTitle
       : activeWorkspaceTab === 'changes'
         ? t('conversation.workspace.changes.tab')
-        : props.workspaceExtraTabs?.find((tab) => tab.key === activeWorkspaceTab)?.title ?? props.siderTitle;
+        : mergedExtraTabs.find((tab) => tab.key === activeWorkspaceTab)?.title ?? props.siderTitle;
 
   const workspaceTabs = useMemo<WorkspacePreviewTabDefinition[]>(() => {
     if (!workspaceEnabled) return [];
     return [
       { key: 'files', title: t('conversation.workspace.changes.filesTab') },
       { key: 'changes', title: t('conversation.workspace.changes.tab') },
-      ...(props.workspaceExtraTabs
-        ?.filter((tab) => tab.key !== 'conversation-terminals')
-        .map((tab) => ({ key: tab.key, title: String(tab.title) })) ?? []),
+      ...mergedExtraTabs
+        .filter((tab) => tab.key !== 'conversation-terminals')
+        .map((tab) => ({ key: tab.key, title: String(tab.title) })),
     ];
-  }, [props.workspaceExtraTabs, t, workspaceEnabled]);
+  }, [mergedExtraTabs, t, workspaceEnabled]);
 
   const openShellPreview = useCallback(async () => {
     const existing = tabs.find((tab) => inferPreviewTabKind(tab) === 'terminal' && tab.terminal_id);
@@ -341,15 +364,17 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
     if (!React.isValidElement(props.sider)) return props.sider;
     return React.cloneElement(
       props.sider as React.ReactElement<{ extraTabs?: WorkspaceExtraTab[] }>,
-      { extraTabs: props.workspaceExtraTabs }
+      { extraTabs: mergedExtraTabs }
     );
-  }, [props.sider, props.workspaceExtraTabs, workspaceEnabled]);
+  }, [mergedExtraTabs, props.sider, workspaceEnabled]);
 
   const isActiveWorkspaceTab =
     activeTab?.kind === 'workspace' && activeTab.workspaceTabKey === activeWorkspaceTab;
   const shellPreviewActive = activeTab?.kind === 'terminal';
   const showToolRail = workspaceEnabled && isDesktop;
-  const workspaceHeader = activeWorkspaceTitle ? (
+  const hidePlanChromeHeader = activeWorkspaceTab === CONVERSATION_PLAN_WORKSPACE_TAB;
+  const workspaceHeader =
+    !hidePlanChromeHeader && activeWorkspaceTitle ? (
     <WorkspacePanelHeader
       showToggle={false}
       collapsed={false}
@@ -543,7 +568,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
             shellPreviewActive={shellPreviewActive}
             onSelect={selectWorkspaceTool}
             changeCount={workspaceChangeCount}
-            extraTabs={props.workspaceExtraTabs}
+            extraTabs={mergedExtraTabs}
             collaboration={workspaceCollaboration}
           />
         )}
@@ -591,7 +616,12 @@ const ChatLayout: React.FC<ChatLayoutProps> = (props) => {
       subscribeGlobalOpen={true}
       workspacePath={props.workspacePath}
     >
-      <ChatLayoutInner {...props} />
+      <ConversationPlanProvider
+        conversationId={props.conversation_id}
+        workspaceEnabled={props.workspaceEnabled !== false}
+      >
+        <ChatLayoutInner {...props} />
+      </ConversationPlanProvider>
     </PreviewProvider>
   );
 };

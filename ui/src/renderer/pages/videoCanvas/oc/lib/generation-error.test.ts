@@ -4,6 +4,7 @@ import {
     CONTENT_MODERATION_MESSAGE,
     COPYRIGHT_RESTRICTION_MESSAGE,
     REFERENCE_IMAGE_MODERATION_MESSAGE,
+    REF_AUDIO_DURATION_MESSAGE,
     generationErrorMessage,
     generationFailureMetadata,
     isContentModerationError,
@@ -46,9 +47,23 @@ describe("generation-error", () => {
         expect(generationErrorMessage("Request failed with status code 502 Bad Gateway")).toBe("网络异常。");
     });
 
+    test("does not collapse a provider 500 with a remaining reason into a network error", () => {
+        const raw = "Internal error: video generation failed: API error 500: Model call failed. Please try again later: invalid last_frame";
+        const message = generationErrorMessage(raw);
+        expect(message).not.toContain("网络异常");
+        expect(message.toLowerCase()).toContain("invalid last_frame");
+        expect(generationFailureMetadata(new Error(raw), "prompt").errorDetails.toLowerCase()).toContain("invalid last_frame");
+    });
+
     test("recognizes already-localized moderation messages for retry gating", () => {
         expect(isContentModerationError(COPYRIGHT_RESTRICTION_MESSAGE)).toBe(true);
         expect(isContentModerationError(CONTENT_MODERATION_MESSAGE)).toBe(true);
         expect(generationErrorMessage(COPYRIGHT_RESTRICTION_MESSAGE)).toBe(COPYRIGHT_RESTRICTION_MESSAGE);
+    });
+
+    test("maps wan3 reference_audio duration cap to a friendly message", () => {
+        const raw = "video generation failed: InvalidParameter: reference_audio total duration 15.6s exceeds max 15s";
+        expect(generationErrorMessage(raw)).toBe(REF_AUDIO_DURATION_MESSAGE);
+        expect(generationErrorMessage(raw)).not.toContain("网络异常");
     });
 });

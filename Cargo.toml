@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/desktop", "apps/web"]
 
 [workspace.package]
-version = "1.0.11"
+version = "1.4.2"
 edition = "2024"
 license = "Apache-2.0"
 repository = "local/nomifun-tauri"
@@ -53,6 +53,7 @@ nomifun-cloud = { path = "crates/backend/nomifun-cloud" }
 nomifun-insights = { path = "crates/backend/nomifun-insights" }
 nomifun-media = { path = "crates/backend/nomifun-media" }
 nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
+nomifun-briefing = { path = "crates/backend/nomifun-briefing" }
 nomifun-canvas = { path = "crates/backend/nomifun-canvas" }
 nomifun-browser-platform = { path = "crates/backend/nomifun-browser-platform" }
 # default-features=false: silero-vad is opt-in (host-specific) — headless
@@ -88,6 +89,7 @@ nomi-auxiliary = { path = "crates/agent/nomi-auxiliary" }
 nomi-insights-core = { path = "crates/agent/nomi-insights-core" }
 nomi-media = { path = "crates/agent/nomi-media" }
 nomi-vimax = { path = "crates/agent/nomi-vimax" }
+nomi-briefing = { path = "crates/agent/nomi-briefing" }
 nomi-agent = { path = "crates/agent/nomi-agent" }
 nomi-coding = { path = "crates/agent/nomi-coding" }
 nomi-computer = { path = "crates/agent/nomi-computer" }
@@ -125,6 +127,8 @@ anyhow = "1"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+sentry = { version = "0.38", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+sentry-tracing = "0.38"
 
 # Opus codec for the robot uplink/downlink. `opusic-sys` is used instead of the
 # higher-level `audiopus`/`opus` crates because both of those pull
@@ -151,6 +155,10 @@ bytes = "1"
 # loaded at all, `nomifun-robot` degrades to its energy VAD. Defaults are
 # narrowed: `tls-rustls` keeps the build off system OpenSSL, and `ndarray` is
 # dropped because the VAD reads tensors as plain slices.
+#
+# Windows pyke ORT prebuilts hard-link DirectML (`DMLCreateDevice1`). The NSIS
+# installer downloads Microsoft.AI.DirectML from nuget.org into $INSTDIR only
+# when the machine's DirectML lacks that export (see windows/nsis/installer.nsi).
 ort = { version = "2.0.0-rc.13", default-features = false, features = [
     "std",
     "tracing",
@@ -179,7 +187,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 psl = "2"
 
 uuid = { version = "1", features = ["v7"] }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream", "rustls-tls", "socks", "system-proxy"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream", "http2", "rustls-tls-native-roots", "socks", "system-proxy"], default-features = false }
 dashmap = "6"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 prost = "0.13"

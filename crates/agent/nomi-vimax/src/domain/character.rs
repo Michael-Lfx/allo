@@ -26,6 +26,11 @@ pub struct VoiceProfile {
     /// Precomputed one-line clause for Seedance captions (preferred inject form).
     #[serde(default)]
     pub caption_clause: Option<String>,
+    /// Flowy Cloud / Qwen3-TTS voice id used to bake the local reference wav.
+    /// Distinct per cast member so Seedance `reference_audio` clips do not collapse
+    /// to the same timbre. Assigned by the pipeline, not the screenwriter.
+    #[serde(default)]
+    pub tts_voice: Option<String>,
 }
 
 impl VoiceProfile {
@@ -94,6 +99,39 @@ impl VoiceProfile {
             }
         }
         self.build_canonical_clause(character_name)
+    }
+
+    /// Short speaker lock for Seedance prompts — id + four stable traits.
+    ///
+    /// The canonical [`Self::seedance_clause`] is too long to paste into every
+    /// clip; this one-liner is identical on every shot so Seedance does not
+    /// reinvent timbre/pitch/volume/style.
+    pub fn compact_lock(&self, character_name: &str) -> String {
+        let name = character_name.trim();
+        let timbre = self.timbre.trim();
+        let pitch = self
+            .pitch
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("mid");
+        let volume = self
+            .volume
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("normal");
+        let style = self.speaking_style.trim();
+        let mut bits = Vec::new();
+        if !timbre.is_empty() {
+            bits.push(format!("timbre「{timbre}」"));
+        }
+        bits.push(format!("pitch {pitch}"));
+        bits.push(format!("volume {volume}"));
+        if !style.is_empty() {
+            bits.push(style.to_string());
+        }
+        format!("{name}: SPEAKER LOCK — {}", bits.join("; "))
     }
 
     fn build_canonical_clause(&self, character_name: &str) -> String {
@@ -193,6 +231,66 @@ pub struct CharacterInScene {
     pub voice_profile: Option<VoiceProfile>,
 }
 
+/// True when `text` names this character, including unique short forms
+/// (`老祖` → `玄霄老祖`). Ambiguous suffixes (two *老祖 in the cast) do not match.
+pub fn character_mentioned_in(
+    text: &str,
+    character: &CharacterInScene,
+    cast: &[CharacterInScene],
+) -> bool {
+    let name = character.identifier_in_scene.trim();
+    if name.chars().count() < 2 {
+        return false;
+    }
+    if text.contains(name) {
+        return true;
+    }
+    for alias in unique_name_aliases(name, cast) {
+        if text.contains(&alias) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Unique CJK prefixes/suffixes of `name` that do not appear inside any other
+/// identifier in `cast`. 2-character names only match exactly.
+fn unique_name_aliases(name: &str, cast: &[CharacterInScene]) -> Vec<String> {
+    name_alias_candidates(name)
+        .into_iter()
+        .filter(|alias| {
+            !cast.iter().any(|other| {
+                let o = other.identifier_in_scene.trim();
+                o != name && o.contains(alias.as_str())
+            })
+        })
+        .collect()
+}
+
+fn name_alias_candidates(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let n = chars.len();
+    if n < 3 || !chars.iter().any(|c| is_cjk_ident(*c)) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let suffix_max = n.saturating_sub(1).min(4);
+    for len in 2..=suffix_max {
+        out.push(chars[n - len..].iter().collect());
+    }
+    let prefix_max = n.saturating_sub(1).min(3);
+    for len in 2..=prefix_max {
+        out.push(chars[..len].iter().collect());
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn is_cjk_ident(c: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&c)
+}
+
 impl fmt::Display for CharacterInScene {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.identifier_in_scene)?;
@@ -243,6 +341,7 @@ mod tests {
             pitch: Some("mid-high".into()),
             speaking_style: "语速平稳".into(),
             caption_clause: Some("stale freeform".into()),
+            tts_voice: None,
         };
         vp.normalize("李薇");
         let clause = vp.seedance_clause("李薇");
@@ -252,6 +351,10 @@ mod tests {
         assert!(clause.contains("pitch mid-high"));
         assert!(clause.contains("volume normal"));
         assert_eq!(vp.caption_clause.as_deref(), Some(clause.as_str()));
+        assert_eq!(
+            vp.compact_lock("李薇"),
+            "李薇: SPEAKER LOCK — timbre「清亮柔和的女中音，气息稳定」; pitch mid-high; volume normal; 语速平稳"
+        );
     }
 
     #[test]
@@ -262,9 +365,37 @@ mod tests {
             pitch: Some("mid".into()),
             speaking_style: "克制".into(),
             caption_clause: Some("老旧写法".into()),
+            tts_voice: None,
         };
         let clause = vp.seedance_clause("阿强");
         assert!(clause.contains("FIXED SPEAKER VOICE"));
         assert!(clause.contains("沉稳男中音"));
+    }
+
+    fn ch(idx: i32, name: &str) -> CharacterInScene {
+        CharacterInScene {
+            idx,
+            identifier_in_scene: name.into(),
+            is_visible: true,
+            static_features: String::new(),
+            dynamic_features: None,
+            voice_profile: None,
+        }
+    }
+
+    #[test]
+    fn unique_honorific_suffix_matches_full_identifier() {
+        let cast = vec![ch(0, "玄霄老祖"), ch(1, "王胖子"), ch(2, "苏小翠")];
+        assert!(character_mentioned_in("中景:老祖指了指牌子", &cast[0], &cast));
+        assert!(character_mentioned_in("王胖子倒吸一口凉气", &cast[1], &cast));
+        assert!(!character_mentioned_in("中景:老祖指了指牌子", &cast[1], &cast));
+    }
+
+    #[test]
+    fn ambiguous_laozu_suffix_does_not_steal_either_character() {
+        let cast = vec![ch(0, "玄霄老祖"), ch(1, "青云老祖")];
+        assert!(!character_mentioned_in("老祖开口", &cast[0], &cast));
+        assert!(!character_mentioned_in("老祖开口", &cast[1], &cast));
+        assert!(character_mentioned_in("<玄霄老祖>开口", &cast[0], &cast));
     }
 }

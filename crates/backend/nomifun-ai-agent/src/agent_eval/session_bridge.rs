@@ -21,6 +21,7 @@ pub struct OpenEvalCaseSession {
     pub case_id: String,
     pub case_category: String,
     pub prompt: String,
+    pub trial: u32,
     pub workspace: PathBuf,
     /// Parent run workspace (business-named directory).
     pub run_workspace: PathBuf,
@@ -67,11 +68,15 @@ pub trait EvalSessionBridge: Send + Sync {
 /// Human-readable label for a suite used in workspace / session naming.
 pub fn suite_business_label(suite: &str) -> &'static str {
     match suite.trim() {
-        "office_tasks" => "办公任务",
-        "agent_workflows" => "Agent工作流",
+        "office_core" | "office_tasks" => "办公任务",
+        "coding_local" | "agent_workflows" => "本地编码",
+        "harness_smoke" | "harness_control" => "Harness冒烟",
+        "browser_smoke" => "浏览器冒烟",
+        "mcp_fixture" => "MCP夹具",
+        "private_badcases" => "私有Badcase",
         "aider_polyglot" => "Aider编程",
         "classeval" => "ClassEval",
-        "harness_control" => "Harness冒烟",
+        "harbor_terminal_bench" => "Harbor沙箱",
         _ => "Agent评测",
     }
 }
@@ -94,8 +99,10 @@ mod tests {
 
     #[test]
     fn suite_labels_cover_live_catalog() {
+        assert_eq!(suite_business_label("office_core"), "办公任务");
         assert_eq!(suite_business_label("office_tasks"), "办公任务");
-        assert_eq!(suite_business_label("agent_workflows"), "Agent工作流");
+        assert_eq!(suite_business_label("coding_local"), "本地编码");
+        assert_eq!(suite_business_label("agent_workflows"), "本地编码");
         assert_eq!(suite_business_label("unknown"), "Agent评测");
     }
 

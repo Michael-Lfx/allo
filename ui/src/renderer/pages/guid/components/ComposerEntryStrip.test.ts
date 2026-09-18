@@ -4,15 +4,16 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('Guid composer entry strip', () => {
-  test('keeps creation configuration focused on preset controls', () => {
+  test('keeps preset and current-conversation Skill controls together', () => {
     const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
 
     expect(source.includes('collaborationPolicyNode')).toBe(false);
     expect(source.includes('onChoosePreset')).toBe(true);
     expect(source.includes('onFree')).toBe(true);
     expect(source.includes('ComposerSkill')).toBe(false);
-    expect(source.includes('activeSkill')).toBe(false);
-    expect(source.includes('onAdjustSkills')).toBe(false);
+    expect(source.includes('activeSkillCount')).toBe(true);
+    expect(source.includes('onAdjustSkills')).toBe(true);
+    expect(source.includes('Puzzle')).toBe(true);
     expect(source.includes('TaskProfileSelector')).toBe(true);
     expect(source.includes('taskProfile')).toBe(true);
   });

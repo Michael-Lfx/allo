@@ -7,10 +7,13 @@ mod overlay;
 mod package;
 mod parse;
 
+pub use builtin::{
+    default_idea2video_skill_ids, DEFAULT_SHORT_DRAMA_SKILL_ID, SCENE_DIRECTING_SKILL_ID,
+};
 pub use catalog::SkillCatalog;
 pub use model::{
-    sanitize_skill_name, SkillId, SkillOverlay, SkillSource, SkillVisibility, VerticalSkill,
-    VerticalSkillDraft, VerticalSkillSummary,
+    sanitize_skill_name, DirectorSpec, OverBudget, PackPolicy, SkillId, SkillOverlay, SkillSource,
+    SkillVisibility, VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
 };
 pub use overlay::compose_overlays;
 pub use package::{pack_skill_dir, patch_cloud_provenance, unpack_skill_package};

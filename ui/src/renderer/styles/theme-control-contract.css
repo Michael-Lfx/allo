@@ -432,6 +432,14 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
   transform: none !important;
 }
 
+/* The speech control already has an explicit disabled treatment in SendBox.
+ * Keep the mic slot at full opacity while sending so the state change does
+ * not look like a size/position change. */
+.arco-btn.speech-input-button[disabled],
+.arco-btn.speech-input-button.arco-btn-disabled {
+  opacity: 1 !important;
+}
+
 .arco-btn:focus-visible {
   outline: none !important;
   box-shadow: 0 0 0 3px var(--flowy-focus-ring, var(--control-focus-ring, var(--color-primary-light-3))) !important;

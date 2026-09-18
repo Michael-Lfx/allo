@@ -237,7 +237,7 @@ file, verify:
 - the license allows redistribution in this repository;
 - the asset is not proprietary or copied from a private product;
 - the dependency is needed at runtime or build time, not just convenient;
-- the change does not weaken the local-first and no-telemetry promise;
+- telemetry (PostHog / Sentry) must go through the existing wrappers, the event-property allowlist in `ui/src/renderer/utils/analytics/telemetry.ts`, and the Settings opt-out; do not send conversation bodies, file paths, secrets, or cookies;
 - secrets, keys, tokens, private conversations, and local data are not included.
 
 If the license or origin is ambiguous, do not add it. Open an issue first.

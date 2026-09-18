@@ -1,8 +1,9 @@
-//! Aspect ratios for **Seedance video** + **Seedream film cover** only.
+//! Aspect ratios for **Seedance video**, **Seedream film cover**, and
+//! **environment volume plates**.
 //!
-//! Character portraits / world plates intentionally ignore session aspect and
-//! keep the model default canvas (`2K`). Cover generation maps the session
-//! ratio onto Seedream-supported 2K pixel sizes (unsupported → 16:9).
+//! Character portraits and prop catalog plates ignore session aspect and keep
+//! the model default canvas (`2K`). Cover + env plates map the session ratio
+//! onto Seedream-supported 2K pixel sizes (unsupported → 16:9).
 
 use std::path::Path;
 
@@ -12,6 +13,18 @@ pub const SEEDANCE_ASPECT_RATIOS: &[&str] =
     &["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
 
 pub const DEFAULT_ASPECT_RATIO: &str = "16:9";
+
+/// Integer parts of a normalized Seedance ratio (`16:9` → `(16, 9)`).
+pub fn aspect_parts(ratio: &str) -> (u32, u32) {
+    match normalize_aspect_ratio(ratio).as_str() {
+        "9:16" => (9, 16),
+        "1:1" => (1, 1),
+        "4:3" => (4, 3),
+        "3:4" => (3, 4),
+        "21:9" => (21, 9),
+        _ => (16, 9),
+    }
+}
 
 /// Read `aspect_ratio.txt` from `dir` or its parent (film root vs scene workdir).
 pub async fn load_aspect_from_dir(dir: &Path) -> String {
@@ -61,6 +74,30 @@ pub fn aspect_prompt_clause(ratio: &str) -> String {
     }
 }
 
+/// Seedance R2V framing line from the user's session ratio (never hardcode 9:16).
+///
+/// Portrait ratios get an extra keep-in-frame hint so large figures are not cropped
+/// off the tall canvas. The API `ratio` field is still the real lock; this is a
+/// composition hint for the prompt.
+pub fn video_aspect_framing_clause(ratio: &str) -> String {
+    let r = normalize_aspect_ratio(ratio);
+    let label = match r.as_str() {
+        "9:16" => "9:16 vertical",
+        "1:1" => "1:1 square",
+        "4:3" => "4:3 landscape",
+        "3:4" => "3:4 portrait",
+        "21:9" => "21:9 ultrawide",
+        _ => "16:9 landscape",
+    };
+    let keep = match r.as_str() {
+        "9:16" | "3:4" => {
+            "Keep the full subject in frame, including large creatures — fit the entire figure inside the portrait edges."
+        }
+        _ => "Keep the full subject in frame.",
+    };
+    format!("Frame: {label}. {keep}")
+}
+
 /// DashScope-style `W*H` size (~Seedream 2K-class posters).
 pub fn aspect_to_dashscope_size(ratio: &str) -> &'static str {
     match normalize_aspect_ratio(ratio).as_str() {
@@ -100,8 +137,8 @@ pub fn aspect_to_upload_dims(ratio: &str) -> (u32, u32) {
     }
 }
 
-/// JSON `extra` for cover generation — Seedream `size` + DashScope `parameters.size`.
-/// Portraits / world plates must NOT call this (they keep default `2K`).
+/// JSON `extra` for cover / environment-plate generation — Seedream `size` + DashScope `parameters.size`.
+/// Portraits / prop catalog plates must NOT call this (they keep default `2K`).
 pub fn image_request_extra_for_aspect(ratio: &str) -> serde_json::Value {
     let r = normalize_aspect_ratio(ratio);
     serde_json::json!({
@@ -126,6 +163,8 @@ mod tests {
         assert_eq!(normalize_aspect_ratio("nope"), "16:9");
         assert_eq!(normalize_aspect_ratio("16：9"), "16:9");
         assert_eq!(normalize_aspect_ratio("2:3"), "16:9");
+        assert_eq!(aspect_parts("16:9"), (16, 9));
+        assert_eq!(aspect_parts("portrait"), (9, 16));
     }
 
     #[test]
@@ -146,5 +185,25 @@ mod tests {
         assert_eq!(aspect_to_seedream_size("16:9"), "2816x1584");
         assert_eq!(aspect_to_dashscope_size("9:16"), "1584*2816");
         assert_eq!(aspect_to_upload_dims("16:9"), (1280, 720));
+    }
+
+    #[test]
+    fn video_framing_clause_follows_user_ratio_not_hardcoded_916() {
+        let vertical = video_aspect_framing_clause("9:16");
+        assert!(vertical.contains("9:16 vertical"), "{vertical}");
+        assert!(vertical.contains("large creatures"), "{vertical}");
+        assert!(!vertical.contains("16:9"), "{vertical}");
+
+        let portrait_34 = video_aspect_framing_clause("3:4");
+        assert!(portrait_34.contains("3:4 portrait"), "{portrait_34}");
+        assert!(portrait_34.contains("large creatures"), "{portrait_34}");
+
+        let landscape = video_aspect_framing_clause("16:9");
+        assert!(landscape.contains("16:9 landscape"), "{landscape}");
+        assert!(!landscape.contains("vertical"), "{landscape}");
+        assert!(!landscape.contains("large creatures"), "{landscape}");
+
+        let alias = video_aspect_framing_clause("portrait");
+        assert!(alias.contains("9:16 vertical"), "{alias}");
     }
 }

@@ -39,6 +39,7 @@ export type ToolbarHandlers = {
     onAddFolder: () => void;
     onAddDrawing: () => void;
     onChooseStyle: () => void;
+    onOpenLibrary: () => void;
     onOpenDirector: () => void;
     /**
      * 扩展节点（Markdown / SVG / HTML / 全景 / 对比 / 图表 / 调色）统一走这一个入口。
@@ -86,13 +87,14 @@ export type ToolbarHandlers = {
     onNodeSuperResolve: (node: CanvasNodeData) => void;
     onNodeAngle: (node: CanvasNodeData) => void;
     onNodeViewImage: (node: CanvasNodeData) => void;
-    onNodeExtractVideoLastFrame: (node: CanvasNodeData) => void;
+    onNodeExtractVideoFrames: (node: CanvasNodeData) => void;
     onNodeReversePrompt: (node: CanvasNodeData) => void;
     onNodeToggleFreeResize: (node: CanvasNodeData) => void;
     onNodeToggleLocked: (node: CanvasNodeData) => void;
     onNodeCopyPrompt: (node: CanvasNodeData) => void;
     onNodeSubtitles: (node: CanvasNodeData) => void;
     onNodeTimeline: (node: CanvasNodeData) => void;
+    onNodeOpenDrawing: (node: CanvasNodeData) => void;
 };
 
 /** 工具运行时可见的上下文。工具定义通过纯函数读取状态 */
@@ -109,7 +111,7 @@ export type ToolContext = {
     node?: CanvasNodeData;
     /** 便捷访问 node.metadata（node 为空时为 undefined） */
     nodeMetadata?: CanvasNodeMetadata;
-    /** 视频尾帧提取中（节点悬停工具栏用） */
+    /** 视频画面提取中（节点悬停工具栏用） */
     extractingVideoFrame: boolean;
     /** 合并视频中（多选工具栏用） */
     mergingVideos: boolean;
@@ -122,8 +124,14 @@ export type ToolContext = {
 
 /** 添加节点菜单只依赖创建动作，避免右键菜单为工具栏状态补无意义字段。 */
 export type AddNodeMenuContext = {
-    workspaceMode: CanvasWorkspaceMode;
+    /**
+     * 已不再分流菜单。真实分叉是 compactCreateMenu（创作 IR 在场时隐藏加工类扩展节点）。
+     * 字段保留以免二十余处调用方一起改；解析时忽略它。
+     */
+    workspaceMode?: CanvasWorkspaceMode;
     isProjectLinked: boolean;
+    /** 创作项目：隐藏 Markdown/图表等加工节点。主网格片原语与专业画布相同。 */
+    compactCreateMenu?: boolean;
     handlers: Pick<ToolbarHandlers,
         | "onAddText"
         | "onAddImage"
@@ -134,6 +142,7 @@ export type AddNodeMenuContext = {
         | "onAddFolder"
         | "onAddDrawing"
         | "onChooseStyle"
+        | "onOpenLibrary"
         | "onOpenDirector"
         | "onAddExtensionNode"
         | "onUpload"
@@ -171,7 +180,8 @@ export type ToolDefinition = {
 export type AddNodeMenuCommand = {
     id: string;
     label: string | (() => string);
-    icon: ReactNode;
+    /** 与 label 一样允许惰性解析，避免节点注册表尚未填完时把 icon 快照成 null。 */
+    icon: ReactNode | (() => ReactNode);
     badge?: string | (() => string);
     section: "node" | "extension" | "project" | "resource";
     defaultOrder: number;
@@ -179,10 +189,11 @@ export type AddNodeMenuCommand = {
     run: (ctx: AddNodeMenuContext) => void;
 };
 
-/** resolveAddNodeMenuCommands 解析后的命令（label/badge 已是具体字符串） */
-export type ResolvedAddNodeMenuCommand = Omit<AddNodeMenuCommand, "label" | "badge"> & {
+/** resolveAddNodeMenuCommands 解析后的命令（label/badge/icon 已是具体值） */
+export type ResolvedAddNodeMenuCommand = Omit<AddNodeMenuCommand, "label" | "badge" | "icon"> & {
     label: string;
     badge?: string;
+    icon: ReactNode;
 };
 
 /** 用户偏好——排序与显隐 */

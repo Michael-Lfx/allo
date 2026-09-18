@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { FRAME_COLLAPSED_HEIGHT, FRAME_COLLAPSED_WIDTH, getFrameChildIds, isFrameNode } from "@oc/lib/canvas/canvas-frame";
 import { downloadCanvasNodeMedia } from "@oc/lib/canvas/canvas-node-download";
 import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@oc/lib/canvas/canvas-project-domain";
@@ -13,6 +14,7 @@ import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type Posi
 
 type UseCanvasNodeEditorOptions = {
     canvasId: string;
+    canvasTitle: string;
     domainProjectId?: string;
     nodesRef: { current: CanvasNodeData[] };
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
@@ -26,6 +28,7 @@ type UseCanvasNodeEditorOptions = {
 
 export function useCanvasNodeEditor({
     canvasId,
+    canvasTitle,
     domainProjectId,
     nodesRef,
     setNodes,
@@ -151,7 +154,10 @@ export function useCanvasNodeEditor({
     }, [setNodes]);
 
     const handleConfigNodeChange = useCallback((nodeId: string, patch: Partial<CanvasNodeMetadata>) => {
-        setNodes((current) => current.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
+        setNodes((current) => {
+            const next = current.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node));
+            return next.some((node, index) => node !== current[index]) ? next : current;
+        });
         if (!patch.assetCategory) return;
         const node = nodesRef.current.find((item) => item.id === nodeId);
         if (!node?.metadata?.content?.trim()) return;
@@ -162,7 +168,7 @@ export function useCanvasNodeEditor({
                 if (domainProjectId) await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
                 message.success("资产分类已更新");
             })
-            .catch((error) => message.error(error instanceof Error ? error.message : "资产分类更新失败"));
+            .catch((error) => message.error(formatCanvasUserError(error, "资产分类更新失败")));
     }, [canvasId, domainProjectId, message, nodesRef, queryClient, setNodes]);
 
     const downloadNodeImage = useCallback(async (node: CanvasNodeData) => {
@@ -173,16 +179,16 @@ export function useCanvasNodeEditor({
         }
         const hide = message.loading(node.type === CanvasNodeType.Video ? "正在保存视频…" : node.type === CanvasNodeType.Audio ? "正在保存音频…" : "正在保存图片…", 0);
         try {
-            const result = await downloadCanvasNodeMedia(node);
+            const result = await downloadCanvasNodeMedia(node, { canvasTitle });
             if (result === "saved") message.success("文件已保存");
             else message.success("已开始下载，请在浏览器下载栏查看");
         } catch (error) {
             if (error instanceof DOMException && error.name === "AbortError") return;
-            message.error(error instanceof Error ? error.message : "下载失败");
+            message.error(formatCanvasUserError(error, "下载失败"));
         } finally {
             hide();
         }
-    }, [message]);
+    }, [canvasTitle, message]);
 
     const saveNodeAsset = useCallback(async (node: CanvasNodeData) => {
         if (node.type !== CanvasNodeType.Text && node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return message.error("当前节点类型不能保存为素材");
@@ -194,7 +200,7 @@ export function useCanvasNodeEditor({
             message.success(result.linkedToProject ? "已加入项目资产" : "已加入我的素材");
             onAssetSaved?.();
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "素材保存失败");
+            message.error(formatCanvasUserError(error, "素材保存失败"));
         }
     }, [canvasId, domainProjectId, message, onAssetSaved, queryClient, setNodes]);
 

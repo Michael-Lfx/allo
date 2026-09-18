@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nomifun_ai_agent::{
-    AgentRouterState, AgentRuntimeRegistry, AgentService, EvalLab, RemoteAgentRouterState,
-    RemoteAgentService,
+    AgentRouterState, AgentRuntimeRegistry, AgentService, EvalLab, EvalQualitySink,
+    RemoteAgentRouterState, RemoteAgentService,
 };
 use nomifun_api_types::TerminalExitEvent;
 use nomifun_preset::{BuiltinPresetRegistry, PresetRouterState, PresetService};
@@ -31,7 +31,7 @@ use nomifun_db::{
     MAX_UNSETTLED_TURN_ADMISSION_PAGE_SIZE,
 };
 use nomifun_extension::{
-    PresetRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
+    MarketPackagePresetInstaller, PresetRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
     HubIndexManager, HubInstaller, HubRouterState, SkillRouterState, resolve_install_target_dir_for_data_dir,
     resolve_scan_paths_for_data_dir, resolve_state_file_path,
 };
@@ -43,6 +43,7 @@ use nomifun_poi::PoiRouterState;
 use nomifun_insights::InsightsRouterState;
 use nomifun_media::MediaRouterState;
 use nomifun_vimax::VimaxRouterState;
+use nomifun_briefing::BriefingRouterState;
 use nomifun_canvas::CanvasRouterState;
 use nomifun_cloud::CloudRouterState;
 use nomifun_mcp::{
@@ -100,6 +101,7 @@ pub struct ModuleStates {
     pub insights: InsightsRouterState,
     pub media: MediaRouterState,
     pub vimax: VimaxRouterState,
+    pub briefing: BriefingRouterState,
     pub video_canvas: CanvasRouterState,
     pub cloud: CloudRouterState,
     pub companion: CompanionRouterState,
@@ -564,6 +566,8 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
 
     let dispatcher: Arc<dyn PresetRuleDispatcher> = preset.service.clone();
     skill_state.preset_dispatcher = Some(dispatcher);
+    let package_installer: Arc<dyn MarketPackagePresetInstaller> = preset.service.clone();
+    skill_state.market_package_preset_installer = Some(package_installer);
 
     let (channel_state, channel_components) = build_channel_state(services, ext_state.registry.clone()).await;
     tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: channel state built");
@@ -613,6 +617,20 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             }));
         }
     }
+    let eval_lab = Arc::new(EvalLab::with_session_binding(
+        services.data_dir.clone(),
+        services.provider_repo.clone(),
+        services.provider_model_repo.clone(),
+        services.encryption_key,
+        Arc::new(SqliteClientPreferenceRepository::new(
+            services.database.pool().clone(),
+        )) as Arc<dyn nomifun_db::IClientPreferenceRepository>,
+        Some(eval_session_bridge),
+        eval_trace_hub,
+    ));
+    eval_lab.set_quality_sink(Arc::new(
+        crate::eval_quality_sink::CloudEvalQualitySink::new(services.cloud_service.clone()),
+    ) as Arc<dyn EvalQualitySink>);
     let states = ModuleStates {
         system,
         conversation,
@@ -622,17 +640,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         agent: AgentRouterState {
             agent_registry: services.agent_registry.clone(),
             service: agent_service,
-            eval_lab: Arc::new(EvalLab::with_session_binding(
-                services.data_dir.clone(),
-                services.provider_repo.clone(),
-                services.provider_model_repo.clone(),
-                services.encryption_key,
-                Arc::new(SqliteClientPreferenceRepository::new(
-                    services.database.pool().clone(),
-                )) as Arc<dyn nomifun_db::IClientPreferenceRepository>,
-                Some(eval_session_bridge),
-                eval_trace_hub,
-            )),
+            eval_lab,
         },
         connection_test: build_connection_test_state(),
         file: build_file_state(services, snapshot_service),
@@ -659,6 +667,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             services.vimax_service.clone(),
             services.video_canvas_service.clone(),
         ),
+        briefing: BriefingRouterState::new(services.briefing_service.clone()),
         video_canvas: CanvasRouterState::new(services.video_canvas_service.clone()),
         cloud: CloudRouterState::new(
             services.cloud_service.clone(),
@@ -1006,11 +1015,16 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
     let oauth_service = nomifun_mcp::McpOAuthService::new_dynamic(oauth_token_repo.clone())
         .with_registration_repository(oauth_registration_repo);
 
+    let connection_test_service = McpConnectionTestService::new_dynamic();
+
     McpRouterState {
         config_service: McpConfigService::new(repo.clone()),
         sync_service: McpSyncService::new(adapters),
-        connection_test_service: McpConnectionTestService::new_dynamic()
-            .with_oauth_service(oauth_service.clone()),
+        activation_service: nomifun_mcp::McpActivationService::new(
+            McpConfigService::new(repo.clone()),
+            Arc::new(connection_test_service.clone()),
+        ),
+        connection_test_service: connection_test_service.with_oauth_service(oauth_service.clone()),
         oauth_service,
     }
 }
@@ -2458,6 +2472,7 @@ pub async fn build_extension_states(
         skill_paths,
         external_paths_manager: ext_paths_mgr,
         preset_dispatcher: None,
+        market_package_preset_installer: None,
         skill_tag_repo,
         builtin_skill_tags,
     };

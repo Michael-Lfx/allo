@@ -1,3 +1,5 @@
+import { fetchImageSourceBlob } from "@oc/services/image-storage";
+
 export type CanvasFaceBox = {
     id: string;
     x: number;
@@ -396,9 +398,7 @@ function drawFaceCrop(image: ImageBitmap, box: CanvasFaceBox, imageWidth: number
 }
 
 async function loadImageBitmap(dataUrl: string) {
-    const response = await fetch(dataUrl);
-    if (!response.ok) throw new Error("无法读取源图片，请重新上传后再试");
-    return createImageBitmap(await response.blob());
+    return createImageBitmap(await fetchImageSourceBlob(dataUrl));
 }
 
 function clamp01(value: number) {

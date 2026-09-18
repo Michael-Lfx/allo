@@ -105,6 +105,33 @@ export async function tauriRelaunch(): Promise<void> {
   await invoke('restart_application');
 }
 
+/**
+ * Open the on-disk support log directory via a Tauri command.
+ * Does not touch the embedded HTTP backend — required when startup recovery
+ * is showing because `127.0.0.1` is unreachable from the webview.
+ */
+export async function tauriOpenSupportLogsDir(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('open_support_logs_dir');
+}
+
+export interface BackendLoopbackProbe {
+  port: number;
+  tcp_connect: boolean;
+  http_status: number | null;
+  error: string | null;
+}
+
+/**
+ * Ask the host process to hit the embedded backend over loopback. Runs outside
+ * the webview network stack, so it separates "backend is not serving" from
+ * "webview cannot reach the backend".
+ */
+export async function tauriProbeBackendLoopback(): Promise<BackendLoopbackProbe> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<BackendLoopbackProbe>('probe_backend_loopback');
+}
+
 /** OS directory paths (@tauri-apps/api/path). */
 export async function tauriGetPath(name: 'desktop' | 'home' | 'downloads'): Promise<string> {
   const path = await import('@tauri-apps/api/path');
@@ -262,6 +289,7 @@ export async function tauriSendNotification(opts: {
   body: string;
   icon?: string;
   click_target?: string;
+  attention_id?: string;
 }): Promise<void> {
   try {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -269,6 +297,7 @@ export async function tauriSendNotification(opts: {
       title: opts.title,
       body: opts.body,
       clickTarget: opts.click_target ?? null,
+      attentionId: opts.attention_id ?? null,
     });
     return;
   } catch {
@@ -278,6 +307,32 @@ export async function tauriSendNotification(opts: {
   let granted = await mod.isPermissionGranted();
   if (!granted) granted = (await mod.requestPermission()) === 'granted';
   if (granted) mod.sendNotification({ title: opts.title, body: opts.body, icon: opts.icon });
+}
+
+export type AttentionSource = 'conversation' | 'support';
+
+/** Clear one native pending-attention item after its target has loaded. */
+export async function tauriClearAttention(attentionId: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('clear_attention_cmd', { attentionId });
+}
+
+/** Clear all pending items for one source scope after its UI has handled them. */
+export async function tauriClearAttentionScope(
+  source: AttentionSource,
+  entityId?: string
+): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('clear_attention_scope_cmd', {
+    source,
+    entityId: entityId ?? null,
+  });
+}
+
+/** Clear native pending attention on logout/account reset only. */
+export async function tauriClearAllAttention(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('clear_all_attention_cmd');
 }
 
 function parseDeepLink(url: string): { action: string; params: Record<string, string> } {
@@ -341,6 +396,29 @@ export async function subscribeWindowMaximized(
   return win.onResized(() => {
     void win.isMaximized().then((is_maximized) => callback({ is_maximized }));
   });
+}
+
+/**
+ * App-level focus: any Flowy window (main, companion, memory panel, toast)
+ * currently holds OS focus. `document.hasFocus()` only reflects the calling
+ * webview, so a focused sibling window would otherwise read as "unfocused".
+ * Falls back to the main window, then to the DOM signal, if window
+ * enumeration is unavailable.
+ */
+export async function tauriIsAppFocused(): Promise<boolean> {
+  try {
+    const { getAllWindows } = await import('@tauri-apps/api/window');
+    const windows = await getAllWindows();
+    const focused = await Promise.all(windows.map((win) => win.isFocused().catch(() => false)));
+    return focused.some(Boolean);
+  } catch {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      return await getCurrentWindow().isFocused();
+    } catch {
+      return typeof document !== 'undefined' && document.hasFocus();
+    }
+  }
 }
 
 // ---- WebUI / LAN remote-access lifecycle (Tauri commands + status event) ----

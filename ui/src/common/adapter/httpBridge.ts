@@ -14,6 +14,11 @@ declare global {
   interface Window {
     __backendPort?: number;
     /**
+     * Host OS of the packaged desktop shell (`std::env::consts::OS`):
+     * `"macos" | "windows" | "linux"`. Absent in WebUI browser mode.
+     */
+    __os?: string;
+    /**
      * Per-boot local-trust secret injected by the Tauri desktop shell
      * (`apps/desktop/src/main.rs`). The renderer presents it on every request so
      * the desktop's own webview is trusted with no login while remote LAN
@@ -166,6 +171,25 @@ export function getBaseUrl(): string {
     return '';
   }
   return `http://127.0.0.1:${getBackendPort()}`;
+}
+
+/**
+ * Transport-level probe for startup recovery.
+ *
+ * `mode: 'no-cors'` makes the browser drop the non-safelisted trust header, so
+ * this stays a *simple* request: no CORS preflight, and no response header is
+ * required for it to resolve. A resolved (opaque) response therefore proves the
+ * socket and HTTP exchange work and that the original failure came from the
+ * CORS/preflight layer; a rejection means the webview never completed an
+ * exchange with the backend at all.
+ */
+export async function probeBackendTransport(): Promise<{ ok: boolean; detail?: string }> {
+  try {
+    await fetch(`${getBaseUrl()}/health`, { mode: 'no-cors', cache: 'no-store' });
+    return { ok: true };
+  } catch (error: unknown) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function getWsUrl(): string {
@@ -364,7 +388,7 @@ function emitCloudAuthExpiredEvent(): void {
   emitWindowEvent(CLOUD_AUTH_EXPIRED_EVENT);
 }
 
-function notifyHttpAuthFailure(status: number, body: unknown): void {
+export function notifyHttpAuthFailure(status: number, body: unknown): void {
   const authExpired = isAuthExpiredResponse(status, body);
   const unauthorized = status === 401;
   // WebUI local JWT rejection stays on the existing /login redirect.

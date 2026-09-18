@@ -68,7 +68,7 @@ bun run dev
 完整流程如下：
 
 1. Tauri 的 `beforeDevCommand` 执行 `bun run --filter=./ui dev`，启动
-   Vite 开发服务器在 `http://localhost:5173`。
+   Vite 开发服务器在 `http://127.0.0.1:5173`。
 2. `cargo` 编译 `nomifun-desktop`（以及它依赖的整个工作区）。
 3. 外壳启动，挑选一个空闲端口，派生嵌入式后端，并加载 Vite 开发地址。
    渲染端支持热重载；后端只在其 Rust 代码变更时才会重启。

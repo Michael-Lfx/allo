@@ -63,6 +63,41 @@ describe('supportChatReducer', () => {
     });
   });
 
+  test('keeps pending delivery updates in the closed cache', () => {
+    const pending = createPendingMessage('client-1', 'hello', '2026-07-24T10:00:00Z');
+    const ready = supportChatReducer({ status: 'loading', unreadCount: 1 }, {
+      type: 'ready',
+      conversation: conversation({ userUnreadCount: 0 }),
+      messages: [pending],
+    });
+    const closed = supportChatReducer(ready, { type: 'close' });
+    expect(closed.status).toBe('closed');
+    if (closed.status !== 'closed' || !closed.cached) throw new Error('expected cached closed state');
+    expect(closed.cached.messages).toEqual([pending]);
+    expect(supportChatReducer(closed, { type: 'close' })).toEqual(closed);
+
+    const replaced = supportChatReducer(closed, {
+      type: 'pending-replaced',
+      clientMsgId: 'client-1',
+      message: serverMessage(),
+    });
+    expect(replaced.status).toBe('closed');
+    if (replaced.status !== 'closed' || !replaced.cached) throw new Error('expected cached replaced state');
+    expect(replaced.cached.messages).toEqual([
+      { kind: 'server', message: serverMessage(), localClientMsgId: 'client-1' },
+    ]);
+
+    const failed = supportChatReducer(closed, { type: 'pending-failed', clientMsgId: 'client-1' });
+    expect(failed.status).toBe('closed');
+    if (failed.status !== 'closed' || !failed.cached) throw new Error('expected cached failed state');
+    expect(failed.cached.messages).toEqual([{ ...pending, delivery: 'failed' }]);
+
+    const reopened = supportChatReducer(failed, { type: 'open' });
+    expect(reopened.status).toBe('ready');
+    if (reopened.status !== 'ready') throw new Error('expected ready state');
+    expect(reopened.messages).toEqual([{ ...pending, delivery: 'failed' }]);
+  });
+
   test('ready state tracks conversation, messages, and pending delivery updates', () => {
     const pending = createPendingMessage('client-1', 'hello', '2026-07-24T10:00:00Z');
     const ready = supportChatReducer({ status: 'loading', unreadCount: 1 }, {
@@ -85,7 +120,9 @@ describe('supportChatReducer', () => {
     });
     expect(replaced.status).toBe('ready');
     if (replaced.status !== 'ready') throw new Error('expected ready');
-    expect(replaced.messages).toEqual([{ kind: 'server', message: serverMessage() }]);
+    expect(replaced.messages).toEqual([
+      { kind: 'server', message: serverMessage(), localClientMsgId: 'client-1' },
+    ]);
   });
 
   test('auth-required and error preserve unread count', () => {

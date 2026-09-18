@@ -669,8 +669,8 @@ fn classify_provider_api(lower: &str) -> Option<ClassifiedError> {
             "The model provider could not be reached",
             AgentErrorCode::UserLlmProviderNetworkError,
             true,
-            AgentErrorResolutionKind::CheckProviderBaseUrl,
-            Some(AgentErrorResolutionTarget::ProviderSettings),
+            AgentErrorResolutionKind::Retry,
+            None,
         ));
     }
     // 图片不支持:上游对 image_url 内容反序列化失败 / 明确拒绝图片。必须排在
@@ -1113,6 +1113,14 @@ mod tests {
     }
 
     #[test]
+    fn classifies_initial_request_timeout_as_provider_timeout() {
+        let raw = "Nomi agent error: Provider error: Initial request timeout: initial negotiation deadline exceeded";
+        let err = AgentSendError::from_app_error(AppError::BadGateway(raw.into()));
+
+        assert_eq!(err.code(), Some(AgentErrorCode::UserLlmProviderTimeout));
+    }
+
+    #[test]
     fn classifies_agent_lifecycle_before_bad_gateway_wrapper() {
         assert_classification(
             "Bad gateway: Agent process exited before initialize handshake completed (exit code 1)",
@@ -1403,13 +1411,13 @@ mod tests {
             "Nomi agent error: API error: Connection error: error decoding response body",
             AgentErrorCode::UserLlmProviderNetworkError,
             AgentErrorOwnership::UserLlmProvider,
-            AgentErrorResolutionKind::CheckProviderBaseUrl,
+            AgentErrorResolutionKind::Retry,
         );
         assert_classification(
             "Nomi agent error: API error: error sending request for url",
             AgentErrorCode::UserLlmProviderNetworkError,
             AgentErrorOwnership::UserLlmProvider,
-            AgentErrorResolutionKind::CheckProviderBaseUrl,
+            AgentErrorResolutionKind::Retry,
         );
         assert_classification(
             "Autocompact failed: Empty response from LLM",

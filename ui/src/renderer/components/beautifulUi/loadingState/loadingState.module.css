@@ -105,17 +105,6 @@
 
 .label {
   font-weight: 500;
-  background: linear-gradient(
-    90deg,
-    var(--color-text-3, #86909c) 0%,
-    var(--color-text-1, #1d2129) 40%,
-    var(--color-text-3, #86909c) 80%
-  );
-  background-size: 180% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-  animation: loading-shimmer 1.6s ease-in-out infinite;
 }
 
 .elapsed {
@@ -153,27 +142,10 @@
   }
 }
 
-@keyframes loading-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -80% 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .driveCell,
   .dot,
-  .orbitRing,
-  .label {
+  .orbitRing {
     animation: none;
-  }
-
-  .label {
-    background: none;
-    color: var(--color-text-1, #1d2129);
-    -webkit-background-clip: unset;
-    background-clip: unset;
   }
 }

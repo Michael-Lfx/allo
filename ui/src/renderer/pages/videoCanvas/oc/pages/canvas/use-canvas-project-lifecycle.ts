@@ -3,13 +3,18 @@ import { App } from "antd";
 import { useNavigate } from "react-router-dom";
 
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
+import { canvasAppearanceBaseTheme, DEFAULT_CANVAS_COLOR_THEME, resolveStoredCanvasAppearance, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { removeCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
 import { hydrateAssistantImages, hydrateCanvasImages, resetInterruptedGeneration } from "@oc/lib/canvas/canvas-project-generation";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+import { normalizeCanvasNodeTimestamps } from "@oc/lib/canvas/canvas-node-timestamps";
 import { listAddedSkills, type Skill } from "@oc/services/api/skills";
 import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
+import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, CanvasNodeMetadata, ViewportTransform } from "@oc/types/canvas";
 import { createCanvasPersistPause } from "../../../lib/canvasProjectAutosave";
+import { videoCanvasProjectPath } from "../../../routes";
 import type { CanvasHistorySnapshot } from "./use-canvas-history";
 
 type UseCanvasProjectLifecycleOptions = {
@@ -20,6 +25,7 @@ type UseCanvasProjectLifecycleOptions = {
     chatSessions: CanvasAssistantSession[];
     activeChatId: string | null;
     backgroundMode: CanvasBackgroundMode;
+    canvasAppearance: CanvasAppearance;
     showImageInfo: boolean;
     viewport: ViewportTransform;
     nodesRef: MutableRefObject<CanvasNodeData[]>;
@@ -31,6 +37,7 @@ type UseCanvasProjectLifecycleOptions = {
     setChatSessions: Dispatch<SetStateAction<CanvasAssistantSession[]>>;
     setActiveChatId: Dispatch<SetStateAction<string | null>>;
     setBackgroundMode: Dispatch<SetStateAction<CanvasBackgroundMode>>;
+    setCanvasAppearance: Dispatch<SetStateAction<CanvasAppearance>>;
     setShowImageInfo: Dispatch<SetStateAction<boolean>>;
     setViewport: Dispatch<SetStateAction<ViewportTransform>>;
     setProjectLoaded: Dispatch<SetStateAction<boolean>>;
@@ -47,6 +54,7 @@ export function useCanvasProjectLifecycle({
     chatSessions,
     activeChatId,
     backgroundMode,
+    canvasAppearance,
     showImageInfo,
     viewport,
     nodesRef,
@@ -58,6 +66,7 @@ export function useCanvasProjectLifecycle({
     setChatSessions,
     setActiveChatId,
     setBackgroundMode,
+    setCanvasAppearance,
     setShowImageInfo,
     setViewport,
     setProjectLoaded,
@@ -79,12 +88,14 @@ export function useCanvasProjectLifecycle({
     // hydrate 的 setNodes/setChatSessions 不是用户编辑，落盘会触发一串
     // 无意义的 doc PUT（历史上还会把一次性 blob: URL 写进服务端文档）。
     const persistPausedRef = useRef(createCanvasPersistPause());
+    const [persistReady, setPersistReady] = useState(false);
 
     useEffect(() => {
         if (!hydrated) return;
         let cancelled = false;
         setProjectLoaded(false);
         persistPausedRef.current.pause();
+        setPersistReady(false);
         const project = openProject(projectId);
         if (!project) {
             navigate("/video-generation?mode=creation", { replace: true });
@@ -109,6 +120,10 @@ export function useCanvasProjectLifecycle({
             setChatSessions(snapshot.chatSessions);
             setActiveChatId(snapshot.activeChatId);
             setBackgroundMode(snapshot.backgroundMode);
+            const restoredAppearance = resolveStoredCanvasAppearance(project.appearance);
+            setCanvasAppearance(restoredAppearance);
+            const restoredTheme = canvasAppearanceBaseTheme(restoredAppearance, DEFAULT_CANVAS_COLOR_THEME);
+            if (restoredTheme !== useThemeStore.getState().theme) useThemeStore.getState().setTheme(restoredTheme);
             setShowImageInfo(snapshot.showImageInfo);
             setViewport(project.viewport);
             resetHistory(snapshot);
@@ -116,7 +131,10 @@ export function useCanvasProjectLifecycle({
         };
 
         const restore = async () => {
-            const initialNodes = resetInterruptedGeneration(project.nodes);
+            const initialNodes = normalizeCanvasNodeTimestamps(resetInterruptedGeneration(project.nodes), {
+                createdAt: project.createdAt,
+                updatedAt: project.updatedAt,
+            });
             const initialSessions = project.chatSessions || [];
 
             // 先恢复可交互的节点和布局，媒体缓存/资源校验放到后台，避免首屏被远程资源拖住。
@@ -129,6 +147,7 @@ export function useCanvasProjectLifecycle({
             // 合并已调度完成，恢复持久化；随后的首次 updateProject 携带的就是
             // 干净的合并结果，而不是 hydrate 过程的中间态。
             persistPausedRef.current.resume();
+            setPersistReady(true);
         };
         void restore();
         return () => {
@@ -152,9 +171,9 @@ export function useCanvasProjectLifecycle({
     }, [projectLoaded]);
 
     useEffect(() => {
-        if (!projectLoaded || historyPausedRef.current || persistPausedRef.current.paused) return;
-        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo });
-    }, [activeChatId, backgroundMode, chatSessions, connections, historyPausedRef, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
+        if (!projectLoaded || !persistReady || historyPausedRef.current || persistPausedRef.current.paused) return;
+        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, appearance: canvasAppearance, backgroundMode, showImageInfo });
+    }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connections, historyPausedRef, nodes, persistReady, projectId, projectLoaded, showImageInfo, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded || persistPausedRef.current.paused) return;
@@ -177,7 +196,7 @@ export function useCanvasProjectLifecycle({
     const createAndOpenProject = useCallback(() => {
         void createCanvasProjectWithRemoteSync(`自由画布 ${useCanvasStore.getState().projects.length + 1}`).then(({ id, syncError }) => {
             if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
-            navigate(`/canvas/${id}`);
+            navigate(videoCanvasProjectPath(id));
         });
     }, [message, navigate]);
 
@@ -203,6 +222,7 @@ export function useCanvasProjectLifecycle({
                 connections: connectionsRef.current,
                 chatSessions,
                 activeChatId,
+                appearance: canvasAppearance,
                 backgroundMode,
                 showImageInfo,
                 viewport: viewportRef.current,
@@ -217,10 +237,10 @@ export function useCanvasProjectLifecycle({
             await saveRemoteUserDataNow();
             message.success("画布布局和位置已保存");
         } catch (error) {
-            const detail = error instanceof Error ? error.message : "未知错误";
+            const detail = formatCanvasUserError(error, "未知错误");
             message.warning(`本地画布布局已保存，云端同步失败：${detail}`);
         }
-    }, [activeChatId, backgroundMode, chatSessions, connectionsRef, currentProject?.directorScenes, message, nodesRef, projectId, showImageInfo, updateProject, viewportRef]);
+    }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connectionsRef, currentProject?.directorScenes, message, nodesRef, projectId, showImageInfo, updateProject, viewportRef]);
 
     const clearCanvasFiles = useCallback(() => {
         cleanupCanvasFiles({ projectId, nodes: [], chatSessions: [] });
@@ -238,7 +258,7 @@ export function useCanvasProjectLifecycle({
     };
 }
 
-const hydratedMediaMetadataKeys = ["content", "storageKey", "naturalWidth", "naturalHeight", "bytes", "mimeType", "durationMs"] as const satisfies readonly (keyof CanvasNodeMetadata)[];
+const hydratedMediaMetadataKeys = ["content", "storageKey", "mediaId", "naturalWidth", "naturalHeight", "bytes", "mimeType", "durationMs"] as const satisfies readonly (keyof CanvasNodeMetadata)[];
 
 function mergeHydratedNodeMedia(currentNodes: CanvasNodeData[], initialNodes: CanvasNodeData[], hydratedNodes: CanvasNodeData[]) {
     const initialById = new Map(initialNodes.map((node) => [node.id, node]));

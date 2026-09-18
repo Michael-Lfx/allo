@@ -15,7 +15,7 @@ use nomifun_api_types::{
     AutoWorkTargetKind, FaultWatchConfig, IdmmBinding, IdmmConfig, IdmmSettings, IdmmState, IdmmTargetKind,
     InterventionRecord, WatchBase, WatchTier,
 };
-use nomifun_common::{AppError, ConversationId, IdmmInterventionId, TerminalId, UserId};
+use nomifun_common::{AppError, ConversationId, TerminalId, UserId};
 use nomifun_conversation::ConversationService;
 use nomifun_db::models::IdmmInterventionRow;
 use nomifun_db::{

@@ -45,6 +45,14 @@ export type GenerationTaskView = {
   progress: number;
   error: string | null;
   result_media_id: string | null;
+  aspect_ratio?: string | null;
+  resolution?: string | null;
+  duration_secs?: number | null;
+  reference_media_ids?: string[];
+  first_frame_media_id?: string | null;
+  last_frame_media_id?: string | null;
+  /** Set when the job was started from a canvas node. Empty for home clip tasks. */
+  project_id?: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -59,6 +67,7 @@ export type CreateGenerationBody = {
   reference_media_ids?: string[];
   first_frame_media_id?: string;
   last_frame_media_id?: string;
+  project_id?: string;
 };
 
 export function resolveCanvasUrl(path: string | null | undefined): string | null {
@@ -68,8 +77,25 @@ export function resolveCanvasUrl(path: string | null | undefined): string | null
   return path.startsWith('/') ? `${base}${path}` : `${base}/${path}`;
 }
 
+export function canvasMediaPath(mediaId: string): string {
+  return `/api/video-canvas/media/${encodeURIComponent(mediaId)}`;
+}
+
 export function canvasMediaUrl(mediaId: string): string {
-  return `${getBaseUrl()}/api/video-canvas/media/${encodeURIComponent(mediaId)}`;
+  return `${getBaseUrl()}${canvasMediaPath(mediaId)}`;
+}
+
+/**
+ * Extract the media id from a `/api/video-canvas/media/{id}` style path
+ * (absolute or relative). Returns null if the path doesn't match.
+ *
+ * Useful for materialised Canvas nodes whose `mediaId` metadata may be missing
+ * in older documents but whose `content` URL still encodes the id.
+ */
+export function extractMediaIdFromCanvasMediaUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const match = path.match(/\/api\/video-canvas\/media\/([^/?#]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
 export async function listCanvasProjects(): Promise<CanvasProjectMeta[]> {
@@ -147,11 +173,23 @@ export async function cancelGenerationTask(taskId: string): Promise<GenerationTa
   );
 }
 
-export async function listGenerationTasks(limit = 30, offset = 0): Promise<{ tasks: GenerationTaskView[]; total: number }> {
+export async function listGenerationTasks(
+  limit = 30,
+  offset = 0,
+  options?: { standalone?: boolean }
+): Promise<{ tasks: GenerationTaskView[]; total: number }> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (options?.standalone) params.set('standalone', 'true');
   return httpRequest<{ tasks: GenerationTaskView[]; total: number }>(
     'GET',
     `/api/video-canvas/tasks?${params.toString()}`
+  );
+}
+
+export async function deleteGenerationTask(taskId: string): Promise<void> {
+  await httpRequest<unknown>(
+    'DELETE',
+    `/api/video-canvas/tasks/${encodeURIComponent(taskId)}`
   );
 }
 
@@ -163,6 +201,39 @@ export async function concatCanvasMedia(
     media_ids: mediaIds,
     title,
   });
+}
+
+export type CanvasTranscription = {
+  text: string;
+  language?: string | null;
+  duration_ms?: number | null;
+};
+
+export async function transcribeCanvasMedia(
+  mediaId: string,
+  language?: string
+): Promise<CanvasTranscription> {
+  return httpRequest<CanvasTranscription>(
+    'POST',
+    `/api/video-canvas/media/${encodeURIComponent(mediaId)}/transcribe`,
+    language ? { language } : {}
+  );
+}
+
+export type CanvasTimelineExportClip = {
+  media_id: string;
+  source_start_ms?: number;
+  duration_ms: number;
+  gap_before_ms?: number;
+};
+
+export async function exportCanvasTimeline(body: {
+  clips: CanvasTimelineExportClip[];
+  srt?: string;
+  burn_subtitles?: boolean;
+  title?: string;
+}): Promise<CanvasMediaMeta> {
+  return httpRequest<CanvasMediaMeta>('POST', '/api/video-canvas/media/export-timeline', body);
 }
 
 export async function uploadCanvasMedia(
@@ -216,5 +287,95 @@ export async function deleteCanvasMedia(mediaId: string): Promise<void> {
     'DELETE',
     `/api/video-canvas/media/${encodeURIComponent(mediaId)}`
   );
+}
+
+/** Fetch the local filesystem path for a media item so the renderer can
+ *  open its containing folder via `ipcBridge.shell.showItemInFolder`. */
+export async function getMediaPath(mediaId: string): Promise<string> {
+  const data = await httpRequest<{ path: string }>(
+    'GET',
+    `/api/video-canvas/media/${encodeURIComponent(mediaId)}/path`
+  );
+  return data.path;
+}
+
+export async function exportCanvasProject(
+  projectId: string,
+  destPath: string
+): Promise<{ dest_path: string }> {
+  return httpRequest<{ dest_path: string }>(
+    'POST',
+    `/api/video-canvas/projects/${encodeURIComponent(projectId)}/export`,
+    { dest_path: destPath }
+  );
+}
+
+export async function importCanvasProject(sourcePath: string): Promise<CanvasProjectMeta> {
+  return httpRequest<CanvasProjectMeta>('POST', '/api/video-canvas/projects/import', {
+    source_path: sourcePath,
+  });
+}
+
+export async function publishCanvasProjectToTvShow(
+  projectId: string,
+  body?: { title?: string; description?: string; campaignId?: number }
+): Promise<{ id: number; status: string; title: string }> {
+  const payload: { title?: string; description?: string; campaignId?: number } = {};
+  if (body?.title) payload.title = body.title;
+  if (body?.description) payload.description = body.description;
+  if (body?.campaignId && body.campaignId > 0) payload.campaignId = body.campaignId;
+  return httpRequest<{ id: number; status: string; title: string }>(
+    'POST',
+    `/api/video-canvas/projects/${encodeURIComponent(projectId)}/tv-show/publish`,
+    payload,
+    // OSS package PUT may take several minutes; abort instead of spinning forever.
+    { timeoutMs: 12 * 60 * 1000 }
+  );
+}
+
+export async function importCanvasTvShow(id: number): Promise<CanvasProjectMeta> {
+  return httpRequest<CanvasProjectMeta>(
+    'POST',
+    `/api/video-canvas/tv-show/${id}/import`,
+    {}
+  );
+}
+
+export async function putCanvasProjectExtras(projectId: string, zip: Blob): Promise<void> {
+  const url = `${getBaseUrl()}/api/video-canvas/projects/${encodeURIComponent(projectId)}/extras`;
+  const headers = { ...buildBackendAuthHeaders('PUT') };
+  delete headers['Content-Type'];
+  delete headers['content-type'];
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers,
+    credentials: 'omit',
+    body: zip,
+  });
+  if (!res.ok) {
+    let message = `extras upload failed (${res.status})`;
+    try {
+      const json = (await res.json()) as { message?: string };
+      if (json.message) message = json.message;
+    } catch {
+      // Keep status text.
+    }
+    throw new Error(message);
+  }
+}
+
+export async function getCanvasProjectExtras(projectId: string): Promise<Blob | null> {
+  const url = `${getBaseUrl()}/api/video-canvas/projects/${encodeURIComponent(projectId)}/extras`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: buildBackendAuthHeaders('GET'),
+    credentials: 'omit',
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`extras download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  return blob.size > 0 ? blob : null;
 }
 

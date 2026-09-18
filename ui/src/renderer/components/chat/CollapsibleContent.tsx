@@ -4,8 +4,9 @@ import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
 import { prefersReducedMotion } from '@renderer/utils/motion/flowyMotion';
 import { Down, Up } from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { getCollapsibleContentLayout, shouldCollapseContent } from './collapsibleContentModel';
 
 // 渐变遮罩常量 Gradient mask constants
 // mask-image 模式：让内容本身淡出，适用于有背景色的场景（如 Alert）
@@ -85,21 +86,31 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
   const { t } = useTranslation(); // 国际化 i18n
   const { theme } = useThemeContext(); // 主题上下文（亮色/暗色）Theme context (light/dark)
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed); // 折叠状态 Collapse state
-  const [needsCollapse, setNeedsCollapse] = useState(false); // 是否需要折叠功能 Whether collapse feature is needed
+  const [needsCollapse, setNeedsCollapse] = useState<boolean | null>(null); // null means measurement is pending
   const contentRef = useRef<HTMLDivElement>(null); // 内容容器引用 Content container ref
+  const scheduleHeightCheckRef = useRef<(() => void) | null>(null);
+  const contentId = `collapsible-content-${useId()}`;
 
   // 检测内容高度 Detect content height using ResizeObserver
+  // Keep the observer alive while children change; only the measurement is coalesced.
   useEffect(() => {
     const element = contentRef.current;
     if (!element) return;
 
-    // 检测内容高度的辅助函数 Helper function to check content height
     let rafId: number | null = null;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+
+    const update = () => {
+      rafId = null;
+      if (disposed || contentRef.current !== element) return;
+
+      const nextNeedsCollapse = shouldCollapseContent(element.scrollHeight, maxHeight);
+      setNeedsCollapse((value) => (value === nextNeedsCollapse ? value : nextNeedsCollapse));
+    };
+
     const scheduleHeightCheck = () => {
-      const update = () => {
-        const contentHeight = element.scrollHeight;
-        setNeedsCollapse(contentHeight > maxHeight);
-      };
+      if (disposed) return;
 
       if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
         if (rafId !== null) {
@@ -110,6 +121,7 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
         update();
       }
     };
+    scheduleHeightCheckRef.current = scheduleHeightCheck;
 
     // 使用 ResizeObserver 替代 setTimeout，更精确地检测内容变化
     // Use ResizeObserver instead of setTimeout for more accurate content change detection
@@ -126,6 +138,10 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
       scheduleHeightCheck();
 
       return () => {
+        disposed = true;
+        if (scheduleHeightCheckRef.current === scheduleHeightCheck) {
+          scheduleHeightCheckRef.current = null;
+        }
         if (rafId !== null) {
           cancelAnimationFrame(rafId);
         }
@@ -134,41 +150,55 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
     } else {
       // Fallback: 如果 ResizeObserver 不可用（理论上不会发生），使用 setTimeout
       // Fallback: use setTimeout if ResizeObserver is unavailable (should not happen in practice)
-      const timer = setTimeout(scheduleHeightCheck, 100);
+      fallbackTimer = setTimeout(() => {
+        fallbackTimer = null;
+        scheduleHeightCheck();
+      }, 100);
       return () => {
-        clearTimeout(timer);
+        disposed = true;
+        if (scheduleHeightCheckRef.current === scheduleHeightCheck) {
+          scheduleHeightCheckRef.current = null;
+        }
+        if (fallbackTimer !== null) {
+          clearTimeout(fallbackTimer);
+        }
         if (rafId !== null) {
           cancelAnimationFrame(rafId);
         }
       };
     }
+  }, [maxHeight]);
+
+  useEffect(() => {
+    scheduleHeightCheckRef.current?.();
   }, [children, maxHeight]);
 
   // 切换折叠状态 Toggle collapse state
   const toggleCollapse = () => {
-    setIsCollapsed(!isCollapsed);
+    setIsCollapsed((value) => !value);
   };
+
+  const collapseLayout = useMemo(
+    () => getCollapsibleContentLayout(isCollapsed, needsCollapse, useMask),
+    [isCollapsed, needsCollapse, useMask]
+  );
 
   // 计算内容区域样式 Calculate content area style
   const contentStyle = useMemo(() => {
     const style: React.CSSProperties = {
-      maxHeight: isCollapsed ? `${maxHeight}px` : undefined,
-      overflowX: allowHorizontalScroll ? 'auto' : 'hidden',
-      overflowY: isCollapsed ? 'hidden' : 'visible',
+      maxHeight: collapseLayout.shouldClip ? `${maxHeight}px` : undefined,
+      overflowX: allowHorizontalScroll ? 'auto' : collapseLayout.shouldClip ? 'hidden' : 'visible',
+      overflowY: collapseLayout.shouldClip ? 'hidden' : 'visible',
     };
 
-    if (!allowHorizontalScroll && !isCollapsed) {
-      style.overflowX = 'visible';
-    }
-
     // mask-image 模式：让内容本身淡出 mask-image mode: fade out content itself
-    if (useMask && isCollapsed) {
+    if (collapseLayout.shouldMask) {
       style.maskImage = MASK_GRADIENT;
       style.WebkitMaskImage = MASK_GRADIENT;
     }
 
     return style;
-  }, [allowHorizontalScroll, isCollapsed, maxHeight, useMask]);
+  }, [allowHorizontalScroll, collapseLayout.shouldClip, collapseLayout.shouldMask, maxHeight]);
 
   // 计算背景渐变颜色 Calculate background gradient color
   const bgGradient = useMemo(() => {
@@ -177,11 +207,18 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
   const reduceMotion = prefersReducedMotion();
 
   return (
-    <div className={classNames('relative', className)}>
+    <div
+      className={classNames('relative', 'collapsible-content', className)}
+      data-testid='collapsible-content'
+      data-collapse-state={collapseLayout.shouldClip ? 'collapsed' : 'expanded'}
+    >
       {/* 内容区域 Content area */}
       <div
         ref={contentRef}
+        id={contentId}
+        data-testid='collapsible-content-body'
         className={classNames(
+          'collapsible-content__body',
           reduceMotion ? undefined : 'transition-[max-height,opacity] duration-300',
           contentClassName
         )}
@@ -203,7 +240,8 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
           - 100%: 完全不透明，融入背景色 Fully opaque, blends with background */}
       {!useMask && needsCollapse && isCollapsed && (
         <div
-          className='absolute bottom-0 left-0 right-0 pointer-events-none'
+          className='collapsible-content__mask absolute bottom-0 left-0 right-0 pointer-events-none'
+          aria-hidden='true'
           style={{
             height: '80px',
             background: bgGradient,
@@ -213,11 +251,14 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
 
       {/* 展开/折叠按钮 Expand/Collapse button */}
       {needsCollapse && (
-        <div className='flex justify-center relative z-10'>
+        <div className='collapsible-content__controls flex justify-center relative z-10'>
           <button
             onClick={toggleCollapse}
-            className='flex items-center gap-1 px-3 py-1.5 text-sm text-t-primary hover:text-primary transition-colors cursor-pointer border-none bg-transparent font-medium [&_svg]:transition-colors [&_svg]:inline-block [&_svg]:align-middle'
+            className='collapsible-content__toggle flex items-center gap-1 px-3 py-1.5 text-sm text-t-primary hover:text-primary transition-colors cursor-pointer border-none bg-transparent font-medium [&_svg]:transition-colors [&_svg]:inline-block [&_svg]:align-middle'
             type='button'
+            aria-expanded={!isCollapsed}
+            aria-controls={contentId}
+            data-testid='collapsible-content-toggle'
           >
             {isCollapsed ? (
               <>

@@ -23,21 +23,7 @@ pub async fn proxy_chat_completions(
     Json(body): Json<Value>,
 ) -> Result<Response, AppError> {
     let data_dir = state.service.data_dir();
-    let gateway: GatewayConfig = load_user_config_file(&config_yaml_path(Some(data_dir)))
-        .map_err(|e| AppError::Internal(e))?;
-    if !gateway.server.enabled {
-        return Err(AppError::BadRequest(
-            "Flowy cloud is disabled in local config".into(),
-        ));
-    }
-    if !gateway.server.api_ready() {
-        return Err(AppError::BadRequest(
-            "Flowy cloud base URL is not configured".into(),
-        ));
-    }
-
-    let api = FlowyApiClient::new(&gateway.server).map_err(map_cloud_err)?;
-    let session = ServerSession::from_config(&gateway.server, data_dir);
+    let (api, session) = open_flowy(data_dir)?;
 
     let upstream = api
         .llm_transport()
@@ -92,4 +78,24 @@ fn truncate(message: &str, max: usize) -> String {
         return trimmed.to_string();
     }
     trimmed.chars().take(max).collect::<String>() + "…"
+}
+
+pub(crate) fn open_flowy(
+    data_dir: &std::path::Path,
+) -> Result<(FlowyApiClient, ServerSession), AppError> {
+    let gateway: GatewayConfig = load_user_config_file(&config_yaml_path(Some(data_dir)))
+        .map_err(AppError::Internal)?;
+    if !gateway.server.enabled {
+        return Err(AppError::BadRequest(
+            "Flowy cloud is disabled in local config".into(),
+        ));
+    }
+    if !gateway.server.api_ready() {
+        return Err(AppError::BadRequest(
+            "Flowy cloud base URL is not configured".into(),
+        ));
+    }
+    let api = FlowyApiClient::new(&gateway.server).map_err(map_cloud_err)?;
+    let session = ServerSession::from_config(&gateway.server, data_dir);
+    Ok((api, session))
 }

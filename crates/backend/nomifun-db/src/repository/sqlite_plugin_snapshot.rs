@@ -119,7 +119,7 @@ impl IPluginSnapshotRepository for SqlitePluginSnapshotRepository {
         mcp_server_id: &str,
     ) -> Result<Option<PluginSnapshotRow>, DbError> {
         // `mcp_server_id` lives inside the component's `runtime_ref` JSON
-        // (054_agent_store_installer.sql) — there is no dedicated column.
+        // (060_agent_store_installer.sql) — there is no dedicated column.
         let row = sqlx::query_as::<_, PluginSnapshotRow>(
             "SELECT snapshots.* FROM plugin_snapshots snapshots \
              JOIN plugin_snapshot_components components \

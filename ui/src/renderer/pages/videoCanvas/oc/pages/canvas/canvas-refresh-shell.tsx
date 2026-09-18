@@ -1,3 +1,4 @@
+import { Spin } from "antd";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 
 export function CanvasRefreshShell() {
@@ -12,8 +13,14 @@ export function CanvasRefreshShell() {
             />
 
             <div className="absolute inset-0 z-[var(--z-toolbar)] grid place-items-center">
-                <div className="rounded-xl border px-4 py-3 text-sm text-foreground/70 shadow-lg backdrop-blur" style={{ background: "var(--background)", borderColor: "var(--border)" }}>
-                    {canvasT("videoCanvas.chrome.refreshLoading", "正在加载画布…")}
+                <div
+                    className="flex flex-col items-center gap-3 rounded-xl border px-8 py-5 shadow-lg backdrop-blur"
+                    style={{ background: "var(--background)", borderColor: "var(--border)" }}
+                >
+                    <Spin size="large" />
+                    <span className="text-sm text-foreground/70">
+                        {canvasT("videoCanvas.chrome.refreshLoading", "正在加载画布…")}
+                    </span>
                 </div>
             </div>
 

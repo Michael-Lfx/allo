@@ -583,16 +583,25 @@
   min-height: 36px !important;
   padding: 0 12px !important;
   border-radius: 10px !important;
+  font-size: 13px !important;
+}
+
+.capability-hub-action-btn.arco-btn:not(.capability-hub-action-btn--primary) {
   border: 1px solid var(--color-border-2) !important;
   background: var(--flowy-raised, var(--color-bg-2)) !important;
   color: var(--flowy-text-primary) !important;
-  font-size: 13px !important;
   font-weight: 500 !important;
   box-shadow: none !important;
 }
 
-.capability-hub-action-btn.arco-btn:hover,
-.capability-hub-action-btn.arco-btn:focus {
+/* Keep the create action on the shared primary-button contract so every
+ * built-in or custom theme supplies its own semantic fill and foreground. */
+.capability-hub-action-btn--primary.arco-btn {
+  font-weight: 600 !important;
+}
+
+.capability-hub-action-btn.arco-btn:not(.capability-hub-action-btn--primary):hover,
+.capability-hub-action-btn.arco-btn:not(.capability-hub-action-btn--primary):focus {
   background: var(--flowy-interactive-hover) !important;
   border-color: var(--color-border-3) !important;
   color: var(--flowy-text-primary) !important;

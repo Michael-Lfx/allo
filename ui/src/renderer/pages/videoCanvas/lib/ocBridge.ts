@@ -19,11 +19,22 @@ import {
 } from '@oc/stores/canvas/use-canvas-store';
 import type { CanvasNodeData, CanvasConnection, ViewportTransform } from '@oc/types/canvas';
 import { CanvasNodeType } from '@oc/types/canvas';
-import { createCanvasNode } from '@oc/lib/canvas/canvas-project-domain';
+import { createCanvasNode, createStoryboardRow } from '@oc/lib/canvas/canvas-project-domain';
+import { buildPlaybookNode, findPlaybook } from '@oc/lib/canvas/craft/catalog';
+import { storyboardNodeHeight } from '@oc/components/canvas/canvas-script-node';
 import { encodeChannelModel } from '@oc/stores/use-config-store';
-import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
-import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
-import { isMiniMaxH3ResolutionToken } from '@oc/lib/video-generation-options';
+import { parsePersistedChatSessions, projectToCanvasDocument } from './canvasChatPersist';
+import { isCanvasHomeAgentLaunch, storedVqualityFromHomeLaunch } from './home-agent-launch';
+import {
+  buildCreationIrFromLaunch,
+  isCreationSubjectKind,
+  workflowKindForSubject,
+  writeCreationIr,
+  type CreationSubjectKind,
+} from './creation-ir';
+import { resolveLookIdentity } from '@renderer/pages/videoGeneration/styleCatalog/lookIdentity';
+import { materializeHomeImageMentions, rewriteHomeImageMentionsToNodeTokens } from '@renderer/pages/videoGeneration/home/imageMentions';
+import { resolveCanvasStylePreset } from '@oc/lib/canvas/canvas-style-system';
 
 export type CanvasHomeLaunch = {
   prompt: string;
@@ -31,16 +42,19 @@ export type CanvasHomeLaunch = {
   mediaKind: 'image' | 'video';
   /**
    * `generate` = ordinary T2V/I2V from home (no style skill, may auto-start).
-   * `creation` (default) = styleboard launch with skill node.
+   * `creation` (default) = open canvas Agent with the homepage prompt as the first turn.
    */
   intent?: 'creation' | 'generate';
   /** When true, canvas opens and fires one video generation on the config node. */
   autoGenerate?: boolean;
+  /** When true, canvas opens Agent and sends the homepage prompt as the first chat turn. */
+  autoAgent?: boolean;
   skill?: {
     id: string;
     label: string;
     description: string;
     stylePrompt: string;
+    stylePresetId?: string;
   };
   preferences: {
     automatic: boolean;
@@ -51,7 +65,10 @@ export type CanvasHomeLaunch = {
     imageModel?: string;
     videoModel?: string;
   };
-  references?: CanvasMediaMeta[];
+  references?: Array<CanvasMediaMeta & {
+    subjectKind?: CreationSubjectKind;
+    subjectName?: string;
+  }>;
 };
 
 function connection(fromNodeId: string, toNodeId: string): CanvasConnection {
@@ -62,10 +79,200 @@ function connection(fromNodeId: string, toNodeId: string): CanvasConnection {
   };
 }
 
-function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLaunch): CanvasProject {
+export function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLaunch): CanvasProject {
   const intent = launch.intent ?? 'creation';
   const isGenerate = intent === 'generate';
+  const autoAgent = isCanvasHomeAgentLaunch({ intent, autoAgent: launch.autoAgent });
   const skill = launch.skill;
+  const referenceNodes = homeReferenceNodes(launch, autoAgent);
+  const nodeIds = referenceNodes.map((node) => node.id);
+  const plotPrompt = materializeHomeImageMentions(launch.prompt);
+  const agentPrompt = rewriteHomeImageMentionsToNodeTokens(launch.prompt, nodeIds);
+  const graphLaunch = { ...launch, prompt: plotPrompt };
+  const seeded = autoAgent
+    ? seedHomeAgentConstraintGraph(graphLaunch, skill, referenceNodes)
+    : seedLegacyHomeGraph(graphLaunch, isGenerate, skill, referenceNodes);
+  const homeLaunch = {
+    schema: 1 as const,
+    intent,
+    autoGenerate: Boolean(launch.autoGenerate),
+    autoAgent,
+    agentBriefSent: false,
+    prompt: agentPrompt,
+    requirement: launch.requirement,
+    mediaKind: launch.mediaKind,
+    skill,
+    preferences: launch.preferences,
+    referenceMediaIds: (launch.references ?? []).map((item) => item.media_id),
+    createdAt: new Date().toISOString(),
+  };
+  const creation = autoAgent
+    ? buildCreationIrFromLaunch({
+        prompt: plotPrompt,
+        mediaKind: launch.mediaKind,
+        preferences: launch.preferences,
+        skill: skill ? { id: skill.id, label: skill.label } : undefined,
+        subjects: (launch.references ?? []).map((reference, index) => ({
+          kind: isCreationSubjectKind(reference.subjectKind) ? reference.subjectKind : 'character',
+          name: reference.subjectName || reference.title || referenceNodes[index]?.title,
+          mediaId: reference.media_id,
+          nodeId: referenceNodes[index]?.id,
+        })),
+      })
+    : null;
+  return {
+    ...project,
+    nodes: seeded.nodes,
+    connections: seeded.connections,
+    viewport: { x: 80, y: 60, k: referenceNodes.length > 2 ? 0.72 : 0.86 },
+    alloCreative: creation
+      ? writeCreationIr({ ...(project.alloCreative ?? {}), homeLaunch }, creation)
+      : {
+          ...(project.alloCreative ?? {}),
+          homeLaunch,
+        },
+  };
+}
+
+function homeReferenceNodes(launch: CanvasHomeLaunch, autoAgent: boolean): CanvasNodeData[] {
+  return (launch.references ?? []).map((reference, index) => {
+    const kind = autoAgent && isCreationSubjectKind(reference.subjectKind) ? reference.subjectKind : autoAgent ? 'character' : undefined;
+    const name = reference.subjectName?.trim() || reference.title?.trim() || `参考图 ${index + 1}`;
+    return {
+      ...createCanvasNode(
+        CanvasNodeType.Image,
+        { x: 600, y: 150 + index * 210 },
+        {
+          content: canvasMediaUrl(reference.media_id),
+          status: 'success',
+          mimeType: reference.mime,
+          bytes: reference.bytes,
+          naturalWidth: reference.width ?? undefined,
+          naturalHeight: reference.height ?? undefined,
+          assetId: reference.media_id,
+          workflowKind: kind ? workflowKindForSubject(kind) : 'reference_set',
+          ...(kind === 'character' ? { characterName: name } : {}),
+        },
+      ),
+      title: name,
+    };
+  });
+}
+
+function seedHomeAgentConstraintGraph(
+  launch: CanvasHomeLaunch,
+  skill: CanvasHomeLaunch['skill'],
+  referenceNodes: CanvasNodeData[],
+) {
+  const { promptNode, skillNode, styleNode, configNode } = buildHomeInputNodes(
+    launch,
+    false,
+    skill,
+    'agent',
+  );
+  const durationSecs = Math.max(1, Number(launch.preferences.targetDurationSecs) || 5);
+  const characterNodes = referenceNodes.filter((node) => node.metadata?.workflowKind === 'character');
+  const scriptRows = [createStoryboardRow(1, {
+    durationSeconds: durationSecs,
+    plotDescription: launch.prompt,
+    characters: characterNodes.map((node) => ({
+      characterName: node.metadata?.characterName || node.title,
+      characterImageNodeId: node.id,
+    })),
+    referenceNodeIds: referenceNodes.map((node) => node.id),
+  })];
+  const scriptHeight = storyboardNodeHeight(scriptRows.length);
+  const scriptNode = {
+    ...createCanvasNode(
+      CanvasNodeType.Script,
+      { x: 540, y: 150 + Math.max(referenceNodes.length, 1) * 210 + 40 },
+      {
+        status: 'idle',
+        workflowKind: 'script',
+        workflowTitle: '分镜',
+        composerContent: launch.prompt,
+        storyboard: {
+          rows: scriptRows,
+          visibleColumns: ['shotNumber', 'durationSeconds', 'plotDescription', 'dialogue'],
+          referenceNodeIds: referenceNodes.map((node) => node.id),
+        },
+      },
+    ),
+    title: '分镜脚本',
+    height: scriptHeight,
+  };
+  return {
+    nodes: [
+      promptNode,
+      ...(styleNode ? [styleNode] : []),
+      ...(skillNode ? [skillNode] : []),
+      ...referenceNodes,
+      scriptNode,
+      configNode,
+    ],
+    connections: [
+      connection(promptNode.id, configNode.id),
+      ...(styleNode ? [connection(styleNode.id, configNode.id)] : []),
+      ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
+      ...referenceNodes.map((node) => connection(node.id, scriptNode.id)),
+    ],
+  };
+}
+
+function seedLegacyHomeGraph(
+  launch: CanvasHomeLaunch,
+  isGenerate: boolean,
+  skill: CanvasHomeLaunch['skill'],
+  referenceNodes: CanvasNodeData[],
+) {
+  const { promptNode, skillNode, styleNode, configNode } = buildHomeInputNodes(
+    launch,
+    isGenerate,
+    skill,
+    'generate',
+  );
+  return {
+    nodes: [
+      promptNode,
+      ...(styleNode ? [styleNode] : []),
+      ...(skillNode ? [skillNode] : []),
+      ...referenceNodes,
+      configNode,
+    ],
+    connections: [
+      connection(promptNode.id, configNode.id),
+      ...(styleNode ? [connection(styleNode.id, configNode.id)] : []),
+      ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
+      ...referenceNodes.map((node) => connection(node.id, configNode.id)),
+    ],
+  };
+}
+
+function resolveHomeLaunchLook(skill: CanvasHomeLaunch['skill']) {
+  if (!skill) return null;
+  const prompt = skill.stylePrompt?.trim();
+  return resolveLookIdentity({
+    canvasPresetId: skill.stylePresetId,
+    stylePrompt: prompt,
+    vimaxKey: prompt ? undefined : skill.id,
+    creationSkillId: prompt ? undefined : skill.id,
+  });
+}
+
+function buildHomeInputNodes(
+  launch: CanvasHomeLaunch,
+  isGenerate: boolean,
+  skill: CanvasHomeLaunch['skill'],
+  mode: 'generate' | 'agent',
+) {
+  const look = !isGenerate ? resolveHomeLaunchLook(skill) : null;
+  const canvasPreset =
+    look && !look.canvasPresetId.startsWith('look:')
+      ? resolveCanvasStylePreset(look.canvasPresetId)
+      : undefined;
+  const canvasPresetId = canvasPreset?.id ?? look?.canvasPresetId;
+  const canvasStylePrompt = canvasPreset?.prompt ?? look?.canvasPrompt ?? skill?.stylePrompt;
+  const canvasStyleTitle = canvasPreset?.title ?? look?.canvasTitle ?? skill?.label;
   const promptNode = {
     ...createCanvasNode(CanvasNodeType.Text, { x: 220, y: 190 }, {
       content: launch.prompt,
@@ -77,47 +284,38 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
     }),
     title: isGenerate ? '生成提示' : '创作提示',
   };
-  const skillNode =
-    !isGenerate && skill
+  const styleNode =
+    !isGenerate && canvasStylePrompt
       ? {
-          ...createCanvasNode(CanvasNodeType.Skill, { x: 220, y: 500 }, {
-            content: skill.stylePrompt,
-            prompt: skill.stylePrompt,
+          ...createCanvasNode(CanvasNodeType.Text, { x: 220, y: 500 }, {
+            content: canvasStylePrompt,
+            prompt: canvasStylePrompt,
             status: 'success',
-            skillId: skill.id,
-            skillVersion: 1,
-            stylePresetId: skill.id,
-            skillSnapshot: {
-              id: skill.id,
-              name: skill.label,
-              description: skill.description,
-              category: launch.mediaKind,
-              template: skill.stylePrompt,
-              outputMode: launch.mediaKind === 'image' ? 'image_prompt' : 'workflow',
-              outputContract: 'Apply the selected visual style to the connected generation node.',
-              version: 1,
-              tags: ['video-home', 'style'],
-            },
+            workflowKind: 'styleboard',
+            workflowTitle: '项目画风',
+            workflowDescription: canvasPreset?.description || skill?.description,
+            stylePresetId: canvasPresetId,
+            fontSize: 14,
           }),
-          title: skill.label,
+          title: `项目画风 · ${canvasStyleTitle}`,
+          width: 420,
+          height: 280,
         }
+      : null;
+  const playbook = skill && (skill.id.startsWith('builtin:') || skill.id.startsWith('hub:'))
+    ? findPlaybook(skill.id)
+    : undefined;
+  const skillNode =
+    !isGenerate && playbook
+      ? buildPlaybookNode(playbook, playbook.brief, { x: 220, y: styleNode ? 820 : 500 })
       : null;
   const selectedModel =
     launch.mediaKind === 'image'
       ? launch.preferences.imageModel
       : launch.preferences.videoModel;
-  const videoModel = selectedModel || '';
-  const canonicalVquality = canonicalizeVideoResolution(
-    videoModel,
-    launch.preferences.resolution,
-  );
-  const storedVquality =
-    isMiniMaxH3VideoModel(videoModel) || isMiniMaxH3ResolutionToken(canonicalVquality)
-      ? canonicalVquality
-      : String(canonicalVquality).replace(/p$/i, '');
   const composedPrompt = [
     launch.prompt,
-    !isGenerate ? skill?.stylePrompt : undefined,
+    !isGenerate ? look?.modelPrompt || skill?.stylePrompt : undefined,
     launch.requirement,
   ]
     .filter(Boolean)
@@ -129,7 +327,6 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
       prompt: composedPrompt,
       status: 'idle',
       generationMode: launch.mediaKind,
-      // Ordinary generate always targets a video clip (T2V / I2V).
       videoEditOperation: isGenerate
         ? (launch.references?.length ? 'image_to_video' : 'text_to_video')
         : undefined,
@@ -138,71 +335,35 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
         : undefined,
       size: launch.preferences.aspectRatio,
       seconds: String(launch.preferences.targetDurationSecs),
-      vquality: storedVquality,
-      workflowKind: isGenerate ? 'shot' : 'styleboard',
-      workflowTitle: isGenerate
-        ? '视频生成'
-        : `${skill?.label ?? '创作'}创作`,
+      vquality: storedVqualityFromHomeLaunch(launch.preferences),
+      workflowKind: isGenerate ? 'shot' : undefined,
+      workflowTitle: mode === 'agent'
+        ? '首页约束'
+        : isGenerate
+          ? '视频生成'
+          : `${skill?.label ?? '创作'}创作`,
       workflowDescription: launch.requirement,
       ...(skill && !isGenerate
-        ? { stylePresetId: skill.id, skillId: skill.id }
+        ? {
+            stylePresetId: canvasPresetId || skill.stylePresetId,
+            ...(playbook ? { skillId: playbook.qualifiedId } : {}),
+          }
         : {}),
     }),
-    title: launch.mediaKind === 'image' ? '图片生成配置' : '视频生成配置',
+    title: mode === 'agent'
+      ? '首页约束'
+      : launch.mediaKind === 'image' ? '图片生成配置' : '视频生成配置',
   };
-  const referenceNodes = (launch.references ?? []).map((reference, index) => ({
-    ...createCanvasNode(
-      CanvasNodeType.Image,
-      { x: 600, y: 150 + index * 210 },
-      {
-        content: canvasMediaUrl(reference.media_id),
-        status: 'success',
-        mimeType: reference.mime,
-        bytes: reference.bytes,
-        naturalWidth: reference.width ?? undefined,
-        naturalHeight: reference.height ?? undefined,
-        assetId: reference.media_id,
-        workflowKind: 'reference_set',
-      }
-    ),
-    title: reference.title || `参考图 ${index + 1}`,
-  }));
-  const nodes = [
-    promptNode,
-    ...(skillNode ? [skillNode] : []),
-    ...referenceNodes,
-    configNode,
-  ];
-  const connections = [
-    connection(promptNode.id, configNode.id),
-    ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
-    ...referenceNodes.map((node) => connection(node.id, configNode.id)),
-  ];
-  return {
-    ...project,
-    nodes,
-    connections,
-    viewport: { x: 80, y: 60, k: referenceNodes.length > 2 ? 0.72 : 0.86 },
-    alloCreative: {
-      ...(project.alloCreative ?? {}),
-      homeLaunch: {
-        schema: 1,
-        intent,
-        autoGenerate: Boolean(launch.autoGenerate),
-        prompt: launch.prompt,
-        requirement: launch.requirement,
-        mediaKind: launch.mediaKind,
-        skill: skill,
-        preferences: launch.preferences,
-        referenceMediaIds: (launch.references ?? []).map((item) => item.media_id),
-        createdAt: new Date().toISOString(),
-      },
-    },
-  };
+  return { promptNode, skillNode, styleNode, configNode };
 }
 
-function docToProject(projectId: string, title: string, doc: CanvasDocument): CanvasProject {
+function docToProject(projectId: string, title: string, doc: CanvasDocument, existing?: CanvasProject): CanvasProject {
   const now = new Date().toISOString();
+  const sessions = parsePersistedChatSessions(doc.chatSessions);
+  const chatSessions = sessions.length ? sessions : existing?.chatSessions || [];
+  const activeChatId = typeof doc.activeChatId === 'string' && doc.activeChatId
+    ? doc.activeChatId
+    : existing?.activeChatId || chatSessions[0]?.id || null;
   return {
     id: projectId,
     title: doc.title || title || '未命名画布',
@@ -210,8 +371,8 @@ function docToProject(projectId: string, title: string, doc: CanvasDocument): Ca
     updatedAt: now,
     nodes: (doc.nodes || []) as unknown as CanvasNodeData[],
     connections: (doc.connections || []) as unknown as CanvasConnection[],
-    chatSessions: [],
-    activeChatId: null,
+    chatSessions,
+    activeChatId,
     backgroundMode: (doc.backgroundMode as CanvasProject['backgroundMode']) || 'dots',
     showImageInfo: false,
     viewport: (doc.viewport || { x: 0, y: 0, k: 1 }) as ViewportTransform,
@@ -221,13 +382,16 @@ function docToProject(projectId: string, title: string, doc: CanvasDocument): Ca
   };
 }
 
+export { projectToCanvasDocument };
+
 export async function hydrateCanvasProjectFromServer(
   projectId: string,
   prefetched?: Awaited<ReturnType<typeof getCanvasProject>>
 ): Promise<CanvasProject> {
   const { meta, doc } = prefetched ?? (await getCanvasProject(projectId));
-  const project = docToProject(projectId, meta.title, doc as CanvasDocument);
   const store = useCanvasStore.getState();
+  const existingProject = store.projects.find((p) => p.id === projectId);
+  const project = docToProject(projectId, meta.title, doc as CanvasDocument, existingProject);
   const existing = store.projects.filter((p) => p.id !== projectId);
   store.replaceProjects([...existing, project]);
   return project;
@@ -237,17 +401,7 @@ export async function syncCanvasProjectToServer(projectId: string): Promise<void
   const project = useCanvasStore.getState().projects.find((p) => p.id === projectId);
   if (!project) return;
   await flushCanvasStorePersistence();
-  const doc: CanvasDocument = {
-    schema: 1,
-    title: project.title,
-    nodes: project.nodes as unknown as CanvasDocument['nodes'],
-    connections: project.connections as unknown as CanvasDocument['connections'],
-    viewport: project.viewport as CanvasDocument['viewport'],
-    backgroundMode: (project.backgroundMode as CanvasDocument['backgroundMode']) || 'dots',
-    ...(project.timeline ? { timeline: project.timeline as CanvasDocument['timeline'] } : {}),
-    ...(project.alloCreative ? { alloCreative: project.alloCreative } : {}),
-  };
-  await putCanvasDoc(projectId, doc);
+  await putCanvasDoc(projectId, projectToCanvasDocument(project));
 }
 
 export async function ensureServerProjectsInStore(): Promise<void> {

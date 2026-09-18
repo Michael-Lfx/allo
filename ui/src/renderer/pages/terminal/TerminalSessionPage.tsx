@@ -1,14 +1,14 @@
 
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Navigate, useParams } from 'react-router-dom';
 import { Button, Input, Spin } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Refresh, EditOne, Terminal } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import type { ITerminalSession } from '@/common/adapter/ipcBridge';
-import { parseTerminalId, terminalTarget, type TerminalId } from '@/common/types/ids';
+import { terminalTarget, tryParseEntityId, type TerminalId } from '@/common/types/ids';
 import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
 import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
@@ -523,9 +523,10 @@ const TerminalSessionContent: React.FC<{ sessionId: TerminalId }> = ({ sessionId
 
 const TerminalSessionPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  if (!id) return null;
+  if (!id) return <Navigate to='/guid' replace />;
 
-  const sessionId = parseTerminalId(id);
+  const sessionId = tryParseEntityId('terminal', id);
+  if (!sessionId) return <Navigate to='/guid' replace />;
   // React Router reuses the same route element when only `:id` changes. Keying
   // the stateful page content prevents session A's loaded metadata, edit state,
   // or in-flight actions from being rendered against terminal B.

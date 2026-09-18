@@ -2,11 +2,14 @@ import React, { useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import HubPageShell from '@/renderer/components/layout/HubPageShell';
 import CapabilityHubHeader from './CapabilityHubHeader';
-import type { CapabilityHubId } from './capabilityHub';
+import { parseCapabilityHubFromPathname, type CapabilityHubId } from './capabilityHub';
 import { useCapabilityHubRoute } from './useCapabilityHubRoute';
+import { useSettingsNavigationTransition } from '@/renderer/components/layout/SettingsNavigationTransition';
 
 type CapabilityHubShellProps = {
   hub: CapabilityHubId;
+  /** Whether this hub exposes a remote market/discover view. */
+  marketEnabled?: boolean;
   installedCount?: number;
   extraActions?: React.ReactNode;
   children: React.ReactNode;
@@ -24,12 +27,18 @@ export const useCapabilityHubSearch = () => React.useContext(CapabilityHubSearch
 
 const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
   hub,
+  marketEnabled = true,
   installedCount,
   extraActions,
   children,
 }) => {
   const { view, setView, goToHub, redirectTo } = useCapabilityHubRoute(hub);
+  const { pendingTarget } = useSettingsNavigationTransition();
   const [searchQuery, setSearchQuery] = useState('');
+  const pendingHub = pendingTarget
+    ? parseCapabilityHubFromPathname(pendingTarget.split(/[?#]/u, 1)[0])
+    : null;
+  const activeHub = pendingHub ?? hub;
 
   if (redirectTo) {
     return <Navigate to={redirectTo} replace />;
@@ -44,19 +53,26 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
         toolbarClassName='mb-8px'
         toolbar={
           <CapabilityHubHeader
-            hub={hub}
-            view={view}
+            hub={activeHub}
+            marketEnabled={marketEnabled}
+            view={marketEnabled ? view : 'installed'}
             installedCount={installedCount}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
             onHubChange={(nextHub) => {
               if (nextHub === hub) {
-                setView('market');
+                setView(marketEnabled ? 'market' : 'installed');
                 return;
               }
               goToHub(nextHub);
             }}
-            onToggleInstalled={() => setView(view === 'installed' ? 'market' : 'installed')}
+            onToggleInstalled={() => {
+              if (!marketEnabled) {
+                setView('installed');
+                return;
+              }
+              setView(view === 'installed' ? 'market' : 'installed');
+            }}
             extraActions={extraActions}
           />
         }

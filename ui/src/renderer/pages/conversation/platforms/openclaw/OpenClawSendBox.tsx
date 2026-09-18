@@ -3,13 +3,15 @@
 import { conversationTarget, type ConversationId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
-import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { uuid } from '@/common/utils';
 import { getSendBoxDraftHook } from '@/renderer/hooks/chat/useSendBoxDraft';
 import { useSlashCommands } from '@/renderer/hooks/chat/useSlashCommands';
+import { AppMessage as Message } from '@/renderer/components/notifications';
+import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import {
   claimInitialMessageDelivery,
   completeInitialMessageDelivery,
+  handleInitialMessageDeliveryFailure,
   persistInitialMessageDelivery,
   quarantineInitialMessageDelivery,
   readAuthorizedInitialMessageDelivery,
@@ -18,6 +20,7 @@ import {
   type PersistedInitialMessage,
 } from '@/renderer/pages/conversation/platforms/initialMessageDelivery';
 import { classifyPublicMessageDelivery } from '@/renderer/pages/conversation/platforms/publicMessageDelivery';
+import { isConversationTurnAdmissionConflict } from '@/renderer/pages/conversation/platforms/conversationSendRecovery';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import BasicRuntimeSendBox, {
@@ -27,6 +30,7 @@ import BasicRuntimeSendBox, {
   type BasicRuntimeStreamHooks,
 } from '@/renderer/pages/conversation/platforms/BasicRuntimeSendBox';
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 
 const useOpenClawSendBoxDraft = getSendBoxDraftHook('openclaw-gateway', {
   _type: 'openclaw-gateway',
@@ -51,6 +55,7 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
     cancelLocalTurn,
     addOrUpdateMessage,
   } = controller;
+  const { t } = useTranslation();
 
   // Track whether the current turn was triggered by a Star Office install request
   const starOfficeInstallInFlightRef = useRef(false);
@@ -97,23 +102,25 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
         }
         emitter.emit('chat.history.refresh');
       } catch (error) {
-        if (
-          initialOnly &&
-          isBackendHttpError(error) &&
-          error.status === 409 &&
-          error.code === 'CONFLICT'
-        ) {
-          quarantineInitialMessageDelivery(
-            sessionStorage,
-            storageKey,
-            idempotency_key
-          );
-        } else {
-          releaseInitialMessageDelivery(storageKey);
-        }
+        handleInitialMessageDeliveryFailure(
+          sessionStorage,
+          storageKey,
+          idempotency_key,
+          error
+        );
         cancelLocalTurn();
         setAiProcessing(false);
         starOfficeInstallInFlightRef.current = false;
+        if (isConversationTurnAdmissionConflict(error)) {
+          Message.warning(
+            t('conversation.commandQueue.specialDeliveryConflict', {
+              defaultValue:
+                'The conversation is still busy. This message and its Skill selection were kept; retry after the current turn finishes.',
+            })
+          );
+        } else {
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        }
       }
     },
     [
@@ -124,6 +131,7 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
       markLocalTurnAccepted,
       reconcilePublicDeliveryReplay,
       setAiProcessing,
+      t,
     ]
   );
 
@@ -140,7 +148,8 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
         storageKey,
         conversation_id,
         text,
-        []
+        [],
+        false
       );
       // This event comes directly from a user's click, so it is an explicit
       // new turn even on a Finished Conversation with existing history.
@@ -161,9 +170,25 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
           if (
             pending.conversation_id !== conversation_id ||
             !conversation ||
-            conversation.id !== conversation_id ||
-            (conversation.status !== 'pending' && conversation.status !== 'running')
+            conversation.id !== conversation_id
           ) {
+            quarantineInitialMessageDelivery(
+              sessionStorage,
+              storageKey,
+              pending.idempotency_key
+            );
+            return;
+          }
+
+          if (pending.initial_only === false) {
+            // This was an explicit StarOffice action, not a Guid creation
+            // handoff. Preserve its normal delivery semantics on remount,
+            // including when the conversation is already Finished.
+            void deliverStarOfficeRequest(pending, storageKey);
+            return;
+          }
+
+          if (conversation.status !== 'pending' && conversation.status !== 'running') {
             quarantineInitialMessageDelivery(
               sessionStorage,
               storageKey,
@@ -194,16 +219,13 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
             void deliverStarOfficeRequest(authorized, storageKey, true);
           }
         })
-        .catch(() => {
-          quarantineInitialMessageDelivery(
-            sessionStorage,
-            storageKey,
-            pending.idempotency_key
-          );
+        .catch((error) => {
+          releaseInitialMessageDelivery(storageKey);
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
         });
     }
     return () => releaseInitialMessageDelivery(storageKey);
-  }, [conversation_id, deliverStarOfficeRequest]);
+  }, [conversation_id, deliverStarOfficeRequest, t]);
 
   const onStreamFinish = useCallback(() => {
     if (starOfficeInstallInFlightRef.current) {

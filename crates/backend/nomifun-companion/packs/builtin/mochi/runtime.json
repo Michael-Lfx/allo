@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "mochi--builtin",
+  "display_name": "Mochi",
+  "renderer": "css",
+  "hit_areas": [
+    { "id": "head", "intent": "head", "x": 0.22, "y": 0.02, "w": 0.56, "h": 0.3 },
+    { "id": "body", "intent": "body", "x": 0.16, "y": 0.32, "w": 0.68, "h": 0.62 }
+  ],
+  "clips": {
+    "touch_head": { "a": "touch_head_a", "b": "touch_head_b", "c": "touch_head_c" },
+    "touch_body": { "a": "touch_body_a", "b": "touch_body_b", "c": "touch_body_c" },
+    "raise": { "a": "raise_a", "b": "raise_b", "c": "raise_c" }
+  },
+  "agent_bindings": {
+    "running": "busy",
+    "planning": "review",
+    "awaiting_approval": "awaiting_user",
+    "waiting_input": "awaiting_user",
+    "paused": "review",
+    "failed": "failed",
+    "completed_with_failures": "failed",
+    "starting": "busy",
+    "waiting_confirmation": "awaiting_user"
+  }
+}

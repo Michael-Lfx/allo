@@ -1,6 +1,6 @@
 # 云服务与计费域（Flowy Cloud）
 
-> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6` ·
+> **最后维护：** 2026-09-01 · 核对基准：源码（nomifun-cloud 遥测出站 + FlowyClaw ingest）
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) 是"远程 LLM 服务器客户端"：
@@ -59,6 +59,39 @@
   [`superpowers/specs/2026-08-21-desktop-airwallex-billing-design.md`](../superpowers/specs/2026-08-21-desktop-airwallex-billing-design.md)。
   托管式 `redirectToCheckout` 明确不在范围内（仅 drop-in）。
 
+## 第一方产品遥测（增长仓）
+
+PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使用分析」opt-out）。**运营/商业北星以 FlowyClaw 第一方仓为权威**，不从 PostHog 或 `tb_video_task` 倒算漏斗。
+
+| 路径 | 职责 |
+| --- | --- |
+| 渲染进程 outbox | `ui/.../telemetryOutbox.ts`：队列 `flowy.telemetry.events.v1`（迁移旧 `flowy.growth.video.events.v1`）；尊重 `isTelemetryEnabled()` |
+| 本机 axum | `POST /api/cloud/telemetry/events`（别名 `/api/cloud/growth/video/events`）补 `clientId` / `app` / `platform` / `appVersion` |
+| Flowy 云 | `POST {base}/claw/telemetry/events/batch` → Gin `/api/v1/telemetry/events/batch`；JWT `user_id` 强制覆盖 |
+| ViMax 终态 | `nomi-vimax` 仅在 **Render** 终态（成功/失败/取消）与关机 **Rendering** 中断时回调；`nomifun-vimax` spawn 上传，不阻塞管线。未登录云则跳过。Rust 侧目前**不读** UI opt-out |
+
+事件名闭集含：视频漏斗 `home_viewed` … `film_succeeded` / `film_failed` / `film_cancelled`，资讯播报终态 `briefing_succeeded` / `briefing_failed` / `briefing_cancelled`，平台 `app_opened` / `auth_completed` / `home_interactive`、启动性能 `app_launch_*`、以及 OTA `update_*`。非视频的 `home_viewed`（如 guid/knowledge）记 `module=platform`；视频 `home_viewed` 仍为 `video_generation`。**资讯播报禁止发 `film_succeeded`。**
+
+**冻结口径（WAFC 分母）**
+
+- **WAFC**：窗口内有 `film_succeeded` / `film_at` 的 distinct 用户（**film-only**，不含 briefing）
+- **TTF Film p50**：首次 `home_viewed` 或 `task_accepted` → 首次 `film_succeeded`
+- **start_to_film_rate**：窗口内有 `render_started` 且同时成片成功的用户比
+- **film_success_rate**：`succeeded / (succeeded + failed)`，**排除 cancel**
+- **film_d7_rate**：当前为窗口内成功，不是终身首次成功后的 D7
+- **publish_rate**：成片成功用户中已导出或 TV 发布
+- **DAU**：来自 `app_opened` 集市 `platform_dau`，不是 VG KPI 卡
+- **启动体验**：`app_launch_auth_ready` → `app_launch_config_ready` → `app_launch_interactive` / `app_launch_completed`（`total_ms` / `cold_start`）；失败走 `app_launch_failed`。启动热路径只记内存时间戳，funnel/outbox/HTTP 经 `scheduleDeferred`（≥2.5s + idle）再落盘上报
+
+**资讯播报另立口径（不并入 WAFC）**
+
+- **WAFC-Briefing**：窗口内有 `briefing_succeeded` 的 distinct 用户
+- **TTF Briefing p50**：首次带 `mode=briefing` 的 `home_viewed` 或 `task_accepted` → 首次 `briefing_succeeded`
+- 属性白名单含 `briefing_id` / `research_depth` / `beat_count` / `citation_count`；服务端 `event_id = briefing:{name}:{briefing_id}`
+- FlowyClaw ingest 已同步闭集 18 与白名单；资讯播报写入 `tb_vg_session_facts` 但不置 `film_at`，WAFC 仍只看成片
+
+ClickHouse 是后续双写出口，当前权威存储是 MySQL 事件表 + 会话事实 + 日/小时集市。
+
 ## 配置面
 
 `GatewayConfig`（持久化 `<data_dir>/config.yaml`，定义在
@@ -73,6 +106,7 @@
 ## 消费者
 
 后端：`nomifun-app`（挂载服务与路由）、`nomifun-media`、`nomifun-vimax`、
+`nomifun-briefing`、
 `nomifun-canvas`、`nomifun-shell`、`nomifun-insights`；引擎侧：`nomi-media`、
 `nomi-vimax`（媒体/视频生成走 Flowy 云后端的公共依赖，见
 [media-creation.zh.md](media-creation.zh.md) 与 [poi-insights.zh.md](poi-insights.zh.md)）。

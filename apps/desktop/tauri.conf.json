@@ -4,7 +4,7 @@
   "identifier": "com.flowy.desktop",
   "build": {
     "frontendDist": "../../ui/dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://127.0.0.1:5173",
     "beforeDevCommand": "bun run --filter=./ui dev",
     "beforeBuildCommand": "bun scripts/prune-build.mjs --pre && bun scripts/ensure-bundled-rg.mjs && bun run --filter=./ui build"
   },
@@ -19,7 +19,6 @@
     "active": true,
     "targets": ["nsis", "app", "dmg", "appimage", "deb", "rpm"],
     "resources": {
-      "../../ui/dist/": "webui-dist/",
       "resources/bin/": "bin/"
     },
     "icon": [
@@ -31,8 +30,17 @@
     ],
     "windows": {
       "webviewInstallMode": {
-        "type": "downloadBootstrapper",
+        "type": "embedBootstrapper",
         "silent": true
+      },
+      "nsis": {
+        "template": "windows/nsis/installer.nsi",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false,
+        "customLanguageFiles": {
+          "English": "windows/nsis/English.nsh",
+          "SimpChinese": "windows/nsis/SimpChinese.nsh"
+        }
       }
     }
   },

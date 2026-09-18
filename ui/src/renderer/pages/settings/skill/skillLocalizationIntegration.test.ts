@@ -26,7 +26,7 @@ describe('skill localization integration', () => {
     expect(page.includes('conversation.skills.sources.${skill.source}')).toBe(true);
     expect(page.includes('skillId: skill.skillId')).toBe(true);
     expect(drawer.includes('filterSkillsByTags')).toBe(false);
-    expect(drawer.includes('DrawerSkillCard')).toBe(false);
+    expect(drawer.includes('DrawerSkillCard')).toBe(true);
     expect(drawer.includes('localeKey={localeKey}')).toBe(true);
   });
 });

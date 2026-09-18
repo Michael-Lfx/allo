@@ -28,6 +28,12 @@ function sameConnectingParams(left: ConnectionHandle | null, right: ConnectionHa
     return left.nodeId === right.nodeId && left.handleType === right.handleType && left.handleId === right.handleId && left.anchorRatio === right.anchorRatio;
 }
 
+function sameDragPreview(left: CanvasDragPreview | null, right: CanvasDragPreview | null) {
+    if (left === right) return true;
+    if (!left || !right) return false;
+    return left.x === right.x && left.y === right.y && left.nodeIds.length === right.nodeIds.length && left.nodeIds.every((id, index) => id === right.nodeIds[index]);
+}
+
 function sameSelectionBox(left: SelectionBox | null, right: SelectionBox | null) {
     if (left === right) return true;
     if (!left || !right) return false;
@@ -93,7 +99,10 @@ export const useCanvasInteractionStore = create<CanvasInteractionStore>((set) =>
         const toolbarNodeId = resolveAction(id, state.toolbarNodeId);
         return toolbarNodeId === state.toolbarNodeId ? state : { toolbarNodeId };
     }),
-    setDragPreview: (preview) => set((state) => ({ dragPreview: resolveAction(preview, state.dragPreview) })),
+    setDragPreview: (preview) => set((state) => {
+        const dragPreview = resolveAction(preview, state.dragPreview);
+        return sameDragPreview(dragPreview, state.dragPreview) ? state : { dragPreview };
+    }),
     setIsNodeDragging: (isNodeDragging) => set((state) => (state.isNodeDragging === isNodeDragging ? state : { isNodeDragging })),
     setAlignmentGuides: (guides) => set((state) => {
         const next = resolveAction(guides, state.alignmentGuides);

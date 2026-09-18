@@ -2,15 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Image } from "antd";
-import { FileText, Image as ImageIcon, Music2, Pencil, Sparkles, Video, X } from "lucide-react";
+import { FileText, Image as ImageIcon, LayoutTemplate, Music2, Pencil, Video, X } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { referenceImagePreviewUrl } from "@oc/lib/canvas/canvas-media-id";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import type { NodeGenerationInput } from "./canvas-node-generation";
 import { CanvasVideoPromptTools } from "./canvas-video-prompt-tools";
+import { craftCover, PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/catalog";
+import { recipeToken } from "@oc/lib/canvas/craft/tokens";
+import { skillToken } from "@oc/lib/canvas/canvas-skill-mentions";
+import { CanvasStyleCoverSwatch } from "./canvas-style-cover";
+import { createCraftAttachmentChipElement, recipeAttachmentChip, skillAttachmentChip } from "./canvas-craft-token-chip";
 import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-picker";
+import { CanvasComposerPill } from "./canvas-composer-pill";
+import { CanvasTemplateSlotBar } from "./canvas-template-slot-bar";
 import type { CanvasGenerationMode, CanvasNodeMetadata, CanvasWorkspaceMode } from "@oc/types/canvas";
 
 type CanvasConfigComposerProps = {
@@ -23,11 +31,15 @@ type CanvasConfigComposerProps = {
     onMetadataChange?: (patch: Partial<CanvasNodeMetadata>) => void;
     onClose: () => void;
     workspaceMode?: CanvasWorkspaceMode;
+    onOpenLibrary?: () => void;
+    onOpenTemplates?: () => void;
 };
 
 type Token =
     | { type: "text"; value: string }
-    | { type: "reference"; nodeId: string };
+    | { type: "reference"; nodeId: string }
+    | { type: "recipe"; recipeId: string }
+    | { type: "skill"; skillId: string };
 
 type MentionState = {
     query: string;
@@ -45,7 +57,7 @@ type ComposerCandidate =
 
 export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
-export function CanvasConfigComposer({ value, inputs, skillReferences = [], generationMode, metadata, onChange, onMetadataChange, onClose, workspaceMode = "professional" }: CanvasConfigComposerProps) {
+export function CanvasConfigComposer({ value, inputs, skillReferences = [], generationMode, metadata, onChange, onMetadataChange, onClose, onOpenLibrary, onOpenTemplates }: CanvasConfigComposerProps) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const editorRef = useRef<HTMLDivElement>(null);
@@ -54,14 +66,13 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
     const [activeIndex, setActiveIndex] = useState(0);
     const [imagePreview, setImagePreview] = useState<string | null>(null);
     const [presetOpen, setPresetOpen] = useState(false);
-    const simpleMode = workspaceMode === "simple";
     const tokens = useMemo(() => parseComposerTokens(value), [value]);
     const referenceById = useMemo(() => new Map(inputs.map((input) => [input.nodeId, input])), [inputs]);
     const videoFrameOptions = useMemo(
         () =>
             inputs
                 .filter((input) => input.type === "image" && input.image)
-                .map((input) => ({ nodeId: input.nodeId, label: resourceLabel(input, inputs), title: input.title, previewUrl: input.image?.dataUrl })),
+                .map((input) => ({ nodeId: input.nodeId, label: resourceLabel(input, inputs), title: input.title, previewUrl: referenceImagePreviewUrl(input.image) })),
         [inputs],
     );
     const candidates = useMemo(() => {
@@ -82,10 +93,19 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
                 editor.append(document.createTextNode(token.value));
                 return;
             }
+            if (token.type === "recipe") {
+                editor.append(createCraftAttachmentChipElement(recipeAttachmentChip(token.recipeId), theme));
+                return;
+            }
+            if (token.type === "skill") {
+                const reference = skillReferences.find((item) => item.skill?.skill_id === token.skillId);
+                editor.append(createCraftAttachmentChipElement(skillAttachmentChip(token.skillId, reference?.label, reference?.previewUrl), theme));
+                return;
+            }
             const input = referenceById.get(token.nodeId);
             if (input) editor.append(createReferenceChip(input, inputs, theme, setImagePreview));
         });
-    }, [inputs, referenceById, theme, tokens]);
+    }, [inputs, referenceById, skillReferences, theme, tokens]);
 
     const syncFromEditor = () => {
         const editor = editorRef.current;
@@ -118,8 +138,18 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
         const editor = editorRef.current;
         if (!editor) return;
         removeActiveMention();
+        let node: Node;
+        if (candidate.kind === "skill") {
+            const skillId = candidate.reference.skill?.skill_id;
+            if (!skillId || serializeEditor(editor).includes(skillToken(skillId))) {
+                closeMention();
+                return;
+            }
+            node = createCraftAttachmentChipElement(skillAttachmentChip(skillId, candidate.reference.label, candidate.reference.previewUrl), theme);
+        } else {
+            node = createReferenceChip(candidate.input, inputs, theme, setImagePreview);
+        }
         const space = document.createTextNode(" ");
-        const node = candidate.kind === "skill" ? document.createTextNode(`@${candidate.reference.label}`) : createReferenceChip(candidate.input, inputs, theme, setImagePreview);
         const selection = window.getSelection();
         const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
         if (range) {
@@ -143,17 +173,24 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
         const editor = editorRef.current;
         if (!editor) return;
         removeActiveSlash(editor);
+        const current = serializeEditor(editor);
+        if (current.includes(recipeToken(preset.id))) {
+            onChange(current);
+            return;
+        }
+        const chip = createCraftAttachmentChipElement(recipeAttachmentChip(preset.id), theme);
         const selection = window.getSelection();
         const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-        const text = document.createTextNode(`${preset.prompt} `);
+        const space = document.createTextNode(" ");
         if (range && editor.contains(range.commonAncestorContainer)) {
-            range.insertNode(text);
-            range.setStartAfter(text);
+            range.insertNode(space);
+            range.insertNode(chip);
+            range.setStartAfter(space);
             range.collapse(true);
             selection?.removeAllRanges();
             selection?.addRange(range);
         } else {
-            editor.append(text);
+            editor.append(chip, space);
             placeCaretAtEnd(editor);
         }
         onChange(serializeEditor(editor));
@@ -170,26 +207,41 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
         >
             <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-baseline gap-2">
-                    <div className="shrink-0 text-xs font-semibold">{simpleMode ? canvasT("videoCanvas.config.quickGenerate", "快速生成") : canvasT("videoCanvas.config.assemblePrompt", "组装提示词")}</div>
-                    <div className="truncate text-[var(--fs-label)] opacity-55">{simpleMode ? canvasT("videoCanvas.config.simpleHint", "已连接素材会自动带入") : canvasT("videoCanvas.config.assembleHint", "@ 引用已连接素材或已激活技能，发送前自动组装")}</div>
+                    <div className="shrink-0 text-xs font-semibold">{canvasT("videoCanvas.config.assemblePrompt", "组装提示词")}</div>
+                    <div className="truncate text-[var(--fs-label)] opacity-55">{canvasT("videoCanvas.config.assembleHint", "@ 引用已连接素材或已激活技能，发送前自动组装")}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                    {(simpleMode && generationMode !== "image" && generationMode !== "video") ? null : <CanvasPresetPicker mode={generationMode || "image"} skillReferences={skillReferences} open={presetOpen} onOpenChange={setPresetOpen} onSelect={insertPreset} />}
+                    {onOpenTemplates ? (
+                        <CanvasComposerPill
+                            icon={<LayoutTemplate />}
+                            label={canvasT("videoCanvas.craft.tabTemplate", "模板")}
+                            onClick={onOpenTemplates}
+                        />
+                    ) : null}
+                    <CanvasPresetPicker mode={generationMode || "image"} open={presetOpen} onOpenChange={setPresetOpen} onSelect={insertPreset} onOpenLibrary={onOpenLibrary} />
                     <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
                 </div>
             </div>
-            {generationMode === "video" && onMetadataChange && !simpleMode ? (
+            {generationMode === "video" && onMetadataChange ? (
                 <div className="mb-2 border-y px-1 py-1.5" style={{ borderColor: theme.node.stroke }}>
                     <CanvasVideoPromptTools metadata={metadata} frameOptions={videoFrameOptions} onMetadataChange={onMetadataChange} />
                 </div>
             ) : null}
+            {onMetadataChange ? (
+                <CanvasTemplateSlotBar
+                    theme={theme}
+                    metadata={metadata}
+                    model={metadata?.model}
+                    onChange={onMetadataChange}
+                />
+            ) : null}
             <div className="relative rounded-lg border" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
-                {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{canvasT("videoCanvas.config.composerPlaceholder", "输入提示词，按 @ 引用连接素材或技能")}</div> : null}
+                {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{generationMode === "image" || generationMode === "video" ? canvasT("videoCanvas.config.composerPlaceholderTemplate", "描述画面，或选一个模板") : canvasT("videoCanvas.config.composerPlaceholder", "输入提示词，按 @ 引用连接素材或技能")}</div> : null}
                 <div
                     ref={editorRef}
                     contentEditable
                     suppressContentEditableWarning
-                    className="thin-scrollbar min-h-28 max-h-[min(42vh,360px)] w-full overflow-y-auto whitespace-pre-wrap break-words px-3 py-2 text-sm leading-7 outline-none"
+                    className="thin-scrollbar min-h-44 max-h-[min(48vh,440px)] w-full overflow-y-auto whitespace-pre-wrap break-words px-3 py-2 text-sm leading-7 outline-none"
                     style={{ color: theme.node.text }}
                     onInput={() => {
                         if (!composingRef.current) syncFromEditor();
@@ -302,11 +354,10 @@ function MentionMenu({ candidates, allInputs, activeIndex, theme, onSelect }: { 
 
 function ResourcePreview({ candidate }: { candidate: ComposerCandidate }) {
     if (candidate.kind === "skill") {
-        return (
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-cyan-500/12 text-cyan-600 dark:text-cyan-200">
-                <Sparkles className="size-4" />
-            </span>
-        );
+        const skillId = candidate.reference.skill?.skill_id || "";
+        const coverId = PLAYBOOK_BY_QUALIFIED.get(skillId)?.coverLookId || "cinematic";
+        const cover = candidate.reference.previewUrl ? { ...craftCover(coverId), image: candidate.reference.previewUrl } : craftCover(coverId);
+        return <CanvasStyleCoverSwatch cover={cover} className="size-9 shrink-0 rounded-md" alt="" />;
     }
     const input = candidate.input;
     if (input.sourceKind === "drawing") {
@@ -316,7 +367,14 @@ function ResourcePreview({ candidate }: { candidate: ComposerCandidate }) {
             </span>
         );
     }
-    if (input.type === "image" && input.image) return <img src={input.image.dataUrl} alt="" className="size-9 rounded-md object-cover" />;
+    if (input.type === "image" && input.image) {
+        const previewUrl = referenceImagePreviewUrl(input.image);
+        return previewUrl ? <img src={previewUrl} alt="" className="size-9 rounded-md object-cover" /> : (
+            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-black/10">
+                <ImageIcon className="size-4" />
+            </span>
+        );
+    }
     if (input.type === "video" && input.video) return <video src={input.video.url} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
     const Icon = input.type === "audio" ? Music2 : input.type === "video" ? Video : input.type === "image" ? ImageIcon : FileText;
     return (
@@ -338,24 +396,27 @@ function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationI
     wrapper.className = "mx-px inline-flex h-7 max-w-40 items-center justify-center overflow-hidden rounded-md border px-1 text-xs leading-none align-middle";
     Object.assign(wrapper.style, chipStyle(theme));
     if (input.type === "image" && input.image && input.sourceKind !== "drawing") {
-        const image = document.createElement("img");
-        image.src = input.image.dataUrl;
-        image.alt = input.title;
-        image.className = "size-6 rounded object-cover";
-        wrapper.className = "mx-px inline-flex size-6 items-center justify-center overflow-hidden rounded align-middle";
-        wrapper.appendChild(image);
-        wrapper.addEventListener("click", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onImagePreview(input.image?.dataUrl || "");
-        });
-    } else {
-        wrapper.title = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.text || input.title;
-        const text = document.createElement("span");
-        text.className = "block truncate";
-        text.textContent = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.type === "text" ? input.text || input.title : input.title;
-        wrapper.appendChild(text);
+        const previewUrl = referenceImagePreviewUrl(input.image);
+        if (previewUrl) {
+            const image = document.createElement("img");
+            image.src = previewUrl;
+            image.alt = input.title;
+            image.className = "size-6 rounded object-cover";
+            wrapper.className = "mx-px inline-flex size-6 items-center justify-center overflow-hidden rounded align-middle";
+            wrapper.appendChild(image);
+            wrapper.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onImagePreview(previewUrl);
+            });
+            return wrapper;
+        }
     }
+    wrapper.title = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.text || input.title;
+    const text = document.createElement("span");
+    text.className = "block truncate";
+    text.textContent = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.type === "text" ? input.text || input.title : input.title;
+    wrapper.appendChild(text);
     return wrapper;
 }
 
@@ -369,7 +430,11 @@ function serializeNodes(nodes: NodeListOf<ChildNode>) {
         if (node.nodeType === Node.TEXT_NODE) result += node.textContent || "";
         if (!(node instanceof HTMLElement)) return;
         const nodeId = node.dataset.referenceNodeId;
+        const recipeId = node.dataset.recipeId;
+        const skillId = node.dataset.skillId;
         if (nodeId) result += `@[node:${nodeId}]`;
+        else if (recipeId) result += recipeToken(recipeId);
+        else if (skillId) result += skillToken(skillId);
         else if (node.tagName === "BR") result += "\n";
         else result += serializeNodes(node.childNodes);
     });
@@ -418,7 +483,7 @@ function adjacentReferenceNode(range: Range, key: string) {
 function findReferenceSibling(node: Node, previous: boolean, includeSelf = false): HTMLElement | null {
     let current: Node | null = includeSelf ? node : previous ? node.previousSibling : node.nextSibling;
     while (current && current.nodeType === Node.TEXT_NODE && !(current.textContent || "").trim()) current = previous ? current.previousSibling : current.nextSibling;
-    return current instanceof HTMLElement && current.dataset.referenceNodeId ? current : null;
+    return current instanceof HTMLElement && (current.dataset.referenceNodeId || current.dataset.recipeId || current.dataset.skillId) ? current : null;
 }
 
 function textBeforeCaret() {
@@ -445,13 +510,17 @@ function placeCaretAtEnd(element: HTMLElement) {
     selection?.addRange(range);
 }
 
+const COMPOSER_TOKEN_PATTERN = /@\[(node|recipe|skill):([^\]]+)\]/g;
+
 function parseComposerTokens(value: string): Token[] {
     const tokens: Token[] = [];
     let lastIndex = 0;
-    for (const match of value.matchAll(CONFIG_REFERENCE_PATTERN)) {
+    for (const match of value.matchAll(COMPOSER_TOKEN_PATTERN)) {
         if (match.index === undefined) continue;
         if (match.index > lastIndex) tokens.push({ type: "text", value: value.slice(lastIndex, match.index) });
-        tokens.push({ type: "reference", nodeId: match[1] });
+        if (match[1] === "recipe") tokens.push({ type: "recipe", recipeId: match[2] });
+        else if (match[1] === "skill") tokens.push({ type: "skill", skillId: match[2] });
+        else tokens.push({ type: "reference", nodeId: match[2] });
         lastIndex = match.index + match[0].length;
     }
     if (lastIndex < value.length) tokens.push({ type: "text", value: value.slice(lastIndex) });

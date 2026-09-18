@@ -15,6 +15,7 @@ import {
   reasoningEffortSliderViewModel,
   parseCatalogReasoningEffortLevels,
   pendingReasoningEffortCommitIndex,
+  resolveReasoningEffortForLevels,
   resolveReasoningEffortForSelection,
 } from './reasoningEffort';
 
@@ -86,6 +87,18 @@ describe('reasoningEffort helpers', () => {
     expect(resolveReasoningEffortForSelection(selection, 'xhigh').effort).toBe('xhigh');
     expect(resolveReasoningEffortForSelection(selection, 'high').effort).toBe('medium');
     expect(resolveReasoningEffortForSelection(selection, undefined).effort).toBe('medium');
+  });
+
+  it('normalizes a stale effort when the active model changes its catalog', () => {
+    expect(resolveReasoningEffortForLevels(['low', 'medium', 'xhigh'], 'auto')).toEqual({
+      levels: ['low', 'medium', 'xhigh'],
+      effort: 'medium',
+    });
+    expect(resolveReasoningEffortForLevels(['low', 'xhigh'], 'medium')).toEqual({
+      levels: ['low', 'xhigh'],
+      effort: 'low',
+    });
+    expect(resolveReasoningEffortForLevels([], 'xhigh')).toEqual({ levels: [] });
   });
 
   it('keeps Cloud order as the discrete shallow-to-deep slider order', () => {

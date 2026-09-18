@@ -10,6 +10,7 @@ pub mod vertex;
 
 pub use billing_turn::{
     FLOWY_TURN_ID_HEADER, current_flowy_billing_turn_id, with_flowy_billing_turn_id,
+    with_optional_flowy_billing_turn_id,
 };
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -92,6 +93,53 @@ pub(crate) fn request_body_with_extra(
     body
 }
 
+/// Absolute deadline for the complete OpenAI-compatible initial-request
+/// negotiation. Created once per `stream()` call and shared by connect,
+/// retries, backoff, key rotation, and compatibility negotiation, so a stalled
+/// gateway cannot multiply the wait by the number of attempts.
+pub(crate) const INITIAL_REQUEST_DEADLINE: Duration = Duration::from_secs(90);
+
+/// Bound an initial-request operation by an absolute deadline. The operation's
+/// future is dropped (its in-flight request cancelled) when the deadline
+/// expires, and the resulting error is not retryable.
+pub(crate) async fn send_with_deadline<T>(
+    deadline: tokio::time::Instant,
+    operation: impl std::future::Future<Output = Result<T, ProviderError>>,
+) -> Result<T, ProviderError> {
+    match tokio::time::timeout_at(deadline, operation).await {
+        Ok(result) => result,
+        Err(_) => Err(ProviderError::InitialRequestTimeout(
+            "initial negotiation deadline exceeded".to_owned(),
+        )),
+    }
+}
+
+/// Parse the strict `supported range is from L (inclusive|exclusive) to U
+/// (inclusive|exclusive)` wording (observed on the Flowy Cloud gateway) into the
+/// largest allowed output ceiling. Returns `None` for malformed, inverted, or
+/// out-of-range wordings so callers fall back to the original error.
+pub(crate) fn parse_supported_output_range(message: &str) -> Option<u32> {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)supported range is from\s+(\d+)\s*\(\s*(inclusive|exclusive)\s*\)\s*to\s+(\d+)\s*\(\s*(inclusive|exclusive)\s*\)",
+        )
+        .expect("supported-range regex is valid")
+    });
+    let captures = pattern.captures(message)?;
+    let lower: u32 = captures.get(1)?.as_str().parse().ok()?;
+    let upper: u32 = captures.get(3)?.as_str().parse().ok()?;
+    let upper_bound = match captures.get(4)?.as_str().to_ascii_lowercase().as_str() {
+        "inclusive" => upper,
+        "exclusive" => upper.checked_sub(1)?,
+        _ => return None,
+    };
+    if upper_bound == 0 || lower > upper_bound {
+        return None;
+    }
+    Some(upper_bound)
+}
+
 /// Unified interface for LLM API providers
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -118,6 +166,12 @@ pub enum ProviderError {
     PromptTooLong(String),
     #[error("Connection error: {0}")]
     Connection(String),
+    /// The complete initial-request negotiation (connect, retries, backoff, key
+    /// rotation, and compatibility negotiation) exceeded its absolute deadline.
+    /// Not retryable: the internal budget is exhausted, and an upper layer must
+    /// not replay the send.
+    #[error("Initial request timeout: {0}")]
+    InitialRequestTimeout(String),
     /// The HTTP transport closed cleanly, but the provider never emitted the
     /// protocol's commit marker. Retryable only while no replay-unsafe content
     /// has crossed the provider boundary (see stream outcome empty/partial).
@@ -131,6 +185,7 @@ impl ProviderError {
             ProviderError::RateLimited { .. }
             | ProviderError::Connection(_)
             | ProviderError::StreamTruncated(_) => true,
+            ProviderError::Http(err) => retry::is_transient_reqwest_transport(err),
             // Transient server-side faults (500/502/503/504) from an overloaded
             // gateway are the most common spurious failure and are safe to retry
             // on the pre-response / empty-content paths. 4xx are terminal.
@@ -170,7 +225,51 @@ impl ProviderError {
         let has_composition_keyword = ["oneof", "allof", "anyof"]
             .iter()
             .any(|keyword| lower.contains(keyword));
-        has_schema_error && has_top_level_restriction && has_composition_keyword
+        if has_schema_error && has_top_level_restriction && has_composition_keyword {
+            return true;
+        }
+
+        // Gemini's flattened tool errors name the offending branch directly
+        // (`parameters.any_of[0].required: only allowed for OBJECT type`)
+        // without the OpenAI "top level" wording. Accept both the snake_case
+        // and camelCase spellings of the branch keyword.
+        let names_object_only_branch = lower.contains("only allowed for object type")
+            || lower.contains("parameters.any_of")
+            || lower.contains("parameters.anyof");
+        names_object_only_branch && lower.contains("parameters") && lower.contains("function")
+    }
+
+    /// Whether an API rejection requires tool-bearing requests to disable their
+    /// OpenAI-style `reasoning_effort`. Observed on the Flowy Cloud gateway:
+    /// `Function tools with reasoning_effort are not supported ... set
+    /// reasoning_effort to 'none'`. Only tool-bearing requests may act on it;
+    /// the caller must keep the configured effort for tool-free requests.
+    pub(crate) fn is_tools_with_reasoning_effort_incompatible(&self) -> bool {
+        let ProviderError::Api { message, .. } = self else {
+            return false;
+        };
+        let lower = message.to_ascii_lowercase();
+        let names_tools = lower.contains("function tool") || lower.contains("tools");
+        let names_effort =
+            lower.contains("reasoning_effort") || lower.contains("reasoning effort");
+        let rejects_parameter = [
+            "not supported",
+            "unsupported",
+            "isn't supported",
+            "not allowed",
+        ]
+        .iter()
+        .any(|signal| lower.contains(signal));
+        names_tools && names_effort && rejects_parameter
+    }
+
+    /// Whether an API rejection identifies an output-token ceiling above the
+    /// upstream supported range, together with the largest allowed ceiling.
+    pub(crate) fn output_limit_rejection(&self) -> Option<u32> {
+        let ProviderError::Api { message, .. } = self else {
+            return None;
+        };
+        parse_supported_output_range(message)
     }
 
     /// Whether an API rejection narrowly identifies an expired or otherwise
@@ -302,33 +401,41 @@ pub(crate) async fn send_initial(
     headers: &HeaderMap,
     body: &Value,
 ) -> Result<reqwest::Response, ProviderError> {
-    retry::with_initial_request_retry(|| async {
-        let response = client
-            .post(url)
-            .headers(headers.clone())
-            .json(body)
-            .send()
-            .await?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
-        }
-        let retry_after_ms = parse_retry_after_ms(response.headers()).unwrap_or(5000);
-        let body_text = response.text().await.unwrap_or_default();
-        if status.as_u16() == 429 {
-            return Err(ProviderError::RateLimited {
-                retry_after_ms,
-                message: non_empty_rate_limit_message(body_text),
-            });
-        }
-        if is_context_overflow_status_body(status.as_u16(), &body_text) {
-            return Err(ProviderError::PromptTooLong(body_text));
-        }
-        Err(ProviderError::Api {
-            status: status.as_u16(),
-            message: body_text,
-        })
-    })
+    retry::with_initial_request_retry(
+        retry::InitialRequestContext::from_json_body(body),
+        || async {
+            let response = client
+                .post(url)
+                .headers(headers.clone())
+                .json(body)
+                .send()
+                .await
+                // Connection reset / broken pipe after TCP is up is a request
+                // error, not `is_connect()`. Mapping it here matches
+                // `send_and_check` so the initial-request retry loop can
+                // recover a long Goal round instead of failing the whole turn.
+                .map_err(|e| ProviderError::Connection(e.to_string()))?;
+            let status = response.status();
+            if status.is_success() {
+                return Ok(response);
+            }
+            let retry_after_ms = parse_retry_after_ms(response.headers()).unwrap_or(5000);
+            let body_text = response.text().await.unwrap_or_default();
+            if status.as_u16() == 429 {
+                return Err(ProviderError::RateLimited {
+                    retry_after_ms,
+                    message: non_empty_rate_limit_message(body_text),
+                });
+            }
+            if is_context_overflow_status_body(status.as_u16(), &body_text) {
+                return Err(ProviderError::PromptTooLong(body_text));
+            }
+            Err(ProviderError::Api {
+                status: status.as_u16(),
+                message: body_text,
+            })
+        },
+    )
     .await
 }
 
@@ -587,10 +694,13 @@ pub fn create_provider(config: &Config) -> Arc<dyn LlmProvider> {
 
 #[cfg(test)]
 mod retryable_tests {
+    use std::time::Duration;
+
     use super::ProviderError;
     use super::{
-        is_api_key_rotation_error, parse_api_keys, parse_retry_after_ms,
-        parse_tool_call_arguments, MAX_DOUBLE_ENCODED_TOOL_ARGUMENT_BYTES,
+        INITIAL_REQUEST_DEADLINE, is_api_key_rotation_error, parse_api_keys,
+        parse_retry_after_ms, parse_supported_output_range, parse_tool_call_arguments,
+        send_with_deadline, MAX_DOUBLE_ENCODED_TOOL_ARGUMENT_BYTES,
         is_context_overflow_text,
     };
 
@@ -729,6 +839,30 @@ mod retryable_tests {
     }
 
     #[test]
+    fn tool_schema_classifier_accepts_gemini_object_only_branch_wording() {
+        let gemini = ProviderError::Api {
+            status: 500,
+            message: r#"{"code":500,"msg":"Model call failed. Please try again later: * GenerateContentRequest.tools[0].function_declarations[10].parameters.any_of[0].required: only allowed for OBJECT type","error_key":"error.all_channel_models_failed"}"#.into(),
+        };
+        let wording = ProviderError::Api {
+            status: 500,
+            message: "tool function parameters.anyOf required is only allowed for OBJECT type".into(),
+        };
+        let camel_case_only = ProviderError::Api {
+            status: 500,
+            message:
+                "GenerateContentRequest.tools[0].function_declarations[3].parameters.anyOf[2].required: unsupported keyword"
+                    .into(),
+        };
+        assert!(gemini.is_tool_schema_incompatible());
+        assert!(wording.is_tool_schema_incompatible());
+        assert!(
+            camel_case_only.is_tool_schema_incompatible(),
+            "camelCase parameters.anyOf must classify without the object-type phrase"
+        );
+    }
+
+    #[test]
     fn tool_schema_classifier_rejects_unrelated_failures() {
         let errors = [
             ProviderError::Api {
@@ -753,6 +887,128 @@ mod retryable_tests {
             errors
                 .iter()
                 .all(|error| !error.is_tool_schema_incompatible())
+        );
+    }
+
+    #[test]
+    fn tools_effort_classifier_accepts_gateway_wording() {
+        // Verbatim body from the 2026-09-12 Flowy Cloud incident.
+        let body = r#"{"code":500,"msg":"Model call failed. Please try again later: Function tools with reasoning_effort are not supported for gpt-5.6-sol-tec-do in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","error_key":"error.all_channel_models_failed"}"#;
+        assert!(
+            ProviderError::Api {
+                status: 500,
+                message: body.into(),
+            }
+            .is_tools_with_reasoning_effort_incompatible()
+        );
+        assert!(
+            ProviderError::Api {
+                status: 400,
+                message: "tools with reasoning effort unsupported".into(),
+            }
+            .is_tools_with_reasoning_effort_incompatible()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_with_deadline_bounds_retries_and_backoff_with_one_deadline() {
+        let deadline = tokio::time::Instant::now() + INITIAL_REQUEST_DEADLINE;
+        let outcome = send_with_deadline(deadline, async {
+            // Simulates two slow attempts plus backoff that together exceed the
+            // single per-stream budget.
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok::<(), ProviderError>(())
+        })
+        .await;
+        assert!(matches!(
+            outcome,
+            Err(ProviderError::InitialRequestTimeout(_))
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_with_deadline_passes_through_fast_results() {
+        let deadline = tokio::time::Instant::now() + INITIAL_REQUEST_DEADLINE;
+        let outcome = send_with_deadline(deadline, async { Ok::<_, ProviderError>(7) }).await;
+        assert_eq!(outcome.expect("fast result"), 7);
+    }
+
+    #[test]
+    fn initial_request_timeout_is_not_retryable() {
+        assert!(!ProviderError::InitialRequestTimeout("deadline".into()).is_retryable());
+    }
+
+    #[test]
+    fn output_range_parser_handles_inclusive_and_exclusive_bounds() {
+        let observed = r#"{"code":500,"msg":"Unable to submit request because it has a maxOutputTokens value of 128000 but the supported range is from 1 (inclusive) to 65537 (exclusive). Update the value and try again."}"#;
+        assert_eq!(parse_supported_output_range(observed), Some(65536));
+        assert_eq!(
+            parse_supported_output_range(
+                "supported range is from 1 (inclusive) to 65536 (inclusive)"
+            ),
+            Some(65536)
+        );
+    }
+
+    #[test]
+    fn output_range_parser_rejects_malformed_or_inverted_ranges() {
+        for message in [
+            "upstream unavailable",
+            "supported range is from 1 to 65537",
+            "supported range is from 1 (inclusive) to 0 (exclusive)",
+            "supported range is from 10 (inclusive) to 5 (inclusive)",
+            "supported range is from 1 (inclusive) to 1 (exclusive)",
+            "supported range is from 1 (inclusive) to 4294967296 (exclusive)",
+            "supported range is from 4294967296 (inclusive) to 4294967297 (exclusive)",
+        ] {
+            assert_eq!(parse_supported_output_range(message), None, "{message}");
+        }
+    }
+
+    #[test]
+    fn output_limit_classifier_only_accepts_api_errors() {
+        let message = "supported range is from 1 (inclusive) to 65537 (exclusive)".to_string();
+        assert_eq!(
+            ProviderError::Api {
+                status: 500,
+                message: message.clone(),
+            }
+            .output_limit_rejection(),
+            Some(65536)
+        );
+        assert!(
+            ProviderError::Connection(message)
+                .output_limit_rejection()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tools_effort_classifier_rejects_unrelated_failures() {
+        let errors = [
+            ProviderError::Api {
+                status: 500,
+                message: "upstream unavailable".into(),
+            },
+            ProviderError::Api {
+                status: 500,
+                message: "reasoning_effort is not supported".into(),
+            },
+            ProviderError::Api {
+                status: 500,
+                message: "tools are not supported for this model".into(),
+            },
+            ProviderError::Api {
+                status: 500,
+                message: "function tools with reasoning_effort failed".into(),
+            },
+            ProviderError::Connection("tools reset".into()),
+        ];
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.is_tools_with_reasoning_effort_incompatible())
         );
     }
 

@@ -1,30 +1,72 @@
-export type ActivityKind = 'single_choice' | 'true_false' | 'reflection' | 'fill_in_blank';
-export type LessonStatus = 'not_started' | 'in_progress' | 'completed';
+export type ActivityKind =
+  | 'single_choice'
+  | 'true_false'
+  | 'reflection'
+  | 'fill_in_blank'
+  | 'multi_choice'
+  | 'numeric'
+  | 'ordering'
+  | 'matching'
+  | 'open_question';
+
+/** 课时内部的节段类型（ADR-0002 首期 5 种；交互节暂缓） */
+export type SectionKind = 'concept' | 'example' | 'demo' | 'summary' | 'practice';
+
+/** 分节正文：body_md 自带 `## ` 标题行，可直接渲染 */
+export interface Section {
+  section_key: string;
+  kind: SectionKind;
+  title: string;
+  points: string;
+  body_md: string;
+  /** 当前正文是否为降级纯文字兜底（visual 承诺未兑现，ADR-0008） */
+  degraded?: boolean;
+  status: 'pending' | 'ready' | 'failed';
+  version: number;
+  position: number;
+}
+
+/** 课程讲解风格（课程级选择，决定节写作提示词变体） */
+export type TeachingStyle = 'standard' | 'socratic' | 'feynman';
+export type LessonStatus = 'not_started' | 'in_progress' | 'completed' | 'skipped';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
 export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archived';
+/** 课程类型：传统课程（大纲驱动）与学习图（beta，前置网络驱动） */
+export type CourseKind = 'traditional' | 'learning_graph';
 
+/** 生成课程请求：知识库流与描述流二选一（都传时后端以知识库为准）。
+ * 学习图课程只走描述流（描述即学习目标），由后端按 course_kind 分流。 */
 export interface GenerateCourseRequest {
-  knowledge_base_id: string;
+  course_kind?: CourseKind;
+  knowledge_base_id?: string;
+  description?: string;
   domain?: string;
   provider_id?: string;
   model?: string;
-  module_count?: number;
-  lessons_per_module?: number;
-  /** 'full' 一次性生成全部课时；'on_demand' 先出大纲，学习时按需生成课时 */
-  mode?: 'full' | 'on_demand';
+  /** 讲解风格（课程级）：standard 标准 / socratic 苏格拉底 / feynman 费曼 */
+  teaching_style?: TeachingStyle;
 }
 
-/** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传 */
+/** 学习图生成状态（后台指示条/取消入口的数据源）。生成在 HTTP 请求内同步
+ * 执行，创建对话框可以随时关闭——服务端注册表让运行对外可发现、可取消。 */
+export interface LearningGraphGenerationStatus {
+  running: boolean;
+  topic: string | null;
+  elapsed_secs: number | null;
+}
+
+/** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
+ * feedback 是单节重写的可选学习建议（ADR-0007），为空即同分布重生成。 */
 export interface GenerateLessonRequest {
   provider_id?: string;
   model?: string;
+  feedback?: string;
 }
 
-/** 重试课程生成任务时可选的模型偏好；两个字段同时传或不传 */
-export interface RetryCourseJobRequest {
-  provider_id?: string;
-  model?: string;
+/** 手动编辑节正文请求（ADR-0007）：仅覆盖 body_md */
+export interface UpdateSectionBodyRequest {
+  body_md: string;
 }
 
 export interface CourseSummary {
@@ -39,6 +81,7 @@ export interface CourseSummary {
   completed_lessons: number;
   updated_at: number;
   tags: string[];
+  course_kind: CourseKind;
 }
 
 export interface Activity {
@@ -46,20 +89,12 @@ export interface Activity {
   kind: ActivityKind;
   prompt: string;
   options: string[];
+  /** matching 题的右列候选（按存储顺序；前端渲染时本地打乱） */
+  matches: string[];
+  /** 来源节 key；null = 跨节综合题（通用） */
+  section_key: string | null;
   position: number;
   concepts: string[];
-}
-
-export interface DiagnosticItem {
-  lesson_id: string;
-  lesson_title: string;
-  activity: Activity;
-}
-
-export interface DiagnosticPlan {
-  course_id: string;
-  total_concepts: number;
-  items: DiagnosticItem[];
 }
 
 export interface Lesson {
@@ -74,6 +109,8 @@ export interface Lesson {
   status: LessonStatus;
   concepts: string[];
   activities: Activity[];
+  /** 分节正文；空 = 旧课时的单篇 summary（双读回退） */
+  sections: Section[];
 }
 
 export interface LearningModule {
@@ -100,6 +137,8 @@ export interface CourseDetail {
   concepts: Concept[];
   next_lesson_id: string | null;
   due_review_count: number;
+  /** 仅 learning_graph 课程携带：图投影 + 下一步推荐节点 */
+  graph: LearningGraphView | null;
 }
 
 export interface AttemptResult {
@@ -107,6 +146,11 @@ export interface AttemptResult {
   score: number;
   passed: boolean;
   feedback: string;
+}
+
+/** 作答记录 = 判卷结果 + 提交的原始作答；response 用于回看时回显用户答案 */
+export interface AttemptRecord extends AttemptResult {
+  response?: unknown;
 }
 
 /** 活动作答提交。reflection 批改可携带显式模型偏好；未携带时后端回落默认模型 */
@@ -121,6 +165,7 @@ export interface ReviewQuestion {
   kind: ActivityKind;
   prompt: string;
   options: string[];
+  matches: string[];
 }
 
 export interface DueReview {
@@ -139,6 +184,8 @@ export interface DueReview {
   difficulty: number;
   review_count: number;
   lapse_count: number;
+  /** FSRS 预测回忆率（0-1）；从未推进过的卡为 null */
+  r: number | null;
   /** 已标记“待编辑”，刷卡时记录，不打断复习；描述用于找回思路 */
   edit_pending: boolean;
   edit_note: string | null;
@@ -149,6 +196,8 @@ export interface ReviewResult {
   due_at: number;
   stability_days: number;
   difficulty: number;
+  /** 本次评分是否真实推进了排期；被到期门拦下的过期重复为 false */
+  advanced: boolean;
   review_count: number;
   lapse_count: number;
 }
@@ -208,6 +257,8 @@ export interface ReviewAnswerResult {
   feedback: string;
   correct_answer: unknown | null;
   rated: ReviewResult | null;
+  /** 本次作答是否真实推进了排期；被到期门拦下的重复作答为 false */
+  advanced: boolean;
 }
 
 export interface QuestionEntry {
@@ -304,35 +355,84 @@ export interface SetTagsRequest {
   apply_to_children?: boolean;
 }
 
-export type CourseJobSource = 'http' | 'agent';
+// ── 学习图（beta，对应后端 learning_graph 类型） ──────────────────────
 
-export type CourseJobStatus =
-  | 'queued'
-  | 'sampling'
-  | 'blueprint'
-  | 'lessons'
-  | 'importing'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'interrupted';
+/** 图节点：底层课时 + 图坐标（拓扑序 position、层深 depth）+ 学习者进度。
+ * 正文不进全图载荷——内容经现有课时接口按需拉取。 */
+export interface GraphNodeView {
+  lesson_id: string;
+  title: string;
+  summary: string;
+  purpose: string;
+  estimated_minutes: number;
+  generated: boolean;
+  /** 发布时的 Kahn 拓扑序（也是推荐排序键） */
+  position: number;
+  /** 前置层深（零前置为 0），供分层渲染与宏观 LOD 使用 */
+  depth: number;
+  status: LessonStatus;
+  prerequisite_count: number;
+}
 
-/** 持久化课程生成任务的公开投影（对应后端 CourseJobView） */
-export interface CourseJobView {
-  job_id: string;
-  source: CourseJobSource;
-  status: CourseJobStatus;
-  /** 1 起始的模块索引；蓝图完成前为 0 */
-  current_module: number;
-  /** 已完成课时数（0..=total_lessons） */
-  current_lesson: number;
-  total_lessons: number;
-  error: string | null;
-  course_id: string | null;
-  /** 任务对应的知识库名称（库已被删除时为 null） */
-  knowledge_base_name: string | null;
-  /** 用户填写的课程领域（请求快照中，未填时为 null） */
-  domain: string | null;
-  created_at: number;
-  updated_at: number;
+/** 前置边：from 应先于 to 被满足（lesson_id 引用） */
+export interface GraphEdgeView {
+  from: string;
+  to: string;
+  reason: string;
+}
+
+/** 图视图（挂在 CourseDetail.graph 下）：结构投影 + 就绪集推荐（≤10） */
+export interface LearningGraphView {
+  goal: string;
+  scope: string;
+  nodes: GraphNodeView[];
+  edges: GraphEdgeView[];
+  /** 下一步推荐学习的节点（就绪集按拓扑序，≤10） */
+  recommended: string[];
+  /** 课程行 graph_meta_json 透传（审计快照/生成留档/扩展备注） */
+  meta: Record<string, unknown> | null;
+}
+
+/** 记忆健康面板：到期预报、卡池状态、真实保留率与预测对照/遗忘曲线 */
+export interface MemoryLoadDay {
+  review_day: number;
+  due_count: number;
+}
+
+export interface MemoryStateBucket {
+  key: 'new' | 'young' | 'mature' | 'master';
+  count: number;
+}
+
+export interface MemoryTrueRetention {
+  passes: number;
+  fails: number;
+  rate: number | null;
+}
+
+export interface MemoryCalibrationBin {
+  bucket: number;
+  min: number;
+  max: number;
+  predicted: number;
+  actual: number | null;
+  count: number;
+}
+
+export interface MemoryCurvePoint {
+  elapsed_days: number;
+  predicted: number;
+  actual: number | null;
+  count: number;
+}
+
+export interface MemoryHealthStats {
+  review_day: number;
+  tz_offset: number;
+  overdue_count: number;
+  load_forecast: MemoryLoadDay[];
+  state_distribution: MemoryStateBucket[];
+  true_retention: MemoryTrueRetention | null;
+  calibration: MemoryCalibrationBin[];
+  forgetting_curve: MemoryCurvePoint[];
 }

@@ -1,0 +1,409 @@
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::cards::CARD_CATALOG;
+use crate::error::BriefingResult;
+use crate::ir::BeatScript;
+use crate::lint::{card_lint, merge_reports, motion_check};
+use crate::session::{BEATS_FILENAME, TIMING_FILENAME};
+use crate::voice::TimingFile;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ComposeResult {
+    pub video_path: Option<String>,
+    pub mode: String,
+    pub qa: crate::lint::LintReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ComposePlan {
+    cards: Vec<String>,
+    beats: usize,
+}
+
+pub fn write_beats_file(working_dir: &Path, script: &BeatScript, timing: &TimingFile) -> BriefingResult<()> {
+    let beats_payload = serde_json::json!({
+        "version": 1,
+        "beats": script.beats,
+        "timing": timing,
+        "cards": CARD_CATALOG,
+    });
+    std::fs::write(
+        working_dir.join(BEATS_FILENAME),
+        serde_json::to_vec_pretty(&beats_payload)?,
+    )?;
+    std::fs::write(
+        working_dir.join(TIMING_FILENAME),
+        serde_json::to_vec_pretty(timing)?,
+    )?;
+    Ok(())
+}
+
+pub fn compose_working_dir(working_dir: &Path, script: &BeatScript) -> BriefingResult<ComposeResult> {
+    compose_working_dir_with_progress(working_dir, script, |_, _| {})
+}
+
+pub fn compose_working_dir_with_progress(
+    working_dir: &Path,
+    script: &BeatScript,
+    mut on_progress: impl FnMut(&str, Option<Value>),
+) -> BriefingResult<ComposeResult> {
+    let card_report = card_lint(&script.beats);
+    let motion_report = motion_check(&script.beats);
+    let qa = merge_reports(&[card_report, motion_report]);
+    if !qa.ok {
+        return Ok(ComposeResult {
+            video_path: None,
+            mode: "lint_failed".into(),
+            qa,
+        });
+    }
+
+    let plan = ComposePlan {
+        cards: script.beats.iter().map(|b| b.card.clone()).collect(),
+        beats: script.beats.len(),
+    };
+    std::fs::write(
+        working_dir.join("compose-plan.json"),
+        serde_json::to_vec_pretty(&plan)?,
+    )?;
+
+    let encode = prepare_shared_encode_plan(working_dir);
+
+    if let Some(video) = spawn_compositor(working_dir, &mut on_progress) {
+        return Ok(ComposeResult {
+            video_path: Some(video),
+            mode: "compositor".into(),
+            qa,
+        });
+    }
+    on_progress(
+        "encode fallback stills",
+        Some(serde_json::json!({
+            "phase": "clip",
+            "step": 0,
+            "total": script.beats.len(),
+            "message": "encode fallback stills",
+        })),
+    );
+    if let Some(video) = ffmpeg_stills(working_dir, script, encode.as_ref()) {
+        return Ok(ComposeResult {
+            video_path: Some(video),
+            mode: "ffmpeg_stills".into(),
+            qa,
+        });
+    }
+    Ok(ComposeResult {
+        video_path: None,
+        mode: "stills_audio".into(),
+        qa,
+    })
+}
+
+fn prepare_shared_encode_plan(
+    working_dir: &Path,
+) -> Option<nomi_config::ffmpeg_hw::EncodePlanSidecar> {
+    let ffmpeg = nomi_config::resolve_ffmpeg_executable()?;
+    match nomi_config::ffmpeg_hw::write_encode_plan_sidecar_blocking(&ffmpeg, working_dir) {
+        Ok(sidecar) => {
+            tracing::info!(
+                encoder = %sidecar.primary.codec,
+                encode_desc = %sidecar.primary.description,
+                ffmpeg = %sidecar.ffmpeg,
+                "briefing encode plan ready"
+            );
+            Some(sidecar)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to write briefing encode-plan.json");
+            None
+        }
+    }
+}
+
+fn spawn_compositor(
+    working_dir: &Path,
+    on_progress: &mut impl FnMut(&str, Option<Value>),
+) -> Option<String> {
+    let cli = locate_compositor()?;
+    let mut child = silent_command("node")
+        .arg(&cli)
+        .arg("--input")
+        .arg(working_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let progress_path = working_dir.join("compose-progress.json");
+    let mut last_raw = String::new();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                pump_compose_progress(&progress_path, &mut last_raw, on_progress);
+                if !status.success() {
+                    return None;
+                }
+                break;
+            }
+            Ok(None) => {
+                pump_compose_progress(&progress_path, &mut last_raw, on_progress);
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                return None;
+            }
+        }
+    }
+    let mp4 = working_dir.join("briefing.mp4");
+    mp4.exists().then(|| mp4.to_string_lossy().into_owned())
+}
+
+fn pump_compose_progress(
+    path: &Path,
+    last_raw: &mut String,
+    on_progress: &mut impl FnMut(&str, Option<Value>),
+) {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if raw == *last_raw {
+        return;
+    }
+    *last_raw = raw.clone();
+    let Ok(value) = serde_json::from_str::<Value>(raw.trim()) else {
+        return;
+    };
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("compose original news cards")
+        .to_string();
+    on_progress(&message, Some(value));
+}
+
+fn silent_command(program: &str) -> Command {
+    nomi_process_runtime::hidden_std_command(program)
+}
+
+fn locate_compositor() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("NOMIFUN_BRIEFING_COMPOSITOR") {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let mut dir = std::env::current_dir().ok()?;
+    for _ in 0..6 {
+        let candidate = dir.join("packaging/briefing-compositor/cli.mjs");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn ffmpeg_stills(
+    working_dir: &Path,
+    script: &BeatScript,
+    encode: Option<&nomi_config::ffmpeg_hw::EncodePlanSidecar>,
+) -> Option<String> {
+    let video_only = working_dir.join("clips").join("ffmpeg-stills.mp4");
+    let _ = std::fs::create_dir_all(working_dir.join("clips"));
+    let duration = stills_duration_secs(working_dir, script);
+    let color = format!("color=c=0x101418:s=1920x1080:d={duration:.3}:r=30");
+    let ffmpeg_bin = encode
+        .map(|e| e.ffmpeg.as_str())
+        .unwrap_or("ffmpeg");
+    let plans: Vec<&nomi_config::ffmpeg_hw::VideoEncodePlanSpec> = match encode {
+        Some(e) => {
+            if e.primary.uses_hw && e.fallback.codec != e.primary.codec {
+                vec![&e.primary, &e.fallback]
+            } else {
+                vec![&e.primary]
+            }
+        }
+        None => return ffmpeg_stills_soft(working_dir, &video_only, &color),
+    };
+
+    let mut encoded = false;
+    for plan in plans {
+        let mut args: Vec<String> = vec!["-y".into()];
+        args.extend(plan.input_args.iter().cloned());
+        args.extend([
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            color.clone(),
+        ]);
+        if let Some(vf) = &plan.hwupload_vf {
+            args.extend(["-vf".into(), vf.clone()]);
+        }
+        args.extend(plan.encode_args().into_iter().map(str::to_string));
+        args.extend([
+            "-movflags".into(),
+            "+faststart".into(),
+            video_only.to_string_lossy().into_owned(),
+        ]);
+        let status = silent_command(ffmpeg_bin).args(&args).status().ok()?;
+        if status.success() && video_only.is_file() {
+            encoded = true;
+            tracing::info!(encoder = %plan.codec, "briefing ffmpeg_stills encoded");
+            break;
+        }
+        let _ = std::fs::remove_file(&video_only);
+    }
+    if !encoded {
+        return None;
+    }
+
+    mux_or_copy_stills(working_dir, ffmpeg_bin, &video_only)
+}
+
+fn ffmpeg_stills_soft(working_dir: &Path, video_only: &Path, color: &str) -> Option<String> {
+    let status = silent_command("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            color,
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "stillimage",
+            "-movflags",
+            "+faststart",
+            video_only.to_str()?,
+        ])
+        .status()
+        .ok()?;
+    if !status.success() || !video_only.is_file() {
+        return None;
+    }
+    mux_or_copy_stills(working_dir, "ffmpeg", video_only)
+}
+
+fn mux_or_copy_stills(working_dir: &Path, ffmpeg_bin: &str, video_only: &Path) -> Option<String> {
+    let out = working_dir.join("briefing.mp4");
+    if let Some(narration) = find_narration(working_dir) {
+        let mux = silent_command(ffmpeg_bin)
+            .args(["-y", "-i"])
+            .arg(video_only)
+            .arg("-i")
+            .arg(&narration)
+            .args([
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+            ])
+            .arg(&out)
+            .status()
+            .ok()?;
+        if mux.success() && out.is_file() {
+            return Some(out.to_string_lossy().into_owned());
+        }
+    }
+    if std::fs::copy(video_only, &out).is_ok() && out.is_file() {
+        Some(out.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+fn stills_duration_secs(working_dir: &Path, script: &BeatScript) -> f64 {
+    let fallback = f64::from(script.format_secs.max(4));
+    let Ok(raw) = std::fs::read_to_string(working_dir.join(TIMING_FILENAME)) else {
+        return fallback;
+    };
+    let Ok(timing) = serde_json::from_str::<TimingFile>(&raw) else {
+        return fallback;
+    };
+    timing
+        .chunks
+        .iter()
+        .map(|chunk| chunk.end_secs)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|end| end.max(4.0))
+        .unwrap_or(fallback)
+}
+
+fn find_narration(working_dir: &Path) -> Option<PathBuf> {
+    for name in ["narration.wav", "narration.mp3", "audio.wav", "audio.mp3", "full.wav"] {
+        let path = working_dir.join(name);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+pub fn compositor_missing_is_ok(result: &ComposeResult) -> bool {
+    result.mode != "lint_failed"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{Beat, BeatScript};
+
+    #[test]
+    fn lint_blocks_unknown_card_before_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = BeatScript {
+            format_secs: 90,
+            beats: vec![Beat {
+                id: "b1".into(),
+                spoken_text: "今日".into(),
+                on_screen: String::new(),
+                visual: crate::ir::VisualKind::UserAsset,
+                card: "not_a_card".into(),
+                claims: vec![],
+                citations: vec![],
+                anchors: vec![],
+            }],
+            unknowns: vec![],
+        };
+        let result = compose_working_dir(dir.path(), &script).unwrap();
+        assert_eq!(result.mode, "lint_failed");
+    }
+
+    #[test]
+    fn sidecar_catalog_matches_engine_cards() {
+        let catalog_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packaging/briefing-compositor/catalog.json");
+        let raw = std::fs::read_to_string(&catalog_path).unwrap();
+        let catalog: Vec<String> = serde_json::from_str(&raw).unwrap();
+        let expected: Vec<String> = CARD_CATALOG.iter().map(|id| (*id).to_string()).collect();
+        assert_eq!(catalog, expected);
+        let cli = catalog_path
+            .parent()
+            .unwrap()
+            .join("cli.mjs")
+            .canonicalize()
+            .unwrap();
+        let source = std::fs::read_to_string(cli).unwrap();
+        assert!(!source.contains("video-talkcraft"));
+        assert!(!source.contains("@remotion"));
+        assert!(!source.contains("zoompan"));
+        assert!(source.contains("compose-progress.json"));
+        assert!(source.contains("encode-plan.json"));
+        assert!(source.contains("hwupload_vf"));
+    }
+}

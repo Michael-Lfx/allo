@@ -24,7 +24,7 @@ type AgentLogContext = { endpoint: string; connected: boolean; enabled: boolean;
 function formatLogText(logs: AgentEventLog[], context: AgentLogContext) {
     const connectionStatus = context.connected ? canvasT(`${LA}.diagOnline`, "在线") : context.enabled ? canvasT(`${LA}.diagConnecting`, "连接中") : canvasT(`${LA}.diagDisabled`, "未启用");
     const head = [
-        canvasT(`${LA}.diagHeader`, "影策 Canvas Agent 诊断日志"),
+        canvasT(`${LA}.diagHeader`, "Canvas Agent 诊断日志"),
         canvasT(`${LA}.diagCanvasAgent`, "Canvas Agent: {{endpoint}}", { endpoint: context.endpoint }),
         canvasT(`${LA}.diagConnection`, "连接: {{status}}", { status: connectionStatus }),
         canvasT(`${LA}.diagStatus`, "状态: {{activity}}", { activity: context.activity }),

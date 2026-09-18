@@ -1,4 +1,4 @@
-//! Multi-scene film assembly for Script2Video.
+//! Multi-scene film coordination for Script2Video.
 //!
 //! Reuses per-scene [`Script2VideoPipeline`] the same way Idea2Video does:
 //! split screenplay → film-level cast/world → `scene_i/` plan+render → concat.
@@ -9,23 +9,29 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    CharacterExtractor, CharacterPortraitsGenerator, VoiceProfileGenerator, VoiceReferenceGenerator,
-    WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
+    CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, VoiceProfileGenerator,
+    VoiceReferenceGenerator, ensure_film_cover, has_usable_portrait,
 };
 use crate::error::VimaxResult;
+use crate::drama::{
+    DramaEngine, load_drama_engine, with_drama_engine, with_scene_drama_engine,
+};
 use crate::media_local;
 use crate::planning::{
     allocate_scene_budgets, enrich_requirement_for_scene,
     enrich_requirement_for_scene_model_decides, normalize_target_duration_secs,
 };
 use crate::progress::ProgressCallback;
-use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
+use crate::session::{
+    copy_json_artifact_if_readable, read_json_artifact, write_json_artifact, write_text_artifact,
+};
 
 use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
     world_cameo_context,
 };
-use super::script2video::{resolve_scene_tail_continuity, PlanArtifacts, Script2VideoPipeline};
+use super::scene_reel::SceneReel;
+use super::script2video::{PlanArtifacts, Script2VideoPipeline};
 use super::script_scene_split::{
     apply_script_selection, build_scenes_index, resolve_script_selection, selected_script_bodies,
     split_screenplay, ScriptSelection, ScreenplayUnit,
@@ -38,6 +44,7 @@ use super::{
 pub struct ScriptFilmPipeline {
     backends: PipelineBackends,
     working_dir: PathBuf,
+    screenwriter: Screenwriter,
     character_extractor: CharacterExtractor,
     portraits: CharacterPortraitsGenerator,
 }
@@ -45,10 +52,53 @@ pub struct ScriptFilmPipeline {
 impl ScriptFilmPipeline {
     pub fn new(backends: PipelineBackends, working_dir: PathBuf) -> Self {
         Self {
+            screenwriter: Screenwriter::new(Arc::clone(&backends.chat), backends.clip),
             character_extractor: CharacterExtractor::new(Arc::clone(&backends.chat)),
             portraits: CharacterPortraitsGenerator::new(Arc::clone(&backends.image)),
             backends,
             working_dir,
+        }
+    }
+
+    /// Best-effort dramatic engine for script-to-film. A thin user script must
+    /// still plan — unlike idea2video, a lint failure here does not abort.
+    async fn ensure_drama_engine(
+        &self,
+        script: &str,
+        user_requirement: &str,
+        progress: &Option<ProgressCallback>,
+    ) -> Option<DramaEngine> {
+        emit_pct(
+            progress,
+            "drama_engine",
+            "正在设计戏剧引擎（欲望/阻力/反转/节拍）",
+            6.0,
+        );
+        let engine_fp = artifact_fingerprint(&[script, user_requirement]);
+        let path = self.working_dir.join("drama_engine.json");
+        match load_or_write_json_cached(&path, &engine_fp, || async {
+            self.screenwriter
+                .develop_validated_drama_engine(script, user_requirement)
+                .await
+        })
+        .await
+        {
+            Ok(engine) => Some(engine),
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&path).await;
+                tracing::warn!(
+                    error = %e,
+                    "script film drama engine skipped; continuing without it"
+                );
+                None
+            }
+        }
+    }
+
+    fn requirement_with_film_drama(&self, user_requirement: &str) -> String {
+        match load_drama_engine(&self.working_dir) {
+            Some(engine) => with_drama_engine(user_requirement, &engine),
+            None => user_requirement.to_string(),
         }
     }
 
@@ -76,15 +126,15 @@ impl ScriptFilmPipeline {
 
         let root_chars = self.working_dir.join("characters.json");
         let scene_chars = scene_dir.join("characters.json");
-        if root_chars.exists() {
+        if root_chars.is_file() {
             let mut cast_changed = !scene_chars.exists();
             if scene_chars.exists() {
                 let a = tokio::fs::read(&root_chars).await.unwrap_or_default();
                 let b = tokio::fs::read(&scene_chars).await.unwrap_or_default();
                 cast_changed = a != b;
             }
-            tokio::fs::copy(&root_chars, &scene_chars).await?;
-            if cast_changed {
+            let copied = copy_json_artifact_if_readable(&root_chars, &scene_chars).await?;
+            if copied && cast_changed {
                 for name in [
                     "storyboard.json",
                     "shot_descriptions.json",
@@ -103,21 +153,17 @@ impl ScriptFilmPipeline {
         }
 
         let root_reg = self.working_dir.join("character_portraits_registry.json");
-        if root_reg.exists() {
-            tokio::fs::copy(
-                &root_reg,
-                scene_dir.join("character_portraits_registry.json"),
-            )
-            .await?;
-        }
+        let _ = copy_json_artifact_if_readable(
+            &root_reg,
+            &scene_dir.join("character_portraits_registry.json"),
+        )
+        .await?;
         let root_world = self.working_dir.join("world_assets_registry.json");
-        if root_world.exists() {
-            tokio::fs::copy(
-                &root_world,
-                scene_dir.join("world_assets_registry.json"),
-            )
-            .await?;
-        }
+        let _ = copy_json_artifact_if_readable(
+            &root_world,
+            &scene_dir.join("world_assets_registry.json"),
+        )
+        .await?;
         let local_portraits = scene_dir.join("character_portraits");
         if local_portraits.is_dir() {
             let _ = tokio::fs::remove_dir_all(&local_portraits).await;
@@ -173,11 +219,21 @@ impl ScriptFilmPipeline {
             "script2video screenplay split/selection"
         );
 
+        let engine = self
+            .ensure_drama_engine(script, user_requirement, &progress)
+            .await;
+
         if split.units.len() <= 1 {
             // True single-beat script — legacy flat film-root layout.
+            // Film-scope drama so the storyboard covers hook/turn/payoff of
+            // THIS whole script, not "don't restage another scene's payoff".
+            let req = match engine.as_ref() {
+                Some(engine) => with_drama_engine(user_requirement, engine),
+                None => user_requirement.to_string(),
+            };
             let s2v = Script2VideoPipeline::new(self.backends.clone(), self.working_dir.clone());
             let plan = s2v
-                .plan_text_artifacts(script, user_requirement, &style, progress)
+                .plan_text_artifacts(script, &req, &style, progress)
                 .await?;
             write_json_artifact(
                 &self.working_dir.join("script.json"),
@@ -236,7 +292,7 @@ impl ScriptFilmPipeline {
         emit_pct(
             &progress,
             "cameo_bind",
-            "正在绑定用户角色参考图（有真人脸才做隐私换脸）",
+            "正在绑定用户角色参考图（仅真实照片人脸才做隐私换脸）",
             18.0,
         );
         apply_session_cameos(
@@ -247,10 +303,7 @@ impl ScriptFilmPipeline {
         )
         .await?;
 
-        let world_planner = WorldAssetsPlanner::new(
-            Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
-        );
+        let world_planner = self.backends.world_planner(&self.working_dir).await;
         emit_pct(
             &progress,
             "character_portraits_start",
@@ -280,7 +333,7 @@ impl ScriptFilmPipeline {
                 ));
                 let entry = self
                     .portraits
-                    .generate_all_views(character, &style, &corpus, &dir, &[])
+                    .generate_all_views(character, &style, &corpus, &dir)
                     .await?;
                 registry.extend(entry);
                 write_json_artifact(&registry_path, &registry).await?;
@@ -320,7 +373,6 @@ impl ScriptFilmPipeline {
             }
         }
 
-        emit_pct(&progress, "look_plate_start", "正在锁定全片画风", 28.0);
         emit_pct(
             &progress,
             "world_assets_start",
@@ -341,8 +393,9 @@ impl ScriptFilmPipeline {
                 .await?;
         }
 
+        let clip = self.backends.clip;
         let scene_count = bodies.len().max(1);
-        let budgets = film_total.map(|total| allocate_scene_budgets(total, scene_count));
+        let budgets = film_total.map(|total| allocate_scene_budgets(clip, total, scene_count));
 
         for (i, scene_script) in bodies.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
@@ -360,6 +413,7 @@ impl ScriptFilmPipeline {
             &format!("正在规划 0/{scene_count} 个场次文本产物"),
             40.0,
         );
+        let scene_base = scene_requirement_base(&self.working_dir, user_requirement);
         for (i, scene_script) in bodies.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
             let backends = self.backends.clone();
@@ -368,13 +422,19 @@ impl ScriptFilmPipeline {
             let budget = budgets.as_ref().and_then(|b| b.get(i).copied());
             let mut scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
-                    user_requirement,
+                    clip,
+                    &scene_base,
                     budget,
                     i,
                     scene_count,
                     film_total,
                 ),
-                _ => enrich_requirement_for_scene_model_decides(user_requirement, i, scene_count),
+                _ => enrich_requirement_for_scene_model_decides(
+                    clip,
+                    &scene_base,
+                    i,
+                    scene_count,
+                ),
             };
             scene_req = format!("{scene_req}\n\n{scope}");
             let permit = Arc::clone(&sem);
@@ -409,6 +469,12 @@ impl ScriptFilmPipeline {
         while let Some(joined) = set.join_next().await {
             joined.map_err(|e| crate::error::VimaxError::msg(e.to_string()))??;
         }
+        super::film_coverage::apply_film_coverage(
+            &self.working_dir,
+            self.backends.clip,
+            self.backends.max_reference_audio,
+        )
+        .await?;
 
         let synopsis = format!("{corpus}\n{user_requirement}");
         let cover_aspect = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
@@ -454,17 +520,17 @@ impl ScriptFilmPipeline {
             && multi_scene_or_selected_script_json(&script_json).await;
 
         if !use_scene_dirs {
+            let req = self.requirement_with_film_drama(user_requirement);
             let s2v = Script2VideoPipeline::new(self.backends.clone(), self.working_dir.clone());
-            return s2v
-                .render(script, user_requirement, &style, progress)
-                .await;
+            return s2v.render(script, &req, &style, progress).await;
         }
 
         let scenes: Vec<String> =
             serde_json::from_str(&tokio::fs::read_to_string(&script_json).await?)?;
         let film_total = self.film_target_secs().await;
+        let clip = self.backends.clip;
         let scene_total = scenes.len().max(1);
-        let budgets = film_total.map(|total| allocate_scene_budgets(total, scene_total));
+        let budgets = film_total.map(|total| allocate_scene_budgets(clip, total, scene_total));
 
         let selection: ScriptSelection = read_json_artifact(&self.working_dir.join("selection.json"))
             .await
@@ -472,6 +538,7 @@ impl ScriptFilmPipeline {
         let split = split_screenplay(script);
         let selected = apply_script_selection(&split, &selection);
         let scope = Self::scope_note(&selection, &selected);
+        let scene_base = scene_requirement_base(&self.working_dir, user_requirement);
 
         let characters: Vec<crate::domain::CharacterInScene> = serde_json::from_str(
             &tokio::fs::read_to_string(self.working_dir.join("characters.json")).await?,
@@ -484,8 +551,7 @@ impl ScriptFilmPipeline {
         )
         .await?;
 
-        let mut scene_videos: Vec<PathBuf> = Vec::new();
-        let mut prior_continuity: Option<PathBuf> = None;
+        let mut reel = SceneReel::new();
         for (i, scene_script) in scenes.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
             let scene_final = scene_dir.join("final_video.mp4");
@@ -497,8 +563,7 @@ impl ScriptFilmPipeline {
                     &format!("场次 {}/{scene_total} 已完成，跳过", i + 1),
                     20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
                 );
-                prior_continuity = resolve_scene_tail_continuity(&scene_dir).await;
-                scene_videos.push(scene_final);
+                reel.push(scene_final, &scene_dir).await;
                 continue;
             }
 
@@ -506,13 +571,19 @@ impl ScriptFilmPipeline {
             self.prepare_scene_workspace(&scene_dir, budget).await?;
             let mut scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
-                    user_requirement,
+                    clip,
+                    &scene_base,
                     budget,
                     i,
                     scene_total,
                     film_total,
                 ),
-                _ => enrich_requirement_for_scene_model_decides(user_requirement, i, scene_total),
+                _ => enrich_requirement_for_scene_model_decides(
+                    clip,
+                    &scene_base,
+                    i,
+                    scene_total,
+                ),
             };
             scene_req = format!("{scene_req}\n\n{scope}");
 
@@ -531,13 +602,12 @@ impl ScriptFilmPipeline {
                     &scene_req,
                     &style,
                     progress.clone(),
-                    prior_continuity.as_deref(),
+                    reel.tail_frame(),
                 )
                 .await
             {
                 Ok(video) => {
-                    prior_continuity = resolve_scene_tail_continuity(&scene_dir).await;
-                    scene_videos.push(video);
+                    reel.push(video, &scene_dir).await;
                     emit_pct(
                         &progress,
                         "render_scene_done",
@@ -549,7 +619,7 @@ impl ScriptFilmPipeline {
                     return Err(crate::error::VimaxError::Video(format!(
                         "场次 {}/{scene_total} 渲染失败（已完成 {} 场，可从断点续跑）: {e}",
                         i + 1,
-                        scene_videos.len()
+                        reel.len()
                     )));
                 }
             }
@@ -559,11 +629,17 @@ impl ScriptFilmPipeline {
         media_local::scrub_unusable_video(&final_path).await?;
         if !media_local::is_usable_video_file(&final_path) {
             emit_pct(&progress, "concat_start", "正在拼接各场次视频", 95.0);
-            let refs: Vec<&Path> = scene_videos.iter().map(|p| p.as_path()).collect();
-            media_local::concat_videos(&refs, &final_path).await?;
+            media_local::concat_videos(&reel.concat_clips(), &final_path).await?;
         }
         emit_pct(&progress, "render_done", "剧本成片渲染完成", 100.0);
         Ok(final_path)
+    }
+}
+
+fn scene_requirement_base(film_root: &Path, user_requirement: &str) -> String {
+    match load_drama_engine(film_root) {
+        Some(engine) => with_scene_drama_engine(user_requirement, &engine),
+        None => user_requirement.to_string(),
     }
 }
 

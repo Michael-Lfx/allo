@@ -14,9 +14,12 @@ pub mod continuation;
 pub mod edit_converge;
 pub mod edit_hints;
 pub mod env;
+pub mod failure;
 pub mod finalize;
 pub mod harness;
+pub mod metrics;
 pub mod patch;
+pub mod plan_artifact;
 pub mod profile;
 pub mod progress;
 pub mod prompt;
@@ -24,6 +27,7 @@ pub mod read_repeat;
 pub mod todo_continuation;
 pub mod tools;
 pub mod verify;
+pub mod working_set;
 
 pub use bash_hints::{BOUNDARY_PREFIX, format_write_root_rejection, wrap_boundary_error};
 pub use continuation::{ContinuationBudget, DEFAULT_MAX_SYSTEM_CONTINUATIONS};
@@ -47,10 +51,16 @@ pub use patch::{
 pub use profile::TaskProfile;
 pub use progress::{
     CODING_EXPLORE_BUDGET_NUDGE, CODING_EXPLORE_HARD_STOP, CODING_EXPLORE_NUDGE,
-    CODING_PLAN_HARD_STOP, CODING_PLAN_TIMEOUT_NUDGE, CODING_VERIFY_NUDGE, CodingProgressAction,
-    CodingProgressGuard, ProgressObserveParams, is_explore_tool,
+    CODING_LIFETIME_RECON_HARD_STOP, CODING_LIFETIME_RECON_NUDGE, CODING_PLAN_HARD_STOP,
+    CODING_PLAN_TIMEOUT_NUDGE, CODING_SERIAL_RECON_HARD_STOP, CODING_SERIAL_RECON_NUDGE,
+    CODING_VERIFY_NUDGE, CodingProgressAction, CodingProgressGuard, ExploreBudgetKind,
+    ProgressObserveParams, explore_budget_nudge_text, explore_hard_stop_text, is_explore_tool,
+    is_recon_tool,
 };
-pub use prompt::{coding_overlay_instructions, coding_turn_tail};
+pub use failure::{ToolFailureClass, failure_nudge, failure_nudge_if_useful, skip_failure_nudge};
+pub use metrics::HarnessKpi;
+pub use plan_artifact::PlanArtifact;
+pub use prompt::{CODING_SYSTEM_PREFIX_MARKER, coding_overlay_instructions, coding_turn_tail};
 pub use read_repeat::{
     CODING_READ_REPEAT_HARD_STOP, CODING_READ_REPEAT_NUDGE, CODING_UNCHANGED_STUB_NUDGE,
     ReadRepeatAction, ReadRepeatTracker, normalize_read_path,
@@ -60,4 +70,5 @@ pub use todo_continuation::{
     parse_plan_update_content,
 };
 pub use tools::advertise_tool;
-pub use verify::{is_mutating_tool, looks_like_verification_command};
+pub use verify::{is_isolated_subagent_tool, is_mutating_tool, is_side_effect_tool, looks_like_verification_command};
+pub use working_set::{LineSpan, WorkingSet, WorkingSetEntry};

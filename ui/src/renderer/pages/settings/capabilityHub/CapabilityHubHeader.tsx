@@ -1,4 +1,4 @@
-import { Puzzle, Robot, Search, Tool, ApplicationOne } from '@icon-park/react';
+import { Puzzle, Robot, Search, Tool } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -11,39 +11,35 @@ const TAB_ICONS: Record<CapabilityHubId, typeof Robot> = {
   presets: Robot,
   skills: Puzzle,
   mcp: Tool,
-  plugins: ApplicationOne,
 };
 
 const TAB_LABEL_KEYS: Record<CapabilityHubId, I18nKey> = {
   presets: 'settings.presetsHub.railTitle',
   skills: 'settings.skillsHub.railTitle',
   mcp: 'settings.mcpHub.railTitle',
-  plugins: 'settings.capabilityHub.tabPlugins',
 };
 
 const SEARCH_PLACEHOLDER_KEYS: Record<CapabilityHubId, I18nKey> = {
   presets: 'settings.capabilityHub.searchPresets',
   skills: 'settings.capabilityHub.searchSkills',
   mcp: 'settings.capabilityHub.searchMcp',
-  plugins: 'settings.capabilityHub.searchPlugins',
 };
 
 const TAB_LABEL_DEFAULTS: Record<CapabilityHubId, string> = {
   presets: 'Presets',
   skills: 'Skills',
   mcp: 'MCP',
-  plugins: 'Plugins',
 };
 
 const SEARCH_PLACEHOLDER_DEFAULTS: Record<CapabilityHubId, string> = {
   presets: 'Search presets',
   skills: 'Search skills',
   mcp: 'Search MCP',
-  plugins: 'Search plugins',
 };
 
 type CapabilityHubHeaderProps = {
   hub: CapabilityHubId;
+  marketEnabled?: boolean;
   view: CapabilityHubView;
   installedCount?: number;
   searchQuery: string;
@@ -55,6 +51,7 @@ type CapabilityHubHeaderProps = {
 
 const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
   hub,
+  marketEnabled = true,
   view,
   installedCount,
   searchQuery,
@@ -105,18 +102,20 @@ const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
           />
 
           <div className='capability-hub-segment' role='group' aria-label={t('settings.capabilityHub.navLabel')}>
-            <button
-              type='button'
-              className={classNames('capability-hub-segment-btn', {
-                'capability-hub-segment-btn--active': view === 'market',
-              })}
-              aria-pressed={view === 'market'}
-              onClick={() => {
-                if (view === 'installed') onToggleInstalled();
-              }}
-            >
-              {t('settings.capabilityHub.discover', { defaultValue: 'Discover' })}
-            </button>
+            {marketEnabled && (
+              <button
+                type='button'
+                className={classNames('capability-hub-segment-btn', {
+                  'capability-hub-segment-btn--active': view === 'market',
+                })}
+                aria-pressed={view === 'market'}
+                onClick={() => {
+                  if (view === 'installed') onToggleInstalled();
+                }}
+              >
+                {t('settings.capabilityHub.discover', { defaultValue: 'Discover' })}
+              </button>
+            )}
             <button
               type='button'
               className={classNames('capability-hub-segment-btn', {

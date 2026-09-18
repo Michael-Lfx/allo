@@ -213,6 +213,10 @@ async fn bootstrap_embedded_agent_execution_is_host_composed() {
         !names.contains("nomi_delegate"),
         "host composition disabled must not register embedded AgentExecution"
     );
+    assert!(
+        names.contains("explore_code") && names.contains("verify_change"),
+        "isolated coding tools stay available without embedded nomi_delegate"
+    );
     let mut expected = enabled;
     assert!(expected.remove("nomi_delegate"));
     assert_eq!(

@@ -70,10 +70,12 @@ describe('MessageTips error render contract', () => {
   test('renders the real error card with summary, collapsed details, and ordered actions', () => {
     const html = renderMessage({
       message: '模型服务商拒绝了工具定义',
+      model_id: 'claude-sonnet-4-20250514',
       code: 'USER_LLM_PROVIDER_INVALID_TOOL_SCHEMA',
       incident_id: 'incident-message-tips-1',
       ownership: 'user_llm_provider',
       retryable: true,
+      resolution: { kind: 'retry' },
       detail: 'Invalid schema for function Read',
     });
 
@@ -83,7 +85,11 @@ describe('MessageTips error render contract', () => {
     const feedbackIndex = html.indexOf('message-error-note__feedback');
 
     expect(html).toContain('message-error-note__diagnostic-summary');
+    expect(html).toContain('模型 ID');
+    expect(html).toContain('claude-sonnet-4-20250514');
     expect(html).toContain('Invalid schema for function Read');
+    expect(html).not.toContain('message-error-note__tag');
+    expect(html).not.toContain('message-error-note__resolution');
     expect(html).not.toContain('message-error-note__incident');
     expect(html).toContain('message-error-note__details');
     expect(html).not.toContain('arco-collapse-item-active');
@@ -119,6 +125,19 @@ describe('MessageTips error render contract', () => {
     expect(feedbackIndex).toBeGreaterThan(copyIndex);
   });
 
+  test('keeps standalone recovery guidance when no direct recovery action is available', () => {
+    const html = renderMessage({
+      message: '会话正在处理上一条消息',
+      code: 'NOMIFUN_CONVERSATION_BUSY',
+      retryable: false,
+      resolution: { kind: 'wait_for_current_response' },
+    });
+
+    expect(html).toContain('message-error-note__resolution');
+    expect(html).toContain('建议：');
+    expect(html).not.toContain('message-error-note__retry');
+  });
+
   test('uses the billing recovery action instead of changing the model', () => {
     const html = renderMessage({
       message: '积分不足',
@@ -135,5 +154,18 @@ describe('MessageTips error render contract', () => {
     expect(html).toContain('message-error-note__copy');
     expect(html).toContain('message-error-note__feedback');
     expect(html).not.toContain('message-error-note__retry');
+  });
+
+  test('uses the feedback button instead of duplicating feedback guidance', () => {
+    const html = renderMessage({
+      message: '模型服务商拒绝了请求',
+      code: 'USER_LLM_PROVIDER_INVALID_REQUEST',
+      ownership: 'user_llm_provider',
+      retryable: false,
+      resolution: { kind: 'send_feedback', target: 'feedback' },
+    });
+
+    expect(html).not.toContain('message-error-note__resolution');
+    expect(html).toContain('message-error-note__feedback');
   });
 });

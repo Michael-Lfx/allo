@@ -5,7 +5,6 @@
 
 declare global {
   interface Window {
-    __NomiSafeResizeObserver__?: boolean;
     __NomiResizeObserverPatched__?: boolean;
   }
 
@@ -89,34 +88,6 @@ const patchGlobalErrorListeners = () => {
   }) as typeof window.removeEventListener;
 };
 
-const patchResizeObserver = () => {
-  // Wrap ResizeObserver callbacks in requestAnimationFrame to break the feedback loop that
-  // browsers treat as "ResizeObserver loop" (在下一帧执行回调，可彻底规避 ResizeObserver loop limit 警告).
-  if (!window.__NomiSafeResizeObserver__ && typeof ResizeObserver !== 'undefined') {
-    const NativeResizeObserver = window.ResizeObserver;
-    class SafeResizeObserver extends NativeResizeObserver {
-      constructor(callback: ResizeObserverCallback) {
-        let frame = 0;
-        super((entries, observer) => {
-          if (frame) cancelAnimationFrame(frame);
-          frame = requestAnimationFrame(() => {
-            frame = 0;
-            try {
-              callback(entries, observer);
-            } catch (error) {
-              if (!shouldSilence(extractMessage(error))) {
-                throw error;
-              }
-            }
-          });
-        });
-      }
-    }
-    window.ResizeObserver = SafeResizeObserver as typeof ResizeObserver;
-    window.__NomiSafeResizeObserver__ = true;
-  }
-};
-
 const patchGlobalErrorFilters = () => {
   // Global error/rejection filter: quietly drop known RO-loop messages but keep other errors
   // (全局过滤 ResizeObserver 循环提示，只忽略白名单消息，其余错误依然向外抛出).
@@ -158,7 +129,6 @@ export const applyRuntimePatches = () => {
     return;
   }
   patchGlobalErrorListeners();
-  patchResizeObserver();
   patchGlobalErrorFilters();
   patchConsole();
 };

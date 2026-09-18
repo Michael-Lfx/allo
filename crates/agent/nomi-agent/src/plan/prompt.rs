@@ -44,7 +44,7 @@ Compose a clear, actionable implementation plan in your response including:
 - **Verification**: how to test the changes end-to-end
 
 ### Phase 4: Submit for review
-When your plan is complete, call ExitPlanMode to submit it for user review. Do not ask "Is this plan okay?" — calling ExitPlanMode is the way to request approval. Do not linger in open-ended exploration once you have enough context to write the plan."#
+When your plan is complete, call ExitPlanMode with the full plan text. The `plan` argument MUST include a concrete Verification command the user can run (for example `cargo test`, `bun run check`, or an equivalent). ExitPlanMode without Verification is rejected. Write tools stay locked until the user sends the next message — that next message is approval to implement. Do not ask "Is this plan okay?" — calling ExitPlanMode is the way to request approval. Do not linger in open-ended exploration once you have enough context to write the plan."#
 }
 
 #[cfg(test)]

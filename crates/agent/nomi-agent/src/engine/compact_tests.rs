@@ -139,12 +139,17 @@ fn make_compact_engine_with_output(
         moa: None,
         stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
         coding_harness: None,
+        harness_runtime: Default::default(),
         context_contributors: Vec::new(),
         steering_inbox: None,
         system_resource_inbox: None,
+        frozen_provider_tools: None,
+        sent_prefix_len: 0,
         process_supervisor: None,
         editable_turn: None,
         observation: None,
+        horizon: Default::default(),
+        plan_exit_latch: None,
     }
 }
 
@@ -334,6 +339,49 @@ fn prune_old_tool_images_drops_individually_oversized_legacy_image() {
     assert_eq!(content.matches("payload budget").count(), 1);
 }
 
+#[test]
+fn prune_old_tool_images_does_not_rewrite_sent_prefix() {
+    let mut engine = make_compact_engine(
+        CompactConfig::default(),
+        CompactState::new(),
+        (0..5)
+            .map(|i| tool_result_msg_with_image(&format!("call_{i}")))
+            .collect(),
+    );
+    engine.messages[0].provider_round_id = Some("resp_frozen".to_owned());
+    engine.max_recent_images = 3;
+    engine.sent_prefix_len = engine.messages.len();
+    engine.prune_old_tool_images();
+    assert_eq!(count_images(&engine.messages), 5);
+    assert_eq!(
+        engine.messages[0].provider_round_id.as_deref(),
+        Some("resp_frozen")
+    );
+}
+
+#[test]
+fn prune_old_tool_images_strips_only_unsent_over_budget() {
+    let mut messages: Vec<_> = (0..3)
+        .map(|i| tool_result_msg_with_image(&format!("old_{i}")))
+        .collect();
+    messages.push(tool_result_msg_with_image("new"));
+    let mut engine = make_compact_engine(CompactConfig::default(), CompactState::new(), messages);
+    engine.messages[0].provider_round_id = Some("resp_frozen".to_owned());
+    engine.max_recent_images = 3;
+    engine.sent_prefix_len = 3;
+    engine.prune_old_tool_images();
+    assert_eq!(count_images(&engine.messages[..3]), 3);
+    assert_eq!(count_images(&engine.messages[3..]), 0);
+    assert_eq!(
+        engine.messages[0].provider_round_id.as_deref(),
+        Some("resp_frozen")
+    );
+    let ContentBlock::ToolResult { content, .. } = &engine.messages[3].content[0] else {
+        unreachable!();
+    };
+    assert!(content.contains("attachment(s)"));
+}
+
 #[tokio::test]
 async fn first_request_prunes_images_from_preloaded_or_resumed_history() {
     let mut message = tool_result_msg_with_image("legacy-batch");
@@ -453,6 +501,37 @@ fn abort_current_turn_redacts_an_image_before_any_assistant_response() {
     }));
 }
 
+#[test]
+fn abort_current_turn_keeps_already_sent_user_image() {
+    let mut engine = make_compact_engine(
+        CompactConfig::default(),
+        CompactState::new(),
+        vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::Text {
+                    text: "inspect this".to_string(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_string(),
+                    data: "large-base64-payload".to_string(),
+                },
+            ],
+        )],
+    );
+    engine.sent_prefix_len = 1;
+
+    engine.abort_current_turn("Canceled by user");
+
+    assert!(engine.messages[0].content.iter().any(|block| {
+        matches!(
+            block,
+            ContentBlock::Image { media_type, data }
+                if media_type == "image/png" && data == "large-base64-payload"
+        )
+    }));
+}
+
 // -- Emergency check fires when at limit --
 
 #[tokio::test]
@@ -496,11 +575,12 @@ async fn emergency_silent_below_limit() {
     assert!(engine.run_compaction(CompactReason::TurnEnd).await.is_ok());
 }
 
-// -- Microcompact runs when count trigger fires --
+// -- Microcompact primitive still clears old results when invoked directly --
 
-#[tokio::test]
-async fn microcompact_clears_old_results() {
-    // 12 tool results with keep_recent=3 (threshold=6) → should clear 9
+#[test]
+fn microcompact_clears_old_results() {
+    // TurnEnd no longer microcompacts until the autocompact watermark.
+    // This hits the primitive: 12 tool results, keep_recent=3 → clear 9.
     let mut messages = Vec::new();
     for i in 0..12 {
         let id = format!("t{i}");
@@ -516,7 +596,7 @@ async fn microcompact_clears_old_results() {
 
     let mut engine = make_compact_engine(config, state, messages);
     engine.messages[0].provider_round_id = Some("resp_before_microcompact".to_owned());
-    engine.run_compaction(CompactReason::TurnEnd).await.unwrap();
+    engine.run_microcompact();
 
     // Last 3 tool results should be preserved
     let cleared_count = engine
@@ -533,6 +613,145 @@ async fn microcompact_clears_old_results() {
         engine.messages.iter().all(|message| message.provider_round_id.is_none()),
         "microcompact rewrites the full provider snapshot"
     );
+}
+
+#[tokio::test]
+async fn turn_end_does_not_microcompact_below_autocompact_watermark() {
+    let mut messages = Vec::new();
+    for i in 0..12 {
+        let id = format!("t{i}");
+        messages.push(tool_use_msg(&id, "Read"));
+        messages.push(tool_result_msg(&id, &format!("data-{i}")));
+    }
+
+    let config = CompactConfig {
+        micro_keep_recent: 3,
+        ..Default::default()
+    };
+    let mut engine = make_compact_engine(config, CompactState::new(), messages);
+    engine
+        .run_compaction(CompactReason::TurnEnd)
+        .await
+        .unwrap();
+
+    let cleared_count = engine
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|b| {
+            matches!(b, ContentBlock::ToolResult { content, .. } if content == "[Tool result cleared]")
+        })
+        .count();
+    assert_eq!(cleared_count, 0);
+}
+
+#[tokio::test]
+async fn idle_cache_expired_microcompacts_below_watermark() {
+    let mut messages = Vec::new();
+    for i in 0..12 {
+        let id = format!("t{i}");
+        messages.push(tool_use_msg(&id, "Read"));
+        messages.push(tool_result_msg(&id, &format!("data-{i}")));
+    }
+    let config = CompactConfig {
+        micro_keep_recent: 3,
+        idle_compact_seconds: 900,
+        ..Default::default()
+    };
+    let mut engine = make_compact_engine(config, CompactState::new(), messages);
+    engine
+        .run_compaction(CompactReason::IdleCacheExpired)
+        .await
+        .unwrap();
+    let cleared_count = engine
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|b| {
+            matches!(b, ContentBlock::ToolResult { content, .. } if content == "[Tool result cleared]")
+        })
+        .count();
+    assert_eq!(cleared_count, 9);
+}
+
+#[test]
+fn idle_compact_requires_fifteen_minute_gap() {
+    let mut messages = Vec::new();
+    for i in 0..4 {
+        messages.push(Message::new(
+            if i % 2 == 0 { Role::User } else { Role::Assistant },
+            vec![ContentBlock::Text {
+                text: format!("msg-{i}"),
+            }],
+        ));
+    }
+    let mut engine = make_compact_engine(
+        CompactConfig::default(),
+        CompactState::new(),
+        messages,
+    );
+    engine.compact_state.last_turn_ended_at =
+        Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    assert!(!engine.should_idle_compact());
+    engine.compact_state.last_turn_ended_at =
+        Some(chrono::Utc::now() - chrono::Duration::minutes(16));
+    assert!(engine.should_idle_compact());
+}
+
+#[test]
+fn snip_archives_dropped_turns_when_session_cwd_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut messages = vec![Message::now(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "task".into(),
+        }],
+    )];
+    for i in 0..30 {
+        messages.push(Message::now(
+            if i % 2 == 0 {
+                Role::Assistant
+            } else {
+                Role::User
+            },
+            vec![ContentBlock::Text {
+                text: format!("plain-{i}"),
+            }],
+        ));
+    }
+    let now = chrono::Utc::now();
+    let session = crate::session::Session {
+        id: "snip-archive".into(),
+        created_at: now,
+        updated_at: now,
+        provider: "anthropic".into(),
+        model: "test".into(),
+        cwd: dir.path().to_string_lossy().into_owned(),
+        total_usage: Default::default(),
+        messages: Vec::new(),
+        owner_token: None,
+        activated_deferred_tools: Vec::new(),
+        editable_turn: None,
+        last_turn_ended_at: None,
+    };
+    let mut engine = make_compact_engine(CompactConfig::default(), CompactState::new(), messages);
+    engine.current_session = Some(session);
+    engine.run_snip_layer();
+    let notice = engine
+        .messages
+        .iter()
+        .rev()
+        .find_map(|m| m.content.iter().find_map(|b| match b {
+            ContentBlock::Text { text } if text.contains("[Context collapse]") => Some(text.clone()),
+            _ => None,
+        }))
+        .expect("collapse notice");
+    assert!(
+        notice.contains(".flowy/context-archive/"),
+        "notice should point at the archive, got: {notice}"
+    );
+    let archive_root = dir.path().join(".flowy").join("context-archive");
+    assert!(archive_root.exists());
 }
 
 // -- Disabled config skips micro and auto but not emergency --

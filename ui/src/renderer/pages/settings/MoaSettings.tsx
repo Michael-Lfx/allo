@@ -207,7 +207,7 @@ const MoaSettings: React.FC = () => {
   const isDirty = serializeMoaSettings(form) !== serializeMoaSettings(savedForm);
 
   return (
-    <SettingsPageWrapper>
+    <SettingsPageWrapper loading={loading}>
       <div className='space-y-24px'>
         <SettingsPageHeader
           title={t('settings.moa.title')}

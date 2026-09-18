@@ -12,6 +12,7 @@
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { resolveLocaleKey } from '@/common/utils';
+import SettingsContentLoading from '@/renderer/components/layout/SettingsContentLoading';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 // Shared tag UI + vocabulary — reused verbatim from the preset page so the
@@ -70,6 +71,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
   const skillRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [skillPaths, setSkillPaths] = useState<{ user_skills_dir: string; builtin_skills_dir: string } | null>(null);
   const [builtinAutoSkills, setBuiltinAutoSkills] = useState<Array<{ name: string; description: string }>>([]);
@@ -95,6 +97,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setLoadError(false);
     try {
       const [skills, paths, autoSkills] = await Promise.all([
         ipcBridge.fs.listAvailableSkills.invoke(),
@@ -104,8 +107,10 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
       setAvailableSkills(skills as SkillInfo[]);
       setSkillPaths(paths);
       setBuiltinAutoSkills(autoSkills);
+      setLoadError(false);
     } catch (error) {
       console.error('Failed to fetch skills:', error);
+      setLoadError(true);
       message.error(t('settings.skillsHub.fetchError', { defaultValue: 'Failed to fetch skills' }));
     } finally {
       setLoading(false);
@@ -369,36 +374,61 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
           </div>
 
           {/* Single card grid for all skills */}
-          {filteredSkills.length > 0 ? (
+          {loading && availableSkills.length === 0 ? (
+            <SettingsContentLoading className='min-h-220px' />
+          ) : loadError && availableSkills.length === 0 ? (
             <div
-              className='grid gap-16px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_185px]'
-              style={{ gridTemplateColumns: CARD_GRID_COLS }}
+              className='flex min-h-220px flex-col items-center justify-center gap-10px rd-8px border border-dashed border-arco-2 px-20px py-32px text-center'
+              role='alert'
             >
-              {filteredSkills.map((skill) => (
-                <SkillCard
-                  key={skill.name}
-                  skill={skill}
-                  tagByKey={tags.tagByKey}
-                  localeKey={localeKey}
-                  isAutoInjected={skill.source !== 'extension' && autoInjectedNames.has(skill.name)}
-                  onOpenDetails={setDetailSkill}
-                  onEditTags={setTagModalSkill}
-                  onDelete={confirmDelete}
-                  highlighted={highlightedSkill === skill.name}
-                  cardRef={(el) => {
-                    skillRefs.current[skill.name] = el;
-                  }}
-                />
-              ))}
+              <div className='text-13px text-t-secondary'>{t('common.failed')}</div>
+              <Button type='secondary' size='small' onClick={() => void fetchData()}>
+                {t('common.retry')}
+              </Button>
             </div>
           ) : (
-            <div className='text-center text-t-secondary py-40px'>
-              {loading
-                ? t('common.loading', { defaultValue: 'Please wait...' })
-                : availableSkills.length === 0
-                  ? t('settings.skillsHub.noSkills', { defaultValue: 'No skills found. Import some to get started.' })
-                  : t('settings.skillsHub.noMatch', { defaultValue: 'No skills match the current filters.' })}
-            </div>
+            <>
+              {loadError && availableSkills.length > 0 ? (
+                <div
+                  className='mb-12px flex items-center justify-between gap-12px rd-12px border border-dashed border-arco-2 px-16px py-12px text-13px text-t-secondary'
+                  role='alert'
+                >
+                  <span>{t('common.failed')}</span>
+                  <Button type='secondary' size='small' onClick={() => void fetchData()}>
+                    {t('common.retry')}
+                  </Button>
+                </div>
+              ) : null}
+              {filteredSkills.length > 0 ? (
+                <div
+                  className='grid gap-16px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_185px]'
+                  style={{ gridTemplateColumns: CARD_GRID_COLS }}
+                >
+                  {filteredSkills.map((skill) => (
+                    <SkillCard
+                      key={skill.name}
+                      skill={skill}
+                      tagByKey={tags.tagByKey}
+                      localeKey={localeKey}
+                      isAutoInjected={skill.source !== 'extension' && autoInjectedNames.has(skill.name)}
+                      onOpenDetails={setDetailSkill}
+                      onEditTags={setTagModalSkill}
+                      onDelete={confirmDelete}
+                      highlighted={highlightedSkill === skill.name}
+                      cardRef={(el) => {
+                        skillRefs.current[skill.name] = el;
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className='text-center text-t-secondary py-40px'>
+                  {availableSkills.length === 0
+                    ? t('settings.skillsHub.noSkills', { defaultValue: 'No skills found. Import some to get started.' })
+                    : t('settings.skillsHub.noMatch', { defaultValue: 'No skills match the current filters.' })}
+                </div>
+              )}
+            </>
           )}
 
           {/* Skill directory path */}

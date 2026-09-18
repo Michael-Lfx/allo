@@ -49,7 +49,7 @@
 - [ ] **Step 1: 在 media_types.rs 增加常量**
 
 ```rust
-/// `tb_model.category` for ASR models (`GET .../model/availableListClaw?category=7`).
+/// `tb_model.category` for ASR models (`GET .../api/v2/model/availableListClaw?category=7`).
 pub const MODEL_CATEGORY_ASR: i32 = 7;
 ```
 

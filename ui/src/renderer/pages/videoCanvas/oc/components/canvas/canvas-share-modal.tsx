@@ -3,6 +3,7 @@ import { App, Button, Input, Modal, Select, Spin } from "antd";
 import { Copy, Link2, RefreshCw, Share2, Unlink } from "lucide-react";
 
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { createCanvasShare, deleteCanvasShare, getCanvasShare, type CanvasShareStatus } from "@oc/services/api/canvas-share";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 
@@ -21,7 +22,7 @@ export function CanvasShareModal({ projectId, open, onClose, beforeCreate }: { p
             const result = await getCanvasShare(projectId);
             setShare(result.share);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "读取分享状态失败");
+            message.error(formatCanvasUserError(error, "读取分享状态失败"));
         } finally {
             setLoading(false);
         }
@@ -46,7 +47,7 @@ export function CanvasShareModal({ projectId, open, onClose, beforeCreate }: { p
             const url = result.share.token ? `${window.location.origin}/share/canvas/${result.share.token}` : "";
             await copy(url);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "创建分享链接失败");
+            message.error(formatCanvasUserError(error, "创建分享链接失败"));
         } finally {
             setSubmitting(false);
         }

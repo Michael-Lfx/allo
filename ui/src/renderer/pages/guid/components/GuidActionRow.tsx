@@ -22,7 +22,11 @@ type GuidActionRowProps = {
 
   // Model selector node (rendered by parent)
   modelSelectorNode: React.ReactNode;
-  /** Optional reasoning-effort pill shown before the model selector (Nomi only). */
+  /** Whether the model node is the FlowY chat selector rather than ACP. */
+  modelSelectorIsChat?: boolean;
+  /** Parent-owned popup key for mutually exclusive FlowY chat controls. */
+  activeChatPopup?: 'model' | 'strategy' | null;
+  /** Optional strategy control shown before the model selector (chat only). */
   reasoningEffortSelectorNode?: React.ReactNode;
 
   // Agent mode
@@ -70,6 +74,8 @@ type GuidActionRowProps = {
 const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onOpenAddMenu,
   modelSelectorNode,
+  modelSelectorIsChat = false,
+  activeChatPopup = null,
   reasoningEffortSelectorNode,
   selectedAgent,
   effectiveModeAgent,
@@ -105,6 +111,17 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const hasModelSelector = Boolean(modelSelectorNode);
   const hasReasoningEffortSelector = Boolean(reasoningEffortSelectorNode);
   const hasConfigControls = hasModelSelector || hasReasoningEffortSelector;
+  const renderedModelSelector = modelSelectorIsChat ? (
+    <div
+      className='chat-model-picker-slot'
+      data-layout-slot='model'
+      data-testid='guid-chat-model-slot'
+    >
+      {modelSelectorNode}
+    </div>
+  ) : (
+    modelSelectorNode
+  );
 
   const getModeDisplayLabel = (mode: AgentModeOption): string =>
     t(`agentMode.${mode.value}`, { defaultValue: mode.label });
@@ -207,11 +224,22 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
       <div className={`${styles.actionSubmit} ${!isMobile ? styles.actionSubmitResponsive : ''}`}>
         {hasConfigControls && (
           <div
-            className={`${styles.actionConfigGroup} ${!isMobile ? styles.actionConfigGroupResponsive : ''}`}
+            className={`${styles.actionConfigGroup} ${!isMobile ? styles.actionConfigGroupResponsive : ''} ${
+              modelSelectorIsChat ? 'chat-model-picker-config-group' : ''
+            }`}
             data-mobile={isMobile ? 'true' : undefined}
+            data-chat-popup={modelSelectorIsChat ? activeChatPopup ?? undefined : undefined}
           >
-            {reasoningEffortSelectorNode}
-            {modelSelectorNode}
+            {reasoningEffortSelectorNode && (
+              <div
+                className='sendbox-strategy-slot'
+                data-layout-slot='strategy'
+                data-testid='guid-strategy-slot'
+              >
+                {reasoningEffortSelectorNode}
+              </div>
+            )}
+            {renderedModelSelector}
           </div>
         )}
 

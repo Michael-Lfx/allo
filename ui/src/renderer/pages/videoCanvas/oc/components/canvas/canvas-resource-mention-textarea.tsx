@@ -1,12 +1,18 @@
 import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, KeyboardEvent, MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
-import { FileText, Image as ImageIcon, Music2, Pencil, Sparkles, UserRound, Video } from "lucide-react";
+import { FileText, Image as ImageIcon, Music2, Pencil, UserRound, Video } from "lucide-react";
 
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { canvasResourceMentionToken, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
+import { craftCover, craftStillUrl, PLAYBOOK_BY_QUALIFIED, splitCraftTokenParts } from "@oc/lib/canvas/craft/catalog";
 import { CanvasNodeType } from "@oc/types/canvas";
+import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
+import { contentSizeShouldNotify, measureElementScrollHeight, resizeObserverWidthChanged } from "./canvas-content-size";
+import { CanvasStyleCoverSwatch } from "./canvas-style-cover";
+import { createCraftAttachmentChipElement, recipeAttachmentChip, skillAttachmentChip } from "./canvas-craft-token-chip";
 
 type MentionState = {
     start: number;
@@ -55,21 +61,23 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     const lastRenderedValueRef = useRef("");
     const [mention, setMention] = useState<MentionState | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
+    const canvasReferences = useResolvedCanvasResourceReferences(references);
     const candidates = useMemo(() => {
         if (!mention) return [];
         const query = mention.query.trim().toLowerCase();
-        const activeItems = references.filter((item) => item.active);
+        const activeItems = canvasReferences.filter((item) => item.active);
         if (!query) return activeItems;
         return activeItems.filter((item) => `${item.label} ${item.title} ${item.kind} ${item.text || ""}`.toLowerCase().includes(query));
-    }, [mention, references]);
-    const activeReferences = useMemo(() => (highlightLabels ? references.filter((item) => item.active) : []), [highlightLabels, references]);
+    }, [mention, canvasReferences]);
+    const activeReferences = useMemo(() => (highlightLabels ? canvasReferences.filter((item) => item.active) : []), [highlightLabels, canvasReferences]);
     const useRichEditor = Boolean(activeReferences.length);
+    const lastReportedHeightRef = useRef<number | null>(null);
+    const lastObservedWidthRef = useRef<number | null>(null);
     const reportContentSize = useCallback((element: HTMLElement | null) => {
         if (!element || !onContentSizeChange) return;
-        const previousHeight = element.style.height;
-        element.style.height = "0px";
-        const height = element.scrollHeight;
-        element.style.height = previousHeight;
+        const height = measureElementScrollHeight(element);
+        if (!contentSizeShouldNotify(lastReportedHeightRef.current, height)) return;
+        lastReportedHeightRef.current = height;
         onContentSizeChange(height);
     }, [onContentSizeChange]);
 
@@ -84,19 +92,33 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
             return;
         }
         const selection = pendingSelectionRef.current ?? (isFocused ? getEditableSelection(editor)?.start ?? null : null);
-        renderEditableContent(editor, value, activeReferences);
+        renderEditableContent(editor, value, activeReferences, theme);
         lastRenderedValueRef.current = value;
         if (isFocused && selection !== null) setEditableSelection(editor, selection);
         pendingSelectionRef.current = null;
         reportContentSize(editor);
-    }, [activeReferences, reportContentSize, useRichEditor, value]);
+    }, [activeReferences, reportContentSize, theme, useRichEditor, value]);
+
+    useLayoutEffect(() => {
+        const element = useRichEditor ? editorRef.current : textareaRef.current;
+        reportContentSize(element);
+    }, [reportContentSize, useRichEditor, value]);
 
     useLayoutEffect(() => {
         const element = useRichEditor ? editorRef.current : textareaRef.current;
         const container = containerRef.current;
         if (!element || !container || !onContentSizeChange) return;
+        lastObservedWidthRef.current = Math.round(container.getBoundingClientRect().width);
         reportContentSize(element);
-        const observer = new ResizeObserver(() => reportContentSize(element));
+        // 只在宽度变化时复测。父级根据本回调改高度会触发 ResizeObserver，
+        // 若再同步 setState，滚动条出现/消失会让 scrollHeight 来回抖，生产环境即 React #185。
+        const observer = new ResizeObserver((entries) => {
+            const width = Math.round(entries[0]?.contentRect.width ?? container.getBoundingClientRect().width);
+            if (!resizeObserverWidthChanged(lastObservedWidthRef.current, width)) return;
+            lastObservedWidthRef.current = width;
+            lastReportedHeightRef.current = null;
+            reportContentSize(element);
+        });
         observer.observe(container);
         return () => observer.disconnect();
     }, [onContentSizeChange, reportContentSize, useRichEditor]);
@@ -387,9 +409,18 @@ function createInlinePreview(reference: CanvasResourceReference) {
         }
         return media;
     }
+    if (reference.kind === "skill") {
+        const skillId = reference.skill?.skill_id || "";
+        const coverId = PLAYBOOK_BY_QUALIFIED.get(skillId)?.coverLookId || "cinematic";
+        const media = document.createElement("img");
+        media.className = "size-[1.18em] shrink-0 rounded-[0.24em] object-cover";
+        media.setAttribute("src", reference.previewUrl || craftStillUrl(coverId));
+        media.setAttribute("alt", "");
+        return media;
+    }
     const fallback = document.createElement("span");
     fallback.className = "grid size-[1.18em] shrink-0 place-items-center rounded-[0.24em] bg-current/10";
-    fallback.textContent = reference.sourceType === CanvasNodeType.Drawing ? "✎" : reference.kind === "audio" ? "♪" : reference.kind === "video" ? "▶" : reference.kind === "image" ? "□" : reference.kind === "skill" ? "✦" : "";
+    fallback.textContent = reference.sourceType === CanvasNodeType.Drawing ? "✎" : reference.kind === "audio" ? "♪" : reference.kind === "video" ? "▶" : reference.kind === "image" ? "□" : "";
     return fallback;
 }
 
@@ -416,8 +447,8 @@ function MentionMenu({ anchor, references, activeIndex, theme, preferredWidth, o
     return createPortal(
         <div
             data-canvas-resource-mention-menu="true"
-            className="fixed z-[var(--z-tooltip)] max-h-56 overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
-            style={{ left, top, width: menuWidth, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            className="canvas-overlay fixed z-[var(--z-tooltip)] max-h-56 overflow-y-auto p-1"
+            style={{ ...canvasOverlayStyle(theme), left, top, width: menuWidth }}
             onPointerDown={stopCanvasInteraction}
             onMouseDown={stopCanvasInteraction}
             onClick={(event) => event.stopPropagation()}
@@ -456,11 +487,10 @@ function ReferencePreview({ reference }: { reference: CanvasResourceReference })
     if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
     if (reference.kind === "character" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-9 rounded-md bg-black/5 object-contain" />;
     if (reference.kind === "skill") {
-        return (
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-cyan-500/12 text-cyan-600 dark:text-cyan-200">
-                <Sparkles className="size-4" />
-            </span>
-        );
+        const skillId = reference.skill?.skill_id || "";
+        const coverId = PLAYBOOK_BY_QUALIFIED.get(skillId)?.coverLookId || "cinematic";
+        const cover = reference.previewUrl ? { ...craftCover(coverId), image: reference.previewUrl } : craftCover(coverId);
+        return <CanvasStyleCoverSwatch cover={cover} className="size-9 shrink-0 rounded-md" alt="" />;
     }
     const Icon = reference.sourceType === CanvasNodeType.Drawing ? Pencil : reference.kind === "character" ? UserRound : reference.kind === "audio" ? Music2 : reference.kind === "video" ? Video : reference.kind === "image" ? ImageIcon : FileText;
     return (
@@ -497,9 +527,16 @@ function splitMentionText(value: string, references: CanvasResourceReference[]) 
     return parts;
 }
 
-function renderEditableContent(editor: HTMLElement, value: string, references: CanvasResourceReference[]) {
+function renderEditableContent(editor: HTMLElement, value: string, references: CanvasResourceReference[], theme: (typeof canvasThemes)[keyof typeof canvasThemes]) {
     const parts = splitMentionText(value, references);
-    const nodes = parts.map((part) => (part.type === "mention" ? createInlineMentionChip(part.reference, part.token) : document.createTextNode(part.text)));
+    const nodes = parts.flatMap((part) => {
+        if (part.type === "mention") return [createInlineMentionChip(part.reference, part.token)];
+        return splitCraftTokenParts(part.text).map((token) => {
+            if (token.type === "recipe") return createCraftAttachmentChipElement(recipeAttachmentChip(token.id), theme);
+            if (token.type === "skill") return createCraftAttachmentChipElement(skillAttachmentChip(token.id), theme);
+            return document.createTextNode(token.value);
+        });
+    });
     editor.replaceChildren(...nodes);
 }
 

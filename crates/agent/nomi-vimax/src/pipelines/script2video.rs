@@ -1,65 +1,66 @@
-//! Script2Video pipeline — plan text artifacts then render frames/clips/final.
+//! Script2Video pipeline — plan text artifacts then render clips/final.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    CameraImageGenerator, CharacterExtractor, CharacterPortraitsGenerator, ReferenceImageSelector,
-    StoryboardArtist, VoiceProfileGenerator, VoiceReferenceGenerator, WorldAssetsPlanner,
-    ensure_film_cover, has_usable_portrait, rank_world_pairs_for_frame, voice_ref_abs_path,
-    world_asset_pairs,
+    CharacterExtractor, CharacterPortraitsGenerator, StoryboardArtist, VoiceProfileGenerator,
+    VoiceReferenceGenerator, bind_location_ids, ensure_film_cover, environment_sluglines_from_dir,
+    has_usable_portrait, resolve_environment_plate, voice_ref_abs_path, world_asset_pairs,
 };
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
+use crate::drama::{lint_script_promise_coverage, load_drama_engine, pack_split_needles};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
+use crate::media_local::SpliceSeam;
 use crate::progress::ProgressCallback;
-use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
+use crate::session::{
+    copy_json_artifact_if_readable, read_json_artifact, write_json_artifact, write_text_artifact,
+};
+use crate::skills::DirectorSpec;
 
 use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
     world_cameo_context,
 };
 use super::privacy_face::{
-    content_index_to_image_slot, ensure_ai_sanitized_privacy_face, ensure_seedance_privacy_face,
+    ensure_ai_sanitized_privacy_face, ensure_seedance_privacy_face,
     is_seedance_privacy_image_err_text, next_privacy_tier_for_path,
-    parse_seedance_flagged_content_index, preflight_video_ref_privacy, privacy_repair_targets,
+    parse_seedance_flagged_content_index, privacy_repair_targets,
     PrivacyFaceOutcome, PrivacyFaceTier,
 };
 use super::{
+    ai_face_sanitizer,
     artifact_cache::{
-        load_or_write_json_cached, plan_artifacts_sidecar_complete,
-        script2video_plan_fingerprint, sidecar_matches,
+        load_json_if_cached, load_or_write_json_cached, plan_artifacts_sidecar_complete,
+        script2video_plan_fingerprint, sidecar_matches, write_sidecar,
     },
     PipelineBackends, emit, emit_meta, emit_pct, emit_pct_meta, group_shots_into_cameras,
     resolve_film_root, safe_component, sanitize_camera_tree,
 };
 
-/// Max times we rewrite flagged input images per shot before dropping continuity / T2V.
-const MAX_PRIVACY_FACE_REPAIRS_PER_SHOT: usize = 3;
+/// One image rewrite per shot after a privacy reject. Concat trim handles freeze-frame;
+/// we do not drop the last-frame ref or fall back to text-to-video.
+const MAX_PRIVACY_FACE_REPAIRS_PER_SHOT: usize = 1;
 
 pub struct Script2VideoPipeline {
     backends: PipelineBackends,
     working_dir: PathBuf,
     character_extractor: CharacterExtractor,
     storyboard: StoryboardArtist,
-    camera_gen: CameraImageGenerator,
-    ref_selector: ReferenceImageSelector,
 }
 
 impl Script2VideoPipeline {
     pub fn new(backends: PipelineBackends, working_dir: PathBuf) -> Self {
         let character_extractor = CharacterExtractor::new(Arc::clone(&backends.chat));
-        let storyboard = StoryboardArtist::new(Arc::clone(&backends.chat));
-        let camera_gen = CameraImageGenerator::new(Arc::clone(&backends.chat));
-        let ref_selector = ReferenceImageSelector::new(Arc::clone(&backends.chat));
+        let storyboard = StoryboardArtist::new(Arc::clone(&backends.chat), backends.clip)
+            .with_voice_ref_slots(backends.max_reference_audio);
         Self {
             backends,
             working_dir,
             character_extractor,
             storyboard,
-            camera_gen,
-            ref_selector,
         }
     }
 
@@ -113,120 +114,152 @@ impl Script2VideoPipeline {
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
 
         let plan_started = std::time::Instant::now();
+        let film_root = resolve_film_root(&self.working_dir);
+        // idea2video / script_film / novel2video fan out 3 scene planners at once.
+        // Each used to rewrite film-root registries (portraits / world / cover),
+        // so a sibling could read a truncated empty JSON and fail with
+        // `JSON error: EOF while parsing a value at line 1 column 0`.
+        let scene_only = film_root != self.working_dir;
 
-        let session_root = resolve_session_root(&self.working_dir);
-        emit_pct(
-            &progress,
-            "classify_references",
-            "正在识别用户上传参考图类型",
-            10.0,
-        );
-        let _ = classify_session_references(
-            &session_root,
-            Arc::clone(&self.backends.chat),
-        )
-        .await?;
+        if !scene_only {
+            let session_root = resolve_session_root(&self.working_dir);
+            emit_pct(
+                &progress,
+                "classify_references",
+                "正在识别用户上传参考图类型",
+                10.0,
+            );
+            let _ = classify_session_references(
+                &session_root,
+                Arc::clone(&self.backends.chat),
+            )
+            .await?;
+        }
 
         emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 12.0);
-        let characters = self
+        let mut characters = self
             .extract_characters(script, user_requirement, &style, &plan_fp)
             .await?;
 
-        emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 15.0);
-        let characters = self.ensure_character_voices(characters, script, &style).await?;
+        if !scene_only {
+            emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 15.0);
+            characters = self
+                .ensure_character_voices(characters, script, &style)
+                .await?;
 
-        emit_pct(
-            &progress,
-            "cameo_bind",
-            "正在绑定用户角色参考图（有真人脸才做隐私换脸）",
-            18.0,
-        );
-        apply_session_cameos(
-            &self.working_dir,
-            &characters,
-            Arc::clone(&self.backends.image),
-            Arc::clone(&self.backends.chat),
-        )
-        .await?;
-
-        // Global cast bible during planning (text-to-image only — style via prompt, not look plate).
-        emit_pct(
-            &progress,
-            "character_portraits_start",
-            "正在生成全局角色定妆图",
-            22.0,
-        );
-        let _ = self
-            .generate_character_portraits(&characters, &style, script, &progress)
+            emit_pct(
+                &progress,
+                "cameo_bind",
+                "正在绑定用户角色参考图（仅真实照片人脸才做隐私换脸）",
+                18.0,
+            );
+            apply_session_cameos(
+                &self.working_dir,
+                &characters,
+                Arc::clone(&self.backends.image),
+                Arc::clone(&self.backends.chat),
+            )
             .await?;
 
-        emit_pct(
-            &progress,
-            "voice_references_start",
-            "正在生成角色音色参考音频",
-            24.0,
-        );
-        self.ensure_character_voice_references(&characters, &progress).await?;
-
-        let film_root = resolve_film_root(&self.working_dir);
-        emit_pct(
-            &progress,
-            "look_plate_start",
-            "正在锁定全片画风",
-            28.0,
-        );
-        emit_pct(
-            &progress,
-            "world_assets_start",
-            "正在生成全局环境与道具参考图",
-            30.0,
-        );
-        {
-            let world_planner = WorldAssetsPlanner::new(
-                Arc::clone(&self.backends.chat),
-                Arc::clone(&self.backends.image),
+            emit_pct(
+                &progress,
+                "plan_assets_parallel",
+                "正在并行生成定妆图、世界参考与分镜表",
+                22.0,
             );
-            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-            let _ = world_planner
-                .ensure(
-                    &film_root,
-                    script,
-                    &style,
-                    &style_refs,
-                    &scene_hint,
-                    &lock_token,
-                )
-                .await?;
         }
 
-        emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
-        let storyboard = self
-            .design_storyboard(script, &characters, user_requirement, &plan_fp)
-            .await?;
+        let storyboard = if scene_only {
+            emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
+            self.design_storyboard(script, &characters, user_requirement, &plan_fp)
+                .await?
+        } else {
+            let portraits_voices = async {
+                emit_pct(
+                    &progress,
+                    "character_portraits_start",
+                    "正在生成全局角色定妆图",
+                    22.0,
+                );
+                self.generate_character_portraits(&characters, &style, script, &progress)
+                    .await?;
+                emit_pct(
+                    &progress,
+                    "voice_references_start",
+                    "正在生成角色音色参考音频",
+                    24.0,
+                );
+                self.ensure_character_voice_references(&characters, &progress)
+                    .await
+            };
+            let world = async {
+                emit_pct(
+                    &progress,
+                    "world_assets_start",
+                    "正在生成全局环境与道具参考图",
+                    30.0,
+                );
+                let world_planner = self.backends.world_planner(&film_root).await;
+                let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
+                world_planner
+                    .ensure(
+                        &film_root,
+                        script,
+                        &style,
+                        &style_refs,
+                        &scene_hint,
+                        &lock_token,
+                    )
+                    .await?;
+                Ok(())
+            };
+            let board = async {
+                emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
+                match self
+                    .design_storyboard(script, &characters, user_requirement, &plan_fp)
+                    .await
+                {
+                    Ok(rows) => Ok(rows),
+                    Err(err) => {
+                        // Portraits/voice emit in parallel and can clobber this stage
+                        // name; restore it so a coverage failure is not reported as
+                        // voice_references_start.
+                        emit_pct(&progress, "design_storyboard", "分镜覆盖校验未通过", 40.0);
+                        Err(err)
+                    }
+                }
+            };
+            let ((), (), storyboard) = tokio::try_join!(portraits_voices, world, board)?;
+            storyboard
+        };
 
-        emit_pct(&progress, "decompose_shots", "正在分解镜头视觉描述", 62.0);
+        emit_pct(&progress, "shot_descriptions", "正在落盘镜头描述", 62.0);
         let shot_descriptions = self
-            .decompose_visual_descriptions(&storyboard, &characters, &plan_fp)
+            .persist_shot_descriptions(&storyboard, &characters, script, &plan_fp)
             .await?;
+        let storyboard = read_json_artifact(&self.working_dir.join("storyboard.json"))
+            .await
+            .unwrap_or(storyboard);
 
         emit_pct(&progress, "construct_camera_tree", "正在构建机位树", 85.0);
         let camera_tree = self
             .construct_camera_tree(&shot_descriptions, &plan_fp)
             .await?;
 
-        // Poster is display-only (not muxed). Prefer film root so multi-scene shares one cover.
-        let film_root = resolve_film_root(&self.working_dir);
-        let synopsis = format!("{script}\n{user_requirement}");
-        let cover_aspect = crate::aspect::load_aspect_from_dir(&film_root).await;
-        let _ = ensure_film_cover(
-            &film_root,
-            Arc::clone(&self.backends.chat),
-            self.backends.poster_image(&cover_aspect),
-            &style,
-            &synopsis,
-            &progress,
-        )
-        .await;
+        if !scene_only {
+            // Poster is display-only (not muxed). Prefer film root so multi-scene shares one cover.
+            let synopsis = format!("{script}\n{user_requirement}");
+            let cover_aspect = crate::aspect::load_aspect_from_dir(&film_root).await;
+            let _ = ensure_film_cover(
+                &film_root,
+                Arc::clone(&self.backends.chat),
+                self.backends.poster_image(&cover_aspect),
+                &style,
+                &synopsis,
+                &progress,
+            )
+            .await;
+        }
 
         emit_pct(&progress, "planned", "文本规划完成（含全局定妆图）", 100.0);
         tracing::info!(
@@ -272,9 +305,24 @@ impl Script2VideoPipeline {
             read_json_artifact(&wd.join("characters.json")).await?;
         let storyboard: Vec<ShotBriefDescription> =
             read_json_artifact(&wd.join("storyboard.json")).await?;
-        let shot_descriptions: Vec<ShotDescription> =
-            read_json_artifact(&wd.join("shot_descriptions.json")).await?;
         let camera_tree: Vec<Camera> = read_json_artifact(&wd.join("camera_tree.json")).await?;
+        let clips = clips_from_board(&storyboard, &characters);
+        let (synced, shot_descriptions, idx_map) =
+            commit_packed_shot_layout(wd, storyboard.clone(), clips).await;
+        if super::clip_beats::storyboard_differs(&storyboard, &synced) {
+            tracing::info!(
+                before = storyboard.len(),
+                after = synced.len(),
+                "densified published storyboard idxs; clip count follows the board"
+            );
+            write_json_artifact(&wd.join("storyboard.json"), &synced).await?;
+        }
+        write_json_artifact(&wd.join("shot_descriptions.json"), &shot_descriptions).await?;
+        let mut camera_tree = camera_tree;
+        if remap_camera_tree_shot_idxs(&mut camera_tree, &idx_map) {
+            write_json_artifact(&wd.join("camera_tree.json"), &camera_tree).await?;
+        }
+        let storyboard = synced;
         apply_session_cameos(
             wd,
             &characters,
@@ -313,6 +361,19 @@ impl Script2VideoPipeline {
         prior_continuity: Option<&Path>,
     ) -> VimaxResult<PathBuf> {
         emit(&progress, "render_start", "开始渲染脚本成片");
+        // Validate once: everything downstream (the opening shot's @Image1, the
+        // prompt seam, the concat's opening fade) must agree on whether this
+        // scene actually starts from the previous scene's tail frame.
+        let prior_continuity = prior_continuity.filter(|p| {
+            let usable = media_local::is_usable_image_file(p);
+            if !usable {
+                tracing::warn!(
+                    continuity = %p.display(),
+                    "prior scene continuity frame unusable; this scene opens as a hard cut"
+                );
+            }
+            usable
+        });
         let style = crate::planning::resolve_visual_style(style);
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
         let final_path = self.working_dir.join("final_video.mp4");
@@ -378,10 +439,7 @@ impl Script2VideoPipeline {
         }
 
         let world_pairs = {
-            let world_planner = WorldAssetsPlanner::new(
-                Arc::clone(&self.backends.chat),
-                Arc::clone(&self.backends.image),
-            );
+            let world_planner = self.backends.world_planner(&film_root).await;
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
             let reg = world_planner
                 .ensure(
@@ -401,13 +459,6 @@ impl Script2VideoPipeline {
             tokio::fs::create_dir_all(&shot_dir).await?;
             write_json_artifact(&shot_dir.join("shot_description.json"), shot).await?;
         }
-
-        emit(&progress, "frames_start", "跳过镜头首尾帧生成（Seedance 多参考图生视频）");
-        // Intentionally skip generate_frames_sequential: Seedance 2.0 rejects img2img
-        // photoreal frames as first/last_frame. Shot video uses multi reference_image
-        // (cast/env/prop + previous video_last_frame). Frame generators remain available
-        // for revise/manual workflows.
-        emit_pct(&progress, "frames_done", "镜头首尾帧已跳过，进入多参考图生视频", 55.0);
 
         emit(&progress, "video_clips_start", "正在串行生成镜头视频（一次一个）");
         self.generate_videos_sequential(
@@ -442,8 +493,20 @@ impl Script2VideoPipeline {
                 }
                 clips.push(clip);
             }
+            // Seams must match what the prompts asked the model for: shots that
+            // reuse a camera keep rolling (their head replays and gets trimmed),
+            // a camera change is a real cut. A scene that opened from a prior
+            // scene's tail frame starts mid-soundtrack, so it must not fade up.
             let refs: Vec<&Path> = clips.iter().map(|p| p.as_path()).collect();
-            media_local::concat_videos(&refs, &final_path).await?;
+            let entries: Vec<i32> = ordered_shots.iter().map(|s| s.cam_idx).collect();
+            let exits: Vec<i32> = ordered_shots.iter().map(|s| s.exit_cam_idx()).collect();
+            let opening = if prior_continuity.is_some() {
+                media_local::SpliceSeam::MatchCut
+            } else {
+                media_local::SpliceSeam::Cut
+            };
+            let seq = media_local::ConcatClip::scene_exits(&refs, &entries, &exits, opening);
+            media_local::concat_videos(&seq, &final_path).await?;
             emit(&progress, "concat_done", "场景成片拼接完成");
         }
         emit(&progress, "render_done", "脚本成片渲染完成");
@@ -461,17 +524,28 @@ impl Script2VideoPipeline {
         let film_chars = film_root.join("characters.json");
         let path = self.working_dir.join("characters.json");
         // Always prefer the film-level cast so every scene/shot shares identifiers.
-        if film_chars.exists() {
-            if film_chars != path {
-                tokio::fs::copy(&film_chars, &path).await?;
-                super::artifact_cache::write_sidecar(&path, plan_fp).await?;
-                return read_json_artifact(&path).await;
+        // Never `tokio::fs::copy` here: it truncates the dest first, and an empty
+        // film-root leftover used to fail the first scene with
+        // `JSON error: EOF while parsing a value at line 1 column 0`.
+        if film_chars != path && film_chars.is_file() {
+            match read_json_artifact::<Vec<CharacterInScene>>(&film_chars).await {
+                Ok(characters) => {
+                    write_json_artifact(&path, &characters).await?;
+                    super::artifact_cache::write_sidecar(&path, plan_fp).await?;
+                    return Ok(characters);
+                }
+                Err(e) => {
+                    return Err(VimaxError::msg(format!(
+                        "film-root characters.json unreadable at {}: {e}",
+                        film_chars.display()
+                    )));
+                }
             }
         } else if !path.exists() {
             if let Some(parent) = self.working_dir.parent() {
                 let parent_chars = parent.join("characters.json");
-                if parent_chars.exists() {
-                    tokio::fs::copy(&parent_chars, &path).await?;
+                if parent_chars.exists() && parent_chars != path {
+                    let _ = copy_json_artifact_if_readable(&parent_chars, &path).await?;
                 }
             }
         }
@@ -521,116 +595,77 @@ impl Script2VideoPipeline {
         plan_fp: &str,
     ) -> VimaxResult<Vec<ShotBriefDescription>> {
         let path = self.working_dir.join("storyboard.json");
-        let mut storyboard = load_or_write_json_cached(&path, plan_fp, || async {
-            self.storyboard
-                .design_storyboard(script, characters, user_requirement)
-                .await
-        })
-        .await?;
-        let budget = load_target_duration_secs(&self.working_dir).await;
-        if let Some(budget) = budget {
-            let max_shots = crate::planning::max_shots_for_budget(budget);
-            if enforce_max_shots(&mut storyboard, max_shots) {
-                tracing::warn!(
-                    max_shots,
-                    kept = storyboard.len(),
-                    "truncated storyboard to respect duration budget"
-                );
-                write_json_artifact(&path, &storyboard).await?;
-                // Shot decompositions must be rebuilt for the truncated board.
-                let decomp = self.working_dir.join("shot_descriptions.json");
-                if decomp.exists() {
-                    let _ = tokio::fs::remove_file(&decomp).await;
-                }
-                let cam = self.working_dir.join("camera_tree.json");
-                if cam.exists() {
-                    let _ = tokio::fs::remove_file(&cam).await;
-                }
-                let keep: std::collections::HashSet<i32> =
-                    storyboard.iter().map(|s| s.idx).collect();
-                let shots_root = self.working_dir.join("shots");
-                if shots_root.is_dir() {
-                    if let Ok(mut entries) = tokio::fs::read_dir(&shots_root).await {
-                        while let Ok(Some(entry)) = entries.next_entry().await {
-                            let name = entry.file_name();
-                            let name = name.to_string_lossy();
-                            if let Ok(idx) = name.parse::<i32>() {
-                                if !keep.contains(&idx) {
-                                    let _ = tokio::fs::remove_dir_all(entry.path()).await;
-                                }
-                            }
-                        }
-                    }
-                }
+        // Draft stays in RAM. `storyboard.json` is the published clip list
+        // (one row = one video). Writing the LLM's micro-shots first is what
+        // made 「故事分镜」 flash absorbed cards during planning.
+        let mut storyboard: Vec<ShotBriefDescription> =
+            match load_json_if_cached::<Vec<ShotBriefDescription>>(&path, plan_fp).await {
+            Some(cached) if lint_script_promise_coverage(script, &cached).is_empty() => cached,
+            _ => {
+                self.storyboard
+                    .design_storyboard(script, characters, user_requirement)
+                    .await?
             }
-        }
+        };
         if ensure_brief_audio_descs(&mut storyboard) {
             tracing::info!("filled missing storyboard audio_desc with ambient defaults");
-            write_json_artifact(&path, &storyboard).await?;
         }
-        let bgm = ensure_scene_bgm_brief(&self.working_dir, &storyboard).await?;
+        let film_root = resolve_film_root(&self.working_dir);
+        let slugs = environment_sluglines_from_dir(&film_root).await;
+        bind_location_ids(&mut storyboard, script, &slugs);
+        let spec = DirectorSpec::load_from_dir(&self.working_dir);
+        let engine = load_drama_engine(&self.working_dir);
+        let split_needles = engine
+            .as_ref()
+            .map(pack_split_needles)
+            .unwrap_or_default();
+        let draft_len = storyboard.len();
+        let max_shots = load_target_duration_secs(&self.working_dir)
+            .await
+            .map(|budget| crate::planning::max_shots_for_budget(self.backends.clip, budget));
+        let packed = super::clip_beats::pack_briefs_for_publish(
+            self.backends.clip,
+            storyboard,
+            super::clip_beats::PackOpts {
+                policy: spec.pack_policy,
+                split_needles,
+                max_voice_ref_speakers: self.backends.max_reference_audio,
+            },
+            max_shots,
+            spec.over_budget,
+        );
+        if packed.len() != draft_len {
+            tracing::info!(
+                before = draft_len,
+                after = packed.len(),
+                "packed storyboard into renderable clips (one row = one video)"
+            );
+        }
+        persist_published_storyboard(&self.working_dir, &path, &packed, plan_fp).await?;
+        let bgm = ensure_scene_bgm_brief(&self.working_dir, &packed).await?;
         tracing::info!(bgm = %bgm, "scene BGM brief locked for shot continuity");
-        Ok(storyboard)
+        Ok(packed)
     }
 
-    async fn decompose_visual_descriptions(
+    async fn persist_shot_descriptions(
         &self,
         briefs: &[ShotBriefDescription],
         characters: &[CharacterInScene],
+        script: &str,
         plan_fp: &str,
     ) -> VimaxResult<Vec<ShotDescription>> {
         let aggregate = self.working_dir.join("shot_descriptions.json");
-        if aggregate.is_file() && sidecar_matches(&aggregate, plan_fp).await {
-            return read_json_artifact(&aggregate).await;
-        }
-        let shots_root = self.working_dir.join("shots");
-        tokio::fs::create_dir_all(&shots_root).await?;
-
-        // Sequential by timeline idx so each shot's ff can continue from the previous lf.
-        let mut ordered = briefs.to_vec();
-        ordered.sort_by_key(|b| b.idx);
-
-        let mut out: Vec<ShotDescription> = Vec::with_capacity(ordered.len());
-        let mut prev_lf: Option<String> = None;
-        let storyboard = StoryboardArtist::new(Arc::clone(&self.backends.chat));
-
-        for brief in &ordered {
-            let path = shots_root
-                .join(brief.idx.to_string())
-                .join("shot_description.json");
-            let mut desc = if path.exists() {
-                read_json_artifact(&path).await?
-            } else {
-                let desc = storyboard
-                    .decompose_visual_description_with_continuity(
-                        brief,
-                        characters,
-                        prev_lf.as_deref(),
-                    )
-                    .await?;
-                write_json_artifact(&path, &desc).await?;
-                desc
-            };
-            // Resume / stale cache: prefer non-empty brief audio, else keep mined defaults.
-            let desc_audio_empty = desc
-                .audio_desc
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or("")
-                .is_empty();
-            if desc_audio_empty {
-                if let Some(a) = brief.audio_desc.as_ref().filter(|s| !s.trim().is_empty()) {
-                    desc.audio_desc = Some(a.clone());
-                    write_json_artifact(&path, &desc).await?;
-                }
-            }
-            prev_lf = Some(desc.lf_desc.clone());
-            out.push(desc);
-        }
-
-        write_json_artifact(&aggregate, &out).await?;
+        let mut briefs = briefs.to_vec();
+        let film_root = resolve_film_root(&self.working_dir);
+        let slugs = environment_sluglines_from_dir(&film_root).await;
+        bind_location_ids(&mut briefs, script, &slugs);
+        let clips = clips_from_board(&briefs, characters);
+        let (synced, packed, _) =
+            commit_packed_shot_layout(&self.working_dir, briefs, clips).await;
+        write_json_artifact(&self.working_dir.join("storyboard.json"), &synced).await?;
+        write_json_artifact(&aggregate, &packed).await?;
         super::artifact_cache::write_sidecar(&aggregate, plan_fp).await?;
-        Ok(out)
+        Ok(packed)
     }
 
     async fn construct_camera_tree(
@@ -640,13 +675,9 @@ impl Script2VideoPipeline {
     ) -> VimaxResult<Vec<Camera>> {
         let path = self.working_dir.join("camera_tree.json");
         let mut cameras = load_or_write_json_cached(&path, plan_fp, || async {
-            let cameras = group_shots_into_cameras(shot_descriptions);
-            self.camera_gen
-                .construct_camera_tree(&cameras, shot_descriptions)
-                .await
+            Ok(group_shots_into_cameras(shot_descriptions))
         })
         .await?;
-        // Always sanitize — cached trees from earlier LLM output may self-reference.
         sanitize_camera_tree(&mut cameras);
         write_json_artifact(&path, &cameras).await?;
         super::artifact_cache::write_sidecar(&path, plan_fp).await?;
@@ -657,7 +688,7 @@ impl Script2VideoPipeline {
     /// same registry paths so identity stays consistent across the final cut.
     ///
     /// `theme_source` is the script/story text used for THEME LOCK on wardrobe/era.
-    async fn generate_character_portraits(
+    pub(crate) async fn generate_character_portraits(
         &self,
         characters: &[CharacterInScene],
         style: &str,
@@ -681,6 +712,9 @@ impl Script2VideoPipeline {
         let sem = Arc::new(tokio::sync::Semaphore::new(4));
         for character in characters {
             if !character.is_visible {
+                continue;
+            }
+            if super::cameo_bind::is_body_part_character(character) {
                 continue;
             }
             // Skip when user Cameo or a usable three-view sheet already exists.
@@ -713,7 +747,7 @@ impl Script2VideoPipeline {
                     .await
                     .map_err(|_| VimaxError::msg("semaphore closed"))?;
                 portraits
-                    .generate_all_views(&character, &style, &theme, &dir, &[])
+                    .generate_all_views(&character, &style, &theme, &dir)
                     .await
             });
         }
@@ -741,7 +775,7 @@ impl Script2VideoPipeline {
     }
 
     /// TTS voice-reference clips for cast members (category=8 models).
-    async fn ensure_character_voice_references(
+    pub(crate) async fn ensure_character_voice_references(
         &self,
         characters: &[CharacterInScene],
         progress: &Option<ProgressCallback>,
@@ -781,176 +815,6 @@ impl Script2VideoPipeline {
         Ok(())
     }
 
-    /// Generate frames camera-by-camera in dependency order (parent before child).
-    /// Avoids the parallel Notify race that could hang forever with no progress updates.
-    ///
-    /// Not used by the default Seedance 2.0 multi-ref R2V render path (kept for revise /
-    /// legacy first/last-frame workflows).
-    #[allow(dead_code)]
-    async fn generate_frames_sequential(
-        &self,
-        cameras: &[Camera],
-        shots: &[ShotDescription],
-        characters: &[CharacterInScene],
-        registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
-        world_pairs: &[(PathBuf, String)],
-        style: &str,
-        progress: &Option<ProgressCallback>,
-    ) -> VimaxResult<()> {
-        use std::collections::HashSet;
-
-        // Defensive: clear self-parent edges before scheduling (also covers stale cache).
-        let mut cameras = cameras.to_vec();
-        sanitize_camera_tree(&mut cameras);
-
-        let mut done_shots: HashSet<i32> = HashSet::new();
-        for shot in shots {
-            let ff = self
-                .working_dir
-                .join("shots")
-                .join(shot.idx.to_string())
-                .join("first_frame.png");
-            if ff.exists() {
-                done_shots.insert(shot.idx);
-            }
-        }
-
-        let mut remaining: Vec<Camera> = cameras;
-        let total = remaining.len().max(1);
-        let mut finished = 0usize;
-
-        while !remaining.is_empty() {
-            if self.cancel_requested() {
-                emit(
-                    progress,
-                    "frames_cancelled",
-                    &format!("已取消关键帧生成；已完成机位 {finished}/{total}"),
-                );
-                return Err(VimaxError::Cancelled);
-            }
-
-            let ready_idx = remaining.iter().position(|cam| match cam.parent_shot_idx {
-                None => true,
-                Some(parent) => {
-                    // Ready if parent frame exists, OR parent shot is owned by this
-                    // camera (should already be sanitized away).
-                    done_shots.contains(&parent) || cam.active_shot_idxs.contains(&parent)
-                }
-            });
-
-            let Some(ready_idx) = ready_idx else {
-                // Last resort: promote the first remaining camera to root and continue
-                // instead of hard-failing a whole scene over a bad tree edge.
-                let mut cam = remaining.remove(0);
-                tracing::warn!(
-                    camera = cam.idx,
-                    parent_shot = ?cam.parent_shot_idx,
-                    shots = ?cam.active_shot_idxs,
-                    "forcing camera to root to break frame-generation deadlock"
-                );
-                cam.parent_cam_idx = None;
-                cam.parent_shot_idx = None;
-                emit(
-                    progress,
-                    "frame_camera_force_root",
-                    &format!(
-                        "机位 {} 父镜头不可达，改为独立机位继续生成",
-                        cam.idx
-                    ),
-                );
-                let pct = 35.0 + 20.0 * (finished as f32 / total as f32);
-                emit_pct(
-                    progress,
-                    "frame_camera_start",
-                    &format!(
-                        "生成机位关键帧（{}/{}）· camera {} · shots {:?}",
-                        finished + 1,
-                        total,
-                        cam.idx,
-                        cam.active_shot_idxs
-                    ),
-                    pct,
-                );
-                self.generate_frames_for_camera(
-                    &cam,
-                    shots,
-                    characters,
-                    registry,
-                    world_pairs,
-                    style,
-                    progress,
-                )
-                    .await?;
-                for &idx in &cam.active_shot_idxs {
-                    let ff = self
-                        .working_dir
-                        .join("shots")
-                        .join(idx.to_string())
-                        .join("first_frame.png");
-                    if ff.exists() {
-                        done_shots.insert(idx);
-                    }
-                }
-                if let Some(&first) = cam.active_shot_idxs.first() {
-                    done_shots.insert(first);
-                }
-                finished += 1;
-                continue;
-            };
-
-            let camera = remaining.remove(ready_idx);
-            let pct = 35.0 + 20.0 * (finished as f32 / total as f32);
-            emit_pct(
-                progress,
-                "frame_camera_start",
-                &format!(
-                    "生成机位关键帧（{}/{}）· camera {} · shots {:?}",
-                    finished + 1,
-                    total,
-                    camera.idx,
-                    camera.active_shot_idxs
-                ),
-                pct,
-            );
-
-            self.generate_frames_for_camera(
-                &camera,
-                shots,
-                characters,
-                registry,
-                world_pairs,
-                style,
-                progress,
-            )
-                .await?;
-
-            for &idx in &camera.active_shot_idxs {
-                let ff = self
-                    .working_dir
-                    .join("shots")
-                    .join(idx.to_string())
-                    .join("first_frame.png");
-                if ff.exists() {
-                    done_shots.insert(idx);
-                }
-            }
-            if let Some(&first) = camera.active_shot_idxs.first() {
-                done_shots.insert(first);
-            }
-
-            finished += 1;
-            emit_pct(
-                progress,
-                "frame_camera_done",
-                &format!("机位 {} 关键帧完成（{finished}/{total}）", camera.idx),
-                35.0 + 20.0 * (finished as f32 / total as f32),
-            );
-        }
-
-        emit_pct(progress, "frames_done", "全部机位关键帧已就绪", 55.0);
-        Ok(())
-    }
-
     /// Submit video-generation API calls one-by-one.
     /// On failure/cancel, stop immediately; already-saved clips remain for resume.
     ///
@@ -977,17 +841,12 @@ impl Script2VideoPipeline {
         let mut ok = 0usize;
         let mut errors: Vec<String> = Vec::new();
         let target = load_target_duration_secs(&self.working_dir).await;
+        let clip = self.backends.clip;
         let needs: Vec<u32> = shots
             .iter()
-            .map(|s| {
-                crate::planning::estimate_shot_need_secs(
-                    s.audio_desc.as_deref(),
-                    &s.motion_desc,
-                    &s.variation_type,
-                )
-            })
+            .map(|s| super::clip_beats::clip_need_secs(clip, s))
             .collect();
-        let clip_durs = crate::planning::allocate_clip_durations_for_content(target, &needs);
+        let clip_durs = crate::planning::allocate_clip_durations_for_content(clip, target, &needs);
         let scene_bgm = load_scene_bgm_paren(&self.working_dir).await;
         tracing::info!(
             target = ?target,
@@ -1018,22 +877,45 @@ impl Script2VideoPipeline {
             );
 
             // Timeline-adjacent continuity: previous shot (or prior scene tail) ending still.
+            // The seam decides what the still MEANS to this shot — resume the
+            // same take, or just carry identity across a cut — and the scene
+            // concat re-derives it from the previous clip's *exit* camera.
+            let seam = match i.checked_sub(1) {
+                Some(prev) => media_local::SpliceSeam::within_scene(
+                    shots[prev].exit_cam_idx(),
+                    shot.cam_idx,
+                ),
+                // Cross-scene: the prompt lets the new scene change camera or
+                // location, so its opening shot is a match-cut, never a resume.
+                None => media_local::SpliceSeam::MatchCut,
+            };
             let continuity_first = if i > 0 {
                 let prev = &shots[i - 1];
                 match ensure_shot_video_last_frame(&self.working_dir, prev.idx, false).await {
                     Ok(Some(path)) => {
+                        let vendor_url = media_local::load_return_last_frame_url(&path);
                         emit(
                             progress,
                             "video_continuity",
                             &format!(
-                                "Shot {}: reference_image ← shot {} video_last_frame.png (cam {}→{})",
-                                shot.idx, prev.idx, prev.cam_idx, shot.cam_idx
+                                "Shot {}: reference_image ← shot {} {} (cam {}→{}, {seam:?})",
+                                shot.idx,
+                                prev.idx,
+                                if vendor_url.is_some() {
+                                    "last_frame_url"
+                                } else {
+                                    "video_last_frame.png"
+                                },
+                                prev.exit_cam_idx(),
+                                shot.cam_idx
                             ),
                         );
                         tracing::info!(
                             shot = shot.idx,
                             prev = prev.idx,
                             continuity = %path.display(),
+                            vendor_last_frame_url = vendor_url.is_some(),
+                            ?seam,
                             "adjacent shot multi-ref continuity locked to previous video_last_frame"
                         );
                         Some(path)
@@ -1052,15 +934,18 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                         )));
                     }
                 }
-            } else if let Some(path) = prior_continuity
-                .filter(|p| media_local::is_usable_image_file(p))
-            {
+            } else if let Some(path) = prior_continuity {
                 emit(
                     progress,
                     "video_continuity",
                     &format!(
-                        "Shot {}: reference_image ← previous scene last-shot video_last_frame ({})",
+                        "Shot {}: reference_image ← previous scene last-shot {} ({})",
                         shot.idx,
+                        if media_local::load_return_last_frame_url(&path).is_some() {
+                            "last_frame_url"
+                        } else {
+                            "video_last_frame"
+                        },
                         path.file_name()
                             .and_then(|s| s.to_str())
                             .unwrap_or("video_last_frame.png")
@@ -1073,30 +958,23 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 );
                 Some(path.to_path_buf())
             } else {
-                if prior_continuity.is_some() {
-                    tracing::warn!(
-                        shot = shot.idx,
-                        "prior scene continuity path unusable; first shot of scene starts without match-cut frame"
-                    );
-                }
                 None
             };
 
             let duration_secs = clip_durs.get(i).copied().unwrap_or_else(|| {
                 needs.get(i).copied().unwrap_or_else(|| {
-                    crate::planning::clip_duration_secs(target, shots.len())
+                    crate::planning::clip_duration_secs(clip, target, shots.len())
                 })
             });
             emit(
                 progress,
                 "video_duration",
                 &format!(
-                    "Shot {}: render {}s (need≈{}s from audio/motion, +{}s splice tail ≤{}s)",
+                    "Shot {}: render {}s (need≈{}s from audio/motion, ≤{}s model max)",
                     shot.idx,
                     duration_secs,
                     needs.get(i).copied().unwrap_or(duration_secs),
-                    crate::planning::SHOT_SPLICE_TAIL_PADDING_SECS,
-                    crate::planning::MAX_CLIP_DURATION_SECS,
+                    clip.max_secs(),
                 ),
             );
 
@@ -1112,6 +990,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                     registry,
                     world_pairs,
                     &resolve_film_root(&self.working_dir),
+                    true,
                 )
                 .into_iter()
                 .map(|(p, _)| p)
@@ -1148,6 +1027,8 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                     shot,
                     duration_secs,
                     continuity_first.as_deref(),
+                    seam,
+                    i.checked_sub(1).map(|p| &shots[p]),
                     characters,
                     registry,
                     world_pairs,
@@ -1217,475 +1098,20 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
         Ok(())
     }
 
-    async fn generate_frames_for_camera(
-        &self,
-        camera: &Camera,
-        shots: &[ShotDescription],
-        characters: &[CharacterInScene],
-        registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
-        world_pairs: &[(PathBuf, String)],
-        style: &str,
-        progress: &Option<ProgressCallback>,
-    ) -> VimaxResult<()> {
-        if camera.active_shot_idxs.is_empty() {
-            return Ok(());
-        }
-        let first_shot_idx = camera.active_shot_idxs[0];
-        let first_shot = shots
-            .iter()
-            .find(|s| s.idx == first_shot_idx)
-            .ok_or_else(|| VimaxError::msg(format!("missing shot {first_shot_idx}")))?;
-
-        let shot_dir = self
-            .working_dir
-            .join("shots")
-            .join(first_shot_idx.to_string());
-        tokio::fs::create_dir_all(&shot_dir).await?;
-        let first_ff = shot_dir.join("first_frame.png");
-        restore_canonical_frame_from_privacy_bak(&first_ff).await;
-        restore_canonical_frame_from_privacy_bak(&shot_dir.join("last_frame.png")).await;
-
-        if !first_ff.exists() {
-            emit(
-                progress,
-                "frame_start",
-                &format!("generating first frame for shot {first_shot_idx}"),
-            );
-            let mut available: Vec<(PathBuf, String)> = portrait_pairs(
-                characters,
-                &first_shot.ff_vis_char_idxs,
-                registry,
-                &resolve_film_root(&self.working_dir),
-            );
-            available.extend(rank_world_pairs_for_frame(
-                &first_shot.ff_desc,
-                world_pairs,
-                4,
-            ));
-
-            // Timeline-adjacent predecessor in this scene (any camera).
-            // Cross-scene continuity is intentionally skipped (separate working dirs).
-            if let Some(prev) = timeline_predecessor(shots, first_shot_idx) {
-                if let Some(prev_path) = continuity_frame_path(&self.working_dir, prev.idx) {
-                    available.push((
-                        prev_path,
-                        format!(
-                            "Immediate previous shot ending frame in this scene (timeline continuity). \
-Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting, and set. Previous ending: {}. New beat: {}",
-                            prev.lf_desc, first_shot.ff_desc
-                        ),
-                    ));
-                    emit(
-                        progress,
-                        "frame_start",
-                        &format!(
-                            "shot {first_shot_idx}: timeline continuity from previous shot {}",
-                            prev.idx
-                        ),
-                    );
-                }
-            }
-
-            // Prefer image continuity from parent frame over a billed transition video.
-            if let Some(parent_shot_idx) = camera.parent_shot_idx {
-                if let Some(parent_ref) =
-                    continuity_frame_path(&self.working_dir, parent_shot_idx)
-                {
-                    let already = available.iter().any(|(p, _)| p == &parent_ref);
-                    if !already {
-                        let missing = camera.missing_info.as_deref().unwrap_or("");
-                        available.push((
-                            parent_ref,
-                            format!(
-                                "Parent-camera continuity frame (most recent). Keep identity, wardrobe, lighting, and style; reframe to the NEW camera angle for this shot. Changed/missing elements vs parent: {}",
-                                if missing.is_empty() {
-                                    "none — change framing/angle only"
-                                } else {
-                                    missing
-                                }
-                            ),
-                        ));
-                        emit(
-                            progress,
-                            "frame_start",
-                            &format!(
-                                "shot {first_shot_idx}: using parent shot {parent_shot_idx} frame (skip transition video)"
-                            ),
-                        );
-                    }
-                }
-            }
-
-            self.generate_frame_from_selector(
-                &shot_dir,
-                "first_frame",
-                &first_shot.ff_desc,
-                &available,
-                characters,
-                &first_shot.ff_vis_char_idxs,
-                style,
-                &first_ff,
-                progress,
-            )
-            .await?;
-        }
-
-        // Same-camera shots chain from the previous ending frame (not the establishing first_frame).
-        // Always generate last_frame so Seedance flf2v and next-shot continuity can use it.
-        let mut continuity = ContinuityRef {
-            path: first_ff.clone(),
-            desc: first_shot.ff_desc.clone(),
-        };
-
-        {
-            let lf = shot_dir.join("last_frame.png");
-            if !lf.exists() {
-                let mut available = portrait_pairs(
-                    characters,
-                    &first_shot.lf_vis_char_idxs,
-                    registry,
-                    &resolve_film_root(&self.working_dir),
-                );
-                available.extend(rank_world_pairs_for_frame(
-                    &first_shot.lf_desc,
-                    world_pairs,
-                    4,
-                ));
-                available.push((
-                    continuity.path.clone(),
-                    format!(
-                        "Immediate previous frame on this camera (continuity). {}",
-                        continuity.desc
-                    ),
-                ));
-                self.generate_frame_from_selector(
-                    &shot_dir,
-                    "last_frame",
-                    &first_shot.lf_desc,
-                    &available,
-                    characters,
-                    &first_shot.lf_vis_char_idxs,
-                    style,
-                    &lf,
-                    progress,
-                )
-                .await?;
-            }
-            if lf.exists() {
-                continuity = ContinuityRef {
-                    path: lf,
-                    desc: first_shot.lf_desc.clone(),
-                };
-            }
-        }
-
-        for &shot_idx in camera.active_shot_idxs.iter().skip(1) {
-            let shot = shots
-                .iter()
-                .find(|s| s.idx == shot_idx)
-                .ok_or_else(|| VimaxError::msg(format!("missing shot {shot_idx}")))?;
-            let sdir = self.working_dir.join("shots").join(shot_idx.to_string());
-            tokio::fs::create_dir_all(&sdir).await?;
-
-            let ff = sdir.join("first_frame.png");
-            let lf = sdir.join("last_frame.png");
-            restore_canonical_frame_from_privacy_bak(&ff).await;
-            restore_canonical_frame_from_privacy_bak(&lf).await;
-            if !ff.exists() {
-                // Always generate a distinct first frame. Byte-copying the previous
-                // frame makes Seedance I2V freeze on the same opening for ~4s.
-                let mut available = portrait_pairs(
-                    characters,
-                    &shot.ff_vis_char_idxs,
-                    registry,
-                    &resolve_film_root(&self.working_dir),
-                );
-                available.extend(rank_world_pairs_for_frame(&shot.ff_desc, world_pairs, 4));
-                available.push((
-                    continuity.path.clone(),
-                    format!(
-                        "Immediate previous shot ending frame (prefer this for temporal continuity; do not reset to an older establishing shot). Evolve pose/action slightly for the new beat. {}",
-                        continuity.desc
-                    ),
-                ));
-                self.generate_frame_from_selector(
-                    &sdir,
-                    "first_frame",
-                    &shot.ff_desc,
-                    &available,
-                    characters,
-                    &shot.ff_vis_char_idxs,
-                    style,
-                    &ff,
-                    progress,
-                )
-                .await?;
-            }
-
-            {
-                let lf = sdir.join("last_frame.png");
-                if !lf.exists() {
-                    let mut available = portrait_pairs(
-                        characters,
-                        &shot.lf_vis_char_idxs,
-                        registry,
-                        &resolve_film_root(&self.working_dir),
-                    );
-                    available.extend(rank_world_pairs_for_frame(&shot.lf_desc, world_pairs, 4));
-                    available.push((
-                        ff.clone(),
-                        format!(
-                            "This shot's first frame (continuity within the shot). {}",
-                            shot.ff_desc
-                        ),
-                    ));
-                    self.generate_frame_from_selector(
-                        &sdir,
-                        "last_frame",
-                        &shot.lf_desc,
-                        &available,
-                        characters,
-                        &shot.lf_vis_char_idxs,
-                        style,
-                        &lf,
-                        progress,
-                    )
-                    .await?;
-                }
-            }
-
-            // Advance continuity to this shot's ending frame.
-            let this_lf = sdir.join("last_frame.png");
-            if this_lf.exists() {
-                continuity = ContinuityRef {
-                    path: this_lf,
-                    desc: shot.lf_desc.clone(),
-                };
-            } else if ff.exists() {
-                continuity = ContinuityRef {
-                    path: ff,
-                    desc: shot.ff_desc.clone(),
-                };
-            }
-        }
-        Ok(())
-    }
-
-    async fn generate_frame_from_selector(
-        &self,
-        shot_dir: &Path,
-        frame_type: &str,
-        frame_desc: &str,
-        available: &[(PathBuf, String)],
-        characters: &[CharacterInScene],
-        vis_char_idxs: &[i32],
-        style: &str,
-        out_path: &Path,
-        progress: &Option<ProgressCallback>,
-    ) -> VimaxResult<()> {
-        let selector_path = shot_dir.join(format!("{frame_type}_selector_output.json"));
-        #[derive(serde::Deserialize)]
-        struct SavedSelector {
-            #[serde(default)]
-            reference_image_path_and_text_pairs: Vec<(String, String)>,
-            #[serde(default)]
-            text_prompt: String,
-            #[serde(default)]
-            full_prompt: Option<String>,
-            #[serde(default)]
-            prompt_override: bool,
-        }
-
-        let saved_override = if selector_path.exists() {
-            read_json_artifact::<SavedSelector>(&selector_path)
-                .await
-                .ok()
-        } else {
-            None
-        };
-
-        // User-edited full prompt: regenerate with the override text as-is.
-        if let Some(saved) = &saved_override {
-            if saved.prompt_override {
-                if let Some(full_prompt) = saved
-                    .full_prompt
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                {
-                    let mut pairs: Vec<(PathBuf, String)> = saved
-                        .reference_image_path_and_text_pairs
-                        .iter()
-                        .map(|(p, t)| (PathBuf::from(p), t.clone()))
-                        .collect();
-                    ensure_frame_refs(&mut pairs, available, characters, vis_char_idxs);
-                    let refs: Vec<&Path> = pairs.iter().map(|(p, _)| p.as_path()).collect();
-                    self.backends
-                        .image
-                        .generate(full_prompt, &refs, out_path)
-                        .await?;
-                    emit(
-                        progress,
-                        "frame_done",
-                        &format!(
-                            "Generated {frame_type} (prompt override) at {}",
-                            out_path.display()
-                        ),
-                    );
-                    return Ok(());
-                }
-            }
-        }
-
-        let (mut pairs, prompt) = if let Some(saved) = saved_override {
-            (
-                saved
-                    .reference_image_path_and_text_pairs
-                    .into_iter()
-                    .map(|(p, t)| (PathBuf::from(p), t))
-                    .collect::<Vec<_>>(),
-                saved.text_prompt,
-            )
-        } else {
-            emit(
-                progress,
-                "frame_prompt_start",
-                &format!("Selecting references for {frame_type}"),
-            );
-            let sel = self
-                .ref_selector
-                .select_reference_images_and_generate_prompt(available, frame_desc)
-                .await?;
-            let saved_pairs: Vec<(String, String)> = sel
-                .reference_image_path_and_text_pairs
-                .iter()
-                .map(|(p, t)| (p.to_string_lossy().to_string(), t.clone()))
-                .collect();
-            write_json_artifact(
-                &selector_path,
-                &serde_json::json!({
-                    "reference_image_path_and_text_pairs": saved_pairs,
-                    "text_prompt": sel.text_prompt,
-                }),
-            )
-            .await?;
-            (sel.reference_image_path_and_text_pairs, sel.text_prompt)
-        };
-
-        // Always keep cast portraits + matched empty-set / prop plates (selector may drop them).
-        ensure_frame_refs(&mut pairs, available, characters, vis_char_idxs);
-
-        // Order for ref strip compose: portraits → env/prop → continuity shots.
-        pairs.sort_by_key(|(p, _)| {
-            let s = p.to_string_lossy().to_ascii_lowercase();
-            if s.contains("character_portrait") || s.contains("three_view") {
-                0u8
-            } else if s.contains("environments") || s.contains("props") {
-                1u8
-            } else if s.contains("shots") {
-                2u8
-            } else {
-                3u8
-            }
-        });
-        let portrait_budget = vis_char_idxs.len().clamp(1, MAX_FRAME_PORTRAIT_REFS);
-        pairs = pick_frame_ref_strip(pairs, portrait_budget);
-
-        let identity = character_identity_clause(characters, vis_char_idxs, style);
-        let style_clause = crate::planning::style_prompt_clause(style);
-        let plot_lock: String = frame_desc.chars().take(220).collect();
-        let set_lock = pairs
-            .iter()
-            .find(|(p, _)| {
-                p.to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("environments")
-            })
-            .map(|(_, t)| t.chars().take(90).collect::<String>())
-            .unwrap_or_default();
-        let prop_lock = pairs
-            .iter()
-            .find(|(p, _)| p.to_string_lossy().to_ascii_lowercase().contains("props"))
-            .map(|(_, t)| t.chars().take(60).collect::<String>())
-            .unwrap_or_default();
-        let mut prefix = String::new();
-        for (i, (path, text)) in pairs.iter().enumerate() {
-            let name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("ref.png");
-            let hint: String = text.chars().take(100).collect();
-            prefix.push_str(&format!("[{name}] (image #{i}): {hint}. "));
-        }
-        let continuity_hint = if pairs
-            .iter()
-            .any(|(p, _)| p.to_string_lossy().to_ascii_lowercase().contains("shots"))
-        {
-            "Keep temporal continuity with the latest prior shot frame. "
-        } else {
-            ""
-        };
-        let multi_ref_hint = if pairs.len() > 1 {
-            "Multi-reference img2img: each [filename] above is a separate input image — match faces/wardrobe from *_three_view.png, architecture/lighting from *_environment_plate.png, objects from *_prop.png, and continuity from shot frames. Place the cast INTO the referenced set; do not invent a new location or new characters. "
-        } else if pairs.iter().any(|(p, _)| {
-            let s = p.to_string_lossy().to_ascii_lowercase();
-            s.contains("character_portrait") || s.contains("three_view")
-        }) {
-            "Match face/hair/outfit from the cast three-view reference file named above. "
-        } else {
-            ""
-        };
-        let set_clause = if set_lock.is_empty() {
-            String::new()
-        } else {
-            format!("SET LOCK: {set_lock}. ")
-        };
-        let prop_clause = if prop_lock.is_empty() {
-            String::new()
-        } else {
-            format!("PROP LOCK: {prop_lock}. ")
-        };
-        // Plot + identity + set first — selector text alone often drifts off story.
-        let full_prompt = format!(
-            "{style_clause} PLOT LOCK (must depict): {plot_lock}. {identity}{set_clause}{prop_clause}{multi_ref_hint}{continuity_hint}{prefix}Scene: {prompt}"
-        );
-
-        // Persist the exact prompt used for generation so creators can fine-tune it later.
-        let saved_pairs: Vec<(String, String)> = pairs
-            .iter()
-            .map(|(p, t)| (p.to_string_lossy().to_string(), t.clone()))
-            .collect();
-        let _ = write_json_artifact(
-            &selector_path,
-            &serde_json::json!({
-                "reference_image_path_and_text_pairs": saved_pairs,
-                "text_prompt": prompt,
-                "full_prompt": full_prompt,
-                "prompt_override": false,
-            }),
-        )
-        .await;
-        let prompt_txt = shot_dir.join(format!("{frame_type}_generation_prompt.txt"));
-        let _ = crate::session::write_text_artifact(&prompt_txt, &full_prompt).await;
-
-        let refs: Vec<&Path> = pairs.iter().map(|(p, _)| p.as_path()).collect();
-        self.backends
-            .image
-            .generate(&full_prompt, &refs, out_path)
-            .await?;
-        emit(
-            progress,
-            "frame_done",
-            &format!("Generated {frame_type} at {}", out_path.display()),
-        );
-        Ok(())
-    }
-
+    /// Render one shot's clip.
+    ///
+    /// `seam` describes how this shot joins the previous one and is what keeps
+    /// the prompt honest about `continuity_first_frame`: same take (resume from
+    /// it) vs. new angle (identity reference only). It is downgraded to
+    /// [`SpliceSeam::Cut`] when no usable frame arrives, so the prompt never
+    /// talks about an `@Image1` that is not bound.
     async fn generate_video_for_shot(
         &self,
         shot: &ShotDescription,
         duration_secs: u32,
         continuity_first_frame: Option<&Path>,
+        seam: SpliceSeam,
+        prev: Option<&ShotDescription>,
         characters: &[CharacterInScene],
         registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
         world_pairs: &[(PathBuf, String)],
@@ -1711,15 +1137,35 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             .filter(|p| media_local::is_usable_image_file(p))
             .map(|p| p.to_path_buf());
         let using_video_continuity = continuity_source.is_some();
+        let seam = if using_video_continuity {
+            seam
+        } else {
+            SpliceSeam::Cut
+        };
 
+        let continuity_ref = continuity_still_for_seam(seam, continuity_source.as_deref());
+        let keep_env = keep_location_plate(seam, shot, prev);
         let ref_pairs = shot_video_ref_pairs(
             shot,
-            continuity_source.as_deref(),
+            continuity_ref,
             characters,
             registry,
             world_pairs,
             &resolve_film_root(&self.working_dir),
+            keep_env,
         );
+        if keep_env
+            && !ref_pairs
+                .iter()
+                .any(|(p, _)| is_environment_ref_path(p))
+        {
+            tracing::warn!(
+                shot = shot.idx,
+                location_id = %shot.location_id,
+                world = world_pairs.len(),
+                "shot has no environment plate in the Seedance ref strip"
+            );
+        }
         if ref_pairs.is_empty() {
             return Err(VimaxError::Video(format!(
                 "Shot {}: no usable reference images (cast/env/prop{}) for multi-ref video",
@@ -1734,20 +1180,35 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
 
         let ref_paths: Vec<&Path> = ref_pairs.iter().map(|(p, _)| p.as_path()).collect();
         let film_root = resolve_film_root(&self.working_dir);
-        let voice_ref_path = shot_speaker_voice_ref_path(shot, characters, registry, &film_root);
-        let speaker_name = shot_primary_speaker_name(shot, characters, registry, &film_root);
-        let use_voice_audio_ref = voice_ref_path.is_some();
-        let ref_audio = voice_ref_path.as_deref();
+        // Voice clips invite invented speech on silent shots; only bind when this beat talks.
+        let audio_ref_pairs = if shot_has_spoken_dialogue(shot) {
+            shot_speaker_voice_refs(
+                shot,
+                characters,
+                registry,
+                &film_root,
+                self.backends.max_reference_audio,
+            )
+        } else {
+            Vec::new()
+        };
+        let use_voice_audio_ref = !audio_ref_pairs.is_empty();
+        let audio_bound_names: Vec<&str> =
+            audio_ref_pairs.iter().map(|(n, _)| n.as_str()).collect();
+        let ref_audio_paths: Vec<&Path> =
+            audio_ref_pairs.iter().map(|(_, p)| p.as_path()).collect();
+        let aspect_ratio = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
         let prompt = i2v_motion_prompt(
             shot,
             characters,
             style,
             &ref_pairs,
             duration_secs,
-            using_video_continuity,
+            seam,
             scene_bgm,
             use_voice_audio_ref,
-            speaker_name.as_deref(),
+            &audio_bound_names,
+            &aspect_ratio,
         );
         // P0-3: soften risky wording (motion / plot / audio captions) before the
         // first submission so Seedance content filters don't reject the prompt text.
@@ -1782,7 +1243,10 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             "video multi-ref R2V binding"
         );
 
-        preflight_video_ref_privacy(self.backends.image.as_ref(), &ref_paths).await?;
+        // Do not vision-preflight refs here (including previous-shot last frames).
+        // Face inspection/repair runs only after the video model returns a
+        // real-person privacy reject — see the retry loop below. Cameo plates
+        // are sanitized at bind. Idea / script / novel all share this path.
 
         let first_err = match self
             .backends
@@ -1796,7 +1260,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                 &video_path,
                 Some(&video_last_frame_path),
                 None,
-                ref_audio,
+                &ref_audio_paths,
             )
             .await
         {
@@ -1830,7 +1294,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         &video_path,
                         Some(&video_last_frame_path),
                         None,
-                        ref_audio,
+                        &ref_audio_paths,
                     )
                     .await
                 {
@@ -1854,10 +1318,6 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         };
 
         if let Some(mut err) = first_err {
-            // 1) Privacy repair: locate content[N] or sweep face-bearing subject refs,
-            //    force re-edit from privacy_raw (do not trust prior markers after reject).
-            // 2) If still blocked, drop continuity still, then pure T2V.
-            let working_pairs = ref_pairs.clone();
             let mut privacy_attempts: Vec<(PathBuf, PrivacyFaceTier)> = Vec::new();
             let mut privacy_resolved = false;
 
@@ -1868,7 +1328,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     break;
                 }
                 let err_text = err.to_string();
-                let targets = privacy_repair_targets(&err_text, &working_pairs);
+                let targets = privacy_repair_targets(&err_text, &ref_pairs);
                 if targets.is_empty() {
                     tracing::info!(
                         shot = shot.idx,
@@ -1882,7 +1342,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     && targets.len() == 1;
                 let labels: Vec<String> = targets
                     .iter()
-                    .filter_map(|&i| working_pairs.get(i))
+                    .filter_map(|&i| ref_pairs.get(i))
                     .map(|(p, _)| {
                         p.file_name()
                             .and_then(|s| s.to_str())
@@ -1904,10 +1364,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                 let mut any_rewrite = false;
                 let mut all_exhausted = true;
                 for &slot in &targets {
-                    let flagged_path = working_pairs[slot].0.clone();
-                    
-                    // Use AI Sanitization strategy for better video model compliance
-                    // This uses vision description + T2I instead of img2img
+                    let flagged_path = ref_pairs[slot].0.clone();
                     match ensure_ai_sanitized_privacy_face(
                         Arc::clone(&self.backends.image),
                         Arc::clone(&self.backends.chat),
@@ -1933,9 +1390,22 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                                 shot = shot.idx,
                                 path = %flagged_path.display(),
                                 error = %repair_err,
-                                "AI sanitization failed; falling back to traditional img2img"
+                                "AI sanitization failed; checking real-face gate before img2img fallback"
                             );
-                            // Fallback to traditional img2img
+                            let has_real_face = ai_face_sanitizer::detect_human_face(
+                                Arc::clone(&self.backends.chat),
+                                &flagged_path,
+                            )
+                            .await
+                            .unwrap_or(false);
+                            if !has_real_face {
+                                tracing::info!(
+                                    shot = shot.idx,
+                                    path = %flagged_path.display(),
+                                    "privacy fallback skipped: no real photographic human face"
+                                );
+                                continue;
+                            }
                             let Some(tier) =
                                 next_privacy_tier_for_path(&flagged_path, &privacy_attempts)
                             else {
@@ -1979,20 +1449,18 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                 }
 
                 let retry_paths: Vec<&Path> =
-                    working_pairs.iter().map(|(p, _)| p.as_path()).collect();
+                    ref_pairs.iter().map(|(p, _)| p.as_path()).collect();
                 let retry_prompt = i2v_motion_prompt(
                     shot,
                     characters,
                     style,
-                    &working_pairs,
+                    &ref_pairs,
                     duration_secs,
-                    using_video_continuity
-                        && continuity_source
-                            .as_ref()
-                            .is_some_and(|c| working_pairs.iter().any(|(p, _)| p == c)),
+                    seam,
                     scene_bgm,
                     use_voice_audio_ref,
-                    speaker_name.as_deref(),
+                    &audio_bound_names,
+                    &aspect_ratio,
                 );
                 let retry_prompt = crate::prompt_safety::sanitize_video_prompt(&retry_prompt);
                 match self
@@ -2007,7 +1475,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         &video_path,
                         Some(&video_last_frame_path),
                         None,
-                        ref_audio,
+                        &ref_audio_paths,
                     )
                     .await
                 {
@@ -2026,149 +1494,9 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             }
 
             if !privacy_resolved {
-                // Drop continuity still (may still trip privacy on rare gateways) and retry
-                // with T2I cast/env/prop refs only; then pure T2V.
-                let asset_pairs: Vec<(PathBuf, String)> = working_pairs
-                    .iter()
-                    .filter(|(p, _)| {
-                        continuity_source
-                            .as_ref()
-                            .map(|c| p != c)
-                            .unwrap_or(true)
-                    })
-                    .cloned()
-                    .collect();
-                if using_video_continuity && !asset_pairs.is_empty() {
-                    emit(
-                        progress,
-                        "video_clip_start",
-                        &format!(
-                            "Shot {}: possible privacy block ({}). Retrying multi-ref without continuity still…",
-                            shot.idx,
-                            truncate_err(&err, 120)
-                        ),
-                    );
-                    let asset_paths: Vec<&Path> =
-                        asset_pairs.iter().map(|(p, _)| p.as_path()).collect();
-                    let retry_prompt = i2v_motion_prompt(
-                        shot,
-                        characters,
-                        style,
-                        &asset_pairs,
-                        duration_secs,
-                        false,
-                        scene_bgm,
-                        use_voice_audio_ref,
-                        speaker_name.as_deref(),
-                    );
-                    let retry_prompt = crate::prompt_safety::sanitize_video_prompt(&retry_prompt);
-                    match self
-                        .backends
-                        .video
-                        .generate(
-                            &retry_prompt,
-                            None,
-                            None,
-                            &asset_paths,
-                            duration_secs,
-                            &video_path,
-                            Some(&video_last_frame_path),
-                            None,
-                            ref_audio,
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            // success
-                        }
-                        Err(retry_err)
-                            if should_retry_seedance_without_photoreal_frame(&retry_err)
-                                || is_seedance_privacy_image_err(&retry_err) =>
-                        {
-                            emit(
-                                progress,
-                                "video_clip_start",
-                                &format!(
-                                    "Shot {}: refs still blocked; falling back to text-to-video…",
-                                    shot.idx
-                                ),
-                            );
-                            let t2v_prompt = format!(
-                                "{}\n{}\nOpening scene: {}",
-                                crate::planning::style_prompt_clause(style),
-                                retry_prompt,
-                                shot.ff_desc
-                            );
-                            let t2v_prompt =
-                                crate::prompt_safety::sanitize_video_prompt(&t2v_prompt);
-                            self.backends
-                                .video
-                                .generate(
-                                    &t2v_prompt,
-                                    None,
-                                    None,
-                                    &[],
-                                    duration_secs,
-                                    &video_path,
-                                    Some(&video_last_frame_path),
-                                    None,
-                                    // Seedance: audio cannot be the sole reference input.
-                                    None,
-                                )
-                                .await
-                                .map_err(|t2v_err| {
-                                    VimaxError::Video(format!(
-                                        "Shot {} video failed (multi-ref → privacy-face → drop continuity → text-to-video). First: {}; Final: {t2v_err}",
-                                        shot.idx,
-                                        truncate_err(&err, 160)
-                                    ))
-                                })?;
-                        }
-                        Err(retry_err) => return Err(retry_err),
-                    }
-                } else {
-                    emit(
-                        progress,
-                        "video_clip_start",
-                        &format!(
-                            "Shot {}: possible privacy block ({}). Falling back to text-to-video…",
-                            shot.idx,
-                            truncate_err(&err, 120)
-                        ),
-                    );
-                    let t2v_prompt = format!(
-                        "{}\n{}\nOpening scene: {}",
-                        crate::planning::style_prompt_clause(style),
-                        prompt,
-                        shot.ff_desc
-                    );
-                    let t2v_prompt = crate::prompt_safety::sanitize_video_prompt(&t2v_prompt);
-                    self.backends
-                        .video
-                        .generate(
-                            &t2v_prompt,
-                            None,
-                            None,
-                            &[],
-                            duration_secs,
-                            &video_path,
-                            Some(&video_last_frame_path),
-                            None,
-                            // Seedance: audio cannot be the sole reference input.
-                            None,
-                        )
-                        .await
-                        .map_err(|t2v_err| {
-                            VimaxError::Video(format!(
-                                "Shot {} video failed (multi-ref → privacy-face → text-to-video). First: {}; Final: {t2v_err}",
-                                shot.idx,
-                                truncate_err(&err, 160)
-                            ))
-                        })?;
-                }
+                return Err(err);
             }
         }
-
         if !media_local::is_usable_video_file(&video_path) {
             return Err(VimaxError::Video(format!(
                 "Shot {} video file invalid after generation",
@@ -2183,105 +1511,6 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             serde_json::json!({ "shot_idx": shot.idx }),
         );
         Ok(())
-    }
-
-    /// Privacy-safe I2V sidecar frame. Never overwrites the multi-ref canonical path.
-    /// Still binds cast / env / prop plates so identity stays consistent.
-    /// Kept for revise / legacy first-last I2V workflows; render path no longer calls this.
-    #[allow(dead_code)]
-    async fn ensure_stylized_i2v_frame(
-        &self,
-        shot: &ShotDescription,
-        frame_type: &str,
-        canonical_path: &Path,
-        frame_desc: &str,
-        vis_char_idxs: &[i32],
-        style: &str,
-        characters: &[CharacterInScene],
-        registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
-        world_pairs: &[(PathBuf, String)],
-    ) -> VimaxResult<PathBuf> {
-        let stylized_path = frame_i2v_stylized_path(canonical_path);
-        media_local::scrub_unusable_image(&stylized_path)?;
-        if media_local::is_usable_image_file(&stylized_path) {
-            return Ok(stylized_path);
-        }
-
-        let mut available = portrait_pairs(
-            characters,
-            vis_char_idxs,
-            registry,
-            &resolve_film_root(&self.working_dir),
-        );
-        available.extend(rank_world_pairs_for_frame(frame_desc, world_pairs, 4));
-        // Prefer composition layout from the multi-ref canonical without treating it as
-        // a photoreal face bible (portraits already cover identity).
-        if media_local::is_usable_image_file(canonical_path) {
-            available.push((
-                canonical_path.to_path_buf(),
-                format!(
-                    "Composition / blocking layout for this {frame_type} — restyle faces heavily; keep pose, framing, and set."
-                ),
-            ));
-        }
-        let catalog = available.clone();
-        let mut pairs = available;
-        ensure_frame_refs(&mut pairs, &catalog, characters, vis_char_idxs);
-        pairs.sort_by_key(|(p, _)| {
-            let s = p.to_string_lossy().to_ascii_lowercase();
-            if s.contains("character_portrait") || s.contains("three_view") || s.contains("cameo") {
-                0u8
-            } else if s.contains("environments") || s.contains("props") {
-                1u8
-            } else {
-                2u8
-            }
-        });
-        let portrait_budget = vis_char_idxs.len().clamp(1, MAX_FRAME_PORTRAIT_REFS);
-        let pairs = pick_frame_ref_strip(pairs, portrait_budget);
-
-        let style_clause = crate::planning::style_prompt_clause(style);
-        let identity = character_identity_clause(characters, vis_char_idxs, style);
-        let plot_lock: String = frame_desc.chars().take(220).collect();
-        let mut prefix = String::new();
-        for (i, (path, text)) in pairs.iter().enumerate() {
-            let name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("ref.png");
-            let hint: String = text.chars().take(90).collect();
-            prefix.push_str(&format!("[{name}] (image #{i}): {hint}. "));
-        }
-        let continuity_lock = if frame_type.contains("continuity") {
-            "CONTINUITY LOCK: this sidecar is the previous shot's ending frame — preserve the exact pose, framing, wardrobe, lighting, and set; only stylize faces for privacy. Do NOT invent a new establishing composition. "
-        } else {
-            ""
-        };
-        let prompt = format!(
-            "{style_clause} PRIVACY SAFE REDRAW for video I2V (sidecar only). \
-Heavily stylize all faces — clearly fictional / non-photoreal; no real-person likeness. \
-Keep wardrobe, pose, framing, set, and props locked to the references. \
-{continuity_lock}PLOT LOCK: {plot_lock}. {identity}{prefix}Wide 16:9. Scene: {frame_desc}"
-        );
-        let refs: Vec<&Path> = pairs.iter().map(|(p, _)| p.as_path()).collect();
-        tracing::info!(
-            shot = shot.idx,
-            frame_type,
-            refs = refs.len(),
-            out = %stylized_path.display(),
-            "generating stylized I2V sidecar (canonical multi-ref frame preserved)"
-        );
-        self.backends
-            .image
-            .generate(&prompt, &refs, &stylized_path)
-            .await?;
-        if !media_local::is_usable_image_file(&stylized_path) {
-            return Err(VimaxError::msg(format!(
-                "stylized {frame_type} I2V sidecar missing after generation for shot {}",
-                shot.idx
-            )));
-        }
-        Ok(stylized_path)
     }
 }
 
@@ -2304,29 +1533,35 @@ fn portrait_pairs(
         if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
             if let Some(views) = registry.get(&ch.identifier_in_scene) {
                 let feats = ch.static_features.trim();
-                // Prefer user Cameo, then the single three-view sheet.
-                let preferred = views
-                    .get("cameo")
-                    .or_else(|| views.get("sheet"))
-                    .or_else(|| views.get("front"));
-                if let Some(sheet) = preferred {
-                    if let Some(p) = sheet.get("path") {
-                        let path = crate::session::resolve_stored_asset_path(p, film_root);
-                        if media_local::is_usable_image_file(&path) {
-                            let file_name = path
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("portrait.png");
-                            let desc = sheet.get("description").cloned().unwrap_or_else(|| {
-                                format!(
-                                    "File [{file_name}] = GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
-                                    ch.identifier_in_scene
-                                )
-                            });
-                            available.push((path, desc));
-                            continue;
-                        }
+                // Prefer the user three-view sheet, then Cameo, then generated front.
+                // Keep both user plates when present so wardrobe + turnaround both lock identity.
+                let mut pushed = false;
+                for key in ["sheet", "cameo", "front"] {
+                    let Some(item) = views.get(key) else {
+                        continue;
+                    };
+                    let Some(p) = item.get("path") else {
+                        continue;
+                    };
+                    let path = crate::session::resolve_stored_asset_path(p, film_root);
+                    if !media_local::is_usable_image_file(&path) {
+                        continue;
                     }
+                    let file_name = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("portrait.png");
+                    let desc = item.get("description").cloned().unwrap_or_else(|| {
+                        format!(
+                            "File [{file_name}] = GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
+                            ch.identifier_in_scene
+                        )
+                    });
+                    available.push((path, desc));
+                    pushed = true;
+                }
+                if pushed {
+                    continue;
                 }
                 for (view, item) in views {
                     if view == "cameo" || view == "sheet" || view == "front" {
@@ -2368,13 +1603,13 @@ fn character_identity_clause(characters: &[CharacterInScene], idxs: &[i32], styl
             }
             let mut desc = String::new();
             if !static_f.is_empty() {
-                desc.push_str(&static_f.chars().take(120).collect::<String>());
+                desc.push_str(&crate::planning::clip_at_break(static_f, 120));
             }
             if !dynamic_f.is_empty() {
                 if !desc.is_empty() {
                     desc.push_str("; ");
                 }
-                desc.push_str(&dynamic_f.chars().take(80).collect::<String>());
+                desc.push_str(&crate::planning::clip_at_break(dynamic_f, 80));
             }
             if desc.is_empty() {
                 parts.push(format!("<{}>", ch.identifier_in_scene));
@@ -2404,43 +1639,65 @@ fn character_identity_clause(characters: &[CharacterInScene], idxs: &[i32], styl
     out
 }
 
-/// Build multi-ref strip for frame img2img: cast bibles + env/prop plates + continuity.
-/// Seedream-class models accept an image URL array; keep a hard cap for latency/cost.
-const MAX_FRAME_REF_IMAGES: usize = 8;
-const MAX_FRAME_PORTRAIT_REFS: usize = 4;
-const MAX_FRAME_ENV_REFS: usize = 2;
-const MAX_FRAME_PROP_REFS: usize = 1;
+/// Seedance R2V image-array ceiling. Do not invent tighter per-category caps —
+/// model capacity will move; plot + this API limit decide who is bound.
+const MAX_SEEDANCE_REF_IMAGES: usize = 9;
 
-fn pick_frame_ref_strip(
+/// Split a remaining-slot budget between two plot-relevant groups.
+/// No per-group ceiling — if both fit, both go in; if not, share by count
+/// (each side keeps at least one plate when the budget allows).
+fn share_ref_slots(need_a: usize, need_b: usize, budget: usize) -> (usize, usize) {
+    if need_a + need_b <= budget {
+        return (need_a, need_b);
+    }
+    if need_a == 0 {
+        return (0, need_b.min(budget));
+    }
+    if need_b == 0 {
+        return (need_a.min(budget), 0);
+    }
+    if budget == 0 {
+        return (0, 0);
+    }
+    if budget == 1 {
+        return if need_a >= need_b { (1, 0) } else { (0, 1) };
+    }
+    let take_a = ((budget * need_a) / (need_a + need_b))
+        .max(1)
+        .min(need_a)
+        .min(budget - 1);
+    let take_b = (budget - take_a).min(need_b);
+    (take_a, take_b)
+}
+
+/// Seedance R2V strip. The only hard cap is the API image-array limit.
+/// In-shot portraits (user Cameo first) and plot-mentioned props share that
+/// budget — no extra "max N faces" heuristic.
+fn pick_video_assets(
     pairs: Vec<(PathBuf, String)>,
-    portrait_budget: usize,
+    continuity: Option<&Path>,
+    keep_env: bool,
 ) -> Vec<(PathBuf, String)> {
-    let portrait_budget = portrait_budget.clamp(1, MAX_FRAME_PORTRAIT_REFS);
+    let mut continuity_pair = None;
     let mut portraits = Vec::new();
     let mut envs = Vec::new();
     let mut props = Vec::new();
     let mut rest = Vec::new();
     for (p, t) in pairs {
-        let s = p.to_string_lossy().to_ascii_lowercase();
-        if s.contains("character_portrait")
-            || s.contains("three_view")
-            || s.contains("_cameo")
-            || s.contains("/cameo/")
-            || s.contains("/references/by_category/character")
-        {
+        if continuity.is_some_and(|c| p == c) {
+            continuity_pair = Some((p, t));
+            continue;
+        }
+        if is_portrait_ref_path(&p) {
             portraits.push((p, t));
-        } else if s.contains("environments")
-            || s.contains("/by_category/environment")
-            || s.contains("/by_category/style")
-        {
+        } else if is_environment_ref_path(&p) {
             envs.push((p, t));
-        } else if s.contains("props") || s.contains("/by_category/prop") {
+        } else if is_prop_ref_path(&p) {
             props.push((p, t));
         } else {
             rest.push((p, t));
         }
     }
-    // Keep user Cameo plates ahead of AI three-views within the portrait budget.
     portraits.sort_by_key(|(p, _)| {
         let s = p.to_string_lossy().to_ascii_lowercase();
         if s.contains("_cameo") || s.contains("/cameo/") {
@@ -2450,147 +1707,23 @@ fn pick_frame_ref_strip(
         }
     });
     let mut out = Vec::new();
-    out.extend(portraits.drain(..).take(portrait_budget));
-    out.extend(envs.drain(..).take(MAX_FRAME_ENV_REFS));
-    if out.len() < MAX_FRAME_REF_IMAGES {
-        out.extend(
-            props
-                .drain(..)
-                .take(MAX_FRAME_PROP_REFS.min(MAX_FRAME_REF_IMAGES - out.len())),
-        );
+    if let Some(c) = continuity_pair {
+        out.push(c);
     }
-    if out.len() < MAX_FRAME_REF_IMAGES {
-        out.extend(rest.drain(..).take(MAX_FRAME_REF_IMAGES - out.len()));
+    let remaining = |n: usize| MAX_SEEDANCE_REF_IMAGES.saturating_sub(n);
+    let env_reserve = if keep_env && !envs.is_empty() { 1usize } else { 0 };
+    let budget = remaining(out.len()).saturating_sub(env_reserve);
+    let (portrait_take, prop_take) = share_ref_slots(portraits.len(), props.len(), budget);
+    out.extend(portraits.drain(..portrait_take));
+    out.extend(props.drain(..prop_take));
+    if keep_env {
+        let env_take = remaining(out.len()).min(1).min(envs.len());
+        out.extend(envs.drain(..env_take));
     }
-    if out.len() < MAX_FRAME_REF_IMAGES {
-        out.extend(portraits.drain(..).take(MAX_FRAME_REF_IMAGES - out.len()));
-    }
+    let rest_take = remaining(out.len()).min(rest.len());
+    out.extend(rest.drain(..rest_take));
+    out.truncate(MAX_SEEDANCE_REF_IMAGES);
     out
-}
-
-/// Ensure each visible cast portrait and at least one world plate survive selector drops.
-fn ensure_frame_refs(
-    pairs: &mut Vec<(PathBuf, String)>,
-    available: &[(PathBuf, String)],
-    characters: &[CharacterInScene],
-    vis_char_idxs: &[i32],
-) {
-    let path_key = |p: &Path| p.to_string_lossy().to_ascii_lowercase();
-    let is_portrait = |p: &Path| {
-        let s = path_key(p);
-        s.contains("character_portrait")
-            || s.contains("three_view")
-            || s.contains("_cameo")
-            || s.contains("/cameo/")
-            || s.contains("/references/by_category/character")
-    };
-    let mentions_id = |text: &str, id: &str| text.to_ascii_lowercase().contains(&id.to_ascii_lowercase());
-
-    // Re-insert missing three-views for every visible cast member.
-    for &ci in vis_char_idxs {
-        let Some(ch) = characters.iter().find(|c| c.idx == ci) else {
-            continue;
-        };
-        let id = &ch.identifier_in_scene;
-        let already = pairs.iter().any(|(p, t)| {
-            is_portrait(p) && (mentions_id(t, id) || path_key(p).contains(&id.to_ascii_lowercase()))
-        });
-        if already {
-            continue;
-        }
-        if let Some((p, t)) = available.iter().find(|(p, t)| {
-            is_portrait(p) && (mentions_id(t, id) || path_key(p).contains(&id.to_ascii_lowercase()))
-        }) {
-            pairs.insert(0, (p.clone(), t.clone()));
-        }
-    }
-    // Fallback: at least one portrait if none survived.
-    if !vis_char_idxs.is_empty() && !pairs.iter().any(|(p, _)| is_portrait(p)) {
-        if let Some((p, t)) = available.iter().find(|(p, _)| is_portrait(p)) {
-            pairs.insert(0, (p.clone(), t.clone()));
-        }
-    }
-
-    if !pairs
-        .iter()
-        .any(|(p, _)| path_key(p).contains("environments"))
-    {
-        if let Some((p, t)) = available.iter().find(|(p, _)| path_key(p).contains("environments"))
-        {
-            pairs.push((p.clone(), t.clone()));
-        }
-    }
-    if !pairs.iter().any(|(p, _)| path_key(p).contains("props")) {
-        if let Some((p, t)) = available.iter().find(|(p, _)| path_key(p).contains("props")) {
-            pairs.push((p.clone(), t.clone()));
-        }
-    }
-}
-
-struct ContinuityRef {
-    path: PathBuf,
-    desc: String,
-}
-
-fn continuity_frame_path(working_dir: &Path, shot_idx: i32) -> Option<PathBuf> {
-    let dir = working_dir.join("shots").join(shot_idx.to_string());
-    let lf = dir.join("last_frame.png");
-    if lf.exists() {
-        return Some(lf);
-    }
-    let ff = dir.join("first_frame.png");
-    if ff.exists() {
-        Some(ff)
-    } else {
-        None
-    }
-}
-
-/// `first_frame.png` → `first_frame.privacy_bak.png` (legacy privacy overwrite backup).
-fn frame_privacy_bak_path(canonical: &Path) -> PathBuf {
-    canonical.with_extension("privacy_bak.png")
-}
-
-/// `first_frame.png` → `first_frame.i2v_stylized.png` (privacy-safe I2V sidecar).
-fn frame_i2v_stylized_path(canonical: &Path) -> PathBuf {
-    canonical.with_extension("i2v_stylized.png")
-}
-
-/// Restore multi-ref canonical frames that an older privacy retry renamed to `*.privacy_bak.png`.
-async fn restore_canonical_frame_from_privacy_bak(canonical: &Path) {
-    let bak = frame_privacy_bak_path(canonical);
-    if !media_local::is_usable_image_file(&bak) {
-        return;
-    }
-    let stylized = frame_i2v_stylized_path(canonical);
-    if media_local::is_usable_image_file(canonical) {
-        // Keep the text-only overwrite as an I2V sidecar if one isn't already present.
-        if !media_local::is_usable_image_file(&stylized) {
-            if let Err(e) = tokio::fs::rename(canonical, &stylized).await {
-                tracing::warn!(
-                    from = %canonical.display(),
-                    to = %stylized.display(),
-                    error = %e,
-                    "failed to move overwritten frame aside before privacy_bak restore"
-                );
-                return;
-            }
-        } else {
-            let _ = tokio::fs::remove_file(canonical).await;
-        }
-    }
-    match tokio::fs::rename(&bak, canonical).await {
-        Ok(()) => tracing::info!(
-            path = %canonical.display(),
-            "restored multi-ref frame from privacy_bak"
-        ),
-        Err(e) => tracing::warn!(
-            from = %bak.display(),
-            to = %canonical.display(),
-            error = %e,
-            "failed to restore multi-ref frame from privacy_bak"
-        ),
-    }
 }
 
 /// Previous shot in timeline order within the same scene (by idx).
@@ -2619,6 +1752,7 @@ async fn ensure_shot_video_last_frame(
     let out = dir.join("video_last_frame.png");
     if force {
         let _ = tokio::fs::remove_file(&out).await;
+        media_local::clear_return_last_frame_url(&out);
     } else if media_local::is_usable_image_file(&out) {
         return Ok(Some(out));
     }
@@ -2687,19 +1821,227 @@ async fn load_target_duration_secs(working_dir: &Path) -> Option<u32> {
     None
 }
 
-/// Keep at most `max_shots` briefs; reindex and mark the final shot as `is_last`.
-fn enforce_max_shots(shots: &mut Vec<ShotBriefDescription>, max_shots: usize) -> bool {
-    let max_shots = max_shots.max(1);
-    if shots.len() <= max_shots {
+/// Drop cached decompose / camera tree and unused shot dirs after the
+/// storyboard list changes (truncate or pack). Directories that already have
+/// a clip are kept so resume does not delete billed work.
+async fn invalidate_downstream_of_storyboard(
+    working_dir: &Path,
+    storyboard: &[ShotBriefDescription],
+) {
+    let decomp = working_dir.join("shot_descriptions.json");
+    if decomp.exists() {
+        let _ = tokio::fs::remove_file(&decomp).await;
+    }
+    let cam = working_dir.join("camera_tree.json");
+    if cam.exists() {
+        let _ = tokio::fs::remove_file(&cam).await;
+    }
+    prune_unkept_shot_dirs(working_dir, storyboard).await;
+}
+
+/// Write `storyboard.json` only as the published clip list.
+///
+/// Returns whether the file changed. A matching sidecar is always kept so
+/// resume still skips the LLM draft; callers must pass the packed (and
+/// optionally in-clip-densified) rows, never the pre-pack draft.
+async fn persist_published_storyboard(
+    working_dir: &Path,
+    path: &Path,
+    board: &[ShotBriefDescription],
+    plan_fp: &str,
+) -> VimaxResult<bool> {
+    let on_disk = if path.is_file() {
+        read_json_artifact::<Vec<ShotBriefDescription>>(path)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    if on_disk
+        .as_ref()
+        .is_some_and(|disk| !super::clip_beats::storyboard_differs(disk, board))
+    {
+        if !sidecar_matches(path, plan_fp).await {
+            write_sidecar(path, plan_fp).await?;
+        }
+        return Ok(false);
+    }
+    write_json_artifact(path, &board).await?;
+    write_sidecar(path, plan_fp).await?;
+    invalidate_downstream_of_storyboard(working_dir, board).await;
+    Ok(true)
+}
+
+/// Board row → clip. One published storyboard card becomes one video job.
+fn clips_from_board(
+    briefs: &[ShotBriefDescription],
+    characters: &[CharacterInScene],
+) -> Vec<ShotDescription> {
+    let mut out = super::clip_beats::shots_from_packed_briefs(briefs);
+    for desc in &mut out {
+        let vis = shot_cast_idxs(desc, characters);
+        desc.ff_vis_char_idxs = vis.clone();
+        desc.lf_vis_char_idxs = vis;
+    }
+    out
+}
+
+/// Persist the packed clip list as consecutive `shots/0..n` dirs.
+///
+/// Clip packing keeps each run's first idx, which leaves holes the UI reads
+/// as skipped middles. Prune absorbed dirs first (keep billed video), then
+/// rename survivors onto `0..n` and rewrite per-shot JSON.
+async fn commit_packed_shot_layout(
+    working_dir: &Path,
+    mut synced: Vec<ShotBriefDescription>,
+    mut packed: Vec<ShotDescription>,
+) -> (
+    Vec<ShotBriefDescription>,
+    Vec<ShotDescription>,
+    HashMap<i32, i32>,
+) {
+    packed.sort_by_key(|clip| clip.idx);
+    prune_unkept_shot_dirs(working_dir, &synced).await;
+    let briefs_dense = synced
+        .iter()
+        .enumerate()
+        .all(|(i, brief)| brief.idx == i as i32);
+    let map = if super::clip_beats::clip_indices_are_dense(&packed) && briefs_dense {
+        packed.iter().map(|clip| (clip.idx, clip.idx)).collect()
+    } else {
+        let map = super::clip_beats::densify_aligned_indices(&mut synced, &mut packed);
+        relocate_shot_dirs(working_dir, &map).await;
+        prune_unkept_shot_dirs(working_dir, &synced).await;
+        map
+    };
+    for clip in &packed {
+        let path = working_dir
+            .join("shots")
+            .join(clip.idx.to_string())
+            .join("shot_description.json");
+        if let Some(parent) = path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let _ = write_json_artifact(&path, clip).await;
+    }
+    (synced, packed, map)
+}
+
+async fn relocate_shot_dirs(working_dir: &Path, old_to_new: &HashMap<i32, i32>) {
+    let shots_root = working_dir.join("shots");
+    if !shots_root.is_dir() {
+        return;
+    }
+    let moves: Vec<(i32, i32)> = old_to_new
+        .iter()
+        .filter_map(|(&old, &new)| (old != new).then_some((old, new)))
+        .collect();
+    if moves.is_empty() {
+        return;
+    }
+
+    for (old, _) in &moves {
+        let from = shots_root.join(old.to_string());
+        if !from.exists() {
+            continue;
+        }
+        let tmp = shots_root.join(format!(".reloc-{old}"));
+        if tmp.exists() {
+            let _ = tokio::fs::remove_dir_all(&tmp).await;
+        }
+        if let Err(e) = tokio::fs::rename(&from, &tmp).await {
+            tracing::warn!(
+                from = %from.display(),
+                error = %e,
+                "could not park shot dir for reindex"
+            );
+        }
+    }
+
+    for (old, new) in &moves {
+        let tmp = shots_root.join(format!(".reloc-{old}"));
+        if !tmp.exists() {
+            continue;
+        }
+        let to = shots_root.join(new.to_string());
+        if to.exists() {
+            park_or_delete_shot_dir(&to).await;
+        }
+        if let Err(e) = tokio::fs::rename(&tmp, &to).await {
+            tracing::warn!(
+                from = %tmp.display(),
+                to = %to.display(),
+                error = %e,
+                "could not move shot dir onto dense idx"
+            );
+        }
+    }
+}
+
+async fn park_or_delete_shot_dir(path: &Path) {
+    let video = path.join("video.mp4");
+    if media_local::is_usable_video_file(&video) {
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("shot");
+        let parked = parent.join("_absorbed").join(name);
+        if let Some(dir) = parked.parent() {
+            let _ = tokio::fs::create_dir_all(dir).await;
+        }
+        if parked.exists() {
+            let _ = tokio::fs::remove_dir_all(&parked).await;
+        }
+        if tokio::fs::rename(path, &parked).await.is_ok() {
+            tracing::info!(shot = name, "parked absorbed shot dir with billed video");
+        }
+        return;
+    }
+    let _ = tokio::fs::remove_dir_all(path).await;
+}
+
+fn remap_camera_tree_shot_idxs(cameras: &mut [Camera], old_to_new: &HashMap<i32, i32>) -> bool {
+    if old_to_new.iter().all(|(old, new)| old == new) {
         return false;
     }
-    shots.truncate(max_shots);
-    let last_i = shots.len().saturating_sub(1);
-    for (i, s) in shots.iter_mut().enumerate() {
-        s.idx = i as i32;
-        s.is_last = i == last_i;
+    for camera in cameras.iter_mut() {
+        camera.active_shot_idxs = camera
+            .active_shot_idxs
+            .iter()
+            .filter_map(|idx| old_to_new.get(idx).copied())
+            .collect();
+        if let Some(parent) = camera.parent_shot_idx {
+            camera.parent_shot_idx = old_to_new.get(&parent).copied();
+        }
     }
     true
+}
+
+async fn prune_unkept_shot_dirs(working_dir: &Path, storyboard: &[ShotBriefDescription]) {
+    let keep: HashSet<i32> = storyboard.iter().map(|s| s.idx).collect();
+    let shots_root = working_dir.join("shots");
+    if !shots_root.is_dir() {
+        return;
+    }
+    let Ok(mut entries) = tokio::fs::read_dir(&shots_root).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Ok(idx) = name.parse::<i32>() else {
+            continue;
+        };
+        if keep.contains(&idx) {
+            continue;
+        }
+        // Leftover numbered dirs (pre-pack cache, absorbed idx) become phantom
+        // last cards on the filmstrip if they stay under shots/N.
+        park_or_delete_shot_dir(&entry.path()).await;
+    }
 }
 
 /// Fill empty `audio_desc` so every shot carries ambient/BGM (and keeps dialogue
@@ -2756,199 +2098,692 @@ async fn load_scene_bgm_paren(working_dir: &Path) -> String {
     }
 }
 
+fn path_key_lower(p: &Path) -> String {
+    p.to_string_lossy().to_ascii_lowercase()
+}
+
+fn is_portrait_ref_path(p: &Path) -> bool {
+    let s = path_key_lower(p);
+    s.contains("character_portrait")
+        || s.contains("three_view")
+        || s.contains("_cameo")
+        || s.contains("/cameo/")
+        || s.contains("/references/by_category/character")
+        || s.contains("video_front")
+}
+
+fn is_environment_ref_path(p: &Path) -> bool {
+    let s = path_key_lower(p);
+    s.contains("environments")
+        || s.contains("/by_category/environment")
+        || s.contains("environment_plate")
+}
+
+fn is_prop_ref_path(p: &Path) -> bool {
+    let s = path_key_lower(p);
+    s.contains("/props/")
+        || s.contains("\\props\\")
+        || s.contains("/by_category/prop")
+        || s.contains("_prop.")
+        || s.contains("_prop.png")
+}
+
+fn extract_bracket_name(text: &str) -> Option<&str> {
+    let start = text.find('<')?;
+    let rest = &text[start + 1..];
+    let end = rest.find('>')?;
+    let name = rest[..end].trim();
+    (!name.is_empty()).then_some(name)
+}
+
+fn shot_world_query(shot: &ShotDescription) -> String {
+    let mut blob = format!(
+        "{} {} {} {} {}",
+        shot.ff_desc.trim(),
+        shot.motion_desc.trim(),
+        shot.lf_desc.trim(),
+        shot.visual_desc.trim(),
+        shot.audio_desc.as_deref().unwrap_or("").trim()
+    );
+    for beat in &shot.beats {
+        blob.push(' ');
+        blob.push_str(beat.motion_desc.trim());
+        if let Some(a) = &beat.audio_desc {
+            blob.push(' ');
+            blob.push_str(a.trim());
+        }
+    }
+    blob
+}
+
+fn prop_name_needles(path: &Path, text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let push = |names: &mut Vec<String>, raw: &str| {
+        let name = raw.trim().trim_matches(|c| c == '_' || c == '-');
+        if name.is_empty() {
+            return;
+        }
+        let chars = name.chars().count();
+        let cjk = name.chars().filter(|c| crate::planning::is_cjk_speech_char(*c)).count();
+        if cjk >= 2 || (cjk == 0 && chars >= 3) {
+            names.push(name.to_string());
+        }
+    };
+    if let Some(n) = extract_bracket_name(text) {
+        push(&mut names, n);
+    }
+    if let Some(dir) = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+    {
+        let cleaned = dir
+            .split_once('_')
+            .map(|(_, rest)| rest)
+            .unwrap_or(dir);
+        if !cleaned.eq_ignore_ascii_case("props") {
+            push(&mut names, cleaned);
+        }
+    }
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        let cleaned = stem
+            .trim_end_matches("_prop")
+            .trim_end_matches("-prop");
+        let cleaned = cleaned
+            .split_once('_')
+            .map(|(_, rest)| rest)
+            .unwrap_or(cleaned);
+        push(&mut names, cleaned);
+    }
+    names
+}
+
+fn query_mentions_prop(query: &str, path: &Path, text: &str) -> bool {
+    let q = query.to_ascii_lowercase();
+    prop_name_needles(path, text)
+        .iter()
+        .any(|n| q.contains(&n.to_ascii_lowercase()))
+}
+
+fn mentioned_prop_pairs(
+    query: &str,
+    world_pairs: &[(PathBuf, String)],
+) -> Vec<(PathBuf, String)> {
+    world_pairs
+        .iter()
+        .filter(|(p, t)| is_prop_ref_path(p) && query_mentions_prop(query, p, t))
+        .cloned()
+        .collect()
+}
+
+fn prop_duplicates_visible_cast(
+    path: &Path,
+    text: &str,
+    characters: &[CharacterInScene],
+    vis: &[i32],
+) -> bool {
+    let blob = format!("{} {}", path.to_string_lossy(), text);
+    vis.iter().any(|&ci| {
+        characters.iter().any(|ch| {
+            ch.idx == ci
+                && ch.identifier_in_scene.trim().chars().count() >= 2
+                && blob.contains(ch.identifier_in_scene.trim())
+        })
+    })
+}
+
+fn shot_has_spoken_dialogue(shot: &ShotDescription) -> bool {
+    crate::planning::text_looks_like_dialogue(&shot_audio_source(shot))
+        || crate::planning::text_looks_like_dialogue(&shot.motion_desc)
+        || crate::planning::text_looks_like_dialogue(&shot.visual_desc)
+}
+
+/// Storyboard `audio_desc` is the source of truth; packed beats fill in when the
+/// parent row left it empty.
+fn shot_audio_source(shot: &ShotDescription) -> String {
+    let top = shot.audio_desc.as_deref().unwrap_or("").trim();
+    if !top.is_empty() {
+        return top.to_string();
+    }
+    let mut parts = Vec::new();
+    for beat in &shot.beats {
+        if let Some(a) = beat
+            .audio_desc
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            parts.push(a);
+        }
+    }
+    parts.join(" ")
+}
+
+/// Cast that must stay on the Seedance image strip: vis idxs plus anyone named
+/// in the shot text. Last-frame continuity is geography, not identity — empty
+/// vis idxs used to drop portraits and leave only a prop.
+fn shot_cast_idxs(shot: &ShotDescription, characters: &[CharacterInScene]) -> Vec<i32> {
+    let mut idxs = Vec::new();
+    let mut push = |idx: i32| {
+        if !idxs.contains(&idx) {
+            idxs.push(idx);
+        }
+    };
+    for &i in &shot.ff_vis_char_idxs {
+        push(i);
+    }
+    for &i in &shot.lf_vis_char_idxs {
+        push(i);
+    }
+    let mut blob = String::new();
+    for piece in [
+        shot.visual_desc.as_str(),
+        shot.motion_desc.as_str(),
+        shot.ff_desc.as_str(),
+        shot.lf_desc.as_str(),
+        shot.audio_desc.as_deref().unwrap_or(""),
+    ] {
+        blob.push_str(piece);
+        blob.push(' ');
+    }
+    for beat in &shot.beats {
+        blob.push_str(&beat.motion_desc);
+        blob.push(' ');
+        if let Some(a) = &beat.audio_desc {
+            blob.push_str(a);
+            blob.push(' ');
+        }
+    }
+    for ch in characters {
+        if crate::domain::character_mentioned_in(&blob, ch, characters) {
+            push(ch.idx);
+        }
+    }
+    idxs
+}
+
+fn looks_cjk(text: &str) -> bool {
+    text.chars()
+        .filter(|c| crate::planning::is_cjk_speech_char(*c))
+        .take(2)
+        .count()
+        >= 2
+}
+
+fn is_last_frame_ref_path(path: &Path) -> bool {
+    path_key_lower(path).contains("video_last_frame")
+}
+
+fn style_short(style: &str) -> String {
+    crate::planning::video_style_clause(style)
+        .trim_start_matches("Look:")
+        .trim()
+        .trim_end_matches('.')
+        .to_string()
+}
+
+fn constraint_line(cjk: bool, duration_secs: u32, aspect_ratio: &str, style: &str) -> String {
+    let mut bits = Vec::new();
+    bits.push(if cjk {
+        "画面无任何字幕。".to_string()
+    } else {
+        "No on-screen subtitles.".to_string()
+    });
+    let ratio = aspect_ratio.trim();
+    if !ratio.is_empty() {
+        let ratio = crate::aspect::normalize_aspect_ratio(ratio);
+        let portrait = matches!(ratio.as_str(), "9:16" | "3:4");
+        bits.push(if cjk {
+            if portrait {
+                format!("{ratio}，主体完整入画。")
+            } else {
+                format!("{ratio}。")
+            }
+        } else if portrait {
+            format!("{ratio}, keep the full subject in frame.")
+        } else {
+            format!("{ratio}.")
+        });
+    }
+    bits.push(if cjk {
+        format!("约{duration_secs}秒。")
+    } else {
+        format!("About {duration_secs}s.")
+    });
+    let look = style_short(style);
+    if !look.is_empty() {
+        bits.push(format!("{look}."));
+    }
+    bits.join(" ")
+}
+
+fn video_ref_role(path: &Path, text: &str, resume: bool, cjk: bool) -> String {
+    if resume {
+        return if cjk {
+            "上一镜接着演".into()
+        } else {
+            "previous shot continues".into()
+        };
+    }
+    if is_last_frame_ref_path(path) {
+        return if cjk {
+            "上一镜".into()
+        } else {
+            "previous shot".into()
+        };
+    }
+    if is_portrait_ref_path(path) {
+        let who = extract_bracket_name(text).unwrap_or(if cjk { "角色" } else { "cast" });
+        return if cjk {
+            format!("<{who}> 身份")
+        } else {
+            format!("<{who}> identity")
+        };
+    }
+    if is_environment_ref_path(path) {
+        return if cjk {
+            "地点圣经（建筑体积，不是构图）".into()
+        } else {
+            "location bible (architecture, not composition)".into()
+        };
+    }
+    if is_prop_ref_path(path) {
+        let who = extract_bracket_name(text).unwrap_or(if cjk { "道具" } else { "prop" });
+        return if cjk {
+            format!("<{who}> 道具")
+        } else {
+            format!("<{who}> prop")
+        };
+    }
+    crate::planning::clip_at_break(text, 48)
+}
+
+fn video_at_image_bindings(ref_pairs: &[(PathBuf, String)], seam: SpliceSeam, cjk: bool) -> String {
+    if ref_pairs.is_empty() {
+        return String::new();
+    }
+    let sep = if cjk { "。" } else { ". " };
+    let bits: Vec<String> = ref_pairs
+        .iter()
+        .enumerate()
+        .map(|(i, (path, text))| {
+            let resume = i == 0 && seam == SpliceSeam::SameTake && is_last_frame_ref_path(path);
+            format!("@Image{} {}", i + 1, video_ref_role(path, text, resume, cjk))
+        })
+        .collect();
+    let joined = bits.join(sep);
+    if cjk && !joined.ends_with('。') {
+        format!("{joined}。")
+    } else if !cjk && !joined.ends_with('.') {
+        format!("{joined}.")
+    } else {
+        joined
+    }
+}
+
+fn seam_line(seam: SpliceSeam, cjk: bool, resume_bound: bool) -> &'static str {
+    match seam {
+        SpliceSeam::Cut => "",
+        SpliceSeam::SameTake if resume_bound => "",
+        SpliceSeam::SameTake => {
+            if cjk {
+                "同一机位接着演。"
+            } else {
+                "Same camera keeps rolling."
+            }
+        }
+        SpliceSeam::MatchCut => {
+            if cjk {
+                "切到新机位，动作已经在进行。"
+            } else {
+                "Cut to a new angle with the action already in progress."
+            }
+        }
+    }
+}
+
+fn video_cast_clause(
+    characters: &[CharacterInScene],
+    shot: &ShotDescription,
+    style: &str,
+    has_identity_refs: bool,
+    cjk: bool,
+) -> String {
+    let idxs = shot_cast_idxs(shot, characters);
+    let mut has_child = false;
+    for &ci in &idxs {
+        if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
+            if crate::planning::looks_like_child_character(
+                &ch.identifier_in_scene,
+                ch.static_features.trim(),
+            ) {
+                has_child = true;
+                break;
+            }
+        }
+    }
+    let child_line = if !has_child {
+        ""
+    } else if cjk {
+        "儿童与成人同一画风。"
+    } else if crate::planning::wants_stylized_non_photoreal(style) {
+        "Children share the SAME animation style as adults."
+    } else {
+        "Children share the SAME cinematic style as adults."
+    };
+    if has_identity_refs {
+        return child_line.to_string();
+    }
+    let compact = character_identity_clause(characters, &idxs, style);
+    if child_line.is_empty() {
+        compact
+    } else if compact.is_empty() {
+        child_line.to_string()
+    } else {
+        compact
+    }
+}
+
+fn single_lens_visual(shot: &ShotDescription) -> String {
+    let visual = shot.visual_desc.trim();
+    if !visual.is_empty() {
+        return crate::planning::clip_at_break(visual, 720);
+    }
+    super::clip_beats::strip_authored_timecodes(&shot.motion_desc)
+}
+
+fn clip_prompt_lenses(shot: &ShotDescription) -> Vec<super::clip_beats::PromptLens> {
+    let mut lenses = super::clip_beats::prompt_lenses(shot);
+    if !lenses.is_empty() {
+        return lenses;
+    }
+    let visual = single_lens_visual(shot);
+    if visual.is_empty() && shot.audio_desc.as_deref().unwrap_or("").trim().is_empty() {
+        return Vec::new();
+    }
+    lenses.push(super::clip_beats::PromptLens {
+        visual,
+        audio: shot.audio_desc.clone(),
+        cut: false,
+    });
+    lenses
+}
+
+fn render_lens_audio(
+    raw: Option<&str>,
+    motion: &str,
+    visual: &str,
+    scene_bgm: &str,
+    essential_only: bool,
+    emit_bgm: bool,
+) -> (String, String) {
+    let audio = raw.unwrap_or("").trim();
+    let mined = if !audio.is_empty() {
+        strip_conflicting_voice_color_cues(audio)
+    } else if crate::planning::text_looks_like_dialogue(motion) {
+        strip_conflicting_voice_color_cues(motion)
+    } else if crate::planning::text_looks_like_dialogue(visual) {
+        strip_conflicting_voice_color_cues(visual)
+    } else {
+        String::new()
+    };
+    let mined = if essential_only {
+        strip_bgm_stage_directions(&mined)
+    } else {
+        mined
+    };
+    let (line, sfx) = if mined.is_empty() {
+        (String::new(), String::new())
+    } else {
+        split_dialogue_and_sfx(&mined)
+    };
+    let line = trim_audio_brackets(&line);
+    let (line, peeled_sfx) = super::clip_beats::peel_trailing_stage_sfx(&line);
+    let mut sfx = trim_audio_brackets(&sfx);
+    if !peeled_sfx.is_empty() {
+        sfx = if sfx.is_empty() {
+            peeled_sfx
+        } else {
+            format!("{sfx} {peeled_sfx}")
+        };
+    }
+    if line.is_empty() && sfx.is_empty() && emit_bgm && !essential_only {
+        sfx = if looks_cjk(visual) || looks_cjk(motion) {
+            "环境底噪与画面同步的拟音".into()
+        } else {
+            "environmental ambience and scene-matched foley matching on-screen action".into()
+        };
+    } else if line.is_empty() && sfx.is_empty() && essential_only && emit_bgm {
+        sfx = "environmental ambience and essential on-screen foley only — no music".into();
+    }
+    let sfx = if emit_bgm && !essential_only {
+        let bgm = crate::planning::format_scene_bgm_paren(scene_bgm);
+        if sfx.is_empty() {
+            bgm
+        } else if sfx.contains('(') {
+            replace_or_append_bgm_paren(&format!("<{sfx}>"), scene_bgm)
+                .trim_matches(|c| c == '<' || c == '>')
+                .trim()
+                .to_string()
+        } else {
+            format!("<{sfx}> {bgm}")
+        }
+    } else if sfx.is_empty() {
+        String::new()
+    } else if sfx.starts_with('<') {
+        sfx
+    } else {
+        format!("<{sfx}>")
+    };
+    (line, sfx)
+}
+
 fn i2v_motion_prompt(
     shot: &ShotDescription,
     characters: &[CharacterInScene],
     style: &str,
     ref_pairs: &[(PathBuf, String)],
     duration_secs: u32,
-    from_prev_video_tail: bool,
+    seam: SpliceSeam,
     scene_bgm: &str,
     use_voice_audio_ref: bool,
-    speaker_name: Option<&str>,
+    audio_bound_speakers: &[&str],
+    aspect_ratio: &str,
 ) -> String {
-    let motion = shot.motion_desc.trim();
-    let style_clause = crate::planning::style_prompt_clause(style);
-    let identity = character_identity_clause(characters, &shot.ff_vis_char_idxs, style);
-    let plot: String = shot.ff_desc.chars().take(180).collect();
-    let end_plot: String = if shot.lf_desc.trim().is_empty() {
-        String::new()
-    } else {
-        format!(
-            " End beat: {}.",
-            shot.lf_desc.chars().take(120).collect::<String>()
-        )
-    };
-    let mut ref_bind = String::new();
-    for (i, (path, text)) in ref_pairs.iter().enumerate() {
-        let n = i + 1;
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("ref.png");
-        let hint: String = text.chars().take(120).collect();
-        ref_bind.push_str(&format!("Image {n} ({name}): {hint}. "));
+    let lenses = clip_prompt_lenses(shot);
+    let mut blob = String::new();
+    blob.push_str(&shot.visual_desc);
+    blob.push_str(&shot.motion_desc);
+    blob.push_str(shot.audio_desc.as_deref().unwrap_or(""));
+    for lens in &lenses {
+        blob.push_str(&lens.visual);
+        blob.push_str(lens.audio.as_deref().unwrap_or(""));
     }
-    let ref_clause = if ref_bind.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "REFERENCE BINDINGS (each Image N is a reference_image input — follow these roles): {ref_bind}\
-Use *_three_view / cameo for cast identity, *_environment_plate for location, *_prop for objects, \
-video_last_frame for match-cut continuity from the previous shot. "
-        )
-    };
-    let continuity_clause = if from_prev_video_tail {
-        "CONTINUITY: Image 1 is the previous timeline-adjacent shot's ending frame \
-(same scene or prior scene's last shot) — begin motion immediately from that pose/framing; \
-seamless match-cut continuation into this beat (camera/angle may already differ; keep identity and set). "
-    } else {
-        ""
-    };
-    let speaker_idxs = speaker_idxs_for_shot(shot, characters);
-    let voice_lock = if use_voice_audio_ref {
-        String::new()
-    } else {
-        character_voice_lock_clause(characters, &speaker_idxs)
-    };
-    let audio_block = if use_voice_audio_ref {
-        seedance_audio_caption_essential_only(
-            shot.audio_desc.as_deref(),
-            &shot.motion_desc,
-            &shot.visual_desc,
-        )
-    } else {
-        seedance_audio_caption_block(
-            shot.audio_desc.as_deref(),
-            &shot.motion_desc,
-            &shot.visual_desc,
+    let cjk = looks_cjk(&blob);
+    let has_dialogue = shot_has_spoken_dialogue(shot);
+    let has_identity_refs = ref_pairs.iter().any(|(p, _)| is_portrait_ref_path(p));
+    let resume_bound = seam == SpliceSeam::SameTake
+        && ref_pairs
+            .first()
+            .is_some_and(|(p, _)| is_last_frame_ref_path(p));
+
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(constraint_line(cjk, duration_secs, aspect_ratio, style));
+    let ref_clause = video_at_image_bindings(ref_pairs, seam, cjk);
+    if !ref_clause.is_empty() {
+        parts.push(ref_clause);
+    }
+    let audio_ref_clause = audio_ref_binding_clause(audio_bound_speakers, use_voice_audio_ref);
+    if !audio_ref_clause.is_empty() {
+        parts.push(audio_ref_clause);
+    }
+    if has_dialogue {
+        // Floor of 4 keeps text locks for speakers who did not get a wav slot;
+        // Wan can bind 5, so grow with the bound list.
+        let lock_cap = audio_bound_speakers.len().max(4);
+        let lock = character_voice_lock_clause(
             characters,
-            &speaker_idxs,
+            &speaker_idxs_for_shot(shot, characters),
+            lock_cap,
+        );
+        if !lock.is_empty() {
+            parts.push(lock);
+        }
+    }
+    let join = seam_line(seam, cjk, resume_bound);
+    if !join.is_empty() {
+        parts.push(join.to_string());
+    }
+    let identity = video_cast_clause(characters, shot, style, has_identity_refs, cjk);
+    if !identity.trim().is_empty() {
+        parts.push(identity.trim().to_string());
+    }
+
+    let scene_lbl = if cjk { "画面：" } else { "Scene: " };
+    let line_lbl = if cjk { "台词：" } else { "Line: " };
+    let sfx_lbl = if cjk { "音效：" } else { "SFX: " };
+    let shot_lbl = if cjk { "镜头" } else { "Shot " };
+    let inner_cut = if cjk {
+        "切到新机位。"
+    } else {
+        "Cut to a new camera."
+    };
+
+    let mut bgm_emitted = false;
+    for (i, lens) in lenses.iter().enumerate() {
+        let emit_bgm = !bgm_emitted;
+        let (line, sfx) = render_lens_audio(
+            lens.audio.as_deref(),
+            &lens.visual,
+            &lens.visual,
             scene_bgm,
-        )
-    };
-    let audio_ref_clause = if use_voice_audio_ref {
-        let who = speaker_name.unwrap_or("the speaking character");
-        format!(
-            "REFERENCE AUDIO: reference_audio is the voice timbre bible for {who} — \
-match speaker identity for any dialogue exactly; do NOT invent a new voice. \
-NO background music or underscore — only dialogue and essential on-screen foley. "
-        )
-    } else {
-        String::new()
-    };
-    let voice_continuity = if use_voice_audio_ref {
-        String::new()
-    } else {
-        "VOICE CONTINUITY: copy each speaker's FIXED SPEAKER VOICE from VOICE LOCK verbatim. \
-Emotion intensity may shift slightly; NEVER reinvent timbre, pitch band, age, or gender between shots. \
-Ignore any conflicting voice-color stage directions in the audio line — VOICE LOCK wins.\n"
-            .to_string()
-    };
-    let music_continuity = if use_voice_audio_ref {
-        String::new()
-    } else {
-        "MUSIC CONTINUITY: keep the SAME underscore motif/tempo/instrumentation as adjacent shots \
-(use the scene BGM caption exactly; do not invent a new track per cut).\n"
-            .to_string()
-    };
-    format!(
-        "{style_clause} {identity}{voice_lock}{audio_ref_clause}{ref_clause}{continuity_clause}\
-DURATION: target length is about {duration_secs}s. Speak clearly at a natural conversational pace — \
-do NOT rush, speed-read, chipmunk, swallow syllables, or time-compress dialogue to cram lines in. \
-Leave a short breath before the first word; finish the last syllable cleanly, then land on a visible \
-reaction/action beat (no empty static hold after speech). Keep motion purposeful for the full clip.\n\
-{voice_continuity}{music_continuity}\
-PLOT LOCK: stay on this scene — {plot}.{end_plot} \
-Do not invent new characters, locations, outfits, or story beats.\n\
-Motion: {motion}\n\
-Throughout: {audio_block}\n\
-Keep it subtitle-free. Do not generate on-screen captions, logos, or watermarks."
-    )
+            false,
+            emit_bgm,
+        );
+        let mut block = String::new();
+        if lenses.len() > 1 {
+            block.push_str(&format!("{}{}", shot_lbl, i + 1));
+            block.push('\n');
+        }
+        if lens.cut {
+            block.push_str(inner_cut);
+            block.push('\n');
+        }
+        if !lens.visual.trim().is_empty() {
+            block.push_str(scene_lbl);
+            block.push_str(lens.visual.trim());
+            if !line.is_empty() && !visual_has_speech_cue(lens.visual.trim()) {
+                let v = lens.visual.trim();
+                if !v.ends_with(['。', '.', '！', '!', '？', '?']) {
+                    block.push('。');
+                }
+                block.push_str(if cjk { "开口。" } else { " Mouth opens to speak." });
+            }
+            block.push('\n');
+        }
+        if !line.is_empty() {
+            let inline = super::clip_beats::format_inline_spoken(&line);
+            block.push_str(line_lbl);
+            if inline.is_empty() {
+                block.push('{');
+                block.push_str(&line);
+                block.push('}');
+            } else {
+                block.push_str(&inline);
+            }
+            block.push('\n');
+            bgm_emitted |= emit_bgm && !sfx.is_empty();
+        }
+        if !sfx.is_empty() {
+            block.push_str(sfx_lbl);
+            block.push_str(&sfx);
+            block.push('\n');
+            bgm_emitted = true;
+        }
+        let block = block.trim_end();
+        if !block.is_empty() {
+            parts.push(block.to_string());
+        }
+    }
+    if !bgm_emitted && !scene_bgm.trim().is_empty() {
+        let bgm = crate::planning::format_scene_bgm_paren(scene_bgm);
+        if !bgm.is_empty() {
+            parts.push(format!("{}{bgm}", if cjk { "音效：" } else { "SFX: " }));
+        }
+    }
+    parts.join("\n")
 }
 
-fn shot_speaker_voice_ref_path(
+fn visual_has_speech_cue(visual: &str) -> bool {
+    const CJK: &[&str] = &["开口", "说话", "说道", "念出", "喊道", "口型"];
+    if CJK.iter().any(|n| visual.contains(n)) {
+        return true;
+    }
+    let lower = visual.to_ascii_lowercase();
+    lower.contains("speaks") || lower.contains("speaking") || lower.contains("mouth open")
+}
+
+fn audio_ref_binding_clause(bound: &[&str], use_voice_audio_ref: bool) -> String {
+    if !use_voice_audio_ref {
+        return String::new();
+    }
+    let mut bits = Vec::new();
+    if bound.is_empty() {
+        bits.push(
+            "@Audio1 is the voice timbre bible for the speaking character — match speaker identity for dialogue exactly."
+                .to_string(),
+        );
+    } else {
+        for (i, name) in bound.iter().enumerate() {
+            bits.push(format!(
+                "@Audio{} is the voice timbre bible for {name} — match speaker identity for dialogue exactly",
+                i + 1
+            ));
+        }
+    }
+    bits.join(". ")
+}
+
+/// Up to `max_slots` `reference_audio` clips, speakers in audio first then vis.
+fn shot_speaker_voice_refs(
     shot: &ShotDescription,
     characters: &[CharacterInScene],
     registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
     film_root: &Path,
-) -> Option<PathBuf> {
+    max_slots: usize,
+) -> Vec<(String, PathBuf)> {
+    if max_slots == 0 {
+        return Vec::new();
+    }
     let idxs = speaker_idxs_for_shot(shot, characters);
+    let mut out = Vec::new();
+    let mut push = |ch: &CharacterInScene| {
+        if out.len() >= max_slots {
+            return;
+        }
+        if out.iter().any(|(n, _)| n == &ch.identifier_in_scene) {
+            return;
+        }
+        if let Some(p) = voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root) {
+            out.push((ch.identifier_in_scene.clone(), p));
+        }
+    };
     for &ci in &idxs {
         if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
-            if let Some(p) = voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root) {
-                return Some(p);
-            }
+            push(ch);
         }
     }
-    for ch in characters {
-        if idxs.contains(&ch.idx) || shot.ff_vis_char_idxs.contains(&ch.idx) {
-            if let Some(p) = voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root) {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-fn shot_primary_speaker_name(
-    shot: &ShotDescription,
-    characters: &[CharacterInScene],
-    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
-    film_root: &Path,
-) -> Option<String> {
-    let idxs = speaker_idxs_for_shot(shot, characters);
-    for &ci in &idxs {
-        if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
-            if voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root).is_some() {
-                return Some(ch.identifier_in_scene.clone());
-            }
-        }
-    }
-    characters
-        .iter()
-        .find(|ch| voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root).is_some())
-        .map(|ch| ch.identifier_in_scene.clone())
+    out
 }
 
 /// Dialogue + essential foley only — no BGM, no text voice-color locks (reference_audio carries timbre).
+#[cfg(test)]
 fn seedance_audio_caption_essential_only(
     audio_desc: Option<&str>,
     motion_desc: &str,
     visual_desc: &str,
 ) -> String {
-    let audio = audio_desc.unwrap_or("").trim();
-    let raw = if !audio.is_empty() {
-        strip_conflicting_voice_color_cues(audio)
-    } else if crate::planning::text_looks_like_dialogue(motion_desc) {
-        strip_conflicting_voice_color_cues(motion_desc.trim())
-    } else if crate::planning::text_looks_like_dialogue(visual_desc) {
-        strip_conflicting_voice_color_cues(&visual_desc.trim().chars().take(280).collect::<String>())
-    } else {
-        String::new()
-    };
-
-    if raw.is_empty() {
-        return "<environmental ambience and essential on-screen foley only — no music underscore>"
-            .to_string();
-    }
-
-    let has_typed = raw.contains('{')
-        || raw.contains('}')
-        || raw.contains('<')
-        || raw.contains('>')
-        || (raw.contains('(') && raw.contains(')'));
-
-    if has_typed {
-        return strip_music_paren_segments(&raw);
-    }
-
-    let looks_dialogue = crate::planning::text_looks_like_dialogue(&raw);
-    if looks_dialogue {
-        format!("{{{raw}}} <essential on-screen foley only — no music>")
-    } else {
-        format!("<{raw}>")
-    }
+    seedance_audio_caption_block(audio_desc, motion_desc, visual_desc, "", true)
 }
 
 fn strip_music_paren_segments(s: &str) -> String {
@@ -2969,7 +2804,160 @@ fn strip_music_paren_segments(s: &str) -> String {
     out.trim().to_string()
 }
 
-/// Multi-ref strip for Seedance R2V: optional previous video_last_frame + cast + env/prop.
+/// Drop BGM stage directions that survive outside `(music)` captions (e.g. `BGM: 低音合成器…`).
+///
+/// Packed multi-shot `audio_desc` often interleaves `音效; BGM:… 角色:「台词」; BGM:…`.
+/// Truncating at the first marker used to throw away later dialogue. Dialogue wins:
+/// each BGM span is skipped until the next spoken line (or the end).
+fn strip_bgm_stage_directions(s: &str) -> String {
+    let t = strip_music_paren_segments(s);
+    let mut out = String::new();
+    let mut i = 0;
+    while i < t.len() {
+        let Some((rel, marker_len)) = next_bgm_marker(&t[i..]) else {
+            out.push_str(&t[i..]);
+            break;
+        };
+        out.push_str(&t[i..i + rel]);
+        let after = i + rel + marker_len;
+        let rest = &t[after..];
+        match find_post_bgm_resume(rest) {
+            Some(resume) => i = after + resume,
+            None => break,
+        }
+    }
+    collapse_ws(out.trim())
+}
+
+const BGM_MARKERS: &[&str] = &[
+    "BGM:",
+    "BGM：",
+    "bgm:",
+    "Bgm:",
+    "背景音乐",
+    "配乐：",
+    "配乐:",
+];
+
+fn next_bgm_marker(s: &str) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for marker in BGM_MARKERS {
+        let Some(pos) = find_case_insensitive(s, marker) else {
+            continue;
+        };
+        let len = marker.len();
+        best = Some(match best {
+            None => (pos, len),
+            Some((p, l)) if pos < p || (pos == p && len > l) => (pos, len),
+            Some(cur) => cur,
+        });
+    }
+    best
+}
+
+/// Byte offset in a BGM tail where keepable audio resumes (台词 / quoted line).
+fn find_post_bgm_resume(rest: &str) -> Option<usize> {
+    const LINE: &[&str] = &["台词:", "台词："];
+    let mut resume: Option<usize> = None;
+    let consider = |cur: &mut Option<usize>, pos: usize| {
+        *cur = Some(cur.map_or(pos, |p| p.min(pos)));
+    };
+    for marker in LINE {
+        if let Some(pos) = find_case_insensitive(rest, marker) {
+            consider(&mut resume, pos);
+        }
+    }
+    if let Some(quote_at) = find_dialogue_quote_byte(rest) {
+        consider(&mut resume, speaker_prefix_start(rest, quote_at));
+    }
+    resume
+}
+
+fn find_dialogue_quote_byte(s: &str) -> Option<usize> {
+    s.find(['「', '{', '“', '"'])
+}
+
+/// Include `萧彻:` / `李薇说：` immediately before a quote so the speaker tag
+/// is not left inside the discarded BGM span. Stop at punctuation/whitespace
+/// so leading SFX is not swallowed into the name.
+fn speaker_prefix_start(s: &str, quote_byte: usize) -> usize {
+    let Some(prefix) = s.get(..quote_byte) else {
+        return 0;
+    };
+    let chars: Vec<(usize, char)> = prefix.char_indices().collect();
+    let mut i = chars.len();
+    while i > 0 && chars[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    if i == 0 {
+        return quote_byte;
+    }
+    let last = chars[i - 1].1;
+    let tagged = if matches!(last, ':' | '：') {
+        i -= 1;
+        true
+    } else if is_say_verb_char(last) {
+        i -= 1;
+        if last == '道' && i > 0 && chars[i - 1].1 == '说' {
+            i -= 1;
+        }
+        true
+    } else {
+        false
+    };
+    if !tagged {
+        return quote_byte;
+    }
+    while i > 0 && chars[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    let mut name_chars = 0u32;
+    while i > 0 && is_speaker_name_char(chars[i - 1].1) && name_chars < 12 {
+        i -= 1;
+        name_chars += 1;
+    }
+    if name_chars == 0 {
+        return quote_byte;
+    }
+    chars[i].0
+}
+
+fn is_say_verb_char(ch: char) -> bool {
+    matches!(ch, '说' | '道' | '喊' | '叫' | '吼')
+}
+
+fn is_speaker_name_char(ch: char) -> bool {
+    matches!(ch, '<' | '>' | '《' | '》' | '·' | '-' | '_')
+        || ch.is_ascii_alphanumeric()
+        || crate::planning::is_cjk_speech_char(ch)
+}
+
+fn collapse_ws(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            prev_space = false;
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Later shots in the same scene always bind the previous clip's last frame
+/// (set/look lock). Freeze-frame at the join is handled by concat head-trim,
+/// not by omitting this still.
+fn continuity_still_for_seam(_seam: SpliceSeam, still: Option<&Path>) -> Option<&Path> {
+    still
+}
+
+/// Multi-ref strip for Seedance R2V: last-frame (if any) + in-shot portraits
+/// + the current location plate (unless same-camera resume) + mentioned props.
 fn shot_video_ref_pairs(
     shot: &ShotDescription,
     continuity: Option<&Path>,
@@ -2977,130 +2965,126 @@ fn shot_video_ref_pairs(
     registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
     world_pairs: &[(PathBuf, String)],
     film_root: &Path,
+    keep_env: bool,
 ) -> Vec<(PathBuf, String)> {
     let mut pairs: Vec<(PathBuf, String)> = Vec::new();
     if let Some(path) = continuity.filter(|p| media_local::is_usable_image_file(p)) {
         pairs.push((
             path.to_path_buf(),
-            "Previous timeline-adjacent shot ending frame — match-cut continuity; start motion immediately from this pose, framing, wardrobe, and set."
+            "Previous timeline-adjacent shot ending frame — continuity still (identity, wardrobe, set, lighting, L-R geography). Role depends on seam: same-camera resume vs match-cut state only."
                 .into(),
         ));
     }
 
-    let mut vis: Vec<i32> = shot.ff_vis_char_idxs.clone();
-    for &idx in &shot.lf_vis_char_idxs {
-        if !vis.contains(&idx) {
-            vis.push(idx);
+    let vis = shot_cast_idxs(shot, characters);
+    pairs.extend(
+        portrait_pairs(characters, &vis, registry, film_root)
+            .into_iter()
+            .map(|(p, t)| {
+                let front = media_local::ensure_three_view_front_panel(&p);
+                (front, t)
+            }),
+    );
+
+    let world_query = shot_world_query(shot);
+    if keep_env {
+        if let Some(env) =
+            resolve_environment_plate(&shot.location_id, &world_query, world_pairs)
+        {
+            pairs.push(env);
         }
     }
-    pairs.extend(portrait_pairs(characters, &vis, registry, film_root));
+    for (p, t) in mentioned_prop_pairs(&world_query, world_pairs) {
+        if prop_duplicates_visible_cast(&p, &t, characters, &vis) {
+            continue;
+        }
+        if pairs.iter().any(|(have, _)| have == &p) {
+            continue;
+        }
+        pairs.push((p, t));
+    }
 
-    let world_query = format!(
-        "{} {} {}",
-        shot.ff_desc.trim(),
-        shot.motion_desc.trim(),
-        shot.lf_desc.trim()
-    );
-    pairs.extend(rank_world_pairs_for_frame(&world_query, world_pairs, 4));
-
-    // Dedup by path while preserving order (continuity first).
     let mut seen = std::collections::HashSet::new();
     pairs.retain(|(p, _)| seen.insert(p.clone()));
-
-    let portrait_budget = vis.len().clamp(1, MAX_FRAME_PORTRAIT_REFS);
-    // Keep continuity (if any) pinned at index 0, then apply the usual strip budget.
-    if pairs
-        .first()
-        .map(|(p, _)| continuity.is_some_and(|c| p == c))
-        .unwrap_or(false)
-    {
-        let continuity_pair = pairs.remove(0);
-        let mut rest = pick_frame_ref_strip(pairs, portrait_budget);
-        rest.insert(0, continuity_pair);
-        // Cap total refs for Seedance latency/cost (continuity + assets).
-        rest.truncate(MAX_FRAME_REF_IMAGES.saturating_add(1));
-        rest
-    } else {
-        let mut out = pick_frame_ref_strip(pairs, portrait_budget);
-        out.truncate(MAX_FRAME_REF_IMAGES);
-        out
-    }
+    pick_video_assets(pairs, continuity, keep_env)
 }
 
-/// Prefer characters who actually speak in this shot's audio, then visible cast.
+/// Location bible always travels with the clip. Last-frame continuity is
+/// people + framing; the empty environment plate is architecture identity.
+fn keep_location_plate(
+    _seam: SpliceSeam,
+    _shot: &ShotDescription,
+    _prev: Option<&ShotDescription>,
+) -> bool {
+    true
+}
+
+/// Speakers named in this clip's audio, stable by character idx (not vis order).
+///
+/// Visible-but-silent cast must not reshuffle `@AudioN`. If nobody is named but
+/// the clip still has dialogue, fall back to visible cast sorted by idx.
 fn speaker_idxs_for_shot(shot: &ShotDescription, characters: &[CharacterInScene]) -> Vec<i32> {
-    let audio = shot.audio_desc.as_deref().unwrap_or("");
-    let mut idxs: Vec<i32> = Vec::new();
-    let mut push = |idx: i32| {
-        if !idxs.contains(&idx) {
-            idxs.push(idx);
-        }
-    };
-    for ch in characters {
-        let name = ch.identifier_in_scene.trim();
-        if !name.is_empty() && audio.contains(name) {
-            push(ch.idx);
-        }
-    }
-    for &idx in &shot.ff_vis_char_idxs {
-        push(idx);
-    }
-    for &idx in &shot.lf_vis_char_idxs {
-        push(idx);
+    let audio = shot_audio_source(shot);
+    let mut idxs: Vec<i32> = characters
+        .iter()
+        .filter(|ch| crate::domain::character_mentioned_in(&audio, ch, characters))
+        .map(|ch| ch.idx)
+        .collect();
+    idxs.sort_unstable();
+    idxs.dedup();
+    if idxs.is_empty() && shot_has_spoken_dialogue(shot) {
+        let mut vis = shot_cast_idxs(shot, characters);
+        vis.sort_unstable();
+        vis.dedup();
+        return vis;
     }
     idxs
 }
 
-/// Compact VOICE LOCK so Seedance keeps the same speaker timbre across shots.
-fn character_voice_lock_clause(characters: &[CharacterInScene], idxs: &[i32]) -> String {
+/// Compact SPEAKER LOCK so Seedance keeps the same speaker card on every shot,
+/// including characters already bound as `@AudioN`.
+fn character_voice_lock_clause(
+    characters: &[CharacterInScene],
+    idxs: &[i32],
+    max_locks: usize,
+) -> String {
     let mut parts = Vec::new();
     let mut seen = std::collections::HashSet::new();
-
-    let mut push_ch = |ch: &CharacterInScene| {
-        if parts.len() >= 4 || !seen.insert(ch.idx) {
-            return;
+    let cap = max_locks.max(1);
+    for &ci in idxs {
+        if parts.len() >= cap {
+            break;
+        }
+        let Some(ch) = characters.iter().find(|c| c.idx == ci) else {
+            continue;
+        };
+        if !seen.insert(ch.idx) {
+            continue;
         }
         if let Some(vp) = ch.voice_profile.as_ref().filter(|v| v.is_usable()) {
-            parts.push(vp.seedance_clause(&ch.identifier_in_scene));
+            parts.push(vp.compact_lock(&ch.identifier_in_scene));
         }
-    };
-
-    for &ci in idxs {
-        if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
-            push_ch(ch);
-        }
-    }
-    // Ensure every cast member with a bible is available as fallback (capped).
-    for ch in characters {
-        push_ch(ch);
     }
     if parts.is_empty() {
         return String::new();
     }
-    format!(
-        "VOICE LOCK (immutable speaker identity — reuse these FIXED SPEAKER VOICE clauses \
-exactly on every shot; emotion may vary slightly, timbre/pitch/age/gender must not): {}. ",
-        parts.join(" | ")
-    )
+    format!("VOICE LOCK: {}.", parts.join("; "))
 }
 
 /// Seedance 2.0 audio captions use typed brackets:
 /// dialogue `{…}`, SFX `<…>`, music `(…)`.
 /// Empty captions with `generate_audio=true` fail with InvalidParameter.
 ///
-/// Resolves audio from `audio_desc`, falling back to dialogue mined from
-/// `motion_desc` / `visual_desc`. Injects per-character voice locks when the
-/// text mentions a cast member, and always forces the scene-stable BGM caption
-/// so adjacent shots share the same music intent (avoids abrupt motif jumps).
+/// Resolves audio from storyboard `台词`/`音效` (or mines motion/visual). Does
+/// **not** paste FIXED SPEAKER VOICE into the caption — that doubled the
+/// storyboard line and fought `@AudioN`.
 fn seedance_audio_caption_block(
     audio_desc: Option<&str>,
     motion_desc: &str,
     visual_desc: &str,
-    characters: &[CharacterInScene],
-    vis_idxs: &[i32],
     scene_bgm: &str,
+    essential_only: bool,
 ) -> String {
-    let bgm = crate::planning::format_scene_bgm_paren(scene_bgm);
     let audio = audio_desc.unwrap_or("").trim();
     let raw = if !audio.is_empty() {
         strip_conflicting_voice_color_cues(audio)
@@ -3111,45 +3095,122 @@ fn seedance_audio_caption_block(
     } else {
         String::new()
     };
+    let raw = if essential_only {
+        strip_bgm_stage_directions(&raw)
+    } else {
+        raw
+    };
 
     if raw.is_empty() {
-        return format!(
-            "<environmental ambience and scene-matched foley matching on-screen action> {bgm}"
-        );
+        return if essential_only {
+            "<environmental ambience and essential on-screen foley only — no music>".to_string()
+        } else {
+            let bgm = crate::planning::format_scene_bgm_paren(scene_bgm);
+            format!(
+                "<environmental ambience and scene-matched foley matching on-screen action> {bgm}"
+            )
+        };
     }
 
-    let has_typed = raw.contains('{')
-        || raw.contains('}')
-        || raw.contains('<')
-        || raw.contains('>')
-        || (raw.contains('(') && raw.contains(')'));
-
-    let voiced = inject_voice_into_audio_text(&raw, characters, vis_idxs);
-
-    if has_typed {
-        return replace_or_append_bgm_paren(&voiced, &bgm);
-    }
-
-    let looks_dialogue = crate::planning::text_looks_like_dialogue(&voiced);
-    if looks_dialogue {
-        format!("{{{voiced}}} <scene-matched foley> {bgm}")
+    let caption = format_storyboard_audio_caption(&raw);
+    if essential_only {
+        caption
     } else {
-        format!("<{voiced}> {bgm}")
+        replace_or_append_bgm_paren(&caption, scene_bgm)
     }
 }
 
-/// Force the scene-stable `(music)` caption: replace any existing `(…)` span,
-/// otherwise append.
+/// Turn storyboard `台词:…音效:…` (or already-typed `{…} <…>`) into Seedance captions
+/// without wrapping the 台词 marker itself.
+fn format_storyboard_audio_caption(raw: &str) -> String {
+    const LINE: &[&str] = &["台词:", "台词："];
+    let has_line_marker = LINE.iter().any(|m| find_case_insensitive(raw, m).is_some());
+    let already_typed = (raw.contains('{') || raw.contains('<')) && !has_line_marker;
+    if already_typed {
+        return raw.trim().to_string();
+    }
+    let (line, sfx) = split_dialogue_and_sfx(raw);
+    let line = trim_audio_brackets(&line);
+    let sfx = trim_audio_brackets(&sfx);
+    match (line.is_empty(), sfx.is_empty()) {
+        (true, true) => raw.trim().to_string(),
+        (false, true) => format!("{{{line}}}"),
+        (true, false) => format!("<{sfx}>"),
+        (false, false) => format!("{{{line}}} <{sfx}>"),
+    }
+}
+
+fn trim_audio_brackets(s: &str) -> String {
+    s.trim()
+        .trim_matches(|c| c == '{' || c == '}' || c == '<' || c == '>')
+        .trim()
+        .to_string()
+}
+
+fn extract_after_marker(s: &str, markers: &[&str], stop: &[&str]) -> Option<String> {
+    let (start, marker) = markers.iter().find_map(|m| {
+        find_case_insensitive(s, m).map(|p| (p, *m))
+    })?;
+    let body_start = start + marker.len();
+    let body_end = stop
+        .iter()
+        .filter_map(|m| find_case_insensitive(&s[body_start..], m).map(|p| body_start + p))
+        .min()
+        .unwrap_or(s.len());
+    Some(s[body_start..body_end].trim().to_string())
+}
+
+fn split_dialogue_and_sfx(raw: &str) -> (String, String) {
+    const LINE: &[&str] = &["台词:", "台词："];
+    const SFX: &[&str] = &["音效:", "音效：", "SFX:", "sfx:"];
+    let line = extract_after_marker(raw, LINE, SFX);
+    let sfx = extract_after_marker(raw, SFX, LINE);
+    match (line, sfx) {
+        (Some(l), Some(x)) => (l, x),
+        (Some(l), None) => (l, String::new()),
+        (None, Some(x)) => (String::new(), x),
+        (None, None) => {
+            if crate::planning::text_looks_like_dialogue(raw) {
+                split_unmarked_dialogue_and_sfx(raw)
+            } else {
+                (String::new(), raw.trim().to_string())
+            }
+        }
+    }
+}
+
+/// Unmarked `音效… 角色:「台词」` → keep the spoken span in `{…}` and the
+/// leading foley in `<…>`, so Seedance does not try to vocalize ambience.
+fn split_unmarked_dialogue_and_sfx(raw: &str) -> (String, String) {
+    let Some(quote_at) = find_dialogue_quote_byte(raw) else {
+        return (raw.trim().to_string(), String::new());
+    };
+    let line_start = speaker_prefix_start(raw, quote_at);
+    let line = raw[line_start..].trim().to_string();
+    let sfx = raw[..line_start]
+        .trim()
+        .trim_end_matches(['；', ';', '，', ',', '。', '.'])
+        .trim()
+        .to_string();
+    (line, sfx)
+}
+
+/// Force the scene-stable `(music)` caption: replace an existing music `(…)`
+/// span, otherwise append. Acting/SFX parentheses (`(倒吸一口凉气)`) stay.
 fn replace_or_append_bgm_paren(voiced: &str, scene_bgm: &str) -> String {
     let bgm = crate::planning::format_scene_bgm_paren(scene_bgm);
     if let Some(start) = voiced.find('(') {
         if let Some(rel_end) = voiced[start + 1..].find(')') {
             let end = start + 1 + rel_end;
-            let mut out = String::with_capacity(voiced.len() + bgm.len());
-            out.push_str(&voiced[..start]);
-            out.push_str(&bgm);
-            out.push_str(&voiced[end + 1..]);
-            return out;
+            let existing = &voiced[start..=end];
+            if crate::planning::paren_looks_like_bgm(existing) {
+                let mut out = String::with_capacity(voiced.len() + bgm.len());
+                out.push_str(&voiced[..start]);
+                out.push_str(&bgm);
+                out.push_str(&voiced[end + 1..]);
+                return out;
+            }
+            return format!("{voiced} {bgm}");
         }
     }
     format!("{voiced} {bgm}")
@@ -3208,54 +3269,6 @@ fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     let hay_lower: String = haystack.to_ascii_lowercase();
     let needle_lower = needle.to_ascii_lowercase();
     hay_lower.find(&needle_lower)
-}
-
-/// Prefix dialogue with matched character voice clauses when names appear in the text.
-fn inject_voice_into_audio_text(
-    raw: &str,
-    characters: &[CharacterInScene],
-    vis_idxs: &[i32],
-) -> String {
-    if characters.is_empty() {
-        return raw.to_string();
-    }
-    let mut matched: Vec<&CharacterInScene> = characters
-        .iter()
-        .filter(|c| {
-            c.voice_profile.as_ref().is_some_and(|v| v.is_usable())
-                && !c.identifier_in_scene.trim().is_empty()
-                && raw.contains(c.identifier_in_scene.trim())
-        })
-        .collect();
-    if matched.is_empty() {
-        // Fall back to prioritized speaker idxs (named speakers / visible cast).
-        matched = characters
-            .iter()
-            .filter(|c| {
-                c.voice_profile.as_ref().is_some_and(|v| v.is_usable())
-                    && (vis_idxs.is_empty() || vis_idxs.contains(&c.idx))
-            })
-            .take(2)
-            .collect();
-    }
-    if matched.is_empty() {
-        return raw.to_string();
-    }
-    let locks: Vec<String> = matched
-        .iter()
-        .filter_map(|c| {
-            c.voice_profile
-                .as_ref()
-                .map(|vp| vp.seedance_clause(&c.identifier_in_scene))
-        })
-        .collect();
-    if locks.is_empty() {
-        return raw.to_string();
-    }
-    format!(
-        "[FIXED SPEAKER VOICE for this clip — reuse verbatim: {}] {raw}",
-        locks.join("; ")
-    )
 }
 
 fn is_seedance_privacy_image_err(err: &VimaxError) -> bool {
@@ -3334,6 +3347,12 @@ fn truncate_err(err: &VimaxError, max_chars: usize) -> String {
 #[cfg(test)]
 mod continuity_tests {
     use super::*;
+    use super::super::privacy_face::content_index_to_image_slot;
+    use crate::clip_bounds::ClipBounds;
+    use crate::domain::VoiceProfile;
+
+    /// Window of the models integrated today (Seedance 2.0, MiniMax-H3 ⊂ 4–15s).
+    const SEEDANCE: ClipBounds = ClipBounds::new(5, 15);
 
     fn shot(idx: i32, cam_idx: i32) -> ShotDescription {
         ShotDescription {
@@ -3349,6 +3368,33 @@ mod continuity_tests {
             lf_vis_char_idxs: vec![],
             motion_desc: String::new(),
             audio_desc: None,
+            location_id: String::new(),
+            beats: Vec::new(),
+        }
+    }
+
+    fn assert_not_english_runbook(prompt: &str) {
+        for needle in [
+            "ONE continuous take",
+            "continuity reference ONLY",
+            "Do NOT reproduce",
+            "Keep it subtitle-free.",
+            "Throughout:",
+            "[0-",
+            "Frame:",
+            "Motion:",
+            "PRODUCTION LOOK LOCK",
+            "CAST LOCK",
+            "REFERENCE BINDINGS",
+            "CONTINUITY: Image 1",
+            "PLOT LOCK:",
+            "native multi-shot",
+            "SAME take keeps rolling",
+        ] {
+            assert!(
+                !prompt.contains(needle),
+                "runbook leftover `{needle}`: {prompt}"
+            );
         }
     }
 
@@ -3359,19 +3405,6 @@ mod continuity_tests {
         assert_eq!(prev.idx, 1);
         assert_eq!(prev.cam_idx, 1);
         assert!(timeline_predecessor(&shots, 0).is_none());
-    }
-
-    #[test]
-    fn privacy_bak_and_stylized_sidecar_paths() {
-        let canonical = PathBuf::from("shots/0/first_frame.png");
-        assert_eq!(
-            frame_privacy_bak_path(&canonical),
-            PathBuf::from("shots/0/first_frame.privacy_bak.png")
-        );
-        assert_eq!(
-            frame_i2v_stylized_path(&canonical),
-            PathBuf::from("shots/0/first_frame.i2v_stylized.png")
-        );
     }
 
     #[test]
@@ -3413,8 +3446,11 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
     }
 
     #[test]
-    fn multi_ref_prompt_labels_images_one_based() {
-        let s = shot(1, 0);
+    fn multi_ref_prompt_is_a_beat_card() {
+        let mut s = shot(1, 0);
+        s.motion_desc = "左方女性从防御起身，走向右侧巨兽".into();
+        s.ff_desc = "中景，两人并肩站在深坑前".into();
+        s.lf_desc = "中景，两人并肩站在深坑前".into();
         let refs = vec![
             (
                 PathBuf::from("shots/0/video_last_frame.png"),
@@ -3422,17 +3458,284 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             ),
             (
                 PathBuf::from("characters/alice_three_view.png"),
-                "Cast bible".into(),
+                "File [alice_three_view.png] = GLOBAL three-view character bible for <林铮>".into(),
             ),
         ];
-        let prompt = i2v_motion_prompt(&s, &[], "cinematic", &refs, 5, true, "", false, None);
-        assert!(prompt.contains("Image 1 (video_last_frame.png)"));
-        assert!(prompt.contains("Image 2 (alice_three_view.png)"));
-        assert!(prompt.contains("CONTINUITY: Image 1"));
-        // Empty audio_desc still gets ambient + BGM captions.
-        assert!(prompt.contains("Throughout:"));
-        assert!(prompt.contains("underscore"));
-        assert!(prompt.contains("MUSIC CONTINUITY"));
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            5,
+            SpliceSeam::SameTake,
+            "",
+            false,
+            &[],
+            "9:16",
+        );
+        assert!(
+            prompt.starts_with("画面无任何字幕"),
+            "subtitle lock is the first line: {prompt}"
+        );
+        assert!(prompt.contains("约5秒"), "{prompt}");
+        assert!(prompt.contains("9:16"), "{prompt}");
+        assert!(prompt.contains("主体完整入画"), "{prompt}");
+        assert!(prompt.contains("@Image1"));
+        assert!(prompt.contains("接着演"), "{prompt}");
+        assert!(prompt.contains("@Image2"));
+        assert!(prompt.contains("<林铮> 身份"), "{prompt}");
+        assert!(prompt.contains("画面："), "{prompt}");
+        assert!(prompt.contains("左方女性从防御起身"), "{prompt}");
+        assert!(!prompt.contains("16:9"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    #[test]
+    fn same_take_binds_last_frame_as_resume() {
+        let mut s = shot(1, 0);
+        s.motion_desc = "她转身".into();
+        let refs = vec![(
+            PathBuf::from("shots/0/video_last_frame.png"),
+            "Previous ending".into(),
+        )];
+
+        let same = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            5,
+            SpliceSeam::SameTake,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(same.contains("@Image1 上一镜接着演"), "{same}");
+        assert!(!same.contains("切到新机位"), "{same}");
+        assert_not_english_runbook(&same);
+    }
+
+    #[test]
+    fn match_cut_prompt_binds_last_frame_as_prior() {
+        let mut s = shot(1, 1);
+        s.motion_desc = "她转身".into();
+        let refs = vec![
+            (
+                PathBuf::from("shots/0/video_last_frame.png"),
+                "Previous ending".into(),
+            ),
+            (
+                PathBuf::from("characters/alice_three_view.png"),
+                "File [alice_three_view.png] = GLOBAL three-view character bible for <林铮>".into(),
+            ),
+        ];
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            5,
+            SpliceSeam::MatchCut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(prompt.contains("@Image1 上一镜"), "{prompt}");
+        assert!(!prompt.contains("接着演"), "{prompt}");
+        assert!(prompt.contains("切到新机位，动作已经在进行"), "{prompt}");
+        assert!(prompt.contains("@Image2 <林铮> 身份"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    #[test]
+    fn match_cut_prompt_starts_on_a_portrait() {
+        let mut s = shot(1, 0);
+        s.motion_desc = "她转身".into();
+        let refs = vec![(
+            PathBuf::from("characters/alice_three_view.png"),
+            "File [alice_three_view.png] = GLOBAL three-view character bible for <林铮>".into(),
+        )];
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            5,
+            SpliceSeam::MatchCut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(prompt.contains("切到新机位，动作已经在进行"), "{prompt}");
+        assert!(prompt.contains("@Image1 <林铮> 身份"), "{prompt}");
+        assert!(!prompt.contains("接着演"), "{prompt}");
+        assert!(!prompt.contains("video_last_frame"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    /// Without a continuity still there is no seam to describe; the prompt must
+    /// not reference an `@Image1` role that was never bound.
+    #[test]
+    fn a_hard_cut_prompt_has_no_opening_seam_clause() {
+        let mut s = shot(1, 0);
+        s.motion_desc = "她转身".into();
+        let refs = vec![(
+            PathBuf::from("characters/alice_three_view.png"),
+            "File [alice_three_view.png] = GLOBAL three-view character bible for <林铮>".into(),
+        )];
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            5,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(!prompt.contains("Opening:"), "{prompt}");
+        assert!(!prompt.contains("切到新机位"), "{prompt}");
+        assert!(!prompt.contains("接着演"), "{prompt}");
+        assert!(prompt.contains("@Image1 <林铮> 身份"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    /// A clip that absorbed a same-camera neighbour lists each beat as its own
+    /// lens — never a second-window clock.
+    #[test]
+    fn a_merged_clip_prompt_lists_each_lens() {
+        let line: String = "中".chars().cycle().take(17).collect();
+        let mut a = shot(0, 0);
+        a.motion_desc = "她转身".into();
+        a.audio_desc = Some(line);
+        let mut b = shot(1, 0);
+        b.motion_desc = "她走近窗边".into();
+        let merged = super::super::clip_beats::pack_scene_clips(SEEDANCE, vec![a, b]);
+        assert_eq!(merged.len(), 1, "same camera must merge");
+
+        let prompt = i2v_motion_prompt(
+            &merged[0],
+            &[],
+            "cinematic",
+            &[],
+            13,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(prompt.contains("镜头1"), "{prompt}");
+        assert!(prompt.contains("镜头2"), "{prompt}");
+        assert!(prompt.contains("她转身"), "{prompt}");
+        assert!(prompt.contains("她走近窗边"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    #[test]
+    fn a_packed_reverse_prompt_asks_for_a_cut_inside_the_clip() {
+        let mut first = shot(0, 0);
+        first.motion_desc = "她说话".into();
+        let mut second = shot(1, 1);
+        second.motion_desc = "他回答".into();
+        let packed = super::super::clip_beats::pack_scene_clips(SEEDANCE, vec![first, second]);
+        assert_eq!(packed.len(), 1);
+        assert!(packed[0].has_camera_cuts());
+
+        let prompt = i2v_motion_prompt(
+            &packed[0],
+            &[],
+            "cinematic",
+            &[],
+            10,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(prompt.contains("切到新机位"), "{prompt}");
+        assert!(prompt.contains("镜头1"), "{prompt}");
+        assert!(prompt.contains("镜头2"), "{prompt}");
+        assert!(prompt.contains("她说话"), "{prompt}");
+        assert!(prompt.contains("他回答"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    /// Authored `0-4s:` windows never reach the model; the API duration does.
+    #[test]
+    fn authored_timecodes_never_contradict_the_requested_duration() {
+        let mut s = shot(0, 0);
+        s.motion_desc = "0-4s:摄影机固定,男生骑车从画面左侧向右横贯画面;\
+4-7s:他继续向右骑行,地面落叶被风吹卷而起。"
+            .into();
+
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            5,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(!prompt.contains("0-4s"), "{prompt}");
+        assert!(!prompt.contains("4-7s"), "{prompt}");
+        assert!(prompt.contains("镜头1"), "{prompt}");
+        assert!(prompt.contains("镜头2"), "{prompt}");
+        assert!(prompt.contains("约5秒"), "{prompt}");
+        assert!(prompt.contains("摄影机固定"), "{prompt}");
+        assert!(prompt.contains("他继续向右骑行"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    /// A single-beat clip keeps one 画面 line — no 镜头1 header.
+    #[test]
+    fn a_single_beat_clip_prompt_has_no_beat_timeline() {
+        let mut s = shot(1, 0);
+        s.motion_desc = "她转身".into();
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            8,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(prompt.contains("画面：她转身"), "{prompt}");
+        assert!(!prompt.contains("镜头1"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    /// A tail frame bound at Image 2+ is a previous-shot still, never a resume.
+    #[test]
+    fn a_tail_frame_outside_image_one_is_state_only() {
+        let refs = vec![
+            (
+                PathBuf::from("characters/alice_three_view.png"),
+                "bible for <林铮>".into(),
+            ),
+            (
+                PathBuf::from("shots/0/video_last_frame.png"),
+                "Previous ending".into(),
+            ),
+        ];
+        let bindings = video_at_image_bindings(&refs, SpliceSeam::Cut, true);
+        assert!(bindings.contains("@Image1 <林铮> 身份"), "{bindings}");
+        assert!(bindings.contains("@Image2 上一镜"), "{bindings}");
+        assert!(!bindings.contains("接着演"), "{bindings}");
     }
 
     #[test]
@@ -3442,9 +3745,8 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             None,
             "他看着对方说道：「我们走吧」",
             "wide shot of two people",
-            &[],
-            &[],
             scene_bgm,
+            false,
         );
         assert!(from_motion.contains('{'));
         assert!(from_motion.contains("我们走吧"));
@@ -3454,9 +3756,8 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             None,
             "slow pan across room",
             "establishing",
-            &[],
-            &[],
             scene_bgm,
+            false,
         );
         assert!(ambient.contains('<') || ambient.contains("ambience") || ambient.contains("环境"));
         assert!(ambient.contains("gentle piano motif"));
@@ -3465,9 +3766,8 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             Some("{快跑} <脚步声>"),
             "runs",
             "chase",
-            &[],
-            &[],
             scene_bgm,
+            false,
         );
         assert!(typed.contains("{快跑}"));
         assert!(
@@ -3479,9 +3779,8 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             Some("{快跑} <脚步声> (loud EDM drop)"),
             "runs",
             "chase",
-            &[],
-            &[],
             scene_bgm,
+            false,
         );
         assert!(
             replaced.contains("gentle piano motif") && !replaced.contains("EDM"),
@@ -3491,13 +3790,13 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
 
     #[test]
     fn audio_caption_injects_character_voice_lock() {
-        use crate::domain::VoiceProfile;
         let mut vp = VoiceProfile {
             timbre: "清亮女中音".into(),
             volume: Some("normal".into()),
             pitch: Some("mid-high".into()),
             speaking_style: "语速平稳".into(),
             caption_clause: None,
+            tts_voice: None,
         };
         vp.normalize("李薇");
         let chars = vec![CharacterInScene {
@@ -3512,12 +3811,15 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             Some("李薇说：「今晚别等我」"),
             "nod",
             "close-up",
-            &chars,
-            &[0],
             "",
+            false,
         );
         assert!(caption.contains("李薇"));
-        assert!(caption.contains("FIXED SPEAKER VOICE"));
+        assert!(caption.contains("今晚别等我"));
+        assert!(
+            !caption.contains("FIXED SPEAKER VOICE"),
+            "caption must round-trip storyboard dialogue, not a voice bible: {caption}"
+        );
         let prompt = i2v_motion_prompt(
             &ShotDescription {
                 idx: 0,
@@ -3532,24 +3834,36 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
                 lf_vis_char_idxs: vec![0],
                 motion_desc: "speaks".into(),
                 audio_desc: Some("李薇用低沉的声音说：「今晚别等我」".into()),
+                location_id: String::new(),
+                beats: Vec::new(),
             },
             &chars,
             "cinematic",
             &[],
             10,
-            false,
+            SpliceSeam::Cut,
             "",
             false,
-            None,
+            &[],
+            "",
         );
         assert!(prompt.contains("VOICE LOCK"));
-        assert!(prompt.contains("FIXED SPEAKER VOICE"));
         assert!(prompt.contains("清亮女中音"));
+        assert!(
+            !prompt.contains("FIXED SPEAKER VOICE"),
+            "full voice bible must not be pasted into the clip prompt: {prompt}"
+        );
         assert!(
             !prompt.contains("用低沉的声音"),
             "timbre-redefining stage directions must be stripped so VOICE LOCK wins"
         );
         assert!(prompt.contains("今晚别等我"));
+        assert!(prompt.contains("台词：") || prompt.contains("Line: "), "{prompt}");
+        assert!(!prompt.contains("Throughout:"), "{prompt}");
+        assert!(
+            !prompt.contains("Speak at a natural conversational pace"),
+            "{prompt}"
+        );
     }
 
     #[test]
@@ -3563,7 +3877,7 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
     }
 
     #[test]
-    fn audio_ref_mode_skips_voice_lock_and_bgm() {
+    fn audio_ref_mode_keeps_scene_bgm() {
         let s = shot(1, 0);
         let prompt = i2v_motion_prompt(
             &s,
@@ -3571,25 +3885,695 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             "cinematic",
             &[],
             8,
-            false,
+            SpliceSeam::Cut,
             "(piano motif)",
             true,
-            Some("阿琳"),
+            &["阿琳"],
+            "",
         );
-        assert!(prompt.contains("REFERENCE AUDIO"));
+        assert!(prompt.contains("@Audio1"));
         assert!(prompt.contains("阿琳"));
         assert!(!prompt.contains("VOICE LOCK"));
-        assert!(!prompt.contains("MUSIC CONTINUITY"));
-        assert!(!prompt.contains("piano motif"));
-        assert!(prompt.contains("no music"));
+        assert!(
+            prompt.contains("piano motif"),
+            "dialogue wav does not strip scene BGM: {prompt}"
+        );
+        assert!(
+            !prompt.contains("No background music"),
+            "do not tell Seedance to drop BGM: {prompt}"
+        );
 
         let essential = seedance_audio_caption_essential_only(
-            Some("李薇说：「走吧」"),
+            Some("李薇说：「走吧」。BGM: 同一低音合成器持续音与脉冲鼓点延续"),
             "walks",
             "street",
         );
         assert!(essential.contains("走吧"));
         assert!(!essential.contains("piano"));
+        assert!(
+            !essential.contains("低音合成器"),
+            "BGM prose must be stripped when reference_audio is bound: {essential}"
+        );
+    }
+
+    #[test]
+    fn audio_ref_mode_keeps_dialogue_after_interleaved_bgm() {
+        let packed = "烈日下人群低语声与衣料摩擦声,霜华剑入缝时一声清越的金属嗡鸣,金色禁制符文亮起时伴随低沉的阵法轰鸣;BGM:低音弦乐与冷冽古琴的持续压迫型底乐,节奏缓慢如心跳,贯穿全场景。 萧彻:「圣子若想要,大比上自己来取。」语气不疾不徐,尾音带一丝居高临下的冷意;BGM:同前,低音弦乐与古琴的压迫型底乐持续,鼓点轻敲,节奏不变。";
+        let essential = seedance_audio_caption_essential_only(Some(packed), "入剑", "演武场");
+        assert!(
+            essential.contains("圣子若想要") && essential.contains("大比上自己来取"),
+            "packed-clip dialogue after BGM must survive: {essential}"
+        );
+        assert!(
+            essential.contains("萧彻"),
+            "speaker tag must stay with the line: {essential}"
+        );
+        assert!(
+            essential.contains('{') && essential.contains('}'),
+            "spoken line must be a Seedance dialogue caption: {essential}"
+        );
+        assert!(
+            essential.contains("金属嗡鸣") || essential.contains("人群低语"),
+            "leading foley must remain: {essential}"
+        );
+        assert!(
+            !essential.contains("低音弦乐") && !essential.to_ascii_lowercase().contains("bgm"),
+            "BGM is less important than dialogue and must be dropped: {essential}"
+        );
+
+        let between = seedance_audio_caption_essential_only(
+            Some("李薇：「走吧。」BGM:钢琴铺底。阿琳：「别走。」"),
+            "对峙",
+            "中景",
+        );
+        assert!(between.contains("走吧") && between.contains("别走"), "{between}");
+        assert!(!between.contains("钢琴"), "{between}");
+
+        let mut s = shot(0, 0);
+        s.audio_desc = Some(packed.to_string());
+        s.motion_desc = "萧彻入剑后转身说话".into();
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            14,
+            SpliceSeam::Cut,
+            "",
+            true,
+            &["萧彻", "林昭"],
+            "",
+        );
+        assert!(
+            prompt.contains("圣子若想要"),
+            "i2v prompt must carry the spoken line, not only SFX: {prompt}"
+        );
+        assert!(
+            prompt.contains("台词：") || prompt.contains("Line: "),
+            "dialogue lives in the lens, not a trailing dump: {prompt}"
+        );
+        assert!(!prompt.contains("Throughout:"), "{prompt}");
+    }
+
+    #[test]
+    fn cut_to_prompt_interleaves_dialogue_per_lens_and_peels_bgm() {
+        let mut s = shot(0, 0);
+        s.visual_desc = "近景 <罗子君>正面。CUT TO <陈俊生>近景。CUT TO <唐晶>侧脸围观。".into();
+        s.audio_desc = Some(
+            "罗子君：「……陈俊生。」陈俊生：「不是我！我没点！」唐晶：「你别装了。」\
+凌玲：「卡片上写得很清楚。」贺建军：「大家冷静。」康总：「把监控调出来。」\
+弹幕刷屏；BGM:低音铺底"
+                .into(),
+        );
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            15,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(prompt.contains("镜头1"), "{prompt}");
+        assert!(prompt.contains("镜头2"), "{prompt}");
+        assert!(prompt.contains("镜头3"), "{prompt}");
+        let line1 = prompt
+            .split("镜头2")
+            .next()
+            .unwrap_or("");
+        assert!(line1.contains("……陈俊生"), "lens 1 must speak first: {prompt}");
+        assert!(
+            !line1.contains("不是我"),
+            "陈俊生's line must not dump into lens 1: {prompt}"
+        );
+        assert!(prompt.contains("不是我"), "{prompt}");
+        assert!(prompt.contains("卡片上写得很清楚"), "{prompt}");
+        assert!(prompt.contains("把监控调出来"), "{prompt}");
+        let dialogue_lines: String = prompt
+            .lines()
+            .filter(|l| l.contains("台词：") || l.contains("Line: "))
+            .collect();
+        assert!(
+            !dialogue_lines.to_ascii_lowercase().contains("bgm")
+                && !dialogue_lines.contains("低音铺底")
+                && !dialogue_lines.contains("弹幕"),
+            "BGM/弹幕 belong in 音效, not {{台词}}: {prompt}"
+        );
+        assert!(
+            prompt.contains("音效：") || prompt.contains("SFX: "),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("开口"),
+            "speaking lenses need a mouth-open cue: {prompt}"
+        );
+    }
+
+    #[test]
+    fn audio_ref_mode_keeps_text_lock_for_other_speakers() {
+        fn vp(name: &str, timbre: &str) -> VoiceProfile {
+            let mut v = VoiceProfile {
+                timbre: timbre.into(),
+                volume: Some("normal".into()),
+                pitch: Some("mid".into()),
+                speaking_style: "平稳".into(),
+                caption_clause: None,
+                tts_voice: None,
+            };
+            v.normalize(name);
+            v
+        }
+        let chars = vec![
+            CharacterInScene {
+                idx: 0,
+                identifier_in_scene: "李薇".into(),
+                is_visible: true,
+                static_features: "成年女性".into(),
+                dynamic_features: None,
+                voice_profile: Some(vp("李薇", "清亮女中音")),
+            },
+            CharacterInScene {
+                idx: 1,
+                identifier_in_scene: "阿琳".into(),
+                is_visible: true,
+                static_features: "成年女性".into(),
+                dynamic_features: None,
+                voice_profile: Some(vp("阿琳", "偏暖女中音")),
+            },
+        ];
+        let mut s = shot(0, 0);
+        s.audio_desc = Some("李薇：「走吧。」阿琳：「别走。」".into());
+        let prompt = i2v_motion_prompt(
+            &s,
+            &chars,
+            "cinematic",
+            &[],
+            8,
+            SpliceSeam::Cut,
+            "",
+            true,
+            &["李薇"],
+            "",
+        );
+        assert!(prompt.contains("@Audio1"), "{prompt}");
+        let lock_line = prompt
+            .lines()
+            .find(|line| line.contains("VOICE LOCK"))
+            .expect("speakers keep the same SPEAKER LOCK even when a wav is bound");
+        assert!(lock_line.contains("阿琳"), "{lock_line}");
+        assert!(
+            lock_line.contains("李薇"),
+            "the @Audio1 speaker still gets the same lock string: {lock_line}"
+        );
+        assert!(!prompt.contains("Throughout:"), "{prompt}");
+    }
+
+    #[test]
+    fn named_cast_is_inferred_when_vis_idxs_empty() {
+        let mut s = shot(0, 0);
+        s.ff_vis_char_idxs.clear();
+        s.lf_vis_char_idxs.clear();
+        s.visual_desc = "林尘与赵无极对峙".into();
+        s.audio_desc = Some("台词:林尘:「站住」;赵无极:「放下」音效:剑鸣、风声".into());
+        let chars = vec![
+            CharacterInScene {
+                idx: 0,
+                identifier_in_scene: "林尘".into(),
+                is_visible: true,
+                static_features: "青年男性".into(),
+                dynamic_features: None,
+                voice_profile: None,
+            },
+            CharacterInScene {
+                idx: 1,
+                identifier_in_scene: "赵无极".into(),
+                is_visible: true,
+                static_features: "中年男性".into(),
+                dynamic_features: None,
+                voice_profile: None,
+            },
+        ];
+        let idxs = shot_cast_idxs(&s, &chars);
+        assert!(idxs.contains(&0) && idxs.contains(&1), "{idxs:?}");
+    }
+
+    #[test]
+    fn honorific_alias_binds_protagonist_portrait() {
+        let mut s = shot(0, 0);
+        s.ff_vis_char_idxs.clear();
+        s.lf_vis_char_idxs.clear();
+        s.visual_desc = "中景:老祖指了指密室逃脱的牌子。王胖子倒吸一口凉气。".into();
+        s.audio_desc = Some("(倒吸一口凉气)".into());
+        let chars = vec![
+            CharacterInScene {
+                idx: 0,
+                identifier_in_scene: "玄霄老祖".into(),
+                is_visible: true,
+                static_features: "成年男性".into(),
+                dynamic_features: None,
+                voice_profile: None,
+            },
+            CharacterInScene {
+                idx: 2,
+                identifier_in_scene: "王胖子".into(),
+                is_visible: true,
+                static_features: "成年男性".into(),
+                dynamic_features: None,
+                voice_profile: None,
+            },
+        ];
+        let idxs = shot_cast_idxs(&s, &chars);
+        assert!(idxs.contains(&0), "老祖 must bind 玄霄老祖: {idxs:?}");
+        assert!(idxs.contains(&2), "{idxs:?}");
+    }
+
+    #[test]
+    fn sfx_paren_is_kept_when_scene_bgm_is_appended() {
+        let mut s = shot(0, 0);
+        s.visual_desc = "中景:<玄霄老祖>指了指牌子。<王胖子>倒吸一口凉气。".into();
+        s.motion_desc = s.visual_desc.clone();
+        s.audio_desc = Some("(倒吸一口凉气)".into());
+        let chars = [CharacterInScene {
+            idx: 0,
+            identifier_in_scene: "玄霄老祖".into(),
+            is_visible: true,
+            static_features: "成年男性".into(),
+            dynamic_features: None,
+            voice_profile: None,
+        }];
+        let prompt = i2v_motion_prompt(
+            &s,
+            &chars,
+            "cinematic",
+            &[],
+            2,
+            SpliceSeam::Cut,
+            "(soft continuous cinematic atmospheric underscore, same motif)",
+            false,
+            &[],
+            "",
+        );
+        assert!(
+            prompt.contains("倒吸一口凉气"),
+            "shot SFX must not be replaced by scene BGM: {prompt}"
+        );
+        assert!(
+            !prompt.contains("激动带哭腔"),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn pick_video_assets_keeps_portraits_ahead_of_env() {
+        let cont = PathBuf::from("shots/0/video_last_frame.png");
+        let pairs = vec![
+            (cont.clone(), "cont".into()),
+            (
+                PathBuf::from("character_portraits/0/lin_three_view.png"),
+                "<林尘>".into(),
+            ),
+            (
+                PathBuf::from("character_portraits/1/zhao_three_view.png"),
+                "<赵无极>".into(),
+            ),
+            (PathBuf::from("props/token_prop.png"), "<玄铁令>".into()),
+            (PathBuf::from("environments/hall.png"), "hall".into()),
+        ];
+        let out = pick_video_assets(pairs, Some(&cont), false);
+        let blob: String = out
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(blob.contains("lin_three_view"), "{blob}");
+        assert!(blob.contains("zhao_three_view"), "{blob}");
+        assert!(blob.contains("token_prop"), "{blob}");
+        assert!(
+            !blob.contains("environments"),
+            "continuity already carries the set: {blob}"
+        );
+        assert_eq!(out[0].0, cont);
+    }
+
+    #[test]
+    fn later_shot_keeps_the_last_frame_on_the_strip() {
+        let still = PathBuf::from("shots/0/video_last_frame.png");
+        assert_eq!(
+            continuity_still_for_seam(SpliceSeam::MatchCut, Some(&still)),
+            Some(still.as_path())
+        );
+        assert_eq!(
+            continuity_still_for_seam(SpliceSeam::Cut, Some(&still)),
+            Some(still.as_path())
+        );
+        assert_eq!(
+            continuity_still_for_seam(SpliceSeam::SameTake, Some(&still)),
+            Some(still.as_path())
+        );
+
+        let pairs = vec![
+            (still.clone(), "cont".into()),
+            (
+                PathBuf::from("character_portraits/0/lin_three_view.png"),
+                "<林尘>".into(),
+            ),
+            (PathBuf::from("props/token_prop.png"), "<玄铁令>".into()),
+            (PathBuf::from("environments/hall.png"), "hall".into()),
+        ];
+        let out = pick_video_assets(pairs, Some(&still), true);
+        assert_eq!(out[0].0, still);
+        assert!(
+            out.iter()
+                .any(|(p, _)| p.to_string_lossy().contains("environments")),
+            "MatchCut / cut still feeds the location bible: {out:?}"
+        );
+    }
+
+    #[test]
+    fn same_take_still_keeps_location_plate() {
+        let mut cur = shot(1, 0);
+        let mut prev = shot(0, 0);
+        prev.location_id = "INT. CAFE - NIGHT".into();
+        cur.location_id = "INT. CAFE - NIGHT".into();
+        assert!(keep_location_plate(SpliceSeam::SameTake, &cur, Some(&prev)));
+        assert!(keep_location_plate(SpliceSeam::MatchCut, &cur, Some(&prev)));
+        cur.location_id = "EXT. PIER - NIGHT".into();
+        assert!(keep_location_plate(SpliceSeam::SameTake, &cur, Some(&prev)));
+        assert!(keep_location_plate(SpliceSeam::Cut, &cur, None));
+    }
+
+    #[test]
+    fn empty_location_id_still_binds_sole_environment_plate() {
+        let mut s = shot(1, 0);
+        s.visual_desc = "taxi back seat".into();
+        s.location_id.clear();
+        let env = PathBuf::from("environments/0_TAXI/TAXI_environment_plate.png");
+        let world = vec![(
+            env.clone(),
+            "GLOBAL EMPTY environment plate: 出租车后座".into(),
+        )];
+        let pairs = shot_video_ref_pairs(
+            &s,
+            None,
+            &[],
+            &HashMap::new(),
+            &world,
+            Path::new("."),
+            true,
+        );
+        assert!(
+            pairs.iter().any(|(p, _)| p == &env),
+            "sole environment plate must ride with the clip: {pairs:?}"
+        );
+    }
+
+    #[test]
+    fn speaker_idxs_follow_named_speakers_not_visible_order() {
+        let mut s = shot(0, 0);
+        s.ff_vis_char_idxs = vec![1, 0];
+        s.audio_desc = Some("李薇：「走吧。」".into());
+        let chars = vec![
+            CharacterInScene {
+                idx: 0,
+                identifier_in_scene: "李薇".into(),
+                is_visible: true,
+                static_features: String::new(),
+                dynamic_features: None,
+                voice_profile: None,
+            },
+            CharacterInScene {
+                idx: 1,
+                identifier_in_scene: "阿琳".into(),
+                is_visible: true,
+                static_features: String::new(),
+                dynamic_features: None,
+                voice_profile: None,
+            },
+        ];
+        assert_eq!(speaker_idxs_for_shot(&s, &chars), vec![0]);
+    }
+
+    #[test]
+    fn pick_video_assets_binds_every_mentioned_prop_that_fits() {
+        let cont = PathBuf::from("shots/0/video_last_frame.png");
+        let pairs = vec![
+            (cont.clone(), "cont".into()),
+            (
+                PathBuf::from("character_portraits/0/lin_three_view.png"),
+                "<林尘>".into(),
+            ),
+            (
+                PathBuf::from("character_portraits/1/zhao_three_view.png"),
+                "<赵无极>".into(),
+            ),
+            (PathBuf::from("props/0_长老令/长老令_prop.png"), "<长老令>".into()),
+            (PathBuf::from("props/1_霜华剑/霜华剑_prop.png"), "<霜华剑>".into()),
+            (PathBuf::from("props/2_红伞/红伞_prop.png"), "<红伞>".into()),
+        ];
+        let out = pick_video_assets(pairs, Some(&cont), false);
+        let blob: String = out
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(blob.contains("长老令"), "{blob}");
+        assert!(blob.contains("霜华剑"), "{blob}");
+        assert!(blob.contains("红伞"), "{blob}");
+        assert!(out.len() <= MAX_SEEDANCE_REF_IMAGES, "{}", out.len());
+        assert!(blob.contains("lin_three_view"), "{blob}");
+        assert!(blob.contains("zhao_three_view"), "{blob}");
+    }
+
+    #[test]
+    fn pick_video_assets_keeps_all_in_shot_portraits_when_they_fit() {
+        let cont = PathBuf::from("shots/0/video_last_frame.png");
+        let pairs = vec![
+            (cont.clone(), "cont".into()),
+            (
+                PathBuf::from("cameo/hero_cameo.png"),
+                "<主角>".into(),
+            ),
+            (
+                PathBuf::from("character_portraits/1/a_three_view.png"),
+                "<甲>".into(),
+            ),
+            (
+                PathBuf::from("character_portraits/2/b_three_view.png"),
+                "<乙>".into(),
+            ),
+            (
+                PathBuf::from("character_portraits/3/c_three_view.png"),
+                "<丙>".into(),
+            ),
+            (PathBuf::from("props/0_剑/剑_prop.png"), "<霜华剑>".into()),
+        ];
+        let out = pick_video_assets(pairs, Some(&cont), false);
+        let faces: Vec<_> = out
+            .iter()
+            .filter(|(p, _)| is_portrait_ref_path(p))
+            .collect();
+        assert_eq!(faces.len(), 4, "{out:?}");
+        assert!(
+            faces[0].0.to_string_lossy().contains("cameo"),
+            "Cameo stays first among faces: {out:?}"
+        );
+    }
+
+    #[test]
+    fn pick_video_assets_does_not_starve_props_for_extra_portraits() {
+        let cont = PathBuf::from("shots/0/video_last_frame.png");
+        let mut pairs = vec![(cont.clone(), "cont".into())];
+        for i in 0..6 {
+            pairs.push((
+                PathBuf::from(format!("character_portraits/{i}/c{i}_three_view.png")),
+                format!("<角色{i}>"),
+            ));
+        }
+        pairs.push((PathBuf::from("props/0_令/令牌_prop.png"), "<令牌>".into()));
+        pairs.push((PathBuf::from("props/1_剑/长剑_prop.png"), "<长剑>".into()));
+        pairs.push((PathBuf::from("props/2_伞/油纸伞_prop.png"), "<油纸伞>".into()));
+        let out = pick_video_assets(pairs, Some(&cont), false);
+        let blob: String = out
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(blob.contains("令牌"), "plot props must survive extra faces: {blob}");
+        assert!(blob.contains("长剑"), "{blob}");
+        assert!(blob.contains("油纸伞"), "{blob}");
+        assert_eq!(out.len(), MAX_SEEDANCE_REF_IMAGES, "{blob}");
+        let face_n = out.iter().filter(|(p, _)| is_portrait_ref_path(p)).count();
+        assert!(face_n > 2, "no hardcoded 2-face cap: {face_n} in {blob}");
+        assert_eq!(out[0].0, cont);
+    }
+
+    #[test]
+    fn i2v_prompt_carries_storyboard_visual_as_scene() {
+        let mut s = shot(0, 0);
+        s.visual_desc =
+            "正午烈日下演武场人群围成半圈，萧彻单手托起霜华剑，剑身冰蓝流光游走，迈步走向剑冢入口"
+                .into();
+        s.motion_desc = "他迈步向前".into();
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            8,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(
+            prompt.contains("画面：正午烈日下演武场"),
+            "video prompt must include the storyboard 画面描述: {prompt}"
+        );
+        assert!(prompt.contains("霜华剑"), "{prompt}");
+        assert!(!prompt.contains("Scene:"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    #[test]
+    fn prop_refs_follow_shot_mentions_not_fallback() {
+        let token = (
+            PathBuf::from("props/0_长老令/长老令_prop.png"),
+            "object only: <长老令>".into(),
+        );
+        let umbrella = (
+            PathBuf::from("props/1_红伞/红伞_prop.png"),
+            "object only: <红伞>".into(),
+        );
+        let world = vec![token.clone(), umbrella.clone()];
+        let mentioned = mentioned_prop_pairs("萧彻举起长老令对着人群", &world);
+        assert_eq!(mentioned.len(), 1, "{mentioned:?}");
+        assert!(mentioned[0].0.to_string_lossy().contains("长老令"));
+        assert!(!query_mentions_prop(
+            "萧彻单手托起霜华剑走进剑冢",
+            &token.0,
+            &token.1
+        ));
+        assert!(query_mentions_prop(
+            "他从腰间解下长老令",
+            &token.0,
+            &token.1
+        ));
+    }
+
+    #[test]
+    fn dialogue_caption_round_trips_storyboard_audio_desc() {
+        let cap = seedance_audio_caption_essential_only(
+            Some("台词:林尘:「站住」;赵无极:「放下」音效:剑鸣、风声"),
+            "对峙",
+            "中景",
+        );
+        assert!(cap.contains("{林尘:「站住」;赵无极:「放下」}"), "{cap}");
+        assert!(cap.contains("<剑鸣、风声>"), "{cap}");
+        assert!(!cap.contains("台词:"), "{cap}");
+        assert!(
+            !cap.contains("foley only"),
+            "do not invent English foley when 音效 is present: {cap}"
+        );
+    }
+
+    #[test]
+    fn adult_age_does_not_inject_child_style_lock() {
+        let s = ShotDescription {
+            idx: 0,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: "中景".into(),
+            variation_type: "small".into(),
+            variation_reason: String::new(),
+            ff_desc: "林铮站在巨兽身侧".into(),
+            ff_vis_char_idxs: vec![0],
+            lf_desc: "林铮站在巨兽身侧".into(),
+            lf_vis_char_idxs: vec![0],
+            motion_desc: "林铮收脚站定".into(),
+            audio_desc: Some("脚步踩在沙砾上".into()),
+            location_id: String::new(),
+            beats: Vec::new(),
+        };
+        let chars = vec![CharacterInScene {
+            idx: 0,
+            identifier_in_scene: "林铮".into(),
+            is_visible: true,
+            static_features: "28 岁中国女性，身高约 172cm".into(),
+            dynamic_features: None,
+            voice_profile: None,
+        }];
+        let refs = vec![(
+            PathBuf::from("characters/lin_three_view.png"),
+            "File [lin_three_view.png] = GLOBAL three-view character bible for <林铮>".into(),
+        )];
+        let prompt = i2v_motion_prompt(
+            &s,
+            &chars,
+            "cinematic",
+            &refs,
+            8,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "16:9",
+        );
+        assert!(!prompt.contains("Children share"));
+        assert!(!prompt.contains("CAST LOCK"));
+        assert!(prompt.contains("@Image1"));
+        assert!(prompt.contains("<林铮> 身份"), "{prompt}");
+        assert!(prompt.contains("画面：中景"), "{prompt}");
+        assert!(prompt.contains("16:9"), "{prompt}");
+        assert!(!prompt.contains("vertical"), "{prompt}");
+        assert!(!prompt.contains("large creatures"), "{prompt}");
+        assert_not_english_runbook(&prompt);
+    }
+
+    #[test]
+    fn empty_aspect_omits_frame_line() {
+        let s = shot(1, 0);
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            5,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(!prompt.contains("Frame:"), "{prompt}");
+        assert!(!prompt.contains("16:9"), "{prompt}");
+    }
+
+    #[test]
+    fn prop_that_is_also_cast_is_duplicate() {
+        let chars = [CharacterInScene {
+            idx: 0,
+            identifier_in_scene: "硅基晶体巨兽".into(),
+            is_visible: true,
+            static_features: "八米高晶体".into(),
+            dynamic_features: None,
+            voice_profile: None,
+        }];
+        assert!(prop_duplicates_visible_cast(
+            Path::new("props/巨兽躯干_prop.png"),
+            "GLOBAL prop bible: <硅基晶体巨兽的躯干>",
+            &chars,
+            &[0],
+        ));
+        assert!(!prop_duplicates_visible_cast(
+            Path::new("props/能量刃_prop.png"),
+            "GLOBAL prop bible: <能量刃>",
+            &chars,
+            &[0],
+        ));
     }
 
     #[test]
@@ -3600,9 +4584,88 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             cam_idx: 0,
             visual_desc: "establishing wide shot".into(),
             audio_desc: None,
+            location_id: String::new(),
+            beats: Vec::new(),
         }];
         assert!(ensure_brief_audio_descs(&mut shots));
         assert!(shots[0].audio_desc.as_ref().is_some_and(|s| !s.trim().is_empty()));
         assert!(!ensure_brief_audio_descs(&mut shots));
+    }
+}
+
+#[cfg(test)]
+mod storyboard_publish_tests {
+    use super::*;
+    use crate::clip_bounds::ClipBounds;
+    use crate::domain::ShotBriefDescription;
+
+    const SEEDANCE: ClipBounds = ClipBounds::new(5, 15);
+
+    fn brief(idx: i32, cam_idx: i32, visual: &str) -> ShotBriefDescription {
+        ShotBriefDescription {
+            idx,
+            is_last: false,
+            cam_idx,
+            visual_desc: visual.into(),
+            audio_desc: None,
+            location_id: String::new(),
+            beats: Vec::new(),
+        }
+    }
+
+    fn micro_draft() -> Vec<ShotBriefDescription> {
+        vec![
+            brief(0, 0, "她转身开门"),
+            brief(1, 0, "她看见他"),
+            brief(2, 1, "他抬头"),
+            brief(3, 2, "窗外雨"),
+        ]
+    }
+
+    #[tokio::test]
+    async fn first_storyboard_write_is_the_packed_clip_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = dir.path();
+        let path = wd.join("storyboard.json");
+        let draft = micro_draft();
+        let packed = super::super::clip_beats::pack_scene_briefs(SEEDANCE, draft);
+        assert!(packed.len() < 4, "draft must collapse so this tests publish");
+        assert!(!path.exists());
+        let wrote = persist_published_storyboard(wd, &path, &packed, "plan-fp")
+            .await
+            .unwrap();
+        assert!(wrote);
+        let disk: Vec<ShotBriefDescription> = read_json_artifact(&path).await.unwrap();
+        assert_eq!(disk.len(), packed.len());
+        assert_eq!(disk[0].idx, 0);
+        assert_eq!(disk.last().map(|row| row.idx), Some((packed.len() - 1) as i32));
+        assert!(sidecar_matches(&path, "plan-fp").await);
+        let clips = super::super::clip_beats::shots_from_packed_briefs(&disk);
+        assert!(super::super::clip_beats::clips_follow_board(&disk, &clips));
+        assert_eq!(clips.len(), disk.len());
+    }
+
+    #[tokio::test]
+    async fn persist_replaces_an_unpacked_draft_left_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = dir.path();
+        let path = wd.join("storyboard.json");
+        let draft = micro_draft();
+        write_json_artifact(&path, &draft).await.unwrap();
+        write_sidecar(&path, "plan-fp").await.unwrap();
+        let packed = super::super::clip_beats::pack_scene_briefs(SEEDANCE, draft.clone());
+        assert!(packed.len() < draft.len());
+        let wrote = persist_published_storyboard(wd, &path, &packed, "plan-fp")
+            .await
+            .unwrap();
+        assert!(wrote);
+        let disk: Vec<ShotBriefDescription> = read_json_artifact(&path).await.unwrap();
+        assert_eq!(disk.len(), packed.len());
+        assert!(disk.iter().enumerate().all(|(i, row)| row.idx == i as i32));
+        assert!(sidecar_matches(&path, "plan-fp").await);
+        let again = persist_published_storyboard(wd, &path, &packed, "plan-fp")
+            .await
+            .unwrap();
+        assert!(!again);
     }
 }

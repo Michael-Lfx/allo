@@ -1,6 +1,10 @@
+use std::collections::hash_map::DefaultHasher;
 use std::fs::OpenOptions;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use fs2::FileExt;
@@ -36,6 +40,12 @@ pub enum MigrationLineageStatus {
 #[derive(Clone, Debug)]
 pub struct Database {
     pool: SqlitePool,
+    /// Per-run snapshot-copy cleanup. `Some` only for memory databases
+    /// restored from the shared snapshot template; dropped together with the
+    /// last clone of this handle so the run file outlives the pool.
+    /// Never read: the value matters only through its `Drop`.
+    #[allow(dead_code)]
+    snapshot_run: Option<Arc<SnapshotRunFile>>,
 }
 
 impl Database {
@@ -136,7 +146,7 @@ pub async fn open_database_for_backup(path: &Path) -> Result<Database, DbError> 
         pool.close().await;
         return Err(error);
     }
-    Ok(Database { pool })
+    Ok(Database { pool, snapshot_run: None })
 }
 
 async fn validate_restorable_database_contract(pool: &SqlitePool) -> Result<(), DbError> {
@@ -384,6 +394,320 @@ pub async fn init_database_memory() -> Result<Database, DbError> {
     init_database_memory_inner(None).await
 }
 
+// ── In-memory snapshot template ─────────────────────────────────────────────
+//
+// Every memory init used to replay all migrations plus the v3 schema-contract
+// validation (~1.2s in debug builds), which dominated test-suite runtime
+// (398 repository tests x 1.2s = ~8 minutes of fixed cost). Instead, the
+// first init in a process builds a validated, owner-less template database
+// once (`VACUUM main INTO`), and every init afterwards restores from a copy.
+//
+// Correctness contract:
+// - The template is keyed by a fingerprint over every migration's
+//   version/description/sql plus the template semantics version, so any
+//   schema or init change rebuilds it.
+// - The template passes the exact same validation chain as the legacy path;
+//   a restored copy is byte-identical to that validated state, so re-running
+//   the contract validators per init would be a no-op and is skipped.
+// - The template carries NO installation owner: the owner row is stripped
+//   before `VACUUM INTO`, so each copy inserts its own owner through
+//   `ensure_installation_owner`, preserving the legacy one-random-owner-per-
+//   init semantics (and the hard error on a mismatched requested owner).
+// - Any snapshot-machinery failure falls back to the legacy full init: the
+//   cache can only make things faster, never wrong or red.
+
+/// Bump when the template-building semantics change in a way the migration
+/// fingerprint cannot see (e.g. new seed rows, changed validation chain).
+const MEMORY_SNAPSHOT_SEMANTICS: &str = "v1";
+
+/// Process-wide handle for the built template path. A cached failure keeps
+/// every later init on the legacy full-init path instead of retry-storming.
+/// Concurrent first callers await the same cell; a concurrent process race
+/// resolves through the rename protocol in the builder.
+static MEMORY_SNAPSHOT_TEMPLATE: tokio::sync::OnceCell<Result<PathBuf, String>> =
+    tokio::sync::OnceCell::const_new();
+
+/// Monotonic counter naming run files inside the per-process run directory.
+static SNAPSHOT_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Fingerprint over the full migration set plus the template semantics.
+fn memory_snapshot_fingerprint() -> String {
+    let mut hasher = DefaultHasher::new();
+    for migration in DB_MIGRATOR.iter() {
+        migration.version.hash(&mut hasher);
+        migration.description.hash(&mut hasher);
+        migration.sql.hash(&mut hasher);
+    }
+    MEMORY_SNAPSHOT_SEMANTICS.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Root directory for snapshot templates and per-run copies.
+fn memory_snapshot_dir() -> PathBuf {
+    std::env::temp_dir().join("flowy-db-mem-snapshots")
+}
+
+/// Build the validated, owner-less template at `final_path` (not yet present).
+///
+/// The staging database is a real FILE, not `:memory:`: in this environment
+/// `VACUUM main INTO` from a `:memory:` source reports success while writing
+/// nothing, so the template is produced as a direct file init instead. The
+/// file is compact by construction (fresh init), and `close` checkpoints the
+/// WAL so the single file carries all pages.
+async fn build_memory_snapshot_template(final_path: &Path) -> Result<(), DbError> {
+    let staging = final_path.with_extension(format!(
+        "staging-{}-{}",
+        std::process::id(),
+        SNAPSHOT_RUN_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let opts = SqliteConnectOptions::new()
+        .filename(&staging)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS));
+    let pool = PoolOptions::<Sqlite>::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&staging);
+            DbError::Query(error)
+        })?;
+
+    // The exact legacy validation chain (a random owner is inserted first so
+    // the data contract sees the same shape of state it always validated).
+    let init = async {
+        run_migrations(&pool).await?;
+        crate::id_schema_contract::validate_id_schema_contract(&pool).await?;
+        crate::id_schema_contract::repair_logical_reference_orphans(&pool).await?;
+        ensure_installation_owner(&pool, None).await?;
+        crate::id_schema_contract::validate_id_data_contract(&pool).await
+    }
+    .await;
+    if let Err(error) = init {
+        pool.close().await;
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+    pool.close().await;
+
+    // Backup-grade validation on the actual artifact while it still carries
+    // the owner row (the restorable contract requires exactly one).
+    validate_sqlite_snapshot(&staging).await?;
+
+    // Strip the owner so restored copies insert their own. A fresh database
+    // holds exactly the installation identity and its admin user row.
+    let strip_opts = SqliteConnectOptions::new()
+        .filename(&staging)
+        .create_if_missing(false)
+        .busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS));
+    let strip_pool = PoolOptions::<Sqlite>::new()
+        .max_connections(1)
+        .connect_with(strip_opts)
+        .await
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&staging);
+            DbError::Query(error)
+        })?;
+    let strip = async {
+        let mut transaction = strip_pool.begin().await.map_err(DbError::Query)?;
+        sqlx::query("DELETE FROM installation_identity")
+            .execute(&mut *transaction)
+            .await
+            .map_err(DbError::Query)?;
+        sqlx::query("DELETE FROM users WHERE username = 'admin'")
+            .execute(&mut *transaction)
+            .await
+            .map_err(DbError::Query)?;
+        transaction.commit().await.map_err(DbError::Query)
+    }
+    .await;
+    strip_pool.close().await;
+    if let Err(error) = strip {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+
+    match std::fs::rename(&staging, final_path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // Lost the race (or Windows held the file): the winner's template
+            // is byte-equivalent, so keep ours only if the final is missing.
+            if final_path.exists() {
+                let _ = std::fs::remove_file(&staging);
+                Ok(())
+            } else {
+                Err(DbError::Init(format!(
+                    "could not move snapshot template into place: {}",
+                    final_path.display()
+                )))
+            }
+        }
+    }
+}
+
+/// Resolve the template path, building it once per process. Concurrent
+/// callers await the same cell; a concurrent process race resolves through
+/// the rename protocol in [`build_memory_snapshot_template`].
+async fn ensure_memory_snapshot_template() -> Result<PathBuf, DbError> {
+    let dir = memory_snapshot_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| DbError::Init(format!("failed to create {}: {error}", dir.display())))?;
+    let final_path = dir.join(format!("template-{}.db", memory_snapshot_fingerprint()));
+    let result = MEMORY_SNAPSHOT_TEMPLATE
+        .get_or_init(|| async {
+            if final_path.exists() {
+                return Ok(final_path);
+            }
+            // Best-effort GC of stale templates from older fingerprints and
+            // run files abandoned by crashed processes.
+            gc_stale_snapshot_files(&dir);
+            match build_memory_snapshot_template(&final_path).await {
+                Ok(()) => Ok(final_path),
+                Err(error) => Err(error.to_string()),
+            }
+        })
+        .await;
+    result.clone().map_err(DbError::Init)
+}
+
+/// Delete snapshot files older than a day: superseded templates and run
+/// directories of processes that are long gone. Locked files are skipped.
+fn gc_stale_snapshot_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now() - Duration::from_secs(24 * 60 * 60);
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if modified < cutoff {
+            let path = entry.path();
+            if metadata.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// One restored run file. Deleted when the last `Database` clone drops; the
+/// pool's connections may close asynchronously after that, so removal retries
+/// briefly in a background thread and gives up quietly on failure.
+struct SnapshotRunFile {
+    path: PathBuf,
+    run_dir: PathBuf,
+}
+
+impl std::fmt::Debug for SnapshotRunFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnapshotRunFile").field("path", &self.path).finish()
+    }
+}
+
+impl Drop for SnapshotRunFile {
+    fn drop(&mut self) {
+        // Only runs once the last Arc reference (i.e. the last Database
+        // clone) is gone, so this is always the final cleanup.
+        // gone, so this is always the final cleanup.
+        let path = self.path.clone();
+        let run_dir = self.run_dir.clone();
+        std::thread::spawn(move || {
+            for _ in 0..50 {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                    // Windows holds the file until the pool's background close
+                    // finishes; retry briefly, then leave it for the day-GC.
+                    Err(_) => std::thread::sleep(Duration::from_millis(200)),
+                }
+            }
+            let _ = std::fs::remove_dir(&run_dir);
+        });
+    }
+}
+
+/// Restore one run database from the template: copy the file, connect to it,
+/// cheaply confirm the migration state, and insert the installation owner.
+async fn restore_database_from_snapshot(
+    template: &Path,
+    requested_owner_user_id: Option<&str>,
+) -> Result<Database, DbError> {
+    let run_dir = memory_snapshot_dir().join(format!("runs-{}", std::process::id()));
+    std::fs::create_dir_all(&run_dir)
+        .map_err(|error| DbError::Init(format!("failed to create {}: {error}", run_dir.display())))?;
+    let run_file =
+        run_dir.join(format!("mem-{}.db", SNAPSHOT_RUN_COUNTER.fetch_add(1, Ordering::Relaxed)));
+    std::fs::copy(template, &run_file).map_err(|error| {
+        DbError::Init(format!(
+            "failed to copy snapshot template {}: {error}",
+            template.display()
+        ))
+    })?;
+
+    let opts = SqliteConnectOptions::new()
+        .filename(&run_file)
+        .create_if_missing(false)
+        .busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS));
+    let pool = PoolOptions::<Sqlite>::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&run_file);
+            DbError::Query(error)
+        })?;
+
+    let init = async {
+        // The template carries the full `_sqlx_migrations` ledger, so this is
+        // a cheap applied-version check, not a replay — and still fails closed
+        // if a rebuilt template ever drifted from the binary's migrations.
+        run_migrations(&pool).await?;
+        ensure_installation_owner(&pool, requested_owner_user_id).await
+    }
+    .await;
+    if let Err(error) = init {
+        pool.close().await;
+        let _ = std::fs::remove_file(&run_file);
+        return Err(error);
+    }
+    Ok(Database {
+        pool,
+        snapshot_run: Some(Arc::new(SnapshotRunFile { path: run_file, run_dir })),
+    })
+}
+
+/// The legacy full path: replay migrations and the whole validation chain on
+/// a fresh in-memory database. Used to build the template and as the fallback
+/// whenever the snapshot machinery cannot deliver.
+async fn init_database_memory_full(
+    requested_owner_user_id: Option<&str>,
+) -> Result<Database, DbError> {
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+        .map_err(|e| DbError::Init(format!("Invalid memory connection string: {e}")))?
+        .busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS));
+
+    let pool = PoolOptions::<Sqlite>::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .map_err(DbError::Query)?;
+
+    run_migrations(&pool).await?;
+    crate::id_schema_contract::validate_id_schema_contract(&pool).await?;
+    crate::id_schema_contract::repair_logical_reference_orphans(&pool).await?;
+    ensure_installation_owner(&pool, requested_owner_user_id).await?;
+    crate::id_schema_contract::validate_id_data_contract(&pool).await?;
+
+    info!("In-memory database initialized");
+    Ok(Database { pool, snapshot_run: None })
+}
+
 /// Initialize an in-memory database with an explicitly supplied canonical
 /// installation owner.
 ///
@@ -398,25 +722,24 @@ pub async fn init_database_memory_with_owner(
 }
 
 async fn init_database_memory_inner(requested_owner_user_id: Option<String>) -> Result<Database, DbError> {
-    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
-        .map_err(|e| DbError::Init(format!("Invalid memory connection string: {e}")))?
-        .busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS));
-
-    let pool = PoolOptions::<Sqlite>::new()
-        .max_connections(1)
-        .connect_with(opts)
-        .await
-        .map_err(DbError::Query)?;
-
-    // In-memory DBs are not shared across processes, so no advisory lock is
-    // needed (and there is no on-disk path we could create one against).
-    run_migrations(&pool).await?;
-    crate::id_schema_contract::validate_id_schema_contract(&pool).await?;
-    ensure_installation_owner(&pool, requested_owner_user_id.as_deref()).await?;
-    crate::id_schema_contract::validate_id_data_contract(&pool).await?;
-
-    info!("In-memory database initialized");
-    Ok(Database { pool })
+    match ensure_memory_snapshot_template().await {
+        Ok(template) => {
+            match restore_database_from_snapshot(&template, requested_owner_user_id.as_deref())
+                .await
+            {
+                Ok(database) => {
+                    info!("In-memory database restored from snapshot template");
+                    return Ok(database);
+                }
+                // Restore is an optimization only: fall back to the full init.
+                Err(error) => {
+                    warn!("snapshot restore failed, falling back to full init: {error}")
+                }
+            }
+        }
+        Err(error) => warn!("snapshot template unavailable, falling back to full init: {error}"),
+    }
+    init_database_memory_full(requested_owner_user_id.as_deref()).await
 }
 
 async fn try_init_file(path: &Path) -> Result<Database, DbError> {
@@ -450,6 +773,7 @@ async fn try_init_file(path: &Path) -> Result<Database, DbError> {
     let setup = async {
         run_migrations(&pool).await?;
         crate::id_schema_contract::validate_id_schema_contract(&pool).await?;
+        crate::id_schema_contract::repair_logical_reference_orphans(&pool).await?;
         ensure_installation_owner(&pool, None).await?;
         crate::id_schema_contract::validate_id_data_contract(&pool).await
     }
@@ -463,7 +787,7 @@ async fn try_init_file(path: &Path) -> Result<Database, DbError> {
     }
 
     info!("Database initialized at {}", path.display());
-    Ok(Database { pool })
+    Ok(Database { pool, snapshot_run: None })
 }
 
 /// Path of the cross-process advisory lock file used to serialize concurrent

@@ -243,13 +243,11 @@ pub fn resolve_app_for_diagnostics(name: &str) -> Option<String> {
 
 /// Enumerate Start-Menu apps as `(display_name, app_id)` via PowerShell
 /// `Get-StartApps`. Uses `-EncodedCommand` (base64 UTF-16LE) to avoid all
-/// argument-quoting pitfalls, and `CREATE_NO_WINDOW` so no console flashes.
+/// argument-quoting pitfalls, and console-hide so no window flashes.
 /// Returns empty on any failure (caller falls back to a raw open).
 #[cfg(target_os = "windows")]
 fn get_start_apps() -> Vec<(String, String)> {
     use base64::Engine;
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     // Tab-separated Name<TAB>AppID per line (names/AppIDs don't contain tabs).
     let script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; \
@@ -259,9 +257,8 @@ fn get_start_apps() -> Vec<(String, String)> {
         base64::engine::general_purpose::STANDARD.encode(utf16)
     };
 
-    let output = std::process::Command::new("powershell")
+    let output = nomi_process_runtime::hidden_std_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
-        .creation_flags(CREATE_NO_WINDOW)
         .output();
 
     let Ok(out) = output else {

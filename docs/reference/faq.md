@@ -55,6 +55,7 @@ What NomiFun itself does over the network:
 
 - Optional update checks (system info / check-update endpoint).
 - Extension marketplace (`/api/hub/*`) — only if you actively use it.
+- Optional product analytics (PostHog) and crash reports (Sentry) when the build has keys and the user has not opted out in Settings → Analytics. Event properties are allowlisted; conversation bodies are not sent.
 - Whatever your configured agents and providers do — typically API calls to LLM providers.
 
 ## What about extensions and skills — what runs them?

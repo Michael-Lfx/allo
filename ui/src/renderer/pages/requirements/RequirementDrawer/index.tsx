@@ -15,7 +15,7 @@
  * the view→edit switch stays local.
  */
 
-import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Descriptions, Drawer, Spin } from '@arco-design/web-react';
 import { Edit } from '@icon-park/react';
@@ -28,6 +28,7 @@ import FilePreview from '@/renderer/components/media/FilePreview';
 import StatusPill from '../components/StatusPill';
 import RequirementDisplayNumber from '../components/RequirementDisplayNumber';
 import RequirementForm, { type RequirementFormPayload } from './RequirementForm';
+import { requirementAttentionId } from '@renderer/hooks/system/desktopNotifyDeepLink';
 
 interface RequirementDrawerProps {
   open: boolean;
@@ -56,12 +57,19 @@ const RequirementDrawer: React.FC<RequirementDrawerProps> = ({
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formResetSignal, setFormResetSignal] = useState(0);
+  const clearedAttentionIdRef = useRef<string | undefined>(undefined);
 
   // Re-seed the inner mode and clear stale data whenever the drawer (re)opens or
   // its target changes — so reopening a different requirement never flashes the
   // previous one, and a host that keeps the drawer mounted gets a clean slate.
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // The same requirement id may become a new attention item after a later
+      // terminal transition, so a future open must be allowed to clear again.
+      clearedAttentionIdRef.current = undefined;
+      return;
+    }
+    clearedAttentionIdRef.current = undefined;
     setInnerMode(mode);
     setData(null);
     setFormResetSignal((signal) => signal + 1);
@@ -110,6 +118,18 @@ const RequirementDrawer: React.FC<RequirementDrawerProps> = ({
       cancelled = true;
     };
   }, [open, mode, requirementId, message]);
+
+  useEffect(() => {
+    if (!open || !data || requirementId === undefined) return;
+    const attentionId = requirementAttentionId(String(data.requirement_id));
+    if (clearedAttentionIdRef.current === attentionId) return;
+    clearedAttentionIdRef.current = attentionId;
+    void ipcBridge.attention.clear
+      .invoke({ attention_id: attentionId })
+      .catch(() => {
+        // Keep native attention when the page cannot confirm the clear.
+      });
+  }, [data, open, requirementId]);
 
   const handleCreate = useCallback(
     async (payload: RequirementFormPayload) => {

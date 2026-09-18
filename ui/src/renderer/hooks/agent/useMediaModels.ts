@@ -5,6 +5,12 @@ import type { IMediaModelList, IMediaModelOption } from '@/common/adapter/ipcBri
 /** Match backend TTL so concurrent UI paths (home prefs / Canvas sync) share one round-trip. */
 const MEDIA_MODELS_CACHE_TTL_MS = 120_000;
 
+const EMPTY_MEDIA_MODEL_LIST: IMediaModelList = {
+  image_models: [],
+  video_models: [],
+  audio_models: [],
+};
+
 let mediaModelsCache: { at: number; data: IMediaModelList } | null = null;
 let mediaModelsInflight: Promise<IMediaModelList> | null = null;
 
@@ -22,11 +28,7 @@ export const fetchMediaModels = async (): Promise<IMediaModelList> => {
       mediaModelsCache = { at: Date.now(), data };
       return data;
     } catch {
-      const empty: IMediaModelList = {
-        image_models: [],
-        video_models: [],
-      };
-      return empty;
+      return EMPTY_MEDIA_MODEL_LIST;
     } finally {
       mediaModelsInflight = null;
     }
@@ -48,6 +50,7 @@ export type UseMediaModelsOptions = {
 export type UseMediaModelsResult = {
   imageModels: IMediaModelOption[];
   videoModels: IMediaModelOption[];
+  audioModels: IMediaModelOption[];
   isLoading: boolean;
   error: string | null;
   revalidate: () => Promise<IMediaModelList | undefined>;
@@ -87,6 +90,7 @@ export function useMediaModels(options?: UseMediaModelsOptions): UseMediaModelsR
   return {
     imageModels: data?.image_models ?? [],
     videoModels: data?.video_models ?? [],
+    audioModels: data?.audio_models ?? [],
     isLoading,
     error,
     revalidate,

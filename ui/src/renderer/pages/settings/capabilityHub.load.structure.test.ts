@@ -43,16 +43,78 @@ describe('capability hub load contracts', () => {
     expect(getAgentsCall).toBeLessThan(listFn);
   });
 
+  test('capability installed views distinguish loading from an empty result', () => {
+    const presetList = read('./PresetSettings/PresetListPanel.tsx');
+    const skills = read('./SkillsHubSettings.tsx');
+    const mcp = read('../../components/settings/SettingsModal/contents/ToolsModalContent.tsx');
+
+    for (const source of [presetList, skills, mcp]) {
+      expect(source).toContain('SettingsContentLoading');
+    }
+    expect(presetList).toContain('loading ?');
+    expect(presetList).toContain('error && presets.length > 0');
+    expect(skills).toContain('{loading && availableSkills.length === 0 ? (');
+    expect(skills).toContain('loadError && availableSkills.length === 0');
+    expect(skills).toContain('loadError && availableSkills.length > 0');
+    expect(mcp).toContain('{isMcpServersLoading ? (');
+    expect(mcp).toContain('mcpServersLoadFailed && !hasServers');
+    expect(mcp).toContain('loadErrorNotice');
+    expect(mcp).toContain('mcpServersLoadFailed');
+    expect(mcp).toContain("t('common.retry')");
+  });
+
+  test('MCP catalog refreshes expose one combined loading state and ignore stale responses', () => {
+    const hook = read('../../hooks/mcp/useMcpServers.ts');
+
+    expect(hook).toContain('requestIdRef');
+    expect(hook).toContain('if (requestIdRef.current !== requestId) return;');
+    expect(hook).toContain('extensionMcpServersLoadFailed');
+    expect(hook).toContain('mcpServersLoadFailed || extensionMcpServersLoadFailed');
+    expect(hook).toContain('isMcpServersLoading: isMcpServersLoading || isExtensionMcpServersLoading');
+    expect(hook).toContain('reloadMcpServers: loadMcpServers');
+  });
+
   test('skill market reuses the available-skills SWR key and does not scan home-dir agents', () => {
     const market = read('./SkillMarketSettings.tsx');
+    const skillHubPanel = read('./SkillHubMarketPanel.tsx');
+    const skillHubHook = read('./skill/useSkillHubMarket.ts');
     const importMenu = read('./skill/SkillImportMenu.tsx');
     const panel = read('./MarketSettingsPanel.tsx');
 
-    expect(market).toContain('AVAILABLE_SKILLS_SWR_KEY');
+    expect(market).toContain('SkillHubMarketPanel');
+    expect(skillHubPanel).toContain('AVAILABLE_SKILLS_SWR_KEY');
+    expect(skillHubPanel).toContain('installSkillMarketSkill');
+    expect(skillHubPanel).toContain('showInstallCommand={false}');
+    expect(market).not.toContain('useNomiQuickStart');
+    expect(skillHubHook).toContain('v7');
+    expect(market).not.toContain('rankings.v5');
+    expect(market).not.toContain('ClawHub');
+    expect(market).not.toContain('LoopHub');
     expect(market).not.toContain('detectAndCountExternalSkills');
     expect(importMenu).toContain('openAgentImport');
     expect(importMenu).not.toContain('useEffect');
     expect(panel).toContain('usePresetTags({ enabled: enableTagFilter })');
+  });
+
+  test('SkillHub list failures render one error state instead of duplicating the same message', () => {
+    const skillHubPanel = read('./SkillHubMarketPanel.tsx');
+
+    expect(skillHubPanel).toContain("market.status === 'stale' || market.status === 'partial-error'");
+    expect(skillHubPanel).toContain('{showMarketErrorBanner && (');
+    expect(skillHubPanel).not.toContain('{market.error && (');
+  });
+
+  test('retired plugin routes redirect and stay out of the capability model', () => {
+    const header = read('./capabilityHub/CapabilityHubHeader.tsx');
+    const capabilityHub = read('./capabilityHub/capabilityHub.ts');
+    const router = read('../../components/layout/Router.tsx');
+
+    expect(header).not.toContain("tabPlugins");
+    expect(capabilityHub).toContain("['presets', 'skills', 'mcp']");
+    expect(capabilityHub).not.toContain("'plugins'");
+    expect(router).toContain("path='/plugins/*' element={<DisabledPluginsRedirect />}");
+    expect(router).toContain("path='/settings/plugins/*' element={<DisabledPluginsRedirect />}");
+    expect(router).not.toContain('PluginSettingsPage');
   });
 
   test('capability hub chrome uses two-row discover and installed controls', () => {

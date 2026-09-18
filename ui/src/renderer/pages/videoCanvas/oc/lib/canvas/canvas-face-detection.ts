@@ -1,3 +1,4 @@
+import { fetchImageSourceBlob } from "@oc/services/image-storage";
 import type { CanvasFaceBox } from "./canvas-emotion";
 
 type DetectFaceResponse = {
@@ -26,9 +27,7 @@ const pendingRequests = new Map<number, PendingRequest>();
 
 export async function detectCanvasFaces(dataUrl: string, signal?: AbortSignal): Promise<CanvasFaceDetectionResult> {
     if (signal?.aborted) throw new DOMException("人脸识别已取消", "AbortError");
-    const response = await fetch(dataUrl, { signal });
-    if (!response.ok) throw new Error("无法读取源图片，请重新上传后再试");
-    const image = await createImageBitmap(await response.blob());
+    const image = await createImageBitmap(await fetchImageSourceBlob(dataUrl, signal));
     const worker = getDetectorWorker();
     const id = ++requestSequence;
     return new Promise((resolve, reject) => {

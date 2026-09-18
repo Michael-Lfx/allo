@@ -44,6 +44,7 @@ import workshopAgent from './workshopAgent.json';
 import browser from './browser.json';
 import poi from './poi.json';
 import insights from './insights.json';
+import telemetry from './telemetry.json';
 import media from './media.json';
 import cloudLogin from './cloudLogin.json';
 import billing from './billing.json';
@@ -99,6 +100,7 @@ export default {
   browser,
   poi,
   insights,
+  telemetry,
   media,
   cloudLogin,
   billing,

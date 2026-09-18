@@ -16,4 +16,6 @@ export type MarkdownViewProps = {
   allowUnverifiedImages?: boolean;
   /** When true, code blocks stay expanded and tail-follow during streaming. */
   isStreaming?: boolean;
+  /** Collapse long blockquotes only when the caller explicitly opts in. */
+  collapsibleBlockquotes?: boolean;
 };

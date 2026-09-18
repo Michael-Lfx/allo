@@ -29,6 +29,7 @@ aws-credential-types.workspace = true
 aws-config.workspace           = true
 
 tracing.workspace        = true
+regex.workspace          = true
 
 
 [dev-dependencies]

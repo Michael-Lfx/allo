@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use nomifun_api_types::{
+    AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityRunRequest, AgentQualityPromotedItem,
     ApiResponse, CloudBillingAirwallexSession, CloudBillingCouponList,
     CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
     CloudBillingPaymentChannel, CloudBillingPlan, CloudDeviceActivationRetryResponse,
@@ -17,7 +18,7 @@ use nomifun_api_types::{
     CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudServerSettingsResponse, CloudSyncModelsResponse, CloudWebsiteEntryResponse,
     CloudWhoamiResponse, UpdateCloudServerSettingsRequest, VideoGrowthEvent,
-    VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse, VideoGrowthMetricsResponse,
+    VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -42,7 +43,15 @@ const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const MAX_GROWTH_EVENTS_PER_BATCH: usize = 50;
 const MAX_GROWTH_PROPERTIES: usize = 24;
-const VIDEO_GROWTH_EVENT_NAMES: [&str; 13] = [
+const TELEMETRY_EVENT_NAMES: [&str; 35] = [
+    "app_opened",
+    "app_launch_auth_ready",
+    "app_launch_config_ready",
+    "app_launch_interactive",
+    "app_launch_failed",
+    "app_launch_completed",
+    "auth_completed",
+    "home_interactive",
     "home_viewed",
     "task_drafted",
     "task_accepted",
@@ -51,11 +60,25 @@ const VIDEO_GROWTH_EVENT_NAMES: [&str; 13] = [
     "render_started",
     "film_succeeded",
     "film_failed",
+    "film_cancelled",
+    "briefing_succeeded",
+    "briefing_failed",
+    "briefing_cancelled",
     "value_confirmed",
     "project_exported",
     "tv_published",
     "resume_started",
     "resume_succeeded",
+    "expert_package_install_failed",
+    "update_check_completed",
+    "update_prompt_shown",
+    "update_download_started",
+    "update_download_succeeded",
+    "update_download_failed",
+    "update_install_started",
+    "update_install_failed",
+    "update_install_blocked",
+    "update_applied",
 ];
 
 #[derive(Clone)]
@@ -140,12 +163,12 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
         .route("/api/cloud/logout", post(logout))
         .route("/api/cloud/sync-models", post(sync_models))
         .route(
-            "/api/cloud/growth/video/events",
+            "/api/cloud/telemetry/events",
             post(upload_video_growth_events),
         )
         .route(
-            "/api/cloud/growth/video/metrics",
-            get(get_video_growth_metrics),
+            "/api/cloud/growth/video/events",
+            post(upload_video_growth_events),
         )
         .route("/api/cloud/plans", get(list_billing_plans))
         .route("/api/cloud/credit-packs", get(list_billing_credit_packs))
@@ -167,6 +190,15 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
             "/api/cloud/im/logs/upload-from-path",
             post(upload_im_log_from_path),
         )
+        .route(
+            "/api/cloud/agent-quality/badcases",
+            post(submit_agent_badcase),
+        )
+        .route("/api/cloud/agent-quality/runs", post(submit_agent_eval_run))
+        .route(
+            "/api/cloud/agent-quality/badcases/promoted",
+            get(list_promoted_agent_badcases),
+        )
         .with_state(state)
         .merge(upload_routes)
         .merge(screenshot_upload_routes)
@@ -176,8 +208,46 @@ fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError>
     if event.event_id.is_empty() || event.event_id.len() > 128 {
         return Err(AppError::BadRequest("growth event id is invalid".into()));
     }
-    if !VIDEO_GROWTH_EVENT_NAMES.contains(&event.name.as_str()) {
+    if !TELEMETRY_EVENT_NAMES.contains(&event.name.as_str()) {
         return Err(AppError::BadRequest("growth event name is invalid".into()));
+    }
+    if let Some(module) = event.module.as_deref() {
+        let expected = match event.name.as_str() {
+            "app_opened"
+            | "app_launch_auth_ready"
+            | "app_launch_config_ready"
+            | "app_launch_interactive"
+            | "app_launch_failed"
+            | "app_launch_completed"
+            | "auth_completed"
+            | "home_interactive"
+            | "expert_package_install_failed"
+            | "update_check_completed"
+            | "update_prompt_shown"
+            | "update_download_started"
+            | "update_download_succeeded"
+            | "update_download_failed"
+            | "update_install_started"
+            | "update_install_failed"
+            | "update_install_blocked"
+            | "update_applied" => "platform",
+            "home_viewed" => {
+                // Video home stays video_generation; guid/knowledge/etc. are platform UX.
+                let feature = event
+                    .properties
+                    .get("feature")
+                    .and_then(|value| value.as_str());
+                if feature == Some("video_generation") {
+                    "video_generation"
+                } else {
+                    "platform"
+                }
+            }
+            _ => "video_generation",
+        };
+        if module != expected {
+            return Err(AppError::BadRequest("growth event module is invalid".into()));
+        }
     }
     if event.cohort.as_deref().is_some_and(|value| value != "A" && value != "B") {
         return Err(AppError::BadRequest("growth event cohort is invalid".into()));
@@ -228,26 +298,38 @@ async fn upload_video_growth_events(
     )))
 }
 
-#[derive(Debug, Deserialize)]
-struct VideoGrowthMetricsQuery {
-    #[serde(default = "default_growth_metrics_days")]
-    days: u16,
-}
-
-fn default_growth_metrics_days() -> u16 {
-    7
-}
-
-async fn get_video_growth_metrics(
+async fn submit_agent_badcase(
     State(state): State<CloudRouterState>,
     Extension(_user): Extension<CurrentUser>,
-    Query(query): Query<VideoGrowthMetricsQuery>,
-) -> Result<Json<ApiResponse<VideoGrowthMetricsResponse>>, AppError> {
+    Json(request): Json<AgentQualityBadcaseRequest>,
+) -> Result<Json<ApiResponse<AgentQualityAck>>, AppError> {
+    if request.event_id.trim().is_empty() {
+        return Err(AppError::BadRequest("eventId is required".into()));
+    }
     Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .get_video_growth_metrics(query.days.clamp(1, 90))
-            .await?,
+        state.service.submit_agent_badcase(request).await?,
+    )))
+}
+
+async fn submit_agent_eval_run(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(request): Json<AgentQualityRunRequest>,
+) -> Result<Json<ApiResponse<AgentQualityAck>>, AppError> {
+    if request.event_id.trim().is_empty() || request.suite.trim().is_empty() {
+        return Err(AppError::BadRequest("eventId and suite are required".into()));
+    }
+    Ok(Json(ApiResponse::ok(
+        state.service.submit_agent_eval_run(request).await?,
+    )))
+}
+
+async fn list_promoted_agent_badcases(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<AgentQualityPromotedItem>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_promoted_agent_badcases().await?,
     )))
 }
 
@@ -260,6 +342,7 @@ mod growth_tests {
             event_id: "video:film_succeeded:session-1".into(),
             name: name.into(),
             occurred_at: "2026-08-26T00:00:00Z".into(),
+            module: None,
             properties: Default::default(),
             cohort: Some("A".into()),
         }
@@ -273,6 +356,111 @@ mod growth_tests {
     #[test]
     fn rejects_unknown_video_growth_event() {
         assert!(validate_video_growth_event(&event("arbitrary_event")).is_err());
+    }
+
+    #[test]
+    fn accepts_briefing_terminal_events() {
+        assert!(validate_video_growth_event(&event("briefing_succeeded")).is_ok());
+        assert!(validate_video_growth_event(&event("briefing_failed")).is_ok());
+        assert!(validate_video_growth_event(&event("briefing_cancelled")).is_ok());
+        assert!(TELEMETRY_EVENT_NAMES.contains(&"briefing_succeeded"));
+        assert!(TELEMETRY_EVENT_NAMES.contains(&"film_succeeded"));
+    }
+
+    #[test]
+    fn accepts_expert_package_failure_as_a_platform_event() {
+        let mut event = event("expert_package_install_failed");
+        event.module = Some("platform".into());
+        event
+            .properties
+            .insert("package_slug".into(), serde_json::json!("tech-test-automation"));
+        event
+            .properties
+            .insert("failure_class".into(), serde_json::json!("deterministic"));
+        assert!(validate_video_growth_event(&event).is_ok());
+
+        event.module = Some("video_generation".into());
+        assert!(validate_video_growth_event(&event).is_err());
+    }
+
+    #[test]
+    fn accepts_app_launch_pipeline_events_as_platform() {
+        for name in [
+            "app_launch_auth_ready",
+            "app_launch_config_ready",
+            "app_launch_interactive",
+            "app_launch_failed",
+            "app_launch_completed",
+            "auth_completed",
+            "home_interactive",
+        ] {
+            assert!(TELEMETRY_EVENT_NAMES.contains(&name), "{name}");
+            let mut event = event(name);
+            event.module = Some("platform".into());
+            event
+                .properties
+                .insert("duration_ms".into(), serde_json::json!(420));
+            event
+                .properties
+                .insert("cold_start".into(), serde_json::json!(true));
+            assert!(validate_video_growth_event(&event).is_ok(), "{name}");
+
+            event.module = Some("video_generation".into());
+            assert!(validate_video_growth_event(&event).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn home_viewed_module_follows_feature() {
+        let mut event = event("home_viewed");
+        event.module = Some("platform".into());
+        event
+            .properties
+            .insert("feature".into(), serde_json::json!("guid"));
+        assert!(validate_video_growth_event(&event).is_ok());
+
+        event.module = Some("video_generation".into());
+        assert!(validate_video_growth_event(&event).is_err());
+
+        event
+            .properties
+            .insert("feature".into(), serde_json::json!("video_generation"));
+        event.module = Some("video_generation".into());
+        assert!(validate_video_growth_event(&event).is_ok());
+        event.module = Some("platform".into());
+        assert!(validate_video_growth_event(&event).is_err());
+    }
+
+    #[test]
+    fn accepts_update_pipeline_events_as_platform() {
+        for name in [
+            "update_check_completed",
+            "update_prompt_shown",
+            "update_download_started",
+            "update_download_succeeded",
+            "update_download_failed",
+            "update_install_started",
+            "update_install_failed",
+            "update_install_blocked",
+            "update_applied",
+        ] {
+            assert!(TELEMETRY_EVENT_NAMES.contains(&name), "{name}");
+            let mut event = event(name);
+            event.module = Some("platform".into());
+            event
+                .properties
+                .insert("from_version".into(), serde_json::json!("1.0.0"));
+            event
+                .properties
+                .insert("to_version".into(), serde_json::json!("1.1.0"));
+            event
+                .properties
+                .insert("duration_ms".into(), serde_json::json!(1200));
+            assert!(validate_video_growth_event(&event).is_ok(), "{name}");
+
+            event.module = Some("video_generation".into());
+            assert!(validate_video_growth_event(&event).is_err(), "{name}");
+        }
     }
 
     #[test]
@@ -631,7 +819,7 @@ fn validate_send_im_message(
             .payload
             .as_mut()
             .ok_or_else(|| AppError::BadRequest("payload is required for msgType=image".into()))?;
-        validate_im_attachment_payload(payload, "payload", MAX_IMAGE_PAYLOAD_BYTES)?;
+        validate_im_attachment_payload(payload, "payload", MAX_IMAGE_PAYLOAD_BYTES, false)?;
         if !ALLOWED_IM_IMAGE_CONTENT_TYPES.contains(&payload.content_type.as_str()) {
             return Err(AppError::BadRequest(
                 "payload.contentType must be image/jpeg, image/png, image/webp or image/gif"
@@ -643,7 +831,7 @@ fn validate_send_im_message(
     }
 
     if let Some(payload) = request.log_payload.as_mut() {
-        validate_im_attachment_payload(payload, "logPayload", MAX_LOG_PAYLOAD_BYTES)?;
+        validate_im_attachment_payload(payload, "logPayload", MAX_LOG_PAYLOAD_BYTES, true)?;
     }
 
     request.app = validate_im_app(request.app.as_deref())?.map(str::to_string);
@@ -654,6 +842,7 @@ fn validate_im_attachment_payload(
     payload: &mut CloudImAttachmentPayload,
     field: &str,
     max_bytes: i64,
+    allow_oss_id: bool,
 ) -> Result<(), AppError> {
     let url = payload
         .url
@@ -667,13 +856,18 @@ fn validate_im_attachment_payload(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    if url.is_none() && object_key.is_none() {
+    let oss_id = allow_oss_id
+        .then_some(payload.oss_id)
+        .flatten()
+        .filter(|value| *value > 0);
+    if url.is_none() && object_key.is_none() && (!allow_oss_id || oss_id.is_none()) {
         return Err(AppError::BadRequest(format!(
-            "{field} requires url or objectKey"
+            "{field} requires url, objectKey, or a valid ossId"
         )));
     }
     payload.url = url;
     payload.object_key = object_key;
+    payload.oss_id = oss_id;
 
     let name = payload.name.trim();
     if name.is_empty() {
@@ -873,4 +1067,83 @@ async fn mark_im_read(
     Ok(Json(ApiResponse::ok(
         state.service.mark_im_read(req.last_read_seq).await?,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attachment(oss_id: Option<i64>) -> CloudImAttachmentPayload {
+        CloudImAttachmentPayload {
+            object_key: None,
+            url: Some("https://cdn.example/attachment".into()),
+            oss_id,
+            name: "attachment.bin".into(),
+            content_type: "application/octet-stream".into(),
+            byte_size: 1,
+            account: None,
+            device: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn log_payload_keeps_a_valid_oss_only_reference() {
+        let mut payload = attachment(Some(42));
+        payload.url = None;
+        let request = CloudImSendMessageRequest {
+            client_msg_id: "client-1".into(),
+            content: "日志".into(),
+            msg_type: "text".into(),
+            app: None,
+            payload: None,
+            log_payload: Some(payload),
+        };
+
+        let validated = validate_send_im_message(request).expect("valid log payload");
+        assert_eq!(validated.log_payload.as_ref().and_then(|item| item.oss_id), Some(42));
+    }
+
+    #[test]
+    fn image_payload_does_not_forward_storage_only_oss_id() {
+        let request = CloudImSendMessageRequest {
+            client_msg_id: "client-2".into(),
+            content: "截图".into(),
+            msg_type: "image".into(),
+            app: None,
+            payload: Some(CloudImAttachmentPayload {
+                object_key: None,
+                url: Some("https://cdn.example/screenshot.png".into()),
+                oss_id: Some(42),
+                name: "screenshot.png".into(),
+                content_type: "image/png".into(),
+                byte_size: 1,
+                account: None,
+                device: None,
+                extra: Default::default(),
+            }),
+            log_payload: None,
+        };
+
+        let validated = validate_send_im_message(request).expect("valid image payload");
+        assert_eq!(validated.payload.as_ref().and_then(|item| item.oss_id), None);
+    }
+
+    #[test]
+    fn image_payload_rejects_an_oss_only_reference() {
+        let mut payload = attachment(Some(42));
+        payload.url = None;
+        payload.name = "screenshot.png".into();
+        payload.content_type = "image/png".into();
+        let request = CloudImSendMessageRequest {
+            client_msg_id: "client-3".into(),
+            content: "截图".into(),
+            msg_type: "image".into(),
+            app: None,
+            payload: Some(payload),
+            log_payload: None,
+        };
+
+        assert!(validate_send_im_message(request).is_err());
+    }
 }

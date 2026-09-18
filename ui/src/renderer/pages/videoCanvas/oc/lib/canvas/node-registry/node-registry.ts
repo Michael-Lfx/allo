@@ -20,6 +20,7 @@ const NODE_LABEL_KEYS: Record<CanvasNodeType, [key: string, fallback: string]> =
     [CanvasNodeType.Compare]: ["videoCanvas.node.compare", "对比"],
     [CanvasNodeType.Chart]: ["videoCanvas.node.chart", "图表"],
     [CanvasNodeType.ColorGrade]: ["videoCanvas.node.colorgrade", "调色"],
+    [CanvasNodeType.ArtCritique]: ["videoCanvas.node.artCritique", "AI 审美批改"],
 };
 
 /** 模块级注册表 */

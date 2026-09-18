@@ -19,6 +19,7 @@ describe('resolveToolChipStatus', () => {
 
   test('covers skipped and invalid-argument outcomes without new message types', () => {
     expect(resolveToolChipStatus({ status: 'pending', skipped: true })).toBe('skipped');
+    expect(resolveToolChipStatus({ status: 'error', nonFatalFailure: true })).toBe('completed');
     expect(
       resolveToolChipStatus({ status: 'error', notExecutedReason: 'invalid_arguments' })
     ).toBe('invalid_arguments');
@@ -48,6 +49,12 @@ describe('resolveToolChipStatus', () => {
     expect(resolveToolChipStatusFromProcessState({ state: 'failed', skipped: true })).toBe('skipped');
     expect(
       resolveToolChipStatusFromProcessState({
+        state: 'failed',
+        nonFatalFailure: true,
+      })
+    ).toBe('completed');
+    expect(
+      resolveToolChipStatusFromProcessState({
         state: 'completed',
         notExecutedReason: 'invalid_arguments',
       })
@@ -69,6 +76,7 @@ describe('chipDetailOmittingCommand', () => {
 
   test('hides bash and run_commands payloads so the chip stays compact', () => {
     expect(isCommandToolName('bash')).toBe(true);
+    expect(isCommandToolName('exec_command')).toBe(true);
     expect(chipDetailOmittingCommand('bash', 'cd C:/code/flowy/allo; git status')).toBeUndefined();
     expect(
       chipDetailOmittingCommand('Read', 'still a path', 'run_commands')

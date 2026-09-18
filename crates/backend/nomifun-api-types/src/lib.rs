@@ -12,9 +12,12 @@ mod channel;
 mod cloud;
 mod cloud_billing;
 mod cloud_im;
+mod campaign;
 mod tv_show;
 mod vimax_skill_hub;
+mod generation_template;
 mod vimax;
+mod briefing;
 mod confirmation;
 mod connection_test;
 mod conversation;
@@ -58,9 +61,10 @@ mod webhook;
 mod websocket;
 
 pub use agent_eval::{
-    EvalArtifactView, EvalCaseTraceView, EvalCaseView, EvalCategoryView, EvalRunView,
-    EvalScorerView, EvalSuiteDescriptor, EvalSummaryView, EvalTrajectoryEventView,
-    PullEvalDatasetResponse, StartEvalRunRequest,
+    AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
+    EvalArtifactView, EvalCaseFlip, EvalCaseTraceView, EvalCaseView, EvalCategoryView,
+    EvalRunDiffView, EvalRunListItem, EvalRunView, EvalScorerView, EvalSuiteDescriptor,
+    EvalSummaryView, EvalTrajectoryEventView, PullEvalDatasetResponse, StartEvalRunRequest,
 };
 pub use acp::{
     AcpHealthCheckRequest, AcpHealthCheckResponse, AgentModeResponse,
@@ -163,6 +167,10 @@ pub use cloud_im::{
     CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,
     CloudImMessageList, CloudImReadRequest, CloudImSendMessageRequest,
 };
+pub use campaign::{
+    CampaignCarouselItem, CampaignCarouselResponse, CampaignDetail, CampaignListResponse,
+    CampaignPhase, CampaignSummary,
+};
 pub use tv_show::{
     TvShowAuthor, TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest,
     TvShowPublishResponse, TvShowPublishSessionRequest, TvShowVideo,
@@ -172,7 +180,16 @@ pub use vimax_skill_hub::{
     VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest,
     VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse, VimaxSkillAuthor,
 };
+pub use generation_template::{
+    GenerationTemplateAsset, GenerationTemplateAuthor, GenerationTemplateDetail,
+    GenerationTemplateEventRequest, GenerationTemplateListItem, GenerationTemplateListResponse,
+    GenerationTemplateModelIntent, GenerationTemplatePrompt, GenerationTemplatePublishRequest,
+    GenerationTemplateSlot, GenerationTemplateTarget,
+};
 pub use vimax::{VimaxSessionListResponse, VimaxSessionSummary};
+pub use briefing::{
+    BriefingCreateRequest, BriefingModelsRequest, BriefingSessionListResponse, BriefingSessionSummary,
+};
 pub use confirmation::{
     ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse,
 };
@@ -249,10 +266,11 @@ pub use managed_model::{
 };
 pub use mcp::{
     BatchImportMcpServersRequest, CreateMcpServerRequest, DetectedMcpServerEntry,
-    DetectedMcpServerResponse, ImportMcpServerRequest, McpAuthMethod, McpConnectionTestErrorCode,
-    McpConnectionTestResult, McpServerId, McpServerResponse, McpToolResponse, McpTransport,
-    OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest,
-    OAuthStatusResponse, TestMcpConnectionRequest, UpdateMcpServerRequest,
+    DetectedMcpServerResponse, ImportMcpServerRequest, McpActivationResponse, McpAuthMethod,
+    McpConnectionTestErrorCode, McpConnectionTestResult, McpServerId, McpServerResponse,
+    McpTestByIdResponse, McpToolResponse, McpTransport, OAuthCheckStatusRequest, OAuthLoginRequest,
+    OAuthLoginResponse, OAuthLogoutRequest, OAuthStatusResponse, TestMcpConnectionRequest,
+    UpdateMcpServerRequest,
 };
 pub use mcp::oauth_state;
 pub use mcp_declarations::{
@@ -324,9 +342,11 @@ pub use shell::{
 };
 pub use session_observation::{
     ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
-    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestSummaryDto,
-    SessionObservationResponseSummaryDto, SessionObservationTokenUsageDto,
-    SessionObservationToolDto, SessionObservationTurnDto,
+    SessionObservationEventDto, SessionObservationExportDto, SessionObservationExportTurnDto,
+    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestMessageViewDto,
+    SessionObservationRequestSummaryDto, SessionObservationResponseSummaryDto,
+    SessionObservationTimelineEventDto, SessionObservationTokenUsageDto, SessionObservationToolDto,
+    SessionObservationTurnDto,
 };
 pub use skill::{
     AddExternalPathRequest, BuiltinAutoSkillResponse, ExportSkillRequest,
@@ -335,10 +355,16 @@ pub use skill::{
     ReadBuiltinResourceRequest, ReadSkillInfoRequest, ReadSkillInfoResponse,
     RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse, ScannedSkillResponse,
     SetSkillTagsRequest, SkillCatalogItemResponse, SkillCatalogResponse, SkillCatalogSource, SkillId,
-    SkillListItemResponse, SkillMarketItemResponse, SkillMarketMcpConfigRequest,
+    SkillHubMarketCategoryItem, SkillHubMarketCategoriesResponse, SkillHubMarketContentSource,
+    SkillHubMarketItem, SkillHubMarketQueryRequest, SkillHubMarketQueryResponse, SkillHubMarketSort,
+    SkillHubMarketSource,
+    SkillHubMarketSubCategory, SkillListItemResponse, SkillMarketInstallMode, SkillMarketInstallStatus,
+    SkillMarketItemResponse,
+    SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallError, SkillMarketPackageInstallResponse,
-    SkillMarketPackageRequest, SkillMarketPackageResponse, SkillMarketSyncRequest,
-    SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse, WritePresetRuleRequest,
+    SkillMarketPackageRequest, SkillMarketPackageResponse, SkillMarketSkillInstallRequest,
+    SkillMarketSkillInstallResponse, SkillMarketSyncRequest, SkillMarketSyncResponse, SkillPathsResponse,
+    SkillSourceResponse, WritePresetRuleRequest,
 };
 pub use system::{
     ClientPreferencesResponse, SystemSettingsResponse, UpdateClientPreferencesRequest,

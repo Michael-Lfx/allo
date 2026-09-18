@@ -10,7 +10,6 @@
 
 import type { ConfirmationCorrelationId, IConfirmation } from '@/common/chat/chatLib';
 import { bridge } from '@/platform';
-import type { McpConnectionTestRequest } from './mcpRequest';
 import {
   noopEmitter,
   shellEmitter,
@@ -21,6 +20,10 @@ import {
   subscribeWindowMaximized,
   tauriGetPath,
   tauriGetZoom,
+  tauriClearAllAttention,
+  tauriClearAttention,
+  tauriClearAttentionScope,
+  tauriIsAppFocused,
   tauriIsAutostartEnabled,
   tauriOpenDialog,
   tauriSaveDialog,
@@ -41,6 +44,7 @@ import {
   tauriWindowUnmaximize,
   type ShellOpenDialogOptions,
   type ShellSaveDialogOptions,
+  type AttentionSource,
   type TauriUpdatePackageState,
 } from './tauriShell';
 import {
@@ -1287,7 +1291,7 @@ export const application = {
 const MODELSCOPE_RELEASE_PAGE = 'https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo';
 
 export const update = {
-  open: noopEmitter<{ source?: 'menu' | 'about' }>(),
+  open: noopEmitter<{ source?: 'menu' | 'about' | 'startup' | 'interval' | 'titlebar' | 'modal' }>(),
   check: shellProvider<IBridgeResponse<UpdateCheckResult>, UpdateCheckRequest>(async () => {
     try {
       const currentVersion = await tauriUpdateCurrentVersion();
@@ -1402,13 +1406,77 @@ export const dialog = {
 // ---------------------------------------------------------------------------
 
 export type SkillMarketSource =
-  | 'clawhub'
   | 'skillhub'
-  | 'loophub'
   | 'skillhub_mcp'
   | 'mcpworld'
   | 'clawhub_plugins'
   | 'skillhub_packages';
+
+export type SkillMarketInstallMode = 'native' | 'external' | 'unsupported';
+export type SkillMarketInstallStatus = 'installed' | 'reused';
+
+export type SkillHubMarketSort = 'score' | 'downloads' | 'updated_at';
+export type SkillHubMarketSource = 'skillhub' | 'clawhub';
+export type SkillHubMarketContentSource = SkillHubMarketSource | 'unknown';
+
+export interface ISkillHubMarketQueryRequest {
+  source?: SkillHubMarketSource;
+  keyword?: string;
+  category?: string;
+  requires_api_key?: boolean;
+  sort_by?: SkillHubMarketSort;
+  page?: number;
+  page_size?: number;
+}
+
+export interface ISkillHubMarketSubCategory {
+  key: string;
+  name: string;
+}
+
+export interface ISkillHubMarketItem {
+  id: string;
+  owner: string;
+  slug: string;
+  market_source: SkillHubMarketContentSource;
+  upstream_source?: string | null;
+  rank: number;
+  name: string;
+  description: string;
+  version: string;
+  category?: string | null;
+  tags: string[];
+  sub_categories: ISkillHubMarketSubCategory[];
+  requires_api_key: boolean | null;
+  downloads: number;
+  installs: number;
+  stars: number;
+  score: number;
+  created_at?: number | null;
+  updated_at?: number | null;
+  url: string;
+  avatar?: string | null;
+}
+
+export interface ISkillHubMarketQueryResponse {
+  fetched_at: number;
+  total: number;
+  page: number;
+  page_size: number;
+  items: ISkillHubMarketItem[];
+}
+
+export interface ISkillHubMarketCategory {
+  key: string;
+  name: string;
+  name_en: string;
+  sort_order: number;
+}
+
+export interface ISkillHubMarketCategoriesResponse {
+  fetched_at: number;
+  items: ISkillHubMarketCategory[];
+}
 
 export interface ISkillMarketItem {
   id: string;
@@ -1417,12 +1485,16 @@ export interface ISkillMarketItem {
   name: string;
   description: string;
   url: string;
+  artifact_url?: string;
   install_command: string;
+  install_mode: SkillMarketInstallMode;
   tags?: string[];
   audience_tags?: string[];
   scenario_tags?: string[];
   stats?: string;
   avatar?: string;
+  market_source?: SkillHubMarketContentSource;
+  upstream_source?: string | null;
 }
 
 export interface ISkillMarketSyncResponse {
@@ -1435,6 +1507,13 @@ export interface ISkillMarketMcpConfigResponse {
   config_json: unknown;
 }
 
+export interface ISkillMarketSkillInstallResponse {
+  source: string;
+  skill_id: string;
+  skill_name: string;
+  status: SkillMarketInstallStatus;
+}
+
 export interface ISkillMarketPackageResponse {
   name: string;
   description: string;
@@ -1445,8 +1524,12 @@ export interface ISkillMarketPackageResponse {
 
 export interface ISkillMarketPackageInstallResponse {
   package: ISkillMarketPackageResponse;
-  installed_skill_names: string[];
-  errors?: Array<{ skill_slug: string; error: string }>;
+  preset_id?: string | null;
+  installed_skill_ids?: string[];
+  installed_skill_names?: string[];
+  errors?: Array<{ skill_slug: string; error: string; http_status?: number | null }>;
+  failure_class?: string | null;
+  failure_code?: string | null;
 }
 
 export const fs = {
@@ -1495,6 +1578,7 @@ export const fs = {
       source: 'builtin' | 'custom' | 'extension';
       audience_tags?: string[];
       scenario_tags?: string[];
+      market_id?: string;
     }>,
     void
   >('/api/skills'),
@@ -1506,6 +1590,7 @@ export const fs = {
         description: string;
         source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
         source_key?: string;
+        market_id?: string;
       }>;
     },
     void
@@ -1558,14 +1643,24 @@ export const fs = {
   syncSkillMarketRankings: httpPost<ISkillMarketSyncResponse, { sources?: SkillMarketSource[] }>(
     '/api/skills/market/rankings/sync'
   ),
+  querySkillHubMarket: httpPost<ISkillHubMarketQueryResponse, ISkillHubMarketQueryRequest>(
+    '/api/skills/market/skillhub/query'
+  ),
+  listSkillHubMarketCategories: httpGet<ISkillHubMarketCategoriesResponse, void>(
+    '/api/skills/market/skillhub/categories'
+  ),
   resolveSkillMarketMcpConfig: httpPost<
     ISkillMarketMcpConfigResponse,
     { source: SkillMarketSource; id: string; url: string }
   >('/api/skills/market/mcp/config'),
   installSkillMarketPackage: httpPost<
     ISkillMarketPackageInstallResponse,
-    { source: SkillMarketSource; id: string; url: string }
+    { source: SkillMarketSource; id: string; url: string; preset_id?: string }
   >('/api/skills/market/package/install'),
+  installSkillMarketSkill: httpPost<
+    ISkillMarketSkillInstallResponse,
+    { source: 'skillhub'; id: string; market_source?: SkillHubMarketContentSource }
+  >('/api/skills/market/skill/install'),
 };
 
 // ---------------------------------------------------------------------------
@@ -1595,6 +1690,68 @@ export const fileStream = {
     relative_path: string;
     operation: 'write' | 'delete';
   }>('fileStream.contentUpdate'),
+};
+
+// ---------------------------------------------------------------------------
+// Learning — course/lesson generation progress (WS, best-effort)
+// ---------------------------------------------------------------------------
+
+/** One tool call inside a generation round (`loop_core` agent_round reshape). */
+export interface ILearningGenerationToolCall {
+  name: string;
+  is_error: boolean;
+}
+
+/** 课程生成过程事件（`learning.course-generation`）。`phase` 区分阶段；
+ * WS 不重放、不补发，终态一律以同步 HTTP 响应为准，因此所有过程字段可选。 */
+export interface ILearningCourseGenerationEvent {
+  phase: 'started' | 'scope' | 'round' | 'audit' | 'publishing' | 'completed' | 'failed';
+  /** 生成来源：课程简报 / 知识库 */
+  kind?: 'description' | 'knowledge_base';
+  /** agent loop 轮次：loop=generate|repair、round/max_rounds、本轮工具调用与摘要文本 */
+  loop?: 'generate' | 'repair';
+  round?: number;
+  max_rounds?: number;
+  tools?: ILearningGenerationToolCall[];
+  text?: string;
+  /** 审计发现计数与最多 5 条 danger 摘要 */
+  danger?: number;
+  warning?: number;
+  info?: number;
+  top?: string[];
+  /** 终态：入库课程信息 / 失败原因 */
+  course_id?: string;
+  title?: string;
+  modules?: number;
+  lessons?: number;
+  error?: string;
+}
+
+/** 课时内容生成过程事件（`learning.lesson-generation`），与课程事件同构，
+ * 额外带 lesson 标识供并发生成的 UI 过滤。 */
+export interface ILearningLessonGenerationEvent {
+  phase: 'started' | 'round' | 'audit' | 'completed' | 'failed';
+  lesson_id?: string;
+  title?: string;
+  module?: string;
+  loop?: 'generate' | 'repair';
+  round?: number;
+  max_rounds?: number;
+  tools?: ILearningGenerationToolCall[];
+  text?: string;
+  danger?: number;
+  warning?: number;
+  info?: number;
+  top?: string[];
+  activities?: number;
+  estimated_minutes?: number;
+  error?: string;
+}
+
+/** 学习模块生成过程事件（概念图生成进度同款 best-effort 推送）。 */
+export const learning = {
+  courseGeneration: wsEmitter<ILearningCourseGenerationEvent>('learning.course-generation'),
+  lessonGeneration: wsEmitter<ILearningLessonGenerationEvent>('learning.lesson-generation'),
 };
 
 // File snapshot providers
@@ -1988,6 +2145,34 @@ export type DetectedMcpServer = {
   import_skip_reason?: string;
 };
 
+export type McpConnectionTestResultDto = {
+  success: boolean;
+  tools?: Array<{
+    name: string;
+    description?: string;
+    input_schema?: unknown;
+    _meta?: Record<string, unknown>;
+  }>;
+  error?: string;
+  code?: string;
+  details?: unknown;
+  needs_auth?: boolean;
+  needsAuth?: boolean;
+  auth_method?: 'oauth' | 'basic';
+  authMethod?: 'oauth' | 'basic';
+  www_authenticate?: string;
+  wwwAuthenticate?: string;
+};
+
+export type McpActivationResult = {
+  server: IMcpServer;
+  test: McpConnectionTestResultDto;
+  enabled: boolean;
+  needs_auth?: boolean;
+  enable_rejected_reason?: string;
+  config_changed?: boolean;
+};
+
 export const mcpService = {
   listServers: withResponseMap(
     httpGet<ApiMcpServer[], void>('/api/mcp/servers'),
@@ -2032,6 +2217,40 @@ export const mcpService = {
     ),
     fromApiMcpServer
   ),
+  testServerById: withResponseMap(
+    httpPost<
+      { server: ApiMcpServer; test: McpConnectionTestResultDto; config_changed?: boolean },
+      { mcp_server_id: McpServerId }
+    >(
+      (p) => `/api/mcp/servers/${p.mcp_server_id}/test`,
+      () => undefined
+    ),
+    (r) => ({ server: fromApiMcpServer(r.server), test: r.test, config_changed: r.config_changed })
+  ),
+  activateServer: withResponseMap(
+    httpPost<
+      {
+        server: ApiMcpServer;
+        test: McpConnectionTestResultDto;
+        enabled: boolean;
+        needs_auth?: boolean;
+        enable_rejected_reason?: string;
+        config_changed?: boolean;
+      },
+      { mcp_server_id: McpServerId }
+    >(
+      (p) => `/api/mcp/servers/${p.mcp_server_id}/activate`,
+      () => undefined
+    ),
+    (r): McpActivationResult => ({
+      server: fromApiMcpServer(r.server),
+      test: r.test,
+      enabled: r.enabled,
+      needs_auth: r.needs_auth,
+      enable_rejected_reason: r.enable_rejected_reason,
+      config_changed: r.config_changed,
+    })
+  ),
   getAgentMcpConfigs: httpGet<
     Array<{
       source: string;
@@ -2044,27 +2263,6 @@ export const mcpService = {
       cli_path?: string;
     }>
   >('/api/mcp/agent-configs'),
-  testMcpConnection: httpPost<
-    {
-      success: boolean;
-      tools?: Array<{
-        name: string;
-        description?: string;
-        input_schema?: unknown;
-        _meta?: Record<string, unknown>;
-      }>;
-      error?: string;
-      code?: string;
-      details?: unknown;
-      needsAuth?: boolean;
-      needs_auth?: boolean;
-      authMethod?: 'oauth' | 'basic';
-      auth_method?: 'oauth' | 'basic';
-      wwwAuthenticate?: string;
-      www_authenticate?: string;
-    },
-    McpConnectionTestRequest
-  >('/api/mcp/test-connection'),
   checkOAuthStatus: httpPost<{ authenticated: boolean }, { server_url: string }>('/api/mcp/oauth/check-status'),
   loginMcpOAuth: httpPost<{ success: boolean; error?: string }, { server_url: string }>('/api/mcp/oauth/login'),
   logoutMcpOAuth: httpPost<void, { server_url: string }>('/api/mcp/oauth/logout'),
@@ -2685,6 +2883,11 @@ export const windowControls = {
   close: shellProvider<void, void>(() => tauriWindowClose(), undefined),
   isMaximized: shellProvider<boolean, void>(() => tauriWindowIsMaximized(), false),
   maximizedChanged: shellEmitter<{ is_maximized: boolean }>((cb) => subscribeWindowMaximized(cb)),
+  // App-level focus across every Flowy window; DOM focus is the web fallback.
+  isAppFocused: shellProvider<boolean, void>(
+    () => tauriIsAppFocused(),
+    () => (typeof document !== 'undefined' ? document.hasFocus() : false)
+  ),
 };
 
 // ---------------------------------------------------------------------------
@@ -2759,6 +2962,8 @@ export type INotificationOptions = {
   body: string;
   icon?: string;
   conversation_id?: ConversationId;
+  /** Stable native pending-attention identity; generic notifications omit it. */
+  attention_id?: string;
   /** `flowy://navigate?route=…` deep link opened when the toast is clicked. */
   click_target?: string;
 };
@@ -2771,12 +2976,25 @@ export const notification = {
         body: opts.body,
         icon: opts.icon,
         click_target: opts.click_target,
+        attention_id: opts.attention_id,
       }),
     undefined
   ),
   // Click navigation is delivered via deep-link://received (see desktop
   // system_notify + useDeepLink). This emitter stays for legacy callers.
   clicked: noopEmitter<{ conversation_id?: ConversationId }>(),
+};
+
+export const attention = {
+  clear: shellProvider<void, { attention_id: string }>(
+    ({ attention_id }) => tauriClearAttention(attention_id),
+    undefined
+  ),
+  clearScope: shellProvider<void, { source: AttentionSource; entity_id?: string }>(
+    ({ source, entity_id }) => tauriClearAttentionScope(source, entity_id),
+    undefined
+  ),
+  clearAll: shellProvider<void, void>(() => tauriClearAllAttention(), undefined),
 };
 
 // ---------------------------------------------------------------------------
@@ -3840,6 +4058,8 @@ export interface GoalStatusResponse {
   waiting_on_session?: string;
   /** The goal's completion contract, when one was drafted or set. */
   contract?: GoalContractDto;
+  /** Consecutive judged EndTurns without mechanical progress. */
+  no_progress_streak?: number;
 }
 
 interface IBridgeResponse<D = {}> {
@@ -7414,6 +7634,8 @@ export interface IMediaModelOption {
 export interface IMediaModelList {
   image_models: IMediaModelOption[];
   video_models: IMediaModelOption[];
+  /** TTS models from Flowy `availableListClaw?category=8`. */
+  audio_models?: IMediaModelOption[];
 }
 
 export interface IMediaWorkflowHistoryItem {
@@ -7478,6 +7700,7 @@ export interface ICloudDeviceActivationStatus {
   appVersion?: string;
   activatedForVersion: boolean;
   lastReportedIp?: string;
+  clientId?: string;
 }
 
 export interface ICloudDeviceActivationRetryResponse {
@@ -7726,6 +7949,8 @@ export interface ICloudImAttachmentPayload {
   objectKey?: string;
   /** CDN URL when available. */
   url?: string;
+  /** FlowyClaw log uploads may expose only their OSS identifier. */
+  ossId?: number;
   name: string;
   contentType: string;
   byteSize: number;
@@ -7967,6 +8192,10 @@ export const meeting = {
     stt_backend: p.stt_backend,
   })),
   getSession: httpGet<MeetingSession, { session_id: string }>((p) => `/api/meetings/${p.session_id}`),
+  updateSession: httpPatch<MeetingSession, { session_id: string; title: string }>(
+    (p) => `/api/meetings/${p.session_id}`,
+    (p) => ({ title: p.title })
+  ),
   start: httpPost<MeetingSession, { session_id: string }>(
     (p) => `/api/meetings/${p.session_id}/start`,
     () => ({})
@@ -7989,6 +8218,13 @@ export const meeting = {
   ),
   listSegments: httpGet<MeetingSegment[], { session_id: string }>(
     (p) => `/api/meetings/${p.session_id}/segments`
+  ),
+  searchSegments: httpGet<MeetingSegment[], { session_id: string; q: string; limit?: number }>(
+    (p) => {
+      const qs = new URLSearchParams({ q: p.q });
+      if (p.limit != null) qs.set('limit', String(p.limit));
+      return `/api/meetings/${p.session_id}/segments/search?${qs.toString()}`;
+    }
   ),
   editSegment: httpPatch<MeetingSegment, { session_id: string; segment_id: string; text: string }>(
     (p) => `/api/meetings/${p.session_id}/segments/${p.segment_id}`,
@@ -8027,4 +8263,3 @@ export const meeting = {
   ),
   onEvent: wsEmitter<MeetingEvent>('meeting:event'),
 };
-

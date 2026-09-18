@@ -33,6 +33,12 @@ There are deliberate, feature-gated direct-dependency exceptions:
 - [`nomifun-robot`](../../crates/backend/nomifun-robot/) binds `nomi-config`,
   `nomi-providers`, and `nomi-types` unconditionally: the LAN robot gateway
   speaks the provider protocol directly without a Conversation runtime.
+- [`nomifun-briefing`](../../crates/backend/nomifun-briefing/) binds
+  `nomi-briefing` the same way [`nomifun-vimax`](../../crates/backend/nomifun-vimax/)
+  binds `nomi-vimax`: news briefing is a domain engine with file-backed sessions
+  and `/api/briefing/*`. It must not be reached only through conversation's
+  `nomifun-ai-agent` seam, or Session would improvise "today's news" from model
+  memory. Conversation still calls the same engine via thin `briefing_*` tools.
 
 Do not add another direct `nomi-*` dependency without documenting why it cannot
 go through the normal seam or one of those bridge surfaces.
@@ -107,6 +113,7 @@ identifiers remain opaque.
 | [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) | Remote LLM server client: Flowy cloud login plus an OpenAI-compatible inference gateway client used by cloud-backed features. Also the shared backend dependency of `nomi-media` / `nomi-vimax`. |
 | [`nomifun-canvas`](../../crates/backend/nomifun-canvas/) | Video-generation Canvas mode HTTP surface (`/api/video-canvas/*`), built on `nomi-vimax` pipelines. |
 | [`nomifun-vimax`](../../crates/backend/nomifun-vimax/) | ViMax video generation HTTP surface (`/api/vimax/*`). |
+| [`nomifun-briefing`](../../crates/backend/nomifun-briefing/) | News briefing HTTP surface (`/api/briefing/*`) over the `nomi-briefing` engine. Same class of exception as `nomifun-vimax` → `nomi-vimax`. |
 | [`nomifun-media`](../../crates/backend/nomifun-media/) | Media settings, credits, and workflow-history HTTP surface (delegates engine work to `nomi-media`). |
 | [`nomifun-learning`](../../crates/backend/nomifun-learning/) | Domain-neutral learning engine over knowledge bases (`/learn` pages are its frontend). |
 | [`nomifun-poi`](../../crates/backend/nomifun-poi/) | Local user-interest (POI) topic management API (engine in `nomi-poi`). |
@@ -154,5 +161,5 @@ rg -l 'nomi-[a-z-]+\\s*=' crates/backend/*/Cargo.toml
 Expect the primary seam (`nomifun-ai-agent`) plus the feature-gated bridge
 exceptions described above (`nomifun-app`, `nomifun-gateway`, `nomifun-robot`),
 plus the media-domain crates (`nomifun-canvas`, `nomifun-media`, `nomifun-vimax`,
-`nomifun-poi`, `nomifun-insights`, `nomifun-companion`) that consume
+`nomifun-briefing`, `nomifun-poi`, `nomifun-insights`, `nomifun-companion`) that consume
 domain-specific `nomi-*` engines directly.

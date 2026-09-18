@@ -7,9 +7,12 @@ import {
   normalizeMiniMaxH3Duration,
   normalizeMiniMaxH3Ratio,
 } from '@oc/lib/minimax-h3-video';
-import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
+import { normalizeWan3Duration, normalizeWan3Ratio } from '@oc/lib/wan3-video';
+import { isMiniMaxH3VideoModel, isWan3VideoModel } from '@renderer/services/videoModelCapabilities';
 import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
+import { imageSizeToAspectRatio, modelCapabilityConfigFor, normalizeVideoValue } from '@oc/lib/model-capabilities';
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
+import { hasExplicitVideoFrames, resolveVideoImageReferences, shouldSubmitVideoImagesAsReferences } from '@oc/services/api/video-reference-roles';
 import { modelOptionName } from '@oc/stores/use-config-store';
 import {
   cancelGenerationTask as alloCancel,
@@ -217,7 +220,7 @@ export function mapAlloTask(view: GenerationTaskView, extra?: Partial<Generation
   const task: GenerationTask = {
     ...extra,
     id: view.task_id,
-    projectId: extra?.projectId,
+    projectId: extra?.projectId || view.project_id || undefined,
     type: extra?.type || `canvas_${isVideo ? 'video' : 'image'}`,
     status: mapStatus(view.status),
     progress: Math.round((view.progress || 0) * 100),
@@ -243,9 +246,8 @@ export function mapAlloTask(view: GenerationTaskView, extra?: Partial<Generation
  * Map task-center reference payloads onto allo generation media ids.
  *
  * Video image-to-video may promote the first reference image to `first_frame`
- * when no explicit frame media id is set. Image / img2img must keep every
- * reference in `reference_media_ids` — the canvas image runner only reads that
- * field, so treating the first ref as a video frame would silently drop it.
+ * when no explicit frame is set. Named start/end frame node ids win over that
+ * fallback. Image / img2img must keep every reference in `reference_media_ids`.
  */
 export function collectMediaIds(
   input?: Record<string, unknown>,
@@ -272,13 +274,40 @@ export function collectMediaIds(
     input.metadata && typeof input.metadata === 'object'
       ? (input.metadata as Record<string, unknown>)
       : {};
-  const explicitFirstFrame =
+  const videoOptions = {
+    videoEditOperation: typeof metadata.videoEditOperation === 'string' ? metadata.videoEditOperation : undefined,
+    videoStartFrameNodeId: typeof metadata.videoStartFrameNodeId === 'string' ? metadata.videoStartFrameNodeId : undefined,
+    videoEndFrameNodeId: typeof metadata.videoEndFrameNodeId === 'string' ? metadata.videoEndFrameNodeId : undefined,
+  };
+  // Named start/end frames only apply to video. The OA helper's index fallback
+  // (1 image = first frame, 2 images = first+last) is Yingce creation-page
+  // semantics — canvas keeps "first connected image becomes first_frame, rest
+  // stay references" unless the user named the frames.
+  const namedFrames = Boolean(options?.promoteFirstImageToFrame) && hasExplicitVideoFrames(videoOptions);
+  const imageList = images.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const image = item as { id?: string; storageKey?: string };
+    return typeof image.id === 'string' ? [image as { id: string; storageKey?: string }] : [];
+  });
+  const bindAsReferences = shouldSubmitVideoImagesAsReferences(videoOptions, imageList.length);
+  const rolePlan = namedFrames && !bindAsReferences
+    ? resolveVideoImageReferences(imageList, videoOptions)
+    : [];
+  const roleFirst = rolePlan.find((item) => item.role === 'first_frame');
+  const roleLast = rolePlan.find((item) => item.role === 'last_frame');
+  const metadataFirstFrame =
     (typeof metadata.firstFrameMediaId === 'string' && metadata.firstFrameMediaId) ||
     (typeof metadata.first_frame_media_id === 'string' && metadata.first_frame_media_id) ||
     undefined;
+  if (bindAsReferences) {
+    return { referenceIds: refs, firstFrameId: undefined, lastFrameId: undefined };
+  }
   const firstFrameId =
-    explicitFirstFrame ||
+    metadataFirstFrame ||
+    (roleFirst ? resourceIdFromStorageKey(roleFirst.image.storageKey) : undefined) ||
     (options?.promoteFirstImageToFrame &&
+    !namedFrames &&
+    !metadataFirstFrame &&
     images[0] &&
     typeof images[0] === 'object'
       ? resourceIdFromStorageKey((images[0] as { storageKey?: string }).storageKey) ||
@@ -287,6 +316,7 @@ export function collectMediaIds(
   const lastFrameId =
     (typeof metadata.lastFrameMediaId === 'string' && metadata.lastFrameMediaId) ||
     (typeof metadata.last_frame_media_id === 'string' && metadata.last_frame_media_id) ||
+    (roleLast ? resourceIdFromStorageKey(roleLast.image.storageKey) : undefined) ||
     undefined;
   const referenceIds = refs.filter((id) => id !== firstFrameId && id !== lastFrameId);
   return { referenceIds, firstFrameId: firstFrameId || undefined, lastFrameId: lastFrameId || undefined };
@@ -299,7 +329,7 @@ export function resolveAlloGenerationMode(input: CreateTaskInput): string {
   let mode = modeRaw;
   if (mode === 't2i' || mode === 'i2i' || mode.includes('image')) mode = 'image';
   if (mode === 't2v' || mode === 'i2v' || mode.includes('video')) mode = 'video';
-  if (operation === 'image_to_video' || operation === 'text_to_video') mode = 'video';
+  if (operation === 'image_to_video' || operation === 'text_to_video' || operation === 'reference_to_video') mode = 'video';
   return mode;
 }
 
@@ -316,8 +346,9 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     payload.metadata && typeof payload.metadata === 'object'
       ? (payload.metadata as Record<string, unknown>)
       : {};
-  const { referenceIds, firstFrameId, lastFrameId } = collectMediaIds(payload, {
-    // Only video tasks use first/last frame slots. Image edit must keep refs.
+    const { referenceIds, firstFrameId, lastFrameId } = collectMediaIds(payload, {
+    // Only video tasks use first/last frame slots. Named start/end frames win
+    // over promoting the first connected image.
     promoteFirstImageToFrame: isVideo,
   });
   const modelValue = String(input.model || config.model || '');
@@ -331,11 +362,30 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     ? canonicalizeVideoResolution(model, rawResolution)
     : canonicalizeVideoResolution('', rawResolution);
   let aspect_ratio = String(config.size || metadata.aspectRatio || '16:9');
-  if (model && isMiniMaxH3VideoModel(model)) {
+  if (!isVideo) {
+    aspect_ratio = imageSizeToAspectRatio(aspect_ratio);
+  } else if (model && isMiniMaxH3VideoModel(model)) {
     const hasMedia =
       Boolean(firstFrameId || lastFrameId) || referenceIds.length > 0;
     duration_secs = normalizeMiniMaxH3Duration(duration_secs);
     aspect_ratio = normalizeMiniMaxH3Ratio(aspect_ratio, hasMedia);
+  } else if (model && isWan3VideoModel(model)) {
+    const hasMedia =
+      Boolean(firstFrameId || lastFrameId) || referenceIds.length > 0;
+    duration_secs = normalizeWan3Duration(duration_secs);
+    aspect_ratio = normalizeWan3Ratio(aspect_ratio, hasMedia);
+  } else if (model) {
+    const profile = modelCapabilityConfigFor({ channels: [] }, model).video;
+    if (profile) {
+      const normalized = normalizeVideoValue(profile, {
+        seconds: String(duration_secs),
+        ratio: aspect_ratio,
+        resolution: rawResolution,
+      });
+      duration_secs = Number(normalized.seconds);
+      aspect_ratio = normalized.ratio;
+      resolution = canonicalizeVideoResolution(model, normalized.resolution);
+    }
   }
 
   return {
@@ -348,6 +398,7 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     reference_media_ids: referenceIds,
     first_frame_media_id: firstFrameId,
     last_frame_media_id: lastFrameId,
+    ...(input.projectId?.trim() ? { project_id: input.projectId.trim() } : {}),
   };
 }
 
@@ -504,9 +555,7 @@ export async function waitForGenerationTask(
       if (task.status === 'succeeded') return task;
       if (task.status === 'failed' || task.status === 'cancelled') {
         throw new Error(
-          task.error
-            ? generationErrorMessage(task.error)
-            : `Task ${task.status === 'cancelled' ? 'cancelled' : 'failed'}`
+          task.error || `Task ${task.status === 'cancelled' ? 'cancelled' : 'failed'}`
         );
       }
       await delay(intervalMs, options?.signal);

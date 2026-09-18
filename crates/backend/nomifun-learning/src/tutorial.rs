@@ -193,11 +193,13 @@ mod tests {
     struct UnusedCompleter;
 
     #[async_trait::async_trait]
-    impl nomifun_knowledge::KnowledgeCompleter for UnusedCompleter {
+    impl crate::completer::LearningCompleter for UnusedCompleter {
         async fn complete(
             &self,
+            _model_override: Option<(&str, &str)>,
             _system: &str,
             _user: &str,
+            _max_tokens: u32,
         ) -> Result<String, nomifun_common::AppError> {
             Err(nomifun_common::AppError::Internal(
                 "tutorial seed does not invoke the completer".into(),
@@ -272,6 +274,14 @@ mod tests {
                     );
                     // Answer formats: single choice picks an option, true/false
                     // is a boolean, reflection carries no answer.
+                    activity
+                        .validate_shape((2, 5), false)
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "lesson {} activity {:?} fails its kind shape: {error}",
+                                lesson.title, activity.prompt
+                            )
+                        });
                     match activity.kind {
                         ActivityKind::SingleChoice => {
                             let answer = activity
@@ -316,6 +326,14 @@ mod tests {
                                 "lesson {} fill_in_blank lacks distractor traps",
                                 lesson.title
                             );
+                        }
+                        ActivityKind::MultiChoice
+                        | ActivityKind::Numeric
+                        | ActivityKind::Ordering
+                        | ActivityKind::Matching
+                        | ActivityKind::OpenQuestion => {
+                            // covered by validate_shape above; the seeded
+                            // tutorial only uses the classic kinds today.
                         }
                     }
                 }

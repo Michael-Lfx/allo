@@ -100,18 +100,41 @@ pub enum AiSanitizerOutcome {
     NoFace,
 }
 
-/// Check if an image contains real human face(s) using vision model
+/// Vision gate: true only for a **photographic / live-action** human face.
+/// Drawn, anime, cartoon, CGI, and other stylized faces must be false.
+pub(crate) const DETECT_REAL_PHOTO_FACE_SYSTEM: &str = "\
+You are a strict privacy gate. Return true ONLY when the image is a photograph or live-action \
+video still of a real human being's face (camera capture: selfie, snapshot, ID photo, movie still \
+of a real actor — photographic skin, pores, lens/sensor look).
+
+Return FALSE whenever the visible face is not a real-person photograph, even if it clearly looks \
+like a humanoid face. Drawn and stylized faces are not 'real human faces' for this gate.";
+
+pub(crate) const DETECT_REAL_PHOTO_FACE_USER: &str = r#"Does this image contain at least one REAL photographic human face?
+
+Return true ONLY for photoreal live-action / camera photographs of a real person (full or partial face).
+
+Return false for ALL of these, even when a face is obvious:
+- anime, manga, cartoon, comic, chibi, cel shading
+- illustration, painting, drawing, sketch, watercolor, digital art
+- 3D render, CGI character, game character, toon/stylized 3D
+- claymation, puppet, doll, plush, statue, mannequin, mask
+- animals (including anthropomorphic)
+- empty scenes, landscapes, props-only shots
+
+If the face is drawn or stylized rather than a real photograph, answer false.
+If unsure whether it is a real photo vs illustration, answer false.
+
+Reply JSON only:
+{"has_real_human_face": true|false, "reason": "short"}"#;
+
+/// Check if an image contains a real photographic human face (not anime/cartoon).
 pub async fn detect_human_face(
     chat: Arc<dyn VimaxChat>,
     image_path: &Path,
 ) -> VimaxResult<bool> {
-    let system = "You are a strict gate for human face detection. Answer accurately.";
-    let user = r#"Does this image contain at least one real human face?
-
-Answer JSON only:
-{"has_real_human_face": true|false, "reason": "brief explanation"}
-
-Return false for: animals, anime/cartoon faces without real human identity, toys, sculptures, empty scenes, landscapes, props-only shots."#;
+    let system = DETECT_REAL_PHOTO_FACE_SYSTEM;
+    let user = DETECT_REAL_PHOTO_FACE_USER;
 
     #[derive(Deserialize)]
     struct FaceDetectResp {
@@ -216,10 +239,9 @@ pub async fn ai_sanitize_face_image(
     style: &str,
 ) -> VimaxResult<(PathBuf, AiSanitizerOutcome)> {
     // Check if already sanitized
-    let marker = ai_sanitized_marker_path(source_path);
     let raw_fp = file_fingerprint(source_path)?;
 
-    if let Some(cached) = read_ai_sanitizer_marker(&marker, &raw_fp) {
+    if let Some(cached) = read_cached_sanitizer_outcome(source_path, &raw_fp) {
         if is_usable_image_file(output_path) {
             tracing::info!(
                 path = %source_path.display(),
@@ -247,8 +269,7 @@ pub async fn ai_sanitize_face_image(
             path = %source_path.display(),
             "AI face sanitizer: no human face detected, keeping original"
         );
-        // Mark that we checked and found no face
-        let _ = std::fs::write(&marker, format!("{}|no_face", raw_fp));
+        write_ai_sanitizer_marker(source_path, &format!("{raw_fp}|no_face"));
         return Ok((source_path.to_path_buf(), AiSanitizerOutcome::NoFace));
     }
 
@@ -264,13 +285,6 @@ pub async fn ai_sanitize_face_image(
             return Ok((source_path.to_path_buf(), AiSanitizerOutcome::NoFace));
         }
     };
-
-    // Cache vision description for debugging/audit
-    let desc_marker = description_marker_path(source_path);
-    let _ = std::fs::write(
-        &desc_marker,
-        serde_json::to_string_pretty(&vision_desc).unwrap_or_default(),
-    );
 
     tracing::info!(
         path = %source_path.display(),
@@ -324,8 +338,7 @@ pub async fn ai_sanitize_face_image(
     copy_image_file_atomic(&tmp, output_path)?;
     let _ = std::fs::remove_file(&tmp);
 
-    // Step 5: Write marker
-    let _ = std::fs::write(&marker, format!("{}|ai_generated", raw_fp));
+    write_ai_sanitizer_marker(source_path, &format!("{raw_fp}|ai_generated"));
 
     tracing::info!(
         input = %source_path.display(),
@@ -389,12 +402,41 @@ pub async fn ensure_ai_sanitized_face(
 // Utility functions
 // ============================================================================
 
+/// Sidecars live under `{parent}/.cache/` so they do not clutter character asset folders.
+fn cache_sidecar_path(source: &Path, suffix: &str) -> PathBuf {
+    let name = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    let parent = source.parent().unwrap_or_else(|| Path::new("."));
+    parent.join(".cache").join(format!("{name}.{suffix}"))
+}
+
 fn ai_sanitized_marker_path(source: &Path) -> PathBuf {
+    cache_sidecar_path(source, AI_SANITIZED_MARKER)
+}
+
+fn legacy_ai_sanitized_marker_path(source: &Path) -> PathBuf {
     PathBuf::from(format!("{}.{}", source.display(), AI_SANITIZED_MARKER))
 }
 
-fn description_marker_path(source: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.{}", source.display(), DESCRIPTION_MARKER))
+fn write_ai_sanitizer_marker(source: &Path, payload: &str) {
+    let marker = ai_sanitized_marker_path(source);
+    if let Some(dir) = marker.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&marker, payload);
+    let _ = std::fs::remove_file(legacy_ai_sanitized_marker_path(source));
+    let _ = std::fs::remove_file(PathBuf::from(format!(
+        "{}.{}",
+        source.display(),
+        DESCRIPTION_MARKER
+    )));
+}
+
+fn read_cached_sanitizer_outcome(source: &Path, raw_fp: &str) -> Option<AiSanitizerOutcome> {
+    read_ai_sanitizer_marker(&ai_sanitized_marker_path(source), raw_fp)
+        .or_else(|| read_ai_sanitizer_marker(&legacy_ai_sanitized_marker_path(source), raw_fp))
 }
 
 fn read_ai_sanitizer_marker(marker: &Path, raw_fp: &str) -> Option<AiSanitizerOutcome> {
@@ -451,11 +493,21 @@ mod tests {
     fn marker_path_construction() {
         let source = PathBuf::from("character_portraits/0_hero/front.png");
         let marker = ai_sanitized_marker_path(&source);
-        assert!(marker.to_string_lossy().ends_with(".ai_sanitized"));
-        assert!(marker.to_string_lossy().contains("front.png"));
+        let marker_s = marker.to_string_lossy().replace('\\', "/");
+        assert!(marker_s.ends_with(".cache/front.png.ai_sanitized"));
+    }
 
-        let desc_marker = description_marker_path(&source);
-        assert!(desc_marker.to_string_lossy().ends_with(".vision_desc"));
+    #[test]
+    fn detect_gate_requires_photographic_face() {
+        let blob = format!(
+            "{} {}",
+            DETECT_REAL_PHOTO_FACE_SYSTEM, DETECT_REAL_PHOTO_FACE_USER
+        );
+        let lower = blob.to_ascii_lowercase();
+        assert!(lower.contains("photograph") || blob.contains("photograph"));
+        assert!(lower.contains("anime"));
+        assert!(lower.contains("cartoon"));
+        assert!(blob.contains("false"));
     }
 
     #[test]

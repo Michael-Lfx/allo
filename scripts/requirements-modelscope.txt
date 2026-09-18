@@ -1,0 +1,2 @@
+# Pinned ModelScope SDK for reproducible release uploads.
+modelscope==1.39.1

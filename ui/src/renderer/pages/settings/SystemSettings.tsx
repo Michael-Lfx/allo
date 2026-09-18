@@ -1,7 +1,7 @@
 
 import React, { Suspense } from 'react';
 import { useLocation } from 'react-router-dom';
-import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
+import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 const SystemModalContent = React.lazy(() => import('@/renderer/components/settings/SettingsModal/contents/SystemModalContent'));
@@ -41,7 +41,7 @@ const SystemSettings: React.FC = () => {
 
   return (
     <SettingsPageWrapper contentClassName={route === 'about' ? 'max-w-640px' : undefined}>
-      <Suspense fallback={<RouteContentFallback />}>
+      <Suspense fallback={<SettingsContentLoading />}>
         <SystemSettingsPanel route={route} />
       </Suspense>
     </SettingsPageWrapper>

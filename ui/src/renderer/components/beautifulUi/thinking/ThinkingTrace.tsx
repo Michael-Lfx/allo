@@ -1,6 +1,7 @@
 import { ChevronRight, Code2, Search, Sparkle } from 'lucide-react';
 import React, { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import shimmerStyles from '../textShimmer.module.css';
 import { isLiveProcessThinkingWindow, isThinkingTraceSettled } from './thinkingTraceModel';
 import styles from './thinkingTrace.module.css';
 
@@ -169,8 +170,8 @@ const ThinkingTrace: React.FC<ThinkingTraceProps> = ({
         <span className={styles.icon} aria-hidden='true'>
           {variantIcon(isProcess ? processHeaderVariant(variant) : variant)}
         </span>
-        <span className={`${styles.label} ${status === 'thinking' ? styles.shimmer : ''}`} title={summary}>
-          {summary}
+        <span className={styles.label} title={summary}>
+          <span className={status === 'thinking' ? shimmerStyles.shimmer : undefined}>{summary}</span>
         </span>
         {!isSettled && shouldShowElapsed ? (
           <span className={styles.elapsed}>

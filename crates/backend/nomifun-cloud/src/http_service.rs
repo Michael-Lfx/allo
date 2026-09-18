@@ -15,11 +15,12 @@ use crate::activation::DeviceActivation;
 use crate::flowy::FlowyApiClient;
 use crate::session::ServerSession;
 use nomifun_api_types::{
+    AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
     CloudImConversation, CloudImLogUploadResponse, CloudImMessage, CloudImMessageList,
     CloudImSendMessageRequest, CloudBillingAirwallexSession, CloudBillingCouponList,
     CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
     CloudBillingPaymentChannel, CloudBillingPlan, VideoGrowthEventBatchRequest,
-    VideoGrowthEventBatchResponse, VideoGrowthMetricsResponse,
+    VideoGrowthEventBatchResponse,
 };
 use nomifun_common::AppError;
 
@@ -32,10 +33,18 @@ pub struct CloudService {
     data_dir: PathBuf,
     config: Arc<Mutex<GatewayConfig>>,
     pending: Arc<DashMap<String, PendingEntry>>,
+    host_runtime: nomifun_api_types::RuntimeKind,
 }
 
 impl CloudService {
     pub fn new(data_dir: PathBuf) -> Result<Self, AppError> {
+        Self::new_with_host(data_dir, nomifun_api_types::RuntimeKind::Web)
+    }
+
+    pub fn new_with_host(
+        data_dir: PathBuf,
+        host_runtime: nomifun_api_types::RuntimeKind,
+    ) -> Result<Self, AppError> {
         let path = config_yaml_path(Some(&data_dir));
         let mut config = load_user_config_file(&path).map_err(|e| AppError::Internal(e))?;
         // Persist when the file is missing OR when base_url/provider were empty —
@@ -56,6 +65,7 @@ impl CloudService {
             data_dir,
             config: Arc::new(Mutex::new(config)),
             pending: Arc::new(DashMap::new()),
+            host_runtime,
         })
     }
 
@@ -69,7 +79,7 @@ impl CloudService {
 
     pub(crate) fn auth_manager(&self) -> Result<AuthManager, AppError> {
         let cfg = self.gateway_config();
-        AuthManager::new(cfg.server.clone(), &self.data_dir)
+        AuthManager::new_with_host(cfg.server.clone(), &self.data_dir, self.host_runtime)
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
@@ -368,19 +378,69 @@ impl CloudService {
         request: &VideoGrowthEventBatchRequest,
     ) -> Result<VideoGrowthEventBatchResponse, AppError> {
         let (client, session) = self.im_client_and_session().await?;
+        let mut request = request.clone();
+        let cfg = self.gateway_config();
+        if request
+            .client_id
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            request.client_id = Some(crate::paths::load_or_create_client_id(&self.data_dir));
+        }
+        if request.app.as_ref().is_none_or(|value| value.trim().is_empty()) {
+            let app = cfg.server.app.trim();
+            if !app.is_empty() {
+                request.app = Some(app.to_string());
+            }
+        }
+        if request
+            .platform
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            request.platform = Some(crate::platform::client_platform());
+        }
+        if request
+            .app_version
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            request.app_version = Some(env!("CARGO_PKG_VERSION").to_string());
+        }
         client
-            .upload_video_growth_events(&session, request)
+            .upload_video_growth_events(&session, &request)
             .await
             .map_err(map_im_client_error)
     }
 
-    pub async fn get_video_growth_metrics(
+    pub async fn submit_agent_badcase(
         &self,
-        days: u16,
-    ) -> Result<VideoGrowthMetricsResponse, AppError> {
+        request: AgentQualityBadcaseRequest,
+    ) -> Result<AgentQualityAck, AppError> {
         let (client, session) = self.im_client_and_session().await?;
         client
-            .get_video_growth_metrics(&session, days)
+            .submit_agent_badcase(&session, &request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn submit_agent_eval_run(
+        &self,
+        request: AgentQualityRunRequest,
+    ) -> Result<AgentQualityAck, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .submit_agent_eval_run(&session, &request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn list_promoted_agent_badcases(
+        &self,
+    ) -> Result<Vec<AgentQualityPromotedItem>, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .list_promoted_agent_badcases(&session)
             .await
             .map_err(map_im_client_error)
     }
@@ -404,6 +464,7 @@ impl CloudService {
                 app_version: None,
                 activated_for_version: false,
                 last_reported_ip: None,
+                client_id: Some(crate::paths::load_or_create_client_id(&self.data_dir)),
             });
         }
 
@@ -432,6 +493,7 @@ impl CloudService {
             app_version: Some(local.app_version),
             activated_for_version: local.activated_for_version,
             last_reported_ip: local.last_reported_ip,
+            client_id: Some(crate::paths::load_or_create_client_id(&self.data_dir)),
         })
     }
 

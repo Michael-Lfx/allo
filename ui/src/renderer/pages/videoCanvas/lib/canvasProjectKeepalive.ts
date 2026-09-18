@@ -13,28 +13,22 @@
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 
 import { useCanvasStore } from '@oc/stores/canvas/use-canvas-store';
-import type { CanvasDocument } from '../types';
+import { projectToCanvasDocument } from './canvasChatPersist';
+
+const KEEPALIVE_MAX_BYTES = 60 * 1024;
 
 export function keepaliveSyncCanvasProject(projectId: string): void {
   try {
     const project = useCanvasStore.getState().projects.find((p) => p.id === projectId);
     if (!project) return;
-    const doc: CanvasDocument = {
-      schema: 1,
-      title: project.title,
-      nodes: project.nodes as unknown as CanvasDocument['nodes'],
-      connections: project.connections as unknown as CanvasDocument['connections'],
-      viewport: project.viewport as CanvasDocument['viewport'],
-      backgroundMode: (project.backgroundMode as CanvasDocument['backgroundMode']) || 'dots',
-      ...(project.timeline ? { timeline: project.timeline as CanvasDocument['timeline'] } : {}),
-      ...(project.alloCreative ? { alloCreative: project.alloCreative } : {}),
-    };
+    const body = JSON.stringify(projectToCanvasDocument(project));
+    if (body.length > KEEPALIVE_MAX_BYTES) return;
     const url = `${getBaseUrl()}/api/video-canvas/projects/${encodeURIComponent(projectId)}/doc`;
     void fetch(url, {
       method: 'PUT',
       keepalive: true,
       headers: { 'Content-Type': 'application/json', ...buildBackendAuthHeaders('PUT') },
-      body: JSON.stringify(doc),
+      body,
     }).catch(() => {
       // 卸载兜底：失败时静默，常规 flush 已尽力。
     });

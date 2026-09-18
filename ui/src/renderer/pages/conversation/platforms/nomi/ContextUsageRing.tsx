@@ -2,7 +2,7 @@
 import type { ContextBreakdownData, SummarizedConversationProperties } from '@/common/config/storage';
 import { Popover } from '@arco-design/web-react';
 import { Close, Down, Up } from '@icon-park/react';
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   buildContextBreakdownViewModel,
@@ -20,6 +20,8 @@ export type ContextUsageRingProps = {
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
+  popupVisible?: boolean;
+  onPopupVisibleChange?: (visible: boolean) => void;
 };
 
 const CATEGORY_LABEL_KEYS: Record<ContextUsageCategory, string> = {
@@ -96,10 +98,14 @@ export function ContextUsageRing({
   inputTokens,
   outputTokens,
   reasoningTokens,
+  popupVisible: popupVisibleProp,
+  onPopupVisibleChange,
 }: ContextUsageRingProps) {
   const { t } = useTranslation();
-  const [visible, setVisible] = useState(false);
+  const [localVisible, setLocalVisible] = useState(false);
+  const visible = popupVisibleProp ?? localVisible;
   const [summarizedOpen, setSummarizedOpen] = useState(false);
+  const popupId = `context-usage-popover-${useId().replace(/:/g, '')}`;
 
   const panel = useMemo(
     () =>
@@ -128,8 +134,17 @@ export function ContextUsageRing({
     listSegments.some((segment) => segment.key === 'summarized_conversation') &&
     hasSummarizedProps(summarizedProps);
 
+  const handleVisibleChange = (next: boolean) => {
+    if (popupVisibleProp === undefined) {
+      setLocalVisible(next);
+    }
+    onPopupVisibleChange?.(next);
+    if (!next) setSummarizedOpen(false);
+  };
+
   const content = (
     <div
+      id={popupId}
       data-testid='nomi-context-usage-popover'
       className='w-320px max-w-[min(320px,calc(100vw-24px))] box-border px-2px py-1px max-h-[min(70vh,420px)] overflow-y-auto'
     >
@@ -141,7 +156,7 @@ export function ContextUsageRing({
           type='button'
           aria-label={t('conversation.contextUsage.close', { defaultValue: 'Close' })}
           className='inline-flex h-20px w-20px shrink-0 items-center justify-center rd-4px b-none bg-transparent p-0 text-t-tertiary cursor-pointer hover:bg-fill-2 hover:text-t-secondary'
-          onClick={() => setVisible(false)}
+          onClick={() => handleVisibleChange(false)}
         >
           <Close theme='outline' size='14' />
         </button>
@@ -281,22 +296,23 @@ export function ContextUsageRing({
       trigger='click'
       position='top'
       content={content}
+      getPopupContainer={() => document.body}
       popupVisible={visible}
-      onVisibleChange={(next) => {
-        setVisible(next);
-        if (!next) setSummarizedOpen(false);
-      }}
+      onVisibleChange={handleVisibleChange}
       unmountOnExit
     >
       <button
         type='button'
         aria-label={ariaLabel}
+        aria-controls={popupId}
         aria-expanded={visible}
+        data-popup-open={visible ? 'true' : undefined}
+        data-layout-part='context-ring'
         data-testid='nomi-context-usage-ring'
         // `ring-2`/`ring-offset-2` look like widths, but the numeric suffix resolves against the
         // theme's numeric colour keys, so both only set a colour custom property — no ring width,
         // no box-shadow chain, no focus ring at all. `ring-2px`/`ring-offset-2px` are the widths.
-        className='relative h-22px w-22px shrink-0 rd-999px b-none bg-transparent p-0 cursor-pointer outline-none transition-transform hover:scale-105 active:scale-95 focus-visible:ring-2px focus-visible:ring-[rgb(var(--primary-6))] focus-visible:ring-offset-2px focus-visible:ring-offset-[var(--color-bg-2)]'
+        className='relative h-22px w-22px shrink-0 rd-999px b-none bg-transparent p-0 cursor-pointer outline-none transition-colors hover:bg-fill-2 active:bg-fill-3 focus-visible:ring-2px focus-visible:ring-[rgb(var(--primary-6))] focus-visible:ring-offset-2px focus-visible:ring-offset-[var(--color-bg-2)]'
         style={{ color: tone }}
       >
         <span aria-hidden='true' className='absolute inset-0 rd-999px' style={{ background: ringFill }} />

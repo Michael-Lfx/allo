@@ -130,11 +130,17 @@
   "entry": {
     "free": "自由发挥",
     "usePreset": "使用设定",
-    "backToFree": "自由发挥"
+    "backToFree": "自由发挥",
+    "adjustSkills": "调整当前对话 Skills",
+    "skills": "Skills",
+    "skillCount": "已选择 {{count}} 个 Skill"
   },
   "drawer": {
+    "modeLabel": "选择类型",
     "presetTab": "设定",
+    "skillsTab": "Skills",
     "searchPreset": "搜索设定名称或描述…",
+    "searchSkill": "搜索 Skill…",
     "usePreset": "使用",
     "keepFree": "保持自由发挥",
     "sourceCustom": "自定义",
@@ -145,6 +151,11 @@
     "presetHint": "选择一个设定，本次会话将由后端解析并固化配置快照。",
     "presetEmpty": "还没有设定。可前往设定页创建，或保持自由发挥。",
     "presetNoMatch": "没有匹配当前搜索与筛选条件的设定。",
-    "skillNoMatch": "没有匹配当前搜索与筛选条件的 Skill。"
+    "skillNoMatch": "没有匹配当前搜索条件的 Skill。",
+    "selectedSkillCount": "已选择 {{count}} 个",
+    "skillNoDescription": "暂无描述。",
+    "skillLoadFailed": "Skills 暂时无法加载，请稍后重试。",
+    "skillEmpty": "当前运行环境没有可用的 Skill。",
+    "skillHint": "选择的 Skills 只应用于当前对话。"
   }
 }

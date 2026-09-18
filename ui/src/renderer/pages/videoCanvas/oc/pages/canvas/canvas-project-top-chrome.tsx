@@ -3,22 +3,26 @@ import { CanvasTopBar } from "./canvas-project-top-bar";
 import { CanvasNodeSearchModal } from "@oc/components/canvas/canvas-node-search-modal";
 import { CanvasShortDramaGuide } from "@oc/components/canvas/canvas-short-drama-entry";
 import { CanvasStylePickerModal } from "@oc/components/canvas/canvas-style-picker-modal";
+import { CanvasDirectorTemplateModal } from "@oc/components/canvas/director/canvas-director-template-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
-import type { CanvasNodeData, CanvasWorkspaceMode, CanvasMediaPerformanceMode } from "@oc/types/canvas";
+import { resolveCanvasStylePreset } from "@oc/lib/canvas/canvas-style-system";
+import { PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/catalog";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
+import type { CanvasNodeData, CanvasMediaPerformanceMode, Position } from "@oc/types/canvas";
 import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import type { useCanvasHistory } from "./use-canvas-history";
 import type { useCanvasUpload } from "./use-canvas-upload";
 import type { useCanvasAssistantVisibility } from "./use-canvas-assistant-visibility";
 import type { useCanvasShortDrama } from "./use-canvas-short-drama";
 import type { useCanvasStyleWorkflow } from "./use-canvas-style-workflow";
+import type { useCanvasProjectShare } from "./use-canvas-project-share";
+import type { useCanvasDirector } from "./use-canvas-director";
 import type { CanvasHistoryActions, CanvasAssistantState } from "./canvas-project-bundles";
 
 type CanvasProjectTopChromeProps = {
     focusMode: boolean;
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
-    workspaceMode: CanvasWorkspaceMode;
-    setWorkspaceMode: Dispatch<SetStateAction<CanvasWorkspaceMode>>;
     titleDraft: string;
     setTitleDraft: Dispatch<SetStateAction<string>>;
     titleEditing: boolean;
@@ -54,18 +58,22 @@ type CanvasProjectTopChromeProps = {
     activateShortDramaStep: ReturnType<typeof useCanvasShortDrama>["activateStep"];
     stylePickerOpen: boolean;
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryTab: Dispatch<SetStateAction<LibraryTab>>;
+    directorTemplateRequest: { position?: Position } | null;
+    setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
+    createDirectorShot: ReturnType<typeof useCanvasDirector>["createDirectorShot"];
     activeStylePresetId: string | undefined;
     selectCanvasStyle: ReturnType<typeof useCanvasStyleWorkflow>["selectCanvasStyle"];
     historyActions: CanvasHistoryActions;
     assistant: CanvasAssistantState;
+    projectShare: ReturnType<typeof useCanvasProjectShare>;
 };
 
 export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
     const {
         focusMode,
         currentProject,
-        workspaceMode,
-        setWorkspaceMode,
         titleDraft,
         setTitleDraft,
         titleEditing,
@@ -101,20 +109,27 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
         activateShortDramaStep,
         stylePickerOpen,
         setStylePickerOpen,
+        setLibraryOpen,
+        setLibraryTab,
+        directorTemplateRequest,
+        setDirectorTemplateRequest,
+        createDirectorShot,
         activeStylePresetId,
         selectCanvasStyle,
         historyActions,
         assistant,
+        projectShare,
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { assistantOpen, closeAgent, openAgent } = assistant;
+    const lookTitle = activeStylePresetId ? resolveCanvasStylePreset(activeStylePresetId)?.title : undefined;
+    const playbookNode = nodes.find((node) => node.metadata?.projectPlaybook);
+    const playbookTitle = playbookNode?.metadata?.skillSnapshot?.name || (playbookNode?.metadata?.skillId ? PLAYBOOK_BY_QUALIFIED.get(playbookNode.metadata.skillId)?.title.zh : undefined);
     return (
         <>
                     {!focusMode ? (
                         <CanvasTopBar
                             title={currentProject?.title || canvasT("videoCanvas.chrome.untitled", "未命名画布")}
-                            workspaceMode={workspaceMode}
-                            onWorkspaceModeChange={setWorkspaceMode}
                             titleDraft={titleDraft}
                             isTitleEditing={titleEditing}
                             onTitleDraftChange={setTitleDraft}
@@ -135,6 +150,17 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
                             mediaPerformanceMode={mediaPerformanceMode}
                             onMediaPerformanceModeChange={setMediaPerformanceMode}
                             onOpenSearch={() => setNodeSearchOpen(true)}
+                            onOpenLibrary={() => {
+                                setLibraryTab("template");
+                                setLibraryOpen(true);
+                            }}
+                            lookLabel={lookTitle}
+                            onOpenStyle={() => setStylePickerOpen(true)}
+                            playbookLabel={playbookTitle}
+                            onOpenPlaybook={() => {
+                                setLibraryTab("playbook");
+                                setLibraryOpen(true);
+                            }}
                             projectContext={
                                 shortDramaEnabled && currentProject?.projectId
                                     ? {
@@ -146,6 +172,10 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
                             }
                             onEnterFocusMode={enterFocusMode}
                             shortDramaGuide={shortDramaGuide}
+                            onExportProject={() => void projectShare.exportProject()}
+                            onPublishTvShow={() => void projectShare.publishToTvShow()}
+                            exporting={projectShare.exporting}
+                            publishing={projectShare.publishing}
                         />
                     ) : null}
 
@@ -172,6 +202,11 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
                     ) : null}
 
                     <CanvasStylePickerModal open={stylePickerOpen} value={activeStylePresetId} onClose={() => setStylePickerOpen(false)} onSelect={selectCanvasStyle} />
+                    <CanvasDirectorTemplateModal
+                        open={Boolean(directorTemplateRequest)}
+                        onClose={() => setDirectorTemplateRequest(null)}
+                        onSelect={(templateId) => createDirectorShot(templateId, directorTemplateRequest?.position)}
+                    />
         </>
     );
 }

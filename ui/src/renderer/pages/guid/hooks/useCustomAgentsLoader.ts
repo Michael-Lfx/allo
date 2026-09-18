@@ -71,6 +71,8 @@ export const useCustomAgentsLoader = ({
     PRESET_CATALOG_SWR_KEY,
     fetchPresetCatalog,
   );
+  // Once installed, a former market package is just a user preset. Its
+  // remote availability must not decide whether it appears in the launcher.
   const presets = presetList ?? [];
   const presetsLoaded = presetList !== undefined;
 

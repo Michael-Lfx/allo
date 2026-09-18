@@ -9,7 +9,8 @@ import { channelRequest } from "@oc/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@oc/services/image-storage";
 import type { ReferenceImage } from "@oc/types/image";
 import { withOpenAIPromptCacheKey } from "@oc/lib/openai-prompt-cache";
-import { isCanvasLlmConfig, streamCanvasChatCompletions } from "@renderer/pages/videoCanvas/lib/canvasLlm";
+import { encodeToolArguments } from "@oc/lib/canvas/canvas-tool-arguments";
+import { isCanvasLlmConfig, isCanvasLlmTransportFailure, canvasLlmNetworkErrorMessage, streamCanvasChatCompletions, toCanvasLlmTransportError } from "@renderer/pages/videoCanvas/lib/canvasLlm";
 
 export type AiTextMessage = {
     role: "system" | "user" | "assistant";
@@ -59,7 +60,7 @@ type ResponseApiToolDefinition = {
 };
 type ResponseApiOutputItem =
     | { type?: "message"; content?: Array<{ type?: string; text?: string }> }
-    | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
+    | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: unknown };
 type ResponseApiPayload = {
     id?: string;
     output?: ResponseApiOutputItem[];
@@ -69,7 +70,7 @@ type ResponseApiPayload = {
     msg?: string;
 };
 type ResponseStreamState = { buffer: string; text: string; payload?: ResponseApiPayload; error?: string };
-type ChatCompletionToolCall = { id?: string; type?: "function"; function?: { name?: string; arguments?: string } };
+type ChatCompletionToolCall = { id?: string; type?: "function"; function?: { name?: string; arguments?: unknown } };
 type ChatCompletionPayload = {
     choices?: Array<{ message?: { content?: string | null; tool_calls?: ChatCompletionToolCall[] } }>;
     error?: { message?: string };
@@ -237,11 +238,12 @@ function parseImagePayload(payload: ImageApiResponse) {
 
 function readAxiosError(error: unknown, fallback: string) {
     if (axios.isCancel(error)) return "请求已取消";
+    if (error instanceof DOMException && error.name === "AbortError") return "请求已取消";
+    if (isCanvasLlmTransportFailure(error)) return canvasLlmNetworkErrorMessage();
     if (axios.isAxiosError<{ error?: { message?: string }; msg?: string; code?: number }>(error)) {
         const responseData = error.response?.data;
         return responseData?.msg || responseData?.error?.message || readStatusError(error.response?.status, fallback);
     }
-    if (error instanceof DOMException && error.name === "AbortError") return "请求已取消";
     return error instanceof Error ? error.message : fallback;
 }
 
@@ -368,7 +370,7 @@ function parseChatCompletionPayload(payload: ChatCompletionPayload): ToolRespons
         .map((call) => ({
             id: call.id || "",
             type: "function" as const,
-            function: { name: call.function?.name || "", arguments: call.function?.arguments || "{}" },
+            function: { name: call.function?.name || "", arguments: encodeToolArguments(call.function?.arguments) },
         }))
         .filter((call) => call.id && call.function.name);
     return { content: message?.content || "", toolCalls };
@@ -387,7 +389,7 @@ function parseToolResponse(payload: ResponseApiPayload): ToolResponseResult {
         .map((item) => ({
             id: item.call_id || item.id || "",
             type: "function" as const,
-            function: { name: item.name || "", arguments: item.arguments || "{}" },
+            function: { name: item.name || "", arguments: encodeToolArguments(item.arguments) },
         }))
         .filter((item) => item.id && item.function.name);
     return { content, toolCalls };
@@ -552,7 +554,7 @@ function consumeChatCompletionStreamBlock(block: string, state: ChatCompletionSt
         state.toolCalls.set(callIndex, {
             id: stringValue(value.id) || current.id,
             name: stringValue(fn?.name) || current.name,
-            arguments: current.arguments + stringValue(fn?.arguments),
+            arguments: current.arguments + (typeof fn?.arguments === "string" ? fn.arguments : current.arguments ? "" : encodeToolArguments(fn?.arguments)),
         });
     });
 }
@@ -580,13 +582,18 @@ async function requestStreamingChatCompletion(config: AiConfig, body: Record<str
     }
 
     const request = channelRequest(config, aiApiUrl(config, "/chat/completions"), { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" });
-    const response = await fetch(request.url, {
-        method: "POST",
-        headers: request.headers,
-        body: JSON.stringify({ ...body, stream: true }),
-        signal: options?.signal,
-        credentials: request.credentials,
-    });
+    let response: Response;
+    try {
+        response = await fetch(request.url, {
+            method: "POST",
+            headers: request.headers,
+            body: JSON.stringify({ ...body, stream: true }),
+            signal: options?.signal,
+            credentials: request.credentials,
+        });
+    } catch (error) {
+        throw toCanvasLlmTransportError(error);
+    }
     if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
     const contentType = response.headers.get("content-type") || "";
     if (!response.body || !contentType.includes("text/event-stream")) return parseChatCompletionPayload(await readJsonPayload<ChatCompletionPayload>(response, "请求失败"));

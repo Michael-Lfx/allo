@@ -11,6 +11,8 @@ const MAX_SERIALIZED_DEPTH = 5;
 export type ErrorDiagnosticInput = {
   message?: string;
   summary?: string;
+  modelId?: string;
+  providerId?: string;
   code?: string;
   incidentId?: string;
   ownership?: string;
@@ -22,6 +24,8 @@ export type ErrorDiagnosticInput = {
 };
 
 export type ErrorDiagnosticLabels = {
+  modelId: string;
+  providerId: string;
   errorCode: string;
   incidentId: string;
   ownership: string;
@@ -37,6 +41,8 @@ export type ErrorDiagnosticLabels = {
 export type SafeErrorDiagnostic = {
   summary: string;
   message?: string;
+  modelId?: string;
+  providerId?: string;
   detail?: string;
   code?: string;
   incidentId?: string;
@@ -170,6 +176,8 @@ const appendLine = (lines: string[], label: string, value: string | number | boo
 };
 
 export const getErrorDiagnosticLabels = (t: (key: string) => string): ErrorDiagnosticLabels => ({
+  modelId: t('conversation.agentError.modelId'),
+  providerId: t('conversation.agentError.providerId'),
   errorCode: t('conversation.agentError.errorCode'),
   incidentId: t('conversation.agentError.incidentId'),
   ownership: t('conversation.agentError.diagnosticOwnership'),
@@ -188,6 +196,8 @@ export const formatErrorDiagnosticText = (
 ): string => {
   const lines: string[] = [];
 
+  appendLine(lines, labels.modelId, diagnostic.modelId);
+  appendLine(lines, labels.providerId, diagnostic.providerId);
   appendLine(lines, labels.errorCode, diagnostic.code);
   appendLine(lines, labels.incidentId, diagnostic.incidentId);
   appendLine(lines, labels.ownership, diagnostic.ownership);
@@ -205,6 +215,8 @@ export const formatErrorDiagnosticText = (
 export const buildErrorDiagnostic = (input: ErrorDiagnosticInput): SafeErrorDiagnostic => {
   const detail = safeText(input.detail, MAX_DETAIL_CHARS);
   const message = safeText(input.message, MAX_SUMMARY_CHARS);
+  const modelId = safeText(input.modelId, MAX_SERIALIZED_STRING_CHARS);
+  const providerId = safeText(input.providerId, MAX_SERIALIZED_STRING_CHARS);
   const summary = firstLine(safeText(input.summary, MAX_SUMMARY_CHARS)) ?? firstLine(detail) ?? message ?? '';
   const code = safeText(input.code, MAX_SUMMARY_CHARS);
   const incidentId = safeText(input.incidentId, MAX_SUMMARY_CHARS);
@@ -215,6 +227,8 @@ export const buildErrorDiagnostic = (input: ErrorDiagnosticInput): SafeErrorDiag
   return {
     summary,
     ...(message ? { message } : {}),
+    ...(modelId ? { modelId } : {}),
+    ...(providerId ? { providerId } : {}),
     ...(detail ? { detail } : {}),
     ...(code ? { code } : {}),
     ...(incidentId ? { incidentId } : {}),
@@ -229,6 +243,8 @@ export const buildErrorDiagnostic = (input: ErrorDiagnosticInput): SafeErrorDiag
 export const buildAgentErrorDiagnostic = (error: AgentStreamErrorInfo): SafeErrorDiagnostic =>
   buildErrorDiagnostic({
     message: error.message,
+    modelId: error.model_id,
+    providerId: error.provider_id,
     code: error.code,
     incidentId: error.incident_id,
     ownership: error.ownership,

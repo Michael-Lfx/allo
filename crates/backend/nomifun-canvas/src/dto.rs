@@ -31,6 +31,25 @@ pub struct CanvasMediaMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasTranscription {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineExportClip {
+    pub media_id: String,
+    #[serde(default)]
+    pub source_start_ms: Option<u64>,
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub gap_before_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationTaskStatus {
     Queued,
@@ -50,6 +69,21 @@ pub struct GenerationTaskView {
     pub progress: f32,
     pub error: Option<String>,
     pub result_media_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reference_media_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_frame_media_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_frame_media_id: Option<String>,
+    /// Canvas project this job belongs to. Empty for home 「视频生成」 clips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

@@ -275,6 +275,7 @@ nomifun-poi.workspace = true
 nomifun-insights.workspace = true
 nomifun-media.workspace = true
 nomifun-vimax.workspace = true
+nomifun-briefing.workspace = true
 nomifun-canvas.workspace = true
 nomifun-cloud.workspace = true
 nomifun-agent-execution.workspace = true
@@ -307,6 +308,8 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+sentry.workspace = true
+sentry-tracing.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -317,7 +320,7 @@ reqwest.workspace = true
 url.workspace = true
 # Marketplace remote-source fetch layer (git clone materialization).
 git2.workspace = true
-rmcp = { version = "1.5", features = ["server", "transport-io", "schemars"] }
+rmcp = { version = "2.0", features = ["server", "transport-io", "schemars"] }
 anyhow.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true

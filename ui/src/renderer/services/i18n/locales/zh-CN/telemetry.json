@@ -1,0 +1,11 @@
+{
+  "title": "使用分析",
+  "description": "产品事件与崩溃报告会发到 PostHog 和 Sentry。不会上传对话正文、文件路径或密钥。可随时关闭。",
+  "enabled": "分享使用分析",
+  "enabledHint": "覆盖漏斗、留存与崩溃报告。第一方视频增长事件共用此开关。",
+  "sdkStatus": "构建配置",
+  "notConfigured": "当前构建未配置 PostHog / Sentry 密钥。本机首胜漏斗仍会记录。",
+  "configured": "打开开关后，本构建会发送事件。",
+  "installId": "安装 ID",
+  "installIdHint": "与心跳共用的匿名 ID。"
+}

@@ -6,6 +6,7 @@
 
 import type { IApiSshConfigScan, IApiSshHost } from '@/common/adapter/ipcBridge';
 import { ipcBridge } from '@/common';
+import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
 import { useCallback, useState } from 'react';
 import { Button, Form, Input, InputNumber, Modal, Select } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
@@ -392,7 +393,7 @@ const SshConfigImportModal: React.FC<ImportModalProps> = ({ visible, scan, onClo
 
 const SshHostManagement: React.FC = () => {
   const { t } = useTranslation();
-  const { data: hosts, mutate } = useSWR('ssh-hosts.list', () => ipcBridge.ssh.list.invoke());
+  const { data: hosts, error: hostsError, mutate } = useSWR('ssh-hosts.list', () => ipcBridge.ssh.list.invoke());
   // Scanned once per mount, silently: the empty state is import-first only when
   // there is genuinely something to import. `shouldRetryOnError: false` keeps a
   // backend without this route (an older build) from being polled about it.
@@ -469,7 +470,19 @@ const SshHostManagement: React.FC = () => {
         </div>
       </div>
 
-      {isEmpty ? (
+      {hosts === undefined && !hostsError ? (
+        <SettingsContentLoading className='min-h-200px' />
+      ) : hostsError ? (
+        <div
+          className='flex min-h-200px flex-col items-center justify-center gap-10px rd-12px border border-dashed border-arco-2 px-24px py-28px text-center'
+          role='alert'
+        >
+          <div className='text-14px text-t-secondary'>{t('common.failed')}</div>
+          <Button type='secondary' size='small' onClick={() => void mutate()}>
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : isEmpty ? (
         <div className='flex min-h-200px flex-col items-center justify-center gap-10px rd-12px border border-solid border-arco-2 bg-fill-0 px-24px py-28px text-center'>
           <span className='flex size-44px items-center justify-center rd-12px bg-brand-light text-brand'>
             <Server theme='outline' size='24' fill='currentColor' />

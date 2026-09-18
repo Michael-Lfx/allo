@@ -155,6 +155,13 @@ impl FlowyApiClient {
 
             let content = extract_chat_content(&value);
             if !content.is_empty() {
+                let finish = finish_reason(&value);
+                if is_truncated_finish_reason(finish) {
+                    return Err(ServerClientError::InvalidResponse(format!(
+                        "chat completion truncated (finish_reason={finish}, content_len={})",
+                        content.len()
+                    )));
+                }
                 return Ok(content);
             }
             last_detail = describe_empty_completion(&value, system_len, user_len);
@@ -369,6 +376,20 @@ fn strip_think_tags(s: &str) -> String {
     out.trim().to_string()
 }
 
+fn finish_reason(value: &Value) -> &str {
+    unwrap_completion_payload(value)
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+fn is_truncated_finish_reason(reason: &str) -> bool {
+    matches!(
+        reason.trim().to_ascii_lowercase().as_str(),
+        "length" | "max_tokens" | "max_output_tokens"
+    )
+}
+
 fn describe_empty_completion(value: &Value, system_len: usize, user_len: usize) -> String {
     let payload = unwrap_completion_payload(value);
     let choice = payload.pointer("/choices/0");
@@ -485,5 +506,15 @@ mod tests {
         assert!(d.contains("user_len=3400"));
         assert!(d.contains("finish_reason=length"));
         assert!(d.contains("content=string(len=0)"));
+    }
+
+    #[test]
+    fn detects_truncated_finish_reasons() {
+        assert!(is_truncated_finish_reason("length"));
+        assert!(is_truncated_finish_reason("max_tokens"));
+        assert!(is_truncated_finish_reason("MAX_OUTPUT_TOKENS"));
+        assert!(!is_truncated_finish_reason("stop"));
+        let v = json!({"choices":[{"finish_reason":"length","message":{"content":"["}}]});
+        assert_eq!(finish_reason(&v), "length");
     }
 }

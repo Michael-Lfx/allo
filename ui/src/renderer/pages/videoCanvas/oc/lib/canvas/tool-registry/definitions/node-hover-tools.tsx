@@ -1,8 +1,7 @@
-import { Captions, Clapperboard, Download, FolderPlus, GalleryHorizontalEnd, Image as ImageIcon, Info, LoaderCircle, Lock, Maximize2, MessageSquare, Minus, Music2, Plus, RefreshCw, Settings2, Trash2, Unlock, Upload, UserRound, Video } from "lucide-react";
+import { Captions, Clapperboard, Download, FolderPlus, GalleryHorizontalEnd, Image as ImageIcon, Info, LoaderCircle, Lock, Maximize2, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Settings2, Trash2, Unlock, Upload, UserRound, Video } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@oc/lib/generation-error";
-import { registerToolbarTools } from "../tool-registry";
 import type { ToolContext, ToolDefinition } from "../tool-definition";
 import { CanvasNodeType } from "@oc/types/canvas";
 
@@ -12,13 +11,13 @@ function isVideo(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Vi
 function isAudio(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Audio; }
 function isText(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Text; }
 function isConfig(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Config; }
-function hasImage(ctx: ToolContext) { return isImage(ctx) && Boolean(ctx.nodeMetadata?.content); }
+function isDrawing(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Drawing; }
+function hasImage(ctx: ToolContext) { return isImage(ctx) && Boolean(ctx.nodeMetadata?.content) && !isCharacterReference(ctx); }
 function hasVideo(ctx: ToolContext) { return isVideo(ctx) && Boolean(ctx.nodeMetadata?.content); }
 function hasAudio(ctx: ToolContext) { return isAudio(ctx) && Boolean(ctx.nodeMetadata?.content); }
-function isCharacterReference(ctx: ToolContext) { return isText(ctx) && ctx.nodeMetadata?.workflowKind === "character" && Boolean(ctx.nodeMetadata?.characterAssetId); }
+function isCharacterReference(ctx: ToolContext) { return ctx.nodeMetadata?.workflowKind === "character" && Boolean(ctx.nodeMetadata?.characterAssetId); }
 function isEditableText(ctx: ToolContext) { return isText(ctx) && !isCharacterReference(ctx); }
-function canOpenDialog(ctx: ToolContext) { return isEditableText(ctx) || isImage(ctx) || isVideo(ctx); }
-function simpleMode(ctx: ToolContext) { return ctx.workspaceMode === "simple"; }
+function canOpenDialog(ctx: ToolContext) { return isEditableText(ctx) || (isImage(ctx) && !isCharacterReference(ctx)) || isVideo(ctx); }
 function canRetry(ctx: ToolContext) {
     const requiresPromptChange = ctx.nodeMetadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(ctx.nodeMetadata?.errorDetails);
     return ctx.nodeMetadata?.status === "error" && !requiresPromptChange;
@@ -63,17 +62,17 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         run: (ctx) => ctx.handlers.onNodeRetry(ctx.node!),
     },
     {
-        id: "extractLastFrame",
+        id: "extractFrames",
         toolbar: "node-hover",
         category: "node-state",
-        label: (ctx) => ctx.extractingVideoFrame ? canvasT("videoCanvas.toolbar.extractingFrameLong", "正在截取尾帧") : canvasT("videoCanvas.toolbar.extractFrameLong", "截取尾帧"),
-        displayLabel: (ctx) => ctx.extractingVideoFrame ? canvasT("videoCanvas.toolbar.extractingFrame", "截取中") : canvasT("videoCanvas.toolbar.extractFrame", "尾帧"),
+        label: (ctx) => ctx.extractingVideoFrame ? canvasT("videoCanvas.toolbar.extractingFrameLong", "正在提取画面") : canvasT("videoCanvas.toolbar.extractFrameLong", "提取画面"),
+        displayLabel: (ctx) => ctx.extractingVideoFrame ? canvasT("videoCanvas.toolbar.extractingFrame", "提取中") : canvasT("videoCanvas.toolbar.extractFrame", "画面"),
         icon: (ctx) => ctx.extractingVideoFrame ? <LoaderCircle className="size-3.5 animate-spin" /> : <GalleryHorizontalEnd className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 40,
-        applicable: (ctx) => hasVideo(ctx) && !simpleMode(ctx),
+        applicable: hasVideo,
         disabled: (ctx) => ctx.extractingVideoFrame,
-        run: (ctx) => ctx.handlers.onNodeExtractVideoLastFrame(ctx.node!),
+        run: (ctx) => ctx.handlers.onNodeExtractVideoFrames(ctx.node!),
     },
     {
         id: "saveAsset",
@@ -144,8 +143,20 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: <Settings2 className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 100,
-        applicable: (ctx) => isConfig(ctx) && !simpleMode(ctx),
+        applicable: isConfig,
         run: (ctx) => ctx.handlers.onNodeToggleDialog(ctx.node!),
+    },
+    {
+        id: "openDrawing",
+        toolbar: "node-hover",
+        category: "node-state",
+        label: () => canvasT("videoCanvas.menu.openDrawing", "打开绘图"),
+        displayLabel: () => canvasT("videoCanvas.menu.openDrawing", "打开绘图"),
+        icon: <Pencil className="size-3.5" />,
+        defaultVisible: true,
+        defaultOrder: 105,
+        applicable: isDrawing,
+        run: (ctx) => ctx.handlers.onNodeOpenDrawing(ctx.node!),
     },
     {
         id: "decreaseFont",
@@ -156,7 +167,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: <Minus className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 110,
-        applicable: (ctx) => isEditableText(ctx) && !simpleMode(ctx),
+        applicable: isEditableText,
         run: (ctx) => ctx.handlers.onNodeDecreaseFont(ctx.node!),
     },
     {
@@ -168,7 +179,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: <Plus className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 120,
-        applicable: (ctx) => isEditableText(ctx) && !simpleMode(ctx),
+        applicable: isEditableText,
         run: (ctx) => ctx.handlers.onNodeIncreaseFont(ctx.node!),
     },
     {
@@ -180,7 +191,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: <Upload className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 130,
-        applicable: (ctx) => isImage(ctx) && !hasImage(ctx),
+        applicable: (ctx) => isImage(ctx) && !hasImage(ctx) && !isCharacterReference(ctx),
         run: (ctx) => ctx.handlers.onNodeUpload(ctx.node!),
     },
     {
@@ -188,7 +199,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         toolbar: "node-hover",
         category: "node-state",
         label: (ctx) => hasVideo(ctx) ? canvasT("videoCanvas.toolbar.replaceVideo", "替换视频") : canvasT("videoCanvas.toolbar.uploadVideo", "上传视频"),
-        displayLabel: (ctx) => hasVideo(ctx) ? canvasT("videoCanvas.toolbar.replaceVideo", "替换视频") : canvasT("videoCanvas.toolbar.uploadVideo", "上传视频"),
+        displayLabel: (ctx) => hasVideo(ctx) ? canvasT("videoCanvas.nodeUi.replace", "替换") : canvasT("videoCanvas.toolbar.uploadVideo", "上传视频"),
         icon: <Video className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 140,
@@ -245,5 +256,3 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         run: (ctx) => ctx.handlers.onNodeToggleLocked(ctx.node!),
     },
 ];
-
-registerToolbarTools(nodeHoverToolbarTools);

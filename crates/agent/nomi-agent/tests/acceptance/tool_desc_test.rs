@@ -66,7 +66,7 @@ fn system_prompt_contains_tool_guidance() {
 
     // 5. Read-before-Edit rule
     assert!(
-        prompt.contains("Read a file before editing"),
+        prompt.contains("Read each unread range once before the first Edit"),
         "should contain Read-before-Edit rule"
     );
 }

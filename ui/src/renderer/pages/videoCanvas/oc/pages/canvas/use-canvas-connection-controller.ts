@@ -6,6 +6,8 @@ import type { PendingConnectionCreate } from "@oc/components/canvas/canvas-works
 import { getNodeSpec } from "@oc/constant/canvas";
 import { batchSourceRestriction, buildBatchConnectionCreateRequest, hasBatchConnectionCandidate, planBatchConnections, type CanvasBatchConnectionPreview } from "@oc/lib/canvas/canvas-batch-connection";
 import { canvasConnectionError } from "@oc/lib/canvas/canvas-connection-policy";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+import { connectedNodeCenterFromEdgeDrop } from "@oc/lib/canvas/canvas-connected-node-placement";
 import { attachNodeToStoryboardRow, createCanvasNode, getConnectionTargetAnchor, isHiddenBatchChild, normalizeConnection, storyboardHandleAtY, storyboardPromptTemplateMetadata, storyboardRowFromHandle } from "@oc/lib/canvas/canvas-project-domain";
 import { createCanvasDrawingFromImage } from "@oc/lib/canvas/canvas-drawing-storage";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@oc/lib/canvas/canvas-drawing-engine";
@@ -41,7 +43,7 @@ type ConnectionDropTarget = {
 
 type BatchConnectionDropTarget = ConnectionDropTarget;
 
-const CONNECTION_HANDLE_HIT_RADIUS = 40;
+const CONNECTION_SNAP_RADIUS = 56;
 const CONNECTION_NODE_HIT_PADDING = 32;
 const NODE_STATUS_IDLE = "idle" as const;
 
@@ -210,7 +212,9 @@ export function useCanvasConnectionController({
                       : sourceNodeForQuickCreate.position.x - 96 - spec.width / 2,
                   y: anchorY,
               }
-            : pending.position;
+            : batchSourceNodeIds.length
+              ? pending.position
+              : connectedNodeCenterFromEdgeDrop(pending.position, spec, pending.connection.handleType);
         const newNode = createCanvasNode(type, position, metadata);
         if (storyboardRow) newNode.title = `镜头 ${storyboardRow.shotNumber} · 视频`;
         if (batchSourceNodeIds.length && type === CanvasNodeType.Drawing) {
@@ -283,7 +287,7 @@ export function useCanvasConnectionController({
                     drawingPageCount: saved.pageCount,
                 };
             } catch (error) {
-                message.error(error instanceof Error ? `创建绘图失败：${error.message}` : "创建绘图失败");
+                message.error(error instanceof Error ? `创建绘图失败：${formatCanvasUserError(error, "创建失败")}` : "创建绘图失败");
                 return;
             }
         }
@@ -306,7 +310,7 @@ export function useCanvasConnectionController({
         const world = screenToCanvas(clientX, clientY);
         const scale = Math.max(viewportRef.current.k, 0.05);
         const padding = CONNECTION_NODE_HIT_PADDING / scale;
-        const handleRadius = CONNECTION_HANDLE_HIT_RADIUS / scale;
+        const handleRadius = CONNECTION_SNAP_RADIUS / scale;
         let isNearNode = false;
         let bestNodeId: string | null = null;
         let bestHandleId: string | undefined;
@@ -350,7 +354,7 @@ export function useCanvasConnectionController({
         const world = screenToCanvas(clientX, clientY);
         const scale = Math.max(viewportRef.current.k, 0.05);
         const padding = CONNECTION_NODE_HIT_PADDING / scale;
-        const handleRadius = CONNECTION_HANDLE_HIT_RADIUS / scale;
+        const handleRadius = CONNECTION_SNAP_RADIUS / scale;
         let isNearNode = false;
         let bestNodeId: string | null = null;
         let bestHandleId: string | undefined;

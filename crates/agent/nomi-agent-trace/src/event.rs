@@ -18,6 +18,7 @@ pub const EVENT_TOOL_EXECUTION_CANCELLED: &str = "tool/execution_cancelled";
 pub const EVENT_OBSERVATION_GAP: &str = "observation/gap";
 pub const EVENT_TURN_START: &str = "turn/start";
 pub const EVENT_TURN_END: &str = "turn/end";
+pub const EVENT_HORIZON_DECISION: &str = "horizon/decision";
 
 /// Fallback `event_seq` boundary when no conversation / execution / turn is bound.
 pub const PROCESS_BOUNDARY_ID: &str = "process";

@@ -209,7 +209,7 @@ experts 的体积高度集中：≥1 MiB 的 **77 个文件占 50.9%**，≥10 M
 | `web/packages/protocol/src/protocol.ts` | `MarketplaceSourceKind` 加 `"zip"`；指纹 `fp-7` |
 | `web/src/components/catalog/{shared.tsx,MarketSourcesPanel.tsx}` | kind 映射 + option + placeholder |
 | `web/src/i18n/{zh-CN,en-US}.ts` | `marketKindZip` / `marketZipPlaceholder` |
-| `crates/backend/nomifun-db/migrations/059_marketplace_zip_source_kind.sql`（新） | 重建 `plugin_marketplaces` 放宽 `source_kind` 的 CHECK |
+| `crates/backend/nomifun-db/migrations/065_marketplace_zip_source_kind.sql`（新） | 重建 `plugin_marketplaces` 放宽 `source_kind` 的 CHECK |
 | `crates/backend/nomifun-app/Cargo.toml` | 加 `hex.workspace = true`（`zip` 已在，`sha2` 已有） |
 | `crates/backend/nomifun-app-server/Cargo.toml` | 加 `tracing.workspace = true`（该 crate 此前零日志；未知 kind 的告警需要它） |
 | `apps/agent-store/src/init.rs` | 配置模板注释改口径（归档、不再提 `_files.txt`） |

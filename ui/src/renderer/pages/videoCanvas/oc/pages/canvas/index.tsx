@@ -9,6 +9,7 @@ import { CollectionGrid, ListToolbar, PageHeader, PaginationBar, WorkspacePage }
 import { WorkspaceLoadingState, WorkspaceState } from "@oc/components/layout/workspace-state";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { readZip } from "@oc/lib/zip";
 import { setMediaBlob } from "@oc/services/file-storage";
 import { setImageBlob } from "@oc/services/image-storage";
@@ -20,6 +21,7 @@ import { exportCanvasProjects } from "@oc/lib/canvas/canvas-export";
 import { saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@oc/lib/canvas/canvas-drawing-storage";
 import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/services/user-data-sync";
 import { listProjects } from "@oc/services/api/projects";
+import { videoCanvasProjectPath } from "../../../routes";
 
 export default function CanvasPage() {
     useTranslation();
@@ -47,7 +49,7 @@ export default function CanvasPage() {
     const agentMode = mode === "new" || mode === "recent" || mode === "choose";
     const agentQuery = agentMode ? `?${searchParams.toString()}` : "";
     const enterProject = (id: string) => {
-        navigate(`/canvas/${id}${agentQuery}`);
+        navigate(videoCanvasProjectPath(id, agentQuery));
     };
     const defaultCanvasName = () => canvasT("videoCanvas.library.defaultName", "自由画布 {{n}}", { n: projects.length + 1 });
     const warnLocalCreate = (syncError: unknown) => {
@@ -82,7 +84,7 @@ export default function CanvasPage() {
             setAssociationOpen(false);
         } catch (error) {
             message.error(error instanceof Error
-                ? canvasT("videoCanvas.library.relationSaveFailedWithError", "画布关系保存失败：{{message}}", { message: error.message })
+                ? canvasT("videoCanvas.library.relationSaveFailedWithError", "画布关系保存失败：{{message}}", { message: formatCanvasUserError(error, canvasT("videoCanvas.library.relationSaveFailed", "画布关系保存失败")) })
                 : canvasT("videoCanvas.library.relationSaveFailed", "画布关系保存失败"));
         }
     };
@@ -201,7 +203,7 @@ export default function CanvasPage() {
                         <strong className="mr-auto font-medium">{canvasT("videoCanvas.library.selectedCount", "已选 {{count}} 个画布", { count: selectedIds.length })}</strong>
                         <Button size="small" disabled={!hydrated || projectQuery.isLoading} onClick={() => { setAssociationProjectId(selectedProjects[0]?.projectId || ""); setAssociationOpen(true); }}>{canvasT("videoCanvas.library.joinProject", "加入项目")}</Button>
                         {selectedProjects.some((project) => project.projectId) ? <Button size="small" disabled={!hydrated} onClick={() => { setAssociationProjectId(""); void associateSelected(""); }}>{canvasT("videoCanvas.library.leaveProject", "移出项目")}</Button> : null}
-                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportCanvasProjects(selectedProjects, canvasT("videoCanvas.library.exportName", "影策画布-{{count}}个画布", { count: selectedIds.length }))}>{canvasT("videoCanvas.library.export", "导出")}</Button>
+                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportCanvasProjects(selectedProjects, canvasT("videoCanvas.library.exportName", "画布-{{count}}个画布", { count: selectedIds.length }))}>{canvasT("videoCanvas.library.export", "导出")}</Button>
                         <Button size="small" danger disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>{canvasT("videoCanvas.dialog.delete", "删除")}</Button>
                     </div>
                 ) : null}

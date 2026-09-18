@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use nomi_config::RuntimeDep;
+use nomi_process_runtime::hidden_command;
 use nomi_types::ToolError;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -15,12 +16,17 @@ use tokio::process::Command;
 use crate::assets::persist_bytes;
 use crate::progress::report_media_progress;
 
+fn media_command(bin: impl AsRef<Path>) -> Command {
+    hidden_command(bin.as_ref())
+}
+
 /// Per-model maximum seconds for a single generation request.
 pub fn max_clip_duration_for_model(model: &str) -> u32 {
-    let lower = model.to_ascii_lowercase();
-    // MiniMax-H3 accepts 4–15s per task.
-    if lower.contains("minimax-h3") || lower.contains("minimaxh3") {
-        return 15;
+    if nomifun_cloud::is_wan3_model(model) {
+        return nomifun_cloud::WAN3_DURATION_MAX;
+    }
+    if nomifun_cloud::is_minimax_h3_model(model) {
+        return nomifun_cloud::MINIMAX_H3_DURATION_MAX;
     }
     // Seedance (Flowy default video backend) caps at ~10s per task today.
     10
@@ -260,7 +266,7 @@ fn ffprobe_executable(ffmpeg: &Path) -> PathBuf {
 
 async fn probe_video_duration_secs(video_path: &Path, ffmpeg: &Path) -> Option<f64> {
     let ffprobe = ffprobe_executable(ffmpeg);
-    let output = Command::new(&ffprobe)
+    let output = media_command(&ffprobe)
         .args([
             "-v",
             "error",
@@ -443,7 +449,7 @@ async fn convert_png_to_jpeg(png_path: &Path, jpg_path: &Path) -> Result<(), Too
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("create frame dir: {e}")))?;
     }
-    let output = Command::new(&ffmpeg)
+    let output = media_command(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(png_path)
         .args(["-q:v", "4", "-y"])
@@ -467,7 +473,7 @@ async fn run_ffmpeg_frame_extract(
     ffmpeg: &Path,
     args: &[std::ffi::OsString],
 ) -> Result<(), ToolError> {
-    let output = Command::new(ffmpeg)
+    let output = media_command(ffmpeg)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -545,7 +551,7 @@ pub async fn require_segment_anchor_image_url(
             video_path.display()
         )));
     }
-    let output = Command::new(&ffmpeg)
+    let output = media_command(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-ss", "0", "-i"])
         .arg(video_path)
         .args(["-vframes", "1", "-q:v", "4", "-y"])
@@ -775,7 +781,7 @@ async fn run_ffmpeg_concat(
     ffmpeg: &Path,
     args: &[std::ffi::OsString],
 ) -> Result<(), ToolError> {
-    let output = Command::new(ffmpeg)
+    let output = media_command(ffmpeg)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -985,6 +991,17 @@ mod tests {
             route_long_video_template("prompt_refine_txt2video", 8, "seedance"),
             "prompt_refine_txt2video"
         );
+    }
+
+    #[test]
+    fn wan3_single_clip_covers_20s() {
+        assert_eq!(max_clip_duration_for_model("flowy/wan3.0-video"), 30);
+        assert_eq!(
+            route_long_video_template("prompt_refine_txt2video", 20, "flowy/wan3.0-video"),
+            "prompt_refine_txt2video"
+        );
+        assert_eq!(max_clip_duration_for_model("flowy/MiniMax-H3"), 15);
+        assert_eq!(max_clip_duration_for_model("seedance"), 10);
     }
 
     #[test]

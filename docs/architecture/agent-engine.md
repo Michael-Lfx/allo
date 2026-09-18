@@ -35,6 +35,7 @@ implementation map for the current workspace, not an extraction plan.
 | `nomi-insights-core` | De-identified insights contribution pipeline and POI sanitization helpers. |
 | `nomi-media` | Flowy-backed media generation and multi-step workflow coordination. |
 | `nomi-vimax` | ViMax video-generation pipelines. |
+| `nomi-briefing` | News briefing engine: cited beats, research gates, TTS/ASR align, original compositor spawn. |
 | `nomi-poi` | Local user-interest (POI) topic store. |
 
 `nomi_delegate` has one request and receipt contract in `nomi-types`:
@@ -68,7 +69,7 @@ Backend-to-agent integration normally flows through `nomifun-ai-agent`;
 feature-gated bridge surfaces in `nomifun-app` and `nomifun-gateway` directly
 depend on browser and computer-use crates to expose those capabilities as
 stdio/public tools, and domain feature crates (`nomifun-canvas`, `nomifun-media`,
-`nomifun-vimax`, `nomifun-poi`, `nomifun-insights`, `nomifun-companion`,
+`nomifun-vimax`, `nomifun-briefing`, `nomifun-poi`, `nomifun-insights`, `nomifun-companion`,
 `nomifun-robot`, `nomifun-cloud`) bind their matching `nomi-*` engines directly.
 
 ## Runtime Families
@@ -164,3 +165,64 @@ Older specs describe the agent layer as mechanically extraction-ready and list
 only 11 crates. Those files are historical. The current code still keeps a
 strong boundary, but browser/computer bridge work and public gateway surfaces
 mean the real rule is “primary seam plus documented feature-gated exceptions.”
+
+## Coding / office harness v2
+
+There is still one loop: `AgentEngine::execute_turn_inner` plus an optional
+`CodingHarness` overlay (`task_profile=coding`). Office uses the same engine
+without the coding overlay.
+
+- **WorkingSet** (`nomi-coding`) records which file ranges were actually read
+  or edited. Autocompact must not `file_cache.clear()`. Compact reinjects a
+  WorkingSet index, not a file dump.
+- **Read** pages large files (~500 lines) and reports `unread_ranges`. Oversized
+  tool results become `[content_ref …]` locators (budget reduction). Snip drops
+  old plain turns before microcompact; LLM autocompact remains last.
+- **Turn shape:** coding constitution is a cache-stable system prefix. After
+  tool results, thinking budget and `reasoning_effort` drop. Tool batches use
+  path-overlap: disjoint Read/Grep may run with a disjoint Edit; Bash/Edit/Write
+  /Browser/Computer stay exclusive. Readonly tool failures no longer cascade.
+- **Explore vs delegate:** `explore_code` / `verify_change` / `research` are
+  depth-1 isolated `AgentEngine` forks. They return a summary only and are not
+  `nomi_delegate` (canvas Agent Execution). Parent explore hard-stop counts
+  only the parent's own tour turns. `Lsp` is in the coding core advertise list
+  when servers are configured. `verify_change` with an exact `command` runs
+  shell directly (no nested LLM). Non-verify Bash is recon and does not reset
+  the tour budget; request-lifetime recon and consecutive 1-tool round-trip
+  caps also apply. Engine hard-stop only forced-finalizes — it does not
+  `reset_progress`.
+- **Completion:** coding defaults to EvidenceRequired (`HardGate`). Natural
+  EndTurn after Edit/Write needs a verify receipt (or a harness-classified
+  trivial mutation). Format/test retries cap at 3. `ExitPlanMode` can carry a
+  `PlanArtifact`. Office Q&A stays conversational; file writes and
+  Browser/Computer side effects take the same evidence nudge once.
+- **Hot path:** intermediate tool rounds persist compact JSON without rewriting
+  the session index. `ContextContributor`s that are `parallel_safe` run
+  concurrently with an optional token cap.
+- **KPIs** (logged at EndTurn): `tools_per_turn`, `recon_turns`, `serial_recon`,
+  `time_to_first_edit`, `unique_path_reread_rate`, `verify_before_end`,
+  `contributor_ms`, `checkpoint_ms`, `ttft_ms`, `tool_wall_ms`.
+
+## Horizon (Goal auto-continue + office Plan)
+
+`HorizonController` is the unique owner of Goal auto-continue and the office
+Plan overlay. Coding sessions keep `CodingHarness::on_natural_end` (todo /
+verify) and typically set `disable_goal_auto_continue`.
+
+- **Progress ledger:** a mutating tool, a verification-like command, a pending
+  step increase, or a workspace fingerprint change (git HEAD + porcelain, else
+  write-root mtime/size) counts as progress. Recon-only tools do not. Near-
+  duplicate assistant text is idle. After GoalState copies the snapshot, round-
+  scoped mutation/verify flags are consumed so the next auto-continue EndTurn
+  is judged independently.
+- **Fail-closed judge:** parse or transport failure pauses immediately. Wait
+  barriers without a liveness probe still fail-open. Judge *done* without
+  mechanical evidence is treated as *continue*.
+- **Budgets compose and do not reset `turn`:** the engine 200-turn net stays
+  monotonic; Horizon caps Goal auto-continues (free-form min(requested, 3);
+  with Verification, the requested cap, default 8) plus a 2h wall clock.
+- **Plan gate:** `ExitPlanMode` requires a verifiable plan. A valid Exit latches
+  `PlanPhase::AwaitingApproval` and keeps writes locked. The next user message
+  is the Build approval. Office Plan nudges at 8 provider turns and hard-stops
+  at 12 (ExitPlanMode remains available).
+- Observation event: `horizon/decision`.

@@ -52,6 +52,7 @@ type UseMarketCatalogOptions = {
   t: Translate;
   notify: MarketCatalogNotifier;
   text?: MarketCatalogText;
+  itemFilter?: (item: ISkillMarketItem) => boolean;
 };
 
 /** Skip automatic ranking sync when a full local cache is newer than this. */
@@ -67,6 +68,7 @@ export const useMarketCatalog = ({
   t,
   notify,
   text,
+  itemFilter,
 }: UseMarketCatalogOptions) => {
   const autoSyncStartedRef = useRef(false);
   const itemsRef = useRef<ISkillMarketItem[]>([]);
@@ -97,7 +99,9 @@ export const useMarketCatalog = ({
       setLoading(true);
       try {
         const result = await ipcBridge.fs.syncSkillMarketRankings.invoke({ sources });
-        const normalized = normalizeSkillMarketItems(result.items).filter((item) => sources.includes(item.source));
+        const normalized = normalizeSkillMarketItems(result.items)
+          .filter((item) => sources.includes(item.source))
+          .filter((item) => itemFilter?.(item) ?? true);
         const normalizedErrors = normalizeSkillMarketErrors(result.errors);
         const nextItems = resolveMarketSyncItems(itemsRef.current, normalized);
         itemsRef.current = nextItems;
@@ -125,7 +129,7 @@ export const useMarketCatalog = ({
         setLoading(false);
       }
     },
-    [cacheKey, notify, sources, t, text],
+    [cacheKey, itemFilter, notify, sources, t, text],
   );
 
   useEffect(() => {
@@ -136,7 +140,9 @@ export const useMarketCatalog = ({
       const raw = localStorage.getItem(cacheKey);
       if (raw) {
         const cache = JSON.parse(raw) as { fetched_at?: number; items?: unknown; errors?: unknown };
-        cachedItems = normalizeSkillMarketItems(cache.items).filter((item) => sources.includes(item.source));
+        cachedItems = normalizeSkillMarketItems(cache.items)
+          .filter((item) => sources.includes(item.source))
+          .filter((item) => itemFilter?.(item) ?? true);
         cachedFetchedAt = typeof cache.fetched_at === 'number' ? cache.fetched_at : null;
         itemsRef.current = cachedItems;
         setItems(cachedItems);
@@ -167,7 +173,7 @@ export const useMarketCatalog = ({
 
     if (cacheIsFresh) return;
     void syncMarket({ showToast: false });
-  }, [autoSyncKey, cacheKey, sources, syncMarket]);
+  }, [autoSyncKey, cacheKey, itemFilter, sources, syncMarket]);
 
   const skillTagFilter = useMemo<SkillTagFilterState>(() => {
     if (!enableTagFilter) return { audience: [], scenario: [] };

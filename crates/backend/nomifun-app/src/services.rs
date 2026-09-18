@@ -25,8 +25,8 @@ use nomifun_db::{
     IProviderRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
     SqliteOAuthClientRegistrationRepository, SqliteOAuthTokenRepository,
-    SqliteProviderModelRepository, SqliteProviderRepository,
-    SqliteRemoteAgentRepository, SqliteTerminalRepository, SqliteUserRepository,
+    SqliteProviderModelRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
+    SqliteSettingsRepository, SqliteTerminalRepository, SqliteUserRepository,
 };
 use nomifun_db::{IClientPreferenceRepository, SqliteClientPreferenceRepository};
 use nomifun_realtime::{BroadcastEventBus, WebSocketManager};
@@ -1272,6 +1272,8 @@ pub struct AppServices {
     pub media_service: Arc<nomifun_media::MediaApiService>,
     /// ViMax video-generation sessions / plan / render.
     pub vimax_service: Arc<nomifun_vimax::VimaxApiService>,
+    /// News briefing sessions (cited beats; not a ViMax workflow).
+    pub briefing_service: Arc<nomifun_briefing::BriefingApiService>,
     /// Video-generation Canvas mode (open-ai-canvas port) — independent of Workshop.
     pub video_canvas_service: Arc<nomifun_canvas::CanvasService>,
     /// Flowy cloud account (email OTP login, whoami).
@@ -2506,8 +2508,13 @@ impl AppServices {
         )
         .into_arc();
         let system_notifier_slot = Arc::new(nomifun_notify::SystemNotifierSlot::new());
-        let system_notifier =
-            nomifun_notify::SystemCompletionNotifier::new(system_notifier_slot.clone()).into_arc();
+        let settings_repo_for_notifier: Arc<dyn nomifun_db::ISettingsRepository> =
+            Arc::new(SqliteSettingsRepository::new(database.pool().clone()));
+        let system_notifier = nomifun_notify::SystemCompletionNotifier::new(
+            system_notifier_slot.clone(),
+            settings_repo_for_notifier,
+        )
+        .into_arc();
         let completion_notifier = nomifun_requirement::FanOutCompletionNotifier::new(vec![
             webhook_notifier,
             system_notifier,
@@ -2634,6 +2641,18 @@ impl AppServices {
                 workspace: data_dir.clone(),
             });
         knowledge_service.set_completer(knowledge_completer.clone());
+        // The learning pipeline gets its OWN completer instance on its own
+        // trait (`LearningCompleter`, with per-stage max_tokens budgets):
+        // course generation / concept graphs / reflection grading must not
+        // share the knowledge autogen instance, whose 8192-token cap is
+        // tuned for README overviews and cannot be overridden per call.
+        let learning_completer: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(nomifun_ai_agent::LiveLearningCompleter {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                provider_model_repo: provider_model_repo.clone(),
+                encryption_key,
+                workspace: data_dir.clone(),
+            });
         // Recover profiles left by an interrupted earlier browser runtime
         // before constructing any Host authority. If ownership/termination
         // cannot be proven, Browser functionality remains degraded for this
@@ -2749,8 +2768,64 @@ impl AppServices {
         ));
         learning_service.set_generation_dependencies(
             knowledge_service.clone(),
-            knowledge_completer,
+            learning_completer,
         );
+        // Learning-graph agent engine: the two-loop tool-driven pipeline
+        // (generation loop + audit-gated repair loops, `lg_*` tool set).
+        // Generation requires the engine — there is no fallback pipeline.
+        learning_service.set_learning_graph_engine(Arc::new(
+            nomifun_ai_agent::LiveLearningGraphAgentEngine {
+                service: learning_service.clone(),
+                round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+                deps: nomifun_ai_agent::OneShotDeps {
+                    provider_repo: provider_repo.clone()
+                        as Arc<dyn nomifun_db::IProviderRepository>,
+                    provider_model_repo: provider_model_repo.clone(),
+                    encryption_key,
+                    workspace: data_dir.clone(),
+                },
+            },
+        ));
+        // Course outline agent engine: the two-loop tool-driven pipeline
+        // (generation loop + audit-gated repair loops, `co_*` tool set) for
+        // BOTH the kb and description flows; the legacy one-shot pipeline
+        // stays as the no-engine fallback.
+        learning_service.set_course_outline_engine(Arc::new(
+            nomifun_ai_agent::LiveCourseOutlineAgentEngine {
+                service: learning_service.clone(),
+                deps: nomifun_ai_agent::OneShotDeps {
+                    provider_repo: provider_repo.clone()
+                        as Arc<dyn nomifun_db::IProviderRepository>,
+                    provider_model_repo: provider_model_repo.clone(),
+                    encryption_key,
+                    workspace: data_dir.clone(),
+                },
+            },
+        ));
+        // Lesson content agent engine: the two-loop tool-driven pipeline
+        // (document + activities via the `ls_*` tool set, audit-gated
+        // publish); the legacy two-stage pipeline stays as the no-engine
+        // fallback.
+        learning_service.set_lesson_engine(Arc::new(
+            nomifun_ai_agent::LiveLessonContentAgentEngine {
+                service: learning_service.clone(),
+                deps: nomifun_ai_agent::OneShotDeps {
+                    provider_repo: provider_repo.clone()
+                        as Arc<dyn nomifun_db::IProviderRepository>,
+                    provider_model_repo: provider_model_repo.clone(),
+                    encryption_key,
+                    workspace: data_dir.clone(),
+                },
+                round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            },
+        ));
+        // Best-effort WebSocket progress for course/lesson generation —
+        // same event bus and authoritative-user pattern as the knowledge
+        // emitter; absent a sink (tests, CLI) all emissions are skipped.
+        learning_service.set_event_sink(nomifun_learning::LearningEventEmitter::new(
+            event_bus.clone(),
+            authoritative_user_id.clone(),
+        ));
         // Tutorial seed is TEMPORARILY DISABLED: first-boot creation of the
         // "Flowy 使用指南" knowledge base and the "学习模块上手指南" example
         // course is paused while its value is under review (uncertain the
@@ -2762,12 +2837,6 @@ impl AppServices {
             if let Err(error) = learning_service.seed_tutorial_content(&data_dir).await {
                 tracing::warn!(%error, "tutorial learning content seed failed; continuing");
             }
-        }
-        // Boot-resume: re-claim course-generation jobs left running by a
-        // previous process so interrupted generations continue from their
-        // last persisted snapshot. Failures are non-fatal.
-        if let Err(error) = learning_service.recover_interrupted_jobs().await {
-            tracing::warn!(%error, "course-generation job resume sweep failed; continuing");
         }
 
         // Knowledge MCP server: gives ACP sessions with bound knowledge bases
@@ -3463,10 +3532,21 @@ impl AppServices {
             nomifun_vimax::VimaxApiService::new(data_dir.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to open vimax service: {e}"))?,
         );
+        let briefing_api = nomifun_briefing::BriefingApiService::new(data_dir.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to open briefing service: {e}"))?;
+        briefing_api.attach_voice(
+            model_invoke_service.clone(),
+            Arc::new(SqliteClientPreferenceRepository::new(database.pool().clone())),
+            Arc::new(SqliteProviderModelRepository::new(database.pool().clone())),
+        );
+        let briefing_service = Arc::new(briefing_api);
         let video_canvas_service = nomifun_canvas::CanvasService::new(data_dir.clone());
         let cloud_service = Arc::new(
-            nomifun_cloud::CloudService::new(data_dir.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
+            nomifun_cloud::CloudService::new_with_host(
+                data_dir.clone(),
+                capabilities.runtime_capabilities.runtime,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
         );
 
         // Persist the last-known catalog for the model selector; refresh the
@@ -3594,6 +3674,7 @@ impl AppServices {
             insights_service,
             media_service,
             vimax_service,
+            briefing_service,
             video_canvas_service,
             cloud_service,
             #[cfg(feature = "browser-use")]

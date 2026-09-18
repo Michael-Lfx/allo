@@ -7,12 +7,15 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildConversationErrorReportMetadata,
+  getConversationErrorReportContextKey,
   type ConversationErrorReportContext,
 } from './conversationErrorReport';
 
 const context: ConversationErrorReportContext = {
   error: {
     message: 'The model provider is temporarily unavailable',
+    model_id: 'claude-sonnet-4-20250514',
+    provider_id: '019c0000-0000-7000-8000-000000000005',
     incident_id: '019c0000-0000-7000-8000-000000000001',
     code: 'USER_LLM_PROVIDER_GATEWAY_ERROR',
     ownership: 'user_llm_provider',
@@ -39,6 +42,8 @@ describe('conversation error support report', () => {
       incidentId: context.error.incident_id,
       error: {
         message: context.error.message,
+        modelId: 'claude-sonnet-4-20250514',
+        providerId: '019c0000-0000-7000-8000-000000000005',
         code: context.error.code,
         ownership: context.error.ownership,
         retryable: true,
@@ -55,5 +60,19 @@ describe('conversation error support report', () => {
     });
     expect(JSON.stringify(metadata)).not.toContain('Bearer secret');
     expect(JSON.stringify(metadata)).not.toContain('private');
+  });
+
+  test('keeps the same context stable while changing report contexts', () => {
+    expect(getConversationErrorReportContextKey(context)).toBe(
+      JSON.stringify([
+        context.conversationId,
+        context.messageId,
+        context.turnId,
+        context.occurredAt,
+      ])
+    );
+    expect(
+      getConversationErrorReportContextKey({ ...context, messageId: undefined })
+    ).not.toBe(getConversationErrorReportContextKey(context));
   });
 });

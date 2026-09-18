@@ -1,3 +1,5 @@
+import type { ArtCritiqueNodeState } from "@oc/lib/art-critique/contracts";
+import type { AssetCategory } from "@oc/lib/asset-category";
 import type { CanvasColorGrade } from "@oc/lib/canvas/canvas-color-grade";
 import type { PortraitTextureSettings } from "@oc/lib/canvas/canvas-portrait-texture";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@oc/types/timeline";
@@ -31,6 +33,7 @@ export enum CanvasNodeType {
     Compare = "compare",
     Chart = "chart",
     ColorGrade = "colorgrade",
+    ArtCritique = "ai-art-critique",
 }
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
@@ -46,7 +49,7 @@ export type CanvasGenerationBatchStatus = "queued" | "running" | "partial_failed
 export type CanvasGenerationBatchItemStatus = "waiting" | "submitting" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type CanvasImageGenerationType = "generation" | "edit";
 export type CanvasWorkflowKind = "free" | "script" | "story_input" | "character" | "scene" | "storyboard" | "shot" | "final" | "styleboard" | "reference_set" | "reference_video" | "action_board";
-export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat";
+export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "reference_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat";
 export type CanvasFolderStyle = "glass" | "stacked" | "midnight" | "paper" | "cinema" | "compact";
 export type CanvasFolderTheme = "aurora" | "obsidian" | "ember" | "pearl";
 export type CanvasSkillCategory = "writing" | "storyboard" | "image" | "video" | "utility";
@@ -89,6 +92,10 @@ export type StoryboardRow = {
     referenceNodeIds: string[];
     imageNodeId?: string;
     videoNodeId?: string;
+    /** How this shot's still is used when generating the shot video. */
+    stillRole?: "first" | "last" | "reference";
+    directorSceneId?: string;
+    directorShotId?: string;
     status?: CanvasNodeStatus;
     errorDetails?: string;
 };
@@ -131,6 +138,10 @@ export type CanvasSkillSnapshot = {
     outputContract: string;
     version: number;
     tags: string[];
+    qualifiedId?: string;
+    semver?: string;
+    coverUrl?: string;
+    jobToBeDone?: string;
 };
 
 export type CanvasNodeMetadata = {
@@ -140,11 +151,34 @@ export type CanvasNodeMetadata = {
     prompt?: string;
     promptTemplateOperation?: string;
     promptTemplateVariables?: Record<string, string>;
+    appliedTemplate?: {
+        id: number;
+        slug?: string;
+        version: string;
+        appliedAt: string;
+        degraded: boolean;
+        degradeReason?: string;
+        remixOf?: number;
+        promptBody: string;
+        adapters?: Record<string, string>;
+        slots: Array<{ id: string; kind: string; label: string; required: boolean; default?: string; options?: string[] }>;
+    };
     status?: CanvasNodeStatus;
     locked?: boolean;
     errorDetails?: string;
     generationErrorCode?: string;
     failedPromptFingerprint?: string;
+    lastGenerationRequestFingerprint?: string;
+    previewContent?: string;
+    videoPreview?: {
+        content?: string;
+        storageKey?: string;
+        width?: number;
+        height?: number;
+        bytes?: number;
+        mimeType?: string;
+    };
+    hasAudio?: boolean;
     /**
      * 生成任务已在服务端成功，但结果下载/落盘到本地或现有 OSS 失败。
      * 可基于同一 taskId 向当前服务端重新拉取，无需重新计费生成。
@@ -158,12 +192,25 @@ export type CanvasNodeMetadata = {
     quality?: string;
     transparentBackground?: string;
     count?: number;
+    cameraEnabled?: string;
+    cameraBody?: string;
+    cameraLens?: string;
+    cameraFocal?: string;
+    cameraAperture?: string;
+    cameraAngle?: string;
+    cameraShot?: string;
+    /** Video prompt polish. `"false"` turns it off; missing or `"true"` keeps it on. */
+    promptOptimize?: string;
+    /** Per-output sampler seed for batch diversity. Backends may ignore it. */
+    seed?: number;
     /** Text generation copy count (decoupled from image batch count). */
     textCount?: number;
     seconds?: string;
     vquality?: string;
     generateAudio?: string;
     watermark?: string;
+    /** Copied media nodes regenerate in place; parameter variants keep a new-version lineage. */
+    generationResultPlacement?: "replace-node" | "new-version";
     audioVoice?: string;
     audioFormat?: string;
     audioSpeed?: string;
@@ -182,15 +229,20 @@ export type CanvasNodeMetadata = {
     primaryImageId?: string;
     imageBatchExpanded?: boolean;
     storageKey?: string;
+    mediaId?: string;
+    /** Exclusive Flowy TV cover. Only one image node should have this set. */
+    tvCover?: boolean;
     mimeType?: string;
     bytes?: number;
     durationMs?: number;
     assetId?: string;
     assetTags?: string[];
-    assetCategory?: "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
+    assetCategory?: AssetCategory;
     workflowKind?: CanvasWorkflowKind;
     workflowTitle?: string;
     workflowDescription?: string;
+    /** Stable agent short id (n1); persists across graph edits so aliases do not renumber. */
+    agentAlias?: string;
     stylePresetId?: string;
     styleProfileJson?: string;
     styleExecutionPlan?: import("@oc/lib/canvas/style-profile").StyleExecutionPlan;
@@ -233,12 +285,15 @@ export type CanvasNodeMetadata = {
     taskStage?: string;
     taskCreatedAt?: string;
     taskUpdatedAt?: string;
+    taskCompletedAt?: string;
     sessionId?: string;
     videoEditOperation?: CanvasVideoEditOperation;
     videoCameraMoveId?: string;
     videoCameraMovePrompt?: string;
     videoStartFrameNodeId?: string;
     videoEndFrameNodeId?: string;
+    videoFrameSourceNodeId?: string;
+    videoFrameTimeMs?: number;
     versionOfNodeId?: string;
     versionLabel?: string;
     versionPrimary?: boolean;
@@ -253,9 +308,11 @@ export type CanvasNodeMetadata = {
     subtitleHighlights?: SubtitleHighlight[];
     subtitleStyle?: SubtitleStyle;
     subtitleUpdatedAt?: string;
+    artCritique?: ArtCritiqueNodeState;
     skillId?: string;
     skillVersion?: number;
     skillSnapshot?: CanvasSkillSnapshot;
+    projectPlaybook?: boolean;
     storyboard?: StoryboardData;
     storyboardShotDuration?: StoryboardShotDuration;
     storyboardShotCount?: StoryboardShotCount;
@@ -329,6 +386,8 @@ export type CanvasNodeData = {
     width: number;
     height: number;
     parentId?: string;
+    createdAt?: string;
+    updatedAt?: string;
     metadata?: CanvasNodeMetadata;
 };
 
@@ -369,6 +428,8 @@ export type CanvasAssistantMessage = {
     role: "user" | "assistant" | "system" | "tool" | "error";
     title?: string;
     text: string;
+    /** Model-only brief; not shown in the chat bubble. */
+    modelContext?: string;
     meta?: string;
     detail?: unknown;
     references?: CanvasAssistantReference[];
@@ -414,6 +475,7 @@ export type ContextMenuState =
           x: number;
           y: number;
           position: Position;
+          createOpen?: boolean;
       }
     | {
           type: "node";

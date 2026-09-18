@@ -1,0 +1,6 @@
+{
+  "name": "briefing-compositor",
+  "private": true,
+  "type": "module",
+  "description": "Original news-card compositor sidecar for Allo briefing."
+}

@@ -478,6 +478,8 @@
     "modelPlaceholder": "选择模型",
     "preset": "复用设定",
     "presetHint": "一键应用已保存的 Agent、模型、Skill 与知识范围配置。",
+    "appliedPreset": "已应用设定",
+    "appliedPresetHint": "该伙伴继续沿用已保存的设定快照；新的对话可在首页选择设定。",
     "persona": "人格",
     "personaHint": "决定 {{companionName}} 说话的性格与语气",
     "personaLively": "活泼",

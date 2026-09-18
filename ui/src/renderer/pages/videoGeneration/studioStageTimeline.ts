@@ -69,6 +69,7 @@ const BRIEF_STAGES = new Set([
   'develop_story',
   'extract_characters',
   'write_script',
+  'drama_engine',
   'plan',
 ]);
 
@@ -109,6 +110,7 @@ const RENDER_STAGES = new Set([
   'image_generate',
   'film_cover_start',
   'film_cover_done',
+  'film_cover_failed',
   'video_clips_start',
   'video_clip_exists',
   'video_clip_start',
@@ -137,6 +139,7 @@ const ACTION_GENERATE_STAGES = new Set([
   'render_start',
   'film_cover_start',
   'film_cover_done',
+  'film_cover_failed',
   'video_create',
   'video_poll',
   'video_download',

@@ -1,15 +1,17 @@
 import { Canvas, useLoader, useThree } from "@react-three/fiber";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Suspense, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Suspense, Component, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ErrorInfo, type ReactNode } from "react";
 import { ScanFace, Sparkles, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Box3, Color, Mesh, MeshStandardMaterial, Vector3, type Object3D } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 
-import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import {
     canvasEmotionPresets,
     emotionBlendshapes,
@@ -19,6 +21,7 @@ import {
     type CanvasFaceBox,
 } from "@oc/lib/canvas/canvas-emotion";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { CANVAS_BASIS_TRANSCODER_PATH, CANVAS_FACECAP_MODEL_URL } from "@oc/lib/canvas/canvas-static-assets";
 
 export type CanvasImageEmotionPayload = CanvasEmotionParams & {
     label: string;
@@ -54,18 +57,18 @@ type CanvasNodeEmotionPanelProps = {
 };
 
 export function CanvasNodeEmotionPanel({ dataUrl, imageWidth, imageHeight, characters, activeCharacterId, preset, generating, error, onSelectCharacter, onManualSelect, onPresetChange, onClose, onConfirm }: CanvasNodeEmotionPanelProps) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const reducedMotion = useReducedMotion();
     return (
-        <SpotlightSurface
+        <motion.div
             data-canvas-no-zoom
-            spotlightColor={theme.toolbar.itemHover}
-            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 5, scale: 0.98 }}
+            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 5 }}
             transition={reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel}
-            className="aceternity-floating-panel w-[580px] max-w-full overflow-hidden rounded-[var(--r-2xl)] border backdrop-blur-2xl"
-            style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: `0 28px 80px ${theme.spatial.shadow}` }}
+            className="canvas-overlay w-[580px] max-w-full overflow-hidden"
+            style={canvasOverlayStyle(theme)}
         >
             <div className="flex h-11 items-center gap-1.5 border-b px-2.5" style={{ borderColor: theme.toolbar.border }}>
                 <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -85,10 +88,10 @@ export function CanvasNodeEmotionPanel({ dataUrl, imageWidth, imageHeight, chara
                         </motion.button>
                     ))}
                     <button type="button" className="flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--dock-item-radius)] border px-2 text-[var(--fs-label)] font-medium opacity-70 transition hover:opacity-100" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }} onClick={onManualSelect}>
-                        <ScanFace className="size-3.5" />手动框选
+                        <ScanFace className="size-3.5" />{canvasT("videoCanvas.emotion.manualButton", "手动框选")}
                     </button>
                 </div>
-                <button type="button" aria-label="关闭情绪调节" className="grid size-7 shrink-0 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" onClick={onClose}><X className="size-3.5" /></button>
+                <button type="button" aria-label={canvasT("videoCanvas.emotion.closePanelAria", "关闭情绪调节")} className="grid size-7 shrink-0 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" onClick={onClose}><X className="size-3.5" /></button>
             </div>
 
             <div className="grid h-[216px] grid-cols-[minmax(0,1fr)_212px] gap-2.5 p-2.5">
@@ -97,7 +100,7 @@ export function CanvasNodeEmotionPanel({ dataUrl, imageWidth, imageHeight, chara
             </div>
 
             <div className="flex min-h-11 items-center gap-2 border-t px-3" style={{ borderColor: theme.toolbar.border }}>
-                <span className="text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>情绪定位</span>
+                <span className="text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.emotion.locate", "情绪定位")}</span>
                 <AnimatePresence mode="wait" initial={false}>
                     <motion.span key={preset.id} initial={reducedMotion ? false : { opacity: 0, y: 4, filter: "blur(4px)" }} animate={{ opacity: 1, y: 0, filter: "blur(0px)" }} exit={reducedMotion ? undefined : { opacity: 0, y: -3, filter: "blur(3px)" }} transition={{ duration: reducedMotion ? 0 : 0.18 }} className="text-xs font-semibold">{preset.label}</motion.span>
                 </AnimatePresence>
@@ -111,10 +114,10 @@ export function CanvasNodeEmotionPanel({ dataUrl, imageWidth, imageHeight, chara
                     style={{ background: theme.node.activeStroke, color: theme.node.panel }}
                     onClick={onConfirm}
                 >
-                    <Sparkles className={`size-3.5 ${generating ? "animate-pulse" : ""}`} />{generating ? "准备生成" : "生成"}
+                    <Sparkles className={`size-3.5 ${generating ? "animate-pulse" : ""}`} />{generating ? canvasT("videoCanvas.emotion.generating", "准备生成") : canvasT("videoCanvas.emotion.generate", "生成")}
                 </motion.button>
             </div>
-        </SpotlightSurface>
+        </motion.div>
     );
 }
 
@@ -145,13 +148,13 @@ function EmotionPad({ preset, onChange }: { preset: CanvasEmotionPreset; onChang
     const selectedRow = 2 - preset.arousal;
     return (
         <div className="relative rounded-[var(--r-lg)] border px-[25px] pb-[22px] pt-[24px]" style={{ background: theme.toolbar.itemHover, borderColor: theme.toolbar.border }}>
-            <span className="pointer-events-none absolute inset-x-0 top-1.5 text-center text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>激动</span>
-            <span className="pointer-events-none absolute inset-x-0 bottom-1.5 text-center text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>平静</span>
-            <span className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2 text-[var(--fs-micro)] [writing-mode:vertical-rl]" style={{ color: theme.node.muted }}>亲近</span>
-            <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--fs-micro)] [writing-mode:vertical-rl]" style={{ color: theme.node.muted }}>疏离</span>
+            <span className="pointer-events-none absolute inset-x-0 top-1.5 text-center text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.emotion.aroused", "激动")}</span>
+            <span className="pointer-events-none absolute inset-x-0 bottom-1.5 text-center text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.emotion.calm", "平静")}</span>
+            <span className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2 text-[var(--fs-micro)] [writing-mode:vertical-rl]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.emotion.close", "亲近")}</span>
+            <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--fs-micro)] [writing-mode:vertical-rl]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.emotion.distant", "疏离")}</span>
             <div
                 role="slider"
-                aria-label="情绪强度"
+                aria-label={canvasT("videoCanvas.emotion.emotionPadAria", "情绪强度")}
                 aria-valuetext={preset.label}
                 tabIndex={0}
                 className="relative grid size-full touch-none cursor-crosshair grid-cols-5 grid-rows-5 outline-none"
@@ -193,25 +196,60 @@ function EmotionHeadPreview({ preset }: { preset: CanvasEmotionPreset }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div className="relative overflow-hidden rounded-[var(--r-lg)] border" style={{ background: "#26272a", borderColor: theme.toolbar.border }}>
-            <Canvas frameloop="demand" dpr={[1, 1.5]} camera={{ fov: 38, near: 0.1, far: 20, position: [0, 0, 4.15] }} gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}>
-                <color attach="background" args={["#26272a"]} />
-                <ambientLight intensity={0.82} />
-                <directionalLight position={[-2.8, 4, 3]} intensity={1.45} color="#ffffff" />
-                <directionalLight position={[3, 1, 2]} intensity={0.5} color="#c9d0dc" />
-                <Suspense fallback={null}><EmotionFaceModel preset={preset} /></Suspense>
-            </Canvas>
+            <EmotionPreviewBoundary fallback={<EmotionPreviewFallback preset={preset} />}>
+                <Canvas frameloop="demand" dpr={[1, 1.5]} camera={{ fov: 38, near: 0.1, far: 20, position: [0, 0, 4.15] }} gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}>
+                    <color attach="background" args={["#26272a"]} />
+                    <ambientLight intensity={0.82} />
+                    <directionalLight position={[-2.8, 4, 3]} intensity={1.45} color="#ffffff" />
+                    <directionalLight position={[3, 1, 2]} intensity={0.5} color="#c9d0dc" />
+                    <Suspense fallback={null}><EmotionFaceModel preset={preset} /></Suspense>
+                </Canvas>
+            </EmotionPreviewBoundary>
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/55 to-transparent" />
             <AnimatePresence mode="wait" initial={false}>
-                <motion.span key={preset.id} initial={{ opacity: 0, filter: "blur(6px)" }} animate={{ opacity: 1, filter: "blur(0px)" }} exit={{ opacity: 0, filter: "blur(5px)" }} transition={{ duration: aceternityMotion.duration.state }} className="pointer-events-none absolute bottom-2 left-2.5 text-[var(--fs-tiny)] font-medium text-white/72">实时预览 · {preset.label}</motion.span>
+                <motion.span key={preset.id} initial={{ opacity: 0, filter: "blur(6px)" }} animate={{ opacity: 1, filter: "blur(0px)" }} exit={{ opacity: 0, filter: "blur(5px)" }} transition={{ duration: aceternityMotion.duration.state }} className="pointer-events-none absolute bottom-2 left-2.5 text-[var(--fs-tiny)] font-medium text-white/72">{canvasT("videoCanvas.emotion.livePreview", "实时预览")} · {preset.label}</motion.span>
             </AnimatePresence>
+        </div>
+    );
+}
+
+class EmotionPreviewBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
+    state = { failed: false };
+    static getDerivedStateFromError() {
+        return { failed: true };
+    }
+    componentDidCatch(error: Error, _info: ErrorInfo) {
+        console.warn("[canvas-emotion] 3D preview unavailable", error.message);
+    }
+    render() {
+        return this.state.failed ? this.props.fallback : this.props.children;
+    }
+}
+
+function EmotionPreviewFallback({ preset }: { preset: CanvasEmotionPreset }) {
+    const smile = Math.max(0, preset.intimacy);
+    const open = Math.max(0, preset.arousal);
+    return (
+        <div className="grid h-full place-items-center" aria-hidden="true">
+            <div className="relative size-24 rounded-full bg-[#3a3b40] shadow-[inset_0_-18px_28px_rgba(0,0,0,0.35)]">
+                <span className="absolute left-[28%] top-[38%] size-2 rounded-full bg-[#d7d8dc]" />
+                <span className="absolute right-[28%] top-[38%] size-2 rounded-full bg-[#d7d8dc]" />
+                <span
+                    className="absolute left-1/2 top-[58%] h-3 w-8 -translate-x-1/2 rounded-full border-2 border-[#d7d8dc]"
+                    style={{
+                        borderTopColor: open > 0 ? "#d7d8dc" : "transparent",
+                        transform: `translateX(-50%) scaleY(${0.45 + open * 0.2}) rotate(${smile * -6}deg)`,
+                    }}
+                />
+            </div>
         </div>
     );
 }
 
 function EmotionFaceModel({ preset }: { preset: CanvasEmotionPreset }) {
     const renderer = useThree((state) => state.gl);
-    const gltf = useLoader(GLTFLoader, "/canvas/models/facecap.glb", (loader) => {
-        loader.setKTX2Loader(new KTX2Loader().setTranscoderPath("/three/basis/").detectSupport(renderer));
+    const gltf = useLoader(GLTFLoader, CANVAS_FACECAP_MODEL_URL, (loader) => {
+        loader.setKTX2Loader(new KTX2Loader().setTranscoderPath(CANVAS_BASIS_TRANSCODER_PATH).detectSupport(renderer));
         loader.setMeshoptDecoder(MeshoptDecoder);
     });
     const invalidate = useThree((state) => state.invalidate);

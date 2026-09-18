@@ -38,13 +38,30 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('sider-conversation-entry')).toBe(false);
   });
 
-  test('places Learning directly below Knowledge with a development badge', () => {
+  test('places Learning directly below Knowledge without a development badge', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
     const learningEntrySource = readSource(new URL('./SiderNav/SiderLearningEntry.tsx', import.meta.url));
 
     expect(siderSource.indexOf('<SiderKnowledgeEntry')).toBeLessThan(siderSource.indexOf('<SiderLearningEntry'));
-    expect(learningEntrySource.includes("t('learning.dev.tag')")).toBe(true);
-    expect(learningEntrySource.includes("t('learning.dev.navTooltip')")).toBe(true);
+    expect(learningEntrySource.includes("t('learning.dev.tag')")).toBe(false);
+    expect(learningEntrySource.includes("t('learning.dev.navTooltip')")).toBe(false);
+  });
+
+  test('warms the learning page chunk on hover and idle before the sider click', () => {
+    const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+    const learningEntrySource = readSource(new URL('./SiderNav/SiderLearningEntry.tsx', import.meta.url));
+    const learningPrefetchSource = readSource(
+      new URL('../../../pages/learning/prefetch.ts', import.meta.url)
+    );
+
+    expect(learningPrefetchSource.includes("void import('./index')")).toBe(true);
+    expect(learningPrefetchSource.includes("from './index'")).toBe(false);
+    expect(
+      siderSource.includes("import { prefetchLearningPage } from '@renderer/pages/learning/prefetch'")
+    ).toBe(true);
+    expect(siderSource.includes('prefetchLearningPage()')).toBe(true);
+    expect(learningEntrySource.includes('onPointerEnter')).toBe(true);
+    expect(learningEntrySource.includes('prefetchLearningPage')).toBe(true);
   });
 
   test('places Eval below Learning and gates it on developer mode', () => {
@@ -74,8 +91,17 @@ describe('capability hub navigation', () => {
     expect(routerSource.includes("path='/mcp'")).toBe(true);
     expect(routerSource.includes("path='/presets'")).toBe(true);
     expect(routerSource.includes("path='/skills'")).toBe(true);
-    expect(routerSource.includes("path='/plugins'")).toBe(true);
+    expect(routerSource.includes("path='/plugins/*' element={<DisabledPluginsRedirect />}")).toBe(true);
+    expect(routerSource.includes("path='/settings/plugins/*' element={<DisabledPluginsRedirect />}")).toBe(true);
+    expect(routerSource.includes('const PluginPage')).toBe(false);
     expect(routerSource.includes('LegacyExtensionsRedirect')).toBe(true);
     expect(routerSource.includes("path='/extensions'")).toBe(true);
+  });
+
+  test('does not let malformed encoded video paths crash the primary rail', () => {
+    const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+
+    expect(siderSource.includes('safeDecodeUriComponent')).toBe(true);
+    expect(siderSource.includes('decodeURIComponent(m[1])')).toBe(false);
   });
 });

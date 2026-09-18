@@ -17,6 +17,8 @@ pub struct TvShowVideo {
     pub id: i64,
     pub title: String,
     pub cover_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
     pub workflow: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
@@ -51,14 +53,24 @@ pub struct TvShowVideo {
     pub archive_version: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub award_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub award_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TvShowListResponse {
+    #[serde(default)]
     pub total: i64,
+    #[serde(default)]
     pub page: i32,
+    #[serde(default)]
     pub page_size: i32,
+    #[serde(default)]
     pub list: Vec<TvShowVideo>,
 }
 
@@ -77,6 +89,10 @@ pub struct TvShowPublishRequest {
     pub cover_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_object_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_object_key: Option<String>,
     pub package_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_object_key: Option<String>,
@@ -86,6 +102,13 @@ pub struct TvShowPublishRequest {
     pub package_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_version: Option<i32>,
+    /// `None` / `0` publishes to the plaza; a positive id submits to that campaign.
+    #[serde(default, skip_serializing_if = "skip_campaign_id")]
+    pub campaign_id: Option<i64>,
+}
+
+fn skip_campaign_id(id: &Option<i64>) -> bool {
+    matches!(id, None | Some(0))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +126,8 @@ pub struct TvShowPublishResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at: Option<String>,
     pub author: TvShowAuthor,
+    #[serde(default, skip_serializing_if = "skip_campaign_id")]
+    pub campaign_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,4 +146,7 @@ pub struct TvShowPublishSessionRequest {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// `None` / `0` publishes to the plaza; a positive id submits to that campaign.
+    #[serde(default, skip_serializing_if = "skip_campaign_id")]
+    pub campaign_id: Option<i64>,
 }

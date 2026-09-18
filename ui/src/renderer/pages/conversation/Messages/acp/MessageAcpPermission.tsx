@@ -1,8 +1,10 @@
 
 import { parseConfirmationCorrelationId, type IMessageAcpPermission } from '@/common/chat/chatLib';
 import { optionalDisplayText, toDisplayText } from '@/common/chat/displayText';
+import type { AcpPermissionOptionKind } from '@/common/types/platform/acpTypes';
 import { conversation } from '@/common/adapter/ipcBridge';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
+import type { I18nKey } from '@/renderer/services/i18n';
 import ApprovalCard from '@renderer/components/beautifulUi/approvalCard/ApprovalCard';
 import { kindFromPermissionAction } from '@renderer/components/beautifulUi/approvalCard/approvalCardModel';
 import { Typography } from '@arco-design/web-react';
@@ -10,6 +12,16 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const { Text } = Typography;
+
+const ACP_PERMISSION_OPTION_I18N_KEYS: Record<AcpPermissionOptionKind, I18nKey> = {
+  allow_once: 'messages.confirmation.yesAllowOnce',
+  allow_always: 'messages.confirmation.yesAllowAlways',
+  reject_once: 'messages.confirmation.rejectOnce',
+  reject_always: 'messages.confirmation.rejectAlways',
+};
+
+const isAcpPermissionOptionKind = (value: string): value is AcpPermissionOptionKind =>
+  Object.prototype.hasOwnProperty.call(ACP_PERMISSION_OPTION_I18N_KEYS, value);
 
 interface MessageAcpPermissionProps {
   message: IMessageAcpPermission;
@@ -47,7 +59,11 @@ const MessageAcpPermission: React.FC<MessageAcpPermissionProps> = React.memo(({ 
       ? (options ?? []).map((option, index) => {
           const optionName = optionalDisplayText(option?.name) || `${t('messages.option')} ${index + 1}`;
           const option_id = optionalDisplayText(option?.option_id) || `option_${index}`;
-          return { id: option_id, label: optionName };
+          const kind = optionalDisplayText(option?.kind);
+          const translationKey =
+            kind && isAcpPermissionOptionKind(kind) ? ACP_PERMISSION_OPTION_I18N_KEYS[kind] : undefined;
+          const label = translationKey ? t(translationKey, { defaultValue: optionName }) : optionName;
+          return { id: option_id, label };
         })
       : [];
 

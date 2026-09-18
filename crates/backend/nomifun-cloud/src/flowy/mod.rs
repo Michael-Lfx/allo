@@ -1,6 +1,7 @@
 //! Flowy `/claw` REST API client.
 
 mod asr;
+mod agent_quality;
 mod billing;
 mod growth;
 mod im;
@@ -10,7 +11,9 @@ mod media_types;
 mod model_resolve;
 mod oss;
 mod response;
+mod campaign;
 mod skills;
+mod generation_templates;
 mod tv_show;
 mod types;
 
@@ -19,10 +22,13 @@ pub use media::{
     video_task_failure_message, video_task_status_label, video_task_status_user_message_zh,
 };
 pub use media_types::{
-    clamp_minimax_h3_duration, is_minimax_h3_model, normalize_minimax_h3_resolution,
+    clamp_minimax_h3_duration, clamp_wan3_duration, extract_provider_error_code,
+    extract_provider_error_message, film_telemetry_error, infer_film_failure_channel,
+    is_minimax_h3_model, is_wan3_model, normalize_minimax_h3_resolution, normalize_wan3_resolution,
     CreateVideoTaskResponse, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
-    MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO, DEFAULT_MINIMAX_H3_RESOLUTION, MINIMAX_H3_DURATION_MAX,
-    MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS, OssPresignPutData, OssPresignPutRequest,
+    MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO, DEFAULT_MINIMAX_H3_RESOLUTION, DEFAULT_WAN3_RESOLUTION,
+    MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS, WAN3_DURATION_MAX,
+    WAN3_DURATION_MIN, WAN3_RESOLUTIONS, OssPresignPutData, OssPresignPutRequest,
     VIDEO_TASK_STATUS_CANCELLED, VIDEO_TASK_STATUS_EXPIRED, VIDEO_TASK_STATUS_FAILED,
     VIDEO_TASK_STATUS_SUCCEEDED, VideoContentImage, VideoCreateParams, VideoTaskRecord,
 };
@@ -41,6 +47,16 @@ use crate::transport::HttpTransport;
 
 fn form_urlencode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+fn available_models_claw_path(category: i32, app: &str) -> String {
+    let mut path = format!("/api/v2/model/availableListClaw?category={category}");
+    let app = app.trim();
+    if !app.is_empty() {
+        path.push_str("&app=");
+        path.push_str(&form_urlencode(app));
+    }
+    path
 }
 
 /// Client for Flowy user account, credits, and device APIs.
@@ -211,7 +227,9 @@ impl FlowyApiClient {
             "/credits/usageByTurn?turnId={}",
             form_urlencode(turn_id)
         );
-        self.get_data(&path, Some(session)).await
+        self.get_data(&path, Some(session))
+            .await
+            .map(TurnCreditUsage::normalize)
     }
 
     pub async fn send_bind_email_code(
@@ -247,12 +265,13 @@ impl FlowyApiClient {
     pub async fn report_client_package(
         &self,
         session: &ServerSession,
+        client_id: Option<String>,
     ) -> Result<(), ServerClientError> {
         let body = ClientPackageRequest {
             package_type: "stable".to_string(),
             app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             platform: Some(crate::platform::client_platform()),
-            client_id: None,
+            client_id,
         };
         self.post_no_data("/user/clientPackage", Some(session), &body)
             .await
@@ -261,11 +280,18 @@ impl FlowyApiClient {
     pub async fn presence_heartbeat(
         &self,
         session: &ServerSession,
+        client_id: Option<String>,
     ) -> Result<(), ServerClientError> {
+        let app = self.config.app.trim();
         let body = PresenceHeartbeatRequest {
             platform: Some(crate::platform::client_platform()),
             app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            client_id: None,
+            client_id,
+            app: if app.is_empty() {
+                None
+            } else {
+                Some(app.to_string())
+            },
         };
         self.post_no_data("/presence/heartbeat", Some(session), &body)
             .await
@@ -286,7 +312,7 @@ impl FlowyApiClient {
         category: Option<i32>,
     ) -> Result<AvailableModelsClaw, ServerClientError> {
         let category = category.unwrap_or(1);
-        let path = format!("/model/availableListClaw?category={category}");
+        let path = available_models_claw_path(category, &self.config.app);
         self.get_data(&path, Some(session)).await
     }
 
@@ -477,5 +503,59 @@ mod api_tests {
             .await
             .expect("exchange");
         assert_eq!(jwt, "jwt-wechat-open");
+    }
+
+    #[tokio::test]
+    async fn available_models_claw_v2_decodes_reasoning_effort_payload() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/model/availableListClaw"))
+            .and(query_param("category", "1"))
+            .and(query_param("app", "flowymes"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"auto":[{"id":"AIPC-auto-balance","name":"平衡","extra":"{\"input\":[\"text\"],\"tools\":true,\"context_window\":500000}","category":1}],"cloud":[{"id":"AIPC-glm-5","name":"GLM 5","extra":"{\"reasoning\":true,\"reasoning_effort\":[\"low\",\"high\"],\"max_tokens\":16384}","category":1}]}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let config = test_config(&server.uri());
+        let api = FlowyApiClient::new(&config).expect("client");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-catalog-v2") };
+        let session = ServerSession::from_config(&config, tmp.path());
+
+        let response = api
+            .get_available_models_claw(&session, None)
+            .await
+            .expect("catalog response");
+        let auto = response.auto.first().expect("auto model");
+        assert_eq!(auto.api_model_id(), "AIPC-auto-balance");
+        assert!(auto.model_extra().tools);
+        assert!(auto.model_extra().reasoning_effort.is_empty());
+        let entry = response.cloud.first().expect("model");
+        let extra = entry.model_extra();
+
+        assert_eq!(entry.api_model_id(), "AIPC-glm-5");
+        assert!(extra.reasoning);
+        assert_eq!(extra.reasoning_effort, vec!["low", "high"]);
+        assert_eq!(extra.reasoning_effort_levels(), Some(vec!["low".into(), "high".into()]));
+    }
+
+    #[test]
+    fn available_models_claw_path_appends_app_query() {
+        assert_eq!(
+            available_models_claw_path(1, "flowymes"),
+            "/api/v2/model/availableListClaw?category=1&app=flowymes"
+        );
+        assert_eq!(
+            available_models_claw_path(4, " flowymes "),
+            "/api/v2/model/availableListClaw?category=4&app=flowymes"
+        );
+        assert_eq!(
+            available_models_claw_path(6, ""),
+            "/api/v2/model/availableListClaw?category=6"
+        );
     }
 }

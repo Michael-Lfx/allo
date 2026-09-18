@@ -11,11 +11,7 @@ describe('guid phase-one visual sample', () => {
     expect(page.includes('styles.heroTitlePrimary')).toBe(true);
     expect(page.includes('onPaste={guidInput.onPaste}')).toBe(true);
     expect(page.includes('onSend={handleComposerSend}')).toBe(true);
-    const sendHandler = page.slice(
-      page.indexOf('const handleComposerSend = useCallback(() => {'),
-      page.indexOf('const handleComposerSend = useCallback(() => {') + 700
-    );
-    expect(sendHandler.includes('send.sendMessageHandler()')).toBe(true);
+    expect(page.includes('const handleComposerSend = send.sendMessageHandler;')).toBe(true);
     expect(inputCard.includes('styles.guidInputCardWrapActive')).toBe(true);
     expect(styles.includes('.guidInputCardWrap:focus-within')).toBe(true);
     const composerStyles = styles.slice(

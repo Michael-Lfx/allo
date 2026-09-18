@@ -14,6 +14,7 @@ export type GuidInitialMessage = {
   initial_admission_epoch: 0;
   input: string;
   files?: string[];
+  workspace_path?: string;
   inject_skills?: string[];
   idempotency_key: string;
 };
@@ -29,6 +30,7 @@ type PersistGuidInitialMessageHandoffParams = {
   conversationId: ConversationId;
   input: string;
   files: readonly string[];
+  workspacePath?: string;
   initialSkillIds: readonly string[];
   idempotencyKey: string;
 };
@@ -44,6 +46,7 @@ export function persistGuidInitialMessageHandoff({
   conversationId,
   input,
   files,
+  workspacePath,
   initialSkillIds,
   idempotencyKey,
 }: PersistGuidInitialMessageHandoffParams): GuidInitialMessageHandoff | null {
@@ -54,6 +57,7 @@ export function persistGuidInitialMessageHandoff({
     initial_admission_epoch: 0,
     input,
     ...(files.length > 0 ? { files: [...files] } : {}),
+    ...(workspacePath !== undefined ? { workspace_path: workspacePath } : {}),
     ...(initialSkillIds.length > 0 ? { inject_skills: [...initialSkillIds] } : {}),
     idempotency_key: idempotencyKey,
   };

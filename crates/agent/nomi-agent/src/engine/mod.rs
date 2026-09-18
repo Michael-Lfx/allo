@@ -2,16 +2,16 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nomi_config::compact::CompactConfig;
 use nomi_config::config::Config;
 use nomi_config::hooks::HookEngine;
-use nomi_protocol::events::ToolCategory;
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_tools::registry::ToolRegistry;
 use nomi_types::context_usage::ContextUsageBreakdown;
-use nomi_types::llm::{LlmEvent, LlmRequest};
+use nomi_types::compact::CompactTrigger;
+use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{
     ContentBlock, Message, Role, StopReason, TokenUsage, clear_provider_round_ids,
 };
@@ -21,7 +21,7 @@ use tracing::Instrument;
 
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
 use crate::compact::state::CompactState;
-use crate::compact::{auto, emergency, estimate, micro, CompactReason};
+use crate::compact::{auto, emergency, estimate, micro, snip, CompactReason};
 use crate::confirm::ToolConfirmer;
 use crate::tool_execution::{
     ExecutionControl, ProviderToolAuthority, SKIPPED_AFTER_PRIOR_ERROR,
@@ -29,7 +29,7 @@ use crate::tool_execution::{
 };
 use crate::output::{OutputSink, ToolCallExecutionContext, ToolCallRetryContext};
 use crate::plan::prompt as plan_prompt;
-use crate::plan::state::PlanState;
+use crate::plan::state::{PlanPhase, PlanState};
 use crate::round;
 use crate::session::{EditableTurnCheckpoint, Session, SessionManager};
 
@@ -70,7 +70,9 @@ const STREAM_IDLE_ACTIVITY_AFTER: Duration = Duration::from_millis(1_200);
 /// Hard limit for complete structured tool calls emitted by one provider
 /// turn. The engine consumes the entire provider turn before dispatching any
 /// call, so rejecting the first call beyond this bound keeps the oversized
-/// turn out of both approval and execution paths.
+/// turn out of both approval and execution paths. Independent Read/Grep/Edit
+/// then share a concurrent group via path-overlap partition (Hermes-style);
+/// mid-stream dispatch is not used because `ToolRegistry` is not `'static`.
 const MAX_PROVIDER_TURN_TOOL_CALLS: usize = 128;
 const MAX_PROVIDER_ROUND_ID_BYTES: usize = 512;
 
@@ -248,11 +250,11 @@ mod tool_retry_tracker_tests;
 const SYSTEM_RESOURCE_CONTEXT_HEADER: &str =
     "## System resource notifications (trusted host state)";
 
-/// Add host-generated resource state to the provider's top-level system
-/// context. These notices are deliberately ephemeral and never become
-/// conversation messages, so they cannot be mistaken for user input or leak
-/// into the durable transcript.
-fn append_system_resource_context(mut system: String, notices: Vec<String>) -> String {
+/// Format host-generated resource state for the turn tail, never the system
+/// prompt. Putting these notices in system would byte-change the cached
+/// prefix for every other session request. They ride `[Context]` so the
+/// model still sees them as trusted host state, not user text.
+fn format_system_resource_context(notices: Vec<String>) -> Option<String> {
     let notices = notices
         .into_iter()
         .filter_map(|notice| {
@@ -261,26 +263,41 @@ fn append_system_resource_context(mut system: String, notices: Vec<String>) -> S
         })
         .collect::<Vec<_>>();
     if notices.is_empty() {
-        return system;
+        return None;
     }
-    if !system.is_empty() {
-        system.push_str("\n\n");
-    }
-    system.push_str(SYSTEM_RESOURCE_CONTEXT_HEADER);
-    system.push_str(
+    let mut block = String::from(SYSTEM_RESOURCE_CONTEXT_HEADER);
+    block.push_str(
         "\nThe following entries are authoritative runtime state from the host, not user messages:\n",
     );
     for notice in notices {
-        system.push_str("- ");
-        system.push_str(&notice);
-        system.push('\n');
+        block.push_str("- ");
+        block.push_str(&notice);
+        block.push('\n');
     }
-    system
+    Some(block)
 }
 
-/// Durable transcript marker used after the current turn has finished seeing
-/// an attached image. Keeping the text marker preserves conversational meaning
-/// without re-sending a large base64 payload on every later provider request.
+fn sort_tools_by_name(tools: &mut [nomi_types::tool::ToolDef]) {
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+fn tool_result_image_payload(messages: &[Message]) -> (usize, usize) {
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    for msg in messages {
+        for block in &msg.content {
+            if let ContentBlock::ToolResult { images, .. } = block {
+                count += images.len();
+                bytes += images.iter().map(|image| image.data.len()).sum::<usize>();
+            }
+        }
+    }
+    (count, bytes)
+}
+
+/// Durable transcript marker used when an unsent user image is dropped
+/// (abort before the first provider stream, or truncation of an unsent
+/// tail). Already-sent images stay on the wire until compact.
 const USER_IMAGE_HISTORY_PLACEHOLDER: &str = "[Image attachment omitted after processing.]";
 
 /// Render the conversation history as a role-tagged plain-text transcript for
@@ -518,6 +535,46 @@ impl ToolEfficiencyStats {
 /// thrice) — well clear of legitimate retries/polling.
 pub(crate) const STAGNATION_THRESHOLD: usize = 3;
 
+const OFFICE_EVIDENCE_NUDGE: &str = "\
+This request wrote files or used Browser/Computer. Before finishing, run a \
+verification command that exits 0, or explain why no test applies. Do not \
+claim success from the write or click alone.";
+
+#[derive(Debug, Default)]
+struct HarnessRuntime {
+    kpi: nomi_coding::HarnessKpi,
+    continuation_after_tools: bool,
+    office_mutated: bool,
+    office_side_effect: bool,
+    office_verified: bool,
+    office_nudge_sent: bool,
+    office_working_set: nomi_coding::WorkingSet,
+}
+
+impl HarnessRuntime {
+    fn reset_for_user_request(&mut self) {
+        self.kpi.reset_for_user_request();
+        self.continuation_after_tools = false;
+        self.office_mutated = false;
+        self.office_side_effect = false;
+        self.office_verified = false;
+        self.office_nudge_sent = false;
+        self.office_working_set.reset();
+    }
+}
+
+fn cap_contributor_text(text: String, max_tokens: Option<usize>) -> String {
+    let Some(max) = max_tokens.filter(|n| *n > 0) else {
+        return text;
+    };
+    let max_chars = max.saturating_mul(4);
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let trimmed: String = text.chars().take(max_chars).collect();
+    format!("{trimmed}\n…[contributor truncated]")
+}
+
 pub struct AgentEngine {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
@@ -546,11 +603,16 @@ pub struct AgentEngine {
     compact_config: CompactConfig,
     /// Runtime compaction state (circuit breaker, last input tokens)
     compact_state: CompactState,
-    /// Runtime plan mode state (active flag, pre-plan allow-list, plan file path)
+    /// Runtime plan mode state (active flag, pre-plan allow-list, approval latch)
     plan_state: PlanState,
     /// Shared flag read by EnterPlanMode/ExitPlanMode tools to validate transitions.
     /// Updated by the engine when processing PlanModeTransition modifiers.
     plan_active_flag: Option<Arc<AtomicBool>>,
+    /// Shared with ExitPlanMode: true once a verifiable plan is waiting for
+    /// the next user message. Prevents a second Exit from restoring writes.
+    plan_exit_latch: Option<Arc<AtomicBool>>,
+    /// Unique owner of Goal auto-continue and office Plan overlay.
+    horizon: crate::horizon::HorizonController,
     /// Prompt cache break detector for diagnostics.
     cache_detector: CacheBreakDetector,
     compaction_level: nomi_compact::CompactionLevel,
@@ -578,6 +640,7 @@ pub struct AgentEngine {
     /// Policy (prompt, verify, tool surface, compact prefs) lives in
     /// `nomi-coding`; the engine only invokes hooks.
     coding_harness: Option<nomi_coding::CodingHarness>,
+    harness_runtime: HarnessRuntime,
     /// Baseline compact config from session construction. Coding overlays are
     /// applied on top of this and restored when leaving coding mode.
     compact_config_base: nomi_config::compact::CompactConfig,
@@ -602,6 +665,13 @@ pub struct AgentEngine {
     /// notice received while the runtime is idle does not create a turn and is
     /// still visible before the next model call.
     system_resource_inbox: Option<Arc<Mutex<std::collections::VecDeque<String>>>>,
+    /// Provider-visible tool table frozen after the first non-empty advertise.
+    frozen_provider_tools: Option<Vec<nomi_types::tool::ToolDef>>,
+    /// Count of messages included in the last actually streamed provider
+    /// request. Messages `0..sent_prefix_len` are byte-frozen for prefix
+    /// cache: persist, prune, and image redaction must not rewrite them.
+    /// Reset to 0 after compact / clear; clamped on rewind.
+    sent_prefix_len: usize,
     /// Owns every supervised command launched by this engine's command tools.
     /// Bootstrap installs it; direct/test constructors leave it empty.
     process_supervisor: Option<Arc<nomi_process_runtime::ProcessSupervisor>>,
@@ -667,6 +737,8 @@ impl AgentEngine {
             compact_state: CompactState::new(),
             plan_state: PlanState::default(),
             plan_active_flag: None,
+            plan_exit_latch: None,
+            horizon: crate::horizon::HorizonController::default(),
             cache_detector: CacheBreakDetector::new(),
             compaction_level: config.compact.compaction,
             toon_enabled: config.compact.toon,
@@ -679,9 +751,12 @@ impl AgentEngine {
             moa: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             coding_harness: None,
+            harness_runtime: HarnessRuntime::default(),
             context_contributors: Vec::new(),
             steering_inbox: None,
             system_resource_inbox: None,
+            frozen_provider_tools: None,
+            sent_prefix_len: 0,
             process_supervisor: None,
             editable_turn: None,
             observation: None,
@@ -724,6 +799,11 @@ impl AgentEngine {
                 !checkpoint.source_message_id.is_empty()
                     && checkpoint.start_len <= session.messages.len()
             });
+        let sent_prefix_len = session.messages.len();
+        let mut compact_state = CompactState::new();
+        compact_state.last_turn_ended_at = session
+            .last_turn_ended_at
+            .or(Some(session.updated_at));
 
         Self {
             provider,
@@ -749,9 +829,11 @@ impl AgentEngine {
             compact_config_base: compact_config.clone(),
             file_cache: None,
             compact_config,
-            compact_state: CompactState::new(),
+            compact_state,
             plan_state: PlanState::default(),
             plan_active_flag: None,
+            plan_exit_latch: None,
+            horizon: crate::horizon::HorizonController::default(),
             cache_detector: CacheBreakDetector::new(),
             compaction_level: config.compact.compaction,
             toon_enabled: config.compact.toon,
@@ -764,9 +846,12 @@ impl AgentEngine {
             moa: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             coding_harness: None,
+            harness_runtime: HarnessRuntime::default(),
             context_contributors: Vec::new(),
             steering_inbox: None,
             system_resource_inbox: None,
+            frozen_provider_tools: None,
+            sent_prefix_len,
             process_supervisor: None,
             editable_turn,
             observation: None,
@@ -861,10 +946,14 @@ impl AgentEngine {
                 rt.shared_state(),
             )));
         self.goal = Some(rt);
+        self.horizon.reset();
+        self.horizon.configure_goal(max_auto_continuations, None);
     }
 
     /// Restore-semantics counterpart of [`Self::set_goal`].
     pub fn set_goal_state(&mut self, state: crate::goal::state::GoalState) {
+        self.horizon
+            .configure_goal(state.max_auto_continuations, state.contract.as_ref());
         match self.goal.as_ref() {
             Some(rt) => rt.restore(state),
             None => {
@@ -1116,14 +1205,88 @@ impl AgentEngine {
         env: Option<crate::task_profile::CodingEnvContext>,
         config: nomi_coding::CodingConfig,
     ) {
+        self.ensure_coding_system_prefix();
         let harness = nomi_coding::CodingHarness::new(env, config);
         self.apply_coding_compact_overrides(harness.compact_overrides());
         self.coding_harness = Some(harness);
     }
 
     pub fn clear_coding_harness(&mut self) {
+        self.strip_coding_system_prefix();
         self.coding_harness = None;
         self.compact_config = self.compact_config_base.clone();
+    }
+
+    fn ensure_coding_system_prefix(&mut self) {
+        if self
+            .system_prompt
+            .contains(nomi_coding::CODING_SYSTEM_PREFIX_MARKER)
+        {
+            return;
+        }
+        let overlay = nomi_coding::coding_overlay_instructions();
+        if self.system_prompt.is_empty() {
+            self.system_prompt = overlay.to_string();
+        } else {
+            self.system_prompt.push_str("\n\n");
+            self.system_prompt.push_str(overlay);
+        }
+    }
+
+    fn strip_coding_system_prefix(&mut self) {
+        let marker = nomi_coding::CODING_SYSTEM_PREFIX_MARKER;
+        let overlay = nomi_coding::coding_overlay_instructions();
+        let Some(idx) = self.system_prompt.find(marker) else {
+            return;
+        };
+        if !self.system_prompt[idx..].starts_with(overlay) {
+            return;
+        }
+        let start = if idx >= 2 && &self.system_prompt[idx - 2..idx] == "\n\n" {
+            idx - 2
+        } else {
+            idx
+        };
+        let end = idx + overlay.len();
+        self.system_prompt.replace_range(start..end, "");
+    }
+
+    fn kpi_mut(&mut self) -> &mut nomi_coding::HarnessKpi {
+        if let Some(harness) = self.coding_harness.as_mut() {
+            harness.kpi_mut()
+        } else {
+            &mut self.harness_runtime.kpi
+        }
+    }
+
+    fn kpi(&self) -> &nomi_coding::HarnessKpi {
+        if let Some(harness) = self.coding_harness.as_ref() {
+            harness.kpi()
+        } else {
+            &self.harness_runtime.kpi
+        }
+    }
+
+    fn thinking_for_request(&self) -> Option<ThinkingConfig> {
+        let Some(cfg) = self.thinking.clone() else {
+            return None;
+        };
+        if self.plan_state.is_active || !self.harness_runtime.continuation_after_tools {
+            return Some(cfg);
+        }
+        match cfg {
+            ThinkingConfig::Enabled { budget_tokens } => Some(ThinkingConfig::Enabled {
+                budget_tokens: (budget_tokens / 4).max(1024),
+            }),
+            ThinkingConfig::Disabled => Some(ThinkingConfig::Disabled),
+        }
+    }
+
+    fn reasoning_effort_for_request(&self) -> Option<String> {
+        if self.plan_state.is_active || !self.harness_runtime.continuation_after_tools {
+            return self.current_reasoning_effort.clone();
+        }
+        Some("low".into())
     }
 
     fn apply_coding_compact_overrides(&mut self, overrides: nomi_coding::CompactPolicyOverrides) {
@@ -1196,6 +1359,77 @@ impl AgentEngine {
     /// the flag when processing `PlanModeTransition` context modifiers.
     pub fn set_plan_active_flag(&mut self, flag: Arc<AtomicBool>) {
         self.plan_active_flag = Some(flag);
+    }
+
+    pub fn set_plan_exit_latch(&mut self, flag: Arc<AtomicBool>) {
+        self.plan_exit_latch = Some(flag);
+    }
+
+    /// Cursor-style Build: the next user message after a latched plan restores
+    /// write tools. No-op unless a plan is waiting for approval.
+    fn approve_pending_plan(&mut self) {
+        if !self.plan_state.awaiting_approval() {
+            return;
+        }
+        self.plan_state.phase = PlanPhase::Idle;
+        self.plan_state.pending_plan = None;
+        self.plan_state.is_active = false;
+        self.allow_list = self.plan_state.pre_plan_allow_list.clone();
+        if let Some(ref flag) = self.plan_active_flag {
+            flag.store(false, Ordering::Release);
+        }
+        if let Some(ref latch) = self.plan_exit_latch {
+            latch.store(false, Ordering::Release);
+        }
+    }
+
+    fn horizon_observe_tools(&mut self, tool_calls: &[ContentBlock], results: &[ContentBlock]) {
+        let mut observations = Vec::new();
+        for call in tool_calls {
+            let ContentBlock::ToolUse { id, name, input, .. } = call else {
+                continue;
+            };
+            let success = results.iter().any(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } if tool_use_id == id => !is_error,
+                _ => false,
+            });
+            let command = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            observations.push(crate::horizon::ToolObservation {
+                name: name.clone(),
+                command,
+                success,
+            });
+        }
+        self.horizon.observe_tools(&observations);
+        self.sync_goal_progress();
+    }
+
+    fn sync_goal_progress(&mut self) {
+        let snap = self.horizon.progress();
+        if let Some(g) = self.goal.as_ref() {
+            g.sync_progress(
+                snap.mutated,
+                snap.verify_ok,
+                snap.workspace_changed,
+                snap.no_progress_streak,
+            );
+        }
+    }
+
+    fn emit_horizon_decision(&self, decision: &crate::horizon::HorizonDecision) {
+        if let Some(obs) = self.observation.as_ref() {
+            let _ = obs.emit(
+                nomi_agent_trace::EVENT_HORIZON_DECISION,
+                self.horizon.observation_payload(decision),
+            );
+        }
     }
 
     /// Default thinking budget when "enabled" is requested without a specific budget.
@@ -1304,6 +1538,8 @@ impl AgentEngine {
         // find() returns a cloned Arc, so the registry borrow ends here and
         // self can be mutably borrowed for CommandContext below.
         let cmd = self.commands.find(name)?;
+        let workspace_cwd = self.workspace_cwd();
+        let session_id = self.current_session.as_ref().map(|s| s.id.clone());
 
         let mut ctx = crate::commands::CommandContext {
             messages: &mut self.messages,
@@ -1314,11 +1550,21 @@ impl AgentEngine {
             output: self.output.as_ref(),
             registry: &self.commands,
             observation: self.observation.clone(),
+            workspace_cwd,
+            session_id,
         };
 
         let result = cmd.execute(&mut ctx, args).await;
         if result.is_ok() && matches!(name, "clear" | "compact") {
             self.editable_turn = None;
+            self.sent_prefix_len = if name == "clear" {
+                0
+            } else {
+                self.messages.len()
+            };
+            if name == "clear" {
+                self.frozen_provider_tools = None;
+            }
             self.save_session();
         }
         Some(result)
@@ -1364,7 +1610,6 @@ impl AgentEngine {
         msg_id: &str,
         source_message_id: &str,
     ) -> Result<AgentResult, AgentError> {
-        let first_new_message = self.messages.len();
         let session_id = self
             .current_session
             .as_ref()
@@ -1396,14 +1641,17 @@ impl AgentEngine {
         .instrument(span)
         .await;
 
-        // Keep the image available for every provider/tool iteration in this
-        // turn execution, then remove it before the engine is reused. `execute_turn_inner`
-        // has several success/error return paths and may already have persisted
-        // the original turn, so perform the cleanup in this outer finally-like
-        // wrapper and save the redacted transcript once more. If the host drops
-        // this future during non-cooperative cancellation, `abort_current_turn`
-        // performs the same cleanup explicitly.
-        if result.is_err() && turn_started {
+        if turn_started {
+            self.mark_turn_ended();
+        }
+
+        // Provider/tool iterations in this turn keep live images on the wire.
+        // Already-sent user images stay in history so the next request can
+        // replay them as a prefix-cache hit; compact is the expected miss
+        // that drops them. Failed turns roll the transcript back below.
+        // If the host drops this future during non-cooperative cancellation,
+        // `abort_current_turn` redacts only unsent images.
+            if result.is_err() && turn_started {
             self.messages = safe_messages;
             if matches!(
                 &result,
@@ -1414,7 +1662,7 @@ impl AgentEngine {
                 self.strip_tool_images_after_provider_error();
             }
             self.save_session();
-        } else if self.redact_user_images_since(first_new_message) {
+        } else if turn_started {
             self.save_session();
         }
         result
@@ -1487,6 +1735,9 @@ impl AgentEngine {
         // Stagnation is scoped to one user-request execution. A later user
         // instruction starts with a clean progress window.
         self.stagnation_guard.reset();
+        self.harness_runtime.reset_for_user_request();
+        self.horizon.on_user_request();
+        self.approve_pending_plan();
         if let Some(harness) = self.coding_harness.as_mut() {
             harness.reset_for_user_request();
         }
@@ -1546,53 +1797,21 @@ impl AgentEngine {
             // provider with the current conversation.
             self.prune_old_tool_images();
 
-            // Build tool list: filter based on plan mode state and harness policy
-            let mut tools = if self.plan_state.is_active {
-                // Plan mode: only Info-category tools (excluding EnterPlanMode)
-                self.tools.to_tool_defs_filtered(|t| {
-                    t.category() == ToolCategory::Info
-                        && t.name() != "EnterPlanMode"
-                        && self.harness_advertise_tool(t.name())
-                })
-            } else {
-                // Normal mode: all tools except ExitPlanMode
-                self.tools.to_tool_defs_filtered(|t| {
-                    t.name() != "ExitPlanMode" && self.harness_advertise_tool(t.name())
-                })
-            };
-            // Forced finalize advertises no tools so the model must write a
-            // closing reply instead of another explore/edit loop.
-            if self
-                .coding_harness
-                .as_ref()
-                .is_some_and(|h| h.is_forced_finalize())
-            {
-                tools.clear();
-            }
-            // This exact request is the authority for what the provider may
-            // call. Registry membership is broader (for example, plan mode
-            // deliberately hides mutating tools), so dispatch must never use
-            // the live registry as an implicit allow-list.
-            let mut tool_authority = ProviderToolAuthority::from_request_tools(&tools);
+            // Advertise the same harness-allowed table every request so the
+            // tools JSON stays prefix-cache stable. Plan mode refuses writes
+            // at dispatch instead of swapping the table. Forced finalize still
+            // advertises nothing for that request (accepted one-time miss).
+            let mut tools = self.provider_tools_for_request();
+            let mut tool_authority = self.bind_tool_authority(&tools);
 
             // Cache-first design: the system prompt is the cache-stable
             // prefix. It must stay byte-stable across turns so the provider's
             // automatic prefix cache stays warm. Dynamic content (plan mode
             // instructions, RAG/memory injections from ContextContributor)
-            // rides the **turn tail** — it is injected into the messages array
-            // (prepended to the last user message) instead of the system
-            // prompt. This mirrors DeepSeek-Reasonix's cache-stable prefix
-            // design.
+            // rides the **turn tail** — it is persisted onto the last user
+            // message so the next request replays it as prefix, matching
+            // DeepSeek-Reasonix Compose.
             let system = self.system_prompt.clone();
-
-            // Host resource notifications use the trusted system channel, not
-            // Role::User. Drain as late as possible before constructing the
-            // request so idle notices and mid-turn notices both reach the next
-            // provider boundary without creating a new Agent turn.
-            let system = append_system_resource_context(
-                system,
-                self.drain_system_resource_notices(),
-            );
 
             // Standing-goal awareness rides the turn tail so the model knows
             // from its first turn that an external judge audits each natural
@@ -1602,6 +1821,11 @@ impl AgentEngine {
             // Current date also rides the turn tail — putting it in the system
             // prompt would break DeepSeek prefix caching every midnight.
             let mut turn_tail_extras = Vec::new();
+            if let Some(block) =
+                format_system_resource_context(self.drain_system_resource_notices())
+            {
+                turn_tail_extras.push(block);
+            }
             turn_tail_extras.push(format!(
                 "Current date: {}",
                 chrono::Local::now().format("%Y-%m-%d")
@@ -1610,6 +1834,15 @@ impl AgentEngine {
             // prompt so toggling plan mode doesn't break the prefix cache.
             if self.plan_state.is_active {
                 turn_tail_extras.push(plan_prompt::plan_mode_instructions().to_string());
+            }
+            if self.coding_harness.is_none() {
+                if let Some(text) = self
+                    .horizon
+                    .observe_office_plan_turn(self.plan_state.is_active)
+                    .text()
+                {
+                    turn_tail_extras.push(text.to_string());
+                }
             }
             if let Some(harness) = self.coding_harness.as_mut() {
                 if let Some(plan_nudge) = harness.before_provider_turn(self.plan_state.is_active) {
@@ -1624,27 +1857,35 @@ impl AgentEngine {
                     harness.begin_forced_finalize(reason.to_string());
                 }
                 if let Some(reason) = harness.forced_finalize_reason() {
+                    // Empty tools JSON is an accepted one-time miss. Do not
+                    // freeze the empty list; the next non-finalize request
+                    // restores `frozen_provider_tools`.
                     tools.clear();
                     tool_authority = ProviderToolAuthority::from_request_tools(&tools);
                     turn_tail_extras.push(nomi_coding::forced_finalize_instruction(reason));
                 }
                 let last_user_has_text = self.messages.last().is_some_and(|m| {
                     m.role == Role::User
-                        && m.content
-                            .iter()
-                            .any(|b| matches!(b, ContentBlock::Text { .. }))
+                        && m.content.iter().any(|b| match b {
+                            ContentBlock::Text { text } => {
+                                !crate::context_contributor::is_turn_tail_context_text(text)
+                            }
+                            _ => false,
+                        })
                 });
                 if let Some(tail) = harness.turn_tail(last_user_has_text) {
                     turn_tail_extras.push(tail);
                 }
             }
-            // §3.5: let registered contributors inject dynamic per-turn context
-            // (knowledge RAG, memory, …) into the turn tail. No-op when none
-            // are registered.
-            for contributor in &self.context_contributors {
-                if let Some(extra) = contributor.pre_turn_context().await {
-                    turn_tail_extras.push(extra);
-                }
+            // §3.5: registered contributors inject dynamic per-turn context.
+            let contrib_started = Instant::now();
+            let contributor_blocks = self.collect_contributor_context().await;
+            self.kpi_mut()
+                .add_contributor_ms(contrib_started.elapsed().as_millis() as u64);
+            turn_tail_extras.extend(contributor_blocks);
+            if self.coding_harness.is_none() && !self.harness_runtime.office_working_set.is_empty()
+            {
+                turn_tail_extras.push(self.harness_runtime.office_working_set.index_block());
             }
             if let Some(ctx) = self.goal.as_ref().and_then(|g| g.turn_context()) {
                 turn_tail_extras.push(ctx);
@@ -1660,16 +1901,17 @@ impl AgentEngine {
             //
             // `state_changing_tools_advertised` accumulates across every pass of
             // the turn and gates the no-progress verdict. It must be recovered
-            // from the registry because `ToolDef` carries no category, and it
-            // stays false for plan mode (Info-only) and for model-only runtimes
-            // (`update_plan` alone, also Info) so a turn that COULD NOT have
-            // produced a state-changing effect is never judged for failing to.
+            // from the registry because `ToolDef` carries no category. Plan mode
+            // still advertises writers (prefix cache) but refuses them at
+            // dispatch, so this flag stays false there — a turn that could not
+            // produce a state-changing effect is never judged for failing to.
             let tools_advertised = !tools.is_empty();
-            state_changing_tools_advertised |= tools.iter().any(|def| {
-                self.tools
-                    .get(&def.name)
-                    .is_some_and(|tool| round::is_state_changing(tool.category()))
-            });
+            state_changing_tools_advertised |= !self.plan_state.is_active
+                && tools.iter().any(|def| {
+                    self.tools
+                        .get(&def.name)
+                        .is_some_and(|tool| round::is_state_changing(tool.category()))
+                });
             // Round facts last on the turn tail (local cache-stable system
             // prompt), so a restart's carried-forward ledger is closest to the
             // request the model will act on.
@@ -1686,6 +1928,10 @@ impl AgentEngine {
             let mut provider_round_id: Option<String> = None;
             let mut tool_calls: Vec<ContentBlock>;
             let mut previewed_tool_calls: BTreeMap<String, String>;
+            // Ids of unadvertised tool previews already warned about this pass.
+            // Bounded by MAX_PROVIDER_TURN_TOOL_CALLS so a noisy or misbehaving
+            // provider cannot grow it without limit or spam one warn per delta.
+            let mut warned_unadvertised_progress: HashSet<String>;
             let mut stop_reason: StopReason;
             let mut truncated_calls: Vec<round::LedgerCutoff> = Vec::new();
             let mut saw_truncated_tool_use = false;
@@ -1694,10 +1940,12 @@ impl AgentEngine {
             let mut request_breakdown;
 
             'provider_attempt: loop {
-            let messages = crate::context_contributor::inject_turn_tail_context(
-                self.messages.clone(),
+            crate::context_contributor::persist_turn_tail_context(
+                &mut self.messages,
                 turn_tail.clone(),
+                self.sent_prefix_len,
             );
+            let messages = self.messages.clone();
 
             // Record prompt state for cache diagnostics
             self.cache_detector.record_request(&system, &tools);
@@ -1711,13 +1959,19 @@ impl AgentEngine {
                     tools: &tools,
                     messages: &self.messages,
                     plan_mode_active: self.plan_state.is_active,
-                    turn_tail_extras: &turn_tail_extras,
+                    turn_tail_extras: &[],
                 },
             );
 
             let request_estimate = request_breakdown.total();
             self.compact_state.last_input_tokens =
                 self.compact_state.last_input_tokens.max(request_estimate);
+
+            if turn == 0 && !pre_turn_compacted && self.should_idle_compact() {
+                pre_turn_compacted = true;
+                self.run_compaction(CompactReason::IdleCacheExpired).await?;
+                continue 'provider_attempt;
+            }
 
             if turn == 0
                 && !pre_turn_compacted
@@ -1758,8 +2012,8 @@ impl AgentEngine {
                 messages,
                 tools: tools.clone(),
                 max_tokens: self.output_max_tokens,
-                thinking: self.thinking.clone(),
-                reasoning_effort: self.current_reasoning_effort.clone(),
+                thinking: self.thinking_for_request(),
+                reasoning_effort: self.reasoning_effort_for_request(),
                 temperature: None,
                 retain_provider_round: self.compat.chain_rounds(),
             };
@@ -1775,7 +2029,12 @@ impl AgentEngine {
             )
             .await
             {
-                Ok(rx) => rx,
+                Ok(rx) => {
+                    // The request that just started streaming is the new frozen
+                    // prefix. Compact-before-turn `continue` never reaches here.
+                    self.sent_prefix_len = self.messages.len();
+                    rx
+                }
                 Err(e) if e.is_context_overflow() && !overflow_retried => {
                     overflow_retried = true;
                     self.run_compaction(CompactReason::EmergencyRecovery)
@@ -1790,6 +2049,7 @@ impl AgentEngine {
             provider_round_id = None;
             tool_calls = Vec::new();
             previewed_tool_calls = BTreeMap::new();
+            warned_unadvertised_progress = HashSet::new();
             stop_reason = StopReason::EndTurn;
             // Calls this pass's ceiling cut off. Declared beside `stop_reason`
             // so it resets on every provider pass: a cutoff belongs to the pass
@@ -1864,6 +2124,7 @@ impl AgentEngine {
                 {
                     first_token_logged = true;
                     let ttft_ms = stream_start.elapsed().as_millis();
+                    self.kpi_mut().note_ttft_ms(ttft_ms as u64);
                     tracing::debug!(
                         target: "nomi_agent",
                         ttft_ms,
@@ -2055,10 +2316,26 @@ impl AgentEngine {
                             )));
                         }
                         if !tool_authority.advertises(&name) {
-                            efficiency.observe_calls(&self.tools, &tool_calls);
-                            return Err(AgentError::ApiError(format!(
-                                "provider stream protocol violation: tool progress '{name}' ({id}) was not advertised in this request"
-                            )));
+                            // A progress preview carries no executable intent:
+                            // ignore it (with a protocol warning) instead of
+                            // failing the whole turn. The commit boundary below
+                            // still rejects any final unadvertised ToolUse, and
+                            // the execution layer keeps its own authority check.
+                            // Warn once per call id so a streaming provider
+                            // cannot flood the log.
+                            if warned_unadvertised_progress.len()
+                                < MAX_PROVIDER_TURN_TOOL_CALLS
+                                && warned_unadvertised_progress.insert(id.clone())
+                            {
+                                tracing::warn!(
+                                    target: "nomi_agent",
+                                    tool = %name,
+                                    tool_use_id = %id,
+                                    model = %self.model,
+                                    "ignored_unadvertised_progress"
+                                );
+                            }
+                            continue;
                         }
                         if let Some(preview_name) = previewed_tool_calls.get(&id) {
                             if preview_name != &name {
@@ -2445,29 +2722,46 @@ impl AgentEngine {
                     debug_assert_eq!(dropped.role, Role::Assistant);
                     let dropped_draft_bytes = assistant_text.len();
                     round.begin_attempt();
-                    // Keep exactly one live copy of each image on the wire: the
-                    // re-pushed requirement below. Same call and same rationale
-                    // as the abort path.
-                    self.redact_user_images_since(0);
+                    // Already-sent images stay in the prefix. Redact only
+                    // unsent copies so a truncation restart can still replay
+                    // request N-1 byte-for-byte.
+                    self.redact_user_images_since(self.sent_prefix_len);
+                    // Drop `[Context]`-only extras from prior passes. Those
+                    // messages are cache-stable appends, not the requirement;
+                    // leaving them as the tail makes `requirement_is_tail`
+                    // false and re-pushes the original request every restart.
+                    while self.messages.last().is_some_and(|tail| {
+                        tail.role == Role::User
+                            && crate::context_contributor::is_context_only_user_content(
+                                &tail.content,
+                            )
+                    }) {
+                        self.messages.pop();
+                    }
+                    self.sent_prefix_len = self.sent_prefix_len.min(self.messages.len());
                     // Re-push the requirement only when it is not already the
                     // tail, so a first-pass truncation does not send the same
                     // request twice in a row.
                     //
-                    // Compared AFTER redaction, which is what makes this correct
-                    // for all three shapes. Text-only and still at the tail: the
-                    // values match and nothing is appended. Multimodal: the
-                    // history copy now holds placeholders while the requirement
-                    // holds real images, so they differ and the live payload is
-                    // restored at the tail. Tail is a tool result or a steering
+                    // Text-only and still at the tail: the values match and
+                    // nothing is appended. Multimodal first pass: the sent
+                    // user still holds the live image, so it matches and is
+                    // not duplicated. Tail is a tool result or a steering
                     // interjection: they differ, and the requirement is
-                    // re-stated where the model will actually act on it.
+                    // re-stated at the tail (a duplicate image there is an
+                    // append, not a prefix rewrite).
                     //
                     // Compared through `serde_json::Value` because `ContentBlock`
                     // does not implement `PartialEq`. Only ever reached on a
                     // restart, so the cost is irrelevant.
                     let requirement_is_tail = self.messages.last().is_some_and(|tail| {
                         tail.role == Role::User
-                            && serde_json::to_value(&tail.content).ok()
+                            && serde_json::to_value(
+                                crate::context_contributor::without_leading_turn_tail(
+                                    &tail.content,
+                                ),
+                            )
+                            .ok()
                                 == serde_json::to_value(&round.requirement).ok()
                     });
                     if !requirement_is_tail {
@@ -2564,6 +2858,23 @@ impl AgentEngine {
 
                 // Coding harness finish policy (HardGate / todo continuation /
                 // system-continuation budget). Runs before goal continuation.
+                if self.coding_harness.is_none()
+                    && (self.harness_runtime.office_mutated
+                        || self.harness_runtime.office_side_effect)
+                    && !self.harness_runtime.office_verified
+                    && !self.harness_runtime.office_nudge_sent
+                {
+                    self.harness_runtime.office_nudge_sent = true;
+                    self.messages.push(Message::now(
+                        Role::User,
+                        vec![ContentBlock::Text {
+                            text: OFFICE_EVIDENCE_NUDGE.to_string(),
+                        }],
+                    ));
+                    self.persist_session(true);
+                    turn += 1;
+                    continue;
+                }
                 if let Some(harness) = self.coding_harness.as_mut() {
                     match harness.on_natural_end() {
                         nomi_coding::FinishDecision::Allow => {}
@@ -2580,47 +2891,77 @@ impl AgentEngine {
                 }
 
                 // Goal-driven continuation (opt-in). Coding mode disables
-                // fail-open auto-continue by default — incomplete work is handled
-                // by the coding harness todo/explore gates instead.
+                // auto-continue by default — incomplete work is handled by the
+                // coding harness todo/explore gates instead.
                 let skip_goal = self
                     .coding_harness
                     .as_ref()
                     .is_some_and(|h| h.disables_goal_auto_continue());
+                self.horizon.record_usage(
+                    turn_usage.input_tokens,
+                    turn_usage.output_tokens,
+                );
+                let cwd = self.workspace_cwd();
+                self.horizon
+                    .observe_end_turn(&assistant_text, cwd.as_deref(), 0);
+                self.sync_goal_progress();
+                self.horizon.consume_turn_scoped();
                 let continuation = if skip_goal {
                     None
-                } else {
-                    match self.goal.as_ref() {
-                        Some(g) => {
-                            let mut judge = crate::goal::judge::ProviderJudgeClient::new(
-                                Arc::clone(&self.provider),
-                                self.model.clone(),
-                            );
-                            if let Some(session) = self.observation.clone() {
-                                judge = judge.with_observation(session);
-                            }
-                            g.evaluate_and_continue(&assistant_text, &judge).await
-                        }
-                        None => None,
+                } else if let Some(snap) = self.goal.as_ref().map(|g| g.snapshot()) {
+                    self.horizon.align_budget(
+                        snap.max_auto_continuations,
+                        snap.contract.as_ref(),
+                        snap.auto_continuations,
+                    );
+                    let awaiting = self.plan_state.awaiting_approval();
+                    let decision = self.horizon.decide(self.plan_state.is_active, awaiting);
+                    self.emit_horizon_decision(&decision);
+                    let delta = self.horizon.continuation_delta(
+                        &snap.objective,
+                        snap.contract.as_ref(),
+                        &crate::goal::state::render_subgoals_block(&snap.subgoals),
+                    );
+                    let gate = crate::goal::runtime::GoalContinueGate {
+                        allow_continue: decision.allow_continue,
+                        pause_on_veto: decision.pause_goal,
+                        veto_reason: Some(decision.reason.clone()),
+                        continuation_delta: Some(delta),
+                        observed: true,
+                    };
+                    let mut judge = crate::goal::judge::ProviderJudgeClient::new(
+                        Arc::clone(&self.provider),
+                        self.model.clone(),
+                    );
+                    if let Some(session) = self.observation.clone() {
+                        judge = judge.with_observation(session);
                     }
+                    self.goal
+                        .as_ref()
+                        .unwrap()
+                        .evaluate_and_continue_with(&assistant_text, &judge, gate)
+                        .await
+                } else {
+                    None
                 };
                 if let Some(cont) = continuation {
+                    self.horizon.record_continuation();
                     self.messages.push(cont);
                     self.save_session();
-                    // Each goal round gets a fresh internal-iteration budget:
-                    // the continuation opens a new logical turn. Carrying the
-                    // previous round's tool-loop count forward would let a
-                    // thorough first round starve every later round into the
-                    // MaxTurns exit — which returns without consulting the
-                    // judge. Total work stays bounded: rounds are capped by
-                    // the goal's auto-continuation limit, iterations per
-                    // round by `limit`.
-                    turn = 0;
+                    // Do not reset `turn`: the 200-turn net budget is global.
+                    // Goal auto-continue is additionally capped by HorizonBudget.
+                    turn += 1;
                     continue; // don't return — run another turn toward the goal
                 }
                 if stop_reason == StopReason::EndTurn {
                     self.run_compaction(CompactReason::TurnEnd).await?;
                 }
-                self.save_session();
+                tracing::info!(
+                    target: "nomi_agent",
+                    "{}",
+                    self.kpi().summary_line()
+                );
+                self.persist_session(true);
                 return Ok(AgentResult {
                     text: assistant_text,
                     stop_reason,
@@ -2633,16 +2974,10 @@ impl AgentEngine {
                 });
             }
 
-            let cascade_policy = if self
-                .coding_harness
-                .as_ref()
-                .is_some_and(|h| h.prefers_relaxed_error_cascade())
-            {
-                crate::tool_execution::ErrorCascadePolicy::HaltAfterMutatingOrGate
-            } else {
-                crate::tool_execution::ErrorCascadePolicy::HaltAllSubsequent
-            };
+            let cascade_policy =
+                crate::tool_execution::ErrorCascadePolicy::HaltAfterMutatingOrGate;
             self.observe_tool_calls_started(&tool_calls);
+            let tool_started = Instant::now();
             let mut outcome = if let Some(ref approval_mgr) = self.approval_manager {
                 // JSON stream mode: use protocol-based approval
                 let writer = self
@@ -2696,6 +3031,8 @@ impl AgentEngine {
                     }
                 }
             };
+            self.kpi_mut()
+                .add_tool_wall_ms(tool_started.elapsed().as_millis() as u64);
             self.observe_tool_calls_finished(&tool_calls, &outcome.results);
             let confirmed_invalid_argument_call_ids =
                 confirmed_predispatch_schema_invalid_call_ids(
@@ -2960,6 +3297,14 @@ impl AgentEngine {
                         .and_then(|v| v.as_str())
                         .map(str::to_owned);
                     let file_path = coding_tool_file_path(name, input);
+                    let offset = input
+                        .get("offset")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize);
+                    let limit = input
+                        .get("limit")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize);
                     outcomes.push(nomi_coding::ToolCallOutcome {
                         name: name.clone(),
                         success,
@@ -2967,6 +3312,8 @@ impl AgentEngine {
                         file_path,
                         error_content,
                         result_content,
+                        offset,
+                        limit,
                     });
                 }
                 if let Some(harness) = self.coding_harness.as_mut() {
@@ -2975,6 +3322,11 @@ impl AgentEngine {
                     coding_hard_stop = nudge.hard_stop;
                 }
             }
+            self.harness_runtime.continuation_after_tools = true;
+            if self.coding_harness.is_none() {
+                self.observe_office_tool_turn(&tool_calls, &outcome.results);
+            }
+            self.horizon_observe_tools(&tool_calls, &outcome.results);
 
             // Apply any context modifiers from skill executions before the next turn
             self.apply_context_modifiers(&outcome.modifiers);
@@ -3044,9 +3396,10 @@ impl AgentEngine {
                 .push(Message::now(Role::User, tool_result_blocks));
             self.prune_old_tool_images();
 
-            // Save session after each turn
+            // Coalesced checkpoint after tools — pretty JSON + index wait for
+            // EndTurn / user-message durable saves.
             *safe_messages = self.messages.clone();
-            self.save_session();
+            self.persist_session(false);
             if stagnation_action == crate::loop_guard::StagnationAction::Abort {
                 if let Some(harness) = self.coding_harness.as_mut() {
                     harness.reset_progress();
@@ -3057,7 +3410,10 @@ impl AgentEngine {
             }
             if let Some(reason) = coding_hard_stop {
                 if let Some(harness) = self.coding_harness.as_mut() {
-                    harness.reset_progress();
+                    // Do not reset_progress here: that clears force_allow_finish
+                    // and WorkingSet. Forced finalize already skips verify/todo
+                    // continuations; wiping the guard would let a later natural
+                    // EndTurn reopen a recon tour.
                     harness.begin_forced_finalize(reason.clone());
                 }
                 tracing::warn!(
@@ -3075,11 +3431,20 @@ impl AgentEngine {
     /// Keep at most `max_recent_images` individual images, additionally bounded
     /// by the strictest supported provider request limit. The text part of each
     /// result is preserved.
+    ///
+    /// Already-sent messages (`0..sent_prefix_len`) are never rewritten: their
+    /// images occupy budget first, and only unsent results are stripped.
     fn prune_old_tool_images(&mut self) {
-        let mut remaining_count = self.max_recent_images.min(MAX_PROVIDER_REQUEST_IMAGES);
-        let mut remaining_data_bytes = MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES;
+        let frozen = self.sent_prefix_len.min(self.messages.len());
+        let (frozen_count, frozen_bytes) = tool_result_image_payload(&self.messages[..frozen]);
+        let mut remaining_count = self
+            .max_recent_images
+            .min(MAX_PROVIDER_REQUEST_IMAGES)
+            .saturating_sub(frozen_count);
+        let mut remaining_data_bytes =
+            MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES.saturating_sub(frozen_bytes);
         let mut changed = false;
-        for msg in self.messages.iter_mut().rev() {
+        for msg in self.messages[frozen..].iter_mut().rev() {
             for block in msg.content.iter_mut().rev() {
                 if let ContentBlock::ToolResult {
                     content, images, ..
@@ -3107,7 +3472,7 @@ impl AgentEngine {
             }
         }
         if changed {
-            clear_provider_round_ids(&mut self.messages);
+            clear_provider_round_ids(&mut self.messages[frozen..]);
         }
     }
 
@@ -3139,9 +3504,10 @@ impl AgentEngine {
         }
     }
 
-    /// Replace top-level user image blocks added by the current turn execution
-    /// with one small marker per message. Nested tool-result images are owned by
-    /// `prune_old_tool_images` and deliberately remain untouched.
+    /// Replace top-level user image blocks from `first_message` onward with
+    /// one small marker per message. Messages before that index are the sent
+    /// prefix and stay untouched. Nested tool-result images are owned by
+    /// `prune_old_tool_images`.
     fn redact_user_images_since(&mut self, first_message: usize) -> bool {
         let mut changed = false;
         for message in self.messages.iter_mut().skip(first_message) {
@@ -3172,32 +3538,64 @@ impl AgentEngine {
             message.content = redacted;
         }
         if changed {
-            clear_provider_round_ids(&mut self.messages);
+            let start = first_message.min(self.messages.len());
+            clear_provider_round_ids(&mut self.messages[start..]);
         }
         changed
     }
 
     /// Run the compaction pipeline for a specific reason.
     ///
-    /// `TurnEnd` / `TurnStart` run microcompact then autocompact at the
-    /// normal threshold. `EmergencyRecovery` still folds (mechanically if
-    /// stuck) and only returns `ContextTooLong` when the watermark remains
-    /// at the emergency limit after that attempt.
+    /// `TurnEnd` / `TurnStart` run microcompact only once the autocompact
+    /// watermark is already crossed (rewriting old tool results busts the
+    /// prefix cache). `IdleCacheExpired` always snips and microcompacts
+    /// because the provider prefix cache is presumed cold. `EmergencyRecovery`
+    /// still folds (mechanically if stuck) and only returns `ContextTooLong`
+    /// when the watermark remains at the emergency limit after that attempt.
     async fn run_compaction(&mut self, reason: CompactReason) -> Result<(), AgentError> {
         match reason {
             CompactReason::TurnEnd | CompactReason::TurnStart => {
-                self.run_microcompact();
+                // Microcompact rewrites already-sent tool results. Only do that
+                // when the conversation is already at the autocompact watermark
+                // (Reasonix: append-only until ~80% window).
+                if auto::should_autocompact(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ) {
+                    self.run_snip_layer();
+                    self.run_microcompact();
+                }
                 if !self.compact_state.is_compact_stuck() {
-                    self.run_autocompact(false).await?;
+                    self.run_autocompact(false, CompactTrigger::Auto).await?;
+                }
+                Ok(())
+            }
+            CompactReason::IdleCacheExpired => {
+                if self.compact_config.enabled {
+                    self.run_snip_layer();
+                    self.run_microcompact_forced();
+                    // Cheap rewrite is cache-free; refresh occupancy before
+                    // deciding whether the LLM summarizer is still worth it.
+                    self.apply_compact_watermark(0);
+                    if !self.compact_state.is_compact_stuck()
+                        && auto::should_idle_autocompact(
+                            self.compact_state.last_input_tokens,
+                            &self.compact_config,
+                        )
+                    {
+                        self.run_autocompact(false, CompactTrigger::Idle).await?;
+                    }
                 }
                 Ok(())
             }
             CompactReason::EmergencyRecovery => {
                 if self.compact_config.enabled {
+                    self.run_snip_layer();
                     self.run_microcompact();
                     let force_mechanical = self.compact_state.is_compact_stuck()
                         || self.compact_state.is_circuit_broken(&self.compact_config);
-                    self.run_autocompact(force_mechanical).await?;
+                    self.run_autocompact(force_mechanical, CompactTrigger::Auto)
+                        .await?;
                 }
                 if emergency::is_at_emergency_limit(
                     self.compact_state.last_input_tokens,
@@ -3216,26 +3614,54 @@ impl AgentEngine {
         }
     }
 
-    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
-        let mut tools = if self.plan_state.is_active {
-            self.tools.to_tool_defs_filtered(|t| {
-                t.category() == ToolCategory::Info
-                    && t.name() != "EnterPlanMode"
-                    && self.harness_advertise_tool(t.name())
-            })
-        } else {
-            self.tools.to_tool_defs_filtered(|t| {
-                t.name() != "ExitPlanMode" && self.harness_advertise_tool(t.name())
-            })
-        };
+    fn live_advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
+        let mut tools = self
+            .tools
+            .to_tool_defs_filtered(|t| self.harness_advertise_tool(t.name()));
+        sort_tools_by_name(&mut tools);
+        tools
+    }
+
+    fn provider_tools_for_request(&mut self) -> Vec<nomi_types::tool::ToolDef> {
         if self
             .coding_harness
             .as_ref()
             .is_some_and(|h| h.is_forced_finalize())
         {
-            tools.clear();
+            return Vec::new();
+        }
+        if let Some(frozen) = &self.frozen_provider_tools {
+            return frozen.clone();
+        }
+        let tools = self.live_advertised_tools();
+        if !tools.is_empty() {
+            self.frozen_provider_tools = Some(tools.clone());
         }
         tools
+    }
+
+    fn bind_tool_authority(
+        &self,
+        tools: &[nomi_types::tool::ToolDef],
+    ) -> ProviderToolAuthority {
+        let mut authority = ProviderToolAuthority::from_request_tools(tools);
+        authority.overlay_live_activation(&self.tools);
+        authority.plan_mode_read_only = self.plan_state.is_active;
+        authority
+    }
+
+    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
+        if self
+            .coding_harness
+            .as_ref()
+            .is_some_and(|h| h.is_forced_finalize())
+        {
+            return Vec::new();
+        }
+        if let Some(frozen) = &self.frozen_provider_tools {
+            return frozen.clone();
+        }
+        self.live_advertised_tools()
     }
 
     fn request_token_estimate(&self) -> u64 {
@@ -3263,8 +3689,20 @@ impl AgentEngine {
         if !micro::should_microcompact(&self.messages, &self.compact_config) {
             return;
         }
+        self.apply_microcompact();
+    }
+
+    fn run_microcompact_forced(&mut self) {
+        if !self.compact_config.enabled {
+            return;
+        }
+        self.apply_microcompact();
+    }
+
+    fn apply_microcompact(&mut self) {
         let result = micro::microcompact(&mut self.messages, &self.compact_config);
         if result.cleared_count > 0 {
+            self.sent_prefix_len = self.messages.len();
             clear_provider_round_ids(&mut self.messages);
             self.output.emit_info(&format!(
                 "Microcompact: cleared {} tool results (~{} tokens freed)",
@@ -3276,9 +3714,22 @@ impl AgentEngine {
         }
     }
 
-    async fn run_autocompact(&mut self, force_mechanical: bool) -> Result<(), AgentError> {
+    async fn run_autocompact(
+        &mut self,
+        force_mechanical: bool,
+        trigger: CompactTrigger,
+    ) -> Result<(), AgentError> {
         let should_compact = force_mechanical
-            || auto::should_autocompact(self.compact_state.last_input_tokens, &self.compact_config);
+            || match trigger {
+                CompactTrigger::Idle => auto::should_idle_autocompact(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ),
+                CompactTrigger::Auto | CompactTrigger::Manual => auto::should_autocompact(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ),
+            };
         if should_compact {
             tracing::info!(target: "nomi_agent", last_input_tokens = self.compact_state.last_input_tokens, "context compaction triggered");
             if let Some(pct) = self.compact_config.autocompact_threshold_pct {
@@ -3319,51 +3770,70 @@ impl AgentEngine {
         }
 
         let provider = Arc::clone(&self.provider);
+        let cwd = self.workspace_cwd();
+        let session_id = self.current_session.as_ref().map(|s| s.id.clone());
         match auto::autocompact_with(
             provider.as_ref(),
             &self.messages,
             &self.model,
             &self.compact_config,
             &mut self.compact_state,
-            force_mechanical,
-            self.observation.clone(),
+            auto::AutocompactRequest {
+                force_mechanical,
+                observation: self.observation.clone(),
+                focus: None,
+                trigger: Some(trigger),
+                archive_cwd: cwd.as_deref(),
+                session_id: session_id.as_deref(),
+            },
         )
         .await
         {
             Ok(result) => {
                 let compacted = result.messages_summarized > 0;
                 if compacted {
-                    self.output.emit_info(&format!(
-                        "Autocompact: summarized {} messages ({} tokens → compact)",
-                        result.messages_summarized, result.pre_compact_tokens
-                    ));
-                    if result.mechanical_fold {
-                        // 摘要降级为确定性占位符：上下文确实释放了，但用户必须知道这段
-                        // 历史是被丢弃而不是被总结的（见 `CompactResult::mechanical_fold`）。
-                        self.output.emit_warning(&format!(
-                            "Autocompact: the summary is a placeholder ({})",
-                            result
-                                .mechanical_reason
-                                .as_deref()
-                                .unwrap_or("no reason recorded")
+                    let previous = std::mem::replace(&mut self.messages, result.messages);
+                    let new_estimate = self.request_token_estimate();
+                    if !force_mechanical && new_estimate >= result.pre_compact_tokens {
+                        // Folding 69 messages into a summary that does not shrink
+                        // occupancy only burns prefix cache (cold TTFT). Keep the
+                        // original transcript so subsequent rounds can still hit cache.
+                        self.messages = previous;
+                        self.output.emit_info(&format!(
+                            "Autocompact: skipped apply ({} tokens → {new_estimate}, not smaller)",
+                            result.pre_compact_tokens
                         ));
-                    }
-                    self.messages = result.messages;
-                    self.editable_turn = None;
-                    self.cache_detector.notify_compaction();
-                    if let Some(harness) = self.coding_harness.as_ref() {
-                        let reinject = harness.post_compact_reinject();
-                        self.messages.push(Message::now(
-                            Role::User,
-                            vec![ContentBlock::Text { text: reinject }],
+                        self.apply_compact_watermark(0);
+                    } else {
+                        self.output.emit_info(&format!(
+                            "Autocompact: summarized {} messages ({} tokens → compact)",
+                            result.messages_summarized, result.pre_compact_tokens
                         ));
-                        if let Some(cache) = &self.file_cache
-                            && let Ok(mut guard) = cache.write()
-                        {
-                            guard.clear();
+                        if result.mechanical_fold {
+                            // 摘要降级为确定性占位符：上下文确实释放了，但用户必须知道这段
+                            // 历史是被丢弃而不是被总结的（见 `CompactResult::mechanical_fold`）。
+                            self.output.emit_warning(&format!(
+                                "Autocompact: the summary is a placeholder ({})",
+                                result
+                                    .mechanical_reason
+                                    .as_deref()
+                                    .unwrap_or("no reason recorded")
+                            ));
                         }
+                        self.editable_turn = None;
+                        // Freeze the rewritten prefix BEFORE post_compact_reinject
+                        // so persist_turn_tail cannot mutate it (prefix-cache).
+                        self.sent_prefix_len = self.messages.len();
+                        self.cache_detector.notify_compaction();
+                        if let Some(harness) = self.coding_harness.as_ref() {
+                            let reinject = harness.post_compact_reinject();
+                            self.messages.push(Message::now(
+                                Role::User,
+                                vec![ContentBlock::Text { text: reinject }],
+                            ));
+                        }
+                        self.apply_compact_watermark(result.messages_summarized);
                     }
-                    self.apply_compact_watermark(result.messages_summarized);
                 } else if !auto::should_autocompact(
                     self.compact_state.last_input_tokens,
                     &self.compact_config,
@@ -3412,15 +3882,22 @@ impl AgentEngine {
                     PlanModeTransition::Enter => {
                         self.plan_state.pre_plan_allow_list = self.allow_list.clone();
                         self.plan_state.is_active = true;
+                        self.plan_state.phase = PlanPhase::Exploring;
+                        self.plan_state.pending_plan = None;
                         if let Some(ref flag) = self.plan_active_flag {
                             flag.store(true, Ordering::Release);
                         }
+                        if let Some(ref latch) = self.plan_exit_latch {
+                            latch.store(false, Ordering::Release);
+                        }
                     }
-                    PlanModeTransition::Exit { .. } => {
-                        self.plan_state.is_active = false;
-                        self.allow_list = self.plan_state.pre_plan_allow_list.clone();
-                        if let Some(ref flag) = self.plan_active_flag {
-                            flag.store(false, Ordering::Release);
+                    PlanModeTransition::Exit { plan_content } => {
+                        // Valid Exit latches for user approval; write tools stay locked.
+                        self.plan_state.phase = PlanPhase::AwaitingApproval;
+                        self.plan_state.pending_plan = plan_content.clone();
+                        self.plan_state.is_active = true;
+                        if let Some(ref latch) = self.plan_exit_latch {
+                            latch.store(true, Ordering::Release);
                         }
                     }
                 }
@@ -3429,21 +3906,209 @@ impl AgentEngine {
     }
 
     fn save_session(&mut self) {
+        self.persist_session(true);
+    }
+
+    fn mark_turn_ended(&mut self) {
+        self.compact_state.last_turn_ended_at = Some(chrono::Utc::now());
+    }
+
+    fn workspace_cwd(&self) -> Option<PathBuf> {
+        if let Some(session) = &self.current_session {
+            let cwd = PathBuf::from(&session.cwd);
+            if !cwd.as_os_str().is_empty() {
+                return Some(cwd);
+            }
+        }
+        self.hooks.as_ref().map(|h| h.cwd().to_path_buf())
+    }
+
+    fn should_idle_compact(&self) -> bool {
+        if !self.compact_config.enabled {
+            return false;
+        }
+        let gap = self.compact_config.idle_compact_seconds;
+        if gap == 0 || self.messages.len() <= 2 {
+            return false;
+        }
+        let last = self.compact_state.last_turn_ended_at.or_else(|| {
+            self.current_session
+                .as_ref()
+                .and_then(|s| s.last_turn_ended_at.or(Some(s.updated_at)))
+        });
+        let Some(ts) = last else {
+            return false;
+        };
+        chrono::Utc::now()
+            .signed_duration_since(ts)
+            .num_seconds()
+            >= gap as i64
+    }
+
+    fn persist_session(&mut self, durable: bool) {
+        let started = Instant::now();
+        let mut save_err: Option<String> = None;
+        let mut index_err: Option<String> = None;
         if let (Some(mgr), Some(session)) = (&self.session_manager, &mut self.current_session) {
             session.messages = self.messages.clone();
             session.total_usage = self.total_usage.clone();
             session.activated_deferred_tools = self.tools.session_deferred_tool_identities();
             session.editable_turn = self.editable_turn.clone();
+            session.last_turn_ended_at = self.compact_state.last_turn_ended_at;
             session.updated_at = chrono::Utc::now();
-            if let Err(e) = mgr.save(session) {
-                self.output
-                    .emit_warning(&format!("Failed to save session: {}", e));
+            let save_result = if durable {
+                mgr.save(session)
+            } else {
+                mgr.save_coalesced(session)
+            };
+            if let Err(e) = save_result {
+                save_err = Some(e.to_string());
             }
-            if let Err(e) = mgr.update_index_for(session) {
-                self.output
-                    .emit_warning(&format!("Failed to update session index: {}", e));
+            if durable && let Err(e) = mgr.update_index_for(session) {
+                index_err = Some(e.to_string());
+            }
+        } else {
+            return;
+        }
+        if let Some(e) = save_err {
+            self.output
+                .emit_warning(&format!("Failed to save session: {e}"));
+        }
+        if let Some(e) = index_err {
+            self.output
+                .emit_warning(&format!("Failed to update session index: {e}"));
+        }
+        self.kpi_mut()
+            .add_checkpoint_ms(started.elapsed().as_millis() as u64);
+    }
+
+    async fn collect_contributor_context(&self) -> Vec<String> {
+        if self.context_contributors.is_empty() {
+            return Vec::new();
+        }
+        let mut parallel = Vec::new();
+        let mut serial = Vec::new();
+        for contributor in &self.context_contributors {
+            if contributor.parallel_safe() {
+                parallel.push(contributor);
+            } else {
+                serial.push(contributor);
             }
         }
+        let mut out = Vec::new();
+        if !parallel.is_empty() {
+            let budgets: Vec<Option<usize>> = parallel.iter().map(|c| c.max_tokens()).collect();
+            let futs = parallel.iter().map(|c| c.pre_turn_context());
+            for (budget, extra) in budgets.into_iter().zip(futures::future::join_all(futs).await)
+            {
+                if let Some(text) = extra {
+                    out.push(cap_contributor_text(text, budget));
+                }
+            }
+        }
+        for contributor in serial {
+            if let Some(extra) = contributor.pre_turn_context().await {
+                out.push(cap_contributor_text(extra, contributor.max_tokens()));
+            }
+        }
+        out
+    }
+
+    fn observe_office_tool_turn(
+        &mut self,
+        tool_calls: &[ContentBlock],
+        results: &[ContentBlock],
+    ) {
+        self.harness_runtime
+            .kpi
+            .observe_assistant_tools(tool_calls.len());
+        for call in tool_calls {
+            let ContentBlock::ToolUse { id, name, input, .. } = call else {
+                continue;
+            };
+            let success = results.iter().any(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } if tool_use_id == id => !is_error,
+                _ => false,
+            });
+            if !success {
+                continue;
+            }
+            if matches!(name.as_str(), "Edit" | "Write" | "ApplyPatch") {
+                self.harness_runtime.office_mutated = true;
+                self.harness_runtime.kpi.observe_edit();
+            }
+            if matches!(
+                name.as_str(),
+                "Browser" | "Computer" | "LaunchApp" | "computer" | "browser"
+            ) {
+                self.harness_runtime.office_side_effect = true;
+            }
+            let command = input.get("command").and_then(|v| v.as_str());
+            if name.eq_ignore_ascii_case("verify_change")
+                || (matches!(name.as_str(), "Bash" | "exec_command")
+                    && command.is_some_and(nomi_coding::looks_like_verification_command))
+            {
+                self.harness_runtime.office_verified = true;
+                self.harness_runtime.kpi.verify_before_end = true;
+            }
+            if name.eq_ignore_ascii_case("Read")
+                && let Some(path) = input.get("file_path").and_then(|v| v.as_str())
+            {
+                let offset = input
+                    .get("offset")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(0);
+                let limit = input
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(500);
+                self.harness_runtime
+                    .office_working_set
+                    .record_read(path, offset, limit, offset.saturating_add(limit), None);
+                self.harness_runtime
+                    .kpi
+                    .observe_read_key(&format!("{path}#{offset}:{limit}"));
+            }
+        }
+    }
+
+    fn run_snip_layer(&mut self) {
+        let drop_idx = snip::snip_indices(&self.messages, snip::DEFAULT_SNIP_KEEP_TAIL);
+        if drop_idx.is_empty() {
+            return;
+        }
+        let dropped: Vec<Message> = drop_idx
+            .iter()
+            .map(|&i| self.messages[i].clone())
+            .collect();
+        let cwd = self.workspace_cwd();
+        let session_id = self.current_session.as_ref().map(|s| s.id.clone());
+        let archive_rel = crate::compact::archive::write_archive(
+            cwd.as_deref(),
+            session_id.as_deref(),
+            "snip",
+            &dropped,
+        );
+        let removed = snip::snip_old_plain_turns(&mut self.messages, snip::DEFAULT_SNIP_KEEP_TAIL);
+        if removed == 0 {
+            return;
+        }
+        self.messages.push(Message::now(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: snip::collapse_notice(removed, archive_rel.as_deref()),
+            }],
+        ));
+        self.sent_prefix_len = self.messages.len();
+        clear_provider_round_ids(&mut self.messages);
+        self.output
+            .emit_info(&format!("Snip: dropped {removed} older plain turns"));
     }
 
     /// Stamp the owning-conversation token onto the current session and persist
@@ -3478,6 +4143,8 @@ impl AgentEngine {
     pub fn clear_context(&mut self) {
         self.messages.clear();
         self.editable_turn = None;
+        self.frozen_provider_tools = None;
+        self.sent_prefix_len = 0;
         self.compact_state = CompactState::new();
         self.total_usage = TokenUsage::default();
         self.save_session();
@@ -3515,6 +4182,7 @@ impl AgentEngine {
             return false;
         }
         self.messages.truncate(checkpoint.start_len);
+        self.sent_prefix_len = self.sent_prefix_len.min(self.messages.len());
         self.editable_turn = None;
         self.save_session();
         true
@@ -3569,10 +4237,12 @@ impl AgentEngine {
             changed = true;
         }
 
-        // Top-level user images are ephemeral transport payloads. Redact all of
-        // them here rather than relying on the rewind anchor: compaction may
-        // legitimately clear that anchor while a run is still in flight.
-        changed |= self.redact_user_images_since(0);
+        // Top-level user images on unsent messages are ephemeral transport
+        // payloads. Already-sent images stay so the next request can replay
+        // the prefix. Compaction may clear the rewind anchor while a run is
+        // still in flight, so this uses `sent_prefix_len` rather than that
+        // anchor.
+        changed |= self.redact_user_images_since(self.sent_prefix_len);
         if changed {
             self.save_session();
         }

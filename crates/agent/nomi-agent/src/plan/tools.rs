@@ -97,20 +97,49 @@ impl Tool for EnterPlanModeTool {
 // ExitPlanModeTool
 // ---------------------------------------------------------------------------
 
-/// Transitions the agent out of Plan Mode.
-///
-/// On exit the engine restores the full tool set and the allow-list
-/// that was in effect before plan mode was entered.
+/// Minimum plan body length so a one-liner cannot skip the verification gate.
+const MIN_PLAN_CHARS: usize = 40;
+
+fn plan_has_verification(plan: &str) -> bool {
+    let lower = plan.to_ascii_lowercase();
+    nomi_coding::looks_like_verification_command(plan)
+        || lower.contains("verif")
+        || lower.contains("how to test")
+}
+
+fn plan_is_ready(plan: &str) -> bool {
+    plan.trim().chars().count() >= MIN_PLAN_CHARS && plan_has_verification(plan)
+}
+
+/// Submits a verifiable implementation plan. Write tools stay locked until
+/// the next user message (the Build-click analogue).
 pub struct ExitPlanModeTool {
     /// Shared flag indicating whether plan mode is currently active.
-    /// Read by `execute()` to reject exit when not in plan mode.
     plan_active: Arc<AtomicBool>,
+    /// Set by the engine once a valid plan is latched for approval.
+    exit_latched: Arc<AtomicBool>,
 }
 
 impl ExitPlanModeTool {
     pub fn new(plan_active: Arc<AtomicBool>) -> Self {
-        Self { plan_active }
+        Self::with_latch(plan_active, Arc::new(AtomicBool::new(false)))
     }
+
+    pub fn with_latch(plan_active: Arc<AtomicBool>, exit_latched: Arc<AtomicBool>) -> Self {
+        Self {
+            plan_active,
+            exit_latched,
+        }
+    }
+}
+
+fn exit_plan_text(input: &Value) -> Option<&str> {
+    input
+        .get("plan")
+        .or_else(|| input.get("plan_content"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 #[async_trait]
@@ -120,14 +149,25 @@ impl Tool for ExitPlanModeTool {
     }
 
     fn description(&self) -> &str {
-        "Exit plan mode after completing your implementation plan. \
-         This restores full tool access so you can begin implementing the plan."
+        "Submit a complete implementation plan for user approval. \
+         Include Context, Files to modify, and a concrete Verification command \
+         (for example `cargo test` or `bun run check`). Write tools stay locked \
+         until the user sends the next message."
     }
 
     fn input_schema(&self) -> JsonSchema {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "plan": {
+                    "type": "string",
+                    "description": "Required implementation plan: goal, scope, and a Verification command the user can run"
+                },
+                "plan_content": {
+                    "type": "string",
+                    "description": "Alias for plan"
+                }
+            },
             "required": []
         })
     }
@@ -140,7 +180,7 @@ impl Tool for ExitPlanModeTool {
         true
     }
 
-    async fn execute(&self, _input: Value) -> ToolResult {
+    async fn execute(&self, input: Value) -> ToolResult {
         if !self.plan_active.load(Ordering::Acquire) {
             return ToolResult {
                 content: "Not in plan mode. Use EnterPlanMode to enter plan mode first."
@@ -149,19 +189,65 @@ impl Tool for ExitPlanModeTool {
                 images: Vec::new(),
             };
         }
+        if self.exit_latched.load(Ordering::Acquire) {
+            return ToolResult {
+                content: "A plan is already submitted and waiting for the user to continue. \
+                          Do not call ExitPlanMode again."
+                    .to_string(),
+                is_error: true,
+                images: Vec::new(),
+            };
+        }
+
+        let Some(plan) = exit_plan_text(&input) else {
+            return ToolResult {
+                content: "ExitPlanMode requires a non-empty `plan` (goal, scope, and a \
+                          Verification command such as `cargo test` or `bun run check`)."
+                    .to_string(),
+                is_error: true,
+                images: Vec::new(),
+            };
+        };
+        if !plan_is_ready(plan) {
+            return ToolResult {
+                content: "ExitPlanMode rejected: the plan is too short or has no Verification \
+                          command. Add a concrete check (for example `cargo test`, `bun run check`, \
+                          or a 'How to test' section) and call ExitPlanMode again."
+                    .to_string(),
+                is_error: true,
+                images: Vec::new(),
+            };
+        }
+
+        let mut content = String::from(
+            "Plan submitted for approval. Stay in read-only mode until the user \
+             sends the next message. Do not start implementation in this turn.",
+        );
+        content.push_str("\n\n");
+        content.push_str(plan);
 
         ToolResult {
-            content: "Exited plan mode. Full tool access has been restored. \
-                      You can now proceed with implementing the plan."
-                .to_string(),
+            content,
             is_error: false,
             images: Vec::new(),
         }
     }
 
-    fn context_modifier_for(&self, _input: &Value) -> Option<ContextModifier> {
+    fn context_modifier_for(&self, input: &Value) -> Option<ContextModifier> {
+        if !self.plan_active.load(Ordering::Acquire) {
+            return None;
+        }
+        if self.exit_latched.load(Ordering::Acquire) {
+            return None;
+        }
+        let plan = exit_plan_text(input)?;
+        if !plan_is_ready(plan) {
+            return None;
+        }
         Some(ContextModifier {
-            plan_mode_transition: Some(PlanModeTransition::Exit { plan_content: None }),
+            plan_mode_transition: Some(PlanModeTransition::Exit {
+                plan_content: Some(plan.to_string()),
+            }),
             ..Default::default()
         })
     }
@@ -246,6 +332,12 @@ mod tests {
         assert_eq!(tool.describe(&json!({})), "Enter plan mode");
     }
 
+    fn valid_plan() -> serde_json::Value {
+        json!({
+            "plan": "# Goal\nFix the parser.\nFiles: src/parser.rs\nVerification: cargo test -p parser\nHow to test: cargo test -p parser"
+        })
+    }
+
     // --- ExitPlanModeTool unit tests ---
 
     #[test]
@@ -276,26 +368,70 @@ mod tests {
 
     #[test]
     fn exit_tool_context_modifier_returns_exit() {
-        let tool = ExitPlanModeTool::new(make_shared_flag(false));
-        let modifier = tool.context_modifier_for(&json!({}));
+        let tool = ExitPlanModeTool::new(make_shared_flag(true));
+        let modifier = tool.context_modifier_for(&valid_plan());
         assert!(modifier.is_some());
         let cm = modifier.unwrap();
         assert!(matches!(
             cm.plan_mode_transition,
-            Some(PlanModeTransition::Exit { plan_content: None })
+            Some(PlanModeTransition::Exit {
+                plan_content: Some(ref text)
+            }) if text.contains("cargo test")
         ));
-        // Other fields are default
         assert!(cm.model.is_none());
         assert!(cm.effort.is_none());
         assert!(cm.allowed_tools.is_empty());
     }
 
+    #[test]
+    fn exit_tool_context_modifier_none_when_plan_invalid() {
+        let tool = ExitPlanModeTool::new(make_shared_flag(true));
+        assert!(tool.context_modifier_for(&json!({})).is_none());
+        assert!(tool
+            .context_modifier_for(&json!({ "plan": "too short" }))
+            .is_none());
+    }
+
     #[tokio::test]
-    async fn exit_succeeds_when_active() {
+    async fn exit_succeeds_when_active_with_verifiable_plan() {
+        let tool = ExitPlanModeTool::new(make_shared_flag(true));
+        let result = tool.execute(valid_plan()).await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("submitted for approval"));
+        assert!(result.content.contains("Fix the parser"));
+    }
+
+    #[tokio::test]
+    async fn exit_rejects_empty_plan() {
         let tool = ExitPlanModeTool::new(make_shared_flag(true));
         let result = tool.execute(json!({})).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("requires a non-empty"));
+    }
+
+    #[tokio::test]
+    async fn exit_echoes_plan_content() {
+        let tool = ExitPlanModeTool::new(make_shared_flag(true));
+        let result = tool.execute(valid_plan()).await;
         assert!(!result.is_error);
-        assert!(result.content.contains("Exited plan mode"));
+        assert!(result.content.contains("Fix the parser"));
+        let modifier = tool.context_modifier_for(&valid_plan());
+        assert!(matches!(
+            modifier.and_then(|m| m.plan_mode_transition),
+            Some(PlanModeTransition::Exit {
+                plan_content: Some(text)
+            }) if text.contains("Fix the parser")
+        ));
+    }
+
+    #[tokio::test]
+    async fn exit_rejects_when_latched() {
+        let latch = Arc::new(AtomicBool::new(true));
+        let tool = ExitPlanModeTool::with_latch(make_shared_flag(true), latch);
+        let result = tool.execute(valid_plan()).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("already submitted"));
+        assert!(tool.context_modifier_for(&valid_plan()).is_none());
     }
 
     #[tokio::test]
@@ -329,10 +465,10 @@ mod tests {
         // Simulate engine setting the flag after processing Enter transition
         flag.store(true, Ordering::Release);
 
-        // Now active — enter fails, exit succeeds
+        // Now active — enter fails, exit with a verifiable plan succeeds
         let r = enter_tool.execute(json!({})).await;
         assert!(r.is_error);
-        let r = exit_tool.execute(json!({})).await;
+        let r = exit_tool.execute(valid_plan()).await;
         assert!(!r.is_error);
     }
 }

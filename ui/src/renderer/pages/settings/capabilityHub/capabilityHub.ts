@@ -1,9 +1,10 @@
 /**
- * Capability hub routing — presets, skills, MCP, and plugins share one chrome.
- * Market is the default view; `?view=installed` shows the local library.
+ * Capability hub routing — presets, skills, and MCP share one chrome.
+ * Market is the default view for capability hubs that expose one;
+ * `?view=installed` shows the local library. Presets are library-only.
  */
 
-export const CAPABILITY_HUB_IDS = ['presets', 'skills', 'mcp', 'plugins'] as const;
+export const CAPABILITY_HUB_IDS = ['presets', 'skills', 'mcp'] as const;
 
 export type CapabilityHubId = (typeof CAPABILITY_HUB_IDS)[number];
 
@@ -12,29 +13,27 @@ export type CapabilityHubView = 'market' | 'installed';
 export const CAPABILITY_HUB_ACTIVE_PATHS: CapabilityHubId[] = [...CAPABILITY_HUB_IDS];
 
 export const isCapabilityHubId = (value: string | null | undefined): value is CapabilityHubId =>
-  value === 'presets' || value === 'skills' || value === 'mcp' || value === 'plugins';
+  value === 'presets' || value === 'skills' || value === 'mcp';
 
 export const parseCapabilityHubFromPathname = (pathname: string): CapabilityHubId | null => {
-  const match = pathname.match(/^(?:\/settings)?\/(presets|skills|mcp|plugins)(?:\/|$)/);
+  const match = pathname.match(/^(?:\/settings)?\/(presets|skills|mcp)(?:\/|$)/);
   return match && isCapabilityHubId(match[1]) ? match[1] : null;
 };
 
 export const isSettingsCapabilityPathname = (pathname: string): boolean => pathname.startsWith('/settings/');
 
-type LegacyTabTarget = CapabilityHubView | 'plugins-installed' | 'plugins-market';
+type LegacyTabTarget = CapabilityHubView;
 
 export const mapLegacyCapabilityTab = (tab: string | null): LegacyTabTarget | null => {
   if (tab === 'library' || tab === 'servers') return 'installed';
   if (tab === 'market') return 'market';
-  if (tab === 'plugins') return 'plugins-installed';
-  if (tab === 'plugin-market') return 'plugins-market';
   return null;
 };
 
 export const parseCapabilityHubView = (searchParams: URLSearchParams): CapabilityHubView => {
   if (searchParams.get('view') === 'installed') return 'installed';
   const legacy = mapLegacyCapabilityTab(searchParams.get('tab'));
-  if (legacy === 'installed' || legacy === 'plugins-installed') return 'installed';
+  if (legacy === 'installed') return 'installed';
   if (searchParams.get('highlight')) return 'installed';
   return 'market';
 };
@@ -58,7 +57,9 @@ export const buildCapabilityHubLocation = (options: {
   params.delete('tab');
   params.delete('view');
   params.delete('highlight');
-  if (options.view === 'installed') params.set('view', 'installed');
+  // Presets are always the local library, so keep their public URL stable and
+  // avoid exposing an implementation-only view query for the retired market.
+  if (options.hub !== 'presets' && options.view === 'installed') params.set('view', 'installed');
   if (options.highlight) params.set('highlight', options.highlight);
   return withSearch(hubPath(options.hub, options.inSettings), params);
 };
@@ -87,11 +88,7 @@ export const resolveLegacyCapabilityLocation = (pathname: string, search: string
   let view: CapabilityHubView = params.get('view') === 'installed' ? 'installed' : 'market';
   let changed = false;
 
-  if (legacy === 'plugins-installed' || legacy === 'plugins-market') {
-    nextHub = 'plugins';
-    view = legacy === 'plugins-installed' ? 'installed' : 'market';
-    changed = true;
-  } else if (legacy === 'installed' || legacy === 'market') {
+  if (legacy === 'installed' || legacy === 'market') {
     view = legacy;
     changed = true;
   }
@@ -103,6 +100,14 @@ export const resolveLegacyCapabilityLocation = (pathname: string, search: string
 
   if (tab !== null) {
     params.delete('tab');
+    changed = true;
+  }
+
+  // Presets no longer expose a remote expert-package market. Keep old links
+  // navigable, but canonicalize every market view to the local library.
+  if (hub === 'presets' && params.has('view')) {
+    params.delete('view');
+    view = 'installed';
     changed = true;
   }
 

@@ -10,9 +10,11 @@ import { Button } from '@arco-design/web-react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import CanvasProjectPage from '@oc/pages/canvas/project';
 import { hydrateCanvasProjectFromServer, syncCanvasProjectToServer } from './lib/ocBridge';
+import { hydrateCanvasProjectExtras } from './lib/canvasProjectShare';
 import { getCanvasProject } from './api';
 import { createCanvasProjectAutosaveController } from './lib/canvasProjectAutosave';
 import { keepaliveSyncCanvasProject } from './lib/canvasProjectKeepalive';
+import { loadCanvasAssistantPanel } from './loadAssistantPanel';
 import VimaxProvenanceBar from './lib/VimaxProvenanceBar';
 import { syncOcConfigFromAlloMediaModels } from './lib/syncOcModels';
 import { videoCanvasQueryClient } from './lib/queryClient';
@@ -114,8 +116,9 @@ const VideoCanvasProjectPage: React.FC = () => {
     setModelCatalogReady(false);
     setModelCatalogFailed(false);
     setCatalogRetrying(false);
-    setError(null);
-    void (async () => {
+        setError(null);
+        void loadCanvasAssistantPanel();
+        void (async () => {
       try {
         // Wait for zustand persist hydrate
         const waitHydrated = () =>
@@ -138,6 +141,7 @@ const VideoCanvasProjectPage: React.FC = () => {
         const fetchPromise = getCanvasProject(canvasId);
         await waitHydrated();
         await hydrateCanvasProjectFromServer(canvasId, await fetchPromise);
+        await hydrateCanvasProjectExtras(canvasId);
         if (cancelled) return;
         setReady(true);
         void syncModelCatalog(generation);

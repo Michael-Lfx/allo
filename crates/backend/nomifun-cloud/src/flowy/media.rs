@@ -321,6 +321,7 @@ impl FlowyApiClient {
         voice: Option<&str>,
         response_format: &str,
         language_type: &str,
+        instructions: Option<&str>,
     ) -> Result<(Vec<u8>, String), ServerClientError> {
         let voice = voice
             .map(str::trim)
@@ -336,13 +337,20 @@ impl FlowyApiClient {
             .is_empty()
             .then_some("Chinese")
             .unwrap_or(language_type);
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "input": input,
             "voice": voice,
             "response_format": format,
             "language_type": language_type,
         });
+        if let Some(instructions) = instructions
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["instructions"] = json!(instructions);
+            body["optimize_instructions"] = json!(true);
+        }
         let resp = self
             .llm_transport
             .post_json("/audio/speech", Some(session), body)
@@ -616,6 +624,7 @@ impl FlowyApiClient {
                 .collect(),
             reference_video_url: None,
             reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
         })
     }
 
@@ -999,6 +1008,7 @@ mod tests {
             ],
             reference_video_url: Some("https://example.com/ref.mp4".into()),
             reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
         });
         let content = body["content"].as_array().expect("content");
         assert!(content.len() >= 4);
@@ -1031,6 +1041,29 @@ mod tests {
             rec.video_url().as_deref(),
             Some("https://cdn.example/v.mp4")
         );
+    }
+
+    #[test]
+    fn video_task_failure_message_includes_policy_code() {
+        let rec = VideoTaskRecord {
+            id: 1,
+            task_id: None,
+            status: VIDEO_TASK_STATUS_FAILED,
+            credits_consumed: 0,
+            result: Some(serde_json::json!({
+                "status": "failed",
+                "error": {
+                    "code": "OutputVideoSensitiveContentDetected.PolicyViolation",
+                    "message": "The request failed because the output video may be related to copyright restrictions."
+                }
+            })),
+            created_at: None,
+            updated_at: None,
+        };
+        let msg = video_task_failure_message(&rec);
+        assert!(msg.contains("OutputVideoSensitiveContentDetected.PolicyViolation"));
+        assert!(msg.contains("copyright restrictions"));
+        assert!(!msg.ends_with(": failed"));
     }
 
     #[test]
@@ -1073,6 +1106,7 @@ mod tests {
             images: vec![],
             reference_video_url: None,
             reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
         });
         assert_eq!(body["model"], "flowy/MiniMax-H3");
         assert_eq!(body["resolution"], "768P");
@@ -1106,11 +1140,83 @@ mod tests {
             }],
             reference_video_url: None,
             reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
         });
         assert_eq!(body["ratio"], "adaptive");
         assert_eq!(body["resolution"], "2K");
         assert_eq!(body["duration"], 6);
         assert!(body.get("aigc_watermark").is_none());
+    }
+
+    #[test]
+    fn build_wan3_text_only_body() {
+        use crate::flowy::media_types::is_wan3_model;
+        assert!(is_wan3_model("flowy/wan3.0-video"));
+        assert!(is_wan3_model("AIPC-wan3.0-video-prime"));
+        assert!(is_wan3_model("Wan 3.0"));
+        assert!(!is_wan3_model("flowy/MiniMax-H3"));
+        assert!(!is_wan3_model("flowy/doubao-seedance-1-0-pro"));
+
+        let body = FlowyApiClient::build_video_create_params(VideoCreateParams {
+            model: "flowy/wan3.0-video".into(),
+            prompt: "月光下的屋顶".into(),
+            duration: Some(5),
+            aspect_ratio: "16:9".into(),
+            resolution: Some("720p".into()),
+            negative_prompt: Some("blur".into()),
+            seed: Some(7),
+            watermark: true,
+            generate_audio: Some(true),
+            return_last_frame: Some(true),
+            images: vec![],
+            reference_video_url: None,
+            reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
+        });
+        assert_eq!(body["model"], "flowy/wan3.0-video");
+        assert_eq!(body["input"]["prompt"], "月光下的屋顶");
+        assert_eq!(body["parameters"]["duration"], 5);
+        assert_eq!(body["parameters"]["resolution"], "720P");
+        assert_eq!(body["parameters"]["ratio"], "16:9");
+        assert_eq!(body["parameters"]["audio"], true);
+        assert_eq!(body["parameters"]["watermark"], true);
+        assert_eq!(body["parameters"]["seed"], 7);
+        assert_eq!(body["app"], "flowymes");
+        assert!(body.get("content").is_none());
+        assert!(body.get("generate_audio").is_none());
+        assert!(body.get("return_last_frame").is_none());
+        assert!(body.get("negative_prompt").is_none());
+        assert!(body.get("input").unwrap().get("media").is_none());
+    }
+
+    #[test]
+    fn build_wan3_i2v_uses_adaptive_ratio() {
+        let body = FlowyApiClient::build_video_create_params(VideoCreateParams {
+            model: "AIPC-wan3.0-video-prime".into(),
+            prompt: "镜头推进".into(),
+            duration: Some(8),
+            aspect_ratio: "16:9".into(),
+            resolution: Some("1080p".into()),
+            negative_prompt: None,
+            seed: None,
+            watermark: false,
+            generate_audio: None,
+            return_last_frame: None,
+            images: vec![VideoContentImage {
+                url: "https://example.com/first.png".into(),
+                role: "first_frame".into(),
+            }],
+            reference_video_url: None,
+            reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
+        });
+        assert_eq!(body["parameters"]["ratio"], "adaptive");
+        assert_eq!(body["parameters"]["resolution"], "1080P");
+        assert_eq!(body["parameters"]["duration"], 8);
+        assert_eq!(body["parameters"]["audio"], true);
+        assert_eq!(body["input"]["media"][0]["type"], "first_frame");
+        assert_eq!(body["input"]["media"][0]["url"], "https://example.com/first.png");
+        assert!(body.get("content").is_none());
     }
 
     #[test]

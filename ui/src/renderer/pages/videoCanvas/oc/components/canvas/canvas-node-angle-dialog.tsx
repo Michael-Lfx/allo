@@ -1,14 +1,15 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Segmented, Slider, Tooltip } from "antd";
 import { motion, useReducedMotion } from "motion/react";
 import { Camera, RotateCcw, Send, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { ChoiceChip } from "@oc/components/generation-settings-chrome";
+import { CanvasRange } from "./canvas-overlay";
 
 export type CanvasImageAngleParams = {
     horizontalAngle: number;
@@ -56,14 +57,13 @@ export function CanvasNodeAnglePanel({ dataUrl, onClose, onConfirm }: { dataUrl:
     const customLabel = canvasT("videoCanvas.dialog.angleCustom", "自定义");
 
     return (
-        <SpotlightSurface
+        <motion.div
             data-canvas-no-zoom
-            spotlightColor={theme.toolbar.itemHover}
-            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
+            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
             transition={reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel}
-            className="aceternity-floating-panel w-[580px] max-w-full overflow-hidden rounded-[var(--r-2xl)] border backdrop-blur-2xl"
-            style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: `0 28px 80px ${theme.spatial.shadow}` }}
+            className="canvas-overlay w-[580px] max-w-full overflow-hidden"
+            style={canvasOverlayStyle(theme)}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
@@ -71,7 +71,7 @@ export function CanvasNodeAnglePanel({ dataUrl, onClose, onConfirm }: { dataUrl:
                 <span className="grid size-7 shrink-0 place-items-center rounded-[var(--r-md)]" style={{ background: theme.toolbar.itemHover }}><Camera className="size-3.5" /></span>
                 <span className="text-xs font-semibold">{canvasT("videoCanvas.dialog.angleTitle", "多角度编辑器")}</span>
                 <span className="min-w-0 flex-1" />
-                <Tooltip title={canvasT("videoCanvas.dialog.angleClose", "关闭")}><button type="button" aria-label={canvasT("videoCanvas.dialog.angleCloseAria", "关闭多角度编辑器")} className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" onClick={onClose}><X className="size-3.5" /></button></Tooltip>
+                <button type="button" aria-label={canvasT("videoCanvas.dialog.angleCloseAria", "关闭多角度编辑器")} title={canvasT("videoCanvas.dialog.angleClose", "关闭")} className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" onClick={onClose}><X className="size-3.5" /></button>
             </div>
             <div className="flex h-10 items-center gap-1 overflow-x-auto border-b px-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" style={{ borderColor: theme.toolbar.border }}>
                 <AnglePresetButton active={!activePreset} label={customLabel} theme={theme} />
@@ -85,12 +85,15 @@ export function CanvasNodeAnglePanel({ dataUrl, onClose, onConfirm }: { dataUrl:
                     <span className="pointer-events-none absolute bottom-2 text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.dialog.angleDragHint", "拖动调整摄影机")}</span>
                 </div>
                 <div className="flex min-w-0 flex-col justify-center gap-2 rounded-[var(--r-lg)] border px-2.5 py-2" style={{ background: theme.toolbar.itemHover, borderColor: theme.toolbar.border }}>
-                    <AngleSlider label={canvasT("videoCanvas.dialog.angleHorizontal", "水平环绕")} value={params.horizontalAngle} min={-180} max={180} suffix="°" onChange={(value) => update("horizontalAngle", value)} />
-                    <AngleSlider label={canvasT("videoCanvas.dialog.anglePitch", "垂直俯仰")} value={params.pitchAngle} min={-75} max={75} suffix="°" onChange={(value) => update("pitchAngle", value)} />
-                    <AngleSlider label={canvasT("videoCanvas.dialog.angleDistance", "景别缩放")} value={params.cameraDistance} min={1} max={10} step={0.1} suffix={distanceLabel(params.cameraDistance)} onChange={(value) => update("cameraDistance", value)} />
+                    <AngleSlider label={canvasT("videoCanvas.dialog.angleHorizontal", "水平环绕")} value={params.horizontalAngle} min={-180} max={180} suffix="°" theme={theme} onChange={(value) => update("horizontalAngle", value)} />
+                    <AngleSlider label={canvasT("videoCanvas.dialog.anglePitch", "垂直俯仰")} value={params.pitchAngle} min={-75} max={75} suffix="°" theme={theme} onChange={(value) => update("pitchAngle", value)} />
+                    <AngleSlider label={canvasT("videoCanvas.dialog.angleDistance", "景别缩放")} value={params.cameraDistance} min={1} max={10} step={0.1} suffix={distanceLabel(params.cameraDistance)} theme={theme} onChange={(value) => update("cameraDistance", value)} />
                     <div className="grid h-8 grid-cols-[62px_minmax(0,1fr)] items-center gap-2">
                         <span className="text-[var(--fs-tiny)] font-medium" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.dialog.angleLens", "镜头")}</span>
-                        <Segmented block size="small" value={params.wideAngle ? "wide" : "standard"} options={[{ label: canvasT("videoCanvas.dialog.angleStandard", "标准"), value: "standard" }, { label: canvasT("videoCanvas.dialog.angleWide", "广角"), value: "wide" }]} onChange={(value) => update("wideAngle", value === "wide")} />
+                        <div className="flex flex-wrap gap-1">
+                            <ChoiceChip selected={!params.wideAngle} theme={theme} onClick={() => update("wideAngle", false)}>{canvasT("videoCanvas.dialog.angleStandard", "标准")}</ChoiceChip>
+                            <ChoiceChip selected={params.wideAngle} theme={theme} onClick={() => update("wideAngle", true)}>{canvasT("videoCanvas.dialog.angleWide", "广角")}</ChoiceChip>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -102,12 +105,12 @@ export function CanvasNodeAnglePanel({ dataUrl, onClose, onConfirm }: { dataUrl:
                 <button type="button" className="flex h-8 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-2 text-[var(--fs-label)] font-medium transition hover:bg-black/5 dark:hover:bg-white/10" onClick={() => setParams(defaultParams)}><RotateCcw className="size-3.5" />{canvasT("videoCanvas.dialog.angleReset", "重置")}</button>
                 <motion.button type="button" whileHover={reducedMotion ? undefined : { y: -1 }} whileTap={reducedMotion ? undefined : { scale: 0.97 }} className="flex h-8 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-3 text-[var(--fs-label)] font-semibold" style={{ background: theme.node.activeStroke, color: theme.node.panel }} onClick={() => onConfirm(params)}><Send className="size-3.5" />{canvasT("videoCanvas.dialog.angleGenerate", "生成新角度")}</motion.button>
             </div>
-        </SpotlightSurface>
+        </motion.div>
     );
 }
 
-function AngleSlider({ label, value, min, max, step = 1, suffix, onChange }: { label: string; value: number; min: number; max: number; step?: number; suffix: string; onChange: (value: number) => void }) {
-    return <div className="grid h-8 grid-cols-[62px_minmax(0,1fr)_60px] items-center gap-2"><span className="text-[var(--fs-tiny)] font-medium opacity-60">{label}</span><Slider min={min} max={max} step={step} value={value} onChange={onChange} /><span className="text-right text-[var(--fs-tiny)] font-semibold">{Number.isInteger(value) ? value : value.toFixed(1)}{suffix.startsWith("°") ? suffix : ""}{!suffix.startsWith("°") ? ` ${suffix}` : ""}</span></div>;
+function AngleSlider({ label, value, min, max, step = 1, suffix, theme, onChange }: { label: string; value: number; min: number; max: number; step?: number; suffix: string; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onChange: (value: number) => void }) {
+    return <div className="grid h-8 grid-cols-[62px_minmax(0,1fr)_60px] items-center gap-2"><span className="text-[var(--fs-tiny)] font-medium opacity-60">{label}</span><CanvasRange theme={theme} min={min} max={max} step={step} value={value} ariaLabel={label} onChange={onChange} /><span className="text-right text-[var(--fs-tiny)] font-semibold">{Number.isInteger(value) ? value : value.toFixed(1)}{suffix.startsWith("°") ? suffix : ""}{!suffix.startsWith("°") ? ` ${suffix}` : ""}</span></div>;
 }
 
 function AnglePresetButton({ active, label, theme, onClick }: { active: boolean; label: string; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onClick?: () => void }) {

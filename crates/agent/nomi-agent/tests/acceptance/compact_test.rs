@@ -141,6 +141,7 @@ async fn autocompact_triggers_llm_summary() {
         context_window: 1000,
         output_reserve: 100,
         autocompact_buffer: 100,
+        autocompact_threshold_pct: None,
         // threshold = 1000 - 100 - 100 = 800
         ..CompactConfig::default()
     };

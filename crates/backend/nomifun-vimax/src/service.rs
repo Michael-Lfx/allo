@@ -1,5 +1,6 @@
 //! Thin wrapper around `nomi_vimax::VimaxService` with GatewayConfig reload.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -7,15 +8,19 @@ use nomi_config::{GatewayConfig, config_yaml_path, load_user_config_file};
 use nomi_vimax::{
     pack_skill_dir, ArtifactNode, CameoPhotoEntry, CameoUpdate, FlowyVimaxServices, RenderStatus,
     RunStatus, SessionRecord, SessionSummary, SkillSource, VerticalSkill, VerticalSkillDraft,
-    VerticalSkillSummary, VimaxService, WorkflowKind,
+    VerticalSkillSummary, VimaxService, VimaxTerminalTelemetry, WorkflowKind, film_event_name,
 };
 use nomifun_api_types::{
-    TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest, TvShowPublishResponse,
-    TvShowPublishSessionRequest, TvShowVideo, VimaxCloudSkill, VimaxCloudSkillInstallResponse,
-    VimaxCloudSkillLikeResponse, VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest,
-    VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse, VimaxSessionSummary,
+    CampaignCarouselResponse, CampaignDetail, CampaignListResponse, TvShowLikeResponse,
+    TvShowListResponse, TvShowPublishRequest, TvShowPublishResponse, TvShowPublishSessionRequest,
+    TvShowVideo, VideoGrowthEvent, VideoGrowthEventBatchRequest, VimaxCloudSkill,
+    VimaxCloudSkillInstallResponse, VimaxCloudSkillLikeResponse, VimaxCloudSkillListResponse,
+    VimaxCloudSkillPublishLocalRequest, VimaxCloudSkillPublishRequest,
+    VimaxCloudSkillPublishResponse, VimaxSessionSummary, GenerationTemplateDetail,
+    GenerationTemplateListResponse, GenerationTemplatePublishRequest,
 };
-use nomifun_cloud::{FlowyApiClient, ServerSession};
+use nomifun_cloud::{CloudService, FlowyApiClient, ServerSession};
+use serde_json::json;
 use nomifun_common::AppError;
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
@@ -35,6 +40,15 @@ impl VimaxApiService {
         let flowy = load_flowy(&data_dir);
         let inner = VimaxService::start(&data_dir, flowy)
             .map_err(|e| AppError::Internal(e.to_string()))?;
+        let hook_dir = data_dir.clone();
+        inner.set_terminal_telemetry_hook(Some(Arc::new(move |payload| {
+            let data_dir = hook_dir.clone();
+            tokio::spawn(async move {
+                if let Err(err) = upload_vimax_terminal_telemetry(data_dir, payload).await {
+                    warn!(error = %err, "vimax terminal telemetry upload failed");
+                }
+            });
+        })));
         Ok(Self { data_dir, inner })
     }
 
@@ -154,6 +168,10 @@ impl VimaxApiService {
 
     pub fn get_session(&self, id: &str) -> Result<SessionRecord, AppError> {
         self.inner.get_session(id).map_err(map_vimax_err)
+    }
+
+    pub fn rename_session(&self, id: &str, title: String) -> Result<SessionRecord, AppError> {
+        self.inner.rename_session(id, &title).map_err(map_vimax_err)
     }
 
     pub fn working_dir(&self, id: &str) -> Result<PathBuf, AppError> {
@@ -396,7 +414,9 @@ impl VimaxApiService {
 
     // ── TV Show (Flowy cloud) ──────────────────────────────────────────────
 
-    async fn flowy_client_and_session(&self) -> Result<(FlowyApiClient, ServerSession), AppError> {
+    async fn flowy_optional_session(
+        &self,
+    ) -> Result<(FlowyApiClient, Option<ServerSession>), AppError> {
         let cfg: GatewayConfig =
             load_user_config_file(&config_yaml_path(Some(&self.data_dir))).map_err(|e| {
                 AppError::BadRequest(format!("failed to load config: {e}"))
@@ -412,13 +432,14 @@ impl VimaxApiService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?
             .filter(|t| !t.trim().is_empty());
-        if token.is_none() {
-            return Err(AppError::Unauthorized(
-                "cloud login required".into(),
-            ));
-        }
         let client =
             FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok((client, token.is_some().then_some(session)))
+    }
+
+    async fn flowy_client_and_session(&self) -> Result<(FlowyApiClient, ServerSession), AppError> {
+        let (client, session) = self.flowy_optional_session().await?;
+        let session = session.ok_or_else(|| AppError::Unauthorized("cloud login required".into()))?;
         Ok((client, session))
     }
 
@@ -442,16 +463,11 @@ impl VimaxApiService {
             .ok_or_else(|| {
                 AppError::BadRequest("cover image is required before publishing".into())
             })?;
-        let final_video = session
+        let preview_rel = session
             .final_video
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        if final_video.is_none() {
-            return Err(AppError::BadRequest(
-                "finished video is required before publishing".into(),
-            ));
-        }
 
         let (client, cloud_session) = self.flowy_client_and_session().await?;
 
@@ -490,6 +506,50 @@ impl VimaxApiService {
             )
             .await
             .map_err(map_cloud_err)?;
+
+        let preview_upload = if let Some(preview_rel) = preview_rel {
+            let preview_path = self.artifact_path(id, preview_rel)?;
+            if !preview_path.is_file() {
+                warn!(
+                    session_id = %id,
+                    path = %preview_path.display(),
+                    "TV Show: preview file missing, publishing without preview"
+                );
+                None
+            } else {
+                let preview_bytes = tokio::fs::read(&preview_path)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("read preview: {e}")))?;
+                let preview_name = preview_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("preview.mp4");
+                let preview_mime = mime_guess::from_path(&preview_path)
+                    .first_or_octet_stream()
+                    .essence_str()
+                    .to_string();
+                let preview_mime = if preview_mime.starts_with("video/") {
+                    preview_mime
+                } else {
+                    "video/mp4".into()
+                };
+                info!(session_id = %id, bytes = preview_bytes.len(), "TV Show: uploading preview");
+                Some(
+                    client
+                        .upload_bytes_via_oss_detailed(
+                            &cloud_session,
+                            &preview_bytes,
+                            preview_name,
+                            &preview_mime,
+                            None,
+                        )
+                        .await
+                        .map_err(map_cloud_err)?,
+                )
+            }
+        } else {
+            None
+        };
 
         let title_raw = req
             .title
@@ -574,11 +634,14 @@ impl VimaxApiService {
             target_duration_secs,
             cover_url: cover_upload.public_url,
             cover_object_key: cover_upload.object_key,
+            preview_url: preview_upload.as_ref().map(|u| u.public_url.clone()),
+            preview_object_key: preview_upload.and_then(|u| u.object_key),
             package_url: package_upload.public_url,
             package_object_key: package_upload.object_key,
             package_size_bytes: Some(package_upload.byte_size as i64),
             package_sha256: None,
             archive_version: Some(1),
+            campaign_id: req.campaign_id.filter(|id| *id > 0),
         };
 
         client
@@ -594,16 +657,20 @@ impl VimaxApiService {
         workflow: Option<String>,
         keyword: Option<String>,
         sort: Option<String>,
+        campaign_id: Option<i64>,
+        award_level: Option<String>,
     ) -> Result<TvShowListResponse, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
             .tv_show_list(
-                &session,
+                session.as_ref(),
                 page,
                 page_size,
                 workflow.as_deref(),
                 keyword.as_deref(),
                 sort.as_deref(),
+                campaign_id,
+                award_level.as_deref(),
             )
             .await
             .map_err(map_cloud_err)
@@ -614,18 +681,25 @@ impl VimaxApiService {
         page: Option<i32>,
         page_size: Option<i32>,
         status: Option<String>,
+        campaign_id: Option<i64>,
     ) -> Result<TvShowListResponse, AppError> {
         let (client, session) = self.flowy_client_and_session().await?;
         client
-            .tv_show_mine(&session, page, page_size, status.as_deref())
+            .tv_show_mine(
+                &session,
+                page,
+                page_size,
+                status.as_deref(),
+                campaign_id.filter(|id| *id > 0),
+            )
             .await
             .map_err(map_cloud_err)
     }
 
     pub async fn tv_show_detail(&self, id: i64) -> Result<TvShowVideo, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
-            .tv_show_detail(&session, id)
+            .tv_show_detail(session.as_ref(), id)
             .await
             .map_err(map_cloud_err)
     }
@@ -650,6 +724,67 @@ impl VimaxApiService {
         let (client, session) = self.flowy_client_and_session().await?;
         client
             .tv_show_delete(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_carousel(&self) -> Result<CampaignCarouselResponse, AppError> {
+        let (client, session) = self.flowy_optional_session().await?;
+        client
+            .campaign_carousel(session.as_ref())
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_list(
+        &self,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        include_ended: Option<bool>,
+    ) -> Result<CampaignListResponse, AppError> {
+        let (client, session) = self.flowy_optional_session().await?;
+        client
+            .campaign_list(session.as_ref(), page, page_size, include_ended)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_detail(&self, id: i64) -> Result<CampaignDetail, AppError> {
+        let (client, session) = self.flowy_optional_session().await?;
+        client
+            .campaign_detail(session.as_ref(), id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_submissions(
+        &self,
+        id: i64,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        workflow: Option<String>,
+        keyword: Option<String>,
+        sort: Option<String>,
+    ) -> Result<TvShowListResponse, AppError> {
+        let (client, session) = self.flowy_optional_session().await?;
+        client
+            .campaign_submissions(
+                session.as_ref(),
+                id,
+                page,
+                page_size,
+                workflow.as_deref(),
+                keyword.as_deref(),
+                sort.as_deref(),
+            )
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_winners(&self, id: i64) -> Result<TvShowListResponse, AppError> {
+        let (client, session) = self.flowy_optional_session().await?;
+        client
+            .campaign_winners(session.as_ref(), id)
             .await
             .map_err(map_cloud_err)
     }
@@ -950,6 +1085,75 @@ impl VimaxApiService {
             .map_err(map_cloud_err)
     }
 
+    pub async fn generation_template_list(
+        &self,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        keyword: Option<String>,
+        category: Option<String>,
+        origin: Option<String>,
+        sort: Option<String>,
+        node_type: Option<String>,
+    ) -> Result<GenerationTemplateListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_list(
+                &session,
+                page,
+                page_size,
+                keyword.as_deref(),
+                category.as_deref(),
+                origin.as_deref(),
+                sort.as_deref(),
+                node_type.as_deref(),
+            )
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_mine(
+        &self,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        status: Option<String>,
+    ) -> Result<GenerationTemplateListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_mine(&session, page, page_size, status.as_deref())
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_detail(
+        &self,
+        id: i64,
+    ) -> Result<GenerationTemplateDetail, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_detail(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_event(&self, id: i64, event_type: String) -> Result<(), AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_event(&session, id, &event_type)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_publish_from_canvas(
+        &self,
+        body: GenerationTemplatePublishRequest,
+    ) -> Result<GenerationTemplateDetail, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_publish_from_canvas(&session, &body)
+            .await
+            .map_err(map_cloud_err)
+    }
+
     /// Call cloud install, download package, import into local user catalog.
     pub async fn skill_hub_install(&self, id: i64) -> Result<VerticalSkill, AppError> {
         let (client, session) = self.flowy_client_and_session().await?;
@@ -1178,6 +1382,67 @@ async fn download_url_to_file_capped(
     tokio::fs::write(dest, &bytes)
         .await
         .map_err(|e| AppError::Internal(format!("write skill package: {e}")))?;
+    Ok(())
+}
+
+async fn upload_vimax_terminal_telemetry(
+    data_dir: PathBuf,
+    payload: VimaxTerminalTelemetry,
+) -> Result<(), AppError> {
+    let Some(name) = film_event_name(payload.status) else {
+        return Ok(());
+    };
+    let cloud = CloudService::new(data_dir)?;
+    if !cloud.is_authenticated().await {
+        return Ok(());
+    }
+
+    let session_id = payload.session_id.clone();
+    let mut properties = BTreeMap::new();
+    properties.insert("session_id".into(), json!(session_id.clone()));
+    properties.insert("feature".into(), json!("video_generation"));
+    properties.insert("runtime".into(), json!("desktop"));
+    properties.insert("status".into(), json!(payload.status.as_str()));
+    properties.insert("credits_consumed".into(), json!(payload.credits_consumed));
+    properties.insert("duration_ms".into(), json!(payload.duration_ms));
+    if !payload.workflow.is_empty() {
+        properties.insert("workflow".into(), json!(payload.workflow));
+    }
+    if !payload.llm_model.is_empty() {
+        properties.insert("llm_model".into(), json!(payload.llm_model));
+    }
+    if !payload.image_model.is_empty() {
+        properties.insert("image_model".into(), json!(payload.image_model));
+    }
+    if !payload.video_model.is_empty() {
+        properties.insert("video_model".into(), json!(payload.video_model));
+    }
+    if let Some(error_code) = payload.error_code.filter(|value| !value.is_empty()) {
+        properties.insert("error_code".into(), json!(error_code));
+    }
+    if let Some(error_message) = payload.error_message.filter(|value| !value.is_empty()) {
+        properties.insert("error_message".into(), json!(error_message));
+    }
+    if let Some(failure_channel) = payload.failure_channel.filter(|value| !value.is_empty()) {
+        properties.insert("failure_channel".into(), json!(failure_channel));
+    }
+
+    cloud
+        .upload_video_growth_events(&VideoGrowthEventBatchRequest {
+            events: vec![VideoGrowthEvent {
+                event_id: format!("video:{name}:{session_id}"),
+                name: name.to_string(),
+                occurred_at: payload.occurred_at,
+                module: Some("video_generation".into()),
+                properties,
+                cohort: None,
+            }],
+            client_id: None,
+            app: None,
+            platform: None,
+            app_version: None,
+        })
+        .await?;
     Ok(())
 }
 

@@ -11,21 +11,135 @@
 
 .session-logs-body {
   display: flex;
+  min-width: 0;
   min-height: 0;
   flex: 1;
 }
 
-.session-logs-detail {
-  flex: 1;
+.session-logs-trace {
+  display: flex;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
 }
 
-.session-logs-metrics {
+.session-logs-timeline-column {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 4px 20px;
+  flex: 0 0 288px;
+  flex-direction: column;
+  min-width: 88px;
+  min-height: 0;
+  border-right: 1px solid var(--color-border-2);
+  background: var(--color-bg-1);
+}
+
+.session-logs-timeline-column.is-collapsed {
+  width: 88px;
+  min-width: 88px;
+  flex-basis: 88px;
+}
+
+.session-logs-detail {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.session-logs-detail-inner {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.session-logs-detail__header {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--color-border-1);
+}
+
+.session-logs-detail__scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  overflow-anchor: none;
+}
+
+.session-logs-detail__empty {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 12px;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.session-logs-current-event {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 6px;
+  background: color-mix(in srgb, rgb(var(--primary-6)) 6%, var(--color-bg-1));
+}
+
+.session-logs-current-event__eyebrow {
+  color: var(--color-text-3);
+  font-size: 10px;
+  line-height: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.session-logs-current-event__title {
+  min-width: 0;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-logs-current-event__meta {
+  margin-top: 2px;
+  color: var(--color-text-3);
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-logs-event-inspector {
+  min-width: 0;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 6px;
+  background: var(--color-bg-1);
+}
+
+.session-logs-event-inspector__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.session-logs-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 4px 8px;
   margin-top: 8px;
 }
 
@@ -119,6 +233,7 @@
 .session-logs-nav {
   --session-logs-gutter: 16px;
   width: 260px;
+  min-width: 248px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -151,8 +266,19 @@
   margin-right: -4px;
 }
 
+.session-logs-nav__collapse {
+  display: inline-flex;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+}
+
 .session-logs-nav.is-collapsed {
   width: 44px;
+  min-width: 44px;
+  flex: 0 0 44px;
 }
 
 .session-logs-nav.is-collapsed .session-logs-nav__header {
@@ -311,6 +437,46 @@
   transform: rotate(180deg);
 }
 
+.session-logs-turn-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.session-logs-download {
+  flex: 0 0 auto;
+  color: rgb(var(--primary-6)) !important;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.session-logs-download-group {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.session-logs-download-notice {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--color-text-3);
+}
+
+.session-logs-download-error {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-text-2);
+}
+
 .session-logs-identity {
   margin-top: 8px;
   display: flex;
@@ -324,84 +490,20 @@
   color: var(--color-text-3);
 }
 
-.session-logs-flow {
-  display: flex;
-  align-items: stretch;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-
-.session-logs-flow__arrow {
-  flex-shrink: 0;
-  align-self: center;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 16px;
-  color: rgb(var(--primary-6));
-}
-
-.session-logs-flow__end {
-  min-width: 148px;
-  max-width: 220px;
-  flex: 0 0 auto;
-  overflow: hidden;
-  border: 1px solid var(--color-border-2);
-  border-radius: 6px;
-  background: var(--color-bg-1);
-  cursor: default;
-}
-
-.session-logs-tile,
-.session-logs-flow__end {
+.session-logs-tile {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   align-self: stretch;
 }
 
-.session-logs-flow__end-label {
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  height: 26px;
-  padding: 2px 4px 2px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-  color: var(--color-text-2);
-  background: var(--color-fill-1);
-  white-space: nowrap;
-}
-
-.session-logs-flow__end-label > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.session-logs-flow__end-maximize {
-  flex-shrink: 0;
-}
-
-.session-logs-flow__end-title {
-  flex: 1;
-  padding: 8px;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--color-text-1);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
 .session-logs-tile {
+  box-sizing: border-box;
   min-width: 148px;
   max-width: 220px;
   flex: 0 0 auto;
+  height: 84px;
+  min-height: 84px;
   padding: 0;
   border: 1px solid var(--color-border-2);
   border-radius: 6px;
@@ -409,7 +511,10 @@
   color: inherit;
   text-align: left;
   overflow: hidden;
-  transition: border-color 120ms var(--ease-out-expo);
+  transition:
+    background-color 120ms var(--ease-out-expo),
+    border-color 120ms var(--ease-out-expo),
+    color 120ms var(--ease-out-expo);
 }
 
 button.session-logs-tile {
@@ -419,6 +524,17 @@ button.session-logs-tile {
 
 button.session-logs-tile:hover {
   border-color: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-border-2));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 5%, var(--color-bg-1));
+}
+
+button.session-logs-tile:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+button.session-logs-tile:disabled:hover {
+  border-color: var(--color-border-2);
+  background: var(--color-bg-1);
 }
 
 .session-logs-tile:focus-visible {
@@ -428,21 +544,54 @@ button.session-logs-tile:hover {
 
 .session-logs-tile.is-selected {
   border-color: color-mix(in srgb, rgb(var(--primary-6)) 55%, var(--color-border-2));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 10%, var(--color-bg-1));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, rgb(var(--primary-6)) 32%, transparent);
 }
 
 .session-logs-tile__head {
   box-sizing: border-box;
-  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
   padding: 5px 8px;
   font-size: 11px;
   font-weight: 600;
   line-height: 16px;
   color: var(--color-text-1);
   background: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-bg-1));
-  white-space: nowrap;
+  overflow: hidden;
+}
+
+.session-logs-tile__stage-icon,
+.session-logs-tile__stage-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-2);
+}
+
+.session-logs-tile__stage-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-logs-tile__stage-action {
+  margin-left: auto;
+  color: var(--color-text-3);
+}
+
+.session-logs-tile.is-selected .session-logs-tile__stage-icon,
+.session-logs-tile.is-selected .session-logs-tile__stage-action {
+  color: rgb(var(--primary-6));
+}
+
+.session-logs-tile.is-selected .session-logs-tile__stage-label {
+  font-weight: 700;
 }
 
 .session-logs-tile--request .session-logs-tile__head,
@@ -452,8 +601,10 @@ button.session-logs-tile:hover {
 }
 
 .session-logs-tile__body {
-  flex: 1;
-  padding: 8px;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 8px 8px 11px;
+  overflow: hidden;
 }
 
 .session-logs-tile__title {
@@ -471,22 +622,127 @@ button.session-logs-tile:hover {
   font-size: 11px;
   line-height: 16px;
   color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-logs-call {
-  padding: 12px 12px 14px;
+  min-width: 0;
+  padding: 10px 0;
   border-bottom: 1px solid var(--color-border-2);
 }
 
+.session-logs-call-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 12px 10px;
+}
+
+.session-logs-call-list__guide {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 0 4px;
+  color: var(--color-text-3);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-logs-call-list__viewport {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+}
+
+.session-logs-call-list__virtual {
+  min-width: 0;
+}
+
+.session-logs-call--compact {
+  min-height: 104px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--color-border-2);
+  border-radius: 6px;
+  transition:
+    background-color 120ms var(--ease-out-expo),
+    border-color 120ms var(--ease-out-expo);
+}
+
+.session-logs-call--compact.is-selected {
+  border-color: color-mix(in srgb, rgb(var(--primary-6)) 58%, var(--color-border-2));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 10%, var(--color-bg-1));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, rgb(var(--primary-6)) 24%, transparent);
+}
+
+.session-logs-call--compact.is-selected .session-logs-call__title {
+  color: var(--color-text-1);
+  font-weight: 700;
+}
+
+.session-logs-call__inspector-slot {
+  box-sizing: border-box;
+  height: clamp(320px, 42vh, 520px);
+  min-height: 320px;
+  min-width: 0;
+  margin-top: 10px;
+  overflow: auto;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  contain: layout paint;
+}
+
+.session-logs-call__inspector-slot > .session-logs-inspector {
+  margin-top: 0;
+}
+
+.session-logs-round-event-slot {
+  box-sizing: border-box;
+  flex: 0 0 clamp(180px, 24vh, 260px);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overflow-anchor: none;
+  padding: 10px 12px 0;
+  scrollbar-gutter: stable;
+}
+
+.session-logs-call__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
 .session-logs-call__title {
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text-1);
 }
 
+.session-logs-call__status {
+  flex: 0 0 auto;
+  color: var(--color-text-2);
+  font-size: 10px;
+  line-height: 16px;
+}
+
 .session-logs-call__meta {
   margin-top: 4px;
-  margin-bottom: 10px;
+  margin-bottom: 7px;
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
@@ -496,19 +752,432 @@ button.session-logs-tile:hover {
   font-variant-numeric: tabular-nums;
 }
 
-.session-logs-inspector-slot {
+.session-logs-call-details {
   display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 180ms var(--ease-out-expo);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 6px;
+  grid-auto-rows: 84px;
+  min-width: 0;
 }
 
-.session-logs-inspector-slot.is-open {
-  grid-template-rows: 1fr;
+.session-logs-call--compact .session-logs-call-details > .session-logs-tile {
+  height: 84px;
+  min-height: 84px;
 }
 
-.session-logs-inspector-slot__clip {
+.session-logs-call-details > .session-logs-tile {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.session-logs-timeline-wrap {
+  position: relative;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  scrollbar-gutter: stable;
+}
+
+.session-logs-timeline__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 8px 7px;
+  border-bottom: 1px solid var(--color-border-1);
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__header {
+  gap: 4px;
+  padding-inline: 6px;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__heading {
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 4px;
   overflow: hidden;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__title {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__count {
+  flex: 0 1 auto;
+  max-width: 18px;
+  padding-inline: 2px;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__count-full {
+  display: none;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__count-compact {
+  display: inline;
+}
+
+.session-logs-timeline__heading {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.session-logs-timeline__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  min-width: 0;
+  color: var(--color-text-1);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.session-logs-timeline__title-icon {
+  flex: 0 0 auto;
+  color: rgb(var(--primary-6));
+}
+
+.session-logs-timeline__title-text {
+  min-width: 0;
+}
+
+.session-logs-timeline__count {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 2px;
+  border-radius: 9px;
+  background: var(--color-fill-2);
+  color: var(--color-text-3);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-logs-timeline__count-compact {
+  display: none;
+}
+
+.session-logs-timeline__current {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-3);
+  font-size: 10px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity 120ms var(--ease-out-expo);
+}
+
+.session-logs-timeline__toggle {
+  flex: 0 0 auto;
+  width: 24px !important;
+  height: 24px !important;
+}
+
+.session-logs-timeline__toggle-wrap {
+  display: inline-flex;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.session-logs-timeline-new {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, rgb(var(--primary-6)) 42%, var(--color-border-2));
+  border-radius: 5px;
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, var(--color-bg-1));
+  color: var(--color-text-1);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-logs-timeline-new:hover,
+.session-logs-timeline-new:focus-visible {
+  background: color-mix(in srgb, rgb(var(--primary-6)) 18%, var(--color-bg-1));
+}
+
+.session-logs-timeline-empty {
+  padding: 18px 8px;
+  color: var(--color-text-3);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.session-logs-timeline__list {
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.session-logs-timeline__item {
+  position: relative;
+  min-width: 0;
+  padding: 1px 0;
+}
+
+.session-logs-timeline__event {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+}
+
+.session-logs-timeline__rail {
+  position: relative;
+  display: flex;
+  flex: 0 0 28px;
+  justify-content: center;
+  width: 28px;
+  min-height: 42px;
+}
+
+.session-logs-timeline__rail::after {
+  content: '';
+  position: absolute;
+  top: 33px;
+  bottom: -4px;
+  width: 1px;
+  background: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-border-2));
+}
+
+.session-logs-timeline__item:last-child .session-logs-timeline__rail::after {
+  display: none;
+}
+
+.session-logs-timeline__dot {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  min-width: 28px;
+  max-width: 28px;
+  width: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  height: 28px;
+  margin-top: 6px;
+  box-sizing: border-box;
+  aspect-ratio: 1;
+  border: 2px solid var(--color-bg-1);
+  border-radius: 50%;
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, var(--color-bg-1));
+  color: var(--flowy-text-primary, var(--color-text-1));
+  box-shadow: 0 0 0 1px color-mix(in srgb, rgb(var(--primary-6)) 45%, transparent);
+}
+
+.session-logs-timeline__content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 40px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--color-border-2);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.session-logs-timeline__event:hover .session-logs-timeline__content,
+.session-logs-timeline__event:focus-visible .session-logs-timeline__content {
+  border-color: color-mix(in srgb, rgb(var(--primary-6)) 38%, var(--color-border-2));
+  background: color-mix(in srgb, var(--color-fill-2) 60%, var(--color-bg-1));
+}
+
+.session-logs-timeline__event:focus-visible {
+  outline: 2px solid color-mix(in srgb, rgb(var(--primary-6)) 48%, transparent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.session-logs-timeline__item.is-selected .session-logs-timeline__content {
+  border-color: color-mix(in srgb, rgb(var(--primary-6)) 58%, var(--color-border-2));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 10%, var(--color-bg-1));
+}
+
+.session-logs-timeline__item.is-degraded .session-logs-timeline__dot {
+  background: color-mix(in srgb, var(--warning) 16%, var(--color-bg-1));
+  color: color-mix(in srgb, var(--warning) 72%, var(--color-text-1));
+  box-shadow: 0 0 0 1px var(--color-text-3);
+}
+
+.session-logs-timeline__item.is-meta-event .session-logs-timeline__dot {
+  background: var(--color-fill-2);
+  color: var(--flowy-text-primary, var(--color-text-1));
+  box-shadow: 0 0 0 1px var(--color-text-3);
+}
+
+.session-logs-timeline__item.is-selected .session-logs-timeline__dot {
+  background: color-mix(in srgb, rgb(var(--primary-6)) 20%, var(--color-bg-1));
+  color: var(--flowy-text-primary, var(--color-text-1));
+  box-shadow: 0 0 0 2px color-mix(in srgb, rgb(var(--primary-6)) 72%, transparent);
+}
+
+.session-logs-timeline__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.session-logs-timeline__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--color-text-1);
+  transition: opacity 120ms var(--ease-out-expo);
+}
+
+.session-logs-timeline__seq,
+.session-logs-timeline__meta,
+.session-logs-timeline__note {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-logs-timeline__seq {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.session-logs-timeline__note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-2);
+}
+
+.session-logs-timeline__collapsed-time {
+  display: none;
+  min-width: 0;
+  color: var(--color-text-2);
+  font-size: 10px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.session-logs-timeline__gap {
+  margin: 0 0 0 22px;
+  padding: 1px 0;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--color-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline-wrap {
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__heading {
+  justify-content: flex-start;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__current {
+  display: none;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__title {
+  display: block;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__title-text {
+  display: none;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__label {
+  display: none;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__head,
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__meta,
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__note,
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__seq {
+  display: none;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__item {
+  min-height: 48px;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__event {
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 5px;
+  min-height: 48px;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__content {
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 46px;
+  padding: 4px 0;
+  border-color: transparent;
+  border-bottom-color: var(--color-border-2);
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__collapsed-time {
+  display: block;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__count {
+  width: 20px;
+  max-width: 20px;
+  padding-inline: 0;
+}
+
+.session-logs-glossary__section {
+  grid-column: 1 / -1;
+  padding-top: 4px;
+  border-top: 1px solid var(--color-border-2);
+  color: var(--color-text-2);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
 }
 
 .session-logs-inspector {
@@ -516,16 +1185,11 @@ button.session-logs-tile:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  opacity: 0;
-  transform: translateY(8px);
-  transition:
-    opacity 180ms var(--ease-out-expo),
-    transform 180ms var(--ease-out-expo);
-}
-
-.session-logs-inspector-slot.is-open .session-logs-inspector {
-  opacity: 1;
-  transform: translateY(0);
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 6px;
+  background: var(--color-bg-1);
 }
 
 .session-logs-inspector__head {
@@ -539,6 +1203,17 @@ button.session-logs-tile:hover {
   font-size: 12px;
   font-weight: 600;
   color: var(--color-text-1);
+}
+
+.session-logs-inspector__title-group {
+  min-width: 0;
+}
+
+.session-logs-inspector__eyebrow {
+  margin-bottom: 2px;
+  color: var(--color-text-3);
+  font-size: 10px;
+  line-height: 14px;
 }
 
 .session-logs-request-params {
@@ -586,6 +1261,138 @@ button.session-logs-tile:hover {
   flex: 0 0 auto;
 }
 
+.session-logs-request-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 10px;
+  min-width: 0;
+}
+
+.session-logs-request-primary,
+.session-logs-request-secondary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.session-logs-used-tools {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-2);
+  border-radius: 8px;
+  background: var(--color-bg-1);
+}
+
+.session-logs-request-section__heading {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-2);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 10%, var(--color-bg-1));
+  color: var(--color-text-1);
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.session-logs-request-section__count {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-2);
+}
+
+.session-logs-request-section__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.session-logs-request-section__collapsed {
+  padding: 9px 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-text-3);
+}
+
+.session-logs-history-toggle {
+  appearance: none;
+  align-self: flex-start;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgb(var(--primary-6));
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.session-logs-history-toggle:hover,
+.session-logs-history-toggle:focus-visible {
+  text-decoration: underline;
+}
+
+.session-logs-history-toggle.is-open {
+  color: var(--color-text-2);
+}
+
+.session-logs-used-tools__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.session-logs-used-tools__list li + li {
+  border-top: 1px solid var(--color-border-2);
+}
+
+.session-logs-used-tools__item {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-logs-used-tools__item:hover,
+.session-logs-used-tools__item:focus-visible {
+  background: color-mix(in srgb, rgb(var(--primary-6)) 8%, var(--color-bg-1));
+}
+
+.session-logs-used-tools__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--color-text-1);
+}
+
+.session-logs-used-tools__meta {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
 .session-logs-inspector__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -603,10 +1410,12 @@ button.session-logs-tile:hover {
 }
 
 .session-logs-json-tree__toolbar {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-height: 34px;
   padding: 6px 8px 6px 10px;
   background: color-mix(in srgb, rgb(var(--primary-6)) 12%, var(--color-bg-1));
   border-bottom: 1px solid color-mix(in srgb, rgb(var(--primary-6)) 16%, var(--color-border-1));
@@ -616,6 +1425,7 @@ button.session-logs-tile:hover {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex: 1 1 auto;
   min-width: 0;
   font-size: 12px;
   font-weight: 600;
@@ -623,9 +1433,64 @@ button.session-logs-tile:hover {
   color: var(--color-text-1);
 }
 
+.session-logs-json-tree__caption-toggle {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-logs-json-tree__caption-toggle:hover,
+.session-logs-json-tree__caption-toggle:focus-visible {
+  color: var(--color-text-1);
+}
+
+.session-logs-json-tree__caption-toggle > svg {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--color-text-3);
+}
+
+.session-logs-json-tree__caption-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-logs-json-tree__state {
+  margin-left: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-logs-json-tree__caption .session-logs-info {
   width: 16px;
   height: 16px;
+}
+
+.session-logs-json-tree__header-addon {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .session-logs-json-tree__actions {
@@ -648,6 +1513,14 @@ button.session-logs-tile:hover {
   overflow-anchor: none;
   padding: 10px 12px;
   scrollbar-gutter: stable;
+}
+
+.session-logs-json-tree__body-addon {
+  display: flex;
+  min-width: 0;
+  margin: -2px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border-2);
 }
 
 .session-logs-scan {
@@ -900,13 +1773,107 @@ button.session-logs-tile:hover {
   min-width: 0;
 }
 
-@container session-logs (max-width: 720px) {
+@container session-logs (min-width: 900px) and (max-width: 1199px) {
+  .session-logs-nav {
+    width: 248px;
+    min-width: 248px;
+  }
+
+  .session-logs-timeline-column:not(.is-collapsed) {
+    flex-basis: 244px;
+  }
+
+  .session-logs-timeline-column.is-collapsed {
+    width: 88px;
+    min-width: 88px;
+    flex-basis: 88px;
+  }
+}
+
+@container session-logs (max-width: 899px) {
+  .session-logs-timeline-column.is-collapsed {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__title {
+    display: block;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__heading {
+    justify-content: flex-start;
+  }
+}
+
+@container session-logs (min-width: 768px) and (max-width: 899px) {
+  .session-logs-trace {
+    flex-direction: column;
+  }
+
+  .session-logs-timeline-column {
+    width: 100%;
+    flex: 0 0 280px;
+    max-height: 280px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-2);
+  }
+
+  .session-logs-timeline-column.is-collapsed {
+    flex-basis: 88px;
+    max-height: 88px;
+    min-height: 88px;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline-wrap {
+    display: block;
+    padding: 4px 8px 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__list {
+    display: flex;
+    width: max-content;
+    min-width: 100%;
+    gap: 6px;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__item {
+    width: 72px;
+    min-width: 72px;
+    min-height: 48px;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__event {
+    grid-template-columns: 28px 1fr;
+    min-height: 48px;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__gap {
+    display: none;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__rail::after {
+    display: none;
+  }
+
+  .session-logs-request-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .session-logs-inspector__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container session-logs (max-width: 767px) {
   .session-logs-body {
     flex-direction: column;
   }
 
   .session-logs-nav {
     width: 100%;
+    min-width: 0;
     max-height: none;
     border-right: 0;
     border-bottom: 1px solid var(--color-border-2);
@@ -914,6 +1881,8 @@ button.session-logs-tile:hover {
 
   .session-logs-nav.is-collapsed {
     width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
   }
 
   .session-logs-nav.is-collapsed .session-logs-nav__header {
@@ -968,19 +1937,78 @@ button.session-logs-tile:hover {
     border-color: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-border-2));
   }
 
+  .session-logs-trace {
+    flex-direction: column;
+  }
+
+  .session-logs-timeline-column {
+    width: 100%;
+    flex: 0 0 280px;
+    max-height: 280px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-2);
+  }
+
+  .session-logs-timeline-column.is-collapsed {
+    flex-basis: 88px;
+    max-height: 88px;
+    min-height: 88px;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline-wrap {
+    display: block;
+    padding: 4px 8px 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__list {
+    display: flex;
+    width: max-content;
+    min-width: 100%;
+    gap: 6px;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__item {
+    width: 72px;
+    min-width: 72px;
+    min-height: 48px;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__event {
+    grid-template-columns: 28px 1fr;
+    min-height: 48px;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__gap {
+    display: none;
+  }
+
+  .session-logs-timeline-column.is-collapsed .session-logs-timeline__rail::after {
+    display: none;
+  }
+
   .session-logs-inspector__grid {
     grid-template-columns: 1fr;
   }
+
+  .session-logs-request-layout {
+    grid-template-columns: 1fr;
+  }
+
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-logs-inspector-slot,
-  .session-logs-inspector {
+  .session-logs-inspector,
+  .session-logs-call--compact,
+  .session-logs-tile,
+  .session-logs-timeline__label,
+  .session-logs-timeline__current {
     transition: none;
   }
 
-  .session-logs-inspector {
-    opacity: 1;
-    transform: none;
+  .session-logs-timeline__rail::after,
+  .session-logs-json-tree__caption-toggle > svg {
+    transition: none;
   }
 }

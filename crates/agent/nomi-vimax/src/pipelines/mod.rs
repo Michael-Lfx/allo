@@ -4,9 +4,12 @@ mod action2video;
 mod ai_face_sanitizer;
 pub(crate) mod artifact_cache;
 mod cameo_bind;
+pub(crate) mod clip_beats;
+mod film_coverage;
 mod idea2video;
 mod novel2video;
 mod privacy_face;
+mod scene_reel;
 mod script_film;
 mod script_scene_split;
 mod script2video;
@@ -24,6 +27,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::backends::{VimaxChat, VimaxImage, VimaxVideo};
+use crate::clip_bounds::ClipBounds;
 use crate::progress::ProgressCallback;
 
 /// Shared backend handles for pipelines.
@@ -36,6 +40,12 @@ pub struct PipelineBackends {
     pub flowy: Option<crate::backends::FlowyVimaxServices>,
     /// Session image model id (empty → media default); used for poster sizing client.
     pub image_model: Option<String>,
+    /// Clip window of the session's video model. Planning sizes every shot inside
+    /// it, so a model change also changes shot lengths.
+    pub clip: ClipBounds,
+    /// Unique named speakers one generated file can bind as `reference_audio`.
+    /// `0` means the model has no voice-ref slots (do not split on speaker count).
+    pub max_reference_audio: usize,
     /// When cancelled, pipelines stop before the next video API call.
     pub cancel: Option<CancellationToken>,
 }
@@ -45,7 +55,8 @@ impl PipelineBackends {
         self.cancel.as_ref().is_some_and(|t| t.is_cancelled())
     }
 
-    /// Image client with Seedream-safe canvas sized to the film aspect (posters only).
+    /// Image client with Seedream-safe canvas sized to the film aspect (posters
+    /// and environment volume plates).
     pub fn poster_image(&self, aspect_ratio: &str) -> Arc<dyn VimaxImage> {
         match &self.flowy {
             Some(flowy) => Arc::new(flowy.image_with_model_and_aspect(
@@ -54,6 +65,12 @@ impl PipelineBackends {
             )),
             None => Arc::clone(&self.image),
         }
+    }
+
+    pub async fn world_planner(&self, film_root: &Path) -> crate::agents::WorldAssetsPlanner {
+        let aspect = crate::aspect::load_aspect_from_dir(film_root).await;
+        crate::agents::WorldAssetsPlanner::new(Arc::clone(&self.chat), Arc::clone(&self.image))
+            .with_env_image(self.poster_image(&aspect))
     }
 }
 
@@ -107,18 +124,30 @@ pub(crate) fn group_shots_into_cameras(
     use std::collections::BTreeMap;
     let mut cameras_by_idx: BTreeMap<i32, crate::domain::Camera> = BTreeMap::new();
     for shot in shot_descriptions {
-        let cam = cameras_by_idx.entry(shot.cam_idx).or_insert_with(|| {
-            crate::domain::Camera {
-                idx: shot.cam_idx,
-                active_shot_idxs: vec![],
-                parent_cam_idx: None,
-                parent_shot_idx: None,
-                reason: None,
-                is_parent_fully_covers_child: None,
-                missing_info: None,
+        let mut cams = vec![shot.cam_idx];
+        for beat in &shot.beats {
+            if let Some(cam) = beat.cam_idx {
+                if !cams.contains(&cam) {
+                    cams.push(cam);
+                }
             }
-        });
-        cam.active_shot_idxs.push(shot.idx);
+        }
+        for cam_idx in cams {
+            let cam = cameras_by_idx.entry(cam_idx).or_insert_with(|| {
+                crate::domain::Camera {
+                    idx: cam_idx,
+                    active_shot_idxs: vec![],
+                    parent_cam_idx: None,
+                    parent_shot_idx: None,
+                    reason: None,
+                    is_parent_fully_covers_child: None,
+                    missing_info: None,
+                }
+            });
+            if !cam.active_shot_idxs.contains(&shot.idx) {
+                cam.active_shot_idxs.push(shot.idx);
+            }
+        }
     }
     cameras_by_idx.into_values().collect()
 }

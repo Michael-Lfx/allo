@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use include_dir::{Dir, include_dir};
 use nomifun_api_types::{SkillCatalogSource, SkillId};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
@@ -31,6 +32,83 @@ pub const BUILTIN_SKILLS_ENV_VAR: &str = "NOMIFUN_BUILTIN_SKILLS_PATH";
 const AGENT_SKILLS_DIR: &str = ".agents/skills";
 const GLOBAL_AGENT_SKILLS_SOURCE_KEY: &str = "agents";
 const PROJECT_AGENT_SKILLS_SOURCE_KEY: &str = "workspace";
+pub const MARKET_SKILL_MAPPINGS_FILE_NAME: &str = ".nomifun-market-mappings.json";
+
+/// Sidecar record linking a SkillHub identity to the actual manifest name on
+/// disk. It is deliberately outside the database so existing installations
+/// and profiles need no migration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketSkillMapping {
+    pub source: String,
+    pub market_source: String,
+    pub owner: String,
+    pub slug: String,
+    pub installed_skill_id: String,
+    pub version: Option<String>,
+    pub installed_at: i64,
+}
+
+pub fn market_skill_mappings_path(paths: &SkillPaths) -> PathBuf {
+    paths.user_skills_dir.join(MARKET_SKILL_MAPPINGS_FILE_NAME)
+}
+
+/// Read the market mapping sidecar fail-soft. A damaged sidecar must not make
+/// the local Skill catalog unavailable; it only disables exact market reuse
+/// until the next successful install rewrites the file.
+pub async fn load_market_skill_mappings(paths: &SkillPaths) -> HashMap<String, MarketSkillMapping> {
+    let path = market_skill_mappings_path(paths);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return HashMap::new(),
+        Err(error) => {
+            warn!(path = %path.display(), error = %error, "unable to read Skill market mappings");
+            return HashMap::new();
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(mappings) => mappings,
+        Err(error) => {
+            warn!(path = %path.display(), error = %error, "ignoring damaged Skill market mappings");
+            HashMap::new()
+        }
+    }
+}
+
+/// Atomically persist the complete market mapping sidecar. Callers serialize
+/// writes with the market installation lock.
+pub async fn save_market_skill_mappings(
+    paths: &SkillPaths,
+    mappings: &HashMap<String, MarketSkillMapping>,
+) -> Result<(), ExtensionError> {
+    tokio::fs::create_dir_all(&paths.user_skills_dir).await?;
+    let bytes = serde_json::to_vec_pretty(mappings)?;
+    let path = market_skill_mappings_path(paths);
+    let tmp_path = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp_path, bytes).await?;
+    #[cfg(windows)]
+    {
+        // Windows does not replace an existing destination with rename. Keep
+        // a same-directory backup while swapping so a failed second rename
+        // can restore the previous mapping instead of losing it.
+        let backup_path = path.with_extension("json.bak");
+        if tokio::fs::try_exists(&backup_path).await? {
+            tokio::fs::remove_file(&backup_path).await?;
+        }
+        if tokio::fs::try_exists(&path).await? {
+            tokio::fs::rename(&path, &backup_path).await?;
+        }
+        if let Err(error) = tokio::fs::rename(&tmp_path, &path).await {
+            if tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
+                let _ = tokio::fs::rename(&backup_path, &path).await;
+            }
+            return Err(error.into());
+        }
+        let _ = tokio::fs::remove_file(&backup_path).await;
+    }
+    #[cfg(not(windows))]
+    tokio::fs::rename(&tmp_path, &path).await?;
+    Ok(())
+}
 
 /// Managed Agent Store skill subtree under `user_skills_dir`
 /// (`<user_skills_dir>/agent-store/<snapshot_id>/<slug>/SKILL.md`).
@@ -1328,6 +1406,142 @@ pub async fn read_skill_info(skill_path: &Path) -> Result<(String, String), Exte
     Ok((final_name, description))
 }
 
+/// Maximum directory depth used by the market package staging validator.
+/// Kept separate from the public best-effort importer so a malformed archive
+/// can never make the atomic package path discover an unbounded tree.
+pub(crate) const MARKET_IMPORT_SCAN_DEPTH: usize = 6;
+
+/// Extract one downloaded archive into a caller-owned staging directory. This
+/// deliberately does not import anything into the user's Skill root.
+pub(crate) async fn extract_skill_archive_to_staging(
+    archive_path: &Path,
+    destination: &Path,
+) -> Result<(), ExtensionError> {
+    tokio::fs::create_dir_all(destination).await?;
+    let archive = archive_path.to_path_buf();
+    let destination = destination.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::zip_safe::extract_zip_archive(&archive, &destination))
+        .await
+        .map_err(|error| ExtensionError::InvalidSkillPath(format!("Zip extraction task failed: {error}")))??;
+    Ok(())
+}
+
+/// Strictly validate one staged market Skill. Unlike [`read_skill_info`], this
+/// does not fall back to the directory name: the downloaded Skill must declare
+/// the exact slug that the package advertised and must have a description.
+pub(crate) async fn validate_market_skill_directory(
+    skill_dir: &Path,
+    expected_name: &str,
+) -> Result<String, ExtensionError> {
+    validate_filename(expected_name)?;
+    let declared_name = validate_market_skill_directory_name(skill_dir).await?;
+    if declared_name != expected_name {
+        return Err(ExtensionError::InvalidSkillPath(format!(
+            "market Skill name mismatch: expected '{expected_name}', got '{declared_name}'"
+        )));
+    }
+    Ok(declared_name)
+}
+
+/// Strictly validate one staged market Skill and return the manifest name.
+/// This variant is used when a market source does not provide a trusted
+/// canonical name outside the downloaded archive.
+pub(crate) async fn validate_market_skill_directory_name(
+    skill_dir: &Path,
+) -> Result<String, ExtensionError> {
+    let metadata = tokio::fs::symlink_metadata(skill_dir).await?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(ExtensionError::InvalidSkillPath(format!(
+            "market Skill '{}' is not a regular directory",
+            skill_dir.display()
+        )));
+    }
+    let skill_file = skill_dir.join(SKILL_MANIFEST_FILE);
+    let content = tokio::fs::read_to_string(&skill_file).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ExtensionError::SkillNotFound(skill_file.display().to_string())
+        } else {
+            ExtensionError::Io(error)
+        }
+    })?;
+    let (declared_name, description) = parse_frontmatter_fields(&content).ok_or_else(|| {
+        ExtensionError::InvalidSkillPath(format!(
+            "market Skill '{}' has invalid SKILL.md frontmatter",
+            skill_dir.display()
+        ))
+    })?;
+    if declared_name.trim().is_empty() || description.trim().is_empty() {
+        return Err(ExtensionError::InvalidSkillPath(format!(
+            "market Skill '{}' must declare a non-empty name and description",
+            skill_dir.display()
+        )));
+    }
+    validate_filename(&declared_name)?;
+    Ok(declared_name)
+}
+
+/// Result of committing one staged market Skill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MarketSkillCommit {
+    Created,
+    Reused,
+}
+
+/// Atomically move one validated staged Skill into the user Skill root.
+/// Existing valid user Skills are reused; any other existing entry is left
+/// untouched and reported as an error.
+pub(crate) async fn commit_market_skill_directory(
+    paths: &SkillPaths,
+    staged_dir: &Path,
+    expected_name: &str,
+) -> Result<MarketSkillCommit, ExtensionError> {
+    validate_filename(expected_name)?;
+    validate_market_skill_directory(staged_dir, expected_name).await?;
+    tokio::fs::create_dir_all(&paths.user_skills_dir).await?;
+    let target = paths.user_skills_dir.join(expected_name);
+
+    match tokio::fs::symlink_metadata(&target).await {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(ExtensionError::InvalidSkillPath(format!(
+                    "user Skill target '{expected_name}' already exists and is not a valid directory"
+                )));
+            }
+            validate_market_skill_directory(&target, expected_name).await?;
+            tokio::fs::remove_dir_all(staged_dir).await?;
+            Ok(MarketSkillCommit::Reused)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match tokio::fs::rename(staged_dir, &target).await {
+                Ok(()) => Ok(MarketSkillCommit::Created),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Another window may have committed the same Skill between
+                    // the metadata check and rename. Reuse it only if it is
+                    // valid; never overwrite the winner.
+                    let metadata = tokio::fs::symlink_metadata(&target).await?;
+                    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                        return Err(ExtensionError::InvalidSkillPath(format!(
+                            "user Skill target '{expected_name}' was concurrently created with an invalid shape"
+                        )));
+                    }
+                    validate_market_skill_directory(&target, expected_name).await?;
+                    Ok(MarketSkillCommit::Reused)
+                }
+                Err(error) => Err(ExtensionError::Io(error)),
+            }
+        }
+        Err(error) => Err(ExtensionError::Io(error)),
+    }
+}
+
+/// Remove only a user Skill name that the market transaction recorded as newly
+/// created. Reused Skills are never passed here by the package installer.
+pub(crate) async fn rollback_market_skill(paths: &SkillPaths, name: &str) -> Result<(), ExtensionError> {
+    validate_filename(name)?;
+    let _ = remove_path_entry(&paths.user_skills_dir.join(name)).await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // D. Skill import / export / delete
 // ---------------------------------------------------------------------------
@@ -2025,7 +2239,7 @@ async fn read_file_or_empty(path: &Path) -> Result<String, ExtensionError> {
 ///
 /// A lone `"."` is rejected because `base.join(".")` resolves back to `base`,
 /// which would aim a per-skill delete or write at the whole skills tree.
-fn validate_filename(name: &str) -> Result<(), ExtensionError> {
+pub(crate) fn validate_filename(name: &str) -> Result<(), ExtensionError> {
     if name.is_empty()
         || name == "."
         || name.contains('/')
@@ -2151,7 +2365,7 @@ async fn scan_skill_dirs_into(
     Ok(())
 }
 
-async fn collect_skill_dirs_recursive(
+pub(crate) async fn collect_skill_dirs_recursive(
     dir: &Path,
     result: &mut Vec<PathBuf>,
     max_depth: usize,

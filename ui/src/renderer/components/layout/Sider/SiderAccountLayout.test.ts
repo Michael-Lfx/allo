@@ -6,14 +6,21 @@ const footerSource = readFileSync(new URL('./SiderFooter.tsx', import.meta.url),
 const siderSource = readFileSync(new URL('./index.tsx', import.meta.url), 'utf8');
 
 describe('sider account layout stability', () => {
-  test('always reserves stable line boxes for the user name and plan', () => {
+  test('always reserves stable line boxes for the user name and credits', () => {
     expect(userMenuSource.includes('data-sider-account-copy')).toBe(true);
     expect(userMenuSource.includes('h-31px')).toBe(true);
     expect(userMenuSource.includes('h-16px')).toBe(true);
-    expect(userMenuSource.includes('data-sider-plan-slot')).toBe(true);
+    expect(userMenuSource.includes('data-sider-credits')).toBe(true);
     expect(userMenuSource.includes('h-14px')).toBe(true);
-    expect(userMenuSource.includes("planText || '\\u00a0'")).toBe(true);
-    expect(userMenuSource.includes("!planText && 'invisible'")).toBe(true);
+    expect(userMenuSource.includes("!authenticated && 'invisible'")).toBe(true);
+  });
+
+  test('shows live credits and a purchase control under the expanded account name', () => {
+    const copySection = userMenuSource.slice(userMenuSource.indexOf('data-sider-account-copy'));
+    expect(copySection.includes('{creditsText}')).toBe(true);
+    expect(copySection.includes('CreditsWebsiteButton')).toBe(true);
+    expect(userMenuSource.includes('data-sider-notifications')).toBe(false);
+    expect(userMenuSource.includes('<Remind')).toBe(false);
   });
 
   test('locks the expanded footer row height independently of the active route', () => {

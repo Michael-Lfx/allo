@@ -43,7 +43,7 @@ describe('activeVideoGenerationTarget', () => {
     ).toEqual({ shotIndex: 0, sceneIndex: null });
   });
 
-  test('clears shot while clip-done is the current stage', () => {
+  test('reports the completed shot while clip-done is the current stage', () => {
     expect(
       activeVideoGenerationTarget(
         status({
@@ -64,7 +64,7 @@ describe('activeVideoGenerationTarget', () => {
           ],
         })
       )
-    ).toEqual({ shotIndex: null, sceneIndex: null });
+    ).toEqual({ shotIndex: 0, sceneIndex: null });
   });
 
   test('tracks multi-scene render_scene metadata', () => {

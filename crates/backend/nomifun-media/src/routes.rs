@@ -77,11 +77,7 @@ async fn usage_by_turn(
 async fn list_models(
     State(state): State<MediaRouterState>,
 ) -> Result<Json<ApiResponse<MediaModelListResponse>>, AppError> {
-    let (image_models, video_models) = state.service.list_models().await?;
-    Ok(Json(ApiResponse::ok(MediaModelListResponse {
-        image_models,
-        video_models,
-    })))
+    Ok(Json(ApiResponse::ok(state.service.list_models().await?)))
 }
 
 async fn workflow_history(

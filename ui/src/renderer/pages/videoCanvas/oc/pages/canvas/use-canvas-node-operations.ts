@@ -4,9 +4,10 @@ import copyToClipboard from "copy-to-clipboard";
 import { nanoid } from "nanoid";
 
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_HEADER_HEIGHT, getFrameChildIds, getFrameChildren, isFrameNode } from "@oc/lib/canvas/canvas-frame";
-import { alignCanvasNodes, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@oc/lib/canvas/canvas-layout";
-import { createCanvasNode, removeCanvasNodes } from "@oc/lib/canvas/canvas-project-domain";
-import { isolateCopiedNodeMetadata } from "@oc/lib/canvas/canvas-node-copy";
+import { alignCanvasNodes, layoutCanvasAuto, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@oc/lib/canvas/canvas-layout";
+import { createCanvasNode, isHiddenBatchChild, removeCanvasNodes } from "@oc/lib/canvas/canvas-project-domain";
+import { isolateCopiedNodeMetadata, nextCopiedNodeTitle } from "@oc/lib/canvas/canvas-node-copy";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ContextMenuState, type Position } from "@oc/types/canvas";
 import { cloneCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
@@ -130,7 +131,7 @@ export function useCanvasNodeOperations({
         const node = createCanvasNode(type, position || getCanvasCenter(), type === CanvasNodeType.Drawing ? { drawingEngine: defaultDrawingEngine } : undefined);
         commitNodes([...nodesRef.current, node]);
         selectNodes(new Set([node.id]));
-        if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== CanvasNodeType.Markdown && type !== CanvasNodeType.Svg && type !== CanvasNodeType.Html && type !== CanvasNodeType.Panorama && type !== CanvasNodeType.Compare && type !== CanvasNodeType.Chart && type !== CanvasNodeType.ColorGrade) setDialogNodeId(node.id);
+        if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== CanvasNodeType.Markdown && type !== CanvasNodeType.Svg && type !== CanvasNodeType.Html && type !== CanvasNodeType.Panorama && type !== CanvasNodeType.Compare && type !== CanvasNodeType.Chart && type !== CanvasNodeType.ColorGrade && type !== CanvasNodeType.Config && type !== CanvasNodeType.ArtCritique) setDialogNodeId(node.id);
     }, [commitNodes, defaultDrawingEngine, getCanvasCenter, message, nodesRef, selectNodes, setDialogNodeId, tldrawLicenseKey]);
 
     const createFolder = useCallback((position?: Position) => {
@@ -160,6 +161,28 @@ export function useCanvasNodeOperations({
         const positions = mode === "flow" ? layoutCanvasFlow(selected, connectionsRef.current) : layoutCanvasNodes(selected, mode);
         commitNodes(nodesRef.current.map((node) => positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node));
         message.success(mode === "flow" ? "已按连线整理" : "已整理选中节点");
+    }, [commitNodes, connectionsRef, message, nodesRef, selectedNodeIdsRef]);
+
+    const autoArrangeCanvasNodes = useCallback(() => {
+        const currentNodes = nodesRef.current;
+        const selectedIds = selectedNodeIdsRef.current;
+        const hasSelection = selectedIds.size > 0;
+        const candidates = currentNodes.filter((node) => {
+            if (node.metadata?.locked || isFrameNode(node) || isHiddenBatchChild(node, currentNodes)) return false;
+            if (hasSelection) return selectedIds.has(node.id);
+            return !node.parentId;
+        });
+        if (candidates.length < 2) {
+            message.info(hasSelection
+                ? canvasT("videoCanvas.zoom.arrangeNeedSelection", "请至少选择两个可整理节点")
+                : canvasT("videoCanvas.zoom.arrangeNeedCanvas", "画布中至少需要两个可整理节点"));
+            return;
+        }
+        const positions = layoutCanvasAuto(candidates, connectionsRef.current);
+        commitNodes(currentNodes.map((node) => (positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node)));
+        message.success(hasSelection
+            ? canvasT("videoCanvas.zoom.arrangedSelection", "已按媒体分类整理选中节点")
+            : canvasT("videoCanvas.zoom.arrangedCanvas", "已按媒体分类整理画布"));
     }, [commitNodes, connectionsRef, message, nodesRef, selectedNodeIdsRef]);
 
     const alignSelectedNodes = useCallback((mode: CanvasAlignmentMode) => {
@@ -297,13 +320,31 @@ export function useCanvasNodeOperations({
         setContextMenu((current) => current?.type === "connection" && current.connectionId === connectionId ? null : current);
     }, [commitConnections, connectionsRef, setContextMenu, setSelectedConnectionId]);
 
-    const duplicateNode = useCallback((nodeId: string) => {
+    const setTvCoverNode = useCallback((nodeId: string, enabled = true) => {
+        const source = nodesRef.current.find((node) => node.id === nodeId);
+        if (!source || source.type !== CanvasNodeType.Image) return;
+        commitNodes(nodesRef.current.map((node) => {
+            if (node.type !== CanvasNodeType.Image) return node;
+            const nextCover = enabled && node.id === nodeId;
+            if (Boolean(node.metadata?.tvCover) === nextCover) return node;
+            const metadata = { ...node.metadata };
+            if (nextCover) metadata.tvCover = true;
+            else delete metadata.tvCover;
+            return { ...node, metadata };
+        }));
+        message.success(enabled
+            ? canvasT("videoCanvas.share.coverSet", "已设为 Flowy TV 封面")
+            : canvasT("videoCanvas.share.coverCleared", "已取消封面，发布时将自动选择图片"));
+    }, [commitNodes, message, nodesRef]);
+
+    const duplicateNode = useCallback((nodeId: string, duplicateMode: "variant" | "copy" = "variant") => {
         const source = nodesRef.current.find((node) => node.id === nodeId);
         if (!source) return;
         const sources = isFrameNode(source) ? [source, ...getFrameChildren(source.id, nodesRef.current)] : [source];
         const idMap = new Map(sources.map((node, index) => [node.id, `${node.type}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`]));
-        const versionRootId = isFrameNode(source) ? undefined : source.metadata?.versionOfNodeId || source.id;
+        const versionRootId = duplicateMode === "variant" && !isFrameNode(source) ? source.metadata?.versionOfNodeId || source.id : undefined;
         const versionLabel = versionRootId ? nextCanvasVersionLabel(versionRootId, nodesRef.current) : undefined;
+        const copyTitle = duplicateMode === "copy" ? nextCopiedNodeTitle(source.title, nodesRef.current.map((node) => node.title)) : undefined;
         const copiedNodes = sources.map((node) => {
             const metadata = isolateCopiedNodeMetadata(node, idMap);
             if (node.type === CanvasNodeType.Drawing) {
@@ -321,7 +362,7 @@ export function useCanvasNodeOperations({
             return {
                 ...node,
                 id: idMap.get(node.id)!,
-                title: node.id === source.id ? `${node.title.replace(/ · [A-Z]$/, "")} · ${versionLabel || "副本"}` : node.title,
+                title: node.id === source.id ? copyTitle || `${node.title.replace(/ · [A-Z]$/, "")} · ${versionLabel || "副本"}` : node.title,
                 position: { x: node.position.x + 36, y: node.position.y + 36 },
                 parentId: node.parentId ? idMap.get(node.parentId) || node.parentId : undefined,
                 metadata,
@@ -336,7 +377,7 @@ export function useCanvasNodeOperations({
         }
         const id = idMap.get(source.id)!;
         const nextNodes = [
-            ...nodesRef.current.map((node) => node.id === source.id && versionRootId && !node.metadata?.versionLabel ? { ...node, title: `${node.title} · A`, metadata: { ...node.metadata, versionOfNodeId: versionRootId, versionLabel: "A", versionPrimary: true } } : node),
+            ...nodesRef.current.map((node) => node.id === source.id && versionRootId && !node.metadata?.versionLabel ? { ...node, title: `${node.title} · A`, metadata: { ...node.metadata, versionOfNodeId: versionRootId, versionLabel: "A", versionPrimary: true, generationResultPlacement: "replace-node" as const } } : node),
             ...copiedNodes,
         ];
         commitNodes(nextNodes);
@@ -415,8 +456,11 @@ export function useCanvasNodeOperations({
         const dy = center.y - (bounds.top + bounds.bottom) / 2;
         const idMap = new Map(clipboard.nodes.map((node, index) => [node.id, `${node.type}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`]));
         const copiedSourceIds = new Set(clipboard.nodes.map((node) => node.id));
+        const reservedTitles = new Set(nodesRef.current.map((node) => node.title));
         const nextNodes = clipboard.nodes.map((node) => {
             const metadata = isolateCopiedNodeMetadata(node, idMap);
+            const title = nextCopiedNodeTitle(node.title, reservedTitles);
+            reservedTitles.add(title);
             if (node.type === CanvasNodeType.Drawing && metadata) {
                 metadata.drawingId = `${idMap.get(node.id)}-document`;
                 metadata.drawingRevision = 0;
@@ -427,7 +471,7 @@ export function useCanvasNodeOperations({
             return {
                 ...node,
                 id: idMap.get(node.id)!,
-                title: node.title.endsWith(" Copy") ? node.title : `${node.title} Copy`,
+                title,
                 position: { x: node.position.x + dx, y: node.position.y + dy },
                 parentId: node.parentId ? idMap.get(node.parentId) : undefined,
                 metadata,
@@ -484,6 +528,7 @@ export function useCanvasNodeOperations({
     return {
         alignSelectedNodes,
         arrangeSelectedNodes,
+        autoArrangeCanvasNodes,
         copyNodesToClipboard,
         copySelectedNodes,
         createFolder,
@@ -498,6 +543,7 @@ export function useCanvasNodeOperations({
         restoreCopiedNodesFromText,
         releaseCopiedNodesPastePriority,
         setPrimaryVersion,
+        setTvCoverNode,
         shouldPreferCopiedNodes,
         toggleNodeLocked,
     };

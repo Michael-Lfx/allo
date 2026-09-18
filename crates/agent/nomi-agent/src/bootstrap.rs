@@ -674,10 +674,16 @@ impl AgentBootstrap {
             for tool in crate::ssh_tools::remote_tool_family(ssh) {
                 registry.register(tool);
             }
+            registry.register(Box::new(nomi_tools::content_ref::ReadContentRefTool::new(
+                cwd_path.to_path_buf(),
+            )));
         } else {
             registry.register(Box::new(nomi_tools::read::ReadTool::new(
                 file_cache.clone(),
                 Some(cwd_path.to_path_buf()),
+            )));
+            registry.register(Box::new(nomi_tools::content_ref::ReadContentRefTool::new(
+                cwd_path.to_path_buf(),
             )));
             registry.register(Box::new(
                 nomi_tools::write::WriteTool::new(file_cache.clone())
@@ -877,17 +883,17 @@ impl AgentBootstrap {
         // exec tool exists at all. Rendering that path as "Working directory"
         // would name somewhere none of the model's tools can reach, on a machine
         // it is not operating. Seed the section so `build_system_prompt`'s
-        // `or_insert_with` default never runs; the date still comes along, since
-        // that is the other half of what this section owes the model.
+        // `or_insert_with` default never runs. Date stays on the turn tail so
+        // the system prefix does not change at midnight.
         if ssh_backend.is_some() {
-            prompt_cache.set_environment(format!(
+            prompt_cache.set_environment(
                 "This session runs entirely on a remote host over SSH. Read, Write, Edit, Bash, \
                  Grep and Glob all act on that host, and no tool here can reach the local machine. \
                  There is no local working directory: the remote shell starts in the login user's \
                  default directory on the host (run `pwd` to see it), and paths from the local \
-                 machine do not exist there.\nCurrent date: {}",
-                chrono::Local::now().format("%Y-%m-%d")
-            ));
+                 machine do not exist there."
+                    .to_string(),
+            );
         }
         let system_prompt = crate::context::build_system_prompt(
             &mut prompt_cache,
@@ -908,37 +914,35 @@ impl AgentBootstrap {
             self.config.tools.skills.allow.clone(),
             self.config.tools.auto_approve,
         );
-        // No-gateway CLI/embedded engines share one Agent invocation runner
-        // between fork-mode skills and embedded `nomi_delegate`. Platform
-        // Gateway sessions disable the embedded deployment and expose the same
-        // AgentExecution contract through the platform, so a model sees one tool.
-        let local_invocation_runner = if self.install_embedded_agent_execution {
-            Some(Arc::new(
-                crate::local_agent_invocation::LocalAgentInvocationRunner::new(
-                    provider.clone(),
-                    self.config.clone(),
-                    cwd_path.to_path_buf(),
-                )
-                .with_process_capability(
-                    process_capability.clone(),
-                    write_root.clone(),
-                    self.config.tools.builtin_allowlist.clone(),
-                )
-                .with_token_budget(
-                    self.config
-                        .tools
-                        .delegation_token_budget
-                        .map(|limit| {
-                            Arc::new(crate::local_agent_invocation::TokenBudget::new(limit))
-                        }),
-                ),
-            ))
+        // Isolated explore/verify/research run as nested engines with a
+        // capability-scoped child catalog. They do not install `nomi_delegate`,
+        // so Platform Gateway sessions still get them.
+        let local_invocation_runner = Arc::new(
+            crate::local_agent_invocation::LocalAgentInvocationRunner::new(
+                provider.clone(),
+                self.config.clone(),
+                cwd_path.to_path_buf(),
+            )
+            .with_process_capability(
+                process_capability.clone(),
+                write_root.clone(),
+                self.config.tools.builtin_allowlist.clone(),
+            )
+            .with_token_budget(
+                self.config
+                    .tools
+                    .delegation_token_budget
+                    .map(|limit| {
+                        Arc::new(crate::local_agent_invocation::TokenBudget::new(limit))
+                    }),
+            ),
+        );
+        let skill_invocation_runner = if self.install_embedded_agent_execution {
+            Some(Arc::clone(&local_invocation_runner)
+                as Arc<dyn nomi_types::agent::AgentInvocationRunner>)
         } else {
             None
         };
-        let skill_invocation_runner = local_invocation_runner.as_ref().map(|runner| {
-            Arc::clone(runner) as Arc<dyn nomi_types::agent::AgentInvocationRunner>
-        });
         registry.register(Box::new(
             crate::skill_tool::SkillTool::with_invocation_runner(
                 skills_arc,
@@ -949,17 +953,35 @@ impl AgentBootstrap {
             )
             .with_process_supervisor(Arc::clone(&process_supervisor)),
         ));
-        if let Some(runner) = local_invocation_runner {
-            registry.register(Box::new(crate::local_delegate_tool::LocalDelegateTool::new(runner)));
+        if self.install_embedded_agent_execution {
+            registry.register(Box::new(crate::local_delegate_tool::LocalDelegateTool::new(
+                Arc::clone(&local_invocation_runner),
+            )));
         }
+        let isolated_permits = Arc::new(tokio::sync::Semaphore::new(4));
+        registry.register(Box::new(crate::isolated_subagent::IsolatedSubagentTool::explore(
+            Arc::clone(&local_invocation_runner),
+            Arc::clone(&isolated_permits),
+        )));
+        registry.register(Box::new(
+            crate::isolated_subagent::IsolatedSubagentTool::verify(Arc::clone(
+                &local_invocation_runner,
+            )),
+        ));
+        registry.register(Box::new(crate::isolated_subagent::IsolatedSubagentTool::research(
+            local_invocation_runner,
+            isolated_permits,
+        )));
 
         let plan_active_flag = Arc::new(AtomicBool::new(false));
+        let plan_exit_latch = Arc::new(AtomicBool::new(false));
         if self.config.plan.enabled {
             registry.register(Box::new(crate::plan::tools::EnterPlanModeTool::new(
                 Arc::clone(&plan_active_flag),
             )));
-            registry.register(Box::new(crate::plan::tools::ExitPlanModeTool::new(
+            registry.register(Box::new(crate::plan::tools::ExitPlanModeTool::with_latch(
                 Arc::clone(&plan_active_flag),
+                Arc::clone(&plan_exit_latch),
             )));
         }
 
@@ -1194,6 +1216,7 @@ impl AgentBootstrap {
             )
         };
         engine.set_plan_active_flag(plan_active_flag);
+        engine.set_plan_exit_latch(plan_exit_latch);
         engine.set_process_supervisor(Arc::clone(&process_supervisor));
         engine.set_system_prompt_sections(prompt_cache.sections);
         engine.set_file_cache(file_cache);

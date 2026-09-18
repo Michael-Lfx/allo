@@ -1,7 +1,12 @@
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { imageReferenceLabel } from "@oc/lib/image-reference-prompt";
 import { seedanceReferenceLabel } from "@oc/lib/seedance-video";
+import { canvasNodeDisplayUrl, rewriteCanvasDisplayUrl, usableCanvasSessionUrl } from "@oc/lib/canvas/canvas-media-id";
+import { canvasNodeVideoPreviewUrl } from "@oc/lib/canvas/canvas-media-preview";
 import { getNodeResourceKind } from "@oc/lib/canvas/node-registry";
 import { skillFromCanvasNode } from "@oc/lib/canvas/canvas-skill-mentions";
+import { craftStillUrl } from "@oc/lib/canvas/craft/covers";
+import { PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/playbooks";
 import type { Skill } from "@oc/services/api/skills";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
 
@@ -15,6 +20,7 @@ export type CanvasResourceReference = {
     title: string;
     previewUrl?: string;
     storageKey?: string;
+    previewStorageKey?: string;
     text?: string;
     active: boolean;
     sourceType?: CanvasNodeType;
@@ -43,17 +49,14 @@ export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNo
  */
 export function canvasResourceReferencesSignature(references: CanvasResourceReference[]) {
     return references
-        .map((reference) => [reference.id, reference.kind, reference.label, reference.title, reference.previewUrl ?? "", reference.storageKey ?? "", reference.text ?? "", reference.active ? "1" : "0", reference.sourceType ?? "", reference.skill?.skill_id ?? reference.skill?.skill_name ?? ""].join("|"))
+        .map((reference) => [reference.id, reference.kind, reference.label, reference.title, reference.previewUrl ?? "", reference.storageKey ?? "", reference.previewStorageKey ?? "", reference.text ?? "", reference.active ? "1" : "0", reference.sourceType ?? "", reference.skill?.skill_id ?? reference.skill?.skill_name ?? ""].join("|"))
         .join("\n");
 }
 
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
     if (configInputs.length) return configInputs;
-    const ownInputs = getContextResourceNodes(nodeId, nodes, connections);
-    if (ownInputs.length) return ownInputs;
-    const node = nodes.find((item) => item.id === nodeId);
-    return node && isResourceNode(node) ? [node] : [];
+    return getContextResourceNodes(nodeId, nodes, connections);
 }
 
 export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
@@ -66,7 +69,7 @@ export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData
 
 export function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     return connections
-        .filter((connection) => connection.toNodeId === nodeId)
+        .filter((connection) => connection.toNodeId === nodeId && !connection.fromHandleId?.startsWith("row:"))
         .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))
         .filter((node): node is CanvasNodeData => Boolean(node && isResourceNode(node)));
 }
@@ -84,7 +87,7 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
         const kind = resourceKind(node);
         if (!kind) return [];
         const index = node.type === CanvasNodeType.Drawing ? drawingCount++ : counts[kind]++;
-        const label = node.type === CanvasNodeType.Drawing ? `绘图${index + 1}` : labelForKind(kind, index);
+        const label = node.type === CanvasNodeType.Drawing ? canvasT("videoCanvas.mention.drawing", "绘图 {{n}}", { n: index + 1 }) : labelForKind(kind, index);
         const skill = kind === "skill" ? skillFromCanvasNode(node) || undefined : undefined;
         return [
             {
@@ -93,8 +96,9 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
                 kind,
                 label: skill?.skill_name || label,
                 title: skill?.skill_name || node.title || label,
-                previewUrl: node.metadata?.workflowKind === "character" ? node.metadata.characterCoverUrl : node.type === CanvasNodeType.Drawing ? node.metadata?.drawingPreviewUrl : node.metadata?.content,
+                previewUrl: canvasResourceNodePreviewUrl(node) || undefined,
                 storageKey: node.metadata?.storageKey,
+                previewStorageKey: node.type === CanvasNodeType.Video ? node.metadata?.videoPreview?.storageKey : undefined,
                 text: node.metadata?.workflowKind === "character" ? node.metadata.characterPrompt : node.type === CanvasNodeType.Text ? node.metadata?.content || node.metadata?.prompt : node.type === CanvasNodeType.Skill ? skillResourceText(node) : undefined,
                 active,
                 sourceType: node.type,
@@ -105,12 +109,13 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
 }
 
 function labelForKind(kind: CanvasResourceKind, index: number) {
-    if (kind === "character") return `角色${index + 1}`;
+    const n = index + 1;
+    if (kind === "character") return canvasT("videoCanvas.mention.character", "角色 {{n}}", { n });
     if (kind === "image") return imageReferenceLabel(index);
     if (kind === "video") return seedanceReferenceLabel("video", index);
     if (kind === "audio") return seedanceReferenceLabel("audio", index);
-    if (kind === "skill") return `技能${index + 1}`;
-    return `文本${index + 1}`;
+    if (kind === "skill") return canvasT("videoCanvas.mention.skill", "技能 {{n}}", { n });
+    return canvasT("videoCanvas.mention.text", "文本 {{n}}", { n });
 }
 
 function isResourceNode(node: CanvasNodeData) {
@@ -127,4 +132,25 @@ function skillResourceText(node: CanvasNodeData) {
     const skill = node.metadata?.skillSnapshot;
     if (!skill) return node.metadata?.content || "";
     return [skill.name, skill.description, skill.template, skill.outputContract].filter(Boolean).join("\n\n");
+}
+
+/** Display src for mention chips and video frame thumbs. Never a dead blob or stale-port media URL. */
+export function canvasResourceNodePreviewUrl(node: CanvasNodeData): string {
+    if (node.type === CanvasNodeType.Skill) {
+        const cover = node.metadata?.skillSnapshot?.coverUrl;
+        if (cover) return rewriteCanvasDisplayUrl(cover) || usableCanvasSessionUrl(cover);
+        const skillId = node.metadata?.skillId || node.metadata?.skillSnapshot?.id || "";
+        const coverId = PLAYBOOK_BY_QUALIFIED.get(skillId)?.coverLookId;
+        return coverId ? craftStillUrl(coverId) : "";
+    }
+    if (node.metadata?.workflowKind === "character") {
+        return rewriteCanvasDisplayUrl(node.metadata.characterCoverUrl) || canvasNodeDisplayUrl(node) || usableCanvasSessionUrl(node.metadata.characterCoverUrl);
+    }
+    if (node.type === CanvasNodeType.Drawing) {
+        return usableCanvasSessionUrl(node.metadata?.drawingPreviewUrl);
+    }
+    if (node.type === CanvasNodeType.Video) {
+        return canvasNodeVideoPreviewUrl(node);
+    }
+    return rewriteCanvasDisplayUrl(node.metadata?.previewContent) || canvasNodeDisplayUrl(node) || usableCanvasSessionUrl(node.metadata?.previewContent || node.metadata?.content);
 }

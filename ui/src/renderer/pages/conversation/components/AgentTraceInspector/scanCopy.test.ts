@@ -10,6 +10,7 @@ import {
   requestTileTitle,
   responseTileCopy,
   shouldCloseWorkspaceOnEscape,
+  toolTileTitle,
 } from './scanCopy';
 
 const t = (key: string) => key.split('.').pop() ?? key;
@@ -52,6 +53,12 @@ describe('scanCopy', () => {
       requestTileTitle(t, { has_system: false, message_count: 0, tool_definition_count: 0 })
     ).toBe('requestStage');
     expect(requestTileTitle(t, null)).toBe('previewMissing');
+  });
+
+  test('tool tile uses the tool name instead of the argument preview', () => {
+    expect(toolTileTitle(t, { name: 'Write' })).toBe('Write');
+    expect(toolTileTitle(t, { name: '  Write  ' })).toBe('Write');
+    expect(toolTileTitle(t, { name: null })).toBe('tools');
   });
 
   test('gap labels stay in i18n instead of seq= dumps', () => {

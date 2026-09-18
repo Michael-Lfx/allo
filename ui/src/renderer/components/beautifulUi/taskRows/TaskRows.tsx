@@ -1,5 +1,6 @@
 import { Check, ChevronRight, Clock, Minus, X } from 'lucide-react';
 import React from 'react';
+import shimmerStyles from '../textShimmer.module.css';
 import styles from './taskRows.module.css';
 
 export type TaskRowStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'canceled';
@@ -80,7 +81,9 @@ const RowBody: React.FC<{
     <span className={styles.icon} aria-hidden='true'>
       {statusIcon(status)}
     </span>
-    <span className={`${styles.title} ${status === 'running' ? styles.shimmer : ''}`}>{title}</span>
+    <span className={styles.title}>
+      <span className={status === 'running' ? shimmerStyles.shimmer : undefined}>{title}</span>
+    </span>
     {detail ? (
       <span className={styles.detail} title={detail}>
         {detail}

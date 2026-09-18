@@ -23,7 +23,7 @@ chrono.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls-tls", "stream", "gzip", "deflate"], default-features = false }
+reqwest = { workspace = true, features = ["json", "stream", "gzip", "deflate"], default-features = false }
 futures-util.workspace = true
 htmd.workspace = true
 url.workspace = true
@@ -35,6 +35,7 @@ dom_smoothie = "0.18"
 [dev-dependencies]
 clap.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tracing-subscriber.workspace = true
 wiremock.workspace = true
 
 [[example]]

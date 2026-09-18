@@ -89,6 +89,7 @@ import {
 } from '@/renderer/pages/conversation/Messages/editResubmitOperationController';
 import { markRetrySucceeded } from '@/renderer/utils/analytics/productFunnel';
 import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
+import { useConversationPlan } from '@renderer/pages/conversation/Messages/components/conversationPlanContext';
 import { derivePinnedPlan } from '@renderer/pages/conversation/Messages/components/pinnedPlanModel';
 import './sendbox.css';
 
@@ -209,6 +210,24 @@ function getSkillSourceLabel(source: string, t: TFunction): string {
   return t(`conversation.skills.sources.${source}`, { defaultValue: source });
 }
 
+const createNormalSubmitClaim = (
+  input: string,
+  skillIds: string[],
+  attachmentPaths: string[],
+  domSnippets: Array<{ tag: string; html: string }>,
+  replyQuote: ReplyQuote | null
+): string =>
+  JSON.stringify({
+    input,
+    skillIds,
+    attachmentPaths,
+    // The synchronous claim is only a same-task mutex. Keep the complete
+    // snippet content in its signature so two distinct drafts with equal
+    // HTML lengths are still allowed to queue independently.
+    domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html]),
+    replyMsgId: replyQuote?.messageId ?? null,
+  });
+
 const SendBox: React.FC<{
   value?: string;
   onChange?: (value: string) => void;
@@ -256,6 +275,8 @@ const SendBox: React.FC<{
   /** Conversation-only: the next regular message will become the goal objective. */
   goalModeArmed?: boolean;
   onGoalModeChange?: (enabled: boolean) => void;
+  /** Exact attachment snapshot used by the platform send handler. */
+  submissionAttachmentPaths?: readonly string[];
   hasPendingAttachments?: boolean;
   enableBtw?: boolean;
   allowSendWhileLoading?: boolean;
@@ -302,6 +323,7 @@ const SendBox: React.FC<{
   enableGoalMenu = false,
   goalModeArmed = false,
   onGoalModeChange,
+  submissionAttachmentPaths = [],
   hasPendingAttachments = false,
   enableBtw = false,
   allowSendWhileLoading = false,
@@ -340,6 +362,11 @@ const SendBox: React.FC<{
   const dropzoneRef = useRef<HTMLDivElement>(null);
   const tokenInputRef = useRef<ComposerSkillTokenInputHandle>(null);
   const lastSubmittedDraftRef = useRef<ComposerDraft | null>(null);
+  // React state is not yet updated when two pointer/keyboard submits arrive in
+  // one browser task. This synchronous claim prevents duplicate queue items,
+  // while the microtask release still allows a genuinely new draft to queue
+  // immediately afterwards (no cross-task content de-duplication).
+  const normalSubmitClaimRef = useRef<string | null>(null);
   const [tokenInputState, setTokenInputState] = useState<ComposerTokenInputState>({
     projection: input,
     selection: { start: input.length, end: input.length },
@@ -351,14 +378,25 @@ const SendBox: React.FC<{
   const warmedConversationRef = useRef<ConversationId | undefined>(undefined);
   const warmupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestInputRef = useLatestRef(input);
+  const latestSkillChipsRef = useLatestRef(skillChips);
   const setInputRef = useLatestRef(setInput);
   const messageList = useMessageList();
   const pinnedPlan = useMemo(() => (showPinnedPlan ? derivePinnedPlan(messageList) : null), [messageList, showPinnedPlan]);
+  const { setPlan: setConversationPlan } = useConversationPlan();
+  useEffect(() => {
+    if (!showPinnedPlan) {
+      setConversationPlan(null);
+      return;
+    }
+    setConversationPlan(pinnedPlan);
+    return () => setConversationPlan(null);
+  }, [pinnedPlan, setConversationPlan, showPinnedPlan]);
   const hasInternalStatusRow = Boolean(topRightTools);
   const [historyNavigationIndex, setHistoryNavigationIndex] = useState<number | null>(null);
   const historyDraftRef = useRef<string | null>(null);
   const [replyQuote, setReplyQuote] = useState<ReplyQuote | null>(null);
   const [editingMsgId, setEditingMsgId] = useState<MessageId | null>(null);
+  const [isEditResubmitting, setIsEditResubmitting] = useState(false);
   const editingCreatedAtRef = useRef<number>(0);
   const editPrevDraftRef = useRef<string | null>(null);
   // C3: 编辑态 store 的 owner 标识（本实例唯一、仅 owner 可清，双实例护栏）与
@@ -432,6 +470,7 @@ const SendBox: React.FC<{
       editPrevDraftRef.current = latestInputRef.current;
       editingCreatedAtRef.current = payload.createdAt;
       setEditingMsgId(payload.msgId);
+      setIsEditResubmitting(false);
       setReplyQuote(null);
       onSkillChipsChange?.([]);
       setInputRef.current(payload.content);
@@ -1683,6 +1722,7 @@ const SendBox: React.FC<{
     // isLoading. Ignore the cancel click while a resubmit is pending.
     if (isLoading) return;
     setEditingMsgId(null);
+    setIsEditResubmitting(false);
     const prev = editPrevDraftRef.current ?? '';
     editPrevDraftRef.current = null;
     setInput(prev);
@@ -1759,6 +1799,10 @@ const SendBox: React.FC<{
         })
       ) return;
       activeEditOperationRef.current = operationId;
+      // Hide the local edit banner as soon as this submit is admitted. The
+      // durable edit target and operation remain alive for confirmation,
+      // reconciliation, recovery, and conversation remounts.
+      setIsEditResubmitting(true);
       // A double-click can land its second click on the Stop button that
       // replaces Send after this synchronous admission. Keep that click from
       // cancelling the preparation lease of the operation it just created.
@@ -1790,6 +1834,7 @@ const SendBox: React.FC<{
           )
         ) return;
         rememberEditResubmitOperation(committedTerminalOperationsRef.current, operationId);
+        setIsEditResubmitting(false);
         const outcome = resolveEditResubmitOutcome({
           isCurrentOperation: true,
           revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
@@ -1854,6 +1899,7 @@ const SendBox: React.FC<{
             source: 'edit',
           });
           if (outcome.stale) return;
+          setIsEditResubmitting(false);
           if (outcome.restoreSubmittedInput) setInput(finalMessage);
           // C3: 失败后仍处编辑态，徽章回落为「编辑中」。
           // C3: still editing after a failure — badge drops back to "editing".
@@ -1973,21 +2019,54 @@ const SendBox: React.FC<{
       inputLength: input.length,
       domSnippetCount: domSnippets.length,
     });
-    setIsLoading(true);
     const submittedSkills = skillChips;
+    const submitClaim = createNormalSubmitClaim(
+      input,
+      submittedSkills.map((skill) => skill.skillId),
+      [...submissionAttachmentPaths],
+      domSnippets,
+      replyQuote
+    );
+    if (normalSubmitClaimRef.current === submitClaim) {
+      return;
+    }
+    normalSubmitClaimRef.current = submitClaim;
+    void Promise.resolve().then(() => {
+      if (normalSubmitClaimRef.current === submitClaim) {
+        normalSubmitClaimRef.current = null;
+      }
+    });
+
     const finalMessage = composeAndClear(hasSkillLoadPlan);
-    if (finalMessage == null) return;
+    if (finalMessage == null) {
+      normalSubmitClaimRef.current = null;
+      return;
+    }
+    const submittedInputRevision = inputRevisionStateRef.current.current;
+    setIsLoading(true);
 
     const send = hasSkillLoadPlan && onSendWithSkills
       ? onSendWithSkills(finalMessage, submittedSkills.map((skill) => skill.skillId))
       : onSend(finalMessage);
     send
       .then(() => {
-        if (hasSkillLoadPlan) {
+        const skillsStillMatch =
+          latestSkillChipsRef.current.length === submittedSkills.length &&
+          latestSkillChipsRef.current.every(
+            (skill, index) => skill.skillId === submittedSkills[index]?.skillId
+          );
+        if (
+          hasSkillLoadPlan &&
+          inputRevisionStateRef.current.current === submittedInputRevision &&
+          skillsStillMatch
+        ) {
           onSkillChipsChange?.([]);
         }
       })
       .catch(() => {
+        if (inputRevisionStateRef.current.current !== submittedInputRevision) {
+          return;
+        }
         const submittedDraft = lastSubmittedDraftRef.current;
         if (submittedDraft) {
           tokenInputRef.current?.restoreDraft(submittedDraft);
@@ -2236,7 +2315,7 @@ const SendBox: React.FC<{
           {/* b-1px 才是 1px 宽度（`b-1` 是 --bg-1 颜色），b-border-2 在 theme 里不存在，
               两者叠加等于「无宽度 + 无颜色」：下面这几条提示条从来没有边框。
               `b-1px` is the width; `b-border-2` names no colour that exists. */}
-          {editingMsgId && (
+          {editingMsgId && !isEditResubmitting && (
             <div className='flex items-center gap-10px mb-8px px-12px py-8px rd-10px bg-fill-1 b-1px b-solid border-arco-2'>
               <span className='text-13px text-t-primary'>{t('conversation.editMessage.banner')}</span>
               <div
@@ -2397,14 +2476,14 @@ const SendBox: React.FC<{
             />
           </div>
           {isSingleLine && (
-            <div className='flex items-center gap-2'>
+            <div className='sendbox-toolbar flex items-center gap-2'>
               {sendButtonPrefix}
               {composerSubmitCluster}
             </div>
           )}
         </div>
         {!isSingleLine && (
-          <div className='flex items-center justify-between gap-2 w-full'>
+          <div className='sendbox-toolbar flex items-center justify-between gap-2 w-full'>
             <div
               className={
                 isMobileCompact

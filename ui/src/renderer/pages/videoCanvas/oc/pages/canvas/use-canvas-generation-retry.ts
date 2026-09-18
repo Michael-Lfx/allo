@@ -23,8 +23,10 @@ import {
     supportsVideoReferenceAudio,
 } from "@oc/lib/canvas/canvas-project-generation";
 import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
+import { expandRecipeTokens } from "@oc/lib/canvas/craft/tokens";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
-import { generationFailureMetadata, localizeGenerationErrorText, unchangedModeratedPrompt } from "@oc/lib/generation-error";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+import { generationFailureMetadata, logCanvasGenerationFailure, unchangedModeratedPrompt } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { storeGeneratedAudio } from "@oc/services/api/audio";
 import { storeGeneratedVideo } from "@oc/services/api/video";
@@ -86,15 +88,16 @@ export function useCanvasGenerationRetry({ projectId, domainProjectId, addedSkil
             }
             let rawContext: Awaited<ReturnType<typeof hydrateNodeGenerationContext>> | null;
             try {
-                const baseContext = buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, retryContextPrompt);
+                const baseContext = buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, retryContextPrompt, retryMode === "video");
                 rawContext = hasSavedImageMetadata && !baseContext.characterReferences.length ? null : await hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, retryMode, retryMode === "video" && supportsVideoReferenceAudio(generationConfig));
             } catch (error) {
+                logCanvasGenerationFailure("retry hydrate failed", error);
                 const failure = generationFailureMetadata(error, retryPromptSource);
-                message.error(localizeGenerationErrorText(failure.errorDetails));
+                message.error(formatCanvasUserError(failure.errorDetails));
                 setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure, ...(item.metadata?.taskStatus === "succeeded" ? { resourceReloadAvailable: true } : {}) } } : item)));
                 return;
             }
-            const context = rawContext ? { ...rawContext, prompt: expandSkillMentions(rawContext.prompt, mergeSkillLists(addedSkills, collectCanvasSkills(nodesRef.current))) } : null;
+            const context = rawContext ? { ...rawContext, prompt: expandSkillMentions(expandRecipeTokens(rawContext.prompt), mergeSkillLists(addedSkills, collectCanvasSkills(nodesRef.current))) } : null;
             const prompt = (context?.characterReferences.length ? context.prompt : savedImageMetadata?.prompt || context?.prompt || "").trim();
             if (!prompt) {
                 message.warning("找不到提示词，无法重试");
@@ -213,8 +216,9 @@ export function useCanvasGenerationRetry({ projectId, domainProjectId, addedSkil
                 setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Image, position: { x: item.position.x + item.width / 2 - imageSize.width / 2, y: item.position.y + item.height / 2 - imageSize.height / 2 }, width: imageSize.width, height: imageSize.height, metadata: { ...item.metadata, ...imageMetadata(uploadedImage), prompt, ...generationMetadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined } } : item)));
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
+                logCanvasGenerationFailure("retry generate failed", error);
                 const failure = generationFailureMetadata(error, retryPromptSource);
-                message.error(localizeGenerationErrorText(failure.errorDetails));
+                message.error(formatCanvasUserError(failure.errorDetails));
                 setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure } } : item)));
             } finally {
                 finishGenerationRequest(node.id, controller);

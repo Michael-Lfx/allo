@@ -15,6 +15,7 @@ pub mod meeting_tools;
 pub mod memory_tools;
 pub mod engine;
 pub mod goal;
+pub mod horizon;
 pub mod host_delegate_tool;
 pub mod knowledge_tools;
 pub mod learning_tools;
@@ -35,6 +36,7 @@ pub mod task_profile;
 mod local_agent_invocation;
 mod local_delegation_progress;
 mod local_delegate_tool;
+mod isolated_subagent;
 
 // Re-export the skills crate so existing callers (nomi-cli, tests) can use
 // `nomi_agent::skills::` without changing their import paths.

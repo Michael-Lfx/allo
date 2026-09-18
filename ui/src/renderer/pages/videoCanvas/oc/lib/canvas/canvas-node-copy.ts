@@ -1,5 +1,20 @@
 import { resetGenerationTaskMetadata } from "@oc/lib/canvas/canvas-project-generation";
-import type { CanvasNodeData, CanvasNodeMetadata, StoryboardRow } from "@oc/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type StoryboardRow } from "@oc/types/canvas";
+
+const COPY_TITLE_SUFFIX = /^(.*)_copy(\d+)$/i;
+
+export function nextCopiedNodeTitle(sourceTitle: string, existingTitles: Iterable<string>) {
+    const sourceMatch = sourceTitle.match(COPY_TITLE_SUFFIX);
+    const baseTitle = (sourceMatch?.[1] || sourceTitle.replace(/ Copy$/i, "")).trim() || sourceTitle.trim() || "未命名节点";
+    let maxCopyIndex = 0;
+    for (const title of existingTitles) {
+        const match = title.match(COPY_TITLE_SUFFIX);
+        if (!match || match[1] !== baseTitle) continue;
+        const copyIndex = Number(match[2]);
+        if (Number.isSafeInteger(copyIndex)) maxCopyIndex = Math.max(maxCopyIndex, copyIndex);
+    }
+    return `${baseTitle}_copy${maxCopyIndex + 1}`;
+}
 
 function remapReferenceId(nodeId: string | undefined, idMap: ReadonlyMap<string, string>) {
     return nodeId ? idMap.get(nodeId) || nodeId : undefined;
@@ -37,6 +52,7 @@ export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyM
     delete metadata.generationBatches;
     delete metadata.batchRootId;
     delete metadata.batchChildIds;
+    delete metadata.batchFailedCount;
     delete metadata.isBatchRoot;
     delete metadata.primaryImageId;
     delete metadata.imageBatchExpanded;
@@ -44,8 +60,13 @@ export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyM
     delete metadata.versionOfNodeId;
     delete metadata.versionLabel;
     delete metadata.versionPrimary;
+    delete metadata.tvCover;
+    delete metadata.lastGenerationRequestFingerprint;
 
     metadata.copiedFromNodeId = node.id;
+    if (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) {
+        metadata.generationResultPlacement = "replace-node";
+    }
     metadata.frame = node.metadata?.frame ? { ...node.metadata.frame } : undefined;
     metadata.referenceSetId = remapOwnedNodeId(node.metadata?.referenceSetId, idMap);
     metadata.referenceAssetNodeIds = node.metadata?.referenceAssetNodeIds

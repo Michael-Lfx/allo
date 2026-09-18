@@ -141,7 +141,7 @@ fn classify_transcription_result(
 }
 
 impl FlowyApiClient {
-    /// List ASR models from `GET /model/availableListClaw?category=7`.
+    /// List ASR models from `GET /api/v2/model/availableListClaw?category=7`.
     ///
     /// Results are cached in-process by server `base_url` for [`ASR_CATALOG_CACHE_TTL`].
     pub async fn fetch_asr_models(
@@ -400,7 +400,7 @@ mod tests {
         let mock = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-asr-flash","name":"Qwen3 ASR Flash"}]}}"#,
             ))
@@ -441,7 +441,7 @@ mod tests {
         let mock = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-asr-flash","name":"Qwen3 ASR Flash"}]}}"#,
             ))

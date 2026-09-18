@@ -1,7 +1,7 @@
 /**
  * PresetCard — A grid item for the preset list. Uses the compact management
  * card language (tight radius, neutral border, quiet hover) but is
- * richer: avatar + name + source badge + enable Switch in the header, a 2-line
+ * richer: avatar + name + enable Switch in the header, a 2-line
  * description clamp, a resolved tag-chip row, and a hover-revealed action
  * footer (Duplicate / Edit). The whole card is clickable → onEdit.
  *
@@ -55,8 +55,6 @@ const PresetCard: React.FC<PresetCardProps> = ({
   const visibleTags = resolvedTags.slice(0, MAX_VISIBLE_TAGS);
   const overflowCount = resolvedTags.length - visibleTags.length;
 
-  const isCustom = preset.source === 'user';
-
   return (
     <div
       ref={cardRef}
@@ -86,24 +84,15 @@ const PresetCard: React.FC<PresetCardProps> = ({
           <div className='min-w-0'>
             <span className='block overflow-hidden text-14px font-medium leading-20px text-[var(--color-text-1)]' style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{name}</span>
             <div className='mt-4px flex flex-wrap items-center gap-4px'>
-            {isCustom && (
-              <Tag
-                size='small'
-                bordered={false}
-                className='!flex-shrink-0 !text-10px !leading-14px !px-6px !py-0 !rounded-6px !bg-primary-1 !text-primary-6'
-              >
-                {t('settings.presetSourceCustom', { defaultValue: 'Custom' })}
-              </Tag>
-            )}
-            {presetIsExtension && (
-              <Tag
-                size='small'
-                bordered={false}
-                className='!flex-shrink-0 !text-10px !leading-14px !px-6px !py-0 !rounded-6px !bg-fill-2 !text-t-secondary'
-              >
-                {t('settings.presetSourceExtension', { defaultValue: 'Extension' })}
-              </Tag>
-            )}
+              {presetIsExtension && (
+                <Tag
+                  size='small'
+                  bordered={false}
+                  className='!flex-shrink-0 !text-10px !leading-14px !px-6px !py-0 !rounded-6px !bg-fill-2 !text-t-secondary'
+                >
+                  {t('settings.presetSourceExtension', { defaultValue: 'Extension' })}
+                </Tag>
+              )}
             </div>
           </div>
         </div>
@@ -197,7 +186,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
           className='inline-flex items-center gap-4px whitespace-nowrap border-0 bg-transparent p-0 leading-none text-12px text-[var(--color-text-2)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
         >
           <SettingOne theme='outline' size={13} strokeWidth={3} />
-          {t('settings.editPreset', { defaultValue: 'Preset Details' })}
+          {t('settings.editPreset', { defaultValue: 'Edit preset' })}
         </button>
       </div>
     </div>

@@ -24,7 +24,7 @@ import ScheduledTaskActions from './ScheduledTaskActions';
 const CreateTaskDialog = React.lazy(() => import('./CreateTaskDialog'));
 
 const prefetchCreateTaskDialog = (): void => {
-  void import('./CreateTaskDialog');
+  void import('./CreateTaskDialog').catch(() => undefined);
 };
 
 const DEFAULT_PAGE_SIZE = 20;

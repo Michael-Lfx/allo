@@ -16,12 +16,14 @@ use nomifun_common::{
 use nomifun_common::generate_id;
 use nomifun_db::{IProviderModelRepository, IProviderRepository, NewAgentExecutionParticipant};
 use nomifun_preset::PresetService;
+use nomifun_conversation::ConversationService;
 
 #[derive(Clone)]
 pub(crate) struct ParticipantResolver {
     provider_repo: Arc<dyn IProviderRepository>,
     provider_model_repo: Arc<dyn IProviderModelRepository>,
     preset_service: Arc<PresetService>,
+    conversation: ConversationService,
 }
 
 impl ParticipantResolver {
@@ -29,11 +31,13 @@ impl ParticipantResolver {
         provider_repo: Arc<dyn IProviderRepository>,
         provider_model_repo: Arc<dyn IProviderModelRepository>,
         preset_service: Arc<PresetService>,
+        conversation: ConversationService,
     ) -> Self {
         Self {
             provider_repo,
             provider_model_repo,
             preset_service,
+            conversation,
         }
     }
 
@@ -229,6 +233,24 @@ impl ParticipantResolver {
                     continue;
                 }
             };
+            let canonical_skill_ids = resolved
+                .included_skills
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Err(error) = self
+                .conversation
+                .validate_canonical_skill_ids(&canonical_skill_ids)
+                .await
+            {
+                tracing::warn!(
+                    preset_id = %preset.preset_id,
+                    error_code = error.error_code(),
+                    %error,
+                    "skipping automatic execution preset with unavailable Skills"
+                );
+                continue;
+            }
             let Some(resolved_model) = resolved.resolved_model.as_ref() else {
                 continue;
             };

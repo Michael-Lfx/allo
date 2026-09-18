@@ -73,6 +73,22 @@ describe('SendBox stop interaction', () => {
     }
   });
 
+  test('clear-context fences queued delivery until the reset outcome is authoritative', () => {
+    for (const platform of platformSendBoxes) {
+      const clearContext = platform.source.indexOf('const handleClearContext = async');
+      const pause = platform.source.indexOf('pause();', clearContext);
+      const reset = platform.source.indexOf("resetActiveExecution('external-reset');", pause);
+      const invoke = platform.source.indexOf('clearContext.invoke({ conversation_id });', reset);
+      const resume = platform.source.indexOf('resume();', invoke);
+
+      expect(clearContext >= 0).toBe(true);
+      expect(pause > clearContext).toBe(true);
+      expect(reset > pause).toBe(true);
+      expect(invoke > reset).toBe(true);
+      expect(resume > invoke).toBe(true);
+    }
+  });
+
   test('queue execution guards platform-local resolve and reject side effects', () => {
     for (const platform of platformSendBoxes) {
       const execute = platform.source.indexOf('const executeCommand = useCallback');

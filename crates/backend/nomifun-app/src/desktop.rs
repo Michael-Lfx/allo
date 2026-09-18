@@ -282,12 +282,25 @@ impl WebUiAssetSource {
         let path = path.strip_prefix('/').unwrap_or(path);
         let path = if path.is_empty() { "index.html" } else { path };
 
+        // Hashed Vite assets are content-addressed. A miss must stay a miss so
+        // React.lazy fails fast (and the route error boundary can offer reload)
+        // instead of receiving index.html with a text/html MIME as a "module".
+        let is_hashed_asset = path.starts_with("assets/");
+
         self.assets
             .get(path)
-            .or_else(|| self.assets.get(&format!("{path}.html")))
-            .or_else(|| self.assets.get(&format!("{path}/index.html")))
-            .or_else(|| self.assets.get("index.html"))
             .cloned()
+            .or_else(|| {
+                if is_hashed_asset {
+                    None
+                } else {
+                    self.assets
+                        .get(&format!("{path}.html"))
+                        .or_else(|| self.assets.get(&format!("{path}/index.html")))
+                        .or_else(|| self.assets.get("index.html"))
+                        .cloned()
+                }
+            })
     }
 }
 
@@ -458,7 +471,7 @@ pub struct DesktopServer {
     /// embedded in the Tauri executable. Unlike `spa_dir`, this is independent
     /// of bundle layout, current working directory, and platform path rules.
     webui_asset_source: Option<WebUiAssetSource>,
-    /// In DEV, the vite dev-server URL (e.g. `http://localhost:5173`) the desktop
+    /// In DEV, the vite dev-server URL (e.g. `http://127.0.0.1:5173`) the desktop
     /// webview itself loads. When set, the LAN listener PROXIES the SPA to it
     /// instead of serving the (stale) bundled `ui/dist`, so remote browsers get
     /// the exact same live frontend the desktop shows. `None` in production.
@@ -633,7 +646,7 @@ impl DesktopServer {
     ///
     /// `spa_dir` is the bundled `ui/dist` directory used to serve the app shell
     /// to remote browsers as a compatibility fallback. `dev_frontend_url` (e.g.
-    /// `http://localhost:5173`) is set ONLY in dev: the LAN listener then proxies
+    /// `http://127.0.0.1:5173`) is set ONLY in dev: the LAN listener then proxies
     /// the SPA to the vite dev server so remote browsers match the live desktop.
     /// `webui_asset_source` is the preferred production source and should adapt
     /// the desktop host's compile-time embedded frontend assets.
@@ -1178,6 +1191,28 @@ impl DesktopServer {
                 }
                 Err(_) => errors.push(
                     "vimax interrupt timed out after 3 seconds".to_owned(),
+                ),
+            }
+        }
+
+        if let Some(briefing) = self
+            ._keep_alive
+            .services()
+            .map(|services| services.briefing_service.clone())
+        {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                briefing.interrupt_all(),
+            )
+            .await
+            {
+                Ok(n) => {
+                    if n > 0 {
+                        tracing::info!(interrupted = n, "briefing runs paused during desktop shutdown");
+                    }
+                }
+                Err(_) => errors.push(
+                    "briefing interrupt timed out after 3 seconds".to_owned(),
                 ),
             }
         }
@@ -2013,6 +2048,13 @@ mod tests {
         assert_eq!(
             source.resolve("/unknown/client-route").unwrap().bytes,
             Bytes::from_static(b"index")
+        );
+        // Missing hashed assets must NOT fall through to index.html — that
+        // poisons React.lazy with a text/html module and looks like "click
+        // navigated but the page never rendered".
+        assert!(
+            source.resolve("/assets/LearningSettings-missing.js").is_none(),
+            "missing /assets/* must 404 instead of SPA-falling back to index.html"
         );
     }
 

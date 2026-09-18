@@ -1,8 +1,18 @@
-import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Popover } from '@arco-design/web-react';
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
-  Down,
-  MagicWand,
+  BookOpen,
+  Broadcast,
+  ColorFilter,
+  FileText,
   People,
   Platte,
   RobotOne,
@@ -10,41 +20,114 @@ import {
   Star,
   VideoOne,
 } from '@icon-park/react';
+import { ArrowUp, ChevronDown, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
+import { canvasOverlayStyle } from '@oc/lib/canvas/canvas-overlay';
+import { useQuietChromeTheme } from '../quietChrome';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import { isActionImitationWorkflow } from '../workflowKind';
-import { BoldSendArrowIcon } from './ComposerIcons';
+import { AttachPlusIcon } from './ComposerIcons';
 import { ActionUploadSlots } from './ActionUploadSlots';
+import { ComposerAnchoredOverlay } from './ComposerAnchoredOverlay';
 import { ModeMenu } from './ModeMenu';
 import { PromptComposer } from './PromptComposer';
 import { SlashSkillMenu } from './SlashSkillMenu';
-import { filesFromClipboardData } from './documentUpload';
-import { agentModesFor, creationSkillsFor } from './modeCatalog';
+import {
+  filesFromClipboardData,
+  VIDEO_HOME_UPLOAD_ACCEPT,
+} from './documentUpload';
+import { agentModesFor } from './modeCatalog';
 import { useHomeDraft } from './useHomeDraft';
 import { useHomeUpload } from './useHomeUpload';
 import { useVerticalSkillHub } from './useVerticalSkillHub';
 import type { VimaxWorkflow } from '../types';
-import type {
-  CreationSkillId,
-  VideoCreateDraft,
-  VideoHomeMode,
-} from './types';
-import { usesCanvasReferences } from './types';
+import type { VideoCreateDraft, VideoHomeMode } from './types';
+import { usesCanvasReferences, usesLookPicker } from './types';
 import { generationPreferencesSummary } from '../preferenceSummary';
 import {
-  CLIP_DURATION_DEFAULT_SECS,
-  CLIP_DURATION_MAX_SECS,
-  CLIP_DURATION_MIN_SECS,
-  CLIP_DURATION_STEP_SECS,
+  hasSelectedVisualStyle,
+  visualStyleSelectValue,
+} from '../visualStylePresets';
+import { CanvasStyleCoverSwatch } from '@oc/components/canvas/canvas-style-cover';
+import { isCreationSkillId } from '../styleCatalog/lookIdentity';
+import { lookByPrompt } from '../styleCatalog/looks';
+import {
+  BRIEFING_DURATION_MAX_SECS,
+  BRIEFING_DURATION_MIN_SECS,
+  BRIEFING_DURATION_STEP_SECS,
+  clampClipDurationForModel,
   clampDuration,
 } from '../durationBounds';
+import {
+  prefetchCanvasAssistantPanel,
+  prefetchCanvasWorkspace,
+  prefetchGenerationPreferencesPanel,
+  prefetchLookStyleMenu,
+  prefetchVerticalSkillMenu,
+} from '../prefetch';
 import styles from './home.module.css';
 
-const CameoCastEditor = lazy(() => import('../components/CameoCastEditor'));
-const GenerationPreferencesPopover = lazy(() => import('./GenerationPreferencesPopover'));
+const loadGenerationPreferencesPopover = () => import('./GenerationPreferencesPopover');
+const GenerationPreferencesPopover = lazy(loadGenerationPreferencesPopover);
 const VerticalSkillMenu = lazy(() => import('./VerticalSkillMenu'));
+const LookPicker = lazy(() => import('../styleCatalog/LookPicker'));
 const VerticalSkillCreateModal = lazy(() => import('./VerticalSkillCreateModal'));
+const CampaignCarousel = lazy(() => import('../components/CampaignCarousel'));
+
+type HomeHeadlineKey =
+  | 'videoGeneration.create.homeHeadlineGenerate'
+  | 'videoGeneration.create.homeHeadlineAgent'
+  | 'videoGeneration.create.homeHeadlineCreation'
+  | 'videoGeneration.create.homeHeadlineAction'
+  | 'videoGeneration.create.homeHeadlineBriefing';
+
+function HeadlineWithEmphasis({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/<em>(.*?)<\/em>/).map((segment, index) =>
+        index % 2 === 1 ? <em key={index}>{segment}</em> : segment
+      )}
+    </>
+  );
+}
+
+const HOME_HEADLINES: Record<VideoHomeMode, { key: HomeHeadlineKey; defaults: string }> = {
+  generate: {
+    key: 'videoGeneration.create.homeHeadlineGenerate',
+    defaults: '一张参考图，<em>直接出片</em>',
+  },
+  agent: {
+    key: 'videoGeneration.create.homeHeadlineAgent',
+    defaults: '一句话，拍成<em>短剧</em>',
+  },
+  creation: {
+    key: 'videoGeneration.create.homeHeadlineCreation',
+    defaults: '在无限画布里<em>排镜头</em>',
+  },
+  action: {
+    key: 'videoGeneration.create.homeHeadlineAction',
+    defaults: '让角色跟着视频<em>动起来</em>',
+  },
+  briefing: {
+    key: 'videoGeneration.create.homeHeadlineBriefing',
+    defaults: '把话题做成<em>可溯源口播</em>',
+  },
+};
+
+function GenerationPreferencesMount({
+  onMounted,
+  children,
+}: {
+  onMounted: () => void;
+  children: React.ReactNode;
+}) {
+  useLayoutEffect(() => {
+    onMounted();
+  }, [onMounted]);
+  return children;
+}
 
 export { clearVideoHomeDraft } from './homeDraft';
 
@@ -55,6 +138,8 @@ interface VideoHomeComposerProps {
   onSubmitAgent: (draft: VideoCreateDraft) => void;
   onSubmitCreation: (draft: VideoCreateDraft) => void;
   onSubmitGenerate: (draft: VideoCreateDraft) => void;
+  onSubmitBriefing: (draft: VideoCreateDraft) => void;
+  onCreateBlankCanvas: () => void;
 }
 
 const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
@@ -64,13 +149,17 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   onSubmitAgent,
   onSubmitCreation,
   onSubmitGenerate,
+  onSubmitBriefing,
+  onCreateBlankCanvas,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const theme = useQuietChromeTheme();
   const draftedTracked = useRef(false);
   const { draft, setDraft } = useHomeDraft();
   const isAction = mode === 'action';
   const isGenerate = mode === 'generate';
+  const isBriefing = mode === 'briefing';
   const {
     handleFiles,
     uploadError,
@@ -80,6 +169,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setActionCharacter,
     setActionVideo,
     removeCanvasReference,
+    removeCameo,
   } = useHomeUpload({
     draft,
     setDraft,
@@ -90,14 +180,18 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   });
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [prefsModuleReady, setPrefsModuleReady] = useState(false);
-  const pendingOpenRef = useRef(false); // Track if panel should open after module loads
+  const [prefsHydrated, setPrefsHydrated] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [skillHubOpen, setSkillHubOpen] = useState(false);
+  const [lookMenuOpen, setLookMenuOpen] = useState(false);
   const [skillCreateOpen, setSkillCreateOpen] = useState(false);
+  const [fileDragOver, setFileDragOver] = useState(false);
   const [modelMissing, setModelMissing] = useState(false);
   const composerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const {
+    skillCatalog,
     mergeCatalog,
     reloadToken: skillListReloadToken,
     bumpReloadToken,
@@ -105,19 +199,22 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   } = useVerticalSkillHub(mode, draft.verticalSkillIds);
 
   const agentModes = useMemo(() => agentModesFor(t), [t]);
-  const creationSkills = useMemo(() => creationSkillsFor(t), [t]);
+  const showLookPicker = usesLookPicker(mode);
 
   const generateModeLabel = t('videoGeneration.mode.generateLabel', {
-    defaultValue: '视频生成',
+    defaultValue: '即刻出片',
   });
   const agentModeLabel = t('videoGeneration.mode.agentLabel', {
-    defaultValue: '短剧模式',
+    defaultValue: '短剧工坊',
   });
   const creationModeLabel = t('videoGeneration.mode.creationLabel', {
-    defaultValue: '创作模式',
+    defaultValue: '无限画布',
   });
   const actionModeLabel = t('videoGeneration.mode.actionLabel', {
-    defaultValue: '动作模仿',
+    defaultValue: '动作仿拍',
+  });
+  const briefingModeLabel = t('videoGeneration.mode.briefingLabel', {
+    defaultValue: '资讯口播',
   });
   const modeLabel =
     mode === 'generate'
@@ -126,7 +223,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         ? agentModeLabel
         : mode === 'creation'
           ? creationModeLabel
-          : actionModeLabel;
+          : mode === 'briefing'
+            ? briefingModeLabel
+            : actionModeLabel;
+  const headline = HOME_HEADLINES[mode];
 
   useEffect(() => {
     setDraft((current) => {
@@ -140,17 +240,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         };
       }
       if (mode === 'generate') {
-        const clipped = clampDuration(
-          current.preferences.targetDurationSecs,
-          CLIP_DURATION_MIN_SECS,
-          CLIP_DURATION_MAX_SECS,
-          CLIP_DURATION_STEP_SECS
+        const nextDuration = clampClipDurationForModel(
+          current.preferences.models.video_model,
+          current.preferences.targetDurationSecs
         );
-        const nextDuration =
-          current.preferences.targetDurationSecs > CLIP_DURATION_MAX_SECS ||
-          current.preferences.targetDurationSecs < CLIP_DURATION_MIN_SECS
-            ? CLIP_DURATION_DEFAULT_SECS
-            : clipped;
         if (
           current.preferences.mediaKind === 'video' &&
           !current.preferences.automatic &&
@@ -179,11 +272,16 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     });
     setSlashMenuOpen(false);
     setSkillHubOpen(false);
+    setLookMenuOpen(false);
     setPreferencesOpen(false);
     setUploadError(null);
   }, [mode]);
 
   useEffect(() => {
+    if (isBriefing) {
+      setModelMissing(false);
+      return;
+    }
     if (isAction || isGenerate) {
       if (draft.preferences.models.video_model) setModelMissing(false);
       return;
@@ -193,6 +291,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     draft.preferences.models.llm_model,
     draft.preferences.models.video_model,
     isAction,
+    isBriefing,
     isGenerate,
   ]);
 
@@ -218,9 +317,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       workflow:
         mode === 'creation'
           ? draft.creationSkillId
-          : mode === 'generate'
-            ? 'clip'
-            : draft.workflow,
+            : mode === 'generate'
+              ? 'clip'
+              : mode === 'briefing'
+                ? 'news_briefing'
+                : draft.workflow,
     });
   }, [
     activeText,
@@ -232,16 +333,24 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     mode,
   ]);
 
-  const activeCreationSkill =
-    creationSkills.find((skill) => skill.id === draft.creationSkillId) ??
-    creationSkills[0];
   const selectedModeLabel =
-    mode === 'creation'
-      ? activeCreationSkill.label
-      : agentModes.find((item) => item.id === draft.workflow)?.label;
+    agentModes.find((item) => item.id === draft.workflow)?.label ?? agentModes[0]?.label;
   const verticalSkillLabel = t('videoGeneration.skills.mountButton', {
     defaultValue: 'Skill',
   });
+  const lookButtonFallback = t('videoGeneration.looks.mountButton', {
+    defaultValue: '画风',
+  });
+  const selectedLook = lookByPrompt.get(draft.style.trim());
+  const lookCustom = visualStyleSelectValue(draft.style) === '__custom__';
+  const lookSelected = Boolean(selectedLook) || lookCustom;
+  const lookButtonLabel = selectedLook
+    ? t(selectedLook.labelKey, { defaultValue: selectedLook.defaultLabel })
+    : lookCustom
+      ? t('videoGeneration.workspace.source.stylePresets.custom', {
+          defaultValue: '自定义风格',
+        })
+      : lookButtonFallback;
 
   const removeVerticalSkill = (skillId: string) => {
     setDraft((current) => ({
@@ -295,29 +404,34 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     }
   };
 
-  const getComposerPopupContainer = (node: HTMLElement) =>
-    composerRef.current ?? node.parentElement ?? document.body;
+  const openFilePicker = () => {
+    fileInputRef.current?.click();
+  };
 
   const placeholder =
-    mode === 'generate'
+    mode === 'briefing'
+      ? t('videoGeneration.create.composer.briefingPlaceholder', {
+          defaultValue: '输入早报话题，例如「今日芯片出口管制」。来源链接可选，引擎会自行检索。',
+        })
+      : mode === 'generate'
       ? t('videoGeneration.create.composer.generatePlaceholder', {
-          defaultValue: '描述你想生成的画面与运动，可上传参考图…',
+          defaultValue: '描述你想生成的画面与运动，可上传参考图，上传后输入 @ 可引用图片…',
         })
       : mode === 'creation'
         ? t('videoGeneration.create.composer.creationPlaceholder', {
-            defaultValue: '描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…',
+            defaultValue: '描述故事。可上传角色、场景或道具，上传后输入 @ 可引用图片…',
           })
         : draft.workflow === 'script2video'
           ? t('videoGeneration.create.composer.scriptPlaceholder', {
               defaultValue:
-                '粘贴剧本；自动按集/场拆分，默认拍全集。需求可写「拍第N集」「前N场」',
+                '粘贴剧本；自动按集/场拆分。上传参考图后输入 @ 可引用图片。',
             })
           : draft.workflow === 'novel2video'
             ? t('videoGeneration.create.composer.novelPlaceholder', {
-                defaultValue: '粘贴小说片段，Flowy 会提炼剧情并设计分镜…',
+                defaultValue: '粘贴小说片段。上传参考图后输入 @ 可引用图片。',
               })
             : t('videoGeneration.create.composer.ideaPlaceholderSlash', {
-                defaultValue: '输入一个想法、故事或产品画面，支持 / 切换 Mode…',
+                defaultValue: '输入一个想法、故事或产品画面，支持 / 切换 Mode，上传后输入 @ 可引用图片…',
               });
 
   const setActiveText = (value: string) => {
@@ -326,8 +440,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         ? { ...current, creationPrompt: value }
         : { ...current, sourceText: value }
     );
-    // Slash skill menu is Agent / Creation only.
-    if (mode === 'agent' || mode === 'creation') {
+    // Slash Mode menu is Agent-only.
+    if (mode === 'agent') {
       setSlashMenuOpen(/(?:^|\s)\/$/.test(value));
     }
   };
@@ -347,42 +461,63 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setUploadError(null);
   };
 
-  const selectCreationSkill = (creationSkillId: CreationSkillId) => {
-    const skill = creationSkills.find((item) => item.id === creationSkillId);
+  const selectLook = (stylePrompt: string) => {
+    const look = lookByPrompt.get(stylePrompt.trim());
+    const featuredId =
+      look?.vimaxKey && isCreationSkillId(look.vimaxKey) ? look.vimaxKey : undefined;
     setDraft((current) => ({
       ...current,
-      creationSkillId,
-      style: skill?.stylePrompt ?? current.style,
+      style: stylePrompt,
+      creationSkillId: featuredId ?? current.creationSkillId,
     }));
-    setSlashMenuOpen(false);
+    setLookMenuOpen(false);
   };
 
   const removeTrailingSlash = () => {
     setActiveText(activeText.replace(/\/\s*$/, '').trimEnd());
   };
 
-  // Sync panel open state after lazy module loads
-  useLayoutEffect(() => {
-    if (prefsModuleReady && pendingOpenRef.current) {
-      pendingOpenRef.current = false;
-      setPreferencesOpen(true);
+  const markPrefsHydrated = useCallback(() => {
+    setPrefsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const warm = () => {
+      setPrefsModuleReady(true);
+      prefetchGenerationPreferencesPanel();
+      if (mode === 'agent') prefetchVerticalSkillMenu();
+      if (showLookPicker) prefetchLookStyleMenu();
+      if (mode === 'creation') prefetchCanvasAssistantPanel();
+    };
+    // Briefing first-open waits on this chunk + /api/media/models; do not idle-defer.
+    if (mode === 'briefing') {
+      warm();
+      return;
     }
-  }, [prefsModuleReady]);
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(warm, { timeout: 800 });
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(warm, 120);
+    return () => window.clearTimeout(timer);
+  }, [mode]);
 
   const openPreferences = (open: boolean) => {
     if (open) {
       setModeMenuOpen(false);
       setSlashMenuOpen(false);
-      pendingOpenRef.current = true;
-      // Trigger lazy module load; open state will be set after module is ready.
-      if (!prefsModuleReady) {
-        setPrefsModuleReady(true);
-        return;
-      }
-    } else {
-      pendingOpenRef.current = false;
+      setSkillHubOpen(false);
+      setLookMenuOpen(false);
+      setPrefsModuleReady(true);
+      prefetchGenerationPreferencesPanel();
+      setPreferencesOpen(true);
+      return;
     }
-    setPreferencesOpen(open);
+    setPreferencesOpen(false);
   };
 
   const submit = () => {
@@ -436,26 +571,28 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       cameos: cameosWithLabels,
       sourceText: draft.sourceText.trim(),
       creationPrompt: draft.creationPrompt.trim(),
-      style:
-        mode === 'creation'
-          ? activeCreationSkill.stylePrompt
-          : draft.style,
+      style: draft.style,
       preferences: isGenerate
         ? {
             ...draft.preferences,
             mediaKind: 'video' as const,
-            targetDurationSecs: clampDuration(
-              draft.preferences.targetDurationSecs,
-              CLIP_DURATION_MIN_SECS,
-              CLIP_DURATION_MAX_SECS,
-              CLIP_DURATION_STEP_SECS
+            targetDurationSecs: clampClipDurationForModel(
+              draft.preferences.models.video_model,
+              draft.preferences.targetDurationSecs
             ),
           }
         : draft.preferences,
+      briefingFormatSecs: clampDuration(
+        draft.briefingFormatSecs,
+        BRIEFING_DURATION_MIN_SECS,
+        BRIEFING_DURATION_MAX_SECS,
+        BRIEFING_DURATION_STEP_SECS
+      ),
     };
     openPreferences(false);
     setModelMissing(false);
-    if (mode === 'agent') onSubmitAgent(normalized);
+    if (mode === 'briefing') onSubmitBriefing(normalized);
+    else if (mode === 'agent') onSubmitAgent(normalized);
     else if (mode === 'generate') onSubmitGenerate(normalized);
     else onSubmitCreation(normalized);
   };
@@ -468,7 +605,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const skillMenu =
     mode === 'agent' ? (
       <SlashSkillMenu
-        mode='agent'
         items={agentModes}
         selectedId={draft.workflow}
         onSelect={(id) => {
@@ -476,26 +612,21 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           selectAgentMode(id as VimaxWorkflow);
         }}
       />
-    ) : mode === 'creation' ? (
-      <SlashSkillMenu
-        mode='creation'
-        items={creationSkills}
-        selectedId={draft.creationSkillId}
-        onSelect={(id) => {
-          removeTrailingSlash();
-          selectCreationSkill(id as CreationSkillId);
-        }}
-      />
     ) : null;
 
-  const uploadPreview = usesCanvasReferences(mode)
-    ? draft.canvasReferences[0]?.previewUrl
-    : draft.cameos[0]?.previewUrl;
-  const referenceCount = usesCanvasReferences(mode)
-    ? draft.canvasReferences.length
-    : draft.cameos.length;
-
-  const prefsSummary = generationPreferencesSummary(
+  const briefingSummary = `${clampDuration(
+    draft.briefingFormatSecs,
+    BRIEFING_DURATION_MIN_SECS,
+    BRIEFING_DURATION_MAX_SECS,
+    BRIEFING_DURATION_STEP_SECS
+  )}s · ${
+    draft.researchDepth === 'deep'
+      ? t('videoGeneration.briefing.deep')
+      : t('videoGeneration.briefing.fast')
+  }`;
+  const prefsSummary = isBriefing
+    ? { summary: briefingSummary, title: briefingSummary }
+    : generationPreferencesSummary(
     draft.preferences,
     mode,
     {
@@ -506,39 +637,80 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     isAction ? 'action2video' : undefined
   );
   const prefsTrigger = (
-    <button
-      type='button'
-      className={`${styles.toolbarButton} ${styles.prefsButton} ${
-        preferencesOpen ? styles.toolbarButtonActive : ''
-      }`}
+    <CanvasChromeButton
       disabled={loading}
-      aria-expanded={preferencesOpen}
+      expanded={preferencesOpen}
       aria-haspopup='dialog'
-      onClick={() => openPreferences(!preferencesOpen)}
+      title={prefsSummary.title}
       aria-label={t('videoGeneration.create.customize', { defaultValue: '自定义生成偏好' })}
+      onMouseEnter={prefetchGenerationPreferencesPanel}
+      onFocus={prefetchGenerationPreferencesPanel}
+      onClick={() => {
+        if (!prefsHydrated) {
+          openPreferences(true);
+          return;
+        }
+        openPreferences(!preferencesOpen);
+      }}
     >
-      <SettingTwo theme='outline' size={15} />
-      <span className={styles.toolbarLabel}>
-        {t('videoGeneration.create.preferences.customize', { defaultValue: '自定义' })}
-      </span>
-      <span className={styles.toolbarSummary} title={prefsSummary.title}>
-        {prefsSummary.summary}
-      </span>
-      <Down theme='outline' size={12} />
-    </button>
+      <SettingTwo theme='outline' size={13} />
+      <span className={styles.toolbarSummary}>{prefsSummary.summary}</span>
+    </CanvasChromeButton>
   );
+
+  const modeIcon =
+    mode === 'generate' ? (
+      <VideoOne size={14} />
+    ) : mode === 'agent' ? (
+      <RobotOne size={14} />
+    ) : mode === 'creation' ? (
+      <Platte size={14} />
+    ) : mode === 'briefing' ? (
+      <Broadcast size={14} />
+    ) : (
+      <People size={14} />
+    );
+  const skillTriggerIcon =
+    draft.workflow === 'script2video'
+      ? <FileText size={14} />
+      : draft.workflow === 'novel2video'
+        ? <BookOpen size={14} />
+        : <VideoOne size={14} />;
+  const skillSelected = draft.verticalSkillIds.length > 0;
+  const skillTriggerLabel =
+    selectedVerticalSkills.length === 0
+      ? verticalSkillLabel
+      : selectedVerticalSkills.length === 1
+        ? selectedVerticalSkills[0].label
+        : `${selectedVerticalSkills[0].label} +${selectedVerticalSkills.length - 1}`;
+  const submitDisabled =
+    loading ||
+    (isAction
+      ? !draft.actionCharacter?.file || !draft.actionVideo?.file
+      : !activeText.trim());
+  const submitLabel = isAction
+    ? t('videoGeneration.create.generateActionVideo', { defaultValue: '生成视频' })
+    : mode === 'generate'
+      ? t('videoGeneration.create.generateClip', { defaultValue: '生成视频' })
+      : mode === 'agent'
+        ? t('videoGeneration.create.generateStoryboard', { defaultValue: '生成分镜' })
+        : mode === 'briefing'
+          ? t('videoGeneration.create.generateBriefing', { defaultValue: '开始资讯播报' })
+          : t('videoGeneration.create.enterCanvas', { defaultValue: '发给画布 Agent' });
+  const blankCanvasLabel = t('videoGeneration.create.blankCanvas', {
+    defaultValue: '空白画布',
+  });
+  const blankCanvasTitle = t('videoGeneration.create.gallery.createBlank', {
+    defaultValue: '新建空白画布',
+  });
 
   return (
     <section className={styles.hero}>
       <div className={styles.heroHeading}>
         <h1>
-          {t('videoGeneration.create.homeHeroPrefix', {
-            defaultValue: '开启你的',
-          })}{' '}
-          <em>{modeLabel}</em>
-          {t('videoGeneration.create.homeHeroSuffix', {
-            defaultValue: '，即刻造梦！',
-          })}
+          <HeadlineWithEmphasis
+            text={t(headline.key, { defaultValue: headline.defaults })}
+          />
         </h1>
         <p className={styles.heroHint}>
           {mode === 'action'
@@ -553,23 +725,46 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 ? t('videoGeneration.create.homeHintAgent', {
                     defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
                   })
+                : mode === 'briefing'
+                  ? t('videoGeneration.create.homeHintBriefing', {
+                      defaultValue: '写下话题即可。引擎会检索独立来源做成可溯源口播，不会用模型记忆写今日新闻。',
+                    })
                 : t('videoGeneration.create.homeHintCreation', {
                     defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
                   })}
         </p>
       </div>
 
+      <Suspense fallback={null}>
+        <CampaignCarousel />
+      </Suspense>
+
       <div
         ref={composerRef}
-        className={styles.composer}
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => {
+        className={`${styles.composer} canvas-composer-shell canvas-overlay`}
+        style={canvasOverlayStyle(theme)}
+        onDragEnter={(event) => {
+          if (isBriefing) return;
           event.preventDefault();
+          setFileDragOver(true);
+        }}
+        onDragOver={(event) => {
+          if (isBriefing) return;
+          event.preventDefault();
+        }}
+        onDragLeave={(event) => {
+          const next = event.relatedTarget as Node | null;
+          if (next && composerRef.current?.contains(next)) return;
+          setFileDragOver(false);
+        }}
+        onDrop={(event) => {
+          if (isBriefing) return;
+          event.preventDefault();
+          setFileDragOver(false);
           void handleFiles(filesFromClipboardData(event.dataTransfer));
         }}
-        // Capture so pasted images are treated as uploads before the textarea
-        // inserts a filename / binary placeholder as text.
         onPasteCapture={(event) => {
+          if (isBriefing) return;
           const files = filesFromClipboardData(event.clipboardData);
           if (files.length === 0) return;
           event.preventDefault();
@@ -577,6 +772,16 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           void handleFiles(files);
         }}
       >
+        {fileDragOver ? (
+          <div className={styles.composerDropOverlay}>
+            <span className={styles.composerDropHint}>
+              <AttachPlusIcon size={16} />
+              {t('videoGeneration.create.upload.dropHint', {
+                defaultValue: '松开以上传文件',
+              })}
+            </span>
+          </div>
+        ) : null}
         {isAction ? (
           <ActionUploadSlots
             loading={loading ?? false}
@@ -592,58 +797,75 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             loading={loading ?? false}
             documentName={documentName}
             setDocumentName={setDocumentName}
-            uploadPreview={uploadPreview}
-            referenceCount={referenceCount}
             canvasReferences={draft.canvasReferences}
             removeCanvasReference={removeCanvasReference}
+            cameos={draft.cameos}
+            removeCameo={removeCameo}
             selectedVerticalSkills={selectedVerticalSkills}
             removeVerticalSkill={removeVerticalSkill}
             activeText={activeText}
             setActiveText={setActiveText}
             placeholder={placeholder}
             handlePromptKeyDown={handlePromptKeyDown}
-            handleFiles={handleFiles}
+            onRequestUpload={openFilePicker}
+          />
+        )}
+        {isAction || isBriefing ? null : (
+          <input
+            ref={fileInputRef}
+            type='file'
+            accept={VIDEO_HOME_UPLOAD_ACCEPT}
+            multiple
+            hidden
+            disabled={loading}
+            onChange={(event) => {
+              void handleFiles(Array.from(event.target.files ?? []));
+              event.target.value = '';
+            }}
           />
         )}
 
         {uploadError ? <div className={styles.inlineError}>{uploadError}</div> : null}
 
-        <div className={styles.composerToolbar}>
+        <div className={`${styles.composerToolbar} canvas-composer-footer`}>
           <div className={styles.toolbarLeft}>
-            <Popover
-              trigger='click'
-              position='bl'
-              showArrow={false}
-              getPopupContainer={getComposerPopupContainer}
-              popupVisible={modeMenuOpen}
-              onVisibleChange={(open) => {
+            <ComposerAnchoredOverlay
+              open={modeMenuOpen}
+              onOpenChange={(open) => {
                 if (open) {
                   setPreferencesOpen(false);
                   setSlashMenuOpen(false);
                   setSkillHubOpen(false);
+                  setLookMenuOpen(false);
                 }
                 setModeMenuOpen(open);
               }}
-              content={
-                <ModeMenu mode={mode} onSelect={handleModeSelect} />
+              width={188}
+              estimatedHeight={160}
+              trigger={
+                <CanvasChromeButton
+                  expanded={modeMenuOpen}
+                  title={modeLabel}
+                  aria-label={modeLabel}
+                  onClick={() => {
+                    setPreferencesOpen(false);
+                    setSlashMenuOpen(false);
+                    setSkillHubOpen(false);
+                    setLookMenuOpen(false);
+                    setModeMenuOpen((value) => !value);
+                  }}
+                >
+                  {modeIcon}
+                  <span className={styles.toolbarModeLabel}>{modeLabel}</span>
+                  <ChevronDown className={styles.toolbarCaret} aria-hidden />
+                </CanvasChromeButton>
               }
             >
-              <button type='button' className={`${styles.toolbarButton} ${styles.modeButton}`}>
-                {mode === 'generate' ? (
-                  <VideoOne size={15} />
-                ) : mode === 'agent' ? (
-                  <RobotOne size={15} />
-                ) : mode === 'creation' ? (
-                  <Platte size={15} />
-                ) : (
-                  <People size={15} />
-                )}
-                <span>{modeLabel}</span>
-                <Down size={12} />
-              </button>
-            </Popover>
+              <ModeMenu mode={mode} onSelect={handleModeSelect} />
+            </ComposerAnchoredOverlay>
             {prefsModuleReady ? (
               <Suspense fallback={prefsTrigger}>
+                <GenerationPreferencesMount onMounted={markPrefsHydrated}>
                 <GenerationPreferencesPopover
                   mode={mode}
                   value={draft.preferences}
@@ -656,153 +878,240 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   }
                   onOpenModelHub={() => navigate('/models')}
                   workflow={isAction ? 'action2video' : draft.workflow}
+                  briefing={
+                    isBriefing
+                      ? {
+                          formatSecs: draft.briefingFormatSecs,
+                          researchDepth: draft.researchDepth,
+                          timeWindowHours: draft.timeWindowHours,
+                          sourceUrls: draft.sourceUrls,
+                          tts: draft.briefingTts,
+                          image: draft.briefingImage,
+                        }
+                      : undefined
+                  }
+                  onBriefingChange={
+                    isBriefing
+                      ? (next) =>
+                          setDraft((current) => ({
+                            ...current,
+                            briefingFormatSecs: next.formatSecs,
+                            researchDepth: next.researchDepth,
+                            timeWindowHours: next.timeWindowHours,
+                            sourceUrls: next.sourceUrls,
+                            briefingTts: next.tts,
+                            briefingImage: next.image,
+                          }))
+                      : undefined
+                  }
                 />
+                </GenerationPreferencesMount>
               </Suspense>
             ) : (
               prefsTrigger
             )}
             {skillMenu ? (
-            <Popover
-              trigger='click'
-              position='bl'
-              showArrow={false}
-              getPopupContainer={getComposerPopupContainer}
-              popupVisible={slashMenuOpen}
-              onVisibleChange={(open) => {
+            <ComposerAnchoredOverlay
+              open={slashMenuOpen}
+              onOpenChange={(open) => {
                 if (open) {
                   setPreferencesOpen(false);
                   setModeMenuOpen(false);
                   setSkillHubOpen(false);
+                  setLookMenuOpen(false);
                 }
                 setSlashMenuOpen(open);
               }}
-              content={skillMenu}
+              width={188}
+              estimatedHeight={140}
+              trigger={
+                <CanvasChromeButton
+                  expanded={slashMenuOpen}
+                  title={selectedModeLabel}
+                  aria-label={
+                    selectedModeLabel ??
+                    t('videoGeneration.create.modesMenuAria', {
+                      defaultValue: '选择 Mode',
+                    })
+                  }
+                  onClick={() => {
+                    setPreferencesOpen(false);
+                    setModeMenuOpen(false);
+                    setSkillHubOpen(false);
+                    setLookMenuOpen(false);
+                    setSlashMenuOpen((value) => !value);
+                  }}
+                >
+                  {skillTriggerIcon}
+                  <span className={styles.toolbarModeLabel}>{selectedModeLabel}</span>
+                  <ChevronDown className={styles.toolbarCaret} aria-hidden />
+                </CanvasChromeButton>
+              }
             >
-              <button
-                type='button'
-                className={`${styles.toolbarButton} ${styles.skillToolbarButton} ${
-                  slashMenuOpen ? styles.toolbarButtonActive : ''
-                }`}
-                aria-expanded={slashMenuOpen}
-                aria-label={
-                  selectedModeLabel ??
-                  (mode === 'agent'
-                    ? t('videoGeneration.create.modesMenuAria', {
-                        defaultValue: '选择 Mode',
-                      })
-                    : t('videoGeneration.create.skillsMenuAria', {
-                        defaultValue: '选择技能',
-                      }))
-                }
-              >
-                <MagicWand size={15} />
-                <span className={styles.toolbarLabel}>{selectedModeLabel}</span>
-              </button>
-            </Popover>
+              {skillMenu}
+            </ComposerAnchoredOverlay>
             ) : null}
             {mode === 'agent' ? (
-              <Popover
-                trigger='click'
-                position='bl'
-                showArrow={false}
-                getPopupContainer={getComposerPopupContainer}
-                triggerProps={{ autoFitPosition: false, updateOnScroll: true }}
-                className={styles.skillPopover}
-                style={{ maxWidth: 380, padding: 0 }}
-                popupVisible={skillHubOpen}
-                onVisibleChange={(open) => {
+              <ComposerAnchoredOverlay
+                open={skillHubOpen}
+                onOpenChange={(open) => {
                   if (open) {
                     setPreferencesOpen(false);
                     setModeMenuOpen(false);
                     setSlashMenuOpen(false);
+                    setLookMenuOpen(false);
                   }
                   setSkillHubOpen(open);
                 }}
-                content={
-                  skillHubOpen ? (
-                    <Suspense fallback={<div className={styles.slashMenu} />}>
-                      <VerticalSkillMenu
-                        selectedIds={draft.verticalSkillIds}
-                        reloadToken={skillListReloadToken}
-                        onChangeSelected={(verticalSkillIds) =>
-                          setDraft((current) => ({ ...current, verticalSkillIds }))
-                        }
-                        onCatalogChange={mergeCatalog}
-                        onRequestCreate={() => {
-                          setSkillHubOpen(false);
-                          setSkillCreateOpen(true);
-                        }}
-                      />
-                    </Suspense>
-                  ) : null
+                width={360}
+                estimatedHeight={560}
+                padded={false}
+                trigger={
+                  <CanvasChromeButton
+                    className={`is-icon ${styles.skillMount}`}
+                    expanded={skillHubOpen}
+                    aria-pressed={skillSelected}
+                    title={skillTriggerLabel}
+                    aria-label={skillTriggerLabel}
+                    onMouseEnter={prefetchVerticalSkillMenu}
+                    onFocus={prefetchVerticalSkillMenu}
+                    onClick={() => {
+                      setPreferencesOpen(false);
+                      setModeMenuOpen(false);
+                      setSlashMenuOpen(false);
+                      setLookMenuOpen(false);
+                      setSkillHubOpen((value) => !value);
+                    }}
+                  >
+                    <Star size={14} />
+                    {skillSelected ? (
+                      selectedVerticalSkills.length > 1 ? (
+                        <i className={styles.skillMountBadge}>
+                          {selectedVerticalSkills.length}
+                        </i>
+                      ) : (
+                        <i className={styles.skillMountPip} />
+                      )
+                    ) : null}
+                  </CanvasChromeButton>
                 }
               >
-                <button
-                  type='button'
-                  className={`${styles.toolbarButton} ${styles.skillToolbarButton} ${
-                    skillHubOpen || draft.verticalSkillIds.length > 0
-                      ? styles.toolbarButtonActive
-                      : ''
-                  }`}
-                  aria-expanded={skillHubOpen}
-                  aria-label={verticalSkillLabel}
-                >
-                  <Star size={15} />
-                  <span className={styles.toolbarLabel}>{verticalSkillLabel}</span>
-                </button>
-              </Popover>
+                <Suspense fallback={null}>
+                  <VerticalSkillMenu
+                    selectedIds={draft.verticalSkillIds}
+                    initialSkills={skillCatalog}
+                    reloadToken={skillListReloadToken}
+                    onChangeSelected={(verticalSkillIds) =>
+                      setDraft((current) => ({ ...current, verticalSkillIds }))
+                    }
+                    onCatalogChange={mergeCatalog}
+                    onRequestCreate={() => {
+                      setSkillHubOpen(false);
+                      setSkillCreateOpen(true);
+                    }}
+                  />
+                </Suspense>
+              </ComposerAnchoredOverlay>
+            ) : null}
+            {showLookPicker ? (
+              <ComposerAnchoredOverlay
+                open={lookMenuOpen}
+                onOpenChange={(open) => {
+                  if (open) {
+                    setPreferencesOpen(false);
+                    setModeMenuOpen(false);
+                    setSlashMenuOpen(false);
+                    setSkillHubOpen(false);
+                  }
+                  setLookMenuOpen(open);
+                }}
+                width={400}
+                estimatedHeight={520}
+                padded={false}
+                trigger={
+                  <CanvasChromeButton
+                    className={lookSelected ? undefined : 'is-icon'}
+                    expanded={lookMenuOpen}
+                    aria-pressed={hasSelectedVisualStyle(draft.style)}
+                    title={lookButtonLabel}
+                    aria-label={t('videoGeneration.looks.menuAria', {
+                      defaultValue: '选择画风',
+                    })}
+                    onMouseEnter={prefetchLookStyleMenu}
+                    onFocus={prefetchLookStyleMenu}
+                    onClick={() => {
+                      setPreferencesOpen(false);
+                      setModeMenuOpen(false);
+                      setSlashMenuOpen(false);
+                      setSkillHubOpen(false);
+                      setLookMenuOpen((value) => !value);
+                    }}
+                  >
+                    {selectedLook ? (
+                      <CanvasStyleCoverSwatch
+                        cover={selectedLook.cover}
+                        className={styles.lookChipCover}
+                        alt=''
+                      />
+                    ) : (
+                      <ColorFilter size={14} />
+                    )}
+                    {lookSelected ? (
+                      <span className={styles.lookChipLabel}>{lookButtonLabel}</span>
+                    ) : null}
+                  </CanvasChromeButton>
+                }
+              >
+                <Suspense fallback={null}>
+                  <LookPicker
+                    stylePrompt={draft.style}
+                    allowEmpty={mode !== 'creation'}
+                    onSelect={selectLook}
+                  />
+                </Suspense>
+              </ComposerAnchoredOverlay>
             ) : null}
           </div>
-          <button
-            type='button'
-            data-button-shape='circle'
-            data-video-home-submit=''
-            className={styles.submitButton}
-            disabled={
-              loading ||
-              (isAction
-                ? !draft.actionCharacter?.file || !draft.actionVideo?.file
-                : !activeText.trim())
-            }
-            onClick={submit}
-            aria-label={
-              isAction
-                ? t('videoGeneration.create.generateActionVideo', {
-                    defaultValue: '生成视频',
-                  })
-                : mode === 'generate'
-                  ? t('videoGeneration.create.generateClip', {
-                      defaultValue: '生成视频',
-                    })
-                  : mode === 'agent'
-                    ? t('videoGeneration.create.generateStoryboard', {
-                        defaultValue: '生成分镜',
-                      })
-                    : t('videoGeneration.create.enterCanvas', {
-                        defaultValue: '进入画布',
-                      })
-            }
-          >
-            {loading ? (
-              <span className={styles.submitSpinner} />
-            ) : (
-              <BoldSendArrowIcon size={17} className={styles.submitArrow} />
-            )}
-          </button>
+          <div className={styles.toolbarRight}>
+            {mode === 'creation' ? (
+              <CanvasChromeButton
+                data-video-home-blank-canvas=''
+                disabled={loading}
+                title={blankCanvasTitle}
+                aria-label={blankCanvasTitle}
+                onMouseEnter={prefetchCanvasWorkspace}
+                onFocus={prefetchCanvasWorkspace}
+                onClick={onCreateBlankCanvas}
+              >
+                <Plus className='size-3.5' />
+                <span className={styles.toolbarModeLabel}>{blankCanvasLabel}</span>
+              </CanvasChromeButton>
+            ) : null}
+            <button
+              type='button'
+              data-button-shape='circle'
+              data-video-home-submit=''
+              className='canvas-send-token'
+              disabled={submitDisabled}
+              style={{
+                background: submitDisabled ? theme.toolbar.itemHover : theme.node.activeStroke,
+                color: submitDisabled ? theme.node.faint : theme.canvas.background,
+              }}
+              onMouseEnter={() => {
+                if (mode === 'creation') prefetchCanvasAssistantPanel();
+              }}
+              onFocus={() => {
+                if (mode === 'creation') prefetchCanvasAssistantPanel();
+              }}
+              onClick={submit}
+              aria-label={submitLabel}
+              title={submitLabel}
+            >
+              {loading ? <span className={styles.submitSpinner} /> : <ArrowUp className='size-3' />}
+            </button>
+          </div>
         </div>
       </div>
-
-      {mode === 'agent' && draft.cameos.length > 0 ? (
-        <div className={styles.cameoPanel}>
-          <Suspense fallback={null}>
-            <CameoCastEditor
-              value={draft.cameos}
-              disabled={loading}
-              onChange={(cameos) => setDraft((current) => ({ ...current, cameos }))}
-            />
-          </Suspense>
-        </div>
-      ) : null}
 
       {skillCreateOpen ? (
         <Suspense fallback={null}>

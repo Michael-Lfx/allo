@@ -2,11 +2,15 @@ import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { canGenerateImageInPlace, findAvailableGenerationGroupPosition, imageGenerationChildPosition, imageGenerationGroupSize } from "@oc/lib/canvas/canvas-generation-layout";
+import { CANVAS_IMAGE_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
+import { canvasGenerationSeed, detectCanvasGenerationIntent, varyCanvasGenerationPrompt } from "@oc/lib/canvas/canvas-generation-enhance";
+import { buildImageGenerationNodeTitle } from "@oc/lib/canvas/canvas-generation-title";
 import { imageMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { fitNodeSize, nodeSizeFromRatio } from "@oc/lib/canvas/canvas-node-size";
-import { buildImageGenerationMetadata, getGenerationCount, isGenerationCanceled, runBackendCanvasGenerationTask } from "@oc/lib/canvas/canvas-project-generation";
+import { buildImageGenerationMetadata, isGenerationCanceled, runBackendCanvasGenerationTask } from "@oc/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, generationFailureMetadata, type GenerationFailureMetadata } from "@oc/lib/generation-error";
 import { uploadImage } from "@oc/services/image-storage";
+import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
@@ -37,11 +41,13 @@ export async function executeImageGeneration({
     showError,
     registerPendingNodeIds,
 }: CanvasGenerationExecution) {
-    const count = getGenerationCount(generationConfig.count);
+    const count = getCanvasBatchCount(generationConfig.count, CANVAS_IMAGE_BATCH_MAX_COUNT);
+    const intent = detectCanvasGenerationIntent(effectivePrompt);
+    const batchSalt = Math.floor(Math.random() * 0x7fffffff);
     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
     const isImageNode = sourceNode?.type === CanvasNodeType.Image;
     const reuseSourceNode = canGenerateImageInPlace(sourceNode);
-    const directCopiedBatch = count > 1 && isImageNode && Boolean(sourceNode?.metadata?.content) && (Boolean(sourceNode?.metadata?.copiedFromNodeId) || sourceNode?.title.endsWith(" Copy"));
+    const directCopiedBatch = count > 1 && isImageNode && Boolean(sourceNode?.metadata?.content) && reuseSourceNode;
     // 已有图片生成新结果并保留旧版本；参考图只来自入边，避免把旧结果误当成自身输入。
     const referenceImages = generationContext.referenceImages;
     const generationType = referenceImages.length ? ("edit" as const) : ("generation" as const);
@@ -73,11 +79,12 @@ export async function executeImageGeneration({
     const rootNode: CanvasNodeData = {
         id: rootId,
         type: CanvasNodeType.Image,
-        title: effectivePrompt.slice(0, 32) || "Generated Image",
+        title: buildImageGenerationNodeTitle(effectivePrompt, sourceNode),
         position: rootPosition,
         width: rootWidth,
         height: rootHeight,
         metadata: {
+            ...(reuseSourceNode ? sourceNode?.metadata || {} : {}),
             prompt: effectivePrompt,
             status: NODE_STATUS_LOADING,
             size: generationConfig.size,
@@ -85,6 +92,8 @@ export async function executeImageGeneration({
             batchChildIds: count > 1 ? childIds : undefined,
             batchUsesReferenceImages: referenceImages.length > 0,
             primaryImageId: undefined,
+            content: reuseSourceNode ? "" : undefined,
+            storageKey: reuseSourceNode ? undefined : sourceNode?.metadata?.storageKey,
             ...generationMetadata,
             imageBatchExpanded: count > 1 ? true : undefined,
             generationErrorCode: undefined,
@@ -94,18 +103,19 @@ export async function executeImageGeneration({
     const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
         id,
         type: CanvasNodeType.Image,
-        title: effectivePrompt.slice(0, 32) || "Generated Image",
+        title: buildImageGenerationNodeTitle(effectivePrompt, sourceNode, index, count),
         position: imageGenerationChildPosition(rootNode.position, rootNode.width, outputNodeSize, index),
         width: outputNodeSize.width,
         height: outputNodeSize.height,
-        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, ...generationMetadata, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined },
+        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, ...generationMetadata, seed: canvasGenerationSeed(index, batchSalt), generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined },
     }));
     const batchConnections = directCopiedBatch
         ? childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))
         : [...(reuseSourceNode ? [] : [{ id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }]), ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: rootId, toNodeId: childId }))];
 
+    let createdNodes: CanvasNodeData[] | null = null;
     setNodes((current) => {
-        return [
+        const nextNodes = [
             ...current.map((node) => {
                 if (node.id !== nodeId) return node;
                 if (isConfigNode) return { ...node, metadata: { ...node.metadata, prompt: effectivePrompt, status: NODE_STATUS_LOADING, errorDetails: undefined } };
@@ -123,8 +133,14 @@ export async function executeImageGeneration({
             ...(reuseSourceNode || directCopiedBatch ? [] : [rootNode]),
             ...childNodes,
         ];
+        createdNodes = nextNodes;
+        return nextNodes;
     });
-    setConnections((current) => [...current, ...batchConnections]);
+    setConnections((current) => {
+        const nextConnections = [...current, ...batchConnections];
+        if (projectId && createdNodes) useCanvasStore.getState().updateProject(projectId, { nodes: createdNodes, connections: nextConnections });
+        return nextConnections;
+    });
     setSelectedNodeIds(new Set([nodeId]));
     setSelectedConnectionId(null);
     setDialogNodeId(nodeId);
@@ -135,17 +151,19 @@ export async function executeImageGeneration({
     let hasFailure = false;
     let representativeFailure: GenerationFailureMetadata | undefined;
     await Promise.all(
-        targetIds.map(async (targetId) => {
+        targetIds.map(async (targetId, batchIndex) => {
             try {
+                const seed = canvasGenerationSeed(batchIndex, batchSalt);
+                const samplePrompt = varyCanvasGenerationPrompt(effectivePrompt, batchIndex, count, intent, "image");
                 const result = await runBackendCanvasGenerationTask({
                     projectId,
                     nodeId: targetId,
                     mode: "image",
-                    prompt: effectivePrompt,
+                    prompt: samplePrompt,
                     config: { ...generationConfig, count: "1" },
                     referenceImages,
                     signal: controller.signal,
-                    metadata: { sourceNodeId: nodeId, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, promptTemplateOperation: sourceNode?.metadata?.promptTemplateOperation, promptTemplateVariables: sourceNode?.metadata?.promptTemplateVariables },
+                    metadata: { sourceNodeId: nodeId, seed, batchIndex, batchCount: count, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, promptTemplateOperation: sourceNode?.metadata?.promptTemplateOperation, promptTemplateVariables: sourceNode?.metadata?.promptTemplateVariables },
                     onTaskCreated: (task) => bindGenerationTask(targetId, task),
                 });
                 const image = result.images?.[0];

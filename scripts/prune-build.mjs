@@ -202,9 +202,11 @@ function removeStaleBundleDirs() {
 }
 
 /**
- * Remove Tauri's regenerable WebUI resource staging. The legacy `_up_` layout
- * accumulated old Vite hashes; production now maps the resource to a stable
- * `webui-dist` path, while dev serves Vite directly and disables the resource.
+ * Remove Tauri's regenerable WebUI resource staging left by older configs.
+ * Legacy builds used `_up_/.../ui/dist` or a `webui-dist` resource copy;
+ * production now embeds the SPA via `frontendDist` only (no second resource
+ * tree). Dev serves Vite directly. Keep deleting both layouts so stale stages
+ * do not linger after a config change.
  */
 function removeStaleWebUiResourceDirs(profiles) {
   for (const rootDir of [BUILD_DIR, TARGET_DIR]) {

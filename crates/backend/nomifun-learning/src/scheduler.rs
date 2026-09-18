@@ -89,6 +89,42 @@ pub struct ScheduleState {
     pub lapse_count: i64,
 }
 
+/// Five-percentage-point recall bucket (0..=19) used by the queue ranking
+/// and the memory-health calibration: neighbors inside one bucket are shown
+/// in a stable order instead of jitters of the raw probability.
+pub fn recall_bucket(r: f64) -> i64 {
+    (r.clamp(0.0, 1.0) * 20.0).floor() as i64
+}
+
+/// FSRS-predicted recall probability `days_elapsed` review days after the
+/// last push of a card with the given stability. `None` for cards that never
+/// carried a memory state (first push not yet made). Uses the same decay
+/// constant the scheduler's FSRS model would: the learner's custom weight 20
+/// when present, the FSRS-6 default otherwise.
+pub fn predicted_retrievability(
+    stability_days: f64,
+    days_elapsed: u32,
+    settings: &SchedulerSettings,
+) -> Option<f64> {
+    if stability_days <= 0.0 {
+        return None;
+    }
+    let decay = settings
+        .parameters
+        .get(20)
+        .copied()
+        .unwrap_or(fsrs::FSRS6_DEFAULT_DECAY);
+    let state = MemoryState {
+        stability: stability_days as f32,
+        difficulty: 5.0,
+    };
+    Some(f64::from(fsrs::current_retrievability(
+        state,
+        days_elapsed as f32,
+        decay,
+    )))
+}
+
 /// Schedules the next review of a concept using the FSRS algorithm.
 ///
 /// `stability_days`/`difficulty` feed FSRS's memory state for items already

@@ -11,15 +11,16 @@ import { CanvasFocusModeBar } from "@oc/components/canvas/canvas-focus-mode-bar"
 import { CanvasFileDropOverlay } from "@oc/components/canvas/canvas-file-drop-overlay";
 import { CanvasToolbar } from "@oc/components/canvas/canvas-toolbar";
 import { getContextResourceNodes } from "@oc/lib/canvas/canvas-resource-references";
-import { CanvasNodeType, type CanvasNodeMetadata, type CanvasToolMode, type CanvasWorkspaceMode, type Position, type ViewportTransform } from "@oc/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasToolMode, type CanvasWorkspaceMode, type Position, type ViewportTransform } from "@oc/types/canvas";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { CanvasBackgroundMode, CanvasTheme } from "@oc/lib/canvas-theme";
+import type { CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import type { GenerationTask } from "@oc/services/api/task-center";
 import type { useCanvasAssistantVisibility } from "./use-canvas-assistant-visibility";
 import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import type { useCanvasUpload } from "./use-canvas-upload";
 import type { useCanvasHistory } from "./use-canvas-history";
 import type { useCanvasNodeOperations } from "./use-canvas-node-operations";
-import type { useCanvasDirector } from "./use-canvas-director";
 import type { CanvasRenderModel, CanvasHistoryActions, CanvasAssistantState } from "./canvas-project-bundles";
 
 type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLayers>, "connectionLayerBounds" | "displayConnections" | "nodeById" | "visibleNodes" | "frameChildrenById" | "batchChildCountById" | "batchMotionById" | "reduceMediaEffects" | "resourceReferenceByNodeId" | "mentionReferencesByNodeId" | "selectedNodeBounds"> & {
@@ -28,6 +29,7 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     emotionNodeId: string | null;
     containerRef: RefObject<HTMLDivElement | null>;
     backgroundMode: CanvasBackgroundMode;
+    canvasAppearance: CanvasAppearance;
     handleViewportChange: (viewport: ViewportTransform) => void;
     handleViewportPreviewChange: (viewport: ViewportTransform) => void;
     handleCanvasMouseDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -50,25 +52,31 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     fileDropActive: boolean;
     emptyCanvasState: ReactNode;
     workspaceMode: CanvasWorkspaceMode;
+    compactCreateMenu?: boolean;
     setCanvasTool: Dispatch<SetStateAction<CanvasToolMode>>;
     shortDramaEnabled: boolean;
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
     showImageInfo: boolean;
     setBackgroundMode: Dispatch<SetStateAction<CanvasBackgroundMode>>;
+    applyCanvasAppearance: (appearance: CanvasAppearance) => void;
+    saveCanvasAppearanceDefault: (appearance: CanvasAppearance) => void;
     setShowImageInfo: Dispatch<SetStateAction<boolean>>;
     createNode: ReturnType<typeof useCanvasNodeOperations>["createNode"];
     createFolder: ReturnType<typeof useCanvasNodeOperations>["createFolder"];
-    createDirectorShot: ReturnType<typeof useCanvasDirector>["createDirectorShot"];
+    setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
     handleUploadRequest: ReturnType<typeof useCanvasUpload>["handleUploadRequest"];
     deleteNodes: ReturnType<typeof useCanvasNodeOperations>["deleteNodes"];
     setClearConfirmOpen: Dispatch<SetStateAction<boolean>>;
     openAssetsAtPosition: ReturnType<typeof useCanvasUpload>["openAssetsAtPosition"];
     openProjectAssets: (initialCategory?: string, position?: Position) => void;
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryTab: Dispatch<SetStateAction<LibraryTab>>;
     renderModel: CanvasRenderModel;
     historyActions: CanvasHistoryActions;
     assistant: CanvasAssistantState;
     updateNodeMetadata: (nodeId: string, patch: CanvasNodeMetadata) => void;
+    setArtCritiqueNodeId: Dispatch<SetStateAction<string | null>>;
 };
 
 export function CanvasProjectStage(props: CanvasProjectStageProps) {
@@ -105,7 +113,6 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         onOpenTaskDetails,
         onOpenVersions,
         onViewImage,
-        onReplaceMedia,
         onOpenTextEditor,
         onOpenDirector,
         onOpenDrawing,
@@ -114,6 +121,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         theme,
         containerRef,
         backgroundMode,
+        canvasAppearance,
         handleViewportChange,
         handleViewportPreviewChange,
         handleCanvasMouseDown,
@@ -136,24 +144,30 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         fileDropActive,
         emptyCanvasState,
         workspaceMode,
+        compactCreateMenu,
         setCanvasTool,
         shortDramaEnabled,
         currentProject,
         setBackgroundMode,
+        applyCanvasAppearance,
+        saveCanvasAppearanceDefault,
         setShowImageInfo,
         createNode,
         createFolder,
-        createDirectorShot,
+        setDirectorTemplateRequest,
         handleUploadRequest,
         deleteNodes,
         setClearConfirmOpen,
         openAssetsAtPosition,
         openProjectAssets,
         setStylePickerOpen,
+        setLibraryOpen,
+        setLibraryTab,
         renderModel,
         historyActions,
         assistant,
         updateNodeMetadata,
+        setArtCritiqueNodeId,
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { assistantOpen, closeAgent, openAgent } = assistant;
@@ -166,6 +180,14 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
     const nodeActionContext = useMemo(
         () => ({
             updateMetadata: updateNodeMetadata,
+            openArtCritique: (node: CanvasNodeData) => {
+                if (node.type !== CanvasNodeType.ArtCritique) return;
+                setArtCritiqueNodeId(node.id);
+            },
+            openTemplates: () => {
+                setLibraryTab("template");
+                setLibraryOpen(true);
+            },
             // 图片 onLoad 比例校正：经 onNodeResize 但 markManual:false，避免写成 manualSize。
             resizeNode: (nodeId: string, size: { width: number; height: number }) => {
                 const node = nodeById.get(nodeId);
@@ -177,7 +199,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                 }, { markManual: false });
             },
         }),
-        [nodeById, onNodeResize, updateNodeMetadata],
+        [nodeById, onNodeResize, setArtCritiqueNodeId, setLibraryOpen, setLibraryTab, updateNodeMetadata],
     );
     return (
         <>
@@ -185,6 +207,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                             <InfiniteCanvas
                                 containerRef={containerRef}
                                 viewport={viewport}
+                                appearance={canvasAppearance}
                                 backgroundMode={backgroundMode}
                                 graphicsLayer={
                                     <CanvasLeaferGraphicsLayer
@@ -259,7 +282,6 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onOpenTaskDetails={onOpenTaskDetails}
                                     onOpenVersions={onOpenVersions}
                                     onViewImage={onViewImage}
-                                    onReplaceMedia={onReplaceMedia}
                                     onOpenTextEditor={onOpenTextEditor}
                                     onOpenDirector={onOpenDirector}
                                     onOpenDrawing={onOpenDrawing}
@@ -293,23 +315,29 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                 <CanvasToolbar
                                     selectedCount={selectedNodeIds.size}
                                     workspaceMode={workspaceMode}
+                                    compactCreateMenu={compactCreateMenu}
                                     canvasTool={canvasTool}
                                     onToolChange={setCanvasTool}
                                     isProjectLinked={Boolean(shortDramaEnabled && currentProject?.projectId)}
                                     canUndo={historyState.canUndo}
                                     canRedo={historyState.canRedo}
                                     backgroundMode={backgroundMode}
+                                    appearance={canvasAppearance}
                                     showImageInfo={showImageInfo}
                                     onAddImage={() => createNode(CanvasNodeType.Image)}
                                     onAddVideo={() => createNode(CanvasNodeType.Video)}
                                     onAddAudio={() => createNode(CanvasNodeType.Audio)}
                                     onAddText={() => createNode(CanvasNodeType.Text)}
                                     onChooseStyle={() => setStylePickerOpen(true)}
+                                    onOpenLibrary={() => {
+                                        setLibraryTab("recipe");
+                                        setLibraryOpen(true);
+                                    }}
                                     onAddScript={() => createNode(CanvasNodeType.Script)}
                                     onAddFrame={() => createNode(CanvasNodeType.Frame)}
                                     onAddFolder={createFolder}
                                     onAddDrawing={() => createNode(CanvasNodeType.Drawing)}
-                                    onOpenDirector={() => createDirectorShot()}
+                                    onOpenDirector={() => setDirectorTemplateRequest({})}
                                     onAddExtensionNode={(type) => createNode(type)}
                                     onUndo={undoCanvas}
                                     onRedo={redoCanvas}
@@ -318,6 +346,8 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onClear={() => setClearConfirmOpen(true)}
                                     onDeselect={deselectCanvas}
                                     onBackgroundModeChange={setBackgroundMode}
+                                    onAppearanceChange={applyCanvasAppearance}
+                                    onSaveAppearanceDefault={saveCanvasAppearanceDefault}
                                     onShowImageInfoChange={setShowImageInfo}
                                     onOpenMyAssets={() => {
                                         openAssetsAtPosition();

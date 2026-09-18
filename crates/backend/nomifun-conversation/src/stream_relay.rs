@@ -9,7 +9,8 @@ use futures_util::FutureExt;
 use nomifun_ai_agent::{
     AgentSendError, AgentStreamEvent,
     artifact_store::ArtifactStore,    protocol::events::{
-        FinishEventData, PlanEventData, TextEventData, ThinkingEventData, TurnStopReason,
+        ErrorEventData, FinishEventData, PlanEventData, TextEventData, ThinkingEventData,
+        TurnStopReason,
         tool_call::{
             AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData,
             ToolCallStatus, validate_artifact_receipt_integrity,
@@ -22,7 +23,7 @@ use crate::runtime_state::{AgentTurnCancellation, ConversationRuntimeStateServic
 use nomifun_api_types::{AgentErrorCode, ConversationRuntimeSummary, WebSocketMessage};
 use nomifun_common::{
     CompanionId, ErrorChain, MessageId, generate_id, normalize_keys_to_snake_case, now_ms,
-    stage_direction::StageDirectionFilter,
+    ProviderWithModel, stage_direction::StageDirectionFilter,
 };
 
 use crate::service::ConversationService;
@@ -860,6 +861,9 @@ pub(crate) struct TurnWritebackAttempt {
     attempt_id: String,
     attempt_generation: u64,
     started_at: i64,
+    /// Wire/billing turn id (`X-Flowy-Turn-Id`). Distinct from `msg_id`
+    /// (the assistant row that owns the write-back chip).
+    billing_turn_id: String,
 }
 
 #[derive(Debug)]
@@ -1053,7 +1057,17 @@ impl TurnWritebackAttempt {
             attempt_generation,
             msg_id,
             started_at,
+            billing_turn_id: String::new(),
         }
+    }
+
+    pub(crate) fn with_billing_turn_id(mut self, turn_id: impl Into<String>) -> Self {
+        let turn_id = turn_id.into();
+        let trimmed = turn_id.trim();
+        if !trimmed.is_empty() && trimmed.len() <= 64 {
+            self.billing_turn_id = trimmed.to_owned();
+        }
+        self
     }
 
     fn durable_state(&self, mut state: Value) -> Value {
@@ -1598,6 +1612,19 @@ async fn persist_turn_writeback_report_terminal(
 
 async fn run_turn_writeback_report_inner(
     service: Arc<nomifun_knowledge::KnowledgeService>,
+    request: nomifun_knowledge::TurnWritebackRequest,
+    final_text: String,
+    attempt: TurnWritebackAttempt,
+) -> Result<(), DbError> {
+    let billing_turn_id = attempt.billing_turn_id.clone();
+    nomifun_ai_agent::with_flowy_billing_turn_id(billing_turn_id, async move {
+        run_turn_writeback_report_inner_unscoped(service, request, final_text, attempt).await
+    })
+    .await
+}
+
+async fn run_turn_writeback_report_inner_unscoped(
+    service: Arc<nomifun_knowledge::KnowledgeService>,
     mut request: nomifun_knowledge::TurnWritebackRequest,
     final_text: String,
     attempt: TurnWritebackAttempt,
@@ -1849,6 +1876,11 @@ pub struct StreamRelay {
     /// the final database commit barrier. Runtime event payloads are untrusted:
     /// a marker proves an atomic DB transition, not that bytes exist.
     artifact_workspace: Option<PathBuf>,
+    /// Effective provider/model for the current relay attempt. These values
+    /// are stamped onto terminal errors so historical diagnostics remain
+    /// accurate after a later model switch or failover.
+    error_model_id: Option<String>,
+    error_provider_id: Option<String>,
 }
 
 impl StreamRelay {
@@ -1910,6 +1942,8 @@ impl StreamRelay {
             primary_message_owner: StdMutex::new(PrimaryMessageOwner::Unclaimed),
             root_state_error: StdMutex::new(None),
             artifact_workspace: None,
+            error_model_id: None,
+            error_provider_id: None,
         }
     }
 
@@ -1965,6 +1999,20 @@ impl StreamRelay {
 
     pub fn with_artifact_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
         self.artifact_workspace = Some(workspace.into());
+        self
+    }
+
+    /// Attach the effective model for this relay attempt to terminal errors.
+    /// `use_model` is the runtime's selected model override when present.
+    pub fn with_model_context(mut self, model: Option<&ProviderWithModel>) -> Self {
+        self.error_model_id = model.map(|model| {
+            model
+                .use_model
+                .as_deref()
+                .unwrap_or(&model.model)
+                .to_owned()
+        });
+        self.error_provider_id = model.map(|model| model.provider_id.clone());
         self
     }
 
@@ -2044,7 +2092,8 @@ impl StreamRelay {
         event: &AgentStreamEvent,
         cancellation: &AgentTurnCancellation,
     ) -> bool {
-        let AgentStreamEvent::Error(data) = event else {
+        let event = self.annotate_error_event(event.clone());
+        let AgentStreamEvent::Error(data) = &event else {
             return false;
         };
         if !cancellation.try_claim_terminal_surface() {
@@ -2056,7 +2105,7 @@ impl StreamRelay {
             return false;
         }
         let error_message_id = ConversationService::mint_msg_id();
-        self.forward_to_websocket_with_msg_id(&error_message_id, event);
+        self.forward_to_websocket_with_msg_id(&error_message_id, &event);
         // This projection belongs to the still-authoritative turn owner.  Do
         // not detach or time out the insert: cancelling an in-flight database
         // future can make its commit result ambiguous and lets a later turn
@@ -2245,6 +2294,7 @@ impl StreamRelay {
                     {
                         event = Self::cancelled_finish_event();
                     }
+                    event = self.annotate_error_event(event);
                     if !first_agent_event_logged {
                         first_agent_event_logged = true;
                         info!(
@@ -3643,6 +3693,19 @@ impl StreamRelay {
         }
     }
 
+    fn annotate_error_event(&self, event: AgentStreamEvent) -> AgentStreamEvent {
+        let AgentStreamEvent::Error(mut data) = event else {
+            return event;
+        };
+        if data.model_id.is_none() {
+            data.model_id = self.error_model_id.clone();
+        }
+        if data.provider_id.is_none() {
+            data.provider_id = self.error_provider_id.clone();
+        }
+        AgentStreamEvent::Error(data)
+    }
+
     fn terminal_from_event(event: &AgentStreamEvent) -> RelayTerminal {
         match event {
             AgentStreamEvent::Error(data) => RelayTerminal::Error {
@@ -3778,6 +3841,14 @@ impl StreamRelay {
         // force every object key down the tree to snake_case so the
         // wire contract stays uniform.
         normalize_keys_to_snake_case(&mut event_data);
+        if let AgentStreamEvent::Error(data) = event
+            && let Some(recovery) = self.provider_interrupt_recovery(data)
+            && let Some(object) = event_data
+                .get_mut("data")
+                .and_then(Value::as_object_mut)
+        {
+            object.insert("recovery".to_owned(), recovery);
+        }
 
         let payload = json!({
             "conversation_id": self.conv_id(),
@@ -4347,6 +4418,25 @@ impl StreamRelay {
         outcome
     }
 
+    /// Continue-from-progress surface for a retryable provider interrupt.
+    /// Truncation already uses a dedicated Finish tip; this path covers the
+    /// Error terminal that otherwise offered only rewind-and-resubmit.
+    fn provider_interrupt_recovery(&self, data: &ErrorEventData) -> Option<Value> {
+        if data.retryable != Some(true) {
+            return None;
+        }
+        let source_message_id = self.source_user_message_id.as_deref()?;
+        let failure_code = crate::relay_error_code::agent_error_code_token(data.code?);
+        if !nomifun_db::is_resumable_source_error_code(&failure_code) {
+            return None;
+        }
+        Some(json!({
+            "kind": "continue_truncated",
+            "source_message_id": source_message_id,
+            "failure_code": failure_code,
+        }))
+    }
+
     fn truncated_recovery_tip(
         stop_reason: Option<TurnStopReason>,
     ) -> Option<(&'static str, &'static str, &'static str)> {
@@ -4440,15 +4530,21 @@ impl StreamRelay {
     async fn persist_error_tips(
         &self,
         message_id: &str,
-        data: &nomifun_ai_agent::protocol::events::ErrorEventData,
+        data: &ErrorEventData,
     ) {
-        let content = json!({
+        let mut content = json!({
             "content": &data.message,
             "type": "error",
             "error": &data,
             "turn_id": &self.root_turn_id,
-        })
-        .to_string();
+        });
+        if let Some(recovery) = self.provider_interrupt_recovery(data) {
+            content
+                .as_object_mut()
+                .expect("error tips content is an object")
+                .insert("recovery".to_owned(), recovery);
+        }
+        let content = content.to_string();
         let row = MessageRow {
             id: 0,
             message_id: message_id.to_owned(),
@@ -6354,6 +6450,7 @@ mod tests {
         ErrorEventData, FinishEventData, OutputDiscardedEventData, PlanEventData, StartEventData,
         TextEventData, ThinkingEventData,
     };
+    use nomifun_api_types::{AgentErrorOwnership, AgentErrorResolution, AgentErrorResolutionKind};
     use nomifun_common::{ConversationId, MessageId, PersistedArtifactId};
     use nomifun_db::DbError;
     use std::sync::{
@@ -6389,6 +6486,55 @@ mod tests {
             Vec::new(),
             1,
         )
+    }
+
+    #[test]
+    fn writeback_attempt_carries_wire_billing_turn_id() {
+        let attempt = TurnWritebackAttempt::new(
+            Arc::new(RecordingRepo::new()),
+            Arc::new(TestUserEventBus::new(8)),
+            TEST_USER_ID.to_owned(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.to_owned(),
+            TEST_TURN_A.to_owned(),
+            "answer".to_owned(),
+            Vec::new(),
+            Vec::new(),
+            1,
+        )
+        .with_billing_turn_id("wire-turn-id");
+        assert_eq!(attempt.billing_turn_id, "wire-turn-id");
+        let rejected = attempt.with_billing_turn_id("a".repeat(65));
+        assert_eq!(rejected.billing_turn_id, "wire-turn-id");
+    }
+
+    #[test]
+    fn relay_stamps_effective_model_on_unstructured_errors() {
+        let model = ProviderWithModel {
+            provider_id: "flowyai".into(),
+            model: "claude-3-7-sonnet".into(),
+            use_model: Some("claude-sonnet-4-20250514".into()),
+        };
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            Arc::new(RecordingRepo::new()),
+            Arc::new(TestUserEventBus::new(8)),
+            None,
+        )
+        .with_model_context(Some(&model));
+
+        let annotated = relay.annotate_error_event(AgentStreamEvent::Error(ErrorEventData::legacy(
+            "provider failed",
+            Some(AgentErrorCode::UserLlmProviderNetworkError),
+        )));
+        let AgentStreamEvent::Error(data) = annotated else {
+            panic!("expected an error event");
+        };
+
+        assert_eq!(data.model_id.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert_eq!(data.provider_id.as_deref(), Some("flowyai"));
     }
 
     #[test]
@@ -12134,6 +12280,62 @@ mod tests {
                     || event.data["data"].get("recovery").is_none()
             }));
         }
+    }
+
+    #[tokio::test]
+    async fn retryable_provider_network_error_persists_continue_recovery() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(32));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(32);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        )
+        .with_root_turn_id(TEST_TURN_A)
+        .with_source_user_message_id(Some(TEST_TURN_B.to_owned()));
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Error(ErrorEventData::classified(
+            "The model provider could not be reached",
+            AgentErrorCode::UserLlmProviderNetworkError,
+            AgentErrorOwnership::UserLlmProvider,
+            Some("connection reset".into()),
+            true,
+            false,
+            Some(AgentErrorResolution::new(
+                AgentErrorResolutionKind::Retry,
+                None,
+            )),
+        )))
+        .unwrap();
+
+        relay.consume(rx).await;
+
+        let tips = repo
+            .take_inserts()
+            .into_iter()
+            .filter(|row| row.r#type == "tips")
+            .collect::<Vec<_>>();
+        assert_eq!(tips.len(), 1);
+        let content: Value = serde_json::from_str(&tips[0].content).unwrap();
+        assert_eq!(
+            content["recovery"],
+            json!({
+                "kind": "continue_truncated",
+                "source_message_id": TEST_TURN_B,
+                "failure_code": "user_llm_provider_network_error",
+            })
+        );
+        assert_eq!(content["error"]["retryable"], true);
+
+        let live_error = std::iter::from_fn(|| ws_rx.try_recv().ok())
+            .find(|event| event.name == "message.stream" && event.data["type"] == "error")
+            .expect("terminal error must be broadcast");
+        assert_eq!(live_error.data["data"]["recovery"], content["recovery"]);
     }
 
     #[tokio::test]

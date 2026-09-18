@@ -8,7 +8,6 @@ mod film_cover;
 mod global_information_planner;
 mod novel_compressor;
 mod reference_image_classifier;
-mod reference_image_selector;
 mod scene_extractor;
 mod screenwriter;
 mod storyboard_artist;
@@ -31,7 +30,6 @@ pub use reference_image_classifier::{
     ReferenceImageCategory, ReferenceImageClassification, ReferenceImageClassifier,
     CLASSIFICATION_CACHE_REL,
 };
-pub use reference_image_selector::{ReferenceImageSelector, SelectorOutput};
 pub use scene_extractor::{SceneExtractor, rank_chunks_by_keyword_overlap};
 pub use screenwriter::Screenwriter;
 pub use storyboard_artist::StoryboardArtist;
@@ -40,26 +38,47 @@ pub use voice_reference_generator::{
     has_usable_voice_ref, voice_ref_abs_path, VoiceReferenceGenerator,
 };
 pub use world_assets::{
-    WorldAssetRegistry, WorldAssetsPlanner, rank_world_pairs_for_frame, world_asset_pairs,
+    WorldAssetRegistry, WorldAssetsPlanner, bind_location_ids, environment_sluglines_from_dir,
+    resolve_environment_plate, select_environment_plate, world_asset_pairs,
 };
 
 /// Concise JSON schema strings substituted for `{format_instructions}`.
 pub mod formats {
     pub const CHARACTERS: &str = r#"Return a JSON object:
 {"characters":[{"idx":0,"identifier_in_scene":"string","is_visible":true,"static_features":"string","dynamic_features":"string|null","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":"string|null"}}]}
-Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (appearance/physique), dynamic_features (clothing/accessories, optional), voice_profile (REQUIRED film-stable speaking voice bible reused across every shot — timbre must be a concrete acoustic fingerprint with age/gender/resonance/texture; volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+emotional baseline only; caption_clause optional). Natural-language field values MUST match the user's input language (Chinese input → 简体中文 values)."#;
+Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (MUST state sex/age band then appearance/physique, e.g. 成年女性、长发), dynamic_features (clothing/accessories, optional), voice_profile (REQUIRED film-stable speaking voice bible reused across every shot — timbre must be a concrete acoustic fingerprint with age/gender/resonance/texture; volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+emotional baseline only; caption_clause optional). Natural-language field values MUST match the user's input language (Chinese input → 简体中文 values)."#;
 
     pub const VOICE_PROFILES: &str = r#"Return a JSON object:
 {"voices":[{"idx":0,"identifier_in_scene":"string","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":null}}]}
-One entry per input character (same idx / identifier_in_scene). voice_profile must be film-stable and distinctive: timbre = concrete acoustic fingerprint (not vague 女声/男声); volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+baseline only (no per-shot crying/shouting baked into timbre). caption_clause may be null (pipeline rebuilds FIXED SPEAKER VOICE inject). Prose MUST match the user's input language (Chinese input → 简体中文)."#;
+One entry per input character (same idx / identifier_in_scene). voice_profile must be film-stable and distinctive: timbre = concrete acoustic fingerprint matching the character's sex/age (not vague 女声/男声, never default everyone to 男中音); volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+baseline only (no per-shot crying/shouting baked into timbre). caption_clause may be null (pipeline rebuilds FIXED SPEAKER VOICE inject). Do not emit tts_voice. Prose MUST match the user's input language (Chinese input → 简体中文)."#;
 
-    pub const STORYBOARD: &str = r#"Return a JSON object:
-{"storyboard":[{"idx":0,"is_last":false,"cam_idx":0,"visual_desc":"string","audio_desc":"string"}]}
-idx from 0; is_last true only on the final shot; cam_idx groups shots sharing a camera; visual_desc is a complete shot description; audio_desc is REQUIRED for EVERY shot — put spoken dialogue and/or SFX+BGM intent there (never null/empty). When a character speaks, prefix with identifier_in_scene (e.g. 李薇：「……」). Do NOT invent vocal timbre/age/gender in audio_desc (no 低沉嗓音/尖细女声/沙哑男声) — voice identity is locked separately; only dialogue text, emotion intensity, SFX, BGM. Dialogue MUST finish inside the same shot's 5–15s Seedance clip: pace ~1.9 Chinese chars/sec or ~1.5 English words/sec, leave ~1s lead-in and ~2s tail after the last word, then land on a visible reaction/action beat (no empty hold). All shots in the scene MUST reuse the SAME continuous underscore motif/tempo/instrumentation in audio_desc — no new music style per cut. Purely visual beats still need ambient audio_desc (room tone + that same cinematic underscore). Prefer dense visual events over padded long takes. Natural-language values MUST match the user's input language (Chinese input → 简体中文)."#;
+    use crate::clip_bounds::ClipBounds;
 
-    pub const VIS_DECOMPOSE: &str = r#"Return a single JSON object. Each key MUST appear exactly once (never repeat ff_vis_char_idxs / lf_vis_char_idxs / any other field).
-{"ff_desc":"string","ff_vis_char_idxs":[0],"lf_desc":"string","lf_vis_char_idxs":[0],"motion_desc":"string","variation_type":"large|medium|small","variation_reason":"string"}
-ff_*/lf_* are static first/last frame snapshots; motion_desc covers camera + element motion; variation_type is large|medium|small. Prose fields MUST match the user's input language (Chinese input → 简体中文)."#;
+    /// Storyboard schema + field rules, with clip length sized to the selected
+    /// video model (see [`crate::planning::speech_budget_line`]).
+    pub fn storyboard(clip: ClipBounds, max_voice_refs: usize) -> String {
+        let speech = crate::planning::speech_budget_line(clip);
+        let slots = crate::planning::voice_ref_slot_rules(max_voice_refs);
+        format!(
+            r#"Return a JSON object:
+{{"storyboard":[{{"idx":0,"is_last":false,"cam_idx":0,"location_id":"INT. PLACE - TIME","visual_desc":"string","audio_desc":"string"}}]}}
+idx from 0; is_last true only on the final shot; cam_idx is the OPENING camera of this narrative clip (not a grouping key — do not emit a new object because the camera moves). location_id is the scene heading / world-asset slugline this clip is IN (copy from the script; keep it stable across reverse angles of the same place). visual_desc is the story unit this file plays (composition + events); reverse/insert/push-in of the SAME beat is CUT TO inside this object. Between rows keep screen-left/screen-right of each named person (do not flip 左侧/右侧 across a file splice). Slice objects by NARRATIVE, never by tripod. ONE ROW = ONE VIDEO. Identity is locked by reference images. On-screen people MUST be tagged with their exact identifier_in_scene in angle brackets (e.g. <玄霄老祖>, never a nickname like 老祖). A gesture or reaction that belongs to a spoken line (pointing, a gasp) stays in THAT row as CUT TO / ；然后 — do not emit a leftover row whose only audio is a parenthetical. audio_desc is REQUIRED for EVERY shot — put spoken dialogue and/or SFX+BGM intent there (never null/empty). When a character speaks, prefix with identifier_in_scene (e.g. 李薇：「……」 / Alice: "…") and put the line in quotes so duration estimation ignores SFX/BGM. Two people in frame: write who speaks and who is silent (A：「…」 B silent). Do NOT invent vocal timbre/age/gender in audio_desc (no 低沉嗓音/尖细女声/沙哑男声) — voice identity is locked separately; only dialogue text, emotion intensity, SFX, BGM. {speech} {slots} All shots in the scene MUST reuse the SAME continuous underscore motif/tempo/instrumentation in audio_desc — no new music style per cut. Purely visual beats still need ambient audio_desc (room tone + that same cinematic underscore). Prefer fewer, richer clips over micro-cuts; do not pad long takes or split one beat into extra shots. Natural-language values MUST match the user's input language (Chinese input → 简体中文)."#
+        )
+    }
+
+    /// Shot-decompose schema + field rules.
+    ///
+    /// Decomposition happens before the renderer allocates clip lengths, so this
+    /// deliberately forbids absolute seconds in `motion_desc` — see
+    /// [`crate::planning::clip_length_rules`].
+    pub fn vis_decompose(clip: ClipBounds) -> String {
+        let rules = crate::planning::clip_length_rules(clip);
+        format!(
+            r#"Return a single JSON object. Each key MUST appear exactly once (never repeat ff_vis_char_idxs / lf_vis_char_idxs / any other field).
+{{"ff_desc":"string","ff_vis_char_idxs":[0],"lf_desc":"string","lf_vis_char_idxs":[0],"motion_desc":"string","variation_type":"large|medium|small","variation_reason":"string"}}
+ff_*/lf_* are COMPACT static snapshots (shot size, who is where, facing) — not full appearance bibles. lf_desc only states what CHANGED; if composition is unchanged, one short sentence. motion_desc is the primary video instruction: camera + the beat(s) this clip plays (a line + reaction may share one motion_desc); character names OK with at most one short visible tag. {rules} variation_type is large|medium|small. Prose fields MUST match the user's input language (Chinese input → 简体中文)."#
+        )
+    }
 
     pub const CAMERA_TREE: &str = r#"Return a JSON object:
 {"camera_parent_items":[{"parent_cam_idx":null,"parent_shot_idx":null,"reason":"string","is_parent_fully_covers_child":null,"missing_info":null}]}
@@ -73,9 +92,13 @@ ref_image_indices: 0-based indices into the provided image list (max 8). text_pr
 {"classifications":[{"photo_id":"string","category":"character|environment|prop|style","summary":"string","suggested_label":"string"}]}
 One entry per input image. category MUST be exactly one of: character, environment, prop, style. photo_id MUST match the provided id. summary = one short visual description. suggested_label may be empty. Prose MUST match the user's label language when Chinese."#;
 
+    pub const DRAMA_ENGINE: &str = r#"Return a JSON object:
+{"protagonist":"string","want":"string","obstacle":"string","stakes":"string","status_start":"string","status_end":"string","reversal":"string","visual_motif":"string","beats":[{"role":"hook","action":"string","advance":"string"}]}
+beats: 4-8 entries in play order; role MUST be one of hook|incite|escalate|turn|payoff|button; the FIRST beat MUST be "hook"; include at least one "turn" and one "payoff". action = ONE filmable visible behavior (bodies, props, space — never a bare mood word like 伤心/愤怒/nervous); advance = what this beat changes in plot, relationship, or status. want/obstacle/stakes must be concrete and in conflict; status_start and status_end MUST describe different positions. visual_motif = one recurring filmable object/gesture/light cue. Values MUST match the user's input language (Chinese input → 简体中文)."#;
+
     pub const SCRIPT_SCENES: &str = r#"Return a JSON object:
 {"scenes":["scene script string", "..."]}
-Each string is one scene's screenplay (heading, action, dialogue). Screenplay text MUST match the user's input language (Chinese input → 简体中文).
+Each string is one scene's screenplay (heading, action, AND named-character dialogue in 「」). A mute/action-only scene is invalid. Screenplay text MUST match the user's input language (Chinese input → 简体中文).
 CRITICAL JSON SAFETY: inside each scene string do NOT use raw ASCII double quotes ("). Use Chinese quotes 「」 for dialogue/SFX (e.g. 发出「咚」的一声). If you must use ", write it as \"."#;
 
     pub const EVENT: &str = r#"Return a JSON object matching one Event:
@@ -96,5 +119,5 @@ Merge event characters into the novel-level list without duplicates. Feature pro
 
     pub const WORLD_ASSETS: &str = r#"Return a JSON object:
 {"environments":[{"idx":0,"slugline":"INT. PLACE - TIME","description":"empty set details"}],"props":[{"idx":0,"name":"string","description":"appearance details"}]}
-environments: distinct locations, no people. props: key recurring objects only. Keep lists short. description/name prose MUST match the user's input language (Chinese input → 简体中文; slugline may stay INT./EXT. style)."#;
+environments: one entry per distinct location+time of day from scene headings (do not collapse the film to a global top-5). props: few named plot-critical objects only. description/name prose MUST match the user's input language (Chinese input → 简体中文; slugline may stay INT./EXT. style)."#;
 }

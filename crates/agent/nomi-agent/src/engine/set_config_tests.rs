@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use super::{
     AgentError, MAX_PROVIDER_TURN_TOOL_CALLS, SYSTEM_RESOURCE_CONTEXT_HEADER,
-    USER_IMAGE_HISTORY_PLACEHOLDER,
 };
 use nomi_protocol::events::ToolCategory;
 use nomi_providers::{LlmProvider, ProviderError};
@@ -990,14 +989,19 @@ fn make_engine(model: &str) -> super::AgentEngine {
         moa: None,
         stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
         coding_harness: None,
+        harness_runtime: Default::default(),
         compact_config_base: nomi_config::compact::CompactConfig::default(),
         file_cache: None,
         context_contributors: Vec::new(),
         steering_inbox: None,
         system_resource_inbox: None,
+        frozen_provider_tools: None,
+        sent_prefix_len: 0,
         process_supervisor: None,
         editable_turn: None,
         observation: None,
+        horizon: Default::default(),
+        plan_exit_latch: None,
     }
 }
 
@@ -1010,7 +1014,49 @@ fn context_accessors_report_window_and_last_input() {
 }
 
 #[tokio::test]
-async fn system_resource_notice_is_system_context_not_a_user_message() {
+async fn provider_tools_stay_frozen_after_live_registry_growth() {
+    let provider = Arc::new(RecordingProvider::successful());
+    let mut engine = make_engine("freeze-tools");
+    engine.provider = provider.clone();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    engine.tools.register(Box::new(ConstantResultTool {
+        name: "alpha",
+        polling: false,
+        category: ToolCategory::Info,
+        calls: Arc::clone(&calls),
+        steer_on_call: None,
+    }));
+
+    engine
+        .execute_turn("first", "m1")
+        .await
+        .expect("first turn should succeed");
+
+    engine.tools.register(Box::new(ConstantResultTool {
+        name: "beta_late",
+        polling: false,
+        category: ToolCategory::Info,
+        calls: Arc::clone(&calls),
+        steer_on_call: None,
+    }));
+
+    engine
+        .execute_turn("second", "m2")
+        .await
+        .expect("second turn should succeed");
+
+    let reqs = provider.requests();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(
+        reqs[0].tools, reqs[1].tools,
+        "mid-session registry growth must not rewrite the advertised tools JSON"
+    );
+    assert!(reqs[1].tools.iter().any(|tool| tool.name == "alpha"));
+    assert!(!reqs[1].tools.iter().any(|tool| tool.name == "beta_late"));
+}
+
+#[tokio::test]
+async fn system_resource_notice_rides_turn_tail_not_system_prompt() {
     let mut engine = make_engine("resource-notice");
     let provider = Arc::new(RecordingProvider::successful());
     engine.provider = provider.clone();
@@ -1027,23 +1073,27 @@ async fn system_resource_notice_is_system_context_not_a_user_message() {
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].system.contains(SYSTEM_RESOURCE_CONTEXT_HEADER));
     assert!(
-        requests[0]
+        !requests[0].system.contains(SYSTEM_RESOURCE_CONTEXT_HEADER),
+        "resource notices must not mutate the cached system prefix"
+    );
+    assert!(
+        !requests[0]
             .system
             .contains("terminal term-1 was closed by the user")
     );
     assert!(
-        requests[0].messages.iter().all(|message| {
-            message.content.iter().all(|block| {
-                !matches!(
+        requests[0].messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
                     block,
                     ContentBlock::Text { text }
-                        if text.contains("terminal term-1 was closed by the user")
+                        if text.contains(SYSTEM_RESOURCE_CONTEXT_HEADER)
+                            && text.contains("terminal term-1 was closed by the user")
                 )
             })
         }),
-        "trusted resource state must never be serialized as a conversation message"
+        "trusted resource state rides the persisted turn tail"
     );
     assert!(inbox.lock().unwrap().is_empty());
 
@@ -1060,7 +1110,7 @@ async fn system_resource_notice_is_system_context_not_a_user_message() {
 }
 
 #[tokio::test]
-async fn execute_turn_with_content_sends_image_once_then_redacts_it_from_history() {
+async fn execute_turn_with_content_replays_image_on_follow_up() {
     let mut engine = make_engine("vision-model");
     let provider = Arc::new(RecordingProvider::successful());
     engine.provider = provider.clone();
@@ -1095,12 +1145,12 @@ async fn execute_turn_with_content_sends_image_once_then_redacts_it_from_history
     }));
 
     assert_eq!(engine.messages[0].role, Role::User);
-    assert!(engine.messages[0]
-        .content
-        .iter()
-        .all(|block| !matches!(block, ContentBlock::Image { .. })));
     assert!(engine.messages[0].content.iter().any(|block| {
-        matches!(block, ContentBlock::Text { text } if text == USER_IMAGE_HISTORY_PLACEHOLDER)
+        matches!(
+            block,
+            ContentBlock::Image { media_type, data }
+                if media_type == "image/png" && data == "cG5n"
+        )
     }));
 
     engine
@@ -1109,17 +1159,16 @@ async fn execute_turn_with_content_sends_image_once_then_redacts_it_from_history
         .expect("follow-up turn should run");
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests[1].messages.iter().all(|message| {
-        message
-            .content
-            .iter()
-            .all(|block| !matches!(block, ContentBlock::Image { .. }))
-    }));
-    assert!(requests[1].messages.iter().any(|message| {
-        message.content.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text } if text == USER_IMAGE_HISTORY_PLACEHOLDER)
-        })
-    }));
+    assert!(
+        requests[1].messages[0].content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Image { media_type, data }
+                    if media_type == "image/png" && data == "cG5n"
+            )
+        }),
+        "follow-up must replay the sent image as prefix, not a placeholder"
+    );
 }
 
 #[tokio::test]
@@ -1777,7 +1826,7 @@ async fn tool_delta_identity_must_match_the_completed_call() {
 }
 
 #[tokio::test]
-async fn unadvertised_tool_delta_fails_before_running_preview() {
+async fn unadvertised_tool_delta_is_ignored_without_running_preview() {
     let output = Arc::new(ToolLifecycleRecordingOutput::default());
     let mut engine = make_engine("unadvertised-tool-delta-model");
     engine.output = output.clone();
@@ -1791,13 +1840,39 @@ async fn unadvertised_tool_delta_fails_before_running_preview() {
         .await;
 
     assert!(
-        matches!(&result, Err(AgentError::ApiError(message)) if message.contains("was not advertised in this request")),
-        "an unadvertised delta must fail at the provider boundary: {result:?}"
+        result.is_ok(),
+        "an unadvertised progress preview must not fail the turn: {result:?}"
     );
     assert_eq!(
         output.tool_calls.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "an unauthorized call must never enter the Running preview lifecycle"
+        "an unauthorized preview must never enter the Running preview lifecycle"
+    );
+}
+
+#[tokio::test]
+async fn unadvertised_preview_then_final_tool_use_still_fails_closed() {
+    let output = Arc::new(ToolLifecycleRecordingOutput::default());
+    let mut engine = make_engine("unadvertised-final-tool-use-model");
+    engine.output = output.clone();
+    engine.provider = Arc::new(PreviewThenCompleteProvider {
+        turns: std::sync::atomic::AtomicUsize::new(0),
+        preview: ("x", "not_advertised"),
+        complete: ("x", "not_advertised"),
+    });
+
+    let result = engine
+        .execute_turn("stream the call", "msg-unadvertised-final-tool-use")
+        .await;
+
+    assert!(
+        matches!(&result, Err(AgentError::ApiError(message)) if message.contains("was not advertised in this request")),
+        "a final unadvertised ToolUse must still be rejected: {result:?}"
+    );
+    assert_eq!(
+        output.tool_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the unauthorized call must never enter the Running lifecycle"
     );
 }
 
@@ -2164,9 +2239,13 @@ async fn failed_tool_diagnostic_images_are_not_replayed_to_the_provider() {
     );
     let ContentBlock::ToolResult {
         is_error, images, ..
-    } = &engine.messages[2].content[0]
+    } = engine.messages[2]
+        .content
+        .iter()
+        .find(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        .expect("the third message should contain the failed tool result")
     else {
-        panic!("the third message should contain the failed tool result");
+        unreachable!("filter matched ToolResult");
     };
     assert!(*is_error);
     assert!(images.is_empty());
@@ -2214,9 +2293,13 @@ async fn bounded_mcp_alias_uses_untruncated_export_identity_and_rejects_text_onl
             images,
             content,
             ..
-        } = &engine.messages[2].content[0]
+        } = engine.messages[2]
+            .content
+            .iter()
+            .find(|block| matches!(block, ContentBlock::ToolResult { .. }))
+            .expect("the third message should contain the exporter result")
         else {
-            panic!("the third message should contain the exporter result");
+            unreachable!("filter matched ToolResult");
         };
         assert!(*is_error, "text-only {semantic_tool} must not remain successful");
         assert!(images.is_empty());

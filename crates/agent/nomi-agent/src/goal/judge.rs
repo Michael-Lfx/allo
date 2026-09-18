@@ -3,9 +3,9 @@
 //! Port of hermes `goals.py` `judge_goal()` / `_parse_judge_response()`.
 //! The judge is a one-shot side request — it never touches the engine's
 //! system prompt or conversation history, so the main prompt cache stays
-//! intact. Deliberately fail-open: anything unusable degrades to `Continue`
-//! (never a false `Done`), with parse/transport failures tracked separately
-//! so the runtime can trip its circuit breakers.
+//! intact. The parser still degrades unusable output to `Continue` (never a
+//! false `Done`); the runtime is fail-closed and pauses on the first
+//! parse/transport failure instead of injecting another continuation.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -141,7 +141,7 @@ impl AgentExecutionEngine {
             .conversation
             .agent_execution_port(config.runtime_registry.clone());
         let conversation_effects = Arc::new(ProductionConversationEffects {
-            conversation: config.conversation,
+            conversation: config.conversation.clone(),
             runtime_registry: config.runtime_registry,
             execution_port,
         });
@@ -151,6 +151,7 @@ impl AgentExecutionEngine {
             config.provider_repository,
             config.provider_model_repository,
             config.preset_service,
+            config.conversation,
             planner,
             attempt_runner,
             conversation_effects,

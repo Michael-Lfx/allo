@@ -1,5 +1,5 @@
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@oc/constant/canvas";
-import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
+import { STORYBOARD_COMPOSER_MIN_HEIGHT, STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
 import type { CanvasImageAngleParams } from "@oc/components/canvas/canvas-node-angle-dialog";
 import type { NodeGenerationInput } from "@oc/components/canvas/canvas-node-generation";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
@@ -11,21 +11,26 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Canvas
 
 const CANVAS_WORKSPACE_MODE_STORAGE_KEY = "canvas-workspace-mode-v1";
 
+/** 工作模式分流已停用：恒返回 professional。真实菜单分叉是 compactCreateMenu。 */
 export function readCanvasWorkspaceMode(): CanvasWorkspaceMode {
-    if (typeof window === "undefined") return "professional";
-    try {
-        return scopedLocalStorage.getItem(CANVAS_WORKSPACE_MODE_STORAGE_KEY) === "simple" ? "simple" : "professional";
-    } catch (error) {
-        console.warn("读取画布工作模式失败，已使用专业模式", error);
-        return "professional";
-    }
+    migrateCanvasWorkspaceMode();
+    return "professional";
 }
 
-export function persistCanvasWorkspaceMode(mode: CanvasWorkspaceMode) {
+/**
+ * 工作模式分流已停用：read 恒为 professional，菜单只看 compactCreateMenu。
+ * 仍清理旧 localStorage，避免残留 simple 值误导排查。
+ */
+export function persistCanvasWorkspaceMode(_mode?: CanvasWorkspaceMode) {
+    migrateCanvasWorkspaceMode();
+}
+
+function migrateCanvasWorkspaceMode() {
+    if (typeof window === "undefined") return;
     try {
-        scopedLocalStorage.setItem(CANVAS_WORKSPACE_MODE_STORAGE_KEY, mode);
+        if (scopedLocalStorage.getItem(CANVAS_WORKSPACE_MODE_STORAGE_KEY)) scopedLocalStorage.removeItem(CANVAS_WORKSPACE_MODE_STORAGE_KEY);
     } catch (error) {
-        console.warn("保存画布工作模式失败", error);
+        console.warn("清理画布工作模式失败", error);
     }
 }
 
@@ -128,6 +133,9 @@ export function storyboardRowsFromTask(task: GenerationTask) {
 
 export function applyNodeConfigPatch(node: CanvasNodeData, patch: Partial<CanvasNodeMetadata>) {
     const safePatch = patch || {};
+    const metadata = node.metadata;
+    const unchanged = Object.entries(safePatch).every(([key, value]) => metadata?.[key as keyof CanvasNodeMetadata] === value);
+    if (unchanged) return node;
     const next = { ...node, metadata: { ...node.metadata, ...safePatch } };
     const spec = node.type === CanvasNodeType.Video ? NODE_DEFAULT_SIZE[CanvasNodeType.Video] : NODE_DEFAULT_SIZE[CanvasNodeType.Image];
     const size = typeof safePatch.size === "string" && !node.metadata?.content ? nodeSizeFromRatio(safePatch.size, spec.width, spec.height) : null;
@@ -153,14 +161,14 @@ export function storyboardHandleAtY(node: CanvasNodeData, worldY: number, scroll
         const index = Math.max(0, Math.min(rows.length - 1, Math.floor((localY + scrollTop) / STORYBOARD_ROW_HEIGHT)));
         return `row:${rows[index].id}`;
     }
-    const composerTop = node.height - (node.metadata?.storyboardComposerHeight || 104);
+    const composerTop = node.height - (node.metadata?.storyboardComposerHeight || STORYBOARD_COMPOSER_MIN_HEIGHT);
     if (worldY >= node.position.y + composerTop && worldY <= node.position.y + node.height) return "storyboard:context";
     return undefined;
 }
 
 function storyboardHandleY(node: CanvasNodeData, handleId?: string, scrollTop = 0) {
     if (node.type !== CanvasNodeType.Script) return undefined;
-    if (handleId === "storyboard:context") return node.position.y + node.height - (node.metadata?.storyboardComposerHeight || 104) / 2;
+    if (handleId === "storyboard:context") return node.position.y + node.height - (node.metadata?.storyboardComposerHeight || STORYBOARD_COMPOSER_MIN_HEIGHT) / 2;
     if (!handleId?.startsWith("row:")) return undefined;
     const rowId = handleId.slice(4);
     const index = (node.metadata?.storyboard?.rows || []).findIndex((row) => row.id === rowId);

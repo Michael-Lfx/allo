@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { IMcpServer } from '@/common/config/storage';
 import { parseMcpServerId } from '@/common/types/ids';
-import { toSessionMcpServer } from './catalog';
+import { isMcpServerSelectable, toSessionMcpServer } from './catalog';
 
 const transport: IMcpServer['transport'] = {
   type: 'stdio',
@@ -17,5 +17,12 @@ describe('toSessionMcpServer', () => {
       name: 'everything',
       transport,
     });
+  });
+});
+
+describe('isMcpServerSelectable', () => {
+  test('only allows globally enabled servers into run selectors', () => {
+    expect(isMcpServerSelectable({ enabled: true })).toBe(true);
+    expect(isMcpServerSelectable({ enabled: false })).toBe(false);
   });
 });

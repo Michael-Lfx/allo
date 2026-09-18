@@ -241,7 +241,7 @@ fn tc_4_3_04_edit_write_read_rules() {
         "should contain Edit-over-Write preference"
     );
     assert!(
-        result.contains("Read a file before editing"),
+        result.contains("Read each unread range once before the first Edit"),
         "should contain Read-before-Edit rule"
     );
 }

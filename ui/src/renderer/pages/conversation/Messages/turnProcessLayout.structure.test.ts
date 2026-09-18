@@ -170,8 +170,8 @@ describe('turn process disclosure content layout', () => {
     expect(messageListSource.includes("className='turn-process-group__item'")).toBe(true);
   });
 
-  test('keeps the live step visually adjacent to its active turn', () => {
-    expect(cssRuleFor('.turn_live_step').includes('margin-top: 6px')).toBe(true);
+  test('gives the live step breathing room under the latest reply', () => {
+    expect(cssRuleFor('.turn_live_step').includes('margin-top: 16px')).toBe(true);
     expect(messageListSource.includes("max-w-full md:max-w-780px mx-auto turn_live_step'")).toBe(true);
     expect(messageListSource.includes("m-t-10px max-w-full md:max-w-780px mx-auto turn_live_step'")).toBe(false);
   });

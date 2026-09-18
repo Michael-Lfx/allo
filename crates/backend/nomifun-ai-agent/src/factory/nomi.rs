@@ -434,9 +434,15 @@ pub(super) async fn build(
         }
     }
     if is_instance_owner && !is_app_server_chat {
+        let enabled_session_mcp_servers = super::filter_enabled_session_mcp_servers(
+            deps.mcp_server_repo.as_deref(),
+            &overrides.session_mcp_servers,
+            &ctx.conversation_id,
+        )
+        .await;
         merge_session_snapshot_mcp_servers(
             &mut extra_mcp_servers,
-            &overrides.session_mcp_servers,
+            &enabled_session_mcp_servers,
             &ctx.conversation_id,
             deps.mcp_oauth_service.as_ref(),
         )
@@ -1250,7 +1256,25 @@ fn catalog_model_base(model: &str) -> &str {
 }
 
 fn is_preferred_image_analysis_model(model: &str) -> bool {
-    catalog_model_base(model).eq_ignore_ascii_case("MiniMax-M3")
+    image_analysis_model_priority(model) == 3
+}
+
+/// Image analysis model priority ranking:
+/// 3: DeepSeek Vision (deepseek-v4-flash-vision, deepseek-vl, etc.) - top priority (fast, low-cost)
+/// 2: MiniMax Vision (MiniMax-M3, etc.) - secondary priority
+/// 1: Kimi / Moonshot Vision - fallback
+/// 0: Others
+fn image_analysis_model_priority(model: &str) -> u8 {
+    let lower = catalog_model_base(model).to_lowercase();
+    if lower.contains("deepseek") && (lower.contains("vision") || lower.contains("vl") || lower.contains("flash-vision")) {
+        3
+    } else if lower.contains("minimax-m3") || lower.contains("minimax") {
+        2
+    } else if lower.contains("kimi") || lower.contains("moonshot") {
+        1
+    } else {
+        0
+    }
 }
 
 fn is_image_analysis_eligible_provider(platform: &str) -> bool {
@@ -1302,7 +1326,7 @@ fn config_for_image_analysis(
         api_key: Some(fields.api_key),
         base_url: fields.base_url,
         model: Some(fields.model),
-        max_tokens: Some(1200),
+        max_tokens: Some(4096),
         max_turns: Some(1),
         system_prompt: None,
         profile: None,
@@ -1367,7 +1391,9 @@ async fn resolve_image_analysis_model(
         }
         Some((selection.provider_id, selection.model))
     } else {
-        let mut fallback = None;
+        let mut best_candidate = None;
+        let mut best_priority = 0u8;
+
         for provider in &providers {
             if !is_image_analysis_eligible_provider(&provider.platform) {
                 continue;
@@ -1381,21 +1407,23 @@ async fn resolve_image_analysis_model(
                 if !is_usable_image_analysis_model(provider.enabled, &model) {
                     continue;
                 }
+                let priority = image_analysis_model_priority(&model.model);
                 let candidate = (provider.provider_id.clone(), model.model.clone());
-                if is_preferred_image_analysis_model(&model.model) {
-                    fallback = Some(candidate);
-                    break;
+
+                if best_candidate.is_none() || priority > best_priority {
+                    best_priority = priority;
+                    best_candidate = Some(candidate);
+                    if priority == 3 {
+                        // Max priority (DeepSeek vision) found, stop scanning
+                        break;
+                    }
                 }
-                fallback.get_or_insert(candidate);
             }
-            if fallback
-                .as_ref()
-                .is_some_and(|(_, model)| is_preferred_image_analysis_model(model))
-            {
+            if best_priority == 3 {
                 break;
             }
         }
-        fallback
+        best_candidate
     };
 
     let Some((provider_id, model)) = candidate else {
@@ -1900,13 +1928,7 @@ async fn load_user_mcp_servers(
 
     let mut servers = HashMap::new();
     for row in rows {
-        let selected = selected_ids
-            .map(|ids| {
-                ids.iter()
-                    .any(|id| id.as_str() == row.mcp_server_id)
-            })
-            .unwrap_or(row.enabled);
-        if !selected || row.builtin {
+        if !should_load_user_mcp_row(&row, selected_ids) {
             continue;
         }
 
@@ -2204,6 +2226,14 @@ fn report_missing_credentials(
             "host_mcp: unresolved credential references; omitting them"
         );
     }
+}
+
+fn should_load_user_mcp_row(row: &McpServerRow, selected_ids: Option<&[McpServerId]>) -> bool {
+    row.enabled
+        && !row.builtin
+        && selected_ids
+            .map(|ids| ids.iter().any(|id| id.as_str() == row.mcp_server_id))
+            .unwrap_or(true)
 }
 
 fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, String> {
@@ -2645,6 +2675,33 @@ mod tests {
         assert!(parse_bool_pref("  \"true\"  ", false));
     }
 
+    #[test]
+    fn disabled_user_mcp_never_passes_the_runtime_gate() {
+        let mut row = McpServerRow {
+            mcp_server_id: "0190f5fe-7c00-7a00-8000-000000000001".to_owned(),
+            name: "disabled".to_owned(),
+            description: None,
+            enabled: false,
+            transport_type: "stdio".to_owned(),
+            transport_config: r#"{"command":"npx"}"#.to_owned(),
+            tools: None,
+            last_test_status: "connected".to_owned(),
+            last_connected: Some(1),
+            original_json: None,
+            builtin: false,
+            deleted_at: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let selected = [McpServerId::parse(row.mcp_server_id.clone()).unwrap()];
+
+        assert!(!should_load_user_mcp_row(&row, Some(&selected)));
+        assert!(!should_load_user_mcp_row(&row, None));
+
+        row.enabled = true;
+        assert!(should_load_user_mcp_row(&row, Some(&selected)));
+    }
+
     fn gateway_config(port: u16, binary: &str, owner: &str) -> GatewayMcpConfig {
         GatewayMcpConfig::from_issuer(
             port,
@@ -2923,6 +2980,7 @@ mod tests {
             owner_token: None,
             activated_deferred_tools: Vec::new(),
             editable_turn: None,
+            last_turn_ended_at: None,
         };
 
         assert!(retarget_resumed_session(
@@ -2981,6 +3039,7 @@ mod tests {
                 source_message_id: "message-root".into(),
                 start_len: 2,
             }),
+            last_turn_ended_at: None,
         };
 
         let repair = sanitize_resumed_session(&mut session, false);

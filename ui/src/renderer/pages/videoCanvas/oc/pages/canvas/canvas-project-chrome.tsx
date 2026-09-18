@@ -6,9 +6,11 @@ import { CanvasZoomControls } from "@oc/components/canvas/canvas-zoom-controls";
 import { CanvasAssetTray } from "@oc/components/canvas/canvas-asset-tray";
 import { CanvasProjectContextMenu } from "./canvas-project-context-menu";
 import { HideWhileNodeDragging } from "./canvas-project-world-layers";
+import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
+import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ContextMenuState, type Position, type ViewportTransform } from "@oc/types/canvas";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
-import type { CanvasTrayMediaAsset } from "./use-canvas-render-model";
 import type { useCanvasUpload } from "./use-canvas-upload";
 import type { useCanvasMediaTools } from "./use-canvas-media-tools";
 import type { useCanvasAgentOperations } from "./use-canvas-agent-operations";
@@ -16,7 +18,6 @@ import type { useCanvasNodeEditor } from "./use-canvas-node-editor";
 import type { useCanvasNodeOperations } from "./use-canvas-node-operations";
 import type { useCanvasViewportController } from "./use-canvas-viewport-controller";
 import type { useCanvasGenerationRetry } from "./use-canvas-generation-retry";
-import type { useCanvasDirector } from "./use-canvas-director";
 import type { useCanvasHistory } from "./use-canvas-history";
 import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import type { CanvasRenderModel, CanvasHistoryActions, CanvasAgentOps } from "./canvas-project-bundles";
@@ -29,6 +30,7 @@ type CanvasProjectCanvasChromeProps = {
     nodeImageSettingsOpen: boolean;
     emotionNodeId: string | null;
     workspaceMode: CanvasWorkspaceMode;
+    compactCreateMenu?: boolean;
     viewport: ViewportTransform;
     containerRef: RefObject<HTMLDivElement | null>;
     keepNodeToolbar: (nodeId: string) => void;
@@ -45,14 +47,13 @@ type CanvasProjectCanvasChromeProps = {
     setAnnotationNodeId: SetNodeId;
     setMaskEditNodeId: SetNodeId;
     setEmotionNodeId: SetNodeId;
-    generatePortraitTextureNode: ReturnType<typeof useCanvasMediaTools>["generatePortraitTextureNode"];
+    openPortraitTextureEditor: ReturnType<typeof useCanvasMediaTools>["openPortraitTextureEditor"];
     setCropNodeId: SetNodeId;
     setSplitNodeId: SetNodeId;
     setUpscaleNodeId: SetNodeId;
-    setSuperResolveNodeId: SetNodeId;
     setAngleNodeId: SetNodeId;
     setPreviewNodeId: SetNodeId;
-    extractVideoLastFrame: ReturnType<typeof useCanvasMediaTools>["extractVideoLastFrame"];
+    openVideoFrameExtractor: ReturnType<typeof useCanvasMediaTools>["openVideoFrameExtractor"];
     extractingVideoFrameNodeId: string | null;
     createImageReversePromptNodes: ReturnType<typeof useCanvasMediaTools>["createImageReversePromptNodes"];
     handleRetryNode: ReturnType<typeof useCanvasGenerationRetry>;
@@ -69,11 +70,12 @@ type CanvasProjectCanvasChromeProps = {
     handleViewportChange: (viewport: ViewportTransform) => void;
     setZoomScale: ReturnType<typeof useCanvasViewportController>["setZoomScale"];
     resetViewport: () => void;
+    autoArrangeCanvasNodes: ReturnType<typeof useCanvasNodeOperations>["autoArrangeCanvasNodes"];
     setIsMiniMapOpen: Dispatch<SetStateAction<boolean>>;
     setShortcutRequestNonce: Dispatch<SetStateAction<number>>;
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
     selectedNodeIds: Set<string>;
-    createMediaAssetNode: ReturnType<typeof useCanvasUpload>["createMediaAssetNode"];
+    insertAssetSpaceItem: ReturnType<typeof useCanvasUpload>["insertAssetSpaceItem"];
     focusCanvasImageNode: ReturnType<typeof useCanvasViewportController>["focusCanvasImageNode"];
     contextMenu: ContextMenuState | null;
     shortDramaEnabled: boolean;
@@ -83,12 +85,16 @@ type CanvasProjectCanvasChromeProps = {
     createNode: ReturnType<typeof useCanvasNodeOperations>["createNode"];
     createFolder: ReturnType<typeof useCanvasNodeOperations>["createFolder"];
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
-    createDirectorShot: ReturnType<typeof useCanvasDirector>["createDirectorShot"];
+    setLibraryOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryTab: Dispatch<SetStateAction<LibraryTab>>;
+    setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
     openAssetsAtPosition: ReturnType<typeof useCanvasUpload>["openAssetsAtPosition"];
+    assetTrayOpenNonce: ReturnType<typeof useCanvasUpload>["assetTrayOpenNonce"];
     openProjectAssets: (initialCategory?: string, position?: Position) => void;
     pasteAtPosition: (position: Position) => void;
     copyNodesToClipboard: ReturnType<typeof useCanvasNodeOperations>["copyNodesToClipboard"];
     duplicateNode: ReturnType<typeof useCanvasNodeOperations>["duplicateNode"];
+    setTvCoverNode: ReturnType<typeof useCanvasNodeOperations>["setTvCoverNode"];
     deleteConnection: ReturnType<typeof useCanvasNodeOperations>["deleteConnection"];
     copyNodeContentToClipboard: (node: CanvasNodeData | null) => Promise<void>;
     copyNodeMediaUrlToClipboard: (node: CanvasNodeData | null) => Promise<void>;
@@ -107,6 +113,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         nodeImageSettingsOpen,
         emotionNodeId,
         workspaceMode,
+        compactCreateMenu,
         viewport,
         containerRef,
         keepNodeToolbar,
@@ -123,14 +130,13 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         setAnnotationNodeId,
         setMaskEditNodeId,
         setEmotionNodeId,
-        generatePortraitTextureNode,
+        openPortraitTextureEditor,
         setCropNodeId,
         setSplitNodeId,
         setUpscaleNodeId,
-        setSuperResolveNodeId,
         setAngleNodeId,
         setPreviewNodeId,
-        extractVideoLastFrame,
+        openVideoFrameExtractor,
         extractingVideoFrameNodeId,
         createImageReversePromptNodes,
         handleRetryNode,
@@ -147,11 +153,12 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         handleViewportChange,
         setZoomScale,
         resetViewport,
+        autoArrangeCanvasNodes,
         setIsMiniMapOpen,
         setShortcutRequestNonce,
         currentProject,
         selectedNodeIds,
-        createMediaAssetNode,
+        insertAssetSpaceItem,
         focusCanvasImageNode,
         contextMenu,
         shortDramaEnabled,
@@ -161,12 +168,16 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         createNode,
         createFolder,
         setStylePickerOpen,
-        createDirectorShot,
+        setLibraryOpen,
+        setLibraryTab,
+        setDirectorTemplateRequest,
         openAssetsAtPosition,
+        assetTrayOpenNonce,
         openProjectAssets,
         pasteAtPosition,
         copyNodesToClipboard,
         duplicateNode,
+        setTvCoverNode,
         deleteConnection,
         copyNodeContentToClipboard,
         copyNodeMediaUrlToClipboard,
@@ -178,7 +189,10 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { lastAgentChange, viewLastAgentChange, undoAgentOps, dismissLastAgentChange } = agentOps;
-    const { toolbarNode, mediaAssets, canvasMediaNodes, contextMenuNode } = renderModel;
+    const { toolbarNode: selectedToolbarNode, contextMenuNode, nodeById } = renderModel;
+    const hoverToolbarNodeId = useCanvasInteractionStore((state) => state.toolbarNodeId);
+    const hoverToolbarNode = hoverToolbarNodeId ? nodeById.get(hoverToolbarNodeId) || null : null;
+    const toolbarNode = (hoverToolbarNode && !isFrameNode(hoverToolbarNode) ? hoverToolbarNode : null) || selectedToolbarNode;
     return (
         <>
                     {uploadStatus ? <CanvasUploadStatusToast status={uploadStatus} theme={theme} /> : null}
@@ -218,17 +232,16 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                             setDialogNodeId(null);
                             setEmotionNodeId((current) => (current === node.id ? null : node.id));
                         }}
-                        onPortraitTexture={generatePortraitTextureNode}
+                        onPortraitTexture={openPortraitTextureEditor}
                         onCrop={(node) => setCropNodeId(node.id)}
                         onSplit={(node) => setSplitNodeId(node.id)}
                         onUpscale={(node) => setUpscaleNodeId(node.id)}
-                        onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
                         onAngle={(node) => {
                             setDialogNodeId(null);
                             setAngleNodeId((current) => (current === node.id ? null : node.id));
                         }}
                         onViewImage={(node) => setPreviewNodeId(node.id)}
-                        onExtractVideoLastFrame={(node) => void extractVideoLastFrame(node)}
+                        onExtractVideoFrames={(node) => openVideoFrameExtractor(node)}
                         extractingVideoFrame={toolbarNode?.id === extractingVideoFrameNodeId}
                         onReversePrompt={createImageReversePromptNodes}
                         onRetry={(node) => void handleRetryNode(node)}
@@ -236,6 +249,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onToggleLocked={(node) => toggleNodeLocked(node.id)}
                         onSubtitles={(node) => setSubtitleNodeId(node.id)}
                         onTimeline={(node) => setTimelineNodeId(node.id)}
+                        onOpenDrawing={openDrawingNode}
                         onDelete={(node) => deleteNodes(new Set([node.id]))}
                     />
                     </HideWhileNodeDragging>
@@ -255,25 +269,29 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                                 containerRef={containerRef}
                                 onScaleChange={setZoomScale}
                                 onReset={resetViewport}
+                                onAutoArrange={autoArrangeCanvasNodes}
                                 isMiniMapOpen={isMiniMapOpen}
                                 onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)}
                                 onOpenShortcuts={() => setShortcutRequestNonce((value) => value + 1)}
                             />
-                            <CanvasAssetTray
-                                mediaAssets={mediaAssets}
-                                canvasMediaNodes={canvasMediaNodes}
-                                showLibrary={!currentProject?.projectId}
-                                activeNodeId={selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null}
-                                onInsertMediaAsset={(asset) => void createMediaAssetNode(asset)}
-                                onFocusCanvasMedia={focusCanvasImageNode}
-                            />
                         </div>
+                    ) : null}
+
+                    {!focusMode ? (
+                        <CanvasAssetTray
+                            nodes={nodes}
+                            activeNodeId={selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null}
+                            openRequestNonce={assetTrayOpenNonce}
+                            onInsertAssetSpaceItem={(item) => void insertAssetSpaceItem(item)}
+                            onFocusCanvasMedia={focusCanvasImageNode}
+                        />
                     ) : null}
 
                     <CanvasProjectContextMenu
                         menu={contextMenu}
                         node={contextMenuNode}
                         workspaceMode={workspaceMode}
+                        compactCreateMenu={compactCreateMenu}
                         isProjectLinked={Boolean(shortDramaEnabled && currentProject?.projectId)}
                         canUndo={historyState.canUndo}
                         canRedo={historyState.canRedo}
@@ -283,7 +301,11 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onAddNode={(type, position) => createNode(type, position)}
                         onAddFolder={(position) => createFolder(position)}
                         onChooseStyle={() => setStylePickerOpen(true)}
-                        onOpenDirector={createDirectorShot}
+                        onOpenLibrary={() => {
+                            setLibraryTab("template");
+                            setLibraryOpen(true);
+                        }}
+                        onOpenDirector={(position) => setDirectorTemplateRequest({ position })}
                         onUpload={(nodeId, position) => handleUploadRequest(nodeId, position)}
                         onOpenAssets={openAssetsAtPosition}
                         onOpenProjectCharacters={(position) => openProjectAssets("character", position)}
@@ -292,6 +314,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onPaste={pasteAtPosition}
                         onCopyNode={(nodeId) => copyNodesToClipboard(new Set([nodeId]))}
                         onDuplicate={duplicateNode}
+                        onCreateGenerationCopy={(nodeId) => duplicateNode(nodeId, "copy")}
                         onDeleteNode={(nodeId) => deleteNodes(new Set([nodeId]))}
                         onDeleteConnection={deleteConnection}
                         onSaveAsset={(node) => {
@@ -308,6 +331,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                             void copyNodeMediaUrlToClipboard(node);
                         }}
                         onSetAssetCategory={(nodeId, assetCategory) => handleConfigNodeChange(nodeId, { assetCategory })}
+                        onSetTvCover={setTvCoverNode}
                         onToggleFrame={(node) => toggleFrameCollapsed(node.id)}
                     />
         </>

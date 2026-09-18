@@ -82,7 +82,7 @@ async function prepareGenerationReferences({ referenceImages = [], referenceVide
 }
 
 async function createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages = [], signal, metadata, onTaskUpdate }: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences) {
-    const videoOperation = String(metadata?.videoEditOperation || (referenceImages.length ? "image_to_video" : "text_to_video"));
+    const videoOperation = String(metadata?.videoEditOperation || (referenceImages.length >= 3 ? "reference_to_video" : referenceImages.length ? "image_to_video" : "text_to_video"));
     const task = await createGenerationTask({
         ...(projectId ? { projectId } : {}),
         type: `canvas_${mode}`,

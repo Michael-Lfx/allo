@@ -15,7 +15,7 @@ describe('Guid homepage slash launcher', () => {
     expect(pageSource.includes('replaceActiveSlashToken')).toBe(true);
     expect(pageSource.includes('guidEnabledSkills')).toBe(false);
     expect(pageSource.includes('guidDisabledBuiltinSkills')).toBe(false);
-    expect(pageSource.includes("setDrawerMode('skills')")).toBe(false);
+    expect(pageSource.includes("setDrawerMode('skills')")).toBe(true);
   });
 
   test('keeps selected Skills as source-qualified atomic tokens in the shared editor', () => {

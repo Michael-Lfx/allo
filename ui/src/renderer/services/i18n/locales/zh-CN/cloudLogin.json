@@ -7,7 +7,7 @@
   "brandFlow": "Intent → Work → Result",
   "brandMeta": "云端工作区 · 可追溯执行",
   "welcomeTitle": "开始使用 Flowy",
-  "welcomeDesc": "用邮箱验证码登录，马上开始第一条任务",
+  "welcomeDesc": "输入邮箱，获取验证码即可开始",
   "accountSubtitle": "你已登录，可直接进入应用",
   "account": {
     "signedIn": "已登录"
@@ -20,6 +20,7 @@
     "emailLabel": "邮箱地址",
     "emailPlaceholder": "you@example.com",
     "emailInvalid": "请输入有效的邮箱地址",
+    "autoRegisterHint": "新用户将自动注册",
     "emailBeforeSend": "输入邮箱后发送验证码",
     "sendCodeArrow": "发送验证码",
     "starting": "准备中…",

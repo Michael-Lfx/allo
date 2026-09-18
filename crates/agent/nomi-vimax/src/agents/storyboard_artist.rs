@@ -3,19 +3,34 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::backends::VimaxChat;
+use crate::clip_bounds::ClipBounds;
 use crate::domain::{CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::error::VimaxResult;
 use crate::json_util::complete_and_parse_llm_json;
 
-use super::formats::{STORYBOARD, VIS_DECOMPOSE};
+use super::formats;
 
 pub struct StoryboardArtist {
     chat: Arc<dyn VimaxChat>,
+    /// Clip window of the session's video model — every duration rule in the
+    /// prompts is sized from it instead of naming one vendor's numbers.
+    clip: ClipBounds,
+    /// Unique named speakers one generated file can bind as `reference_audio`.
+    max_voice_refs: usize,
 }
 
 impl StoryboardArtist {
-    pub fn new(chat: Arc<dyn VimaxChat>) -> Self {
-        Self { chat }
+    pub fn new(chat: Arc<dyn VimaxChat>, clip: ClipBounds) -> Self {
+        Self {
+            chat,
+            clip,
+            max_voice_refs: 3,
+        }
+    }
+
+    pub fn with_voice_ref_slots(mut self, max_voice_refs: usize) -> Self {
+        self.max_voice_refs = max_voice_refs;
+        self
     }
 
     pub async fn design_storyboard(
@@ -34,7 +49,19 @@ impl StoryboardArtist {
         let system = include_str!(
             "../../prompts/storyboard_artist__system_prompt_template_design_storyboard.txt"
         )
-        .replace("{format_instructions}", STORYBOARD);
+        .replace("{format_instructions}", &formats::storyboard(self.clip, self.max_voice_refs))
+        .replace(
+            "{clip_duration_rules}",
+            &crate::planning::clip_length_rules(self.clip),
+        )
+        .replace(
+            "{speech_budget}",
+            &format!(
+                "{}\n{}",
+                crate::planning::speech_budget_line(self.clip),
+                crate::planning::voice_ref_slot_rules(self.max_voice_refs)
+            ),
+        );
         let user = include_str!(
             "../../prompts/storyboard_artist__human_prompt_template_design_storyboard.txt"
         )
@@ -48,7 +75,85 @@ impl StoryboardArtist {
         }
         let resp: Resp =
             complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
-        Ok(resp.storyboard)
+        let mut rows = resp.storyboard;
+
+        // Coverage first: missing SCRIPT events mean the board is wrong, not
+        // a cue to append stub rows later. One rewrite of the full list.
+        // Performance lint afterwards is text-only and must not grow shots.
+        let coverage = crate::drama::lint_script_promise_coverage(script, &rows);
+        if !coverage.is_empty() {
+            tracing::info!(
+                issues = coverage.len(),
+                "storyboard missed script-locked lines; running one full-board coverage repair"
+            );
+            let repair_user = format!(
+                "{user}\n\n[LINT_FEEDBACK]\nYour previous storyboard was:\n{}\n\n\
+It is INCOMPLETE — these SCRIPT-locked lines never appear:\n- {}\n\n\
+Rewrite a COMPLETE storyboard of THIS SCRIPT only. Cover every location, reversal, \
+and closing line already in <SCRIPT>. You MAY add rows so those events are filmed. \
+If more uniquely named people speak than voice-ref slots allow, add another row — \
+keep EVERY script line (never drop or paraphrase dialogue). \
+Do NOT invent episodes, characters, or punchlines that are not in SCRIPT. \
+Do NOT pad filler holds. Pack related beats into the same row when speakers and speech still fit.",
+                serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                coverage.join("\n- ")
+            );
+            let repaired: Resp =
+                complete_and_parse_llm_json(self.chat.as_ref(), &system, &repair_user).await?;
+            let mut repaired_rows = repaired.storyboard;
+            let remaining = crate::drama::lint_script_promise_coverage(script, &repaired_rows);
+            if !remaining.is_empty() {
+                tracing::warn!(
+                    remaining = remaining.len(),
+                    "storyboard coverage repair still missing spoken lines; stitching them onto the last row"
+                );
+                crate::drama::ensure_script_promise_lines(script, &mut repaired_rows);
+            }
+            rows = repaired_rows;
+        }
+
+        let issues = crate::drama::lint_storyboard_performance(&rows);
+        if issues.is_empty() {
+            return Ok(rows);
+        }
+        tracing::info!(
+            issues = issues.len(),
+            "storyboard failed performance lint; running one text-only repair round"
+        );
+        let repair_user = format!(
+            "{user}\n\n[LINT_FEEDBACK]\nYour previous storyboard was:\n{}\n\n\
+It has these performance defects — rewrite ONLY the flagged text so every emotion \
+becomes visible behavior (face/hands/blocking/props) and every filler hold becomes a \
+plot-advancing action:\n- {}\n\n\
+HARD RULES: return the SAME number of rows with the SAME idx / cam_idx / is_last, and \
+inside each row the SAME number of beats with the SAME beat cam_idx values. Do NOT add, \
+split, merge, or re-camera anything — only the wording of visual/audio descriptions may change.",
+            serde_json::to_string_pretty(&rows).unwrap_or_default(),
+            issues.join("\n- ")
+        );
+        match complete_and_parse_llm_json::<Resp>(self.chat.as_ref(), &system, &repair_user).await
+        {
+            Ok(repaired) if crate::drama::storyboard_structure_matches(&rows, &repaired.storyboard) => {
+                let remaining = crate::drama::lint_storyboard_performance(&repaired.storyboard);
+                if !remaining.is_empty() {
+                    tracing::warn!(
+                        remaining = remaining.len(),
+                        "storyboard performance lint still failing after repair; proceeding with repaired board"
+                    );
+                }
+                Ok(repaired.storyboard)
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    "storyboard repair changed row/beat/camera structure; discarding repair and keeping original board"
+                );
+                Ok(rows)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "storyboard repair round failed; keeping original board");
+                Ok(rows)
+            }
+        }
     }
 
     pub async fn decompose_visual_description(
@@ -56,16 +161,19 @@ impl StoryboardArtist {
         brief: &ShotBriefDescription,
         characters: &[CharacterInScene],
     ) -> VimaxResult<ShotDescription> {
-        self.decompose_visual_description_with_continuity(brief, characters, None)
+        self.decompose_visual_description_with_continuity(brief, characters, None, None)
             .await
     }
 
-    /// Decompose a shot; when `previous_lf_desc` is set, force ff_desc to continue from it.
+    /// Decompose a shot; when `previous_lf_desc` is set, identity carries over.
+    /// `previous_cam_idx` decides whether first_frame resumes the pose (same
+    /// camera) or opens a new angle already in progress (a cut).
     pub async fn decompose_visual_description_with_continuity(
         &self,
         brief: &ShotBriefDescription,
         characters: &[CharacterInScene],
         previous_lf_desc: Option<&str>,
+        previous_cam_idx: Option<i32>,
     ) -> VimaxResult<ShotDescription> {
         let characters_str = characters
             .iter()
@@ -77,23 +185,41 @@ impl StoryboardArtist {
         let system = include_str!(
             "../../prompts/storyboard_artist__system_prompt_template_decompose_visual_description.txt"
         )
-        .replace("{format_instructions}", VIS_DECOMPOSE);
+        .replace("{format_instructions}", &formats::vis_decompose(self.clip))
+        .replace(
+            "{clip_duration_rules}",
+            &crate::planning::clip_length_rules(self.clip),
+        );
         let continuity_block = match previous_lf_desc.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(prev) => format!(
-                "\n<PREVIOUS_SHOT_LAST_FRAME>\n{prev}\n</PREVIOUS_SHOT_LAST_FRAME>\n\
+            Some(prev) => {
+                let same_take = previous_cam_idx.is_some_and(|cam| cam == brief.cam_idx);
+                let pose_rule = if same_take {
+                    "The first_frame description MUST open exactly where that last frame ended \
+(same composition, same body/prop positions, same screen-left/screen-right for each named person) \
+and the motion continues from there."
+                } else {
+                    "This shot is a CUT to a NEW camera. first_frame is a new angle/size with the action \
+already in progress — do NOT restage or replay the previous last-frame pose. Identity (cast, \
+wardrobe, lighting, set) still carries over. Keep each named person on the SAME screen side \
+(画面左侧/右侧) as the previous last frame unless THIS shot's visual_desc explicitly says 反打, \
+过肩, or reverse."
+                };
+                format!(
+                    "\n<PREVIOUS_SHOT_LAST_FRAME>\n{prev}\n</PREVIOUS_SHOT_LAST_FRAME>\n\
 CRITICAL CONTINUITY: This shot is timeline-adjacent to the previous shot in the SAME scene. \
-The first_frame description MUST start from (or seamlessly continue) the previous shot's last frame above — \
-same cast identity, wardrobe, lighting mood, and set. You may reframe (new cam_idx / shot size) but do NOT \
-reset to an unrelated establishing pose. Cross-scene continuity does NOT apply here.\n"
-            ),
+{pose_rule} Cross-scene continuity does NOT apply here.\n"
+                )
+            }
             None => String::new(),
         };
+        let beats_block = packed_beats_block(brief);
         let user = include_str!(
             "../../prompts/storyboard_artist__human_prompt_template_decompose_visual_description.txt"
         )
         .replace("{visual_desc}", &brief.visual_desc)
         .replace("{characters_str}", &characters_str)
-        .replace("{continuity_block}", &continuity_block);
+        .replace("{continuity_block}", &continuity_block)
+        .replace("{beats_block}", &beats_block);
 
         #[derive(Deserialize)]
         struct Decomp {
@@ -122,6 +248,52 @@ reset to an unrelated establishing pose. Cross-scene continuity does NOT apply h
             lf_vis_char_idxs: d.lf_vis_char_idxs,
             motion_desc: d.motion_desc,
             audio_desc: brief.audio_desc.clone(),
+            location_id: brief.location_id.clone(),
+            beats: brief
+                .beats
+                .iter()
+                .map(|beat| crate::domain::ShotBeat {
+                    motion_desc: beat.visual_desc.clone(),
+                    audio_desc: beat.audio_desc.clone(),
+                    cam_idx: Some(beat.cam_idx),
+                })
+                .collect(),
         })
     }
+}
+
+fn packed_beats_block(brief: &ShotBriefDescription) -> String {
+    if brief.beats.len() < 2 {
+        return String::new();
+    }
+    let lines: String = brief
+        .beats
+        .iter()
+        .enumerate()
+        .map(|(i, beat)| {
+            let audio = beat.audio_desc.as_deref().unwrap_or("").trim();
+            let audio = if audio.is_empty() {
+                String::new()
+            } else {
+                format!(" audio: {audio}")
+            };
+            format!(
+                "- beat {i}: cam_idx={} visual: {}{audio}\n",
+                beat.cam_idx, beat.visual_desc
+            )
+        })
+        .collect();
+    let cuts = brief
+        .beats
+        .windows(2)
+        .any(|pair| pair[0].cam_idx != pair[1].cam_idx);
+    let cut_rule = if cuts {
+        "This is a native multi-shot: at a cam_idx change, CUT TO the new angle with the action already in progress — do not morph or dissolve. first_frame is beat 0; last_frame is the final beat after the last cut."
+    } else {
+        "This is ONE continuous take: camera and framing never change. Play every beat in order."
+    };
+    format!(
+        "\n<CLIP_BEATS>\nThis storyboard row is ONE generated video ({n} beats). {cut_rule}\n{lines}</CLIP_BEATS>\n",
+        n = brief.beats.len(),
+    )
 }

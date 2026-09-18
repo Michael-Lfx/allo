@@ -1,8 +1,7 @@
 
 /**
  * Unified video creation home (`/video-generation`).
- * Agent and infinite-canvas creation share one composer while keeping their
- * skills, drafts, submissions, and project galleries independent.
+ * Agent, clip, canvas, and briefing share one composer and one 「最近创作」 list.
  */
 import React, {
   Suspense,
@@ -18,6 +17,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Result, Spin } from '@arco-design/web-react';
 import { Search, Upload, VideoOne } from '@icon-park/react';
+import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
+import '@oc/styles/quiet-chrome.css';
 import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
@@ -36,23 +37,32 @@ import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
+import { prefetchCanvasWorkspace } from './prefetch';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
-import { parseVideoHomeMode } from './home/types';
-import type { VideoCreateDraft, VideoHomeMode } from './home/types';
+import { videoCanvasProjectPath } from '../videoCanvas/routes';
 import {
-  CLIP_DURATION_DEFAULT_SECS,
-  CLIP_DURATION_MAX_SECS,
-  CLIP_DURATION_MIN_SECS,
-  CLIP_DURATION_STEP_SECS,
-  clampDuration,
-} from './durationBounds';
+  briefingWorkspacePath,
+  createBriefing,
+  listBriefingSessions,
+  runBriefing,
+} from './briefing/api';
+import type { BriefingSessionSummary } from './briefing/api';
+import { parseVideoHomeMode, type VideoCreateDraft, type VideoHomeMode } from './home/types';
+import { resolveLookIdentity } from './styleCatalog/lookIdentity';
+import { composeClipPrompt, lookById } from './styleCatalog/looks';
+import { materializeHomeImageMentions } from './home/imageMentions';
+import { parseTvShowTab } from './campaign';
+import { clampClipDurationForModel } from './durationBounds';
 import {
   clearVideoGenerationSessionMemory,
+  rememberVideoGenerationBriefing,
+  rememberVideoGenerationCanvas,
   rememberVideoGenerationSession,
   rememberVideoGenerationTask,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
-import { listGenerationTasks, type GenerationTaskView } from '../videoCanvas/api';
+import type { CanvasProjectMeta, GenerationTaskView } from '../videoCanvas/api';
+import { isStandaloneClipTask, toUpdatedAtMs } from './recentCreations';
 import styles from './index.module.css';
 
 /**
@@ -74,17 +84,24 @@ async function createServerBackedCanvasProject(
 
 type ListTab = 'recent' | 'tvShow';
 
-const CanvasProjectGallery = lazy(() => import('./home/CanvasProjectGallery'));
 const TvShowPanel = lazy(() => import('./components/TvShowPanel'));
 const SessionCard = lazy(() => import('./components/SessionCard'));
 const GenerationTaskCard = lazy(() => import('./components/GenerationTaskCard'));
+const CanvasProjectCard = lazy(() =>
+  import('./home/CanvasProjectGallery').then((mod) => ({ default: mod.CanvasProjectCard }))
+);
+
+function firstLineTitle(text: string): string {
+  return text.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
+}
 
 function titleForDraft(draft: VideoCreateDraft): string {
   if (draft.workflow === 'action2video') {
     const fromCharacter = draft.actionCharacter?.file.name.replace(/\.[^.]+$/, '').trim();
     return fromCharacter?.slice(0, 48) || '';
   }
-  return draft.sourceText.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
+  // Short-drama titles are set on the task details page, not from the prompt.
+  return '';
 }
 
 const VideoGenerationListPage: React.FC = () => {
@@ -100,14 +117,16 @@ const VideoGenerationListPage: React.FC = () => {
 
   const [listTab, setListTab] = useState<ListTab>('tvShow');
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [briefingSessions, setBriefingSessions] = useState<BriefingSessionSummary[]>([]);
   const [generationTasks, setGenerationTasks] = useState<GenerationTaskView[]>([]);
+  const [canvasProjects, setCanvasProjects] = useState<CanvasProjectMeta[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingTasks, setLoadingTasks] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [openingCanvasId, setOpeningCanvasId] = useState<string | null>(null);
   const pageScrollRef = useRef<HTMLDivElement>(null);
   const savedPageScrollTopRef = useRef(0);
   const initialWorkModeRef = useRef(workMode);
@@ -144,58 +163,50 @@ const VideoGenerationListPage: React.FC = () => {
     [t]
   );
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      setSessions(await listSessions());
+  const refreshAll = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
+    const canvasApi = import('../videoCanvas/api');
+    const results = await Promise.allSettled([
+      listSessions(),
+      listBriefingSessions(),
+      canvasApi.then((api) => api.listGenerationTasks(30, 0, { standalone: true }).then((result) => result.tasks)),
+      canvasApi.then((api) => api.listCanvasProjects()),
+    ]);
+    const sessionsResult = results[0];
+    const briefingsResult = results[1];
+    const tasksResult = results[2];
+    const canvasResult = results[3];
+    if (sessionsResult.status === 'fulfilled') setSessions(sessionsResult.value);
+    if (briefingsResult.status === 'fulfilled') setBriefingSessions(briefingsResult.value);
+    if (tasksResult.status === 'fulfilled') setGenerationTasks(tasksResult.value);
+    if (canvasResult.status === 'fulfilled') setCanvasProjects(canvasResult.value);
+    const allFailed = results.every((result) => result.status === 'rejected');
+    if (allFailed) {
+      const first = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      const reason = first?.reason;
+      setError(reason instanceof Error ? reason.message : String(reason ?? 'load failed'));
+    } else {
       setError(null);
-    } catch (e) {
-      console.error('[videoGeneration] failed to load sessions', e);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
     }
-  }, []);
-
-  const refreshTasks = useCallback(async () => {
-    setLoadingTasks(true);
-    try {
-      const result = await listGenerationTasks(30, 0);
-      setGenerationTasks(result.tasks);
-      setError(null);
-    } catch (e) {
-      console.error('[videoGeneration] failed to load generation tasks', e);
-      // Don't show error for tasks - it's optional
-      setGenerationTasks([]);
-    } finally {
-      setLoadingTasks(false);
-    }
+    setLoading(false);
   }, []);
 
   useEffect(() => {
-    if (workMode !== 'creation' && listTab === 'recent') {
-      void refresh();
-    }
-    if (workMode === 'generate' && listTab === 'recent') {
-      void refreshTasks();
-    }
-  }, [listTab, refresh, refreshTasks, workMode]);
+    if (listTab !== 'recent') return;
+    void refreshAll();
+  }, [listTab, refreshAll]);
 
-  // Keep generation-task polling going while the home is visible — recent
-  // tasks need to keep ticking even when the user switches between
-  // TvShow / recent tabs, and when generation is in-flight.
   useEffect(() => {
-    if (workMode !== 'generate') return;
-    void refreshTasks();
+    if (listTab !== 'recent') return;
     const timer = window.setInterval(() => {
-      void refreshTasks();
+      void refreshAll({ silent: true });
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [refreshTasks, workMode]);
+  }, [listTab, refreshAll]);
 
   useEffect(() => {
     const prefetchGallery = () => {
-      void import('./home/CanvasProjectGallery');
+      void import('./home/CanvasProjectGallery').catch(() => undefined);
     };
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
@@ -212,29 +223,76 @@ const VideoGenerationListPage: React.FC = () => {
   // 「打开到 Canvas」/ 画布入口跳转到这里；用户在列表页停留时提前拉取并解析
   // ProjectPage 大 chunk，跳转时不再出现多秒骨架屏。
   useEffect(() => {
-    void loadVideoCanvasProjectPage();
+    prefetchCanvasWorkspace();
   }, []);
 
-  const displayed = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
-      (s) =>
-        (s.title ?? '').toLowerCase().includes(q) ||
-        s.workflow.toLowerCase().includes(q) ||
-        (s.stage ?? '').toLowerCase().includes(q)
-    );
-  }, [sessions, searchQuery]);
+  type RecentRow =
+    | { kind: 'session'; id: string; updatedAt: number; session: SessionSummary }
+    | { kind: 'task'; id: string; updatedAt: number; task: GenerationTaskView }
+    | { kind: 'canvas'; id: string; updatedAt: number; project: CanvasProjectMeta }
+    | { kind: 'briefing'; id: string; updatedAt: number; briefing: BriefingSessionSummary };
 
-  const displayedTasks = useMemo(() => {
+  const recentRows = useMemo((): RecentRow[] => {
+    const rows: RecentRow[] = [
+      ...sessions.map((session) => ({
+        kind: 'session' as const,
+        id: session.id,
+        updatedAt: toUpdatedAtMs(session.updated_at ?? session.created_at),
+        session,
+      })),
+      ...generationTasks.filter(isStandaloneClipTask).map((task) => ({
+        kind: 'task' as const,
+        id: task.task_id,
+        updatedAt: toUpdatedAtMs(task.updated_at || task.created_at),
+        task,
+      })),
+      ...canvasProjects.map((project) => ({
+        kind: 'canvas' as const,
+        id: project.project_id,
+        updatedAt: toUpdatedAtMs(project.updated_at || project.created_at),
+        project,
+      })),
+      ...briefingSessions.map((briefing) => ({
+        kind: 'briefing' as const,
+        id: briefing.id,
+        updatedAt: toUpdatedAtMs(briefing.updated_at || briefing.created_at),
+        briefing,
+      })),
+    ];
+    rows.sort((a, b) => b.updatedAt - a.updatedAt);
+    return rows;
+  }, [sessions, generationTasks, canvasProjects, briefingSessions]);
+
+  const displayedRecent = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return generationTasks;
-    return generationTasks.filter(
-      (t) =>
-        (t.prompt ?? '').toLowerCase().includes(q) ||
-        t.task_id.toLowerCase().includes(q)
-    );
-  }, [generationTasks, searchQuery]);
+    if (!q) return recentRows;
+    return recentRows.filter((row) => {
+      if (row.kind === 'session') {
+        return (
+          (row.session.title ?? '').toLowerCase().includes(q) ||
+          row.session.workflow.toLowerCase().includes(q) ||
+          (row.session.stage ?? '').toLowerCase().includes(q)
+        );
+      }
+      if (row.kind === 'task') {
+        return (
+          (row.task.prompt ?? '').toLowerCase().includes(q) ||
+          row.task.task_id.toLowerCase().includes(q)
+        );
+      }
+      if (row.kind === 'canvas') {
+        return (
+          row.project.title.toLowerCase().includes(q) ||
+          row.project.project_id.toLowerCase().includes(q)
+        );
+      }
+      return (
+        row.briefing.title.toLowerCase().includes(q) ||
+        row.briefing.stage.toLowerCase().includes(q) ||
+        row.briefing.status.toLowerCase().includes(q)
+      );
+    });
+  }, [recentRows, searchQuery]);
 
   const handleCreate = useCallback(
     async (draft: VideoCreateDraft) => {
@@ -312,6 +370,7 @@ const VideoGenerationListPage: React.FC = () => {
               error_code: isInsufficientCreditsError(raw)
                 ? 'insufficient_credits'
                 : 'launch_failed',
+              error_message: raw.slice(0, 256),
             });
           }
           const failedLabel =
@@ -330,10 +389,10 @@ const VideoGenerationListPage: React.FC = () => {
           navigate(`/video-generation/${created.id}`, {
             state: { launchDraft: draft, launchError: true },
           });
-          rememberVideoGenerationSession(created.id, titleForDraft(draft));
+          rememberVideoGenerationSession(created.id, created.title);
           return;
         }
-        rememberVideoGenerationSession(created.id, titleForDraft(draft));
+        rememberVideoGenerationSession(created.id, created.title);
         navigate(`/video-generation/${created.id}`, {
           state:
             draft.workflow === 'action2video'
@@ -360,47 +419,53 @@ const VideoGenerationListPage: React.FC = () => {
 
   const handleModeChange = useCallback(
     (mode: VideoHomeMode) => {
-      const next = new URLSearchParams(searchParams);
-      if (mode === 'creation') next.set('mode', 'creation');
-      else if (mode === 'action') next.set('mode', 'action');
-      else if (mode === 'generate') next.set('mode', 'generate');
-      else next.delete('mode');
-      setSearchParams(next, { replace: true });
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (mode === 'creation') next.set('mode', 'creation');
+          else if (mode === 'action') next.set('mode', 'action');
+          else if (mode === 'generate') next.set('mode', 'generate');
+          else if (mode === 'briefing') next.set('mode', 'briefing');
+          else next.delete('mode');
+          return next;
+        },
+        { replace: true }
+      );
     },
-    [searchParams, setSearchParams]
+    [setSearchParams]
   );
 
   const handleCreateCanvas = useCallback(
     async (draft: VideoCreateDraft) => {
       if (creating) return;
       setCreating(true);
+      prefetchCanvasWorkspace();
       const references: import('../videoCanvas/api').CanvasMediaMeta[] = [];
       let canvasCreated = false;
       try {
         const { uploadCanvasMedia } = await import('../videoCanvas/api');
         for (const reference of draft.canvasReferences) {
-          references.push(
-            await uploadCanvasMedia(reference.file, reference.file.name)
-          );
+          references.push({
+            ...(await uploadCanvasMedia(reference.file, reference.file.name)),
+            ...(reference.subjectKind ? { subjectKind: reference.subjectKind } : {}),
+            ...(reference.subjectName?.trim() ? { subjectName: reference.subjectName.trim() } : {}),
+          });
         }
-        const skillId = draft.creationSkillId;
-        const skillDefaults = {
-          cinematic: { label: '电影写实', desc: '纪实光影 · 叙事镜头' },
-          anime: { label: '二次元', desc: '鲜明线稿 · 动漫质感' },
-          cyberpunk: { label: '赛博霓虹', desc: '未来都市 · 高对比' },
-          inkWash: { label: '水墨意境', desc: '留白构图 · 东方美学' },
-        } as const;
-        const defaults = skillDefaults[skillId];
-        const skillLabel = t(`videoGeneration.create.skills.${skillId}.label`, {
-          defaultValue: defaults.label,
+        const identity = resolveLookIdentity({
+          stylePrompt: draft.style,
+          creationSkillId: draft.style.trim() ? draft.creationSkillId : undefined,
         });
-        const skillDescription = t(`videoGeneration.create.skills.${skillId}.desc`, {
-          defaultValue: defaults.desc,
-        });
+        const look =
+          (identity?.vimaxKey && lookById.get(identity.vimaxKey)) ||
+          (identity ? lookById.get(identity.canvasPresetId) : undefined);
+        const lookLabel = look
+          ? t(look.labelKey, { defaultValue: look.defaultLabel })
+          : identity?.canvasTitle ||
+            t('videoGeneration.looks.mountButton', { defaultValue: '画风' });
         const title =
           draft.creationPrompt.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
           t('videoGeneration.create.canvasTitleFromSkill', {
-            skill: skillLabel,
+            skill: lookLabel,
             defaultValue: '{{skill}}创作',
           });
         const id = await createServerBackedCanvasProject(title, {
@@ -408,38 +473,44 @@ const VideoGenerationListPage: React.FC = () => {
           requirement: draft.requirement.trim() || undefined,
           mediaKind: draft.preferences.mediaKind,
           intent: 'creation',
-          skill: {
-            id: draft.creationSkillId,
-            label: skillLabel,
-            description: skillDescription,
-            stylePrompt: draft.style,
-          },
+          autoAgent: true,
+          ...(identity
+            ? {
+                skill: {
+                  id: identity.vimaxKey ?? identity.canvasPresetId ?? draft.creationSkillId,
+                  label: lookLabel,
+                  description: look?.defaultDescription || lookLabel,
+                  stylePrompt: identity.modelPrompt ?? draft.style,
+                  stylePresetId: identity.canvasPresetId,
+                },
+              }
+            : {}),
           preferences: {
             automatic: draft.preferences.automatic,
             aspectRatio: draft.preferences.aspectRatio,
             resolution: draft.preferences.resolution,
             fps: draft.preferences.fps,
-            // Canvas nodes expect single-clip seconds (≈4–15), not Agent film length.
-            targetDurationSecs: clampDuration(
-              draft.preferences.targetDurationSecs,
-              CLIP_DURATION_MIN_SECS,
-              CLIP_DURATION_MAX_SECS,
-              CLIP_DURATION_STEP_SECS
-            ) || CLIP_DURATION_DEFAULT_SECS,
+            // Canvas nodes expect a single-clip duration for the selected video model.
+            targetDurationSecs: clampClipDurationForModel(
+              draft.preferences.models.video_model,
+              draft.preferences.targetDurationSecs
+            ),
             imageModel: draft.preferences.models.image_model || undefined,
             videoModel: draft.preferences.models.video_model || undefined,
           },
           references,
         });
         canvasCreated = true;
+        rememberVideoGenerationCanvas(id, title);
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
           mode: 'creation',
-          skill: draft.creationSkillId,
+          workflow: 'canvas',
+          session_id: id,
           project_id: id,
         });
         clearVideoHomeDraft();
-        navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
+        navigate(videoCanvasProjectPath(id));
       } catch (cause) {
         if (isInvalidCloudSessionError(cause)) {
           await logout();
@@ -463,6 +534,42 @@ const VideoGenerationListPage: React.FC = () => {
     },
     [creating, logout, message, navigate, t]
   );
+
+  const handleCreateBlankCanvas = useCallback(async () => {
+    if (creating) return;
+    setCreating(true);
+    prefetchCanvasWorkspace();
+    const title = t('videoGeneration.create.gallery.untitled', {
+      defaultValue: '未命名画布',
+    });
+    try {
+      const id = await createServerBackedCanvasProject(title);
+      rememberVideoGenerationCanvas(id, title);
+      trackFunnelEvent('task_accepted', {
+        feature: 'video_generation',
+        mode: 'creation',
+        workflow: 'canvas',
+        session_id: id,
+        project_id: id,
+        source: 'blank_canvas',
+      });
+      navigate(videoCanvasProjectPath(id));
+    } catch (cause) {
+      if (isInvalidCloudSessionError(cause)) {
+        await logout();
+        navigate('/cloud-login');
+        return;
+      }
+      message.error(
+        t('videoGeneration.create.gallery.createFailed', {
+          error: cause instanceof Error ? cause.message : String(cause),
+          defaultValue: '创建失败：{{error}}',
+        })
+      );
+    } finally {
+      setCreating(false);
+    }
+  }, [creating, logout, message, navigate, t]);
 
   /**
    * Clip generation mode: prompt + optional refs → Canvas video generation task
@@ -506,17 +613,19 @@ const VideoGenerationListPage: React.FC = () => {
 
         // 2. Create video generation task via Canvas API
         const { createGenerationTask } = await import('../videoCanvas/api');
-        const durationSecs =
-          clampDuration(
-            draft.preferences.targetDurationSecs,
-            CLIP_DURATION_MIN_SECS,
-            CLIP_DURATION_MAX_SECS,
-            CLIP_DURATION_STEP_SECS
-          ) || CLIP_DURATION_DEFAULT_SECS;
+        const durationSecs = clampClipDurationForModel(
+          draft.preferences.models.video_model,
+          draft.preferences.targetDurationSecs
+        );
+
+        const prompt = composeClipPrompt(
+          materializeHomeImageMentions(draft.creationPrompt),
+          draft.style,
+        );
 
         const task = await createGenerationTask({
           mode: 'video',
-          prompt: draft.creationPrompt,
+          prompt,
           model: draft.preferences.models.video_model || undefined,
           resolution: draft.preferences.resolution,
           duration_secs: durationSecs,
@@ -550,7 +659,7 @@ const VideoGenerationListPage: React.FC = () => {
           {
             state: {
               title,
-              prompt: draft.creationPrompt,
+              prompt,
               taskId: task.task_id,
             },
           }
@@ -579,6 +688,113 @@ const VideoGenerationListPage: React.FC = () => {
       }
     },
     [creating, logout, message, navigate, t]
+  );
+
+  const handleCreateBriefing = useCallback(
+    async (draft: VideoCreateDraft) => {
+      if (creating) return;
+      const sourceUrls = draft.sourceUrls
+        .split(/[\s,]+/)
+        .map((row) => row.trim())
+        .filter((url) => /^https?:\/\//i.test(url));
+      setCreating(true);
+      try {
+        const created = await createBriefing({
+          intent: draft.sourceText.trim(),
+          title: firstLineTitle(draft.sourceText) || undefined,
+          format_secs: draft.briefingFormatSecs,
+          research_depth: draft.researchDepth,
+          time_window_hours: draft.timeWindowHours,
+          source_urls: sourceUrls,
+          tts_provider_id: draft.briefingTts?.provider_id,
+          tts_model: draft.briefingTts?.model,
+          tts_voice: draft.briefingTts?.voice ?? undefined,
+          image_provider_id: draft.briefingImage?.provider_id,
+          image_model: draft.briefingImage?.model,
+        });
+        trackFunnelEvent('task_accepted', {
+          feature: 'video_generation',
+          mode: 'briefing',
+          workflow: 'news_briefing',
+          briefing_id: created.id,
+          session_id: created.id,
+        });
+        trackFunnelEvent('first_task_started', {
+          feature: 'video_generation',
+          mode: 'briefing',
+          workflow: 'news_briefing',
+          briefing_id: created.id,
+          session_id: created.id,
+        });
+        try {
+          await runBriefing(created.id);
+          trackFunnelEvent('render_started', {
+            feature: 'video_generation',
+            mode: 'briefing',
+            workflow: 'news_briefing',
+            briefing_id: created.id,
+            session_id: created.id,
+          });
+        } catch {
+          // Workspace idle auto-start retries if the first kickoff fails.
+        }
+        clearVideoHomeDraft();
+        rememberVideoGenerationBriefing(created.id, created.title);
+        navigate(briefingWorkspacePath(created.id));
+      } catch (e) {
+        if (isInvalidCloudSessionError(e)) {
+          await logout();
+          navigate('/cloud-login');
+          return;
+        }
+        message.error(
+          `${t('videoGeneration.actions.createFailed', { defaultValue: '创建失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setCreating(false);
+      }
+    },
+    [creating, logout, message, navigate, t]
+  );
+
+  const openCanvasProject = useCallback(
+    (projectId: string) => {
+      const project = canvasProjects.find((item) => item.project_id === projectId);
+      rememberVideoGenerationCanvas(projectId, project?.title);
+      setOpeningCanvasId(projectId);
+      void loadVideoCanvasProjectPage().catch(() => undefined);
+      navigate(videoCanvasProjectPath(projectId));
+    },
+    [canvasProjects, navigate]
+  );
+
+  const handleDeleteCanvas = useCallback(
+    async (project: CanvasProjectMeta) => {
+      if (deletingId) return;
+      setDeletingId(project.project_id);
+      try {
+        const { deleteCanvasProject } = await import('../videoCanvas/api');
+        await deleteCanvasProject(project.project_id);
+        clearVideoGenerationSessionMemory(project.project_id);
+        setCanvasProjects((prev) =>
+          prev.filter((item) => item.project_id !== project.project_id)
+        );
+        message.success(
+          t('videoGeneration.create.gallery.deleteOk', { defaultValue: '画布已删除' })
+        );
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.actions.deleteFailed', { defaultValue: '删除失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, message, t]
   );
 
   const openSession = useCallback(
@@ -621,6 +837,38 @@ const VideoGenerationListPage: React.FC = () => {
 
   const onDeleteSession = useCallback((session: SessionSummary) => {
     void handleDeleteRef.current(session);
+  }, []);
+
+  const handleDeleteTask = useCallback(
+    async (task: GenerationTaskView) => {
+      if (deletingId) return;
+      setDeletingId(task.task_id);
+      try {
+        const { deleteGenerationTask } = await import('../videoCanvas/api');
+        await deleteGenerationTask(task.task_id);
+        clearVideoGenerationSessionMemory(task.task_id);
+        setGenerationTasks((prev) => prev.filter((item) => item.task_id !== task.task_id));
+        message.success(t('videoGeneration.actions.deleteOk', { defaultValue: '已删除任务' }));
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.actions.deleteFailed', { defaultValue: '删除失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, message, t]
+  );
+
+  const handleDeleteTaskRef = useRef<(task: GenerationTaskView) => void>(() => {});
+  useEffect(() => {
+    handleDeleteTaskRef.current = handleDeleteTask;
+  }, [handleDeleteTask]);
+
+  const onDeleteTask = useCallback((task: GenerationTaskView) => {
+    void handleDeleteTaskRef.current(task);
   }, []);
 
   const handleImportProject = useCallback(async () => {
@@ -667,6 +915,54 @@ const VideoGenerationListPage: React.FC = () => {
     }
   }, [creating, importing, message, navigate, t]);
 
+  const handleImportCanvasProject = useCallback(async () => {
+    if (importing || creating) return;
+    if (!isDesktopShell()) {
+      message.info(
+        t('videoGeneration.list.importDesktopOnly', {
+          defaultValue: '导入工程仅桌面端可用。',
+        })
+      );
+      return;
+    }
+    const { dialog } = await import('@/common/adapter/ipcBridge');
+    const paths = await dialog.showOpen.invoke({
+      properties: ['openFile'],
+      filters: [
+        {
+          name: t('videoGeneration.actions.exportCanvasFilter', {
+            defaultValue: 'Flowy 画布工程',
+          }),
+          extensions: ['nomiccanvas'],
+        },
+      ],
+    });
+    const source = paths?.[0];
+    if (!source) return;
+    setImporting(true);
+    try {
+      const { importCanvasProject } = await import('../videoCanvas/api');
+      const imported = await importCanvasProject(source);
+      trackFunnelEvent('task_accepted', {
+        feature: 'video_generation',
+        workflow: 'canvas',
+        session_id: imported.project_id,
+        source: 'project_import',
+      });
+      message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
+      rememberVideoGenerationCanvas(imported.project_id, imported.title);
+      navigate(videoCanvasProjectPath(imported.project_id));
+    } catch (e) {
+      message.error(
+        `${t('videoGeneration.list.importFailed', { defaultValue: '导入失败' })}: ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+    } finally {
+      setImporting(false);
+    }
+  }, [creating, importing, message, navigate, t]);
+
   return (
     <div
       ref={pageScrollRef}
@@ -685,80 +981,78 @@ const VideoGenerationListPage: React.FC = () => {
           onSubmitAgent={(draft) => void handleCreate(draft)}
           onSubmitCreation={(draft) => void handleCreateCanvas(draft)}
           onSubmitGenerate={(draft) => void handleCreateGenerate(draft)}
+          onSubmitBriefing={(draft) => void handleCreateBriefing(draft)}
+          onCreateBlankCanvas={() => void handleCreateBlankCanvas()}
         />
 
-        {workMode === 'creation' ? (
-          <Suspense
-            fallback={
-              <div className='flex justify-center py-38px'>
-                <Spin />
-              </div>
-            }
-          >
-            <CanvasProjectGallery />
-          </Suspense>
-        ) : (
-          <section className='flex flex-col gap-12px'>
+        <section className='flex flex-col gap-12px'>
             <div className='flex flex-wrap items-center justify-between gap-12px'>
               <div>
-                <div className='mb-8px'>
-                  <SegmentedTabs
-                    size='sm'
-                    items={listTabItems}
-                    activeKey={listTab}
-                    onChange={handleListTabChange}
-                  />
-                </div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                <SegmentedTabs
+                  size='sm'
+                  items={listTabItems}
+                  activeKey={listTab}
+                  onChange={handleListTabChange}
+                />
+                <p className='m-0 mt-8px text-12px text-[var(--color-text-3)]'>
                   {listTab === 'tvShow'
-                    ? t('videoGeneration.tvShow.title', { defaultValue: 'Flowy TV' })
-                    : workMode === 'generate'
-                    ? t('videoGeneration.list.generateRecentTitle', {
-                        defaultValue: '最近视频',
-                      })
-                    : workMode === 'action'
-                    ? t('videoGeneration.list.actionRecentTitle', {
-                        defaultValue: '动作模仿',
-                      })
-                    : t('videoGeneration.list.recentTitle', {
-                        defaultValue: '最近创作',
-                      })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                  {listTab === 'tvShow'
-                    ? t('videoGeneration.tvShow.subtitle', {
-                        defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
-                      })
-                    : workMode === 'generate'
-                    ? t('videoGeneration.list.generateRecentSubtitle', {
-                        defaultValue: '继续视频创作。',
-                      })
-                    : workMode === 'action'
-                    ? t('videoGeneration.list.actionRecentSubtitle', {
-                        defaultValue: '继续动作模仿项目。',
-                      })
+                    ? (() => {
+                        const tvTab = parseTvShowTab(
+                          searchParams.get('tvScope'),
+                          searchParams.get('tvChannel')
+                        );
+                        if (tvTab === 'campaign') {
+                          return t('videoGeneration.campaign.subtitle', {
+                            defaultValue: '参与官方活动，投稿成片，看看获奖作品。',
+                          });
+                        }
+                        if (tvTab === 'mine') {
+                          return t('videoGeneration.tvShow.subtitleMine', {
+                            defaultValue: '查看审核进度，管理你发布到 Flowy TV 的作品。',
+                          });
+                        }
+                        return tvTab === 'all'
+                          ? t('videoGeneration.tvShow.subtitle', {
+                              defaultValue: '浏览社区成片，点开就能用同一套工程做一支。',
+                            })
+                          : t('videoGeneration.tvShow.subtitleChannel', {
+                              defaultValue: '按创作方式筛选广场成片。',
+                            });
+                      })()
                     : t('videoGeneration.list.recentSubtitle', {
-                        defaultValue: '继续分镜、渲染或查看已经完成的影片。',
+                        defaultValue: '短剧、画布、视频和播报都在这里，按最近更新排列。',
                       })}
                 </p>
               </div>
               {listTab === 'recent' ? (
-                <div className='flex flex-wrap items-center gap-10px'>
-                  <Button
-                    type='outline'
-                    size='small'
-                    loading={importing}
+                <div className='flex flex-wrap items-center gap-6px'>
+                  <CanvasChromeButton
+                    className='is-icon'
                     disabled={creating || importing}
+                    title={t('videoGeneration.list.importProject', {
+                      defaultValue: '导入工程',
+                    })}
+                    aria-label={t('videoGeneration.list.importProject', {
+                      defaultValue: '导入工程',
+                    })}
                     onClick={() => void handleImportProject()}
                   >
-                    <span className='inline-flex items-center gap-4px'>
-                      <Upload theme='outline' size={14} fill='currentColor' />
-                      {t('videoGeneration.list.importProject', {
-                        defaultValue: '导入工程',
-                      })}
-                    </span>
-                  </Button>
-                  {!error && sessions.length > 0 ? (
+                    <Upload theme='outline' size={14} />
+                  </CanvasChromeButton>
+                  <CanvasChromeButton
+                    className='is-icon'
+                    disabled={creating || importing}
+                    title={t('videoGeneration.list.importCanvas', {
+                      defaultValue: '导入画布',
+                    })}
+                    aria-label={t('videoGeneration.list.importCanvas', {
+                      defaultValue: '导入画布',
+                    })}
+                    onClick={() => void handleImportCanvasProject()}
+                  >
+                    <VideoOne theme='outline' size={14} />
+                  </CanvasChromeButton>
+                  {recentRows.length > 0 && !error ? (
                     <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
                       <Search
                         theme='outline'
@@ -790,142 +1084,132 @@ const VideoGenerationListPage: React.FC = () => {
                 >
                   <TvShowPanel enabled />
                 </Suspense>
-              ) : workMode === 'generate' ? (
-                // Video generation mode - show generation tasks
-                loadingTasks ? (
-                  <div className='flex justify-center py-38px'>
-                    <Spin />
-                  </div>
-                ) : generationTasks.length === 0 ? (
-                  <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-                    <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
-                      <VideoOne theme='outline' size={19} fill='currentColor' />
-                    </span>
-                    <div>
-                      <div className='text-13px font-600 text-[var(--color-text-1)]'>
-                        {t('videoGeneration.list.generateEmpty.title', {
-                          defaultValue: '你的第一个视频从这里开始',
-                        })}
-                      </div>
-                      <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                        {t('videoGeneration.list.generateEmpty.desc', {
-                          defaultValue: '输入描述，上方开始生成视频。',
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <Suspense
-                      fallback={
-                        <div className='flex justify-center py-38px'>
-                          <Spin />
-                        </div>
-                      }
-                    >
-                      <div
-                        className='grid gap-12px'
-                        style={{
-                          gridTemplateColumns:
-                            'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-                        }}
-                      >
-                        {displayedTasks.map((task) => (
-                          <GenerationTaskCard
-                            key={task.task_id}
-                            task={task}
-                          />
-                        ))}
-                      </div>
-                    </Suspense>
-                    {displayedTasks.length === 0 && (
-                      <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
-                        {t('videoGeneration.list.filterEmpty', {
-                          defaultValue: '没有匹配的任务',
-                        })}
-                      </div>
-                    )}
-                  </>
-                )
-              ) : (
-                // Agent/Action modes - show sessions
-                <div>
-                  {error ? (
-                    <Result
-                      status='error'
-                      title={t('videoGeneration.list.loadError', {
-                        defaultValue: '加载失败',
+              ) : error ? (
+                <Result
+                  status='error'
+                  title={t('videoGeneration.list.loadError', {
+                    defaultValue: '加载失败',
+                  })}
+                  subTitle={error}
+                  extra={
+                    <Button onClick={() => void refreshAll()}>
+                      {t('videoGeneration.list.retry', { defaultValue: '重试' })}
+                    </Button>
+                  }
+                />
+              ) : loading && recentRows.length === 0 ? (
+                <div className='flex justify-center py-38px'>
+                  <Spin />
+                </div>
+              ) : recentRows.length === 0 ? (
+                <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
+                  <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-primary-6'>
+                    <VideoOne theme='outline' size={19} fill='currentColor' />
+                  </span>
+                  <div>
+                    <div className='text-13px font-600 text-[var(--color-text-1)]'>
+                      {t('videoGeneration.list.empty.title', {
+                        defaultValue: '你的第一支影片从上方开始',
                       })}
-                      subTitle={error}
-                      extra={
-                        <Button onClick={() => void refresh()}>
-                          {t('videoGeneration.list.retry', { defaultValue: '重试' })}
-                        </Button>
-                      }
-                    />
-                  ) : loading ? (
-                    <div className='flex justify-center py-38px'>
-                      <Spin />
                     </div>
-                  ) : sessions.length === 0 ? (
-                    <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-                      <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
-                        <VideoOne theme='outline' size={19} fill='currentColor' />
-                      </span>
-                      <div>
-                        <div className='text-13px font-600 text-[var(--color-text-1)]'>
-                          {t('videoGeneration.list.empty.title', {
-                            defaultValue: '你的第一支影片从上方开始',
-                          })}
-                        </div>
-                        <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                          {t('videoGeneration.list.empty.desc', {
-                            defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
-                          })}
-                        </div>
+                    <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                      {t('videoGeneration.list.empty.desc', {
+                        defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <Suspense
+                    fallback={
+                      <div className='flex justify-center py-38px'>
+                        <Spin />
                       </div>
-                    </div>
-                  ) : (
-                    <>
-                      <Suspense
-                        fallback={
-                          <div className='flex justify-center py-38px'>
-                            <Spin />
-                          </div>
-                        }
-                      >
-                        <div
-                          className='grid gap-12px'
-                          style={{
-                            gridTemplateColumns:
-                              'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-                          }}
-                        >
-                          {displayed.map((session) => (
+                    }
+                  >
+                    <div
+                      className='grid gap-12px'
+                      style={{
+                        gridTemplateColumns:
+                          'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
+                      }}
+                    >
+                      {displayedRecent.map((row) => {
+                        if (row.kind === 'session') {
+                          return (
                             <SessionCard
-                              key={session.id}
-                              session={session}
+                              key={`session:${row.id}`}
+                              session={row.session}
                               onOpen={openSession}
                               onDelete={onDeleteSession}
-                              deleting={deletingId === session.id}
+                              deleting={deletingId === row.id}
                             />
-                          ))}
-                        </div>
-                      </Suspense>
-                      {displayed.length === 0 && (
-                        <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
-                          {t('videoGeneration.list.filterEmpty', {
-                            defaultValue: '没有匹配的任务',
-                          })}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
+                          );
+                        }
+                        if (row.kind === 'task') {
+                          return (
+                            <GenerationTaskCard
+                              key={`task:${row.id}`}
+                              task={row.task}
+                              onDelete={onDeleteTask}
+                              deleting={deletingId === row.id}
+                            />
+                          );
+                        }
+                        if (row.kind === 'canvas') {
+                          return (
+                            <CanvasProjectCard
+                              key={`canvas:${row.id}`}
+                              project={row.project}
+                              untitled={t('videoGeneration.create.gallery.untitled', {
+                                defaultValue: '未命名画布',
+                              })}
+                              opening={openingCanvasId === row.id}
+                              disabled={Boolean(openingCanvasId) && openingCanvasId !== row.id}
+                              deleting={deletingId === row.id}
+                              onOpen={openCanvasProject}
+                              onDelete={(project) => void handleDeleteCanvas(project)}
+                            />
+                          );
+                        }
+                        return (
+                          <button
+                            key={`briefing:${row.id}`}
+                            type='button'
+                            className='flex flex-col gap-8px rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-16px text-left'
+                            onClick={() => {
+                              rememberVideoGenerationBriefing(row.briefing.id, row.briefing.title);
+                              navigate(briefingWorkspacePath(row.briefing.id));
+                            }}
+                          >
+                            <strong className='text-14px text-[var(--color-text-1)]'>
+                              {row.briefing.title ||
+                                t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
+                            </strong>
+                            <span className='text-12px text-[var(--color-text-3)]'>
+                              {t('videoGeneration.list.briefingKind', {
+                                defaultValue: '资讯播报',
+                              })}
+                              {' · '}
+                              {row.briefing.status} · {row.briefing.stage}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </Suspense>
+                  {displayedRecent.length === 0 ? (
+                    <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
+                      {t('videoGeneration.list.filterEmpty', {
+                        defaultValue: '没有匹配的任务',
+                      })}
+                    </div>
+                  ) : null}
+                </>
               )}
             </div>
           </section>
-        )}
       </div>
     </div>
   );

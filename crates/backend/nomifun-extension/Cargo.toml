@@ -11,6 +11,7 @@ nomifun-realtime.workspace = true
 nomi-process-runtime.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+chrono.workspace = true
 dirs.workspace = true
 fs2.workspace = true
 include_dir.workspace = true

@@ -2,7 +2,38 @@ import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-ref
 import type { Skill } from "@oc/services/api/skills";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
-const SKILL_REF_PATTERN = /@\[skill:([^\]]+)\]/g;
+export const SKILL_REF_PATTERN = /@\[skill:([^\]]+)\]/g;
+
+export function skillToken(id: string): string {
+    return `@[skill:${id}]`;
+}
+
+export function listedSkillIds(prompt: string): string[] {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const match of prompt.matchAll(SKILL_REF_PATTERN)) {
+        const id = match[1];
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+    }
+    return ids;
+}
+
+export function stripSkillTokens(prompt: string): string {
+    return prompt.replace(SKILL_REF_PATTERN, " ").replace(/\s{2,}/g, " ").trim();
+}
+
+export function insertSkillToken(prompt: string, skillId: string): string {
+    const token = skillToken(skillId);
+    if (prompt.includes(token)) return prompt;
+    const trimmed = prompt.trimEnd();
+    return trimmed ? `${trimmed} ${token}` : token;
+}
+
+export function removeSkillToken(prompt: string, skillId: string): string {
+    return prompt.replace(new RegExp(`\\s*@\\[skill:${skillId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]`, "g"), " ").replace(/\s{2,}/g, " ").trim();
+}
 
 export function buildSkillMentionReferences(skills: Skill[]): CanvasResourceReference[] {
     return skills

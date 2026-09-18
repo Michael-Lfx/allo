@@ -15,7 +15,10 @@ use nomi_types::message::ContentBlock;
 use nomi_types::skill_types::ContextModifier;
 use nomi_types::tool::{ToolDef, ToolResult};
 
-use nomi_tools::{ToolExecutionContext, registry::ToolRegistry};
+use nomi_tools::{
+    MAX_PROVIDER_TOOL_OUTPUT_BYTES, ToolExecutionContext, TruncationBudget, registry::ToolRegistry,
+    truncate_middle,
+};
 
 pub(crate) const SKIPPED_AFTER_PRIOR_ERROR: &str = "\
 Skipped because a previous tool call in this assistant turn failed. Inspect the failed result first, then decide whether to retry with a larger timeout, use exec_command/write_stdin for long-running commands, or choose a different next step. Do not assume this step ran.";
@@ -43,9 +46,92 @@ fn should_halt_after(
     match policy {
         ErrorCascadePolicy::HaltAllSubsequent => true,
         ErrorCascadePolicy::HaltAfterMutatingOrGate => {
-            is_gate_or_schema || crate::task_profile::is_mutating_tool(tool_name)
+            is_gate_or_schema || nomi_coding::is_side_effect_tool(tool_name)
         }
     }
+}
+
+#[derive(Default)]
+struct CascadeHalt {
+    halt_all: bool,
+    failed: Vec<Occupancy>,
+}
+
+impl CascadeHalt {
+    fn note(
+        &mut self,
+        policy: ErrorCascadePolicy,
+        call: &ContentBlock,
+        is_gate_or_schema: bool,
+    ) {
+        if !should_halt_after(policy, tool_name_of_call(call), is_gate_or_schema) {
+            return;
+        }
+        match policy {
+            ErrorCascadePolicy::HaltAllSubsequent => self.halt_all = true,
+            ErrorCascadePolicy::HaltAfterMutatingOrGate => {
+                if is_gate_or_schema {
+                    self.halt_all = true;
+                } else {
+                    self.failed.push(occupancy_of_call(call));
+                }
+            }
+        }
+    }
+
+    fn should_skip(&self, policy: ErrorCascadePolicy, call: &ContentBlock) -> bool {
+        if self.halt_all {
+            return true;
+        }
+        match policy {
+            ErrorCascadePolicy::HaltAllSubsequent => false,
+            ErrorCascadePolicy::HaltAfterMutatingOrGate => {
+                if !nomi_coding::is_side_effect_tool(tool_name_of_call(call)) {
+                    return false;
+                }
+                let pending = occupancy_of_call(call);
+                self.failed
+                    .iter()
+                    .any(|failed| occupancy_conflicts(failed, &pending))
+            }
+        }
+    }
+}
+
+fn occupancy_of_call(call: &ContentBlock) -> Occupancy {
+    match call {
+        ContentBlock::ToolUse { name, input, .. } => Occupancy {
+            exclusive: is_exclusive_tool(name),
+            lock: path_lock_for(name, input),
+        },
+        _ => Occupancy {
+            exclusive: true,
+            lock: PathLock::None,
+        },
+    }
+}
+
+fn call_needs_interactive_approval(
+    registry: &ToolRegistry,
+    call: &ContentBlock,
+    auto_approve: bool,
+    allow_list: &[String],
+    approval_manager: &ToolApprovalManager,
+) -> bool {
+    let ContentBlock::ToolUse { name, input, .. } = call else {
+        return false;
+    };
+    if auto_approve {
+        return false;
+    }
+    let Some(tool) = registry.get(name) else {
+        return false;
+    };
+    let category = tool.category_for(input);
+    let tool_auto_approve = tool.auto_approve_invocation(input, category);
+    !tool_auto_approve
+        && !allow_list.contains(&name.to_string())
+        && !approval_manager.is_auto_approved(&category.to_string())
 }
 
 fn tool_name_of_call(call: &ContentBlock) -> &str {
@@ -70,6 +156,7 @@ pub struct ToolCallOutcome {
 pub struct ProviderToolAuthority {
     advertised: BTreeSet<String>,
     deferred: BTreeSet<String>,
+    pub(crate) plan_mode_read_only: bool,
 }
 
 impl ProviderToolAuthority {
@@ -81,6 +168,7 @@ impl ProviderToolAuthority {
                 .filter(|tool| tool.deferred)
                 .map(|tool| tool.name.clone())
                 .collect(),
+            plan_mode_read_only: false,
         }
     }
 
@@ -90,6 +178,18 @@ impl ProviderToolAuthority {
 
     pub(crate) fn is_deferred(&self, name: &str) -> bool {
         self.deferred.contains(name)
+    }
+
+    /// Frozen wire schemas may stay stubs (prefix cache). After a prior-turn
+    /// ToolSearch, drop activated names from the deferred gate so the next
+    /// request can dispatch without rewriting the advertised table.
+    pub(crate) fn overlay_live_activation(&mut self, registry: &ToolRegistry) {
+        let state = registry.deferred_state();
+        self.deferred.retain(|name| {
+            registry.get(name).is_some_and(|tool| {
+                tool.is_deferred() && !state.is_activated(tool.activation_identity())
+            })
+        });
     }
 }
 
@@ -128,7 +228,7 @@ pub async fn execute_tool_calls_scoped(
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
-    let mut halt_after_error = false;
+    let mut cascade = CascadeHalt::default();
     // Engine-produced calls are already canonical. Preparing again here keeps
     // direct/internal execution paths on the same boundary and guarantees that
     // confirmation, hooks, category checks, and dispatch all receive one value.
@@ -138,32 +238,35 @@ pub async fn execute_tool_calls_scoped(
         .collect::<Vec<_>>();
 
     for batch in partition(registry, &prepared_tool_calls, authority) {
-        if halt_after_error {
-            for call in &batch.calls {
+        let mut pending = Vec::new();
+        for call in &batch.calls {
+            if cascade.should_skip(cascade_policy, call) {
                 results.push(skipped_after_prior_error(call));
                 modifiers.push(None);
+            } else {
+                pending.push(*call);
             }
+        }
+        if pending.is_empty() {
             continue;
         }
 
-        if batch.is_concurrent {
+        if pending.len() > 1 && batch.is_concurrent {
             // Preflight the entire concurrent batch before any confirmation.
             // This preserves the provider-turn snapshot even when ToolSearch
             // and its target are emitted together, and guarantees deferred or
             // schema-invalid tools cannot trigger an interactive prompt.
             let mut completed: Vec<Option<(ContentBlock, Option<ContextModifier>)>> =
                 std::iter::repeat_with(|| None)
-                    .take(batch.calls.len())
+                    .take(pending.len())
                     .collect();
-            for (idx, call) in batch.calls.iter().enumerate() {
+            for (idx, call) in pending.iter().enumerate() {
                 if let Some(gated) = invocation_gate_result(
                     registry,
                     call,
                     authority,
                 ) {
-                    if should_halt_after(cascade_policy, tool_name_of_call(call), true) {
-                        halt_after_error = true;
-                    }
+                    cascade.note(cascade_policy, call, true);
                     completed[idx] = Some((gated, None));
                 }
             }
@@ -172,15 +275,13 @@ pub async fn execute_tool_calls_scoped(
             // Concurrent tools are never SkillTool (is_concurrency_safe=false for Skill),
             // so no skill hooks merging is needed here.
             let mut approved = Vec::new();
-            for (idx, call) in batch.calls.iter().enumerate() {
+            for (idx, call) in pending.iter().enumerate() {
                 if completed[idx].is_some() {
                     continue;
                 }
                 match confirm_call(confirmer, call)? {
                     Some(denied) => {
-                        if should_halt_after(cascade_policy, tool_name_of_call(call), true) {
-                            halt_after_error = true;
-                        }
+                        cascade.note(cascade_policy, call, true);
                         completed[idx] = Some((denied, None));
                     }
                     None => approved.push((idx, *call)),
@@ -204,10 +305,8 @@ pub async fn execute_tool_calls_scoped(
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
             for ((idx, call), outcome) in approved.into_iter().zip(batch_results) {
-                if block_is_error(&outcome.0)
-                    && should_halt_after(cascade_policy, tool_name_of_call(call), false)
-                {
-                    halt_after_error = true;
+                if block_is_error(&outcome.0) {
+                    cascade.note(cascade_policy, call, false);
                 }
                 completed[idx] = Some(outcome);
             }
@@ -217,8 +316,8 @@ pub async fn execute_tool_calls_scoped(
                 modifiers.push(modifier);
             }
         } else {
-            for call in &batch.calls {
-                if halt_after_error {
+            for call in pending {
+                if cascade.should_skip(cascade_policy, call) {
                     results.push(skipped_after_prior_error(call));
                     modifiers.push(None);
                     continue;
@@ -228,18 +327,14 @@ pub async fn execute_tool_calls_scoped(
                     call,
                     authority,
                 ) {
-                    if should_halt_after(cascade_policy, tool_name_of_call(call), true) {
-                        halt_after_error = true;
-                    }
+                    cascade.note(cascade_policy, call, true);
                     results.push(gated);
                     modifiers.push(None);
                     continue;
                 }
                 match confirm_call(confirmer, call)? {
                     Some(denied) => {
-                        if should_halt_after(cascade_policy, tool_name_of_call(call), true) {
-                            halt_after_error = true;
-                        }
+                        cascade.note(cascade_policy, call, true);
                         results.push(denied);
                         modifiers.push(None);
                     }
@@ -257,18 +352,14 @@ pub async fn execute_tool_calls_scoped(
                                 hooks_shared,
                                 compaction_level,
                                 toon_enabled,
-)
+                            )
                             .await;
                         }
                         // Merge skill hooks after a successful sequential execution.
                         if !block_is_error(&block) {
                             maybe_merge_skill_hooks(registry, call, hooks.as_deref_mut());
-                        } else if should_halt_after(
-                            cascade_policy,
-                            tool_name_of_call(call),
-                            false,
-                        ) {
-                            halt_after_error = true;
+                        } else {
+                            cascade.note(cascade_policy, call, false);
                         }
                         results.push(block);
                         modifiers.push(modifier);
@@ -372,9 +463,9 @@ fn deferred_gate_result(
 }
 
 /// Validate an invocation before any tool-specific policy method, approval UI,
-/// hook, running event, or dispatch. Deferred authority is checked first so a
-/// provider that only saw a schema stub is told to activate it instead of being
-/// asked to guess required parameters it was never shown.
+/// hook, running event, or dispatch. Advertised names and plan-mode read-only
+/// run before the deferred stub gate so a writer is refused as read-only
+/// rather than told to ToolSearch.
 fn invocation_gate_result(
     registry: &ToolRegistry,
     call: &ContentBlock,
@@ -397,6 +488,31 @@ fn invocation_gate_result(
             is_error: true,
             images: Vec::new(),
         });
+    }
+    if authority.plan_mode_read_only {
+        let ContentBlock::ToolUse { input, .. } = call else {
+            unreachable!("tool-use shape checked above")
+        };
+        let category = registry
+            .get(name)
+            .map(|tool| {
+                if input.is_object() {
+                    tool.category_for(input)
+                } else {
+                    tool.category()
+                }
+            })
+            .unwrap_or(ToolCategory::Info);
+        if category != ToolCategory::Info {
+            return Some(ContentBlock::ToolResult {
+                tool_use_id: id.clone(),
+                content: format!(
+                    "Plan mode is read-only. Tool '{name}' was not executed. Use ExitPlanMode when the plan is ready."
+                ),
+                is_error: true,
+                images: Vec::new(),
+            });
+        }
     }
     if let Some(gated) = deferred_gate_result(call, authority) {
         return Some(gated);
@@ -561,7 +677,7 @@ async fn execute_single_without_deadline(
 
     let (result, modifier) = match registry.get(name) {
         Some(tool) => {
-            let max_size = tool.max_result_size();
+            let max_size = tool.max_result_size().min(MAX_PROVIDER_TOOL_OUTPUT_BYTES);
             // `input` passed the strict object/schema preflight before
             // partitioning or approval. Hooks, policy, context modifiers, and
             // dispatch all see the exact provider-supplied value.
@@ -575,7 +691,7 @@ async fn execute_single_without_deadline(
             // a separate process.
             let execution_context =
                 ToolExecutionContext::from_scoped_tool_call(execution_scope, id);
-            let r = match AssertUnwindSafe(
+            let mut r = match AssertUnwindSafe(
                 tool.execute_with_context(input.clone(), &execution_context),
             )
             .catch_unwind()
@@ -601,7 +717,12 @@ async fn execute_single_without_deadline(
             } else {
                 tool.context_modifier_for(input)
             };
-            let content = truncate_result(&r.content, max_size);
+            // Scrub secrets BEFORE truncation: an oversized result is persisted
+            // to a content_ref file on disk, so redacting only after would let
+            // secret-bearing output hit disk first. Idempotent with the final
+            // defense-in-depth pass below.
+            let raw = nomi_redact::redact_secrets_owned(std::mem::take(&mut r.content));
+            let content = truncate_result(&raw, max_size, hooks.map(|h| h.cwd()));
             let content = nomi_compact::compact_output(&content, compaction_level);
             let content = if toon_enabled {
                 nomi_compact::compact_output_toon(&content)
@@ -749,7 +870,7 @@ async fn execute_tool_calls_with_approval_timeout(
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
-    let mut halt_after_error = false;
+    let mut cascade = CascadeHalt::default();
     // Keep direct protocol callers on the same canonical boundary as the
     // engine and REPL path. Every later decision, approval payload, hook, and
     // dispatch below observes this one schema-validated value.
@@ -759,54 +880,38 @@ async fn execute_tool_calls_with_approval_timeout(
         .collect::<Vec<_>>();
     let tool_calls = prepared_tool_calls.as_slice();
 
-    // Decide which calls can run concurrently (concurrency-safe AND needing no
-    // interactive approval); the rest keep their serial approval+execution flow.
-    let batchable: Vec<bool> = tool_calls
-        .iter()
-        .map(|call| {
-            let ContentBlock::ToolUse { name, input, .. } = call else {
-                return false;
-            };
-            // Blocked calls must be routed through the serial preflight gate,
-            // never into a concurrent group that emits ToolRunning first or
-            // evaluates tool-specific approval/category policy.
-            if invocation_gate_result(registry, call, authority).is_some() {
-                return false;
-            }
-            let Some(tool) = registry.get(name) else {
-                return false;
-            };
-            if !tool.is_concurrency_safe(input) {
-                return false;
-            }
-            let category = tool.category_for(input);
-            let tool_auto_approve = tool.auto_approve_invocation(input, category);
-            let needs_approval = !auto_approve
-                && !tool_auto_approve
-                && !allow_list.contains(&name.to_string())
-                && !approval_manager.is_auto_approved(&category.to_string());
-            !needs_approval
-        })
-        .collect();
-
-    for group in group_batches(&batchable) {
-        if halt_after_error {
-            for idx in group.clone() {
-                let block = emit_skipped_after_prior_error(writer, msg_id, &tool_calls[idx]);
+    for batch in partition(registry, tool_calls, authority) {
+        let mut pending = Vec::new();
+        for call in &batch.calls {
+            if cascade.should_skip(cascade_policy, call) {
+                let block = emit_skipped_after_prior_error(writer, msg_id, call);
                 results.push(block);
                 modifiers.push(None);
+            } else {
+                pending.push(*call);
             }
+        }
+        if pending.is_empty() {
             continue;
         }
 
-        // Concurrent batch: concurrency-safe, pre-approved, non-skill tools. Emit
-        // running for all, execute in parallel (join_all preserves submission
-        // order so tool_use/tool_result pairing stays intact), emit results in
-        // order. This brings the production/protocol path to parity with the REPL
-        // path, which already parallelized. (Phase 2 tool-call)
-        if group.end - group.start > 1 {
-            for idx in group.clone() {
-                if let ContentBlock::ToolUse { id, name, .. } = &tool_calls[idx] {
+        let unprompted = pending.iter().all(|call| {
+            invocation_gate_result(registry, call, authority).is_none()
+                && !call_needs_interactive_approval(
+                    registry,
+                    call,
+                    auto_approve,
+                    allow_list,
+                    approval_manager,
+                )
+        });
+
+        // Occupancy-disjoint exclusive tools (e.g. Edit on two files) join a
+        // concurrent partition batch. Desktop used to serialize those because
+        // Edit is not is_concurrency_safe, then HaltAfter skipped the sibling.
+        if pending.len() > 1 && batch.is_concurrent && unprompted {
+            for call in &pending {
+                if let ContentBlock::ToolUse { id, name, .. } = call {
                     let _ = writer.emit(&ProtocolEvent::ToolRunning {
                         msg_id: msg_id.to_string(),
                         call_id: id.clone(),
@@ -815,12 +920,12 @@ async fn execute_tool_calls_with_approval_timeout(
                 }
             }
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-            let futures: Vec<_> = group
-                .clone()
-                .map(|idx| {
+            let futures: Vec<_> = pending
+                .iter()
+                .map(|call| {
                     execute_single_with_authority(
                         registry,
-                        &tool_calls[idx],
+                        call,
                         authority,
                         msg_id,
                         hooks_shared,
@@ -830,14 +935,13 @@ async fn execute_tool_calls_with_approval_timeout(
                 })
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
-            for (offset, (block, modifier)) in batch_results.into_iter().enumerate() {
-                let idx = group.start + offset;
+            for (call, (block, modifier)) in pending.into_iter().zip(batch_results) {
                 if let (
                     ContentBlock::ToolUse { id, name, .. },
                     ContentBlock::ToolResult {
                         content, is_error, ..
                     },
-                ) = (&tool_calls[idx], &block)
+                ) = (call, &block)
                 {
                     let status = if *is_error {
                         ToolStatus::Error
@@ -854,14 +958,8 @@ async fn execute_tool_calls_with_approval_timeout(
                         metadata: None,
                     });
                 }
-                if block_is_error(&block)
-                    && should_halt_after(
-                        cascade_policy,
-                        tool_name_of_call(&tool_calls[idx]),
-                        false,
-                    )
-                {
-                    halt_after_error = true;
+                if block_is_error(&block) {
+                    cascade.note(cascade_policy, call, false);
                 }
                 results.push(block);
                 modifiers.push(modifier);
@@ -869,173 +967,167 @@ async fn execute_tool_calls_with_approval_timeout(
             continue;
         }
 
-        // --- Serial path (single call): preserves the interactive approval flow ---
-        let call = &tool_calls[group.start];
-        let ContentBlock::ToolUse {
-            id, name, input, ..
-        } = call
-        else {
-            continue;
-        };
-
-        // Fail closed before category/approval evaluation and before emitting
-        // ToolRequest or ToolRunning. Emit only the paired error ToolResult.
-        if let Some(gated) = invocation_gate_result(registry, call, authority) {
-            emit_tool_result_event(writer, msg_id, call, &gated);
-            if should_halt_after(cascade_policy, name, true) {
-                halt_after_error = true;
+        for call in pending {
+            if cascade.should_skip(cascade_policy, call) {
+                let block = emit_skipped_after_prior_error(writer, msg_id, call);
+                results.push(block);
+                modifiers.push(None);
+                continue;
             }
-            results.push(gated);
-            modifiers.push(None);
-            continue;
-        }
 
-        let tool = registry.get(name);
-        let category = tool
-            .map(|t| t.category_for(input))
-            .unwrap_or(ToolCategory::Exec);
-        let description = tool.map(|t| t.describe(input)).unwrap_or_default();
-        let tool_auto_approve = tool
-            .map(|t| t.auto_approve_invocation(input, category))
-            .unwrap_or(false);
-
-        // Check if approval is needed
-        let needs_approval = !auto_approve
-            && !tool_auto_approve
-            && !allow_list.contains(&name.to_string())
-            && !approval_manager.is_auto_approved(&category.to_string());
-
-        if needs_approval {
-            // Emit tool_request and wait for approval
-            let (rx, approval_token) =
-                approval_manager.request_approval_with_token(id, &category);
-            let _ = writer.emit(&ProtocolEvent::ToolRequest {
-                msg_id: msg_id.to_string(),
-                call_id: id.clone(),
-                tool: ToolInfo {
-                    name: name.clone(),
-                    category,
-                    args: input.clone(),
-                    description,
-                },
-            });
-
-            match wait_for_tool_approval(
-                approval_manager,
-                id,
-                rx,
-                approval_token,
-                approval_timeout,
-            )
-            .await
-            {
-                Ok(ToolApprovalResult::Approved) => { /* continue to execute */ }
-                Ok(ToolApprovalResult::Denied { reason }) => {
-                    let _ = writer.emit(&ProtocolEvent::ToolCancelled {
-                        msg_id: msg_id.to_string(),
-                        call_id: id.clone(),
-                        reason: reason.clone(),
-                    });
-                    if should_halt_after(cascade_policy, name, true) {
-                        halt_after_error = true;
-                    }
-                    results.push(ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: format!("Tool denied: {reason}"),
-                        is_error: true,
-                        images: Vec::new(),
-                    });
-                    modifiers.push(None);
-                    continue;
-                }
-                Err(ApprovalWaitError::Disconnected) => {
-                    // Channel dropped — client disconnected
-                    return Err(ExecutionControl::Quit);
-                }
-                Err(ApprovalWaitError::TimedOut) => {
-                    let reason = format!(
-                        "Tool approval timed out after {} seconds; the tool was not executed",
-                        approval_timeout.as_secs()
-                    );
-                    let _ = writer.emit(&ProtocolEvent::ToolCancelled {
-                        msg_id: msg_id.to_string(),
-                        call_id: id.clone(),
-                        reason: reason.clone(),
-                    });
-                    if should_halt_after(cascade_policy, name, true) {
-                        halt_after_error = true;
-                    }
-                    let result = ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: format!(
-                            "{reason}. Do not assume any side effects completed; \
-                             inspect the current state before retrying."
-                        ),
-                        is_error: true,
-                        images: Vec::new(),
-                    };
-                    emit_tool_result_event(writer, msg_id, call, &result);
-                    results.push(result);
-                    modifiers.push(None);
-                    continue;
-                }
-            }
-        }
-
-        // Emit tool_running
-        let _ = writer.emit(&ProtocolEvent::ToolRunning {
-            msg_id: msg_id.to_string(),
-            call_id: id.clone(),
-            tool_name: name.clone(),
-        });
-
-        // Execute the tool (reborrow as shared for execute_single, then reclaim mut for merge).
-        let result;
-        let modifier;
-        {
-            let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-            (result, modifier) = execute_single_with_authority(
-                registry,
-                call,
-                authority,
-                msg_id,
-                hooks_shared,
-                compaction_level,
-                toon_enabled,
-            )
-            .await;
-        }
-
-        // Emit tool_result event
-        if let ContentBlock::ToolResult {
-            content, is_error, ..
-        } = &result
-        {
-            let status = if *is_error {
-                ToolStatus::Error
-            } else {
-                ToolStatus::Success
+            let ContentBlock::ToolUse {
+                id, name, input, ..
+            } = call
+            else {
+                continue;
             };
-            let _ = writer.emit(&ProtocolEvent::ToolResult {
+
+            // Fail closed before category/approval evaluation and before emitting
+            // ToolRequest or ToolRunning. Emit only the paired error ToolResult.
+            if let Some(gated) = invocation_gate_result(registry, call, authority) {
+                emit_tool_result_event(writer, msg_id, call, &gated);
+                cascade.note(cascade_policy, call, true);
+                results.push(gated);
+                modifiers.push(None);
+                continue;
+            }
+
+            let tool = registry.get(name);
+            let category = tool
+                .map(|t| t.category_for(input))
+                .unwrap_or(ToolCategory::Exec);
+            let description = tool.map(|t| t.describe(input)).unwrap_or_default();
+            let tool_auto_approve = tool
+                .map(|t| t.auto_approve_invocation(input, category))
+                .unwrap_or(false);
+
+            let needs_approval = !auto_approve
+                && !tool_auto_approve
+                && !allow_list.contains(&name.to_string())
+                && !approval_manager.is_auto_approved(&category.to_string());
+
+            if needs_approval {
+                let (rx, approval_token) =
+                    approval_manager.request_approval_with_token(id, &category);
+                let _ = writer.emit(&ProtocolEvent::ToolRequest {
+                    msg_id: msg_id.to_string(),
+                    call_id: id.clone(),
+                    tool: ToolInfo {
+                        name: name.clone(),
+                        category,
+                        args: input.clone(),
+                        description,
+                    },
+                });
+
+                match wait_for_tool_approval(
+                    approval_manager,
+                    id,
+                    rx,
+                    approval_token,
+                    approval_timeout,
+                )
+                .await
+                {
+                    Ok(ToolApprovalResult::Approved) => { /* continue to execute */ }
+                    Ok(ToolApprovalResult::Denied { reason }) => {
+                        let _ = writer.emit(&ProtocolEvent::ToolCancelled {
+                            msg_id: msg_id.to_string(),
+                            call_id: id.clone(),
+                            reason: reason.clone(),
+                        });
+                        cascade.note(cascade_policy, call, true);
+                        results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: format!("Tool denied: {reason}"),
+                            is_error: true,
+                            images: Vec::new(),
+                        });
+                        modifiers.push(None);
+                        continue;
+                    }
+                    Err(ApprovalWaitError::Disconnected) => {
+                        return Err(ExecutionControl::Quit);
+                    }
+                    Err(ApprovalWaitError::TimedOut) => {
+                        let reason = format!(
+                            "Tool approval timed out after {} seconds; the tool was not executed",
+                            approval_timeout.as_secs()
+                        );
+                        let _ = writer.emit(&ProtocolEvent::ToolCancelled {
+                            msg_id: msg_id.to_string(),
+                            call_id: id.clone(),
+                            reason: reason.clone(),
+                        });
+                        cascade.note(cascade_policy, call, true);
+                        let result = ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: format!(
+                                "{reason}. Do not assume any side effects completed; \
+                                 inspect the current state before retrying."
+                            ),
+                            is_error: true,
+                            images: Vec::new(),
+                        };
+                        emit_tool_result_event(writer, msg_id, call, &result);
+                        results.push(result);
+                        modifiers.push(None);
+                        continue;
+                    }
+                }
+            }
+
+            let _ = writer.emit(&ProtocolEvent::ToolRunning {
                 msg_id: msg_id.to_string(),
                 call_id: id.clone(),
                 tool_name: name.clone(),
-                status,
-                output: content.clone(),
-                output_type: OutputType::Text,
-                metadata: None,
             });
-        }
 
-        // Merge skill hooks after a successful execution.
-        if !block_is_error(&result) {
-            maybe_merge_skill_hooks(registry, call, hooks.as_deref_mut());
-        } else if should_halt_after(cascade_policy, name, false) {
-            halt_after_error = true;
-        }
+            let result;
+            let modifier;
+            {
+                let hooks_shared: Option<&HookEngine> = hooks.as_deref();
+                (result, modifier) = execute_single_with_authority(
+                    registry,
+                    call,
+                    authority,
+                    msg_id,
+                    hooks_shared,
+                    compaction_level,
+                    toon_enabled,
+                )
+                .await;
+            }
 
-        results.push(result);
-        modifiers.push(modifier);
+            if let ContentBlock::ToolResult {
+                content, is_error, ..
+            } = &result
+            {
+                let status = if *is_error {
+                    ToolStatus::Error
+                } else {
+                    ToolStatus::Success
+                };
+                let _ = writer.emit(&ProtocolEvent::ToolResult {
+                    msg_id: msg_id.to_string(),
+                    call_id: id.clone(),
+                    tool_name: name.clone(),
+                    status,
+                    output: content.clone(),
+                    output_type: OutputType::Text,
+                    metadata: None,
+                });
+            }
+
+            if !block_is_error(&result) {
+                maybe_merge_skill_hooks(registry, call, hooks.as_deref_mut());
+            } else {
+                cascade.note(cascade_policy, call, false);
+            }
+
+            results.push(result);
+            modifiers.push(modifier);
+        }
     }
 
     Ok(ToolCallOutcome { results, modifiers })
@@ -1095,36 +1187,131 @@ fn block_is_error(block: &ContentBlock) -> bool {
     matches!(block, ContentBlock::ToolResult { is_error: true, .. })
 }
 
-fn truncate_result(content: &str, max_chars: usize) -> String {
-    if content.len() <= max_chars {
+fn truncate_result(content: &str, max_bytes: usize, cwd: Option<&std::path::Path>) -> String {
+    if content.len() <= max_bytes {
         return content.to_string();
     }
-    let half = max_chars / 2;
-    // Find char boundaries to avoid panicking on multi-byte characters
-    let head_end = content
-        .char_indices()
-        .nth(half)
-        .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let tail_start = content
-        .char_indices()
-        .rev()
-        .nth(half - 1)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let head = &content[..head_end];
-    let tail = &content[tail_start..];
-    format!(
-        "{}\n\n... [truncated {} chars] ...\n\n{}",
-        head,
-        content.len() - max_chars,
-        tail
+    let locator = nomi_tools::content_ref::persist_content_reference(content, cwd);
+    let clipped = truncate_middle(content, TruncationBudget::Bytes(max_bytes.saturating_sub(locator.len().saturating_add(16))));
+    format!("{locator}\n{clipped}")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathLock {
+    None,
+    All,
+    Paths(Vec<String>),
+}
+
+fn normalize_lock_path(raw: &str) -> String {
+    raw.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn is_workspace_wide_path(raw: &str) -> bool {
+    let t = raw.trim();
+    t.is_empty() || t == "." || t == "./" || t == "*" || t == "**"
+}
+
+fn is_exclusive_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "Edit"
+            | "Write"
+            | "ApplyPatch"
+            | "Bash"
+            | "exec_command"
+            | "write_stdin"
+            | "Browser"
+            | "Computer"
+            | "LaunchApp"
+            | "computer"
+            | "browser"
+            | "verify_change"
     )
+}
+
+fn path_lock_for(name: &str, input: &serde_json::Value) -> PathLock {
+    match name {
+        "Read" => {
+            if let Some(paths) = input.get("file_paths").and_then(|v| v.as_array()) {
+                let paths: Vec<String> = paths
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(normalize_lock_path)
+                    .collect();
+                if paths.is_empty() {
+                    PathLock::All
+                } else {
+                    PathLock::Paths(paths)
+                }
+            } else if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
+                if is_workspace_wide_path(path) {
+                    PathLock::All
+                } else {
+                    PathLock::Paths(vec![normalize_lock_path(path)])
+                }
+            } else {
+                PathLock::All
+            }
+        }
+        "Edit" | "Write" | "ApplyPatch" => {
+            if let Some(path) = input
+                .get("file_path")
+                .or_else(|| input.get("path"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                PathLock::Paths(vec![normalize_lock_path(path)])
+            } else {
+                PathLock::All
+            }
+        }
+        "Grep" | "Glob" | "DirTree" | "dir_tree" => {
+            match input.get("path").and_then(|v| v.as_str()) {
+                None => PathLock::All,
+                Some(p) if is_workspace_wide_path(p) => PathLock::All,
+                Some(p) => PathLock::Paths(vec![normalize_lock_path(p)]),
+            }
+        }
+        "Bash" | "exec_command" | "write_stdin" | "Browser" | "Computer" | "LaunchApp"
+        | "computer" | "browser" | "verify_change" => PathLock::All,
+        _ => PathLock::None,
+    }
+}
+
+fn path_lock_overlaps(a: &PathLock, b: &PathLock) -> bool {
+    match (a, b) {
+        (PathLock::None, _) | (_, PathLock::None) => false,
+        (PathLock::All, _) | (_, PathLock::All) => true,
+        (PathLock::Paths(left), PathLock::Paths(right)) => left.iter().any(|lp| {
+            right.iter().any(|rp| {
+                lp == rp || lp.starts_with(&format!("{rp}/")) || rp.starts_with(&format!("{lp}/"))
+            })
+        }),
+    }
+}
+
+struct Occupancy {
+    exclusive: bool,
+    lock: PathLock,
+}
+
+fn occupancy_conflicts(a: &Occupancy, b: &Occupancy) -> bool {
+    if !a.exclusive && !b.exclusive {
+        return false;
+    }
+    // Unknown occupancy cannot be proven disjoint, so exclusive tools still serialize.
+    if matches!(a.lock, PathLock::None) || matches!(b.lock, PathLock::None) {
+        return true;
+    }
+    path_lock_overlaps(&a.lock, &b.lock)
 }
 
 struct Batch<'a> {
     is_concurrent: bool,
     calls: Vec<&'a ContentBlock>,
+    occupancy: Vec<Occupancy>,
 }
 
 fn partition<'a>(
@@ -1143,28 +1330,37 @@ fn partition<'a>(
                 .get(name)
                 .map(|t| t.is_concurrency_safe(input))
                 .unwrap_or(false);
+        let occ = Occupancy {
+            exclusive: is_exclusive_tool(name) || !is_safe,
+            lock: path_lock_for(name, input),
+        };
 
-        match batches.last_mut() {
-            Some(last) if last.is_concurrent && is_safe => {
+        let can_join = batches.last().is_some_and(|last| {
+            last.occupancy.iter().all(|existing| !occupancy_conflicts(existing, &occ))
+        });
+        if can_join {
+            if let Some(last) = batches.last_mut() {
                 last.calls.push(call);
+                last.occupancy.push(occ);
+                last.is_concurrent = last.calls.len() > 1
+                    || last.occupancy.iter().all(|o| !o.exclusive);
             }
-            _ => {
-                batches.push(Batch {
-                    is_concurrent: is_safe,
-                    calls: vec![call],
-                });
-            }
+        } else {
+            let is_concurrent = is_safe && !is_exclusive_tool(name);
+            batches.push(Batch {
+                is_concurrent,
+                calls: vec![call],
+                occupancy: vec![occ],
+            });
         }
     }
 
     batches
 }
 
-/// Group call indices for the protocol path: consecutive `batchable` calls
-/// (concurrency-safe AND needing no interactive approval) form one range that
-/// can execute in parallel; every other call is its own singleton range so its
-/// approval prompt + serial execution are preserved. Order is preserved, which
-/// keeps tool_use/tool_result pairing intact for the model. (Phase 2 tool-call)
+/// Group call indices for tests of the legacy consecutive-batchable protocol
+/// scheduler. Production execution uses occupancy `partition` instead.
+#[cfg(test)]
 fn group_batches(batchable: &[bool]) -> Vec<std::ops::Range<usize>> {
     let mut groups = Vec::new();
     let mut i = 0;
@@ -1215,27 +1411,323 @@ mod tests {
     #[test]
     fn truncate_result_short_unchanged() {
         let s = "short content";
-        assert_eq!(truncate_result(s, 1000), s);
+        assert_eq!(truncate_result(s, 1000, None), s);
     }
 
     #[test]
     fn truncate_result_cjk_does_not_panic() {
         let cjk: String = "这是一段较长的中文内容用于测试截断功能".repeat(50);
-        let result = truncate_result(&cjk, 100);
+        let result = truncate_result(&cjk, 100, None);
         assert!(result.contains("truncated"));
     }
 
     #[test]
     fn truncate_result_mixed_cjk_ascii_does_not_panic() {
         let mixed = "Hello你好World世界Test测试".repeat(100);
-        let result = truncate_result(&mixed, 200);
+        let result = truncate_result(&mixed, 200, None);
         assert!(result.contains("truncated"));
     }
 
-    // -- execute_single integration tests (deferred tool activation) ----------
+    #[test]
+    fn truncate_result_oversized_emits_content_ref() {
+        let body = "x".repeat(4000);
+        let result = truncate_result(&body, 200, None);
+        assert!(result.contains("[content_ref"));
+        assert!(result.contains("ReadContentRef"));
+        assert!(result.contains("truncated"));
+    }
+
+    /// N3: redaction must happen BEFORE the content_ref file is written, so a
+    /// secret in an oversized output never reaches disk in plaintext.
+    #[test]
+    fn redaction_precedes_content_ref_persistence() {
+        // `sk-` + >=20 alphanumerics matches the redactor's key pattern.
+        let secret = "sk-antapi0300000000000000000000000000000000000000";
+        let mut body = "padding-".repeat(600);
+        body.push_str(secret);
+        body.push_str(&"-padding".repeat(600));
+
+        // Simulate the execution path: scrub first, then truncate.
+        let scrubbed = nomi_redact::redact_secrets_owned(body.clone());
+        let result = truncate_result(&scrubbed, 200, None);
+
+        // The locator is still emitted so the model can page the output.
+        assert!(result.contains("[content_ref"));
+        // And the secret never made it into the persisted artifact.
+        let id = nomi_tools::content_ref::content_id(&scrubbed);
+        let path = std::env::temp_dir()
+            .join("nomi-content-refs")
+            .join(&id);
+        if path.exists() {
+            let on_disk = std::fs::read_to_string(&path).expect("read content_ref");
+            assert!(
+                !on_disk.contains(secret),
+                "secret must not be persisted in plaintext"
+            );
+        }
+        // Redaction actually transformed the payload.
+        assert!(!scrubbed.contains(secret));
+    }
+
+    #[test]
+    fn redaction_leaves_normal_output_intact() {
+        let body = "ls -la\n".repeat(200);
+        let scrubbed = nomi_redact::redact_secrets_owned(body.clone());
+        // Non-secret content passes through unchanged.
+        assert_eq!(scrubbed, body);
+    }
+
+    #[test]
+    fn path_overlap_allows_disjoint_read_and_edit() {
+        let read = Occupancy {
+            exclusive: false,
+            lock: path_lock_for("Read", &json!({"file_path": "a.rs"})),
+        };
+        let edit = Occupancy {
+            exclusive: true,
+            lock: path_lock_for("Edit", &json!({"file_path": "b.rs"})),
+        };
+        assert!(!occupancy_conflicts(&read, &edit));
+    }
+
+    #[test]
+    fn path_overlap_exclusive_edits_on_different_files_do_not_conflict() {
+        let a = Occupancy {
+            exclusive: true,
+            lock: path_lock_for("Edit", &json!({"file_path": "a.rs"})),
+        };
+        let b = Occupancy {
+            exclusive: true,
+            lock: path_lock_for("Edit", &json!({"file_path": "b.rs"})),
+        };
+        assert!(!occupancy_conflicts(&a, &b));
+    }
+
+    #[test]
+    fn path_overlap_exclusive_edits_on_same_file_conflict() {
+        let a = Occupancy {
+            exclusive: true,
+            lock: path_lock_for("Edit", &json!({"file_path": "a.rs"})),
+        };
+        let b = Occupancy {
+            exclusive: true,
+            lock: path_lock_for("Edit", &json!({"file_path": "a.rs"})),
+        };
+        assert!(occupancy_conflicts(&a, &b));
+    }
+
+    #[test]
+    fn workspace_grep_overlaps_any_edit() {
+        let grep = Occupancy {
+            exclusive: false,
+            lock: path_lock_for("Grep", &json!({"pattern": "foo"})),
+        };
+        let edit = Occupancy {
+            exclusive: true,
+            lock: path_lock_for("Edit", &json!({"file_path": "src/lib.rs"})),
+        };
+        assert!(occupancy_conflicts(&grep, &edit));
+    }
+
+    #[test]
+    fn exclusive_unknown_path_occupancy_still_conflicts() {
+        let a = Occupancy {
+            exclusive: true,
+            lock: path_lock_for("MockDeferred", &json!({})),
+        };
+        let b = Occupancy {
+            exclusive: true,
+            lock: path_lock_for("MockDeferred", &json!({})),
+        };
+        assert!(occupancy_conflicts(&a, &b));
+    }
 
     use nomi_tools::Tool;
     use nomi_tools::registry::ToolRegistry;
+
+    struct NamedPathTool {
+        tool_name: &'static str,
+        concurrent_safe: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for NamedPathTool {
+        fn name(&self) -> &str {
+            self.tool_name
+        }
+        fn description(&self) -> &str {
+            "path-aware mock"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            self.concurrent_safe
+        }
+        async fn execute(&self, input: serde_json::Value) -> nomi_types::tool::ToolResult {
+            if self.tool_name == "Edit" {
+                let path = input
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if path.contains("fail") {
+                    return nomi_types::tool::ToolResult {
+                        content: format!("edit failed {path}"),
+                        is_error: true,
+                        images: Vec::new(),
+                    };
+                }
+                return nomi_types::tool::ToolResult {
+                    content: format!("edit ok {path}"),
+                    is_error: false,
+                    images: Vec::new(),
+                };
+            }
+            nomi_types::tool::ToolResult {
+                content: format!("{} ran", self.tool_name),
+                is_error: false,
+                images: Vec::new(),
+            }
+        }
+        fn category(&self) -> nomi_protocol::events::ToolCategory {
+            nomi_protocol::events::ToolCategory::Edit
+        }
+    }
+
+    fn coding_cascade() -> ErrorCascadePolicy {
+        ErrorCascadePolicy::HaltAfterMutatingOrGate
+    }
+
+    fn edit_call(id: &str, path: &str) -> ContentBlock {
+        ContentBlock::ToolUse {
+            id: id.into(),
+            name: "Edit".into(),
+            input: json!({ "file_path": path }),
+            extra: None,
+        }
+    }
+
+    fn bash_call(id: &str) -> ContentBlock {
+        ContentBlock::ToolUse {
+            id: id.into(),
+            name: "Bash".into(),
+            input: json!({ "command": "echo hi" }),
+            extra: None,
+        }
+    }
+
+    fn path_tool_registry() -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(NamedPathTool {
+            tool_name: "Edit",
+            concurrent_safe: false,
+        }));
+        registry.register(Box::new(NamedPathTool {
+            tool_name: "Bash",
+            concurrent_safe: false,
+        }));
+        registry
+    }
+
+    fn result_pair(block: &ContentBlock) -> (&str, bool, &str) {
+        match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                content,
+                ..
+            } => (tool_use_id.as_str(), *is_error, content.as_str()),
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn coding_cascade_runs_disjoint_edit_after_failed_edit() {
+        let registry = path_tool_registry();
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
+        let outcome = execute_tool_calls_scoped(
+            &registry,
+            &[edit_call("e1", "fail.rs"), edit_call("e2", "b.rs")],
+            &ProviderToolAuthority::from_request_tools(&registry.to_tool_defs()),
+            "",
+            &confirmer,
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            coding_cascade(),
+        )
+        .await
+        .unwrap();
+        let (id1, err1, c1) = result_pair(&outcome.results[0]);
+        let (id2, err2, c2) = result_pair(&outcome.results[1]);
+        assert_eq!(id1, "e1");
+        assert!(err1, "{c1}");
+        assert_eq!(id2, "e2");
+        assert!(!err2, "disjoint Edit must still run, got {c2}");
+        assert!(c2.contains("edit ok b.rs"), "{c2}");
+    }
+
+    #[tokio::test]
+    async fn coding_cascade_skips_bash_but_not_other_file_edit() {
+        let registry = path_tool_registry();
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
+        let outcome = execute_tool_calls_scoped(
+            &registry,
+            &[
+                edit_call("e1", "fail.rs"),
+                bash_call("b1"),
+                edit_call("e2", "b.rs"),
+            ],
+            &ProviderToolAuthority::from_request_tools(&registry.to_tool_defs()),
+            "",
+            &confirmer,
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            coding_cascade(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.results.len(), 3);
+        let (_, err1, _) = result_pair(&outcome.results[0]);
+        let (_, err_bash, bash_c) = result_pair(&outcome.results[1]);
+        let (_, err2, c2) = result_pair(&outcome.results[2]);
+        assert!(err1);
+        assert!(err_bash && bash_c.contains("Skipped because a previous tool call"), "{bash_c}");
+        assert!(!err2, "other-file Edit must not inherit HaltAfter, got {c2}");
+        assert!(c2.contains("edit ok b.rs"), "{c2}");
+    }
+
+    #[tokio::test]
+    async fn protocol_coding_cascade_runs_disjoint_edits() {
+        let registry = path_tool_registry();
+        let approval_manager = Arc::new(ToolApprovalManager::new());
+        let writer_capture = Arc::new(CapturingEmitter::default());
+        let writer: Arc<dyn ProtocolEmitter> = writer_capture.clone();
+        let outcome = execute_tool_calls_with_approval(
+            &registry,
+            &[edit_call("e1", "fail.rs"), edit_call("e2", "b.rs")],
+            &ProviderToolAuthority::from_request_tools(&registry.to_tool_defs()),
+            &approval_manager,
+            &writer,
+            "msg-disjoint-edit",
+            true,
+            &[],
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            coding_cascade(),
+        )
+        .await
+        .unwrap();
+        let (_, err1, _) = result_pair(&outcome.results[0]);
+        let (_, err2, c2) = result_pair(&outcome.results[1]);
+        assert!(err1);
+        assert!(!err2, "desktop protocol path must not skip the other file, got {c2}");
+        assert!(c2.contains("edit ok b.rs"), "{c2}");
+    }
+
+    // -- execute_single integration tests (deferred tool activation) ----------
 
     struct ContextRecordingTool {
         operation_ids: Arc<std::sync::Mutex<Vec<String>>>,
@@ -1846,6 +2338,78 @@ mod tests {
 
     fn make_registry_with_deferred() -> (ToolRegistry, Arc<std::sync::atomic::AtomicUsize>) {
         make_registry_with_deferred_safety(true)
+    }
+
+    #[tokio::test]
+    async fn plan_mode_read_only_refuses_write_without_execute() {
+        let (registry, calls) = make_registry_with_deferred();
+        let mut authority = ProviderToolAuthority::from_request_tools(&registry.to_tool_defs());
+        authority.plan_mode_read_only = true;
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
+
+        let outcome = execute_tool_calls_scoped(
+            &registry,
+            &[deferred_call("plan-write")],
+            &authority,
+            "",
+            &confirmer,
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            &outcome.results[0],
+            ContentBlock::ToolResult { content, is_error: true, .. }
+                if content.contains("Plan mode is read-only") && content.contains("MockDeferred")
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn overlay_live_activation_allows_dispatch_after_prior_search() {
+        let (registry, calls) = make_registry_with_deferred();
+        let frozen = registry.to_tool_defs();
+        assert!(
+            frozen
+                .iter()
+                .any(|def| def.name == "MockDeferred" && def.deferred)
+        );
+
+        let search = nomi_tools::tool_search::ToolSearchTool::new(registry.deferred_state());
+        assert!(!search
+            .execute(json!({"query": "MockDeferred"}))
+            .await
+            .is_error);
+
+        let mut authority = ProviderToolAuthority::from_request_tools(&frozen);
+        assert!(authority.is_deferred("MockDeferred"));
+        authority.overlay_live_activation(&registry);
+        assert!(!authority.is_deferred("MockDeferred"));
+
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
+        let outcome = execute_tool_calls_scoped(
+            &registry,
+            &[deferred_call("after-search")],
+            &authority,
+            "",
+            &confirmer,
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            &outcome.results[0],
+            ContentBlock::ToolResult { is_error: false, .. }
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     fn deferred_call(id: &str) -> ContentBlock {

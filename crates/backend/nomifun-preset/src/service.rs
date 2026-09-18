@@ -12,7 +12,10 @@ use nomifun_db::{
     IPresetTagRepository, IProviderRepository, PresetRecord, PresetWriteParams,
     UpdatePresetTagParams, UpsertPresetStateParams,
 };
-use nomifun_extension::{ExtensionRegistry, ResolvedPreset};
+use nomifun_extension::{
+    ExtensionRegistry, MarketPackagePresetInstallFailure, MarketPackagePresetInstaller,
+    ResolvedPreset,
+};
 
 use crate::builtin::{AvatarAsset, BuiltinPreset, BuiltinPresetRegistry};
 use nomifun_extension::{PresetClassifier, PresetRuleDispatcher};
@@ -174,6 +177,25 @@ impl PresetService {
     }
 
     pub async fn create(&self, request: CreatePresetRequest) -> Result<PresetResponse, AppError> {
+        self.create_with_state(
+            request,
+            UpsertPresetStateParams {
+                preset_id: String::new(),
+                enabled: true,
+                auto_selectable: false,
+                preferred_agent_id: None,
+                sort_order: 0,
+                last_used_at: None,
+            },
+        )
+        .await
+    }
+
+    async fn create_with_state(
+        &self,
+        request: CreatePresetRequest,
+        mut state: UpsertPresetStateParams,
+    ) -> Result<PresetResponse, AppError> {
         validate_request(
             &request.name,
             &request.agent_preferences,
@@ -191,14 +213,9 @@ impl PresetService {
             None => PresetId::new().into_string(),
         };
         let params = write_from_create(preset_id.clone(), request);
-        let record = self.repo.create(&params).await?;
-        let state = self.state_repo.upsert(&UpsertPresetStateParams {
-            preset_id, enabled: true, auto_selectable: false,
-            preferred_agent_id: None, sort_order: 0, last_used_at: None,
-        }).await?;
-        let mut response = record_to_response(&record)?;
-        apply_state(&mut response, Some(&state));
-        Ok(response)
+        state.preset_id = preset_id;
+        let record = self.repo.create_with_state(&params, &state).await?;
+        record_to_response(&record)
     }
 
     pub async fn update(&self, id: &str, request: UpdatePresetRequest) -> Result<PresetResponse, AppError> {
@@ -636,6 +653,109 @@ impl PresetService {
             "user" => find_asset(&self.user_data_dir.join("preset-avatars"), id),
             _ => None,
         }
+    }
+}
+
+/// Complete the second half of a market package transaction. The extension
+/// crate owns archive validation and Skill commits; this implementation only
+/// creates the user preset after it receives the complete canonical Skill set.
+#[async_trait::async_trait]
+impl MarketPackagePresetInstaller for PresetService {
+    async fn install_market_package_preset(
+        &self,
+        requested_id: Option<String>,
+        package: SkillMarketPackageResponse,
+        skill_ids: Vec<String>,
+    ) -> Result<String, MarketPackagePresetInstallFailure> {
+        let preset_id = requested_id.unwrap_or_else(|| PresetId::new().into_string());
+        let included_skills = skill_ids
+            .iter()
+            .cloned()
+            .map(|skill_id| SkillBinding { skill_id, required: true })
+            .collect::<Vec<_>>();
+        let request = CreatePresetRequest {
+            preset_id: Some(preset_id.clone()),
+            name: package.name.clone(),
+            description: Some(package.description.clone()),
+            routing_description: Some(package.description.clone()),
+            instructions: package.instructions.clone(),
+            avatar: package.avatar.clone(),
+            fallback_allowed: false,
+            targets: vec![PresetTarget::Conversation, PresetTarget::ExecutionStep],
+            agent_preferences: Vec::new(),
+            model_preferences: Vec::new(),
+            included_skills,
+            excluded_auto_skills: Vec::new(),
+            knowledge_policy: PresetKnowledgePolicy::default(),
+            knowledge_bases: Vec::new(),
+            mcp_server_ids: Vec::new(),
+            examples: Vec::new(),
+            examples_i18n: HashMap::new(),
+            audience_tag_ids: Vec::new(),
+            scenario_tag_ids: Vec::new(),
+            name_i18n: HashMap::new(),
+            description_i18n: HashMap::new(),
+            instructions_i18n: HashMap::new(),
+        };
+
+        let desired_state = UpsertPresetStateParams {
+            preset_id: preset_id.clone(),
+            enabled: true,
+            auto_selectable: true,
+            preferred_agent_id: None,
+            sort_order: 0,
+            last_used_at: None,
+        };
+        let (preset, newly_created) = match self
+            .create_with_state(request, desired_state)
+            .await
+        {
+            Ok(preset) => (preset, true),
+            Err(AppError::Conflict(_)) => {
+                let existing = self
+                    .get(&preset_id)
+                    .await
+                    .map_err(|error| MarketPackagePresetInstallFailure::new(error, true))?;
+                let existing_skill_ids = existing
+                    .included_skills
+                    .iter()
+                    .map(|skill| skill.skill_id.clone())
+                    .collect::<Vec<_>>();
+                if existing.source != PresetSource::User
+                    || existing.name != package.name
+                    || existing.description.as_deref() != Some(package.description.as_str())
+                    || existing.instructions != package.instructions
+                    || existing.targets != [PresetTarget::Conversation, PresetTarget::ExecutionStep]
+                    || existing_skill_ids != skill_ids
+                {
+                    return Err(MarketPackagePresetInstallFailure::new(
+                        AppError::Conflict(format!(
+                            "preset id '{preset_id}' is already used by a different preset"
+                        )),
+                        true,
+                    ));
+                }
+                (existing, false)
+            }
+            Err(error) => {
+                return Err(MarketPackagePresetInstallFailure::new(error, false));
+            }
+        };
+
+        if !newly_created {
+            self.set_state(
+                &preset.preset_id,
+                SetPresetStateRequest {
+                    enabled: Some(true),
+                    auto_selectable: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| MarketPackagePresetInstallFailure::new(error, true))?;
+        }
+
+        Ok(preset.preset_id)
     }
 }
 

@@ -43,7 +43,7 @@ cargo check --workspace
 
 | 命令 | 适用场景 | 实际运行内容 |
 | --- | --- | --- |
-| `bun run dev:ui` | 纯 UI 工作，可接受 API 请求失败 | Vite on `http://localhost:5173`，不启动后端。 |
+| `bun run dev:ui` | 纯 UI 工作，可接受 API 请求失败 | Vite on `http://127.0.0.1:5173`，不启动后端。 |
 | `bun run dev:web` | 浏览器 + 后端联调，关闭登录 | `NOMI_CHANNEL=dev` 的 `nomifun-web --port 8787 --dist ui/dist --insecure-no-auth` 加 Vite。 |
 | `bun run serve:web` | 从源码跑生产形态 Web host | `nomifun-web` on `http://127.0.0.1:8787`，服务 `ui/dist`，默认开启登录。 |
 | `bun run dev` | 桌面/Tauri 开发 | `NOMI_CHANNEL=dev` 的 Tauri shell、Vite、桌面本地信任策略下的嵌入式后端。 |

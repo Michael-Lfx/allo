@@ -10,6 +10,7 @@ use tracing::{debug, warn};
 use crate::activation::DeviceActivation;
 use crate::flowy::FlowyApiClient;
 use crate::http_service::CloudService;
+use crate::paths::load_or_create_client_id;
 use crate::session::ServerSession;
 
 /// Best-effort device activation + client package report for an existing session.
@@ -39,7 +40,14 @@ pub async fn ensure_device_telemetry(service: &CloudService) {
     if let Err(err) = mgr.ensure_device_activation().await {
         warn!(error = %err, "device activation check on startup failed");
     }
-    if let Err(err) = mgr.api().report_client_package(mgr.session()).await {
+    if let Err(err) = mgr
+        .api()
+        .report_client_package(
+            mgr.session(),
+            Some(load_or_create_client_id(service.data_dir())),
+        )
+        .await
+    {
         warn!(error = %err, "client package report on startup failed");
     }
 }
@@ -53,6 +61,9 @@ pub fn spawn_post_login_telemetry(
     data_dir: PathBuf,
     session: ServerSession,
     user_id: i64,
+    host_runtime: nomifun_api_types::RuntimeKind,
+    signup_method: Option<String>,
+    login_at_ms: Option<i64>,
 ) {
     tokio::spawn(async move {
         let api = match FlowyApiClient::new(&config) {
@@ -62,13 +73,27 @@ pub fn spawn_post_login_telemetry(
                 return;
             }
         };
+        let host = match host_runtime {
+            nomifun_api_types::RuntimeKind::Desktop => "desktop",
+            nomifun_api_types::RuntimeKind::Web => "web",
+        };
         if let Err(err) = DeviceActivation::new(&data_dir)
-            .try_activate_for_user(&api, &session, user_id)
+            .try_activate_for_user(
+                &api,
+                &session,
+                user_id,
+                host,
+                signup_method.as_deref(),
+                login_at_ms,
+            )
             .await
         {
             warn!(error = %err, "device activation failed after login");
         }
-        if let Err(err) = api.report_client_package(&session).await {
+        if let Err(err) = api
+            .report_client_package(&session, Some(load_or_create_client_id(&data_dir)))
+            .await
+        {
             warn!(error = %err, "client package report failed after login");
         }
     });
@@ -79,7 +104,14 @@ async fn send_presence_heartbeat(service: &CloudService) {
         Ok(m) => m,
         Err(_) => return,
     };
-    match mgr.api().presence_heartbeat(mgr.session()).await {
+    match mgr
+        .api()
+        .presence_heartbeat(
+            mgr.session(),
+            Some(load_or_create_client_id(service.data_dir())),
+        )
+        .await
+    {
         Ok(()) => debug!("presence heartbeat sent"),
         Err(err) => warn!(error = %err, "presence heartbeat failed"),
     }

@@ -1,4 +1,4 @@
-import { CloseSmall, Robot } from '@icon-park/react';
+import { CloseSmall, Puzzle, Robot } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import TaskProfileSelector, {
@@ -12,6 +12,9 @@ export interface ComposerEntryStripProps {
   presetAvatar?: { kind: 'image' | 'emoji' | 'icon'; value?: string };
   onChoosePreset: () => void;
   onFree: () => void;
+  /** Opens the shared Skills selector for the current draft. */
+  onAdjustSkills?: () => void;
+  activeSkillCount?: number;
   /** Nomi session work mode (office | coding). */
   taskProfile?: TaskProfile;
   onTaskProfileChange?: (profile: TaskProfile) => void;
@@ -30,6 +33,8 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   presetAvatar,
   onChoosePreset,
   onFree,
+  onAdjustSkills,
+  activeSkillCount = 0,
   taskProfile = 'office',
   onTaskProfileChange,
   hideTaskProfile = false,
@@ -56,6 +61,24 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
     />
   );
 
+  const skillButton = onAdjustSkills ? (
+    <button
+      type='button'
+      data-testid='guid-adjust-skills'
+      className={`${styles.entryButton} ${styles.entryButtonInteractive} ${activeSkillCount > 0 ? styles.entryButtonActive : ''}`}
+      onClick={onAdjustSkills}
+      aria-label={t('guid.entry.adjustSkills', { defaultValue: 'Adjust Skills' })}
+    >
+      <Puzzle theme='outline' size={15} fill='currentColor' />
+      <span className={styles.entryButtonText}>{t('guid.entry.skills', { defaultValue: 'Skills' })}</span>
+      {activeSkillCount > 0 && (
+        <span className={styles.entryCountBadge} aria-label={t('guid.entry.skillCount', { count: activeSkillCount })}>
+          <span className={styles.entryCountBadgeDigit}>{activeSkillCount}</span>
+        </span>
+      )}
+    </button>
+  ) : null;
+
   if (isPresetAgent) {
     return (
       <div className={styles.entryStrip}>
@@ -74,6 +97,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         >
           <CloseSmall theme='outline' size={14} />
         </button>
+        {skillButton}
         {taskProfileSelector}
       </div>
     );
@@ -90,6 +114,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         <Robot theme='outline' size={15} fill='currentColor' />
         <span className={styles.entryButtonText}>{t('guid.entry.usePreset', { defaultValue: 'Use preset' })}</span>
       </button>
+      {skillButton}
       {taskProfileSelector}
     </div>
   );

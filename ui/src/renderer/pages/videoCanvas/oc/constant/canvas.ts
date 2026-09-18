@@ -1,3 +1,4 @@
+import { createDefaultArtCritiqueState } from "@oc/lib/art-critique/contracts";
 import { CanvasNodeType } from "@oc/types/canvas";
 import type { CanvasNodeMetadata } from "@oc/types/canvas";
 
@@ -13,8 +14,8 @@ export const NODE_DEFAULT_SIZE = {
     [CanvasNodeType.Text]: { width: 340, height: 240, title: "Note" },
     [CanvasNodeType.Drawing]: { width: 440, height: 300, title: "绘图" },
     [CanvasNodeType.Script]: { width: 920, height: 360, title: "分镜脚本" },
-    [CanvasNodeType.Skill]: { width: 360, height: 220, title: "技能" },
-    [CanvasNodeType.Config]: { width: 340, height: 300, title: "生成配置" },
+    [CanvasNodeType.Skill]: { width: 320, height: 168, title: "技能" },
+    [CanvasNodeType.Config]: { width: 360, height: 340, title: "生成配置" },
     [CanvasNodeType.Video]: { width: 480, height: 270, title: "Video" },
     [CanvasNodeType.Audio]: { width: 340, height: 120, title: "Audio" },
     [CanvasNodeType.Frame]: { width: 760, height: 520, title: "未命名背板" },
@@ -25,6 +26,7 @@ export const NODE_DEFAULT_SIZE = {
     [CanvasNodeType.Compare]: { width: 520, height: 320, title: "对比" },
     [CanvasNodeType.Chart]: { width: 480, height: 320, title: "图表" },
     [CanvasNodeType.ColorGrade]: { width: 420, height: 360, title: "调色" },
+    [CanvasNodeType.ArtCritique]: { width: 560, height: 420, title: "AI 审美批改" },
 } satisfies Record<CanvasNodeType, { width: number; height: number; title: string }>;
 
 export const NODE_SPECS = {
@@ -99,6 +101,10 @@ export const NODE_SPECS = {
     [CanvasNodeType.ColorGrade]: {
         ...NODE_DEFAULT_SIZE[CanvasNodeType.ColorGrade],
         metadata: { status: "idle" },
+    },
+    [CanvasNodeType.ArtCritique]: {
+        ...NODE_DEFAULT_SIZE[CanvasNodeType.ArtCritique],
+        metadata: { status: "idle", artCritique: createDefaultArtCritiqueState() },
     },
 } satisfies Record<CanvasNodeType, CanvasNodeSpec>;
 

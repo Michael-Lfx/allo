@@ -2457,9 +2457,7 @@ impl IConversationRepository for SqliteConversationRepository {
             .execute(&mut *tx)
             .await?;
             if admitted.rows_affected() != 1 {
-                return Err(DbError::Conflict(
-                    "Conversation lifecycle rejected durable turn admission".to_owned(),
-                ));
+                return Err(DbError::ConversationTurnAdmissionConflict);
             }
         }
         let receipt = sqlx::query_as::<_, ConversationDeliveryReceiptRow>(
@@ -2500,10 +2498,7 @@ impl IConversationRepository for SqliteConversationRepository {
         now: i64,
     ) -> Result<ConversationDeliveryReceiptClaim, DbError> {
         if expected_admission_epoch < 0
-            || !matches!(
-                source_error_code,
-                "output_truncated" | "turn_requests_exhausted"
-            )
+            || !crate::is_resumable_source_error_code(source_error_code)
         {
             return Err(DbError::Conflict(
                 "Truncated-turn continuation requires an exact retryable source failure"
@@ -2662,10 +2657,7 @@ impl IConversationRepository for SqliteConversationRepository {
         .execute(&mut *tx)
         .await?;
         if admitted.rows_affected() != 1 {
-            return Err(DbError::Conflict(
-                "Conversation lifecycle rejected truncated-turn continuation admission"
-                    .to_owned(),
-            ));
+            return Err(DbError::ConversationTurnAdmissionConflict);
         }
 
         let receipt = sqlx::query_as::<_, ConversationDeliveryReceiptRow>(
@@ -2779,10 +2771,7 @@ impl IConversationRepository for SqliteConversationRepository {
             .execute(&mut *tx)
             .await?;
             if admitted.rows_affected() != 1 {
-                return Err(DbError::Conflict(
-                    "Conversation lifecycle rejected initial-only turn admission"
-                        .to_owned(),
-                ));
+                return Err(DbError::ConversationTurnAdmissionConflict);
             }
         }
 
@@ -2793,10 +2782,7 @@ impl IConversationRepository for SqliteConversationRepository {
         .fetch_optional(&mut *tx)
         .await?
         else {
-            return Err(DbError::Conflict(
-                "Conversation is no longer eligible for initial auto-delivery"
-                    .to_owned(),
-            ));
+            return Err(DbError::ConversationTurnAdmissionConflict);
         };
         if receipt.user_id != user_id
             || receipt.conversation_id != conversation_id
@@ -2941,9 +2927,7 @@ impl IConversationRepository for SqliteConversationRepository {
             .execute(&mut *tx)
             .await?;
             if admitted.rows_affected() != 1 {
-                return Err(DbError::Conflict(
-                    "Conversation lifecycle rejected exact AutoWork turn admission".to_owned(),
-                ));
+                return Err(DbError::ConversationTurnAdmissionConflict);
             }
         }
         let receipt = sqlx::query_as::<_, ConversationDeliveryReceiptRow>(

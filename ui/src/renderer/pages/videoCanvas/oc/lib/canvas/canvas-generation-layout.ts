@@ -10,7 +10,14 @@ const BATCH_CHILD_GAP = 36;
 const NODE_CLEARANCE = 36;
 
 export function canGenerateImageInPlace(sourceNode: CanvasNodeData | undefined) {
-    return sourceNode?.type === CanvasNodeType.Image && !sourceNode.metadata?.content;
+    return canGenerateMediaInPlace(sourceNode, CanvasNodeType.Image);
+}
+
+export function canGenerateMediaInPlace(sourceNode: CanvasNodeData | undefined, mediaType: typeof CanvasNodeType.Image | typeof CanvasNodeType.Video | typeof CanvasNodeType.Audio) {
+    if (sourceNode?.type !== mediaType) return false;
+    if (sourceNode.metadata?.generationResultPlacement) return sourceNode.metadata.generationResultPlacement === "replace-node";
+    if (!sourceNode.metadata?.content) return true;
+    return Boolean(sourceNode.metadata?.copiedFromNodeId || sourceNode.metadata?.versionOfNodeId);
 }
 
 export function imageGenerationGroupSize(rootSize: Size, imageSize: Size, childCount: number): Size {
@@ -27,6 +34,23 @@ export function imageGenerationChildPosition(rootPosition: Position, rootWidth: 
     return {
         x: rootPosition.x + rootWidth + BATCH_CHILD_OFFSET_X + (index % 2) * (imageSize.width + BATCH_CHILD_GAP),
         y: rootPosition.y + Math.floor(index / 2) * (imageSize.height + BATCH_CHILD_GAP),
+    };
+}
+
+export function generationGridPosition(origin: Position, itemSize: Size, index: number, columns = 2): Position {
+    return {
+        x: origin.x + (index % columns) * (itemSize.width + BATCH_CHILD_GAP),
+        y: origin.y + Math.floor(index / columns) * (itemSize.height + BATCH_CHILD_GAP),
+    };
+}
+
+export function generationGridSize(itemSize: Size, count: number, columns = 2): Size {
+    if (count <= 0) return { width: 0, height: 0 };
+    const cols = Math.min(count, columns);
+    const rows = Math.ceil(count / columns);
+    return {
+        width: cols * itemSize.width + (cols - 1) * BATCH_CHILD_GAP,
+        height: rows * itemSize.height + (rows - 1) * BATCH_CHILD_GAP,
     };
 }
 

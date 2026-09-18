@@ -109,6 +109,12 @@ pub async fn run_doctor(
                                         manager.api(),
                                         manager.session(),
                                         profile.id,
+                                        match manager.host_runtime() {
+                                            nomifun_api_types::RuntimeKind::Desktop => "desktop",
+                                            nomifun_api_types::RuntimeKind::Web => "web",
+                                        },
+                                        None,
+                                        None,
                                     )
                                     .await
                                 {

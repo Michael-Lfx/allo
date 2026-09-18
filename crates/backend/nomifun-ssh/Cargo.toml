@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "nomifun-ssh"
 version.workspace = true
 edition.workspace = true

@@ -139,6 +139,8 @@ export interface WorkspaceExtraTab {
   title: ReactNode;
   /** Optional icon rendered by the persistent vertical tool rail. */
   icon?: ReactNode;
+  /** Optional attention badge rendered on the tool rail item. */
+  badge?: ReactNode;
   content: ReactNode;
 }
 

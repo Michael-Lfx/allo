@@ -71,7 +71,7 @@ Product identity comes from `apps/desktop/tauri.conf.json`:
 - `productName: "Flowy"`
 - `identifier: "com.nomifun.desktop"`
 - version from workspace package metadata
-- dev URL `http://localhost:5173`
+- dev URL `http://127.0.0.1:5173`
 - bundled frontend `../../ui/dist`
 
 Tauri desktop bundles are best built on their target OS. Cross-OS desktop

@@ -42,6 +42,8 @@ import {
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import { isConversationTurnAdmissionConflict } from '@/renderer/pages/conversation/platforms/conversationSendRecovery';
+import { isConversationModelSelectionDisabled } from '@/renderer/pages/conversation/utils/conversationModelSelection';
 import { CHAT_COMPOSER_WRAPPER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import {
   warmupConversation,
@@ -52,6 +54,11 @@ import { iconColors } from '@/renderer/styles/colors';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
+import {
+  beginTurnTiming,
+  markTurnAccepted as markFunnelTurnAccepted,
+  markTurnIdle,
+} from '@/renderer/utils/analytics/productFunnel';
 import { Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Brain, Shield } from '@icon-park/react';
@@ -142,7 +149,13 @@ const AcpSendBox: React.FC<{
   const conversationContext = useConversationContextSafe();
   const loadedMcpStatuses = conversationContext?.loadedMcpStatuses ?? [];
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
+  const isBusy = running || aiProcessing || isStopping;
+  const modelSelectionDisabled = isConversationModelSelectionDisabled({
+    hasHydratedRunningState,
+    isBusy,
+  });
   const prepareRuntimeSync = useCallback(async () => {
     await warmupConversation(conversation_id);
   }, [conversation_id]);
@@ -161,6 +174,7 @@ const AcpSendBox: React.FC<{
     prepareRuntime: prepareRuntimeForRead,
     prepareRuntimeForMutation: prepareRuntimeSync,
     enabled: isMobile,
+    disabled: modelSelectionDisabled,
     onSelectModelSuccess: () => Message.success(t('agent.model.switchSuccess')),
     onSelectModelFailed: () => Message.error(t('agent.model.switchFailed')),
   });
@@ -225,8 +239,10 @@ const AcpSendBox: React.FC<{
     setAtPath,
     setUploadFile,
   });
-  const [isStopping, setIsStopping] = useState(false);
-  const isBusy = running || aiProcessing || isStopping;
+  useEffect(() => {
+    if (modelSelectionDisabled) setIsMobileSheetOpen(false);
+  }, [modelSelectionDisabled]);
+
   const { beginStopAttempt, getStopAttemptStatus } = useConversationStopAttemptGuard(
     conversation_id,
     getTurnStartGeneration,
@@ -267,20 +283,25 @@ const AcpSendBox: React.FC<{
         id = uuidv7(),
         input,
         files,
+        workspace_path: queuedWorkspacePath,
         injectSkills = [],
       }: Pick<ConversationCommandQueueItem, 'input' | 'files'> &
-        Partial<Pick<ConversationCommandQueueItem, 'id'>> & {
+        Partial<Pick<ConversationCommandQueueItem, 'id' | 'workspace_path'>> & {
           /** Source-qualified catalog Skill IDs selected for this exact turn. */
           injectSkills?: string[];
         },
       execution?: ConversationCommandQueueExecution,
       deferLocalTurnUntilFresh = execution !== undefined
     ) => {
-      const displayMessage = buildDisplayMessage(input, files, workspacePath || '');
+      const displayMessage = buildDisplayMessage(input, files, (queuedWorkspacePath ?? workspacePath) || '');
 
       // A persisted queue delivery may be a completed replay. Keep the local
       // lifecycle closed until the backend proves this caller won admission.
       if (!deferLocalTurnUntilFresh) setAiProcessing(true);
+      beginTurnTiming(conversation_id, {
+        conversation_type: 'acp',
+        cold_start: !hasHydratedRunningState,
+      });
 
       try {
         // Wait for the server-assigned msg_id before rendering the optimistic
@@ -302,6 +323,7 @@ const AcpSendBox: React.FC<{
             setAiProcessing(true);
           }
           markTurnAccepted(msg_id);
+          markFunnelTurnAccepted(conversation_id, { conversation_type: 'acp' });
           // A Skill-only send persists visible skill_load history but has no
           // user text projection, so do not create an empty optimistic bubble.
           if (displayMessage.trim().length > 0) {
@@ -325,6 +347,13 @@ const AcpSendBox: React.FC<{
         return disposition;
       } catch (error: unknown) {
         if (execution && !execution.isCurrent()) return;
+        markTurnIdle(conversation_id, 'failed');
+        if (execution) {
+          // The durable queue owns retry/reconciliation and the single final
+          // notification. Do not surface the raw lifecycle conflict here.
+          setAiProcessing(false);
+          throw error;
+        }
         const errorMsg =
           getConversationRuntimeWorkspaceErrorMessage(error, t) || parseError(error) || t('common.unknownError');
 
@@ -344,7 +373,14 @@ const AcpSendBox: React.FC<{
           errorMsg.includes('[ACP-AUTH-') ||
           errorMsg.includes('authentication failed') ||
           errorMsg.includes('认证失败');
-        if (isAuthError) {
+        if (isConversationTurnAdmissionConflict(error)) {
+          Message.warning(
+            t('conversation.commandQueue.specialDeliveryConflict', {
+              defaultValue:
+                'The conversation is still busy. This message and its Skill selection were kept; retry after the current turn finishes.',
+            })
+          );
+        } else if (isAuthError) {
           const content = t('acp.auth.failed', {
             backend,
             error: errorMsg,
@@ -370,6 +406,7 @@ Please check your local CLI tool authentication status`,
     [
       backend,
       conversation_id,
+      hasHydratedRunningState,
       markTurnAccepted,
       reconcilePublicDeliveryReplay,
       setAiProcessing,
@@ -387,6 +424,7 @@ Please check your local CLI tool authentication status`,
     remove,
     clear,
     reorder,
+    sendNow,
     pause,
     resume,
     lockInteraction,
@@ -403,22 +441,14 @@ Please check your local CLI tool authentication status`,
   const onSendHandler = async (message: string) => {
     const atPathFiles = atPath.map((item) => (typeof item === 'string' ? item : item.path));
     const allFiles = [...uploadFile, ...atPathFiles];
-
+    const queued = enqueue({ input: message, files: allFiles, workspace_path: workspacePath || '' });
+    if (!queued) {
+      // Keep the draft and attachments when queue validation/storage fails;
+      // SendBox restores the submitted text through its revision guard.
+      throw new Error('conversation command was not queued');
+    }
     clearFiles();
     emitter.emit('acp.selected.file.clear');
-
-    if (
-      shouldEnqueueConversationCommand({
-        enabled: true,
-        isBusy,
-        hasPendingCommands,
-      })
-    ) {
-      enqueue({ input: message, files: allFiles });
-      return;
-    }
-
-    await executeCommand({ input: message, files: allFiles });
   };
 
   const onSendWithSkillsHandler = useCallback(
@@ -449,7 +479,7 @@ Please check your local CLI tool authentication status`,
 
   const handleEditQueuedCommand = useCallback(
     (item: ConversationCommandQueueItem) => {
-      remove(item.id);
+      if (!remove(item.id)) return;
       setContent(item.input);
       setUploadFile(Array.from(new Set(item.files)));
       setAtPath([]);
@@ -616,8 +646,13 @@ Please check your local CLI tool authentication status`,
 
   // Clear conversation context (release model context); keeps message records.
   const handleClearContext = async (): Promise<void> => {
+    // Keep queued work behind the post-reset authority read. A clear-context
+    // response must not race a late send and reopen the old turn locally.
+    pause();
+    resetActiveExecution('external-reset');
     try {
       await ipcBridge.conversation.clearContext.invoke({ conversation_id });
+      resume();
       Message.success({
         content: t('conversation.clearContext.success', { defaultValue: 'Context cleared' }),
         duration: 2000,
@@ -625,6 +660,8 @@ Please check your local CLI tool authentication status`,
       });
     } catch (error) {
       console.warn('[AcpSendBox] clear context failed', error);
+      // Preserve the messages and leave the queue paused until the user
+      // explicitly resumes after the reset outcome is known.
       Message.error({
         content: t('conversation.clearContext.failed', { defaultValue: 'Failed to clear context' }),
         closable: true,
@@ -643,6 +680,7 @@ Please check your local CLI tool authentication status`,
         onInteractionLock={lockInteraction}
         onInteractionUnlock={unlockInteraction}
         onEdit={handleEditQueuedCommand}
+        onSendNow={sendNow}
         onReorder={reorder}
         onRemove={remove}
         onClear={clear}
@@ -708,6 +746,7 @@ Please check your local CLI tool authentication status`,
               backend={backend}
               initialModelId={initialModelId}
               waitForWarmup
+              disabled={modelSelectionDisabled}
             />
           </div>
         }
@@ -751,6 +790,10 @@ Please check your local CLI tool authentication status`,
             )}
           </>
         }
+        submissionAttachmentPaths={[
+          ...uploadFile,
+          ...atPath.map((item) => (typeof item === 'string' ? item : item.path)),
+        ]}
         onSend={onSendHandler}
         onSendWithSkills={onSendWithSkillsHandler}
         skillChips={skillChips}
@@ -764,7 +807,7 @@ Please check your local CLI tool authentication status`,
       {isMobile && (
         <>
           <MobileActionSheet
-            open={isMobileSheetOpen}
+            open={modelSelectionDisabled ? false : isMobileSheetOpen}
             onClose={() => setIsMobileSheetOpen(false)}
             title={t('common.more', { defaultValue: 'More' })}
             entries={sheetEntries}

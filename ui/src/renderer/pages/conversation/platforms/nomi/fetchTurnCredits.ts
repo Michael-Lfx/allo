@@ -12,6 +12,10 @@ import { emitter } from '@/renderer/utils/emitter';
 import { mutate } from 'swr';
 
 const MAX_TURN_CREDIT_ENTRIES = 40;
+/** Late queries after finish: knowledge write-back / title / review bill after the Agent Run. */
+export const TURN_CREDIT_LATE_REFRESH_MS = [2500, 8000, 22000] as const;
+/** Extra polls on the first fetch so a 50-call coding turn is not frozen at the first positive snapshot. */
+export const TURN_CREDIT_SETTLE_MS = [1500, 2500, 4000, 8000] as const;
 
 /** Survives MessageText remounts (first-turn list reconcile races the emit). */
 const turnCreditsMemory = new Map<string, TurnCreditUsageData>();
@@ -65,6 +69,49 @@ function pruneTurnCreditMap(
   }
   if (map[keepId]) next[keepId] = map[keepId];
   return next;
+}
+
+export function isPositiveTurnCreditUsage(usage: TurnCreditUsageData | null | undefined): boolean {
+  return usage != null && ((usage.callCount ?? 0) > 0 || (usage.creditsConsumed ?? 0) > 0);
+}
+
+export function shouldReuseCachedTurnCredits(
+  cached: TurnCreditUsageData | null,
+  force: boolean
+): boolean {
+  return !force && isPositiveTurnCreditUsage(cached);
+}
+
+/** Prefer call-sum when Flowy's aggregate lags the per-call list. */
+export function normalizeTurnCreditUsage(usage: TurnCreditUsageData): TurnCreditUsageData {
+  const calls = usage.calls ?? [];
+  const callSum = calls.reduce((sum, call) => sum + (Number(call.creditConsumed) || 0), 0);
+  const creditsConsumed = Math.max(Number(usage.creditsConsumed) || 0, callSum);
+  const callCount = Math.max(Number(usage.callCount) || 0, calls.length);
+  return { ...usage, creditsConsumed, callCount, calls };
+}
+
+function turnCreditFingerprint(usage: TurnCreditUsageData): string {
+  return `${usage.creditsConsumed}|${usage.callCount}|${usage.calls?.length ?? 0}`;
+}
+
+/** Keep the richer of two snapshots so a late write-back cannot be overwritten by a stale poll. */
+export function pickRicherTurnCredits(
+  previous: TurnCreditUsageData | null | undefined,
+  next: TurnCreditUsageData
+): TurnCreditUsageData {
+  if (!previous || !isPositiveTurnCreditUsage(previous)) return next;
+  if (!isPositiveTurnCreditUsage(next)) return previous;
+  const previousCalls = previous.calls?.length ?? 0;
+  const nextCalls = next.calls?.length ?? 0;
+  if (
+    next.creditsConsumed > previous.creditsConsumed ||
+    next.callCount > previous.callCount ||
+    nextCalls > previousCalls
+  ) {
+    return next;
+  }
+  return previous;
 }
 
 function publishTurnCredits(params: {
@@ -153,6 +200,30 @@ function publishTurnCredits(params: {
     });
 }
 
+function scheduleLateTurnCreditRefresh(params: {
+  conversation_id: ConversationId;
+  turn_id: MessageId;
+  alias_turn_ids?: Array<MessageId | string | null | undefined>;
+  force?: boolean;
+  retryAttempt?: number;
+}): void {
+  const attempt = params.retryAttempt ?? 0;
+  // Initial finish query starts one follow-up chain. A write-back `force`
+  // refetch (attempt 0) must not open a second chain; chain steps pass attempt > 0.
+  if (attempt === 0 && params.force) return;
+  if (attempt >= TURN_CREDIT_LATE_REFRESH_MS.length) return;
+  const delayMs = TURN_CREDIT_LATE_REFRESH_MS[attempt];
+  setTimeout(() => {
+    void fetchAndPersistTurnCredits({
+      conversation_id: params.conversation_id,
+      turn_id: params.turn_id,
+      alias_turn_ids: params.alias_turn_ids,
+      force: true,
+      retryAttempt: attempt + 1,
+    });
+  }, delayMs);
+}
+
 /**
  * Query server-side credits for `turnId` when the conversation uses Flowy cloud.
  * Best-effort: failures are logged and never surface to the user as turn errors.
@@ -166,6 +237,8 @@ export async function fetchAndPersistTurnCredits(params: {
   delayMs?: number;
   /** Also index the result under these ids (provisional user msg id, etc.). */
   alias_turn_ids?: Array<MessageId | string | null | undefined>;
+  /** Bypass the positive-cache skip (write-back settled / late billing). */
+  force?: boolean;
   /** Internal: late retries after empty first-turn billing lag. */
   retryAttempt?: number;
 }): Promise<TurnCreditUsageData | null> {
@@ -176,18 +249,20 @@ export async function fetchAndPersistTurnCredits(params: {
 
   const key = memoryKey(String(params.conversation_id), turnId);
   const existingInflight = inflightFetches.get(key);
-  if (existingInflight) {
+  if (existingInflight && !params.force) {
     return existingInflight;
   }
 
   const cached = peekTurnCredits(params.conversation_id, turnId);
-  // A positive prior result is authoritative enough to skip; empty results may
-  // be first-turn billing lag and are allowed to refresh.
-  if (cached && (cached.callCount > 0 || cached.creditsConsumed > 0)) {
+  if (shouldReuseCachedTurnCredits(cached, params.force === true)) {
     return cached;
   }
 
   const run = (async (): Promise<TurnCreditUsageData | null> => {
+    if (existingInflight) {
+      await existingInflight.catch(() => null);
+    }
+
     const conversation = await getConversationOrNull(params.conversation_id);
     if (!isFlowyCloudConversation(conversation)) {
       return null;
@@ -199,24 +274,13 @@ export async function fetchAndPersistTurnCredits(params: {
 
     const queryOnce = async () => ipcBridge.media.getCreditsUsageByTurn.invoke({ turnId });
 
-    try {
-      let result = await queryOnce();
-      if (!result?.authenticated) {
-        return null;
-      }
-
-      // First turn of a new session often needs longer for billing to land.
-      const backoffMs = [1200, 2000];
-      for (const wait of backoffMs) {
-        if ((result.callCount ?? 0) > 0 || (result.creditsConsumed ?? 0) > 0) break;
-        await new Promise((resolve) => setTimeout(resolve, wait));
-        const retry = await queryOnce();
-        if (retry?.authenticated) {
-          result = retry;
-        }
-      }
-
-      const usage: TurnCreditUsageData = {
+    const toUsage = (result: {
+      turnId?: string;
+      creditsConsumed?: number;
+      callCount?: number;
+      calls?: Array<{ modelName: string; creditConsumed: number; callStatus?: string }>;
+    }): TurnCreditUsageData =>
+      normalizeTurnCreditUsage({
         turnId: result.turnId || turnId,
         creditsConsumed: result.creditsConsumed ?? 0,
         callCount: result.callCount ?? 0,
@@ -225,27 +289,44 @@ export async function fetchAndPersistTurnCredits(params: {
           creditConsumed: call.creditConsumed,
           callStatus: call.callStatus,
         })),
-      };
+      });
 
-      // Do not persist/publish empty usage as a terminal first-turn result —
-      // billing lag after Guid session ensure can still land later.
-      if ((usage.callCount ?? 0) === 0 && (usage.creditsConsumed ?? 0) === 0) {
-        const attempt = params.retryAttempt ?? 0;
-        if (attempt < 2) {
-          const lateDelayMs = attempt === 0 ? 5000 : 10000;
-          setTimeout(() => {
-            void fetchAndPersistTurnCredits({
-              conversation_id: params.conversation_id,
-              turn_id: params.turn_id,
-              alias_turn_ids: params.alias_turn_ids,
-              retryAttempt: attempt + 1,
-            });
-          }, lateDelayMs);
+    try {
+      let result = await queryOnce();
+      if (!result?.authenticated) {
+        return null;
+      }
+
+      let usage = toUsage(result);
+      if (!params.force) {
+        let previous = turnCreditFingerprint(usage);
+        for (const wait of TURN_CREDIT_SETTLE_MS) {
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          const retry = await queryOnce();
+          if (!retry?.authenticated) break;
+          usage = pickRicherTurnCredits(usage, toUsage(retry));
+          const next = turnCreditFingerprint(usage);
+          if (next === previous && isPositiveTurnCreditUsage(usage)) break;
+          previous = next;
         }
+      }
+
+      const prior = peekTurnCredits(params.conversation_id, turnId);
+      usage = pickRicherTurnCredits(prior, usage);
+
+      emitter.emit('nomi.credits.balance.refresh');
+      scheduleLateTurnCreditRefresh(params);
+
+      if (!isPositiveTurnCreditUsage(usage) || !conversation) {
         return usage;
       }
 
-      if (conversation) {
+      const changed =
+        !prior ||
+        usage.creditsConsumed !== prior.creditsConsumed ||
+        usage.callCount !== prior.callCount ||
+        (usage.calls?.length ?? 0) !== (prior.calls?.length ?? 0);
+      if (changed) {
         publishTurnCredits({
           conversation_id: params.conversation_id,
           turn_id: params.turn_id,
@@ -266,6 +347,8 @@ export async function fetchAndPersistTurnCredits(params: {
   try {
     return await run;
   } finally {
-    inflightFetches.delete(key);
+    if (inflightFetches.get(key) === run) {
+      inflightFetches.delete(key);
+    }
   }
 }

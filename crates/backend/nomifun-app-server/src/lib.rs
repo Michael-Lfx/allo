@@ -597,6 +597,10 @@ impl AppServerError {
             nomifun_common::AppError::CloudOtpInvalidCode => ("invalid_request", false),
             nomifun_common::AppError::ConversationDelete(_) => ("conflict", false),
             nomifun_common::AppError::ProviderInUse(_) => ("conflict", false),
+            // Another turn already holds this conversation's admission slot. The
+            // shared `conflict` code keeps the App Server code set unchanged; the
+            // variant's `error_details()` still reaches the client.
+            nomifun_common::AppError::ConversationTurnAdmissionConflict => ("conflict", false),
             nomifun_common::AppError::WorkspacePathEdgeWhitespace(_)
             | nomifun_common::AppError::WorkspacePathEdgeWhitespaceRuntimeUnsupported(_) => {
                 ("workspace_denied", false)

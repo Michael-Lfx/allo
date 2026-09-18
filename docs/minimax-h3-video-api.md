@@ -38,14 +38,14 @@ Authorization: Bearer <token>
 token: <token>
 ```
 
-模型列表：`GET {业务根}/model/availableListClaw?category=4`（仅 JWT）。列表中应出现 H3（展示名多为 `MiniMax H3`），创建时 `model` 建议使用 `flowy/MiniMax-H3` 或列表返回的 `AIPC-...` / `flowy/...` 形式。
+模型列表：`GET {业务根}/api/v2/model/availableListClaw?category=4`（仅 JWT）。列表中应出现 H3（展示名多为 `MiniMax H3`），创建时 `model` 建议使用 `flowy/MiniMax-H3` 或列表返回的 `AIPC-...` / `flowy/...` 形式。
 
 ---
 
 ## 3. 对接流程（不变）
 
 ```
-GET /model/availableListClaw?category=4
+GET /api/v2/model/availableListClaw?category=4
         ↓
 POST /video/generations/tasks          → data.id（本地主键）
         ↓

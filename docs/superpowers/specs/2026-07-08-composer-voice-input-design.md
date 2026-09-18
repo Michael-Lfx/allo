@@ -5,7 +5,7 @@
 
 ## 背景
 
-用户希望在输入框为空时，将禁用的发送按钮替换为语音输入入口；有文字时显示「麦克风 + 黑色圆形发送按钮」，参考 Cursor 聊天输入框样式。语音转写使用 claw 云端 ASR 模型（`GET /model/availableListClaw?category=7` → `AIPC-qwen3-asr-flash`）。
+用户希望在输入框为空时，将禁用的发送按钮替换为语音输入入口；有文字时显示「麦克风 + 黑色圆形发送按钮」，参考 Cursor 聊天输入框样式。语音转写使用 claw 云端 ASR 模型（`GET /api/v2/model/availableListClaw?category=7` → `AIPC-qwen3-asr-flash`）。
 
 ## 约束
 

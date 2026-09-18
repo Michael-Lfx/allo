@@ -42,7 +42,12 @@ pub async fn retrieve_relevant_chunks(
     if chunks.is_empty() || top_k == 0 {
         return Ok(Vec::new());
     }
-    let candidate_n = (top_k * 3).clamp(top_k, chunks.len().min(12));
+    // Short novels often yield 1 chunk. `usize::clamp(min, max)` panics when
+    // min > max (e.g. top_k=5, n=1 → 15.clamp(5, 1)).
+    if chunks.len() <= top_k {
+        return Ok(chunks.to_vec());
+    }
+    let candidate_n = retrieval_candidate_n(chunks.len(), top_k);
 
     let shortlist: Vec<(usize, f32)> = match try_embed_rank(flowy, query, chunks, candidate_n).await {
         Some(ranked) if !ranked.is_empty() => ranked,
@@ -54,6 +59,16 @@ pub async fn retrieve_relevant_chunks(
         .take(top_k)
         .map(|(i, _)| chunks[i].clone())
         .collect())
+}
+
+/// Pool size for BM25 / embedding shortlist. Always a valid `clamp` range.
+fn retrieval_candidate_n(chunk_len: usize, top_k: usize) -> usize {
+    if chunk_len == 0 || top_k == 0 {
+        return 0;
+    }
+    let upper = chunk_len.min(12);
+    let lower = top_k.min(upper);
+    top_k.saturating_mul(3).clamp(lower, upper)
 }
 
 async fn try_embed_rank(
@@ -231,6 +246,50 @@ mod tests {
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, 0);
         assert!(ranked[0].1 > 0.0);
+    }
+
+    #[test]
+    fn candidate_n_does_not_panic_when_fewer_chunks_than_top_k() {
+        // Production panic: novel mode always asks for top_k=5; a short novel
+        // is one chunk → `(5 * 3).clamp(5, 1)` used to unwind with min > max.
+        assert_eq!(retrieval_candidate_n(1, 5), 1);
+        assert_eq!(retrieval_candidate_n(0, 5), 0);
+        assert_eq!(retrieval_candidate_n(8, 5), 8);
+        assert_eq!(retrieval_candidate_n(20, 5), 12);
+        assert_eq!(retrieval_candidate_n(3, 5), 3);
+    }
+
+    #[tokio::test]
+    async fn retrieve_returns_the_only_chunk_when_top_k_is_larger() {
+        let chunks = vec!["全本压缩后的小说".to_string()];
+        let dummy: std::sync::Arc<dyn crate::backends::VimaxChat> =
+            std::sync::Arc::new(DummyChat);
+        let got = retrieve_relevant_chunks(&dummy, None, "开场", &chunks, 5)
+            .await
+            .unwrap();
+        assert_eq!(got, chunks);
+    }
+
+    struct DummyChat;
+
+    #[async_trait::async_trait]
+    impl crate::backends::VimaxChat for DummyChat {
+        async fn complete_text(
+            &self,
+            _system: &str,
+            _user: &str,
+        ) -> crate::error::VimaxResult<String> {
+            Ok(String::new())
+        }
+
+        async fn complete_vision(
+            &self,
+            _system: &str,
+            _user_text: &str,
+            _image_paths: &[&std::path::Path],
+        ) -> crate::error::VimaxResult<String> {
+            Ok(String::new())
+        }
     }
 
     #[test]

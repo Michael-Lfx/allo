@@ -15,6 +15,16 @@ pub struct EvalSuiteDescriptor {
     pub notes: String,
     pub requires_download: bool,
     pub cached: bool,
+    #[serde(default)]
+    pub tier: String,
+    #[serde(default = "default_trials")]
+    pub default_trials: u32,
+    #[serde(default)]
+    pub requires_sandbox: bool,
+}
+
+fn default_trials() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -28,6 +38,8 @@ pub struct StartEvalRunRequest {
     pub limit: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_trials: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -65,6 +77,10 @@ pub struct EvalCaseView {
     pub error: Option<String>,
     #[serde(default)]
     pub scorer_results: Vec<EvalScorerView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisory_results: Vec<EvalScorerView>,
+    #[serde(default = "default_trial")]
+    pub trial: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(default)]
@@ -73,9 +89,11 @@ pub struct EvalCaseView {
     pub artifact_count: u32,
     #[serde(default)]
     pub has_trace: bool,
-    /// Session Observation conversation id (one case == one eval session).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
+}
+
+fn default_trial() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -138,6 +156,14 @@ pub struct EvalSummaryView {
     pub avg_output_tokens: f64,
     #[serde(default)]
     pub by_category: Vec<EvalCategoryView>,
+    #[serde(default)]
+    pub unique_cases: usize,
+    #[serde(default)]
+    pub n_trials: u32,
+    #[serde(default)]
+    pub pass_at_1: f64,
+    #[serde(default)]
+    pub pass_hat_k: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -172,4 +198,99 @@ pub struct EvalRunView {
     /// Absolute path of the parent run workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvalRunListItem {
+    pub run_id: String,
+    pub suite: String,
+    pub status: String,
+    pub passed: usize,
+    pub failed: usize,
+    #[serde(default)]
+    pub pass_at_1: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvalCaseFlip {
+    pub case_id: String,
+    pub a_success: bool,
+    pub b_success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvalRunDiffView {
+    pub a: String,
+    pub b: String,
+    pub flipped: Vec<EvalCaseFlip>,
+    pub pass_at_1_delta: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQualityBadcaseRequest {
+    pub event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scorer_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_oss_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQualityRunRequest {
+    pub event_id: String,
+    pub suite: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub pass_at_1: f64,
+    #[serde(default)]
+    pub pass_hat_k: f64,
+    #[serde(default)]
+    pub passed: u32,
+    #[serde(default)]
+    pub failed: u32,
+    #[serde(default)]
+    pub unique_cases: u32,
+    #[serde(default)]
+    pub n_trials: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQualityAck {
+    pub event_id: String,
+    #[serde(default)]
+    pub duplicate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQualityPromotedItem {
+    pub event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scorer_json: Option<String>,
 }

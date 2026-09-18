@@ -244,8 +244,36 @@ pub(crate) enum ArkTaskState {
 
 /// Map an Ark task-status body (`queued/running/succeeded/failed/cancelled`)
 /// to [`ArkTaskState`]. A succeeded task must carry `content.video_url`; a
-/// failed/cancelled one reports `error.message` | `error` string | the status
-/// itself. Unknown/absent statuses keep waiting. Pure — unit tested.
+/// failed/cancelled one reports `error.code` + `error.message` (never the bare
+/// status word `"failed"`). Unknown/absent statuses keep waiting. Pure — unit tested.
+fn ark_task_error_message(value: &Value, status: &str) -> String {
+    if let Some(err) = value.get("error") {
+        let code = err
+            .get("code")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let message = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .or_else(|| err.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        match (code, message) {
+            (Some(code), Some(message)) if message.starts_with(code) => return message.to_string(),
+            (Some(code), Some(message)) => return format!("{code}: {message}"),
+            (Some(code), None) => return code.to_string(),
+            (None, Some(message)) => return message.to_string(),
+            _ => {}
+        }
+    }
+    if status.eq_ignore_ascii_case("failed") {
+        "video task failed (no error detail from provider)".into()
+    } else {
+        status.to_string()
+    }
+}
+
 pub(crate) fn parse_video_task_status(value: &Value) -> Result<ArkTaskState, InvokeError> {
     let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
     match status.as_str() {
@@ -258,14 +286,7 @@ pub(crate) fn parse_video_task_status(value: &Value) -> Result<ArkTaskState, Inv
                 .ok_or_else(|| InvokeError::parse("ark task succeeded but missing content.video_url"))?;
             Ok(ArkTaskState::Done(url.to_string()))
         }
-        "failed" | "cancelled" | "canceled" => {
-            let msg = value
-                .get("error")
-                .and_then(|e| e.get("message").and_then(|m| m.as_str()).or_else(|| e.as_str()))
-                .unwrap_or(&status)
-                .to_string();
-            Ok(ArkTaskState::Failed(msg))
-        }
+        "failed" | "cancelled" | "canceled" => Ok(ArkTaskState::Failed(ark_task_error_message(value, &status))),
         // "queued" | "running" | "" | anything unknown → keep waiting.
         _ => Ok(ArkTaskState::Pending),
     }
@@ -388,13 +409,29 @@ mod tests {
         let err = parse_video_task_status(&json!({"status": "succeeded"})).unwrap_err();
         assert_eq!(err.kind, InvokeErrorKind::ParseError);
 
-        // failure message: error.message → error string → status itself.
+        // failure message: error.code + error.message → error string → explicit missing-detail.
         let v = json!({"status": "failed", "error": {"message": "content blocked"}});
         assert_eq!(parse_video_task_status(&v).unwrap(), ArkTaskState::Failed("content blocked".into()));
+        let policy = json!({
+            "status": "failed",
+            "error": {
+                "code": "OutputVideoSensitiveContentDetected.PolicyViolation",
+                "message": "The request failed because the output video may be related to copyright restrictions."
+            }
+        });
+        assert_eq!(
+            parse_video_task_status(&policy).unwrap(),
+            ArkTaskState::Failed(
+                "OutputVideoSensitiveContentDetected.PolicyViolation: The request failed because the output video may be related to copyright restrictions.".into()
+            )
+        );
         let v2 = json!({"status": "cancelled", "error": "user cancelled"});
         assert_eq!(parse_video_task_status(&v2).unwrap(), ArkTaskState::Failed("user cancelled".into()));
         let v3 = json!({"status": "failed"});
-        assert_eq!(parse_video_task_status(&v3).unwrap(), ArkTaskState::Failed("failed".into()));
+        assert_eq!(
+            parse_video_task_status(&v3).unwrap(),
+            ArkTaskState::Failed("video task failed (no error detail from provider)".into())
+        );
     }
 
     // -- ark.images wiremock ----------------------------------------------------

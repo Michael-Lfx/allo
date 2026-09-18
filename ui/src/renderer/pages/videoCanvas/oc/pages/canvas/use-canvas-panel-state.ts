@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getPanelWidthBounds } from "./canvas-assistant-panel-column";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { Position } from "@oc/types/canvas";
 
 export function useCanvasDialogState() {
@@ -11,20 +12,22 @@ export function useCanvasDialogState() {
     const [characterReferenceNodeId, setCharacterReferenceNodeId] = useState<string | null>(null);
     const [drawingNodeId, setDrawingNodeId] = useState<string | null>(null);
     const [stylePickerOpen, setStylePickerOpen] = useState(false);
+    const [libraryOpen, setLibraryOpen] = useState(false);
+    const [libraryTab, setLibraryTab] = useState<LibraryTab>("template");
+    const [directorTemplateRequest, setDirectorTemplateRequest] = useState<{ position?: Position } | null>(null);
     const [projectAssetOpen, setProjectAssetOpen] = useState(false);
     const [projectAssetInitialCategory, setProjectAssetInitialCategory] = useState("all");
     const [projectAssetInsertPosition, setProjectAssetInsertPosition] = useState<Position | undefined>();
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [subtitleNodeId, setSubtitleNodeId] = useState<string | null>(null);
     const [timelineNodeId, setTimelineNodeId] = useState<string | null>(null);
-    const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
+    const [artCritiqueNodeId, setArtCritiqueNodeId] = useState<string | null>(null);
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [scriptEditorNodeId, setScriptEditorNodeId] = useState<string | null>(null);
     const [scriptScrollTopById, setScriptScrollTopById] = useState<Record<string, number>>({});
     const [directorNodeId, setDirectorNodeId] = useState<string | null>(null);
     const [versionCompareRootId, setVersionCompareRootId] = useState<string | null>(null);
     const [shortcutRequestNonce, setShortcutRequestNonce] = useState(0);
-    const [cinematicAgentEntry, setCinematicAgentEntry] = useState(false);
     const openProjectAssets = useCallback((initialCategory = "all", position?: Position) => {
         setProjectAssetInitialCategory(initialCategory);
         setProjectAssetInsertPosition(position);
@@ -51,6 +54,12 @@ export function useCanvasDialogState() {
         setDrawingNodeId,
         stylePickerOpen,
         setStylePickerOpen,
+        libraryOpen,
+        setLibraryOpen,
+        libraryTab,
+        setLibraryTab,
+        directorTemplateRequest,
+        setDirectorTemplateRequest,
         projectAssetOpen,
         setProjectAssetOpen,
         projectAssetInitialCategory,
@@ -63,8 +72,8 @@ export function useCanvasDialogState() {
         setSubtitleNodeId,
         timelineNodeId,
         setTimelineNodeId,
-        superResolveNodeId,
-        setSuperResolveNodeId,
+        artCritiqueNodeId,
+        setArtCritiqueNodeId,
         previewNodeId,
         setPreviewNodeId,
         scriptEditorNodeId,
@@ -77,8 +86,6 @@ export function useCanvasDialogState() {
         setVersionCompareRootId,
         shortcutRequestNonce,
         setShortcutRequestNonce,
-        cinematicAgentEntry,
-        setCinematicAgentEntry,
         openProjectAssets,
         closeProjectAssets,
     };

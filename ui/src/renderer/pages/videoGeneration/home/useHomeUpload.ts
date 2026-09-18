@@ -18,6 +18,7 @@ import type {
   VideoHomeMode,
 } from './types';
 import { usesCanvasReferences } from './types';
+import { retargetMentionsAfterRemove } from './imageMentions';
 
 const MAX_REFERENCES = 8;
 
@@ -44,6 +45,8 @@ export interface HomeUploadApi {
   setActionCharacter: (file: File | null) => void;
   setActionVideo: (file: File | null) => void;
   removeCanvasReference: (localId: string) => void;
+  updateCanvasReference: (localId: string, patch: Partial<Pick<CanvasReferenceDraft, 'subjectKind' | 'subjectName'>>) => void;
+  removeCameo: (localId: string) => void;
 }
 
 /**
@@ -101,10 +104,16 @@ export function useHomeUpload({
 
   const addCanvasImages = (files: File[]) => {
     const room = Math.max(0, MAX_REFERENCES - draft.canvasReferences.length);
-    const added: CanvasReferenceDraft[] = files.slice(0, room).map((file) => ({
+    const added: CanvasReferenceDraft[] = files.slice(0, room).map((file, index) => ({
       localId: makeLocalId('reference'),
       file,
       previewUrl: URL.createObjectURL(file),
+      ...(mode === 'creation'
+        ? {
+            subjectKind: 'character' as const,
+            subjectName: suggestCameoCharacterName(file.name, draft.canvasReferences.length + index),
+          }
+        : {}),
     }));
     setDraft((current) => ({
       ...current,
@@ -183,8 +192,9 @@ export function useHomeUpload({
                 workflow:
                   current.workflow === 'idea2video' ? 'script2video' : current.workflow,
                 sourceText: text,
+                sourceDocumentName: documents[0].name,
               }
-            : { ...current, creationPrompt: text }
+            : { ...current, creationPrompt: text, sourceDocumentName: documents[0].name }
         );
       } catch (error) {
         setUploadError(error instanceof Error ? error.message : String(error));
@@ -202,12 +212,49 @@ export function useHomeUpload({
   const removeCanvasReference = (localId: string) => {
     const target = draft.canvasReferences.find((item) => item.localId === localId);
     if (target) URL.revokeObjectURL(target.previewUrl);
+    setDraft((current) => {
+      const removedIndex = current.canvasReferences.findIndex((item) => item.localId === localId);
+      if (removedIndex < 0) return current;
+      return {
+        ...current,
+        canvasReferences: current.canvasReferences.filter((item) => item.localId !== localId),
+        creationPrompt: retargetMentionsAfterRemove(
+          current.creationPrompt,
+          removedIndex,
+          current.canvasReferences.length,
+        ),
+      };
+    });
+  };
+
+  const updateCanvasReference = (
+    localId: string,
+    patch: Partial<Pick<CanvasReferenceDraft, 'subjectKind' | 'subjectName'>>,
+  ) => {
     setDraft((current) => ({
       ...current,
-      canvasReferences: current.canvasReferences.filter(
-        (item) => item.localId !== localId
+      canvasReferences: current.canvasReferences.map((item) =>
+        item.localId === localId ? { ...item, ...patch } : item,
       ),
     }));
+  };
+
+  const removeCameo = (localId: string) => {
+    const target = draft.cameos.find((item) => item.localId === localId);
+    if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+    setDraft((current) => {
+      const removedIndex = current.cameos.findIndex((item) => item.localId === localId);
+      if (removedIndex < 0) return current;
+      return {
+        ...current,
+        cameos: current.cameos.filter((item) => item.localId !== localId),
+        sourceText: retargetMentionsAfterRemove(
+          current.sourceText,
+          removedIndex,
+          current.cameos.length,
+        ),
+      };
+    });
   };
 
   return {
@@ -219,5 +266,7 @@ export function useHomeUpload({
     setActionCharacter,
     setActionVideo,
     removeCanvasReference,
+    updateCanvasReference,
+    removeCameo,
   };
 }

@@ -230,16 +230,9 @@ fn clear_system_proxy_cache() {
 
 #[cfg(any(test, target_os = "macos", target_os = "linux"))]
 fn command_stdout_with_timeout(command: &mut Command, timeout: Duration) -> Option<String> {
-    // CREATE_NO_WINDOW: these detection helpers spawn console-subsystem CLIs
-    // (`reg`/`scutil`/`gsettings`/`kreadconfig`). The packaged desktop build is a
-    // GUI-subsystem app with no attached console, so without this flag Windows
-    // allocates a fresh console that flashes on screen for each spawn. Matches the
-    // repo-wide convention (nomi-computer, nomi-tools, nomi-mcp, nomi-config, …).
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
+    // Console-subsystem CLIs (`reg`/`scutil`/`gsettings`/`kreadconfig`) must not
+    // flash under a GUI-subsystem desktop host.
+    nomi_process_runtime::apply_hidden_console_std(command);
 
     let mut child = command
         .stdout(Stdio::piped())

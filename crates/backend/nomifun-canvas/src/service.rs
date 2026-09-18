@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nomifun_common::{AppError, generate_id, now_ms};
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::dto::{
-    CanvasMediaMeta, CanvasProjectMeta, GenerationTaskStatus, GenerationTaskView,
+    CanvasMediaMeta, CanvasProjectMeta, CanvasTranscription, GenerationTaskStatus, GenerationTaskView,
+    TimelineExportClip,
 };
 use crate::fsio::{ensure_dir, read_json_file, write_atomic, write_json_file};
 use crate::{CANVAS_REL_DIR, DEFAULT_DOC, MAX_DOC_BYTES, MAX_MEDIA_BYTES};
@@ -29,24 +31,42 @@ pub struct MediaServeHead {
     pub mime: String,
     pub bytes: u64,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalTask {
     pub task_id: String,
     pub status: GenerationTaskStatus,
     pub mode: String,
     pub prompt: String,
+    #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
     pub aspect_ratio: Option<String>,
+    #[serde(default)]
     pub resolution: Option<String>,
+    #[serde(default)]
     pub duration_secs: Option<u32>,
+    #[serde(default)]
     pub reference_media_ids: Vec<String>,
+    #[serde(default)]
     pub first_frame_media_id: Option<String>,
+    #[serde(default)]
     pub last_frame_media_id: Option<String>,
+    /// Set when the job was started from a canvas node. Home 「视频生成」 clips leave this empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default)]
     pub progress: f32,
+    #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
     pub result_media_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct TaskIndex {
+    items: Vec<InternalTask>,
 }
 
 impl InternalTask {
@@ -60,29 +80,44 @@ impl InternalTask {
             progress: self.progress,
             error: self.error.clone(),
             result_media_id: self.result_media_id.clone(),
+            aspect_ratio: self.aspect_ratio.clone(),
+            resolution: self.resolution.clone(),
+            duration_secs: self.duration_secs,
+            reference_media_ids: self.reference_media_ids.clone(),
+            first_frame_media_id: self.first_frame_media_id.clone(),
+            last_frame_media_id: self.last_frame_media_id.clone(),
+            project_id: self.project_id.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
     }
+
+    fn is_standalone_clip(&self) -> bool {
+        self.project_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct MediaIndex {
-    items: Vec<MediaIndexEntry>,
+pub(crate) struct MediaIndex {
+    pub(crate) items: Vec<MediaIndexEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct MediaIndexEntry {
-    media_id: String,
-    kind: String,
-    title: String,
-    mime: String,
-    ext: String,
-    bytes: u64,
-    width: Option<u32>,
-    height: Option<u32>,
-    duration_ms: Option<u64>,
-    created_at: i64,
+pub(crate) struct MediaIndexEntry {
+    pub(crate) media_id: String,
+    pub(crate) kind: String,
+    pub(crate) title: String,
+    pub(crate) mime: String,
+    pub(crate) ext: String,
+    pub(crate) bytes: u64,
+    pub(crate) width: Option<u32>,
+    pub(crate) height: Option<u32>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) created_at: i64,
 }
 
 /// session_id → canvas project_id for idempotent Agent→Canvas opens.
@@ -102,11 +137,14 @@ pub struct NewGenerationRequest {
     pub reference_media_ids: Vec<String>,
     pub first_frame_media_id: Option<String>,
     pub last_frame_media_id: Option<String>,
+    pub project_id: Option<String>,
 }
 
 pub struct CanvasService {
     data_dir: PathBuf,
     tasks: RwLock<HashMap<String, InternalTask>>,
+    /// Set after `tasks.json` has been loaded (or confirmed missing).
+    tasks_hydrated: AtomicBool,
     /// Hard-cancel tokens for in-flight Flowy video (and cooperative image) tasks.
     cancels: RwLock<HashMap<String, CancellationToken>>,
 }
@@ -116,6 +154,7 @@ impl CanvasService {
         Arc::new(Self {
             data_dir,
             tasks: RwLock::new(HashMap::new()),
+            tasks_hydrated: AtomicBool::new(false),
             cancels: RwLock::new(HashMap::new()),
         })
     }
@@ -124,7 +163,7 @@ impl CanvasService {
         &self.data_dir
     }
 
-    fn root(&self) -> PathBuf {
+    pub(crate) fn root(&self) -> PathBuf {
         self.data_dir.join(CANVAS_REL_DIR)
     }
 
@@ -132,11 +171,11 @@ impl CanvasService {
         self.root().join("projects")
     }
 
-    fn project_dir(&self, id: &str) -> PathBuf {
+    pub(crate) fn project_dir(&self, id: &str) -> PathBuf {
         self.projects_dir().join(id)
     }
 
-    fn media_dir(&self) -> PathBuf {
+    pub(crate) fn media_dir(&self) -> PathBuf {
         self.root().join("media")
     }
 
@@ -146,6 +185,10 @@ impl CanvasService {
 
     fn vimax_links_path(&self) -> PathBuf {
         self.root().join("vimax_session_links.json")
+    }
+
+    fn task_index_path(&self) -> PathBuf {
+        self.root().join("tasks.json")
     }
 
     pub async fn ensure_dirs(&self) -> Result<(), AppError> {
@@ -451,7 +494,7 @@ impl CanvasService {
 
     // ── media ───────────────────────────────────────────────────────────────
 
-    async fn load_media_index(&self) -> Result<MediaIndex, AppError> {
+    pub(crate) async fn load_media_index(&self) -> Result<MediaIndex, AppError> {
         self.ensure_dirs().await?;
         match read_json_file::<MediaIndex>(&self.media_index_path()).await {
             Ok(idx) => Ok(idx),
@@ -698,6 +741,77 @@ impl CanvasService {
 
     // ── generation tasks ────────────────────────────────────────────────────
 
+    async fn write_task_index(&self, tasks: &HashMap<String, InternalTask>) -> Result<(), AppError> {
+        let index = TaskIndex {
+            items: tasks.values().cloned().collect(),
+        };
+        write_json_file(&self.task_index_path(), &index).await
+    }
+
+    async fn persist_tasks(&self) {
+        let snapshot = self.tasks.read().await.clone();
+        if let Err(error) = self.write_task_index(&snapshot).await {
+            tracing::warn!(error = %error, "failed to persist generation tasks");
+        }
+    }
+
+    /// Load `{data_dir}/video-canvas/tasks.json` once. In-flight jobs cannot
+    /// resume after process exit, so queued/running rows become failed history.
+    async fn hydrate_tasks(&self) {
+        if self.tasks_hydrated.load(Ordering::Acquire) {
+            return;
+        }
+        if let Err(error) = self.ensure_dirs().await {
+            tracing::warn!(error = %error, "ensure canvas dirs before hydrating tasks");
+        }
+        let mut guard = self.tasks.write().await;
+        if self.tasks_hydrated.load(Ordering::Acquire) {
+            return;
+        }
+        let path = self.task_index_path();
+        let mut rewritten = false;
+        if path.exists() {
+            match read_json_file::<TaskIndex>(&path).await {
+                Ok(index) => {
+                    let now = now_ms();
+                    for mut task in index.items {
+                        if matches!(
+                            task.status,
+                            GenerationTaskStatus::Queued | GenerationTaskStatus::Running
+                        ) {
+                            task.status = GenerationTaskStatus::Failed;
+                            task.progress = 1.0;
+                            task.error = Some(
+                                "Interrupted when the app exited. The history entry was kept."
+                                    .into(),
+                            );
+                            task.updated_at = now;
+                            rewritten = true;
+                        }
+                        guard.insert(task.task_id.clone(), task);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "failed to load generation task index"
+                    );
+                    self.tasks_hydrated.store(true, Ordering::Release);
+                    return;
+                }
+            }
+        }
+        let snapshot = rewritten.then(|| guard.clone());
+        self.tasks_hydrated.store(true, Ordering::Release);
+        drop(guard);
+        if let Some(snapshot) = snapshot {
+            if let Err(error) = self.write_task_index(&snapshot).await {
+                tracing::warn!(error = %error, "failed to persist interrupted generation tasks");
+            }
+        }
+    }
+
     pub async fn create_generation_task(
         self: &Arc<Self>,
         req: NewGenerationRequest,
@@ -723,6 +837,13 @@ impl CanvasService {
         {
             let _ = self.media_file_path(id).await?;
         }
+        let project_id = req
+            .project_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(pid) = project_id.as_deref() {
+            validate_project_id(pid)?;
+        }
         let now = now_ms();
         let task_id = generate_id();
         let task = InternalTask {
@@ -737,6 +858,7 @@ impl CanvasService {
             reference_media_ids: req.reference_media_ids,
             first_frame_media_id: req.first_frame_media_id,
             last_frame_media_id: req.last_frame_media_id,
+            project_id: project_id.clone(),
             progress: 0.0,
             error: None,
             result_media_id: None,
@@ -745,8 +867,13 @@ impl CanvasService {
         };
         let view = task.to_view();
         let cancel = CancellationToken::new();
+        self.hydrate_tasks().await;
         self.cancels.write().await.insert(task_id.clone(), cancel);
         self.tasks.write().await.insert(task_id.clone(), task);
+        self.persist_tasks().await;
+        if let Some(pid) = project_id.as_deref() {
+            self.touch_project(pid).await;
+        }
         let svc = Arc::clone(self);
         tokio::spawn(async move {
             crate::generate::run_generation_task(svc, task_id).await;
@@ -755,6 +882,7 @@ impl CanvasService {
     }
 
     pub async fn task_snapshot(&self, task_id: &str) -> Option<InternalTask> {
+        self.hydrate_tasks().await;
         self.tasks.read().await.get(task_id).cloned()
     }
 
@@ -763,6 +891,7 @@ impl CanvasService {
     }
 
     pub async fn get_task(&self, task_id: &str) -> Result<GenerationTaskView, AppError> {
+        self.hydrate_tasks().await;
         self.tasks
             .read()
             .await
@@ -771,17 +900,37 @@ impl CanvasService {
             .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))
     }
 
+    /// Bump a canvas project's recency so 「最近创作」 shows the canvas card,
+    /// not a detached clip task, after a node generation.
+    async fn touch_project(&self, project_id: &str) {
+        let dir = self.project_dir(project_id);
+        let Ok(mut meta) = read_json_file::<CanvasProjectMeta>(&dir.join("meta.json")).await else {
+            return;
+        };
+        meta.updated_at = now_ms();
+        if let Err(error) = write_json_file(&dir.join("meta.json"), &meta).await {
+            tracing::warn!(project_id, error = %error, "failed to touch canvas project after generation");
+        }
+    }
+
     /// List generation tasks ordered by most-recently-updated first.
     ///
     /// `limit` and `offset` paginate a stable, descending sort so callers can
     /// render the first page immediately and stream older items on demand.
+    /// When `standalone_only` is true, canvas-bound node jobs are omitted so
+    /// home 「视频生成」 recents only show clip-mode tasks.
     pub async fn list_tasks(
         &self,
         limit: usize,
         offset: usize,
+        standalone_only: bool,
     ) -> Vec<GenerationTaskView> {
+        self.hydrate_tasks().await;
         let guard = self.tasks.read().await;
-        let mut tasks: Vec<&InternalTask> = guard.values().collect();
+        let mut tasks: Vec<&InternalTask> = guard
+            .values()
+            .filter(|task| !standalone_only || task.is_standalone_clip())
+            .collect();
         tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         tasks
             .into_iter()
@@ -791,21 +940,34 @@ impl CanvasService {
             .collect()
     }
 
-    /// Total count of tasks currently tracked in memory. Used by the UI to
+    /// Total count of persisted generation tasks. Used by the UI to
     /// decide whether more pages can be loaded.
-    pub async fn task_count(&self) -> usize {
-        self.tasks.read().await.len()
+    pub async fn task_count(&self, standalone_only: bool) -> usize {
+        self.hydrate_tasks().await;
+        let guard = self.tasks.read().await;
+        if !standalone_only {
+            return guard.len();
+        }
+        guard
+            .values()
+            .filter(|task| task.is_standalone_clip())
+            .count()
     }
 
-    /// Drop a finished task from the in-memory index. The result media file
+    /// Drop a finished task from the persisted index. The result media file
     /// (if any) is intentionally kept on disk so the URL stays resolvable for
     /// callers that already cached it.
     pub async fn delete_task(&self, task_id: &str) -> Result<(), AppError> {
-        let mut guard = self.tasks.write().await;
-        guard
-            .remove(task_id)
-            .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+        self.hydrate_tasks().await;
+        let snapshot = {
+            let mut guard = self.tasks.write().await;
+            guard
+                .remove(task_id)
+                .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+            guard.clone()
+        };
         self.cancels.write().await.remove(task_id);
+        self.write_task_index(&snapshot).await?;
         Ok(())
     }
 
@@ -838,26 +1000,32 @@ impl CanvasService {
         if terminal {
             self.cancels.write().await.remove(task_id);
         }
+        self.persist_tasks().await;
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> Result<GenerationTaskView, AppError> {
+        self.hydrate_tasks().await;
         if let Some(token) = self.cancels.read().await.get(task_id).cloned() {
             token.cancel();
         }
-        let mut guard = self.tasks.write().await;
-        let task = guard
-            .get_mut(task_id)
-            .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
-        match task.status {
-            GenerationTaskStatus::Succeeded
-            | GenerationTaskStatus::Failed
-            | GenerationTaskStatus::Canceled => {}
-            _ => {
-                task.status = GenerationTaskStatus::Canceled;
-                task.updated_at = now_ms();
+        let (view, snapshot) = {
+            let mut guard = self.tasks.write().await;
+            let task = guard
+                .get_mut(task_id)
+                .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+            match task.status {
+                GenerationTaskStatus::Succeeded
+                | GenerationTaskStatus::Failed
+                | GenerationTaskStatus::Canceled => {}
+                _ => {
+                    task.status = GenerationTaskStatus::Canceled;
+                    task.updated_at = now_ms();
+                }
             }
-        }
-        Ok(task.to_view())
+            (task.to_view(), guard.clone())
+        };
+        self.write_task_index(&snapshot).await?;
+        Ok(view)
     }
 
     /// Concatenate video media clips (order preserved) via local ffmpeg.
@@ -897,7 +1065,11 @@ impl CanvasService {
                 .ok_or_else(|| AppError::Internal("scratch parent missing".into()))?,
         )
         .await?;
-        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        // User-picked clips are unrelated takes, so every join is a real cut.
+        let refs: Vec<nomi_vimax::media_local::ConcatClip<'_>> = paths
+            .iter()
+            .map(|p| nomi_vimax::media_local::ConcatClip::cut(p.as_path()))
+            .collect();
         nomi_vimax::media_local::concat_videos(&refs, &out_path)
             .await
             .map_err(|e| AppError::Internal(format!("ffmpeg concat: {e}")))?;
@@ -920,9 +1092,207 @@ impl CanvasService {
             .ok_or_else(|| AppError::Internal("media index missing after concat".into()))?;
         Ok(Self::entry_to_meta(entry))
     }
+
+    /// ffmpeg extract + Flowy category-7 ASR. Returns plain text (no word timestamps).
+    pub async fn transcribe_media(
+        &self,
+        media_id: &str,
+        language: Option<String>,
+    ) -> Result<CanvasTranscription, AppError> {
+        let idx = self.load_media_index().await?;
+        let entry = idx
+            .items
+            .iter()
+            .find(|e| e.media_id == media_id)
+            .ok_or_else(|| AppError::NotFound(format!("media {media_id}")))?;
+        if entry.kind != "video" && entry.kind != "audio" {
+            return Err(AppError::BadRequest(format!(
+                "media {media_id} is not audio or video (kind={})",
+                entry.kind
+            )));
+        }
+        let input = self.media_file_path(media_id).await?;
+        let duration_ms = nomi_vimax::media_local::probe_media_duration_secs(&input)
+            .await
+            .filter(|d| *d > 0.0 && d.is_finite())
+            .map(|d| (d * 1000.0).round() as u64)
+            .or(entry.duration_ms);
+        let wav_path = self
+            .root()
+            .join("scratch")
+            .join(format!("asr-{}.wav", generate_id()));
+        crate::fsio::ensure_dir(
+            wav_path
+                .parent()
+                .ok_or_else(|| AppError::Internal("scratch parent missing".into()))?,
+        )
+        .await?;
+        nomi_vimax::media_local::extract_audio_wav(&input, &wav_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("ffmpeg extract audio: {e}")))?;
+        let wav_bytes = tokio::fs::read(&wav_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("read wav: {e}")))?;
+        let _ = tokio::fs::remove_file(&wav_path).await;
+        let (api, session) = crate::llm_proxy::open_flowy(self.data_dir())?;
+        let text = api
+            .transcribe_audio(
+                &session,
+                wav_bytes,
+                "audio.wav",
+                "audio/wav",
+                language.as_deref(),
+            )
+            .await
+            .map_err(|e| e.into_app_error())?;
+        Ok(CanvasTranscription {
+            text,
+            language,
+            duration_ms,
+        })
+    }
+
+    /// Trim / gap / concat / optional SRT burn via local ffmpeg.
+    pub async fn export_timeline(
+        &self,
+        clips: Vec<TimelineExportClip>,
+        srt: Option<String>,
+        burn_subtitles: bool,
+        title: Option<String>,
+    ) -> Result<CanvasMediaMeta, AppError> {
+        if clips.is_empty() {
+            return Err(AppError::BadRequest("export-timeline requires clips".into()));
+        }
+        let scratch = self
+            .root()
+            .join("scratch")
+            .join(format!("timeline-{}", generate_id()));
+        crate::fsio::ensure_dir(&scratch).await?;
+        let cleanup = scratch.clone();
+        let result = self
+            .export_timeline_inner(&scratch, clips, srt, burn_subtitles, title)
+            .await;
+        let _ = tokio::fs::remove_dir_all(&cleanup).await;
+        result
+    }
+
+    async fn export_timeline_inner(
+        &self,
+        scratch: &Path,
+        clips: Vec<TimelineExportClip>,
+        srt: Option<String>,
+        burn_subtitles: bool,
+        title: Option<String>,
+    ) -> Result<CanvasMediaMeta, AppError> {
+        let idx = self.load_media_index().await?;
+        let mut parts: Vec<PathBuf> = Vec::new();
+        let mut canvas = (1920u32, 1080u32);
+        for (index, clip) in clips.iter().enumerate() {
+            let entry = idx
+                .items
+                .iter()
+                .find(|e| e.media_id == clip.media_id)
+                .ok_or_else(|| AppError::NotFound(format!("media {}", clip.media_id)))?;
+            if entry.kind != "video" {
+                return Err(AppError::BadRequest(format!(
+                    "media {} is not a video (kind={})",
+                    clip.media_id, entry.kind
+                )));
+            }
+            let src = self.media_file_path(&clip.media_id).await?;
+            if index == 0 {
+                if let Some(size) = nomi_vimax::media_local::probe_media_video_size(&src).await {
+                    canvas = size;
+                }
+            }
+            if let Some(gap_ms) = clip.gap_before_ms.filter(|ms| *ms > 100) {
+                let gap_path = scratch.join(format!("gap-{index}.mp4"));
+                nomi_vimax::media_local::write_black_gap(
+                    &gap_path,
+                    gap_ms as f64 / 1000.0,
+                    canvas.0,
+                    canvas.1,
+                )
+                .await
+                .map_err(|e| AppError::Internal(format!("ffmpeg gap: {e}")))?;
+                parts.push(gap_path);
+            }
+            let start_ms = clip.source_start_ms.unwrap_or(0);
+            let duration_ms = clip.duration_ms.max(50);
+            let source_secs = nomi_vimax::media_local::probe_media_duration_secs(&src)
+                .await
+                .unwrap_or(0.0);
+            let needs_trim = start_ms > 20
+                || (source_secs > 0.0 && (duration_ms as f64) < source_secs * 1000.0 - 80.0);
+            if needs_trim {
+                let seg = scratch.join(format!("clip-{index}.mp4"));
+                nomi_vimax::media_local::extract_av_segment(
+                    &src,
+                    &seg,
+                    start_ms as f64 / 1000.0,
+                    duration_ms as f64 / 1000.0,
+                )
+                .await
+                .map_err(|e| AppError::Internal(format!("ffmpeg trim: {e}")))?;
+                parts.push(seg);
+            } else {
+                parts.push(src);
+            }
+        }
+        if parts.is_empty() {
+            return Err(AppError::BadRequest("no video clips to export".into()));
+        }
+        let concat_path = scratch.join("concat.mp4");
+        let film_path = if parts.len() == 1 {
+            parts[0].clone()
+        } else {
+            let refs: Vec<nomi_vimax::media_local::ConcatClip<'_>> = parts
+                .iter()
+                .map(|p| nomi_vimax::media_local::ConcatClip::cut(p.as_path()))
+                .collect();
+            nomi_vimax::media_local::concat_videos(&refs, &concat_path)
+                .await
+                .map_err(|e| AppError::Internal(format!("ffmpeg concat: {e}")))?;
+            concat_path
+        };
+        let srt_text = srt.unwrap_or_default();
+        let out_path = if burn_subtitles && !srt_text.trim().is_empty() {
+            let srt_path = scratch.join("timeline.srt");
+            tokio::fs::write(&srt_path, srt_text.as_bytes())
+                .await
+                .map_err(|e| AppError::Internal(format!("write srt: {e}")))?;
+            let burned = scratch.join("burned.mp4");
+            match nomi_vimax::media_local::burn_srt_subtitles(&film_path, &srt_path, &burned).await {
+                Ok(()) => burned,
+                Err(e) => {
+                    tracing::warn!("subtitle burn skipped: {e}");
+                    film_path
+                }
+            }
+        } else {
+            film_path
+        };
+        let bytes = tokio::fs::read(&out_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("read export output: {e}")))?;
+        let title = title
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "timeline-export".into());
+        let media_id = self
+            .store_media_bytes(bytes, "video", "video/mp4", "mp4", title)
+            .await?;
+        let idx = self.load_media_index().await?;
+        let entry = idx
+            .items
+            .iter()
+            .find(|e| e.media_id == media_id)
+            .ok_or_else(|| AppError::Internal("media index missing after export".into()))?;
+        Ok(Self::entry_to_meta(entry))
+    }
 }
 
-fn validate_project_id(id: &str) -> Result<(), AppError> {
+pub(crate) fn validate_project_id(id: &str) -> Result<(), AppError> {
     if id.is_empty()
         || id.contains("..")
         || id.contains('/')
@@ -1002,5 +1372,95 @@ mod tests {
         let mut got = Vec::new();
         file.read_to_end(&mut got).await.expect("read stream");
         assert_eq!(got, payload);
+    }
+
+    fn sample_task(id: &str, status: GenerationTaskStatus) -> InternalTask {
+        InternalTask {
+            task_id: id.into(),
+            status,
+            mode: "video".into(),
+            prompt: "a clip".into(),
+            model: None,
+            aspect_ratio: Some("16:9".into()),
+            resolution: Some("720p".into()),
+            duration_secs: Some(5),
+            reference_media_ids: vec![],
+            first_frame_media_id: None,
+            last_frame_media_id: None,
+            project_id: None,
+            progress: 1.0,
+            error: None,
+            result_media_id: Some("media-1".into()),
+            created_at: 1,
+            updated_at: 2,
+        }
+    }
+
+    #[tokio::test]
+    async fn generation_tasks_reload_from_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().to_path_buf();
+        let first = CanvasService::new(path.clone());
+        first
+            .tasks
+            .write()
+            .await
+            .insert("t1".into(), sample_task("t1", GenerationTaskStatus::Succeeded));
+        first.persist_tasks().await;
+
+        let second = CanvasService::new(path);
+        let listed = second.list_tasks(10, 0, false).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].task_id, "t1");
+        assert_eq!(listed[0].status, GenerationTaskStatus::Succeeded);
+        assert_eq!(listed[0].result_media_id.as_deref(), Some("media-1"));
+        assert_eq!(listed[0].duration_secs, Some(5));
+    }
+
+    #[tokio::test]
+    async fn in_flight_generation_tasks_fail_on_reload() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().to_path_buf();
+        let first = CanvasService::new(path.clone());
+        let mut running = sample_task("t2", GenerationTaskStatus::Running);
+        running.progress = 0.4;
+        running.result_media_id = None;
+        first.tasks.write().await.insert("t2".into(), running);
+        first.persist_tasks().await;
+
+        let second = CanvasService::new(path);
+        let listed = second.list_tasks(10, 0, false).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, GenerationTaskStatus::Failed);
+        assert!(listed[0].error.as_ref().is_some());
+    }
+
+    #[tokio::test]
+    async fn standalone_task_list_hides_canvas_bound_jobs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = CanvasService::new(dir.path().to_path_buf());
+        let clip = sample_task("clip", GenerationTaskStatus::Succeeded);
+        let mut canvas_job = sample_task("canvas-job", GenerationTaskStatus::Succeeded);
+        canvas_job.project_id = Some("proj-1".into());
+        service
+            .tasks
+            .write()
+            .await
+            .insert("clip".into(), clip);
+        service
+            .tasks
+            .write()
+            .await
+            .insert("canvas-job".into(), canvas_job);
+
+        let all = service.list_tasks(10, 0, false).await;
+        assert_eq!(all.len(), 2);
+
+        let standalone = service.list_tasks(10, 0, true).await;
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].task_id, "clip");
+        assert!(standalone[0].project_id.is_none());
+        assert_eq!(service.task_count(true).await, 1);
+        assert_eq!(service.task_count(false).await, 2);
     }
 }

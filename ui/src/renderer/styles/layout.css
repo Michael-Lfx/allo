@@ -19,6 +19,20 @@
 .workpath-action-btn.sider-action-btn:hover {
   background-color: transparent;
 }
+
+/* Icon Park wraps glyphs in an inline `.i-icon` span. Kill the text strut so
+ * the 14px SVG sits in the 20px hit target instead of riding the baseline. */
+.workpath-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.workpath-action-btn > .i-icon,
+.workpath-action-btn > .i-icon > svg {
+  display: block;
+  line-height: 0;
+}
 .session-action-icon-btn.sider-action-btn,
 .session-action-icon-btn.sider-action-btn:hover {
   background-color: transparent;
@@ -41,6 +55,13 @@
 .sider-section-title,
 .settings-sider__group-header {
   color: var(--sider-section-title-color, var(--text-secondary));
+}
+
+.settings-sider__group-header {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Layout sider base styles */
@@ -361,6 +382,10 @@
 
 .settings-sider__item-label {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-history__placeholder,

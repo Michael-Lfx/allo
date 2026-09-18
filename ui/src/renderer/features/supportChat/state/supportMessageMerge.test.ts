@@ -52,7 +52,9 @@ describe('supportMessageMerge', () => {
     const pending = createPendingMessage('client-1', 'hello', '2026-07-24T10:00:00Z');
     const server = message({ id: 9, seq: 3, clientMsgId: 'client-1', content: 'hello' });
 
-    expect(mergeServerMessages([pending], [server])).toEqual([{ kind: 'server', message: server }]);
+    expect(mergeServerMessages([pending], [server])).toEqual([
+      { kind: 'server', message: server, localClientMsgId: 'client-1' },
+    ]);
     expect(mergeServerMessages([{ kind: 'server', message: server }], [server])).toEqual([
       { kind: 'server', message: server },
     ]);
@@ -72,7 +74,40 @@ describe('supportMessageMerge', () => {
     const pending = createPendingMessage('client-1', 'hello', '2026-07-24T10:00:00Z');
     const server = message({ id: 9, seq: 3, clientMsgId: 'client-1', content: 'hello' });
     expect(replacePendingMessage([pending], 'client-1', server)).toEqual([
-      { kind: 'server', message: server },
+      { kind: 'server', message: server, localClientMsgId: 'client-1' },
     ]);
+  });
+
+  test('keeps pending messages before newer server replies and retains local image identity', () => {
+    const pending = createPendingMessage('client-image', '', '2026-07-24T10:01:00Z', 'sending', undefined, {
+      payload: {
+        url: 'https://cdn.example/image.png',
+        name: 'image.png',
+        contentType: 'image/png',
+        byteSize: 10,
+      },
+      previewUrl: 'blob:image',
+    });
+    const reply = message({
+      id: 10,
+      seq: 4,
+      senderType: 'sys_user',
+      createdAt: '2026-07-24T10:02:00Z',
+      content: '收到',
+    });
+
+    const merged = mergeServerMessages([pending], [reply]);
+    expect(merged.map((item) => item.kind === 'server' ? item.message.content : item.clientMsgId)).toEqual([
+      'client-image',
+      '收到',
+    ]);
+    const replaced = replacePendingMessage([pending], 'client-image', message({
+      id: 11,
+      seq: 5,
+      msgType: 'image',
+      clientMsgId: null,
+      payload: pending.payload,
+    }));
+    expect(replaced[0]).toMatchObject({ kind: 'server', localClientMsgId: 'client-image' });
   });
 });

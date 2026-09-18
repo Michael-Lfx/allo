@@ -3,6 +3,7 @@ import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@oc/components/c
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@oc/components/canvas/canvas-node-mask-edit-dialog";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@oc/components/canvas/canvas-node-split-dialog";
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@oc/components/canvas/canvas-node-upscale-dialog";
+import { CanvasVideoFrameDialog, type CanvasVideoFrameParams } from "@oc/components/canvas/canvas-video-frame-dialog";
 import type { CanvasNodeData } from "@oc/types/canvas";
 
 type CanvasProjectMediaDialogsProps = {
@@ -21,6 +22,9 @@ type CanvasProjectMediaDialogsProps = {
     onMaskEdit: (node: CanvasNodeData, payload: CanvasImageMaskEditPayload) => void;
     onSplit: (node: CanvasNodeData, params: CanvasImageSplitParams) => void;
     onUpscale: (node: CanvasNodeData, params: CanvasImageUpscaleParams) => void;
+    frameNode: CanvasNodeData | null;
+    onCloseFrame: () => void;
+    onExtractFrames: (node: CanvasNodeData, params: CanvasVideoFrameParams) => void;
 };
 
 export function CanvasProjectMediaDialogs({
@@ -39,6 +43,9 @@ export function CanvasProjectMediaDialogs({
     onMaskEdit,
     onSplit,
     onUpscale,
+    frameNode,
+    onCloseFrame,
+    onExtractFrames,
 }: CanvasProjectMediaDialogsProps) {
     return (
         <>
@@ -47,6 +54,7 @@ export function CanvasProjectMediaDialogs({
             {maskEditNode?.metadata?.content ? <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open onClose={onCloseMaskEdit} onConfirm={(payload) => onMaskEdit(maskEditNode, payload)} /> : null}
             {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open onClose={onCloseSplit} onConfirm={(params) => onSplit(splitNode, params)} /> : null}
             {upscaleNode?.metadata?.content ? <CanvasNodeUpscaleDialog dataUrl={upscaleNode.metadata.content} open onClose={onCloseUpscale} onConfirm={(params) => onUpscale(upscaleNode, params)} /> : null}
+            {frameNode ? <CanvasVideoFrameDialog node={frameNode} open onClose={onCloseFrame} onConfirm={(params) => void onExtractFrames(frameNode, params)} /> : null}
         </>
     );
 }

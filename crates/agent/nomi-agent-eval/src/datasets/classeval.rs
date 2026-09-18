@@ -101,6 +101,9 @@ files. Do not rename the class.\n\n\
             task_profile: Some("coding".into()),
             workspace_files,
             timeout_secs: Some(300),
+            advisory_scorers: vec![],
+            isolation: None,
+            trial: 0,
         });
     }
     if cases.is_empty() {

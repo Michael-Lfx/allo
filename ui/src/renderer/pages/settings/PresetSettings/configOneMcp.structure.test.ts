@@ -18,5 +18,8 @@ describe('Preset Config One MCP', () => {
     expect(editorHook.includes('mcp_server_ids: mcpServerIds.map(String)')).toBe(true);
     expect(guidSend.includes('presetUsesSnapshotMcp')).toBe(true);
     expect(guidSend.includes('selected_mcp_server_ids: selectedUserMcpServerIds')).toBe(true);
+    expect(drawer.includes('server.enabled || mcpServerIds.includes(server.mcp_server_id)')).toBe(true);
+    expect(drawer.includes('disabled={!server.enabled && !mcpServerIds.includes(server.mcp_server_id)}')).toBe(true);
+    expect(drawer.includes('settings.presetMcpDisabledSelectionHint')).toBe(true);
   });
 });

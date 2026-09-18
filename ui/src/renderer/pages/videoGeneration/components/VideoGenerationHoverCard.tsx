@@ -37,19 +37,28 @@ const VideoGenerationHoverCard: React.FC<VideoGenerationHoverCardProps> = ({
 
   return (
     <div className='flex flex-col gap-6px py-4px min-w-200px max-w-320px'>
-      <div className='flex flex-col gap-2px'>
+      <div className='flex flex-col gap-2px min-w-0'>
         <span className='text-12px text-t-tertiary'>
           {t('videoGeneration.nav.hoverCard.name', { defaultValue: '项目名' })}
         </span>
-        <span className='text-13px text-t-primary break-all'>{displayTitle}</span>
+        <span
+          className='text-13px text-t-primary break-words line-clamp-3'
+          style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+        >
+          {displayTitle}
+        </span>
       </div>
 
-      <div className='flex flex-col gap-2px'>
+      <div className='flex flex-col gap-2px min-w-0'>
         <span className='text-12px text-t-tertiary'>
           {t('videoGeneration.nav.hoverCard.id', { defaultValue: '项目 ID' })}
         </span>
-        <div className='flex items-center gap-6px'>
-          <span className='text-13px text-t-primary break-all font-mono leading-16px'>{id}</span>
+        <div className='flex items-center gap-6px min-w-0'>
+          <span
+            className='text-12px text-t-primary font-mono leading-16px flex-1 min-w-0 break-all'
+          >
+            {id}
+          </span>
           <CopyIconButton
             text={id}
             tooltip={t('common.copyFullId', { defaultValue: '复制完整 ID' })}

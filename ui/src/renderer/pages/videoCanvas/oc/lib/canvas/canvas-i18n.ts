@@ -5,5 +5,11 @@ import i18n from "i18next";
  * 注册表等非 React 上下文也可用；组件内请另调 useTranslation() 以订阅语言切换。
  */
 export function canvasT(key: string, defaultValue: string, options?: Record<string, unknown>): string {
-    return String(i18n.t(key, { defaultValue, ...(options || {}) }));
+    const translated = i18n.t(key, { defaultValue, ...(options || {}) });
+    const text = typeof translated === "string" && translated.length > 0 && translated !== "undefined" ? translated : defaultValue;
+    if (!options) return text;
+    return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (match, name: string) => {
+        const value = options[name];
+        return value == null ? match : String(value);
+    });
 }

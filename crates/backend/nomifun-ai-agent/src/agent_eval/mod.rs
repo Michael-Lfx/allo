@@ -8,10 +8,12 @@
 mod capture;
 mod lab;
 mod live;
+mod quality;
 mod session_bridge;
 
 pub use lab::EvalLab;
 pub use live::{LiveEvalTrace, LiveNomiHarness};
+pub use quality::{EvalQualityCase, EvalQualityReport, EvalQualitySink};
 pub use session_bridge::{
     eval_run_workspace_label, suite_business_label, EvalCaseTurnUsage, EvalSessionBridge,
     OpenEvalCaseSession, RecordEvalCaseTurn,

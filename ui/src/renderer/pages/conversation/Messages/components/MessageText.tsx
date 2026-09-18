@@ -117,12 +117,14 @@ const MessageKnowledgeWriteback: React.FC<{
   state: KnowledgeWritebackState;
   conversationId: IMessageText['conversation_id'];
   messageId?: IMessageText['message_id'];
-}> = ({ state, conversationId, messageId }) => {
+  onSettled?: () => void;
+}> = ({ state, conversationId, messageId, onSettled }) => {
   const { t } = useTranslation();
   const [retrying, setRetrying] = useState(false);
   const [watchingRetry, setWatchingRetry] = useState(false);
   const [polledState, setPolledState] = useState<KnowledgeWritebackState>();
   const retryFromAttemptRef = useRef<string | undefined>(undefined);
+  const sawRunningRef = useRef(RUNNING_WRITEBACK_STATUSES.has(state.status));
   const displayState = useMemo(
     () => preferKnowledgeWritebackState(state, polledState) ?? state,
     [polledState, state]
@@ -158,6 +160,16 @@ const MessageKnowledgeWriteback: React.FC<{
     retrying,
     watchingRetry,
   ]);
+
+  useEffect(() => {
+    if (RUNNING_WRITEBACK_STATUSES.has(displayState.status)) {
+      sawRunningRef.current = true;
+      return;
+    }
+    if (!sawRunningRef.current) return;
+    sawRunningRef.current = false;
+    onSettled?.();
+  }, [displayState.status, onSettled]);
 
   // Realtime fan-out is bounded and may drop a frame without disconnecting.
   // Poll this exact durable owner row while it is running (or while a manual
@@ -432,7 +444,9 @@ const MessageText: React.FC<{
   });
   const creditProvider = useMemo(() => {
     if (conversation?.type !== 'nomi') return undefined;
-    return findProviderById(providerList ?? [], conversation.model?.id) ?? conversation.model;
+    const provider = findProviderById(providerList ?? [], conversation.model?.id);
+    if (provider) return provider;
+    return conversation.model ? { ...conversation.model, models: [] } : undefined;
   }, [conversation, providerList]);
   const creditFallbackModel = conversation?.type === 'nomi' ? conversation.model?.use_model : undefined;
   const turnCreditDetails = useMemo(
@@ -531,7 +545,8 @@ const MessageText: React.FC<{
     isLatestUserMessage;
 
   const isCodingProfile =
-    typeof conversation?.extra?.task_profile === 'string' &&
+    conversation?.type === 'nomi' &&
+    typeof conversation.extra.task_profile === 'string' &&
     conversation.extra.task_profile.toLowerCase() === 'coding';
 
   const { data: codingRollbackAvailability } = useSWR(
@@ -779,6 +794,7 @@ const MessageText: React.FC<{
                     fontSize={MESSAGE_BODY_FONT_SIZE}
                     lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                     allowUnverifiedImages={isUserMessage}
+                    collapsibleBlockquotes={false}
                   >{`\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``}</MarkdownView>
                 </CollapsibleContent>
               ) : streamingParts && streamingParts.tailKind === 'code' ? (
@@ -789,7 +805,7 @@ const MessageText: React.FC<{
                       fontSize={MESSAGE_BODY_FONT_SIZE}
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                       allowUnverifiedImages={isUserMessage}
-                      isStreaming
+                      collapsibleBlockquotes={false}
                     >
                       {streamingParts.stablePrefix}
                     </MarkdownView>
@@ -799,21 +815,29 @@ const MessageText: React.FC<{
                   </CodeBlock>
                 </>
               ) : streamingParts ? (
-                <MarkdownView
-                  codeStyle={CODE_STYLE}
-                  fontSize={MESSAGE_BODY_FONT_SIZE}
-                  lineHeight={MESSAGE_BODY_LINE_HEIGHT}
-                  allowUnverifiedImages={isUserMessage}
-                  isStreaming
-                >
-                  {data}
-                </MarkdownView>
+                <>
+                  {streamingParts.stablePrefix ? (
+                    <MarkdownView
+                      codeStyle={CODE_STYLE}
+                      fontSize={MESSAGE_BODY_FONT_SIZE}
+                      lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                      allowUnverifiedImages={isUserMessage}
+                      collapsibleBlockquotes={false}
+                    >
+                      {streamingParts.stablePrefix}
+                    </MarkdownView>
+                  ) : null}
+                  <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>
+                    {streamingParts.tail}
+                  </div>
+                </>
               ) : (
                 <MarkdownView
                   codeStyle={CODE_STYLE}
                   fontSize={MESSAGE_BODY_FONT_SIZE}
                   lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                   allowUnverifiedImages={isUserMessage}
+                  collapsibleBlockquotes={!isUserMessage && !isStreaming}
                 >
                   {data}
                 </MarkdownView>
@@ -826,6 +850,18 @@ const MessageText: React.FC<{
             state={writebackState}
             conversationId={message.conversation_id}
             messageId={message.message_id ?? message.msg_id}
+            onSettled={
+              conversationId && turnCreditKey
+                ? () => {
+                    void fetchAndPersistTurnCredits({
+                      conversation_id: conversationId,
+                      turn_id: turnCreditKey,
+                      force: true,
+                      delayMs: 800,
+                    });
+                  }
+                : undefined
+            }
           />
         )}
         {actionsRow}

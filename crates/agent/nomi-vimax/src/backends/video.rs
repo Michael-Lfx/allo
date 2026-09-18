@@ -1,22 +1,25 @@
 //! Flowy video generation → local file (strictly serial + cancelable).
 
 use async_trait::async_trait;
-use std::path::Path;
+use futures::StreamExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use nomifun_cloud::{
-    video_task_failure_message, is_minimax_h3_model, MODEL_CATEGORY_VIDEO, VideoContentImage,
-    VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord, MINIMAX_H3_DURATION_MAX,
-    MINIMAX_H3_DURATION_MIN,
+    video_task_failure_message, is_minimax_h3_model, is_wan3_model, MODEL_CATEGORY_VIDEO,
+    VideoContentImage, VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord,
 };
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local::{
-    is_usable_video_file, scrub_unusable_video, write_image_bytes_atomic, write_video_bytes_atomic,
+    image_magic_kind, is_usable_audio_file, is_usable_video_file, load_return_last_frame_url,
+    probe_media_duration_secs, scrub_unusable_video, trim_audio_to_max_secs,
+    write_image_bytes_atomic, write_return_last_frame_url, write_video_bytes_atomic,
 };
 
 /// Cap concurrent Flowy video create+poll calls process-wide to **one**.
@@ -186,7 +189,7 @@ impl VimaxVideo for FlowyVideo {
         out_path: &Path,
         last_frame_out: Option<&Path>,
         ref_video: Option<&Path>,
-        ref_audio: Option<&Path>,
+        ref_audios: &[&Path],
     ) -> VimaxResult<()> {
         if self.is_cancelled() {
             return Err(VimaxError::Cancelled);
@@ -201,9 +204,11 @@ impl VimaxVideo for FlowyVideo {
         let model = self.resolve_model().await?;
         let model_for_err = model.clone();
         let is_h3 = is_minimax_h3_model(&model);
-        if ref_video.is_some() && !is_h3 {
+        let is_wan3 = is_wan3_model(&model);
+        let is_seedance = !is_h3 && !is_wan3;
+        if ref_video.is_some() && !is_h3 && !is_wan3 {
             return Err(VimaxError::InvalidParams(
-                "action imitation (reference_video) requires MiniMax-H3".into(),
+                "action imitation (reference_video) requires MiniMax-H3 or Wan 3.0".into(),
             ));
         }
 
@@ -239,6 +244,7 @@ impl VimaxVideo for FlowyVideo {
         let uses_frame_roles = images.iter().any(|img| {
             matches!(img.role.as_str(), "first_frame" | "last_frame")
         });
+        let mut vendor_last_frame_slots: Vec<(usize, PathBuf)> = Vec::new();
         if uses_frame_roles {
             if !ref_images.is_empty() {
                 tracing::info!(
@@ -253,6 +259,8 @@ impl VimaxVideo for FlowyVideo {
         } else {
             // Upload reference images concurrently (independent I/O) while preserving
             // their order — the prompt binds each `Image N` by array position.
+            // Continuity stills prefer the previous task's `last_frame_url` so we
+            // do not re-host the same pixels on our OSS (lower content-review risk).
             let n = ref_images.len();
             let mut set = tokio::task::JoinSet::new();
             for (i, path) in ref_images.iter().enumerate() {
@@ -266,24 +274,31 @@ impl VimaxVideo for FlowyVideo {
                 let p = (*path).to_path_buf();
                 let stem_clone = stem.clone();
                 set.spawn(async move {
-                    let url = services.upload_image_public_url(&p, &stem_clone).await;
-                    (i, stem, url)
+                    let resolved =
+                        resolve_reference_image_url(&services, &p, &stem_clone).await;
+                    (i, stem, p, resolved)
                 });
             }
-            let mut slots: Vec<Option<(String, VimaxResult<String>)>> = (0..n)
-                .map(|_| None)
-                .collect();
+            let mut slots: Vec<Option<(String, PathBuf, VimaxResult<(String, bool)>)>> =
+                (0..n).map(|_| None).collect();
             while let Some(joined) = set.join_next().await {
-                let (i, stem, url) =
+                let (i, stem, path, resolved) =
                     joined.map_err(|e| VimaxError::Video(format!("ref upload join: {e}")))?;
-                slots[i] = Some((stem, url));
+                slots[i] = Some((stem, path, resolved));
             }
             for slot in slots {
-                let (stem, url) =
+                let (stem, path, resolved) =
                     slot.expect("every spawned ref upload joins exactly once");
-                local_frame_notes.push(format!("reference_image←{stem}"));
+                let (url, used_vendor_last_frame) = resolved?;
+                if used_vendor_last_frame {
+                    local_frame_notes
+                        .push(format!("reference_image←{stem} (Seedance last_frame_url)"));
+                    vendor_last_frame_slots.push((images.len(), path));
+                } else {
+                    local_frame_notes.push(format!("reference_image←{stem}"));
+                }
                 images.push(VideoContentImage {
-                    url: url?,
+                    url,
                     role: "reference_image".into(),
                 });
             }
@@ -311,26 +326,36 @@ impl VimaxVideo for FlowyVideo {
             );
         }
 
-        let mut reference_audio_url = None;
+        let mut reference_audio_urls = Vec::new();
         // Seedance: reference_audio cannot be the only reference input — need ≥1
         // image or reference_video. Pure T2V must omit voice refs.
         let has_visual_ref = !images.is_empty() || reference_video_url.is_some();
-        if let Some(path) = ref_audio.filter(|p| crate::media_local::is_usable_audio_file(p)) {
+        let max_audio = crate::video_quality::max_reference_audio(&model);
+        let capped_audios = cap_reference_audio_paths(ref_audios, is_wan3, max_audio).await;
+        if !capped_audios.is_empty() && capped_audios.len() < ref_audios.len() {
+            local_frame_notes.push(format!(
+                "reference_audio_budget_{}_of_{}",
+                capped_audios.len(),
+                ref_audios.len()
+            ));
+        }
+        if !capped_audios.is_empty() {
             if has_visual_ref {
-                local_frame_notes.push(format!(
-                    "reference_audio←{}",
-                    path.file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("?")
-                ));
-                reference_audio_url = Some(
-                    self.services
-                        .upload_audio_public_url(path, "reference_audio")
-                        .await?,
-                );
+                for path in &capped_audios {
+                    local_frame_notes.push(format!(
+                        "reference_audio←{}",
+                        path.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("?")
+                    ));
+                    reference_audio_urls.push(
+                        self.services
+                            .upload_audio_public_url(path, "reference_audio")
+                            .await?,
+                    );
+                }
             } else {
                 tracing::info!(
-                    path = %path.display(),
                     "omitting reference_audio: Seedance forbids audio as the only reference input"
                 );
                 local_frame_notes.push("reference_audio_omitted_no_visual_ref".into());
@@ -339,29 +364,24 @@ impl VimaxVideo for FlowyVideo {
 
         let aspect = self.resolved_aspect();
         let resolution = Some(self.resolved_resolution(&model));
-        // Seedance 2.0 / 2.0-fast I2V accepts [4, 15]; MiniMax-H3 accepts [4, 15].
-        // ViMax film clips historically used [5, 15]; H3 action imitation uses the
-        // upstream 4–15 window so a 4s reference video is not padded.
-        let (min_d, max_d) = if is_h3 {
-            (MINIMAX_H3_DURATION_MIN, MINIMAX_H3_DURATION_MAX)
-        } else {
-            (
-                crate::planning::MIN_CLIP_DURATION_SECS,
-                crate::planning::MAX_CLIP_DURATION_SECS,
-            )
-        };
-        let duration = duration_secs.clamp(min_d, max_d);
+        // Last line of defence: planning already sizes clips to the model window,
+        // but a resumed session or a hand-edited storyboard can still ask for a
+        // duration the upstream API would reject.
+        let bounds = crate::video_quality::clip_bounds_for_model(&model);
+        let duration = bounds.clamp_secs(duration_secs);
         if duration != duration_secs {
             tracing::warn!(
                 requested = duration_secs,
                 clamped = duration,
                 model = %model,
-                "video duration clamped to [{min_d}, {max_d}]",
+                "video duration clamped to [{}, {}]",
+                bounds.min_secs(),
+                bounds.max_secs(),
             );
         }
         let want_last_frame = last_frame_out.is_some();
 
-        let params = VideoCreateParams {
+        let mut params = VideoCreateParams {
             model: model.clone(),
             prompt: prompt.to_string(),
             duration: Some(duration),
@@ -372,16 +392,18 @@ impl VimaxVideo for FlowyVideo {
             watermark: false,
             // Seedance 2.0 requires non-empty audio captions when true.
             // MiniMax-H3 does not use generate_audio / return_last_frame.
+            // Wan 3.0 maps generate_audio → parameters.audio; no return_last_frame.
             generate_audio: if is_h3 { None } else { Some(true) },
-            return_last_frame: if is_h3 { None } else { Some(want_last_frame) },
+            return_last_frame: if is_h3 || is_wan3 { None } else { Some(want_last_frame) },
             images,
             reference_video_url,
-            reference_audio_url,
+            reference_audio_url: None,
+            reference_audio_urls,
         };
 
         log_video_create_params(&params, &local_frame_notes, out_path);
 
-        let timeout = self.services.media.video.poll_timeout_seconds.max(600);
+        let timeout = self.services.media.video.poll_timeout_seconds.max(1200);
 
         // Strictly one in-flight video API call process-wide.
         let _permit = global_video_gate()
@@ -417,12 +439,123 @@ impl VimaxVideo for FlowyVideo {
                 .await
         };
 
-        let record = match first {
+        let first = match first {
+            Err(e)
+                if is_seedance
+                    && !vendor_last_frame_slots.is_empty()
+                    && is_stale_ref_image_url_err(&e) =>
+            {
+                tracing::warn!(
+                    model = %model_for_err,
+                    error = %e,
+                    slots = vendor_last_frame_slots.len(),
+                    "upstream last_frame_url rejected; re-uploading local stills to OSS"
+                );
+                let mut oss_params = params.clone();
+                for (idx, path) in &vendor_last_frame_slots {
+                    let url = self.frame_public_url(path, "video_last_frame").await?;
+                    if let Some(img) = oss_params.images.get_mut(*idx) {
+                        img.url = url;
+                    }
+                }
+                local_frame_notes.push("last_frame_url_fallback_oss".into());
+                log_video_create_params(&oss_params, &local_frame_notes, out_path);
+                if self.is_cancelled() {
+                    return Err(VimaxError::Cancelled);
+                }
+                if is_usable_video_file(out_path) {
+                    return Ok(());
+                }
+                self.emit_progress(
+                    "video_create",
+                    "submitting video task (OSS last-frame fallback)",
+                    None,
+                );
+                params = oss_params;
+                self.services
+                    .api
+                    .generate_video_with_timeout_and_progress_cancellable(
+                        &self.services.session,
+                        params.to_json(),
+                        timeout,
+                        self.poll_progress_hook(),
+                        should_cancel.clone(),
+                        None,
+                    )
+                    .await
+            }
+            other => other,
+        };
+
+        let mut record = match first {
             Ok(r) => r,
             Err(e)
-                if !is_h3
+                if is_ref_audio_duration_limit_err(&e)
+                    && !params.reference_audio_urls_merged().is_empty() =>
+            {
+                let mut last_err = e;
+                loop {
+                    if !drop_last_reference_audio(&mut params) {
+                        if self.is_cancelled() {
+                            return Err(VimaxError::Cancelled);
+                        }
+                        return Err(map_model_err(
+                            "video",
+                            Some(model_for_err.as_str()),
+                            "video_generate_drop_ref_audio_duration",
+                            last_err,
+                        ));
+                    }
+                    tracing::warn!(
+                        model = %model_for_err,
+                        remaining = params.reference_audio_urls_merged().len(),
+                        error = %last_err,
+                        "Wan 3.0 reference_audio total duration over 15s; retrying with one fewer clip"
+                    );
+                    local_frame_notes.push("reference_audio_dropped_wan3_over_15s".into());
+                    log_video_create_params(&params, &local_frame_notes, out_path);
+                    if self.is_cancelled() {
+                        return Err(VimaxError::Cancelled);
+                    }
+                    if is_usable_video_file(out_path) {
+                        return Ok(());
+                    }
+                    match self
+                        .services
+                        .api
+                        .generate_video_with_timeout_and_progress_cancellable(
+                            &self.services.session,
+                            params.to_json(),
+                            timeout,
+                            self.poll_progress_hook(),
+                            should_cancel.clone(),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(r) => break r,
+                        Err(e2) if is_ref_audio_duration_limit_err(&e2) => {
+                            last_err = e2;
+                            continue;
+                        }
+                        Err(e2) => {
+                            if self.is_cancelled() {
+                                return Err(VimaxError::Cancelled);
+                            }
+                            return Err(map_model_err(
+                                "video",
+                                Some(model_for_err.as_str()),
+                                "video_generate_drop_ref_audio_duration",
+                                e2,
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(e)
+                if is_seedance
                     && is_seedance_audio_only_ref_err(&e)
-                    && params.reference_audio_url.is_some() =>
+                    && !params.reference_audio_urls_merged().is_empty() =>
             {
                 // Upstream sometimes strips rejected images then complains that audio
                 // is the only remaining reference — drop voice ref and retry once.
@@ -433,6 +566,7 @@ impl VimaxVideo for FlowyVideo {
                 );
                 let mut no_audio = params.clone();
                 no_audio.reference_audio_url = None;
+                no_audio.reference_audio_urls.clear();
                 let mut notes = local_frame_notes.clone();
                 notes.push("reference_audio_dropped_after_audio_only_reject".into());
                 log_video_create_params(&no_audio, &notes, out_path);
@@ -465,7 +599,7 @@ impl VimaxVideo for FlowyVideo {
                         )
                     })?
             }
-            Err(e) if !is_h3 && is_seedance_caption_empty_err(&e) => {
+            Err(e) if is_seedance && is_seedance_caption_empty_err(&e) => {
                 // First reinforce captions (keep audio on); only then fall back to silent.
                 tracing::warn!(
                     model = %model_for_err,
@@ -501,7 +635,7 @@ impl VimaxVideo for FlowyVideo {
                             error = %e2,
                             "Seedance still rejected captions; retrying with generate_audio=false"
                         );
-                        let mut silent = params;
+                        let mut silent = params.clone();
                         silent.generate_audio = Some(false);
                         log_video_create_params(&silent, &local_frame_notes, out_path);
                         if self.is_cancelled() {
@@ -517,7 +651,7 @@ impl VimaxVideo for FlowyVideo {
                                 silent.to_json(),
                                 timeout,
                                 self.poll_progress_hook(),
-                                should_cancel,
+                                should_cancel.clone(),
                                 None,
                             )
                             .await
@@ -559,6 +693,52 @@ impl VimaxVideo for FlowyVideo {
             }
         };
 
+        while is_ref_audio_duration_limit_record(&record)
+            && drop_last_reference_audio(&mut params)
+        {
+            tracing::warn!(
+                model = %model_for_err,
+                remaining = params.reference_audio_urls_merged().len(),
+                detail = %video_task_failure_message(&record),
+                "Wan 3.0 reference_audio total duration over 15s; retrying with one fewer clip"
+            );
+            local_frame_notes.push("reference_audio_dropped_wan3_over_15s".into());
+            log_video_create_params(&params, &local_frame_notes, out_path);
+            if self.is_cancelled() {
+                return Err(VimaxError::Cancelled);
+            }
+            if is_usable_video_file(out_path) {
+                return Ok(());
+            }
+            match self
+                .services
+                .api
+                .generate_video_with_timeout_and_progress_cancellable(
+                    &self.services.session,
+                    params.to_json(),
+                    timeout,
+                    self.poll_progress_hook(),
+                    should_cancel.clone(),
+                    None,
+                )
+                .await
+            {
+                Ok(r) => record = r,
+                Err(e) if is_ref_audio_duration_limit_err(&e) => continue,
+                Err(e) => {
+                    if self.is_cancelled() {
+                        return Err(VimaxError::Cancelled);
+                    }
+                    return Err(map_model_err(
+                        "video",
+                        Some(model_for_err.as_str()),
+                        "video_generate_drop_ref_audio_duration",
+                        e,
+                    ));
+                }
+            }
+        }
+
         if self.is_cancelled() {
             return Err(VimaxError::Cancelled);
         }
@@ -567,9 +747,16 @@ impl VimaxVideo for FlowyVideo {
             if record.is_success() {
                 VimaxError::Video("video task succeeded but no video_url".into())
             } else {
-                // Surface the upstream failure reason (e.g. InputTextSensitiveContentDetected)
-                // instead of a misleading success message.
-                VimaxError::Video(video_task_failure_message(&record))
+                let raw = video_task_failure_message(&record);
+                if is_ref_audio_duration_limit_text(&raw) {
+                    VimaxError::Video(format!(
+                        "{raw}\nHint: Wan 3.0 caps combined reference_audio at 15s. Voice refs are trimmed for Wan only; extra speakers are dropped. Resume from checkpoint, or open the shot in Canvas."
+                    ))
+                } else {
+                    // Surface the upstream failure reason (e.g. InputTextSensitiveContentDetected)
+                    // instead of a misleading success message.
+                    VimaxError::Video(raw)
+                }
             }
         })?;
 
@@ -579,6 +766,18 @@ impl VimaxVideo for FlowyVideo {
 
         if let Some(lf_out) = last_frame_out {
             if let Some(lf_url) = record.last_frame_url() {
+                if let Err(e) = write_return_last_frame_url(lf_out, &lf_url) {
+                    tracing::warn!(
+                        out = %lf_out.display(),
+                        error = %e,
+                        "failed to persist last_frame_url sidecar"
+                    );
+                } else {
+                    tracing::info!(
+                        out = %lf_out.display(),
+                        "persisted Seedance last_frame_url for next-shot continuity"
+                    );
+                }
                 match download_image_still(&lf_url, lf_out).await {
                     Ok(()) => tracing::info!(
                         out = %lf_out.display(),
@@ -601,6 +800,99 @@ impl VimaxVideo for FlowyVideo {
     }
 }
 
+/// Wan 3.0 only: Σ `reference_audio` duration must stay under 15s.
+/// Per-clip trim is `min(4s, 14.5 / n)` so five Wan slots still fit the budget.
+const WAN3_VOICE_REF_MAX_SECS: f64 = 4.0;
+const WAN3_REF_AUDIO_TOTAL_BUDGET_SECS: f64 = 14.5;
+
+fn count_refs_within_budget(durations: &[f64], max_count: usize, max_total: f64) -> usize {
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    for &d in durations.iter().take(max_count) {
+        let d = if d.is_finite() && d > 0.0 { d } else { 0.0 };
+        if n > 0 && sum + d > max_total {
+            break;
+        }
+        sum += d;
+        n += 1;
+    }
+    n
+}
+
+async fn cap_reference_audio_paths(
+    paths: &[&Path],
+    wan3_duration_budget: bool,
+    max_count: usize,
+) -> Vec<PathBuf> {
+    if max_count == 0 {
+        return Vec::new();
+    }
+    let candidates: Vec<&Path> = paths
+        .iter()
+        .copied()
+        .filter(|path| is_usable_audio_file(path))
+        .take(max_count)
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    if !wan3_duration_budget {
+        return candidates.into_iter().map(Path::to_path_buf).collect();
+    }
+    let n = candidates.len().max(1);
+    let per = (WAN3_REF_AUDIO_TOTAL_BUDGET_SECS / n as f64).min(WAN3_VOICE_REF_MAX_SECS);
+    let mut kept: Vec<(PathBuf, f64)> = Vec::new();
+    for path in candidates {
+        let _ = trim_audio_to_max_secs(path, per).await;
+        let dur = probe_media_duration_secs(path)
+            .await
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .unwrap_or(per);
+        kept.push((path.to_path_buf(), dur));
+    }
+    let durs: Vec<f64> = kept.iter().map(|(_, d)| *d).collect();
+    let n = count_refs_within_budget(&durs, max_count, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS);
+    kept.truncate(n);
+    kept.into_iter().map(|(p, _)| p).collect()
+}
+
+fn is_ref_audio_duration_limit_text(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("reference_audio")
+        && (lower.contains("exceeds max")
+            || (lower.contains("total duration") && lower.contains("15")))
+}
+
+fn is_ref_audio_duration_limit_err(err: &nomifun_cloud::ServerClientError) -> bool {
+    is_ref_audio_duration_limit_text(&err.to_string())
+}
+
+fn is_ref_audio_duration_limit_record(record: &VideoTaskRecord) -> bool {
+    if record
+        .failure_detail()
+        .is_some_and(|d| is_ref_audio_duration_limit_text(&d))
+    {
+        return true;
+    }
+    is_ref_audio_duration_limit_text(&video_task_failure_message(record))
+        || record
+            .result
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok())
+            .is_some_and(|s| is_ref_audio_duration_limit_text(&s))
+}
+
+fn drop_last_reference_audio(params: &mut VideoCreateParams) -> bool {
+    let mut urls = params.reference_audio_urls_merged();
+    if urls.is_empty() {
+        return false;
+    }
+    urls.pop();
+    params.reference_audio_url = None;
+    params.reference_audio_urls = urls;
+    true
+}
+
 /// Seedance 2.0 audio path requires usable dialogue/SFX captions in the prompt.
 fn is_seedance_caption_empty_err(err: &nomifun_cloud::ServerClientError) -> bool {
     let s = err.to_string().to_ascii_lowercase();
@@ -617,6 +909,92 @@ fn is_seedance_audio_only_ref_err(err: &nomifun_cloud::ServerClientError) -> boo
         || (s.contains("reference_audio")
             && s.contains("only reference")
             && (s.contains("invalidparameter") || s.contains("not valid")))
+}
+
+fn is_video_last_frame_still(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("video_last_frame.png"))
+}
+
+/// Prefer the previous Seedance `last_frame_url`; fall back to our OSS publicUrl.
+async fn resolve_reference_image_url(
+    services: &FlowyVimaxServices,
+    path: &Path,
+    stem: &str,
+) -> VimaxResult<(String, bool)> {
+    if is_video_last_frame_still(path)
+        && let Some(vendor) = load_return_last_frame_url(path)
+    {
+        if remote_still_url_is_live(&vendor).await {
+            tracing::info!(
+                path = %path.display(),
+                "reusing Seedance last_frame_url (skip OSS re-upload)"
+            );
+            return Ok((vendor, true));
+        }
+        tracing::warn!(
+            path = %path.display(),
+            "Seedance last_frame_url stale or unreadable; uploading local still to OSS"
+        );
+    }
+    let url = services.upload_image_public_url(path, stem).await?;
+    Ok((url, false))
+}
+
+async fn remote_still_url_is_live(url: &str) -> bool {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return false;
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    else {
+        return false;
+    };
+    let Ok(resp) = client.get(url).send().await else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let mut head = Vec::with_capacity(32);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(bytes) = chunk else {
+            return false;
+        };
+        head.extend_from_slice(&bytes);
+        if head.len() >= 16 {
+            break;
+        }
+    }
+    image_magic_kind(&head).is_some()
+}
+
+/// Create-task failed because a reference image URL could not be fetched.
+fn is_stale_ref_image_url_err(err: &nomifun_cloud::ServerClientError) -> bool {
+    let s = err.to_string().to_ascii_lowercase();
+    let mentions_image_url = s.contains("last_frame_url")
+        || s.contains("image url")
+        || s.contains("image_url")
+        || s.contains("download") && (s.contains("image") || s.contains("url"))
+        || s.contains("fetch") && s.contains("image")
+        || s.contains("getobject")
+        || s.contains("nosuchkey");
+    let stale = s.contains("expired")
+        || s.contains("expire")
+        || s.contains("403")
+        || s.contains("404")
+        || s.contains("accessdenied")
+        || s.contains("not found")
+        || s.contains("invalid")
+        || s.contains("unreadable")
+        || s.contains("cannot be accessed")
+        || s.contains("failed to download")
+        || s.contains("download failed");
+    mentions_image_url && stale
 }
 
 /// Append a strong ambient/BGM caption block so a second attempt can keep `generate_audio=true`.
@@ -741,5 +1119,61 @@ reference_audio cannot be the only reference input. Request id: abc)"
         };
         assert!(is_seedance_audio_only_ref_err(&err));
         assert!(!is_seedance_caption_empty_err(&err));
+    }
+
+    #[test]
+    fn detects_stale_last_frame_url_reject() {
+        let err = ServerClientError::Api {
+            code: 400,
+            msg: "InvalidParameter: failed to download image from last_frame_url (403 expired)"
+                .into(),
+        };
+        assert!(is_stale_ref_image_url_err(&err));
+        let safety = ServerClientError::Api {
+            code: 400,
+            msg: "InputTextSensitiveContentDetected".into(),
+        };
+        assert!(!is_stale_ref_image_url_err(&safety));
+    }
+
+    #[test]
+    fn count_refs_within_budget_keeps_prefix_under_15s() {
+        assert_eq!(
+            count_refs_within_budget(&[5.2, 5.2, 5.2], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            2
+        );
+        assert_eq!(
+            count_refs_within_budget(&[4.0, 4.0, 4.0], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            3
+        );
+        assert_eq!(
+            count_refs_within_budget(&[16.0], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            1
+        );
+        assert_eq!(
+            count_refs_within_budget(&[2.9, 2.9, 2.9, 2.9, 2.9], 5, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            5
+        );
+    }
+
+    #[test]
+    fn detects_reference_audio_duration_limit() {
+        let err = ServerClientError::Api {
+            code: 400,
+            msg: "InvalidParameter: reference_audio total duration 15.6s exceeds max 15s".into(),
+        };
+        assert!(is_ref_audio_duration_limit_err(&err));
+        assert!(is_ref_audio_duration_limit_text(
+            "video generation failed: InvalidParameter: reference_audio total duration 15.6s exceeds max 15s"
+        ));
+        assert!(!is_ref_audio_duration_limit_text(
+            "reference_audio cannot be the only reference input"
+        ));
+    }
+
+    #[tokio::test]
+    async fn dead_last_frame_url_is_not_live() {
+        assert!(!remote_still_url_is_live("http://127.0.0.1:1/missing.png").await);
+        assert!(!remote_still_url_is_live("not-a-url").await);
     }
 }

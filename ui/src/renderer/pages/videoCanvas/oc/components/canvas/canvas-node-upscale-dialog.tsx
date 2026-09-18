@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Modal, Segmented } from "antd";
 import { ImagePlus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasThemes } from "@oc/lib/canvas-theme";
 import { readImageMeta } from "@oc/lib/image-utils";
 import { MAX_UPSCALE_LONG_EDGE, resolveUpscaleSize, type ImageUpscaleAlgorithm, type ImageUpscaleParams } from "@oc/lib/canvas/canvas-image-data";
+import { useThemeStore } from "@oc/stores/use-theme-store";
+import { ChoiceChip } from "@oc/components/generation-settings-chrome";
+import { CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
 export type CanvasImageUpscaleParams = ImageUpscaleParams;
 
@@ -30,6 +33,7 @@ const defaultParams: CanvasImageUpscaleParams = {
 
 export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageUpscaleParams) => void }) {
     useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [params, setParams] = useState<CanvasImageUpscaleParams>(defaultParams);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
     const sourceLongEdge = image ? Math.max(image.width, image.height) : 0;
@@ -55,63 +59,75 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
     }, [image, sourceLongEdge]);
 
     return (
-        <Modal title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={820} centered destroyOnHidden>
-            <div className="space-y-5">
-                <div>
-                    <h2 className="text-xl font-semibold">{canvasT("videoCanvas.dialog.upscaleTitle", "图片放大")}</h2>
-                </div>
-                <div className="grid gap-6 md:grid-cols-[minmax(260px,1fr)_360px]">
-                    <div className="rounded-xl border p-4">
-                        <div className="grid min-h-[280px] place-items-center rounded-lg bg-black/5">
-                            <img src={dataUrl} alt="" className="max-h-[320px] max-w-full rounded-lg object-contain shadow-xl" draggable={false} />
-                        </div>
-                        <div className="mt-3 flex items-center justify-between text-sm">
-                            <span className="opacity-60">{canvasT("videoCanvas.dialog.upscaleSource", "源图")}</span>
-                            <span className="font-semibold">{image ? `${image.width} x ${image.height} px` : canvasT("videoCanvas.dialog.upscaleReading", "读取中")}</span>
-                        </div>
+        <CanvasSheet
+            open={open && Boolean(dataUrl)}
+            theme={theme}
+            width="min(820px, 94vw)"
+            title={canvasT("videoCanvas.dialog.upscaleTitle", "图片放大")}
+            onClose={onClose}
+            footer={
+                <CanvasSheetButton theme={theme} variant="primary" className="ml-auto" disabled={!canUpscale} onClick={() => onConfirm(params)}>
+                    <ImagePlus className="size-3.5" />
+                    {canvasT("videoCanvas.dialog.upscaleGenerate", "生成放大图")}
+                </CanvasSheetButton>
+            }
+        >
+            <div className="grid gap-6 md:grid-cols-[minmax(260px,1fr)_320px]">
+                <div className="rounded-[var(--r-lg)] border p-4" style={{ borderColor: theme.toolbar.border }}>
+                    <div className="grid min-h-[240px] place-items-center rounded-lg" style={{ background: theme.node.fill }}>
+                        <img src={dataUrl} alt="" className="max-h-[320px] max-w-full rounded-lg object-contain" draggable={false} />
                     </div>
-                    <div className="space-y-6 py-2">
-                        <div className="space-y-2">
-                            <div className="font-medium opacity-75">{canvasT("videoCanvas.dialog.upscaleTargetPx", "目标像素")}</div>
-                            <Segmented
-                                block
-                                value={params.targetLongEdge}
-                                options={targetOptions.map((option) => ({ label: `${option.label} · ${option.value}px`, value: option.value, disabled: Boolean(image && sourceLongEdge >= option.value) }))}
-                                onChange={(value) => setParams((current) => ({ ...current, targetLongEdge: Number(value) }))}
-                            />
-                            {image && !canUpscale ? <div className="text-xs font-medium text-[#ef4444]">{reachedMax ? canvasT("videoCanvas.dialog.upscaleAt4k", "图片已达到 4K，无需放大") : canvasT("videoCanvas.dialog.upscaleAtTarget", "图片已达到当前目标像素，无需放大")}</div> : null}
-                        </div>
-                        <div className="space-y-2">
-                            <div className="font-medium opacity-75">{canvasT("videoCanvas.dialog.upscaleAlgo", "放大算法")}</div>
-                            <Segmented
-                                block
-                                value={params.algorithm}
-                                options={algorithms().map((item) => ({
-                                    value: item.value,
-                                    label: (
-                                        <span className="flex min-h-12 flex-col justify-center text-left leading-5">
-                                            <span className="font-medium">{item.title}</span>
-                                            <span className="text-xs opacity-55">{item.description}</span>
-                                        </span>
-                                    ),
-                                }))}
-                                onChange={(value) => setParams((current) => ({ ...current, algorithm: value as ImageUpscaleAlgorithm }))}
-                            />
-                        </div>
-                        <div className="rounded-xl border px-4 py-3 text-sm">
-                            <div className="flex items-center justify-between">
-                                <span className="opacity-60">{canvasT("videoCanvas.dialog.upscaleOutput", "输出尺寸")}</span>
-                                <span className="font-semibold">{outputSize ? `${outputSize.width} x ${outputSize.height} px` : canvasT("videoCanvas.dialog.upscaleUnknown", "未知")}</span>
-                            </div>
-                        </div>
+                    <div className="mt-3 flex items-center justify-between text-sm">
+                        <span style={{ color: theme.node.muted }}>{canvasT("videoCanvas.dialog.upscaleSource", "源图")}</span>
+                        <span className="font-semibold">{image ? `${image.width} x ${image.height} px` : canvasT("videoCanvas.dialog.upscaleReading", "读取中")}</span>
                     </div>
                 </div>
-                <div className="flex justify-end">
-                    <Button type="primary" size="large" icon={<ImagePlus className="size-4" />} disabled={!canUpscale} onClick={() => onConfirm(params)}>
-                        {canvasT("videoCanvas.dialog.upscaleGenerate", "生成放大图")}
-                    </Button>
+                <div className="space-y-5 py-1">
+                    <div className="space-y-2">
+                        <div className="text-[var(--fs-tiny)] font-medium" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.dialog.upscaleTargetPx", "目标像素")}</div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {targetOptions.map((option) => (
+                                <ChoiceChip
+                                    key={option.value}
+                                    selected={params.targetLongEdge === option.value}
+                                    theme={theme}
+                                    disabled={Boolean(image && sourceLongEdge >= option.value)}
+                                    onClick={() => setParams((current) => ({ ...current, targetLongEdge: option.value }))}
+                                >
+                                    {option.label} · {option.value}px
+                                </ChoiceChip>
+                            ))}
+                        </div>
+                        {image && !canUpscale ? <div className="text-xs font-medium" style={{ color: theme.accent.danger }}>{reachedMax ? canvasT("videoCanvas.dialog.upscaleAt4k", "图片已达到 4K，无需放大") : canvasT("videoCanvas.dialog.upscaleAtTarget", "图片已达到当前目标像素，无需放大")}</div> : null}
+                    </div>
+                    <div className="space-y-2">
+                        <div className="text-[var(--fs-tiny)] font-medium" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.dialog.upscaleAlgo", "放大算法")}</div>
+                        <div className="flex flex-col gap-1.5">
+                            {algorithms().map((item) => (
+                                <button
+                                    key={item.value}
+                                    type="button"
+                                    className="rounded-[var(--r-md)] border px-3 py-2 text-left"
+                                    style={{
+                                        borderColor: params.algorithm === item.value ? theme.node.activeStroke : theme.toolbar.border,
+                                        background: params.algorithm === item.value ? theme.toolbar.activeBg : "transparent",
+                                    }}
+                                    onClick={() => setParams((current) => ({ ...current, algorithm: item.value }))}
+                                >
+                                    <span className="block text-[var(--fs-label)] font-medium">{item.title}</span>
+                                    <span className="block text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{item.description}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="rounded-[var(--r-lg)] border px-4 py-3 text-sm" style={{ borderColor: theme.toolbar.border }}>
+                        <div className="flex items-center justify-between">
+                            <span style={{ color: theme.node.muted }}>{canvasT("videoCanvas.dialog.upscaleOutput", "输出尺寸")}</span>
+                            <span className="font-semibold">{outputSize ? `${outputSize.width} x ${outputSize.height} px` : canvasT("videoCanvas.dialog.upscaleUnknown", "未知")}</span>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </Modal>
+        </CanvasSheet>
     );
 }

@@ -1,30 +1,33 @@
 {
   "schema_version": 1,
-  "corpus_version": "2026-08-19-office-v1",
-  "suite": "office_tasks",
+  "corpus_version": "2026-09-09-office-core-v1",
+  "suite": "office_core",
   "cases": [
     {
       "id": "memo-write",
       "category": "document",
       "task_profile": "office",
       "timeout_secs": 180,
-      "prompt": "You are an office assistant. Write a short internal memo as markdown in a file named memo.md at the workspace root.\n\nRequirements:\n- Include headings or labels for Subject, To, and Date.\n- Subject is the Q3 office move.\n- To is All Staff.\n- The body must mention the move date 15 September and that desks stay assigned.\n- The last line of the file must be exactly: MEMO_OK\n\nDo not create code or test files.",
+      "prompt": "You are an office assistant. Write a short internal memo as markdown in a file named memo.md at the workspace root.\n\nRequirements:\n- Include headings or labels for Subject, To, and Date.\n- Subject is the Q3 office move.\n- To is All Staff.\n- The body must mention the move date 15 September and that desks stay assigned.\n\nDo not create code or test files.",
       "enabled": true,
       "budgets": { "max_turns": 10, "max_tokens": 65536 },
       "scorers": [
         { "type": "file_exists", "path": "memo.md" },
-        { "type": "file_contains", "path": "memo.md", "marker": "MEMO_OK" },
         { "type": "file_contains", "path": "memo.md", "marker": "15 September" },
+        { "type": "file_contains", "path": "memo.md", "marker": "All Staff" },
         { "type": "tool_called", "name": "Write" }
       ],
-      "notes": "Office document generation via Write."
+      "advisory_scorers": [
+        { "type": "keyword_coverage", "path": "memo.md", "keywords": ["Subject", "desks"], "minimum": 2 }
+      ],
+      "notes": "Office document generation via Write. Outcome is the memo file, not a magic token."
     },
     {
       "id": "meeting-minutes",
       "category": "document",
       "task_profile": "office",
       "timeout_secs": 180,
-      "prompt": "Read scratch-notes.txt in the workspace. Turn those messy notes into clean meeting minutes in minutes.md.\n\nminutes.md must include:\n- a title\n- Attendees (include Ada, Lin, and Sam)\n- Decisions\n- Action items\n- the token MINUTES_OK somewhere in the file\n\nDo not copy the scratch notes verbatim. Do not write test files.",
+      "prompt": "Read scratch-notes.txt in the workspace. Turn those messy notes into clean meeting minutes in minutes.md.\n\nminutes.md must include:\n- a title\n- Attendees (include Ada, Lin, and Sam)\n- Decisions\n- Action items\n\nDo not copy the scratch notes verbatim. Do not write test files.",
       "enabled": true,
       "budgets": { "max_turns": 12, "max_tokens": 65536 },
       "workspace_files": {
@@ -33,9 +36,12 @@
       "scorers": [
         { "type": "tool_called", "name": "Read" },
         { "type": "file_exists", "path": "minutes.md" },
-        { "type": "file_contains", "path": "minutes.md", "marker": "MINUTES_OK" },
         { "type": "file_contains", "path": "minutes.md", "marker": "Ada" },
-        { "type": "file_contains", "path": "minutes.md", "marker": "Lin" }
+        { "type": "file_contains", "path": "minutes.md", "marker": "Lin" },
+        { "type": "file_contains", "path": "minutes.md", "marker": "Sam" }
+      ],
+      "advisory_scorers": [
+        { "type": "keyword_coverage", "path": "minutes.md", "keywords": ["Attendees", "Decisions", "Action"], "minimum": 2 }
       ]
     },
     {
@@ -43,15 +49,16 @@
       "category": "spreadsheet",
       "task_profile": "office",
       "timeout_secs": 180,
-      "prompt": "Create a small department budget as budget.csv in the workspace root.\n\nRules:\n- First row header: Category,Amount\n- Include rows for Travel, Meals, and Software\n- Include a final row whose Category is Total\n- Use only integers in Amount\n- The file must contain the token BUDGET_OK either as a comment-free extra last line or inside a cell\n\nThis is an office spreadsheet task, not a coding task.",
+      "prompt": "Create a small department budget as budget.csv in the workspace root.\n\nRules:\n- First row header: Category,Amount\n- Include rows for Travel, Meals, and Software\n- Include a final row whose Category is Total\n- Use only integers in Amount\n- The Total amount must equal the sum of Travel, Meals, and Software\n\nThis is an office spreadsheet task, not a coding task.",
       "enabled": true,
       "budgets": { "max_turns": 10, "max_tokens": 65536 },
       "scorers": [
-        { "type": "file_exists", "path": "budget.csv" },
-        { "type": "file_contains", "path": "budget.csv", "marker": "Category,Amount" },
-        { "type": "file_contains", "path": "budget.csv", "marker": "Travel" },
-        { "type": "file_contains", "path": "budget.csv", "marker": "Total" },
-        { "type": "file_contains", "path": "budget.csv", "marker": "BUDGET_OK" }
+        {
+          "type": "csv_valid",
+          "path": "budget.csv",
+          "must_contain": ["Category,Amount", "Travel", "Meals", "Software", "Total"],
+          "total_equals_sum": true
+        }
       ]
     },
     {
@@ -59,14 +66,14 @@
       "category": "email",
       "task_profile": "office",
       "timeout_secs": 180,
-      "prompt": "Draft a polite client email in email.md.\n\nAudience: Jordan at Northwind.\nPurpose: apologize for a two-day delivery slip and give a new arrival window of Thursday–Friday.\nTone: professional, no slang.\nThe file must start with a Subject line and include EMAIL_OK on its own last line.",
+      "prompt": "Draft a polite client email in email.md.\n\nAudience: Jordan at Northwind.\nPurpose: apologize for a two-day delivery slip and give a new arrival window of Thursday–Friday.\nTone: professional, no slang.\nThe file must start with a Subject line.",
       "enabled": true,
       "budgets": { "max_turns": 8, "max_tokens": 65536 },
       "scorers": [
         { "type": "file_exists", "path": "email.md" },
-        { "type": "file_contains", "path": "email.md", "marker": "EMAIL_OK" },
         { "type": "file_contains", "path": "email.md", "marker": "Northwind" },
-        { "type": "file_contains", "path": "email.md", "marker": "Thursday" }
+        { "type": "file_contains", "path": "email.md", "marker": "Thursday" },
+        { "type": "file_regex", "path": "email.md", "pattern": "(?i)subject" }
       ]
     },
     {
@@ -74,7 +81,7 @@
       "category": "edit",
       "task_profile": "office",
       "timeout_secs": 180,
-      "prompt": "The workspace has draft.md, which is too casual. Edit it in place so it becomes a short formal briefing.\n\nKeep the revenue figure 4.2M. Add a one-sentence summary at the top. The last line must be exactly REPORT_OK. Do not create a second file.",
+      "prompt": "The workspace has draft.md, which is too casual. Edit it in place so it becomes a short formal briefing.\n\nKeep the revenue figure 4.2M. Add a one-sentence summary at the top. Do not create a second file.",
       "enabled": true,
       "budgets": { "max_turns": 10, "max_tokens": 65536 },
       "workspace_files": {
@@ -82,8 +89,51 @@
       },
       "scorers": [
         { "type": "file_contains", "path": "draft.md", "marker": "4.2M" },
-        { "type": "file_contains", "path": "draft.md", "marker": "REPORT_OK" },
-        { "type": "tool_called", "name": "Edit" }
+        { "type": "tool_called", "name": "Edit" },
+        { "type": "file_not_contains", "path": "draft.md", "marker": "lol" }
+      ]
+    },
+    {
+      "id": "synthesize-briefing",
+      "category": "multi_file_office",
+      "task_profile": "office",
+      "timeout_secs": 240,
+      "prompt": "You are an office agent. The workspace has three source notes: sales.txt, risk.txt, and ops.txt.\n\nRead all three, then write briefing.md that:\n1. Starts with a one-line Summary\n2. Has sections ## Sales, ## Risk, ## Ops (in that order)\n3. Mentions the revenue figure 4.2M, the risk owner Mira, and the ship date Friday\n\nDo not invent numbers that contradict the sources. Do not write test files.",
+      "enabled": true,
+      "budgets": { "max_turns": 16, "max_tokens": 65536 },
+      "workspace_files": {
+        "sales.txt": "Q3 pipeline update\nclosed: Northwind renewal\nrevenue run-rate now 4.2M\nnext focus: upsell analytics pack\n",
+        "risk.txt": "open risks\n1. invoice template drift — owner Mira — mitigate by Friday freeze\n2. banner ads delayed (accepted)\n",
+        "ops.txt": "ops notes\nship window: Friday if QA green\ndesks stay assigned during office move\n"
+      },
+      "scorers": [
+        { "type": "tool_called", "name": "Read" },
+        { "type": "file_exists", "path": "briefing.md" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "## Sales" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "## Risk" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "## Ops" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "4.2M" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "Mira" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "Friday" }
+      ],
+      "notes": "Multi-source read → structured write."
+    },
+    {
+      "id": "policy-safe-edit",
+      "category": "constrained_edit",
+      "task_profile": "office",
+      "timeout_secs": 180,
+      "prompt": "Edit policy.md in place.\n\nRequirements:\n- Keep the existing title line starting with '# '\n- Replace the body so it states that API keys must never be pasted into chat\n- Must include the phrase never paste secrets\n- Must NOT include the substring sk-\n- Do not create additional files",
+      "enabled": true,
+      "budgets": { "max_turns": 10, "max_tokens": 65536 },
+      "workspace_files": {
+        "policy.md": "# Secrets policy\n\nOld draft: engineers sometimes share sk-EXAMPLEKEY in tickets. Rewrite this.\n"
+      },
+      "scorers": [
+        { "type": "file_exists", "path": "policy.md" },
+        { "type": "file_contains", "path": "policy.md", "marker": "# " },
+        { "type": "file_contains", "path": "policy.md", "marker": "never paste secrets" },
+        { "type": "file_not_contains", "path": "policy.md", "marker": "sk-" }
       ]
     }
   ]

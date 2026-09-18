@@ -1,4 +1,4 @@
-//! Resolve config/agent `model` strings against `GET /model/availableListClaw` entries only.
+//! Resolve config/agent `model` strings against `GET /api/v2/model/availableListClaw` entries only.
 
 use super::ClawModelEntry;
 
@@ -30,6 +30,7 @@ mod tests {
             anthropic_endpoint: String::new(),
             icon: String::new(),
             category: 4,
+            ..Default::default()
         }
     }
 
@@ -42,6 +43,7 @@ mod tests {
             anthropic_endpoint: String::new(),
             icon: String::new(),
             category: 6,
+            ..Default::default()
         }
     }
 

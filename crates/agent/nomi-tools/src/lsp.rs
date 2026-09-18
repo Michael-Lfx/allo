@@ -228,12 +228,13 @@ pub mod client {
             let (program, args) = command
                 .split_first()
                 .ok_or_else(|| "empty LSP server command".to_string())?;
-            let mut child = tokio::process::Command::new(program)
-                .args(args)
+            let mut cmd = nomi_process_runtime::hidden_command(program);
+            cmd.args(args)
                 .current_dir(root)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let mut child = cmd
                 .spawn()
                 .map_err(|e| format!("failed to spawn LSP server '{program}': {e}"))?;
             let stdin = child.stdin.take().ok_or("no stdin")?;
@@ -430,9 +431,9 @@ pub mod tool {
 
     #[async_trait]
     impl Tool for LspTool {
-        fn name(&self) -> &str {
-            "Lsp"
-        }
+    fn name(&self) -> &str {
+        "Lsp"
+    }
 
         fn description(&self) -> &str {
             "Code navigation via a language server (experimental).\n\n\

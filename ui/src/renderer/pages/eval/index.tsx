@@ -11,6 +11,7 @@ import {
   Alert,
   Button,
   InputNumber,
+  Modal,
   Progress,
   Select,
   Table,
@@ -20,11 +21,20 @@ import {
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import EvalModelSelector, { useEvalAutogenModel } from './EvalModelSelector';
-import { evalApi, type EvalCaseTraceView, type EvalCaseView, type EvalRunView, type EvalSuiteDescriptor } from './api';
+import {
+  evalApi,
+  type EvalCaseTraceView,
+  type EvalCaseView,
+  type EvalRunDiffView,
+  type EvalRunListItem,
+  type EvalRunView,
+  type EvalSuiteDescriptor,
+} from './api';
 
 const { Title, Text } = Typography;
 
 const IN_FLIGHT = new Set(['loading', 'queued', 'running', 'cancelling']);
+const TIER_ORDER = ['smoke', 'capability', 'advanced', 'sandbox'] as const;
 
 function formatRate(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
@@ -48,16 +58,37 @@ function statusColor(status: string): string {
   }
 }
 
+function tierLabel(
+  tier: (typeof TIER_ORDER)[number],
+  t: (key: 'eval.tier.smoke' | 'eval.tier.capability' | 'eval.tier.advanced' | 'eval.tier.sandbox') => string
+): string {
+  switch (tier) {
+    case 'smoke':
+      return t('eval.tier.smoke');
+    case 'capability':
+      return t('eval.tier.capability');
+    case 'advanced':
+      return t('eval.tier.advanced');
+    case 'sandbox':
+      return t('eval.tier.sandbox');
+  }
+}
+
 const EvalPage: React.FC = () => {
   const { t } = useTranslation();
   const { active: developerMode } = useDeveloperModeGate();
   const evalModel = useEvalAutogenModel();
   const [suites, setSuites] = useState<EvalSuiteDescriptor[]>([]);
-  const [suiteId, setSuiteId] = useState('office_tasks');
-  const [limit, setLimit] = useState<number | undefined>(5);
+  const [suiteId, setSuiteId] = useState('office_core');
+  const [limit, setLimit] = useState<number | undefined>(7);
+  const [nTrials, setNTrials] = useState(3);
   const [run, setRun] = useState<EvalRunView | null>(null);
+  const [history, setHistory] = useState<EvalRunListItem[]>([]);
+  const [diffA, setDiffA] = useState<string | undefined>();
+  const [diffB, setDiffB] = useState<string | undefined>();
+  const [diff, setDiff] = useState<EvalRunDiffView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'load' | 'pull' | 'run' | 'cancel' | null>(null);
+  const [busy, setBusy] = useState<'load' | 'pull' | 'run' | 'cancel' | 'sync' | 'diff' | null>(null);
 
   const selectedSuite = useMemo(
     () => suites.find((suite) => suite.id === suiteId) ?? null,
@@ -69,9 +100,14 @@ const EvalPage: React.FC = () => {
     setBusy((current) => current ?? 'load');
     setError(null);
     try {
-      const [nextSuites, latest] = await Promise.all([evalApi.listSuites(), evalApi.latestRun()]);
+      const [nextSuites, latest, nextHistory] = await Promise.all([
+        evalApi.listSuites(),
+        evalApi.latestRun(),
+        evalApi.history().catch(() => [] as EvalRunListItem[]),
+      ]);
       setSuites(nextSuites);
       setRun(latest);
+      setHistory(nextHistory);
     } catch (loadError) {
       if (isBackendHttpError(loadError) && loadError.status === 403) {
         setError(t('eval.developerModeRequired'));
@@ -102,7 +138,10 @@ const EvalPage: React.FC = () => {
   const onSuiteChange = (nextId: string) => {
     setSuiteId(nextId);
     const next = suites.find((suite) => suite.id === nextId);
-    if (next) setLimit(next.default_limit);
+    if (next) {
+      setLimit(next.default_limit);
+      setNTrials(next.default_trials ?? 1);
+    }
   };
 
   const pull = async () => {
@@ -125,6 +164,7 @@ const EvalPage: React.FC = () => {
       const next = await evalApi.startRun({
         suite: suiteId,
         limit,
+        n_trials: nTrials,
         task_profile: selectedSuite?.default_task_profile,
         ...(evalModel.choice
           ? { provider_id: evalModel.choice.provider_id, model: evalModel.choice.model }
@@ -150,6 +190,34 @@ const EvalPage: React.FC = () => {
       setBusy(null);
     }
   };
+
+  const syncPrivate = async () => {
+    setBusy('sync');
+    setError(null);
+    try {
+      await evalApi.syncPrivate();
+      await load();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const loadDiff = async () => {
+    if (!diffA || !diffB) return;
+    setBusy('diff');
+    setError(null);
+    try {
+      setDiff(await evalApi.diffRuns(diffA, diffB));
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sandboxBlocked = selectedSuite?.requires_sandbox === true;
 
   if (developerMode !== true) {
     return <Navigate to='/guid' replace />;
@@ -193,11 +261,21 @@ const EvalPage: React.FC = () => {
               onChange={onSuiteChange}
               disabled={inFlight}
               style={{ width: 320 }}
-              options={suites.map((suite) => ({
-                value: suite.id,
-                label: suite.title,
-              }))}
-            />
+            >
+              {TIER_ORDER.map((tier) => {
+                const group = suites.filter((suite) => (suite.tier || 'capability') === tier);
+                if (group.length === 0) return null;
+                return (
+                  <Select.OptGroup key={tier} label={tierLabel(tier, t)}>
+                    {group.map((suite) => (
+                      <Select.Option key={suite.id} value={suite.id}>
+                        {suite.title}
+                      </Select.Option>
+                    ))}
+                  </Select.OptGroup>
+                );
+              })}
+            </Select>
           </div>
           <div>
             <Text type='secondary' className='block mb-4px'>
@@ -212,21 +290,45 @@ const EvalPage: React.FC = () => {
               style={{ width: 120 }}
             />
           </div>
+          <div>
+            <Text type='secondary' className='block mb-4px'>
+              {t('eval.trials')}
+            </Text>
+            <InputNumber
+              value={nTrials}
+              min={1}
+              max={5}
+              disabled={inFlight}
+              onChange={(value) => setNTrials(typeof value === 'number' ? value : 1)}
+              style={{ width: 120 }}
+            />
+          </div>
           {selectedSuite?.requires_download && (
             <Button onClick={() => void pull()} loading={busy === 'pull'} disabled={inFlight}>
               {t('eval.pull')}
             </Button>
           )}
+          <Button onClick={() => void syncPrivate()} loading={busy === 'sync'} disabled={inFlight}>
+            {t('eval.syncPrivate')}
+          </Button>
           {inFlight ? (
             <Button status='danger' onClick={() => void cancel()} loading={busy === 'cancel'}>
               {t('eval.cancel')}
             </Button>
           ) : (
-            <Button type='primary' onClick={() => void start()} loading={busy === 'run'}>
+            <Button
+              type='primary'
+              onClick={() => void start()}
+              loading={busy === 'run'}
+              disabled={sandboxBlocked}
+            >
               {t('eval.run')}
             </Button>
           )}
         </div>
+        {sandboxBlocked && (
+          <Text type='secondary'>{t('eval.sandboxDisabled')}</Text>
+        )}
 
         {selectedSuite && (
           <Text type='secondary'>
@@ -260,6 +362,14 @@ const EvalPage: React.FC = () => {
               <Metric
                 label={t('eval.metric.successRate')}
                 value={summary ? formatRate(summary.success_rate) : '—'}
+              />
+              <Metric
+                label={t('eval.metric.passAt1')}
+                value={summary ? formatRate(summary.pass_at_1 ?? 0) : '—'}
+              />
+              <Metric
+                label={t('eval.metric.passHatK')}
+                value={summary ? formatRate(summary.pass_hat_k ?? 0) : '—'}
               />
               <Metric
                 label={t('eval.metric.avgTurns')}
@@ -316,18 +426,22 @@ const EvalPage: React.FC = () => {
               {t('eval.cases')}
             </Title>
             <Table
-              rowKey='case_id'
+              rowKey={(row: EvalCaseView) => `${row.case_id}#${row.trial ?? 1}`}
               pagination={false}
               data={run.cases}
               expandedRowRender={(row: EvalCaseView) => (
                 <CaseDetail
                   runId={run.run_id}
+                  suite={run.suite}
                   row={row}
-                  liveTrace={run.current_trace?.case_id === row.case_id ? run.current_trace : null}
+                  liveTrace={
+                    run.current_trace?.case_id === row.case_id ? run.current_trace : null
+                  }
                 />
               )}
               columns={[
                 { title: t('eval.col.case'), dataIndex: 'case_id' },
+                { title: t('eval.col.trial'), dataIndex: 'trial', width: 72 },
                 { title: t('eval.col.category'), dataIndex: 'category', width: 140 },
                 {
                   title: t('eval.col.result'),
@@ -376,6 +490,63 @@ const EvalPage: React.FC = () => {
                 },
               ]}
             />
+          </>
+        )}
+
+        {history.length > 0 && (
+          <>
+            <Title heading={5} className='!m-0'>
+              {t('eval.history')}
+            </Title>
+            <Table
+              rowKey='run_id'
+              pagination={false}
+              data={history}
+              onRow={(row: EvalRunListItem) => ({
+                onClick: () => {
+                  void evalApi.getRun(row.run_id).then(setRun).catch(() => undefined);
+                },
+              })}
+              columns={[
+                { title: t('eval.col.run'), dataIndex: 'run_id' },
+                { title: t('eval.suite'), dataIndex: 'suite', width: 160 },
+                { title: t('eval.col.result'), dataIndex: 'status', width: 110 },
+                { title: t('eval.col.passed'), dataIndex: 'passed', width: 80 },
+                {
+                  title: t('eval.metric.passAt1'),
+                  dataIndex: 'pass_at_1',
+                  width: 100,
+                  render: (value: number) => formatRate(value),
+                },
+              ]}
+            />
+            <div className='flex flex-wrap items-end gap-12px'>
+              <Select
+                placeholder='A'
+                value={diffA}
+                onChange={setDiffA}
+                style={{ width: 240 }}
+                options={history.map((item) => ({ value: item.run_id, label: item.run_id.slice(0, 8) }))}
+              />
+              <Select
+                placeholder='B'
+                value={diffB}
+                onChange={setDiffB}
+                style={{ width: 240 }}
+                options={history.map((item) => ({ value: item.run_id, label: item.run_id.slice(0, 8) }))}
+              />
+              <Button onClick={() => void loadDiff()} loading={busy === 'diff'} disabled={!diffA || !diffB}>
+                {t('eval.diff')}
+              </Button>
+            </div>
+            {diff && (
+              <Text type='secondary'>
+                {t('eval.diffDelta', {
+                  delta: formatRate(diff.pass_at_1_delta),
+                  flips: diff.flipped.length,
+                })}
+              </Text>
+            )}
           </>
         )}
       </div>
@@ -427,16 +598,19 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function CaseDetail({
   runId,
+  suite,
   row,
   liveTrace,
 }: {
   runId: string;
+  suite: string;
   row: EvalCaseView;
   liveTrace: EvalCaseTraceView | null | undefined;
 }) {
   const { t } = useTranslation();
   const [trace, setTrace] = useState<EvalCaseTraceView | null>(liveTrace ?? null);
   const [observationSummary, setObservationSummary] = useState<string | null>(null);
+  const [reporting, setReporting] = useState(false);
   const conversationId = row.conversation_id ?? liveTrace?.conversation_id ?? null;
 
   useEffect(() => {
@@ -445,7 +619,7 @@ function CaseDetail({
       return undefined;
     }
     let cancelled = false;
-    void evalApi.getCaseTrace(runId, row.case_id)
+    void evalApi.getCaseTrace(runId, row.case_id, row.trial)
       .then((next) => {
         if (!cancelled) setTrace(next);
       })
@@ -455,7 +629,7 @@ function CaseDetail({
     return () => {
       cancelled = true;
     };
-  }, [runId, row.case_id, liveTrace]);
+  }, [runId, row.case_id, row.trial, liveTrace]);
 
   useEffect(() => {
     let cancelled = false;
@@ -514,6 +688,56 @@ function CaseDetail({
         ]}
       />
       {row.error && <Text type='error'>{row.error}</Text>}
+      {!row.success && (
+        <Button
+          size='small'
+          loading={reporting}
+          onClick={() => {
+            Modal.confirm({
+              title: t('eval.reportConfirm'),
+              onOk: async () => {
+                setReporting(true);
+                try {
+                  await evalApi.reportCase({
+                    case_id: row.case_id,
+                    suite,
+                    category: row.category,
+                    error: row.error,
+                    prompt: (row.prompt ?? '').slice(0, 800),
+                    scorer_json: JSON.stringify(row.scorer_results),
+                  });
+                } finally {
+                  setReporting(false);
+                }
+              },
+            });
+          }}
+        >
+          {t('eval.reportTurn')}
+        </Button>
+      )}
+      {(row.advisory_results?.length ?? 0) > 0 && (
+        <Table
+          rowKey={(scorer) => `adv:${scorer.scorer_type}:${scorer.detail ?? ''}:${scorer.passed}`}
+          pagination={false}
+          size='small'
+          data={row.advisory_results}
+          columns={[
+            { title: t('eval.col.advisory'), dataIndex: 'scorer_type' },
+            {
+              title: t('eval.col.result'),
+              dataIndex: 'passed',
+              width: 90,
+              render: (passed: boolean) => (
+                <Tag color={passed ? 'green' : 'gray'}>
+                  {passed ? t('eval.pass') : t('eval.fail')}
+                </Tag>
+              ),
+            },
+            { title: t('eval.col.detail'), dataIndex: 'detail' },
+          ]}
+        />
+      )}
       {trace ? (
         <TraceView trace={trace} />
       ) : (

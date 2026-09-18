@@ -1,8 +1,10 @@
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
+import { useSettingsNavigationTransition } from '@/renderer/components/layout/SettingsNavigationTransition';
 import { useSlidingSelectionIndicator } from '@/renderer/hooks/ui/useSlidingSelectionIndicator';
 import {
   BookOpen,
   Brain,
+  ChartHistogram,
   ChartPie,
   CloudStorage,
   Computer,
@@ -27,6 +29,7 @@ import {
   type SettingsNavItem,
   useSettingsNavigation,
 } from './settingsNavigation';
+import { prefetchSettingsPages } from '../prefetch';
 import './settings.css';
 
 const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentType<any>> = {
@@ -36,6 +39,7 @@ const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentT
   poi: Brain,
   learning: BookOpen,
   insights: ChartPie,
+  telemetry: ChartHistogram,
   moa: TreeDiagram,
   media: Pic,
   presets: Robot,
@@ -66,7 +70,9 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
   tooltipEnabled = false,
 }) => {
   const navigate = useNavigate();
+  const { navigateWithSettingsTransition, pendingTarget } = useSettingsNavigationTransition();
   const { pathname } = useLocation();
+  const navigationPathname = pendingTarget?.split(/[?#]/u, 1)[0] || pathname;
   const { groups } = useSettingsNavigation();
   const navigationRef = useRef<HTMLDivElement>(null);
   const menuSignature = useMemo(
@@ -76,7 +82,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
   const selectionIndicator = useSlidingSelectionIndicator({
     containerRef: navigationRef,
     activeSelector: '[data-settings-nav-entry][data-active="true"]',
-    revision: `${pathname}:${collapsed}:${menuSignature}`,
+    revision: `${navigationPathname}:${collapsed}:${menuSignature}`,
   });
   const { measureElement } = selectionIndicator;
 
@@ -92,11 +98,17 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     [measureElement]
   );
 
+  // Footer idle prefetch is skipped while pathname is under /settings; warm the
+  // sibling panels again on mount so intelligence-group clicks are not cold.
+  useEffect(() => {
+    prefetchSettingsPages();
+  }, []);
+
   useEffect(() => {
     navigationRef.current
       ?.querySelector<HTMLElement>('[data-settings-nav-entry][data-active="true"]')
       ?.scrollIntoView({ block: 'nearest' });
-  }, [menuSignature, pathname]);
+  }, [menuSignature, navigationPathname]);
 
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
   return (
@@ -125,7 +137,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
             </h2>
           )}
           {group.items.map((item) => {
-            const selected = isSettingsNavItemActive(pathname, item);
+            const selected = isSettingsNavItemActive(navigationPathname, item);
             const target = item.path.startsWith('/') ? item.path : `/settings/${item.path}`;
             return (
               <Tooltip key={item.id} {...siderTooltipProps} content={item.label} position='right'>
@@ -142,15 +154,17 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
                     { 'hover:bg-fill-2': !selected }
                   )}
                   onClick={() => {
-                    Promise.resolve(navigate(target, { replace: true })).catch((error: unknown) => {
-                      console.error('Navigation failed:', error);
+                    navigateWithSettingsTransition(target, () => {
+                      Promise.resolve(navigate(target, { replace: true })).catch((error: unknown) => {
+                        console.error('Navigation failed:', error);
+                      });
                     });
                   }}
                 >
                   <span className='size-22px flex shrink-0 items-center justify-center line-height-0'>
                     <SettingsNavIconSlot item={item} selected={selected} />
                   </span>
-                  <FlexFullContainer className='h-24px collapsed-hidden'>
+                  <FlexFullContainer className='h-24px min-w-0 collapsed-hidden'>
                     <span
                       className={classNames(
                         'settings-sider__item-label inline-block w-full overflow-hidden text-nowrap text-14px font-500 lh-24px whitespace-nowrap',

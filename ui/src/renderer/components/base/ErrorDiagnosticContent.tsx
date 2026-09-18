@@ -31,6 +31,14 @@ const ErrorDiagnosticContent: React.FC<ErrorDiagnosticContentProps> = ({ diagnos
     <div className={classNames('conversation-error-diagnostic', className)}>
       <div className='conversation-error-diagnostic__header'>
         <div className='conversation-error-diagnostic__meta'>
+          {diagnostic.modelId ? (
+            <span className='conversation-error-diagnostic__meta-item conversation-error-diagnostic__meta-item--model'>
+              <span className='conversation-error-diagnostic__meta-label'>
+                {t('conversation.agentError.modelId')}
+              </span>
+              <code title={diagnostic.modelId}>{diagnostic.modelId}</code>
+            </span>
+          ) : null}
           {diagnostic.code ? (
             <span className='conversation-error-diagnostic__meta-item conversation-error-diagnostic__meta-item--code'>
               <span className='conversation-error-diagnostic__meta-label'>

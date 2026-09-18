@@ -18,8 +18,8 @@ import PersonaSection from './PersonaSection';
 
 /**
  * 总览 — the companion's identity and brains, in three titled sections:
- * 伙伴形象 (name / look / desktop visibility / growth), 伙伴设定 (persona + preset
- * reuse) and 模型配置 (chat model + a pointer to the app-level voice settings).
+ * 伙伴形象 (name / look / desktop visibility / growth), 伙伴设定 (persona) and
+ * 模型配置 (chat model + a pointer to the app-level voice settings).
  *
  * Everything that used to be piled on here — the self-evolution disclosure
  * banner, the weekly digest card, the shared-store counters, the data-collection
@@ -27,7 +27,7 @@ import PersonaSection from './PersonaSection';
  */
 const OverviewTab: React.FC<WorkspaceTabProps> = ({ companionId, companion, onAttentionChange }) => {
   const { t } = useTranslation();
-  const { profile, status, loading, patchCompanion, refresh } = companion;
+  const { profile, status, loading, patchCompanion } = companion;
   const [figurePaneOpen, setFigurePaneOpen] = useState(false);
 
   // A pane opened for one companion must not survive a switch to another.
@@ -75,7 +75,7 @@ const OverviewTab: React.FC<WorkspaceTabProps> = ({ companionId, companion, onAt
           figurePaneOpen={figurePaneOpen}
           onEditFigure={() => setFigurePaneOpen((open) => !open)}
         />
-        <PersonaSection profile={profile} patchCompanion={patchCompanion} refresh={refresh} />
+        <PersonaSection profile={profile} patchCompanion={patchCompanion} />
         <ModelsSection companion={companion} status={status} companionName={profile.name} />
       </div>
     );

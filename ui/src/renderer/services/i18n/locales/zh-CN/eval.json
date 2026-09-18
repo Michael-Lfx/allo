@@ -5,12 +5,20 @@
     "navTooltip": "Agent 评测实验室（开发者模式）"
   },
   "subtitle": "用真实 harness / runtime 打分。每条 case 绑定一个 eval session，复用 Session Observation 观测链路。",
-  "isolationNote": "开始评测时会先创建有业务含义的父工作区（如「评测-办公任务-日期-短ID」），case 在其子目录中跑生产 AgentEngine，并写入与真实会话相同的 Observation JSONL（session_kind=eval）。会话壳会投影思考 / 工具调用 / 回复与 token 用量，打开会话时可看到过程轨与积分。办公 KPI 用 Office tasks；多步 agent KPI 用 Agent workflows；coding-agent KPI 用 Aider Polyglot / ClassEval。MCP、浏览器、computer-use、联网搜索默认关闭。同时只允许跑一轮。",
+  "isolationNote": "Live 评测跑生产 AgentEngine。隔离按套件 overlay：smoke / office / coding 关闭 MCP 与浏览器；browser_smoke 只开浏览器并注入本地 HTML fixture；mcp_fixture 注入 stdio 假 CRM。办公 KPI 用 office_core（默认 3 trials），编码 KPI 用 coding_local。Aider / ClassEval 在 Advanced。Harbor 需要沙箱，本机不可跑。同时只允许一轮。",
   "developerModeRequired": "请在 设置 → 系统 中打开开发者模式后再使用评测。",
   "workspace": "工作区",
   "model": "模型",
   "suite": "套件",
   "limit": "条数上限",
+  "trials": "试验次数",
+  "history": "历史轮次",
+  "diff": "对比两轮",
+  "diffDelta": "pass@1 差值 {{delta}}，翻转 {{flips}} 题",
+  "syncPrivate": "同步私有题库",
+  "sandboxDisabled": "此套件需要沙箱 runner，本机无法开始评测。",
+  "reportTurn": "上报此回合",
+  "reportConfirm": "将失败摘要上报云端（不含完整 JSONL / 原文）。确认？",
   "pull": "下载数据集",
   "run": "开始评测",
   "cancel": "取消",
@@ -41,6 +49,8 @@
   "metric": {
     "passed": "通过 / 已评分",
     "successRate": "成功率",
+    "passAt1": "pass@1",
+    "passHatK": "pass^k",
     "avgTurns": "平均轮次",
     "avgElapsed": "平均耗时",
     "avgTokens": "平均 token 入 / 出",
@@ -52,12 +62,15 @@
     "passed": "通过",
     "successRate": "成功率",
     "case": "用例",
+    "trial": "试验",
+    "run": "运行",
     "result": "结果",
     "turns": "轮次",
     "tools": "工具",
     "tokens": "Token",
     "elapsed": "耗时",
-    "scorer": "Scorer",
+    "scorer": "打分器",
+    "advisory": "参考项",
     "detail": "详情",
     "events": "轨迹",
     "artifacts": "产物",
@@ -80,5 +93,11 @@
       "error": "错误",
       "info": "信息"
     }
+  },
+  "tier": {
+    "smoke": "冒烟",
+    "capability": "能力",
+    "advanced": "进阶",
+    "sandbox": "沙箱"
   }
 }

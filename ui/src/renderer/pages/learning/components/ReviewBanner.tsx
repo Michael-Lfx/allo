@@ -1,9 +1,11 @@
 import { Button, Select, Typography } from '@arco-design/web-react';
-import { IconCalendar, IconDown } from '@arco-design/web-react/icon';
+import { IconCalendar, IconDown, IconThunderbolt } from '@arco-design/web-react/icon';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ORPHAN_COURSE_FILTER } from '../constants';
 import type { CheckinStatus, CourseSummary, DueReview } from '../types';
 import { CheckinPanel } from './CheckinPanel';
+import { MemoryHealthPanel } from './MemoryHealthPanel';
 
 const { Title, Text } = Typography;
 
@@ -39,6 +41,8 @@ export function ReviewBanner({
   onStart: () => void;
 }) {
   const { t } = useTranslation();
+  // 记忆健康面板的展开态：本地态即可（低频查看，不需要跨会话持久化）
+  const [memoryExpanded, setMemoryExpanded] = useState(false);
   // 紧凑打卡徽章：有目标显示进度，无目标显示已复习次数；完成态绿色高亮
   const badgeText = checkin
     ? checkin.goal > 0
@@ -154,6 +158,38 @@ export function ReviewBanner({
         {expanded && (
           <div className='pt-12px'>
             <CheckinPanel checkin={checkin} celebrateToken={celebrateToken} />
+          </div>
+        )}
+      </div>
+
+      {/* 记忆健康折叠条：负载预报 / 卡池状态 / 真实保留率 / 预测对照 */}
+      <div className='px-20px pb-16px'>
+        <button
+          type='button'
+          aria-expanded={memoryExpanded}
+          className='flex w-full cursor-pointer items-center justify-between gap-12px rounded-10px border border-solid border-[var(--color-primary-light-3)] bg-[var(--color-bg-2)] px-16px py-12px transition-colors hover:border-[var(--color-primary-6)] hover:bg-[var(--color-primary-light-1)]'
+          onClick={() => setMemoryExpanded(!memoryExpanded)}
+        >
+          <span className='flex min-w-0 flex-wrap items-center gap-8px'>
+            <IconThunderbolt className='shrink-0 text-16px text-[var(--color-primary-6)]' />
+            <Text bold>{t('learning.memoryPanelTitle')}</Text>
+          </span>
+          <span className='flex shrink-0 items-center gap-8px'>
+            <Text className='text-12px text-[var(--color-primary-6)]'>
+              {memoryExpanded
+                ? t('learning.memoryPanelCollapse')
+                : t('learning.memoryPanelExpand')}
+            </Text>
+            <span className='flex h-22px w-22px items-center justify-center rounded-full bg-[var(--color-primary-6)]'>
+              <IconDown
+                className={`text-12px text-white transition-transform ${memoryExpanded ? 'rotate-180' : ''}`}
+              />
+            </span>
+          </span>
+        </button>
+        {memoryExpanded && (
+          <div className='pt-12px'>
+            <MemoryHealthPanel />
           </div>
         )}
       </div>

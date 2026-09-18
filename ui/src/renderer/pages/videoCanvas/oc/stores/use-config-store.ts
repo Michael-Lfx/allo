@@ -39,6 +39,8 @@ export type ModelChannel = {
         outputTokenPriceMicrocredits?: number;
         cachedTokenPriceMicrocredits?: number;
         capabilityConfig?: ModelCapabilityConfig;
+        /** Catalog `extra.input` includes `image` — Flowy multimodal chat. */
+        supportsVision?: boolean;
     }>;
 };
 
@@ -181,7 +183,8 @@ function isImageModelName(model: string) {
             value.includes("ideogram") ||
             value.includes("recraft") ||
             value.includes("playground") ||
-            value.includes("leonardo"))
+            value.includes("leonardo") ||
+            (value.includes("grok") && value.includes("imagine") && !value.includes("video")))
     );
 }
 

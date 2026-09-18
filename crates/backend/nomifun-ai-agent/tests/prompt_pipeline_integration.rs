@@ -182,7 +182,7 @@ async fn empty_pipeline_is_identity() {
         skill_manager: &skill_manager,
     };
 
-    let out = pipeline.pre_send(&mut ctx, "hello".into()).await;
+    let out = pipeline.pre_send(&mut ctx, "hello".into()).await.unwrap();
     assert_eq!(out, "hello");
 }
 
@@ -204,7 +204,7 @@ async fn brand_new_first_prompt_injects_preset_context() {
         skill_manager: &skill_manager,
     };
 
-    let out = pipeline.pre_send(&mut ctx, "hello".into()).await;
+    let out = pipeline.pre_send(&mut ctx, "hello".into()).await.unwrap();
     assert!(out.contains("[Assistant Rules]"), "prelude block missing: {out}");
     assert!(out.contains("Rule A"), "preset_context missing: {out}");
     assert!(out.ends_with("hello"), "user content should be at the end: {out}");
@@ -233,7 +233,7 @@ async fn second_prompt_is_passthrough() {
             params: &params,
             skill_manager: &skill_manager,
             };
-        let _ = pipeline.pre_send(&mut ctx, "first".into()).await;
+        let _ = pipeline.pre_send(&mut ctx, "first".into()).await.unwrap();
     }
 
     // Second prompt: flag already consumed.
@@ -242,7 +242,7 @@ async fn second_prompt_is_passthrough() {
         params: &params,
         skill_manager: &skill_manager,
     };
-    let out = pipeline.pre_send(&mut ctx, "second".into()).await;
+    let out = pipeline.pre_send(&mut ctx, "second".into()).await.unwrap();
     assert_eq!(out, "second", "no prelude / no reminder expected on second turn");
 }
 
@@ -264,7 +264,7 @@ async fn resume_path_does_not_inject() {
         skill_manager: &skill_manager,
     };
 
-    let out = pipeline.pre_send(&mut ctx, "continue the story".into()).await;
+    let out = pipeline.pre_send(&mut ctx, "continue the story".into()).await.unwrap();
     assert_eq!(out, "continue the story");
 }
 
@@ -290,7 +290,7 @@ async fn knowledge_section_delivered_on_resume() {
         skill_manager: &skill_manager,
     };
 
-    let out = pipeline.pre_send(&mut ctx, "用领域知识回答".into()).await;
+    let out = pipeline.pre_send(&mut ctx, "用领域知识回答".into()).await.unwrap();
     assert!(out.contains("[Knowledge Bases]"), "knowledge block missing: {out}");
     assert!(
         out.contains("## Knowledge bases (extended knowledge source)"),
@@ -308,7 +308,7 @@ async fn knowledge_section_delivered_on_resume() {
         params: &params,
         skill_manager: &skill_manager,
     };
-    let out2 = pipeline.pre_send(&mut ctx2, "再问一句".into()).await;
+    let out2 = pipeline.pre_send(&mut ctx2, "再问一句".into()).await.unwrap();
     assert_eq!(out2, "再问一句", "knowledge section must be one-shot per session open");
 }
 
@@ -327,7 +327,7 @@ async fn knowledge_section_skipped_without_flag() {
         skill_manager: &skill_manager,
     };
 
-    let out = pipeline.pre_send(&mut ctx, "hello".into()).await;
+    let out = pipeline.pre_send(&mut ctx, "hello".into()).await.unwrap();
     assert_eq!(out, "hello", "no knowledge flag → passthrough");
 }
 
@@ -349,7 +349,7 @@ async fn pending_model_notice_triggers_reminder_prepend() {
         skill_manager: &skill_manager,
     };
 
-    let out = pipeline.pre_send(&mut ctx, "go".into()).await;
+    let out = pipeline.pre_send(&mut ctx, "go".into()).await.unwrap();
     assert!(out.contains("<system-reminder>"), "reminder missing: {out}");
     assert!(out.ends_with("go"), "user content must survive at the end: {out}");
 
@@ -359,7 +359,7 @@ async fn pending_model_notice_triggers_reminder_prepend() {
         params: &params,
         skill_manager: &skill_manager,
     };
-    let out2 = pipeline.pre_send(&mut ctx2, "next".into()).await;
+    let out2 = pipeline.pre_send(&mut ctx2, "next".into()).await.unwrap();
     assert_eq!(out2, "next");
 }
 
@@ -380,7 +380,7 @@ async fn both_flags_prepend_reminder_outermost() {
         skill_manager: &skill_manager,
     };
 
-    let out = pipeline.pre_send(&mut ctx, "hi".into()).await;
+    let out = pipeline.pre_send(&mut ctx, "hi".into()).await.unwrap();
     let reminder_idx = out.find("<system-reminder>").expect("reminder must be present");
     let rules_idx = out.find("[Assistant Rules]").expect("rules block must be present");
     assert!(

@@ -101,6 +101,10 @@
   min-height: 104px;
 }
 
+.cloud-login-input-slot .flowy-auth-field__hint {
+  margin-top: var(--flowy-space-1);
+}
+
 .cloud-login-status-slot {
   display: flex;
   flex-direction: column;

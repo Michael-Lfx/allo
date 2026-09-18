@@ -114,7 +114,7 @@ fn autocompact_fires_before_emergency() {
     };
 
     // Pick a token count that triggers autocompact but not emergency
-    // autocompact threshold = 200k - 20k - 13k = 167k
+    // autocompact threshold = 200k * 60% = 120k
     // emergency limit = 200k - 3k = 197k
     let token_count: u64 = 170_000;
     let autocompact_triggers = should_autocompact(token_count, &config);
@@ -122,7 +122,7 @@ fn autocompact_fires_before_emergency() {
 
     assert!(
         autocompact_triggers && !emergency_triggers,
-        "at 170k tokens, autocompact should trigger (threshold 167k) \
+        "at 170k tokens, autocompact should trigger (threshold 120k) \
          but emergency should not (limit 197k)"
     );
 }

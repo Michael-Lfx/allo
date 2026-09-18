@@ -1,6 +1,6 @@
 ---
 name: nomifun-skills
-description: 'Discover and install community AI agent skills. Use when the user asks whether a skill exists, wants marketplace skills (ClawHub / SkillHub), or needs to install a skill. This skill is fully bundled — do not curl a remote guide first.'
+description: 'Discover and install community AI agent skills. Use when the user asks whether a skill exists, wants a SkillHub marketplace skill, or needs to install a skill. This skill is fully bundled — do not curl a remote guide first.'
 version: 1.1.0
 ---
 
@@ -23,25 +23,21 @@ Invoking `Skill` with `skill: "nomifun-skills"` only returns this guide.
 
 ## Built-in Skill Market (preferred)
 
-Flowy already syncs public rankings from:
+Flowy already syncs the public SkillHub catalog:
 
 | Source | Site |
 | --- | --- |
-| ClawHub | https://clawhub.ai/ |
-| SkillHub | https://www.skills.sh/ |
+| SkillHub | https://skillhub.cn/skills |
 
-**For users:** Settings → Skills → Skill Market. Sync rankings, search/filter, then use **Add** to open an install draft conversation with a reviewed install command.
+**For users:** Settings → Skills → Skill Market. Search and filter the catalog, then use **Install**. The app downloads and validates the SkillHub package into the local Skill library; it does not enable the Skill automatically.
 
 **For you (agent) when asked to find/install a community skill:**
 
 1. Prefer skills already available in this session. If one fits, say so and use it.
-2. If the user needs a marketplace skill, tell them to open **Settings → Skills → Skill Market**, or follow an install draft they already started from that UI.
-3. Before running any install command, verify the source page and command, then ask the user to confirm.
-4. Typical install command shapes (examples only — prefer the command from Skill Market):
-   - ClawHub: `openclaw skills install @owner/slug`
-   - SkillHub: `npx skills add owner/slug` (exact form depends on the listing)
+2. If the user needs a marketplace skill, tell them to open **Settings → Skills → Skill Market**, or use an install action they already started from that UI.
+3. Do not invoke an external marketplace CLI or copy an unreviewed command. The Skill Market owns the SkillHub detail lookup, version pinning, download, and package validation.
 
-Installing a skill is a shell/network action. This guide itself does not download packages.
+Installing a skill is a network action handled by the Skill Market. This guide itself does not download packages.
 
 ## Optional guide refresh (not required)
 

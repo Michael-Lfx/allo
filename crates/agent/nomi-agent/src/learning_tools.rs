@@ -1,16 +1,16 @@
 //! Native `learning_generate_course` / `learning_course_status` tools: let an
-//! in-process agent turn a mounted knowledge base into a structured learning
-//! course (modules, lessons, retrieval activities, spaced-repetition concepts)
-//! through a `LearningCourseSink` trait object. Generation now runs as a
-//! persistent background job: the generate tool returns immediately with a
-//! `job_id`, and the status tool reports progress / final result, so the agent
-//! never blocks on the 1-3 minute generation. The backend injects a concrete
-//! sink over its `LearningService`; standalone `nomi-cli` passes `None` and the
-//! tools are absent.
+//! in-process agent turn a knowledge base OR a free-text course brief into a
+//! structured learning course (modules, lessons, retrieval activities,
+//! spaced-repetition concepts) through a `LearningCourseSink` trait object.
+//! Generation runs synchronously in the backend but NOT in the agent session:
+//! the generate tool returns immediately with a `job_id` and the status tool
+//! polls an in-memory registry, so the agent never blocks on the 1-3 minute
+//! generation. The backend injects a concrete sink over its `LearningService`;
+//! standalone `nomi-cli` passes `None` and the tools are absent.
 //!
-//! Intended workflow for the model: first persist well-structured markdown
-//! documents into the base with `knowledge_write`, then call this tool to
-//! generate the course from them.
+//! Intended workflow for the model: either pass a `description` brief to
+//! generate from, or first persist well-structured markdown documents into a
+//! mounted base with `knowledge_write` and generate from it.
 //!
 //! Mirrors `knowledge_tools.rs`: trait here, impl in `nomifun-ai-agent`.
 
@@ -28,53 +28,48 @@ use nomi_types::tool::{JsonSchema, ToolResult};
 pub const LEARNING_GENERATE_COURSE_TOOL_NAME: &str = "learning_generate_course";
 
 /// Tool name of the companion progress-poll tool for course-generation jobs.
-/// Read-only (queries the job row), allow-listed alongside the generate tool
-/// so the agent can report progress without a per-call approval.
+/// Read-only (queries the in-memory registry), allow-listed alongside the
+/// generate tool so the agent can report progress without a per-call approval.
 pub const LEARNING_COURSE_STATUS_TOOL_NAME: &str = "learning_course_status";
 
-/// Default course shape when the model omits sizing (matches the HTTP API).
-const DEFAULT_MODULE_COUNT: u8 = 3;
-const DEFAULT_LESSONS_PER_MODULE: u8 = 3;
-/// Backend validation bound (`nomifun-learning::validate_generation_request`).
-const MAX_SIZE: u8 = 6;
-
 /// A model-issued course-generation request, resolved by the tool to one of
-/// the session's bound bases before forwarding to the backend. The session's
-/// active `(provider_id, model)` rides along so the background job runs on
-/// the model the user picked in this conversation; `None` falls back to the
-/// backend's default completer.
+/// the session's bound bases (or a free-text brief) before forwarding to the
+/// backend. Exactly one of `kb_id` / `description` is set. The session's
+/// active `(provider_id, model)` rides along so generation runs on the model
+/// the user picked in this conversation; `None` falls back to the backend's
+/// default completer. Course size is not part of the request: the backend's
+/// generation model decides the module/lesson layout from the source itself.
 #[derive(Debug, Clone)]
 pub struct CourseGenerationRequest {
-    pub kb_id: KnowledgeBaseId,
+    /// kb flow: the base to ground the course in.
+    pub kb_id: Option<KnowledgeBaseId>,
+    /// description flow: the free-text course brief (the whole grounding).
+    pub description: Option<String>,
     pub domain: Option<String>,
     pub provider_id: Option<String>,
     pub model: Option<String>,
-    pub module_count: u8,
-    pub lessons_per_module: u8,
-    /// "full" (default) materializes every lesson up front; "on_demand" imports
-    /// the outline and generates each lesson's body when the learner opens it.
+    /// Only "on_demand" is supported today (default): the outline is imported
+    /// immediately and each lesson's body is generated when the learner opens
+    /// it. Kept as an extension point for future generation strategies (e.g.
+    /// a learning-graph-driven mode).
     pub mode: Option<String>,
 }
 
-/// A background course-generation job has been accepted. `job_id` is the handle
-/// for `learning_course_status` and for the user's job panel on the Learning
-/// page.
+/// A course generation has been accepted. `job_id` is the handle for
+/// `learning_course_status`.
 #[derive(Debug, Clone)]
 pub struct CourseJobStarted {
     pub job_id: String,
     pub status: String,
 }
 
-/// Snapshot of a background course-generation job.
+/// Snapshot of a course generation tracked in the backend's in-memory
+/// registry.
 #[derive(Debug, Clone)]
 pub struct CourseJobStatus {
     pub job_id: String,
-    /// Machine-readable stage: queued | sampling | blueprint | lessons |
-    /// importing | completed | failed | cancelled | interrupted.
+    /// Machine-readable stage: running | completed | failed | cancelled.
     pub status: String,
-    /// Number of completed lessons (0..=total_lessons).
-    pub current_lesson: i64,
-    pub total_lessons: i64,
     pub error: Option<String>,
     pub course_id: Option<String>,
     /// Course title, filled only when `completed`.
@@ -85,16 +80,9 @@ impl CourseJobStatus {
     /// Human-readable progress text for the agent's confirmation message.
     pub fn progress_text(&self) -> String {
         match self.status.as_str() {
-            "queued" => format!("job {} is queued, waiting to start", self.job_id),
-            "sampling" => {
-                format!("job {} is sampling the knowledge base documents", self.job_id)
+            "running" => {
+                format!("job {} is still generating; one run takes 1-3 minutes", self.job_id)
             }
-            "blueprint" => format!("job {} is designing the course blueprint", self.job_id),
-            "lessons" => format!(
-                "job {} is generating lessons {}/{}",
-                self.job_id, self.current_lesson, self.total_lessons
-            ),
-            "importing" => format!("job {} is importing the finished course", self.job_id),
             "completed" => {
                 let title = self.title.as_deref().unwrap_or("(untitled)");
                 let course_id = self.course_id.as_deref().unwrap_or("(unknown)");
@@ -108,13 +96,7 @@ impl CourseJobStatus {
                 self.job_id,
                 self.error.as_deref().unwrap_or("unknown error")
             ),
-            "cancelled" => format!(
-                "job {} was cancelled; it can be resumed to continue from the last completed lesson",
-                self.job_id
-            ),
-            "interrupted" => {
-                format!("job {} was interrupted by a restart; it can be resumed", self.job_id)
-            }
+            "cancelled" => format!("job {} was cancelled", self.job_id),
             other => format!("job {} is in unknown state {other}", self.job_id),
         }
     }
@@ -189,27 +171,30 @@ impl Tool for LearningGenerateCourseTool {
 
     fn description(&self) -> &str {
         "Start a background job that generates a learning course (modules, lessons, quizzes, \
-         spaced-repetition concepts) FROM a mounted knowledge base. The course is grounded in the \
-         base's markdown documents, so FIRST make sure the base contains well-structured .md notes: \
+         spaced-repetition concepts). The grounding source is EITHER a free-text course brief \
+         (pass `description`) OR a mounted knowledge base (pass `base`): with `description` no \
+         knowledge base is needed — write a dense brief (topic, scope, learner level, what to \
+         cover) and the course is designed from it; with a base the course is grounded in its \
+         markdown documents, so FIRST make sure the base contains well-structured .md notes: \
          one topic per file, and each file's atomic unit should cover 描述 (description), \
          例子 (worked examples) and 验证 (self-check questions) at minimum — other sections such as \
          迁移 (transfer), 其他 (other), 关键词 (keywords), 推广 (promotion) are optional and chosen \
          by topic — write missing ones with knowledge_write before calling this. \
-         Generated lesson documents follow the same structure as long-form study material \
-         (1000+ characters each), so the course reads like a real textbook instead of a bare summary. \
-         Generation samples the documents and runs multiple model calls (blueprint first, then one \
-         call per lesson), so it takes 1-3 minutes IN THE BACKGROUND. This tool returns immediately \
-         with a job_id — report progress by calling learning_course_status with it; the user can \
-         also track / cancel / resume the job on the Learning page."
+         Generation is on-demand: it samples the source, designs a blueprint and imports the \
+         course outline immediately (blueprint + lesson purposes + concept map), and each lesson's \
+         long-form document and exercises are generated only when the learner opens that lesson on \
+         the Learning page. The job runs in the background, so this tool returns immediately with \
+         a job_id — report progress by calling learning_course_status with it; the user can \
+         also follow or cancel the job on the Learning page."
     }
 
     fn input_schema(&self) -> JsonSchema {
         let names = self.base_names();
         let base_desc = if names.len() <= 1 {
-            "Which knowledge base to build the course from (its name). Optional when only one base is mounted.".to_owned()
+            "Which knowledge base to build the course from (its name). Optional when only one base is mounted; unused when description is passed.".to_owned()
         } else {
             format!(
-                "Which knowledge base to build the course from. Must be one of: {}.",
+                "Which knowledge base to build the course from. Must be one of: {}. Unused when description is passed.",
                 names.join(", ")
             )
         };
@@ -217,21 +202,17 @@ impl Tool for LearningGenerateCourseTool {
             "type": "object",
             "properties": {
                 "base": { "type": "string", "description": base_desc },
+                "description": {
+                    "type": "string",
+                    "description": "Free-text course brief to generate from INSTEAD of a knowledge base: topic, scope, learner level and what to cover. Pass this OR base, not both; no knowledge base is needed with it."
+                },
                 "domain": {
                     "type": "string",
                     "description": "Optional short domain label for the course, e.g. \"trading\" or \"rust\"."
                 },
-                "module_count": {
-                    "type": "integer",
-                    "description": "Number of course modules (default 3, max 6)."
-                },
-                "lessons_per_module": {
-                    "type": "integer",
-                    "description": "Lessons per module (default 3, max 6)."
-                },
                 "mode": {
                     "type": "string",
-                    "description": "Generation strategy: \"full\" (default) generates every lesson up front; \"on_demand\" imports the outline first and generates each lesson's body when the learner opens it."
+                    "description": "Generation strategy. Only \"on_demand\" is supported (default): the course outline is imported first and each lesson's body is generated when the learner opens it. Reserved for future strategies; do not pass other values."
                 },
                 "provider_id": {
                     "type": "string",
@@ -258,17 +239,34 @@ impl Tool for LearningGenerateCourseTool {
     }
 
     async fn execute(&self, input: Value) -> ToolResult {
-        if self.bases.is_empty() {
-            return ToolResult::text(
-                "No knowledge bases are mounted in this session, so there is no base to build a course from.",
-            );
-        }
-        let kb_id = match crate::knowledge_tools::resolve_write_base(
-            &self.bases,
-            input.get("base").and_then(Value::as_str),
-        ) {
-            Ok(b) => b.0.clone(),
-            Err(e) => return ToolResult::error(e),
+        let description = input
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(ToOwned::to_owned);
+        let base_arg = input.get("base").and_then(Value::as_str);
+        let kb_id = if description.is_some() {
+            // Brief flow: the description is the whole grounding, so no base
+            // is resolved; an explicit `base` alongside it is a conflict.
+            if base_arg.map(str::trim).is_some_and(|b| !b.is_empty()) {
+                return ToolResult::error(
+                    "learning_generate_course accepts either `base` or `description`, not both",
+                );
+            }
+            None
+        } else {
+            if self.bases.is_empty() {
+                return ToolResult::text(
+                    "No knowledge bases are mounted in this session and no `description` brief was \
+                     passed, so there is no source to build a course from. Pass a `description` \
+                     brief, or write notes into a mounted base with knowledge_write first.",
+                );
+            }
+            match crate::knowledge_tools::resolve_write_base(&self.bases, base_arg) {
+                Ok(b) => Some(b.0.clone()),
+                Err(e) => return ToolResult::error(e),
+            }
         };
         let domain = input
             .get("domain")
@@ -276,8 +274,6 @@ impl Tool for LearningGenerateCourseTool {
             .map(str::trim)
             .filter(|d| !d.is_empty())
             .map(ToOwned::to_owned);
-        let module_count = size_arg(&input, "module_count", DEFAULT_MODULE_COUNT);
-        let lessons_per_module = size_arg(&input, "lessons_per_module", DEFAULT_LESSONS_PER_MODULE);
         let mode = input
             .get("mode")
             .and_then(Value::as_str)
@@ -306,11 +302,10 @@ impl Tool for LearningGenerateCourseTool {
         };
         let req = CourseGenerationRequest {
             kb_id,
+            description,
             domain,
             provider_id,
             model,
-            module_count,
-            lessons_per_module,
             mode,
         };
         match self
@@ -321,7 +316,7 @@ impl Tool for LearningGenerateCourseTool {
             Ok(job) => ToolResult::text(format!(
                 "Started course generation job {} (status: {}). It runs in the background and takes 1-3 minutes; \
                  you can check progress with the learning_course_status tool using this job id, and the user can \
-                 follow, cancel, resume or retry it on the Learning page.",
+                 follow or cancel it on the Learning page.",
                 job.job_id, job.status
             )),
             Err(e) => ToolResult::error(format!("learning_generate_course failed: {e}")),
@@ -334,7 +329,18 @@ impl Tool for LearningGenerateCourseTool {
 
     fn describe(&self, input: &Value) -> String {
         let base = input.get("base").and_then(Value::as_str).unwrap_or("");
-        if base.is_empty() {
+        let brief = input
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|d| !d.is_empty());
+        if let Some(brief) = brief {
+            let mut head: String = brief.chars().take(40).collect();
+            if brief.chars().count() > 40 {
+                head.push('…');
+            }
+            format!("learning_generate_course from brief '{head}'")
+        } else if base.is_empty() {
             "learning_generate_course".to_owned()
         } else {
             format!("learning_generate_course '{base}'")
@@ -365,9 +371,9 @@ impl Tool for LearningCourseStatusTool {
 
     fn description(&self) -> &str {
         "Check the progress of a background course-generation job started by learning_generate_course. \
-         Returns the current stage (sampling / blueprint / generating lessons x/y / importing) while \
-         running, or the final outcome: completed (with the course id and title), failed (with the \
-         error), cancelled or interrupted. Input: job_id (required)."
+         Returns `running` (a full run takes 1-3 minutes) while generating, or the final outcome: \
+         completed (with the course id and title), failed (with the error) or cancelled. \
+         Input: job_id (required)."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -421,17 +427,6 @@ impl Tool for LearningCourseStatusTool {
     }
 }
 
-/// Parse an optional sizing argument, falling back to the default and clamping
-/// to the backend's 1..=6 validation bound so the model gets a course instead
-/// of a service rejection.
-fn size_arg(input: &Value, key: &str, default: u8) -> u8 {
-    input
-        .get(key)
-        .and_then(Value::as_u64)
-        .map(|n| (n as u16).clamp(1, MAX_SIZE as u16) as u8)
-        .unwrap_or(default)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,9 +457,7 @@ mod tests {
                 fail: false,
                 status: std::sync::Mutex::new(CourseJobStatus {
                     job_id: String::new(),
-                    status: "queued".to_owned(),
-                    current_lesson: 0,
-                    total_lessons: 0,
+                    status: "running".to_owned(),
                     error: None,
                     course_id: None,
                     title: None,
@@ -538,7 +531,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forwards_explicit_mode_and_model_override() {
+    async fn forwards_on_demand_mode_and_model_override() {
         let sink = Arc::new(FakeCourseSink::default());
         let tool = LearningGenerateCourseTool::new(
             sink.clone(),
@@ -567,7 +560,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn starts_job_immediately_with_defaults_on_single_base() {
+    async fn starts_job_immediately_on_single_base() {
         let (tool, sink) = tool(vec![("kb1", "金融知识库")]);
         let res = tool.execute(json!({})).await;
         assert!(!res.is_error, "{res:?}");
@@ -576,34 +569,21 @@ mod tests {
         let (user, session, req) = sink.last.lock().unwrap().clone().unwrap();
         assert_eq!(user, USER);
         assert_eq!(session.as_deref(), Some("session-1"));
-        assert_eq!(req.kb_id, kb_id("kb1"));
+        assert_eq!(req.kb_id.as_ref(), Some(&kb_id("kb1")));
+        assert!(req.description.is_none());
         assert!(req.domain.is_none());
-        assert_eq!(req.module_count, DEFAULT_MODULE_COUNT);
-        assert_eq!(req.lessons_per_module, DEFAULT_LESSONS_PER_MODULE);
     }
 
     #[tokio::test]
     async fn resolves_base_by_name_and_forwards_options() {
         let (tool, sink) = tool(vec![("kb1", "Finance"), ("kb2", "Ops")]);
         let res = tool
-            .execute(json!({"base": " ops ", "domain": " ops-runbook ", "module_count": 4, "lessons_per_module": 2}))
+            .execute(json!({"base": " ops ", "domain": " ops-runbook "}))
             .await;
         assert!(!res.is_error, "{res:?}");
         let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
-        assert_eq!(req.kb_id, kb_id("kb2"));
+        assert_eq!(req.kb_id.as_ref(), Some(&kb_id("kb2")));
         assert_eq!(req.domain.as_deref(), Some("ops-runbook"));
-        assert_eq!(req.module_count, 4);
-        assert_eq!(req.lessons_per_module, 2);
-    }
-
-    #[tokio::test]
-    async fn sizes_are_clamped_to_backend_bounds() {
-        let (tool, sink) = tool(vec![("kb1", "Finance")]);
-        let res = tool.execute(json!({"module_count": 0, "lessons_per_module": 99})).await;
-        assert!(!res.is_error, "{res:?}");
-        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
-        assert_eq!(req.module_count, 1, "below-range sizes clamp to 1");
-        assert_eq!(req.lessons_per_module, MAX_SIZE, "above-range sizes clamp to {MAX_SIZE}");
     }
 
     #[tokio::test]
@@ -623,6 +603,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn description_flow_skips_base_resolution() {
+        let (tool, sink) = tool(vec![]);
+        let res = tool
+            .execute(json!({"description": "零基础期权入门：从权利义务讲到期权策略"}))
+            .await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert!(req.kb_id.is_none());
+        assert_eq!(
+            req.description.as_deref(),
+            Some("零基础期权入门：从权利义务讲到期权策略")
+        );
+    }
+
+    #[tokio::test]
+    async fn description_and_base_are_rejected_together() {
+        let (tool, _sink) = tool(vec![("kb1", "Finance")]);
+        let res = tool
+            .execute(json!({"base": "Finance", "description": "brief"}))
+            .await;
+        assert!(res.is_error);
+        assert!(res.content.contains("not both"), "{res:?}");
+    }
+
+    #[tokio::test]
     async fn sink_error_is_surfaced() {
         let sink = Arc::new(FakeCourseSink { fail: true, ..Default::default() });
         let tool = LearningGenerateCourseTool::new(
@@ -638,20 +643,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_reports_in_progress_lessons() {
+    async fn status_reports_running_generation() {
         let (tool, sink) = status_tool();
         *sink.status.lock().unwrap() = CourseJobStatus {
             job_id: "job-1".into(),
-            status: "lessons".into(),
-            current_lesson: 2,
-            total_lessons: 9,
+            status: "running".into(),
             error: None,
             course_id: None,
             title: None,
         };
         let res = tool.execute(json!({"job_id": "job-1"})).await;
         assert!(!res.is_error, "{res:?}");
-        assert!(res.content.contains("2/9"), "{res:?}");
+        assert!(res.content.contains("still generating"), "{res:?}");
     }
 
     #[tokio::test]
@@ -660,8 +663,6 @@ mod tests {
         *sink.status.lock().unwrap() = CourseJobStatus {
             job_id: "job-1".into(),
             status: "completed".into(),
-            current_lesson: 9,
-            total_lessons: 9,
             error: None,
             course_id: Some("course-1".into()),
             title: Some("测试课程".into()),
@@ -677,8 +678,6 @@ mod tests {
         *sink.status.lock().unwrap() = CourseJobStatus {
             job_id: "job-1".into(),
             status: "failed".into(),
-            current_lesson: 1,
-            total_lessons: 9,
             error: Some("model call failed".into()),
             course_id: None,
             title: None,

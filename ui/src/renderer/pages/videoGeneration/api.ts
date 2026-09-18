@@ -21,6 +21,10 @@ import type {
   TvShowListResult,
   TvShowPublishResult,
   TvShowVideo,
+  CampaignCarouselItem,
+  CampaignCarouselResult,
+  CampaignDetail,
+  CampaignListResult,
   VerticalSkillDetail,
   VerticalSkillDraft,
   VerticalSkillSummary,
@@ -34,9 +38,13 @@ import type {
   ImagePromptInfo,
   ActionAssetsInfo,
 } from './types';
+import { isCanvasTvShow } from './workflowKind';
+import { importCanvasTvShow } from '../videoCanvas/api';
 
 const BASE = '/api/vimax';
 const SESSION_LIST_CACHE_TTL_MS = 4_000;
+const CAMPAIGN_CAROUSEL_CACHE_TTL_MS = 60_000;
+const TV_SHOW_PUBLISH_TIMEOUT_MS = 12 * 60 * 1000;
 
 let sessionListCache: { at: number; data: SessionSummary[] } | null = null;
 let sessionListInflight: Promise<SessionSummary[]> | null = null;
@@ -44,13 +52,33 @@ let sessionListGeneration = 0;
 
 /**
  * Resolve a backend-relative serve path to an absolute URL usable in
- * `<img src>` / `<video src>`. Absolute / blob / data URLs pass through.
+ * `<img src>` / `<video src>`. Historical sessions often persist
+ * `http://127.0.0.1:{oldPort}/api/vimax/...` from a previous desktop launch —
+ * rewrite those onto `getBaseUrl()`. Live `blob:` / `data:` / external https
+ * pass through.
  */
 export function resolveVimaxUrl(path: string | null | undefined): string | null {
   if (!path) return null;
-  if (/^(https?:|blob:|data:)/i.test(path)) return path;
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+  if (/^(blob:|data:)/i.test(trimmed)) return trimmed;
+  const loopbackApi = loopbackApiPath(trimmed);
+  if (loopbackApi) {
+    const base = getBaseUrl();
+    return `${base}${loopbackApi}`;
+  }
+  if (/^https?:/i.test(trimmed)) return trimmed;
   const base = getBaseUrl();
-  return path.startsWith('/') ? `${base}${path}` : `${base}/${path}`;
+  return trimmed.startsWith('/') ? `${base}${trimmed}` : `${base}/${trimmed}`;
+}
+
+function loopbackApiPath(url: string): string | null {
+  const match = url.match(/^https?:\/\/(?:127\.0\.0\.1|localhost):\d+(\/api\/[^?#]*)/i);
+  return match?.[1] ?? null;
+}
+
+function isAuthorizedVimaxMediaUrl(url: string): boolean {
+  return /\/api\/vimax\//i.test(url) || /\/api\/video-canvas\/media\//i.test(url);
 }
 
 /** Absolute URL for fetching an artifact file (binary or text). */
@@ -104,6 +132,19 @@ export async function createSession(body: CreateSessionBody): Promise<SessionSum
 
 export async function getSession(id: string): Promise<VimaxSession> {
   return httpRequest<VimaxSession>('GET', `${BASE}/sessions/${encodeURIComponent(id)}`);
+}
+
+/** Display title cap; empty string is allowed (UI shows 未命名任务). */
+export const SESSION_TITLE_MAX_CHARS = 80;
+
+export async function updateSessionTitle(id: string, title: string): Promise<VimaxSession> {
+  const session = await httpRequest<VimaxSession>(
+    'PATCH',
+    `${BASE}/sessions/${encodeURIComponent(id)}`,
+    { title }
+  );
+  invalidateSessionList();
+  return session;
 }
 
 export async function planSession(id: string, body: PlanBody): Promise<void> {
@@ -306,6 +347,35 @@ export async function listArtifacts(id: string): Promise<ArtifactNode[]> {
   return data?.tree ?? data?.artifacts ?? [];
 }
 
+async function blobContentFromResponse(
+  response: Response,
+  contentType: string,
+  lowerPath: string
+): Promise<ArtifactContent> {
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const isVideo = contentType.startsWith('video/') || /\.(mp4|webm|mov|avi|mkv)$/i.test(lowerPath);
+  const isAudio =
+    contentType.startsWith('audio/') ||
+    /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(lowerPath);
+  return {
+    kind: 'url',
+    url: objectUrl,
+    mime: contentType || (isVideo ? 'video/mp4' : isAudio ? 'audio/wav' : undefined),
+  };
+}
+
+async function fetchAuthorizedMediaBlob(url: string, artifactPath: string): Promise<ArtifactContent> {
+  const headers: Record<string, string> = { ...buildBackendAuthHeaders('GET') };
+  const response = await fetch(url, { method: 'GET', headers });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Failed to load artifact (${response.status}): ${detail || response.statusText}`);
+  }
+  const contentType = response.headers.get('Content-Type') ?? '';
+  return blobContentFromResponse(response, contentType, artifactPath.toLowerCase());
+}
+
 /**
  * Fetch an artifact. Media is returned as an authenticated blob: URL so
  * `<img>` / `<video>` work (raw API paths require Authorization headers).
@@ -329,17 +399,9 @@ export async function getArtifact(sessionId: string, artifactPath: string): Prom
     contentType.startsWith('video/') ||
     contentType.startsWith('audio/') ||
     contentType.includes('octet-stream') ||
-    /\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|mkv|mp3|wav)$/i.test(lowerPath)
+    /\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|mkv|mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(lowerPath)
   ) {
-    const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const isVideo =
-      contentType.startsWith('video/') || /\.(mp4|webm|mov|avi|mkv)$/i.test(lowerPath);
-    return {
-      kind: 'url',
-      url: objectUrl,
-      mime: contentType || (isVideo ? 'video/mp4' : undefined),
-    };
+    return blobContentFromResponse(response, contentType, lowerPath);
   }
 
   if (contentType.includes('application/json')) {
@@ -356,7 +418,15 @@ export async function getArtifact(sessionId: string, artifactPath: string): Prom
     if (payload && typeof payload === 'object') {
       const obj = payload as Record<string, unknown>;
       if (typeof obj.url === 'string') {
-        return { kind: 'url', url: resolveVimaxUrl(obj.url) ?? obj.url, mime: typeof obj.mime === 'string' ? obj.mime : contentType };
+        const resolved = resolveVimaxUrl(obj.url) ?? obj.url;
+        if (isAuthorizedVimaxMediaUrl(resolved)) {
+          return fetchAuthorizedMediaBlob(resolved, artifactPath);
+        }
+        return {
+          kind: 'url',
+          url: resolved,
+          mime: typeof obj.mime === 'string' ? obj.mime : contentType,
+        };
       }
       if (typeof obj.content === 'string') {
         const looksJson = obj.content.trim().startsWith('{') || obj.content.trim().startsWith('[');
@@ -395,49 +465,58 @@ export async function loadArtifactMediaUrl(
 }
 
 // ── Cached media blob URLs (LRU) ────────────────────────────────────────────
-// Remount-heavy components (session cards, storyboard filmstrip thumbs) would
-// re-download the same artifact file on every mount otherwise. The cache owns
-// the blob URL lifecycle: callers must NOT revoke returned URLs. Eviction
-// revokes, so entries may disappear under memory pressure — acceptable for
-// display-only previews.
-const MEDIA_URL_CACHE_LIMIT = 24;
-const mediaUrlCache = new Map<string, string>();
+// Remount-heavy components (session cards, storyboard filmstrip, agent session)
+// share this cache. Eviction must not revoke a blob that is still on screen —
+// that is what made historical storyboard / agent thumbs go blank. Entries
+// with refs > 0 stay until every display hook releases them.
+const MEDIA_URL_CACHE_LIMIT = 96;
+type ArtifactMediaCacheEntry = { url: string; refs: number };
+const mediaUrlCache = new Map<string, ArtifactMediaCacheEntry>();
 const mediaUrlInflight = new Map<string, Promise<string>>();
 
-/**
- * Like {@link loadArtifactMediaUrl} but memoized per `${sessionId}:${path}`.
- * Concurrent callers share one download; repeated mounts get the same URL.
- */
-export function loadArtifactMediaUrlCached(
-  sessionId: string,
-  artifactPath: string
-): Promise<string> {
-  const key = `${sessionId}:${artifactPath}`;
+function artifactMediaCacheKey(sessionId: string, artifactPath: string) {
+  return `${sessionId}:${artifactPath}`;
+}
+
+function touchArtifactMediaEntry(key: string, entry: ArtifactMediaCacheEntry) {
+  mediaUrlCache.delete(key);
+  mediaUrlCache.set(key, entry);
+}
+
+function evictIdleArtifactMedia() {
+  while (mediaUrlCache.size > MEDIA_URL_CACHE_LIMIT) {
+    let victim: string | undefined;
+    for (const [key, entry] of mediaUrlCache) {
+      if (entry.refs <= 0) {
+        victim = key;
+        break;
+      }
+    }
+    if (!victim) break;
+    const entry = mediaUrlCache.get(victim);
+    mediaUrlCache.delete(victim);
+    if (entry?.url.startsWith('blob:')) URL.revokeObjectURL(entry.url);
+  }
+}
+
+async function getOrCreateCachedArtifactUrl(sessionId: string, artifactPath: string): Promise<string> {
+  const key = artifactMediaCacheKey(sessionId, artifactPath);
   const hit = mediaUrlCache.get(key);
-  if (hit != null) {
-    // Refresh LRU recency.
-    mediaUrlCache.delete(key);
-    mediaUrlCache.set(key, hit);
-    return Promise.resolve(hit);
+  if (hit) {
+    touchArtifactMediaEntry(key, hit);
+    return hit.url;
   }
   const inflight = mediaUrlInflight.get(key);
   if (inflight) return inflight;
   const request = loadArtifactMediaUrl(sessionId, artifactPath)
     .then((url) => {
       const existing = mediaUrlCache.get(key);
-      if (existing != null) {
-        // Another caller populated the entry first — drop our duplicate.
-        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
-        return existing;
+      if (existing) {
+        if (url.startsWith('blob:') && url !== existing.url) URL.revokeObjectURL(url);
+        return existing.url;
       }
-      mediaUrlCache.set(key, url);
-      while (mediaUrlCache.size > MEDIA_URL_CACHE_LIMIT) {
-        const oldestKey = mediaUrlCache.keys().next().value;
-        if (oldestKey == null) break;
-        const oldest = mediaUrlCache.get(oldestKey);
-        mediaUrlCache.delete(oldestKey);
-        if (oldest?.startsWith('blob:')) URL.revokeObjectURL(oldest);
-      }
+      mediaUrlCache.set(key, { url, refs: 0 });
+      evictIdleArtifactMedia();
       return url;
     })
     .finally(() => {
@@ -445,6 +524,51 @@ export function loadArtifactMediaUrlCached(
     });
   mediaUrlInflight.set(key, request);
   return request;
+}
+
+/** Hold a cached artifact URL so LRU eviction cannot revoke it while it is on screen. */
+export async function acquireCachedArtifactMediaUrl(
+  sessionId: string,
+  artifactPath: string
+): Promise<string> {
+  const url = await getOrCreateCachedArtifactUrl(sessionId, artifactPath);
+  const key = artifactMediaCacheKey(sessionId, artifactPath);
+  const entry = mediaUrlCache.get(key);
+  if (entry) {
+    entry.refs += 1;
+    touchArtifactMediaEntry(key, entry);
+  } else {
+    mediaUrlCache.set(key, { url, refs: 1 });
+  }
+  return url;
+}
+
+export function releaseCachedArtifactMediaUrl(sessionId: string, artifactPath: string) {
+  const key = artifactMediaCacheKey(sessionId, artifactPath);
+  const entry = mediaUrlCache.get(key);
+  if (!entry) return;
+  entry.refs = Math.max(0, entry.refs - 1);
+  evictIdleArtifactMedia();
+}
+
+export function invalidateCachedArtifactMediaUrl(sessionId: string, artifactPath: string) {
+  const key = artifactMediaCacheKey(sessionId, artifactPath);
+  const entry = mediaUrlCache.get(key);
+  if (!entry) return;
+  mediaUrlCache.delete(key);
+  if (entry.url.startsWith('blob:') && entry.refs <= 1) URL.revokeObjectURL(entry.url);
+}
+
+/**
+ * Warm the cache without taking a display loan. Prefer
+ * {@link acquireCachedArtifactMediaUrl} (or `useArtifactMediaUrl`) for anything
+ * mounted as `<img>` / `<video>`.
+ */
+export function loadArtifactMediaUrlCached(
+  sessionId: string,
+  artifactPath: string
+): Promise<string> {
+  return getOrCreateCachedArtifactUrl(sessionId, artifactPath);
 }
 
 function looksLikeJson(s: string): boolean {
@@ -462,7 +586,11 @@ export function isActiveStatus(status: string | null | undefined): boolean {
     status === 'planning' ||
     status === 'rendering' ||
     status === 'queued' ||
-    status === 'running'
+    status === 'running' ||
+    status === 'researching' ||
+    status === 'scripting' ||
+    status === 'aligning' ||
+    status === 'composing'
   );
 }
 
@@ -609,10 +737,13 @@ export function uploadActionAssets(
 
 // ── TV Show (cloud plaza via local proxy) ───────────────────────────────────
 
-function tvShowQuery(params: Record<string, string | number | undefined | null>): string {
+function tvShowQuery(
+  params: Record<string, string | number | boolean | undefined | null>
+): string {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value == null || value === '') continue;
+    if (value === false) continue;
     qs.set(key, String(value));
   }
   const s = qs.toString();
@@ -622,12 +753,17 @@ function tvShowQuery(params: Record<string, string | number | undefined | null>)
 /** Coordinate cover + package OSS upload and Flowy publish for a local session. */
 export async function publishSessionToTvShow(
   sessionId: string,
-  body?: { title?: string; description?: string }
+  body?: { title?: string; description?: string; campaignId?: number }
 ): Promise<TvShowPublishResult> {
+  const payload: { title?: string; description?: string; campaignId?: number } = {};
+  if (body?.title) payload.title = body.title;
+  if (body?.description) payload.description = body.description;
+  if (body?.campaignId && body.campaignId > 0) payload.campaignId = body.campaignId;
   return httpRequest<TvShowPublishResult>(
     'POST',
     `${BASE}/sessions/${encodeURIComponent(sessionId)}/tv-show/publish`,
-    body ?? {}
+    payload,
+    { timeoutMs: TV_SHOW_PUBLISH_TIMEOUT_MS }
   );
 }
 
@@ -637,6 +773,8 @@ export async function listTvShow(params?: {
   workflow?: string;
   keyword?: string;
   sort?: string;
+  campaignId?: number;
+  awardLevel?: string;
 }): Promise<TvShowListResult> {
   return httpRequest<TvShowListResult>(
     'GET',
@@ -646,6 +784,8 @@ export async function listTvShow(params?: {
       workflow: params?.workflow,
       keyword: params?.keyword,
       sort: params?.sort,
+      campaignId: params?.campaignId,
+      awardLevel: params?.awardLevel,
     })}`
   );
 }
@@ -654,6 +794,7 @@ export async function listMyTvShow(params?: {
   page?: number;
   pageSize?: number;
   status?: string;
+  campaignId?: number;
 }): Promise<TvShowListResult> {
   return httpRequest<TvShowListResult>(
     'GET',
@@ -661,6 +802,7 @@ export async function listMyTvShow(params?: {
       page: params?.page,
       pageSize: params?.pageSize,
       status: params?.status,
+      campaignId: params?.campaignId,
     })}`
   );
 }
@@ -688,8 +830,105 @@ export async function importTvShow(id: number): Promise<SessionSummary> {
   return session;
 }
 
+/** Import a published film and return the local editor path. */
+export async function remixTvShow(video: TvShowVideo): Promise<string> {
+  if (isCanvasTvShow(video)) {
+    const imported = await importCanvasTvShow(video.id);
+    return `/video-generation/canvas/${encodeURIComponent(imported.project_id)}`;
+  }
+  const imported = await importTvShow(video.id);
+  return `/video-generation/${imported.id}`;
+}
+
+// ── Campaigns (cloud marketing via local proxy) ─────────────────────────────
+
+let campaignCarouselCache: { at: number; data: CampaignCarouselItem[] } | null = null;
+let campaignCarouselInflight: Promise<CampaignCarouselItem[]> | null = null;
+
+export function invalidateCampaignCarouselCache(): void {
+  campaignCarouselCache = null;
+}
+
+export async function listCampaignCarousel(force = false): Promise<CampaignCarouselItem[]> {
+  const now = Date.now();
+  if (
+    !force &&
+    campaignCarouselCache &&
+    now - campaignCarouselCache.at < CAMPAIGN_CAROUSEL_CACHE_TTL_MS
+  ) {
+    return campaignCarouselCache.data;
+  }
+  if (!force && campaignCarouselInflight) return campaignCarouselInflight;
+
+  const request = httpRequest<CampaignCarouselResult>('GET', `${BASE}/campaigns/carousel`)
+    .then((data) => {
+      const list = data?.list ?? [];
+      campaignCarouselCache = { at: Date.now(), data: list };
+      return list;
+    })
+    .finally(() => {
+      campaignCarouselInflight = null;
+    });
+  campaignCarouselInflight = request;
+  return request;
+}
+
+export async function listCampaigns(params?: {
+  page?: number;
+  pageSize?: number;
+  includeEnded?: boolean;
+}): Promise<CampaignListResult> {
+  return httpRequest<CampaignListResult>(
+    'GET',
+    `${BASE}/campaigns/list${tvShowQuery({
+      page: params?.page,
+      pageSize: params?.pageSize,
+      includeEnded: params?.includeEnded,
+    })}`
+  );
+}
+
+export async function getCampaignDetail(id: number): Promise<CampaignDetail> {
+  return httpRequest<CampaignDetail>('GET', `${BASE}/campaigns/${id}`);
+}
+
+export async function listCampaignSubmissions(
+  id: number,
+  params?: {
+    page?: number;
+    pageSize?: number;
+    workflow?: string;
+    keyword?: string;
+    sort?: string;
+  }
+): Promise<TvShowListResult> {
+  return httpRequest<TvShowListResult>(
+    'GET',
+    `${BASE}/campaigns/${id}/submissions${tvShowQuery({
+      page: params?.page,
+      pageSize: params?.pageSize,
+      workflow: params?.workflow,
+      keyword: params?.keyword,
+      sort: params?.sort,
+    })}`
+  );
+}
+
+export async function listCampaignWinners(id: number): Promise<TvShowListResult> {
+  return httpRequest<TvShowListResult>('GET', `${BASE}/campaigns/${id}/winners`);
+}
+
 function encodeSkillId(id: string): string {
   return encodeURIComponent(id);
+}
+
+const VERTICAL_SKILL_LIST_TTL_MS = 15_000;
+let verticalSkillListCache: { at: number; data: VerticalSkillSummary[] } | null = null;
+let verticalSkillListInflight: Promise<VerticalSkillSummary[]> | null = null;
+
+function invalidateVerticalSkillListCache(): void {
+  verticalSkillListCache = null;
+  verticalSkillListInflight = null;
 }
 
 export async function listVerticalSkills(params?: {
@@ -700,11 +939,30 @@ export async function listVerticalSkills(params?: {
   if (params?.mode) query.set('mode', params.mode);
   if (params?.source) query.set('source', params.source);
   const qs = query.toString();
-  const data = await httpRequest<
+  const unfiltered = !params?.mode && !params?.source;
+  if (unfiltered) {
+    const now = Date.now();
+    if (verticalSkillListCache && now - verticalSkillListCache.at < VERTICAL_SKILL_LIST_TTL_MS) {
+      return verticalSkillListCache.data;
+    }
+    if (verticalSkillListInflight) return verticalSkillListInflight;
+  }
+  const request = httpRequest<
     VerticalSkillSummary[] | { skills: VerticalSkillSummary[] }
-  >('GET', `${BASE}/skills${qs ? `?${qs}` : ''}`);
-  if (Array.isArray(data)) return data;
-  return data?.skills ?? [];
+  >('GET', `${BASE}/skills${qs ? `?${qs}` : ''}`).then((data) => {
+    const skills = Array.isArray(data) ? data : data?.skills ?? [];
+    if (unfiltered) {
+      verticalSkillListCache = { at: Date.now(), data: skills };
+    }
+    return skills;
+  });
+  if (unfiltered) {
+    verticalSkillListInflight = request.finally(() => {
+      verticalSkillListInflight = null;
+    });
+    return verticalSkillListInflight;
+  }
+  return request;
 }
 
 export async function getVerticalSkill(id: string): Promise<VerticalSkillDetail> {
@@ -754,6 +1012,7 @@ export async function createVerticalSkill(
   draft: VerticalSkillDraft
 ): Promise<VerticalSkillSummary> {
   const skill = await httpRequest<RawVerticalSkill>('POST', `${BASE}/skills`, draft);
+  invalidateVerticalSkillListCache();
   return normalizeSkillSummary(skill);
 }
 
@@ -761,15 +1020,18 @@ export async function updateVerticalSkill(
   id: string,
   draft: VerticalSkillDraft
 ): Promise<VerticalSkillSummary> {
-  return httpRequest<VerticalSkillSummary>(
+  const skill = await httpRequest<VerticalSkillSummary>(
     'PUT',
     `${BASE}/skills/${encodeSkillId(id)}`,
     draft
   );
+  invalidateVerticalSkillListCache();
+  return skill;
 }
 
 export async function deleteVerticalSkill(id: string): Promise<void> {
   await httpRequest<unknown>('DELETE', `${BASE}/skills/${encodeSkillId(id)}`);
+  invalidateVerticalSkillListCache();
 }
 
 export async function publishVerticalSkill(id: string): Promise<VerticalSkillSummary> {
@@ -790,6 +1052,7 @@ export async function unpublishVerticalSkill(id: string): Promise<void> {
 
 export async function importVerticalSkill(path: string): Promise<VerticalSkillSummary> {
   const skill = await httpRequest<RawVerticalSkill>('POST', `${BASE}/skills/import`, { path });
+  invalidateVerticalSkillListCache();
   return normalizeSkillSummary(skill);
 }
 
@@ -862,6 +1125,7 @@ export async function installCloudSkill(id: number): Promise<VerticalSkillSummar
     `${BASE}/skill-hub/${id}/install`,
     {}
   );
+  invalidateVerticalSkillListCache();
   return normalizeSkillSummary(skill);
 }
 

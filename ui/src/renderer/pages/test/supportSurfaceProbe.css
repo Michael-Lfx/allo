@@ -1,0 +1,56 @@
+.support-surface-probe {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 24px;
+  color: var(--flowy-text-primary, var(--color-text-1));
+  background: var(--flowy-canvas, var(--color-bg-1));
+  font-family: var(--font-family, system-ui, sans-serif);
+}
+
+.support-surface-probe__header {
+  width: min(720px, 100%);
+  margin: 0 auto;
+}
+
+.support-surface-probe__eyebrow {
+  margin: 0 0 4px;
+  color: var(--flowy-text-muted, var(--color-text-3));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.support-surface-probe__header h1,
+.support-surface-probe__header p {
+  margin: 0;
+}
+
+.support-surface-probe__header h1 {
+  font-size: 22px;
+  line-height: 30px;
+}
+
+.support-surface-probe__header p:last-child {
+  margin-top: 6px;
+  color: var(--flowy-text-secondary, var(--color-text-3));
+  font-size: 12px;
+  line-height: 18px;
+}
+
+#support-surface-probe-result {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  z-index: -1;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  .support-surface-probe {
+    padding: 14px;
+  }
+}

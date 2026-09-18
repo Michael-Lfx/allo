@@ -9,9 +9,11 @@ import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGa
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
+import { safeDecodeUriComponent } from '@/common/utils/localPath';
 import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import { useSlidingSelectionIndicator } from '@renderer/hooks/ui/useSlidingSelectionIndicator';
+import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
 import {
   ConversationSiderActions,
   SiderConversationEntry,
@@ -28,6 +30,7 @@ import {
 import SiderFooter from './SiderFooter';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
+import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -57,6 +60,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const location = useLocation();
   const { pathname, search, hash } = location;
   const navigate = useNavigate();
+  const { navigateWithSettingsTransition } = useSettingsNavigationTransition();
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
   const [batchMode, setBatchMode] = useState(false);
@@ -132,14 +136,28 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
   const activeVideoGenerationSessionId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
-    return m?.[1] ? decodeURIComponent(m[1]) : null;
+    const id = m?.[1] ? safeDecodeUriComponent(m[1]) : null;
+    if (!id || id === 'campaigns' || id === 'clip' || id === 'canvas' || id === 'briefing') {
+      return null;
+    }
+    return id;
   }, [pathname]);
 
   // Match clip task route: /video-generation/clip/:taskId — must NOT match the
   // bare /video-generation or any videoGeneration workspace session routes.
   const activeClipTaskId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/clip\/([^/]+)\/?$/);
-    return m?.[1] ? decodeURIComponent(m[1]) : null;
+    return m?.[1] ? safeDecodeUriComponent(m[1]) : null;
+  }, [pathname]);
+
+  const activeCanvasProjectId = useMemo(() => {
+    const m = pathname.match(/^\/video-generation\/canvas\/([^/]+)\/?$/);
+    return m?.[1] ? safeDecodeUriComponent(m[1]) : null;
+  }, [pathname]);
+
+  const activeBriefingId = useMemo(() => {
+    const m = pathname.match(/^\/video-generation\/briefing\/([^/]+)\/?$/);
+    return m?.[1] ? safeDecodeUriComponent(m[1]) : null;
   }, [pathname]);
 
   const handleOpenRecentVideoGeneration = useCallback(
@@ -155,11 +173,42 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     },
     [navTo]
   );
+
+  const handleOpenRecentCanvasProject = useCallback(
+    (projectId: string) => {
+      navTo(`/video-generation/canvas/${encodeURIComponent(projectId)}`);
+    },
+    [navTo]
+  );
+
+  const handleOpenRecentBriefing = useCallback(
+    (briefingId: string) => {
+      navTo(`/video-generation/briefing/${encodeURIComponent(briefingId)}`);
+    },
+    [navTo]
+  );
   const handleScheduledClick = () => navTo('/scheduled');
   const handleMeetingClick = () => navTo('/meeting');
   const handleKnowledgeClick = () => navTo('/knowledge');
   const handleNomiClick = () => navTo('/nomi');
   const handleLearningClick = () => navTo('/learn');
+
+  useEffect(() => {
+    if (isSettings) return;
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(() => prefetchLearningPage(), {
+        timeout: 1800,
+      });
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(() => prefetchLearningPage(), 250);
+    return () => window.clearTimeout(timer);
+  }, [isSettings]);
+
   const handleEvalClick = () => navTo('/eval');
   const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');
@@ -175,8 +224,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
         console.error('Navigation failed:', error);
       });
     } else {
-      Promise.resolve(navigate('/settings/system')).catch((error) => {
-        console.error('Navigation failed:', error);
+      navigateWithSettingsTransition('/settings/system', () => {
+        Promise.resolve(navigate('/settings/system')).catch((error) => {
+          console.error('Navigation failed:', error);
+        });
       });
     }
     if (onSessionClick) {
@@ -266,11 +317,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               moduleActive={pathname.startsWith('/video-generation')}
               activeSessionId={activeVideoGenerationSessionId}
               activeClipTaskId={activeClipTaskId}
+              activeCanvasProjectId={activeCanvasProjectId}
+              activeBriefingId={activeBriefingId}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onEnterHome={handleVideoGenerationHome}
               onOpenProject={handleOpenRecentVideoGeneration}
               onOpenClipTask={handleOpenRecentClipTask}
+              onOpenCanvasProject={handleOpenRecentCanvasProject}
+              onOpenBriefing={handleOpenRecentBriefing}
             />
 
             <SiderSectionHeader label={t('common.titlebar.sections.resources')} collapsed={collapsed} />

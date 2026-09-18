@@ -39,6 +39,7 @@ fn sample_film() -> CreativeFilm {
         pitch: Some("mid".into()),
         speaking_style: "语速平稳".into(),
         caption_clause: None,
+        tts_voice: None,
     };
     voice.normalize("Alice");
 
@@ -93,6 +94,8 @@ fn sample_film() -> CreativeFilm {
                 cam_idx: 0,
                 visual_desc: "Alice walks into frame".into(),
                 audio_desc: Some("你好".into()),
+                location_id: String::new(),
+                beats: Vec::new(),
             }],
             shot_descriptions: vec![ShotDescription {
                 idx: 0,
@@ -107,6 +110,8 @@ fn sample_film() -> CreativeFilm {
                 lf_vis_char_idxs: vec![0],
                 motion_desc: "slow dolly in".into(),
                 audio_desc: Some("你好".into()),
+                location_id: String::new(),
+                beats: Vec::new(),
             }],
             camera_tree: vec![Camera {
                 idx: 0,
@@ -169,6 +174,10 @@ fn canvas_doc_preserves_camera_tree_and_voice() {
         video_prompt.contains("FIXED SPEAKER VOICE"),
         "video prompt must inject voice bible: {video_prompt}"
     );
+    assert!(
+        video_prompt.contains("Frame: 16:9 landscape"),
+        "canvas video prompt must use the film's user ratio, not a hardcoded 9:16: {video_prompt}"
+    );
     assert_eq!(row["videoNodeId"].as_str(), Some("vimax-shot-main-0"));
 
     let video = nodes
@@ -225,6 +234,7 @@ fn character_from_domain_keeps_voice() {
             pitch: Some("low".into()),
             speaking_style: "稳重".into(),
             caption_clause: None,
+            tts_voice: None,
         }),
     };
     let creative = CreativeCharacter::from_domain(&c);

@@ -282,6 +282,21 @@ async fn delete_removes_server() {
 async fn delete_enabled_returns_true() {
     let svc = make_service().await;
     let created = svc.add_server(stdio_req("del-en")).await.unwrap();
+    svc.persist_test_result(
+        &created.mcp_server_id,
+        &nomifun_api_types::McpConnectionTestResult {
+            success: true,
+            tools: Some(Vec::new()),
+            error: None,
+            code: None,
+            details: None,
+            needs_auth: None,
+            auth_method: None,
+            www_authenticate: None,
+        },
+    )
+    .await
+    .unwrap();
     svc.toggle_server(&created.mcp_server_id).await.unwrap();
 
     let was_enabled = svc.delete_server(&created.mcp_server_id).await.unwrap();
@@ -305,6 +320,24 @@ async fn toggle_enables_then_disables() {
     let created = svc.add_server(stdio_req("tog")).await.unwrap();
     assert!(!created.enabled);
 
+    let err = svc.toggle_server(&created.mcp_server_id).await.unwrap_err();
+    assert!(matches!(err, McpError::Conflict(message) if message.contains("connection test")));
+
+    svc.persist_test_result(
+        &created.mcp_server_id,
+        &nomifun_api_types::McpConnectionTestResult {
+            success: true,
+            tools: Some(Vec::new()),
+            error: None,
+            code: None,
+            details: None,
+            needs_auth: None,
+            auth_method: None,
+            www_authenticate: None,
+        },
+    )
+    .await
+    .unwrap();
     let toggled = svc.toggle_server(&created.mcp_server_id).await.unwrap();
     assert!(toggled.enabled);
 
@@ -335,7 +368,7 @@ async fn batch_import_creates_and_upserts() {
 }
 
 #[tokio::test]
-async fn batch_import_preserves_enabled_in_database() {
+async fn batch_import_starts_disabled_in_database() {
     let svc = make_service().await;
     let mut req = stdio_import_req("enabled-db-mcp");
     req.enabled = Some(true);
@@ -347,9 +380,9 @@ async fn batch_import_preserves_enabled_in_database() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].name, "enabled-db-mcp");
-    assert!(result[0].enabled);
+    assert!(!result[0].enabled);
 
     let listed = svc.list_servers().await.unwrap();
     assert_eq!(listed.len(), 1);
-    assert!(listed[0].enabled);
+    assert!(!listed[0].enabled);
 }

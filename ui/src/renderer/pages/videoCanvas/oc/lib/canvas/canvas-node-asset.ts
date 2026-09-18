@@ -114,7 +114,7 @@ export function declaredCanvasNodeAssetCategory(node: CanvasNodeData): AssetCate
     if (node.metadata?.assetCategory) return node.metadata.assetCategory;
     if (node.metadata?.workflowKind === "character") return "character";
     if (node.metadata?.workflowKind === "scene") return "environment";
-    if (node.metadata?.workflowKind === "styleboard") return "style";
+    if (node.metadata?.workflowKind === "styleboard") return "material";
     return undefined;
 }
 

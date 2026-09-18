@@ -8,12 +8,14 @@ use nomi_config::config::Config;
 use nomi_process_runtime::{CapabilityPolicy, ProcessSupervisor, SupervisorConfig};
 use nomi_providers::LlmProvider;
 use nomi_tools::bash::BashTool;
+use nomi_tools::dir_tree::DirTreeTool;
 use nomi_tools::edit::EditTool;
 use nomi_tools::glob::GlobTool;
 use nomi_tools::grep::GrepTool;
 use nomi_tools::read::ReadTool;
 use nomi_tools::registry::ToolRegistry;
 use nomi_tools::write::WriteTool;
+use nomi_tools::Tool;
 use nomi_types::message::{StopReason, TokenUsage};
 
 use crate::context_contributor::ContextContributor;
@@ -27,6 +29,7 @@ use crate::output::null_sink::NullSink;
 use nomi_types::agent::{
     AgentInvocationInput, AgentInvocationOutput, AgentInvocationRunner, AgentToolPolicy,
 };
+use nomi_types::tool::ToolResult;
 
 /// Local implementation of the shared one-Agent invocation primitive.
 ///
@@ -84,6 +87,21 @@ impl LocalAgentInvocationRunner {
     /// Execute a single delegated Agent and await its result.
     pub(crate) async fn invoke_one(&self, input: AgentInvocationInput) -> AgentInvocationOutput {
         self.invoke_with_context(input, None).await
+    }
+
+    /// Run a shell command in this runner's cwd without a nested model loop.
+    ///
+    /// `verify_change` uses this when the parent already named the exact command:
+    /// spinning a 4-turn Agent just to call Bash is a full LLM round-trip tax.
+    pub(crate) async fn run_shell_command(&self, command: &str) -> ToolResult {
+        let supervisor = ProcessSupervisor::new(SupervisorConfig::default());
+        let bash = BashTool::new(
+            supervisor,
+            self.cwd.clone(),
+            self.process_capability.clone(),
+        )
+        .with_coding_boundary(true);
+        bash.execute(serde_json::json!({ "command": command })).await
     }
 
     /// Execute one delegated Agent with optional host-provided per-turn
@@ -538,17 +556,25 @@ where
 {
     let n = tasks.len();
     let mut set = tokio::task::JoinSet::new();
+    // JoinSet tasks are `tokio::spawn`ed and do not inherit task-locals.
+    // Capture the Flowy billing turn id here so nested model calls still
+    // send `X-Flowy-Turn-Id` (otherwise the account is billed, usageByTurn is not).
+    let billing_turn_id = nomi_providers::current_flowy_billing_turn_id();
     for (idx, task) in tasks.into_iter().enumerate() {
         let sem = semaphore.clone();
+        let billing_turn_id = billing_turn_id.clone();
         set.spawn(async move {
             // Held for the task's whole lifetime; dropped on completion to free
             // the slot for a queued task. A closed semaphore is a bug (nothing
             // closes it in production) but degrades to an error result instead
             // of panicking inside the spawned task.
-            match sem.acquire_owned().await {
-                Ok(_permit) => Ok((idx, task.await)),
-                Err(_) => Err(BoundedTaskError::SemaphoreClosed),
-            }
+            let run = async move {
+                match sem.acquire_owned().await {
+                    Ok(_permit) => Ok((idx, task.await)),
+                    Err(_) => Err(BoundedTaskError::SemaphoreClosed),
+                }
+            };
+            nomi_providers::with_optional_flowy_billing_turn_id(billing_turn_id, run).await
         });
     }
 
@@ -788,6 +814,7 @@ enum ChildToolKind {
     Bash,
     Grep,
     Glob,
+    DirTree,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -797,7 +824,7 @@ struct ChildToolDescriptor {
     workspace_effect: WorkspaceEffect,
 }
 
-const CHILD_TOOL_CATALOG: [ChildToolDescriptor; 6] = [
+const CHILD_TOOL_CATALOG: [ChildToolDescriptor; 7] = [
     ChildToolDescriptor {
         kind: ChildToolKind::Read,
         name: "Read",
@@ -826,6 +853,11 @@ const CHILD_TOOL_CATALOG: [ChildToolDescriptor; 6] = [
     ChildToolDescriptor {
         kind: ChildToolKind::Glob,
         name: "Glob",
+        workspace_effect: WorkspaceEffect::ReadOnly,
+    },
+    ChildToolDescriptor {
+        kind: ChildToolKind::DirTree,
+        name: "DirTree",
         workspace_effect: WorkspaceEffect::ReadOnly,
     },
 ];
@@ -959,6 +991,7 @@ fn build_tool_registry(
             )),
             ChildToolKind::Grep => Box::new(GrepTool::new(cwd.clone())),
             ChildToolKind::Glob => Box::new(GlobTool::new(cwd.clone())),
+            ChildToolKind::DirTree => Box::new(DirTreeTool::new(cwd.clone())),
         };
         registry.register(tool);
     }
@@ -1191,14 +1224,15 @@ mod phase7_tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             names,
-            BTreeSet::from(["Bash", "Edit", "Glob", "Grep", "Read", "Write"]),
+            BTreeSet::from(["Bash", "DirTree", "Edit", "Glob", "Grep", "Read", "Write"]),
             "the scheduler and registry must use the same complete catalog"
         );
         for descriptor in CHILD_TOOL_CATALOG {
             let expected = match descriptor.kind {
-                ChildToolKind::Read | ChildToolKind::Grep | ChildToolKind::Glob => {
-                    WorkspaceEffect::ReadOnly
-                }
+                ChildToolKind::Read
+                | ChildToolKind::Grep
+                | ChildToolKind::Glob
+                | ChildToolKind::DirTree => WorkspaceEffect::ReadOnly,
                 ChildToolKind::Write | ChildToolKind::Edit | ChildToolKind::Bash => {
                     WorkspaceEffect::MayMutate
                 }
@@ -1837,6 +1871,25 @@ mod phase7_tests {
             completed.load(SeqCst),
             0,
             "dropping execute_bounded must abort in-flight delegated Agent tasks (no detached compute)"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_bounded_inherits_flowy_billing_turn_id() {
+        use tokio::sync::Semaphore;
+
+        let observed = nomi_providers::with_flowy_billing_turn_id("turn-parent", async {
+            super::execute_bounded(
+                Arc::new(Semaphore::new(2)),
+                vec![async { nomi_providers::current_flowy_billing_turn_id() }],
+            )
+            .await
+        })
+        .await;
+        assert_eq!(
+            observed[0].as_ref().expect("join").as_deref(),
+            Some("turn-parent"),
+            "JoinSet fan-out must re-scope X-Flowy-Turn-Id so nested model calls bill the parent turn"
         );
     }
 

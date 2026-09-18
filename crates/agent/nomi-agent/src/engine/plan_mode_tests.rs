@@ -13,7 +13,7 @@ use nomi_types::skill_types::{ContextModifier, PlanModeTransition};
 use crate::compact::state::CompactState;
 use crate::confirm::ToolConfirmer;
 use crate::output::null_sink::NullSink;
-use crate::plan::state::PlanState;
+use crate::plan::state::{PlanPhase, PlanState};
 
 struct NullProvider;
 #[async_trait::async_trait]
@@ -66,14 +66,19 @@ fn make_plan_engine(allow_list: Vec<String>) -> super::AgentEngine {
         moa: None,
         stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
         coding_harness: None,
+        harness_runtime: Default::default(),
         compact_config_base: nomi_config::compact::CompactConfig::default(),
         file_cache: None,
         context_contributors: Vec::new(),
         steering_inbox: None,
         system_resource_inbox: None,
+        frozen_provider_tools: None,
+        sent_prefix_len: 0,
         process_supervisor: None,
         editable_turn: None,
         observation: None,
+        horizon: Default::default(),
+        plan_exit_latch: None,
     }
 }
 
@@ -113,33 +118,60 @@ fn enter_transition_updates_shared_flag() {
     assert!(flag.load(Ordering::Acquire), "shared flag should be true");
 }
 
-// --- TC-3.5-04: Exit transition deactivates plan mode and restores allow_list ---
+// --- TC-3.5-04: Exit latches AwaitingApproval and keeps write tools locked ---
 
 #[test]
-fn exit_transition_deactivates_and_restores() {
+fn exit_transition_latches_awaiting_approval() {
     let mut engine = make_plan_engine(vec!["Read".into(), "Bash".into()]);
 
-    // Enter plan mode first
     engine.apply_context_modifiers(&[Some(ContextModifier {
         plan_mode_transition: Some(PlanModeTransition::Enter),
         ..Default::default()
     })]);
     assert!(engine.plan_state.is_active);
 
-    // Modify allow_list while in plan mode (simulating a skill adding tools)
     engine.allow_list.push("NewTool".into());
 
-    // Exit plan mode
     engine.apply_context_modifiers(&[Some(ContextModifier {
-        plan_mode_transition: Some(PlanModeTransition::Exit { plan_content: None }),
+        plan_mode_transition: Some(PlanModeTransition::Exit {
+            plan_content: Some(
+                "# Goal\nFix the parser\nVerification: cargo test -p parser".into(),
+            ),
+        }),
         ..Default::default()
     })]);
 
-    assert!(!engine.plan_state.is_active, "plan mode should be inactive");
+    assert!(engine.plan_state.is_active, "writes stay locked until approval");
+    assert_eq!(engine.plan_state.phase, PlanPhase::AwaitingApproval);
+    assert!(
+        engine.allow_list.contains(&"NewTool".to_string()),
+        "allow_list is not restored until the user continues"
+    );
+}
+
+#[test]
+fn next_user_turn_approves_plan_and_restores_writes() {
+    let mut engine = make_plan_engine(vec!["Read".into(), "Bash".into()]);
+    engine.apply_context_modifiers(&[Some(ContextModifier {
+        plan_mode_transition: Some(PlanModeTransition::Enter),
+        ..Default::default()
+    })]);
+    engine.apply_context_modifiers(&[Some(ContextModifier {
+        plan_mode_transition: Some(PlanModeTransition::Exit {
+            plan_content: Some(
+                "# Goal\nFix the parser\nVerification: cargo test -p parser".into(),
+            ),
+        }),
+        ..Default::default()
+    })]);
+
+    engine.approve_pending_plan();
+
+    assert!(!engine.plan_state.is_active);
+    assert_eq!(engine.plan_state.phase, PlanPhase::Idle);
     assert_eq!(
         engine.allow_list,
-        vec!["Read".to_string(), "Bash".to_string()],
-        "allow_list should be restored to pre-plan state"
+        vec!["Read".to_string(), "Bash".to_string()]
     );
 }
 
@@ -159,12 +191,16 @@ fn exit_transition_updates_shared_flag() {
 
     // Exit
     engine.apply_context_modifiers(&[Some(ContextModifier {
-        plan_mode_transition: Some(PlanModeTransition::Exit { plan_content: None }),
+        plan_mode_transition: Some(PlanModeTransition::Exit {
+            plan_content: Some(
+                "# Goal\nFix the parser\nVerification: cargo test -p parser".into(),
+            ),
+        }),
         ..Default::default()
     })]);
     assert!(
-        !flag.load(Ordering::Acquire),
-        "shared flag should be false after exit"
+        flag.load(Ordering::Acquire),
+        "shared flag stays true until the user approves"
     );
 }
 

@@ -23,14 +23,15 @@ pub use event::{
     ObservationEvent, ObservationIds, ObservationScope, Omitted, EVENT_LLM_REQUEST,
     EVENT_LLM_RESPONSE, EVENT_OBSERVATION_GAP, EVENT_TOOL_EXECUTION_CANCELLED,
     EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
-    EVENT_TURN_END, EVENT_TURN_START, OBSERVATION_SCHEMA_VERSION, PROCESS_BOUNDARY_ID,
+    EVENT_TURN_END, EVENT_TURN_START, EVENT_HORIZON_DECISION, OBSERVATION_SCHEMA_VERSION, PROCESS_BOUNDARY_ID,
 };
 pub use project::{
     event_belongs_to_turn, fold_observation_summary, last_user_text_preview, project_call_detail,
     project_turn_by_id, project_turns, strip_projected_turn_payloads,
     NormalizedObservationUsage, ObservationSummary, ObservationSummaryFold, ProjectedGap,
-    ProjectedModelCall, ProjectedRequestSummary, ProjectedResponseSummary, ProjectedTokenUsage,
-    ProjectedToolExecution, ProjectedTurn, ToolExecutionStatus,
+    ObservationTimelineEvent, ProjectedModelCall, ProjectedRequestMessageView,
+    ProjectedRequestSummary, ProjectedResponseSummary, ProjectedTokenUsage, ProjectedToolExecution,
+    ProjectedTurn, RequestMessageViewMode, SystemPromptState, ToolExecutionStatus,
     COVERAGE_RETAINED_OBSERVATION_HISTORY,
 };
 pub use recorder::{

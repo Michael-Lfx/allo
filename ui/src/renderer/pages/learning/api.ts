@@ -5,20 +5,19 @@ import type {
   CheckinStatus,
   ConceptRef,
   CourseDetail,
-  CourseJobView,
   CourseSummary,
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
-  DiagnosticPlan,
   DueReview,
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
+  MemoryHealthStats,
   GeneratedLessonActivity,
+  LearningGraphGenerationStatus,
   Lesson,
   LessonStatus,
   QuestionEntry,
-  RetryCourseJobRequest,
   ReviewAnswerResult,
   ReviewRating,
   ReviewResult,
@@ -26,6 +25,7 @@ import type {
   SetTagsRequest,
   SubmitAttemptRequest,
   UpdateQuestionRequest,
+  UpdateSectionBodyRequest,
 } from './types';
 
 const BASE = '/api/learning';
@@ -38,32 +38,54 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
+  // 同步生成：agent loop 全程在 HTTP 请求内执行，过程事件经
+  // WS 的 `learning.course-generation` 推送，终态以本响应为准。
   generateCourse: (request: GenerateCourseRequest) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/courses/generate`, request),
-  listCourseJobs: () => httpRequest<CourseJobView[]>('GET', `${BASE}/course-jobs`),
-  getCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('GET', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
-  cancelCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/cancel`),
-  resumeCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/resume`),
-  retryCourseJob: (id: string, request: RetryCourseJobRequest) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/retry`, request),
-  deleteCourseJob: (id: string) =>
-    httpRequest<void>('DELETE', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
+    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
+  // 续建失败的学习图生成：服务端定位最近活跃草稿接着建（草稿内存存活
+  // 1 小时）；无存活草稿（404）或引擎未配置（409）时报错，调用方回退
+  // 全量重生成。
+  resumeLearningGraph: (request: { provider_id?: string; model?: string } = {}) =>
+    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate/resume`, request),
+  // 学习图生成状态/取消：关闭对话框后生成仍在后台继续（HTTP 请求内同步
+  // 执行），页面用这对端点恢复悬浮指示条与取消入口。
+  generationStatus: () =>
+    httpRequest<LearningGraphGenerationStatus>(
+      'GET',
+      `${BASE}/courses/generate/status`
+    ),
+  cancelGeneration: () =>
+    httpRequest<{ cancelled: boolean }>(
+      'POST',
+      `${BASE}/courses/generate/cancel`,
+      {}
+    ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/${encodeURIComponent(id)}/enroll`),
-  getDiagnostic: (id: string, limit = 10) =>
-    httpRequest<DiagnosticPlan>(
-      'GET',
-      `${BASE}/courses/${encodeURIComponent(id)}/diagnostic?limit=${limit}`
-    ),
+  getLesson: (id: string) =>
+    httpRequest<Lesson>('GET', `${BASE}/lessons/${encodeURIComponent(id)}`),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
   generateLesson: (id: string, request: GenerateLessonRequest = {}) =>
     httpRequest<Lesson>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/generate`, request),
+  // 单节重写（ADR-0003）：确定性单节管线，返回重写后的最新课时详情
+  //（其余节与题目不动）；旧课时（无节清单）返回 400。feedback 为可选
+  // 学习建议（ADR-0007），为空即同分布重生成。
+  rewriteLessonSection: (id: string, sectionKey: string, request: GenerateLessonRequest = {}) =>
+    httpRequest<Lesson>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionKey)}/rewrite`,
+      request
+    ),
+  // 手动编辑节正文（ADR-0007）：仅覆盖 body_md，返回编辑后的最新课时详情
+  updateLessonSectionBody: (id: string, sectionKey: string, request: UpdateSectionBodyRequest) =>
+    httpRequest<Lesson>(
+      'PUT',
+      `${BASE}/lessons/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionKey)}/body`,
+      request
+    ),
   createLessonActivity: (lessonId: string, request: CreateLessonActivityRequest) =>
     httpRequest<Lesson>(
       'POST',
@@ -93,6 +115,8 @@ export const learningApi = {
   },
   listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),
   checkinToday: () => httpRequest<CheckinStatus>('GET', `${BASE}/checkins/today`),
+  getMemoryStats: (tzOffset: number) =>
+    httpRequest<MemoryHealthStats>('GET', `${BASE}/stats/memory?tz_offset=${tzOffset}`),
   getCalendarStats: (year: number, month: number | undefined, tzOffset: number) =>
     httpRequest<CalendarStats>(
       'GET',
@@ -115,10 +139,18 @@ export const learningApi = {
           `${BASE}/questions/${encodeURIComponent(entry.question_id)}/tags`,
           { tags }
         ),
-  answerReview: (source: ReviewSource, id: string, response: unknown, forgot = false) =>
+  answerReview: (
+    source: ReviewSource,
+    id: string,
+    response: unknown,
+    forgot = false,
+    elapsedMs?: number
+  ) =>
     httpRequest<ReviewAnswerResult>('POST', `${reviewBase(source, id)}/answer`, {
       response,
       forgot,
+      // 题面展示到提交的墙钟耗时，供乱猜判定等后续启发式使用
+      ...(elapsedMs === undefined ? {} : { elapsed_ms: elapsedMs }),
     }),
   rateReview: (source: ReviewSource, id: string, rating: ReviewRating) =>
     httpRequest<ReviewResult>('POST', `${reviewBase(source, id)}/rate`, { rating }),

@@ -677,3 +677,48 @@ async fn webui_lan_restore_refuses_to_expose_an_installation_without_a_credentia
         "an installation with no admin password must never be auto-exposed"
     );
 }
+
+/// Regression: Chromium/WebView2 Private Network Access preflights from
+/// `http://tauri.localhost` to `http://127.0.0.1:<port>` require
+/// `Access-Control-Allow-Private-Network: true`. Without it the preflight dies
+/// as TypeError "Failed to fetch", which the renderer reports as backend
+/// unreachable on first `/api/system/info` (Win11 Home + updated WebView2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn loopback_cors_allows_private_network_for_desktop_webview_preflight() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cli = isolated_cli(tmp.path());
+    let merged_path = std::env::var("PATH").unwrap_or_default();
+    let (server, _keep) =
+        nomifun_app::DesktopServer::start(&cli, &merged_path, None, None, None)
+            .await
+            .expect("DesktopServer::start failed");
+
+    let base = format!("http://127.0.0.1:{}", server.loopback_port());
+    let client = local_http_client();
+    let response = client
+        .request(reqwest::Method::OPTIONS, format!("{base}/api/system/info"))
+        .header(reqwest::header::ORIGIN, "http://tauri.localhost")
+        .header(reqwest::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+        .header(
+            reqwest::header::ACCESS_CONTROL_REQUEST_HEADERS,
+            "x-nomi-local-trust",
+        )
+        .header("Access-Control-Request-Private-Network", "true")
+        .send()
+        .await
+        .expect("PNA preflight request failed");
+
+    assert!(
+        response.status().is_success(),
+        "desktop PNA preflight must succeed, got {}",
+        response.status()
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-private-network")
+            .and_then(|value| value.to_str().ok()),
+        Some("true"),
+        "missing Access-Control-Allow-Private-Network on desktop CORS preflight"
+    );
+}

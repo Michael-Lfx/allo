@@ -118,6 +118,12 @@ pub fn goal_row_to_state(row: &GoalRow) -> GoalState {
         waiting_on_pid: row.waiting_on_pid.map(|v| v.max(0) as u32),
         waiting_on_session: row.waiting_on_session.clone(),
         waiting_reason: row.waiting_reason.clone(),
+        no_progress_streak: 0,
+        last_mutation: false,
+        last_verify_ok: false,
+        last_workspace_changed: false,
+        blocked_evidence_hash: None,
+        blocked_evidence_repeats: 0,
     }
 }
 
@@ -164,6 +170,7 @@ pub fn goal_state_to_response(state: &GoalState) -> GoalStatusResponse {
         waiting_on_pid: state.waiting_on_pid,
         waiting_on_session: state.waiting_on_session.clone(),
         contract: state.contract.as_ref().map(engine_contract_to_dto),
+        no_progress_streak: Some(state.no_progress_streak as u64),
     }
 }
 

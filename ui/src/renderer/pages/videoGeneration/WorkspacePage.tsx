@@ -3,16 +3,10 @@
 /**
  * VideoGeneration workspace (`/video-generation/:sessionId`).
  *
- * Sections (one job each):
- * 1. Header — title + locked workflow badge + status
- * 2. Technical artifacts — tree + editable preview (top)
- * 4. Active status (Planning / Rendering) — above the story brief
- * 5. Source input — idea / script / novel + Plan
- * 6. Render CTA — above storyboard once planned
- * 7. Storyboard — inline shot revise + filmstrip
- * 8. Final video player when done
+ * Layout: sticky header + scrolling artifact column + docked Agent session.
+ * Pipeline actions (plan / render / cancel / continue) live in the session composer.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -23,9 +17,10 @@ import {
   Spin,
   Tag,
 } from '@arco-design/web-react';
-import { ArrowLeft, Delete, Export, Eyes, FolderOpen, Play, Refresh, Share, VideoOne, Cube } from '@icon-park/react';
+import { ArrowLeft, Delete, Export, FolderOpen, Refresh, Share, VideoOne, Cube, Robot } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import { useDeveloperModeGate } from '@renderer/hooks/config/useDeveloperModeGate';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
@@ -49,27 +44,23 @@ import {
   publishSessionToTvShow,
   renderSession,
   materializeSessionToCanvas,
-  writeArtifactText,
   listCameos,
   uploadCameo,
+  updateSessionTitle,
 } from './api';
 import type { ArtifactContent, ArtifactNode, VimaxSession, VimaxWorkflow } from './types';
 import ArtifactTree from './components/ArtifactTree';
 import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
-import ProgressTimeline from './components/ProgressTimeline';
 import VideoQualityPickers from './components/VideoQualityPickers';
-import { normalizeWorkflow, isActionImitationWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
+import { normalizeWorkflow, isActionImitationWorkflow, statusLabel, workflowLabel } from './components/SessionCard';
 import StoryboardBoard from './components/StoryboardBoard';
-import StudioStageRail from './components/StudioStageRail';
 import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceActionAssets from './components/WorkspaceActionAssets';
-import WorkspaceCameoStrip from './components/WorkspaceCameoStrip';
 import type { VideoCreateDraft } from './home/types';
-import type { StoryboardScene } from './artifactPresentation';
-import { findStoryboardPath, patchShotDescriptionsInArtifact } from './artifactPresentation';
-import { progressStatusText } from './stageI18n';
+import { appendHomeImageLegend } from './home/imageMentions';
+import { findStoryboardPath } from './artifactPresentation';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
@@ -81,12 +72,14 @@ import {
   normalizeVideoResolution,
   type VideoResolution,
 } from '@renderer/services/videoModelCapabilities';
-import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
+  updateRecentVideoGenerationTitle,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
+import { filmTelemetryError } from './providerError';
+import { resolveSessionCreditsConsumed } from './sessionCredits';
 import { shouldContinueAsRender } from './continueMode';
 import {
   getRunStatusSnapshot,
@@ -95,14 +88,48 @@ import {
   useRunStatusFlags,
   useRunStatusFull,
 } from './useRunStatusFeed';
-import { clampDuration } from './durationBounds';
+import StudioAgentSession from './studioAgentSession/StudioAgentSession';
+import {
+  computeStudioSessionWidth,
+  loadStudioSessionCollapsed,
+  loadStudioSessionWidthRatio,
+  saveStudioSessionCollapsed,
+  saveStudioSessionWidthRatio,
+} from './studioAgentSession/sessionPanelStorage';
 import styles from './index.module.css';
+import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
+import WorkspaceTitleField from './components/WorkspaceTitleField';
+import '@oc/styles/quiet-chrome.css';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
+import { videoCanvasProjectPath } from '../videoCanvas/routes';
 
 const TextArea = Input.TextArea;
 
 /** Dedupes home→workspace auto-plan across React Strict Mode remounts. */
 const autoPlannedSessions = new Set<string>();
+
+function sourceDocumentStorageKey(sessionId: string): string {
+  return `vimax-source-document:${sessionId}`;
+}
+
+function readStoredSourceDocument(sessionId: string): string | null {
+  if (!sessionId || typeof sessionStorage === 'undefined') return null;
+  try {
+    const value = sessionStorage.getItem(sourceDocumentStorageKey(sessionId));
+    return value?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function storeSourceDocument(sessionId: string, name: string): void {
+  if (!sessionId || typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(sourceDocumentStorageKey(sessionId), name);
+  } catch {
+    // ignore quota / private mode
+  }
+}
 
 type WorkspaceLaunchState = {
   launchDraft?: VideoCreateDraft;
@@ -122,20 +149,6 @@ function sourceFieldForWorkflow(workflow: VimaxWorkflow | string): 'idea' | 'scr
   }
 }
 
-/** Live stage/message line — the only header piece tracking every poll tick. */
-const RunProgressLine: React.FC<{ fallbackStage?: string | null }> = ({ fallbackStage }) => {
-  const { t } = useTranslation();
-  const runStatus = useRunStatusFull();
-  return (
-    <>
-      {progressStatusText(runStatus?.stage ?? fallbackStage, runStatus?.message, t) ||
-        t('videoGeneration.workspace.workflowLocked', {
-          defaultValue: '工作流在创建后已锁定，不可更改。',
-        })}
-    </>
-  );
-};
-
 const WorkspacePage: React.FC = () => {
   const { sessionId = '' } = useParams<{ sessionId: string }>();
   const { t } = useTranslation();
@@ -145,6 +158,7 @@ const WorkspacePage: React.FC = () => {
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
   const { status: cloudStatus, logout } = useCloudAuth();
+  const { active: developerMode } = useDeveloperModeGate();
 
   const [session, setSession] = useState<VimaxSession | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -152,7 +166,7 @@ const WorkspacePage: React.FC = () => {
 
   const [sourceText, setSourceText] = useState('');
   const [requirement, setRequirement] = useState('');
-  const [style, setStyle] = useState(DEFAULT_VISUAL_STYLE_PROMPT);
+  const [style, setStyle] = useState('');
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_SEEDANCE_ASPECT_RATIO);
   const [resolution, setResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
   const [fps, setFps] = useState(DEFAULT_VIDEO_FPS);
@@ -164,7 +178,6 @@ const WorkspacePage: React.FC = () => {
 
   const [planning, setPlanning] = useState(false);
   const [rendering, setRendering] = useState(false);
-  const [revising, setRevising] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -196,18 +209,62 @@ const WorkspacePage: React.FC = () => {
   // 「打开到 Canvas」按钮的目标页面：进入工作台即预热 ProjectPage 大 chunk，
   // 悬停按钮时再补一次，保证点击跳转不再等 chunk 解析。
   useEffect(() => {
-    void loadVideoCanvasProjectPage();
+    void loadVideoCanvasProjectPage().catch(() => undefined);
   }, []);
 
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const storyboardVisibleTracked = useRef(false);
   const [actionAssetsReady, setActionAssetsReady] = useState(false);
-  /** Bump so WorkspaceCameoStrip re-lists after plan / artifact changes. */
+  /** Bump so the agent session re-lists Cameo stills after home upload. */
   const [cameoRefreshToken, setCameoRefreshToken] = useState(0);
+  const [focusSceneId, setFocusSceneId] = useState<string | null>(null);
+  const studioShellRef = useRef<HTMLDivElement>(null);
+  const [studioShellWidth, setStudioShellWidth] = useState(1280);
+  const [sessionRatio, setSessionRatio] = useState(loadStudioSessionWidthRatio);
+  const [sessionCollapsed, setSessionCollapsed] = useState(loadStudioSessionCollapsed);
+  const [storyboardShotCount, setStoryboardShotCount] = useState(0);
+  const sessionWidth = computeStudioSessionWidth(studioShellWidth, sessionRatio);
+
+  useLayoutEffect(() => {
+    const node = studioShellRef.current;
+    if (!node) return;
+    const apply = () => {
+      const next = node.getBoundingClientRect().width;
+      if (next > 0) setStudioShellWidth(next);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [sessionId, loading]);
+
+  const handleSessionWidthChange = useCallback((next: number) => {
+    setSessionRatio((prev) => {
+      const ratio = studioShellWidth > 0 ? next / studioShellWidth : prev;
+      saveStudioSessionWidthRatio(ratio);
+      return ratio;
+    });
+  }, [studioShellWidth]);
+
+  const handleSessionCollapsedChange = useCallback((next: boolean) => {
+    setSessionCollapsed(next);
+    saveStudioSessionCollapsed(next);
+  }, []);
 
   const launchState = (location.state as WorkspaceLaunchState | null) ?? null;
   const launchDraft = launchState?.launchDraft;
   const shouldAutoPlan = Boolean(launchState?.autoPlan) && !launchState?.launchError;
+  const sourceDocumentName =
+    launchDraft?.sourceDocumentName?.trim() || readStoredSourceDocument(sessionId);
+
+  useEffect(() => {
+    setStoryboardShotCount(0);
+  }, [sessionId]);
+
+  useEffect(() => {
+    const name = launchDraft?.sourceDocumentName?.trim();
+    if (name) storeSourceDocument(sessionId, name);
+  }, [sessionId, launchDraft?.sourceDocumentName]);
 
   const sourceField = session ? sourceFieldForWorkflow(session.workflow) : 'idea';
 
@@ -249,7 +306,7 @@ const WorkspacePage: React.FC = () => {
       rememberVideoGenerationSession(sessionId, s.title);
       setSourceText(s.idea || s.script || s.novel_text || launchDraft?.sourceText || '');
       setRequirement(s.user_requirement || launchDraft?.requirement || '');
-      setStyle(s.style?.trim() || launchDraft?.style?.trim() || DEFAULT_VISUAL_STYLE_PROMPT);
+      setStyle(s.style?.trim() || launchDraft?.style?.trim() || '');
       setAspectRatio(
         normalizeSeedanceAspectRatio(
           s.aspect_ratio ||
@@ -364,6 +421,11 @@ const WorkspacePage: React.FC = () => {
       'render_scene_done',
       'concat_done',
       'render_done',
+      'design_storyboard',
+      'decompose_shots',
+      'construct_camera_tree',
+      'planned',
+      'reuse_plan',
     ]);
     // Include message + updated_at so consecutive shots finishing with the
     // same stage name still trigger a refresh.
@@ -401,7 +463,7 @@ const WorkspacePage: React.FC = () => {
   }, [sessionId]);
 
   // Toast only on an active→failed transition so revisiting an old failed job
-  // does not re-spam; ProgressTimeline still shows the credits panel either way.
+  // does not re-spam; the agent session still shows the credits failure either way.
   useEffect(() => {
     const prev = prevRunStatusRef.current;
     const next = statusFlags.status;
@@ -424,6 +486,7 @@ const WorkspacePage: React.FC = () => {
     ) {
       const snapshot = getRunStatusSnapshot();
       const stage = snapshot?.stage ?? '';
+      const errText = snapshot?.error ?? '';
       const failureChannel = /plan|brief|script|storyboard/i.test(stage)
         ? 'llm'
         : /image|poster|cover/i.test(stage)
@@ -431,14 +494,23 @@ const WorkspacePage: React.FC = () => {
           : /video|render|concat/i.test(stage)
             ? 'video'
             : 'pipeline';
-      trackFunnelEvent('film_failed', {
-        feature: 'video_generation',
-        session_id: sessionId,
-        workflow: session?.workflow ?? null,
-        status: next,
-        failure_channel: failureChannel,
-        error_code: statusFlags.creditsFailed ? 'insufficient_credits' : next,
-      });
+      if (next === 'cancelled' || next === 'interrupted') {
+        trackVideoSessionEvent('film_cancelled', sessionId, {
+          workflow: session?.workflow ?? null,
+          status: next,
+        });
+      } else {
+        const { errorCode, errorMessage } = filmTelemetryError(errText);
+        trackVideoSessionEvent('film_failed', sessionId, {
+          workflow: session?.workflow ?? null,
+          status: next,
+          failure_channel: errorCode?.includes('.') ? 'video' : failureChannel,
+          error_code: statusFlags.creditsFailed
+            ? 'insufficient_credits'
+            : errorCode,
+          error_message: errorMessage,
+        });
+      }
     }
     if (!sessionId || next !== 'failed' || !statusFlags.creditsFailed) return;
     if (prev !== 'planning' && prev !== 'rendering') return;
@@ -462,7 +534,7 @@ const WorkspacePage: React.FC = () => {
 
   // Load artifact preview when selection changes (blob URLs for media + auth).
   useEffect(() => {
-    if (!sessionId || !selectedPath) {
+    if (!developerMode || !sessionId || !selectedPath) {
       setPreview((prev) => {
         if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url);
         return null;
@@ -502,7 +574,7 @@ const WorkspacePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, selectedPath, previewEpoch]);
+  }, [developerMode, sessionId, selectedPath, previewEpoch]);
 
   // Final video via authenticated blob URL (relative path is not a public HTTP URL).
   useEffect(() => {
@@ -600,9 +672,21 @@ const WorkspacePage: React.FC = () => {
         launchDraft?.verticalSkillIds && launchDraft.verticalSkillIds.length > 0
           ? launchDraft.verticalSkillIds
           : undefined;
-      const prefs = launchDraft?.preferences;
+      let cameoNames = (launchDraft?.cameos ?? []).map(
+        (cameo, index) => cameo.characterName.trim() || `参考图${index + 1}`,
+      );
+      if (cameoNames.length === 0) {
+        try {
+          const photos = await listCameos(sessionId);
+          cameoNames = photos.map(
+            (photo, index) => photo.character_name.trim() || `参考图${index + 1}`,
+          );
+        } catch {
+          cameoNames = [];
+        }
+      }
       const body = {
-        [sourceField]: trimmed,
+        [sourceField]: appendHomeImageLegend(trimmed, cameoNames),
         user_requirement: requirement.trim() || undefined,
         style: style.trim() || undefined,
         vertical_skill_ids: fromSession ?? fromLaunch,
@@ -612,10 +696,6 @@ const WorkspacePage: React.FC = () => {
         llm_model: models.llm_model.trim() || undefined,
         image_model: models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
-        target_duration_secs:
-          prefs?.mediaKind === 'video' && prefs.specifyTargetDuration
-            ? clampDuration(prefs.targetDurationSecs)
-            : undefined,
       };
       await planSession(sessionId, body);
       message.success(t('videoGeneration.workspace.planStarted', { defaultValue: '已开始规划' }));
@@ -732,55 +812,6 @@ const WorkspacePage: React.FC = () => {
     t,
   ]);
 
-  const handleSaveSceneDescriptions = useCallback(
-    async (
-      scene: StoryboardScene,
-      descriptions: { visualDescription: string; audioDescription: string }
-    ) => {
-      if (!sessionId) return;
-      const targetPath =
-        scene.storyboardPath ||
-        (scene.sceneRoot ? `${scene.sceneRoot.replace(/\\/g, '/')}/storyboard.json` : '') ||
-        scene.revisionPath;
-      if (!targetPath) {
-        message.warning(
-          t('videoGeneration.studio.storyboard.visualSaveMissing', {
-            defaultValue: '找不到可保存的分镜文件',
-          })
-        );
-        return;
-      }
-      setRevising(true);
-      try {
-        const current = await getArtifact(sessionId, targetPath);
-        const patched = patchShotDescriptionsInArtifact(current.text, scene, descriptions);
-        await writeArtifactText(sessionId, targetPath, patched);
-        message.success(
-          t('videoGeneration.studio.storyboard.visualSaveOk', {
-            defaultValue: '画面描述已保存',
-          })
-        );
-        confirmFirstValue({
-          feature: 'video_generation',
-          source: 'storyboard_revision',
-          session_id: sessionId,
-        });
-        void refreshArtifacts();
-        setPreviewEpoch((n) => n + 1);
-      } catch (e) {
-        message.error(
-          `${t('videoGeneration.studio.storyboard.visualSaveFailed', {
-            defaultValue: '保存画面描述失败',
-          })}: ${e instanceof Error ? e.message : String(e)}`
-        );
-        throw e;
-      } finally {
-        setRevising(false);
-      }
-    },
-    [sessionId, message, t, refreshArtifacts]
-  );
-
   const handleRender = useCallback(async () => {
     if (!sessionId) return;
     const actionMode = isActionImitationWorkflow(session?.workflow);
@@ -884,6 +915,24 @@ const WorkspacePage: React.FC = () => {
       setDeleting(false);
     }
   }, [sessionId, deleting, message, t, navigate]);
+
+  const handleRename = useCallback(
+    async (next: string) => {
+      if (!sessionId) return;
+      try {
+        const updated = await updateSessionTitle(sessionId, next);
+        setSession((prev) => (prev ? { ...prev, title: updated.title } : updated));
+        updateRecentVideoGenerationTitle(sessionId, updated.title);
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.workspace.renameFailed', { defaultValue: '标题保存失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      }
+    },
+    [sessionId, message, t]
+  );
 
   // Subscribe to the full snapshot only while a terminal failure is showing —
   // resume-vs-replan is the sole page-level consumer of raw events.
@@ -1126,11 +1175,10 @@ const WorkspacePage: React.FC = () => {
 
   const busy = statusFlags.busy || planning || rendering;
   const isAction = isActionImitationWorkflow(session?.workflow);
-  const videoCreditsConsumed = Math.max(
-    0,
-    statusFlags.creditsConsumed,
-    Number(session?.credits_consumed ?? 0) || 0
-  );
+  const videoCreditsConsumed = resolveSessionCreditsConsumed({
+    sessionCredits: session?.credits_consumed,
+    statusCredits: statusFlags.creditsConsumed,
+  });
   const hasStoryboard =
     !isAction &&
     (Boolean(findStoryboardPath(artifacts)) ||
@@ -1143,14 +1191,7 @@ const WorkspacePage: React.FC = () => {
     ? !busy && actionAssetsReady
     : !busy && (hasStoryboard || isFailed);
   /** Resume is only needed when continuing as plan (render button handles resume-as-render). */
-  const canContinue = isFailed && !busy && !continueAsRender;
   const currentStatus = liveStatus;
-  /** Plan finished (idle + `planned`) but the film is not rendered yet. */
-  const plannedIdle =
-    currentStatus === 'idle' &&
-    !statusFlags.hasFinalVideo &&
-    !session?.final_video &&
-    (statusFlags.stagePlanned || session?.stage === 'planned');
   const canPublishTvShow =
     !busy &&
     !publishing &&
@@ -1190,7 +1231,7 @@ const WorkspacePage: React.FC = () => {
           }) + warnText
         );
       }
-      navigate(`/video-generation/canvas/${encodeURIComponent(result.project_id)}`);
+      navigate(videoCanvasProjectPath(result.project_id));
     } catch (e) {
       message.error(
         `${t('videoGeneration.actions.openInCanvasFailed', { defaultValue: '打开到 Canvas 失败' })}: ${
@@ -1244,100 +1285,88 @@ const WorkspacePage: React.FC = () => {
 
   return (
     <div
+      ref={studioShellRef}
       className={[
         styles.studioPage,
-        'flex-1 min-h-0 size-full box-border overflow-y-auto',
-        isMobile ? 'px-12px py-12px' : 'px-16px py-20px md:px-32px md:py-24px',
+        styles.studioShell,
+        'flex-1 min-h-0 size-full box-border',
       ].join(' ')}
     >
       {messageHolder}
-      <div className='mx-auto flex w-full max-w-1180px box-border flex-col gap-14px'>
-        <div className='flex items-start justify-between gap-12px flex-wrap'>
-          <div className='flex items-start gap-10px min-w-0'>
-            <Button
-              type='text'
-              className='!px-6px shrink-0'
+      <header className={styles.studioHeader}>
+        <div className='flex items-center justify-between gap-12px flex-wrap'>
+          <div className='flex items-center gap-8px min-w-0'>
+            <CanvasChromeButton
+              className='is-icon shrink-0'
               onClick={() => navigate('/video-generation')}
+              title={t('videoGeneration.workspace.back', { defaultValue: '返回列表' })}
               aria-label={t('videoGeneration.workspace.back', { defaultValue: '返回列表' })}
             >
-              <ArrowLeft theme='outline' size={18} fill='currentColor' />
-            </Button>
+              <ArrowLeft theme='outline' size={16} fill='currentColor' />
+            </CanvasChromeButton>
             <div className='min-w-0'>
-              <div className='flex items-center gap-8px flex-wrap'>
-                <h1 className='m-0 text-18px font-700 text-[var(--color-text-1)] truncate'>
-                  {session.title || t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
-                </h1>
-                <Tag size='small' color='arcoblue'>
-                  {workflowLabel(session.workflow, t)}
-                </Tag>
-                <Tag size='small' color={statusTagColor(currentStatus)}>
-                  {statusLabel(currentStatus, t)}
-                </Tag>
-              </div>
-              <p className='m-0 mt-4px text-12px text-[var(--color-text-3)]'>
-                <RunProgressLine fallbackStage={session.stage} />
+              <WorkspaceTitleField title={session.title} onSave={handleRename} />
+              <p className='m-0 mt-2px text-11px text-[var(--color-text-3)] truncate'>
+                {workflowLabel(session.workflow, t)} · {statusLabel(currentStatus, t)}
               </p>
             </div>
           </div>
-          <div className='flex items-center gap-8px shrink-0'>
-            <Button
-              type='outline'
-              size='small'
+          <div className='flex items-center gap-4px shrink-0'>
+            {sessionCollapsed && !isMobile ? (
+              <CanvasChromeButton
+                className='is-icon'
+                onClick={() => handleSessionCollapsedChange(false)}
+                title={t('videoGeneration.agentSession.expand', { defaultValue: '展开会话' })}
+                aria-label={t('videoGeneration.agentSession.expand', { defaultValue: '展开会话' })}
+              >
+                <Robot theme='outline' size={14} fill='currentColor' />
+              </CanvasChromeButton>
+            ) : null}
+            <CanvasChromeButton
+              className='is-icon'
               onClick={() => {
-                // Pull latest run data only — never reset in-progress form edits.
                 void refreshRun();
                 void refreshArtifacts();
               }}
+              title={t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
+              aria-label={t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
             >
-              <span className='inline-flex items-center gap-4px'>
-                <Refresh theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
-              </span>
-            </Button>
-            <Button
-              type='outline'
-              size='small'
-              loading={materializing}
-              disabled={!canOpenInCanvas}
+              <Refresh theme='outline' size={14} fill='currentColor' />
+            </CanvasChromeButton>
+            <CanvasChromeButton
+              className='is-icon'
+              disabled={materializing || !canOpenInCanvas}
               title={
                 isAction
                   ? t('videoGeneration.actions.openInCanvasUnsupported', {
                       defaultValue: '动作模仿没有分镜，无法打开到 Canvas',
                     })
-                  : undefined
+                  : t('videoGeneration.actions.openInCanvas', { defaultValue: '打开到 Canvas' })
               }
-              onPointerEnter={() => void loadVideoCanvasProjectPage()}
+              aria-label={t('videoGeneration.actions.openInCanvas', { defaultValue: '打开到 Canvas' })}
+              onPointerEnter={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
               onClick={() => void handleOpenInCanvas()}
             >
-              <span className='inline-flex items-center gap-4px'>
-                <Cube theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.actions.openInCanvas', { defaultValue: '打开到 Canvas' })}
-              </span>
-            </Button>
-            <Button
-              type='outline'
-              size='small'
-              loading={exporting}
+              <Cube theme='outline' size={14} fill='currentColor' />
+            </CanvasChromeButton>
+            <CanvasChromeButton
+              className='is-icon'
               disabled={busy || exporting}
+              title={t('videoGeneration.actions.exportProject', { defaultValue: '导出工程' })}
+              aria-label={t('videoGeneration.actions.exportProject', { defaultValue: '导出工程' })}
               onClick={() => void handleExportProject()}
             >
-              <span className='inline-flex items-center gap-4px'>
-                <Export theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.actions.exportProject', { defaultValue: '导出工程' })}
-              </span>
-            </Button>
-            <Button
-              type='outline'
-              size='small'
-              loading={publishing}
-              disabled={!canPublishTvShow}
+              <Export theme='outline' size={14} fill='currentColor' />
+            </CanvasChromeButton>
+            <CanvasChromeButton
+              className='is-icon'
+              disabled={!canPublishTvShow || publishing}
+              title={t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
+              aria-label={t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
               onClick={() => void handlePublishToTvShow()}
             >
-              <span className='inline-flex items-center gap-4px'>
-                <Share theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
-              </span>
-            </Button>
+              <Share theme='outline' size={14} fill='currentColor' />
+            </CanvasChromeButton>
             <Popconfirm
               title={t('videoGeneration.actions.deleteConfirm', {
                 defaultValue: '确定删除该任务？产物将一并清除。',
@@ -1345,76 +1374,139 @@ const WorkspacePage: React.FC = () => {
               disabled={deleting}
               onOk={() => void handleDelete()}
             >
-              <Button status='danger' type='outline' size='small' loading={deleting}>
-                <span className='inline-flex items-center gap-4px'>
-                  <Delete theme='outline' size={14} fill='currentColor' />
-                  {t('videoGeneration.actions.delete', { defaultValue: '删除' })}
-                </span>
-              </Button>
+              <CanvasChromeButton
+                className='is-icon'
+                disabled={deleting}
+                title={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+                aria-label={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+              >
+                <Delete theme='outline' size={14} fill='currentColor' />
+              </CanvasChromeButton>
             </Popconfirm>
           </div>
         </div>
+      </header>
 
-        <StudioStageRail
-          hasStoryboard={hasStoryboard}
-          hasFinalVideo={Boolean(finalBlobUrl)}
-          variant={isAction ? 'action' : 'film'}
-        />
-
-        {artifacts.length > 0 ? (
-          <details
-            className={`${styles.studioPanel} px-14px py-12px`}
-            open={artifactsPanelOpen}
-            onToggle={(event) => {
-              setArtifactsPanelOpen((event.currentTarget as HTMLDetailsElement).open);
-            }}
-          >
-            <summary className='cursor-pointer list-none marker:content-none'>
-              <div className='flex flex-wrap items-center justify-between gap-8px'>
-                <div>
-                  <div className='text-14px font-650 text-[var(--color-text-1)]'>
-                    {t('videoGeneration.studio.technicalDetails', {
-                      defaultValue: '技术产物与运行文件',
-                    })}
-                  </div>
-                  <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                    {t('videoGeneration.studio.technicalDetailsHint', {
-                      defaultValue:
-                        '审阅参考图分类、定妆图、环境/道具板与工程文件，再生成成片。',
-                    })}
-                  </div>
-                </div>
-                <Tag size='small' color='orangered'>
-                  {t('videoGeneration.studio.technicalDetailsBadge', {
-                    defaultValue: '建议先检查',
-                  })}
-                </Tag>
-              </div>
-            </summary>
-            <div
-              className={[
-                'mt-12px grid min-h-240px gap-12px',
-                isMobile ? 'grid-cols-1' : 'grid-cols-[240px_1fr]',
-              ].join(' ')}
-            >
-              <div className='flex max-h-420px min-h-200px flex-col overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
-                <ArtifactTree
-                  tree={artifacts}
-                  selectedPath={selectedPath}
-                  onSelect={setSelectedPath}
+      <div className={styles.studioBody}>
+        <div className={styles.studioMain}>
+          <div className={styles.studioMainInner}>
+        {isAction ? (
+          <section className={`${styles.studioPanel} p-16px md:p-20px`}>
+            <div className='mb-14px'>
+              <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                {t('videoGeneration.studio.actionTitle', { defaultValue: '上传素材，生成成片' })}
+              </h2>
+              <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                {t('videoGeneration.studio.actionHint', {
+                  defaultValue: '一张角色图 + 一段参考视频。无需提示词，时长跟随参考视频。',
+                })}
+              </p>
+            </div>
+            <WorkspaceActionAssets
+              sessionId={sessionId}
+              disabled={busy}
+              onReadyChange={setActionAssetsReady}
+            />
+            <div className='mt-14px'>
+              <ModelSelectors
+                value={models}
+                onChange={setModels}
+                disabled={busy}
+                isMobile={isMobile}
+                mode='action'
+              />
+              <div className='mt-12px'>
+                <VideoQualityPickers
+                  videoModel={models.video_model}
+                  value={{ resolution, fps }}
+                  onChange={({ resolution: nextRes, fps: nextFps }) => {
+                    setResolution(nextRes);
+                    setFps(nextFps);
+                  }}
+                  disabled={busy}
                 />
               </div>
-              <ArtifactPreviewPanel
-                sessionId={sessionId}
-                selectedPath={selectedPath}
-                preview={preview}
-                previewLoading={previewLoading}
-                disabled={busy}
-                onChanged={handleArtifactsChanged}
-                onRequestRegenerate={() => void handleRender()}
-              />
             </div>
-          </details>
+          </section>
+        ) : !hasStoryboard ? (
+          <section className={`${styles.studioPanel} p-16px md:p-20px`}>
+            <div className='mb-14px'>
+              <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                {t('videoGeneration.studio.briefTitle', { defaultValue: '把故事交给 Flowy' })}
+              </h2>
+              <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                {t('videoGeneration.studio.briefHint', {
+                  defaultValue: '生成的是可修改分镜，不会直接开始高成本渲染。',
+                })}
+              </p>
+            </div>
+            <label className='mb-6px block text-12px text-[var(--color-text-3)]'>{sourceLabel}</label>
+            <TextArea
+              value={sourceText}
+              onChange={setSourceText}
+              placeholder={sourcePlaceholder}
+              autoSize={{ minRows: 5, maxRows: 14 }}
+              disabled={busy}
+              className='!text-14px !leading-23px'
+            />
+            <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
+              <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                <span>
+                  {t('videoGeneration.workspace.source.aspectLabel', {
+                    defaultValue: '视频比例',
+                  })}
+                </span>
+                <AspectRatioPicker
+                  value={aspectRatio}
+                  onChange={setAspectRatio}
+                  disabled={busy}
+                />
+                <span className='text-11px text-[var(--color-text-4)]'>
+                  {t('videoGeneration.workspace.source.aspectHint', {
+                    defaultValue: '同时作用于 Seedance 成片与海报封面',
+                  })}
+                </span>
+              </div>
+              <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                <span>
+                  {t('videoGeneration.workspace.source.styleLabel', {
+                    defaultValue: '视觉风格（人物与成片）',
+                  })}
+                </span>
+                <VisualStyleSelect value={style} onChange={setStyle} disabled={busy} />
+                <span className='text-11px text-[var(--color-text-4)]'>
+                  {t('videoGeneration.workspace.source.styleHint', {
+                    defaultValue:
+                      '定妆为单张三视图；面部轻微柔化但五官清晰。规划阶段也会生成全局环境与道具参考图。',
+                  })}
+                </span>
+              </div>
+            </div>
+            <details className='mt-14px rd-10px bg-[var(--color-fill-1)] px-12px py-9px'>
+              <summary className='cursor-pointer text-12px font-600 text-[var(--color-text-2)]'>
+                {t('videoGeneration.studio.modelSettings', { defaultValue: '模型设置' })}
+              </summary>
+              <div className='mt-12px'>
+                <ModelSelectors
+                  value={models}
+                  onChange={setModels}
+                  disabled={busy}
+                  isMobile={isMobile}
+                />
+                <div className='mt-12px'>
+                  <VideoQualityPickers
+                    videoModel={models.video_model}
+                    value={{ resolution, fps }}
+                    onChange={({ resolution: nextRes, fps: nextFps }) => {
+                      setResolution(nextRes);
+                      setFps(nextFps);
+                    }}
+                    disabled={busy}
+                  />
+                </div>
+              </div>
+            </details>
+          </section>
         ) : null}
 
         {finalBlobUrl ? (
@@ -1471,216 +1563,40 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : null}
 
-        {busy || isFailed ? (
-          <section
-            className={[
-              styles.studioPanel,
-              busy ? styles.progressGlow : '',
-              'p-16px',
-            ].join(' ')}
-          >
-            <ProgressTimeline
-              onCancel={() => void handleCancel()}
-              cancelling={cancelling}
-              models={models}
-              creditsConsumed={videoCreditsConsumed}
+        {!isAction && hasStoryboard ? (
+          <section className={`${styles.studioPanel} ${styles.storyboardPanel}`}>
+            <div className={styles.storyboardHeader}>
+              <div>
+                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                  {t('videoGeneration.studio.storyboard.title', { defaultValue: '故事分镜' })}
+                  {storyboardShotCount > 0 ? (
+                    <span className='ml-8px text-12px font-500 text-[var(--color-text-3)]'>
+                      {t('videoGeneration.studio.storyboard.shotCount', {
+                        count: storyboardShotCount,
+                        defaultValue: '共 {{count}} 个镜头',
+                      })}
+                    </span>
+                  ) : null}
+                </h2>
+                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                  {t('videoGeneration.studio.storyboard.hint', {
+                    defaultValue:
+                      '胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。点击画面描述或台词可展开编辑；整表精调仍可打开 Canvas。',
+                  })}
+                </p>
+              </div>
+            </div>
+            <StoryboardBoard
+              sessionId={sessionId}
+              artifacts={artifacts}
+              focusSceneId={focusSceneId}
+              onFocusScene={setFocusSceneId}
+              onShotCount={setStoryboardShotCount}
             />
           </section>
         ) : null}
 
-        {isAction ? (
-          <section className={`${styles.studioPanel} p-16px md:p-20px`}>
-            <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
-              <div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.actionTitle', { defaultValue: '上传素材，生成成片' })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.actionHint', {
-                    defaultValue: '一张角色图 + 一段参考视频。无需提示词，时长跟随参考视频。',
-                  })}
-                </p>
-              </div>
-              <div className='flex flex-wrap items-center gap-8px'>
-                {canContinue ? (
-                  <Button
-                    type='primary'
-                    status='warning'
-                    loading={rendering}
-                    onClick={() => void handleContinue()}
-                  >
-                    {t('videoGeneration.workspace.continue', { defaultValue: '从断点继续' })}
-                  </Button>
-                ) : null}
-                <Button
-                  type='primary'
-                  loading={rendering}
-                  disabled={!canRender || busy}
-                  onClick={() => void handleRender()}
-                >
-                  <span className='inline-flex items-center gap-7px'>
-                    <Play theme='outline' size={15} fill='currentColor' />
-                    {isFailed && continueAsRender
-                      ? t('videoGeneration.workspace.renderContinue', {
-                          defaultValue: '继续生成成片',
-                        })
-                      : t('videoGeneration.create.generateActionVideo', {
-                          defaultValue: '生成视频',
-                        })}
-                  </span>
-                </Button>
-              </div>
-            </div>
-            <WorkspaceActionAssets
-              sessionId={sessionId}
-              disabled={busy}
-              onReadyChange={setActionAssetsReady}
-            />
-            <div className='mt-14px'>
-              <ModelSelectors
-                value={models}
-                onChange={setModels}
-                disabled={busy}
-                isMobile={isMobile}
-                mode='action'
-              />
-              <div className='mt-12px'>
-                <VideoQualityPickers
-                  videoModel={models.video_model}
-                  value={{ resolution, fps }}
-                  onChange={({ resolution: nextRes, fps: nextFps }) => {
-                    setResolution(nextRes);
-                    setFps(nextFps);
-                  }}
-                  disabled={busy}
-                />
-              </div>
-            </div>
-          </section>
-        ) : !hasStoryboard ? (
-          <section className={`${styles.studioPanel} p-16px md:p-20px`}>
-            <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
-              <div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.briefTitle', { defaultValue: '把故事交给 Flowy' })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.briefHint', {
-                    defaultValue: '生成的是可修改分镜，不会直接开始高成本渲染。',
-                  })}
-                </p>
-              </div>
-              <Button
-                type='primary'
-                loading={planning}
-                disabled={busy && !planning}
-                onClick={() => void handlePlan()}
-              >
-                {isFailed && !continueAsRender
-                  ? t('videoGeneration.workspace.planContinue', {
-                      defaultValue: '从断点继续规划',
-                    })
-                  : t('videoGeneration.create.generateStoryboard', {
-                      defaultValue: '生成分镜',
-                    })}
-              </Button>
-            </div>
-            <label className='mb-6px block text-12px text-[var(--color-text-3)]'>{sourceLabel}</label>
-            <TextArea
-              value={sourceText}
-              onChange={setSourceText}
-              placeholder={sourcePlaceholder}
-              autoSize={{ minRows: 5, maxRows: 14 }}
-              disabled={busy}
-              className='!text-14px !leading-23px'
-            />
-            {sessionId ? (
-              <WorkspaceCameoStrip
-                sessionId={sessionId}
-                disabled={busy}
-                refreshToken={cameoRefreshToken}
-                onChanged={() => {
-                  setCameoRefreshToken((n) => n + 1);
-                  void refreshArtifacts();
-                }}
-              />
-            ) : null}
-            <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
-              <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
-                <span>
-                  {t('videoGeneration.workspace.source.aspectLabel', {
-                    defaultValue: '视频比例',
-                  })}
-                </span>
-                <AspectRatioPicker
-                  value={aspectRatio}
-                  onChange={setAspectRatio}
-                  disabled={busy}
-                />
-                <span className='text-11px text-[var(--color-text-4)]'>
-                  {t('videoGeneration.workspace.source.aspectHint', {
-                    defaultValue: '同时作用于 Seedance 成片与海报封面',
-                  })}
-                </span>
-              </div>
-              <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)] md:col-span-2'>
-                {t('videoGeneration.workspace.source.requirementLabel', {
-                  defaultValue: '额外要求（可选）',
-                })}
-                <Input
-                  value={requirement}
-                  onChange={setRequirement}
-                  disabled={busy}
-                  placeholder={t('videoGeneration.workspace.source.requirementPlaceholder', {
-                    defaultValue: '节奏、受众等（画幅请在上方比例中选择）',
-                  })}
-                />
-              </label>
-              <div
-                className={`flex flex-col gap-6px text-12px text-[var(--color-text-3)] ${
-                  isMobile ? '' : 'col-span-2'
-                }`}
-              >
-                <span>
-                  {t('videoGeneration.workspace.source.styleLabel', {
-                    defaultValue: '视觉风格（人物与成片）',
-                  })}
-                </span>
-                <VisualStyleSelect value={style} onChange={setStyle} disabled={busy} />
-                <span className='text-11px text-[var(--color-text-4)]'>
-                  {t('videoGeneration.workspace.source.styleHint', {
-                    defaultValue:
-                      '定妆为单张三视图；面部轻微柔化但五官清晰。规划阶段也会生成全局环境与道具参考图。',
-                  })}
-                </span>
-              </div>
-            </div>
-            <details className='mt-14px rd-10px bg-[var(--color-fill-1)] px-12px py-9px'>
-              <summary className='cursor-pointer text-12px font-600 text-[var(--color-text-2)]'>
-                {t('videoGeneration.studio.modelSettings', { defaultValue: '模型设置' })}
-              </summary>
-              <div className='mt-12px'>
-                <ModelSelectors
-                  value={models}
-                  onChange={setModels}
-                  disabled={busy}
-                  isMobile={isMobile}
-                />
-                <div className='mt-12px'>
-                  <VideoQualityPickers
-                    videoModel={models.video_model}
-                    value={{ resolution, fps }}
-                    onChange={({ resolution: nextRes, fps: nextFps }) => {
-                      setResolution(nextRes);
-                      setFps(nextFps);
-                    }}
-                    disabled={busy}
-                  />
-                </div>
-              </div>
-            </details>
-          </section>
-        ) : (
+        {!isAction && hasStoryboard ? (
           <details className={`${styles.studioPanel} px-14px py-11px`}>
             <summary className='cursor-pointer text-12px font-600 text-[var(--color-text-2)]'>
               {t('videoGeneration.studio.briefAndModels', {
@@ -1726,93 +1642,98 @@ const WorkspacePage: React.FC = () => {
               />
             </div>
           </details>
-        )}
-
-        {!isAction && hasStoryboard ? (
-          <section className={`${styles.studioPanel} flex flex-wrap items-center justify-between gap-14px p-16px`}>
-            {plannedIdle ? (
-              <div className='w-full rd-8px px-12px py-10px border border-solid border-[rgba(var(--primary-6),0.35)] bg-[rgba(var(--primary-6),0.06)]'>
-                <div className='flex items-center gap-6px text-13px font-600 text-[var(--color-text-1)]'>
-                  <Eyes theme='outline' size={15} className='text-[rgb(var(--primary-6))]' />
-                  {t('videoGeneration.studio.portraitReviewTitle', {
-                    defaultValue: '规划完成——渲染前可先审阅定妆图',
-                  })}
-                </div>
-                <div className='mt-2px text-12px leading-18px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.portraitReviewHint', {
-                    defaultValue:
-                      '规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在上方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。',
-                  })}
-                </div>
-              </div>
-            ) : null}
-            <div>
-              <div className='text-14px font-650 text-[var(--color-text-1)]'>
-                {t('videoGeneration.studio.renderTitle', { defaultValue: '分镜确认了吗？' })}
-              </div>
-              <div className='mt-3px text-12px text-[var(--color-text-3)]'>
-                {t('videoGeneration.studio.renderHint', {
-                  defaultValue: '渲染会生成关键帧、镜头视频并自动拼接成片。',
-                })}
-              </div>
-            </div>
-            <div className='flex flex-wrap items-center gap-8px'>
-              {canContinue ? (
-                <Button
-                  type='primary'
-                  status='warning'
-                  size='large'
-                  loading={planning || rendering}
-                  onClick={() => void handleContinue()}
-                >
-                  {t('videoGeneration.workspace.continue', { defaultValue: '从断点继续' })}
-                </Button>
-              ) : null}
-              <Button
-                type='primary'
-                size='large'
-                loading={rendering}
-                disabled={!canRender || busy}
-                onClick={() => void handleRender()}
-              >
-                <span className='inline-flex items-center gap-7px'>
-                  <Play theme='outline' size={15} fill='currentColor' />
-                  {isFailed && continueAsRender
-                    ? t('videoGeneration.workspace.renderContinue', {
-                        defaultValue: '继续生成成片',
-                      })
-                    : t('videoGeneration.studio.renderCta', { defaultValue: '生成成片' })}
-                </span>
-              </Button>
-            </div>
-          </section>
         ) : null}
 
-        {!isAction && hasStoryboard ? (
-          <section className={`${styles.studioPanel} p-14px md:p-18px`}>
-            <div className='mb-12px flex items-end justify-between gap-10px'>
-              <div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.storyboard.title', { defaultValue: '故事分镜' })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.storyboard.hint', {
-                    defaultValue: '逐镜头检查叙事和画面，满意后再生成成片。',
+        {developerMode && artifacts.length > 0 ? (
+          <details
+            className={`${styles.studioPanel} px-14px py-12px`}
+            open={artifactsPanelOpen}
+            onToggle={(event) => {
+              setArtifactsPanelOpen((event.currentTarget as HTMLDetailsElement).open);
+            }}
+          >
+            <summary className='cursor-pointer list-none marker:content-none'>
+              <div className='flex flex-wrap items-center justify-between gap-8px'>
+                <div>
+                  <div className='text-14px font-650 text-[var(--color-text-1)]'>
+                    {t('videoGeneration.studio.technicalDetails', {
+                      defaultValue: '技术产物与运行文件',
+                    })}
+                  </div>
+                  <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                    {t('videoGeneration.studio.technicalDetailsHint', {
+                      defaultValue:
+                        '审阅参考图分类、定妆图、环境/道具板与工程文件，再生成成片。',
+                    })}
+                  </div>
+                </div>
+                <Tag size='small' color='orangered'>
+                  {t('videoGeneration.studio.technicalDetailsBadge', {
+                    defaultValue: '建议先检查',
                   })}
-                </p>
+                </Tag>
               </div>
-              <Tag size='small' color='arcoblue'>
-                {t('videoGeneration.studio.storyboard.editable', { defaultValue: '可编辑' })}
-              </Tag>
+            </summary>
+            <div
+              className={[
+                'mt-12px grid min-h-240px gap-12px',
+                isMobile ? 'grid-cols-1' : 'grid-cols-[240px_1fr]',
+              ].join(' ')}
+            >
+              <div className='flex max-h-420px min-h-200px flex-col overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
+                <ArtifactTree
+                  tree={artifacts}
+                  selectedPath={selectedPath}
+                  onSelect={setSelectedPath}
+                />
+              </div>
+              <ArtifactPreviewPanel
+                sessionId={sessionId}
+                selectedPath={selectedPath}
+                preview={preview}
+                previewLoading={previewLoading}
+                disabled={busy}
+                onChanged={handleArtifactsChanged}
+                onRequestRegenerate={() => void handleRender()}
+              />
             </div>
-            <StoryboardBoard
-              sessionId={sessionId}
-              artifacts={artifacts}
-              disabled={busy}
-              revising={revising}
-              onSaveSceneDescriptions={handleSaveSceneDescriptions}
-            />
-          </section>
+          </details>
+        ) : null}
+          </div>
+        </div>
+        {isMobile || !sessionCollapsed ? (
+          <StudioAgentSession
+            sessionId={sessionId}
+            artifacts={artifacts}
+            sourceText={sourceText}
+            hasStoryboard={hasStoryboard}
+            hasFinalVideo={Boolean(finalBlobUrl) || statusFlags.hasFinalVideo}
+            coverPath={statusFlags.coverPath || session.cover}
+            finalVideoPath={statusFlags.finalVideoPath || session.final_video}
+            isAction={isAction}
+            actionAssetsReady={actionAssetsReady}
+            canRender={canRender}
+            isFailed={Boolean(isFailed)}
+            busy={busy}
+            planning={planning}
+            rendering={rendering}
+            cancelling={cancelling}
+            creditsConsumed={videoCreditsConsumed}
+            models={models}
+            isMobile={isMobile}
+            collapsed={sessionCollapsed}
+            width={sessionWidth}
+            onCollapsedChange={handleSessionCollapsedChange}
+            onWidthChange={handleSessionWidthChange}
+            onPlan={() => void handlePlan()}
+            onRender={() => void handleRender()}
+            onCancel={() => void handleCancel()}
+            onContinue={handleContinue}
+            onFocusScene={setFocusSceneId}
+            onSelectArtifact={developerMode ? setSelectedPath : undefined}
+            cameoEpoch={cameoRefreshToken}
+            sourceDocumentName={sourceDocumentName}
+          />
         ) : null}
       </div>
     </div>

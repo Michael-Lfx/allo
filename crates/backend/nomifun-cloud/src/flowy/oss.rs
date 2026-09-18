@@ -1,6 +1,6 @@
 //! OSS presigned PUT upload — avoid base64 frames in video create bodies.
 
-use tracing::debug;
+use tracing::info;
 
 use crate::error::ServerClientError;
 use crate::flowy::media_types::{OssPresignPutData, OssPresignPutRequest};
@@ -78,9 +78,21 @@ impl FlowyApiClient {
             file_name.trim()
         };
 
+        info!(
+            file_name,
+            content_type,
+            bytes = bytes.len(),
+            expires_seconds,
+            "OSS: requesting presign"
+        );
         let presign = self
             .presign_oss_put(session, file_name, content_type, expires_seconds)
             .await?;
+        info!(
+            file_name,
+            object_key = ?presign.object_key,
+            "OSS: presign ok"
+        );
 
         let public_url = presign
             .public_url
@@ -156,12 +168,6 @@ impl FlowyApiClient {
         if !has_content_type {
             headers.insert("Content-Type".into(), content_type.to_string());
         }
-
-        debug!(
-            object_key = ?presign.object_key,
-            bytes = bytes.len(),
-            "OSS presigned PUT"
-        );
 
         let resp = self
             .transport

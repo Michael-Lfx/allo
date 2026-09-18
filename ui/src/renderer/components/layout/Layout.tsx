@@ -1,5 +1,3 @@
-
-
 import { ipcBridge } from '@/common';
 import { httpGet } from '@/common/adapter/httpBridge';
 import { configService } from '@/common/config/configService';
@@ -21,6 +19,7 @@ import { useNotificationClick } from '@renderer/hooks/system/useNotificationClic
 import { useConversationDesktopNotify } from '@renderer/hooks/system/useConversationDesktopNotify';
 import { useAutoWorkDesktopNotify } from '@renderer/hooks/system/useAutoWorkDesktopNotify';
 import {
+  getUpdateAvailabilitySnapshot,
   reportNoUpdateAvailable,
   reportUpdateAvailable,
 } from '@renderer/hooks/system/useUpdateAvailability';
@@ -35,10 +34,18 @@ import {
 import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShortcuts';
+import { useActiveConversationRouteSync } from '@renderer/hooks/ui/useActiveConversationRouteSync';
 import { isDesktopShell } from '@renderer/utils/platform';
+import { tauriUpdateCurrentVersion } from '@/common/adapter/tauriUpdater';
+import { trackUpdateCheckCompleted } from '@/renderer/utils/analytics/updateTelemetry';
+import { scheduleDeferred } from '@/renderer/utils/scheduleDeferred';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
 import SidebarToggleIcon from '@renderer/components/layout/Sider/SidebarToggleIcon';
+import {
+  SettingsNavigationLoadingOverlay,
+  SettingsNavigationTransitionProvider,
+} from '@renderer/components/layout/SettingsNavigationTransition';
 import { useTranslation } from 'react-i18next';
 import '@renderer/styles/layout.css';
 
@@ -75,6 +82,9 @@ const useDebug = () => {
 };
 
 const UpdateModal = React.lazy(() => import('@/renderer/components/settings/UpdateModal'));
+
+/** How often a long-running desktop session re-checks ModelScope for OTA. */
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 // Primary rail width. Default slimmed from 216 → 184; the rail is now freely
 // resizable by dragging its right edge (clamped to [RAIL_MIN, RAIL_MAX]) and the
@@ -144,6 +154,7 @@ const Layout: React.FC<{
   useNotificationClick();
   useConversationDesktopNotify();
   useAutoWorkDesktopNotify();
+  useActiveConversationRouteSync();
   const navigate = useNavigate();
   useConversationShortcuts({ navigate });
   const location = useLocation();
@@ -403,32 +414,94 @@ const Layout: React.FC<{
     return () => unsubscribe();
   }, []);
 
-  // 启动后静默检查一次更新（仅桌面壳）：发现新版本时同步全局 Logo 入口并沿用现有弹窗提醒；
-  // 无更新 / 离线 / 出错时不显示 Logo 入口。
-  // Startup silent update check (desktop shell only): keep the persistent Logo
-  // entry in sync and preserve the existing modal prompt when an update exists.
+  // Deferred startup update check (desktop only), then hourly polls while the
+  // shell stays open so long-running sessions still see new ModelScope releases.
+  // First paint + idle delay keeps OTA off the 秒开 path. New discoveries badge
+  // immediately; the modal opens once (startup always, interval only on first
+  // transition to available).
   useEffect(() => {
     if (!isDesktopShell()) return;
     let cancelled = false;
-    const includePrerelease = localStorage.getItem('update.includePrerelease') === 'true';
-    void (async () => {
+    let inFlight = false;
+    let modalTimer: number | null = null;
+    let intervalId: number | null = null;
+
+    const runCheck = async (source: 'startup' | 'interval') => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      const includePrerelease = localStorage.getItem('update.includePrerelease') === 'true';
+      const previouslyAvailable = getUpdateAvailabilitySnapshot().available;
+      const startedAt = performance.now();
+      let fromVersion = '';
+      try {
+        fromVersion = await tauriUpdateCurrentVersion();
+      } catch {
+        fromVersion = '';
+      }
       try {
         const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
-        if (!cancelled && res?.success && res.data?.updateInfo) {
+        if (cancelled) return;
+        const durationMs = performance.now() - startedAt;
+        if (res?.success && res.data?.updateInfo) {
+          // Modal re-check records `update_check_completed` + prompt for this path.
           reportUpdateAvailable(res.data.updateInfo.version);
           window.dispatchEvent(
             new CustomEvent(UPDATE_AVAILABLE_EVENT, { detail: { version: res.data.updateInfo.version } }),
           );
-          window.dispatchEvent(new CustomEvent('nomifun-open-update-modal', { detail: { source: 'startup' } }));
-        } else if (!cancelled && res?.success) {
+          const shouldOpenModal = source === 'startup' || !previouslyAvailable;
+          if (shouldOpenModal) {
+            modalTimer = window.setTimeout(() => {
+              if (cancelled) return;
+              window.dispatchEvent(
+                new CustomEvent('nomifun-open-update-modal', { detail: { source } }),
+              );
+            }, 1_500);
+          }
+        } else if (res?.success) {
+          trackUpdateCheckCompleted({
+            source,
+            status: 'up_to_date',
+            duration_ms: durationMs,
+            from_version: fromVersion,
+          });
           reportNoUpdateAvailable();
+        } else {
+          trackUpdateCheckCompleted({
+            source,
+            status: 'failed',
+            duration_ms: durationMs,
+            from_version: fromVersion,
+            error_code: 'unknown',
+          });
         }
       } catch {
+        if (!cancelled) {
+          trackUpdateCheckCompleted({
+            source,
+            status: 'failed',
+            duration_ms: performance.now() - startedAt,
+            from_version: fromVersion,
+            error_code: 'network',
+          });
+        }
         /* offline / endpoint unreachable — silent; the About page button still works */
+      } finally {
+        inFlight = false;
       }
-    })();
+    };
+
+    const cancelDefer = scheduleDeferred(() => {
+      void runCheck('startup');
+    });
+    intervalId = window.setInterval(() => {
+      void runCheck('interval');
+    }, UPDATE_CHECK_INTERVAL_MS);
+
     return () => {
       cancelled = true;
+      cancelDefer();
+      if (intervalId != null) window.clearInterval(intervalId);
+      if (modalTimer != null) window.clearTimeout(modalTimer);
     };
   }, []);
 
@@ -558,110 +631,117 @@ const Layout: React.FC<{
 
   return (
     <LayoutContext.Provider value={{ isMobile, siderCollapsed: collapsed, setSiderCollapsed: setCollapsed }}>
-      <NavigationHistoryProvider>
-        <WebuiServerProvider>
-          <div className='app-shell flex flex-col size-full min-h-0'>
-            <Titlebar workspaceAvailable={workspaceAvailable} />
-          {/* 移动端左侧边栏蒙板 / Mobile left sider backdrop */}
-          {isMobile && !collapsed && (
-            <div className='fixed inset-0 bg-black/30 z-90' onClick={() => setCollapsed(true)} aria-hidden='true' />
-          )}
-
-          <ArcoLayout className={'size-full layout flex-1 min-h-0'}>
-            <ArcoLayout.Sider
-              collapsedWidth={isMobile ? 0 : 0}
-              collapsed={collapsed}
-              width={siderWidth}
-              className={classNames('!bg-2 layout-sider', {
-                collapsed: collapsed,
-              })}
-              style={siderStyle}
-            >
-              <ArcoLayout.Header
-                className={classNames(
-                  'flex items-center justify-start pt-8px pb-8px pl-18px pr-16px gap-12px layout-sider-header',
-                  isMobile && 'layout-sider-header--mobile',
-                  {
-                    'cursor-pointer group ': collapsed,
-                  }
-                )}
-              >
+      <SettingsNavigationTransitionProvider>
+        <NavigationHistoryProvider>
+          <WebuiServerProvider>
+            <div className='app-shell flex flex-col size-full min-h-0'>
+              <Titlebar workspaceAvailable={workspaceAvailable} />
+              {/* 移动端左侧边栏蒙板 / Mobile left sider backdrop */}
+              {isMobile && !collapsed && (
                 <div
-                  className={classNames('shrink-0 size-32px relative rd-0.5rem overflow-hidden', {
-                    '!size-24px': collapsed,
-                  })}
-                  onClick={onClick}
-                >
-                  <img src={appLogo} alt='Flowy' className='absolute inset-0 w-full h-full object-cover' />
-                </div>
-                <div className='min-w-0 flex-1 flex flex-col justify-center collapsed-hidden'>
-                  <span className='truncate text-16px text-t-primary font-semibold'>Flowy</span>
-                  {appVersion && <span className='sidebar-app-version'>v{appVersion}</span>}
-                </div>
-                {isMobile && !collapsed && (
-                  <button
-                    type='button'
-                    className='app-titlebar__button app-titlebar__button--mobile'
-                    onClick={() => setCollapsed(true)}
-                    title={t('common.navCollapse')}
-                    aria-label={t('common.navCollapse')}
-                    aria-expanded={!collapsed}
-                    aria-controls='flowy-primary-sider'
-                  >
-                    <SidebarToggleIcon collapsed={collapsed} size={18} strokeWidth={2.5} />
-                  </button>
-                )}
-                {/* 侧栏折叠改由标题栏统一控制 / Sidebar folding handled by Titlebar toggle */}
-              </ArcoLayout.Header>
-              <ArcoLayout.Content className='pt-0 px-8px pb-0 layout-sider-content'>
-                {React.isValidElement(sider)
-                  ? React.cloneElement(sider, {
-                      onSessionClick: () => {
-                        cleanupSiderTooltips();
-                        if (isMobile) setCollapsed(true);
-                      },
-                      collapsed,
-                    } as any)
-                  : sider}
-              </ArcoLayout.Content>
-              {!isMobile && (
-                <div
-                  className='absolute top-0 h-full w-8px z-20 cursor-col-resize group'
-                  style={{ right: '-4px' }}
-                  onMouseDown={beginSiderResizeDrag}
-                  onDoubleClick={resetSiderWidth}
+                  className='fixed inset-0 bg-black/30 z-90'
+                  onClick={() => setCollapsed(true)}
                   aria-hidden='true'
-                >
-                  <div className='absolute top-0 left-1/2 h-full w-1px -translate-x-1/2 bg-transparent group-hover:bg-[var(--color-border-2)] transition-colors duration-150' />
-                </div>
+                />
               )}
-            </ArcoLayout.Sider>
 
-            <ArcoLayout.Content
-              className={'bg-base layout-content flex flex-col min-h-0'}
-              onClick={() => {
-                if (isMobile && !collapsed) setCollapsed(true);
-              }}
-              style={
-                isMobile
-                  ? {
-                      width: '100%',
-                    }
-                  : undefined
-              }
-            >
-              {children ?? <Outlet />}
-              {directorySelectionContextHolder}
-              <PwaPullToRefresh />
-              <Suspense fallback={null}>
-                <UpdateModal />
-              </Suspense>
-            </ArcoLayout.Content>
-          </ArcoLayout>
-        </div>
-        <NotificationHost />
-        </WebuiServerProvider>
-      </NavigationHistoryProvider>
+              <ArcoLayout className={'size-full layout flex-1 min-h-0'}>
+                <ArcoLayout.Sider
+                  collapsedWidth={isMobile ? 0 : 0}
+                  collapsed={collapsed}
+                  width={siderWidth}
+                  className={classNames('!bg-2 layout-sider', {
+                    collapsed: collapsed,
+                  })}
+                  style={siderStyle}
+                >
+                  <ArcoLayout.Header
+                    className={classNames(
+                      'flex items-center justify-start pt-8px pb-8px pl-18px pr-16px gap-12px layout-sider-header',
+                      isMobile && 'layout-sider-header--mobile',
+                      {
+                        'cursor-pointer group ': collapsed,
+                      }
+                    )}
+                  >
+                    <div
+                      className={classNames('shrink-0 size-32px relative rd-0.5rem overflow-hidden', {
+                        '!size-24px': collapsed,
+                      })}
+                      onClick={onClick}
+                    >
+                      <img src={appLogo} alt='Flowy' className='absolute inset-0 w-full h-full object-cover' />
+                    </div>
+                    <div className='min-w-0 flex-1 flex flex-col justify-center collapsed-hidden'>
+                      <span className='truncate text-16px text-t-primary font-semibold'>Flowy</span>
+                      {appVersion && <span className='sidebar-app-version'>v{appVersion}</span>}
+                    </div>
+                    {isMobile && !collapsed && (
+                      <button
+                        type='button'
+                        className='app-titlebar__button app-titlebar__button--mobile'
+                        onClick={() => setCollapsed(true)}
+                        title={t('common.navCollapse')}
+                        aria-label={t('common.navCollapse')}
+                        aria-expanded={!collapsed}
+                        aria-controls='flowy-primary-sider'
+                      >
+                        <SidebarToggleIcon collapsed={collapsed} size={18} strokeWidth={2.5} />
+                      </button>
+                    )}
+                    {/* 侧栏折叠改由标题栏统一控制 / Sidebar folding handled by Titlebar toggle */}
+                  </ArcoLayout.Header>
+                  <ArcoLayout.Content className='pt-0 px-8px pb-0 layout-sider-content'>
+                    {React.isValidElement(sider)
+                      ? React.cloneElement(sider, {
+                          onSessionClick: () => {
+                            cleanupSiderTooltips();
+                            if (isMobile) setCollapsed(true);
+                          },
+                          collapsed,
+                        } as any)
+                      : sider}
+                  </ArcoLayout.Content>
+                  {!isMobile && (
+                    <div
+                      className='absolute top-0 h-full w-8px z-20 cursor-col-resize group'
+                      style={{ right: '-4px' }}
+                      onMouseDown={beginSiderResizeDrag}
+                      onDoubleClick={resetSiderWidth}
+                      aria-hidden='true'
+                    >
+                      <div className='absolute top-0 left-1/2 h-full w-1px -translate-x-1/2 bg-transparent group-hover:bg-[var(--color-border-2)] transition-colors duration-150' />
+                    </div>
+                  )}
+                </ArcoLayout.Sider>
+
+                <ArcoLayout.Content
+                  className={'relative bg-base layout-content flex flex-col min-h-0'}
+                  onClick={() => {
+                    if (isMobile && !collapsed) setCollapsed(true);
+                  }}
+                  style={
+                    isMobile
+                      ? {
+                          width: '100%',
+                        }
+                      : undefined
+                  }
+                >
+                  {children ?? <Outlet />}
+                  <SettingsNavigationLoadingOverlay />
+                  {directorySelectionContextHolder}
+                  <PwaPullToRefresh />
+                  <Suspense fallback={null}>
+                    <UpdateModal />
+                  </Suspense>
+                </ArcoLayout.Content>
+              </ArcoLayout>
+            </div>
+            <NotificationHost />
+          </WebuiServerProvider>
+        </NavigationHistoryProvider>
+      </SettingsNavigationTransitionProvider>
     </LayoutContext.Provider>
   );
 };

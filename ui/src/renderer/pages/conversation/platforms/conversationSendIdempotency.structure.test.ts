@@ -27,6 +27,21 @@ describe('conversation send idempotency wiring', () => {
     }
   });
 
+  test('uses complete DOM content for the same-task duplicate claim', () => {
+    const claim = readSource('../../../components/chat/SendBox/index.tsx');
+    expect(claim).toContain('domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html])');
+    expect(claim).not.toContain('domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html.length])');
+    expect(claim).toContain('attachmentPaths');
+    expect(claim).toContain('submissionAttachmentPaths');
+  });
+
+  test('captures a workspace snapshot when ordinary messages enter the queue', () => {
+    for (const source of platformSources) {
+      expect(source).toContain('workspace_path: workspacePath');
+    }
+    expect(queueSource).toContain('workspace_path: workspace_path ?? \'\'');
+  });
+
   test('uses UUIDv7 for every default direct-send id before forwarding it as the header key', () => {
     for (const source of platformSources) {
       expect(source.includes("import { uuid, uuidv7 } from '@/common/utils';")).toBe(true);
@@ -39,21 +54,25 @@ describe('conversation send idempotency wiring', () => {
     }
   });
 
-  test('keeps queued work persisted until acceptance and retains the same id on failure', () => {
+  test('keeps queued work persisted until acceptance and retries the same id after failure', () => {
     const dispatch = queueSource.indexOf('return onExecute(nextCommand, { isCurrent: isExecutionCurrent });');
     const acceptedRemoval = queueSource.indexOf(
       'items: removeQueuedCommand(state.items, nextCommand.id)',
       dispatch
     );
     const failure = queueSource.indexOf('.catch((error) => {', acceptedRemoval);
+    const failureKind = queueSource.indexOf('const failureKind = classifyConversationSendFailure(error);', failure);
+    const sameKeyRecovery = queueSource.indexOf('nextCommand.id', failureKind);
     const restoration = queueSource.indexOf(
-      'items: restoreQueuedCommand(state.items, nextCommand)',
+      'items: restoreQueuedCommand(currentState.items, pausedItem)',
       failure
     );
 
     expect(dispatch >= 0).toBe(true);
     expect(acceptedRemoval > dispatch).toBe(true);
     expect(failure > acceptedRemoval).toBe(true);
+    expect(failureKind > failure).toBe(true);
+    expect(sameKeyRecovery > failureKind).toBe(true);
     expect(restoration > failure).toBe(true);
   });
 
@@ -183,6 +202,14 @@ describe('conversation send idempotency wiring', () => {
       "if (conversation.status === 'running') {",
       quarantine
     );
+    const explicitRemount = openClawSource.indexOf(
+      'if (pending.initial_only === false)',
+      remountRead
+    );
+    const explicitReplay = openClawSource.indexOf(
+      'void deliverStarOfficeRequest(pending, storageKey);',
+      explicitRemount
+    );
     const runningReplay = openClawSource.indexOf(
       'void deliverStarOfficeRequest(pending, storageKey, true);',
       runningBranch
@@ -215,17 +242,15 @@ describe('conversation send idempotency wiring', () => {
         .includes('deliverStarOfficeRequest(delivery, storageKey, true)')
     ).toBe(false);
     expect(remountRead > explicitDispatch).toBe(true);
+    expect(explicitRemount > remountRead).toBe(true);
+    expect(explicitReplay > explicitRemount).toBe(true);
     expect(terminalFence > remountRead).toBe(true);
     expect(quarantine > terminalFence).toBe(true);
     expect(runningBranch > quarantine).toBe(true);
     expect(runningReplay > runningBranch).toBe(true);
     expect(pendingAuthority > runningReplay).toBe(true);
     expect(pendingInitialOnly > pendingAuthority).toBe(true);
-    expect(
-      openClawSource
-        .slice(remountRead, pendingInitialOnly)
-        .includes('deliverStarOfficeRequest(pending, storageKey);')
-    ).toBe(false);
+    expect(explicitReplay < runningBranch).toBe(true);
   });
 
   test('keeps persisted initial deliveries closed until a fresh accepted response', () => {

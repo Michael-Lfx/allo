@@ -22,6 +22,20 @@ import {
 } from './chatLib';
 
 describe('agent stream error normalization', () => {
+  test('preserves the effective model and provider identifiers', () => {
+    expect(
+      normalizeAgentStreamError({
+        message: 'provider failed',
+        model_id: 'claude-sonnet-4-20250514',
+        provider_id: '019c0000-0000-7000-8000-000000000005',
+        code: 'USER_LLM_PROVIDER_NETWORK_ERROR',
+      })
+    ).toMatchObject({
+      model_id: 'claude-sonnet-4-20250514',
+      provider_id: '019c0000-0000-7000-8000-000000000005',
+    });
+  });
+
   test('preserves incident correlation and accepts historical errors without it', () => {
     expect(
       normalizeAgentStreamError({
@@ -117,6 +131,85 @@ describe('knowledge writeback attempt ordering', () => {
 });
 
 describe('transformMessage runtime field normalization', () => {
+  test('carries model identifiers from live error events into tips', () => {
+    const message = transformMessage(
+      baseWire({
+        type: 'error',
+        data: {
+          message: 'provider failed',
+          model_id: 'claude-sonnet-4-20250514',
+          provider_id: '019c0000-0000-7000-8000-000000000005',
+          code: 'USER_LLM_PROVIDER_NETWORK_ERROR',
+        },
+      })
+    );
+
+    expect(message?.type).toBe('tips');
+    if (!message || message.type !== 'tips') throw new Error('expected an error tips message');
+    expect(message.content.error).toMatchObject({
+      model_id: 'claude-sonnet-4-20250514',
+      provider_id: '019c0000-0000-7000-8000-000000000005',
+    });
+  });
+
+  test('keeps ACP permission option kinds for localized labels and omits unknown kinds', () => {
+    const message = transformMessage(
+      baseWire({
+        type: 'acp_permission',
+        data: {
+          session_id: 'session-1',
+          options: [
+            { option_id: 'allow', name: 'Allow once', kind: 'allow_once' },
+            { option_id: 'allow-always', name: 'Allow always', kind: 'allow_always' },
+            { option_id: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+            { option_id: 'reject-always', name: 'Reject always', kind: 'reject_always' },
+            { option_id: 'custom', name: 'Custom provider action', kind: 'provider_extension' },
+            { option_id: 'missing', name: 'Missing kind' },
+          ],
+          tool_call: { tool_call_id: 'tool-1' },
+        },
+      })
+    );
+
+    expect(message?.type).toBe('acp_permission');
+    if (message?.type !== 'acp_permission') throw new Error('expected ACP permission message');
+    expect(message.content.options).toEqual([
+      { option_id: 'allow', name: 'Allow once', kind: 'allow_once' },
+      { option_id: 'allow-always', name: 'Allow always', kind: 'allow_always' },
+      { option_id: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      { option_id: 'reject-always', name: 'Reject always', kind: 'reject_always' },
+      { option_id: 'custom', name: 'Custom provider action' },
+      { option_id: 'missing', name: 'Missing kind' },
+    ]);
+  });
+
+  test('routes Confirmation-shaped ACP events to the legacy renderer and preserves option values', () => {
+    const message = transformMessage(
+      baseWire({
+        type: 'acp_permission',
+        data: {
+          id: 'confirmation-1',
+          call_id: 'tool-1',
+          title: 'Write file',
+          description: 'Write /tmp/a.txt',
+          options: [
+            { label: 'messages.confirmation.yesAllowOnce', value: 'allow-once' },
+            { label: 'messages.confirmation.yesAllowAlways', value: 'allow-always' },
+            { label: 'messages.confirmation.rejectOnce', value: 'deny' },
+          ],
+        },
+      })
+    );
+
+    expect(message?.type).toBe('permission');
+    if (message?.type !== 'permission') throw new Error('expected legacy permission message');
+    expect(message.content.options).toEqual([
+      { label: 'messages.confirmation.yesAllowOnce', value: 'allow-once' },
+      { label: 'messages.confirmation.yesAllowAlways', value: 'allow-always' },
+      { label: 'messages.confirmation.rejectOnce', value: 'deny' },
+    ]);
+  });
+
   test('normalizes persisted-style Skill load stream events into a center history entry', () => {
     const message = transformMessage(
       baseWire({
@@ -331,6 +424,28 @@ describe('transformMessage runtime field normalization', () => {
       kind: 'continue_truncated',
       source_message_id: SECOND_MESSAGE_ID,
       failure_code: 'output_truncated',
+    });
+
+    const networkRecovered = transformMessage(
+      baseWire({
+        type: 'tips',
+        data: {
+          content: 'provider dropped',
+          type: 'error',
+          error: { message: 'provider dropped', code: 'USER_LLM_PROVIDER_NETWORK_ERROR', retryable: true },
+          recovery: {
+            kind: 'continue_truncated',
+            source_message_id: SECOND_MESSAGE_ID,
+            failure_code: 'user_llm_provider_network_error',
+          },
+        },
+      })
+    );
+    if (networkRecovered?.type !== 'tips') throw new Error('expected tips');
+    expect(networkRecovered.content.recovery).toEqual({
+      kind: 'continue_truncated',
+      source_message_id: SECOND_MESSAGE_ID,
+      failure_code: 'user_llm_provider_network_error',
     });
 
     const malformed = transformMessage(

@@ -1,9 +1,38 @@
 
 import type { ArtifactNode } from './types';
 
+const IMAGE_ARTIFACT_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const VIDEO_ARTIFACT_RE = /\.(mp4|webm|mov|avi|mkv)$/i;
+const AUDIO_ARTIFACT_RE = /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
+
+export function isImageArtifactPath(path: string): boolean {
+  return IMAGE_ARTIFACT_RE.test(path);
+}
+
+export function isVideoArtifactPath(path: string): boolean {
+  return VIDEO_ARTIFACT_RE.test(path);
+}
+
+export function isAudioArtifactPath(path: string): boolean {
+  return AUDIO_ARTIFACT_RE.test(path);
+}
+
+export interface StoryboardBeat {
+  visualDescription: string;
+  camIdx?: number;
+}
+
 export interface StoryboardShot {
   index: number;
   visualDescription: string;
+  audioDescription?: string;
+  /** Packed adjacent beats in this row; omitted when the row is a single beat. */
+  beatCount?: number;
+  beats?: StoryboardBeat[];
+}
+
+export interface StoryboardSceneSave {
+  visualDescription?: string;
   audioDescription?: string;
 }
 
@@ -11,6 +40,7 @@ export interface StoryboardScene {
   id: string;
   /** Global display order across all pipeline scenes. */
   index: number;
+  /** Planning brief (`storyboard.json` visual_desc) — filmstrip caption. */
   visualDescription: string;
   audioDescription?: string;
   imagePath?: string;
@@ -18,10 +48,15 @@ export interface StoryboardScene {
   revisionPath?: string;
   /** Owning `storyboard.json` path used for direct visual-direction edits. */
   storyboardPath?: string;
+  /** `shots/N/shot_description.json` when present. */
+  generationSpecPath?: string;
   /** Pipeline scene root (e.g. `idea2video/scene_1`); empty for single-scene runs. */
   sceneRoot?: string;
   /** Shot index within its pipeline scene. */
   shotIndex?: number;
+  /** Packed beats in this clip (`>= 2`); one card still renders as one video. */
+  beatCount?: number;
+  beats?: StoryboardBeat[];
 }
 
 /** Location of a shot under a pipeline scene workspace. */
@@ -43,16 +78,38 @@ export function flattenArtifacts(nodes: ArtifactNode[]): ArtifactNode[] {
   return flattened;
 }
 
+/** Invalidate the filmstrip fetch when packed `storyboard.json` or shot dirs change. */
+export function storyboardRefreshSignature(nodes: ArtifactNode[]): string {
+  const files = flattenArtifacts(nodes);
+  const boards = files
+    .filter((file) => /(^|\/)storyboard\.json$/i.test(file.path.replace(/\\/g, '/')))
+    .map((file) => `${file.path.replace(/\\/g, '/')}:${file.size ?? 0}`)
+    .sort();
+  const shotDirs = [
+    ...new Set(
+      files.flatMap((file) => {
+        const match = file.path.replace(/\\/g, '/').match(/^(.*)\/shots\/(\d+)\//i);
+        return match ? [`${match[1]}/shots/${match[2]}`] : [];
+      })
+    ),
+  ].sort();
+  return `${boards.join('|')}#${shotDirs.join('|')}`;
+}
+
 export function findStoryboardPath(nodes: ArtifactNode[]): string | undefined {
   return findStoryboardPaths(nodes)[0];
 }
 
-/** All `storyboard.json` paths, sorted by scene order then path. */
+/** All `storyboard.json` paths, sorted by scene order then path.
+ *
+ * Exact basename only: `storyboard.json.cache.json` sidecars must not be
+ * treated as a second board (the old `storyboard.*.json` glob matched them).
+ */
 export function findStoryboardPaths(nodes: ArtifactNode[]): string[] {
   const files = flattenArtifacts(nodes);
   const paths = files
     .map((file) => file.path.replace(/\\/g, '/'))
-    .filter((path) => /\/storyboard\.json$/i.test(path) || /storyboard.*\.json$/i.test(path));
+    .filter((path) => /(^|\/)storyboard\.json$/i.test(path));
   return [...new Set(paths)].sort(compareSceneAwarePaths);
 }
 
@@ -64,21 +121,22 @@ export function parseStoryboard(text: string | undefined): StoryboardShot[] {
     return rows.flatMap((row, fallbackIndex) => {
       if (!row || typeof row !== 'object') return [];
       const value = row as Record<string, unknown>;
-      const visual =
-        stringValue(value.visual_desc) ??
-        stringValue(value.visualDescription) ??
-        stringValue(value.description) ??
-        stringValue(value.prompt);
-      if (!visual) return [];
       const rawIndex = value.idx ?? value.index ?? value.shot_index;
+      const hasIdx = typeof rawIndex === 'number';
+      const visual = visualFromStoryboardRow(value) ?? '';
+      const beats = beatsFromStoryboardRow(value);
+      if (!hasIdx && !visual && beats.length === 0) return [];
+      const beatCount = beats.length >= 2 ? beats.length : undefined;
       return [
         {
-          index: typeof rawIndex === 'number' ? rawIndex : fallbackIndex,
+          index: hasIdx ? rawIndex : fallbackIndex,
           visualDescription: visual,
           audioDescription:
             stringValue(value.audio_desc) ??
             stringValue(value.audioDescription) ??
             stringValue(value.audio),
+          ...(beatCount != null ? { beatCount } : {}),
+          ...(beats.length >= 2 ? { beats } : {}),
         },
       ];
     });
@@ -124,58 +182,122 @@ export function buildStoryboardScenesFromStoryboards(
     const sceneRoot = sceneRootFromStoryboardPath(board.path);
     for (const shot of board.shots) {
       const key = shotKey(sceneRoot, shot.index);
+      if (usedKeys.has(key)) continue;
       usedKeys.add(key);
       scenes.push({
         id: key,
         index: scenes.length,
         visualDescription: shot.visualDescription,
         audioDescription: shot.audioDescription,
-        imagePath: bestShotFile(imageFiles, sceneRoot, shot.index, 'first_frame'),
+        imagePath: bestShotFile(imageFiles, sceneRoot, shot.index, 'video_last_frame'),
         videoPath: bestShotFile(videoFiles, sceneRoot, shot.index),
         revisionPath:
           bestShotFile(revisionFiles, sceneRoot, shot.index) ?? board.path,
+        generationSpecPath: bestShotFile(revisionFiles, sceneRoot, shot.index),
         storyboardPath: board.path,
         sceneRoot,
         shotIndex: shot.index,
+        ...(shot.beatCount != null ? { beatCount: shot.beatCount } : {}),
+        ...(shot.beats?.length ? { beats: shot.beats } : {}),
       });
     }
   }
 
-  // Also surface media that exists on disk but isn't listed in loaded storyboards
-  // (e.g. storyboard text still loading, or shots rendered before JSON refresh).
-  const locations = new Map<string, ShotLocation>();
-  for (const file of [...imageFiles, ...videoFiles]) {
-    const location = shotLocationFromPath(file.path);
-    if (!location) continue;
-    locations.set(shotKey(location.sceneRoot, location.shotIndex), location);
-  }
+  // Only invent filmstrip cards from leftover media when this scene has no
+  // storyboard.json on disk *and* none has loaded. A refetch with empty
+  // `storyboardEntries` used to rebuild from stray `shots/N` (including the
+  // extra dir created at video start) and flash a phantom last card.
+  const boardFilesOnDisk = files.some((file) =>
+    /(^|\/)storyboard\.json$/i.test(file.path.replace(/\\/g, '/'))
+  );
+  const boardsHaveRows = sortedBoards.some((board) => board.shots.length > 0);
+  if (!boardsHaveRows && !boardFilesOnDisk) {
+    const locations = new Map<string, ShotLocation>();
+    for (const file of [...imageFiles, ...videoFiles]) {
+      const location = shotLocationFromPath(file.path);
+      if (!location) continue;
+      locations.set(shotKey(location.sceneRoot, location.shotIndex), location);
+    }
 
-  const extra = [...locations.values()]
-    .filter((loc) => !usedKeys.has(shotKey(loc.sceneRoot, loc.shotIndex)))
-    .sort((a, b) => {
-      const byScene = compareSceneAwarePaths(a.sceneRoot, b.sceneRoot);
-      return byScene !== 0 ? byScene : a.shotIndex - b.shotIndex;
-    });
+    const extra = [...locations.values()]
+      .filter((loc) => !usedKeys.has(shotKey(loc.sceneRoot, loc.shotIndex)))
+      .sort((a, b) => {
+        const byScene = compareSceneAwarePaths(a.sceneRoot, b.sceneRoot);
+        return byScene !== 0 ? byScene : a.shotIndex - b.shotIndex;
+      });
 
-  for (const loc of extra) {
-    const fallbackBoard =
-      sortedBoards.find((board) => sceneRootFromStoryboardPath(board.path) === loc.sceneRoot)
-        ?.path ?? sortedBoards[0]?.path;
-    scenes.push({
-      id: shotKey(loc.sceneRoot, loc.shotIndex),
-      index: scenes.length,
-      visualDescription: '',
-      imagePath: bestShotFile(imageFiles, loc.sceneRoot, loc.shotIndex, 'first_frame'),
-      videoPath: bestShotFile(videoFiles, loc.sceneRoot, loc.shotIndex),
-      revisionPath:
-        bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex) ?? fallbackBoard,
-      storyboardPath: fallbackBoard,
-      sceneRoot: loc.sceneRoot,
-      shotIndex: loc.shotIndex,
-    });
+    for (const loc of extra) {
+      const fallbackBoard =
+        sortedBoards.find((board) => sceneRootFromStoryboardPath(board.path) === loc.sceneRoot)
+          ?.path ?? sortedBoards[0]?.path;
+      scenes.push({
+        id: shotKey(loc.sceneRoot, loc.shotIndex),
+        index: scenes.length,
+        visualDescription: '',
+        imagePath: bestShotFile(imageFiles, loc.sceneRoot, loc.shotIndex, 'video_last_frame'),
+        videoPath: bestShotFile(videoFiles, loc.sceneRoot, loc.shotIndex),
+        revisionPath:
+          bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex) ?? fallbackBoard,
+        generationSpecPath: bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex),
+        storyboardPath: fallbackBoard,
+        sceneRoot: loc.sceneRoot,
+        shotIndex: loc.shotIndex,
+      });
+    }
   }
 
   return scenes;
+}
+
+export interface StoryboardFile {
+  path: string;
+  shots: StoryboardShot[];
+}
+
+/**
+ * Keep the planned shot count when a later fetch of `storyboard.json` grows.
+ *
+ * Video start rewrites per-shot specs and may briefly rewrite the board; the
+ * filmstrip must not gain a phantom last card. Shrinking (packed absorb) is OK.
+ * New scene paths not seen before are accepted in full.
+ * Pass `allowGrowth` while planning so coverage-appended rows can appear.
+ */
+export function mergeStoryboardsWithoutGrowth(
+  previous: StoryboardFile[],
+  incoming: StoryboardFile[],
+  allowGrowth = false
+): StoryboardFile[] {
+  if (previous.length === 0 || allowGrowth) return incoming;
+  const prevByPath = new Map(
+    previous.map((board) => [board.path.replace(/\\/g, '/'), board])
+  );
+  return incoming.map((board) => {
+    const prev = prevByPath.get(board.path.replace(/\\/g, '/'));
+    if (!prev?.shots.length || board.shots.length <= prev.shots.length) {
+      return board;
+    }
+    const byIndex = new Map(board.shots.map((shot) => [shot.index, shot]));
+    return {
+      path: board.path,
+      shots: prev.shots.map((shot) => byIndex.get(shot.index) ?? shot),
+    };
+  });
+}
+
+/** Paths of per-shot `shot_description.json` files, sorted for stable signatures. */
+export function findShotDescriptionPaths(nodes: ArtifactNode[]): string[] {
+  const paths = flattenArtifacts(nodes)
+    .map((file) => file.path.replace(/\\/g, '/'))
+    .filter((path) => /\/shots\/\d+\/shot_description\.json$/i.test(path));
+  return [...new Set(paths)].sort(compareSceneAwarePaths);
+}
+
+/** Shot video paths used to refetch descriptions when a clip lands. */
+export function findShotVideoPaths(nodes: ArtifactNode[]): string[] {
+  const paths = flattenArtifacts(nodes)
+    .map((file) => file.path.replace(/\\/g, '/'))
+    .filter((path) => /\/shots\/\d+\/video\.(mp4|webm|mov)$/i.test(path));
+  return [...new Set(paths)].sort(compareSceneAwarePaths);
 }
 
 /**
@@ -300,6 +422,42 @@ function patchShotRowInList(
   setDescriptionFields(target, visual, audio);
 }
 
+function beatsFromStoryboardRow(value: Record<string, unknown>): StoryboardBeat[] {
+  if (!Array.isArray(value.beats)) return [];
+  return value.beats.flatMap((beat) => {
+    if (!beat || typeof beat !== 'object') return [];
+    const row = beat as Record<string, unknown>;
+    const visualDescription =
+      stringValue(row.visual_desc) ??
+      stringValue(row.visualDescription) ??
+      stringValue(row.motion_desc);
+    if (!visualDescription) return [];
+    const camIdx = typeof row.cam_idx === 'number' ? row.cam_idx : undefined;
+    return [{ visualDescription, ...(camIdx != null ? { camIdx } : {}) }];
+  });
+}
+
+function visualFromStoryboardRow(value: Record<string, unknown>): string | undefined {
+  const top =
+    stringValue(value.visual_desc) ??
+    stringValue(value.visualDescription) ??
+    stringValue(value.description) ??
+    stringValue(value.prompt);
+  if (top) return top;
+  if (!Array.isArray(value.beats)) return undefined;
+  const parts: string[] = [];
+  for (const beat of value.beats) {
+    if (!beat || typeof beat !== 'object') continue;
+    const row = beat as Record<string, unknown>;
+    const text =
+      stringValue(row.visual_desc) ??
+      stringValue(row.visualDescription) ??
+      stringValue(row.motion_desc);
+    if (text) parts.push(text);
+  }
+  return parts.length > 0 ? parts.join('；然后') : undefined;
+}
+
 function storyboardRows(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
@@ -348,10 +506,12 @@ function bestShotFile(
       location.sceneRoot === sceneRoot
     );
   });
-  return (
-    matches.find((file) => preferredName && file.path.includes(preferredName))?.path ??
-    matches[0]?.path
-  );
+  if (preferredName) {
+    return matches.find((file) =>
+      file.path.replace(/\\/g, '/').includes(preferredName)
+    )?.path;
+  }
+  return matches[0]?.path;
 }
 
 /** Sort paths so `scene_2` follows `scene_10` numerically when possible. */

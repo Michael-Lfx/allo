@@ -1,6 +1,9 @@
 //! Flowy media request normalization (resolution, duration).
 
-use nomifun_cloud::{is_minimax_h3_model, normalize_minimax_h3_resolution};
+use nomifun_cloud::{
+    clamp_minimax_h3_duration, clamp_wan3_duration, is_minimax_h3_model, is_wan3_model,
+    normalize_minimax_h3_resolution, normalize_wan3_resolution,
+};
 
 /// True when `model` looks like a Flowy server model id (`AIPC-...` or `flowy/...`).
 pub fn is_flowy_model_id(model: &str) -> bool {
@@ -15,6 +18,7 @@ pub fn is_flowy_model_id(model: &str) -> bool {
 /// Normalize resolution for the active video model.
 /// - Seedance fast/mini: clamp 1080p+ → 720p
 /// - MiniMax-H3: map onto `768P` / `2K`
+/// - Wan 3.0: map onto `480P` / `720P` / `1080P`
 pub fn normalize_video_resolution(model: &str, resolution: &str) -> Option<String> {
     let r = resolution.trim();
     if r.is_empty() {
@@ -22,6 +26,9 @@ pub fn normalize_video_resolution(model: &str, resolution: &str) -> Option<Strin
     }
     if is_minimax_h3_model(model) {
         return Some(normalize_minimax_h3_resolution(r));
+    }
+    if is_wan3_model(model) {
+        return Some(normalize_wan3_resolution(r));
     }
     let mut lower = r.to_ascii_lowercase().replace(['_', ' '], "");
     // Canvas historically stores bare heights (`1080`); Seedance expects `1080p`.
@@ -47,6 +54,12 @@ pub fn normalize_video_resolution(model: &str, resolution: &str) -> Option<Strin
 
 /// Cap duration for a single upstream clip (model-specific).
 pub fn normalize_video_duration(model: &str, duration: u32) -> u32 {
+    if is_wan3_model(model) {
+        return clamp_wan3_duration(duration);
+    }
+    if is_minimax_h3_model(model) {
+        return clamp_minimax_h3_duration(duration);
+    }
     let max_clip = crate::video_segment::max_clip_duration_for_model(model);
     if duration > max_clip {
         tracing::warn!(
@@ -102,6 +115,22 @@ mod tests {
         assert_eq!(
             normalize_video_resolution("AIPC-MiniMax-H3", "1080p").as_deref(),
             Some("2K")
+        );
+    }
+
+    #[test]
+    fn resolution_maps_for_wan3() {
+        assert_eq!(
+            normalize_video_resolution("flowy/wan3.0-video", "720p").as_deref(),
+            Some("720P")
+        );
+        assert_eq!(
+            normalize_video_resolution("AIPC-wan3.0-video-prime", "1080").as_deref(),
+            Some("1080P")
+        );
+        assert_eq!(
+            normalize_video_resolution("flowy/wan3.0-video", "480p").as_deref(),
+            Some("480P")
         );
     }
 }

@@ -24,6 +24,8 @@ import {
   uniqueCatalogUserSkillIdForName,
   type SelectedPresetSkill,
 } from '@/renderer/pages/settings/PresetSettings/presetSkillBindings';
+import { removePresetMarketIdsForPreset } from '@/renderer/pages/settings/PresetSettings/presetMarketStorage';
+import { SKILL_CATALOG_CHANGED_EVENT } from '@/renderer/hooks/skills/skillCatalogEvents';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -148,6 +150,17 @@ export const usePresetEditor = ({
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
   }, [editName, editTargets]);
+
+  useEffect(() => {
+    if (!editVisible || typeof window === 'undefined') return;
+    const handleCatalogChanged = () => {
+      void loadPresetSkillCatalog()
+        .then((skillsList) => setAvailableSkills(skillsList))
+        .catch((error) => console.error('Failed to refresh preset skill catalog:', error));
+    };
+    window.addEventListener(SKILL_CATALOG_CHANGED_EVENT, handleCatalogChanged);
+    return () => window.removeEventListener(SKILL_CATALOG_CHANGED_EVENT, handleCatalogChanged);
+  }, [editVisible]);
 
   const updateField = useCallback(<K extends keyof PresetDraft>(field: K, value: PresetDraft[K]) => {
     switch (field) {
@@ -502,6 +515,7 @@ export const usePresetEditor = ({
       // Delete the backend-owned preset record. Conversation snapshots remain
       // immutable and continue to describe historical launches.
       await ipcBridge.presets.delete.invoke({ preset_id: activePreset.preset_id });
+      removePresetMarketIdsForPreset(activePreset.preset_id);
 
       // Reload preset list
       await loadPresets();

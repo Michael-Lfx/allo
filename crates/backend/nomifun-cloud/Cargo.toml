@@ -9,6 +9,7 @@ nomifun-api-types.workspace = true
 nomifun-auth.workspace = true
 nomifun-db.workspace = true
 nomi-config.workspace = true
+nomi-process-runtime.workspace = true
 nomi-providers.workspace = true
 nomi-types.workspace = true
 axum.workspace = true
@@ -33,8 +34,17 @@ aes-gcm.workspace = true
 base64.workspace = true
 getrandom.workspace = true
 rqrr = "0.9"
+sysinfo = { workspace = true, features = ["system", "disk"] }
+
+[features]
+default = []
+http3-experimental = ["reqwest/http3"]
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [dev-dependencies]
+clap = { workspace = true }
 tempfile.workspace = true
 wiremock.workspace = true
 nomi-types.workspace = true

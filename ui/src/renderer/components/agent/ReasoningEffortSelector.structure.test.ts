@@ -24,6 +24,8 @@ describe('ReasoningEffortSelector structure', () => {
     expect(source.includes("className='reasoning-effort-popover'")).toBe(true);
     expect(source.includes("classNames(styles.triggerIcon, 'shrink-0')")).toBe(true);
     expect(source.includes("classNames(styles.triggerLabelSlot, 'sendbox-responsive-label')")).toBe(true);
+    expect(source.includes('sendbox-responsive-static-value')).toBe(true);
+    expect(source.includes('sendbox-responsive-strategy-root')).toBe(true);
     expect(source.includes('styles.triggerLabelReserve')).toBe(true);
     expect(source.includes('styles.panelFooter')).toBe(false);
     expect(source.includes('tooltipVisible={false}')).toBe(true);
@@ -57,7 +59,12 @@ describe('ReasoningEffortSelector structure', () => {
     expect(css.includes('.arco-slider-road) {\n  background: transparent;')).toBe(true);
     expect(css.includes('.compactTrigger > :global(.i-icon):first-child')).toBe(true);
     expect(css.includes('.triggerIcon')).toBe(true);
-    expect(css.includes('margin-right: -2px')).toBe(true);
+    expect(css.includes('.compactTrigger :global(.sendbox-responsive-leading-icon)')).toBe(true);
+    expect(css.includes('.compactTrigger :global(.sendbox-responsive-chevron-slot)')).toBe(true);
+    expect(css.includes('margin-right: -2px')).toBe(false);
+    expect(css.includes('height: 28px;')).toBe(true);
+    expect(css.includes('max-height: 28px;')).toBe(true);
+    expect(css.includes('transform: scale(0.96)')).toBe(false);
     expect(css.includes('transform: translateY(2px)')).toBe(false);
     expect(css.includes('.compactTrigger:active')).toBe(true);
     expect(css.includes('.arco-popover-content')).toBe(true);
@@ -107,6 +114,14 @@ describe('ReasoningEffortSelector structure', () => {
     expect(selectorCss.includes('@container sendbox-config')).toBe(false);
     expect(selectorCss.includes('@container guid-action-config')).toBe(false);
     expect(selectorCss.includes("data-mobile")).toBe(false);
+    expect(selectorSource.includes("data-layout-part='leading-icon'")).toBe(true);
+    expect(selectorSource.includes("data-layout-part='chevron'")).toBe(true);
+    expect(selectorSource.includes("normalizedLevels.length === 1")).toBe(true);
+    expect(selectorSource.includes('useChatModelTriggerExpansion')).toBe(true);
+    expect(selectorSource.includes("cssVariablePrefix: 'strategy'")).toBe(true);
+    expect(selectorSource.includes("slotSelector: '.sendbox-strategy-slot'")).toBe(true);
+    expect(selectorSource.includes('style={strategyTriggerStyle}')).toBe(true);
+    expect(selectorSource.includes('data-chat-strategy-expand-side')).toBe(true);
   });
 
   test('keeps the trigger hint localized in both supported locales', () => {

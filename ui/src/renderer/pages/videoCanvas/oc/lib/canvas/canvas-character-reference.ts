@@ -75,20 +75,88 @@ export function normalizeCharacterName(value?: string) {
     return (value || "").toLocaleLowerCase("zh-CN").replace(/^角色[：:]\s*/, "").replace(/[\s·•・._-]+/g, "").trim();
 }
 
+function findJsonValueEnd(source: string, start: number) {
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start; index < source.length; index += 1) {
+        const character = source[index];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (character === "\\") {
+                escaped = true;
+            } else if (character === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (character === '"') {
+            inString = true;
+            continue;
+        }
+        if (character === "{" || character === "[") {
+            stack.push(character);
+            continue;
+        }
+        if (character !== "}" && character !== "]") continue;
+        const opener = stack.pop();
+        if ((character === "}" && opener !== "{") || (character === "]" && opener !== "[")) return -1;
+        if (!stack.length) return index;
+    }
+    return -1;
+}
+
+function isCharacterCardArray(value: unknown): value is unknown[] {
+    if (!Array.isArray(value) || !value.length) return false;
+    return value.some((item) => Boolean(item) && typeof item === "object" && typeof (item as Record<string, unknown>).name === "string");
+}
+
+function flattenCharacterCandidates(value: unknown): unknown[] | undefined {
+    if (Array.isArray(value)) {
+        const result: unknown[] = [];
+        value.forEach((item) => {
+            if (Array.isArray(item)) {
+                result.push(...(flattenCharacterCandidates(item) ?? []));
+                return;
+            }
+            if (item && typeof item === "object" && typeof (item as Record<string, unknown>).name !== "string") {
+                const nested = flattenCharacterCandidates((item as { characters?: unknown }).characters);
+                if (nested?.length) {
+                    result.push(...nested);
+                    return;
+                }
+            }
+            result.push(item);
+        });
+        return result;
+    }
+    if (value && typeof value === "object") return Object.values(value as Record<string, unknown>);
+    return undefined;
+}
+
+function extractCharacterBreakdownJson(raw: string) {
+    for (let start = 0; start < raw.length; start += 1) {
+        if (raw[start] !== "{" && raw[start] !== "[") continue;
+        const end = findJsonValueEnd(raw, start);
+        if (end < start) continue;
+        try {
+            const parsed: unknown = JSON.parse(raw.slice(start, end + 1));
+            if (isCharacterCardArray(parsed)) return parsed;
+            const candidates = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? flattenCharacterCandidates((parsed as { characters?: unknown }).characters) : undefined;
+            if (Array.isArray(candidates) && candidates.length) return parsed;
+        } catch {
+            // Ignore unrelated braces in model prose and continue to the next complete JSON value.
+        }
+    }
+    throw new Error("角色拆解没有返回符合契约的 JSON");
+}
+
 export function parseCharacterBreakdown(raw: string): CharacterBreakdown[] {
     const unfenced = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-    const starts = [unfenced.indexOf("{"), unfenced.indexOf("[")].filter((index) => index >= 0);
-    const start = starts.length ? Math.min(...starts) : -1;
-    const end = Math.max(unfenced.lastIndexOf("}"), unfenced.lastIndexOf("]"));
-    if (start < 0 || end < start) throw new Error("角色拆解没有返回可识别的 JSON");
-
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(unfenced.slice(start, end + 1));
-    } catch (error) {
-        throw new Error(`角色拆解结果格式不正确：${error instanceof Error ? error.message : "无法解析 JSON"}`);
-    }
-    const candidates = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" ? (parsed as { characters?: unknown }).characters : undefined;
+    const parsed = extractCharacterBreakdownJson(unfenced);
+    const candidates = Array.isArray(parsed) ? flattenCharacterCandidates(parsed) : flattenCharacterCandidates((parsed as { characters?: unknown }).characters);
     if (!Array.isArray(candidates)) throw new Error("角色拆解结果缺少 characters 数组");
 
     const seen = new Set<string>();

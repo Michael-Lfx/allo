@@ -5,6 +5,114 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Lesson practice sections present questions one at a time with instant grading feedback ("Next question" after each submit); the stepper is gated per practice section and unlocks past it only once its questions are answered. Answered questions stay reviewable with your own response and the grader's feedback.
+- Wan 3.0 video create requests now send DashScope `input`/`parameters` (not Seedance `content[]`), with 2–30s clips and `480P`/`720P`/`1080P` resolution tokens.
+
+
+## v1.3.2 - 2026-09-11
+
+- Video generation adds a blank-canvas entry and outer connect rails for wiring nodes from outside the card.
+
+## v1.3.1 - 2026-09-10
+
+- Desktop surfaces startup diagnostics when the local backend is unreachable.
+
+## v1.3.0 - 2026-09-10
+
+- Canvas adds a craft-shelf handbook and a simpler create-node menu.
+- Bottom dock toolbar and toolbar settings are refined. Windows 11 keeps the webview loopback API reachable.
+
+## v1.2.9 - 2026-09-10
+
+- macOS cross-builds bundle ripgrep for the Tauri target architecture.
+
+## v1.2.8 - 2026-09-09
+
+- Vimax cover generation, storyboard truncation, and missing scene reference images are fixed.
+- Desktop defers the startup OTA check until after first paint, and reports update-funnel plus CDN quality telemetry.
+- Agent eval adds layered suites, pass@k, and a cloud bad-case pipeline.
+
+## v1.2.7 - 2026-09-09
+
+- Vimax fills missing shots at the finished-film level before packing, so storyboards do not duplicate rows or split extra clips.
+
+## v1.2.6 - 2026-09-09
+
+- Release CI no longer replaces crates.io with rsproxy, which was breaking ModelScope builds.
+
+## v1.2.2 - 2026-09-05
+
+- Video Look catalog and original still covers share one surface.
+- R2V storyboard display stays frozen during generation, and users can name tasks.
+
+## v1.2.1 - 2026-09-05
+
+- Canvas unifies the asset space with short-drama stills, quiets overlay chrome, and collapses the node composer.
+- Historical canvas media displays again, and art-critique errors surface instead of failing silently.
+
+## v1.2.0 - 2026-09-04
+
+- SkillHub expert packs now validate package integrity during install and at runtime; expert pack settings live in the local capability center, and Nomi setup stays consistent with pack installs. Missing ACP skills no longer silently degrade mid-session.
+- Conversations gain a Skills picker card and improved setup-presentation coverage.
+- Image analysis prioritizes DeepSeek vision models with tightened matching, a larger token budget, and graceful fallback on failure.
+- Networking: the workspace HTTP client enables HTTP/2 multiplexing, with a new HTTP/2 vs HTTP/3 benchmark probe and documented findings on the current reqwest HTTP/3 ALPN limitation.
+- Canvas isolates node jobs from clip recents and hardens the home agent.
+- Video generation unifies recents, fixes TV tabs, and tightens the drama pipeline.
+- Learning fixes directory deletion graph cleanup and relaxes the startup orphan audit with automatic repair.
+- Meeting dock pill and notes-first surface match Granola; capability-center sidebar no longer overflows in English.
+
+## v1.1.10 - 2026-09-03
+
+- Learning courses use a graph/list workspace with on-demand generation, interrupt/resume, and faster first paint.
+- Session Trace timeline, folding, and diagnostics are clearer; conversation errors include model context and block mid-stream model switches.
+- Video canvas allows connecting video nodes and defaults to a light theme. Vimax adds style catalog, session Cameo, and clearer provider moderation errors.
+- Coding recon is bounded by provider round-trips, with corrected turn credits.
+
+## v1.1.9 - 2026-09-02
+
+- News Briefing adds a research-to-voice/stills workflow and starts processing directly after submission.
+- Settings navigation now shows loading and error states and prevents stale interactions during transitions.
+- MCP, plugin, and skill settings are more consistent across the settings surfaces.
+- Video-generation and canvas surfaces integrate briefing controls and improve draft, route, and duration handling.
+- First-party telemetry now preserves error messages, while UI async, type, and component-contract fixes improve cross-page stability.
+
+## v1.1.8 - 2026-09-01
+
+- Canvas Agent restores the local coding switch and no longer hits a max-update-depth loop on prompt resize.
+- Keep-awake settings stay consistent. Feedback and support chat modals are more stable.
+- First-party telemetry reports video-generation events and film terminal status.
+
+## v1.1.7 - 2026-09-01
+
+- Canvas Agent starts faster, persists chats, and uses a simpler panel.
+
+## v1.1.6 - 2026-09-01
+
+- Vimax studio docks the Agent session and persists run history.
+- Storyboard rows stay frozen while a video clip is generating.
+
+## v1.1.5 - 2026-08-31
+
+- Long Markdown blockquotes collapse; streaming layout and collapse controls stay stable.
+- Media catalog lists TTS models and rewrites relative catalog icons.
+- Vimax clip timelines follow model duration windows; narrative clips pack without phantom last shots.
+
+## v1.1.4 - 2026-08-30
+
+- Seedance reference-to-video prompts are shorter and honor the user's aspect ratio.
+
+## v1.1.3 - 2026-08-29
+
+- Video canvas adds a 3D director workbench and canvas agent tools.
+- Vimax campaign carousel, TV tab, and submit flow. Storyboard shows I2V spec and concatenates mixed-resolution shots.
+- Photographic faces are sanitized for privacy; clip pacing follows speech.
+
+## v1.1.2 - 2026-08-29
+
+- Fix Windows ARM ModelScope publish: NSIS `_arm64-setup.exe` maps to `windows-aarch64`.
+- Video home composer attach matches stacked-card UX; custom/skill popovers open faster.
+- Meeting recording dock stays pinned. Safari 15.5 WebKit and real macOS versions report correctly.
+
 ## v1.0.6 - 2026-08-25
 
 - Meetings record with switchable local or cloud STT, live captions, speaker labels, and notes that land in bound chats and tasks. Tray and global shortcuts start or join a session; Agent listen mode keeps a rolling transcript.

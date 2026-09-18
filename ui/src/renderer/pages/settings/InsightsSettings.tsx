@@ -147,7 +147,7 @@ const InsightsSettings: React.FC = () => {
   };
 
   return (
-    <SettingsPageWrapper>
+    <SettingsPageWrapper loading={loading && status === null}>
       <div className='space-y-24px'>
         <SettingsPageHeader
           title={t('insights.title')}

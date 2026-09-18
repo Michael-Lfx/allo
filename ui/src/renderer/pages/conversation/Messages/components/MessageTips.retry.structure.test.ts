@@ -23,8 +23,7 @@ describe('message error actions', () => {
     expect(tipsSource.includes('if (message.content.recovery) return null')).toBe(true);
     expect(tipsSource.includes("message.content.type === 'error'")).toBe(true);
     expect(tipsSource.includes('message.content.error?.retryable === true')).toBe(true);
-    expect(tipsSource.includes("recovery?.failure_code === 'output_truncated'")).toBe(true);
-    expect(tipsSource.includes("recovery?.failure_code === 'turn_requests_exhausted'")).toBe(true);
+    expect(tipsSource.includes('recovery.failure_code.toUpperCase()')).toBe(true);
     expect(tipsSource.includes('message.content.error.code === expectedUiErrorCode')).toBe(true);
   });
 

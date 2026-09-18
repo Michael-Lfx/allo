@@ -107,7 +107,7 @@ const MediaSettings: React.FC = () => {
   );
 
   return (
-    <SettingsPageWrapper>
+    <SettingsPageWrapper loading={loading && settings === null}>
       <div className='space-y-24px'>
         <SettingsPageHeader
           title={t('media.title')}

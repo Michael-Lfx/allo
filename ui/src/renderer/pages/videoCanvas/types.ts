@@ -21,6 +21,7 @@ export type CanvasGenerationMode = 'text' | 'image' | 'video' | 'audio';
 export type CanvasVideoEditOperation =
   | 'text_to_video'
   | 'image_to_video'
+  | 'reference_to_video'
   | 'extend'
   | 'camera_motion'
   | 'concat';
@@ -72,6 +73,8 @@ export type CanvasNodeMetadata = {
   videoStartFrameNodeId?: string;
   videoEndFrameNodeId?: string;
   mediaId?: string;
+  /** Exclusive Flowy TV cover. Only one image node should have this set. */
+  tvCover?: boolean;
   mimeType?: string;
   durationMs?: number;
   taskId?: string;
@@ -109,6 +112,9 @@ export type CanvasDocument = {
     durationMs: number;
     updatedAt?: string;
   };
+  /** Agent chat: one project keeps its sessions across reopen. */
+  chatSessions?: unknown[];
+  activeChatId?: string | null;
   /** High-fidelity Agent→Canvas sidecar (camera tree, voice bible, write-back). */
   alloCreative?: Record<string, unknown>;
 };

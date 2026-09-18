@@ -969,36 +969,64 @@ fn compose_video_prompt(
     use_voice_audio_ref: bool,
 ) -> String {
     let mut parts = Vec::new();
-    if !visual.trim().is_empty() {
-        parts.push(visual.trim().to_string());
-    }
     if !motion.trim().is_empty() {
         parts.push(format!("Motion: {}", motion.trim()));
+    } else if !visual.trim().is_empty() {
+        parts.push(visual.trim().to_string());
     }
-    if !ff_desc.trim().is_empty() {
-        parts.push(format!("Starts on: {}", ff_desc.trim()));
-    }
-    if !lf_desc.trim().is_empty() {
-        parts.push(format!("Ends on: {}", lf_desc.trim()));
+    let ff = ff_desc.trim();
+    let lf = lf_desc.trim();
+    let same_beat = {
+        let norm = |s: &str| -> String {
+            s.chars().filter(|c| !c.is_whitespace()).take(48).collect()
+        };
+        !ff.is_empty() && !lf.is_empty() && {
+            let a = norm(ff);
+            let b = norm(lf);
+            if a == b {
+                true
+            } else {
+                let pa: String = a.chars().take(12).collect();
+                let pb: String = b.chars().take(12).collect();
+                pa.chars().count() >= 8
+                    && pb.chars().count() >= 8
+                    && (a.starts_with(&pb) || b.starts_with(&pa))
+            }
+        }
+    };
+    if !same_beat {
+        if !ff.is_empty() {
+            parts.push(format!(
+                "Start: {}",
+                crate::planning::clip_at_break(ff, 80)
+            ));
+        }
+        if !lf.is_empty() {
+            parts.push(format!(
+                "End: {}",
+                crate::planning::clip_at_break(lf, 80)
+            ));
+        }
     }
     if use_voice_audio_ref {
         parts.push(
-            "REFERENCE AUDIO: match reference_audio for speaker timbre; no background music — only dialogue and essential on-screen foley."
+            "@Audio1 is the voice timbre bible; match speaker identity for dialogue. Keep the scene's room tone and BGM."
                 .into(),
         );
     } else if !audio.trim().is_empty() {
         parts.push(format!("Audio / dialogue: {}", audio.trim()));
     }
-    if !use_voice_audio_ref {
-        for clause in voice_clauses {
-            if !parts.iter().any(|p| p.contains(clause)) {
-                parts.push(clause.clone());
-            }
+    for clause in voice_clauses {
+        if !parts.iter().any(|p| p.contains(clause)) {
+            parts.push(clause.clone());
         }
     }
     if !film.aspect_ratio.trim().is_empty() {
-        parts.push(format!("Aspect ratio {}", film.aspect_ratio.trim()));
+        parts.push(crate::aspect::video_aspect_framing_clause(
+            film.aspect_ratio.trim(),
+        ));
     }
+    parts.push("Keep it subtitle-free.".into());
     parts.join("\n")
 }
 
@@ -1101,6 +1129,7 @@ fn image_node(
             "storageKey".into(),
             json!(format!("resource:{}", entry.media_id)),
         );
+        obj.insert("mediaId".into(), json!(entry.media_id));
         obj.insert("mimeType".into(), json!(entry.mime));
         obj.insert("bytes".into(), json!(entry.bytes));
         obj.insert("status".into(), json!(status));
@@ -1135,6 +1164,7 @@ fn audio_node(
             "storageKey".into(),
             json!(format!("resource:{}", entry.media_id)),
         );
+        obj.insert("mediaId".into(), json!(entry.media_id));
         obj.insert("mimeType".into(), json!(entry.mime));
         obj.insert("bytes".into(), json!(entry.bytes));
         obj.insert("status".into(), json!(status));
@@ -1167,6 +1197,7 @@ fn video_node(
             "storageKey".into(),
             json!(format!("resource:{}", entry.media_id)),
         );
+        obj.insert("mediaId".into(), json!(entry.media_id));
         obj.insert("mimeType".into(), json!(entry.mime));
         obj.insert("bytes".into(), json!(entry.bytes));
     }

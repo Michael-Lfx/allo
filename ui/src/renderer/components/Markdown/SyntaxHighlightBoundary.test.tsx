@@ -33,8 +33,8 @@ describe('SyntaxHighlightBoundary', () => {
       {
         fallback: React.createElement('code', { 'data-fallback': true }, 'plain'),
         resetKey: 'ok',
+        children: React.createElement('code', { 'data-ok': true }, 'highlighted'),
       },
-      React.createElement('code', { 'data-ok': true }, 'highlighted')
     );
     expect(React.isValidElement(element)).toBe(true);
   });

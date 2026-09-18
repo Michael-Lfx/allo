@@ -23,6 +23,7 @@ export type SettingsNavIcon =
   | 'poi'
   | 'learning'
   | 'insights'
+  | 'telemetry'
   | 'moa'
   | 'media'
   | 'presets'
@@ -91,9 +92,10 @@ const BUILTIN_NAVIGATION: SettingsNavBuiltin[] = [
     groupId: 'capabilities',
     icon: 'presets',
     labelKey: 'settings.capabilityHub.navLabel',
-    activePaths: ['presets', 'skills', 'mcp', 'plugins'],
+    activePaths: ['presets', 'skills', 'mcp'],
   },
   { id: 'cloud-login', path: 'cloud-login', groupId: 'account', icon: 'cloud-login', labelKey: 'settings.cloudLoginNav' },
+  { id: 'telemetry', path: 'telemetry', groupId: 'account', icon: 'telemetry', labelKey: 'settings.telemetryNav' },
   { id: 'about', path: 'about', groupId: 'account', icon: 'about', labelKey: 'settings.about' },
 ];
 

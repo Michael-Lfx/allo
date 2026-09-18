@@ -719,16 +719,22 @@ impl CompanionThreads {
         let workspaces_dir = self.registry.workspaces_dir();
         let desired = compute_desired_workspace_dir(&workspaces_dir, profile);
         let action = plan_workspace_reconcile(&current, &desired, &workspaces_dir);
-        if let Some(new_path) = apply_workspace_action(action) {
-            let new_str = new_path.to_string_lossy().into_owned();
-            if new_str != current
-                && let Err(e) = self
-                    .conversations
-                    .update_extra(conversation_id, serde_json::json!({ "workspace": new_str }))
-                    .await
-            {
-                tracing::warn!(error = %e, conversation_id, "update companion workspace extra failed");
-            }
+        if matches!(action, WorkspaceAction::Noop | WorkspaceAction::Leave) {
+            return;
+        }
+
+        // Re-read and plan again after the runtime configuration gate is
+        // acquired. The initial read above is only a cheap no-op/leave fast
+        // path; it must never authorize a filesystem move by itself.
+        let result = self
+            .conversations
+            .update_workspace_extra_with(conversation_id, move |fresh_current| {
+                let action = plan_workspace_reconcile(fresh_current, &desired, &workspaces_dir);
+                apply_workspace_action(action).map(|path| path.to_string_lossy().into_owned())
+            })
+            .await;
+        if let Err(e) = result {
+            tracing::warn!(error = %e, conversation_id, "reconcile companion workspace failed");
         }
     }
 

@@ -478,6 +478,8 @@
     "modelPlaceholder": "Select model",
     "preset": "Reusable preset",
     "presetHint": "Apply a saved Agent, model, Skill and knowledge configuration to this companion in one step.",
+    "appliedPreset": "Applied preset",
+    "appliedPresetHint": "This companion keeps using its saved preset snapshot; choose a preset for new conversations from the home page.",
     "persona": "Persona",
     "personaHint": "Shapes how {{companionName}} talks",
     "personaLively": "Lively",

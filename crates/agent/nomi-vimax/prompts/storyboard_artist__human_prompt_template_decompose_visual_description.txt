@@ -7,3 +7,4 @@
 {characters_str}
 </CHARACTERS>
 {continuity_block}
+{beats_block}

@@ -128,10 +128,12 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     .await
     .expect("tables");
 
-    // 数字跟着 schema 走：v3 baseline 110 张 + 后续迁移追加（`052` / `053` / `055`
-    // 共 4 张）＝ 114。它是一条**刻意显式**的契约（新增表时应当被刻意改一次），不是
+    // 数字跟着 schema 走，是两侧迁移合并后的显式契约（新增表时应当被刻意改一次），不是
     // 从迁移里推出来的——所以坏掉时说明有人加了表而没更新契约，不是测试需要放宽。
-    assert_eq!(tables.len(), 114);
+    // 学习侧:048 学习图:+learning_graph_prerequisites;050 课时分节:
+    // +learning_lesson_sections;052 复习日志:+learning_review_log。
+    // Agent Store 侧:`058` / `059` / `061` 共 4 张。
+    assert_eq!(tables.len(), 117);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)

@@ -25,6 +25,7 @@ export function getOperationLabel(value: string): string | undefined {
         { label: canvasT("videoCanvas.tasks.opAgentSession", "Agent 会话：拆解影视工作流"), value: "agent_session" },
         { label: canvasT("videoCanvas.tasks.opTextToVideo", "文生视频"), value: "text_to_video" },
         { label: canvasT("videoCanvas.tasks.opImageToVideo", "图生视频"), value: "image_to_video" },
+        { label: canvasT("videoCanvas.tasks.opReferenceToVideo", "多图参考视频"), value: "reference_to_video" },
         { label: canvasT("videoCanvas.tasks.opExtend", "视频续写"), value: "extend" },
         { label: canvasT("videoCanvas.tasks.opInpaint", "视频局部修改"), value: "inpaint" },
         { label: canvasT("videoCanvas.tasks.opReplace", "元素替换"), value: "replace_element" },

@@ -7,12 +7,13 @@ use axum::routing::{get, post};
 
 use nomifun_api_types::{
     ApiResponse, BatchImportMcpServersRequest, CreateMcpServerRequest, DetectedMcpServerResponse, ErrorResponse,
-    McpConnectionTestErrorCode, McpServerId, McpServerResponse, OAuthCheckStatusRequest, OAuthLoginRequest,
-    OAuthLoginResponse, OAuthLogoutRequest, OAuthStatusResponse, TestMcpConnectionRequest,
-    UpdateMcpServerRequest,
+    McpActivationResponse, McpConnectionTestErrorCode, McpServerId, McpServerResponse, McpTestByIdResponse,
+    OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest, OAuthStatusResponse,
+    TestMcpConnectionRequest, UpdateMcpServerRequest,
 };
 use nomifun_common::AppError;
 
+use crate::activation::McpActivationService;
 use crate::connection_test::McpConnectionTestService;
 use crate::oauth_service::McpOAuthService;
 use crate::service::McpConfigService;
@@ -29,6 +30,7 @@ pub struct McpRouterState {
     pub config_service: McpConfigService,
     pub sync_service: McpSyncService,
     pub connection_test_service: McpConnectionTestService,
+    pub activation_service: McpActivationService,
     pub oauth_service: McpOAuthService,
 }
 
@@ -51,6 +53,16 @@ pub fn mcp_routes(state: McpRouterState) -> Router {
         .route(
             "/api/mcp/servers/{mcp_server_id}/toggle",
             post(toggle_server),
+        )
+        // Test a saved server by ID (transport read from the DB row only)
+        .route(
+            "/api/mcp/servers/{mcp_server_id}/test",
+            post(test_server_by_id),
+        )
+        // Explicit "add and enable": test by ID, enable on success
+        .route(
+            "/api/mcp/servers/{mcp_server_id}/activate",
+            post(activate_server),
         )
         // Connection test route
         .route("/api/mcp/test-connection", post(test_connection))
@@ -127,6 +139,33 @@ async fn toggle_server(
     Ok(Json(ApiResponse::ok(server)))
 }
 
+/// `POST /api/mcp/servers/:mcp_server_id/test` — test a saved MCP server by ID.
+///
+/// The transport is read from the persisted row; the client never re-submits
+/// it. The test result is persisted. A failed test is data (HTTP 200 with
+/// `test.success == false`), not a request error.
+async fn test_server_by_id(
+    State(state): State<McpRouterState>,
+    Path(mcp_server_id): Path<McpServerId>,
+) -> Result<Json<ApiResponse<McpTestByIdResponse>>, AppError> {
+    let response = state.activation_service.test_server_by_id(&mcp_server_id).await?;
+    Ok(Json(ApiResponse::ok(response)))
+}
+
+/// `POST /api/mcp/servers/:mcp_server_id/activate` — test and enable.
+///
+/// Explicit "add and enable" flow: run the test against the persisted config
+/// and enable the server only when the test succeeded and the configuration
+/// was unchanged. Refusals (failed test, auth required, config drift) keep the
+/// server disabled and are returned as data.
+async fn activate_server(
+    State(state): State<McpRouterState>,
+    Path(mcp_server_id): Path<McpServerId>,
+) -> Result<Json<ApiResponse<McpActivationResponse>>, AppError> {
+    let response = state.activation_service.test_and_enable(&mcp_server_id).await?;
+    Ok(Json(ApiResponse::ok(response)))
+}
+
 /// `POST /api/mcp/servers/import` — batch import MCP servers.
 async fn batch_import(
     State(state): State<McpRouterState>,
@@ -149,14 +188,43 @@ async fn test_connection(
     body: Result<Json<TestMcpConnectionRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    // A saved server is always tested from the persisted row. Keep the legacy
+    // request shape for unsaved editor drafts, but never allow a client to
+    // replace the transport of an existing server while persisting a result.
+    if let Some(server_id) = req.mcp_server_id {
+        let response = state.activation_service.test_server_by_id(&server_id).await?;
+        if response.test.success || response.test.needs_auth == Some(true) {
+            return Ok(Json(ApiResponse::ok(response.test)).into_response());
+        }
+
+        let status = response
+            .test
+            .code
+            .map(connection_test_failure_status)
+            .unwrap_or(StatusCode::BAD_GATEWAY);
+        let error = response
+            .test
+            .error
+            .clone()
+            .unwrap_or_else(|| "MCP connection test failed".to_string());
+        let code = response
+            .test
+            .code
+            .map(McpConnectionTestErrorCode::as_str)
+            .unwrap_or("MCP_CONNECTION_FAILED");
+        return Ok((
+            status,
+            Json(ErrorResponse::new_with_details(error, code, response.test.details.clone())),
+        )
+            .into_response());
+    }
+
     let transport = McpServerTransport::from(req.transport);
     let result = state
         .connection_test_service
         .test_connection(&req.name, &transport)
         .await;
-    if let Some(server_id) = req.mcp_server_id {
-        state.config_service.persist_test_result(&server_id, &result).await?;
-    }
     if result.success || result.needs_auth == Some(true) {
         return Ok(Json(ApiResponse::ok(result)).into_response());
     }

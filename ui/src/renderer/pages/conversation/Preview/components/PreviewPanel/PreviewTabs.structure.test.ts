@@ -11,6 +11,11 @@ const source = readFileSync(new URL('./PreviewTabs.tsx', import.meta.url), 'utf8
 const chromeCss = readFileSync(new URL('./preview.css', import.meta.url), 'utf8');
 
 describe('preview chrome tab strip', () => {
+  test('uses the list-checkbox glyph for the conversation plan workspace tab', () => {
+    expect(source.includes("case 'conversation-plan':")).toBe(true);
+    expect(source.includes('ListCheckbox')).toBe(true);
+  });
+
   test('uses a compact bar with inset pill chips instead of full-height strips', () => {
     expect(chromeCss.includes('height: 32px;')).toBe(true);
     expect(source.includes('h-24px')).toBe(true);

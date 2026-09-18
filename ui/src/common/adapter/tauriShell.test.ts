@@ -9,6 +9,8 @@ import { describe, expect, test } from 'bun:test';
 import {
   tauriDownloadUpdate,
   tauriInstallUpdate,
+  tauriIsAppFocused,
+  tauriSendNotification,
   type TauriDownloadUpdateProgress,
 } from './tauriShell';
 
@@ -36,6 +38,8 @@ const withTauriInternals = async (
         invoke,
         transformCallback: () => 1,
         unregisterCallback: () => {},
+        // `getCurrentWindow()` resolves its label from this metadata.
+        metadata: { currentWindow: { label: 'main' } },
       },
     },
   });
@@ -46,6 +50,47 @@ const withTauriInternals = async (
     restoreWindow();
   }
 };
+
+const withDocumentFocus = async (
+  hasFocus: boolean,
+  run: () => Promise<void>
+): Promise<void> => {
+  const originalDocument = (globalThis as { document?: unknown }).document;
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { hasFocus: () => hasFocus },
+  });
+
+  try {
+    await run();
+  } finally {
+    if (originalDocument === undefined) {
+      Reflect.deleteProperty(globalThis, 'document');
+    } else {
+      Object.defineProperty(globalThis, 'document', {
+        configurable: true,
+        value: originalDocument,
+      });
+    }
+  }
+};
+
+const focusInvoke = (
+  focusedLabels: string[],
+  options: { throwOnEnumerate?: boolean; throwOnFocus?: boolean } = {}
+) =>
+  async (command: string, args: unknown): Promise<unknown> => {
+    if (command === 'plugin:window|get_all_windows') {
+      if (options.throwOnEnumerate) throw new Error('window enumeration unavailable');
+      return ['main', 'nomi-memory-panel'];
+    }
+    if (command === 'plugin:window|is_focused') {
+      if (options.throwOnFocus) throw new Error('focus query unavailable');
+      const { label } = args as { label: string };
+      return focusedLabels.includes(label);
+    }
+    throw new Error(`unexpected command: ${command}`);
+  };
 
 describe('native update commands', () => {
   test('download invokes the Rust-owned command and forwards progress', async () => {
@@ -94,5 +139,74 @@ describe('native update commands', () => {
     });
 
     expect(errorMessage).toBe('native updater failed');
+  });
+
+  test('notification forwards the pending-attention id to Rust', async () => {
+    const calls: Array<{ command: string; args: unknown }> = [];
+    await withTauriInternals(async (command, args) => {
+      calls.push({ command, args });
+    }, async () => {
+      await tauriSendNotification({
+        title: '客服回复了你',
+        body: '你好',
+        attention_id: 'support:7',
+        click_target: 'flowy://support?attention_id=support%3A7',
+      });
+    });
+
+    expect(calls).toEqual([
+      {
+        command: 'show_os_notification_cmd',
+        args: {
+          title: '客服回复了你',
+          body: '你好',
+          clickTarget: 'flowy://support?attention_id=support%3A7',
+          attentionId: 'support:7',
+        },
+      },
+    ]);
+  });
+});
+
+describe('app-level window focus', () => {
+  test('is focused when any Flowy window holds OS focus', async () => {
+    await withTauriInternals(focusInvoke(['nomi-memory-panel']), async () => {
+      await withDocumentFocus(false, async () => {
+        expect(await tauriIsAppFocused()).toBe(true);
+      });
+    });
+  });
+
+  test('is unfocused when no window holds OS focus', async () => {
+    await withTauriInternals(focusInvoke([]), async () => {
+      await withDocumentFocus(true, async () => {
+        expect(await tauriIsAppFocused()).toBe(false);
+      });
+    });
+  });
+
+  test('falls back to the main window when enumeration fails', async () => {
+    await withTauriInternals(
+      focusInvoke(['main'], { throwOnEnumerate: true }),
+      async () => {
+        await withDocumentFocus(false, async () => {
+          expect(await tauriIsAppFocused()).toBe(true);
+        });
+      }
+    );
+  });
+
+  test('falls back to the DOM signal when every native query fails', async () => {
+    await withTauriInternals(
+      focusInvoke([], { throwOnEnumerate: true, throwOnFocus: true }),
+      async () => {
+        await withDocumentFocus(true, async () => {
+          expect(await tauriIsAppFocused()).toBe(true);
+        });
+        await withDocumentFocus(false, async () => {
+          expect(await tauriIsAppFocused()).toBe(false);
+        });
+      }
+    );
   });
 });

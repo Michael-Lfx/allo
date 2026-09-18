@@ -56,6 +56,9 @@ describe('CodeBlock streaming behavior', () => {
 
     expect(source.includes('<BeautifulUiCodeBlock')).toBe(true);
     expect(source.includes("className='markdown-code-footer'")).toBe(true);
+    expect(source.includes("data-testid='markdown-code-footer'")).toBe(true);
+    expect(source.includes("data-collapsible={canCollapse ? 'true' : 'false'}")).toBe(true);
+    expect(source.includes("data-streaming={isStreaming ? 'true' : 'false'}")).toBe(true);
     expect(source.includes("className='markdown-code-footer-label'")).toBe(true);
     expect(source.includes('from \'lucide-react\'')).toBe(true);
     expect(source.includes('rgba(255,255,255,0.55)')).toBe(false);

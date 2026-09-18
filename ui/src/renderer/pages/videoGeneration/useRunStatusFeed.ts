@@ -5,8 +5,7 @@
  * do not re-render the whole workspace:
  *
  * - `full` — complete `SessionStatus`; subscribed by the small live-progress
- *   components (ProgressTimeline, StudioStageRail, StoryboardBoard, header
- *   progress line). New identity only when the payload actually changed.
+ *       components (StudioAgentSession, StoryboardBoard). New identity only when the payload actually changed.
  * - `flags` — coarse primitives (`status`, `busy`, `failedLike`, media paths,
  *   …) the workspace chrome derives buttons/panels from. New identity only
  *   when one of those primitives changes, so the heavy page body bails out
@@ -20,6 +19,7 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import { getSessionStatus, isActiveStatus } from './api';
 import type { SessionStatus, VimaxRunStatus } from './types';
 import { isInsufficientCreditsError } from './creditsError';
+import { resolveSessionCreditsConsumed } from './sessionCredits';
 
 /** Coarse signals the workspace chrome subscribes to — changes rarely. */
 export interface RunStatusFlags {
@@ -102,7 +102,10 @@ function computeFlags(next: SessionStatus | null, prev: RunStatusFlags): RunStat
     coverPath: next?.cover ?? null,
     creditsFailed:
       status === 'failed' && typeof next?.error === 'string' && isInsufficientCreditsError(next.error),
-    creditsConsumed: Math.max(0, Number(next?.credits_consumed ?? 0) || 0),
+    creditsConsumed: resolveSessionCreditsConsumed({
+      statusCredits: next?.credits_consumed,
+      events: next?.events,
+    }),
   };
   for (const key of FLAG_KEYS) {
     if (!Object.is(flags[key], prev[key])) return flags;

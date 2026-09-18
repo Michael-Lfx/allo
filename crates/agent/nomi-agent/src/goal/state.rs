@@ -160,6 +160,24 @@ pub struct GoalState {
     pub waiting_on_session: Option<String>,
     /// Human-readable reason for the wait barrier.
     pub waiting_reason: Option<String>,
+    /// Consecutive judged EndTurns without mechanical progress (Horizon).
+    #[serde(default)]
+    pub no_progress_streak: usize,
+    /// Last Horizon observation: a mutating / side-effect tool succeeded.
+    #[serde(default)]
+    pub last_mutation: bool,
+    /// Last Horizon observation: a verification-like command succeeded.
+    #[serde(default)]
+    pub last_verify_ok: bool,
+    /// Last Horizon observation: workspace fingerprint changed this request.
+    #[serde(default)]
+    pub last_workspace_changed: bool,
+    /// Hash of the last `update_goal blocked` evidence string.
+    #[serde(default)]
+    pub blocked_evidence_hash: Option<u64>,
+    /// How many times the same blocked evidence has been asserted.
+    #[serde(default)]
+    pub blocked_evidence_repeats: usize,
 }
 
 impl Default for GoalState {
@@ -190,12 +208,58 @@ impl GoalState {
             waiting_on_pid: None,
             waiting_on_session: None,
             waiting_reason: None,
+            no_progress_streak: 0,
+            last_mutation: false,
+            last_verify_ok: false,
+            last_workspace_changed: false,
+            blocked_evidence_hash: None,
+            blocked_evidence_repeats: 0,
+        }
+    }
+
+    /// Free-form goals (no Verification field) cannot spend the full default 8.
+    pub const FREEFORM_AUTO_CONTINUE_CAP: usize = 3;
+
+    pub fn has_verification(&self) -> bool {
+        self.contract
+            .as_ref()
+            .is_some_and(|c| !c.verification.trim().is_empty())
+    }
+
+    pub fn effective_cap(&self) -> usize {
+        if self.has_verification() {
+            self.max_auto_continuations
+        } else {
+            self.max_auto_continuations
+                .min(Self::FREEFORM_AUTO_CONTINUE_CAP)
         }
     }
 
     /// Whether continuation should still fire: Active and under the cap.
     pub fn should_continue(&self) -> bool {
-        self.status == GoalStatus::Active && self.auto_continuations < self.max_auto_continuations
+        self.status == GoalStatus::Active && self.auto_continuations < self.effective_cap()
+    }
+
+    /// Mechanical evidence Horizon copies in after each turn.
+    pub fn apply_progress(
+        &mut self,
+        mutated: bool,
+        verify_ok: bool,
+        workspace_changed: bool,
+        no_progress_streak: usize,
+    ) {
+        self.last_mutation = mutated;
+        self.last_verify_ok = verify_ok;
+        self.last_workspace_changed = workspace_changed;
+        self.no_progress_streak = no_progress_streak;
+    }
+
+    pub fn satisfies_complete_gate(&self) -> bool {
+        if !self.has_verification() {
+            self.last_mutation || self.last_verify_ok || self.last_workspace_changed
+        } else {
+            self.last_verify_ok || self.last_workspace_changed
+        }
     }
 
     /// Drop every wait-barrier field. Hermes semantics: a barrier is
@@ -275,6 +339,18 @@ mod tests {
         let mut g = GoalState::new("do X".into(), 2);
         g.auto_continuations = 2;
         assert!(!g.should_continue());
+    }
+
+    #[test]
+    fn freeform_cap_clamps_requested_eight_to_three() {
+        let mut g = GoalState::new("do X".into(), 8);
+        g.auto_continuations = 3;
+        assert!(!g.should_continue());
+        g.contract = Some(GoalContract {
+            verification: "cargo test".into(),
+            ..Default::default()
+        });
+        assert!(g.should_continue());
     }
 
     #[test]

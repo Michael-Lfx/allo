@@ -66,6 +66,23 @@ export function reasoningEffortIndex(levels: readonly string[], effort?: string 
   return Math.max(0, normalized.indexOf(selected ?? normalized[0]));
 }
 
+/** Resolve a stored effort against the levels advertised by the active model. */
+export function resolveReasoningEffortForLevels(
+  levels: readonly string[],
+  preferred?: string | null
+): { levels: string[]; effort?: string } {
+  const normalized = normalizeReasoningEffortLevels(levels);
+  if (normalized.length === 0) return { levels: normalized };
+  const preferredTrimmed = preferred?.trim();
+  return {
+    levels: normalized,
+    effort:
+      preferredTrimmed && normalized.includes(preferredTrimmed)
+        ? preferredTrimmed
+        : defaultReasoningEffort(normalized),
+  };
+}
+
 /** Map a discrete slider index back to the server-advertised effort string. */
 export function reasoningEffortAtIndex(levels: readonly string[], index: number): string | undefined {
   const normalized = normalizeReasoningEffortLevels(levels);
@@ -130,13 +147,8 @@ export function resolveReasoningEffortForSelection(
   selection: TProviderWithModel | undefined,
   preferred?: string | null
 ): { levels: string[]; effort?: string } {
-  const levels = normalizeReasoningEffortLevels(catalogReasoningEffortForModel(selection, selection?.use_model));
-  if (levels.length === 0) {
-    return { levels };
-  }
-  const preferredTrimmed = preferred?.trim();
-  if (preferredTrimmed && levels.includes(preferredTrimmed)) {
-    return { levels, effort: preferredTrimmed };
-  }
-  return { levels, effort: defaultReasoningEffort(levels) };
+  return resolveReasoningEffortForLevels(
+    catalogReasoningEffortForModel(selection, selection?.use_model),
+    preferred
+  );
 }

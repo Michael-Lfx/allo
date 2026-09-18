@@ -11,21 +11,14 @@ use std::sync::Arc;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, Rgba, RgbaImage};
+use nomi_process_runtime::hidden_command;
 use tokio::process::Command;
 
 use crate::error::{VimaxError, VimaxResult};
 
 /// Spawn ffmpeg/ffprobe without flashing a console on Windows GUI hosts.
 fn ffmpeg_command(bin: impl AsRef<Path>) -> Command {
-    let mut cmd = Command::new(bin.as_ref());
-    // CREATE_NO_WINDOW (0x08000000): Allo is a GUI app; bare `Command::new(ffmpeg)`
-    // otherwise pops a CMD window on every last-frame extract / concat.
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
+    hidden_command(bin.as_ref())
 }
 
 /// PNG / JPEG / WEBP magic — used to reject HTML error bodies saved as `.png`.
@@ -117,6 +110,107 @@ pub fn write_image_bytes_atomic(bytes: &[u8], out_path: &Path) -> VimaxResult<()
     let part = image_part_path(out_path);
     write_image_bytes_as_png(bytes, &part)?;
     replace_file_atomic(&part, out_path)
+}
+
+/// Sidecar next to `video_last_frame.png` holding the upstream `last_frame_url`.
+pub fn return_last_frame_url_sidecar(still_path: &Path) -> PathBuf {
+    still_path.with_extension("url")
+}
+
+/// Persist Seedance `last_frame_url` so the next shot can reuse it without OSS re-upload.
+pub fn write_return_last_frame_url(still_path: &Path, url: &str) -> VimaxResult<()> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Ok(());
+    }
+    let sidecar = return_last_frame_url_sidecar(still_path);
+    if let Some(parent) = sidecar.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| VimaxError::Media(e.to_string()))?;
+    }
+    std::fs::write(&sidecar, url.as_bytes()).map_err(|e| VimaxError::Media(e.to_string()))
+}
+
+/// Load a previously saved `last_frame_url` (https/http only).
+pub fn load_return_last_frame_url(still_path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(return_last_frame_url_sidecar(still_path)).ok()?;
+    let url = raw.trim();
+    if url.starts_with("https://") || url.starts_with("http://") {
+        Some(url.to_string())
+    } else {
+        None
+    }
+}
+
+pub fn clear_return_last_frame_url(still_path: &Path) {
+    let _ = std::fs::remove_file(return_last_frame_url_sidecar(still_path));
+}
+
+/// Sidecar for the front (left) panel of a three-view bible, used as a Seedance identity ref.
+const THREE_VIEW_VIDEO_FRONT_SUFFIX: &str = "_video_front.png";
+
+/// Crop the left panel of a three-view turnaround for video identity refs.
+///
+/// Full front/side/back sheets confuse Seedance into split-screens or extra people.
+/// Cameo photos and non-strip images are returned unchanged. Failures fall back to `sheet`.
+pub fn ensure_three_view_front_panel(sheet: &Path) -> PathBuf {
+    let Some(name) = sheet.file_name().and_then(|s| s.to_str()) else {
+        return sheet.to_path_buf();
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("video_front") {
+        return sheet.to_path_buf();
+    }
+    if !lower.contains("three_view") && !lower.contains("three-view") {
+        return sheet.to_path_buf();
+    }
+    let stem = sheet
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("asset");
+    let dest = sheet.with_file_name(format!("{stem}{THREE_VIEW_VIDEO_FRONT_SUFFIX}"));
+    if is_usable_image_file(&dest) {
+        return dest;
+    }
+    match crop_three_view_front_panel(sheet, &dest) {
+        Ok(()) if is_usable_image_file(&dest) => dest,
+        Ok(()) => sheet.to_path_buf(),
+        Err(e) => {
+            tracing::debug!(
+                path = %sheet.display(),
+                error = %e,
+                "three-view front panel crop skipped; using full sheet"
+            );
+            sheet.to_path_buf()
+        }
+    }
+}
+
+fn crop_three_view_front_panel(src: &Path, dest: &Path) -> VimaxResult<()> {
+    let img = image::open(src).map_err(|e| {
+        VimaxError::Media(format!("decode three-view {}: {e}", src.display()))
+    })?;
+    let w = img.width();
+    let h = img.height();
+    if w < 48 || h < 16 {
+        return Err(VimaxError::Media("three-view too small to crop".into()));
+    }
+    // Turnaround sheets are landscape strips. Portrait singles stay as-is.
+    if w < h.saturating_mul(3) / 2 {
+        return Err(VimaxError::Media("three-view is not a landscape strip".into()));
+    }
+    let panel = (w / 3).max(16);
+    let inset = (panel / 25).max(2);
+    let crop_w = panel.saturating_sub(inset).max(16);
+    let cropped = img.crop_imm(0, 0, crop_w, h);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| VimaxError::Media(e.to_string()))?;
+    }
+    cropped
+        .save_with_format(dest, image::ImageFormat::Png)
+        .map_err(|e| {
+            VimaxError::Media(format!("save three-view front {}: {e}", dest.display()))
+        })?;
+    Ok(())
 }
 
 /// Copy an on-disk image into place without re-encoding (cameo photos are already PNG).
@@ -304,6 +398,355 @@ pub async fn probe_media_duration_secs(path: &Path) -> Option<f64> {
     probe_duration_secs(&ffmpeg, path).await
 }
 
+/// Rewrite `path` in place as a prefix clip when it is longer than `max_secs`.
+///
+/// Used by Wan 3.0 submit to keep Σ `reference_audio` under 15s. Probe or
+/// ffmpeg failure leaves the original file (callers must still drop extras).
+pub async fn trim_audio_to_max_secs(path: &Path, max_secs: f64) -> bool {
+    if max_secs <= 0.0 || !is_usable_audio_file(path) {
+        return false;
+    }
+    let Some(dur) = probe_media_duration_secs(path).await else {
+        return false;
+    };
+    if !dur.is_finite() || dur <= max_secs + 0.05 {
+        return false;
+    }
+    let ffmpeg = match ensure_ffmpeg_ready().await {
+        Ok(bin) => bin,
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "ffmpeg unavailable; leaving long voice ref untrimmed"
+            );
+            return false;
+        }
+    };
+    let part = {
+        let mut s = path.as_os_str().to_owned();
+        s.push(".trim.part");
+        PathBuf::from(s)
+    };
+    let input = path.to_string_lossy().into_owned();
+    let output = part.to_string_lossy().into_owned();
+    let limit = format!("{max_secs:.3}");
+    let copy_args = vec![
+        "-y".into(),
+        "-i".into(),
+        input.clone(),
+        "-t".into(),
+        limit.clone(),
+        "-c".into(),
+        "copy".into(),
+        output.clone(),
+    ];
+    let copied = match run_ffmpeg_owned_capture(&ffmpeg, &copy_args).await {
+        Ok((ok, _)) => ok && is_usable_audio_file(&part),
+        Err(_) => false,
+    };
+    if !copied {
+        let encode_args = vec![
+            "-y".into(),
+            "-i".into(),
+            input,
+            "-t".into(),
+            limit,
+            "-vn".into(),
+            "-c:a".into(),
+            "pcm_s16le".into(),
+            output,
+        ];
+        match run_ffmpeg_owned_capture(&ffmpeg, &encode_args).await {
+            Ok((ok, _)) if ok && is_usable_audio_file(&part) => {}
+            Ok((_, err)) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    stderr = %err,
+                    "ffmpeg could not trim voice ref; leaving original"
+                );
+                let _ = tokio::fs::remove_file(&part).await;
+                return false;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "ffmpeg could not trim voice ref; leaving original"
+                );
+                let _ = tokio::fs::remove_file(&part).await;
+                return false;
+            }
+        }
+    }
+    if let Err(err) = tokio::fs::rename(&part, path).await {
+        tracing::warn!(
+            path = %path.display(),
+            error = %err,
+            "could not replace voice ref with trimmed clip"
+        );
+        let _ = tokio::fs::remove_file(&part).await;
+        return false;
+    }
+    true
+}
+
+/// Probe the first video stream size.
+pub async fn probe_media_video_size(path: &Path) -> Option<(u32, u32)> {
+    let ffmpeg = ensure_ffmpeg_ready().await.ok()?;
+    let ffprobe = ffprobe_executable(&ffmpeg);
+    let output = ffmpeg_command(&ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.trim().split([',', 'x', ' ']).filter(|p| !p.is_empty());
+    let width: u32 = parts.next()?.parse().ok()?;
+    let height: u32 = parts.next()?.parse().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// Extract 16 kHz mono PCM WAV for Flowy category-7 ASR.
+pub async fn extract_audio_wav(input: &Path, out_path: &Path) -> VimaxResult<()> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if !input.is_file() {
+        return Err(VimaxError::Media(format!(
+            "media missing: {}",
+            input.display()
+        )));
+    }
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let args = vec![
+        "-y".into(),
+        "-i".into(),
+        input.to_string_lossy().into_owned(),
+        "-vn".into(),
+        "-ac".into(),
+        "1".into(),
+        "-ar".into(),
+        "16000".into(),
+        "-c:a".into(),
+        "pcm_s16le".into(),
+        out_path.to_string_lossy().into_owned(),
+    ];
+    let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+    if !ok {
+        return Err(VimaxError::Media(format!(
+            "ffmpeg extract audio failed for {}{}",
+            input.display(),
+            ffmpeg_stderr_hint(&err)
+                .map(|d| format!(" — ffmpeg: {d}"))
+                .unwrap_or_default()
+        )));
+    }
+    if !out_path.is_file() {
+        return Err(VimaxError::Media(
+            "ffmpeg extract audio produced no wav".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Re-encode an A/V segment for timeline export (safe at arbitrary start times).
+pub async fn extract_av_segment(
+    input: &Path,
+    out_path: &Path,
+    start_secs: f64,
+    duration_secs: f64,
+) -> VimaxResult<()> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if !input.is_file() {
+        return Err(VimaxError::Media(format!(
+            "media missing: {}",
+            input.display()
+        )));
+    }
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let start = start_secs.max(0.0);
+    let dur = duration_secs.max(0.05);
+    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+    let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
+    let out_s = out_path.to_string_lossy().into_owned();
+    let input_s = input.to_string_lossy().into_owned();
+
+    let build = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
+        let mut args = vec!["-y".into()];
+        args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-ss".into(),
+            format!("{start:.3}"),
+            "-i".into(),
+            input_s.clone(),
+            "-t".into(),
+            format!("{dur:.3}"),
+        ]);
+        if let Some(vf) = p.hwupload_vf {
+            args.extend(["-vf".into(), vf.to_string()]);
+        }
+        args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-ac".into(),
+            "2".into(),
+            "-ar".into(),
+            "48000".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            out_s.clone(),
+        ]);
+        args
+    };
+
+    let mut last_err = String::new();
+    for (label, p) in [("hw", &plan), ("sw", &fallback)] {
+        let args = build(p);
+        let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+        if ok && out_path.is_file() {
+            tracing::info!(encoder = p.codec, label, "vimax extract_av_segment");
+            return Ok(());
+        }
+        last_err = err;
+        let _ = tokio::fs::remove_file(out_path).await;
+        if !p.uses_hw {
+            break;
+        }
+    }
+    Err(VimaxError::Media(format!(
+        "ffmpeg extract segment failed for {}{}",
+        input.display(),
+        ffmpeg_stderr_hint(&last_err)
+            .map(|d| format!(" — ffmpeg: {d}"))
+            .unwrap_or_default()
+    )))
+}
+
+/// Black video + silence used to fill timeline gaps.
+pub async fn write_black_gap(
+    out_path: &Path,
+    duration_secs: f64,
+    width: u32,
+    height: u32,
+) -> VimaxResult<()> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let dur = duration_secs.max(0.05);
+    let w = (width.max(2) & !1).max(2);
+    let h = (height.max(2) & !1).max(2);
+    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+    let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
+    let out_s = out_path.to_string_lossy().into_owned();
+
+    let build = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
+        let mut args = vec!["-y".into()];
+        args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            format!("color=c=black:s={w}x{h}:d={dur:.3}:r=30"),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            format!("anullsrc=r=48000:cl=stereo:d={dur:.3}"),
+            "-shortest".into(),
+        ]);
+        if let Some(vf) = p.hwupload_vf {
+            args.extend(["-vf".into(), vf.to_string()]);
+        }
+        args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            out_s.clone(),
+        ]);
+        args
+    };
+
+    let mut last_err = String::new();
+    for (label, p) in [("hw", &plan), ("sw", &fallback)] {
+        let args = build(p);
+        let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+        if ok && out_path.is_file() {
+            tracing::info!(encoder = p.codec, label, "vimax write_black_gap");
+            return Ok(());
+        }
+        last_err = err;
+        let _ = tokio::fs::remove_file(out_path).await;
+        if !p.uses_hw {
+            break;
+        }
+    }
+    Err(VimaxError::Media(format!(
+        "ffmpeg black gap failed{}",
+        ffmpeg_stderr_hint(&last_err)
+            .map(|d| format!(" — ffmpeg: {d}"))
+            .unwrap_or_default()
+    )))
+}
+
+/// Burn an SRT onto a video. Fails if the local ffmpeg has no libass/`subtitles` filter.
+pub async fn burn_srt_subtitles(video: &Path, srt: &Path, out_path: &Path) -> VimaxResult<()> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let filter = escape_subtitles_filter_path(srt);
+    let args = vec![
+        "-y".into(),
+        "-i".into(),
+        video.to_string_lossy().into_owned(),
+        "-vf".into(),
+        format!("subtitles={filter}"),
+        "-c:a".into(),
+        "copy".into(),
+        out_path.to_string_lossy().into_owned(),
+    ];
+    let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+    if !ok {
+        return Err(VimaxError::Media(format!(
+            "ffmpeg burn subtitles failed{}",
+            ffmpeg_stderr_hint(&err)
+                .map(|d| format!(" — ffmpeg: {d}"))
+                .unwrap_or_default()
+        )));
+    }
+    Ok(())
+}
+
+fn escape_subtitles_filter_path(path: &Path) -> String {
+    let raw = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:")
+        .replace('\'', r"\'");
+    format!("'{raw}'")
+}
+
 /// Probe container duration in seconds (ffprobe preferred; ffmpeg `-i` fallback).
 async fn probe_duration_secs(ffmpeg: &Path, input: &Path) -> Option<f64> {
     let ffprobe = ffprobe_executable(ffmpeg);
@@ -369,10 +812,16 @@ fn parse_ffmpeg_duration_banner(stderr: &str) -> Option<f64> {
 /// `concat` **filter** (not the concat demuxer): demuxer stitches A/V as
 /// independent streams, so short audio on early shots makes the last shot's
 /// picture play over silence even when that shot's own file has sound.
-pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult<()> {
-    if clip_paths.is_empty() {
+///
+/// Each clip declares how it meets its predecessor ([`SpliceSeam`]); see
+/// [`ClipEdit::plan`] for what that buys at the seam.
+pub async fn concat_videos(clips: &[ConcatClip<'_>], out_path: &Path) -> VimaxResult<()> {
+    if clips.is_empty() {
         return Err(VimaxError::Media("no clips to concatenate".into()));
     }
+    let clip_paths: Vec<&Path> = clips.iter().map(|c| c.path).collect();
+    let clip_paths = &clip_paths[..];
+    let edits = ClipEdit::plan(clips);
     let ffmpeg = ensure_ffmpeg_ready().await?;
     if let Some(parent) = out_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -381,6 +830,17 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     let norm_dir = out_path.with_extension("concat_norm");
     let _ = tokio::fs::remove_dir_all(&norm_dir).await;
     tokio::fs::create_dir_all(&norm_dir).await?;
+
+    // One film canvas: session aspect, sized so every clip downscales (never
+    // upscales). Same-ratio shots just shrink; a rogue portrait/landscape shot
+    // letterboxes instead of hijacking the whole film's orientation.
+    let (canvas_w, canvas_h) = concat_target_size(&ffmpeg, clip_paths, out_path).await;
+    tracing::info!(
+        canvas_w,
+        canvas_h,
+        clips = clip_paths.len(),
+        "vimax concat canvas"
+    );
 
     let mut normalized: Vec<PathBuf> = Vec::with_capacity(clip_paths.len());
     {
@@ -394,12 +854,15 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
             let ffmpeg = ffmpeg.clone();
             let input = (*clip).to_path_buf();
             let dest = norm_dir.join(format!("{i:03}.mp4"));
+            let edit = edits[i];
             let permit = Arc::clone(&sem);
             set.spawn(async move {
                 let _permit = permit.acquire_owned().await.map_err(|_| {
                     VimaxError::Media("normalize semaphore closed".into())
                 })?;
-                normalize_clip_for_concat(&ffmpeg, &input, &dest).await.map(|_| i)
+                normalize_clip_for_concat(&ffmpeg, &input, &dest, canvas_w, canvas_h, edit)
+                    .await
+                    .map(|_| i)
             });
         }
         let mut slots: Vec<Option<PathBuf>> = (0..clip_paths.len()).map(|_| None).collect();
@@ -435,22 +898,31 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
 
     // filter_complex concat keeps each shot's A/V pair locked together.
+    // Re-assert fps/SAR/timebase here (size already unified in normalize).
+    // Parallel HW normalize can still leave mixed timebases which concat rejects.
     let build_filter_args = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
         let mut filter = String::new();
         for i in 0..n {
-            filter.push_str(&format!("[{i}:v:0][{i}:a:0]"));
+            filter.push_str(&format!(
+                "[{i}:v:0]fps=24,setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v{i}];[{i}:a:0]aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[a{i}];"
+            ));
+        }
+        for i in 0..n {
+            filter.push_str(&format!("[v{i}][a{i}]"));
         }
         filter.push_str(&format!("concat=n={n}:v=1:a=1[v][a]"));
-        // Encoders that need an hwupload stage (e.g. h264_vaapi) get a second
-        // video label that maps instead of `[v]`.
         let mut map_v = "[v]";
         if let Some(vf) = p.hwupload_vf {
             filter.push_str(&format!(";[v]{vf}[vh]"));
             map_v = "[vh]";
         }
 
-        let mut args: Vec<String> = vec!["-y".into()];
-        // Input-side options (e.g. `-vaapi_device`) must precede the inputs.
+        let mut args: Vec<String> = vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-y".into(),
+        ];
         args.extend(p.input_args.iter().map(|s| (*s).to_string()));
         for norm in &normalized {
             args.push("-i".into());
@@ -466,6 +938,8 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
         ]);
         args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
         args.extend([
+            "-r".into(),
+            "24".into(),
             "-c:a".into(),
             "aac".into(),
             "-ar".into(),
@@ -479,22 +953,25 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
         args
     };
 
+    let mut last_hint: Option<String> = None;
     for (label, p) in [("hw", &plan), ("sw", &fallback)] {
         let args = build_filter_args(p);
-        let status = run_ffmpeg_owned(&ffmpeg, &args).await?;
-        if status.success() {
+        let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+        if ok {
             let _ = tokio::fs::remove_dir_all(&norm_dir).await;
             tracing::info!(out = %out_path.display(), encoder = p.codec, "vimax concat filter re-encode ({label})");
             return Ok(());
         }
+        last_hint = ffmpeg_stderr_hint(&err).or_else(|| {
+            let trimmed = err.trim();
+            (!trimmed.is_empty()).then(|| trimmed.chars().take(240).collect())
+        });
         tracing::warn!(
             label,
-            exit = ?status.code(),
+            hint = last_hint.as_deref().unwrap_or(""),
             "ffmpeg concat filter failed; retrying with software encoder"
         );
         let _ = tokio::fs::remove_file(out_path).await;
-        // Software is the last resort — no third try when the plan was already
-        // libx264.
         if !p.uses_hw {
             break;
         }
@@ -502,9 +979,86 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
 
     let _ = tokio::fs::remove_dir_all(&norm_dir).await;
     Err(VimaxError::Media(format!(
-        "ffmpeg concat filter failed for {}",
-        out_path.display()
+        "ffmpeg concat filter failed for {}{}",
+        out_path.display(),
+        last_hint
+            .map(|d| format!(" — ffmpeg: {d}"))
+            .unwrap_or_default()
     )))
+}
+
+fn even_dim(n: u32) -> u32 {
+    (n & !1).max(2)
+}
+
+/// Largest even WxH of aspect `aw:ah` that fits inside `src` (never upscales).
+fn max_aspect_rect_inside(src_w: u32, src_h: u32, aw: u32, ah: u32) -> (u32, u32) {
+    if src_w < 2 || src_h < 2 || aw == 0 || ah == 0 {
+        return (2, 2);
+    }
+    let (w, h) = if (src_w as u64).saturating_mul(ah as u64)
+        <= (src_h as u64).saturating_mul(aw as u64)
+    {
+        let h = ((src_w as u64).saturating_mul(ah as u64) / aw as u64) as u32;
+        (src_w, h)
+    } else {
+        let w = ((src_h as u64).saturating_mul(aw as u64) / ah as u64) as u32;
+        (w, src_h)
+    };
+    (even_dim(w), even_dim(h))
+}
+
+/// Film canvas: session aspect, limited by the smallest clip after fitting
+/// that aspect inside it. Same-ratio 1080p+720p → 720p; a 9:16 stray in a
+/// 16:9 film letterboxes instead of turning the concat vertical.
+fn concat_canvas_for_aspect(sizes: &[(u32, u32)], aspect: &str) -> (u32, u32) {
+    let (aw, ah) = crate::aspect::aspect_parts(aspect);
+    sizes
+        .iter()
+        .copied()
+        .filter(|(w, h)| *w >= 2 && *h >= 2)
+        .map(|(w, h)| max_aspect_rect_inside(w, h, aw, ah))
+        .min_by_key(|(w, h)| w.saturating_mul(*h))
+        .unwrap_or_else(|| {
+            let (w, h) = crate::aspect::aspect_to_upload_dims(aspect);
+            (even_dim(w), even_dim(h))
+        })
+}
+
+async fn concat_target_size(ffmpeg: &Path, clips: &[&Path], out_path: &Path) -> (u32, u32) {
+    let aspect = match out_path.parent() {
+        Some(dir) => crate::aspect::load_aspect_from_dir(dir).await,
+        None => crate::aspect::DEFAULT_ASPECT_RATIO.to_string(),
+    };
+    let mut sizes = Vec::new();
+    for clip in clips {
+        let Some(sig) = nomi_config::ffmpeg_hw::probe_stream_signature(ffmpeg, clip).await else {
+            continue;
+        };
+        sizes.push((sig.width, sig.height));
+    }
+    concat_canvas_for_aspect(&sizes, &aspect)
+}
+
+fn concat_normalize_vf(p: &nomi_config::ffmpeg_hw::VideoEncodePlan, w: u32, h: u32) -> String {
+    let geometry = format!(
+        "fps=24,scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+    );
+    if p.hwupload_vf.is_some() {
+        format!("{geometry},format=nv12,hwupload,setpts=PTS-STARTPTS")
+    } else {
+        format!("{geometry},format=yuv420p,setpts=PTS-STARTPTS")
+    }
+}
+
+/// Concat demuxer list entry. Forward slashes avoid Windows `file 'C:\foo'`
+/// treating `\f` / `\U` as escapes.
+fn ffmpeg_concat_list_line(path: &Path) -> String {
+    let escaped = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', r"'\''");
+    format!("file '{escaped}'\n")
 }
 
 /// Try joining `clips` with the concat demuxer + full stream copy. Returns true
@@ -521,8 +1075,7 @@ async fn try_remux_concat(ffmpeg: &Path, clips: &[PathBuf], out_path: &Path) -> 
     let list_path = out_path.with_extension("concat_remux_list.txt");
     let mut list_body = String::new();
     for p in clips {
-        let escaped = p.display().to_string().replace('\'', "'\\''");
-        list_body.push_str(&format!("file '{escaped}'\n"));
+        list_body.push_str(&ffmpeg_concat_list_line(p));
     }
     let _ = tokio::fs::write(&list_path, &list_body).await;
 
@@ -575,17 +1128,223 @@ async fn try_remux_concat(ffmpeg: &Path, clips: &[PathBuf], out_path: &Path) -> 
     Ok((out_dur - expected).abs() <= (expected * 0.01).max(0.5))
 }
 
-/// Soft fade at clip edges so hard cuts do not click / jump in BGM loudness.
-/// Long enough to soften Seedance per-shot underscore discontinuities, short
-/// enough to avoid chewing the last spoken syllable.
+/// Soft fade at a hard cut / film edge so the join does not click or jump in
+/// BGM loudness. Long enough to soften a change of underscore, short enough to
+/// avoid chewing the last spoken syllable.
 pub const CONCAT_AUDIO_EDGE_FADE_SECS: f64 = 0.5;
+
+/// Fade applied on both sides of a seam that shares its soundtrack.
+///
+/// Such a seam is meant to be inaudible: the two shots share one scene, one
+/// underscore, and one room tone. Half a second of fade-out immediately
+/// followed by half a second of fade-in turns that into an audible dip at every
+/// shot change — the audio half of "stuttering". This is only long enough to
+/// hide the encoder discontinuity (~2 audio frames).
+pub const CONCAT_AUDIO_SEAM_FADE_SECS: f64 = 0.06;
+
+/// Seconds trimmed from the head of a clip that continues its predecessor.
+///
+/// I2V clips are generated from the previous clip's last frame, so they open by
+/// re-staging a moment the audience just saw and only then accelerate into the
+/// new action. Played back-to-back that reads as a freeze at every splice.
+/// Cutting the re-acceleration ramp is the edit-room fix ("cut on action");
+/// planning reserves [`crate::planning::SHOT_SPLICE_TAIL_PADDING_SECS`] per shot
+/// so the film still lands near its advertised length.
+pub const SPLICE_HEAD_TRIM_SECS: f64 = 0.25;
+
+/// Below this a clip is too short to survive a head trim without hurting the
+/// beat, so the overlap is kept rather than gutting the shot.
+const MIN_TRIMMABLE_CLIP_SECS: f64 = 1.5;
+
+/// How a clip meets the clip before it on the timeline.
+///
+/// Two independent things happen at a seam, and the variants below are exactly
+/// the combinations the renderer can produce:
+///
+/// | seam        | picture replays? | soundtrack continues? |
+/// |-------------|------------------|-----------------------|
+/// | `Cut`       | no               | no                    |
+/// | `MatchCut`  | no               | yes                   |
+/// | `SameTake`  | yes              | yes                   |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpliceSeam {
+    /// Unrelated material: the film opening, or a jump to a scene with its own
+    /// soundtrack. Both sides keep the full edge fade.
+    #[default]
+    Cut,
+    /// A new camera angle inside one continuous scene. The picture jumps, the
+    /// underscore does not, and the prompt forbids replaying the previous beat
+    /// — so there is nothing to trim, only a click to hide.
+    MatchCut,
+    /// The same camera continuing, generated from the predecessor's last frame,
+    /// so the head re-stages a beat the audience already saw.
+    SameTake,
+}
+
+impl SpliceSeam {
+    /// Seam between two adjacent shots of one continuously rendered scene.
+    ///
+    /// The renderer always feeds shot N's last frame to shot N+1, but the
+    /// prompt asks for two different things: keep rolling on the same setup, or
+    /// cut to a new angle with the action already in progress. Only the former
+    /// replays footage. See `script2video::shot_seam`, which writes the prompt
+    /// half of this contract from the same `cam_idx` comparison.
+    pub fn within_scene(prev_cam: i32, cam: i32) -> Self {
+        if prev_cam == cam {
+            Self::SameTake
+        } else {
+            Self::MatchCut
+        }
+    }
+
+    /// Does the head of this clip re-stage its predecessor's ending?
+    fn replays_predecessor(self) -> bool {
+        matches!(self, Self::SameTake)
+    }
+
+    /// Does one continuous soundtrack run across this seam?
+    fn shares_soundtrack(self) -> bool {
+        matches!(self, Self::MatchCut | Self::SameTake)
+    }
+}
+
+/// One clip of a concat, plus how it joins the previous one.
+#[derive(Debug, Clone, Copy)]
+pub struct ConcatClip<'a> {
+    pub path: &'a Path,
+    pub seam: SpliceSeam,
+}
+
+impl<'a> ConcatClip<'a> {
+    pub fn new(path: &'a Path, seam: SpliceSeam) -> Self {
+        Self { path, seam }
+    }
+
+    /// A clip that shares nothing with its predecessor.
+    pub fn cut(path: &'a Path) -> Self {
+        Self::new(path, SpliceSeam::Cut)
+    }
+
+    /// Shots of one continuously rendered scene, in timeline order.
+    ///
+    /// `opening` is how the scene itself joins the film: a later scene
+    /// match-cuts from the previous scene's tail frame, so its first shot must
+    /// not be faded up as if the film were starting. `cam_idxs` is parallel to
+    /// `paths`; a shot with no recorded camera is treated as a cut, which is
+    /// the safe direction (no trim).
+    pub fn scene(paths: &[&'a Path], cam_idxs: &[i32], opening: SpliceSeam) -> Vec<Self> {
+        Self::scene_exits(paths, cam_idxs, cam_idxs, opening)
+    }
+
+    /// Like [`Self::scene`], but a packed native multi-shot may *enter* on one
+    /// camera and *exit* on another. Seam i compares `exits[i-1]` to `entries[i]`.
+    pub fn scene_exits(
+        paths: &[&'a Path],
+        entries: &[i32],
+        exits: &[i32],
+        opening: SpliceSeam,
+    ) -> Vec<Self> {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let seam = match i.checked_sub(1) {
+                    None => opening,
+                    Some(prev) => match (exits.get(prev), entries.get(i)) {
+                        (Some(&a), Some(&b)) => SpliceSeam::within_scene(a, b),
+                        _ => SpliceSeam::MatchCut,
+                    },
+                };
+                Self::new(p, seam)
+            })
+            .collect()
+    }
+
+    /// Scene finals of one film, in timeline order.
+    ///
+    /// Each scene after the first is written as a match-cut from the previous
+    /// scene's tail frame, and its head trim (if any) was already applied when
+    /// its own shots were joined.
+    pub fn film(paths: &[&'a Path]) -> Vec<Self> {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let seam = if i == 0 {
+                    SpliceSeam::Cut
+                } else {
+                    SpliceSeam::MatchCut
+                };
+                Self::new(p, seam)
+            })
+            .collect()
+    }
+}
+
+/// What normalize must do to one clip so its two seams play smoothly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClipEdit {
+    /// Seconds dropped from the head (duplicated re-establishment frames).
+    head_trim: f64,
+    fade_in: f64,
+    fade_out: f64,
+}
+
+impl ClipEdit {
+    /// Fade shape for a clip whose seams are both hard cuts.
+    #[cfg(test)]
+    const CUT: Self = Self {
+        head_trim: 0.0,
+        fade_in: CONCAT_AUDIO_EDGE_FADE_SECS,
+        fade_out: CONCAT_AUDIO_EDGE_FADE_SECS,
+    };
+
+    /// Derive each clip's edit from the seams around it.
+    ///
+    /// A clip's head is shaped by its own seam and its tail by the *next*
+    /// clip's seam, so one continuity join relaxes both sides of that splice.
+    fn plan(clips: &[ConcatClip<'_>]) -> Vec<Self> {
+        let fade = |seam: SpliceSeam| {
+            if seam.shares_soundtrack() {
+                CONCAT_AUDIO_SEAM_FADE_SECS
+            } else {
+                CONCAT_AUDIO_EDGE_FADE_SECS
+            }
+        };
+        clips
+            .iter()
+            .enumerate()
+            .map(|(i, clip)| {
+                let next_seam = clips.get(i + 1).map_or(SpliceSeam::Cut, |c| c.seam);
+                Self {
+                    head_trim: if clip.seam.replays_predecessor() {
+                        SPLICE_HEAD_TRIM_SECS
+                    } else {
+                        0.0
+                    },
+                    fade_in: fade(clip.seam),
+                    fade_out: fade(next_seam),
+                }
+            })
+            .collect()
+    }
+
+    /// Head trim this clip can actually afford given its probed duration.
+    fn affordable_head_trim(&self, dur: f64) -> f64 {
+        if self.head_trim <= 0.0 || dur - self.head_trim < MIN_TRIMMABLE_CLIP_SECS {
+            0.0
+        } else {
+            self.head_trim
+        }
+    }
+}
 
 /// Build the per-clip audio filter used before concat.
 ///
 /// - Normalize sample rate / layout
-/// - Pad audio to the full video duration
-/// - Soft fade in/out at edges (when the clip is long enough)
-fn normalize_audio_filter(dur: f64) -> String {
+/// - Pad audio to the full (post-trim) video duration
+/// - Fade the edges per [`ClipEdit`], when the clip is long enough to hold both
+fn normalize_audio_filter(dur: f64, edit: ClipEdit) -> String {
     let base = if dur > 0.05 {
         format!(
             "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad=whole_dur={dur:.3}"
@@ -594,22 +1353,34 @@ fn normalize_audio_filter(dur: f64) -> String {
         "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad"
             .to_string()
     };
-    let fade = CONCAT_AUDIO_EDGE_FADE_SECS;
-    if dur > fade * 2.0 + 0.05 {
-        let out_st = dur - fade;
-        format!(
-            "{base},afade=t=in:st=0:d={fade:.3},afade=t=out:st={out_st:.3}:d={fade:.3}"
-        )
-    } else {
-        base
+    let (fade_in, fade_out) = (edit.fade_in, edit.fade_out);
+    if fade_in + fade_out <= 0.0 || dur <= fade_in + fade_out + 0.05 {
+        return base;
     }
+    let mut chain = base;
+    if fade_in > 0.0 {
+        chain.push_str(&format!(",afade=t=in:st=0:d={fade_in:.3}"));
+    }
+    if fade_out > 0.0 {
+        let out_st = dur - fade_out;
+        chain.push_str(&format!(",afade=t=out:st={out_st:.3}:d={fade_out:.3}"));
+    }
+    chain
 }
 
-/// Re-encode one shot to CFR 24fps video + stereo AAC matched to video length.
+/// Re-encode one shot to CFR 24fps video + stereo AAC matched to video length,
+/// scaled/padded onto a shared even canvas so concat can join them.
+///
+/// `edit` carries the seam treatment: the head overlap to drop and the fade
+/// shape for each end. Trimming here (rather than in a separate pass) keeps it
+/// free — the clip is being re-encoded anyway.
 async fn normalize_clip_for_concat(
     ffmpeg: &Path,
     input: &Path,
     output: &Path,
+    canvas_w: u32,
+    canvas_h: u32,
+    edit: ClipEdit,
 ) -> VimaxResult<()> {
     let input_s = input.to_str().unwrap_or("");
     let output_s = output.to_str().unwrap_or("");
@@ -620,7 +1391,22 @@ async fn normalize_clip_for_concat(
             input.display()
         )));
     }
-    let dur = probe_duration_secs(ffmpeg, input).await.unwrap_or(0.0);
+    let source_dur = probe_duration_secs(ffmpeg, input).await.unwrap_or(0.0);
+    let head_trim = edit.affordable_head_trim(source_dur);
+    let dur = (source_dur - head_trim).max(0.0);
+    if head_trim > 0.0 {
+        tracing::debug!(
+            clip = %input.display(),
+            head_trim,
+            source_dur,
+            "trimming continuity overlap from clip head"
+        );
+    }
+    let seek_args: Vec<String> = if head_trim > 0.0 {
+        vec!["-ss".into(), format!("{head_trim:.3}")]
+    } else {
+        Vec::new()
+    };
     let dur_arg = if dur > 0.05 {
         format!("{dur:.3}")
     } else {
@@ -628,7 +1414,7 @@ async fn normalize_clip_for_concat(
     };
     // whole_dur keeps AAC from ending early (dialogue often shorter than picture).
     // Edge afade softens BGM/volume jumps at shot boundaries without changing duration.
-    let af = normalize_audio_filter(dur);
+    let af = normalize_audio_filter(dur, edit);
 
     // Same hardware plan as the final join — one probe per process, one recipe.
     // A hardware plan that fails at runtime (full NVENC session, driver hiccup)
@@ -640,18 +1426,15 @@ async fn normalize_clip_for_concat(
     // (nv12 → GPU), everything else takes yuv420p software frames. Computing it
     // per plan keeps the software fallback from inheriting VAAPI's hwupload.
     let normalize_vf = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> String {
-        if p.hwupload_vf.is_some() {
-            "fps=24,format=nv12,hwupload,setpts=PTS-STARTPTS".to_string()
-        } else {
-            "fps=24,format=yuv420p,setpts=PTS-STARTPTS".to_string()
-        }
+        concat_normalize_vf(p, canvas_w, canvas_h)
     };
 
     // Path A: clip already has an audio stream.
     let build_a = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan, vf: &str| -> Vec<String> {
         let mut args: Vec<String> = vec!["-y".into()];
-        // Input-side options (e.g. `-vaapi_device`) must precede `-i`.
+        // Input-side options (e.g. `-vaapi_device`, `-ss`) must precede `-i`.
         args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend(seek_args.iter().cloned());
         args.extend([
             "-i".into(),
             input_s.into(),
@@ -666,6 +1449,8 @@ async fn normalize_clip_for_concat(
         ]);
         args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
         args.extend([
+            "-r".into(),
+            "24".into(),
             "-c:a".into(),
             "aac".into(),
             "-ar".into(),
@@ -689,6 +1474,7 @@ async fn normalize_clip_for_concat(
     let build_b = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan, vf: &str| -> Vec<String> {
         let mut args: Vec<String> = vec!["-y".into()];
         args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend(seek_args.iter().cloned());
         args.extend([
             "-i".into(),
             input_s.into(),
@@ -705,6 +1491,8 @@ async fn normalize_clip_for_concat(
         ]);
         args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
         args.extend([
+            "-r".into(),
+            "24".into(),
             "-c:a".into(),
             "aac".into(),
             "-ar".into(),
@@ -1363,6 +2151,37 @@ mod tests {
     }
 
     #[test]
+    fn three_view_front_panel_crops_left_third() {
+        use image::{Rgb, RgbImage};
+        let dir = tempfile::tempdir().unwrap();
+        let sheet = dir.path().join("hero_three_view.png");
+        // 180×60 landscape strip: left third red, rest green.
+        let mut img = RgbImage::from_pixel(180, 60, Rgb([0, 255, 0]));
+        for x in 0..60 {
+            for y in 0..60 {
+                img.put_pixel(x, y, Rgb([255, 0, 0]));
+            }
+        }
+        img.save(&sheet).unwrap();
+        let front = ensure_three_view_front_panel(&sheet);
+        assert_ne!(front, sheet);
+        assert!(front
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .contains("video_front"));
+        let cropped = image::open(&front).unwrap();
+        assert!(cropped.width() <= 60, "front panel should be ~left third");
+        assert_eq!(cropped.height(), 60);
+        // Cameo / non-strip names are unchanged.
+        let cameo = dir.path().join("hero_cameo.png");
+        RgbImage::from_pixel(40, 40, Rgb([0, 0, 255]))
+            .save(&cameo)
+            .unwrap();
+        assert_eq!(ensure_three_view_front_panel(&cameo), cameo);
+    }
+
+    #[test]
     fn rejects_html_as_image() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("fake.png");
@@ -1501,9 +2320,12 @@ mod tests {
         assert!(st1.success());
 
         let out = dir.path().join("final.mp4");
-        concat_videos(&[c0.as_path(), c1.as_path()], &out)
-            .await
-            .expect("concat");
+        concat_videos(
+            &[ConcatClip::cut(&c0), ConcatClip::cut(&c1)],
+            &out,
+        )
+        .await
+        .expect("concat");
         assert!(is_usable_video_file(&out));
 
         // Sample the last ~2s of the film; mean_volume must not be -inf.
@@ -1540,14 +2362,272 @@ mod tests {
     }
 
     #[test]
-    fn normalize_audio_filter_adds_edge_afade_for_long_clips() {
-        let af = normalize_audio_filter(10.0);
+    fn concat_canvas_uses_session_aspect_without_upscaling() {
+        assert_eq!(
+            concat_canvas_for_aspect(&[(1920, 1080), (1280, 720)], "16:9"),
+            (1280, 720)
+        );
+        assert_eq!(
+            concat_canvas_for_aspect(&[(1280, 720), (854, 480), (1920, 1080)], "16:9"),
+            (852, 480)
+        );
+        // Portrait stray in a 16:9 film: fit 9:16 inside 16:9, don't flip the film.
+        let (w, h) = concat_canvas_for_aspect(&[(1920, 1080), (1080, 1920)], "16:9");
+        assert_eq!((w, h), (1080, 606));
+        assert_eq!(concat_canvas_for_aspect(&[], "16:9"), (1280, 720));
+        assert_eq!(concat_canvas_for_aspect(&[(641, 361)], "16:9"), (640, 360));
+    }
+
+    #[test]
+    fn concat_list_uses_forward_slashes_on_windows_paths() {
+        let line = ffmpeg_concat_list_line(Path::new(r"C:\Users\a\script2video\final_video.mp4"));
+        assert!(line.starts_with("file '"));
+        assert!(!line.contains('\\'), "{line}");
+        assert!(line.contains("C:/Users/a/script2video/final_video.mp4"));
+    }
+
+    #[tokio::test]
+    async fn concat_joins_clips_with_mismatched_resolution() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let c0 = dir.path().join("wide.mp4");
+        let c1 = dir.path().join("tall.mp4");
+        for (path, size) in [(&c0, "640x360"), (&c1, "320x240")] {
+            let st = run_ffmpeg(
+                &ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("color=c=green:s={size}:d=1:r=24"),
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    path.to_str().unwrap(),
+                ],
+            )
+            .await
+            .unwrap();
+            assert!(st.success(), "failed to mint {size} clip");
+        }
+        let out = dir.path().join("joined.mp4");
+        concat_videos(
+            &[ConcatClip::cut(&c0), ConcatClip::cut(&c1)],
+            &out,
+        )
+        .await
+        .expect("concat mixed resolutions");
+        assert!(is_usable_video_file(&out));
+        let dur = probe_duration_secs(&ffmpeg, &out).await.expect("probe duration");
+        assert!(
+            (1.5..=2.6).contains(&dur),
+            "joined duration should be ~2s, got {dur}"
+        );
+    }
+
+    /// Shots that keep rolling on one setup must drop their duplicated head, so
+    /// the join is shorter than the raw sum by one trim per seam.
+    #[tokio::test]
+    async fn concat_trims_the_replayed_head_of_same_take_clips() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let clips: Vec<PathBuf> = ["a.mp4", "b.mp4", "c.mp4"]
+            .iter()
+            .map(|n| dir.path().join(n))
+            .collect();
+        for path in &clips {
+            let st = run_ffmpeg(
+                &ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=gray:s=320x240:d=3:r=24",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=3",
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    path.to_str().unwrap(),
+                ],
+            )
+            .await
+            .unwrap();
+            assert!(st.success());
+        }
+        let refs: Vec<&Path> = clips.iter().map(|p| p.as_path()).collect();
+
+        let out = dir.path().join("chained.mp4");
+        let clips = ConcatClip::scene(&refs, &[4, 4, 4], SpliceSeam::Cut);
+        concat_videos(&clips, &out)
+            .await
+            .expect("concat one continuous take");
+        let chained = probe_duration_secs(&ffmpeg, &out).await.expect("probe");
+
+        // 3 clips → 2 same-take seams → 2 head trims removed.
+        let expected = 9.0 - 2.0 * SPLICE_HEAD_TRIM_SECS;
+        assert!(
+            (chained - expected).abs() < 0.35,
+            "chained duration {chained} should be ~{expected}"
+        );
+    }
+
+    #[test]
+    fn cut_seams_keep_the_long_edge_fade() {
+        let af = normalize_audio_filter(10.0, ClipEdit::CUT);
         assert!(af.contains("apad=whole_dur=10.000"));
         assert!(af.contains("afade=t=in:st=0:d=0.500"));
         assert!(af.contains("afade=t=out:st=9.500:d=0.500"));
 
-        let short = normalize_audio_filter(0.2);
+        let short = normalize_audio_filter(0.2, ClipEdit::CUT);
         assert!(!short.contains("afade"), "too-short clips skip edge fade");
+    }
+
+    /// The film opens and closes with a real fade; seams inside one scene only
+    /// get a de-click, otherwise continuous BGM audibly pumps at every cut.
+    #[test]
+    fn a_scene_fades_only_at_the_film_edges() {
+        let paths: Vec<PathBuf> = ["a.mp4", "b.mp4", "c.mp4"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let edits = ClipEdit::plan(&ConcatClip::scene(&refs, &[1, 1, 1], SpliceSeam::Cut));
+
+        assert_eq!(edits[0].head_trim, 0.0, "the first clip has no predecessor");
+        assert_eq!(edits[0].fade_in, CONCAT_AUDIO_EDGE_FADE_SECS);
+        assert_eq!(edits[0].fade_out, CONCAT_AUDIO_SEAM_FADE_SECS);
+
+        assert_eq!(edits[1].head_trim, SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edits[1].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
+        assert_eq!(edits[1].fade_out, CONCAT_AUDIO_SEAM_FADE_SECS);
+
+        assert_eq!(edits[2].head_trim, SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edits[2].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
+        assert_eq!(
+            edits[2].fade_out, CONCAT_AUDIO_EDGE_FADE_SECS,
+            "the film still fades out at the end"
+        );
+    }
+
+    #[test]
+    fn a_clip_too_short_to_trim_keeps_its_head() {
+        let edit = ClipEdit {
+            head_trim: SPLICE_HEAD_TRIM_SECS,
+            fade_in: CONCAT_AUDIO_SEAM_FADE_SECS,
+            fade_out: CONCAT_AUDIO_SEAM_FADE_SECS,
+        };
+        assert_eq!(edit.affordable_head_trim(5.0), SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edit.affordable_head_trim(1.0), 0.0);
+        assert_eq!(ClipEdit::CUT.affordable_head_trim(5.0), 0.0);
+    }
+
+    /// A camera change is a real cut: the prompt tells the model not to replay
+    /// the previous beat, so trimming its head would eat live action. The
+    /// soundtrack still runs through, so the fade stays short either way.
+    #[test]
+    fn a_camera_change_inside_a_scene_is_not_trimmed() {
+        let paths: Vec<PathBuf> = ["a.mp4", "b.mp4", "c.mp4"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let clips = ConcatClip::scene(&refs, &[1, 2, 2], SpliceSeam::Cut);
+
+        assert_eq!(
+            clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
+            vec![SpliceSeam::Cut, SpliceSeam::MatchCut, SpliceSeam::SameTake]
+        );
+        let edits = ClipEdit::plan(&clips);
+        assert_eq!(edits[1].head_trim, 0.0, "cam 1→2 is a cut, nothing replays");
+        assert_eq!(edits[1].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
+        assert_eq!(edits[2].head_trim, SPLICE_HEAD_TRIM_SECS);
+    }
+
+    /// A packed native multi-shot exits on a later camera; the next clip that
+    /// reuses that camera is a continued take, not a match-cut from the pack's
+    /// opening camera.
+    #[test]
+    fn a_packed_clip_seam_uses_its_exit_camera() {
+        let paths: Vec<PathBuf> = ["pack.mp4", "next.mp4"].iter().map(PathBuf::from).collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let clips = ConcatClip::scene_exits(&refs, &[0, 1], &[1, 1], SpliceSeam::Cut);
+        assert_eq!(
+            clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
+            vec![SpliceSeam::Cut, SpliceSeam::SameTake]
+        );
+        assert_eq!(ClipEdit::plan(&clips)[1].head_trim, SPLICE_HEAD_TRIM_SECS);
+    }
+
+    /// A scene rendered after another one opens mid-soundtrack, so baking a
+    /// half-second fade-up into its first shot would dip the film at every
+    /// scene boundary.
+    #[test]
+    fn a_later_scene_does_not_fade_up_from_silence() {
+        let paths: Vec<PathBuf> = ["a.mp4", "b.mp4"].iter().map(PathBuf::from).collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+
+        let opening = ClipEdit::plan(&ConcatClip::scene(&refs, &[1, 1], SpliceSeam::Cut));
+        assert_eq!(opening[0].fade_in, CONCAT_AUDIO_EDGE_FADE_SECS);
+
+        let later = ClipEdit::plan(&ConcatClip::scene(&refs, &[1, 1], SpliceSeam::MatchCut));
+        assert_eq!(later[0].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
+        assert_eq!(later[0].head_trim, 0.0, "the scene's own head was not replayed");
+    }
+
+    /// Scene finals were already trimmed shot-by-shot; the film join must not
+    /// trim them a second time.
+    #[test]
+    fn film_level_scenes_are_match_cuts_never_same_takes() {
+        let paths: Vec<PathBuf> = ["s0.mp4", "s1.mp4", "s2.mp4"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let clips = ConcatClip::film(&refs);
+
+        assert_eq!(
+            clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
+            vec![SpliceSeam::Cut, SpliceSeam::MatchCut, SpliceSeam::MatchCut]
+        );
+        assert!(ClipEdit::plan(&clips).iter().all(|e| e.head_trim == 0.0));
+    }
+
+    #[test]
+    fn a_scene_with_no_recorded_cameras_is_never_trimmed() {
+        let paths: Vec<PathBuf> = ["a.mp4", "b.mp4"].iter().map(PathBuf::from).collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let clips = ConcatClip::scene(&refs, &[], SpliceSeam::Cut);
+        assert_eq!(clips[1].seam, SpliceSeam::MatchCut);
+        assert_eq!(ClipEdit::plan(&clips)[1].head_trim, 0.0);
     }
 
     #[test]
@@ -1570,5 +2650,40 @@ mod tests {
         let decoded = image::load_from_memory(&thumb).unwrap();
         assert!(decoded.width() <= VISION_THUMB_MAX_SIDE);
         assert!(decoded.height() <= VISION_THUMB_MAX_SIDE);
+    }
+
+    #[test]
+    fn return_last_frame_url_sidecar_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let still = dir.path().join("video_last_frame.png");
+        assert!(load_return_last_frame_url(&still).is_none());
+        write_return_last_frame_url(&still, "  https://cdn.example/last.png  ").unwrap();
+        assert_eq!(
+            return_last_frame_url_sidecar(&still),
+            dir.path().join("video_last_frame.url")
+        );
+        assert_eq!(
+            load_return_last_frame_url(&still).as_deref(),
+            Some("https://cdn.example/last.png")
+        );
+        write_return_last_frame_url(&still, "not-a-url").unwrap();
+        assert_eq!(
+            load_return_last_frame_url(&still).as_deref(),
+            Some("https://cdn.example/last.png"),
+            "empty/invalid writes are ignored"
+        );
+        // overwrite with a real url
+        write_return_last_frame_url(&still, "https://cdn.example/next.png").unwrap();
+        assert_eq!(
+            load_return_last_frame_url(&still).as_deref(),
+            Some("https://cdn.example/next.png")
+        );
+        clear_return_last_frame_url(&still);
+        assert!(load_return_last_frame_url(&still).is_none());
+        write_return_last_frame_url(&still, "ftp://nope").unwrap();
+        assert!(
+            load_return_last_frame_url(&still).is_none(),
+            "non-http schemes are not persisted"
+        );
     }
 }

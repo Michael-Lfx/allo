@@ -3,6 +3,20 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// One beat inside a planned storyboard row (one generated video).
+///
+/// Empty [`ShotBriefDescription::beats`] means the row is a single beat.
+/// Two or more means planning already packed adjacent events — including a
+/// reverse-angle CUT — into this row, so the storyboard UI and the renderer
+/// share the same clip count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShotBriefBeat {
+    pub visual_desc: String,
+    #[serde(default)]
+    pub audio_desc: Option<String>,
+    pub cam_idx: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShotBriefDescription {
     pub idx: i32,
@@ -11,6 +25,20 @@ pub struct ShotBriefDescription {
     pub visual_desc: String,
     #[serde(default)]
     pub audio_desc: Option<String>,
+    /// World-asset slugline this row belongs to (e.g. `INT. CAFE - NIGHT`).
+    ///
+    /// Empty on artifacts written before location binding. Render binds the
+    /// environment plate by this field, not token overlap with the visual line.
+    #[serde(default)]
+    pub location_id: String,
+    /// Timeline-ordered beats this row plays in one generation.
+    ///
+    /// Empty for a single-beat row. Two or more is an inner timeline of the
+    /// SAME generated file: packing may have absorbed adjacent rows (a reverse
+    /// CUT keeps a different `cam_idx`), or a same-camera densify split one
+    /// prose line into performance beats. Extra beats are never extra files.
+    #[serde(default)]
+    pub beats: Vec<ShotBriefBeat>,
 }
 
 impl fmt::Display for ShotBriefDescription {
@@ -23,6 +51,37 @@ impl fmt::Display for ShotBriefDescription {
         }
         Ok(())
     }
+}
+
+impl ShotBriefDescription {
+    /// True when this storyboard row already absorbed adjacent planner shots.
+    pub fn is_merged(&self) -> bool {
+        self.beats.len() >= 2
+    }
+
+    /// Camera the row *ends* on — what the next row's seam compares against.
+    pub fn exit_cam_idx(&self) -> i32 {
+        self.beats.last().map(|beat| beat.cam_idx).unwrap_or(self.cam_idx)
+    }
+}
+
+/// One beat inside a clip: a spoken line, a visual event, or a native camera cut.
+///
+/// A clip normally renders exactly one beat, so [`ShotDescription::beats`] stays
+/// empty. When planning packs adjacent events into one storyboard row — one clip
+/// instead of two means one splice fewer to stutter on — the absorbed beats are
+/// preserved here in timeline order so the prompt can lay them out against the
+/// clip's final duration and duration estimation can price the whole run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShotBeat {
+    pub motion_desc: String,
+    #[serde(default)]
+    pub audio_desc: Option<String>,
+    /// Camera this beat was planned on. `None` on artifacts written before
+    /// packing recorded per-beat cameras — treated as the parent clip's
+    /// [`ShotDescription::cam_idx`].
+    #[serde(default)]
+    pub cam_idx: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,4 +101,68 @@ pub struct ShotDescription {
     pub motion_desc: String,
     #[serde(default)]
     pub audio_desc: Option<String>,
+    /// World-asset slugline this clip belongs to. Empty means "unknown" —
+    /// the renderer will not guess the first environment plate.
+    #[serde(default)]
+    pub location_id: String,
+    /// Timeline-ordered beats this clip plays in one generation.
+    ///
+    /// Empty for the usual one-beat clip. Two or more marks a packed clip, which
+    /// must never be packed again (see [`ShotDescription::is_merged`]). Same
+    /// camera → one continuous take; different [`ShotBeat::cam_idx`] → native
+    /// multi-shot (CUT inside the file).
+    #[serde(default)]
+    pub beats: Vec<ShotBeat>,
+}
+
+impl ShotDescription {
+    /// True when this clip already absorbed adjacent shots.
+    ///
+    /// Packing is not idempotent — absorbing an already-packed clip would replay
+    /// its beats — so every producer of packed clips checks this first.
+    pub fn is_merged(&self) -> bool {
+        self.beats.len() >= 2
+    }
+
+    /// Camera the clip *ends* on — what the next clip's seam compares against.
+    ///
+    /// Equals [`Self::cam_idx`] for an unpacked shot or a same-camera pack.
+    /// A native multi-shot that cut to a reverse angle exits on that later
+    /// camera, so the next clip must not be told it is still rolling on the
+    /// opening setup.
+    pub fn exit_cam_idx(&self) -> i32 {
+        self.beats
+            .iter()
+            .rev()
+            .find_map(|beat| beat.cam_idx)
+            .unwrap_or(self.cam_idx)
+    }
+
+    /// True when packed beats change camera inside this generation.
+    pub fn has_camera_cuts(&self) -> bool {
+        self.beats
+            .iter()
+            .any(|beat| beat.cam_idx.is_some_and(|cam| cam != self.cam_idx))
+    }
+}
+
+/// True when both sides name a location and they are not the same place.
+pub fn location_changed(a: &str, b: &str) -> bool {
+    let a = a.trim();
+    let b = b.trim();
+    !a.is_empty() && !b.is_empty() && !location_keys_match(a, b)
+}
+
+/// Slugline / path matching that ignores whitespace and ASCII case.
+pub fn location_keys_match(a: &str, b: &str) -> bool {
+    let na = normalize_location_key(a);
+    let nb = normalize_location_key(b);
+    !na.is_empty() && na == nb
+}
+
+pub fn normalize_location_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || (*c as u32) > 127)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }

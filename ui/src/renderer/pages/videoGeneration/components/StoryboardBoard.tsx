@@ -1,15 +1,23 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Spin } from '@arco-design/web-react';
-import { Edit, LoadingFour, Music, VideoOne } from '@icon-park/react';
-import { getArtifact, loadArtifactMediaUrlCached } from '../api';
+import { Spin } from '@arco-design/web-react';
+import { FullScreen, Left, LoadingFour, Music, Right, VideoOne } from '@icon-park/react';
+import { getArtifact } from '../api';
+import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
+import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import {
   buildStoryboardScenesFromStoryboards,
   findStoryboardPaths,
+  mergeStoryboardsWithoutGrowth,
   parseStoryboard,
+  storyboardRefreshSignature,
   type StoryboardScene,
   type StoryboardShot,
 } from '../artifactPresentation';
+import type { ShotCopySaveResult } from '../storyboardShotCopy';
+import StoryboardShotEditorModal, {
+  type StoryboardShotEditorFocus,
+} from './StoryboardShotEditorModal';
 import {
   activeVideoGenerationTarget,
   resolveStoryboardVideoStatus,
@@ -19,18 +27,35 @@ import type { ArtifactNode } from '../types';
 import { useRunStatusFull } from '../useRunStatusFeed';
 import styles from '../index.module.css';
 
-const TextArea = Input.TextArea;
+const InspectorSpecBlock: React.FC<{
+  label: string;
+  body: string;
+}> = ({ label, body }) => (
+  <div className={styles.storyInspectorSpecBlock}>
+    <div className={styles.storyInspectorSubLabel}>{label}</div>
+    <p className={`${styles.storyInspectorBody} text-13px leading-21px text-white/90`}>{body}</p>
+  </div>
+);
+
+function activateInspectorSection(
+  event: React.KeyboardEvent<HTMLDivElement>,
+  open: () => void
+): void {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    open();
+  }
+}
 
 interface StoryboardBoardProps {
   sessionId: string;
   artifacts: ArtifactNode[];
-  disabled?: boolean;
-  revising?: boolean;
-  /** Persist edited Visual / audio direction for the active shot. */
-  onSaveSceneDescriptions: (
-    scene: StoryboardScene,
-    descriptions: { visualDescription: string; audioDescription: string }
-  ) => Promise<void> | void;
+  /** Select this filmstrip card when the agent session focuses a shot. */
+  focusSceneId?: string | null;
+  /** Keep workspace focus in sync when the user picks a filmstrip card. */
+  onFocusScene?: (sceneId: string) => void;
+  /** Published clip count for the panel header. */
+  onShotCount?: (count: number) => void;
 }
 
 interface SceneMediaProps {
@@ -81,7 +106,7 @@ const VideoStatusPlaceholder: React.FC<{
                 defaultValue: 'This shot is rendering now…',
               })
             : t('videoGeneration.studio.storyboard.videoPendingHint', {
-                defaultValue: 'Shot videos appear here after film generation',
+                defaultValue: 'Click Generate film or Continue at the bottom right — the clip appears here',
               })}
         </div>
       )}
@@ -97,29 +122,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
   alt,
   videoStatus = 'pending',
 }) => {
-  const [url, setUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    if (!path) {
-      setUrl(null);
-      setFailed(false);
-      return;
-    }
-    let cancelled = false;
-    setFailed(false);
-    // Cached loader — the cache owns the blob URL lifecycle; do not revoke here.
-    void loadArtifactMediaUrlCached(sessionId, path)
-      .then((nextUrl) => {
-        if (!cancelled) setUrl(nextUrl);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [path, sessionId]);
+  const { url, failed, reload } = useArtifactMediaUrl(sessionId, path ?? null);
 
   // Ready clip — show the video player / filmstrip preview.
   if (video && path) {
@@ -129,17 +132,22 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
     if (!url) return <Spin size={compact ? 12 : 18} />;
     return (
       <video
+        key={path}
         src={url}
         controls={!compact}
         muted={compact}
         playsInline
         preload={compact ? 'metadata' : 'auto'}
         className={compact ? 'h-full w-full object-contain' : styles.storyShot}
+        onError={() => reload()}
+        onLoadedMetadata={(event) => {
+          if (compact) seekMediaElementToFirstFrame(event.currentTarget);
+        }}
       />
     );
   }
 
-  // Still-frame mode (filmstrip thumbs prefer the shot's first-frame image so
+  // Still-frame mode (filmstrip thumbs prefer video_last_frame.png so
   // compact cells never download a whole clip just to show a thumbnail).
   const status: Exclude<StoryboardVideoSlotStatus, 'ready'> =
     videoStatus === 'generating' ? 'generating' : 'pending';
@@ -151,9 +159,11 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
     }
     return (
       <img
+        key={path}
         src={url}
         alt={alt}
         className={compact ? 'h-full w-full object-cover' : styles.storyShot}
+        onError={() => reload()}
       />
     );
   }
@@ -166,6 +176,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
           src={url}
           alt={alt}
           className={compact ? 'h-full w-full object-cover opacity-50' : `${styles.storyShot} opacity-50`}
+          onError={() => reload()}
         />
         <div className={styles.videoStatusOverlay}>
           <VideoStatusPlaceholder compact={compact} status={status} />
@@ -180,21 +191,23 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
 const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   sessionId,
   artifacts,
-  disabled,
-  revising,
-  onSaveSceneDescriptions,
+  focusSceneId,
+  onFocusScene,
+  onShotCount,
 }) => {
   const { t } = useTranslation();
   const runStatus = useRunStatusFull();
   const storyboardPaths = useMemo(() => findStoryboardPaths(artifacts), [artifacts]);
-  const storyboardPathSignature = storyboardPaths.join('|');
+  const storyboardPathKey = storyboardPaths.join('|');
+  const storyboardRefreshKey = useMemo(
+    () => storyboardRefreshSignature(artifacts),
+    [artifacts]
+  );
   const [storyboardEntries, setStoryboardEntries] = useState<
     Array<{ path: string; shots: StoryboardShot[] }>
   >([]);
   const [activeSceneId, setActiveSceneId] = useState<string>();
-  const [editMode, setEditMode] = useState(false);
-  const [visualDraft, setVisualDraft] = useState('');
-  const [audioDraft, setAudioDraft] = useState('');
+  const [editorFocus, setEditorFocus] = useState<StoryboardShotEditorFocus | null>(null);
 
   const generatingTarget = useMemo(
     () => activeVideoGenerationTarget(runStatus),
@@ -202,11 +215,11 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   );
   const rendering = runStatus?.status === 'rendering';
 
+  // Storyboard *rows* come only from storyboard.json. Video start writes
+  // shots/N/shot_description.json and the artifact poll used to refetch the
+  // board in the same effect — that replaced a planned N-shot strip with N+1.
   useEffect(() => {
-    if (!storyboardPaths.length) {
-      setStoryboardEntries([]);
-      return;
-    }
+    if (!storyboardPathKey) return;
     let cancelled = false;
     void Promise.all(
       storyboardPaths.map(async (path) => {
@@ -217,76 +230,60 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           return { path, shots: [] as StoryboardShot[] };
         }
       })
-    ).then((entries) => {
-      if (!cancelled) setStoryboardEntries(entries);
+    ).then((boards) => {
+      if (cancelled) return;
+      setStoryboardEntries((previous) =>
+        mergeStoryboardsWithoutGrowth(previous, boards, !rendering)
+      );
     });
     return () => {
       cancelled = true;
     };
-    // 轮询期间 artifacts 数组每 ~4s 换新身份；以稳定签名为依赖，路径集合未变就不重拉全部分镜。
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- effect 体读取的 storyboardPaths 内容由上方签名完全决定
-  }, [sessionId, storyboardPathSignature]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- paths + packed content/dirs
+  }, [sessionId, storyboardPathKey, storyboardRefreshKey, rendering]);
 
   const scenes = useMemo(
     () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries),
     [artifacts, storyboardEntries]
   );
+
+  useEffect(() => {
+    onShotCount?.(scenes.length);
+  }, [onShotCount, scenes.length]);
+
+  // Snap once when the agent focuses a new shot. Re-applying on every
+  // `scenes` rebuild (artifact poll) stole the card the user just clicked.
+  const syncedFocusSceneIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusSceneId) return;
+    if (!scenes.some((scene) => scene.id === focusSceneId)) return;
+    if (syncedFocusSceneIdRef.current === focusSceneId) return;
+    syncedFocusSceneIdRef.current = focusSceneId;
+    setActiveSceneId(focusSceneId);
+  }, [focusSceneId, scenes]);
+
+  const selectScene = useCallback(
+    (sceneId: string) => {
+      syncedFocusSceneIdRef.current = sceneId;
+      setActiveSceneId(sceneId);
+      onFocusScene?.(sceneId);
+    },
+    [onFocusScene]
+  );
+
+  const applySavedCopy = useCallback((result: ShotCopySaveResult) => {
+    setStoryboardEntries((previous) =>
+      previous.map((entry) =>
+        entry.path === result.storyboardPath
+          ? { path: entry.path, shots: parseStoryboard(result.patchedText) }
+          : entry
+      )
+    );
+  }, []);
+
   const activeScene =
     scenes.find((scene) => scene.id === activeSceneId) ??
     scenes[0];
-
-  useEffect(() => {
-    setEditMode(false);
-    setVisualDraft(activeScene?.visualDescription ?? '');
-    setAudioDraft(activeScene?.audioDescription ?? '');
-  }, [activeScene?.id, activeScene?.visualDescription, activeScene?.audioDescription]);
-
-  const canEdit = Boolean(activeScene?.storyboardPath || activeScene?.revisionPath);
-
-  const startEdit = useCallback(() => {
-    if (!activeScene) return;
-    setVisualDraft(activeScene.visualDescription || '');
-    setAudioDraft(activeScene.audioDescription || '');
-    setEditMode(true);
-  }, [activeScene]);
-
-  const cancelEdit = useCallback(() => {
-    setVisualDraft(activeScene?.visualDescription ?? '');
-    setAudioDraft(activeScene?.audioDescription ?? '');
-    setEditMode(false);
-  }, [activeScene?.audioDescription, activeScene?.visualDescription]);
-
-  const handleSave = useCallback(async () => {
-    if (!activeScene || !visualDraft.trim()) return;
-    const nextVisual = visualDraft.trim();
-    const nextAudio = audioDraft.trim();
-    try {
-      await onSaveSceneDescriptions(activeScene, {
-        visualDescription: nextVisual,
-        audioDescription: nextAudio,
-      });
-      setStoryboardEntries((previous) =>
-        previous.map((entry) => {
-          if (entry.path !== activeScene.storyboardPath) return entry;
-          return {
-            ...entry,
-            shots: entry.shots.map((shot) =>
-              shot.index === activeScene.shotIndex
-                ? {
-                    ...shot,
-                    visualDescription: nextVisual,
-                    audioDescription: nextAudio || undefined,
-                  }
-                : shot
-            ),
-          };
-        })
-      );
-      setEditMode(false);
-    } catch {
-      // Parent already surfaces the error toast; keep the editor open.
-    }
-  }, [activeScene, audioDraft, onSaveSceneDescriptions, visualDraft]);
 
   const videoStatusFor = useCallback(
     (scene: StoryboardScene): StoryboardVideoSlotStatus =>
@@ -299,6 +296,68 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
       }),
     [generatingTarget, rendering]
   );
+
+  const filmstripRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateFilmstripOverflow = useCallback(() => {
+    const el = filmstripRef.current;
+    if (!el) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    const epsilon = 2;
+    setCanScrollLeft(el.scrollLeft > epsilon);
+    setCanScrollRight(maxScroll - el.scrollLeft > epsilon);
+  }, []);
+
+  const scrollFilmstrip = useCallback((direction: -1 | 1) => {
+    const el = filmstripRef.current;
+    if (!el) return;
+    const distance = Math.max(el.clientWidth * 0.72, 176);
+    el.scrollBy({ left: direction * distance, behavior: 'smooth' });
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = filmstripRef.current;
+    if (!el) return;
+    updateFilmstripOverflow();
+    const observer = new ResizeObserver(updateFilmstripOverflow);
+    observer.observe(el);
+    for (const child of Array.from(el.children)) {
+      observer.observe(child);
+    }
+    el.addEventListener('scroll', updateFilmstripOverflow, { passive: true });
+    window.addEventListener('resize', updateFilmstripOverflow);
+    return () => {
+      observer.disconnect();
+      el.removeEventListener('scroll', updateFilmstripOverflow);
+      window.removeEventListener('resize', updateFilmstripOverflow);
+    };
+  }, [scenes.length, updateFilmstripOverflow]);
+
+  useEffect(() => {
+    const strip = filmstripRef.current;
+    if (!strip || !activeScene) return;
+    const card = strip.querySelector<HTMLElement>(
+      `[data-scene-id="${CSS.escape(activeScene.id)}"]`
+    );
+    if (!card) return;
+    const cardLeft = card.offsetLeft;
+    const cardRight = cardLeft + card.offsetWidth;
+    const viewLeft = strip.scrollLeft;
+    const viewRight = viewLeft + strip.clientWidth;
+    if (cardLeft < viewLeft) {
+      strip.scrollTo({ left: cardLeft, behavior: 'smooth' });
+    } else if (cardRight > viewRight) {
+      strip.scrollTo({ left: cardRight - strip.clientWidth, behavior: 'smooth' });
+    }
+  }, [activeScene?.id]);
+
+  const showFilmstripNav = scenes.length > 1;
 
   if (!activeScene) {
     return (
@@ -324,12 +383,17 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     (activeVideoStatus === 'ready' ? undefined : activeScene.imagePath);
   const mainIsVideo = Boolean(activeScene.videoPath);
   const sceneNumber = activeScene.index + 1;
+  const activeSceneIndex = scenes.findIndex((scene) => scene.id === activeScene.id);
+  const expandLabel = t('videoGeneration.studio.storyboard.expand', {
+    defaultValue: '展开编辑',
+  });
 
   return (
-    <div className='flex flex-col gap-12px'>
+    <div className={styles.storyboardLayout}>
       <div className={styles.storyStage}>
         <div className={styles.storyMedia}>
           <SceneMedia
+            key={activeScene.id}
             sessionId={sessionId}
             path={mainPath}
             video={mainIsVideo}
@@ -340,144 +404,167 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
             videoStatus={activeVideoStatus}
           />
           <span className='absolute left-14px top-14px z-2 rd-full bg-black/55 px-9px py-4px text-11px font-650 text-white backdrop-blur'>
-            {t('videoGeneration.studio.storyboard.shotNumber', {
+            {t('videoGeneration.studio.storyboard.shotNumberOf', {
               number: sceneNumber,
-              defaultValue: '镜头 {{number}}',
+              total: scenes.length,
+              defaultValue: '镜头 {{number}} / {{total}}',
             })}
+            {activeScene.beatCount != null
+              ? ` · ${t('videoGeneration.studio.storyboard.packedBeats', {
+                  count: activeScene.beatCount,
+                  defaultValue: '{{count}} 个切镜一次生成',
+                })}`
+              : ''}
           </span>
         </div>
         <aside className={styles.storyInspector}>
-          <div className={styles.storyInspectorLabel}>
-            {t('videoGeneration.studio.storyboard.visualDirection', {
+          <div
+            className={`${styles.storyInspectorOpen} ${styles.storyInspectorVisual}`}
+            role='button'
+            tabIndex={0}
+            aria-label={`${t('videoGeneration.studio.storyboard.visualDirection', {
               defaultValue: '画面描述',
-            })}
-          </div>
-
-          {editMode ? (
-            <>
-              <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorVisual}`}>
-                <TextArea
-                  value={visualDraft}
-                  onChange={setVisualDraft}
-                  disabled={disabled || revising}
-                  autoSize={{ minRows: 4, maxRows: 12 }}
-                  className={styles.reviseInlineInput}
-                  style={{
-                    color: 'rgba(255,255,255,0.92)',
-                    WebkitTextFillColor: 'rgba(255,255,255,0.92)',
-                    caretColor: 'rgba(255,255,255,0.92)',
-                    background: 'rgba(255,255,255,0.08)',
-                  }}
-                  placeholder={t('videoGeneration.studio.storyboard.visualEditPlaceholder', {
-                    defaultValue: '描述这个镜头的画面…',
-                  })}
-                />
-              </div>
+            })} · ${expandLabel}`}
+            onClick={() => setEditorFocus('visual')}
+            onKeyDown={(event) =>
+              activateInspectorSection(event, () => setEditorFocus('visual'))
+            }
+          >
+            <div className={styles.storyInspectorLabelRow}>
               <div className={styles.storyInspectorLabel}>
-                {t('videoGeneration.studio.storyboard.audioDirection', {
-                  defaultValue: '音频 / 台词',
+                {t('videoGeneration.studio.storyboard.visualDirection', {
+                  defaultValue: '画面描述',
                 })}
               </div>
-              <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorAudio}`}>
-                <TextArea
-                  value={audioDraft}
-                  onChange={setAudioDraft}
-                  disabled={disabled || revising}
-                  autoSize={{ minRows: 2, maxRows: 10 }}
-                  className={styles.reviseInlineInput}
-                  style={{
-                    color: 'rgba(255,255,255,0.92)',
-                    WebkitTextFillColor: 'rgba(255,255,255,0.92)',
-                    caretColor: 'rgba(255,255,255,0.92)',
-                    background: 'rgba(255,255,255,0.08)',
-                  }}
-                  placeholder={t('videoGeneration.studio.storyboard.audioEditPlaceholder', {
-                    defaultValue: '背景音乐、环境音或台词…',
-                  })}
-                />
-              </div>
-              <div className={`${styles.storyInspectorActions} flex flex-wrap items-center gap-8px`}>
-                <Button
-                  size='small'
-                  className='!border-white/15 !bg-transparent !text-white/80 hover:!bg-white/10'
-                  disabled={revising}
-                  onClick={cancelEdit}
-                >
-                  {t('common.cancel', { defaultValue: '取消' })}
-                </Button>
-                <Button
-                  type='primary'
-                  size='small'
-                  loading={revising}
-                  disabled={disabled || !visualDraft.trim()}
-                  onClick={() => void handleSave()}
-                >
-                  {t('videoGeneration.artifacts.save', { defaultValue: '保存' })}
-                </Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorVisual}`}>
-                <p className='m-0 text-14px leading-23px text-white/90'>
-                  {activeScene.visualDescription ||
-                    t('videoGeneration.studio.storyboard.visualPending', {
-                      defaultValue: '画面生成后将在这里展示。',
-                    })}
-                </p>
-              </div>
-              <div className='shrink-0 border-t border-white/10' />
-              <div className={styles.storyInspectorLabel}>
-                {t('videoGeneration.studio.storyboard.audioDirection', {
-                  defaultValue: '音频 / 台词',
+              <FullScreen
+                theme='outline'
+                size={14}
+                className={styles.storyInspectorExpand}
+              />
+            </div>
+            {activeScene.beatCount != null ? (
+              <p className='m-0 text-12px leading-18px text-white/55'>
+                {t('videoGeneration.studio.storyboard.packedBeatsHint', {
+                  count: activeScene.beatCount,
+                  defaultValue: '相邻短镜头已合并进这一条成片，生成时只出一条视频。',
                 })}
-              </div>
-              <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorAudio}`}>
-                <div className='flex items-start gap-7px text-12px leading-18px text-white/58'>
-                  <Music theme='outline' size={14} className='mt-2px shrink-0' />
-                  <span>
-                    {activeScene.audioDescription ||
-                      t('videoGeneration.studio.storyboard.audioPending', {
-                        defaultValue: '暂无音频或台词描述',
+              </p>
+            ) : null}
+            <div className={styles.storyInspectorScroll}>
+              <p className={`${styles.storyInspectorBody} text-14px leading-23px text-white/90`}>
+                {activeScene.visualDescription ||
+                  t('videoGeneration.studio.storyboard.visualPending', {
+                    defaultValue: '画面生成后将在这里展示。',
+                  })}
+              </p>
+              {activeScene.beats && activeScene.beats.length >= 2 ? (
+                <div className={`${styles.storyInspectorSpecStack} mt-12px`}>
+                  {activeScene.beats.map((beat, beatIndex) => (
+                    <InspectorSpecBlock
+                      key={`${activeScene.id}-beat-${beatIndex}`}
+                      label={t('videoGeneration.studio.storyboard.packedBeatItem', {
+                        number: beatIndex + 1,
+                        defaultValue: '切镜 {{number}}',
                       })}
-                  </span>
+                      body={beat.visualDescription}
+                    />
+                  ))}
                 </div>
+              ) : null}
+            </div>
+          </div>
+          <div className='shrink-0 border-t border-white/10' />
+          <div
+            className={`${styles.storyInspectorOpen} ${styles.storyInspectorAudio}`}
+            role='button'
+            tabIndex={0}
+            aria-label={`${t('videoGeneration.studio.storyboard.audioDirection', {
+              defaultValue: '音频 / 台词',
+            })} · ${expandLabel}`}
+            onClick={() => setEditorFocus('audio')}
+            onKeyDown={(event) =>
+              activateInspectorSection(event, () => setEditorFocus('audio'))
+            }
+          >
+            <div className={styles.storyInspectorLabelRow}>
+              <div className={styles.storyInspectorLabel}>
+                {t('videoGeneration.studio.storyboard.audioDirection', {
+                  defaultValue: '音频 / 台词',
+                })}
               </div>
-              <Button
-                className={`${styles.storyInspectorActions} !border-white/15 !bg-white/8 !text-white hover:!bg-white/14`}
-                disabled={disabled || !canEdit}
-                onClick={startEdit}
-              >
-                <span className='inline-flex items-center gap-6px'>
-                  <Edit theme='outline' size={14} />
-                  {t('videoGeneration.studio.storyboard.reviseShot', {
-                    defaultValue: '修改这个镜头',
-                  })}
+              <FullScreen
+                theme='outline'
+                size={14}
+                className={styles.storyInspectorExpand}
+              />
+            </div>
+            <div className={styles.storyInspectorScroll}>
+              <div className='flex items-start gap-7px text-12px leading-18px text-white/58'>
+                <Music theme='outline' size={14} className='mt-2px shrink-0' />
+                <span className={styles.storyInspectorBody}>
+                  {activeScene.audioDescription ||
+                    t('videoGeneration.studio.storyboard.audioPending', {
+                      defaultValue: '暂无音频或台词描述',
+                    })}
                 </span>
-              </Button>
-            </>
-          )}
+              </div>
+            </div>
+          </div>
         </aside>
       </div>
 
-      <div className={styles.filmstrip} aria-label={t('videoGeneration.studio.storyboard.filmstrip', { defaultValue: '分镜胶片' })}>
-        {scenes.map((scene) => {
-          const number = scene.index + 1;
-          const active = scene.id === activeScene.id;
-          const status = videoStatusFor(scene);
-          // Compact thumbs prefer the first-frame still so a ready shot never
-          // downloads its whole clip just to render a thumbnail.
-          const thumbPath = scene.imagePath ?? scene.videoPath;
-          return (
-            <button
-              key={scene.id}
-              type='button'
-              className={`${styles.shotCard} ${active ? styles.shotCardActive : ''} ${
-                status === 'generating' ? styles.shotCardGenerating : ''
-              }`}
-              aria-pressed={active}
-              onClick={() => setActiveSceneId(scene.id)}
-            >
+      {showFilmstripNav ? (
+        <button
+          type='button'
+          className={`${styles.filmstripNav} ${styles.filmstripNavPrev}`}
+          disabled={!canScrollLeft}
+          aria-label={t('videoGeneration.studio.storyboard.filmstripPrev', {
+            defaultValue: '向左查看镜头',
+          })}
+          title={t('videoGeneration.studio.storyboard.filmstripPrev', {
+            defaultValue: '向左查看镜头',
+          })}
+          onClick={() => scrollFilmstrip(-1)}
+        >
+          <Left theme='outline' size={12} />
+        </button>
+      ) : (
+        <span className={`${styles.filmstripGutter} ${styles.filmstripGutterPrev}`} aria-hidden />
+      )}
+      <div
+        ref={filmstripRef}
+        className={styles.filmstrip}
+        aria-label={t('videoGeneration.studio.storyboard.filmstrip', {
+          defaultValue: '分镜胶片',
+        })}
+        tabIndex={showFilmstripNav ? 0 : undefined}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            scrollFilmstrip(-1);
+          } else if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            scrollFilmstrip(1);
+          }
+        }}
+      >
+          {scenes.map((scene) => {
+            const number = scene.index + 1;
+            const active = scene.id === activeScene.id;
+            const status = videoStatusFor(scene);
+            // Compact thumbs prefer the last-frame still so a ready shot never
+            // downloads its whole clip just to render a thumbnail.
+            const thumbPath = scene.imagePath ?? scene.videoPath;
+            return (
+              <div key={scene.id} className={styles.shotCardStack} data-scene-id={scene.id}>
+              <button
+                type='button'
+                className={`${styles.shotCard} ${active ? styles.shotCardActive : ''} ${
+                  status === 'generating' ? styles.shotCardGenerating : ''
+                }`}
+                aria-pressed={active}
+                onClick={() => selectScene(scene.id)}
+              >
               <span className={styles.shotThumb}>
                 <SceneMedia
                   sessionId={sessionId}
@@ -493,6 +580,14 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                 <span className='absolute bottom-6px left-6px z-1 rd-full bg-black/70 px-6px py-2px text-10px font-700 text-white'>
                   {String(number).padStart(2, '0')}
                 </span>
+                {scene.beatCount != null ? (
+                  <span className={styles.shotPackedBadge}>
+                    {t('videoGeneration.studio.storyboard.packedBeatsShort', {
+                      count: scene.beatCount,
+                      defaultValue: '{{count}} 切',
+                    })}
+                  </span>
+                ) : null}
               </span>
               <span className='block truncate px-9px py-8px text-11px'>
                 {scene.visualDescription ||
@@ -502,9 +597,65 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                   })}
               </span>
             </button>
-          );
-        })}
-      </div>
+                {scene.beats && scene.beats.length >= 2 ? (
+                  <ol className={styles.shotCoverageList}>
+                    {scene.beats.map((beat, beatIndex) => (
+                      <li key={`${scene.id}-beat-${beatIndex}`}>
+                        {t('videoGeneration.studio.storyboard.packedBeatItem', {
+                          number: beatIndex + 1,
+                          defaultValue: '切镜 {{number}}',
+                        })}
+                        {beat.visualDescription
+                          ? ` · ${beat.visualDescription}`
+                          : ''}
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      {showFilmstripNav ? (
+        <button
+          type='button'
+          className={`${styles.filmstripNav} ${styles.filmstripNavNext}`}
+          disabled={!canScrollRight}
+          aria-label={t('videoGeneration.studio.storyboard.filmstripNext', {
+            defaultValue: '向右查看镜头',
+          })}
+          title={t('videoGeneration.studio.storyboard.filmstripNext', {
+            defaultValue: '向右查看镜头',
+          })}
+          onClick={() => scrollFilmstrip(1)}
+        >
+          <Right theme='outline' size={12} />
+        </button>
+      ) : (
+        <span className={`${styles.filmstripGutter} ${styles.filmstripGutterNext}`} aria-hidden />
+      )}
+      {editorFocus ? (
+        <StoryboardShotEditorModal
+          sessionId={sessionId}
+          scene={activeScene}
+          sceneNumber={sceneNumber}
+          total={scenes.length}
+          visible
+          focusField={editorFocus}
+          hasPrev={activeSceneIndex > 0}
+          hasNext={activeSceneIndex >= 0 && activeSceneIndex < scenes.length - 1}
+          onClose={() => setEditorFocus(null)}
+          onPrev={() => {
+            const previous = scenes[activeSceneIndex - 1];
+            if (previous) selectScene(previous.id);
+          }}
+          onNext={() => {
+            const next = scenes[activeSceneIndex + 1];
+            if (next) selectScene(next.id);
+          }}
+          onSaved={applySavedCopy}
+        />
+      ) : null}
     </div>
   );
 };

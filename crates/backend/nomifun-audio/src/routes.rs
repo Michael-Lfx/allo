@@ -48,7 +48,7 @@ pub fn meeting_routes(state: MeetingRouterState) -> Router {
             "/api/meetings/voiceprints/{voiceprint_id}",
             delete(delete_voiceprint),
         )
-        .route("/api/meetings/{id}", get(get_session))
+        .route("/api/meetings/{id}", get(get_session).patch(patch_session))
         .route("/api/meetings/{id}/start", post(start_session))
         .route("/api/meetings/{id}/pause", post(pause_session))
         .route("/api/meetings/{id}/resume", post(resume_session))
@@ -110,6 +110,11 @@ struct CreateMeetingBody {
 #[derive(Debug, Deserialize)]
 struct BindBody {
     conversation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchMeetingBody {
+    title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +217,28 @@ async fn get_session(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<MeetingSessionSnapshot>>, AppError> {
     let snap = require_owned(&state.service, user.id.as_str(), &id).await?;
+    Ok(Json(ApiResponse::ok(snap)))
+}
+
+async fn patch_session(
+    State(state): State<MeetingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<PatchMeetingBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<MeetingSessionSnapshot>>, AppError> {
+    let _ = require_owned(&state.service, user.id.as_str(), &id).await?;
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let Some(title) = req.title else {
+        return Err(AppError::BadRequest("title is required".into()));
+    };
+    if title.trim().is_empty() {
+        return Err(AppError::BadRequest("title is required".into()));
+    }
+    let snap = state
+        .service
+        .update_title(&id, title)
+        .await
+        .map_err(map_service_err)?;
     Ok(Json(ApiResponse::ok(snap)))
 }
 
@@ -651,6 +678,9 @@ mod tests {
             let Some(row) = sessions.iter_mut().find(|s| s.session_id == session_id) else {
                 return Ok(None);
             };
+            if let Some(title) = &params.title {
+                row.title = title.clone();
+            }
             if let Some(status) = &params.status {
                 row.status = status.clone();
             }
@@ -840,6 +870,49 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["data"].as_array().unwrap().len(), 1);
         assert_eq!(json["data"][0]["title"], "Daily");
+    }
+
+    #[tokio::test]
+    async fn patch_meeting_title() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let router = test_router(tmp.path());
+
+        let create = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/meetings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Daily"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let created_body = axum::body::to_bytes(create.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&created_body).unwrap();
+        let session_id = created["data"]["session_id"].as_str().unwrap();
+
+        let patch = router
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/meetings/{session_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Weekly sync"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patch.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(patch.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["title"], "Weekly sync");
     }
 
     #[tokio::test]

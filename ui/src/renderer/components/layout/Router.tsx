@@ -1,8 +1,10 @@
-import React, { Suspense, useEffect } from 'react';
+import React, { Suspense, useEffect, useLayoutEffect } from 'react';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
+import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
+import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
@@ -18,7 +20,6 @@ const PresetSettings = React.lazy(() => import('@renderer/pages/settings/PresetS
 const SkillsSettingsPage = React.lazy(() => import('@renderer/pages/settings/SkillsSettingsPage'));
 const ModelHubPage = React.lazy(() => import('@renderer/pages/modelHub'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
-const PluginPage = React.lazy(() => import('@renderer/pages/mcp/PluginSettingsPage'));
 const BrowserPage = React.lazy(() => import('@renderer/pages/browser'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
 const SshHostSettings = React.lazy(() => import('@renderer/pages/settings/SshHostSettings'));
@@ -29,6 +30,7 @@ const ComponentsShowcase = React.lazy(() => import('@renderer/pages/TestShowcase
 const ScheduledTasksPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage'));
 const TaskDetailPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage/TaskDetailPage'));
 const MeetingPage = React.lazy(() => import('@renderer/pages/meeting'));
+const MeetingDetailPage = React.lazy(() => import('@renderer/pages/meeting/MeetingDetailPage'));
 const RequirementsLayout = React.lazy(() => import('@renderer/pages/requirements/RequirementsLayout'));
 const WorkspacePage = React.lazy(() => import('@renderer/pages/requirements/WorkspacePage'));
 const ExtensionsPage = React.lazy(() => import('@renderer/pages/requirements/ExtensionsPage'));
@@ -44,7 +46,13 @@ const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
 const EvalPage = React.lazy(() => import('@renderer/pages/eval'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
+const VideoBriefingWorkspacePage = React.lazy(
+  () => import('@renderer/pages/videoGeneration/briefing/BriefingWorkspacePage')
+);
 const VideoClipResultPage = React.lazy(() => import('@renderer/pages/videoGeneration/ClipResultPage'));
+const VideoCampaignDetailPage = React.lazy(
+  () => import('@renderer/pages/videoGeneration/CampaignDetailPage')
+);
 const VideoCanvasProjectPage = React.lazy(loadVideoCanvasProjectPage);
 // TODO: workshop/assets stay deferred (no routes until explicitly published)
 // const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
@@ -57,6 +65,7 @@ const MeetingCaptionsPage = React.lazy(() => import('@renderer/pages/meetingCapt
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
 const LearningSettings = React.lazy(() => import('@renderer/pages/settings/LearningSettings'));
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
+const TelemetrySettings = React.lazy(() => import('@renderer/pages/settings/TelemetrySettings'));
 const MoaSettings = React.lazy(() => import('@renderer/pages/settings/MoaSettings'));
 const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSettings'));
 const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/CloudLoginSettings'));
@@ -75,14 +84,42 @@ type RouteFallbackProps = {
   fullscreen?: boolean;
 };
 
+const SETTINGS_CAPABILITY_PATHS = ['/presets', '/skills', '/mcp'];
+
+const isSettingsSurfacePath = (pathname: string): boolean =>
+  pathname === '/settings' ||
+  pathname.startsWith('/settings/') ||
+  SETTINGS_CAPABILITY_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+
+const SettingsRouteReady: React.FC<{ children: React.ReactNode; locationKey: string }> = ({ children, locationKey }) => {
+  const { markSettingsNavigationReady } = useSettingsNavigationTransition();
+
+  useLayoutEffect(() => {
+    markSettingsNavigationReady();
+  }, [locationKey, markSettingsNavigationReady]);
+
+  return <>{children}</>;
+};
+
 const RouteFallback: React.FC<RouteFallbackProps> = ({ Component, fullscreen = false }) => {
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
+  const settingsSurface = isSettingsSurfacePath(location.pathname);
 
   return (
     <RouteErrorBoundary resetKey={resetKey}>
-      <Suspense fallback={fullscreen ? <AppLoader /> : <RouteContentFallback />}>
-        <Component />
+      <Suspense
+        fallback={
+          fullscreen ? <AppLoader /> : settingsSurface ? <SettingsContentLoading /> : <RouteContentFallback />
+        }
+      >
+        {settingsSurface ? (
+          <SettingsRouteReady locationKey={resetKey}>
+            <Component />
+          </SettingsRouteReady>
+        ) : (
+          <Component />
+        )}
       </Suspense>
     </RouteErrorBoundary>
   );
@@ -129,12 +166,16 @@ const LegacyExtensionsRedirect: React.FC = () => {
   return <Navigate to={withSearch('/skills', searchParams)} replace />;
 };
 
+/** Plugin management is retired from the user-facing capability surface. */
+const DisabledPluginsRedirect: React.FC = () => <Navigate to='/settings/presets' replace />;
+
 // Legacy `/requirements/:id/edit` deep links → open the workspace with the
 // requirement pre-selected in edit mode (the new shell hosts editing in a
 // drawer, not a standalone form page).
 const RequirementEditRedirect: React.FC = () => {
   const { id } = useParams();
-  return <Navigate to={`/requirements?req=${id}&edit=1`} replace />;
+  const searchParams = new URLSearchParams({ req: id ?? '', edit: '1' });
+  return <Navigate to={`/requirements?${searchParams.toString()}`} replace />;
 };
 
 const getHashRouteRedirectUrl = () => {
@@ -211,16 +252,21 @@ const CompanionNavigateListener: React.FC = () => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import('@tauri-apps/api/event').then(({ listen }) =>
-      listen<string>('companion-navigate', (event) => {
-        if (typeof event.payload === 'string' && event.payload.startsWith('/')) {
-          void navigate(event.payload);
-        }
-      }).then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-    );
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<string>('companion-navigate', (event) => {
+          if (typeof event.payload === 'string' && event.payload.startsWith('/')) {
+            void navigate(event.payload);
+          }
+        }).then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        })
+      )
+      .catch(() => {
+        // Native event listeners are best-effort; a missing Tauri bridge must
+        // not become an unhandled rejection on the route shell.
+      });
     return () => {
       disposed = true;
       unlisten?.();
@@ -236,18 +282,23 @@ const MeetingOpenListener: React.FC = () => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import('@tauri-apps/api/event').then(({ listen }) =>
-      listen<string>('meeting-open', (event) => {
-        const path =
-          typeof event.payload === 'string' && event.payload.startsWith('/')
-            ? event.payload
-            : '/meeting';
-        void navigate(path);
-      }).then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-    );
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<string>('meeting-open', (event) => {
+          const path =
+            typeof event.payload === 'string' && event.payload.startsWith('/')
+              ? event.payload
+              : '/meeting';
+          void navigate(path);
+        }).then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        })
+      )
+      .catch(() => {
+        // Native event listeners are best-effort; a missing Tauri bridge must
+        // not become an unhandled rejection on the route shell.
+      });
     return () => {
       disposed = true;
       unlisten?.();
@@ -309,7 +360,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/models' element={withRouteFallback(ModelHubPage)} />
           <Route path='/extensions' element={<LegacyExtensionsRedirect />} />
           <Route path='/mcp' element={withRouteFallback(McpPage)} />
-          <Route path='/plugins' element={withRouteFallback(PluginPage)} />
+          <Route path='/plugins/*' element={<DisabledPluginsRedirect />} />
           <Route path='/open-capabilities' element={withRouteFallback(OpenCapabilitiesPage)} />
           <Route path='/browser' element={withRouteFallback(BrowserPage)} />
           <Route path='/presets' element={withRouteFallback(PresetSettings)} />
@@ -334,7 +385,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/presets' element={withRouteFallback(PresetSettings)} />
           <Route path='/settings/skills' element={withRouteFallback(SkillsSettingsPage)} />
           <Route path='/settings/mcp' element={withRouteFallback(McpPage)} />
-          <Route path='/settings/plugins' element={withRouteFallback(PluginPage)} />
+          <Route path='/settings/plugins/*' element={<DisabledPluginsRedirect />} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/ssh-hosts' element={withRouteFallback(SshHostSettings)} />
           <Route path='/settings/execution-engines' element={withRouteFallback(ExecutionEngineSettings)} />
@@ -344,6 +395,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/poi' element={withRouteFallback(PoiSettings)} />
           <Route path='/settings/learning' element={withRouteFallback(LearningSettings)} />
           <Route path='/settings/insights' element={withRouteFallback(InsightsSettings)} />
+          <Route path='/settings/telemetry' element={withRouteFallback(TelemetrySettings)} />
           <Route path='/settings/moa' element={withRouteFallback(MoaSettings)} />
           <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
           <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />
@@ -365,6 +417,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/scheduled' element={withRouteFallback(ScheduledTasksPage)} />
           <Route path='/scheduled/:cron_job_id' element={withRouteFallback(TaskDetailPage)} />
           <Route path='/meeting' element={withRouteFallback(MeetingPage)} />
+          <Route path='/meeting/:sessionId' element={withRouteFallback(MeetingDetailPage)} />
           <Route path='/billing' element={withRouteFallback(BillingPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}
           <Route path='/requirements' element={withRouteFallback(RequirementsLayout)}>
@@ -401,6 +454,14 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route
             path='/video-generation/clip/:taskId'
             element={withRouteFallback(VideoClipResultPage)}
+          />
+          <Route
+            path='/video-generation/campaigns/:id'
+            element={withRouteFallback(VideoCampaignDetailPage)}
+          />
+          <Route
+            path='/video-generation/briefing/:id'
+            element={withRouteFallback(VideoBriefingWorkspacePage)}
           />
           <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
           {/* workshop/assets deferred — keep pages in tree but unrouted */}

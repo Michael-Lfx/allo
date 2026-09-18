@@ -10,7 +10,7 @@
 import { ipcBridge } from '@/common';
 import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
 import type { IMcpServer, IMcpServerTransport } from '@/common/config/storage';
-import { Alert, Modal, Tag } from '@arco-design/web-react';
+import { Alert, Button, Modal, Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -18,6 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import MarketSettingsPanel from '@/renderer/pages/settings/MarketSettingsPanel';
 import { MCP_MARKET_SOURCES } from '@/renderer/pages/settings/skill/skillMarket';
 import { useMcpServerCRUD } from '@/renderer/hooks/mcp';
+import type { McpActivationNavigationState } from '@/renderer/hooks/mcp/useMcpActivationFlow';
 import {
   toImportableMcpServersFromConfig,
   type ImportableMcpServer,
@@ -149,6 +150,7 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
   const { handleBatchImportMcpServers } = useMcpServerCRUD(saveMcpServers);
 
   const [pendingServers, setPendingServers] = useState<ImportableMcpServer[] | null>(null);
+  const [pendingMarketSource, setPendingMarketSource] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
 
   const handleAdd = useCallback(
@@ -173,6 +175,7 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
 
         // Import proceeds only after the user confirms the reviewed transports.
         setPendingServers(servers);
+        setPendingMarketSource(item.source);
       } catch (error) {
         console.error('Failed to resolve MCP market config:', error);
         Message.error(t('settings.mcpMarket.addFailed', { defaultValue: 'Failed to add MCP server.' }));
@@ -181,31 +184,52 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
     [t]
   );
 
-  const handleConfirmImport = useCallback(async () => {
-    if (!pendingServers || importing) return;
-    setImporting(true);
-    try {
-      // Servers stay disabled; deliberately NO connection test — testing an
-      // stdio server would spawn its command on this machine.
-      const imported = await handleBatchImportMcpServers(pendingServers);
-      if (imported && imported.length > 0) {
-        setPendingServers(null);
-        Message.warning(
-          t('settings.mcpMarket.importedDisabled', {
-            count: imported.length,
-            defaultValue:
-              'Imported {{count}} MCP server(s) in a disabled state. Review the command and config before enabling or testing.',
-          })
-        );
-        navigate('/mcp?view=installed');
+  const handleConfirmImport = useCallback(
+    async (mode: 'import' | 'activate') => {
+      if (!pendingServers || importing) return;
+      setImporting(true);
+      try {
+        // Servers stay disabled; deliberately NO connection test here —
+        // testing an stdio server would spawn its command on this machine.
+        // The "add and enable" mode hands the persisted IDs to the installed
+        // list, which runs one explicit server-gated activation per server.
+        const imported = await handleBatchImportMcpServers(pendingServers);
+        if (imported && imported.length > 0) {
+          const importedIds = imported.map((server) => server.mcp_server_id);
+          setPendingServers(null);
+          setPendingMarketSource(null);
+          const activation: McpActivationNavigationState | undefined =
+            mode === 'activate'
+              ? {
+                  operationId: globalThis.crypto.randomUUID(),
+                  serverIds: importedIds,
+                  mode: 'add-and-enable',
+                  source: 'market',
+                  createdAt: Date.now(),
+                }
+              : undefined;
+          if (mode === 'import') {
+            Message.warning(
+              t('settings.mcpMarket.importedDisabled', {
+                count: imported.length,
+                defaultValue:
+                  'Imported {{count}} MCP server(s) in a disabled state. Review the command and config before enabling or testing.',
+              })
+            );
+          }
+          navigate('/mcp?view=installed', {
+            state: { mcpFocusIds: importedIds, activation },
+          });
+        }
+      } catch (error) {
+        console.error('Failed to import MCP market servers:', error);
+        Message.error(t('settings.mcpMarket.addFailed', { defaultValue: 'Failed to add MCP server.' }));
+      } finally {
+        setImporting(false);
       }
-    } catch (error) {
-      console.error('Failed to import MCP market servers:', error);
-      Message.error(t('settings.mcpMarket.addFailed', { defaultValue: 'Failed to add MCP server.' }));
-    } finally {
-      setImporting(false);
-    }
-  }, [handleBatchImportMcpServers, importing, navigate, pendingServers, t]);
+    },
+    [handleBatchImportMcpServers, importing, navigate, pendingServers, t]
+  );
 
   const hasStdioServer = (pendingServers ?? []).some((server) => server.transport.type === 'stdio');
   const isAdded = useCallback(
@@ -218,7 +242,7 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
       <MarketSettingsPanel
         title={t('settings.mcpMarket.title', { defaultValue: 'MCP Market' })}
         description={t('settings.mcpMarket.description', {
-          defaultValue: 'Browse SkillHub MCP and MCP World popular servers, then import their MCP JSON directly.',
+          defaultValue: 'Import MCP configurations from trusted listings, then review, test, and enable them locally.',
         })}
         sources={MCP_MARKET_SOURCES}
         cacheKey='nomifun.mcpMarket.rankings.v1'
@@ -229,10 +253,11 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
         hideSearch={hideSearch}
         searchQuery={searchQuery}
         onSearchQueryChange={onSearchQueryChange}
+        showInstallCommand={false}
         primaryAction={{
-          label: t('settings.market.import', { defaultValue: '导入' }),
-          pendingLabel: t('settings.market.importing', { defaultValue: '正在导入' }),
-          completedLabel: t('settings.market.imported', { defaultValue: '已导入' }),
+          label: t('settings.mcpMarket.importConfig'),
+          pendingLabel: t('settings.mcpMarket.importingConfig'),
+          completedLabel: t('settings.mcpMarket.configImported'),
           resolveState: (item) => (addedStateLoading ? 'checking' : isAdded(item) ? 'completed' : 'ready'),
           run: handleAdd,
         }}
@@ -242,19 +267,40 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
       <Modal
         title={t('settings.mcpMarket.confirmTitle', { defaultValue: 'Review MCP server before import' })}
         visible={pendingServers !== null}
-        onCancel={() => setPendingServers(null)}
-        onOk={() => void handleConfirmImport()}
-        okText={t('settings.mcpMarket.confirmOk', { defaultValue: 'Import disabled' })}
-        cancelText={t('common.cancel', { defaultValue: 'Cancel' })}
-        okButtonProps={{ loading: importing }}
+        onCancel={() => {
+          setPendingServers(null);
+          setPendingMarketSource(null);
+        }}
+        footer={[
+          <Button key='import' disabled={importing} onClick={() => void handleConfirmImport('import')}>
+            {t('settings.mcpMarket.importOnly', { defaultValue: 'Import only' })}
+          </Button>,
+          <Button
+            key='activate'
+            type='primary'
+            loading={importing}
+            onClick={() => void handleConfirmImport('activate')}
+          >
+            {t('settings.mcpMarket.addAndEnable', { defaultValue: 'Add and enable' })}
+          </Button>,
+        ]}
         maskClosable={false}
       >
         <div className='space-y-12px'>
+          <div className='grid grid-cols-3 border-y border-solid border-arco-2 py-10px text-center text-12px text-t-secondary'>
+            <span className='font-medium text-t-primary'>{t('settings.mcpMarket.flowImport')}</span>
+            <span>{t('settings.mcpMarket.flowTest')}</span>
+            <span>{t('settings.mcpMarket.flowEnable')}</span>
+          </div>
           <div className='text-13px text-t-secondary'>
             {t('settings.mcpMarket.confirmIntro', {
               defaultValue:
-                'This configuration comes from an external market. Servers are imported disabled; review the details below before confirming.',
+                'This configuration comes from an external market. "Add and enable" imports it disabled, tests the connection once, and enables it automatically if the test passes. "Import only" keeps it disabled for manual testing later.',
             })}
+          </div>
+          <div className='grid grid-cols-[72px_minmax(0,1fr)] gap-x-10px gap-y-4px text-12px leading-18px'>
+            <span className='text-t-tertiary'>{t('settings.mcpMarket.confirmSource')}</span>
+            <code className='break-all text-t-primary'>{pendingMarketSource ?? t('settings.mcpMarket.unknown')}</code>
           </div>
           {hasStdioServer && (
             <Alert
@@ -266,23 +312,29 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
               })}
             />
           )}
-          {(pendingServers ?? []).map((server) => (
-            <div
-              key={server.name}
-              className='rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-12px'
-            >
-              <div className='flex items-center gap-8px min-w-0'>
-                <span className='truncate text-14px font-medium text-t-primary'>{server.name}</span>
-                <Tag size='small' bordered={false} className='!flex-shrink-0 !text-11px'>
-                  {server.transport.type}
-                </Tag>
+          <div className='border-y border-solid border-arco-2'>
+            {(pendingServers ?? []).map((server, index) => (
+              <div key={server.name} className={`py-12px ${index > 0 ? 'border-t border-solid border-arco-2' : ''}`}>
+                <div className='flex min-w-0 items-center gap-8px'>
+                  <span className='truncate text-14px font-medium text-t-primary'>{server.name}</span>
+                  <Tag size='small' bordered={false} className='!flex-shrink-0 !text-11px'>
+                    {server.transport.type}
+                  </Tag>
+                </div>
+                {server.description && (
+                  <div className='mt-4px text-12px leading-18px text-t-secondary'>{server.description}</div>
+                )}
+                {(server.market_configuration_fields?.length ?? 0) > 0 ? (
+                  <div className='mt-6px text-12px leading-18px text-warning-7'>
+                    {t('settings.mcpMarket.confirmMissingFields', {
+                      fields: server.market_configuration_fields?.join(', '),
+                    })}
+                  </div>
+                ) : null}
+                <TransportDetails transport={server.transport} />
               </div>
-              {server.description && (
-                <div className='mt-4px text-12px leading-18px text-t-secondary'>{server.description}</div>
-              )}
-              <TransportDetails transport={server.transport} />
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </Modal>
     </>

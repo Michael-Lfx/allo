@@ -28,7 +28,7 @@ describe('execution transcript capability boundary', () => {
     expect(source.match(/\bhideSendBox\b/g)?.length).toBeGreaterThanOrEqual(5);
     for (const chatSource of basicPlatformChats) {
       expect(chatSource.includes('readOnly?: boolean')).toBe(true);
-      expect(chatSource.includes('useConversationResponseMessages(conversation_id)')).toBe(true);
+      expect(chatSource.includes('useConversationResponseMessages(conversation_id,')).toBe(true);
       expect(chatSource.includes('!readOnly && !hideSendBox')).toBe(true);
     }
     for (const sendBoxSource of basicPlatformSendBoxes) {

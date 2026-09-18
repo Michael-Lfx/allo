@@ -139,6 +139,7 @@ fn bulky_resumed_session(pairs: usize, chars_each: usize) -> Session {
         owner_token: None,
         activated_deferred_tools: Vec::new(),
         editable_turn: None,
+        last_turn_ended_at: None,
     }
 }
 
@@ -204,6 +205,7 @@ async fn resumed_turn_compacts_before_provider_when_occupancy_exceeds_new_thresh
         output_reserve: 2_000,
         autocompact_buffer: 2_000,
         emergency_buffer: 1_000,
+        autocompact_threshold_pct: None,
         ..CompactConfig::default()
     };
 
@@ -332,7 +334,7 @@ async fn tc_2_6_03_emergency_returns_error() {
 #[tokio::test]
 async fn tc_2_6_04_autocompact_then_continue() {
     // Turn 1: tool use, returns input_tokens=170k (above autocompact threshold
-    // 167k on a 200k window, below emergency 197k). The tool loop must not
+    // 120k on a 200k window at 60%, below emergency 197k). The tool loop must not
     // autocompact. After the final EndTurn, autocompact runs once.
     // Enough tool turns that tail preservation still leaves a foldable middle.
     let compact_summary = summary_turn("<summary>Conversation summary</summary>");
@@ -632,7 +634,7 @@ async fn tc_2_6_02_micro_before_auto_execution_order() {
             //
             // micro_keep_recent = 3 → count threshold = 6.
             // After 7 tool-use turns: 7 > 6 → micro fires.
-            // After turn 6: last_input_tokens = 170k > 167k → auto fires.
+            // After turn 6: last_input_tokens = 170k > 120k (60% of 200k) → auto fires.
             let events = if count < 7 {
                 let input_tokens = if count == 6 { 170_000 } else { 10_000 };
                 vec![
@@ -790,7 +792,7 @@ async fn tc_2_6_e2e_02_micro_and_auto_cooperative() {
             // 7 tool-use turns (count 0-6).  Turn 6 returns high tokens.
             // micro_keep_recent = 3 → count threshold = 6.
             // After 7 tool results: 7 > 6 → micro fires.
-            // After turn 6: last_input_tokens = 170k > 167k → auto fires.
+            // After turn 6: last_input_tokens = 170k > 120k (60% of 200k) → auto fires.
             let events = if count < 7 {
                 let input_tokens = if count == 6 { 170_000 } else { 10_000 };
                 vec![

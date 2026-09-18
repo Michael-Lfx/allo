@@ -46,10 +46,27 @@ fn build_backend_filter(log_level: Option<&str>) -> EnvFilter {
 pub struct LogGuards {
     _backend: tracing_appender::non_blocking::WorkerGuard,
     _nomi: tracing_appender::non_blocking::WorkerGuard,
+    _sentry: sentry::ClientInitGuard,
+}
+
+fn init_sentry() -> sentry::ClientInitGuard {
+    let dsn = std::env::var("SENTRY_DSN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse().ok());
+    sentry::init(sentry::ClientOptions {
+        dsn,
+        release: sentry::release_name!(),
+        send_default_pii: false,
+        traces_sample_rate: 0.0,
+        ..Default::default()
+    })
 }
 
 pub fn init_tracing(log_dir: &Path, log_level: Option<&str>) -> LogGuards {
     std::fs::create_dir_all(log_dir).expect("failed to create log directory");
+    let sentry_guard = init_sentry();
 
     let console_layer = fmt::layer().with_target(true).with_filter(build_env_filter(log_level));
 
@@ -92,6 +109,7 @@ pub fn init_tracing(log_dir: &Path, log_level: Option<&str>) -> LogGuards {
         .with(console_layer)
         .with(backend_file_layer)
         .with(nomi_layer)
+        .with(sentry_tracing::layer())
         .try_init()
     {
         eprintln!("[init_tracing] global subscriber already installed, reusing it: {e}");
@@ -100,5 +118,6 @@ pub fn init_tracing(log_dir: &Path, log_level: Option<&str>) -> LogGuards {
     LogGuards {
         _backend: backend_guard,
         _nomi: nomi_guard,
+        _sentry: sentry_guard,
     }
 }

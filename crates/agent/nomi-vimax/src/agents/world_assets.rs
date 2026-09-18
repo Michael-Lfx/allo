@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use futures::FutureExt;
@@ -12,7 +13,8 @@ use crate::session::{read_json_artifact, write_json_artifact};
 
 use super::formats::WORLD_ASSETS;
 
-/// Vacant production-look bible — shared img2img anchor for cast, sets, and props.
+/// Optional vacant look bible. Env/prop plates do **not** img2img from this file
+/// (Seedream copies its layout as a background). Style lock is text-only.
 pub const LOOK_PLATE_FILENAME: &str = "look_plate.png";
 const LOOK_PLATE_LOCK_FILENAME: &str = "look_plate_lock.txt";
 
@@ -56,11 +58,22 @@ pub type WorldAssetRegistry = HashMap<String, HashMap<String, HashMap<String, St
 pub struct WorldAssetsPlanner {
     chat: Arc<dyn VimaxChat>,
     image: Arc<dyn VimaxImage>,
+    /// Seedream canvas sized to the film aspect — environment volume plates only.
+    env_image: Arc<dyn VimaxImage>,
 }
 
 impl WorldAssetsPlanner {
     pub fn new(chat: Arc<dyn VimaxChat>, image: Arc<dyn VimaxImage>) -> Self {
-        Self { chat, image }
+        Self {
+            chat,
+            image: Arc::clone(&image),
+            env_image: image,
+        }
+    }
+
+    pub fn with_env_image(mut self, env_image: Arc<dyn VimaxImage>) -> Self {
+        self.env_image = env_image;
+        self
     }
 
     pub async fn extract(
@@ -120,24 +133,12 @@ impl WorldAssetsPlanner {
                 "dropped people-centric prop concepts (portraits / group photos)"
             );
         }
-        if spec.environments.len() > 5 {
-            spec.environments.truncate(5);
-        }
-        if spec.props.len() > 8 {
-            spec.props.truncate(8);
-        }
-        for (i, e) in spec.environments.iter_mut().enumerate() {
-            e.idx = i as i32;
-            e.description = strip_people_mentions(&e.description);
-        }
-        for (i, p) in spec.props.iter_mut().enumerate() {
-            p.idx = i as i32;
-            p.description = strip_people_mentions(&p.description);
-        }
+        finalize_world_spec(&mut spec);
         Ok(spec)
     }
 
-    /// Vacant production-look plate used as the shared img2img style bible.
+    /// Vacant production-look plate. Kept for optional inspection; `ensure()` does
+    /// not feed it into env/prop generation (layout leak / scale warp).
     ///
     /// Best-effort: returns an empty vec when generation fails so planning can
     /// still proceed on the text [`crate::planning::production_look_lock`].
@@ -208,8 +209,10 @@ impl WorldAssetsPlanner {
 
     /// Extract (if needed) and generate missing environment / prop plates under `film_root`.
     ///
-    /// When `style_refs` / `style_lock_token` come from user Cameo photos, plates are
-    /// regenerated if the lock token changes so scenery stays consistent with uploads.
+    /// Props are always text-to-image catalog plates (white studio, true scale).
+    /// Environments are text-to-image with the production look lock; user Cameo
+    /// location photos may restyle lighting/materials but are never look_plate.png.
+    /// When `style_lock_token` changes, plates regenerate so scenery stays consistent.
     pub async fn ensure(
         &self,
         film_root: &Path,
@@ -220,6 +223,8 @@ impl WorldAssetsPlanner {
         style_lock_token: &str,
     ) -> VimaxResult<WorldAssetRegistry> {
         tokio::fs::create_dir_all(film_root).await?;
+        // Leftovers from older builds (or a vision check that returned before unlink).
+        sweep_world_vision_thumbs(film_root);
         let spec_path = film_root.join("world_assets.json");
         let registry_path = film_root.join("world_assets_registry.json");
         let lock_path = film_root.join("world_assets_cameo_lock.txt");
@@ -259,15 +264,18 @@ impl WorldAssetsPlanner {
             }
         }
 
-        let style_ref_paths: Vec<PathBuf> = {
-            let mut refs = self.look_style_refs(film_root, &style, &theme).await;
-            for p in style_refs {
-                if crate::media_local::is_usable_image_file(p) && !refs.iter().any(|e| e == p) {
-                    refs.push(p.clone());
-                }
-            }
-            refs
-        };
+        let aspect = crate::aspect::load_aspect_from_dir(film_root).await;
+        refresh_environment_plates_for_aspect(film_root, &aspect).await?;
+
+        let env_ref_paths: Vec<PathBuf> = style_refs
+            .iter()
+            .filter(|p| {
+                crate::media_local::is_usable_image_file(p)
+                    && is_safe_world_style_ref(p)
+                    && !is_look_plate_path(p)
+            })
+            .cloned()
+            .collect();
 
         let spec: WorldAssetsSpec = if spec_path.exists() {
             read_json_artifact(&spec_path).await?
@@ -289,6 +297,7 @@ impl WorldAssetsPlanner {
         let prop_root = film_root.join("props");
         tokio::fs::create_dir_all(&env_root).await?;
         tokio::fs::create_dir_all(&prop_root).await?;
+        sweep_world_vision_thumbs(film_root);
 
         let mut env_map = registry.remove("environments").unwrap_or_default();
         let mut prop_map = registry.remove("props").unwrap_or_default();
@@ -328,12 +337,13 @@ impl WorldAssetsPlanner {
                     &env.slugline,
                     &stripped_desc,
                     &style,
+                    &aspect,
                 ))
             } else {
                 None
             };
             let detail: String = stripped_desc.chars().take(120).collect();
-            let cameo_note = if style_ref_paths.is_empty() {
+            let cameo_note = if env_ref_paths.is_empty() {
                 String::new()
             } else {
                 " Style-locked to user Cameo references.".into()
@@ -375,13 +385,8 @@ impl WorldAssetsPlanner {
                 None
             };
             let detail: String = stripped_desc.chars().take(100).collect();
-            let cameo_note = if style_ref_paths.is_empty() {
-                String::new()
-            } else {
-                " Style-locked to user Cameo references.".into()
-            };
             let registry_desc = format!(
-                "File [{plate_name}] = GLOBAL prop bible (object only, no people): <{key}>. {detail}. Lock shape, materials, colors.{cameo_note}"
+                "File [{plate_name}] = GLOBAL prop bible (object only, no people, white studio catalog): <{key}>. {detail}. Lock shape, materials, colors, real-world scale."
             );
             prepared.push(PreparedPlate {
                 group: "props",
@@ -402,9 +407,19 @@ impl WorldAssetsPlanner {
                 let Some(prompt) = plate.prompt.clone() else {
                     continue;
                 };
-                let image = Arc::clone(&self.image);
+                let image = if plate.group == "environments" {
+                    Arc::clone(&self.env_image)
+                } else {
+                    Arc::clone(&self.image)
+                };
                 let chat = Arc::clone(&self.chat);
-                let style_refs = style_ref_paths.clone();
+                // Props are always T2I catalog plates. Env may restyle from Cameo
+                // location photos, never from look_plate.png.
+                let style_refs = if plate.group == "props" {
+                    Vec::new()
+                } else {
+                    env_ref_paths.clone()
+                };
                 let out = plate.out.clone();
                 let permit = Arc::clone(&sem);
                 set.spawn(async move {
@@ -413,7 +428,11 @@ impl WorldAssetsPlanner {
                     })?;
                     let refs: Vec<&Path> =
                         style_refs.iter().map(|p| p.as_path()).collect();
-                    let planner = WorldAssetsPlanner { image, chat };
+                    let planner = WorldAssetsPlanner {
+                        image: Arc::clone(&image),
+                        env_image: image,
+                        chat,
+                    };
                     planner
                         .generate_empty_plate_resilient(&prompt, &refs, &out)
                         .await?;
@@ -421,9 +440,17 @@ impl WorldAssetsPlanner {
                     Ok::<_, VimaxError>(())
                 });
             }
-            while let Some(joined) = set.join_next().await {
-                joined.map_err(|e| VimaxError::msg(format!("world plate join: {e}")))??;
+            let gen_result = async {
+                while let Some(joined) = set.join_next().await {
+                    joined.map_err(|e| VimaxError::msg(format!("world plate join: {e}")))??;
+                }
+                Ok::<_, VimaxError>(())
             }
+            .await;
+            sweep_world_vision_thumbs(film_root);
+            gen_result?;
+        } else {
+            sweep_world_vision_thumbs(film_root);
         }
 
         // Phase C — register plates (skip ones already in the registry) with the
@@ -439,6 +466,7 @@ impl WorldAssetsPlanner {
                         "environments" => WorldPromptKind::Environment {
                             slugline: &plate.key,
                             description: &plate.stripped_desc,
+                            aspect: &aspect,
                         },
                         _ => WorldPromptKind::Prop {
                             name: &plate.key,
@@ -472,6 +500,7 @@ impl WorldAssetsPlanner {
         if !style_lock_token.is_empty() {
             crate::session::write_text_artifact(&lock_path, style_lock_token).await?;
         }
+        sweep_world_vision_thumbs(film_root);
         Ok(registry)
     }
 
@@ -505,17 +534,19 @@ impl WorldAssetsPlanner {
         let style_refs: Vec<&Path> = style_refs
             .iter()
             .copied()
-            .filter(|p| is_safe_world_style_ref(p))
+            .filter(|p| is_safe_world_style_ref(p) && !is_look_plate_path(p))
             .collect();
         let prompted = if style_refs.is_empty() {
             prompt.to_string()
         } else {
             format!(
                 "{prompt}\n\n\
-STYLE/SCENE CONTEXT from reference image(s): match era, palette, materials, lighting mood, \
-and setting type from the references. Do NOT copy any person, face, body, hand, or silhouette \
-from the references. Output must remain a completely unoccupied empty-set plate — never a \
-group photo, portrait, selfie, or framed photo of people."
+STYLE from reference image(s): borrow color science, lighting quality, and material treatment ONLY. \
+Do NOT copy the reference's composition, camera, horizon, room layout, or use it as a background layer. \
+This output is a NEW plate of the subject described above, at real-world scale, filling the frame. \
+Do NOT copy any person, face, body, hand, or silhouette from the references. \
+Output must remain a completely unoccupied empty-set plate — never a group photo, portrait, selfie, \
+or framed photo of people."
             )
         };
 
@@ -558,7 +589,7 @@ group photo, portrait, selfie, or framed photo of people."
             } else {
                 // Short hard prompt so safety prefix + truncate cannot bury the empty-set rule.
                 format!(
-                    "Wide 16:9 vacant unoccupied film location or isolated object plate. \
+                    "Vacant unoccupied film location or isolated object plate filling the frame. \
                      Completely empty. Zero people, zero humans, zero faces, zero silhouettes, zero hands, zero body parts. \
                      Architecture furniture props lighting only. {prompt}"
                 )
@@ -583,6 +614,8 @@ group photo, portrait, selfie, or framed photo of people."
 
     async fn plate_has_people(&self, path: &Path) -> bool {
         // Vision check only needs a thumbnail — full 2K plates bloat multimodal payloads.
+        // Write it under the OS temp dir, never next to the plate (a failed check
+        // used to leave `*.vision_thumb.jpg` beside every env/prop PNG).
         let vision_path = match downsample_for_vision(path).await {
             Ok(p) => p,
             Err(err) => {
@@ -590,12 +623,20 @@ group photo, portrait, selfie, or framed photo of people."
                 path.to_path_buf()
             }
         };
+        let has_people = self.inspect_plate_people(&vision_path).await;
+        if vision_path != path {
+            let _ = tokio::fs::remove_file(&vision_path).await;
+        }
+        has_people
+    }
+
+    async fn inspect_plate_people(&self, vision_path: &Path) -> bool {
         let raw = match self
             .chat
             .complete_vision(
                 "You are a strict image inspector. Reply with exactly YES or NO.",
                 "Does this image contain any human, person, face, crowd, silhouette of a person, hand, or body part? YES or NO only.",
-                &[vision_path.as_path()],
+                &[vision_path],
             )
             .await
         {
@@ -605,9 +646,6 @@ group photo, portrait, selfie, or framed photo of people."
                 return false;
             }
         };
-        if vision_path != path {
-            let _ = tokio::fs::remove_file(&vision_path).await;
-        }
         let upper = raw.trim().to_ascii_uppercase();
         let trimmed = raw.trim();
         if upper.starts_with("NO")
@@ -623,13 +661,19 @@ group photo, portrait, selfie, or framed photo of people."
     }
 }
 
+static VISION_THUMB_SEQ: AtomicU64 = AtomicU64::new(0);
+
 async fn downsample_for_vision(path: &Path) -> VimaxResult<PathBuf> {
     let bytes = tokio::fs::read(path).await?;
     let img = image::load_from_memory(&bytes).map_err(|e| {
         VimaxError::Media(format!("decode plate for vision {}: {e}", path.display()))
     })?;
     let thumb = img.thumbnail(768, 768);
-    let out = path.with_extension("vision_thumb.jpg");
+    let seq = VISION_THUMB_SEQ.fetch_add(1, Ordering::Relaxed);
+    let out = std::env::temp_dir().join(format!(
+        "vimax_world_vision_{}_{seq}.jpg",
+        std::process::id()
+    ));
     let thumb_path = out.clone();
     tokio::task::spawn_blocking(move || {
         thumb
@@ -639,6 +683,40 @@ async fn downsample_for_vision(path: &Path) -> VimaxResult<PathBuf> {
     .await
     .map_err(|e| VimaxError::Media(format!("vision thumb join: {e}")))??;
     Ok(thumb_path)
+}
+
+/// Leftover inspection JPEG next to a world plate (`foo_prop.vision_thumb.jpg`).
+pub(crate) fn is_world_vision_thumb(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n.to_ascii_lowercase().contains("vision_thumb"))
+}
+
+/// Remove inspection sidecars left in `environments/` / `props/` from older builds
+/// (or a cancelled people-check). Not part of the published bible.
+fn sweep_world_vision_thumbs(film_root: &Path) {
+    for group in ["environments", "props"] {
+        let root = film_root.join(group);
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let Ok(files) = std::fs::read_dir(&path) else {
+                    continue;
+                };
+                for file in files.flatten() {
+                    let file = file.path();
+                    if is_world_vision_thumb(&file) {
+                        let _ = std::fs::remove_file(&file);
+                    }
+                }
+            } else if is_world_vision_thumb(&path) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 }
 
 async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
@@ -652,6 +730,7 @@ async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
         "world_assets.json",
         "world_assets_registry.json",
         "world_assets_cameo_lock.txt",
+        "world_assets_aspect.txt",
     ] {
         let p = film_root.join(name);
         if p.exists() {
@@ -659,6 +738,251 @@ async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
         }
     }
     Ok(())
+}
+
+const WORLD_ASPECT_LOCK: &str = "world_assets_aspect.txt";
+const MAX_ENVIRONMENTS: usize = 12;
+const MAX_PROPS: usize = 5;
+
+/// Old env plates were always 16:9 2K. Missing lock + non-16:9 film → regen.
+async fn refresh_environment_plates_for_aspect(film_root: &Path, aspect: &str) -> VimaxResult<()> {
+    let lock = film_root.join(WORLD_ASPECT_LOCK);
+    let prev = tokio::fs::read_to_string(&lock).await.unwrap_or_default();
+    let prev = prev.trim().to_string();
+    let stale = if prev.is_empty() {
+        aspect != crate::aspect::DEFAULT_ASPECT_RATIO
+    } else {
+        crate::aspect::normalize_aspect_ratio(&prev) != aspect
+    };
+    if stale {
+        tracing::info!(
+            film_root = %film_root.display(),
+            aspect,
+            prev = %prev,
+            "film aspect changed — regenerating environment volume plates"
+        );
+        let dir = film_root.join("environments");
+        if dir.is_dir() {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+        }
+        let registry_path = film_root.join("world_assets_registry.json");
+        if registry_path.exists() {
+            if let Ok(mut registry) =
+                read_json_artifact::<WorldAssetRegistry>(&registry_path).await
+            {
+                registry.remove("environments");
+                let _ = write_json_artifact(&registry_path, &registry).await;
+            }
+        }
+    }
+    crate::session::write_text_artifact(&lock, aspect).await?;
+    Ok(())
+}
+
+fn finalize_world_spec(spec: &mut WorldAssetsSpec) {
+    spec.environments = dedup_environments(std::mem::take(&mut spec.environments));
+    if spec.environments.len() > MAX_ENVIRONMENTS {
+        spec.environments.truncate(MAX_ENVIRONMENTS);
+    }
+    if spec.props.len() > MAX_PROPS {
+        spec.props.truncate(MAX_PROPS);
+    }
+    for (i, e) in spec.environments.iter_mut().enumerate() {
+        e.idx = i as i32;
+        e.description = strip_people_mentions(&e.description);
+    }
+    for (i, p) in spec.props.iter_mut().enumerate() {
+        p.idx = i as i32;
+        p.description = strip_people_mentions(&p.description);
+    }
+}
+
+fn dedup_environments(envs: Vec<EnvironmentAsset>) -> Vec<EnvironmentAsset> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for env in envs {
+        let key = crate::domain::normalize_location_key(&env.slugline);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(env);
+    }
+    out
+}
+
+/// First scene heading in a scene script (INT./EXT., 内景/外景, `1-3 夜 内 …`, 第N场).
+pub fn first_scene_slugline(script: &str) -> String {
+    for line in script.lines() {
+        let t = line.trim().trim_start_matches(['#', ' ']);
+        if looks_like_scene_heading(t) {
+            return t.chars().take(80).collect();
+        }
+    }
+    String::new()
+}
+
+fn looks_like_scene_heading(t: &str) -> bool {
+    let t = t.trim();
+    if t.is_empty() || t.chars().count() > 48 {
+        return false;
+    }
+    if t.contains('「') {
+        return false;
+    }
+    let upper = t.to_ascii_uppercase();
+    if upper.starts_with("INT.")
+        || upper.starts_with("EXT.")
+        || upper.starts_with("INT ")
+        || upper.starts_with("EXT ")
+        || upper.starts_with("INT/")
+        || upper.starts_with("SCENE")
+    {
+        return true;
+    }
+    if t.contains("内景") || t.contains("外景") || t.starts_with("场景") {
+        return true;
+    }
+    if t.starts_with('第') && (t.contains('场') || t.contains('幕')) {
+        return true;
+    }
+    let bytes = t.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 {
+        let rest = t[i..].trim_start();
+        if rest.starts_with('-') || rest.starts_with('–') || rest.starts_with('—') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fill empty `location_id` from the scene heading, then snap to extracted sluglines.
+///
+/// Consecutive rows in one scene share that heading. Visual-token overlap must
+/// not retarget a row to another environment — that splits packing (and the
+/// story) for no location change.
+///
+/// Unmatched LLM `location_id` is kept (do not wipe to empty) so the renderer
+/// can still substring-match a plate path/description.
+pub fn bind_location_ids(
+    briefs: &mut [crate::domain::ShotBriefDescription],
+    script: &str,
+    sluglines: &[String],
+) {
+    let fallback = first_scene_slugline(script);
+    let scene_loc = match_slugline(&fallback, sluglines)
+        .or_else(|| {
+            if sluglines.len() == 1 {
+                sluglines.first().cloned()
+            } else if !fallback.is_empty() {
+                Some(fallback)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    for brief in briefs {
+        let existing = brief.location_id.trim();
+        brief.location_id = if existing.is_empty() {
+            scene_loc.clone()
+        } else {
+            match_slugline(existing, sluglines).unwrap_or_else(|| existing.to_string())
+        };
+    }
+}
+
+fn match_slugline(id: &str, sluglines: &[String]) -> Option<String> {
+    if sluglines.is_empty() {
+        return None;
+    }
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    if let Some(s) = sluglines
+        .iter()
+        .find(|s| crate::domain::location_keys_match(id, s))
+    {
+        return Some(s.clone());
+    }
+    sluglines
+        .iter()
+        .find(|s| {
+            crate::domain::normalize_location_key(s)
+                .contains(&crate::domain::normalize_location_key(id))
+                || crate::domain::normalize_location_key(id)
+                    .contains(&crate::domain::normalize_location_key(s))
+        })
+        .cloned()
+}
+
+pub async fn environment_sluglines_from_dir(film_root: &Path) -> Vec<String> {
+    let path = film_root.join("world_assets.json");
+    let Ok(spec) = read_json_artifact::<WorldAssetsSpec>(&path).await else {
+        return Vec::new();
+    };
+    spec.environments
+        .into_iter()
+        .map(|e| e.slugline)
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
+fn is_env_pair_path(path: &Path) -> bool {
+    let s = path.to_string_lossy().to_ascii_lowercase();
+    s.contains("environments") || s.contains("environment_plate")
+}
+
+/// Bind one location plate by slugline. Empty id → no match (use
+/// [`resolve_environment_plate`] when a clip still needs a set bible).
+pub fn select_environment_plate(
+    location_id: &str,
+    pairs: &[(PathBuf, String)],
+) -> Option<(PathBuf, String)> {
+    let key = location_id.trim();
+    if key.is_empty() {
+        return None;
+    }
+    pairs
+        .iter()
+        .find(|(p, t)| is_env_pair_path(p) && plate_matches_location(p, t, key))
+        .cloned()
+}
+
+/// Location bible for a clip: match `location_id`, else the only env plate,
+/// else the env plate whose path/description overlaps the shot text.
+pub fn resolve_environment_plate(
+    location_id: &str,
+    shot_query: &str,
+    pairs: &[(PathBuf, String)],
+) -> Option<(PathBuf, String)> {
+    let envs: Vec<(PathBuf, String)> = pairs
+        .iter()
+        .filter(|(p, _)| is_env_pair_path(p))
+        .cloned()
+        .collect();
+    if envs.is_empty() {
+        return None;
+    }
+    if let Some(hit) = select_environment_plate(location_id, &envs) {
+        return Some(hit);
+    }
+    if envs.len() == 1 {
+        return envs.into_iter().next();
+    }
+    rank_world_pairs_for_frame(shot_query, &envs, 1)
+        .into_iter()
+        .next()
+}
+
+fn plate_matches_location(path: &Path, text: &str, location_id: &str) -> bool {
+    let blob = format!("{} {}", path.to_string_lossy(), text);
+    crate::domain::location_keys_match(&blob, location_id)
+        || crate::domain::normalize_location_key(&blob)
+            .contains(&crate::domain::normalize_location_key(location_id))
 }
 
 fn asset_item(path: &Path, description: &str) -> HashMap<String, String> {
@@ -669,7 +993,11 @@ fn asset_item(path: &Path, description: &str) -> HashMap<String, String> {
 }
 
 enum WorldPromptKind<'a> {
-    Environment { slugline: &'a str, description: &'a str },
+    Environment {
+        slugline: &'a str,
+        description: &'a str,
+        aspect: &'a str,
+    },
     Prop { name: &'a str, description: &'a str },
 }
 
@@ -702,11 +1030,13 @@ async fn ensure_world_prompt_sidecar(
         WorldPromptKind::Environment {
             slugline,
             description,
+            aspect,
         } => environment_plate_prompt(
             theme,
             slugline,
             &strip_people_mentions(description),
             style,
+            aspect,
         ),
         WorldPromptKind::Prop { name, description } => prop_plate_prompt(
             theme,
@@ -718,12 +1048,19 @@ async fn ensure_world_prompt_sidecar(
     write_generation_prompt_sidecar(image_path, &prompt).await
 }
 
-fn environment_plate_prompt(theme: &str, slugline: &str, description: &str, style: &str) -> String {
+fn environment_plate_prompt(
+    theme: &str,
+    slugline: &str,
+    description: &str,
+    style: &str,
+    aspect: &str,
+) -> String {
     include_str!("../../prompts/world_assets__prompt_template_environment_plate.txt")
         .replace("{theme}", theme)
         .replace("{slugline}", slugline)
         .replace("{description}", description)
         .replace("{style}", &crate::planning::production_look_lock(style))
+        .replace("{frame}", &crate::aspect::aspect_prompt_clause(aspect))
 }
 
 fn prop_plate_prompt(theme: &str, name: &str, description: &str, style: &str) -> String {
@@ -795,7 +1132,14 @@ fn is_people_centric_prop(name: &str, desc: &str) -> bool {
     NEEDLES.iter().any(|n| blob.contains(n))
 }
 
-/// Style refs safe for vacant env/prop img2img (atmosphere plates only; never cast portraits).
+fn is_look_plate_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|n| n.to_ascii_lowercase().contains("look_plate"))
+        .unwrap_or(false)
+}
+
+/// Style refs safe for vacant env img2img (atmosphere / Cameo location photos; never cast).
 fn is_safe_world_style_ref(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -908,23 +1252,10 @@ pub fn rank_world_pairs_for_frame(
         if out.len() >= max {
             break;
         }
-        // Keep weak matches only for the first env fallback.
-        if score <= 1 && !out.is_empty() {
+        if score <= 1 {
             continue;
         }
         out.push(pairs[i].clone());
-    }
-    if out.is_empty() {
-        // Fallback: first environment plate if any, else first prop.
-        if let Some(env) = pairs.iter().find(|(p, _)| {
-            p.to_string_lossy()
-                .to_ascii_lowercase()
-                .contains("environments")
-        }) {
-            out.push(env.clone());
-        } else {
-            out.push(pairs[0].clone());
-        }
     }
     out
 }
@@ -962,9 +1293,10 @@ fn match_tokens(blob: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorldAssetsSpec, is_people_centric_prop, is_safe_world_style_ref, rank_world_pairs_for_frame,
-        environment_plate_prompt, prop_plate_prompt,
-        strip_people_mentions,
+        WorldAssetsSpec, bind_location_ids, environment_plate_prompt, first_scene_slugline,
+        is_look_plate_path, is_people_centric_prop, is_safe_world_style_ref, is_world_vision_thumb,
+        prop_plate_prompt, rank_world_pairs_for_frame, resolve_environment_plate,
+        select_environment_plate, strip_people_mentions, sweep_world_vision_thumbs,
     };
     use std::path::{Path, PathBuf};
 
@@ -988,6 +1320,42 @@ mod tests {
     }
 
     #[test]
+    fn world_vision_thumb_names() {
+        assert!(is_world_vision_thumb(Path::new(
+            "莎草纸文书卷_prop.vision_thumb.jpg"
+        )));
+        assert!(is_world_vision_thumb(Path::new(
+            "INT_神殿文书大厅_-_日_environment_plate.vision_thumb.jpg"
+        )));
+        assert!(!is_world_vision_thumb(Path::new("莎草纸文书卷_prop.png")));
+        assert!(!is_world_vision_thumb(Path::new(
+            "INT_神殿文书大厅_-_日_environment_plate.png"
+        )));
+    }
+
+    #[test]
+    fn sweep_removes_leftover_vision_thumbs_not_plates() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join("environments/2_INT");
+        let prop = dir.path().join("props/0_doc");
+        std::fs::create_dir_all(&env).unwrap();
+        std::fs::create_dir_all(&prop).unwrap();
+        let plate = env.join("INT_environment_plate.png");
+        let thumb = env.join("INT_environment_plate.vision_thumb.jpg");
+        let prop_png = prop.join("doc_prop.png");
+        let prop_thumb = prop.join("doc_prop.vision_thumb.jpg");
+        std::fs::write(&plate, b"png").unwrap();
+        std::fs::write(&thumb, b"jpg").unwrap();
+        std::fs::write(&prop_png, b"png").unwrap();
+        std::fs::write(&prop_thumb, b"jpg").unwrap();
+        sweep_world_vision_thumbs(dir.path());
+        assert!(plate.is_file());
+        assert!(prop_png.is_file());
+        assert!(!thumb.exists());
+        assert!(!prop_thumb.exists());
+    }
+
+    #[test]
     fn rejects_portrait_cameo_as_world_style_ref() {
         assert!(!is_safe_world_style_ref(Path::new(
             "character_portraits/0_Alice/Alice_cameo.png"
@@ -1002,7 +1370,13 @@ mod tests {
     fn world_plate_prompts_share_production_look_lock_not_face_clause() {
         let style = "cinematic film look";
         let look = crate::planning::production_look_lock(style);
-        let env = environment_plate_prompt("rainy alley", "EXT. ALLEY - NIGHT", "wet brick", style);
+        let env = environment_plate_prompt(
+            "rainy alley",
+            "EXT. ALLEY - NIGHT",
+            "wet brick",
+            style,
+            "9:16",
+        );
         let prop = prop_plate_prompt("rainy alley", "red umbrella", "oil-paper", style);
         assert!(env.contains(&look));
         assert!(prop.contains(&look));
@@ -1012,6 +1386,22 @@ mod tests {
         assert!(!prop.to_ascii_lowercase().contains("faces:"));
         assert!(!env.contains("If Style is anime"));
         assert!(!prop.contains("If Style is anime"));
+        let prop_l = prop.to_ascii_lowercase();
+        assert!(prop_l.contains("white") || prop_l.contains("cyclorama"));
+        assert!(prop_l.contains("catalog") || prop_l.contains("studio"));
+        assert!(prop_l.contains("real-world") || prop_l.contains("scale"));
+        assert!(prop_l.contains("prop bible"));
+        assert!(env.to_ascii_lowercase().contains("architectural"));
+        assert!(env.to_ascii_lowercase().contains("full frame"));
+        assert!(env.to_ascii_lowercase().contains("9:16"));
+        assert!(env.to_ascii_lowercase().contains("door handle") || env.to_ascii_lowercase().contains("volume"));
+    }
+
+    #[test]
+    fn look_plate_is_never_a_world_generation_ref() {
+        assert!(is_look_plate_path(Path::new("look_plate.png")));
+        assert!(is_look_plate_path(Path::new("film/look_plate.png")));
+        assert!(!is_look_plate_path(Path::new("props/0_key/key_prop.png")));
     }
 
     #[test]
@@ -1044,6 +1434,141 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("coffee")
         );
+    }
+
+    #[test]
+    fn rank_does_not_fall_back_to_the_first_environment() {
+        let pairs = vec![
+            (
+                PathBuf::from("environments/0_INT_OFFICE/INT_OFFICE_environment_plate.png"),
+                "GLOBAL EMPTY environment plate (no people): INT. OFFICE - DAY.".into(),
+            ),
+            (
+                PathBuf::from("environments/1_INT_DOCK/INT_DOCK_environment_plate.png"),
+                "GLOBAL EMPTY environment plate (no people): EXT. DOCK - NIGHT.".into(),
+            ),
+        ];
+        let ranked = rank_world_pairs_for_frame("a close-up of two hands exchanging a letter", &pairs, 2);
+        assert!(ranked.is_empty(), "{ranked:?}");
+    }
+
+    #[test]
+    fn select_environment_plate_uses_location_id() {
+        let pairs = vec![
+            (
+                PathBuf::from("environments/0_INT_OFFICE/INT_OFFICE_environment_plate.png"),
+                "GLOBAL EMPTY environment plate (no people): INT. OFFICE - DAY.".into(),
+            ),
+            (
+                PathBuf::from(
+                    "environments/1_INT_COFFEE_SHOP/INT_COFFEE_SHOP_environment_plate.png",
+                ),
+                "GLOBAL EMPTY environment plate (no people): INT. COFFEE SHOP - NIGHT.".into(),
+            ),
+        ];
+        let hit = select_environment_plate("INT. COFFEE SHOP - NIGHT", &pairs)
+            .expect("coffee plate");
+        assert!(
+            hit.0
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("coffee")
+        );
+        assert!(select_environment_plate("", &pairs).is_none());
+        let only_taxi = vec![pairs[1].clone()];
+        let fallback = resolve_environment_plate("", "close-up of hands", &only_taxi)
+            .expect("single plate is the set");
+        assert!(
+            fallback
+                .0
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("coffee")
+        );
+        let ranked = resolve_environment_plate("", "coffee shop glass steam", &pairs)
+            .expect("rank by shot text");
+        assert!(
+            ranked
+                .0
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("coffee")
+        );
+    }
+
+    #[test]
+    fn bind_location_ids_uses_scene_heading() {
+        let mut briefs = vec![crate::domain::ShotBriefDescription {
+            idx: 0,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: "wide of the shop".into(),
+            audio_desc: None,
+            location_id: String::new(),
+            beats: Vec::new(),
+        }];
+        bind_location_ids(
+            &mut briefs,
+            "INT. COFFEE SHOP - NIGHT\nSteam on the glass.",
+            &["INT. COFFEE SHOP - NIGHT".into(), "INT. OFFICE - DAY".into()],
+        );
+        assert_eq!(briefs[0].location_id, "INT. COFFEE SHOP - NIGHT");
+        assert!(first_scene_slugline("INT. CAFE - DAY\nHello").contains("CAFE"));
+        assert!(
+            first_scene_slugline("1-3 夜 内 出租车后座\n男生低头看手机")
+                .contains("出租车")
+        );
+        assert!(first_scene_slugline("第2场 学校门口\n她下车").contains("学校"));
+    }
+
+    #[test]
+    fn bind_location_ids_keeps_unmatched_llm_slug() {
+        let mut briefs = vec![crate::domain::ShotBriefDescription {
+            idx: 0,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: "taxi interior".into(),
+            audio_desc: None,
+            location_id: "出租车后座".into(),
+            beats: Vec::new(),
+        }];
+        bind_location_ids(
+            &mut briefs,
+            "男生把桃子递过去。",
+            &["INT. OFFICE - DAY".into()],
+        );
+        assert_eq!(briefs[0].location_id, "出租车后座");
+    }
+
+    #[test]
+    fn bind_location_ids_keeps_scene_heading_despite_other_env_tokens() {
+        let mut briefs = vec![
+            crate::domain::ShotBriefDescription {
+                idx: 0,
+                is_last: false,
+                cam_idx: 0,
+                visual_desc: "steam on the coffee shop glass".into(),
+                audio_desc: None,
+                location_id: String::new(),
+                beats: Vec::new(),
+            },
+            crate::domain::ShotBriefDescription {
+                idx: 1,
+                is_last: true,
+                cam_idx: 0,
+                visual_desc: "she remembers the office fluorescent lights".into(),
+                audio_desc: None,
+                location_id: String::new(),
+                beats: Vec::new(),
+            },
+        ];
+        bind_location_ids(
+            &mut briefs,
+            "INT. COFFEE SHOP - NIGHT\nSteam on the glass.",
+            &["INT. COFFEE SHOP - NIGHT".into(), "INT. OFFICE - DAY".into()],
+        );
+        assert_eq!(briefs[0].location_id, "INT. COFFEE SHOP - NIGHT");
+        assert_eq!(briefs[1].location_id, "INT. COFFEE SHOP - NIGHT");
     }
 
     #[test]

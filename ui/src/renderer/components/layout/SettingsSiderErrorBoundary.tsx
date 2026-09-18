@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { claimDynamicImportReload, isDynamicImportFailure } from './routeErrorRecovery';
 
 interface SettingsSiderErrorBoundaryProps {
   children: React.ReactNode;
@@ -9,12 +10,14 @@ interface SettingsSiderErrorBoundaryProps {
 interface SettingsSiderErrorBoundaryState {
   error: Error | null;
   componentStack: string | null;
+  dynamicImportReloadExhausted: boolean;
 }
 
 interface SettingsSiderErrorFallbackProps {
   error: Error;
   componentStack: string | null;
   requiresReload: boolean;
+  reloadExhausted: boolean;
   onRetry: () => void;
   onReload: () => void;
 }
@@ -23,6 +26,7 @@ const SettingsSiderErrorFallback: React.FC<SettingsSiderErrorFallbackProps> = ({
   error,
   componentStack,
   requiresReload,
+  reloadExhausted,
   onRetry,
   onReload,
 }) => {
@@ -43,9 +47,13 @@ const SettingsSiderErrorFallback: React.FC<SettingsSiderErrorFallbackProps> = ({
         <button
           type='button'
           className='px-12px py-5px rounded-6px bg-2 border border-solid border-border-2'
-          onClick={requiresReload ? onReload : onRetry}
+          onClick={onRetry}
         >
-          {requiresReload ? t('settings.reloadApplication') : t('common.retry')}
+          {requiresReload
+            ? reloadExhausted
+              ? t('common.routeError.reloadAgain', { defaultValue: '再次重新加载应用' })
+              : t('settings.reloadApplication')
+            : t('common.retry')}
         </button>
         {requiresReload ? null : (
           <button
@@ -75,10 +83,14 @@ export default class SettingsSiderErrorBoundary extends React.Component<
   SettingsSiderErrorBoundaryProps,
   SettingsSiderErrorBoundaryState
 > {
-  state: SettingsSiderErrorBoundaryState = { error: null, componentStack: null };
+  state: SettingsSiderErrorBoundaryState = {
+    error: null,
+    componentStack: null,
+    dynamicImportReloadExhausted: false,
+  };
 
   static getDerivedStateFromError(error: Error): Partial<SettingsSiderErrorBoundaryState> {
-    return { error };
+    return { error, dynamicImportReloadExhausted: false };
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
@@ -88,18 +100,34 @@ export default class SettingsSiderErrorBoundary extends React.Component<
 
   componentDidUpdate(previousProps: SettingsSiderErrorBoundaryProps): void {
     if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
-      this.setState({ error: null, componentStack: null });
+      this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false });
     }
   }
 
   private isDynamicImportFailure(): boolean {
-    return /Failed to fetch dynamically imported module|Importing a module script failed|dynamically imported module/i.test(
-      this.state.error?.message ?? ''
-    );
+    return isDynamicImportFailure(this.state.error);
   }
 
   private retry = (): void => {
-    this.setState({ error: null, componentStack: null });
+    if (this.isDynamicImportFailure()) {
+      if (this.state.dynamicImportReloadExhausted) {
+        this.reload();
+        return;
+      }
+      let storage: Storage | undefined;
+      try {
+        storage = window.sessionStorage;
+      } catch {
+        storage = undefined;
+      }
+      if (claimDynamicImportReload(storage, window.location.href)) {
+        this.reload();
+      } else {
+        this.setState({ dynamicImportReloadExhausted: true });
+      }
+      return;
+    }
+    this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false });
   };
 
   private reload = (): void => {
@@ -107,7 +135,7 @@ export default class SettingsSiderErrorBoundary extends React.Component<
   };
 
   render(): React.ReactNode {
-    const { error, componentStack } = this.state;
+    const { error, componentStack, dynamicImportReloadExhausted } = this.state;
     if (!error) return this.props.children;
     const requiresReload = this.isDynamicImportFailure();
 
@@ -116,6 +144,7 @@ export default class SettingsSiderErrorBoundary extends React.Component<
         error={error}
         componentStack={componentStack}
         requiresReload={requiresReload}
+        reloadExhausted={dynamicImportReloadExhausted}
         onRetry={this.retry}
         onReload={this.reload}
       />

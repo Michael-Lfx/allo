@@ -21,11 +21,26 @@ pub enum CorpusError {
 
 const BUNDLED_SESSION_DIALOGUE: &str =
     include_str!("../evaluation/corpus.conversation.json");
-const BUNDLED_HARNESS_CONTROL: &str =
+const BUNDLED_HARNESS_SMOKE: &str =
     include_str!("../evaluation/corpus.harness_control.json");
-const BUNDLED_OFFICE_TASKS: &str = include_str!("../evaluation/corpus.office.json");
-const BUNDLED_AGENT_WORKFLOWS: &str =
-    include_str!("../evaluation/corpus.agent_workflows.json");
+const BUNDLED_OFFICE_CORE: &str = include_str!("../evaluation/corpus.office.json");
+const BUNDLED_CODING_LOCAL: &str =
+    include_str!("../evaluation/corpus.coding_local.json");
+const BUNDLED_BROWSER_SMOKE: &str =
+    include_str!("../evaluation/corpus.browser_smoke.json");
+const BUNDLED_MCP_FIXTURE: &str = include_str!("../evaluation/corpus.mcp_fixture.json");
+
+const MAGIC_PROMPT_TOKENS: &[&str] = &[
+    "MEMO_OK",
+    "MINUTES_OK",
+    "BUDGET_OK",
+    "EMAIL_OK",
+    "REPORT_OK",
+    "BRIEFING_OK",
+    "PIPELINE_OK",
+    "REFACTOR_OK",
+    "POLICY_OK",
+];
 
 /// Load a corpus manifest from disk and validate it.
 pub fn load_manifest(path: impl AsRef<Path>) -> Result<Manifest, CorpusError> {
@@ -36,11 +51,12 @@ pub fn load_manifest(path: impl AsRef<Path>) -> Result<Manifest, CorpusError> {
 /// Load a suite compiled into the binary.
 pub fn load_bundled_manifest(suite: &str) -> Result<Manifest, CorpusError> {
     let text = match suite.trim() {
-        // Offline demo only — not in the live lab catalog.
         "session_dialogue" => BUNDLED_SESSION_DIALOGUE,
-        "harness_control" => BUNDLED_HARNESS_CONTROL,
-        "office_tasks" => BUNDLED_OFFICE_TASKS,
-        "agent_workflows" => BUNDLED_AGENT_WORKFLOWS,
+        "harness_smoke" | "harness_control" => BUNDLED_HARNESS_SMOKE,
+        "office_core" | "office_tasks" => BUNDLED_OFFICE_CORE,
+        "coding_local" | "agent_workflows" => BUNDLED_CODING_LOCAL,
+        "browser_smoke" => BUNDLED_BROWSER_SMOKE,
+        "mcp_fixture" => BUNDLED_MCP_FIXTURE,
         other => {
             return Err(CorpusError::Invalid(format!(
                 "unknown bundled suite {other}"
@@ -48,6 +64,30 @@ pub fn load_bundled_manifest(suite: &str) -> Result<Manifest, CorpusError> {
         }
     };
     parse_manifest(text)
+}
+
+/// Offline gate: bundled suites load, prompts have no magic tokens, oracles parse.
+pub fn run_corpus_gate() -> Result<(), CorpusError> {
+    for suite in [
+        "harness_smoke",
+        "office_core",
+        "coding_local",
+        "browser_smoke",
+        "mcp_fixture",
+    ] {
+        let manifest = load_bundled_manifest(suite)?;
+        for case in &manifest.cases {
+            for token in MAGIC_PROMPT_TOKENS {
+                if case.prompt.contains(token) {
+                    return Err(CorpusError::Invalid(format!(
+                        "case {} prompt contains banned token {token}",
+                        case.id
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_manifest(text: &str) -> Result<Manifest, CorpusError> {
@@ -144,7 +184,15 @@ fn validate_case(case: &Case) -> Result<(), CorpusError> {
             CorpusError::Invalid(format!("case {} workspace file: {e}", case.id))
         })?;
     }
-    for scorer in &case.scorers {
+    if let Some(isolation) = case.isolation.as_deref() {
+        if crate::types::IsolationKind::parse_label(isolation).is_none() {
+            return Err(CorpusError::Invalid(format!(
+                "case {} isolation must be smoke|office|coding|browser|mcp",
+                case.id
+            )));
+        }
+    }
+    for scorer in case.scorers.iter().chain(case.advisory_scorers.iter()) {
         validate_scorer(&case.id, scorer)?;
     }
     Ok(())
@@ -256,6 +304,72 @@ fn validate_scorer(case_id: &str, scorer: &ScorerSpec) -> Result<(), CorpusError
                 )));
             }
         }
+        ScorerSpec::FileNotContains { path, marker } => {
+            if path.trim().is_empty() || marker.is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} file_not_contains path and marker must not be empty"
+                )));
+            }
+            safe_join(std::path::Path::new("."), path).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} file_not_contains: {e}"))
+            })?;
+        }
+        ScorerSpec::FileRegex {
+            pattern,
+            path,
+            minimum_hits,
+        } => {
+            if pattern.is_empty() || path.trim().is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} file_regex path and pattern must not be empty"
+                )));
+            }
+            if *minimum_hits == 0 {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} file_regex minimum_hits must be positive"
+                )));
+            }
+            regex::Regex::new(pattern).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} file_regex pattern invalid: {e}"))
+            })?;
+            safe_join(std::path::Path::new("."), path).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} file_regex: {e}"))
+            })?;
+        }
+        ScorerSpec::CsvValid { path, .. } => {
+            if path.trim().is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} csv_valid path must not be empty"
+                )));
+            }
+            safe_join(std::path::Path::new("."), path).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} csv_valid: {e}"))
+            })?;
+        }
+        ScorerSpec::JsonArray { path, .. } => {
+            if path.trim().is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} json_array path must not be empty"
+                )));
+            }
+            safe_join(std::path::Path::new("."), path).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} json_array: {e}"))
+            })?;
+        }
+        ScorerSpec::KeywordCoverage {
+            keywords, path, minimum,
+        } => {
+            if keywords.is_empty() || *minimum == 0 {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} keyword_coverage needs keywords and positive minimum"
+                )));
+            }
+            if !path.trim().is_empty() {
+                safe_join(std::path::Path::new("."), path).map_err(|e| {
+                    CorpusError::Invalid(format!("case {case_id} keyword_coverage: {e}"))
+                })?;
+            }
+        }
     }
     Ok(())
 }
@@ -283,6 +397,9 @@ mod tests {
             task_profile: None,
             workspace_files: std::collections::BTreeMap::new(),
             timeout_secs: None,
+            advisory_scorers: vec![],
+            isolation: None,
+            trial: 0,
         }
     }
 
@@ -308,5 +425,10 @@ mod tests {
             cases: vec![case],
         };
         assert!(validate_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn corpus_gate_rejects_magic_tokens() {
+        run_corpus_gate().expect("bundled suites must load without magic tokens");
     }
 }

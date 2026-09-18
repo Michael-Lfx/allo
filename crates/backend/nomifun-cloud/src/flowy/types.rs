@@ -1,6 +1,6 @@
 //! Flowy API request/response types.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SendEmailCodeRequest {
@@ -213,18 +213,34 @@ pub struct TurnCreditUsage {
     pub turn_id: String,
     #[serde(default)]
     pub session_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i32_lenient")]
     pub call_count: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub credits_consumed: i64,
     #[serde(default)]
     pub calls: Vec<TurnCreditUsageCall>,
 }
 
+impl TurnCreditUsage {
+    /// Prefer the richer of the aggregate vs the per-call sum so a laggy
+    /// `creditsConsumed` cannot under-report a complete `calls` list.
+    pub fn normalize(mut self) -> Self {
+        let call_sum: i64 = self.calls.iter().map(|c| c.credit_consumed).sum();
+        if call_sum > self.credits_consumed {
+            self.credits_consumed = call_sum;
+        }
+        let n = i32::try_from(self.calls.len()).unwrap_or(i32::MAX);
+        if n > self.call_count {
+            self.call_count = n;
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnCreditUsageCall {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub chat_id: i64,
     #[serde(default)]
     pub model_name: String,
@@ -236,12 +252,63 @@ pub struct TurnCreditUsageCall {
     pub completion_tokens: Option<i64>,
     #[serde(default)]
     pub cache_tokens: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub credit_consumed: i64,
     #[serde(default)]
     pub call_status: String,
     #[serde(default)]
     pub created_at: Option<String>,
+}
+
+fn deserialize_i64_lenient<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(parse_lenient_i64(serde_json::Value::deserialize(deserializer)?))
+}
+
+fn deserialize_i32_lenient<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v = parse_lenient_i64(serde_json::Value::deserialize(deserializer)?);
+    i32::try_from(v).or_else(|_| {
+        if v > i64::from(i32::MAX) {
+            Ok(i32::MAX)
+        } else {
+            Ok(0)
+        }
+    })
+}
+
+fn parse_lenient_i64(value: serde_json::Value) -> i64 {
+    match value {
+        serde_json::Value::Null => 0,
+        serde_json::Value::Bool(_) => 0,
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_u64().and_then(|v| i64::try_from(v).ok()))
+            .or_else(|| n.as_f64().map(round_credit))
+            .unwrap_or(0),
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                return 0;
+            }
+            s.parse::<i64>()
+                .ok()
+                .or_else(|| s.parse::<f64>().ok().map(round_credit))
+                .unwrap_or(0)
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => 0,
+    }
+}
+
+fn round_credit(v: f64) -> i64 {
+    if !v.is_finite() {
+        return 0;
+    }
+    v.round() as i64
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -257,6 +324,7 @@ pub struct ClientPackageRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PresenceHeartbeatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
@@ -264,6 +332,8 @@ pub struct PresenceHeartbeatRequest {
     pub app_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -294,6 +364,48 @@ pub struct DeviceActivateRequest {
     pub app_version: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub os_version: String,
+    /// Stable anonymous install id (`client_id` on disk).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub install_id: String,
+    /// Why this activation was sent: `first_install` | `upgrade` | `ip_change`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub activate_reason: String,
+    /// CPU architecture (`x64` / `arm64`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub arch: String,
+    /// Host composition: `desktop` | `web`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_runtime: String,
+    /// Invite / referral code from server config when present.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub invite_code: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_medium: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub utm_campaign: String,
+    /// Last successful login method: `wechat_qr` | `email_otp`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub signup_method: String,
+    /// Total physical RAM in MiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ram_mb: Option<u64>,
+    /// Largest free disk space in GiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_free_gb: Option<u64>,
+    /// Credits balance snapshot at activate time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits_balance: Option<i64>,
+    /// Current plan code from `/user/me` when available.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub plan_code: String,
+    /// First time this install wrote device state (epoch ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_launch_at_ms: Option<i64>,
+    /// Milliseconds from last login success to this activate upload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_to_activate_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xpu_brand: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -324,13 +436,35 @@ pub struct DeviceActivateRequest {
     pub currency: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct AvailableModelsClaw {
+    #[serde(default)]
+    pub auto: Vec<ClawModelEntry>,
     #[serde(default)]
     pub cloud: Vec<ClawModelEntry>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+impl AvailableModelsClaw {
+    /// Chat catalog rows (`auto` then `cloud`).
+    pub fn chat_entries(&self) -> impl Iterator<Item = &ClawModelEntry> {
+        self.auto.iter().chain(self.cloud.iter())
+    }
+
+    /// Positive `extra.max_tokens` for `model` (`AIPC-…` or `flowy/…`).
+    pub fn max_output_tokens_for(&self, model: &str) -> Option<u32> {
+        self.chat_entries()
+            .find(|entry| entry.matches_model_candidate(model))
+            .and_then(|entry| entry.model_extra().max_output_tokens())
+    }
+}
+
+/// `max_tokens` to send on a completion: catalog `extra.max_tokens` when
+/// advertised, otherwise `fallback`.
+pub fn completion_max_tokens(catalog_cap: Option<u32>, fallback: u32) -> u32 {
+    catalog_cap.filter(|n| *n > 0).unwrap_or(fallback)
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ClawModelEntry {
     pub id: String,
@@ -345,6 +479,13 @@ pub struct ClawModelEntry {
     pub icon: String,
     #[serde(default)]
     pub category: i32,
+    /// Set by the catalog synchronizer after decoding the chat response. This
+    /// is deliberately not part of the upstream wire shape.
+    #[serde(skip)]
+    pub catalog_family: Option<String>,
+    /// Canonical Auto tier derived from the upstream Auto entry ID.
+    #[serde(skip)]
+    pub catalog_auto_tier: Option<String>,
 }
 
 /// Capability payload inside `ClawModelEntry.extra` (JSON string from model_dev).
@@ -512,7 +653,10 @@ pub struct ChatSessionReportResponse {
 
 #[cfg(test)]
 mod plan_label_tests {
-    use super::{format_plan_tier, strip_plan_suffix, ClawModelExtra, UserCurrentPlan};
+    use super::{
+        completion_max_tokens, format_plan_tier, strip_plan_suffix, AvailableModelsClaw,
+        ClawModelEntry, ClawModelExtra, UserCurrentPlan,
+    };
 
     #[test]
     fn strip_plan_suffix_removes_english_plan() {
@@ -583,6 +727,29 @@ mod plan_label_tests {
     }
 
     #[test]
+    fn available_models_claw_reads_extra_max_tokens() {
+        let catalog = AvailableModelsClaw {
+            cloud: vec![ClawModelEntry {
+                id: "AIPC-deepseek-v4-pro".into(),
+                extra: r#"{"input":["text"],"max_tokens":16384}"#.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            catalog.max_output_tokens_for("AIPC-deepseek-v4-pro"),
+            Some(16384)
+        );
+        assert_eq!(
+            catalog.max_output_tokens_for("flowy/deepseek-v4-pro"),
+            Some(16384)
+        );
+        assert_eq!(catalog.max_output_tokens_for("AIPC-missing"), None);
+        assert_eq!(completion_max_tokens(Some(16384), 8192), 16384);
+        assert_eq!(completion_max_tokens(None, 8192), 8192);
+        assert_eq!(completion_max_tokens(Some(0), 8192), 8192);
+    }
+
     fn claw_model_extra_treats_zero_or_empty_as_unset() {
         assert_eq!(ClawModelExtra::parse("").context_window_tokens(), None);
         assert_eq!(ClawModelExtra::parse("").max_output_tokens(), None);
@@ -595,5 +762,54 @@ mod plan_label_tests {
             None
         );
         assert_eq!(ClawModelExtra::parse("not-json").context_window_tokens(), None);
+    }
+}
+
+#[cfg(test)]
+mod turn_credit_usage_tests {
+    use super::{TurnCreditUsage, TurnCreditUsageCall};
+
+    #[test]
+    fn deserializes_float_and_string_credit_fields() {
+        let usage: TurnCreditUsage = serde_json::from_str(
+            r#"{
+                "turnId":"t1",
+                "callCount":"2",
+                "creditsConsumed":12.4,
+                "calls":[
+                    {"modelName":"m","creditConsumed":"6.2"},
+                    {"modelName":"m","creditConsumed":7}
+                ]
+            }"#,
+        )
+        .expect("lenient credit payload");
+        let usage = usage.normalize();
+        assert_eq!(usage.call_count, 2);
+        assert_eq!(usage.credits_consumed, 13);
+        assert_eq!(usage.calls[0].credit_consumed, 6);
+        assert_eq!(usage.calls[1].credit_consumed, 7);
+    }
+
+    #[test]
+    fn normalize_raises_aggregate_to_call_sum() {
+        let usage = TurnCreditUsage {
+            turn_id: "t1".into(),
+            call_count: 1,
+            credits_consumed: 10,
+            calls: vec![
+                TurnCreditUsageCall {
+                    credit_consumed: 40,
+                    ..Default::default()
+                },
+                TurnCreditUsageCall {
+                    credit_consumed: 30,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+        .normalize();
+        assert_eq!(usage.credits_consumed, 70);
+        assert_eq!(usage.call_count, 2);
     }
 }

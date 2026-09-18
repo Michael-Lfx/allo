@@ -1,6 +1,7 @@
 
 
-import { enqueueVideoGrowthEvent } from './videoGrowthUpload';
+import { captureFunnelEvent } from './telemetry';
+import { enqueueTelemetryEvent } from './telemetryOutbox';
 
 export type FunnelEventName =
   | 'auth_completed'
@@ -14,6 +15,10 @@ export type FunnelEventName =
   | 'render_started'
   | 'film_succeeded'
   | 'film_failed'
+  | 'film_cancelled'
+  | 'briefing_succeeded'
+  | 'briefing_failed'
+  | 'briefing_cancelled'
   | 'value_confirmed'
   | 'project_exported'
   | 'tv_published'
@@ -23,6 +28,14 @@ export type FunnelEventName =
   | 'first_value_confirmed'
   | 'd1_retained'
   | 'd7_retained'
+  | 'app_opened'
+  | 'kb_created'
+  | 'kb_grounded'
+  | 'billing_catalog_viewed'
+  | 'billing_checkout_started'
+  | 'billing_pay_started'
+  | 'billing_pay_succeeded'
+  | 'billing_pay_failed'
   | 'message_submitted'
   | 'message_accepted'
   | 'first_status'
@@ -30,7 +43,22 @@ export type FunnelEventName =
   | 'stream_finished'
   | 'turn_idle'
   | 'retry_succeeded'
-  | 'abandoned_before_first_token';
+  | 'abandoned_before_first_token'
+  | 'expert_package_install_failed'
+  | 'update_check_completed'
+  | 'update_prompt_shown'
+  | 'update_download_started'
+  | 'update_download_succeeded'
+  | 'update_download_failed'
+  | 'update_install_started'
+  | 'update_install_failed'
+  | 'update_install_blocked'
+  | 'update_applied'
+  | 'app_launch_auth_ready'
+  | 'app_launch_config_ready'
+  | 'app_launch_interactive'
+  | 'app_launch_failed'
+  | 'app_launch_completed';
 
 export type FunnelEvent = {
   id: string;
@@ -70,7 +98,7 @@ function readEvents(): FunnelEvent[] {
 }
 
 function writeEvents(events: FunnelEvent[]): void {
-  memoryEvents = events.slice(-200);
+  memoryEvents = events.slice(-2000);
   if (!canUseStorage()) return;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryEvents));
@@ -154,7 +182,8 @@ function recordFunnelEvent(
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
     window.dispatchEvent(new CustomEvent('flowy:funnel', { detail: event }));
   }
-  enqueueVideoGrowthEvent(event);
+  captureFunnelEvent(event);
+  enqueueTelemetryEvent(event);
   return event;
 }
 
@@ -162,10 +191,22 @@ export function trackFunnelEvent(name: FunnelEventName, props?: FunnelEvent['pro
   return recordFunnelEvent(name, props);
 }
 
+/** Idempotent funnel emit keyed by a stable event id (max 128 chars). */
+export function trackFunnelEventOnce(
+  name: FunnelEventName,
+  eventId: string,
+  props?: FunnelEvent['props']
+): FunnelEvent | null {
+  const id = eventId.slice(0, 128);
+  if (!id || readEvents().some((event) => event.id === id)) return null;
+  return recordFunnelEvent(name, props, id);
+}
+
 export type VideoSessionEventName =
   | 'render_started'
   | 'film_succeeded'
   | 'film_failed'
+  | 'film_cancelled'
   | 'value_confirmed'
   | 'project_exported'
   | 'tv_published'
@@ -210,31 +251,32 @@ export function resetFunnelForTests(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
     window.localStorage.removeItem(COHORT_KEY);
+    window.sessionStorage?.removeItem('flowy.app_opened.v1');
+    window.sessionStorage?.removeItem('flowy.app_launch.boot.v1');
   } catch {
     // ignore
   }
 }
 
-/** Mark D1/D7 if first auth is old enough and user returns. */
-export function maybeTrackRetention(now = Date.now()): FunnelEvent[] {
-  const auth = readEvents().find((event) => event.name === 'auth_completed');
-  if (!auth) return [];
-  const authAt = Date.parse(auth.at);
-  if (!Number.isFinite(authAt)) return [];
-  const dayMs = 24 * 60 * 60 * 1000;
-  const emitted: FunnelEvent[] = [];
-  if (now - authAt >= dayMs && !hasFunnelEvent('d1_retained')) {
-    emitted.push(trackFunnelEvent('d1_retained'));
+/** Session-open signal. Retention is computed in PostHog from this + value_confirmed. */
+export function maybeTrackRetention(): FunnelEvent[] {
+  if (typeof window !== 'undefined' && typeof window.sessionStorage !== 'undefined') {
+    try {
+      if (window.sessionStorage.getItem('flowy.app_opened.v1') === '1') return [];
+      window.sessionStorage.setItem('flowy.app_opened.v1', '1');
+    } catch {
+      if (hasFunnelEvent('app_opened')) return [];
+    }
+  } else if (hasFunnelEvent('app_opened')) {
+    return [];
   }
-  if (now - authAt >= 7 * dayMs && !hasFunnelEvent('d7_retained')) {
-    emitted.push(trackFunnelEvent('d7_retained'));
-  }
-  return emitted;
+  return [trackFunnelEvent('app_opened')];
 }
 
 /**
- * User-confirmed first value (open artifact / copy / follow-up / explicit confirm).
- * First token alone is never enough.
+ * User-confirmed value (open artifact / copy / follow-up / explicit confirm).
+ * First token alone is never enough. first_value_confirmed stays install-once
+ * for first-win UI; value_confirmed fires per feature/session for WAVU.
  */
 export function confirmFirstValue(props?: FunnelEvent['props']): FunnelEvent | null {
   const sessionId =
@@ -243,6 +285,11 @@ export function confirmFirstValue(props?: FunnelEvent['props']): FunnelEvent | n
       : null;
   if (sessionId) {
     trackVideoSessionEvent('value_confirmed', sessionId, props);
+  } else {
+    trackFunnelEvent('value_confirmed', {
+      feature: typeof props?.feature === 'string' ? props.feature : 'conversation',
+      ...props,
+    });
   }
   if (hasFunnelEvent('first_value_confirmed')) return null;
   return trackFunnelEvent('first_value_confirmed', props);

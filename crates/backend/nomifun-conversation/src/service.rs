@@ -45,7 +45,7 @@ use nomifun_common::{
     generate_id, now_ms, validate_uuidv7, workspace_path_has_edge_whitespace_segment,
 };
 use nomifun_db::models::{
-    AgentMetadataRow, AppServerContextUsageRow, ConversationRow, MessageRow,
+    AgentMetadataRow, AppServerContextUsageRow, ConversationRow, ConversationSkillLoad, MessageRow,
     NewConversationSkillLoad,
 };
 use nomifun_db::{
@@ -109,6 +109,8 @@ const CANCEL_TEARDOWN_GRACE: Duration = Duration::from_secs(7);
 const CANCEL_HANDLER_GRACE: Duration = Duration::from_secs(11);
 const CANCEL_AUTH_PREFLIGHT_GRACE: Duration = Duration::from_secs(2);
 const KNOWLEDGE_AUTOGEN_MODEL_PREF_KEY: &str = "knowledge.autogenModel";
+const RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR: &str =
+    "conversation runtime configuration cannot change while the turn is active";
 /// Client preference key holding the preferred conversation-title model
 /// (`ProviderWithModel` JSON: `{provider_id, model}`), written from the
 /// model-routing settings UI. Absent/invalid falls back to the session model.
@@ -312,6 +314,12 @@ fn dedupe_skill_ids(skill_ids: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn has_known_skill_catalog_prefix(value: &str) -> bool {
+    ["builtin:", "user:", "project:", "extension:", "mcp:", "legacy:"]
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+}
+
 /// Select the entries that still use the historical name-based skill lookup.
 ///
 /// Persisted bare names predate catalog identities, and `legacy:` is the
@@ -370,10 +378,131 @@ fn catalog_skill_ids_from_conversation_extra(extra: &str) -> Vec<String> {
     skills
         .iter()
         .filter_map(serde_json::Value::as_str)
-        .filter_map(|value| SkillId::parse(value).ok())
-        .filter(|skill_id| skill_id.source() != SkillCatalogSource::Legacy)
-        .map(|skill_id| skill_id.as_str().to_owned())
+        // Keep malformed values that claim a catalog namespace. The first
+        // send gate will turn them into a deterministic preset-integrity
+        // error instead of silently dropping a missing Skill from the
+        // conversation's requested capability set.
+        .filter(|value| has_known_skill_catalog_prefix(value))
+        .filter(|value| !value.starts_with("legacy:"))
+        .map(ToOwned::to_owned)
         .collect()
+}
+
+/// Prepared Skill context for one send. `loaded` is the complete immutable
+/// context sent to the runtime; `persist` contains only snapshots that were
+/// newly selected for this turn. Historical snapshots are intentionally not
+/// appended to the ledger again on every follow-up message.
+struct PreparedSkillSnapshots {
+    loaded: Vec<ResolvedSkillSnapshot>,
+    persist: Vec<ResolvedSkillSnapshot>,
+}
+
+fn canonical_skill_ids_from_request(skill_ids: &[String]) -> Result<Vec<String>, AppError> {
+    let mut requested = Vec::new();
+    for skill_id in dedupe_skill_ids(skill_ids) {
+        match SkillId::parse(&skill_id) {
+            Ok(skill_id) if skill_id.source() != SkillCatalogSource::Legacy => {
+                requested.push(skill_id.as_str().to_owned());
+            }
+            Ok(_) => {}
+            Err(error) if has_known_skill_catalog_prefix(&skill_id) => {
+                return Err(AppError::BadRequest(format!(
+                    "PRESET_SKILLS_UNAVAILABLE: invalid canonical Skill id '{skill_id}': {error}"
+                )));
+            }
+            // Bare names are retained for legacy callers. They are not part
+            // of the immutable catalog snapshot protocol.
+            Err(_) => {}
+        }
+    }
+    Ok(requested)
+}
+
+fn validate_skill_snapshot_values(
+    skill_ids: &[String],
+    snapshots: &[ResolvedSkillSnapshot],
+) -> Result<(), AppError> {
+    if snapshots.len() != skill_ids.len()
+        || snapshots
+            .iter()
+            .zip(skill_ids)
+            .any(|(snapshot, skill_id)| snapshot.skill_id != *skill_id)
+    {
+        return Err(AppError::BadRequest(
+            "Selected Skills changed while their instructions were loading".to_owned(),
+        ));
+    }
+    for snapshot in snapshots {
+        if snapshot.name.trim().is_empty()
+            || snapshot.source.trim().is_empty()
+            || snapshot.content.trim().is_empty()
+            || snapshot.version_hash.len() != 64
+            || snapshot.version_hash != snapshot.version_hash.to_ascii_lowercase()
+            || !snapshot.version_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(AppError::BadRequest(
+                "Selected Skill has invalid immutable instructions".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reconstruct the exact Skill bodies recorded by an earlier successful turn.
+/// This is deliberately independent of the live catalog: uninstalling a
+/// preset, or rebuilding a stale ACP session, must not silently replace the
+/// historical instructions with a newer or same-named Skill.
+fn historical_skill_snapshots_from_loads(
+    skill_ids: &[String],
+    loads: &[ConversationSkillLoad],
+) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+    let wanted = skill_ids.iter().collect::<HashSet<_>>();
+    let mut by_catalog_key = HashMap::new();
+    for load in loads {
+        if !wanted.contains(&load.catalog_key) {
+            continue;
+        }
+        // Ledger rows are ordered oldest-first. The first row is the original
+        // immutable snapshot for this conversation/preset Skill.
+        by_catalog_key.entry(load.catalog_key.clone()).or_insert_with(|| {
+            ResolvedSkillSnapshot {
+                skill_id: load.catalog_key.clone(),
+                name: load.skill_name.clone(),
+                source: load.source.clone(),
+                version_hash: load.version_hash.clone(),
+                content: load.content.clone(),
+            }
+        });
+    }
+
+    let missing = skill_ids
+        .iter()
+        .filter(|skill_id| !by_catalog_key.contains_key(*skill_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "PRESET_SKILLS_UNAVAILABLE: historical Skill snapshots unavailable: {}",
+            missing.join(", ")
+        )));
+    }
+
+    let snapshots = skill_ids
+        .iter()
+        .filter_map(|skill_id| by_catalog_key.remove(skill_id))
+        .collect::<Vec<_>>();
+    validate_skill_snapshot_values(skill_ids, &snapshots)?;
+    Ok(snapshots)
+}
+
+fn classify_preset_resolution_error(error: AppError) -> AppError {
+    match error {
+        AppError::NotFound(message) => AppError::NotFound(format!("PRESET_NOT_FOUND: {message}")),
+        AppError::BadRequest(message) if message.contains(" is disabled") => {
+            AppError::BadRequest(format!("PRESET_DISABLED: {message}"))
+        }
+        other => other,
+    }
 }
 
 tokio::task_local! {
@@ -1483,31 +1612,44 @@ impl ConversationService {
         &self,
         skill_ids: &[String],
     ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
-        let snapshots = self.skill_resolver.load_catalog_skills(skill_ids).await?;
-        if snapshots.len() != skill_ids.len()
-            || snapshots
-                .iter()
-                .zip(skill_ids)
-                .any(|(snapshot, skill_id)| snapshot.skill_id != *skill_id)
-        {
-            return Err(AppError::BadRequest(
-                "Selected Skills changed while their instructions were loading".to_owned(),
-            ));
-        }
-        for snapshot in &snapshots {
-            if snapshot.name.trim().is_empty()
-                || snapshot.source.trim().is_empty()
-                || snapshot.content.trim().is_empty()
-                || snapshot.version_hash.len() != 64
-                || snapshot.version_hash != snapshot.version_hash.to_ascii_lowercase()
-                || !snapshot.version_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-            {
-                return Err(AppError::BadRequest(
-                    "Selected Skill has invalid immutable instructions".to_owned(),
-                ));
-            }
-        }
+        let snapshots = self
+            .skill_resolver
+            .load_catalog_skills(skill_ids)
+            .await
+            .map_err(|error| match AppError::from(error) {
+                AppError::NotFound(message) => {
+                    AppError::NotFound(format!("PRESET_SKILLS_UNAVAILABLE: {message}"))
+                }
+                AppError::Internal(message) => {
+                    AppError::Internal(format!("SKILL_CATALOG_UNAVAILABLE: {message}"))
+                }
+                AppError::BadRequest(message) => {
+                    AppError::BadRequest(format!("PRESET_SKILLS_UNAVAILABLE: {message}"))
+                }
+                other => other,
+            })?;
+        validate_skill_snapshot_values(skill_ids, &snapshots)?;
         Ok(snapshots)
+    }
+
+    async fn resolve_historical_preset_skill_snapshots(
+        &self,
+        conversation_id: &str,
+        skill_ids: &[String],
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        if skill_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let loads = self
+            .conversation_repo
+            .get_skill_loads(conversation_id)
+            .await
+            .map_err(|error| {
+                AppError::Internal(format!(
+                    "SKILL_CATALOG_UNAVAILABLE: read historical Skill snapshots: {error}"
+                ))
+            })?;
+        historical_skill_snapshots_from_loads(skill_ids, &loads)
     }
 
     async fn resolve_requested_skill_snapshots(
@@ -1518,12 +1660,7 @@ impl ConversationService {
         // `legacy:` bindings likewise retain their name-based compatibility
         // path because they deliberately do not guess a source. Only canonical
         // catalog identities participate in the explicit snapshot protocol.
-        let requested_skill_ids = dedupe_skill_ids(&request.inject_skills)
-            .into_iter()
-            .filter_map(|skill_id| SkillId::parse(&skill_id).ok())
-            .filter(|skill_id| skill_id.source() != SkillCatalogSource::Legacy)
-            .map(|skill_id| skill_id.as_str().to_owned())
-            .collect::<Vec<_>>();
+        let requested_skill_ids = canonical_skill_ids_from_request(&request.inject_skills)?;
         let snapshots = self
             .resolve_explicit_skill_snapshots(&requested_skill_ids)
             .await?;
@@ -1531,6 +1668,18 @@ impl ConversationService {
             return Err(AppError::BadRequest("Message content must not be empty".into()));
         }
         Ok(snapshots)
+    }
+
+    async fn resolve_requested_skill_snapshots_excluding(
+        &self,
+        request: &SendMessageRequest,
+        excluded: &HashSet<String>,
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        let requested_skill_ids = canonical_skill_ids_from_request(&request.inject_skills)?
+            .into_iter()
+            .filter(|skill_id| !excluded.contains(skill_id))
+            .collect::<Vec<_>>();
+        self.resolve_explicit_skill_snapshots(&requested_skill_ids).await
     }
 
     fn build_skill_load_commits(
@@ -3940,6 +4089,59 @@ impl ConversationService {
         })
     }
 
+    /// Reserve the conversation-wide runtime configuration boundary before a
+    /// sensitive setting is persisted or forwarded to an ACP runtime.
+    ///
+    /// This is deliberately non-blocking: an active turn, stop, completion,
+    /// or preparation owner must make the request fail with 409 rather than
+    /// leaving a settings request waiting behind a stream that it could
+    /// otherwise invalidate.
+    pub(crate) async fn try_acquire_runtime_configuration_guard(
+        &self,
+        conversation_id: &str,
+        durable_status: Option<&str>,
+    ) -> Result<ConversationPreparationGuard, AppError> {
+        if durable_status == Some("running") {
+            return Err(AppError::Conflict(
+                RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR.to_owned(),
+            ));
+        }
+
+        let guard = self
+            .runtime_state
+            .try_acquire_preparation_gate(conversation_id)
+            .map_err(|error| match error {
+                AppError::Conflict(_) => {
+                    AppError::Conflict(RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR.to_owned())
+                }
+                other => other,
+            })?;
+        if self.runtime_state.has_active_turn(conversation_id)
+            || self.runtime_state.is_stop_in_progress(conversation_id)
+            || self.runtime_state.is_completion_in_progress(conversation_id)
+        {
+            return Err(AppError::Conflict(
+                RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR.to_owned(),
+            ));
+        }
+
+        // The caller's row was read before gate admission. Re-read the
+        // authoritative durable status while this guard is held so a running
+        // transition that won a separate durable boundary cannot be followed
+        // by a configuration write based on a stale idle snapshot.
+        let current = self
+            .conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        if current.status.as_deref() == Some("running") {
+            return Err(AppError::Conflict(
+                RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR.to_owned(),
+            ));
+        }
+        Ok(guard)
+    }
+
     /// Soft reads (mode / model / slash-commands / usage) use this so a
     /// missing runtime returns empty defaults instead of NotFound.
     pub(crate) fn optional_runtime_handle(
@@ -5289,14 +5491,17 @@ impl ConversationService {
                 .ok()
                 .and_then(|guard| guard.as_ref().cloned())
                 .ok_or_else(|| AppError::Internal("preset service is not wired".into()))?;
-            resolved_preset_snapshot = Some(service
-                .resolve(
-                    &preset_id,
-                    nomifun_api_types::PresetTarget::Conversation,
-                    None,
-                    preset_overrides,
-                )
-                .await?);
+            resolved_preset_snapshot = Some(
+                service
+                    .resolve(
+                        &preset_id,
+                        nomifun_api_types::PresetTarget::Conversation,
+                        None,
+                        preset_overrides,
+                    )
+                    .await
+                    .map_err(classify_preset_resolution_error)?,
+            );
         }
 
         if let Some(snapshot) = resolved_preset_snapshot.as_ref() {
@@ -5545,10 +5750,8 @@ impl ConversationService {
             };
             let selected_rows = rows
                 .into_iter()
-                .filter(|row| !row.builtin)
-                .filter(|row| match selected_mcp_server_ids.as_ref() {
-                    Some(ids) => ids.iter().any(|id| id == &row.mcp_server_id),
-                    None => row.enabled,
+                .filter(|row| {
+                    is_available_user_mcp_row(row, selected_mcp_server_ids.as_deref())
                 })
                 .collect::<Vec<_>>();
             resolved_mcp_server_ids = selected_rows
@@ -6326,6 +6529,9 @@ impl ConversationService {
                 AppError::Internal(format!("Failed to serialize execution model pool: {error}"))
             })?)),
         };
+        let execution_model_pool_changed = execution_model_pool
+            .as_ref()
+            .is_some_and(|next| existing.execution_model_pool.as_ref() != next.as_ref());
         let decision_policy = req
             .decision_policy
             .map(|policy| policy.as_str().to_owned());
@@ -6335,6 +6541,15 @@ impl ConversationService {
                 AppError::BadRequest(format!("invalid execution_template_id: {error}"))
             })?;
         }
+        let execution_template_id_changed = execution_template_id
+            .as_ref()
+            .is_some_and(|next| existing.execution_template_id.as_ref() != next.as_ref());
+        let runtime_configuration_changed = model_changed
+            || workspace_changed
+            || delegation_policy_changed
+            || execution_model_pool_changed
+            || execution_template_id_changed;
+        let runtime_recycle_required = model_changed || workspace_changed || delegation_policy_changed;
 
         let updates = ConversationRowUpdate {
             name: req.name,
@@ -6356,9 +6571,18 @@ impl ConversationService {
             updated_at: Some(now),
         };
 
+        let configuration_guard = if runtime_configuration_changed {
+            Some(self.try_acquire_runtime_configuration_guard(
+                id,
+                existing.status.as_deref(),
+            )
+            .await?)
+        } else {
+            None
+        };
         self.conversation_repo.update(parse_conv_id(id)?, &updates).await?;
 
-        if model_changed || workspace_changed || delegation_policy_changed {
+        if runtime_recycle_required {
             info!(
                 model_changed,
                 workspace_changed,
@@ -6375,9 +6599,7 @@ impl ConversationService {
         }
 
         if (reasoning_effort_changed || task_profile_changed)
-            && !model_changed
-            && !workspace_changed
-            && !delegation_policy_changed
+            && !runtime_recycle_required
         {
             if let Some(runtime) = runtime_registry.get_runtime(id) {
                 runtime.request_turn_boundary_recycle();
@@ -6389,6 +6611,8 @@ impl ConversationService {
                 );
             }
         }
+
+        drop(configuration_guard);
 
         // Re-fetch to return the updated version
         let updated = self
@@ -6407,7 +6631,9 @@ impl ConversationService {
     }
 
     /// Merge backend-owned Agent metadata into `conversation.extra` without
-    /// touching the typed conversation fields or terminating its runtime.
+    /// touching the typed conversation fields. Workspace changes use the same
+    /// runtime configuration gate as the typed update path and recycle only an
+    /// idle runtime after the new value is persisted.
     ///
     /// Execution identity and policy are deliberately rejected here: they have
     /// first-class persistence and must not regain a second source of truth via
@@ -6438,10 +6664,32 @@ impl ConversationService {
                 "Conversation {conversation_id} extra must be a JSON object"
             )));
         }
+        let existing_workspace = merged
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
         merge_json(&mut merged, &patch);
         if patch.get("workspace").is_some() {
             normalize_workspace_extra(&mut merged)?;
         }
+        let workspace_changed = patch.get("workspace").is_some()
+            && existing_workspace
+                != merged
+                    .get("workspace")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+
+        let configuration_guard = if workspace_changed {
+            Some(
+                self.try_acquire_runtime_configuration_guard(
+                    conversation_id,
+                    existing.status.as_deref(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
 
         let updates = ConversationRowUpdate {
             extra: Some(
@@ -6452,8 +6700,91 @@ impl ConversationService {
             ..Default::default()
         };
         self.conversation_repo.update(parse_conv_id(conversation_id)?, &updates).await?;
+        if workspace_changed {
+            Self::terminate_runtime_with_proof(
+                &self.runtime_registry,
+                conversation_id,
+                AgentKillReason::ConfigurationChanged,
+                "backend workspace configuration update",
+            )
+            .await?;
+        }
+        drop(configuration_guard);
         debug!("Conversation extra merged");
         Ok(())
+    }
+
+    /// Apply a trusted workspace reconcile action while the runtime
+    /// configuration gate is held. The callback receives the authoritative
+    /// workspace value re-read after gate admission, so filesystem movement
+    /// cannot be based on a stale pre-gate snapshot.
+    pub async fn update_workspace_extra_with<F>(
+        &self,
+        conversation_id: &str,
+        apply: F,
+    ) -> Result<bool, AppError>
+    where
+        F: FnOnce(&str) -> Option<String>,
+    {
+        let initial = self
+            .conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        let configuration_guard = self
+            .try_acquire_runtime_configuration_guard(conversation_id, initial.status.as_deref())
+            .await?;
+        let current = self
+            .conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        let mut extra: serde_json::Value = serde_json::from_str(&current.extra).map_err(|error| {
+            AppError::Internal(format!(
+                "Conversation {conversation_id} has invalid extra JSON: {error}"
+            ))
+        })?;
+        if !extra.is_object() {
+            return Err(AppError::Internal(format!(
+                "Conversation {conversation_id} extra must be a JSON object"
+            )));
+        }
+        let current_workspace = extra
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        let Some(next_workspace) = apply(&current_workspace) else {
+            drop(configuration_guard);
+            return Ok(false);
+        };
+        if next_workspace.trim() == current_workspace {
+            drop(configuration_guard);
+            return Ok(false);
+        }
+        extra["workspace"] = serde_json::Value::String(next_workspace);
+        normalize_workspace_extra(&mut extra)?;
+        let updates = ConversationRowUpdate {
+            extra: Some(
+                serde_json::to_string(&extra)
+                    .map_err(|error| AppError::Internal(format!("Failed to serialize extra: {error}")))?,
+            ),
+            updated_at: Some(now_ms()),
+            ..Default::default()
+        };
+        self.conversation_repo
+            .update(parse_conv_id(conversation_id)?, &updates)
+            .await?;
+        Self::terminate_runtime_with_proof(
+            &self.runtime_registry,
+            conversation_id,
+            AgentKillReason::ConfigurationChanged,
+            "trusted workspace reconcile",
+        )
+        .await?;
+        drop(configuration_guard);
+        Ok(true)
     }
 
     /// Replace the immutable skill snapshot for a backend-owned conversation.
@@ -7608,6 +7939,13 @@ impl ConversationService {
         }
         let session_model = runtime_options.model.clone();
         let workspace_binding_lease = runtime_options.workspace_binding_lease.take();
+        let billing_turn_id = assistant_content
+            .get("turn_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && id.len() <= 64)
+            .unwrap_or_default()
+            .to_owned();
         let attempt = TurnWritebackAttempt::new(
             Arc::clone(&self.conversation_repo),
             Arc::clone(&self.user_events),
@@ -7619,7 +7957,8 @@ impl ConversationService {
             prior_written,
             prior_failures,
             attempt_generation,
-        );
+        )
+        .with_billing_turn_id(billing_turn_id);
         attempt.persist_started_intent().await.map_err(|error| {
             AppError::Internal(format!(
                 "Failed to persist knowledge write-back retry intent: {error}"
@@ -8050,12 +8389,14 @@ impl ConversationService {
         .await
     }
 
-    /// Starts one explicit continuation of the latest retryable truncation.
+    /// Starts one explicit continuation of the latest retryable interrupted turn.
     ///
-    /// The client supplies only the immutable source message identity and an
-    /// idempotency key. The original requirement and attachments are recovered
-    /// from the server-owned receipt, then re-admitted as a new hidden public
-    /// turn without rewinding any transcript or mutating the failed receipt.
+    /// Eligible failures are truncation, request-budget exhaustion, and retryable
+    /// provider transport faults. The client supplies only the immutable source
+    /// message identity and an idempotency key. The original requirement and
+    /// attachments are recovered from the server-owned receipt, then re-admitted
+    /// as a new hidden public turn without rewinding any transcript or mutating
+    /// the failed receipt.
     pub async fn continue_truncated_turn_with_idempotency_key(
         &self,
         user_id: &str,
@@ -8101,7 +8442,7 @@ impl ConversationService {
         let source_error_code = source
             .result_error_code
             .as_deref()
-            .filter(|code| matches!(*code, "output_truncated" | "turn_requests_exhausted"))
+            .filter(|code| nomifun_db::is_resumable_source_error_code(code))
             .map(str::to_owned)
             .ok_or_else(|| {
                 AppError::Conflict(
@@ -8154,9 +8495,8 @@ impl ConversationService {
                 continuation.original_delivery.content
             );
             if continuation.workflow != "continue-truncated"
-                || !matches!(
+                || !nomifun_db::is_resumable_source_error_code(
                     continuation.source_error_code.as_str(),
-                    "output_truncated" | "turn_requests_exhausted"
                 )
                 || MessageId::parse(&continuation.source_message_id).is_err()
                 || !continuation.delivery.hidden
@@ -9036,10 +9376,10 @@ impl ConversationService {
         // capability, independent from the `/` launcher. Merge them into the
         // first real turn so both paths capture one immutable snapshot and the
         // user-selected chips still retain precedence in the prompt order.
+        let preset_skill_ids = catalog_skill_ids_from_conversation_extra(&row.extra);
         if row.status.as_deref() == Some("pending") {
-            let preset_skill_ids = catalog_skill_ids_from_conversation_extra(&row.extra);
             if !preset_skill_ids.is_empty() {
-                let mut effective_skill_ids = preset_skill_ids;
+                let mut effective_skill_ids = preset_skill_ids.clone();
                 effective_skill_ids.extend(req.inject_skills);
                 req.inject_skills = dedupe_skill_ids(&effective_skill_ids);
             }
@@ -9049,7 +9389,47 @@ impl ConversationService {
         // claim a durable receipt or transition the Conversation to Running.
         // Replays above remain resolvable even if a Skill was later removed
         // from the live catalog because their historical outcome is immutable.
-        let explicit_skill_snapshots = self.resolve_requested_skill_snapshots(&req).await?;
+        // Once a Conversation has crossed its first turn, use the immutable
+        // Skill bodies recorded in its ledger for the preset bindings. This
+        // keeps stale ACP/Nomi sessions and post-uninstall follow-ups from
+        // silently switching to a newer or incomplete live catalog entry.
+        let historical_skill_snapshots = if row.status.as_deref() != Some("pending")
+            && !preset_skill_ids.is_empty()
+        {
+            self.resolve_historical_preset_skill_snapshots(
+                &conversation_key,
+                &preset_skill_ids,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+        let historical_skill_ids = historical_skill_snapshots
+            .iter()
+            .map(|snapshot| snapshot.skill_id.clone())
+            .collect::<HashSet<_>>();
+        let explicit_skill_snapshots = if historical_skill_ids.is_empty() {
+            self.resolve_requested_skill_snapshots(&req).await?
+        } else {
+            self.resolve_requested_skill_snapshots_excluding(&req, &historical_skill_ids)
+                .await?
+        };
+        let mut loaded_skill_snapshots = historical_skill_snapshots;
+        for snapshot in &explicit_skill_snapshots {
+            if !loaded_skill_snapshots
+                .iter()
+                .any(|loaded| loaded.skill_id == snapshot.skill_id)
+            {
+                loaded_skill_snapshots.push(snapshot.clone());
+            }
+        }
+        let prepared_skill_snapshots = PreparedSkillSnapshots {
+            loaded: loaded_skill_snapshots,
+            // Only newly resolved Skills are appended to the immutable ledger;
+            // historical snapshots are injected into the runtime but are not
+            // duplicated on every follow-up message.
+            persist: explicit_skill_snapshots,
+        };
         let _ = owned_row;
         runtime_build_lease.ensure_active()?;
 
@@ -9324,7 +9704,7 @@ impl ConversationService {
                 Some(preparation_guard),
                 runtime_preparation,
                 runtime_observer,
-                Some(explicit_skill_snapshots),
+                Some(prepared_skill_snapshots),
             )
             .await
         {
@@ -9575,7 +9955,7 @@ impl ConversationService {
         runtime_observer: Option<
             oneshot::Sender<(AgentRuntimeHandle, broadcast::Receiver<AgentStreamEvent>)>,
         >,
-        preloaded_skill_snapshots: Option<Vec<ResolvedSkillSnapshot>>,
+        preloaded_skill_snapshots: Option<PreparedSkillSnapshots>,
     ) -> Result<(String, Option<String>), AppError> {
         let public_cancellable = send_authority.public_cancellable();
         // Snapshot before the first await. A stop racing this request advances
@@ -9642,9 +10022,18 @@ impl ConversationService {
             }
         }
 
-        let loaded_skill_snapshots = match preloaded_skill_snapshots {
-            Some(snapshots) => snapshots,
-            None => self.resolve_requested_skill_snapshots(&req).await?,
+        let PreparedSkillSnapshots {
+            loaded: loaded_skill_snapshots,
+            persist: persisted_skill_snapshots,
+        } = match preloaded_skill_snapshots {
+            Some(prepared) => prepared,
+            None => {
+                let snapshots = self.resolve_requested_skill_snapshots(&req).await?;
+                PreparedSkillSnapshots {
+                    loaded: snapshots.clone(),
+                    persist: snapshots,
+                }
+            }
         };
         let load_only = req.content.trim().is_empty();
         if load_only {
@@ -9847,7 +10236,9 @@ impl ConversationService {
                             error = %ErrorChain(&err),
                             "Failed to build runtime options for message send"
                         );
-                        let _ = self.persist_send_failure_tip(conversation_id, None, &err).await;
+                        let _ = self
+                            .persist_send_failure_tip(conversation_id, None, &err, None)
+                            .await;
                         let receipt_error = format!("{}", ErrorChain(&err));
                         if !durable_delivery
                             .as_ref()
@@ -10133,7 +10524,7 @@ impl ConversationService {
         let turn_token = turn_handle.cancellation_token();
 
         let skill_load_commits =
-            Self::build_skill_load_commits(conversation_id, &loaded_skill_snapshots);
+            Self::build_skill_load_commits(conversation_id, &persisted_skill_snapshots);
         // A load-only request owns a durable turn ID but deliberately has no
         // blank user-message projection. The snapshot events still become
         // immutable history in the same SQLite transaction.
@@ -10204,25 +10595,29 @@ impl ConversationService {
             let title_user_message_id = user_msg_id.clone();
             let title_user_content = req.content.clone();
             let title_session_model = runtime_options.model.clone();
+            let title_billing_turn_id = first_turn_msg_id.clone();
             tokio::spawn(async move {
                 let task = AssertUnwindSafe(
-                    title_service
-                        .maybe_autotitle(
-                            &title_conversation_id,
-                            &title_user_message_id,
-                            title_user_content,
-                            title_session_model,
-                        )
-                        .instrument(info_span!(
-                            "conversation_auto_title",
-                            conversation_id = %title_conversation_id,
-                            user_message_id = %title_user_message_id,
-                            title_attempt_id = %title_attempt_id(
+                    nomifun_ai_agent::with_flowy_billing_turn_id(
+                        title_billing_turn_id,
+                        title_service
+                            .maybe_autotitle(
                                 &title_conversation_id,
                                 &title_user_message_id,
-                            ),
-                            attempt = 1,
-                        )),
+                                title_user_content,
+                                title_session_model,
+                            )
+                            .instrument(info_span!(
+                                "conversation_auto_title",
+                                conversation_id = %title_conversation_id,
+                                user_message_id = %title_user_message_id,
+                                title_attempt_id = %title_attempt_id(
+                                    &title_conversation_id,
+                                    &title_user_message_id,
+                                ),
+                                attempt = 1,
+                            )),
+                    ),
                 );
                 if task.catch_unwind().await.is_err() {
                     let attempt_id = format!(
@@ -10351,6 +10746,11 @@ impl ConversationService {
         let observation_execution = durable_delivery
             .as_ref()
             .and_then(|delivery| delivery.execution_authority.clone());
+        // Keep the latest effective model available to the panic finalizer. The
+        // turn-local variable below is dropped when the owner future unwinds,
+        // while this shared snapshot survives long enough to annotate the
+        // fallback terminal error.
+        let panic_model_context = Arc::new(tokio::sync::Mutex::new(runtime_options.model.clone()));
         #[cfg(test)]
         self.reach_public_admission_cutpoint(PublicAdmissionCutpoint::BeforeOwnerSpawn)
             .await;
@@ -10361,6 +10761,7 @@ impl ConversationService {
             let panic_conversation_id = conv_id.clone();
             let panic_stable_turn_id = stable_turn_id.clone();
             let panic_runtime_registry = Arc::clone(&runtime_registry);
+            let turn_model_context = Arc::clone(&panic_model_context);
             let panic_wire_context = TurnWireContext {
                 companion,
                 companion_id: companion_id.clone(),
@@ -10402,6 +10803,7 @@ impl ConversationService {
                             &conv_id,
                             Some(&stable_turn_id),
                             &err,
+                            successful_turn_model.as_ref(),
                         )
                         .await;
                     let receipt_error = format!("{}", ErrorChain(&err));
@@ -10476,6 +10878,7 @@ impl ConversationService {
                         &conv_id,
                         Some(&stable_turn_id),
                         &err,
+                        successful_turn_model.as_ref(),
                     )
                     .await;
                 let receipt_error = format!("{}", ErrorChain(&err));
@@ -10543,6 +10946,7 @@ impl ConversationService {
                         &conv_id,
                         Some(&stable_turn_id),
                         &err,
+                        successful_turn_model.as_ref(),
                     )
                     .await;
                 let receipt_error = format!("{}", ErrorChain(&err));
@@ -10694,6 +11098,7 @@ impl ConversationService {
                     cron_service.clone(),
                 )
                 .with_root_turn_id(stable_turn_id.clone())
+                .with_model_context(successful_turn_model.as_ref())
                 .with_source_user_message_id(truncated_recovery_source_message_id.clone())
                 .with_cancellation(turn_cancellation.clone())
                 .with_companion_context(companion, companion_id.clone())
@@ -10764,6 +11169,7 @@ impl ConversationService {
                 let send_agent = agent.clone();
                 let conv_id_send = conv_id.clone();
                 let send_cancellation = turn_token.clone();
+                let send_billing_turn_id = stable_turn_id.clone();
                 // Phase 3: keep a copy of this turn's send so a pre-response
                 // provider fault can resend the SAME content to the next model.
                 let resend_payload = current_send.clone();
@@ -10774,7 +11180,11 @@ impl ConversationService {
                         let _ = send_error_tx.send(Ok(()));
                         return;
                     }
-                    let send_result = send_agent.send_message(current_send).await;
+                    let send_result = nomifun_ai_agent::with_flowy_billing_turn_id(
+                        send_billing_turn_id,
+                        send_agent.send_message(current_send),
+                    )
+                    .await;
                     if let Err(e) = send_result.as_ref() {
                         error!(conversation_id = %conv_id_send, error = %ErrorChain(e), "Agent send_message failed");
                     }
@@ -10884,6 +11294,7 @@ impl ConversationService {
                     failover_switches_done += 1;
                     failover_tried.push(switch.picked.clone());
                     successful_turn_model = Some(switch.picked.clone());
+                    *turn_model_context.lock().await = successful_turn_model.clone();
                     info!(
                         conversation_id = %conv_id,
                         switch = failover_switches_done,
@@ -10989,6 +11400,7 @@ impl ConversationService {
                         cron_service.clone(),
                     )
                     .with_root_turn_id(stable_turn_id.clone())
+                    .with_model_context(successful_turn_model.as_ref())
                     .with_companion_context(companion, companion_id.clone())
                     .with_origin(origin.clone())
                     .with_channel_platform(channel_platform.clone())
@@ -11162,7 +11574,8 @@ impl ConversationService {
                         Vec::new(),
                         Vec::new(),
                         1,
-                    );
+                    )
+                    .with_billing_turn_id(stable_turn_id.clone());
                     match attempt.emit_started_intent().await {
                         Ok(()) => {
                             // No workspace binding lease is carried: the
@@ -11261,6 +11674,7 @@ impl ConversationService {
                     None,
                 )
                 .with_root_turn_id(panic_stable_turn_id.clone())
+                .with_model_context(panic_model_context.lock().await.as_ref())
                 .with_companion_context(
                     panic_wire_context.companion,
                     panic_wire_context.companion_id.clone(),
@@ -12356,8 +12770,12 @@ impl ConversationService {
         conversation_id: &str,
         turn_id: Option<&str>,
         err: &AppError,
+        model: Option<&ProviderWithModel>,
     ) {
-        let Some(row) = self.persist_send_failure_tip(conversation_id, turn_id, err).await else {
+        let Some(row) = self
+            .persist_send_failure_tip(conversation_id, turn_id, err, model)
+            .await
+        else {
             return;
         };
 
@@ -14194,6 +14612,14 @@ fn project_preset_runtime_context(
 }
 
 impl ConversationService {
+    /// Validate a set of source-qualified Skills without creating a message,
+    /// receipt, or runtime. Automatic participant resolution uses this same
+    /// authority so an invalid preset cannot enter the participant pool.
+    pub async fn validate_canonical_skill_ids(&self, skill_ids: &[String]) -> Result<(), AppError> {
+        let requested = canonical_skill_ids_from_request(skill_ids)?;
+        self.resolve_explicit_skill_snapshots(&requested).await.map(|_| ())
+    }
+
     /// Resolve the authoritative factory options and attach the exact physical
     /// workspace binding required for one execution build.
     ///
@@ -15640,6 +16066,17 @@ fn upsert_conversation_mcp_status(
     statuses.push(status);
 }
 
+fn is_available_user_mcp_row(
+    row: &nomifun_db::models::McpServerRow,
+    selected_ids: Option<&[String]>,
+) -> bool {
+    row.enabled
+        && !row.builtin
+        && selected_ids
+            .map(|ids| ids.iter().any(|id| id == &row.mcp_server_id))
+            .unwrap_or(true)
+}
+
 fn classify_repo_mcp_status(
     row: &nomifun_db::models::McpServerRow,
     support: McpSupportPolicy,
@@ -16351,6 +16788,64 @@ mod tests {
     }
 
     #[test]
+    fn catalog_skill_ids_from_extra_keeps_malformed_canonical_bindings_for_the_send_gate() {
+        let extra = json!({ "skills": ["user:broken%ZZ", "legacy:old-pdf", "plain-name"] });
+
+        assert_eq!(
+            catalog_skill_ids_from_conversation_extra(&extra.to_string()),
+            vec!["user:broken%ZZ".to_owned()]
+        );
+        assert!(has_known_skill_catalog_prefix("user:broken%ZZ"));
+    }
+
+    #[test]
+    fn historical_skill_snapshot_uses_the_original_immutable_load() {
+        let skill_id = "user:qa-plan".to_owned();
+        let version_hash = "a".repeat(64);
+        let loads = vec![
+            ConversationSkillLoad {
+                conversation_id: "conversation".to_owned(),
+                message_id: "message-1".to_owned(),
+                catalog_key: skill_id.clone(),
+                skill_name: "qa-plan".to_owned(),
+                source: "user".to_owned(),
+                version_hash: version_hash.clone(),
+                content: "original instructions".to_owned(),
+                created_at: 1,
+            },
+            ConversationSkillLoad {
+                conversation_id: "conversation".to_owned(),
+                message_id: "message-2".to_owned(),
+                catalog_key: skill_id.clone(),
+                skill_name: "qa-plan".to_owned(),
+                source: "user".to_owned(),
+                version_hash,
+                content: "new live instructions".to_owned(),
+                created_at: 2,
+            },
+        ];
+
+        let snapshots = historical_skill_snapshots_from_loads(&[skill_id], &loads).unwrap();
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].content, "original instructions");
+    }
+
+    #[test]
+    fn missing_historical_skill_snapshot_fails_closed() {
+        let skill_id = "user:missing-skill".to_owned();
+        let error = historical_skill_snapshots_from_loads(&[skill_id.clone()], &[]).unwrap_err();
+
+        match error {
+            AppError::NotFound(message) => {
+                assert!(message.contains("PRESET_SKILLS_UNAVAILABLE"));
+                assert!(message.contains(&skill_id));
+            }
+            other => panic!("expected a closed missing-Skill failure, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn frozen_snapshot_overwrites_tampered_nomi_adapter_prompt() {
         let row = row_with_runtime_preset(json!({
             "preset_rules": "tampered",
@@ -16970,6 +17465,33 @@ mod tests {
         );
 
         assert_eq!(status.status, ConversationMcpStatusKind::Failed);
+    }
+
+    #[test]
+    fn disabled_selected_mcp_is_excluded_from_conversation_snapshot() {
+        let server_id = "0190f5fe-7c00-7a00-8000-000000000123".to_owned();
+        let mut row = nomifun_db::models::McpServerRow {
+            mcp_server_id: server_id.clone(),
+            name: "disabled-mcp".into(),
+            description: None,
+            enabled: false,
+            transport_type: "stdio".into(),
+            transport_config: r#"{"command":"npx"}"#.into(),
+            tools: None,
+            last_test_status: "connected".into(),
+            last_connected: Some(1),
+            original_json: None,
+            builtin: false,
+            deleted_at: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let selected = vec![server_id];
+
+        assert!(!is_available_user_mcp_row(&row, Some(&selected)));
+
+        row.enabled = true;
+        assert!(is_available_user_mcp_row(&row, Some(&selected)));
     }
 
     #[test]

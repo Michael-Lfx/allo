@@ -47,7 +47,8 @@ pub struct AcpPermissionToolCall {
 pub struct AcpPermissionOptionData {
     pub option_id: String,
     pub name: String,
-    pub kind: AcpPermissionOptionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<AcpPermissionOptionKind>,
     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<SdkMeta>,
 }
@@ -59,6 +60,20 @@ pub enum AcpPermissionOptionKind {
     AllowAlways,
     RejectOnce,
     RejectAlways,
+}
+
+impl AcpPermissionOptionKind {
+    /// Translation keys are part of the renderer confirmation contract. Keep
+    /// them beside the protocol kind mapping so recovery and live rendering
+    /// use the same fixed labels.
+    pub const fn confirmation_i18n_key(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "messages.confirmation.yesAllowOnce",
+            Self::AllowAlways => "messages.confirmation.yesAllowAlways",
+            Self::RejectOnce => "messages.confirmation.rejectOnce",
+            Self::RejectAlways => "messages.confirmation.rejectAlways",
+        }
+    }
 }
 
 impl AcpPermissionEventData {
@@ -99,7 +114,11 @@ impl AcpPermissionRequestData {
                 .options
                 .iter()
                 .map(|opt| ConfirmationOption {
-                    label: opt.name.clone(),
+                    label: opt
+                        .kind
+                        .map(AcpPermissionOptionKind::confirmation_i18n_key)
+                        .unwrap_or(&opt.name)
+                        .to_owned(),
                     value: Value::String(opt.option_id.clone()),
                     params: None,
                 })

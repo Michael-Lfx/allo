@@ -1,4 +1,5 @@
 // Runtime patches must be imported early
+import './utils/ui/legacyWebKit';
 import './utils/ui/runtimePatches';
 
 // Browser adapter setup
@@ -6,7 +7,7 @@ import '@/common/adapter/browser';
 
 // React and core dependencies
 import type { PropsWithChildren } from 'react';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 // Context providers
@@ -38,7 +39,7 @@ import './styles/themes/index.css';
 import { configService } from '@/common/config/configService';
 import { application } from '@/common/adapter/ipcBridge';
 import * as ipcBridgeModule from '@/common/adapter/ipcBridge';
-import { isHandledAuthExpiredHttpError } from '@/common/adapter/httpBridge';
+import { getBaseUrl, isHandledAuthExpiredHttpError, probeBackendTransport } from '@/common/adapter/httpBridge';
 import { getBrowserStorageGeneration, setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
 configService.initialize().catch((err) => {
   console.error('Failed to initialize config:', err);
@@ -66,6 +67,18 @@ import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJo
 // Components and utilities
 import AppLoader from './components/layout/AppLoader';
 import { maybeTrackRetention } from './utils/analytics/productFunnel';
+import {
+  markLaunchAuthReady,
+  markLaunchBootStarted,
+  markLaunchConfigReady,
+  markLaunchFailed,
+  markLaunchInteractive,
+} from './utils/analytics/launchTelemetry';
+import { maybeTrackUpdateApplied } from './utils/analytics/updateTelemetry';
+import {
+  startProductTelemetry,
+  syncBackendClientId,
+} from './utils/analytics/telemetry';
 import Layout from './components/layout/Layout';
 import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
@@ -82,6 +95,12 @@ import { useAuth } from './hooks/context/AuthContext';
 import { useCloudAuth } from './hooks/context/CloudAuthContext';
 import { ConversationHistoryProvider } from './hooks/context/ConversationHistoryContext';
 import HOC from './utils/ui/HOC';
+import { isDesktopShell } from './utils/platform';
+import { tauriOpenSupportLogsDir, tauriProbeBackendLoopback, tauriRelaunch } from '@/common/adapter/tauriShell';
+
+void startProductTelemetry();
+markLaunchBootStarted();
+const SupportSurfaceProbe = React.lazy(() => import('./pages/test/SupportSurfaceProbe'));
 
 const arcoLocales: Record<string, typeof enUS> = {
   'zh-CN': zhCN,
@@ -98,10 +117,16 @@ const AppProviders: React.FC<PropsWithChildren> = ({ children }) =>
       React.createElement(
         CreditsProvider,
         null,
+        // SupportChatProvider renders its modal siblings outside `children`,
+        // so ThemeProvider must wrap it for NomiModal's theme context.
         React.createElement(
-          SupportChatProvider,
-        null,
-        React.createElement(ThemeProvider, null, React.createElement(FeedbackProvider, null, children))
+          ThemeProvider,
+          null,
+          React.createElement(
+            SupportChatProvider,
+            null,
+            React.createElement(FeedbackProvider, null, children)
+          )
         )
       )
     )
@@ -122,7 +147,9 @@ const StartupRecoveryPanel: React.FC<{
   onOpenLogs: () => void;
   onSignOut: () => void;
   logsError: string | null;
-}> = ({ error, onRetry, onOpenLogs, onSignOut, logsError }) => {
+  diagnostics: string | null;
+  desktopShell: boolean;
+}> = ({ error, onRetry, onOpenLogs, onSignOut, logsError, diagnostics, desktopShell }) => {
   const { t } = useTranslation();
   return (
     <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)] px-24px'>
@@ -135,6 +162,11 @@ const StartupRecoveryPanel: React.FC<{
             <div className='max-w-640px break-all text-12px text-t-secondary'>
               {error.name}: {error.message}
             </div>
+            {diagnostics ? (
+              <div className='max-w-640px break-all text-12px text-t-secondary'>
+                {t('common.startupRecovery.diagnostics')}: {diagnostics}
+              </div>
+            ) : null}
             {logsError ? <div className='text-12px text-[rgb(var(--danger-6))]'>{logsError}</div> : null}
           </div>
         }
@@ -145,20 +177,95 @@ const StartupRecoveryPanel: React.FC<{
           {t('common.startupRecovery.retrySystemInfo')}
         </Button>
         <Button onClick={onOpenLogs}>{t('common.startupRecovery.openLogs')}</Button>
-        <Button onClick={onSignOut}>{t('common.userMenu.logout')}</Button>
+        <Button onClick={onSignOut}>
+          {desktopShell ? t('common.startupRecovery.restartApp') : t('common.userMenu.logout')}
+        </Button>
       </div>
     </div>
   );
 };
 
 const Main = () => {
-  const { ready, status } = useAuth();
-  const { ready: cloudReady, refresh: refreshCloudAuth, logout: cloudLogout, status: cloudStatus } = useCloudAuth();
+  const { ready, status, user } = useAuth();
+  const {
+    ready: cloudReady,
+    refresh: refreshCloudAuth,
+    logout: cloudLogout,
+    status: cloudStatus,
+    whoami,
+  } = useCloudAuth();
   const { logout: localLogout } = useAuth();
   const [configReady, setConfigReady] = useState(false);
   const [configError, setConfigError] = useState<Error | null>(null);
   const [startupRetryToken, setStartupRetryToken] = useState(0);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [startupDiagnostics, setStartupDiagnostics] = useState<string | null>(null);
+  const previousSessionRef = useRef<{
+    local: boolean;
+    cloud: boolean;
+    localId?: string;
+    cloudId?: string;
+  }>({ local: false, cloud: false });
+
+  // Startup failed with "backend unreachable": probe both sides so the report
+  // names the faulting layer instead of the symptom. The host-process probe
+  // does not use the webview network stack.
+  useEffect(() => {
+    if (!configError) {
+      setStartupDiagnostics(null);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      const parts = [`endpoint=${getBaseUrl() || window.location.origin}`];
+      const transport = await probeBackendTransport();
+      parts.push(transport.ok ? 'webview=reachable' : `webview=blocked (${transport.detail ?? 'unknown'})`);
+      if (isDesktopShell()) {
+        try {
+          const native = await tauriProbeBackendLoopback();
+          const outcome = native.tcp_connect
+            ? `tcp ok, http ${native.http_status ?? 'none'}`
+            : 'tcp refused';
+          parts.push(`host=${outcome}${native.error ? ` (${native.error})` : ''}`);
+        } catch (error: unknown) {
+          parts.push(`host=probe failed (${error instanceof Error ? error.message : String(error)})`);
+        }
+      }
+      if (active) setStartupDiagnostics(parts.join(' · '));
+    })();
+    return () => {
+      active = false;
+    };
+  }, [configError]);
+
+  useEffect(() => {
+    const previous = previousSessionRef.current;
+    const localAuthenticated = status === 'authenticated';
+    const cloudAuthenticated = cloudStatus === 'authenticated';
+    const localId = localAuthenticated && user ? String(user.id) : undefined;
+    const cloudId = cloudAuthenticated && whoami
+      ? String(whoami.userId || whoami.email || whoami.username || '') || undefined
+      : undefined;
+    const sessionEnded =
+      (previous.local && !localAuthenticated) ||
+      (previous.cloud && !cloudAuthenticated) ||
+      (previous.localId !== undefined && localId !== undefined && previous.localId !== localId) ||
+      (previous.cloudId !== undefined && cloudId !== undefined && previous.cloudId !== cloudId);
+
+    if (sessionEnded) {
+      void ipcBridgeModule.attention.clearAll.invoke().catch(() => {
+        // The native state is process-local; a failed clear is harmless after
+        // the shell has already gone away, and must not block auth recovery.
+      });
+    }
+
+    previousSessionRef.current = {
+      local: localAuthenticated,
+      cloud: cloudAuthenticated,
+      localId,
+      cloudId,
+    };
+  }, [cloudStatus, status, user, whoami]);
 
   useEffect(() => {
     // Browser sessions must pass the auth probe before any protected startup
@@ -232,6 +339,12 @@ const Main = () => {
   const openSupportLogs = useCallback(async () => {
     setLogsError(null);
     try {
+      // Prefer the native command: it does not need the embedded HTTP backend,
+      // which is exactly what is unreachable on this recovery screen.
+      if (isDesktopShell()) {
+        await tauriOpenSupportLogsDir();
+        return;
+      }
       const info = await application.systemInfo.invoke();
       await ipcBridgeModule.shell.openFolderWith.invoke({ folder_path: info.logDir, tool: 'explorer' });
     } catch (error: unknown) {
@@ -243,9 +356,16 @@ const Main = () => {
     try {
       if (cloudStatus === 'authenticated') {
         await cloudLogout();
-      } else {
-        await localLogout();
       }
+      // Desktop local auth is always-on (local-trust); AuthContext.logout is a
+      // no-op that keeps status=authenticated, so the recovery panel never
+      // leaves. Restart the shell instead — also the right recovery when the
+      // backend was unreachable because of proxy/PNA.
+      if (isDesktopShell()) {
+        await tauriRelaunch();
+        return;
+      }
+      await localLogout();
     } catch (error) {
       setLogsError(error instanceof Error ? error.message : String(error));
     }
@@ -310,12 +430,55 @@ const Main = () => {
   }, [configReady]);
 
   useEffect(() => {
+    if (!ready) return;
+    markLaunchAuthReady({
+      status: status === 'authenticated' ? 'authenticated' : 'unauthenticated',
+    });
+    // Login is itself the first interactive surface; authenticated sessions still
+    // wait for configReady before the shell is usable.
+    if (status !== 'authenticated') {
+      markLaunchInteractive({ source: 'login' });
+    }
+  }, [ready, status]);
+
+  useEffect(() => {
+    if (!configReady || status !== 'authenticated') return;
+    markLaunchConfigReady();
+    // Defer one frame so AppLoader → router swap is painted before TTI.
+    let raf = 0;
+    raf = window.requestAnimationFrame(() => {
+      markLaunchInteractive({ source: 'shell' });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [configReady, status]);
+
+  useEffect(() => {
+    if (!configError) return;
+    markLaunchFailed({
+      phase: 'config',
+      error_code: 'startup_config_failed',
+      blocker: configError.name || 'Error',
+    });
+  }, [configError]);
+
+  useEffect(() => {
     if (!ready || status !== 'authenticated') return;
-    // Retention / cron repair can wait until cloud status is known on desktop,
-    // but must not block first paint.
+    void startProductTelemetry().then(async () => {
+      try {
+        const device = await ipcBridgeModule.cloud.deviceStatus.invoke();
+        if (device?.clientId) syncBackendClientId(device.clientId);
+      } catch {
+        // Local identity is enough until the device endpoint is reachable.
+      }
+      maybeTrackRetention();
+      void maybeTrackUpdateApplied();
+    });
+  }, [ready, status]);
+
+  useEffect(() => {
+    if (!ready || status !== 'authenticated') return;
     if (!cloudReady) return;
     void repairAllCronJobTimeZonesOnce();
-    maybeTrackRetention();
   }, [ready, cloudReady, status]);
 
   const router = (
@@ -346,6 +509,8 @@ const Main = () => {
         onOpenLogs={() => void openSupportLogs()}
         onSignOut={() => void signOutFromStartup()}
         logsError={logsError}
+        diagnostics={startupDiagnostics}
+        desktopShell={isDesktopShell()}
       />
     );
   }
@@ -358,27 +523,67 @@ const Main = () => {
 };
 
 const App = HOC.Wrapper(Config)(Main);
-
-void registerPwa();
-
 const root = createRoot(document.getElementById('root')!);
 const isButtonLayoutProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout';
 const isErrorSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/error-surface';
+const isSupportSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/support-surface';
 
 // Keep browser-only visual gates independent from auth/backend startup. They
 // still use this real renderer entry and global Arco styles, but must be able
 // to report layout before an unauthenticated session is ready. The exact hash
 // guards prevent these probes from becoming product bypasses.
-root.render(
-  isButtonLayoutProbe ? (
-    <ButtonLayoutProbe />
-  ) : isErrorSurfaceProbe ? (
-    <ErrorSurfaceProbe />
-  ) : (
-    <RouteErrorBoundary scope='application'>
-      <AppProviders>
-        <App />
-      </AppProviders>
-    </RouteErrorBoundary>
-  )
-);
+const renderApp = () => {
+  root.render(
+    isButtonLayoutProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <ButtonLayoutProbe />
+      </React.Suspense>
+    ) : isErrorSurfaceProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <ErrorSurfaceProbe />
+      </React.Suspense>
+    ) : isSupportSurfaceProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <SupportSurfaceProbe />
+      </React.Suspense>
+    ) : (
+      <RouteErrorBoundary scope='application'>
+        <AppProviders>
+          <App />
+        </AppProviders>
+      </RouteErrorBoundary>
+    ),
+  );
+};
+
+// Give development/desktop service-worker cleanup a short head start so an
+// old worker cannot intercept the first lazy module request, but never let a
+// stalled browser API prevent the renderer from showing the recovery UI/app.
+const RENDER_STARTUP_PREPARATION_TIMEOUT_MS = 2_000;
+const prepareRendererBeforeRender = (): Promise<void> =>
+  new Promise((resolve) => {
+    let settled = false;
+    let timeout = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    timeout = window.setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[PWA] Renderer preparation exceeded ${RENDER_STARTUP_PREPARATION_TIMEOUT_MS}ms; continuing without waiting.`
+      );
+      finish();
+    }, RENDER_STARTUP_PREPARATION_TIMEOUT_MS);
+
+    void registerPwa()
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn('[PWA] Failed to prepare the renderer:', error);
+      })
+      .finally(finish);
+  });
+
+void prepareRendererBeforeRender().finally(renderApp);

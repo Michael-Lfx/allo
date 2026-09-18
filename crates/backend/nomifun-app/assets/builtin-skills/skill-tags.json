@@ -104,7 +104,7 @@
       "name": "nomifun-skills",
       "name_i18n": { "zh-CN": "nomifun-skills" },
       "description_i18n": {
-        "zh-CN": "发现并安装社区 AI agent 技能。用户询问是否有某类 skill、需要 ClawHub/SkillHub 市场技能，或需要安装技能时使用。本技能已完整内置，无需先拉取远端 SKILL.md。"
+        "zh-CN": "发现并安装社区 AI agent 技能。用户询问是否有某类 skill、需要 SkillHub 市场技能，或需要安装技能时使用。本技能已完整内置，无需先拉取远端 SKILL.md。"
       },
       "audience_tags": ["developer", "general"],
       "scenario_tags": ["setup"]
@@ -126,6 +126,15 @@
       },
       "audience_tags": ["developer"],
       "scenario_tags": ["setup"]
+    },
+    {
+      "name": "news-briefing",
+      "name_i18n": { "zh-CN": "资讯播报" },
+      "description_i18n": {
+        "zh-CN": "把话题做成可溯源口播。引擎自行检索独立来源，禁止用 web_search 即兴写今日新闻，必须调用 briefing_create / briefing_status。"
+      },
+      "audience_tags": ["general"],
+      "scenario_tags": ["research"]
     }
   ]
 }

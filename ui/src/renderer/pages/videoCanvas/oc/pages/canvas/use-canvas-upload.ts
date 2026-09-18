@@ -6,11 +6,17 @@ import { CANVAS_IMAGE_ASSET_DND_TYPE, CANVAS_MEDIA_ASSET_DND_TYPE, type CanvasTr
 import type { InsertAssetPayload } from "@oc/components/canvas/asset-picker-modal";
 import { CANVAS_PROJECT_CHAPTER_DND_TYPE, type CanvasProjectChapterPayload } from "@oc/components/canvas/canvas-project-sidebar";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
-import { getDataUrlByteSize, readImageMeta } from "@oc/lib/image-utils";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+import { readImageMeta } from "@oc/lib/image-utils";
 import { audioMetadata, imageMetadata, videoMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
+import type { AssetSpaceItem, AssetSpaceKind } from "@oc/lib/canvas/canvas-asset-space";
+import { fileFromBriefingArtifact, fileFromVimaxArtifact } from "@oc/lib/canvas/canvas-asset-space-media";
+import { createCharacterSubjectNode, findCharacterSubjectNode } from "@oc/lib/canvas/canvas-character-subject";
 import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
 import { isAudioFile } from "@oc/lib/canvas/canvas-project-generation";
 import { fitNodeSize, VIDEO_NODE_MAX_SIZE } from "@oc/lib/canvas/canvas-node-size";
+import { canvasMediaUrl } from "@renderer/pages/videoCanvas/api";
+import { resourceIdFromStorageKey, resourceStorageKey } from "@oc/services/api/resources";
 import { resolveMediaUrl, uploadMediaFile } from "@oc/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@oc/services/image-storage";
 import { getProjectUnit } from "@oc/services/api/projects";
@@ -62,7 +68,7 @@ export function useCanvasUpload({
     const uploadStatusIdRef = useRef(0);
     const statusTimersRef = useRef<Set<number>>(new Set());
     const fileDragDepthRef = useRef(0);
-    const [assetPickerOpen, setAssetPickerOpen] = useState(false);
+    const [assetTrayOpenNonce, setAssetTrayOpenNonce] = useState(0);
     const [uploadStatus, setUploadStatus] = useState<CanvasUploadStatus | null>(null);
     const [fileDropActive, setFileDropActive] = useState(false);
 
@@ -106,7 +112,7 @@ export function useCanvasUpload({
             if (domainProjectId) await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
             return true;
         } catch (error) {
-            message.warning(error instanceof Error ? `媒体已添加到画布，但素材同步失败：${error.message}` : "媒体已添加到画布，但素材同步失败");
+            message.warning(error instanceof Error ? `媒体已添加到画布，但素材同步失败：${formatCanvasUserError(error, "素材同步失败")}` : "媒体已添加到画布，但素材同步失败");
             return false;
         }
     }, [canvasId, domainProjectId, message, queryClient, setNodes]);
@@ -135,7 +141,7 @@ export function useCanvasUpload({
             progress.done(persisted ? "图片已添加到画布" : "图片已添加，项目资产待重试");
             return true;
         } catch (error) {
-            const details = error instanceof Error ? error.message : "图片上传失败";
+            const details = formatCanvasUserError(error, "图片上传失败");
             progress.fail(details);
             message.error(details);
             return false;
@@ -144,13 +150,24 @@ export function useCanvasUpload({
 
     const createImageAssetNode = useCallback(async (asset: ImageAsset, position?: Position) => {
         try {
-            const content = asset.data.storageKey ? await resolveImageUrl(asset.data.storageKey, asset.data.dataUrl || asset.coverUrl) : asset.data.dataUrl || asset.coverUrl;
-            if (!content) {
+            const source = asset.data.dataUrl || asset.coverUrl || "";
+            const mediaId = resourceIdFromStorageKey(asset.data.storageKey);
+            const image = mediaId
+                ? {
+                    url: canvasMediaUrl(mediaId),
+                    storageKey: resourceStorageKey(mediaId),
+                    width: asset.data.width || 1,
+                    height: asset.data.height || 1,
+                    bytes: asset.data.bytes || 0,
+                    mimeType: asset.data.mimeType || "image/png",
+                }
+                : await uploadImage(source || await resolveImageUrl(asset.data.storageKey, asset.coverUrl));
+            if (!image.storageKey && !image.url) {
                 message.error("素材图片不可用");
                 return;
             }
-            const size = fitNodeSize(asset.data.width || NODE_DEFAULT_SIZE[CanvasNodeType.Image].width, asset.data.height || NODE_DEFAULT_SIZE[CanvasNodeType.Image].height);
-            const center = position || getCanvasCenter();
+            const size = fitNodeSize(image.width || asset.data.width || NODE_DEFAULT_SIZE[CanvasNodeType.Image].width, image.height || asset.data.height || NODE_DEFAULT_SIZE[CanvasNodeType.Image].height);
+            const center = takeInsertPosition(assetInsertPositionRef, getCanvasCenter(), position);
             const id = `image-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
             const node: CanvasNodeData = {
                 id,
@@ -160,13 +177,7 @@ export function useCanvasUpload({
                 width: size.width,
                 height: size.height,
                 metadata: {
-                    content,
-                    storageKey: asset.data.storageKey,
-                    status: NODE_STATUS_SUCCESS,
-                    naturalWidth: asset.data.width,
-                    naturalHeight: asset.data.height,
-                    bytes: asset.data.bytes || getDataUrlByteSize(content.startsWith("data:") ? content : ""),
-                    mimeType: asset.data.mimeType || "image/png",
+                    ...imageMetadata(image),
                     prompt: typeof asset.metadata?.prompt === "string" ? asset.metadata.prompt : asset.title,
                     assetId: asset.id,
                     assetTags: asset.tags || [],
@@ -174,10 +185,11 @@ export function useCanvasUpload({
             };
             setNodes((current) => [...current, node]);
             selectInsertedNode(id, "close");
+            await persistMediaNode(node);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "素材图片读取失败");
+            message.error(formatCanvasUserError(error, "素材图片读取失败"));
         }
-    }, [getCanvasCenter, message, selectInsertedNode, setNodes]);
+    }, [getCanvasCenter, message, persistMediaNode, selectInsertedNode, setNodes]);
 
     const createMediaAssetNode = useCallback(async (asset: CanvasTrayMediaAsset, position?: Position) => {
         if (asset.kind === "image") {
@@ -185,14 +197,21 @@ export function useCanvasUpload({
             return;
         }
         try {
-            const center = position || getCanvasCenter();
+            const center = takeInsertPosition(assetInsertPositionRef, getCanvasCenter(), position);
+            const mediaId = resourceIdFromStorageKey(asset.data.storageKey);
             if (asset.kind === "video") {
-                const content = asset.data.storageKey ? await resolveMediaUrl(asset.data.storageKey, asset.data.url) : asset.data.url;
-                if (!content) {
-                    message.error("素材视频不可用");
-                    return;
-                }
-                const size = fitNodeSize(asset.data.width || 1280, asset.data.height || 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+                const uploaded = mediaId
+                    ? {
+                        url: canvasMediaUrl(mediaId),
+                        storageKey: resourceStorageKey(mediaId),
+                        bytes: asset.data.bytes || 0,
+                        mimeType: asset.data.mimeType || "video/mp4",
+                        width: asset.data.width,
+                        height: asset.data.height,
+                        durationMs: asset.data.durationMs,
+                    }
+                    : await uploadMediaFile(asset.data.url || await resolveMediaUrl(asset.data.storageKey, ""), "video");
+                const size = fitNodeSize(uploaded.width || asset.data.width || 1280, uploaded.height || asset.data.height || 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
                 const id = `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
                 const node = {
                     id,
@@ -201,28 +220,22 @@ export function useCanvasUpload({
                     position: { x: center.x - size.width / 2, y: center.y - size.height / 2 },
                     width: size.width,
                     height: size.height,
-                    metadata: {
-                        content,
-                        storageKey: asset.data.storageKey,
-                        status: NODE_STATUS_SUCCESS,
-                        naturalWidth: asset.data.width,
-                        naturalHeight: asset.data.height,
-                        durationMs: asset.data.durationMs,
-                        bytes: asset.data.bytes,
-                        mimeType: asset.data.mimeType || "video/mp4",
-                        assetId: asset.id,
-                        assetTags: asset.tags || [],
-                    },
+                    metadata: { ...videoMetadata(uploaded), assetId: asset.id, assetTags: asset.tags || [] },
                 } satisfies CanvasNodeData;
                 setNodes((current) => [...current, node]);
                 selectInsertedNode(id, "open");
+                await persistMediaNode(node);
                 return;
             }
-            const content = asset.data.storageKey ? await resolveMediaUrl(asset.data.storageKey, asset.data.url) : asset.data.url;
-            if (!content) {
-                message.error("素材音频不可用");
-                return;
-            }
+            const uploaded = mediaId
+                ? {
+                    url: canvasMediaUrl(mediaId),
+                    storageKey: resourceStorageKey(mediaId),
+                    bytes: asset.data.bytes || 0,
+                    mimeType: asset.data.mimeType || "audio/mpeg",
+                    durationMs: asset.data.durationMs,
+                }
+                : await uploadMediaFile(asset.data.url || await resolveMediaUrl(asset.data.storageKey, ""), "audio");
             const size = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
             const id = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
             const node = {
@@ -232,23 +245,15 @@ export function useCanvasUpload({
                 position: { x: center.x - size.width / 2, y: center.y - size.height / 2 },
                 width: size.width,
                 height: size.height,
-                metadata: {
-                    content,
-                    storageKey: asset.data.storageKey,
-                    status: NODE_STATUS_SUCCESS,
-                    durationMs: asset.data.durationMs,
-                    bytes: asset.data.bytes,
-                    mimeType: asset.data.mimeType || "audio/mpeg",
-                    assetId: asset.id,
-                    assetTags: asset.tags || [],
-                },
+                metadata: { ...audioMetadata(uploaded), assetId: asset.id, assetTags: asset.tags || [] },
             } satisfies CanvasNodeData;
             setNodes((current) => [...current, node]);
             selectInsertedNode(id, "preserve");
+            await persistMediaNode(node);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "素材读取失败");
+            message.error(formatCanvasUserError(error, "素材读取失败"));
         }
-    }, [createImageAssetNode, getCanvasCenter, message, selectInsertedNode, setNodes]);
+    }, [createImageAssetNode, getCanvasCenter, message, persistMediaNode, selectInsertedNode, setNodes]);
 
     const createVideoFileNode = useCallback(async (file: File, position: Position) => {
         const progress = startUploadStatus("上传视频", "读取视频文件", domainProjectId ? 4 : 3);
@@ -265,7 +270,7 @@ export function useCanvasUpload({
             const persisted = await persistMediaNode(node);
             progress.done(persisted ? "视频已添加到画布" : "视频已添加，项目资产待重试");
         } catch (error) {
-            const details = error instanceof Error ? error.message : "视频上传失败";
+            const details = formatCanvasUserError(error, "视频上传失败");
             progress.fail(details);
             message.error(details);
         }
@@ -286,7 +291,7 @@ export function useCanvasUpload({
             const persisted = await persistMediaNode(node);
             progress.done(persisted ? "音频已添加到画布" : "音频已添加，项目资产待重试");
         } catch (error) {
-            const details = error instanceof Error ? error.message : "音频上传失败";
+            const details = formatCanvasUserError(error, "音频上传失败");
             progress.fail(details);
             message.error(details);
         }
@@ -311,7 +316,7 @@ export function useCanvasUpload({
             try {
                 sourceText = (await getProjectUnit(chapter.projectId, chapter.id)).unit.sourceText;
             } catch (error) {
-                message.error(error instanceof Error ? `章节正文读取失败：${error.message}` : "章节正文读取失败");
+                message.error(error instanceof Error ? `章节正文读取失败：${formatCanvasUserError(error, "读取失败")}` : "章节正文读取失败");
                 return;
             }
         }
@@ -367,7 +372,7 @@ export function useCanvasUpload({
                 progress.done(persisted ? "音频已替换，可撤销恢复" : "音频已替换，项目资产待重试");
                 return true;
             } catch (error) {
-                const details = error instanceof Error ? error.message : "音频替换失败";
+                const details = formatCanvasUserError(error, "音频替换失败");
                 progress.fail(details);
                 message.error(details);
                 return false;
@@ -386,7 +391,7 @@ export function useCanvasUpload({
                 progress.done(persisted ? "视频已替换，可撤销恢复" : "视频已替换，项目资产待重试");
                 return true;
             } catch (error) {
-                const details = error instanceof Error ? error.message : "视频替换失败";
+                const details = formatCanvasUserError(error, "视频替换失败");
                 progress.fail(details);
                 message.error(details);
                 return false;
@@ -429,7 +434,7 @@ export function useCanvasUpload({
             progress.done(persisted ? "图片已替换，可撤销恢复" : "图片已替换，项目资产待重试");
             return true;
         } catch (error) {
-            const details = error instanceof Error ? error.message : "图片替换失败";
+            const details = formatCanvasUserError(error, "图片替换失败");
             progress.fail(details);
             message.error(details);
             return false;
@@ -591,45 +596,109 @@ export function useCanvasUpload({
 
     const openAssetsAtPosition = useCallback((position?: Position) => {
         assetInsertPositionRef.current = position || null;
-        setAssetPickerOpen(true);
+        setAssetTrayOpenNonce((current) => current + 1);
     }, []);
 
-    const closeAssetPicker = useCallback(() => {
-        assetInsertPositionRef.current = null;
-        setAssetPickerOpen(false);
-    }, []);
+    const createCanvasMediaIdNode = useCallback(async (mediaId: string, kind: AssetSpaceKind, title: string) => {
+        const center = takeInsertPosition(assetInsertPositionRef, getCanvasCenter());
+        const content = canvasMediaUrl(mediaId);
+        const storageKey = resourceStorageKey(mediaId);
+        if (kind === "image") {
+            const meta = await readImageMeta(content);
+            const size = fitNodeSize(meta.width, meta.height);
+            const id = `image-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            const node: CanvasNodeData = {
+                id,
+                type: CanvasNodeType.Image,
+                title: title || "素材图片",
+                position: { x: center.x - size.width / 2, y: center.y - size.height / 2 },
+                width: size.width,
+                height: size.height,
+                metadata: {
+                    content,
+                    storageKey,
+                    mediaId,
+                    status: NODE_STATUS_SUCCESS,
+                    naturalWidth: meta.width,
+                    naturalHeight: meta.height,
+                    mimeType: meta.mimeType || "image/png",
+                },
+            };
+            setNodes((current) => [...current, node]);
+            selectInsertedNode(id, "open");
+            await persistMediaNode(node);
+            return;
+        }
+        if (kind === "video") {
+            const size = fitNodeSize(1280, 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+            const id = `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            const node = {
+                id,
+                type: CanvasNodeType.Video,
+                title: title || "素材视频",
+                position: { x: center.x - size.width / 2, y: center.y - size.height / 2 },
+                width: size.width,
+                height: size.height,
+                metadata: {
+                    content,
+                    storageKey,
+                    mediaId,
+                    status: NODE_STATUS_SUCCESS,
+                    naturalWidth: 1280,
+                    naturalHeight: 720,
+                    mimeType: "video/mp4",
+                },
+            } satisfies CanvasNodeData;
+            setNodes((current) => [...current, node]);
+            selectInsertedNode(id, "open");
+            await persistMediaNode(node);
+            return;
+        }
+        const size = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
+        const id = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const node = {
+            id,
+            type: CanvasNodeType.Audio,
+            title: title || "素材音频",
+            position: { x: center.x - size.width / 2, y: center.y - size.height / 2 },
+            width: size.width,
+            height: size.height,
+            metadata: {
+                content,
+                storageKey,
+                mediaId,
+                status: NODE_STATUS_SUCCESS,
+                mimeType: "audio/mpeg",
+            },
+        } satisfies CanvasNodeData;
+        setNodes((current) => [...current, node]);
+        selectInsertedNode(id, "preserve");
+        await persistMediaNode(node);
+    }, [getCanvasCenter, persistMediaNode, selectInsertedNode, setNodes]);
+
+    const insertAssetSpaceItem = useCallback(async (item: AssetSpaceItem) => {
+        if (item.action.type === "focus") return;
+        try {
+            if (item.action.type === "insert-media") {
+                await createCanvasMediaIdNode(item.action.mediaId, item.action.kind, item.title);
+                message.success("已加入画布");
+                return;
+            }
+            const file = item.action.type === "insert-vimax"
+                ? await fileFromVimaxArtifact(item.action.sessionId, item.action.path, item.title, item.action.kind)
+                : await fileFromBriefingArtifact(item.action.sessionId, item.action.path, item.title, item.action.kind);
+            const position = takeInsertPosition(assetInsertPositionRef, getCanvasCenter());
+            if (item.action.kind === "video") await createVideoFileNode(file, position);
+            else if (item.action.kind === "audio") await createAudioFileNode(file, position);
+            else await createImageFileNode(file, position);
+        } catch (error) {
+            message.error(formatCanvasUserError(error, "素材加入画布失败"));
+        }
+    }, [createAudioFileNode, createCanvasMediaIdNode, createImageFileNode, createVideoFileNode, getCanvasCenter, message]);
 
     const createAssetPayloadNode = useCallback(async (payload: InsertAssetPayload, center: Position) => {
         if (payload.kind === "character") {
-            const width = 320;
-            const height = 260;
-            return {
-                id: `character-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                type: CanvasNodeType.Text,
-                title: payload.title,
-                position: { x: center.x - width / 2, y: center.y - height / 2 },
-                width,
-                height,
-                metadata: {
-                    workflowKind: "character",
-                    characterAssetId: payload.assetId,
-                    characterVersionId: payload.versionId,
-                    characterVersionPolicy: "current",
-                    characterName: payload.title,
-                    characterPrompt: payload.prompt,
-                    characterAliases: payload.aliases,
-                    characterDefinition: payload.definition,
-                    characterCoverUrl: payload.coverUrl,
-                    characterVisualStatus: payload.visualStatus,
-                    characterVoiceStatus: payload.voiceStatus,
-                    characterVoiceName: payload.voiceName,
-                    characterVoiceProfile: payload.voiceProfile,
-                    characterVoiceInstructions: payload.voiceInstructions,
-                    assetId: payload.assetId,
-                    status: NODE_STATUS_SUCCESS,
-                    fontSize: 14,
-                },
-            } satisfies CanvasNodeData;
+            return createCharacterSubjectNode(payload, center);
         }
         if (payload.kind === "text") {
             const node = { ...createCanvasNode(CanvasNodeType.Text, center, { content: payload.content, status: NODE_STATUS_SUCCESS, assetId: payload.assetId }), title: payload.content.slice(0, 32) || "Assistant Text" };
@@ -637,60 +706,76 @@ export function useCanvasUpload({
         }
         if (payload.kind === "audio") {
             const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
+            const mediaId = resourceIdFromStorageKey(payload.storageKey);
+            const uploaded = mediaId
+                ? { url: canvasMediaUrl(mediaId), storageKey: resourceStorageKey(mediaId), bytes: payload.bytes || 0, mimeType: payload.mimeType || "audio/mpeg", durationMs: payload.durationMs }
+                : await uploadMediaFile(payload.url || await resolveMediaUrl(payload.storageKey, ""), "audio");
             const id = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-            return { id, type: CanvasNodeType.Audio, title: payload.title, position: { x: center.x - spec.width / 2, y: center.y - spec.height / 2 }, width: spec.width, height: spec.height, metadata: { content: payload.url, storageKey: payload.storageKey, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType || "audio/mpeg", assetId: payload.assetId, status: NODE_STATUS_SUCCESS } } satisfies CanvasNodeData;
+            return { id, type: CanvasNodeType.Audio, title: payload.title, position: { x: center.x - spec.width / 2, y: center.y - spec.height / 2 }, width: spec.width, height: spec.height, metadata: { ...audioMetadata(uploaded), assetId: payload.assetId } } satisfies CanvasNodeData;
         }
         if (payload.kind === "video") {
             const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
-            const size = fitNodeSize(payload.width || spec.width, payload.height || spec.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+            const mediaId = resourceIdFromStorageKey(payload.storageKey);
+            const uploaded = mediaId
+                ? { url: canvasMediaUrl(mediaId), storageKey: resourceStorageKey(mediaId), bytes: payload.bytes || 0, mimeType: payload.mimeType || "video/mp4", width: payload.width, height: payload.height, durationMs: payload.durationMs }
+                : await uploadMediaFile(payload.url || await resolveMediaUrl(payload.storageKey, ""), "video");
+            const size = fitNodeSize(uploaded.width || payload.width || spec.width, uploaded.height || payload.height || spec.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
             const id = `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-            return { id, type: CanvasNodeType.Video, title: payload.title, position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { content: payload.url, storageKey: payload.storageKey, status: NODE_STATUS_SUCCESS, naturalWidth: payload.width, naturalHeight: payload.height, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType || "video/mp4", assetId: payload.assetId } } satisfies CanvasNodeData;
+            return { id, type: CanvasNodeType.Video, title: payload.title, position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { ...videoMetadata(uploaded), assetId: payload.assetId } } satisfies CanvasNodeData;
         }
-        const storedImage = payload.storageKey ? { url: payload.dataUrl, storageKey: payload.storageKey, width: 1, height: 1, bytes: 0, mimeType: "image/png" } : await uploadImage(payload.dataUrl);
+        const imageMediaId = resourceIdFromStorageKey(payload.storageKey);
+        const storedImage = imageMediaId
+            ? { url: canvasMediaUrl(imageMediaId), storageKey: resourceStorageKey(imageMediaId), width: 1, height: 1, bytes: 0, mimeType: "image/png" }
+            : await uploadImage(payload.dataUrl || await resolveImageUrl(payload.storageKey, payload.dataUrl));
         const meta = storedImage.width === 1 && storedImage.height === 1 ? await readImageMeta(storedImage.url) : storedImage;
         const size = fitNodeSize(meta.width, meta.height);
         const id = `image-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
         return { id, type: CanvasNodeType.Image, title: payload.title.slice(0, 32) || "Generated Image", position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { ...imageMetadata({ ...storedImage, width: meta.width, height: meta.height }), prompt: payload.title, assetId: payload.assetId } } satisfies CanvasNodeData;
     }, []);
 
-    const handleAssetInsert = useCallback(async (payload: InsertAssetPayload) => {
-        const center = assetInsertPositionRef.current || getCanvasCenter();
-        try {
-            const node = await createAssetPayloadNode(payload, center);
-            setNodes((current) => [...current, node]);
-            selectInsertedNode(node.id, payload.kind === "image" || payload.kind === "video" ? "open" : "preserve");
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "素材插入失败");
-            return;
-        }
-        closeAssetPicker();
-    }, [closeAssetPicker, createAssetPayloadNode, getCanvasCenter, message, selectInsertedNode, setNodes]);
-
     const handleProjectAssetsInsert = useCallback(async (payloads: InsertAssetPayload[], position?: Position) => {
         const origin = position || getCanvasCenter();
         try {
-            const created = await Promise.all(payloads.map((payload, index) => createAssetPayloadNode(payload, {
-                x: origin.x + (index % 3) * 380,
-                y: origin.y + Math.floor(index / 3) * 300,
-            })));
-            setNodes((current) => [...current, ...created]);
-            setSelectedNodeIds(new Set(created.map((node) => node.id)));
+            const created: CanvasNodeData[] = [];
+            const selected = new Set<string>();
+            for (const [index, payload] of payloads.entries()) {
+                const center = {
+                    x: origin.x + (index % 3) * 380,
+                    y: origin.y + Math.floor(index / 3) * 300,
+                };
+                if (payload.kind === "character") {
+                    const existing = findCharacterSubjectNode([...nodesRef.current, ...created], payload.assetId);
+                    if (existing) {
+                        selected.add(existing.id);
+                        continue;
+                    }
+                    const node = createCharacterSubjectNode(payload, center);
+                    created.push(node);
+                    selected.add(node.id);
+                    continue;
+                }
+                const node = await createAssetPayloadNode(payload, center);
+                created.push(node);
+                selected.add(node.id);
+            }
+            if (created.length) setNodes((current) => [...current, ...created]);
+            await Promise.all(created.filter((node) => node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio).map((node) => persistMediaNode(node)));
+            setSelectedNodeIds(selected);
             setSelectedConnectionId(null);
             setDialogNodeId(null);
-            message.success(`已引入 ${created.length} 项项目资产`);
+            message.success(`已引入 ${selected.size} 项项目资产`);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "项目资产引入失败");
+            message.error(formatCanvasUserError(error, "项目资产引入失败"));
             throw error;
         }
-    }, [createAssetPayloadNode, getCanvasCenter, message, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
+    }, [createAssetPayloadNode, getCanvasCenter, message, nodesRef, persistMediaNode, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
 
     return {
-        assetPickerOpen,
-        closeAssetPicker,
+        assetTrayOpenNonce,
         createImageAssetNode,
         createMediaAssetNode,
+        insertAssetSpaceItem,
         fileDropActive,
-        handleAssetInsert,
         handleDrop,
         handleFileDragEnter,
         handleFileDragLeave,
@@ -706,6 +791,12 @@ export function useCanvasUpload({
         startUploadStatus,
         uploadStatus,
     };
+}
+
+function takeInsertPosition(ref: { current: Position | null }, fallback: Position, position?: Position) {
+    const next = position || ref.current || fallback;
+    ref.current = null;
+    return next;
 }
 
 function hasDraggedFiles(event: DragEvent<HTMLElement>) {

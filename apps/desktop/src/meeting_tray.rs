@@ -248,6 +248,16 @@ fn spawn_status_poller(app: AppHandle) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
+            // Quit in progress: stop polling. Later ticks would only query the
+            // backend after its database pool has closed and spam closed-pool
+            // warnings while the process shuts down (the tray-quit wedge itself
+            // was a main-thread issue; this loop was never the blocker).
+            if app
+                .try_state::<crate::QuitFlag>()
+                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                break;
+            }
             let Some(server) = app.try_state::<Arc<DesktopServer>>() else {
                 continue;
             };

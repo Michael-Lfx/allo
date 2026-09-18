@@ -65,20 +65,35 @@ describe('MessageText process action chrome', () => {
     expect(source.includes("'message-bubble-enter': shouldPlayEnterAnimation && !isStreaming")).toBe(true);
   });
 
-  test('keeps completed markdown fences expanded while the reply is still streaming', () => {
+  test('keeps only an open markdown fence in the lightweight streaming path', () => {
     expect(source.includes("streamingParts.tailKind === 'code'")).toBe(true);
     const codeBranch = source.slice(
       source.indexOf("streamingParts.tailKind === 'code'"),
       source.indexOf('streamingParts.codeContent')
     );
-    expect(codeBranch.includes('isStreaming')).toBe(true);
+    const stablePrefix = codeBranch.slice(codeBranch.indexOf('<MarkdownView'), codeBranch.indexOf('</MarkdownView>'));
+    expect(codeBranch.includes('<CodeBlock language={streamingParts.codeLanguage} streaming>')).toBe(true);
+    expect(stablePrefix.includes('isStreaming')).toBe(false);
   });
 
-  test('renders streaming prose through one MarkdownView so tables and lists do not restyle on promotion', () => {
+  test('renders streaming prose through a non-streaming Markdown prefix and lightweight tail', () => {
     const streamingBlock = source.match(/<StreamingText[\s\S]*?<\/StreamingText>/)?.[0] ?? '';
+    const proseStart = source.indexOf(') : streamingParts ? (');
+    const proseEnd = source.indexOf(') : (\n                <MarkdownView', proseStart);
+    const proseBranch = source.slice(proseStart, proseEnd);
+
     expect(streamingBlock.includes("streamingParts.tailKind === 'code'")).toBe(true);
-    expect(streamingBlock.includes("className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}")).toBe(false);
-    expect(streamingBlock.includes('{data}')).toBe(true);
+    expect(streamingBlock.includes("className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}")).toBe(true);
+    expect(streamingBlock.includes('{streamingParts.stablePrefix}')).toBe(true);
+    expect(streamingBlock.includes('{streamingParts.tail}')).toBe(true);
+    expect(proseBranch.includes('{data}')).toBe(false);
+    expect(proseBranch.includes('isStreaming={isStreaming}')).toBe(false);
+    expect(proseBranch.includes("<div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>")).toBe(true);
+  });
+
+  test('enables blockquote collapse only for completed assistant markdown', () => {
+    expect(source.includes('collapsibleBlockquotes={!isUserMessage && !isStreaming}')).toBe(true);
+    expect(source.includes('collapsibleBlockquotes={false}')).toBe(true);
   });
 
   test('does not pretty-rebalance wrap points on the live streaming tail', () => {
@@ -121,6 +136,12 @@ describe('MessageText process action chrome', () => {
   test('keeps the knowledge writeback icon optically centered with the status text', () => {
     expect(source.includes('h-14px w-14px shrink-0 items-center justify-center self-center leading-none')).toBe(true);
     expect(source.includes("className='block shrink-0'")).toBe(true);
+  });
+
+  test('refetches turn credits after knowledge writeback settles', () => {
+    expect(source.includes('onSettled')).toBe(true);
+    expect(source.includes('force: true')).toBe(true);
+    expect(source.includes('sawRunningRef')).toBe(true);
   });
 
   test('offers coding turn rollback on the latest editable user message when available', () => {

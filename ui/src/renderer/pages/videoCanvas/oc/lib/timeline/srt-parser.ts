@@ -65,3 +65,32 @@ export function serializeSrtEntries(entries: SrtEntry[]): string {
             .join("\n\n") + "\n"
     );
 }
+
+function msToVttTimestamp(ms: number): string {
+    return msToTimestamp(ms).replace(",", ".");
+}
+
+export function serializeVttEntries(entries: SrtEntry[]): string {
+    const cues = entries
+        .map((entry) => `${msToVttTimestamp(entry.startMs)} --> ${msToVttTimestamp(entry.endMs)}\n${entry.text}`)
+        .join("\n\n");
+    return `WEBVTT\n\n${cues}${cues ? "\n" : ""}`;
+}
+
+export function formatSubtitleClock(ms: number): string {
+    const safe = Math.max(0, Math.round(ms));
+    const minutes = Math.floor(safe / 60_000);
+    const seconds = Math.floor((safe % 60_000) / 1000);
+    const millis = safe % 1000;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+}
+
+export function parseSubtitleClock(value: string, fallback: number): number {
+    const match = value.trim().match(/^(\d{1,2}):(\d{2})(?:[.,](\d{1,3}))?$/);
+    if (!match) return fallback;
+    const minutes = Number(match[1]);
+    const seconds = Number(match[2]);
+    const millis = Number((match[3] || "0").padEnd(3, "0"));
+    if ([minutes, seconds, millis].some((n) => Number.isNaN(n))) return fallback;
+    return minutes * 60_000 + seconds * 1000 + millis;
+}

@@ -1,35 +1,31 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, ConfigProvider, Select, Switch } from '@arco-design/web-react';
-import { Down, SettingTwo } from '@icon-park/react';
+import { SettingTwo } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
+import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
+import { canvasOverlayStyle } from '@oc/lib/canvas/canvas-overlay';
+import { useQuietChromeTheme } from '../quietChrome';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
-import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
-import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
+import { fetchMediaModels, useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatios';
 import DurationTimelineBar from '../components/DurationTimelineBar';
 import {
-  AGENT_TICKS,
-  CLIP_DURATION_MAX_SECS,
-  CLIP_DURATION_MIN_SECS,
-  CLIP_DURATION_STEP_SECS,
-  CLIP_TICKS,
+  clampClipDurationForModel,
   clampDuration,
-  DURATION_MAX_SECS,
-  DURATION_MIN_SECS,
-  DURATION_STEP_SECS,
+  clipDurationBoundsForModel,
 } from '../durationBounds';
 import {
   filterAllowedImageModels,
-  pickDefaultLlmModel,
   pickDefaultVideoModel,
-} from '../components/ModelSelectors';
+} from '../components/modelPreferenceDefaults';
 import { normalizeVideoFps,
 normalizeVideoResolution,
 videoModelCapabilities, } from '@renderer/services/videoModelCapabilities'
-import type { GenerationPreferences, VideoHomeMode } from './types';
+import type { BriefingPreferenceValue, GenerationPreferences, VideoHomeMode } from './types';
 import { isClipDurationMode } from './types';
 import type { VimaxWorkflow } from '../types';
+import BriefingPreferenceFields from './BriefingPreferenceFields';
 import { getScrollParents } from './scrollParents';
 import styles from './home.module.css';
 
@@ -56,6 +52,8 @@ interface GenerationPreferencesPopoverProps {
   onChange: (next: GenerationPreferences) => void;
   onOpenModelHub: () => void;
   workflow?: VimaxWorkflow;
+  briefing?: BriefingPreferenceValue;
+  onBriefingChange?: (next: BriefingPreferenceValue) => void;
 }
 
 type PanelPlacement = {
@@ -127,6 +125,12 @@ const SELECT_POPUP_Z_INDEX = 1600;
 /** Stable global class — Arco Trigger overwrites popupStyle.zIndex from context. */
 const SELECT_POPUP_CLASS = 'video-home-prefs-select-popup';
 
+const PreferencesPlanningModelSelect = lazy(() => import('./PreferencesPlanningModelSelect'));
+
+export function warmGenerationPreferences(): void {
+  void fetchMediaModels();
+}
+
 function isSelectPopupOpen(): boolean {
   return Boolean(
     document.querySelector(
@@ -139,23 +143,6 @@ function isSelectPopupOpen(): boolean {
   );
 }
 
-function durationBounds(mode: VideoHomeMode) {
-  if (isClipDurationMode(mode)) {
-    return {
-      min: CLIP_DURATION_MIN_SECS,
-      max: CLIP_DURATION_MAX_SECS,
-      step: CLIP_DURATION_STEP_SECS,
-      ticks: CLIP_TICKS,
-    };
-  }
-  return {
-    min: DURATION_MIN_SECS,
-    max: DURATION_MAX_SECS,
-    step: DURATION_STEP_SECS,
-    ticks: AGENT_TICKS,
-  };
-}
-
 const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> = ({
   mode,
   value,
@@ -166,10 +153,14 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   onChange,
   onOpenModelHub,
   workflow,
+  briefing,
+  onBriefingChange,
 }) => {
   const { t } = useTranslation();
+  const theme = useQuietChromeTheme();
   const isAction = mode === 'action' || workflow === 'action2video';
   const isGenerate = mode === 'generate';
+  const isBriefing = mode === 'briefing';
   /** Ordinary video generate + action: video-only; no image/LLM planning tabs. */
   const videoOnlyMode = isAction || isGenerate;
   const anchorRef = useRef<HTMLDivElement | null>(null);
@@ -184,13 +175,13 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   valueRef.current = value;
 
   // Defer catalog network until the panel opens — closed summary only needs
-  // already-persisted preference ids / labels.
-  const llmModels = useGeneratorModels('text', { enabled: open && !videoOnlyMode });
+  // already-persisted preference ids / labels. Planning LLM catalog lives in a
+  // nested chunk so video-generate first open does not parse the model hub.
   const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels({
     enabled: open,
   });
   const mediaKind = videoOnlyMode ? 'video' : value.mediaKind;
-  const duration = durationBounds(mode);
+  const duration = clipDurationBoundsForModel(value.models.video_model);
 
   const automaticLabel = t('videoGeneration.create.preferences.automatic', {
     defaultValue: '自动',
@@ -214,7 +205,13 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     defaultValue: '暂无可用模型',
   });
 
-  const summary = isAction
+  const summary = isBriefing
+    ? `${briefing?.formatSecs ?? 90}s · ${
+        briefing?.researchDepth === 'deep'
+          ? t('videoGeneration.briefing.deep')
+          : t('videoGeneration.briefing.fast')
+      }`
+    : isAction
     ? `${shortModelLabel(value.models.video_model, noModelLabel)} · ${value.resolution.toUpperCase()}`
     : isGenerate
       ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()} · ${clampDuration(
@@ -232,7 +229,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             )}`
           : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
 
-  const summaryTitle = isAction || isGenerate
+  const summaryTitle = isBriefing
+    ? summary
+    : isAction || isGenerate
     ? summary
     : value.automatic
       ? automaticLabel
@@ -243,20 +242,6 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             ? value.resolution.toUpperCase()
             : shortModelLabel(value.models.image_model, noModelLabel)
         }`;
-
-  const llmOptions = useMemo(() => {
-    const seen = new Set<string>();
-    const opts: { label: string; value: string }[] = [];
-    for (const model of llmModels.flat) {
-      if (seen.has(model.model)) continue;
-      seen.add(model.model);
-      opts.push({
-        value: model.model,
-        label: `${formatCloudModelLabel(model.model)} · ${model.providerName}`,
-      });
-    }
-    return opts;
-  }, [llmModels.flat]);
 
   const imageOptions = useMemo(
     () =>
@@ -300,11 +285,6 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     value.models.video_model,
     value.resolution
   );
-  const safeLlmValue = llmOptions.some(
-    (option) => option.value === value.models.llm_model
-  )
-    ? value.models.llm_model
-    : undefined;
 
   const updatePanelPosition = () => {
     const anchor = anchorRef.current;
@@ -358,7 +338,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     updatePanelPosition();
     const frame = window.requestAnimationFrame(() => updatePanelPosition());
     return () => window.cancelAnimationFrame(frame);
-  }, [open, mediaKind, value.automatic, value.specifyTargetDuration, mode, modelMissing]);
+  }, [open, mediaKind, value.automatic, mode, modelMissing]);
 
   useEffect(() => {
     if (!open) return;
@@ -403,8 +383,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     };
   }, [open, onOpenChange]);
 
-  // Clamp resolution / fps whenever the video model allow-list changes.
+  // Clamp resolution / fps / clip duration whenever the video model allow-list changes.
   useEffect(() => {
+    if (isBriefing) return;
     const current = valueRef.current;
     if (!current.models.video_model) return;
     const resolution = normalizeVideoResolution(
@@ -412,30 +393,27 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
       current.resolution
     );
     const fps = normalizeVideoFps(current.models.video_model, current.fps);
-    if (resolution === current.resolution && fps === current.fps) return;
-    onChange({ ...current, resolution, fps });
+    const targetDurationSecs = isClipDurationMode(mode)
+      ? clampClipDurationForModel(current.models.video_model, current.targetDurationSecs)
+      : current.targetDurationSecs;
+    if (
+      resolution === current.resolution &&
+      fps === current.fps &&
+      targetDurationSecs === current.targetDurationSecs
+    ) {
+      return;
+    }
+    onChange({ ...current, resolution, fps, targetDurationSecs });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-clamp on model / allow-list
-  }, [value.models.video_model, resolutionOptions.join(',')]);
+  }, [value.models.video_model, resolutionOptions.join(','), mode]);
 
   // Seed missing / invalid models whenever options become available while open.
   useEffect(() => {
-    if (!open) return;
+    if (!open || isBriefing) return;
     if (mediaLoading && imageOptions.length === 0 && videoOptions.length === 0) return;
 
     const current = valueRef.current;
     const patch: Partial<GenerationPreferences['models']> = {};
-    if (!videoOnlyMode && !current.models.llm_model && llmOptions[0]) {
-      patch.llm_model =
-        pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value;
-    } else if (
-      !videoOnlyMode &&
-      current.models.llm_model &&
-      llmOptions.length > 0 &&
-      !llmOptions.some((option) => option.value === current.models.llm_model)
-    ) {
-      patch.llm_model =
-        pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value;
-    }
     if (!videoOnlyMode && !current.models.image_model && imageOptions[0]) {
       patch.image_model = imageOptions[0].value;
     } else if (
@@ -461,11 +439,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   }, [
     open,
     mediaLoading,
-    llmOptions,
     imageOptions,
     videoOptions,
     videoModels,
-    value.models.llm_model,
     value.models.image_model,
     value.models.video_model,
     isAction,
@@ -499,8 +475,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
         <ConfigProvider zIndex={SELECT_POPUP_Z_INDEX}>
           <div
             ref={panelRef}
-            className={styles.preferencesFloating}
+            className={`canvas-overlay ${styles.preferencesFloating}`}
             style={{
+              ...canvasOverlayStyle(theme),
               left: panelPos.left,
               width: panelPos.width,
               maxHeight: panelPos.maxHeight,
@@ -514,13 +491,8 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             })}
           >
             <div className={styles.preferencesPanel}>
+              {videoOnlyMode || isBriefing ? null : (
               <div className={styles.preferencesHeader}>
-                <div className={styles.preferencesTitle}>
-                  {t('videoGeneration.create.preferences.title', {
-                    defaultValue: '生成偏好',
-                  })}
-                </div>
-                {videoOnlyMode ? null : (
                 <label className={styles.autoToggle}>
                   <span>{automaticLabel}</span>
                   <Switch
@@ -530,9 +502,18 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     onChange={(automatic) => onChange({ ...value, automatic })}
                   />
                 </label>
-                )}
               </div>
+              )}
 
+            {isBriefing && briefing && onBriefingChange ? (
+              <BriefingPreferenceFields
+                value={briefing}
+                disabled={disabled}
+                selectProps={selectProps}
+                onChange={onBriefingChange}
+              />
+            ) : (
+              <>
             {videoOnlyMode ? null : (
             <div
               className={styles.mediaKindTabs}
@@ -709,6 +690,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                             value.resolution
                           ),
                           fps: normalizeVideoFps(video_model, value.fps),
+                          targetDurationSecs: isClipDurationMode(mode)
+                            ? clampClipDurationForModel(video_model, value.targetDurationSecs)
+                            : value.targetDurationSecs,
                           automatic: false,
                         });
                       }}
@@ -796,87 +780,6 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
               </div>
             ) : null}
 
-            {mediaKind === 'video' && mode === 'agent' && !isAction ? (
-              <div
-                className={`${styles.preferenceSection} ${
-                  value.automatic ? styles.preferenceSectionMuted : ''
-                }`}
-              >
-                <div className={styles.preferenceLabelRow}>
-                  <div className={styles.preferenceLabel}>
-                    {t('videoGeneration.create.preferences.targetDuration', {
-                      defaultValue: '目标时长',
-                    })}
-                  </div>
-                  <label className={styles.autoToggle}>
-                    <span>
-                      {t('videoGeneration.create.preferences.specifyDuration', {
-                        defaultValue: '指定时长',
-                      })}
-                    </span>
-                    <Switch
-                      size='small'
-                      checked={value.specifyTargetDuration}
-                      disabled={disabled || value.automatic}
-                      onChange={(specifyTargetDuration) =>
-                        onChange({
-                          ...value,
-                          mediaKind: 'video',
-                          specifyTargetDuration,
-                          // Keep last scrubbed value; clamp in case bounds drifted.
-                          targetDurationSecs: clampDuration(
-                            value.targetDurationSecs,
-                            duration.min,
-                            duration.max,
-                            duration.step
-                          ),
-                          automatic: false,
-                        })
-                      }
-                    />
-                  </label>
-                </div>
-                {value.specifyTargetDuration ? (
-                  <div className={styles.durationWrap}>
-                    <DurationTimelineBar
-                      value={clampDuration(
-                        value.targetDurationSecs,
-                        duration.min,
-                        duration.max,
-                        duration.step
-                      )}
-                      disabled={disabled || value.automatic}
-                      hideLabel
-                      min={duration.min}
-                      max={duration.max}
-                      step={duration.step}
-                      ticks={duration.ticks}
-                      onChange={(targetDurationSecs) =>
-                        onChange({
-                          ...value,
-                          mediaKind: 'video',
-                          specifyTargetDuration: true,
-                          targetDurationSecs: clampDuration(
-                            targetDurationSecs,
-                            duration.min,
-                            duration.max,
-                            duration.step
-                          ),
-                          automatic: false,
-                        })
-                      }
-                    />
-                  </div>
-                ) : (
-                  <div className={styles.autoHint}>
-                    {t('videoGeneration.create.preferences.specifyDurationOffHint', {
-                      defaultValue: '关闭时由短剧模式根据故事内容自主决定成片时长。',
-                    })}
-                  </div>
-                )}
-              </div>
-            ) : null}
-
             {mode === 'agent' && !isAction ? (
               <div
                 className={`${styles.preferenceSection} ${
@@ -888,29 +791,14 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     defaultValue: '规划模型',
                   })}
                 </div>
-                <Select
-                  allowClear={false}
-                  disabled={disabled || value.automatic}
-                  placeholder={t('videoGeneration.workspace.models.llmPlaceholder', {
-                    defaultValue: '选择聊天模型',
-                  })}
-                  value={safeLlmValue}
-                  options={llmOptions}
-                  notFoundContent={emptyModelsLabel}
-                  onChange={(next) =>
-                    onChange({
-                      ...value,
-                      models: { ...value.models, llm_model: String(next ?? '') },
-                    })
-                  }
-                  {...selectProps}
-                  triggerProps={{
-                    ...selectProps.triggerProps,
-                    // Near the bottom of the card: open upward so the menu
-                    // sits over the panel instead of under/outside it.
-                    position: 'tl',
-                  }}
-                />
+                <Suspense fallback={null}>
+                  <PreferencesPlanningModelSelect
+                    value={value}
+                    disabled={disabled}
+                    selectProps={selectProps}
+                    onChange={onChange}
+                  />
+                </Suspense>
               </div>
             ) : null}
 
@@ -936,6 +824,8 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 </Button>
               </div>
             ) : null}
+              </>
+            )}
             </div>
           </div>
         </ConfigProvider>,
@@ -945,30 +835,19 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
   return (
     <div className={styles.prefsAnchor} ref={anchorRef}>
-      <button
-        type='button'
-        className={`${styles.toolbarButton} ${styles.prefsButton} ${
-          open ? styles.toolbarButtonActive : ''
-        }`}
+      <CanvasChromeButton
         disabled={disabled}
-        aria-expanded={open}
+        expanded={open}
         aria-haspopup='dialog'
-        onClick={() => onOpenChange(!open)}
+        title={summaryTitle}
         aria-label={t('videoGeneration.create.customize', {
           defaultValue: '自定义生成偏好',
         })}
+        onClick={() => onOpenChange(!open)}
       >
-        <SettingTwo theme='outline' size={15} />
-        <span className={styles.toolbarLabel}>
-          {t('videoGeneration.create.preferences.customize', {
-            defaultValue: '自定义',
-          })}
-        </span>
-        <span className={styles.toolbarSummary} title={summaryTitle}>
-          {summary}
-        </span>
-        <Down theme='outline' size={12} />
-      </button>
+        <SettingTwo theme='outline' size={13} />
+        <span className={styles.toolbarSummary}>{summary}</span>
+      </CanvasChromeButton>
       {panel}
     </div>
   );

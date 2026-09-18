@@ -32,7 +32,7 @@ pub fn truncate_deferred_description(desc: &str) -> String {
 }
 
 /// Definition of a tool for the API
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,

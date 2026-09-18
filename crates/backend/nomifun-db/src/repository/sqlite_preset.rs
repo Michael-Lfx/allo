@@ -420,6 +420,82 @@ async fn replace_bindings(
     Ok(())
 }
 
+fn validate_preset_create_params(p: &PresetWriteParams) -> Result<(), DbError> {
+    if p.source_kind == "user" && p.source_key.is_some() {
+        return Err(DbError::Conflict(
+            "user presets must not carry a catalog source_key".into(),
+        ));
+    }
+    if matches!(p.source_kind.as_str(), "builtin" | "extension")
+        && p.source_key.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(DbError::Conflict(
+            "catalog presets require a non-empty source_key".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn insert_preset_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: &PresetWriteParams,
+) -> Result<(), DbError> {
+    let now = now_ms();
+    let result = sqlx::query("INSERT INTO presets (preset_id,source_kind,source_key,revision,name,description,routing_description,instructions,avatar,fallback_allowed,created_at,updated_at) VALUES (?,?,?,1,?,?,?,?,?,?,?,?)")
+        .bind(&p.preset_id).bind(&p.source_kind).bind(&p.source_key).bind(&p.name)
+        .bind(&p.description).bind(&p.routing_description).bind(&p.instructions)
+        .bind(&p.avatar).bind(p.fallback_allowed).bind(now).bind(now)
+        .execute(&mut **tx).await;
+    if let Err(error) = result {
+        return Err(if unique_violation(&error) {
+            DbError::Conflict(format!("Preset '{}' already exists", p.preset_id))
+        } else {
+            DbError::Query(error)
+        });
+    }
+    replace_bindings(tx, p).await
+}
+
+async fn upsert_state_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: &UpsertPresetStateParams,
+) -> Result<PresetUserStateRow, DbError> {
+    let now = now_ms();
+    let preset = sqlx::query(
+        "UPDATE presets SET updated_at = updated_at WHERE preset_id = ?",
+    )
+    .bind(&p.preset_id)
+    .execute(&mut **tx)
+    .await?;
+    if preset.rows_affected() == 0 {
+        return Err(DbError::Conflict(format!(
+            "Preset state parent '{}' does not exist",
+            p.preset_id
+        )));
+    }
+    if let Some(agent_id) = p.preferred_agent_id.as_deref() {
+        let agent = sqlx::query(
+            "UPDATE agent_metadata SET updated_at = updated_at WHERE agent_id = ?",
+        )
+        .bind(agent_id)
+        .execute(&mut **tx)
+        .await?;
+        if agent.rows_affected() == 0 {
+            return Err(DbError::Conflict(format!(
+                "Preferred preset agent '{agent_id}' does not exist"
+            )));
+        }
+    }
+    sqlx::query("INSERT INTO preset_user_state (preset_id,enabled,auto_selectable,preferred_agent_id,sort_order,last_used_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(preset_id) DO UPDATE SET enabled=excluded.enabled,auto_selectable=excluded.auto_selectable,preferred_agent_id=excluded.preferred_agent_id,sort_order=excluded.sort_order,last_used_at=excluded.last_used_at,updated_at=excluded.updated_at")
+        .bind(&p.preset_id).bind(p.enabled).bind(p.auto_selectable).bind(&p.preferred_agent_id).bind(p.sort_order)
+        .bind(p.last_used_at).bind(now).execute(&mut **tx).await?;
+    sqlx::query_as("SELECT * FROM preset_user_state WHERE preset_id=?")
+        .bind(&p.preset_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| DbError::Init("preset state upsert lost row".into()))
+}
+
 #[async_trait::async_trait]
 impl IPresetRepository for SqlitePresetRepository {
     async fn list(&self) -> Result<Vec<PresetRecord>, DbError> {
@@ -465,31 +541,31 @@ impl IPresetRepository for SqlitePresetRepository {
     }
 
     async fn create(&self, p: &PresetWriteParams) -> Result<PresetRecord, DbError> {
-        if p.source_kind == "user" && p.source_key.is_some() {
-            return Err(DbError::Conflict(
-                "user presets must not carry a catalog source_key".into(),
-            ));
-        }
-        if matches!(p.source_kind.as_str(), "builtin" | "extension")
-            && p.source_key.as_deref().is_none_or(str::is_empty)
-        {
-            return Err(DbError::Conflict(
-                "catalog presets require a non-empty source_key".into(),
-            ));
-        }
-        let now = now_ms();
+        validate_preset_create_params(p)?;
         let mut tx = self.pool.begin().await?;
-        let result = sqlx::query("INSERT INTO presets (preset_id,source_kind,source_key,revision,name,description,routing_description,instructions,avatar,fallback_allowed,created_at,updated_at) VALUES (?,?,?,1,?,?,?,?,?,?,?,?)")
-            .bind(&p.preset_id).bind(&p.source_kind).bind(&p.source_key).bind(&p.name)
-            .bind(&p.description).bind(&p.routing_description).bind(&p.instructions)
-            .bind(&p.avatar).bind(p.fallback_allowed).bind(now).bind(now)
-            .execute(&mut *tx).await;
-        if let Err(error) = result {
-            return Err(if unique_violation(&error) { DbError::Conflict(format!("Preset '{}' already exists", p.preset_id)) } else { DbError::Query(error) });
-        }
-        replace_bindings(&mut tx, p).await?;
+        insert_preset_in_transaction(&mut tx, p).await?;
         tx.commit().await?;
         load_record(&self.pool, &p.preset_id).await?.ok_or_else(|| DbError::Init("preset create lost row".into()))
+    }
+
+    async fn create_with_state(
+        &self,
+        p: &PresetWriteParams,
+        state: &UpsertPresetStateParams,
+    ) -> Result<PresetRecord, DbError> {
+        validate_preset_create_params(p)?;
+        if state.preset_id != p.preset_id {
+            return Err(DbError::Conflict(
+                "preset and state ids must match".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        insert_preset_in_transaction(&mut tx, p).await?;
+        upsert_state_in_transaction(&mut tx, state).await?;
+        tx.commit().await?;
+        load_record(&self.pool, &p.preset_id)
+            .await?
+            .ok_or_else(|| DbError::Init("preset create lost row".into()))
     }
 
     async fn update(&self, id: &str, p: &PresetWriteParams) -> Result<Option<PresetRecord>, DbError> {
@@ -590,41 +666,8 @@ impl IPresetStateRepository for SqlitePresetStateRepository {
         Ok(sqlx::query_as("SELECT * FROM preset_user_state").fetch_all(&self.pool).await?)
     }
     async fn upsert(&self, p: &UpsertPresetStateParams) -> Result<PresetUserStateRow, DbError> {
-        let now = now_ms();
         let mut tx = self.pool.begin().await?;
-        let preset = sqlx::query(
-            "UPDATE presets SET updated_at = updated_at WHERE preset_id = ?",
-        )
-        .bind(&p.preset_id)
-        .execute(&mut *tx)
-        .await?;
-        if preset.rows_affected() == 0 {
-            return Err(DbError::Conflict(format!(
-                "Preset state parent '{}' does not exist",
-                p.preset_id
-            )));
-        }
-        if let Some(agent_id) = p.preferred_agent_id.as_deref() {
-            let agent = sqlx::query(
-                "UPDATE agent_metadata SET updated_at = updated_at WHERE agent_id = ?",
-            )
-            .bind(agent_id)
-            .execute(&mut *tx)
-            .await?;
-            if agent.rows_affected() == 0 {
-                return Err(DbError::Conflict(format!(
-                    "Preferred preset agent '{agent_id}' does not exist"
-                )));
-            }
-        }
-        sqlx::query("INSERT INTO preset_user_state (preset_id,enabled,auto_selectable,preferred_agent_id,sort_order,last_used_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(preset_id) DO UPDATE SET enabled=excluded.enabled,auto_selectable=excluded.auto_selectable,preferred_agent_id=excluded.preferred_agent_id,sort_order=excluded.sort_order,last_used_at=excluded.last_used_at,updated_at=excluded.updated_at")
-            .bind(&p.preset_id).bind(p.enabled).bind(p.auto_selectable).bind(&p.preferred_agent_id).bind(p.sort_order)
-            .bind(p.last_used_at).bind(now).execute(&mut *tx).await?;
-        let row = sqlx::query_as("SELECT * FROM preset_user_state WHERE preset_id=?")
-            .bind(&p.preset_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| DbError::Init("preset state upsert lost row".into()))?;
+        let row = upsert_state_in_transaction(&mut tx, p).await?;
         tx.commit().await?;
         Ok(row)
     }
@@ -823,6 +866,31 @@ mod tests {
         );
         let updated = repo.update(PRESET_ID, &sample(PRESET_ID)).await.unwrap().unwrap();
         assert_eq!(updated.preset.unwrap().revision, 2);
+    }
+
+    #[tokio::test]
+    async fn preset_create_with_state_rolls_back_the_preset_when_state_validation_fails() {
+        const ATOMIC_PRESET_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678916";
+
+        let db = database_with_provider().await;
+        let repo = SqlitePresetRepository::new(db.pool().clone());
+        let error = repo
+            .create_with_state(
+                &sample(ATOMIC_PRESET_ID),
+                &UpsertPresetStateParams {
+                    preset_id: ATOMIC_PRESET_ID.into(),
+                    enabled: true,
+                    auto_selectable: true,
+                    preferred_agent_id: Some(MISSING_PROVIDER_ID.into()),
+                    sort_order: 0,
+                    last_used_at: None,
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Preferred preset agent"));
+        assert!(repo.get(ATOMIC_PRESET_ID).await.unwrap().is_none());
     }
 
     #[tokio::test]

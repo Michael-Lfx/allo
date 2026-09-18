@@ -34,6 +34,7 @@ Agent 引擎位于 [`crates/agent/`](../../crates/agent/)（24 个 crate：23 �
 | `nomi-insights-core` | 去标识化的洞察贡献管线与 POI 清洗辅助。 |
 | `nomi-media` | Flowy 后端的媒体生成与多步工作流协调。 |
 | `nomi-vimax` | ViMax 视频生成管线。 |
+| `nomi-briefing` | 资讯播报引擎：可溯源拍脚本、研究质量门、TTS/ASR 对齐、原作合成调度。 |
 | `nomi-poi` | 本地用户兴趣（POI）话题存储。 |
 
 `nomi_delegate` 在 `nomi-types` 中只有一套请求和回执契约：
@@ -59,7 +60,7 @@ Agent 分组对后端**大体独立，但并非完全**：`nomi-agent` 与 `nomi
 `nomifun-secret`。常规的后端到 agent 集成通过 `nomifun-ai-agent` 进入；
 `nomifun-app` 与 `nomifun-gateway` 中 feature-gated 的桥接面会直接依赖
 browser/computer-use crate 以便把这些能力暴露为 stdio 或公开工具；媒体域功能
-crate（`nomifun-canvas`、`nomifun-media`、`nomifun-vimax`、`nomifun-poi`、
+crate（`nomifun-canvas`、`nomifun-media`、`nomifun-vimax`、`nomifun-briefing`、`nomifun-poi`、
 `nomifun-insights`、`nomifun-companion`、`nomifun-robot`、`nomifun-cloud`）
 则直接绑定各自匹配的 `nomi-*` 引擎。
 
@@ -147,3 +148,34 @@ Nomi-engine session 在进程内运行。ACP-style session 会 spawn 并管理�
 旧 specs 会把 agent 层描述为“可机械抽离”并只列 11 个 crates。那些文件属于
 历史资料。当前代码仍保持强边界，但 browser/computer bridge 与 public gateway
 surfaces 意味着真实规则是“主接缝 + 明确记录的 feature-gated exceptions”。
+
+## Coding / 办公 Harness v2
+
+仍然只有一套循环：`AgentEngine::execute_turn_inner`，外加可选的
+`CodingHarness`（`task_profile=coding`）。办公模式走同一引擎，不安装 coding overlay。
+
+- **WorkingSet**（`nomi-coding`）记录实际读过/改过的文件区间。Autocompact **禁止**
+  `file_cache.clear()`。压缩后回注 WorkingSet 索引，而不是文件正文。
+- **Read** 对大文件分页（约 500 行）并报告 `unread_ranges`。超限 tool result 落成
+  `[content_ref …]`（budget reduction）。Snip 先丢掉远离尾部的旧纯文本回合，再
+  microcompact；LLM autocompact 仍是最后一层。
+- **回合形状：** coding constitution 写入 cache-stable system prefix。工具结果之后的
+  续轮降低 thinking budget / `reasoning_effort`。工具批处理按 path-overlap：不相交的
+  Read/Grep 可以和不相交的 Edit 同组并发；Bash/Edit/Write/Browser/Computer 仍独占。
+  只读失败不再级联跳过整回合。
+- **Explore 与 delegate 分家：** `explore_code` / `verify_change` / `research` 是深度 1
+  的隔离 `AgentEngine` fork，只回传摘要，**不是** `nomi_delegate`（画布级
+  Agent Execution）。父进程 explore hard-stop 只统计父自己的旅游回合。配置了
+  `tools.lsp_servers` 时，`Lsp` 进入 coding 核心广告面。`verify_change` 带精确
+  `command` 时直接跑 shell，不套 nested LLM。非 verify Bash 计为 recon，不能清掉
+  探测预算；另有请求级 recon 上限和连续单工具 round-trip 硬停。engine hard-stop
+  只 forced finalize，不清 `CodingProgressGuard`。
+- **完成：** coding 默认 EvidenceRequired（`HardGate`）。有 Edit/Write 后的自然
+  EndTurn 必须看到验证 receipt（或 harness 判定的琐碎改动）。格式/测试重试封顶 3。
+  `ExitPlanMode` 可携带 `PlanArtifact`。办公纯问答保持 Conversation；文件写入或
+  Browser/Computer 副作用走一次 evidence 续轮。
+- **热路径：** 工具中间轮用 compact JSON 落盘且不改 session index。
+  `parallel_safe` 的 `ContextContributor` 有界并行，可带 token 预算。
+- **KPI**（EndTurn 打日志）：`tools_per_turn`、`recon_turns`、`serial_recon`、
+  `time_to_first_edit`、`unique_path_reread_rate`、`verify_before_end`、
+  `contributor_ms`、`checkpoint_ms`、`ttft_ms`、`tool_wall_ms`。

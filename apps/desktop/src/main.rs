@@ -983,16 +983,14 @@ async fn webui_stop(server: tauri::State<'_, Arc<DesktopServer>>) -> Result<WebU
 /// Managed state holding the active OS sleep-inhibitor assertion (None = sleep allowed).
 struct AwakeState(Mutex<Option<keepawake::KeepAwake>>);
 
-/// 获取"保持唤醒"的 OS assertion:仅阻止系统空闲休眠(PreventUserIdleSystemSleep),
-/// **不**阻止显示器空闲关闭 —— 等价 `caffeinate -i`(而非 `-di`)。电脑保持活动时屏幕仍可正常熄屏,
-/// 既省电也避免长时间常亮对屏幕(尤其 OLED)的损耗;熄屏不影响定时任务运行。
+/// 获取"保持唤醒"的 OS assertion:阻止系统空闲休眠和显示器空闲关闭,
+/// 等价 `caffeinate -di`。`keepawake` 在 Windows/Linux 上也会同时请求系统和显示器保持活动。
 /// `set_keep_awake` 与回归测试共用此单一来源。
-/// Acquire the keep-awake assertion: inhibit system idle sleep only, while letting the display
-/// sleep normally (≈ `caffeinate -i`, not `-di`) — saves power and avoids screen wear, and the
-/// display turning off does NOT pause scheduled tasks. Single source shared with the test.
+/// Acquire the keep-awake assertion: inhibit system idle sleep and prevent the display from
+/// entering its idle-off state (≈ `caffeinate -di`). Single source shared with the test.
 fn acquire_keep_awake() -> Result<keepawake::KeepAwake, String> {
     keepawake::Builder::default()
-        .display(false) // 不持有 PreventUserIdleDisplaySleep:允许显示器空闲关闭(省电 + 护屏)
+        .display(true) // PreventUserIdleDisplaySleep:阻止显示器空闲关闭
         .idle(true) // PreventUserIdleSystemSleep:系统保持唤醒;电池供电时同样生效
         .sleep(false) // PreventSystemSleep:已废弃 + 电池下被忽略,显式关闭
         .reason("Flowy keep-awake enabled")
@@ -1002,14 +1000,13 @@ fn acquire_keep_awake() -> Result<keepawake::KeepAwake, String> {
         .map_err(|e| format!("failed to acquire keep-awake assertion: {e}"))
 }
 
-/// 开启/关闭"保持唤醒":开盖状态下阻止系统空闲休眠,但允许显示器照常熄屏(等价 `caffeinate -i`)。
+/// 开启/关闭"保持唤醒":开盖状态下阻止系统空闲休眠并保持显示器常亮(等价 `caffeinate -di`)。
 /// macOS 硬限制:合盖属于"强制休眠"(forced sleep),任何 IOKit assertion 都拦不住(参见 Apple QA1340);
 /// 合盖仍要运行,只能 clamshell 模式(插电 + 外接显示器 + 外接键鼠)或 root 级 `pmset disablesleep 1`。
-/// 早先还持有 PreventUserIdleDisplaySleep(display=true)强制屏幕常亮,会阻止显示器关闭、徒增屏幕损耗,
-/// 现已去掉;PreventSystemSleep(sleep)自 macOS 10.9 起已废弃且电池下被忽略,同样不用。
-/// Keep-awake: with the lid OPEN, inhibit idle system sleep but let the display sleep (~`caffeinate -i`).
-/// Lid-close is forced sleep that no assertion can block; the old display-on assertion (which blocked
-/// the monitor from turning off) and the deprecated PreventSystemSleep are both gone.
+/// 其他平台同样无法覆盖合盖、系统强制休眠、电源策略或低电量关机等操作系统行为。
+/// Keep-awake: with the lid OPEN, inhibit idle system sleep and keep the display on (~`caffeinate -di`).
+/// Lid-close is forced sleep that the assertion cannot block; the deprecated PreventSystemSleep
+/// assertion remains disabled.
 #[tauri::command]
 fn set_keep_awake(enabled: bool, state: tauri::State<'_, AwakeState>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -1118,6 +1115,132 @@ fn restart_application(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the on-disk support log directory without going through the embedded
+/// HTTP backend. Startup recovery must keep working when the webview cannot
+/// reach `127.0.0.1` (system proxy / Private Network Access failures).
+#[tauri::command]
+fn open_support_logs_dir() -> Result<(), String> {
+    let log_dir = resolve_support_log_dir();
+    std::fs::create_dir_all(&log_dir).map_err(|error| {
+        format!("failed to create support log directory {}: {error}", log_dir.display())
+    })?;
+    open::that(&log_dir).map_err(|error| {
+        format!("failed to open support log directory {}: {error}", log_dir.display())
+    })
+}
+
+fn resolve_support_log_dir() -> PathBuf {
+    for key in ["FLOWY_LOG_DIR", "NOMIFUN_LOG_DIR"] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+    }
+    default_data_dir().join("logs")
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct BackendLoopbackProbe {
+    port: u16,
+    tcp_connect: bool,
+    http_status: Option<u16>,
+    error: Option<String>,
+}
+
+/// Probe the embedded backend from the *host process*, bypassing the webview
+/// network stack entirely.
+///
+/// When the renderer reports `backend unreachable (Failed to fetch)` there are
+/// two very different faults: the loopback listener is not serving, or the
+/// webview is blocked from reaching it (system proxy, security software,
+/// Chromium local-network gating). Only a native probe can tell them apart.
+#[tauri::command]
+fn probe_backend_loopback(server: tauri::State<'_, Arc<DesktopServer>>) -> BackendLoopbackProbe {
+    use std::io::{Read, Write};
+
+    let port = server.loopback_port();
+    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    let mut stream = match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(3)) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return BackendLoopbackProbe {
+                port,
+                tcp_connect: false,
+                http_status: None,
+                error: Some(format!("tcp connect failed: {error}")),
+            };
+        }
+    };
+
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+    let request = format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    if let Err(error) = stream.write_all(request.as_bytes()) {
+        return BackendLoopbackProbe {
+            port,
+            tcp_connect: true,
+            http_status: None,
+            error: Some(format!("write failed: {error}")),
+        };
+    }
+
+    let mut response = Vec::new();
+    if let Err(error) = stream.take(4096).read_to_end(&mut response) {
+        return BackendLoopbackProbe {
+            port,
+            tcp_connect: true,
+            http_status: None,
+            error: Some(format!("read failed: {error}")),
+        };
+    }
+
+    let head = String::from_utf8_lossy(&response);
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok());
+    BackendLoopbackProbe {
+        port,
+        tcp_connect: true,
+        http_status: status,
+        error: status.map_or_else(
+            || Some(format!("unparsable response head: {}", head.lines().next().unwrap_or_default())),
+            |_| None,
+        ),
+    }
+}
+
+/// Keep process-level HTTP clients (backend reqwest pools, CLI probes) off the
+/// system proxy for loopback targets. Runs before any worker thread reads the
+/// environment.
+fn configure_loopback_no_proxy() {
+    const LOOPBACK_NO_PROXY: &str = "127.0.0.1,localhost,::1";
+
+    for key in ["NO_PROXY", "no_proxy"] {
+        match std::env::var(key) {
+            Ok(existing) => {
+                let lower = existing.to_ascii_lowercase();
+                if lower.contains("127.0.0.1") && lower.contains("localhost") {
+                    continue;
+                }
+                let merged = if existing.trim().is_empty() {
+                    LOOPBACK_NO_PROXY.to_owned()
+                } else {
+                    format!("{existing},{LOOPBACK_NO_PROXY}")
+                };
+                unsafe {
+                    std::env::set_var(key, merged);
+                }
+            }
+            Err(_) => unsafe {
+                std::env::set_var(key, LOOPBACK_NO_PROXY);
+            },
+        }
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod keep_awake_tests {
     use super::acquire_keep_awake;
@@ -1125,13 +1248,13 @@ mod keep_awake_tests {
     use std::thread::sleep;
     use std::time::Duration;
 
-    /// 回归测试:保持唤醒必须只阻止系统空闲休眠,绝不阻止显示器关闭。
+    /// 回归测试:保持唤醒必须同时阻止系统空闲休眠和显示器关闭。
     /// 用真实 IOKit assertion + `pmset -g assertions` 验证 —— 只看本测试进程(按 pid 过滤)
     /// 自己持有的 assertion,因此不受同时运行的 App 实例或 `caffeinate` 干扰。
-    /// Regression: keep-awake must hold PreventUserIdleSystemSleep but NOT
-    /// PreventUserIdleDisplaySleep (the latter is what stops the monitor from turning off).
+    /// Regression: keep-awake must hold both PreventUserIdleSystemSleep and
+    /// PreventUserIdleDisplaySleep (the latter keeps the monitor from turning off).
     #[test]
-    fn holds_system_idle_assertion_but_not_display() {
+    fn holds_system_and_display_assertions() {
         let handle = acquire_keep_awake().expect("acquire keep-awake assertion");
         let owner = format!("pid {}(", std::process::id());
 
@@ -1147,7 +1270,9 @@ mod keep_awake_tests {
                 .filter(|l| l.contains(&owner))
                 .map(str::to_owned)
                 .collect();
-            if ours.iter().any(|l| l.contains("PreventUserIdleSystemSleep")) {
+            if ours.iter().any(|l| l.contains("PreventUserIdleSystemSleep"))
+                && ours.iter().any(|l| l.contains("PreventUserIdleDisplaySleep"))
+            {
                 break;
             }
             sleep(Duration::from_millis(50));
@@ -1158,9 +1283,8 @@ mod keep_awake_tests {
             "keep-awake should hold PreventUserIdleSystemSleep; our assertions: {ours:?}"
         );
         assert!(
-            !ours.iter().any(|l| l.contains("PreventUserIdleDisplaySleep")),
-            "keep-awake must NOT hold PreventUserIdleDisplaySleep (it blocks the display from \
-             turning off); our assertions: {ours:?}"
+            ours.iter().any(|l| l.contains("PreventUserIdleDisplaySleep")),
+            "keep-awake should hold PreventUserIdleDisplaySleep; our assertions: {ours:?}"
         );
 
         drop(handle);
@@ -1877,7 +2001,7 @@ fn spawn_deferred_exit_shutdown(app: tauri::AppHandle, coordinator: Arc<ExitCoor
             return;
         }
         if coordinator.is_exit_allowed() {
-            app.exit(coordinator.original_code());
+            request_final_exit(&app, coordinator.original_code());
             return;
         }
         tracing::error!(
@@ -1886,7 +2010,7 @@ fn spawn_deferred_exit_shutdown(app: tauri::AppHandle, coordinator: Arc<ExitCoor
              backend cleanup"
         );
         let code = allow_exit_without_backend_cleanup(&coordinator);
-        app.exit(code);
+        request_final_exit(&app, code);
     });
 }
 
@@ -1896,6 +2020,39 @@ fn spawn_deferred_exit_shutdown(app: tauri::AppHandle, coordinator: Arc<ExitCoor
 fn allow_exit_without_backend_cleanup(coordinator: &ExitCoordinator) -> i32 {
     coordinator.mark_cleanup_verified();
     coordinator.original_code()
+}
+
+/// Bound for the final-exit watchdog: how long a posted `app.exit` may go
+/// unprocessed before the process is force-terminated. Normal turnaround is
+/// under 100 ms; the observed tray-quit wedge blocked the main thread for
+/// 10-17s+ behind a shell RPC.
+const FINAL_EXIT_WATCHDOG_DELAY: Duration = Duration::from_secs(5);
+
+/// Post the final process exit and arm a watchdog that force-terminates the
+/// process if the main thread fails to process the request in time (e.g. an
+/// event loop wedged behind a shell RPC from a notification code path).
+///
+/// Only for "cleanup resolved, deliver the final exit" call sites: backend
+/// cleanup is already verified (or explicitly abandoned after bounded
+/// retries) there, and tao's Windows event loop itself ends via
+/// `process::exit` without running destructors, so a forced exit loses
+/// nothing. The watchdog is armed BEFORE `app.exit` so even a panicking exit
+/// post cannot strand the process; it holds only the exit code, and a
+/// normally-exiting process takes the thread with it. The eprintln mirrors
+/// the tracing line because the non-blocking log appender is not flushed by
+/// `process::exit`.
+fn request_final_exit(app: &tauri::AppHandle, code: i32) {
+    std::thread::spawn(move || {
+        std::thread::sleep(FINAL_EXIT_WATCHDOG_DELAY);
+        tracing::error!(
+            code,
+            wait_secs = FINAL_EXIT_WATCHDOG_DELAY.as_secs(),
+            "final exit was not processed in time; forcing process termination"
+        );
+        eprintln!("final exit watchdog fired; forcing exit({code})");
+        std::process::exit(code);
+    });
+    app.exit(code);
 }
 
 fn start_shutdown_if_needed(
@@ -1920,7 +2077,7 @@ fn start_shutdown_if_needed(
                 callback_coordinator.mark_cleanup_verified();
                 callback_coordinator.mark_backend_stopped_verified();
                 if !restart {
-                    app.exit(original_code);
+                    request_final_exit(&app, original_code);
                 }
             }
             Err(error) => {
@@ -1935,7 +2092,7 @@ fn start_shutdown_if_needed(
                             retry_coordinator.mark_cleanup_verified();
                             retry_coordinator.mark_backend_stopped_verified();
                             if !restart {
-                                retry_app.exit(retry_coordinator.original_code());
+                                request_final_exit(&retry_app, retry_coordinator.original_code());
                             }
                         }
                         Err(retry_error) => {
@@ -1996,7 +2153,7 @@ fn retry_shutdown_until_verified(
             coordinator.mark_cleanup_verified();
             coordinator.mark_backend_failed_verified();
             if !restart {
-                app.exit(code);
+                request_final_exit(&app, code);
             }
             coordinator.release_backend_runtimes();
             return;
@@ -2013,7 +2170,7 @@ fn retry_shutdown_until_verified(
         let restart = coordinator.is_restart_requested();
         let code = allow_handoff_without_verified_cleanup(&coordinator);
         if !restart {
-            app.exit(code);
+            request_final_exit(&app, code);
         }
     });
 }
@@ -2355,7 +2512,6 @@ fn complete_main_thread_setup(
 
 /// Bring the main window back from the tray: show if hidden, restore if minimized, then focus.
 fn show_main_window(app: &tauri::AppHandle) {
-    taskbar_badge::clear_badge(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -2621,6 +2777,8 @@ fn main() -> std::process::ExitCode {
         return code;
     }
 
+    configure_loopback_no_proxy();
+
     // Env mutation + runtime init BEFORE Tauri builds its runtime/threads,
     // mirroring the nomicore bin's ordering. `default_data_dir` resolves the
     // effective root (literal NOMIFUN_DATA_DIR or the channel default) and
@@ -2717,7 +2875,7 @@ fn main() -> std::process::ExitCode {
                     .dev_url
                     .as_ref()
                     .map(|url| url.to_string())
-                    .or_else(|| Some("http://localhost:5173".to_string()))
+                    .or_else(|| Some("http://127.0.0.1:5173".to_string()))
             } else {
                 None
             };
@@ -3048,7 +3206,12 @@ fn main() -> std::process::ExitCode {
             set_keep_awake,
             meeting_tray::set_tray_labels,
             restart_application,
+            open_support_logs_dir,
+            probe_backend_loopback,
             system_notify::show_os_notification_cmd,
+            taskbar_badge::clear_attention_cmd,
+            taskbar_badge::clear_attention_scope_cmd,
+            taskbar_badge::clear_all_attention_cmd,
             completion_toast::activate_completion_toast,
             completion_toast::dismiss_completion_toast
         ])
@@ -3071,9 +3234,6 @@ fn main() -> std::process::ExitCode {
                         api.prevent_close();
                         let _ = window.hide();
                     }
-                }
-                tauri::WindowEvent::Focused(true) => {
-                    taskbar_badge::clear_badge(window.app_handle());
                 }
                 _ => {}
             }

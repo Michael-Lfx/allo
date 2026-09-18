@@ -11,6 +11,11 @@ describe('TitlebarUpdateButton', () => {
     expect(source.includes("t('settings.checkForUpdates')")).toBe(false);
   });
 
+  test('does not run its own ModelScope check on mount', () => {
+    expect(source.includes('autoUpdate.check')).toBe(false);
+    expect(source.includes('useUpdateAvailability')).toBe(true);
+  });
+
   test('uses the shared delayed titlebar tooltip', () => {
     expect(source.includes('hoverDelayMs={400}')).toBe(true);
     expect(source.includes("className='app-titlebar__tooltip-anchor'")).toBe(true);

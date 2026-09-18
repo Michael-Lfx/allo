@@ -16,6 +16,8 @@ const CODE_PADDING_VERTICAL = 20;
 const COLLAPSED_HEIGHT = PREVIEW_LINES * CODE_LINE_HEIGHT + CODE_PADDING_VERTICAL;
 
 const MermaidBlock = React.lazy(() => import('./MermaidBlock'));
+const SvgBlock = React.lazy(() => import('./SvgBlock'));
+const JsxGraphBlock = React.lazy(() => import('./JsxGraphBlock'));
 
 type CodeBlockProps = {
   children: string;
@@ -83,6 +85,24 @@ function CodeBlock(props: CodeBlockProps) {
     );
   }
 
+  // Lesson figures: sanitized inline SVG (SMIL animations run natively) and
+  // JSXGraph boards for interactive / programmatically animated diagrams.
+  if (language === 'svg') {
+    return (
+      <React.Suspense fallback={<div className='markdown-mermaid-loading' aria-busy='true' />}>
+        <SvgBlock code={formatCode(children)} style={props.codeStyle} />
+      </React.Suspense>
+    );
+  }
+
+  if (language === 'jsxgraph') {
+    return (
+      <React.Suspense fallback={<div className='markdown-mermaid-loading' aria-busy='true' />}>
+        <JsxGraphBlock code={formatCode(children)} style={props.codeStyle} />
+      </React.Suspense>
+    );
+  }
+
   // Inline code (single line)
   if (!String(children).includes('\n')) {
     return (
@@ -143,6 +163,10 @@ function CodeBlock(props: CodeBlockProps) {
       ref={containerRef}
       style={{ width: '100%', minWidth: 0, maxWidth: '100%', ...props.codeStyle }}
       className='markdown-code-block'
+      data-testid='markdown-code-block'
+      data-streaming={isStreaming ? 'true' : 'false'}
+      data-collapsible={canCollapse ? 'true' : 'false'}
+      data-collapse-state={!canCollapse ? 'none' : isEffectivelyExpanded ? 'expanded' : 'collapsed'}
     >
       <BeautifulUiCodeBlock
         language={language}
@@ -236,6 +260,7 @@ function CodeBlock(props: CodeBlockProps) {
                   : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })
               }
               className='markdown-code-footer'
+              data-testid='markdown-code-footer'
               onClick={toggleExpanded}
             >
               <span className='markdown-code-footer-label'>

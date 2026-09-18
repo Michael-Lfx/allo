@@ -6,6 +6,7 @@
 
 import type { AgentStreamErrorInfo } from '@/common/chat/chatLib';
 import { buildAgentErrorDiagnostic, buildErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
+import { MAX_SUPPORT_MESSAGE_CHARS } from './api/supportChatTypes';
 
 export type ConversationErrorReportContext = {
   error: AgentStreamErrorInfo;
@@ -14,6 +15,37 @@ export type ConversationErrorReportContext = {
   turnId?: string;
   occurredAt: string;
 };
+
+export type ConversationErrorReportScreenshot = {
+  file: File;
+  fileName: string;
+  previewUrl: string;
+};
+
+export type ConversationErrorReportDraft = {
+  description: string;
+  screenshots: ConversationErrorReportScreenshot[];
+};
+
+export const MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS = MAX_SUPPORT_MESSAGE_CHARS;
+
+export type ConversationErrorReportSubmitResult =
+  | { status: 'success' }
+  | { status: 'preparation-failed' }
+  | { status: 'partial-failure' }
+  | { status: 'invalid-input' }
+  | { status: 'stale' };
+
+export function getConversationErrorReportContextKey(
+  context: ConversationErrorReportContext
+): string {
+  return JSON.stringify([
+    context.conversationId,
+    context.messageId ?? null,
+    context.turnId ?? null,
+    context.occurredAt,
+  ]);
+}
 
 export function buildConversationErrorReportMetadata(context: ConversationErrorReportContext) {
   const { error } = context;
@@ -32,6 +64,8 @@ export function buildConversationErrorReportMetadata(context: ConversationErrorR
     ...(diagnostic.incidentId ? { incidentId: diagnostic.incidentId } : {}),
     error: {
       message: safeMessage,
+      ...(diagnostic.modelId ? { modelId: diagnostic.modelId } : {}),
+      ...(diagnostic.providerId ? { providerId: diagnostic.providerId } : {}),
       ...(diagnostic.code ? { code: diagnostic.code } : {}),
       ...(diagnostic.ownership ? { ownership: diagnostic.ownership } : {}),
       ...(error.retryable !== undefined ? { retryable: error.retryable } : {}),

@@ -4,8 +4,10 @@ pub mod agents;
 pub mod artifact_edit;
 pub mod aspect;
 pub mod backends;
+pub mod clip_bounds;
 pub mod creative;
 pub mod domain;
+pub mod drama;
 pub mod error;
 pub mod json_util;
 pub mod media_local;
@@ -27,12 +29,14 @@ pub use creative::{
 pub use aspect::{
     DEFAULT_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS, aspect_prompt_clause, aspect_to_dashscope_size,
     aspect_to_seedream_size, aspect_to_upload_dims, image_request_extra_for_aspect,
-    normalize_aspect_ratio,
+    normalize_aspect_ratio, video_aspect_framing_clause,
 };
 
+pub use clip_bounds::ClipBounds;
 pub use video_quality::{
     DEFAULT_VIDEO_FPS, DEFAULT_VIDEO_RESOLUTION, VIDEO_RESOLUTIONS, VideoModelCapabilities,
-    normalize_fps_for_model, normalize_resolution_for_model, video_model_capabilities,
+    clip_bounds_for_model, max_reference_audio, normalize_fps_for_model,
+    normalize_resolution_for_model, video_model_capabilities,
 };
 
 pub use artifact_edit::ImagePromptInfo;
@@ -41,17 +45,19 @@ pub use backends::{
     VimaxVideo,
 };
 pub use domain::WorkflowKind;
+pub use drama::{BeatRole, DramaBeat, DramaEngine, lint_drama_engine};
 pub use error::{VimaxError, VimaxResult};
 pub use progress::{
     INTERRUPTED_SUMMARY, ProgressCallback, ProgressEvent, RenderStatus, RunStatus,
+    VimaxTerminalTelemetry, duration_ms_from_status, film_event_name,
 };
 pub use revise::ReviseResult;
-pub use service::VimaxService;
+pub use service::{TerminalTelemetryHook, VimaxService};
 pub use session::{
     ARCHIVE_EXTENSION, ActionAssetsInfo, ArtifactNode, CameoManifest, CameoPhotoEntry, CameoUpdate,
     SessionIndex, SessionRecord, SessionSummary, apply_video_task_credits,
 };
 pub use skills::{
-    pack_skill_dir, SkillCatalog, SkillId, SkillOverlay, SkillSource, SkillVisibility,
-    VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
+    pack_skill_dir, DirectorSpec, OverBudget, PackPolicy, SkillCatalog, SkillId, SkillOverlay,
+    SkillSource, SkillVisibility, VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
 };

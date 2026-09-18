@@ -6,10 +6,12 @@ operates that host on your behalf — running commands, reading and editing
 files, searching the tree, installing dependencies. Nothing runs on your local
 machine: the whole session's work happens on the remote host.
 
-> NomiFun is local-first and does not send your data anywhere except the LLM
-> calls you configure. SSH is the one exception you opt into per host — an
-> outbound connection to a machine you own. Credentials stay encrypted on this
-> machine and are never returned to the UI in plaintext.
+> NomiFun is local-first. Conversation bodies stay on this machine except the LLM
+> calls you configure. Optional product analytics and crash reports (PostHog /
+> Sentry) send allowlisted event properties only, and can be turned off in
+> Settings → Analytics. SSH is an outbound connection you opt into per host.
+> Credentials stay encrypted on this machine and are never returned to the UI in
+> plaintext.
 
 ## The host book
 

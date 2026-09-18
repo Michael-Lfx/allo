@@ -17,12 +17,16 @@ use crate::pipelines::{
     model_supports_action_imitation, Action2VideoPipeline, Idea2VideoPipeline, Novel2VideoPipeline,
     PipelineBackends, ScriptFilmPipeline,
 };
-use crate::progress::{INTERRUPTED_SUMMARY, RenderStatus, RunStatus};
+use crate::progress::{
+    duration_ms_from_status, film_event_name, INTERRUPTED_SUMMARY, RenderStatus, RunStatus,
+    VimaxTerminalTelemetry,
+};
 use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
-    apply_status_to_record, apply_video_task_credits, cameo,
+    apply_status_to_record, apply_video_task_credits, cameo, video_task_credit_delta,
 };
-use crate::skills::{SkillCatalog, VerticalSkillDraft, VerticalSkillSummary};
+use crate::clip_bounds::ClipBounds;
+use crate::skills::{SkillCatalog, SkillOverlay, VerticalSkillDraft, VerticalSkillSummary};
 
 fn first_nonempty<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> String {
     for c in candidates {
@@ -33,6 +37,89 @@ fn first_nonempty<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> 
         }
     }
     String::new()
+}
+
+fn live_status<'a>(
+    index: &SessionIndex,
+    map: &'a mut HashMap<String, RenderStatus>,
+    id: &str,
+) -> &'a mut RenderStatus {
+    map.entry(id.to_string())
+        .or_insert_with(|| index.load_run_status(id).unwrap_or_default())
+}
+
+/// Same requirement + style the planner fingerprinted. Render must reuse this
+/// string or `storyboard.json` sidecars miss and the board is redesigned
+/// mid-film (user sees 8 shots, then 15 at clip 6).
+fn plan_skill_ids(record: &SessionRecord) -> Vec<String> {
+    if record.vertical_skill_ids.is_empty() && record.workflow == WorkflowKind::Idea2Video {
+        crate::skills::default_idea2video_skill_ids()
+    } else {
+        record.vertical_skill_ids.clone()
+    }
+}
+
+fn requirement_and_style_from_overlay(
+    record: &SessionRecord,
+    skill_overlay: &SkillOverlay,
+    clip: ClipBounds,
+    target_secs: Option<u32>,
+) -> (String, String) {
+    let lang_sources = [
+        record.idea.as_str(),
+        record.script.as_str(),
+        record.novel_text.as_str(),
+        record.user_requirement.as_str(),
+    ];
+    let req_base = crate::planning::with_language_lock(
+        &skill_overlay.user_requirement,
+        &lang_sources,
+    );
+    let req = match record.workflow {
+        WorkflowKind::Script2Video
+        | WorkflowKind::Idea2Video
+        | WorkflowKind::Novel2Video => {
+            crate::planning::enrich_requirement_for_film(clip, &req_base, target_secs)
+        }
+        WorkflowKind::Action2Video => req_base,
+    };
+    let style_s = crate::planning::resolve_visual_style(if skill_overlay.style.is_empty() {
+        if record.style.is_empty() {
+            ""
+        } else {
+            record.style.as_str()
+        }
+    } else {
+        skill_overlay.style.as_str()
+    });
+    (req, style_s)
+}
+
+fn persist_run_status(index: &SessionIndex, id: &str, st: &RenderStatus) {
+    if let Err(e) = index.save_run_status(id, st) {
+        tracing::warn!(
+            session_id = %id,
+            error = %e,
+            "failed to persist vimax run status"
+        );
+    }
+}
+
+fn overlay_session_record(
+    out: &mut RenderStatus,
+    record: &SessionRecord,
+    working_abs: Option<String>,
+) {
+    out.working_dir_abs = working_abs.or(out.working_dir_abs.take());
+    if out.cover.is_none() {
+        out.cover = record.cover.clone();
+    }
+    if out.final_video.is_none() {
+        out.final_video = record.final_video.clone();
+    }
+    if record.credits_consumed > out.credits_consumed {
+        out.credits_consumed = record.credits_consumed;
+    }
 }
 
 /// Prefer `Interrupted` when shutdown already paused the session; else user cancel.
@@ -61,6 +148,8 @@ enum JobKind {
     Render,
 }
 
+pub type TerminalTelemetryHook = Arc<dyn Fn(VimaxTerminalTelemetry) + Send + Sync>;
+
 pub struct VimaxService {
     #[allow(dead_code)]
     data_dir: PathBuf,
@@ -70,6 +159,7 @@ pub struct VimaxService {
     /// Sync mutex so progress callbacks never drop updates via `try_lock`.
     statuses: StdMutex<HashMap<String, RenderStatus>>,
     cancels: Mutex<HashMap<String, CancellationToken>>,
+    terminal_hook: StdMutex<Option<TerminalTelemetryHook>>,
 }
 
 impl VimaxService {
@@ -97,6 +187,7 @@ impl VimaxService {
             flowy: Mutex::new(flowy),
             statuses: StdMutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
+            terminal_hook: StdMutex::new(None),
         }))
     }
 
@@ -115,6 +206,7 @@ impl VimaxService {
         }
 
         let mut ids: HashSet<String> = HashSet::new();
+        let mut emit_interrupt: HashSet<String> = HashSet::new();
         {
             let mut map = self
                 .statuses
@@ -124,16 +216,24 @@ impl VimaxService {
                 if !st.status.is_active() {
                     continue;
                 }
+                let was_rendering = st.status == RunStatus::Rendering;
                 st.status = RunStatus::Interrupted;
                 st.message = INTERRUPTED_SUMMARY.into();
                 st.error = None;
                 st.emit_terminal("interrupted", INTERRUPTED_SUMMARY);
+                persist_run_status(&self.index, id, st);
                 ids.insert(id.clone());
+                if was_rendering {
+                    emit_interrupt.insert(id.clone());
+                }
             }
         }
 
         if let Ok(sessions) = self.index.list() {
             for record in sessions {
+                if record.status == RunStatus::Rendering {
+                    emit_interrupt.insert(record.session_id.clone());
+                }
                 if record.status.is_active() {
                     ids.insert(record.session_id);
                 }
@@ -147,6 +247,10 @@ impl VimaxService {
             });
         }
 
+        for id in &emit_interrupt {
+            self.emit_film_terminal(id, RunStatus::Interrupted);
+        }
+
         if !ids.is_empty() || !tokens.is_empty() {
             tracing::info!(
                 cancelled_tokens = tokens.len(),
@@ -155,6 +259,91 @@ impl VimaxService {
             );
         }
         ids.len()
+    }
+
+    pub fn set_terminal_telemetry_hook(&self, hook: Option<TerminalTelemetryHook>) {
+        *self
+            .terminal_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hook;
+    }
+
+    fn emit_film_terminal(&self, id: &str, status: RunStatus) {
+        if film_event_name(status).is_none() {
+            return;
+        }
+        let st = {
+            let map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.get(id)
+                .cloned()
+                .or_else(|| self.index.load_run_status(id))
+                .unwrap_or_default()
+        };
+        let record = self.index.get(id).ok();
+        let credits = record
+            .as_ref()
+            .map(|r| r.credits_consumed.max(st.credits_consumed))
+            .unwrap_or(st.credits_consumed);
+        let error_blob = st
+            .error
+            .as_deref()
+            .or((!st.message.is_empty()).then_some(st.message.as_str()))
+            .unwrap_or("");
+        let (error_code, error_message) = nomifun_cloud::flowy::film_telemetry_error(error_blob);
+        let failure_channel = if status == RunStatus::Failed {
+            Some(nomifun_cloud::flowy::infer_film_failure_channel(error_blob).to_string())
+        } else {
+            None
+        };
+        let payload = VimaxTerminalTelemetry {
+            session_id: id.to_string(),
+            status,
+            workflow: record
+                .as_ref()
+                .map(|r| r.workflow.as_str().to_string())
+                .unwrap_or_default(),
+            llm_model: record
+                .as_ref()
+                .map(|r| r.llm_model.clone())
+                .unwrap_or_default(),
+            image_model: record
+                .as_ref()
+                .map(|r| r.image_model.clone())
+                .unwrap_or_default(),
+            video_model: record
+                .as_ref()
+                .map(|r| r.video_model.clone())
+                .unwrap_or_default(),
+            credits_consumed: credits,
+            duration_ms: duration_ms_from_status(&st),
+            error_code: if matches!(status, RunStatus::Failed) {
+                error_code
+            } else {
+                None
+            },
+            error_message: if matches!(status, RunStatus::Failed) {
+                error_message
+            } else {
+                None
+            },
+            failure_channel,
+            occurred_at: if st.updated_at.is_empty() {
+                chrono::Utc::now().to_rfc3339()
+            } else {
+                st.updated_at.clone()
+            },
+        };
+        let hook = self
+            .terminal_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(payload);
+        }
     }
 
     /// Replace Flowy backends after login / config reload.
@@ -180,6 +369,10 @@ impl VimaxService {
 
     pub fn get_session(&self, id: &str) -> VimaxResult<SessionRecord> {
         self.index.get(id)
+    }
+
+    pub fn rename_session(&self, id: &str, title: &str) -> VimaxResult<SessionRecord> {
+        self.index.rename(id, title)
     }
 
     pub fn list_vertical_skills(
@@ -261,40 +454,40 @@ impl VimaxService {
             .working_dir(id)
             .ok()
             .map(|p| p.to_string_lossy().replace('\\', "/"));
-        let map = self
+        let mut map = self
             .statuses
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some(s) = map.get(id) {
-            let mut out = s.clone();
-            out.working_dir_abs = working_abs.or(out.working_dir_abs);
-            if out.cover.is_none() {
-                out.cover = record.cover.clone();
-            }
-            if out.final_video.is_none() {
-                out.final_video = record.final_video.clone();
-            }
-            // Prefer live ledger; fall back to persisted session total.
-            if out.credits_consumed <= 0 {
-                out.credits_consumed = record.credits_consumed;
-            } else if record.credits_consumed > out.credits_consumed {
-                out.credits_consumed = record.credits_consumed;
-            }
-            return Ok(out);
+        let st = live_status(&self.index, &mut map, id);
+        overlay_session_record(st, &record, working_abs.clone());
+        if st.stage.is_empty() {
+            st.stage = record.stage.clone();
         }
-        Ok(RenderStatus {
-            status: record.status,
-            stage: record.stage,
-            message: record.summary,
-            progress: 0.0,
-            error: None,
-            final_video: record.final_video,
-            cover: record.cover,
-            credits_consumed: record.credits_consumed,
-            working_dir_abs: working_abs,
-            updated_at: record.updated_at,
-            events: vec![],
-        })
+        if st.message.is_empty() {
+            st.message = record.summary.clone();
+        }
+        if st.status == RunStatus::Idle && record.status != RunStatus::Idle {
+            st.status = record.status;
+        }
+        if !record.status.is_active() && st.status.is_active() {
+            st.status = record.status;
+            if st.message.is_empty() {
+                st.message = record.summary.clone();
+            }
+            let terminal = record.status.as_str();
+            if !st.events.iter().any(|e| e.stage == terminal) {
+                st.emit_terminal(terminal, &st.message.clone());
+            }
+            persist_run_status(&self.index, id, st);
+        }
+        if st.events.is_empty() && st.status == RunStatus::Idle {
+            // Keep disk-less completed sessions honest about stage/credits.
+            st.status = record.status;
+            st.stage = record.stage.clone();
+            st.message = record.summary.clone();
+            st.updated_at = record.updated_at.clone();
+        }
+        Ok(st.clone())
     }
 
     pub async fn cancel(self: &Arc<Self>, id: &str) -> VimaxResult<()> {
@@ -306,12 +499,13 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let status = map.entry(id.to_string()).or_default();
+            let status = live_status(&self.index, &mut map, id);
             status.status = RunStatus::Cancelled;
             status.message = "cancelled".into();
             // Keep the last working pipeline stage so "continue from checkpoint"
             // can resume plan vs render correctly.
             status.emit_terminal("cancelled", "cancelled");
+            persist_run_status(&self.index, id, status);
         }
         let _ = self.index.update_fields(id, |r| {
             r.status = RunStatus::Cancelled;
@@ -618,7 +812,7 @@ impl VimaxService {
                     r.video_model = v.trim().to_string();
                 }
                 if let Some(v) = &resolution {
-                    // Keep model-canonical casing (MiniMax-H3 uses `768P` / `2K`).
+                    // Keep model-canonical casing (MiniMax-H3 `768P`/`2K`, Wan 3.0 `480P`/`720P`/`1080P`).
                     r.resolution = v.trim().to_string();
                 }
                 if let Some(v) = fps {
@@ -811,7 +1005,7 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.to_string()).or_default();
+            let st = live_status(&self.index, &mut map, id);
             st.status = status;
             st.stage = status.as_str().into();
             st.message = message.into();
@@ -822,6 +1016,7 @@ impl VimaxService {
                 st.credits_consumed = prior_credits;
             }
             st.emit(status.as_str(), message, None);
+            persist_run_status(&self.index, id, st);
         }
         self.index.update_fields(id, |r| {
             r.status = status;
@@ -843,7 +1038,7 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.to_string()).or_default();
+            let st = live_status(&self.index, &mut map, id);
             match result {
                 Ok(()) => {
                     if token.is_cancelled() {
@@ -865,6 +1060,7 @@ impl VimaxService {
                                     st.message = "render complete".into();
                                 }
                                 st.progress = 100.0;
+                                st.emit("succeeded", &st.message.clone(), None);
                             }
                         }
                     }
@@ -893,8 +1089,19 @@ impl VimaxService {
             let _ = self.index.update_fields(id, |r| {
                 apply_status_to_record(r, st);
             });
+            persist_run_status(&self.index, id, st);
         }
+        let emit_status = matches!(kind, JobKind::Render).then(|| {
+            self.statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(id)
+                .map(|st| st.status)
+        });
         self.cancels.lock().await.remove(id);
+        if let Some(Some(status)) = emit_status {
+            self.emit_film_terminal(id, status);
+        }
     }
 
     async fn backends_for(
@@ -909,9 +1116,17 @@ impl VimaxService {
         let video = nonempty_opt(&record.video_model);
         let aspect = resolve_aspect_for_session(record, &flowy.media);
         let resolution = resolve_resolution_for_session(record, &flowy.media);
+        // Resolve from the configured id (not the catalog) so planning stays
+        // synchronous; an unknown id falls back to the universally safe window.
+        let model_id = video
+            .as_deref()
+            .unwrap_or(flowy.media.video.model.trim());
+        let clip = crate::video_quality::clip_bounds_for_model(model_id);
+        let max_reference_audio = crate::video_quality::max_reference_audio(model_id);
         Ok(PipelineBackends {
             chat: Arc::new(flowy.chat_with_model(llm)),
-            // Portraits / env plates use default Seedream 2K — do NOT bind video aspect here.
+            // Portraits / prop plates use default Seedream 2K. Environment volume
+            // plates bind film aspect via `PipelineBackends::poster_image`.
             image: Arc::new(flowy.image_with_model(image.clone())),
             // Fine-grained create / poll / download progress for the progress rail.
             video: Arc::new(flowy.video_with_session_quality(
@@ -923,6 +1138,8 @@ impl VimaxService {
             )),
             flowy: Some(flowy.clone()),
             image_model: image,
+            clip,
+            max_reference_audio,
             cancel,
         })
     }
@@ -987,7 +1204,7 @@ impl VimaxService {
                 r.aspect_ratio = crate::aspect::normalize_aspect_ratio(ar);
             }
             if let Some(res) = &resolution {
-                // Keep model-canonical casing (MiniMax-H3 uses `768P` / `2K`).
+                // Keep model-canonical casing (MiniMax-H3 `768P`/`2K`, Wan 3.0 `480P`/`720P`/`1080P`).
                 r.resolution = res.trim().to_string();
             }
             if let Some(v) = fps {
@@ -1077,21 +1294,25 @@ impl VimaxService {
             let cover = work.join(crate::agents::COVER_FILENAME);
             let _ = tokio::fs::remove_file(&cover).await;
         }
-        // Idea/Novel/Script: film-level enrich. Per-scene pacing is applied inside each pipeline.
-        // Language lock uses the user's creative source so Chinese ideas stay Chinese in planning.
-        let lang_sources = [
-            record.idea.as_str(),
-            record.script.as_str(),
-            record.novel_text.as_str(),
-            record.user_requirement.as_str(),
-        ];
-        // Vertical skills inject at plan-time only — do not overwrite the user's raw requirement.
+        // Vertical skills overlay the requirement for planning fingerprints.
+        // Render must compose the same string or sidecars miss and the board
+        // is redesigned after the user already signed off on 「故事分镜」.
+        // Idea-driven films with no explicitly chosen skill get the built-in
+        // short-drama director plus in-frame scene craft (requirement overlay
+        // only, no style overlay), so they never override a user-picked
+        // vertical or the user's visual style.
+        let skill_ids = plan_skill_ids(&record);
         let skill_overlay = self.skills.compose_for_plan(
             record.workflow,
-            &record.vertical_skill_ids,
+            &skill_ids,
             &record.user_requirement,
             &record.style,
         )?;
+        let _ = crate::session::write_json_artifact(
+            &work.join("director_spec.json"),
+            &skill_overlay.director,
+        )
+        .await;
         if !skill_overlay.applied_skill_ids.is_empty() {
             let _ = crate::session::write_text_artifact(
                 &work.join("vertical_skills.txt"),
@@ -1104,18 +1325,12 @@ impl VimaxService {
             )
             .await;
         }
-        let req_base = crate::planning::with_language_lock(
-            &skill_overlay.user_requirement,
-            &lang_sources,
+        let (req, style_s) = requirement_and_style_from_overlay(
+            &record,
+            &skill_overlay,
+            backends.clip,
+            target_secs,
         );
-        let req = match record.workflow {
-            WorkflowKind::Script2Video
-            | WorkflowKind::Idea2Video
-            | WorkflowKind::Novel2Video => {
-                crate::planning::enrich_requirement_for_film(&req_base, target_secs)
-            }
-            WorkflowKind::Action2Video => req_base,
-        };
         // Persist an explicit budget only. Agent mode omits duration so ViMax-style
         // planning lets the model size the film from the story.
         if let Some(target_secs) = target_secs {
@@ -1130,15 +1345,6 @@ impl VimaxService {
                     .update_fields(id, |r| r.target_duration_secs = target_secs);
             }
         }
-        let style_s = crate::planning::resolve_visual_style(if skill_overlay.style.is_empty() {
-            if record.style.is_empty() {
-                ""
-            } else {
-                record.style.as_str()
-            }
-        } else {
-            skill_overlay.style.as_str()
-        });
         let _ = crate::session::write_text_artifact(&work.join("style.txt"), &style_s).await;
         // Keep session field in sync when client omitted style (store base style, not overlays).
         if record.style.is_empty() && skill_overlay.style.is_empty() {
@@ -1219,9 +1425,10 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.to_string()).or_default();
+            let st = live_status(&self.index, &mut map, id);
             st.progress = 100.0;
             st.emit("planned", "规划完成，可以开始渲染", None);
+            persist_run_status(&self.index, id, st);
         }
         tracing::info!(
             phase = "plan_total",
@@ -1244,6 +1451,7 @@ impl VimaxService {
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(st) = map.get_mut(id) {
                 st.cover = Some(c);
+                persist_run_status(&self.index, id, st);
             }
         }
         Ok(())
@@ -1291,12 +1499,18 @@ impl VimaxService {
             )
             .await;
         }
-        let req = record.user_requirement.clone();
-        let style_s = crate::planning::resolve_visual_style(if record.style.is_empty() {
-            ""
-        } else {
-            record.style.as_str()
-        });
+        let skill_overlay = self.skills.compose_for_plan(
+            record.workflow,
+            &plan_skill_ids(&record),
+            &record.user_requirement,
+            &record.style,
+        )?;
+        let (req, style_s) = requirement_and_style_from_overlay(
+            &record,
+            &skill_overlay,
+            backends.clip,
+            target_secs,
+        );
         let _ = crate::session::write_text_artifact(&work.join("style.txt"), &style_s).await;
         let progress = progress_callback(Arc::clone(self), id);
 
@@ -1350,7 +1564,7 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.to_string()).or_default();
+            let st = live_status(&self.index, &mut map, id);
             st.final_video = Some(rel.clone());
             if let Some(c) = &cover_rel {
                 st.cover = Some(c.clone());
@@ -1359,6 +1573,7 @@ impl VimaxService {
             st.status = RunStatus::Succeeded;
             st.message = "render complete".into();
             st.emit("render_done", "render complete", None);
+            persist_run_status(&self.index, id, st);
         }
         let _ = self.index.update_fields(id, |r| {
             r.final_video = Some(rel);
@@ -1464,26 +1679,19 @@ fn resolve_fps_for_session(record: &SessionRecord, media: &nomi_config::MediaGen
 fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::ProgressCallback {
     let id = id.to_string();
     Arc::new(move |stage, message, meta| {
-        let credit_delta = meta.as_ref().and_then(|m| {
-            let credits = m.get("credits_consumed")?.as_i64().filter(|c| *c > 0)?;
-            let task_id = m.get("task_id")?.as_i64().filter(|t| *t > 0)?;
-            Some((task_id, credits))
-        });
+        let credit_delta = video_task_credit_delta(stage, meta.as_ref());
 
         let mut session_total: Option<i64> = None;
         if let Some((task_id, credits)) = credit_delta {
             let _ = svc.index.update_fields(&id, |r| {
-                if apply_video_task_credits(r, task_id, credits) {
-                    session_total = Some(r.credits_consumed);
-                } else {
-                    session_total = Some(r.credits_consumed);
-                }
+                let _ = apply_video_task_credits(r, task_id, credits);
+                session_total = Some(r.credits_consumed);
             });
         }
 
         {
             let mut map = svc.statuses.lock().unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.clone()).or_default();
+            let st = live_status(&svc.index, &mut map, &id);
             if let Some(pct) = meta
                 .as_ref()
                 .and_then(|m| m.get("progress"))
@@ -1495,6 +1703,9 @@ fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::Progr
                 st.credits_consumed = total;
             }
             st.emit(stage, message, meta.clone());
+            if stage != "video_poll" || session_total.is_some() {
+                persist_run_status(&svc.index, &id, st);
+            }
         }
         let _ = svc.index.update_fields(&id, |r| {
             r.stage = stage.to_string();

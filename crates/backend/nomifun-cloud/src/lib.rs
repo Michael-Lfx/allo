@@ -18,6 +18,7 @@ pub mod paths;
 pub mod platform;
 pub mod profile;
 pub mod provider_sync;
+pub mod resources;
 pub mod session;
 pub mod telemetry;
 pub mod token_store;
@@ -38,13 +39,16 @@ pub use auth::{
 pub use doctor::{DoctorReport, run_doctor};
 pub use error::{CloudError, ServerClientError};
 pub use flowy::{
-    ClawModelEntry, CreateVideoTaskResponse, CreditsBalance, CreditsCheckinResponse,
+    AvailableModelsClaw, ClawModelEntry, CreateVideoTaskResponse, CreditsBalance, CreditsCheckinResponse,
     FlowyApiClient, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
     MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, OssUploadResult,
     TurnCreditUsage, TurnCreditUsageCall, UserMe, VideoContentImage, VideoCreateParams,
-    VideoTaskRecord, clamp_minimax_h3_duration, is_minimax_h3_model, normalize_minimax_h3_resolution,
-    resolve_model_in_catalog, video_task_failure_message, DEFAULT_MINIMAX_H3_RESOLUTION,
-    MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS,
+    VideoTaskRecord, clamp_minimax_h3_duration, clamp_wan3_duration, is_minimax_h3_model,
+    is_wan3_model, normalize_minimax_h3_resolution, normalize_wan3_resolution,
+    resolve_model_in_catalog, video_task_failure_message, extract_provider_error_code,
+    film_telemetry_error, infer_film_failure_channel, DEFAULT_MINIMAX_H3_RESOLUTION,
+    DEFAULT_WAN3_RESOLUTION, MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS,
+    WAN3_DURATION_MAX, WAN3_DURATION_MIN, WAN3_RESOLUTIONS,
 };
 pub use llm::ServerLlmProvider;
 pub use profile::ProfileStore;

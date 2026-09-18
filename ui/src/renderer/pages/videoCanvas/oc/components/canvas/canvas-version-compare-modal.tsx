@@ -2,6 +2,7 @@ import { Button, Modal } from "antd";
 import { Check, Star } from "lucide-react";
 
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
@@ -18,7 +19,7 @@ export function CanvasVersionCompareModal({ open, versions, onClose, onSetPrimar
                             {node.metadata?.versionPrimary ? <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[var(--fs-tiny)] font-medium" style={{ color: theme.accent.primary }}><Check className="size-3" />主版本</span> : null}
                         </div>
                         <button type="button" className="block h-52 w-full overflow-hidden" style={{ background: theme.node.fill }} onClick={() => onFocus(node.id)}>
-                            {node.type === CanvasNodeType.Image && node.metadata?.content ? <img src={node.metadata.content} alt={node.title || "版本图片"} className="size-full object-contain" /> : node.type === CanvasNodeType.Video && node.metadata?.content ? <video src={node.metadata.content} className="size-full object-contain" muted preload="metadata" aria-label={node.title || "版本视频"} /> : <span className="grid size-full place-items-center px-4 text-center text-xs" style={{ color: theme.node.muted }}>点击定位到画布节点</span>}
+                            <VersionMediaThumb node={node} theme={theme} />
                         </button>
                         <div className="space-y-2 p-3 text-[var(--fs-label)]">
                             <Info label="模型" value={node.metadata?.model || "默认模型"} />
@@ -31,6 +32,13 @@ export function CanvasVersionCompareModal({ open, versions, onClose, onSetPrimar
             </div>
         </Modal>
     );
+}
+
+function VersionMediaThumb({ node, theme }: { node: CanvasNodeData; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    const mediaSrc = canvasNodeDisplayUrl(node);
+    if (node.type === CanvasNodeType.Image && mediaSrc) return <img src={mediaSrc} alt={node.title || "版本图片"} className="size-full object-contain" />;
+    if (node.type === CanvasNodeType.Video && mediaSrc) return <video src={mediaSrc} className="size-full object-contain" muted preload="metadata" aria-label={node.title || "版本视频"} />;
+    return <span className="grid size-full place-items-center px-4 text-center text-xs" style={{ color: theme.node.muted }}>点击定位到画布节点</span>;
 }
 
 function Info({ label, value }: { label: string; value: string }) {

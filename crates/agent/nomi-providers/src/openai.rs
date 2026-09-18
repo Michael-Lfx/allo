@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -6,7 +8,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use nomi_config::compat::{self, ProviderCompat};
-use nomi_types::llm::{LlmEvent, LlmRequest};
+use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use nomi_types::tool::{ToolDef, truncate_deferred_description};
 
@@ -25,6 +27,14 @@ pub struct OpenAIProvider {
     base_url: String,
     compat: ProviderCompat,
     sanitize_tool_schemas: AtomicBool,
+    /// Models whose tool-bearing requests must send `reasoning_effort: "none"`.
+    /// Learned from an explicit gateway rejection (Flowy Cloud: "Function tools
+    /// with reasoning_effort are not supported ... set reasoning_effort to
+    /// 'none'"). Tool-free requests never consult this set.
+    learned_effort_none: Mutex<HashSet<String>>,
+    /// Per-model output ceilings learned from `supported range` rejections.
+    /// Later requests send `min(requested, learned)`.
+    learned_output_caps: Mutex<HashMap<String, u32>>,
 }
 
 impl OpenAIProvider {
@@ -35,11 +45,42 @@ impl OpenAIProvider {
             base_url: base_url.to_string(),
             compat,
             sanitize_tool_schemas: AtomicBool::new(false),
+            learned_effort_none: Mutex::new(HashSet::new()),
+            learned_output_caps: Mutex::new(HashMap::new()),
         }
     }
 
     fn should_sanitize_tool_schemas(&self) -> bool {
         self.compat.sanitize_schema() || self.sanitize_tool_schemas.load(Ordering::Acquire)
+    }
+
+    fn requires_effort_none_with_tools(&self, model: &str) -> bool {
+        self.learned_effort_none
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(model)
+    }
+
+    fn remember_effort_none_for_tools(&self, model: &str) {
+        self.learned_effort_none
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(model.to_owned());
+    }
+
+    fn learned_output_cap(&self, model: &str) -> Option<u32> {
+        self.learned_output_caps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(model)
+            .copied()
+    }
+
+    fn remember_output_cap(&self, model: &str, cap: u32) {
+        self.learned_output_caps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(model.to_owned(), cap);
     }
 
     fn build_headers(&self, api_key: &str) -> Result<HeaderMap, ProviderError> {
@@ -92,16 +133,6 @@ impl OpenAIProvider {
         require_reasoning_content: bool,
     ) -> Vec<Value> {
         let mut result: Vec<Value> = Vec::new();
-
-        // Check if any assistant message in the conversation has thinking content.
-        // If so, DeepSeek API requires ALL assistant messages to include
-        // reasoning_content (even if empty string).
-        let has_any_thinking = messages.iter().any(|m| {
-            m.role == Role::Assistant
-                && m.content
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::Thinking { .. }))
-        });
 
         // System message first
         if !system.is_empty() {
@@ -245,10 +276,10 @@ impl OpenAIProvider {
                 Role::Assistant => {
                     let mut msg_json = json!({ "role": "assistant" });
 
-                    // Preserve reasoning_content for models with thinking mode
-                    // (e.g. DeepSeek Reasoner, Kimi K2.5). The API requires
-                    // ALL assistant messages to include reasoning_content once
-                    // any message in the conversation has it.
+                    // Include reasoning_content only for this message (or when
+                    // the provider requires a placeholder on every assistant).
+                    // Conversation-wide backfill would rewrite earlier assistant
+                    // JSON and bust the prefix cache from the first assistant.
                     let thinking: String = msg
                         .content
                         .iter()
@@ -262,7 +293,7 @@ impl OpenAIProvider {
                         .collect::<Vec<_>>()
                         .join("");
 
-                    if has_any_thinking || require_reasoning_content {
+                    if !thinking.is_empty() || require_reasoning_content {
                         // OpenCode's DeepSeek free endpoint rejects some
                         // multi-turn tool histories when an assistant turn has
                         // no reasoning_content. A single space is intentional:
@@ -428,6 +459,8 @@ impl OpenAIProvider {
         request: &LlmRequest,
         sanitize_tool_schemas: bool,
         include_stream_usage: bool,
+        force_effort_none: bool,
+        output_cap: Option<u32>,
     ) -> Value {
         let max_tokens_field = self
             .compat
@@ -449,6 +482,7 @@ impl OpenAIProvider {
             body["stream_options"] = json!({ "include_usage": true });
         }
         if let Some(limit) = request.max_tokens {
+            let limit = output_cap.map_or(limit, |cap| limit.min(cap));
             body[max_tokens_field] = json!(limit);
         }
 
@@ -463,8 +497,26 @@ impl OpenAIProvider {
             ));
         }
 
-        if let Some(effort) = &request.reasoning_effort {
+        if force_effort_none {
+            // The gateway requires an explicit `none` once it rejected the
+            // tools + effort combination, even when the caller never
+            // configured an effort for this model.
+            body["reasoning_effort"] = json!("none");
+        } else if let Some(effort) = &request.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
+        }
+
+        if let Some(thinking) = &request.thinking {
+            // DeepSeek / Minimax-style gateways default to chain-of-thought and
+            // only emit `content` after thinking is disabled; without this field
+            // the request silently leaves thinking ON and the answer may never
+            // land in `content` (empty completions). Mirrors `llm_chat.rs`.
+            body["thinking"] = json!(match thinking {
+                ThinkingConfig::Enabled { budget_tokens } => {
+                    json!({ "type": "enabled", "budget_tokens": budget_tokens })
+                }
+                ThinkingConfig::Disabled => json!({ "type": "disabled" }),
+            });
         }
 
         body
@@ -848,16 +900,28 @@ impl LlmProvider for OpenAIProvider {
         let mut sanitize_tool_schemas = self.should_sanitize_tool_schemas();
         let mut include_stream_usage = true;
         let mut learned_schema_fallback = false;
+        let mut force_effort_none = !request.tools.is_empty()
+            && self.requires_effort_none_with_tools(&request.model);
+        let mut learned_effort_fallback = false;
+        let mut output_cap = request
+            .max_tokens
+            .and_then(|_| self.learned_output_cap(&request.model));
+        let mut negotiated_output_cap: Option<u32> = None;
+        let initial_deadline = tokio::time::Instant::now() + crate::INITIAL_REQUEST_DEADLINE;
 
-        // Negotiate the two optional OpenAI extensions independently. A
-        // gateway can reject both stream usage metadata and rich tool schemas;
-        // a bounded loop lets us remove each incompatible extension once
-        // without retrying unrelated 4xx responses.
+        // Negotiate the four optional OpenAI extensions independently. A
+        // gateway can reject stream usage metadata, rich tool schemas, the
+        // tools + reasoning_effort combination, and an output ceiling above its
+        // supported range; a bounded loop lets us remove or lower each
+        // incompatible extension once without retrying unrelated 4xx
+        // responses.
         let (response, headers, body) = loop {
             let body = self.build_request_body(
                 request,
                 sanitize_tool_schemas,
                 include_stream_usage,
+                force_effort_none,
+                output_cap,
             );
             let max_tokens_field = self
                 .compat
@@ -886,12 +950,15 @@ impl LlmProvider for OpenAIProvider {
                 tool_count,
                 include_stream_usage,
                 sanitize_tool_schemas,
+                force_effort_none,
                 "outgoing request summary"
             );
 
-            match self
-                .send_initial_with_key_rotation(&client, &url, &body)
-                .await
+            match crate::send_with_deadline(
+                initial_deadline,
+                self.send_initial_with_key_rotation(&client, &url, &body),
+            )
+            .await
             {
                 Ok((response, headers)) => break (response, headers, body),
                 Err(error)
@@ -923,11 +990,56 @@ impl LlmProvider for OpenAIProvider {
                     sanitize_tool_schemas = true;
                     learned_schema_fallback = true;
                 }
+                Err(error)
+                    if !request.tools.is_empty()
+                        && !force_effort_none
+                        && error.is_tools_with_reasoning_effort_incompatible() =>
+                {
+                    tracing::warn!(
+                        target: "nomi_providers",
+                        provider = "openai",
+                        model = %request.model,
+                        "provider requires reasoning_effort='none' with function tools; retrying with effort disabled"
+                    );
+                    force_effort_none = true;
+                    learned_effort_fallback = true;
+                }
+                Err(error) if negotiated_output_cap.is_none() && request.max_tokens.is_some() => {
+                    let Some(rejected_cap) = error.output_limit_rejection() else {
+                        return Err(error);
+                    };
+                    let requested = request
+                        .max_tokens
+                        .expect("guarded by request.max_tokens.is_some()");
+                    // Compare against the ceiling actually sent, so a learned
+                    // cap above a smaller request cannot trigger a retry that
+                    // would resend the same body.
+                    let sent = output_cap.map_or(requested, |cap| requested.min(cap));
+                    if rejected_cap >= sent {
+                        return Err(error);
+                    }
+                    tracing::warn!(
+                        target: "nomi_providers",
+                        provider = "openai",
+                        model = %request.model,
+                        sent,
+                        negotiated = rejected_cap,
+                        "provider rejected an output ceiling above its supported range; retrying with the negotiated limit"
+                    );
+                    output_cap = Some(rejected_cap);
+                    negotiated_output_cap = Some(rejected_cap);
+                }
                 Err(error) => return Err(error),
             }
         };
         if learned_schema_fallback {
             self.sanitize_tool_schemas.store(true, Ordering::Release);
+        }
+        if learned_effort_fallback {
+            self.remember_effort_none_for_tools(&request.model);
+        }
+        if let Some(cap) = negotiated_output_cap {
+            self.remember_output_cap(&request.model, cap);
         }
 
         let (tx, rx) = mpsc::channel(64);
@@ -1485,9 +1597,17 @@ fn update_stream_usage(json: &Value, state: &mut StreamState) -> Result<(), Stri
 
     let base_prompt = optional_usage_u64(usage, "prompt_tokens")?.unwrap_or(state.input_tokens);
     let cache_hit = optional_usage_u64(usage, "prompt_cache_hit_tokens")?.unwrap_or(0);
-    state.input_tokens = base_prompt.checked_add(cache_hit).ok_or_else(|| {
-        "OpenAI-compatible provider returned overflowing prompt token usage".to_string()
-    })?;
+    // DeepSeek reports `prompt_tokens` as the full input (hit + miss) and
+    // `prompt_cache_hit_tokens` as a breakdown. Adding them double-counts
+    // cache hits and reports ~50% on a 99% prefix. Only add when hit is
+    // larger than prompt_tokens, which is the miss-only gateway shape.
+    state.input_tokens = if cache_hit > base_prompt {
+        base_prompt.checked_add(cache_hit).ok_or_else(|| {
+            "OpenAI-compatible provider returned overflowing prompt token usage".to_string()
+        })?
+    } else {
+        base_prompt
+    };
     state.output_tokens =
         optional_usage_u64(usage, "completion_tokens")?.unwrap_or(state.output_tokens);
 
@@ -1968,7 +2088,7 @@ mod tests {
         StreamState,
     };
     use crate::failed_sse_capture::FailedSseCaptureContext;
-    use nomi_types::llm::LlmEvent;
+    use nomi_types::llm::{LlmEvent, ThinkingConfig};
     use nomi_types::message::StopReason;
     use serde_json::json;
 
@@ -3206,6 +3326,8 @@ mod tests {
             &request,
             provider.should_sanitize_tool_schemas(),
             true,
+            false,
+            None,
         );
         let assistant = body["messages"]
             .as_array()
@@ -3233,11 +3355,54 @@ mod tests {
             &request,
             provider.should_sanitize_tool_schemas(),
             true,
+            false,
+            None,
         );
         assert!(
             body["messages"][0].get("reasoning_content").is_none(),
             "unrelated models must retain normal OpenAI message semantics"
         );
+    }
+
+    #[test]
+    fn thinking_does_not_backfill_reasoning_on_earlier_plain_assistants() {
+        use nomi_types::message::{ContentBlock, Message, Role};
+
+        let messages = vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text {
+                    text: "plain".into(),
+                }],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "ok".into() }],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        thinking: "secret".into(),
+                        signature: None,
+                    },
+                    ContentBlock::Text {
+                        text: "answer".into(),
+                    },
+                ],
+            ),
+        ];
+        let out = OpenAIProvider::build_messages(&messages, "", &openai_compat(), false);
+        let assistants: Vec<_> = out
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .collect();
+        assert_eq!(assistants.len(), 2);
+        assert!(
+            assistants[0].get("reasoning_content").is_none(),
+            "earlier plain assistants must keep their original JSON shape"
+        );
+        assert_eq!(assistants[1]["reasoning_content"], "secret");
     }
 
     #[tokio::test]
@@ -3343,7 +3508,7 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
         };
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["max_tokens"], 1024);
         assert!(body.get("max_completion_tokens").is_none());
     }
@@ -3366,9 +3531,36 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
         };
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["max_completion_tokens"], 2048);
         assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn test_output_cap_applies_to_dynamic_max_tokens_field() {
+        let compat = ProviderCompat {
+            max_tokens_field: Some("max_completion_tokens".into()),
+            ..Default::default()
+        };
+        let provider = OpenAIProvider::new("key", "http://localhost", compat);
+        let mut req = simple_request();
+        req.max_tokens = Some(200);
+        let body = provider.build_request_body(&req, false, true, false, Some(100));
+        assert_eq!(body["max_completion_tokens"], 100);
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn test_forced_effort_none_is_written_without_request_effort() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let req = simple_request();
+        assert!(req.reasoning_effort.is_none());
+
+        let body = provider.build_request_body(&req, false, true, true, None);
+        assert_eq!(
+            body["reasoning_effort"], "none",
+            "a gateway that demands effort=none for tools must receive it even when the caller configured no effort"
+        );
     }
 
     // --- temperature ---
@@ -3378,7 +3570,7 @@ mod tests {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let mut req = simple_request();
         req.temperature = Some(0.5);
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["temperature"], 0.5);
     }
 
@@ -3386,8 +3578,39 @@ mod tests {
     fn test_temperature_none_is_omitted() {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let req = simple_request();
-        let with_none = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let with_none = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert!(with_none.get("temperature").is_none());
+    }
+
+    // --- thinking ---
+
+    #[test]
+    fn test_thinking_disabled_is_serialized() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let mut req = simple_request();
+        req.thinking = Some(ThinkingConfig::Disabled);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+    }
+
+    #[test]
+    fn test_thinking_enabled_carries_budget() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let mut req = simple_request();
+        req.thinking = Some(ThinkingConfig::Enabled { budget_tokens: 8000 });
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        assert_eq!(
+            body["thinking"],
+            json!({ "type": "enabled", "budget_tokens": 8000 })
+        );
+    }
+
+    #[test]
+    fn test_thinking_none_is_omitted() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let req = simple_request();
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        assert!(body.get("thinking").is_none());
     }
 
     // --- merge_assistant_messages ---
@@ -3657,14 +3880,14 @@ mod tests {
 
         provider.sanitize_tool_schemas.store(true, Ordering::Release);
 
-        let unsanitized = provider.build_request_body(&request, false, true);
+        let unsanitized = provider.build_request_body(&request, false, true, false, None);
         assert!(
             unsanitized["tools"][0]["function"]["parameters"]
                 .get("oneOf")
                 .is_some()
         );
 
-        let sanitized = provider.build_request_body(&request, true, true);
+        let sanitized = provider.build_request_body(&request, true, true, false, None);
         assert!(
             sanitized["tools"][0]["function"]["parameters"]
                 .get("oneOf")
@@ -3674,14 +3897,27 @@ mod tests {
 
     #[test]
     fn usage_includes_prompt_cache_hit_tokens() {
-        // DeepSeek reports prompt_cache_hit_tokens separately;
-        // input_tokens should be the sum of prompt_tokens + prompt_cache_hit_tokens
+        // DeepSeek reports prompt_tokens as the full input (hit + miss).
+        // prompt_cache_hit_tokens is a breakdown, not an extra addend.
+        let mut state = StreamState::new();
+
+        let chunk = r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000000,"completion_tokens":100,"prompt_cache_hit_tokens":999500,"prompt_cache_miss_tokens":500}}"#;
+        let _ = parse_sse_chunk(chunk, &mut state, false);
+
+        assert_eq!(state.input_tokens, 1_000_000);
+        assert_eq!(state.cache_read_tokens, 999_500);
+        assert_eq!(state.output_tokens, 100);
+    }
+
+    #[test]
+    fn usage_adds_cache_hit_when_prompt_tokens_are_miss_only() {
         let mut state = StreamState::new();
 
         let chunk = r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":100,"prompt_cache_hit_tokens":999500}}"#;
         let _ = parse_sse_chunk(chunk, &mut state, false);
 
         assert_eq!(state.input_tokens, 1_000_000);
+        assert_eq!(state.cache_read_tokens, 999_500);
         assert_eq!(state.output_tokens, 100);
     }
 

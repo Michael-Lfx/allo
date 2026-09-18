@@ -1112,7 +1112,7 @@ cargo clippy -p nomifun-mcp -p nomi-mcp -- -D warnings
 
 | 模块 | 实现 |
 |---|---|
-| `nomifun-db` | migration `052_oauth_client_registrations.sql`（registrations 表 + `oauth_tokens.registration_id/principal_id` 逻辑关联列 + 索引）；`OAuthClientRegistrationRow`、`IOAuthClientRegistrationRepository`、`SqliteOAuthClientRegistrationRepository`（身份键 upsert/查询/删除 + 单测）；`OAuthTokenRow` 扩展、`IOAuthTokenRepository::get_by_registration`、`UpsertOAuthTokenParams` 增 `registration_id/principal_id`；v3 schema 注册（`PRODUCT_TABLES`/`NON_REFERENCE_ID_COLUMNS`） |
+| `nomifun-db` | migration `058_oauth_client_registrations.sql`（registrations 表 + `oauth_tokens.registration_id/principal_id` 逻辑关联列 + 索引）；`OAuthClientRegistrationRow`、`IOAuthClientRegistrationRepository`、`SqliteOAuthClientRegistrationRepository`（身份键 upsert/查询/删除 + 单测）；`OAuthTokenRow` 扩展、`IOAuthTokenRepository::get_by_registration`、`UpsertOAuthTokenParams` 增 `registration_id/principal_id`；v3 schema 注册（`PRODUCT_TABLES`/`NON_REFERENCE_ID_COLUMNS`） |
 | `nomifun-mcp` | `MCP_PROTOCOL_VERSION` 常量（与 `nomi-mcp::MCP_PROTOCOL_VERSION` 一致，由 `nomifun-ai-agent` 断言）；`discover_endpoints` → `ResolvedOAuthServer`（RFC 9728 `resource` + issuer）；**未认证 initialize POST 回退发现**；`resolve_client_identity`（预注册 > 持久化动态注册 > RFC 7591 > `pre_registered_client_required`）；`register_client` 持久化 + 错误分类（`redirect_uri_not_allowed`/`dynamic_registration_failed`/`invalid_registration_response`）；exchange/refresh 绑定原 registration（refresh 不再回退默认 client）；固定 loopback redirect 校验（host/port/path）；callback path 校验；`McpError` 结构化错误码 + `oauth_error_code()`；服务注解 |
 | `nomifun-api-types` | `OAuthStatusResponse.state`（§8 状态机枚举）保留 `authenticated` 兼容；`OAuthLoginResponse.error_code` |
 | `nomifun-app` | `services.rs` 注入 `SqliteOAuthClientRegistrationRepository` |

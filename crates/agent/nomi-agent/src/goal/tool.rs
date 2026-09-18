@@ -9,6 +9,14 @@ use nomi_types::tool::{JsonSchema, ToolResult};
 
 use crate::goal::state::{GoalState, GoalStatus};
 
+fn evidence_hash(text: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    text.trim().hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Lets the model declare the terminal state of the current session goal.
 /// Engine-internal (no `RequirementSink`) — deliberately NOT reusing
 /// `requirement_complete`, which routes to the AutoWork runner.
@@ -77,9 +85,34 @@ impl Tool for UpdateGoalTool {
 
         {
             let mut g = self.state.lock().unwrap();
-            // Only Active -> terminal; re-calling on a terminal goal is a no-op (idempotent).
-            if g.status == GoalStatus::Active {
-                g.status = status;
+            if g.status != GoalStatus::Active {
+                // Idempotent on an already-terminal goal.
+            } else if status == GoalStatus::Complete {
+                if !g.satisfies_complete_gate() {
+                    return ToolResult::error(
+                        "update_goal complete rejected: no mechanical evidence yet \
+                         (need a successful verification command or a workspace change). \
+                         Keep working; do not mark complete from prose alone.",
+                    );
+                }
+                g.status = GoalStatus::Complete;
+            } else if status == GoalStatus::Blocked {
+                let hash = evidence_hash(evidence);
+                if g.blocked_evidence_hash == Some(hash) {
+                    g.blocked_evidence_repeats = g.blocked_evidence_repeats.saturating_add(1);
+                } else {
+                    g.blocked_evidence_hash = Some(hash);
+                    g.blocked_evidence_repeats = 1;
+                }
+                if g.blocked_evidence_repeats < g.blocked_threshold {
+                    return ToolResult::error(format!(
+                        "update_goal blocked not yet accepted: the same blocker must repeat \
+                         {} more time(s) (threshold {}). Keep working or collect stronger evidence.",
+                        g.blocked_threshold - g.blocked_evidence_repeats,
+                        g.blocked_threshold
+                    ));
+                }
+                g.status = GoalStatus::Blocked;
             }
         }
 
@@ -115,6 +148,7 @@ mod tests {
     #[tokio::test]
     async fn complete_sets_state() {
         let (tool, state) = tool_with_state();
+        state.lock().unwrap().last_verify_ok = true;
         let r = tool.execute(json!({ "status": "complete" })).await;
         assert!(!r.is_error);
         assert_eq!(state.lock().unwrap().status, GoalStatus::Complete);
@@ -122,9 +156,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_without_evidence_is_rejected() {
+        let (tool, state) = tool_with_state();
+        let r = tool.execute(json!({ "status": "complete" })).await;
+        assert!(r.is_error);
+        assert_eq!(state.lock().unwrap().status, GoalStatus::Active);
+    }
+
+    #[tokio::test]
     async fn blocked_sets_state() {
         let (tool, state) = tool_with_state();
+        state.lock().unwrap().blocked_threshold = 1;
         let r = tool.execute(json!({ "status": "blocked", "evidence": "stuck on auth" })).await;
+        assert!(!r.is_error);
+        assert_eq!(state.lock().unwrap().status, GoalStatus::Blocked);
+    }
+
+    #[tokio::test]
+    async fn blocked_requires_repeated_evidence() {
+        let (tool, state) = tool_with_state();
+        let r = tool.execute(json!({ "status": "blocked", "evidence": "same wall" })).await;
+        assert!(r.is_error);
+        assert_eq!(state.lock().unwrap().status, GoalStatus::Active);
+        assert_eq!(state.lock().unwrap().blocked_evidence_repeats, 1);
+        let r = tool.execute(json!({ "status": "blocked", "evidence": "same wall" })).await;
+        assert!(r.is_error);
+        let r = tool.execute(json!({ "status": "blocked", "evidence": "same wall" })).await;
         assert!(!r.is_error);
         assert_eq!(state.lock().unwrap().status, GoalStatus::Blocked);
     }
@@ -139,6 +196,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_is_idempotent() {
         let (tool, state) = tool_with_state();
+        state.lock().unwrap().last_verify_ok = true;
         let _ = tool.execute(json!({ "status": "complete" })).await;
         // A later "blocked" must not override a reached "complete".
         let _ = tool.execute(json!({ "status": "blocked" })).await;

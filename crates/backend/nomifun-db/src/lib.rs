@@ -13,7 +13,8 @@ pub use database::{
 };
 pub use error::DbError;
 pub use id_schema_contract::{
-    NON_REFERENCE_ID_COLUMNS, validate_id_data_contract, validate_id_schema_contract,
+    NON_REFERENCE_ID_COLUMNS, repair_logical_reference_orphans, validate_id_data_contract,
+    validate_id_schema_contract,
 };
 pub use models::{
     AppServerIdempotencyReceiptRow, AppServerIdempotencyScope,
@@ -67,7 +68,8 @@ pub use repository::customer_service::{
 };
 pub use repository::SqliteCustomerServiceRepository;
 pub use repository::conversation::{
-    ConversationDeliveryReceiptClaim, ConversationFilters, ConversationMessageProjection,
+    is_resumable_source_error_code, ConversationDeliveryReceiptClaim, ConversationFilters,
+    ConversationMessageProjection,
     ConversationSkillLoadCommit, EditResubmitStateSnapshot,
     ConversationTurnAdmissionState,
     ConversationRowUpdate, MessageDayBucket, MessageRowUpdate, MessageSearchRow, SortOrder,
@@ -85,7 +87,8 @@ pub use repository::mcp_server::{CreateMcpServerParams, UpdateMcpServerParams};
 pub use repository::oauth_client_registration::UpsertOAuthClientRegistrationParams;
 pub use repository::oauth_token::UpsertOAuthTokenParams;
 pub use repository::provider::{
-    CreateProviderParams, FLOWY_CATALOG_CREDIT_RATE_PARAM, FLOWY_CATALOG_MAX_TOKENS_PARAM,
+    CreateProviderParams, FLOWY_CATALOG_AUTO_TIER_PARAM, FLOWY_CATALOG_CREDIT_RATE_PARAM,
+    FLOWY_CATALOG_FAMILY_PARAM, FLOWY_CATALOG_MAX_TOKENS_PARAM,
     FLOWY_CATALOG_REASONING_EFFORT_PARAM, ProviderModelProfileSeed, UpdateProviderParams,
 };
 pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentParams};

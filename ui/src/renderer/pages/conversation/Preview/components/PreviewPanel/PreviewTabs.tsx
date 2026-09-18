@@ -1,5 +1,5 @@
 import { iconColors } from '@/renderer/styles/colors';
-import { Branch, Change, ChartHistogram, Close, FileText, FolderOpen, Plus, Terminal, WebPage } from '@icon-park/react';
+import { Branch, Change, ChartHistogram, Close, FileText, FolderOpen, ListCheckbox, Plus, Terminal, WebPage } from '@icon-park/react';
 import { Dropdown, Menu } from '@arco-design/web-react';
 import { IconShrink } from '@arco-design/web-react/icon';
 import React from 'react';
@@ -129,6 +129,8 @@ const TabKindIcon: React.FC<{ tab: PreviewTab }> = ({ tab }) => {
           return <ChartHistogram theme='outline' size={12} fill='currentColor' />;
         case 'agent-execution':
           return <Branch theme='outline' size={12} fill='currentColor' />;
+        case 'conversation-plan':
+          return <ListCheckbox theme='outline' size={12} fill='currentColor' />;
         default:
           return <FolderOpen theme='outline' size={12} fill='currentColor' />;
       }

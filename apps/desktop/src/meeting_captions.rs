@@ -10,7 +10,7 @@ use tracing::warn;
 pub const MEETING_CAPTIONS_LABEL: &str = "meeting-captions";
 
 const CAPTION_WIDTH: u32 = 720;
-const CAPTION_HEIGHT: u32 = 96;
+const CAPTION_HEIGHT: u32 = 128;
 const MARGIN_LOGICAL: f64 = 24.0;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

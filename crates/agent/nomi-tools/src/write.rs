@@ -114,6 +114,7 @@ impl Tool for WriteTool {
                 images: Vec::new(),
             };
         };
+        let content = crate::anchors::strip_copied_read_prefixes(content);
 
         // Resolve a relative file_path against the session working directory
         // (matching ReadTool/Grep/Glob/Bash) before any filesystem use — so a
@@ -174,7 +175,7 @@ impl Tool for WriteTool {
 
         // Write atomically: write to temp file, then rename
         let tmp_path = format!("{}.tmp.{}", file_path, std::process::id());
-        if let Err(e) = std::fs::write(&tmp_path, content) {
+        if let Err(e) = std::fs::write(&tmp_path, &content) {
             return ToolResult {
                 content: format!("Failed to write file: {}", e),
                 is_error: true,
@@ -185,7 +186,7 @@ impl Tool for WriteTool {
         if let Err(e) = std::fs::rename(&tmp_path, file_path) {
             // Fallback: direct write if rename fails (cross-device)
             let _ = std::fs::remove_file(&tmp_path);
-            if let Err(e) = std::fs::write(file_path, content) {
+            if let Err(e) = std::fs::write(file_path, &content) {
                 return ToolResult {
                     content: format!("Failed to write file: {}", e),
                     is_error: true,
@@ -193,7 +194,7 @@ impl Tool for WriteTool {
                 };
             }
             if let Some(cache_arc) = &self.file_cache {
-                update_cache_after_write(cache_arc, path, content);
+                update_cache_after_write(cache_arc, path, &content);
             }
 
             return ToolResult {
@@ -207,7 +208,7 @@ impl Tool for WriteTool {
         }
 
         if let Some(cache_arc) = &self.file_cache {
-            update_cache_after_write(cache_arc, path, content);
+            update_cache_after_write(cache_arc, path, &content);
         }
 
         let line_count = content.lines().count();

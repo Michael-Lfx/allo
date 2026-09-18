@@ -1,0 +1,628 @@
+/* Shared quiet overlay chrome — canvas editor + video-generation home/studio. */
+
+.canvas-overlay {
+    border-radius: var(--r-lg, 12px);
+    border-width: 1px;
+    border-style: solid;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 10px 32px rgba(15, 23, 42, 0.14);
+}
+
+.canvas-menu-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.2;
+    outline: none;
+}
+
+.canvas-menu-row:hover:not(:disabled),
+.canvas-menu-row:focus-visible:not(:disabled),
+.canvas-menu-row[data-active] {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.canvas-menu-row:disabled {
+    cursor: not-allowed;
+    opacity: 0.35;
+}
+
+.canvas-menu-row[data-danger] {
+    color: var(--dock-command-danger, rgb(var(--danger-6, 245 63 63)));
+}
+
+.canvas-menu-row-icon {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    place-items: center;
+    opacity: 0.72;
+}
+
+.canvas-menu-row-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.canvas-create-command-icon {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    place-items: center;
+    overflow: visible;
+    opacity: 0.72;
+}
+
+.group:hover .canvas-create-command-icon,
+.group:focus-visible .canvas-create-command-icon {
+    opacity: 1;
+}
+
+.canvas-create-command-icon svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+    overflow: visible;
+    stroke: currentColor;
+}
+
+.canvas-create-command-icon.is-resource svg {
+    width: 14px;
+    height: 14px;
+}
+
+.canvas-menu-row-detail {
+    display: block;
+    margin-top: 1px;
+    font-size: var(--fs-label, 11px);
+    font-weight: 400;
+    line-height: 1.25;
+    opacity: 0.42;
+    white-space: normal;
+}
+
+.canvas-menu-row-shortcut {
+    font-size: var(--fs-label, 11px);
+    font-weight: 400;
+    opacity: 0.42;
+}
+
+.canvas-menu-row-badge {
+    font-size: var(--fs-label, 11px);
+    font-weight: 600;
+    opacity: 0.55;
+}
+
+.canvas-menu-separator {
+    height: 1px;
+    margin: 4px 8px;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.canvas-chrome-token {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 8px;
+    gap: 6px;
+    background: color-mix(
+        in srgb,
+        var(--workspace-surface-strong, var(--color-fill-2, #f2f3f5)) 94%,
+        var(--workspace-accent, rgb(var(--primary-6, 22 93 255))) 6%
+    );
+    color: inherit;
+    font: inherit;
+    font-size: var(--fs-label, 11px);
+    line-height: 1;
+    cursor: pointer;
+    outline: none;
+}
+
+.canvas-chrome-token:hover,
+.canvas-chrome-token:focus-visible,
+.canvas-chrome-token[aria-expanded="true"],
+.canvas-chrome-token[aria-pressed="true"] {
+    background: color-mix(
+        in srgb,
+        var(--workspace-surface-strong, var(--color-fill-2, #f2f3f5)) 86%,
+        var(--workspace-accent, rgb(var(--primary-6, 22 93 255))) 14%
+    );
+}
+
+.canvas-chrome-token.is-icon {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    line-height: 0;
+    justify-content: center;
+}
+
+.canvas-chrome-token.is-icon svg {
+    display: block;
+    flex: none;
+}
+
+.canvas-chrome-token:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
+/* App dark mode is data-theme / arco-theme; canvas `--workspace-surface-strong` stays light without html.dark. */
+[data-theme='dark'] .canvas-chrome-token,
+body[arco-theme='dark'] .canvas-chrome-token {
+    background: color-mix(
+        in srgb,
+        var(--color-bg-2) 94%,
+        var(--color-text-1) 6%
+    );
+}
+
+[data-theme='dark'] .canvas-chrome-token:hover,
+[data-theme='dark'] .canvas-chrome-token:focus-visible,
+[data-theme='dark'] .canvas-chrome-token[aria-expanded="true"],
+[data-theme='dark'] .canvas-chrome-token[aria-pressed="true"],
+body[arco-theme='dark'] .canvas-chrome-token:hover,
+body[arco-theme='dark'] .canvas-chrome-token:focus-visible,
+body[arco-theme='dark'] .canvas-chrome-token[aria-expanded="true"],
+body[arco-theme='dark'] .canvas-chrome-token[aria-pressed="true"] {
+    background: color-mix(
+        in srgb,
+        var(--color-bg-2) 86%,
+        var(--color-text-1) 14%
+    );
+}
+
+.canvas-composer-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border-radius: var(--r-lg, 12px);
+    border-width: 1px;
+    border-style: solid;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+.canvas-composer-field {
+    min-height: 112px;
+    border-radius: var(--r-md, 8px);
+    outline: none;
+}
+
+.canvas-composer-footer {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 4px;
+}
+
+.canvas-composer-pill {
+    display: inline-flex;
+    height: 28px;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 10px 0 8px;
+    border: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, currentColor 7%, transparent);
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 590;
+    letter-spacing: -0.01em;
+    line-height: 1;
+    cursor: pointer;
+    outline: none;
+    transition: background-color 120ms ease, color 120ms ease, transform 90ms ease;
+}
+
+.canvas-composer-pill svg {
+    display: block;
+    flex: none;
+    width: 13px;
+    height: 13px;
+    opacity: 0.88;
+}
+
+.canvas-composer-pill:hover,
+.canvas-composer-pill:focus-visible {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.canvas-composer-pill:active {
+    transform: scale(0.97);
+}
+
+.canvas-composer-pill[aria-expanded="true"] {
+    background: color-mix(in srgb, var(--workspace-accent, rgb(var(--primary-6, 22 93 255))) 16%, transparent);
+    color: var(--workspace-accent, rgb(var(--primary-6, 22 93 255)));
+}
+
+.canvas-craft-token-chip {
+    display: inline-flex;
+    max-width: 13rem;
+    height: 32px;
+    align-items: center;
+    gap: 7px;
+    overflow: hidden;
+    padding: 2px 4px 2px 2px;
+    border: 1px solid;
+    border-radius: 8px;
+    box-shadow: 0 0.5px 1px color-mix(in srgb, currentColor 10%, transparent);
+    user-select: none;
+}
+
+.canvas-craft-token-chip--inline {
+    margin: 0 3px;
+    vertical-align: middle;
+}
+
+.canvas-craft-token-chip-remove {
+    display: grid;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    place-items: center;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.4;
+    cursor: pointer;
+}
+
+.canvas-craft-token-chip-remove:hover,
+.canvas-craft-token-chip-remove:focus-visible {
+    opacity: 0.92;
+    background: color-mix(in srgb, currentColor 10%, transparent);
+    outline: none;
+}
+
+.canvas-send-token {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    place-items: center;
+    cursor: pointer;
+    outline: none;
+    box-shadow:
+        0 0.5px 0.5px color-mix(in srgb, currentColor 22%, transparent),
+        0 1px 2px color-mix(in srgb, #000 10%, transparent);
+    transition: transform 120ms ease, opacity 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.canvas-send-token:hover:not(:disabled) {
+    transform: scale(1.04);
+}
+
+.canvas-send-token:active:not(:disabled) {
+    transform: scale(0.94);
+}
+
+.canvas-send-token:focus-visible {
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 28%, transparent);
+}
+
+.canvas-send-token:disabled,
+.canvas-send-token.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+    box-shadow: none;
+    transform: none;
+}
+
+.canvas-send-token-stop {
+    width: 10px;
+    height: 10px;
+    border-radius: 2.5px;
+    background: currentColor;
+}
+
+.canvas-sheet-root {
+    position: fixed;
+    inset: 0;
+    z-index: 1100;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+}
+
+.canvas-sheet-mask {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: color-mix(in srgb, #0f172a 42%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    cursor: default;
+}
+
+.canvas-sheet {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.canvas-sheet-header,
+.canvas-sheet-footer {
+    display: flex;
+    min-height: 44px;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    border-bottom-width: 1px;
+    border-bottom-style: solid;
+    padding: 8px 12px;
+}
+
+.canvas-sheet-footer {
+    justify-content: flex-end;
+    border-bottom: 0;
+    border-top-width: 1px;
+    border-top-style: solid;
+}
+
+.canvas-sheet-body {
+    min-height: 0;
+    flex: 1;
+    overflow: auto;
+    padding: 12px;
+}
+
+.canvas-sheet-btn {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    font: inherit;
+    font-size: var(--fs-label, 11px);
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    outline: none;
+}
+
+.canvas-sheet-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
+.canvas-sheet-input {
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, currentColor 6%, transparent);
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+}
+
+.canvas-sheet-input:focus-visible {
+    border-color: color-mix(in srgb, currentColor 42%, transparent);
+}
+
+.canvas-toggle {
+    position: relative;
+    width: 44px;
+    height: 28px;
+    flex: none;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    cursor: pointer;
+    outline: none;
+}
+
+.canvas-toggle-knob {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.24);
+    transition: transform 120ms ease;
+}
+
+.canvas-toggle-knob[data-on] {
+    transform: translateX(16px);
+}
+
+.canvas-range {
+    width: 100%;
+    height: 28px;
+    margin: 0;
+    cursor: pointer;
+    accent-color: inherit;
+}
+
+.canvas-settings-section {
+    padding-bottom: 10px;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.canvas-settings-section:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+}
+
+.canvas-camera-trigger[aria-pressed="true"],
+.canvas-camera-trigger[aria-expanded="true"] {
+    color: var(--workspace-accent, rgb(var(--primary-6, 22 93 255)));
+}
+
+.canvas-camera-panel {
+    min-width: 0;
+}
+
+.canvas-camera-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 2px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.canvas-camera-close {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.45;
+    cursor: pointer;
+}
+
+.canvas-camera-close:hover,
+.canvas-camera-close:focus-visible {
+    opacity: 0.95;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    outline: none;
+}
+
+.canvas-camera-deck {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    padding: 4px 0 8px;
+}
+
+.canvas-camera-col {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 8px 4px;
+    border-right: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.canvas-camera-col:last-child {
+    border-right: 0;
+}
+
+.canvas-camera-chevron {
+    display: grid;
+    width: 28px;
+    height: 18px;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    opacity: 0.32;
+    cursor: pointer;
+}
+
+.canvas-camera-chevron svg {
+    width: 14px;
+    height: 14px;
+}
+
+.canvas-camera-chevron:hover,
+.canvas-camera-chevron:focus-visible {
+    opacity: 0.88;
+    outline: none;
+}
+
+.canvas-camera-peek {
+    display: block;
+    height: 14px;
+    max-width: 100%;
+    overflow: hidden;
+    margin-bottom: 4px;
+    color: inherit;
+    font-size: 10px;
+    line-height: 14px;
+    letter-spacing: 0.08em;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.28;
+}
+
+.canvas-camera-card {
+    display: flex;
+    width: 100%;
+    height: 112px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 6px 10px;
+    border-radius: 18px;
+    background: color-mix(in srgb, currentColor 6%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 7%, transparent);
+}
+
+.canvas-camera-card-label {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    opacity: 0.45;
+}
+
+.canvas-camera-card-art {
+    display: grid;
+    height: 68px;
+    place-items: center;
+    color: inherit;
+}
+
+.canvas-camera-caption {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    min-height: 32px;
+    margin-top: 8px;
+    font-size: 11px;
+    line-height: 16px;
+    text-align: center;
+    opacity: 0.62;
+}
+
+.canvas-camera-power {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 4px 4px 0;
+    font-size: 12px;
+    opacity: 0.72;
+}

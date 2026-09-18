@@ -1,22 +1,29 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { App, Button, Dropdown, Input, Modal, Segmented, Tag } from "antd";
-import { ChevronDown, Ellipsis, Lock, Plus, Settings2, Unlock } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
+import { App } from "antd";
+import { ChevronDown, Ellipsis, Lock, Plus, Settings2, Unlock, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { ASSET_CATEGORY_OPTIONS } from "@oc/lib/asset-category";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
-import { defaultToolbarPrefs, readToolbarPrefs, resolveToolbarTools, type ToolContext, type ToolbarHandlers } from "@oc/lib/canvas/tool-registry";
+import { resolveToolbarTools, type ToolContext, type ToolbarHandlers } from "@oc/lib/canvas/tool-registry";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { canvasNodeAssetCategory } from "@oc/lib/canvas/canvas-node-asset";
+import { anchoredOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { getNodeLabel } from "@oc/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@oc/lib/image-utils";
-import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError, localizeGenerationErrorText } from "@oc/lib/generation-error";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { useCopyText } from "@oc/hooks/use-copy-text";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode, type ViewportTransform } from "@oc/types/canvas";
+import { CanvasHoverHint, CanvasMenuRow, CanvasSheet, CanvasSheetButton, overlayPanelStyle, useAnchoredOverlay } from "./canvas-overlay";
+import { ChoiceChip } from "@oc/components/generation-settings-chrome";
 import { ImageToolSettingsModal } from "./canvas-image-toolbar-settings-modal";
-import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, isImageQuickToolId, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
+import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, imageDockVisibleIds, isImageQuickToolId, readImageQuickToolsConfig, resolveImageDockLayout, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
+import { readCanvasNodeToolbarAnchor } from "./canvas-node-toolbar-anchor";
+import { resolveNodeDockPrimaryIds } from "./canvas-node-toolbar-layout";
 
 type CanvasNodeToolbarProps = {
     node: CanvasNodeData | null;
@@ -40,10 +47,9 @@ type CanvasNodeToolbarProps = {
     onCrop: (node: CanvasNodeData) => void;
     onSplit: (node: CanvasNodeData) => void;
     onUpscale: (node: CanvasNodeData) => void;
-    onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
-    onExtractVideoLastFrame: (node: CanvasNodeData) => void;
+    onExtractVideoFrames: (node: CanvasNodeData) => void;
     extractingVideoFrame: boolean;
     onReversePrompt: (node: CanvasNodeData) => void;
     onRetry: (node: CanvasNodeData) => void;
@@ -51,21 +57,14 @@ type CanvasNodeToolbarProps = {
     onToggleLocked: (node: CanvasNodeData) => void;
     onSubtitles: (node: CanvasNodeData) => void;
     onTimeline: (node: CanvasNodeData) => void;
+    onOpenDrawing: (node: CanvasNodeData) => void;
     onDelete: (node: CanvasNodeData) => void;
     workspaceMode?: CanvasWorkspaceMode;
 };
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
 
-const assetCategoryOptions: Array<{ value: CanvasAssetCategory; label: string }> = [
-    { value: "character", get label() { return canvasT("videoCanvas.menu.categoryCharacter", "角色"); } },
-    { value: "environment", get label() { return canvasT("videoCanvas.menu.categoryEnvironment", "场景"); } },
-    { value: "wardrobe", get label() { return canvasT("videoCanvas.menu.categoryWardrobe", "服饰"); } },
-    { value: "prop", get label() { return canvasT("videoCanvas.menu.categoryProp", "道具"); } },
-    { value: "weapon", get label() { return canvasT("videoCanvas.menu.categoryWeapon", "武器"); } },
-    { value: "style", get label() { return canvasT("videoCanvas.menu.categoryStyle", "画风"); } },
-    { value: "other", get label() { return canvasT("videoCanvas.menu.categoryOther", "其他"); } },
-];
+const assetCategoryOptions = ASSET_CATEGORY_OPTIONS;
 
 type ToolbarTool = {
     id: string;
@@ -103,10 +102,9 @@ export function CanvasNodeToolbar({
     onCrop,
     onSplit,
     onUpscale,
-    onSuperResolve,
     onAngle,
     onViewImage,
-    onExtractVideoLastFrame,
+    onExtractVideoFrames,
     extractingVideoFrame,
     onReversePrompt,
     onRetry,
@@ -114,27 +112,30 @@ export function CanvasNodeToolbar({
     onToggleLocked,
     onSubtitles,
     onTimeline,
+    onOpenDrawing,
     onDelete,
     workspaceMode = "professional",
 }: CanvasNodeToolbarProps) {
     useTranslation();
     const [quickImageToolIds, setQuickImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
     const [draftImageToolIds, setDraftImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
-    const [showDockLabels, setShowDockLabels] = useState(true);
-    const [draftShowDockLabels, setDraftShowDockLabels] = useState(true);
+    const [showDockLabels, setShowDockLabels] = useState(() => {
+        try {
+            return window.localStorage.getItem(NODE_DOCK_LABELS_STORAGE_KEY) === "1";
+        } catch {
+            return false;
+        }
+    });
+    const [draftShowDockLabels, setDraftShowDockLabels] = useState(false);
     const [imageToolSettingsOpen, setImageToolSettingsOpen] = useState(false);
-    const [imageToolMenuOpen, setImageToolMenuOpen] = useState(false);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
     const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
     const toolbarRef = useRef<HTMLDivElement>(null);
-    // Dropdown 关闭与菜单点击处于同一事件批次，ref 用来同步守住即将打开的 Modal，避免工具栏先被卸载。
     const imageToolSettingsOpenRef = useRef(false);
-    const imageToolMenuOpenRef = useRef(false);
     const { message } = App.useApp();
     const copyText = useCopyText();
     const themeName = useThemeStore((state) => state.theme);
     const theme = canvasThemes[themeName];
-    const simpleMode = workspaceMode === "simple";
 
     useEffect(() => {
         try {
@@ -148,51 +149,37 @@ export function CanvasNodeToolbar({
     }, []);
 
     useEffect(() => {
-        setShowDockLabels(window.localStorage.getItem(NODE_DOCK_LABELS_STORAGE_KEY) !== "0");
-    }, []);
-
-    useEffect(() => {
         imageToolSettingsOpenRef.current = false;
-        imageToolMenuOpenRef.current = false;
         setImageToolSettingsOpen(false);
-        setImageToolMenuOpen(false);
         setOpenMenuId(null);
     }, [node?.id]);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
         if (!node || !container) {
-            setAnchor(null);
-            return;
-        }
-        const element = container.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
-        if (!element) {
-            setAnchor(null);
+            setAnchor((current) => (current === null ? current : null));
             return;
         }
         const update = () => {
-            const nodeRect = element.getBoundingClientRect();
-            const containerRect = container.getBoundingClientRect();
-            const preferredLeft = nodeRect.left - containerRect.left + nodeRect.width / 2;
-            const toolbarWidth = toolbarRef.current?.offsetWidth || 0;
-            const halfToolbar = toolbarWidth / 2;
-            const canClamp = toolbarWidth > 0 && toolbarWidth <= containerRect.width - 20;
-            const left = canClamp ? Math.min(Math.max(preferredLeft, halfToolbar + 10), containerRect.width - halfToolbar - 10) : preferredLeft;
-            // 外置标题固定占 24px，额外保留 6px 即可兼顾层级和名称编辑入口。
-            const top = nodeRect.top - containerRect.top - 30;
+            const { left, top } = readCanvasNodeToolbarAnchor({
+                node,
+                viewport,
+                container,
+                toolbarWidth: toolbarRef.current?.offsetWidth || 0,
+            });
             if (toolbarRef.current) {
                 toolbarRef.current.style.left = `${left}px`;
                 toolbarRef.current.style.top = `${top}px`;
-                return;
             }
-            setAnchor((current) => current?.left === left && current.top === top ? current : { left, top });
+            setAnchor((current) => (current?.left === left && current.top === top ? current : { left, top }));
         };
         update();
+        const element = container.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
         const resizeObserver = new ResizeObserver(update);
-        resizeObserver.observe(element);
         resizeObserver.observe(container);
+        if (element) resizeObserver.observe(element);
         if (toolbarRef.current) resizeObserver.observe(toolbarRef.current);
-        const viewportLayer = element.parentElement;
+        const viewportLayer = element?.parentElement;
         const mutationObserver = new MutationObserver(update);
         if (viewportLayer) mutationObserver.observe(viewportLayer, { attributes: true, attributeFilter: ["style"] });
         const unsubscribeViewport = subscribeCanvasViewportPreview(container, update);
@@ -203,25 +190,30 @@ export function CanvasNodeToolbar({
             unsubscribeViewport();
             window.removeEventListener("resize", update);
         };
-    }, [anchor === null, containerRef, node, showDockLabels, viewport.k, viewport.x, viewport.y]);
+    }, [containerRef, node, showDockLabels, viewport.k, viewport.x, viewport.y]);
 
-    if (!node || !anchor) return null;
+    if (!node) return null;
+    const resolvedAnchor = anchor ?? (containerRef.current
+        ? readCanvasNodeToolbarAnchor({
+            node,
+            viewport,
+            container: containerRef.current,
+            toolbarWidth: toolbarRef.current?.offsetWidth || 0,
+        })
+        : null);
+    if (!resolvedAnchor) return null;
 
     const activeNode = node;
     const isImage = node.type === CanvasNodeType.Image;
     const isVideo = node.type === CanvasNodeType.Video;
     const isAudio = node.type === CanvasNodeType.Audio;
-    const hasImage = isImage && Boolean(node.metadata?.content);
+    const hasImage = isImage && Boolean(node.metadata?.content) && !(node.metadata?.workflowKind === "character" && Boolean(node.metadata.characterAssetId));
     const hasVideo = isVideo && Boolean(node.metadata?.content);
     const hasAudio = isAudio && Boolean(node.metadata?.content);
     const isText = node.type === CanvasNodeType.Text;
-    const isCharacterReference = isText && node.metadata?.workflowKind === "character" && Boolean(node.metadata.characterAssetId);
+    const isCharacterReference = node.metadata?.workflowKind === "character" && Boolean(node.metadata.characterAssetId);
     const isEditableText = isText && !isCharacterReference;
-    const isConfig = node.type === CanvasNodeType.Config;
-    const canOpenDialog = isEditableText || isImage || isVideo;
-    const requiresPromptChange = node.metadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(node.metadata?.errorDetails);
-    const canRetry = node.metadata?.status === "error" && !requiresPromptChange;
-    const quickImageToolIdSet = new Set(quickImageToolIds);
+    const isDrawing = node.type === CanvasNodeType.Drawing;
     const copyImagePrompt = (target: CanvasNodeData) => {
         const prompt = target.metadata?.prompt?.trim();
         if (!prompt) {
@@ -230,13 +222,11 @@ export function CanvasNodeToolbar({
         }
         copyText(prompt, canvasT("videoCanvas.nodeUi.promptCopied", "提示词已复制"));
     };
-    const imageTools = buildImageToolbarTools(node, { onUpload, onToggleFreeResize, onAnnotate, onMaskEdit, onEmotion, onPortraitTexture, onCrop, onSplit, onUpscale, onSuperResolve, onAngle, onViewImage, onCopyPrompt: copyImagePrompt, onReversePrompt });
+    const imageTools = buildImageToolbarTools(node, { onUpload, onToggleFreeResize, onAnnotate, onMaskEdit, onEmotion, onPortraitTexture, onCrop, onSplit, onUpscale, onAngle, onViewImage, onCopyPrompt: copyImagePrompt, onReversePrompt });
 
     function openImageToolSettings() {
         imageToolSettingsOpenRef.current = true;
-        imageToolMenuOpenRef.current = false;
         onKeep(activeNode.id);
-        setImageToolMenuOpen(false);
         setDraftImageToolIds(quickImageToolIds);
         setDraftShowDockLabels(showDockLabels);
         setImageToolSettingsOpen(true);
@@ -247,10 +237,10 @@ export function CanvasNodeToolbar({
         onNodeInfo: onInfo, onNodeDelete: onDelete, onNodeRetry: onRetry, onNodeEditText: onEditText, onNodeDecreaseFont: onDecreaseFont, onNodeIncreaseFont: onIncreaseFont,
         onNodeToggleDialog: onToggleDialog, onNodeAnnotate: onAnnotate, onNodeGenerateImage: onGenerateImage, onNodeUpload: onUpload, onNodeDownload: onDownload,
         onNodeSaveAsset: onSaveAsset, onNodeMaskEdit: onMaskEdit, onNodeEmotion: onEmotion, onNodePortraitTexture: onPortraitTexture, onNodeCrop: onCrop,
-        onNodeSplit: onSplit, onNodeUpscale: onUpscale, onNodeSuperResolve: onSuperResolve, onNodeAngle: onAngle, onNodeViewImage: onViewImage,
-        onNodeExtractVideoLastFrame: onExtractVideoLastFrame, onNodeReversePrompt: onReversePrompt, onNodeToggleFreeResize: onToggleFreeResize,
+        onNodeSplit: onSplit, onNodeUpscale: onUpscale, onNodeSuperResolve: () => {}, onNodeAngle: onAngle, onNodeViewImage: onViewImage,
+        onNodeExtractVideoFrames: onExtractVideoFrames, onNodeReversePrompt: onReversePrompt, onNodeToggleFreeResize: onToggleFreeResize,
         onNodeToggleLocked: onToggleLocked, onNodeCopyPrompt: copyImagePrompt,
-        onNodeSubtitles: onSubtitles, onNodeTimeline: onTimeline,
+        onNodeSubtitles: onSubtitles, onNodeTimeline: onTimeline, onNodeOpenDrawing: onOpenDrawing,
     } as Partial<ToolbarHandlers> as ToolbarHandlers;
 
     const nodeHoverCtx: ToolContext = {
@@ -285,29 +275,41 @@ export function CanvasNodeToolbar({
         disabled: tool.disabled?.(nodeHoverCtx),
         onClick: () => tool.run(nodeHoverCtx),
     }));
-    const allTools: ToolbarTool[] = hasImage && !simpleMode
+    const allTools: ToolbarTool[] = hasImage
         ? [...otherTools, ...imageTools.map((tool) => ({ id: tool.id, title: tool.title, label: tool.label, icon: tool.icon, active: tool.active, danger: undefined, disabled: undefined, onClick: tool.onClick }))]
         : otherTools;
     const selectableImageToolbarTools = allTools.filter((tool): tool is ToolbarTool & { id: ImageQuickToolId } => isImageQuickToolId(tool.id));
     const toolById = new Map(allTools.map((tool) => [tool.id, tool] as const));
     const takeTools = (ids: string[]) => ids.map((id) => toolById.get(id)).filter((tool): tool is ToolbarTool => Boolean(tool));
-    const imageBaseTools = takeTools(hasImage ? ["delete", "download"] : ["delete", "uploadImage"]);
-    const imageEditTools = takeTools(["maskEdit", "crop", "split"]);
-    const imagePortraitTools = takeTools(["emotion", "portraitTexture"]).map((tool) => (tool.id === "emotion" ? { ...tool, label: canvasT("videoCanvas.nodeUi.emotionShort", "人物情绪") } : tool));
-    const imageAngleTool = toolById.get("angle");
-    const videoTools = takeTools(["delete", "download", "subtitles", "timeline", "extractLastFrame", "uploadVideo"]).map((tool) => {
-        if (tool.id === "extractLastFrame") return { ...tool, label: canvasT("videoCanvas.toolbar.extractFrame", "尾帧") };
+    const imageDock = resolveImageDockLayout(quickImageToolIds);
+    const imagePinTools = takeTools(imageDock.pin);
+    const imageSingleTools = takeTools(imageDock.singles);
+    const imageEditTools = takeTools(imageDock.editGroup);
+    const imagePortraitTools = takeTools(imageDock.portraitGroup).map((tool) => (tool.id === "emotion" ? { ...tool, label: canvasT("videoCanvas.nodeUi.emotionShort", "人物情绪") } : tool));
+    const imageAngleTool = imageDock.angle ? toolById.get("angle") : undefined;
+    const primaryIds = resolveNodeDockPrimaryIds({
+        isCharacterReference,
+        isImage,
+        hasImage,
+        isVideo,
+        hasVideo,
+        isAudio,
+        hasAudio,
+        isEditableText,
+        isDrawing,
+    }, imageDockVisibleIds(imageDock));
+    const relabelPrimary = (tool: ToolbarTool): ToolbarTool => {
+        if (tool.id === "extractFrames") return { ...tool, label: canvasT("videoCanvas.toolbar.extractFrame", "画面") };
+        if (tool.id === "edit" && (isImage || isVideo)) return { ...tool, label: canvasT("videoCanvas.nodeUi.genSettings", "生成设置") };
         return tool;
-    });
-    const genericTools = takeTools(isAudio ? ["delete", "download", "timeline", "uploadAudio"] : isEditableText ? ["delete", "edit", "editText", "generateImage", "saveAsset"] : ["delete", "info", "config"]);
-    const visibleToolIds = new Set([
-        ...(isImage ? [...imageBaseTools, ...imageEditTools, ...imagePortraitTools, ...(imageAngleTool ? [imageAngleTool] : [])] : isVideo ? videoTools : genericTools).map((tool) => tool.id),
-    ]);
+    };
+    const primaryTools = takeTools(primaryIds).map(relabelPrimary);
+    const visibleToolIds = new Set(primaryIds);
     const overflowTools = allTools
         .filter((tool) => !visibleToolIds.has(tool.id))
         .map((tool) => (tool.id === "edit" && (isImage || isVideo) ? { ...tool, label: canvasT("videoCanvas.nodeUi.genSettings", "生成设置") } : tool));
     // 专业模式图片：把「管理快捷工具」放入更多，保证入口与 OA「更多」一致可见
-    if (hasImage && !simpleMode) {
+    if (hasImage) {
         overflowTools.push({
             id: "manage-image-quick-tools",
             title: canvasT("videoCanvas.nodeUi.manageQuickTools", "管理快捷工具"),
@@ -327,7 +329,7 @@ export function CanvasNodeToolbar({
     const handleMenuOpenChange = (menuId: string, open: boolean) => {
         setOpenMenuId((current) => (open ? menuId : current === menuId ? null : current));
         if (open) onKeep(node.id);
-        else if (!imageToolSettingsOpenRef.current && !imageToolMenuOpenRef.current) onLeave();
+        else if (!imageToolSettingsOpenRef.current) onLeave();
     };
 
     const closeImageToolSettings = () => {
@@ -360,9 +362,7 @@ export function CanvasNodeToolbar({
     const dockShellStyle = canvasDockStyle(theme, theme.node.text);
     const labeledDockStyle = {
         ...dockShellStyle,
-        boxShadow: themeName === "dark"
-            ? `0 18px 52px ${theme.spatial.shadow}`
-            : "0 10px 30px rgba(15,23,42,.12), 0 1px 2px rgba(15,23,42,.05), inset 0 1px 0 rgba(255,255,255,.7)",
+        boxShadow: `0 8px 28px ${theme.spatial.shadow}`,
     };
     const moreLabel = canvasT("videoCanvas.nodeUi.more", "更多");
 
@@ -370,11 +370,11 @@ export function CanvasNodeToolbar({
         <>
             <div
                 ref={toolbarRef}
-                className="canvas-node-toolbar absolute z-[var(--z-node-toolbar)] flex -translate-x-1/2 -translate-y-full items-end justify-center overflow-visible"
-                style={{ left: anchor.left, top: anchor.top, width: "max-content", maxWidth: `min(calc(100% - 20px), ${showDockLabels ? 960 : 560}px)`, color: theme.node.text }}
+                className="canvas-node-toolbar fixed z-[var(--z-node-toolbar)] flex -translate-x-1/2 -translate-y-full items-end justify-center overflow-visible"
+                style={{ left: resolvedAnchor.left, top: resolvedAnchor.top, width: "max-content", maxWidth: `min(calc(100% - 20px), ${showDockLabels ? 960 : 560}px)`, color: theme.node.text, transformOrigin: "bottom center" }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
-                    if (!imageToolSettingsOpenRef.current && !imageToolMenuOpenRef.current && !openMenuId) onLeave();
+                    if (!imageToolSettingsOpenRef.current && !openMenuId) onLeave();
                 }}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
@@ -382,28 +382,27 @@ export function CanvasNodeToolbar({
                 <div
                     role="toolbar"
                     aria-label={canvasT("videoCanvas.nodeUi.quickToolsAria", "节点快捷工具")}
-                    className="aceternity-floating-dock thin-scrollbar relative flex h-11 max-w-full items-center gap-0.5 overflow-x-auto overflow-y-hidden rounded-[var(--dock-radius)] border px-2 py-1 backdrop-blur-2xl"
+                    className="aceternity-floating-dock thin-scrollbar relative flex h-9 min-w-max items-center gap-0.5 overflow-visible rounded-[var(--r-lg)] border px-1.5 py-0.5 backdrop-blur-2xl"
                     style={labeledDockStyle}
                 >
                     <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                        {isImage ? (
+                        {isImage && hasImage ? (
                             <>
-                                {imageBaseTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)}
-                                {imageEditTools.length ? <NodeDockMenuButton menuId="image-edit" label={canvasT("videoCanvas.nodeUi.editGroup", "编辑")} icon={imageEditTools[0].icon} tools={imageEditTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} /> : null}
-                                {imagePortraitTools.length ? <NodeDockMenuButton menuId="image-portrait" label={canvasT("videoCanvas.nodeUi.portraitGroup", "人物调整")} icon={imagePortraitTools[0].icon} tools={imagePortraitTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} /> : null}
+                                {imagePinTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)}
+                                {imageSingleTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)}
+                                {imageEditTools.length ? <NodeDockMenuButton menuId="image-edit" label={canvasT("videoCanvas.nodeUi.editGroup", "编辑")} title={canvasT("videoCanvas.nodeUi.editGroupTitle", "局部编辑、剪裁、切图与放大")} icon={imageEditTools[0].icon} tools={imageEditTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} /> : null}
+                                {imagePortraitTools.length ? <NodeDockMenuButton menuId="image-portrait" label={canvasT("videoCanvas.nodeUi.portraitGroup", "人物调整")} title={canvasT("videoCanvas.nodeUi.portraitGroupTitle", "调整人物情绪与人物质感")} icon={imagePortraitTools[0].icon} tools={imagePortraitTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} /> : null}
                                 {imageAngleTool ? <NodeDockToolButton tool={imageAngleTool} showLabel={showDockLabels} /> : null}
                             </>
-                        ) : isVideo ? (
-                            videoTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)
                         ) : (
-                            genericTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)
+                            primaryTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)
                         )}
                     </div>
                     <span aria-hidden className="aceternity-dock-separator mx-1.5 h-6 w-px shrink-0" />
                     <div className="flex shrink-0 items-center gap-0.5">
                         <NodeDockToolButton tool={lockTool} showLabel={showDockLabels} />
                         {overflowTools.length ? (
-                            <NodeDockMenuButton menuId="more" label={moreLabel} icon={<Ellipsis className="size-3.5" />} tools={overflowTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} placement="topRight" />
+                            <NodeDockMenuButton menuId="more" label={moreLabel} title={canvasT("videoCanvas.nodeUi.moreTitle", "更多节点操作")} icon={<Ellipsis className="size-3.5" />} tools={overflowTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} placement="topRight" />
                         ) : null}
                     </div>
                 </div>
@@ -426,25 +425,28 @@ export function CanvasNodeToolbar({
 
 
 function NodeDockToolButton({ tool, showLabel = true }: { tool: ToolbarTool; showLabel?: boolean }) {
+    const hint = !showLabel ? (tool.title || tool.label) : (tool.title && tool.title !== tool.label ? tool.title : "");
     return (
-        <button
-            type="button"
-            className={`aceternity-dock-command pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${tool.active ? "is-active" : ""} ${tool.danger ? "is-danger" : ""}`}
-            aria-label={tool.title || tool.label}
-            aria-pressed={tool.active || undefined}
-            disabled={tool.disabled}
-            title={tool.title || tool.label}
-            onClick={tool.onClick}
-        >
-            <span className="grid size-3.5 shrink-0 place-items-center">{tool.icon}</span>
-            {showLabel ? <span className="inline-flex h-4 items-center whitespace-nowrap text-[var(--fs-label)] font-medium leading-none">{tool.label}</span> : null}
-        </button>
+        <CanvasHoverHint label={hint} disabled={tool.disabled}>
+            <button
+                type="button"
+                className={`aceternity-dock-command is-quiet pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${tool.active ? "is-active" : ""} ${tool.danger ? "is-danger" : ""}`}
+                aria-label={tool.title || tool.label}
+                aria-pressed={tool.active || undefined}
+                disabled={tool.disabled}
+                onClick={tool.onClick}
+            >
+                <span className="grid size-3.5 shrink-0 place-items-center">{tool.icon}</span>
+                {showLabel ? <span className="inline-flex h-4 items-center whitespace-nowrap text-[var(--fs-label)] font-medium leading-none">{tool.label}</span> : null}
+            </button>
+        </CanvasHoverHint>
     );
 }
 
 function NodeDockMenuButton({
     menuId,
     label,
+    title,
     icon,
     tools,
     openMenuId,
@@ -454,6 +456,7 @@ function NodeDockMenuButton({
 }: {
     menuId: string;
     label: string;
+    title?: string;
     icon: ReactNode;
     tools: ToolbarTool[];
     openMenuId: string | null;
@@ -461,35 +464,73 @@ function NodeDockMenuButton({
     placement?: "top" | "topRight";
     showLabel?: boolean;
 }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
     const open = openMenuId === menuId;
+    const close = useCallback(() => onOpenChange(menuId, false), [menuId, onOpenChange]);
+    const rect = useAnchoredOverlay(open, triggerRef, panelRef, close);
+    const geometry = rect
+        ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, {
+            width: 220,
+            placement: placement === "topRight" ? "topRight" : "top",
+            estimatedHeight: 8 + tools.length * 36,
+        })
+        : null;
+    const hint = !showLabel ? (title || label) : (title && title !== label ? title : "");
+
     return (
-        <Dropdown
-            open={open}
-            trigger={["click"]}
-            placement={placement}
-            onOpenChange={(next) => onOpenChange(menuId, next)}
-            menu={{ items: tools.map((tool) => ({ key: tool.id, icon: tool.icon, label: tool.label, disabled: tool.disabled, danger: tool.danger, onClick: tool.onClick })) }}
-        >
-            <button
-                type="button"
-                className={`aceternity-dock-command pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${open ? "is-active" : ""}`}
-                aria-label={label}
-                aria-expanded={open}
-                title={label}
-            >
-                <span className="grid size-3.5 shrink-0 place-items-center">{icon}</span>
-                {showLabel ? (
-                    <>
-                        <span className="inline-flex h-4 items-center whitespace-nowrap text-[var(--fs-label)] font-medium leading-none">{label}</span>
-                        <ChevronDown className="size-3 shrink-0 opacity-55" />
-                    </>
-                ) : null}
-            </button>
-        </Dropdown>
+        <>
+            <CanvasHoverHint label={open ? "" : hint}>
+                <button
+                    ref={triggerRef}
+                    type="button"
+                    className={`aceternity-dock-command is-quiet pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${open ? "is-active" : ""}`}
+                    aria-label={title || label}
+                    aria-expanded={open}
+                    onClick={() => onOpenChange(menuId, !open)}
+                >
+                    <span className="grid size-3.5 shrink-0 place-items-center">{icon}</span>
+                    {showLabel ? (
+                        <>
+                            <span className="inline-flex h-4 items-center whitespace-nowrap text-[var(--fs-label)] font-medium leading-none">{label}</span>
+                            <ChevronDown className="size-3 shrink-0 opacity-55" />
+                        </>
+                    ) : null}
+                </button>
+            </CanvasHoverHint>
+            {open && geometry
+                ? createPortal(
+                    <div
+                        ref={panelRef}
+                        className="canvas-overlay"
+                        style={{ ...overlayPanelStyle(theme, geometry), padding: 4 }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        {tools.map((tool) => (
+                            <CanvasMenuRow
+                                key={tool.id}
+                                icon={tool.icon}
+                                label={tool.label}
+                                detail={tool.title && tool.title !== tool.label ? tool.title : undefined}
+                                disabled={tool.disabled}
+                                danger={tool.danger}
+                                onClick={() => {
+                                    tool.onClick();
+                                    close();
+                                }}
+                            />
+                        ))}
+                    </div>,
+                    document.body,
+                )
+                : null}
+        </>
     );
 }
 
-export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, readOnly = false, onUnauthorized }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onMetadataChange?: (nodeId: string, metadata: Partial<CanvasNodeMetadata>) => void; readOnly?: boolean; onUnauthorized?: () => void }) {
+export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, readOnly = false }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onMetadataChange?: (nodeId: string, metadata: Partial<CanvasNodeMetadata>) => void; readOnly?: boolean; onUnauthorized?: () => void }) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [view, setView] = useState<"info" | "json">("info");
@@ -551,39 +592,26 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
         saveAssetTags(assetTags.filter((item) => item !== tag));
     };
 
-    const title = (
-        <div className="flex items-center justify-between gap-4 pr-10">
-            <div className="min-w-0">
-                <div className="text-[var(--fs-heading-lg)] font-semibold tracking-[-0.02em]">{canvasT("videoCanvas.nodeUi.infoTitle", "节点信息")}</div>
-                {node ? <div className="mt-0.5 truncate text-xs opacity-45">{node.id}</div> : null}
-            </div>
-            <Segmented
-                size="small"
-                value={view}
-                onChange={(value) => setView(value as "info" | "json")}
-                options={[
-                    { label: canvasT("videoCanvas.nodeUi.infoTab", "信息"), value: "info" },
-                    { label: "JSON", value: "json" },
-                ]}
-            />
-        </div>
-    );
+    const title = canvasT("videoCanvas.nodeUi.infoTitle", "节点信息");
 
     return (
-        <Modal
+        <CanvasSheet
             className="canvas-node-info-modal"
-            title={title}
             open={open && Boolean(node)}
-            centered
-            footer={null}
+            theme={theme}
             width={720}
-            onCancel={onClose}
-            styles={{ body: { paddingTop: 8 } }}
+            title={title}
+            subtitle={node?.id}
+            onClose={onClose}
         >
             {node ? (
                 <div className="h-[min(68vh,640px)] min-h-[420px] text-sm" style={{ color: theme.node.text }}>
+                    <div className="mb-3 flex flex-wrap gap-1.5">
+                        <ChoiceChip selected={view === "info"} theme={theme} onClick={() => setView("info")}>{canvasT("videoCanvas.nodeUi.infoTab", "信息")}</ChoiceChip>
+                        <ChoiceChip selected={view === "json"} theme={theme} onClick={() => setView("json")}>JSON</ChoiceChip>
+                    </div>
                     {view === "info" ? (
-                        <div className="thin-scrollbar h-full space-y-4 overflow-auto pr-1">
+                        <div className="thin-scrollbar h-[calc(100%-40px)] space-y-4 overflow-auto pr-1">
                             <div className="grid gap-2 rounded-2xl border p-3" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
                                 <div className="grid grid-cols-2 gap-2 max-sm:grid-cols-1">
                                     <InfoRow label={canvasT("videoCanvas.nodeUi.infoType", "类型")} value={nodeTypeLabel} />
@@ -640,23 +668,35 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
                                         </div>
                                     ) : (
                                         <div className="flex gap-2">
-                                            <Input
+                                            <input
                                                 value={assetTagInput}
                                                 placeholder={canvasT("videoCanvas.nodeUi.tagPlaceholder", "例如：角色: 张三")}
+                                                className="canvas-sheet-input min-w-0 flex-1"
                                                 onChange={(event) => setAssetTagInput(event.target.value)}
-                                                onPressEnter={addAssetTag}
+                                                onKeyDown={(event) => {
+                                                    if (event.key === "Enter") {
+                                                        event.preventDefault();
+                                                        addAssetTag();
+                                                    }
+                                                }}
                                             />
-                                            <Button type="primary" icon={<Plus className="size-4" />} disabled={!assetTagInput.trim()} onClick={addAssetTag}>
+                                            <CanvasSheetButton theme={theme} variant="primary" disabled={!assetTagInput.trim()} onClick={addAssetTag}>
+                                                <Plus className="size-3.5" />
                                                 {canvasT("videoCanvas.nodeUi.tagAdd", "加入")}
-                                            </Button>
+                                            </CanvasSheetButton>
                                         </div>
                                     )}
                                     <div className="mt-3 flex min-h-10 flex-wrap gap-2 rounded-xl border px-2 py-2" style={{ borderColor: theme.toolbar.border, background: theme.node.fill }}>
                                         {assetTags.length ? (
                                             assetTags.map((tag) => (
-                                                <Tag key={tag} closable={!readOnly} onClose={() => (readOnly ? onUnauthorized?.() : removeAssetTag(tag))} className="!m-0 !rounded-lg !px-2 !py-1 !text-sm">
+                                                <span key={tag} className="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-sm" style={{ background: theme.toolbar.itemHover, color: theme.node.text }}>
                                                     {tag}
-                                                </Tag>
+                                                    {readOnly ? null : (
+                                                        <button type="button" className="grid size-4 place-items-center rounded-full opacity-60 hover:opacity-100" aria-label={canvasT("videoCanvas.nodeUi.tagRemoveAria", "移除标签 {{tag}}", { tag })} onClick={() => removeAssetTag(tag)}>
+                                                            <X className="size-3" />
+                                                        </button>
+                                                    )}
+                                                </span>
                                             ))
                                         ) : (
                                             <span className="px-1 py-1 text-xs opacity-40">{readOnly ? canvasT("videoCanvas.nodeUi.noTags", "暂无标签") : canvasT("videoCanvas.nodeUi.noTagsHint", "还没有标签，输入后点击“加入”或按 Enter。")}</span>
@@ -667,18 +707,18 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
 
                             {node.metadata?.errorDetails ? (
                                 <div className="rounded-2xl border p-3 text-red-500" style={{ borderColor: theme.node.stroke }}>
-                                    {localizeGenerationErrorText(generationErrorMessage(node.metadata.errorDetails))}
+                                    {formatCanvasUserError(node.metadata.errorDetails)}
                                 </div>
                             ) : null}
                         </div>
                     ) : (
-                        <pre className="thin-scrollbar h-full overflow-auto rounded-2xl border p-3 text-xs leading-5" style={{ background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text }}>
+                        <pre className="thin-scrollbar h-[calc(100%-40px)] overflow-auto rounded-2xl border p-3 text-xs leading-5" style={{ background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text }}>
                             {json}
                         </pre>
                     )}
                 </div>
             ) : null}
-        </Modal>
+        </CanvasSheet>
     );
 }
 

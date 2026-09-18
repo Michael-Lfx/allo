@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sqlx::{Row, SqlitePool};
+use tracing::warn;
 
 use crate::error::DbError;
 
@@ -73,14 +74,17 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_checkins",
     "learning_custom_questions",
     "learning_enrollments",
+    "learning_graph_prerequisites",
     "learning_question_tags",
     "learning_lesson_concepts",
     "learning_lesson_progress",
+    "learning_lesson_sections",
     "learning_lessons",
     "learning_mastery_states",
     "learning_modules",
     "learning_review_events",
     "learning_review_items",
+    "learning_review_log",
     "learning_tags",
     "mcp_servers",
     "meeting_segments",
@@ -173,6 +177,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_modules", "module_id"),
     ("learning_review_events", "event_id"),
     ("learning_review_items", "review_item_id"),
+    ("learning_review_log", "log_id"),
     ("learning_tags", "tag_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
@@ -286,6 +291,8 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_review_events", "event_id"),
     ("learning_review_events", "item_id"),
     ("learning_review_items", "review_item_id"),
+    ("learning_review_log", "log_id"),
+    ("learning_review_log", "item_id"),
     ("learning_tags", "tag_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
@@ -548,6 +555,33 @@ macro_rules! text_ref {
             delete_policy: DeletePolicy::$delete,
             rebuild_policy: RebuildPolicy::PreserveBusinessId,
             orphan_audit_policy: default_orphan_audit_policy(DeletePolicy::$delete),
+            child_predicate: None,
+            parent_predicate: None,
+            aggregate_scope_predicate: None,
+        }
+    };
+}
+
+/// A text reference whose child rows may intentionally outlive a deleted
+/// parent (a designed historical state — e.g. reviewable course content kept
+/// by a catalog-only course deletion). Delete semantics stay metadata-only;
+/// the orphan audit only demands that a *still-present* parent satisfies its
+/// live predicates, and repair never deletes these rows.
+macro_rules! historical_text_ref {
+    ($child_table:literal, $child_column:literal => $parent_table:literal, $parent_column:literal,
+     $nullable:expr, $index:literal, $delete:ident) => {
+        LogicalReference {
+            child_table: $child_table,
+            child_column: $child_column,
+            parent_table: Some($parent_table),
+            parent_column: Some($parent_column),
+            kind: LogicalReferenceKind::Text,
+            value_contract: LogicalReferenceValueContract::CanonicalUuidV7,
+            nullable: $nullable,
+            index_name: $index,
+            delete_policy: DeletePolicy::$delete,
+            rebuild_policy: RebuildPolicy::PreserveBusinessId,
+            orphan_audit_policy: OrphanAuditPolicy::AllowMissingHistoricalParent,
             child_predicate: None,
             parent_predicate: None,
             aggregate_scope_predicate: None,
@@ -826,9 +860,13 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("knowledge_binding_bases", "knowledge_binding_id" => "knowledge_bindings", "knowledge_binding_id", false, "idx_knowledge_binding_bases_knowledge_binding_id", Cascade),
     text_ref!("knowledge_binding_bases", "knowledge_base_id" => "knowledge_bases", "knowledge_base_id", false, "idx_knowledge_binding_bases_knowledge_base_id", Cascade),
     text_ref!("learning_courses", "source_kb_id" => "knowledge_bases", "knowledge_base_id", true, "idx_learning_courses_source_kb_id", SetNull),
-    text_ref!("learning_modules", "course_id" => "learning_courses", "course_id", false, "idx_learning_modules_course_id", Cascade),
+    // Catalog-only course deletion keeps the course's modules, enrollments
+    // and concepts as designed historical state (reviewable content without a
+    // live course); graph edges have no such retention story and stay
+    // RequireParent so repair removes them with the course.
+    historical_text_ref!("learning_modules", "course_id" => "learning_courses", "course_id", false, "idx_learning_modules_course_id", Cascade),
     text_ref!("learning_lessons", "module_id" => "learning_modules", "module_id", false, "idx_learning_lessons_module_id", Cascade),
-    text_ref!("learning_concepts", "course_id" => "learning_courses", "course_id", false, "idx_learning_concepts_course_id", Cascade),
+    historical_text_ref!("learning_concepts", "course_id" => "learning_courses", "course_id", false, "idx_learning_concepts_course_id", Cascade),
     text_ref!("learning_concept_prerequisites", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_concept_prerequisites_concept_id", Cascade),
     text_ref!("learning_concept_prerequisites", "prerequisite_concept_id" => "learning_concepts", "concept_id", false, "idx_learning_concept_prerequisites_prerequisite_concept_id", Cascade),
     text_ref!("learning_lesson_concepts", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_concepts_lesson_id", Cascade),
@@ -837,9 +875,13 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_activity_concepts", "activity_id" => "learning_activities", "activity_id", false, "idx_learning_activity_concepts_activity_id", Cascade),
     text_ref!("learning_activity_concepts", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_activity_concepts_concept_id", Cascade),
     text_ref!("learning_enrollments", "user_id" => "users", "user_id", false, "idx_learning_enrollments_user_id", Cascade),
-    text_ref!("learning_enrollments", "course_id" => "learning_courses", "course_id", false, "idx_learning_enrollments_course_id", Cascade),
+    historical_text_ref!("learning_enrollments", "course_id" => "learning_courses", "course_id", false, "idx_learning_enrollments_course_id", Cascade),
     text_ref!("learning_lesson_progress", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_lesson_progress_enrollment_id", Cascade),
     text_ref!("learning_lesson_progress", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_progress_lesson_id", Cascade),
+    text_ref!("learning_lesson_sections", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_sections_lesson_id", Cascade),
+    text_ref!("learning_graph_prerequisites", "course_id" => "learning_courses", "course_id", false, "idx_learning_graph_prereq_course", Cascade),
+    text_ref!("learning_graph_prerequisites", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_graph_prereq_lesson", Cascade),
+    text_ref!("learning_graph_prerequisites", "prerequisite_lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_graph_prereq_pre", Cascade),
     text_ref!("learning_attempts", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_attempts_enrollment_id", Cascade),
     text_ref!("learning_attempts", "activity_id" => "learning_activities", "activity_id", false, "idx_learning_attempts_activity_id", Cascade),
     text_ref!("learning_mastery_states", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_mastery_states_enrollment_id", Cascade),
@@ -849,6 +891,10 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // Check-in rows and review events are user-scoped history rows.
     text_ref!("learning_checkins", "user_id" => "users", "user_id", false, "idx_learning_checkins_user_id", Cascade),
     text_ref!("learning_review_events", "user_id" => "users", "user_id", false, "idx_learning_review_events_user_id", Cascade),
+    // Review-log rows are append-only user-scoped honesty records; the card
+    // id is polymorphic (course item or custom question) and stays listed as
+    // a non-reference id column.
+    text_ref!("learning_review_log", "user_id" => "users", "user_id", false, "idx_learning_review_log_user_day", Cascade),
     text_ref!("learning_custom_questions", "user_id" => "users", "user_id", false, "idx_learning_custom_questions_user_id", Cascade),
     // Course-generation jobs: user-scoped tasks; kb/course links are history —
     // jobs keep working from persisted snapshots even if the base or the
@@ -1169,9 +1215,15 @@ pub(crate) async fn validate_id_value_contract(pool: &SqlitePool) -> Result<(), 
     Ok(())
 }
 
-/// Validate the complete durable v3 ID data contract. Any failure identifies
-/// the current managed dataset as incompatible; callers must quarantine/reset
-/// the dataset rather than rewrite IDs.
+/// Validate the durable v3 ID data contract that cannot be repaired in place.
+///
+/// Value-format and asset-provenance violations identify the current managed
+/// dataset as incompatible; callers must quarantine/reset the dataset rather
+/// than rewrite IDs. Logical-reference orphans are deliberately tolerated at
+/// this gate: catalog-only course deletion keeps reviewable content without a
+/// live course, and [`repair_logical_reference_orphans`] cleans every
+/// `RequireParent` row on the next writable open. Orphans must never strand
+/// a dataset behind the boot gate, so they are reported, not rejected.
 pub async fn validate_id_data_contract(pool: &SqlitePool) -> Result<(), DbError> {
     validate_id_value_contract(pool).await?;
     validate_workshop_asset_origin_values(pool).await?;
@@ -1180,7 +1232,16 @@ pub async fn validate_id_data_contract(pool: &SqlitePool) -> Result<(), DbError>
     if findings.is_empty() {
         return Ok(());
     }
-    let details = findings
+    warn!(
+        target: "db",
+        details = orphan_finding_details(&findings),
+        "logical-reference orphans present; RequireParent rows are repaired on the next writable open"
+    );
+    Ok(())
+}
+
+fn orphan_finding_details(findings: &[OrphanAuditFinding]) -> String {
+    findings
         .iter()
         .map(|finding| {
             format!(
@@ -1193,10 +1254,7 @@ pub async fn validate_id_data_contract(pool: &SqlitePool) -> Result<(), DbError>
             )
         })
         .collect::<Vec<_>>()
-        .join("; ");
-    Err(DbError::Init(format!(
-        "v3 ID data contract audit failed: {details}"
-    )))
+        .join("; ")
 }
 
 /// Read-only database orphan audit. Cross-store registry entries are skipped;
@@ -1278,6 +1336,96 @@ pub(crate) async fn audit_logical_reference_orphans(
     }
     audit_json_logical_reference_orphans(pool, &mut findings).await?;
     Ok(findings)
+}
+
+/// Delete the logical-reference orphans that the live contract requires to be
+/// absent. For every `RequireParent` table reference, child rows whose parent
+/// is gone (or fails its live/aggregate-scope predicates) are removed,
+/// iterating to a fixed point so cascaded orphans (a deleted course orphaning
+/// graph edges, then nothing else — historical references are left alone) are
+/// resolved within the same pass. Historical and external-owner references
+/// are never touched: a deleted parent there is a designed state, and JSON
+/// references have no row-level deletion semantics.
+///
+/// Returns one finding per (reference, pass) that deleted rows, so callers
+/// can log what was cleaned. Writable opens run this after the schema
+/// contract and before the data-contract validation, so stale orphans can
+/// never strand a dataset behind startup.
+pub async fn repair_logical_reference_orphans(
+    pool: &SqlitePool,
+) -> Result<Vec<OrphanAuditFinding>, DbError> {
+    // One pass fully covers a reference chain deeper than the registry could
+    // ever express, but keep a defensive bound so a pathological cycle cannot
+    // spin here; leftover rows stay a tolerated audit finding.
+    const MAX_REPAIR_PASSES: usize = 10;
+    let mut repaired = Vec::new();
+    for _pass in 0..MAX_REPAIR_PASSES {
+        let mut deleted_any = false;
+        for reference in LOGICAL_REFERENCES {
+            if reference.orphan_audit_policy != OrphanAuditPolicy::RequireParent {
+                continue;
+            }
+            let (Some(parent_table), Some(parent_column)) =
+                (reference.parent_table, reference.parent_column)
+            else {
+                continue;
+            };
+            let child_predicate = reference
+                .child_predicate
+                .map(|value| format!(" AND ({value})"))
+                .unwrap_or_default();
+            let parent_predicate = reference
+                .parent_predicate
+                .map(|value| format!(" AND ({value})"))
+                .unwrap_or_default();
+            let aggregate_scope_predicate = reference
+                .aggregate_scope_predicate
+                .map(|value| format!(" AND ({value})"))
+                .unwrap_or_default();
+            let valid_parent_exists = format!(
+                "EXISTS (SELECT 1 FROM {parent_table} parent \
+                         WHERE parent.{parent_column} = child.{child_column}\
+                         {parent_predicate}{aggregate_scope_predicate})",
+                parent_table = quote_sqlite_identifier(parent_table),
+                parent_column = quote_sqlite_identifier(parent_column),
+                child_column = quote_sqlite_identifier(reference.child_column),
+            );
+            let sql = format!(
+                "DELETE FROM {child_table} AS child \
+                 WHERE child.{child_column} IS NOT NULL{child_predicate} \
+                   AND (NOT {valid_parent_exists})",
+                child_table = quote_sqlite_identifier(reference.child_table),
+                child_column = quote_sqlite_identifier(reference.child_column),
+            );
+            let result = sqlx::query(&sql).execute(pool).await?;
+            let deleted = result.rows_affected();
+            if deleted > 0 {
+                deleted_any = true;
+                warn!(
+                    target: "db",
+                    child_table = reference.child_table,
+                    child_column = reference.child_column,
+                    parent_table,
+                    parent_column,
+                    deleted,
+                    "repaired logical-reference orphans"
+                );
+                repaired.push(OrphanAuditFinding {
+                    child_table: reference.child_table.to_owned(),
+                    child_column: reference.child_column.to_owned(),
+                    parent_table: parent_table.to_owned(),
+                    parent_column: parent_column.to_owned(),
+                    count: deleted as i64,
+                    delete_policy: delete_policy_name(reference.delete_policy),
+                    rebuild_policy: rebuild_policy_name(reference.rebuild_policy),
+                });
+            }
+        }
+        if !deleted_any {
+            break;
+        }
+    }
+    Ok(repaired)
 }
 
 async fn audit_parentless_logical_reference_values(
@@ -2860,5 +3008,123 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(unchanged, "succeeded");
+    }
+
+    #[tokio::test]
+    async fn catalog_only_course_deletion_orphans_are_tolerated_and_edges_repaired() {
+        let database = init_database_memory().await.expect("database");
+        let pool = database.pool();
+        let owner: String =
+            sqlx::query_scalar("SELECT user_id FROM users ORDER BY id LIMIT 1")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        let course_id = nomifun_common::LearningCourseId::new();
+        let module_id = nomifun_common::LearningModuleId::new();
+        let lesson_a = nomifun_common::LearningLessonId::new();
+        let lesson_b = nomifun_common::LearningLessonId::new();
+        let enrollment_id = nomifun_common::LearningEnrollmentId::new();
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, course_kind, learning_goal, \
+             learning_scope, graph_meta_json, created_at, updated_at) \
+             VALUES (?, '学习图', '', 'general', 1, 'learning_graph', '目标', '范围', '{}', 1, 1)",
+        )
+        .bind(course_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_modules (module_id, course_id, title, position) \
+             VALUES (?, ?, '学习图', 0)",
+        )
+        .bind(module_id.as_str())
+        .bind(course_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        for (lesson_id, position) in [(lesson_a.as_str(), 0), (lesson_b.as_str(), 1)] {
+            sqlx::query(
+                "INSERT INTO learning_lessons \
+                 (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+                 content_generated) VALUES (?, ?, '节点', '', '', ?, 10, 0)",
+            )
+            .bind(lesson_id)
+            .bind(module_id.as_str())
+            .bind(position)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO learning_enrollments \
+             (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+             VALUES (?, ?, ?, 1, 1)",
+        )
+        .bind(enrollment_id.as_str())
+        .bind(&owner)
+        .bind(course_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        for (lesson_id, prerequisite) in [
+            (lesson_b.as_str(), lesson_a.as_str()),
+            (lesson_a.as_str(), lesson_b.as_str()),
+        ] {
+            sqlx::query(
+                "INSERT INTO learning_graph_prerequisites \
+                 (course_id, lesson_id, prerequisite_lesson_id) VALUES (?, ?, ?)",
+            )
+            .bind(course_id.as_str())
+            .bind(lesson_id)
+            .bind(prerequisite)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        // Catalog-only deletion: the course row disappears, children stay.
+        sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // The boot gate tolerates the orphan state instead of rejecting the
+        // dataset — a catalog-only deletion must never strand a device.
+        validate_id_data_contract(pool)
+            .await
+            .expect("orphans must not strand the boot gate");
+
+        // A writable open repairs the RequireParent rows (graph edges) and
+        // keeps the designed historical state (module, lessons, enrollment).
+        let repaired = repair_logical_reference_orphans(pool).await.unwrap();
+        assert!(
+            repaired.iter().any(|finding| {
+                finding.child_table == "learning_graph_prerequisites"
+                    && finding.child_column == "course_id"
+                    && finding.count == 2
+            }),
+            "both graph edges must be repaired: {repaired:?}"
+        );
+        let edges: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_graph_prerequisites")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(edges, 0, "graph edges must not outlive their course");
+        let historical: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM learning_modules WHERE course_id = ?) \
+             + (SELECT COUNT(*) FROM learning_enrollments WHERE course_id = ?) \
+             + (SELECT COUNT(*) FROM learning_lessons)",
+        )
+        .bind(course_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(historical, 4, "reviewable content must survive repair");
+        let findings = audit_logical_reference_orphans(pool).await.unwrap();
+        assert!(findings.is_empty(), "unexpected findings: {findings:?}");
     }
 }

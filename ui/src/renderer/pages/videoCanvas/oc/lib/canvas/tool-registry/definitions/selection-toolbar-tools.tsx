@@ -2,7 +2,6 @@ import { AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd, AlignHorizonta
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 
-import { registerToolbarTools } from "../tool-registry";
 import type { ToolDefinition } from "../tool-definition";
 
 export const selectionToolbarTools: ToolDefinition[] = [
@@ -37,5 +36,3 @@ export const selectionToolbarTools: ToolDefinition[] = [
         run: (ctx) => ctx.handlers.onMergeVideos(),
     },
 ];
-
-registerToolbarTools(selectionToolbarTools);

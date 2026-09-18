@@ -1,4 +1,4 @@
-import { ApplicationOne, Plus, Puzzle, Robot, Search, Tool } from '@icon-park/react';
+import { Plus, Puzzle, Robot, Search, Tool } from '@icon-park/react';
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from './capabilityHubPreview.module.css';
@@ -15,7 +15,6 @@ const TAB_ICONS = {
   presets: Robot,
   skills: Puzzle,
   mcp: Tool,
-  plugins: ApplicationOne,
 } as const;
 
 type HubMockProps = {

@@ -2,6 +2,7 @@
 
 import type {
   AcpPermissionRequest,
+  AcpPermissionOptionKind,
   PlanUpdate,
   PersistedToolArtifact,
   ToolCallContentItem,
@@ -190,6 +191,10 @@ export type AgentErrorResolution = {
 
 export type AgentStreamErrorInfo = {
   message: string;
+  /** Effective model used by the failed turn attempt, when known. */
+  model_id?: string;
+  /** Provider owning the effective model, when known. */
+  provider_id?: string;
   incident_id?: string;
   code?: string;
   ownership?: AgentErrorOwnership;
@@ -200,7 +205,25 @@ export type AgentStreamErrorInfo = {
   resolution?: AgentErrorResolution;
 };
 
-export type TruncatedTurnFailureCode = 'output_truncated' | 'turn_requests_exhausted';
+export type TruncatedTurnFailureCode =
+  | 'output_truncated'
+  | 'turn_requests_exhausted'
+  | 'user_llm_provider_network_error'
+  | 'user_llm_provider_timeout'
+  | 'user_llm_provider_empty_response'
+  | 'user_llm_provider_gateway_error';
+
+const TRUNCATED_TURN_FAILURE_CODES: readonly TruncatedTurnFailureCode[] = [
+  'output_truncated',
+  'turn_requests_exhausted',
+  'user_llm_provider_network_error',
+  'user_llm_provider_timeout',
+  'user_llm_provider_empty_response',
+  'user_llm_provider_gateway_error',
+];
+
+const isTruncatedTurnFailureCode = (value: unknown): value is TruncatedTurnFailureCode =>
+  typeof value === 'string' && TRUNCATED_TURN_FAILURE_CODES.includes(value as TruncatedTurnFailureCode);
 
 export type TruncatedTurnRecovery = {
   kind: 'continue_truncated';
@@ -818,6 +841,18 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
       ? (value.ownership as AgentErrorOwnership)
       : undefined;
   const detail = typeof value.detail === 'string' ? value.detail : undefined;
+  const model_id =
+    typeof value.model_id === 'string'
+      ? value.model_id
+      : typeof value.modelId === 'string'
+        ? value.modelId
+        : undefined;
+  const provider_id =
+    typeof value.provider_id === 'string'
+      ? value.provider_id
+      : typeof value.providerId === 'string'
+        ? value.providerId
+        : undefined;
   const workspacePath = typeof value.workspacePath === 'string' ? value.workspacePath : undefined;
   const retryable = typeof value.retryable === 'boolean' ? value.retryable : undefined;
   const feedback_recommended = typeof value.feedback_recommended === 'boolean' ? value.feedback_recommended : undefined;
@@ -825,6 +860,8 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
 
   if (
     !incident_id &&
+    !model_id &&
+    !provider_id &&
     !code &&
     !ownership &&
     !detail &&
@@ -838,6 +875,8 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
 
   return {
     message: value.message,
+    ...(model_id ? { model_id } : {}),
+    ...(provider_id ? { provider_id } : {}),
     ...(incident_id ? { incident_id } : {}),
     ...(code ? { code } : {}),
     ...(ownership ? { ownership } : {}),
@@ -851,7 +890,7 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
 
 export const normalizeTruncatedTurnRecovery = (value: unknown): TruncatedTurnRecovery | undefined => {
   if (!isObject(value) || value.kind !== 'continue_truncated') return undefined;
-  if (value.failure_code !== 'output_truncated' && value.failure_code !== 'turn_requests_exhausted') {
+  if (!isTruncatedTurnFailureCode(value.failure_code)) {
     return undefined;
   }
   try {
@@ -988,6 +1027,16 @@ const normalizePermissionParams = (params: unknown): Record<string, string> | un
   return Object.fromEntries(Object.entries(params).map(([key, value]) => [key, toDisplayText(value)]));
 };
 
+const isLegacyConfirmationContent = (value: unknown): boolean => {
+  // Nomi/OpenClaw currently serialize their generic Confirmation under the
+  // `acp_permission` event name. Native ACP requests have a `tool_call` and
+  // must keep the native renderer/confirmation endpoint.
+  if (!isObject(value) || typeof value.call_id !== 'string' || isObject(value.tool_call)) {
+    return false;
+  }
+  return Array.isArray(value.options);
+};
+
 const normalizePermissionContent = (value: unknown): IConfirmation => {
   const data = isObject(value) ? value : {};
   const options = Array.isArray(data.options)
@@ -1015,7 +1064,7 @@ const normalizePermissionContent = (value: unknown): IConfirmation => {
 
 const normalizeAcpPermissionOptionKind = (
   value: unknown
-): AcpPermissionRequest['options'][number]['kind'] => {
+): AcpPermissionOptionKind | undefined => {
   switch (value) {
     case 'allow_once':
     case 'allow_always':
@@ -1023,7 +1072,7 @@ const normalizeAcpPermissionOptionKind = (
     case 'reject_always':
       return value;
     default:
-      return 'allow_once';
+      return undefined;
   }
 };
 
@@ -1037,11 +1086,14 @@ const normalizeAcpPermissionContent = (value: unknown): AcpPermissionRequest => 
   return {
     session_id: toDisplayText(data.session_id),
     options: Array.isArray(data.options)
-      ? data.options.filter(isObject).map((option, index) => ({
-          option_id: toDisplayText(option.option_id, `option_${index}`),
-          name: toDisplayText(option.name ?? option.label, `Option ${index + 1}`),
-          kind: normalizeAcpPermissionOptionKind(option.kind),
-        }))
+      ? data.options.filter(isObject).map((option, index) => {
+          const kind = normalizeAcpPermissionOptionKind(option.kind);
+          return {
+            option_id: toDisplayText(option.option_id, `option_${index}`),
+            name: toDisplayText(option.name ?? option.label, `Option ${index + 1}`),
+            ...(kind ? { kind } : {}),
+          };
+        })
       : [],
     tool_call: {
       tool_call_id: toDisplayText(toolCall.tool_call_id ?? data.call_id),
@@ -1472,6 +1524,18 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
       };
     }
     case 'acp_permission': {
+      if (isLegacyConfirmationContent(message.data)) {
+        return {
+          id: uuid(),
+          type: 'permission',
+          msg_id: message.msg_id,
+          ...turnIdentity,
+          position: 'left',
+          conversation_id: message.conversation_id,
+          created_at,
+          content: normalizePermissionContent(message.data),
+        };
+      }
       return {
         id: uuid(),
         type: 'acp_permission',

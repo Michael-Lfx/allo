@@ -51,8 +51,8 @@ describe('PresetPickerDrawer selection visual language', () => {
     const start = css.indexOf('.drawerCardSelected:hover,');
     expect(start).toBeGreaterThan(-1);
     const block = css.slice(start, css.indexOf('\n}', start));
-    expect(block.includes('var(--skill-selection-bg)')).toBe(true);
-    expect(block.includes('var(--skill-selection-fg)')).toBe(true);
+    expect(block.includes('var(--drawer-selection-bg)')).toBe(true);
+    expect(block.includes('var(--drawer-selection-fg)')).toBe(true);
     expect(block.includes('var(--drawer-panel-hover-bg)')).toBe(false);
   });
 });

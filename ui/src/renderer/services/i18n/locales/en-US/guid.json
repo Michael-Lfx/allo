@@ -130,11 +130,17 @@
   "entry": {
     "free": "Free-form",
     "usePreset": "Use preset",
-    "backToFree": "Free-form"
+    "backToFree": "Free-form",
+    "adjustSkills": "Adjust Skills for this conversation",
+    "skills": "Skills",
+    "skillCount": "{{count}} Skill(s) selected"
   },
   "drawer": {
+    "modeLabel": "Entry type",
     "presetTab": "Presets",
+    "skillsTab": "Skills",
     "searchPreset": "Search presets…",
+    "searchSkill": "Search Skills…",
     "usePreset": "Use",
     "keepFree": "Stay free-form",
     "sourceCustom": "Custom",
@@ -145,6 +151,11 @@
     "presetHint": "Choose one preset; the backend resolves and snapshots it for this conversation.",
     "presetEmpty": "No presets yet. Create one in Presets, or stay free-form.",
     "presetNoMatch": "No presets match the current search and filters.",
-    "skillNoMatch": "No Skills match the current search and filters."
+    "skillNoMatch": "No Skills match the current search.",
+    "selectedSkillCount": "{{count}} selected",
+    "skillNoDescription": "No description.",
+    "skillLoadFailed": "Skills could not be loaded. Try again later.",
+    "skillEmpty": "No Skills are available for this runtime.",
+    "skillHint": "Selected Skills apply to this conversation only."
   }
 }

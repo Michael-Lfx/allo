@@ -1369,6 +1369,53 @@ async fn atomic_turn_claim_has_one_leader_and_existing_receipt_never_readmits_li
 }
 
 #[tokio::test]
+async fn losing_turn_admission_returns_typed_conflict_without_a_delivery_receipt() {
+    let (repo, db) = setup().await;
+    let conversation = make_conversation("typed-turn-admission-conflict");
+    repo.create(&conversation).await.unwrap();
+    let first_operation = "typed-turn-admission-conflict:first";
+    let second_operation = "typed-turn-admission-conflict:second";
+
+    repo.claim_turn_delivery_receipt_and_admit_with_candidate(
+        USER_ID,
+        &conversation.conversation_id,
+        first_operation,
+        &MessageId::new().into_string(),
+        r#"{"content":"first"}"#,
+        0,
+        100,
+    )
+    .await
+    .unwrap();
+
+    let conflict = repo
+        .claim_turn_delivery_receipt_and_admit_with_candidate(
+            USER_ID,
+            &conversation.conversation_id,
+            second_operation,
+            &MessageId::new().into_string(),
+            r#"{"content":"second"}"#,
+            0,
+            101,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        conflict,
+        nomifun_db::DbError::ConversationTurnAdmissionConflict
+    ));
+
+    let loser_receipt: Option<String> = sqlx::query_scalar(
+        "SELECT operation_id FROM conversation_delivery_receipts WHERE operation_id = ?",
+    )
+    .bind(second_operation)
+    .fetch_optional(db.pool())
+    .await
+    .unwrap();
+    assert!(loser_receipt.is_none(), "the losing transaction must roll back its receipt");
+}
+
+#[tokio::test]
 async fn public_turn_claim_and_edit_reservation_have_one_sqlite_winner() {
     let database_root = tempfile::tempdir().unwrap();
     let database_path = database_root.path().join("public-vs-edit-race.sqlite3");
@@ -2389,7 +2436,7 @@ async fn admission_epoch_boundaries_finish_at_i64_max_without_overflow() {
             nomifun_common::now_ms() + 2,
         )
         .await,
-        Err(nomifun_db::DbError::Conflict(_))
+        Err(nomifun_db::DbError::ConversationTurnAdmissionConflict)
     ));
     assert!(
         repo.get_delivery_receipt(

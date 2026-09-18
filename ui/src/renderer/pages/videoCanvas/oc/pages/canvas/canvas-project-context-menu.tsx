@@ -7,6 +7,7 @@ type CanvasProjectContextMenuProps = {
     menu: ContextMenuState | null;
     node: CanvasNodeData | null;
     workspaceMode: CanvasWorkspaceMode;
+    compactCreateMenu?: boolean;
     isProjectLinked: boolean;
     canUndo: boolean;
     canRedo: boolean;
@@ -16,6 +17,7 @@ type CanvasProjectContextMenuProps = {
     onAddNode: (type: CanvasNodeType, position: Position) => void;
     onAddFolder: (position: Position) => void;
     onChooseStyle: () => void;
+    onOpenLibrary: () => void;
     onOpenDirector: (position?: Position) => void;
     onUpload: (nodeId: string | undefined, position: Position) => void;
     onOpenAssets: (position: Position) => void;
@@ -25,6 +27,7 @@ type CanvasProjectContextMenuProps = {
     onPaste: (position: Position) => void;
     onCopyNode: (nodeId: string) => void;
     onDuplicate: (nodeId: string) => void;
+    onCreateGenerationCopy: (nodeId: string) => void;
     onDeleteNode: (nodeId: string) => void;
     onDeleteConnection: (connectionId: string) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
@@ -35,6 +38,7 @@ type CanvasProjectContextMenuProps = {
     onCopyContent: (node: CanvasNodeData | null) => void;
     onCopyMediaUrl: (node: CanvasNodeData | null) => void;
     onSetAssetCategory: (nodeId: string, category: CanvasAssetCategory) => void;
+    onSetTvCover: (nodeId: string, enabled: boolean) => void;
     onToggleFrame: (node: CanvasNodeData) => void;
 };
 
@@ -46,6 +50,7 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             menu={menu}
             node={node}
             workspaceMode={props.workspaceMode}
+            compactCreateMenu={props.compactCreateMenu}
             isProjectLinked={props.isProjectLinked}
             canUndo={props.canUndo}
             canRedo={props.canRedo}
@@ -58,6 +63,7 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
                 if (menu.type === "canvas") props.onAddFolder(menu.position);
             }}
             onChooseStyle={props.onChooseStyle}
+            onOpenLibrary={props.onOpenLibrary}
             onOpenDirector={props.onOpenDirector}
             onUpload={() => props.onUpload(menu.type === "node" ? menu.nodeId : undefined, menuPosition())}
             onOpenAssets={() => props.onOpenAssets(menuPosition())}
@@ -70,6 +76,9 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             }}
             onDuplicate={() => {
                 if (menu.type === "node") props.onDuplicate(menu.nodeId);
+            }}
+            onCreateGenerationCopy={() => {
+                if (menu.type === "node") props.onCreateGenerationCopy(menu.nodeId);
             }}
             onDelete={() => {
                 if (menu.type === "node") props.onDeleteNode(menu.nodeId);
@@ -94,6 +103,9 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             onCopyMediaUrl={() => props.onCopyMediaUrl(node)}
             onSetAssetCategory={(category) => {
                 if (menu.type === "node") props.onSetAssetCategory(menu.nodeId, category);
+            }}
+            onSetTvCover={(enabled) => {
+                if (menu.type === "node") props.onSetTvCover(menu.nodeId, enabled);
             }}
             onToggleFrame={() => {
                 if (node?.type === CanvasNodeType.Frame) props.onToggleFrame(node);

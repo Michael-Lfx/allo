@@ -7,10 +7,10 @@ import { useCanvasStore, type CanvasProject } from "@oc/stores/canvas/use-canvas
 import { useCanvasUiStore } from "@oc/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@oc/lib/canvas/canvas-export";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
-import { resourceFileUrl, resourceIdFromStorageKey } from "@oc/services/api/resources";
-import { resolveBackendApiUrl } from "@oc/stores/use-config-store";
 import { cn } from "@oc/lib/utils";
+import { videoCanvasProjectPath } from "@renderer/pages/videoCanvas/routes";
 
 export function CanvasProjectCard({ project, projectName, variant = "library" }: { project: CanvasProject; projectName?: string; variant?: "library" | "recent" }) {
     useTranslation();
@@ -27,7 +27,7 @@ export function CanvasProjectCard({ project, projectName, variant = "library" }:
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const editing = editingId === project.id;
     const selected = selectedIds.includes(project.id);
-    const open = () => navigate(`/canvas/${project.id}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`);
+    const open = () => navigate(videoCanvasProjectPath(project.id, searchParams.toString()));
     const saveTitle = () => {
         renameProject(project.id, editingTitle);
         stopEditing();
@@ -80,7 +80,7 @@ export function CanvasProjectCard({ project, projectName, variant = "library" }:
                                 menu={{
                                     onClick: ({ domEvent }) => domEvent.stopPropagation(),
                                     items: [
-                                        { key: "export", icon: <Download className="size-3.5" />, label: canvasT("videoCanvas.listCard.export", "导出画布"), onClick: () => void exportCanvasProjects([project], project.title || canvasT("videoCanvas.listCard.exportDefaultName", "影策画布")) },
+                                        { key: "export", icon: <Download className="size-3.5" />, label: canvasT("videoCanvas.listCard.export", "导出画布"), onClick: () => void exportCanvasProjects([project], project.title || canvasT("videoCanvas.listCard.exportDefaultName", "画布")) },
                                         { type: "divider" },
                                         { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: canvasT("videoCanvas.listCard.delete", "删除"), onClick: () => setDeleteIds([project.id]) },
                                     ],
@@ -141,9 +141,7 @@ function ProjectPreview({ project }: { project: CanvasProject }) {
 }
 
 function getNodeMediaUrl(node: CanvasNodeData) {
-    const resourceId = resourceIdFromStorageKey(node.metadata?.storageKey);
-    if (resourceId) return resourceFileUrl(resourceId);
-    return resolveBackendApiUrl(node.metadata?.content || "");
+    return canvasNodeDisplayUrl(node);
 }
 
 function buildNodePreviewLayout(nodes: CanvasNodeData[]) {

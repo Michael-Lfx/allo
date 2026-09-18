@@ -46,6 +46,8 @@ pub struct RunConfig {
     pub model: Option<String>,
     pub provider_id: Option<String>,
     pub harness_profile: Option<String>,
+    /// Repeat each enabled case this many times (default 1).
+    pub n_trials: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,9 +94,13 @@ pub fn completed_case_ids(path: &Path) -> Result<HashSet<String>, RunnerError> {
             continue;
         }
         let value: EvalResult = serde_json::from_str(trimmed)?;
-        ids.insert(value.case_id);
+        ids.insert(resume_key(&value.case_id, value.trial.max(1)));
     }
     Ok(ids)
+}
+
+fn resume_key(case_id: &str, trial: u32) -> String {
+    format!("{case_id}#{trial}")
 }
 
 /// Run all enabled cases through `harness`, writing sanitized JSONL evidence.
@@ -142,9 +148,18 @@ async fn run_manifest(
         HashSet::new()
     };
 
-    let mut enabled: Vec<_> = manifest.cases.iter().filter(|c| c.enabled).collect();
+    let mut enabled: Vec<_> = manifest.cases.iter().filter(|c| c.enabled).cloned().collect();
     if let Some(limit) = config.case_limit {
         enabled.truncate(limit);
+    }
+    let n_trials = config.n_trials.max(1);
+    let mut jobs: Vec<Case> = Vec::new();
+    for case in &enabled {
+        for trial in 1..=n_trials {
+            let mut job = case.clone();
+            job.trial = trial;
+            jobs.push(job);
+        }
     }
     let mut skipped_resume = 0usize;
     let mut passed = 0usize;
@@ -152,7 +167,7 @@ async fn run_manifest(
     let mut completed = 0usize;
     let mut cancelled = false;
 
-    for (offset, case) in enabled.iter().enumerate() {
+    for (offset, case) in jobs.iter().enumerate() {
         if config
             .cancel
             .as_ref()
@@ -165,14 +180,15 @@ async fn run_manifest(
                     case_id: case.id.clone(),
                     category: case.category.clone(),
                     index: offset + 1,
-                    total: enabled.len(),
+                    total: jobs.len(),
                     phase: RunProgressPhase::Cancelled,
                     success: None,
                 });
             }
             break;
         }
-        if already.contains(&case.id) {
+        let trial = case.trial.max(1);
+        if already.contains(&resume_key(&case.id, trial)) {
             skipped_resume += 1;
             continue;
         }
@@ -183,7 +199,7 @@ async fn run_manifest(
                 case_id: case.id.clone(),
                 category: case.category.clone(),
                 index: offset + 1,
-                total: enabled.len(),
+                total: jobs.len(),
                 phase: RunProgressPhase::Started,
                 success: None,
             });
@@ -193,6 +209,11 @@ async fn run_manifest(
         let result = match harness.run_case(case).await {
             Ok(transcript) => {
                 let (success, scorer_results) = score_all(&case.scorers, &transcript);
+                let advisory_results = case
+                    .advisory_scorers
+                    .iter()
+                    .map(|spec| crate::scorer::score_one(spec, &transcript))
+                    .collect();
                 let budget_error = episode_budget_error(case, &transcript);
                 let budget_ok = budget_error.is_none();
                 EvalResult {
@@ -206,6 +227,7 @@ async fn run_manifest(
                     prompt: sanitize_prompt(&case.prompt),
                     success: success && budget_ok,
                     scorer_results,
+                    advisory_results,
                     elapsed_ms: started.elapsed().as_millis(),
                     turns: transcript.turns,
                     tool_call_count: transcript.tool_names.len() as u32,
@@ -224,6 +246,7 @@ async fn run_manifest(
                     trajectory_event_count: transcript.trajectory.len() as u32,
                     artifact_count: transcript.artifacts.len() as u32,
                     conversation_id: transcript.conversation_id.clone(),
+                    trial,
                 }
             }
             Err(err) => EvalResult {
@@ -237,6 +260,7 @@ async fn run_manifest(
                 prompt: sanitize_prompt(&case.prompt),
                 success: false,
                 scorer_results: vec![],
+                advisory_results: vec![],
                 elapsed_ms: started.elapsed().as_millis(),
                 turns: 0,
                 tool_call_count: 0,
@@ -255,6 +279,7 @@ async fn run_manifest(
                 trajectory_event_count: 0,
                 artifact_count: 0,
                 conversation_id: None,
+                trial,
             },
         };
 
@@ -271,7 +296,7 @@ async fn run_manifest(
                 case_id: result.case_id.clone(),
                 category: result.category.clone(),
                 index: offset + 1,
-                total: enabled.len(),
+                total: jobs.len(),
                 phase: RunProgressPhase::Scored,
                 success: Some(result.success),
             });
@@ -282,7 +307,7 @@ async fn run_manifest(
         run_id,
         corpus_version: manifest.corpus_version.clone(),
         suite: manifest.suite.clone(),
-        planned: enabled.len(),
+        planned: jobs.len(),
         completed,
         skipped_resume,
         passed,
@@ -322,6 +347,7 @@ pub async fn run_demo(output: impl AsRef<Path>) -> Result<RunReport, RunnerError
             model: None,
             provider_id: None,
             harness_profile: Some("offline-demo".into()),
+            n_trials: 1,
         },
         Arc::new(OfflineDemoHarness),
     )
@@ -387,6 +413,20 @@ pub fn summarize(inputs: &[PathBuf], output: Option<&Path>) -> Result<Summary, R
     let avg_input_tokens = mean(results.iter().map(|r| r.input_tokens as f64), total);
     let avg_output_tokens = mean(results.iter().map(|r| r.output_tokens as f64), total);
 
+    let mut by_case: BTreeMap<String, Vec<bool>> = BTreeMap::new();
+    for r in &results {
+        by_case.entry(r.case_id.clone()).or_default().push(r.success);
+    }
+    let unique_cases = by_case.len();
+    let n_trials = by_case.values().map(Vec::len).max().unwrap_or(0) as u32;
+    let (pass_at_1, pass_hat_k) = if unique_cases == 0 {
+        (0.0, 0.0)
+    } else {
+        let any = by_case.values().filter(|v| v.iter().any(|ok| *ok)).count() as f64;
+        let all = by_case.values().filter(|v| !v.is_empty() && v.iter().all(|ok| *ok)).count() as f64;
+        (any / unique_cases as f64, all / unique_cases as f64)
+    };
+
     let summary = Summary {
         schema_version: SCHEMA_VERSION,
         scoring_version: SCORING_VERSION.to_owned(),
@@ -401,6 +441,10 @@ pub fn summarize(inputs: &[PathBuf], output: Option<&Path>) -> Result<Summary, R
         avg_elapsed_ms,
         avg_input_tokens,
         avg_output_tokens,
+        unique_cases,
+        n_trials,
+        pass_at_1,
+        pass_hat_k,
     };
 
     if let Some(path) = output {
@@ -467,6 +511,7 @@ mod tests {
                 model: None,
                 provider_id: None,
                 harness_profile: None,
+                n_trials: 1,
             },
             Arc::new(OfflineDemoHarness),
         )
@@ -493,6 +538,7 @@ mod tests {
                 model: None,
                 provider_id: None,
                 harness_profile: None,
+                n_trials: 1,
             },
             Arc::new(OfflineDemoHarness),
         )
@@ -518,6 +564,9 @@ mod tests {
             task_profile: None,
             workspace_files: Default::default(),
             timeout_secs: None,
+            advisory_scorers: vec![],
+            isolation: None,
+            trial: 0,
         };
         let input_heavy = TurnTranscript {
             input_tokens: 50_000,

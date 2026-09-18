@@ -4,6 +4,12 @@
 //! polling is excluded before the guard observes the exact-outcome signal, so
 //! legitimate external waiting remains unaffected while failed polling and
 //! alternating failures stay bounded.
+//!
+//! This guard does **not** catch serial recon of *different* successful tools
+//! (Read A, then Read B, then `git status`). Each outcome signature is unique,
+//! so the cost is a provider round-trip per file rather than a repeated call.
+//! Coding mode owns that policy in [`nomi_coding::CodingProgressGuard`]
+//! (consecutive tour, request-lifetime recon, 1-tool round-trip tax).
 
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},

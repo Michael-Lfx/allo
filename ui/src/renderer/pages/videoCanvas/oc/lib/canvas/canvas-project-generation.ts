@@ -1,14 +1,17 @@
+import { shouldSubmitVideoImagesAsReferences } from "@oc/services/api/video-reference-roles";
 import { type GenerationTask } from "@oc/services/api/task-center";
 import { backendProviderConfig, runBackendGenerationTask } from "@oc/services/api/generation-task";
 import { configuredModelMatchesCapability, defaultConfig, resolveModelRequestConfig, type AiConfig } from "@oc/stores/use-config-store";
-import { resolveImageUrl, uploadImage } from "@oc/services/image-storage";
-import { resolveMediaUrl } from "@oc/services/file-storage";
-import { resourceIdFromStorageKey } from "@oc/services/api/resources";
+import { getImageBlob, resolveImageUrl, uploadImage } from "@oc/services/image-storage";
+import { getMediaBlob, resolveMediaUrl, uploadMediaFile } from "@oc/services/file-storage";
+import { resourceIdFromStorageKey, resourceStorageKey } from "@oc/services/api/resources";
+import { canvasNodeMediaId, canvasNodeReferenceSource, isEphemeralLocalMediaSrc, isLocalIndexedDbStorageKey, persistableCanvasMediaPath } from "@oc/lib/canvas/canvas-media-id";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
+import { canvasMediaSpecsForModel, resolveModelVideoBooleanOptions } from "@oc/lib/model-capabilities";
 import { normalizeVideoDuration } from "@oc/lib/video-generation-options";
 import { isSeedanceVideoConfig } from "@oc/lib/seedance-video";
-import { imageMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
+import { audioMetadata, imageMetadata, videoMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { ensureMediaNodeMinimumSize } from "@oc/lib/canvas/canvas-node-size";
 import type { CanvasNodeGenerationMode } from "@oc/components/canvas/canvas-node-prompt-panel";
 import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, type CanvasImageGenerationType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasVideoEditOperation } from "@oc/types/canvas";
@@ -124,13 +127,14 @@ export function buildImageGenerationMetadata(type: CanvasImageGenerationType, co
 }
 
 export function nodeReferenceImage(node: CanvasNodeData): ReferenceImage | null {
-    if (node.type !== CanvasNodeType.Image || !node.metadata?.content) return null;
+    if (node.type !== CanvasNodeType.Image) return null;
+    const source = canvasNodeReferenceSource(node);
+    if (!source) return null;
     return {
         id: node.id,
         name: `reference-${node.id}.png`,
-        type: node.metadata.mimeType || "image/png",
-        dataUrl: node.metadata.content,
-        storageKey: node.metadata.storageKey,
+        type: node.metadata?.mimeType || "image/png",
+        ...source,
     };
 }
 
@@ -194,8 +198,12 @@ function resolveVideoEditOperation(
     },
 ): CanvasVideoEditOperation {
     const storedOperation = node?.metadata?.videoEditOperation;
+    const imageCount = context?.referenceImages.length || 0;
+    if (shouldSubmitVideoImagesAsReferences({ videoEditOperation: storedOperation }, imageCount)) {
+        return "reference_to_video";
+    }
     // 连接关系是生成时的真实输入，不能让分镜节点残留的文生视频模式丢弃后来连接的参考图。
-    if (storedOperation === "text_to_video" && context?.referenceImages.length) return "image_to_video";
+    if (storedOperation === "text_to_video" && imageCount) return "image_to_video";
     if (storedOperation) return storedOperation;
     if (context?.referenceAudios.length && !context.referenceImages.length && !context.referenceVideos.length) return "audio_to_video";
     if (context?.referenceVideos.length) return "extend";
@@ -236,20 +244,102 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
     return resolveStoredReferenceImages(metadata.references);
 }
 
+function isCanvasMediaNode(node: CanvasNodeData) {
+    return node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio;
+}
+
+function stampCanvasNodeUpload(node: CanvasNodeData, uploaded: { url: string; storageKey: string; width?: number; height?: number; bytes?: number; mimeType?: string; durationMs?: number; hasAudio?: boolean; preview?: { url: string; storageKey: string; width?: number; height?: number; bytes?: number; mimeType?: string } }): CanvasNodeData {
+    const file = {
+        url: uploaded.url,
+        storageKey: uploaded.storageKey,
+        bytes: uploaded.bytes || 0,
+        mimeType: uploaded.mimeType || "application/octet-stream",
+        width: uploaded.width,
+        height: uploaded.height,
+        durationMs: uploaded.durationMs,
+        hasAudio: uploaded.hasAudio,
+        preview: uploaded.preview,
+    };
+    const stamped = node.type === CanvasNodeType.Video
+        ? videoMetadata(file)
+        : node.type === CanvasNodeType.Audio
+            ? audioMetadata(file)
+            : imageMetadata({
+                url: file.url,
+                storageKey: file.storageKey,
+                width: file.width || 1024,
+                height: file.height || 1024,
+                bytes: file.bytes,
+                mimeType: file.mimeType || "image/png",
+            });
+    return { ...node, metadata: { ...node.metadata, ...stamped } };
+}
+
+function withCanonicalCanvasMedia(node: CanvasNodeData): CanvasNodeData {
+    const mediaId = canvasNodeMediaId(node);
+    if (!mediaId) return node;
+    const storageKey = resourceStorageKey(mediaId);
+    const content = persistableCanvasMediaPath(mediaId);
+    if (node.metadata?.mediaId === mediaId && node.metadata.storageKey === storageKey && node.metadata.content === content) return node;
+    return { ...node, metadata: { ...node.metadata, mediaId, storageKey, content } };
+}
+
+/** Copy loopback/file/blob leftovers into `/api/video-canvas/media` so reopen and share keep working. */
+export async function ingestCanvasNodeMedia(node: CanvasNodeData): Promise<CanvasNodeData> {
+    if (!isCanvasMediaNode(node)) return node;
+    const canonical = withCanonicalCanvasMedia(node);
+    if (canvasNodeMediaId(canonical)) return canonical;
+    const storageKey = node.metadata?.storageKey || "";
+    const content = node.metadata?.content || "";
+    if (isLocalIndexedDbStorageKey(storageKey)) {
+        try {
+            const blob = node.type === CanvasNodeType.Image ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
+            if (blob && blob.size > 0) {
+                const uploaded = node.type === CanvasNodeType.Image
+                    ? await uploadImage(blob)
+                    : await uploadMediaFile(blob, node.type === CanvasNodeType.Audio ? "audio" : "video");
+                return stampCanvasNodeUpload(node, uploaded);
+            }
+        } catch (error) {
+            console.warn("[canvas] failed to promote local canvas media", storageKey, error);
+        }
+    }
+    const source = isEphemeralLocalMediaSrc(content) ? content : isEphemeralLocalMediaSrc(storageKey) ? storageKey : "";
+    if (!source) return node;
+    try {
+        const uploaded = node.type === CanvasNodeType.Image
+            ? await uploadImage(source)
+            : await uploadMediaFile(source, node.type === CanvasNodeType.Audio ? "audio" : "video");
+        return stampCanvasNodeUpload(node, uploaded);
+    } catch (error) {
+        console.warn("[canvas] failed to ingest ephemeral canvas media", source.slice(0, 80), error);
+        return node;
+    }
+}
+
 export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
     return Promise.all(
         nodes.map(async (node) => {
-            const content = node.metadata?.content;
-            const storageKey = node.metadata?.storageKey || "";
-            // 远端 `resource:` 媒体保持 HTTP content URL：这里解析会生成一次性
-            // blob: URL 写回节点（再被 PUT 到服务端），展示交给 useNodeResourceUrl
-            // 的即时 URL + 后台缓存。
-            if (resourceIdFromStorageKey(storageKey)) return node;
-            if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveMediaUrl(storageKey, content) } };
-            if (node.type !== CanvasNodeType.Image || !content) return node;
-            if (storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveImageUrl(storageKey, content) } };
-            if (!content.startsWith("data:image/")) return node;
-            return { ...node, metadata: { ...node.metadata, ...imageMetadata(await uploadImage(content)) } };
+            if (!isCanvasMediaNode(node)) return node;
+            const ingested = await ingestCanvasNodeMedia(node);
+            if (canvasNodeMediaId(ingested)) return ingested;
+            const storageKey = ingested.metadata?.storageKey || "";
+            const content = ingested.metadata?.content;
+            if ((ingested.type === CanvasNodeType.Video || ingested.type === CanvasNodeType.Audio) && isLocalIndexedDbStorageKey(storageKey)) {
+                return { ...ingested, metadata: { ...ingested.metadata, content: await resolveMediaUrl(storageKey, content) } };
+            }
+            if (ingested.type === CanvasNodeType.Image && isLocalIndexedDbStorageKey(storageKey)) {
+                return { ...ingested, metadata: { ...ingested.metadata, content: await resolveImageUrl(storageKey, content) } };
+            }
+            if (ingested.type === CanvasNodeType.Image && content?.startsWith("data:image/")) {
+                try {
+                    return { ...ingested, metadata: { ...ingested.metadata, ...imageMetadata(await uploadImage(content)) } };
+                } catch (error) {
+                    console.warn("[canvas] failed to upload inline image data URL", error);
+                    return ingested;
+                }
+            }
+            return ingested;
         }),
     );
 }
@@ -286,16 +376,31 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
     const storedModel = node?.metadata?.model;
     const model = storedModel && configuredModelMatchesCapability(config, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(config, defaultModel, mode) ? defaultModel : fallbackModel;
+    const specs = canvasMediaSpecsForModel(config, model, mode, {
+        size: node?.metadata?.size || config.size || defaultConfig.size,
+        quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
+        seconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
+        vquality: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
+        generateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio,
+        watermark: node?.metadata?.watermark || config.videoWatermark,
+        transparentBackground: node?.metadata?.transparentBackground || config.transparentBackground,
+    });
+    const videoBooleans = resolveModelVideoBooleanOptions(
+        config,
+        model,
+        { videoGenerateAudio: specs.generateAudio, videoWatermark: specs.watermark },
+        { videoGenerateAudio: config.videoGenerateAudio, videoWatermark: config.videoWatermark },
+    );
     return {
         ...config,
         model,
-        quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
-        size: node?.metadata?.size || config.size || defaultConfig.size,
-        transparentBackground: (node?.metadata?.transparentBackground || config.transparentBackground) === "true" ? "true" : "false",
-        videoSeconds: normalizeVideoDuration(node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds),
-        vquality: canonicalizeVideoResolution(model, node?.metadata?.vquality || config.vquality || defaultConfig.vquality),
-        videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
-        videoWatermark: node?.metadata?.watermark || config.videoWatermark || defaultConfig.videoWatermark,
+        quality: mode === "image" ? specs.quality : node?.metadata?.quality || config.quality || defaultConfig.quality,
+        size: mode === "image" || mode === "video" ? specs.size : node?.metadata?.size || config.size || defaultConfig.size,
+        transparentBackground: mode === "image" ? specs.transparentBackground : (node?.metadata?.transparentBackground || config.transparentBackground) === "true" ? "true" : "false",
+        videoSeconds: mode === "video" ? specs.seconds : normalizeVideoDuration(node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds),
+        vquality: mode === "video" ? canonicalizeVideoResolution(model, specs.vquality) : canonicalizeVideoResolution(model, node?.metadata?.vquality || config.vquality || defaultConfig.vquality),
+        videoGenerateAudio: videoBooleans.videoGenerateAudio,
+        videoWatermark: videoBooleans.videoWatermark,
         audioVoice: node?.metadata?.audioVoice || config.audioVoice || defaultConfig.audioVoice,
         audioFormat: node?.metadata?.audioFormat || config.audioFormat || defaultConfig.audioFormat,
         audioSpeed: node?.metadata?.audioSpeed || config.audioSpeed || defaultConfig.audioSpeed,
@@ -311,11 +416,15 @@ export function supportsVideoReferenceAudio(config: AiConfig) {
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
     const configHeight = NODE_DEFAULT_SIZE[CanvasNodeType.Config].height;
-    return nodes.map((node) => {
+    let changed = false;
+    const next = nodes.map((node) => {
         const mediaNode = ensureMediaNodeMinimumSize(node);
         const resizedNode = mediaNode.type === CanvasNodeType.Config && mediaNode.height < configHeight ? { ...mediaNode, height: configHeight } : mediaNode.type === CanvasNodeType.Script && mediaNode.height < NODE_DEFAULT_SIZE[CanvasNodeType.Script].height ? { ...mediaNode, height: NODE_DEFAULT_SIZE[CanvasNodeType.Script].height } : mediaNode;
-        return resizedNode.metadata?.status === "loading" ? { ...resizedNode, metadata: { ...resizedNode.metadata, errorDetails: "正在从任务中心恢复生成状态..." } } : resizedNode;
+        const restored = resizedNode.metadata?.status === "loading" ? { ...resizedNode, metadata: { ...resizedNode.metadata, errorDetails: "正在从任务中心恢复生成状态..." } } : resizedNode;
+        if (restored !== node) changed = true;
+        return restored;
     });
+    return changed ? next : nodes;
 }
 
 export function isGenerationCanceled(error: unknown) {

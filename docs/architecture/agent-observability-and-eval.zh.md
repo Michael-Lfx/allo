@@ -19,14 +19,15 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/debug/session-observations?conversation_id=` | 按会话投影回合列表（摘要 + 顶层 `recorder_health`，不含 request/response 全文；默认 50 条、最多 200 条） |
-| GET | `/api/debug/session-observations/turns/{root_turn_id}?conversation_id=` | 单个回合的 REQUEST → RESPONSE → tools **headers**（无 canonical 正文） |
+| GET | `/api/debug/session-observations/turns/{root_turn_id}?conversation_id=` | 单个回合的投影详情：按 `event_seq` 排序的轻量 timeline、调用 headers 与请求展示元数据（无 canonical 正文） |
 | GET | `/api/debug/session-observations/turns/{root_turn_id}/calls/{model_call_id}?conversation_id=` | 点瓦片才拉的单次 call 正文 |
+| GET | `/api/debug/session-observations/turns/{root_turn_id}/export?conversation_id=` | 下载该用户提示词回合当前保留范围内的完整 JSON 事件文档 |
 
 实现：`nomi-agent-trace`（事件 / capture / DualQueue writer / 投影）→ `nomifun-ai-agent::AgentTraceHub` → `nomifun-conversation::routes_trace`。采集走 `ObservationSession` + `stream_llm`，失败只 warn / `observation/gap`，不打断回合。Delete/Clear/Reset/Shutdown 走 writer ACK；Clear 用 generation bump，Delete 才永久 tombstone。
 
 HTTP 路由只输出 `nomifun-api-types` 中的 Session Observation DTO；Agent 层的投影结构不直接成为 HTTP 类型。投影缺少 `turn/start` 时，fallback 摘要同样跳过 user 消息首个 `[Context]` 文本块，继续选择真实用户文本。普通事件队列溢出会生成 gap；控制事件使用独立有界队列，满时先淘汰一条普通事件，仍无容量则记录控制事件丢失并生成 gap，避免无界内存增长。
 
-投影规则：只按 `event_seq` 排序。`status` 是 Agent 做了什么，`integrity` 是日志缺不缺。工具失败且日志完整 → `status=failed` 且 `integrity=complete`。`integrity=degraded` 仅当：`observation/gap`、JSONL 损坏、或该 turn 已 `turn/end` 后仍缺 `llm/response` / 工具终态。进行中的 call 无 response 标 `interrupted`，不因此把整回合标 degraded。禁止用聊天气泡拼 `messages[]`。Summary 带 `coverage`（当前保留窗口，不是全历史）。
+投影规则：只按 `event_seq` 排序。`status` 是 Agent 做了什么，`integrity` 是日志缺不缺。工具失败且日志完整 → `status=failed` 且 `integrity=complete`。`integrity=degraded` 仅当：`observation/gap`、JSONL 损坏、或该 turn 已 `turn/end` 后仍缺 `llm/response` / 工具终态。进行中的 call 无 response 标 `interrupted`，不因此把整回合标 degraded。单回合详情额外返回不含正文的 timeline：模型响应明确区分工具请求与最终回答，工具生命周期位于响应和下一次模型请求之间；每项带 `event_seq`、相对回合时间和可计算的 duration。请求投影提供公共历史前缀折叠信息及系统提示首次/沿用/变化/不可比较状态。禁止用聊天气泡拼 `messages[]`。Summary 带 `coverage`（当前保留窗口，不是全历史）。
 
 ### UI
 
@@ -34,8 +35,10 @@ HTTP 路由只输出 `nomifun-api-types` 中的 Session Observation DTO；Agent 
 
 - 左列顶：会话四数 + 刷新 + 最新在上|最早在上；写入器 health 与会话 integrity / coverage 次级
 - 回合行带时钟；第 N 轮按时间升序编号
-- 右侧按模型调用展示 REQUEST → RESPONSE → tools；点瓦片才 Call GET
-- 请求 `messages` / `tools` 默认扫描列表（消息最新在上，「原始」才是 `react-json-view-lite`）；系统提示、响应、工具执行仍是文本/对象树；切回对话不 abort poll、不清 LRU
+- 右侧是固定的“回合列表 → 时间线导航栏 → 当前事件详情”工作区：按 `event_seq` 展示紧凑时间线，再按模型调用提供可定位的请求/响应/实际工具详情；模型响应明确标记「请求调用工具」或「最终回答」，不再用 `请求 → 响应 → 工具` 表达时序。工具开始与终态在时间线中视觉合并，详情仍可追溯阶段。
+- 请求 `messages` 默认显示当前请求尾部，历史公共前缀收起在顶部；无法可靠识别时回退完整上下文。系统提示首次默认展开，未变化时收起并标记沿用，变化或不可比较时显式提示；工具定义默认收起，实际使用工具优先
+- 当前回合标题栏提供单回合 JSON 下载；折叠只影响 UI，导出仍包含所有保留的原始事件、辅助调用、工具生命周期与 gap。进行中回合可下载当前已写盘内容，文件状态标记为 `running` / `degraded`。点击后由桌面原生保存对话框或浏览器文件保存选择器让用户选择位置并写入文件，不使用隐式的浏览器默认下载目录
+- 切回对话不 abort poll、不清 LRU；用户离开详情底部时，新事件提示不强制滚动
 
 请求消息的「原始」与「摘要」是两种不同的展示投影：
 
@@ -45,9 +48,15 @@ HTTP 路由只输出 `nomifun-api-types` 中的 Session Observation DTO；Agent 
 
 以上规则属于前端 Trace 展示投影，不改变观测 JSON、`Message` 数据结构、会话持久化、Provider 请求序列化或 KV cache 行为。
 
+### Trace 三栏工作区补充（现行 UI 行为）
+
+当前 Trace 工作区内部保持“回合列表 → 时间线导航栏 → 详情工作区”的三栏结构。宽屏时间线约 288px，收起后切换为固定约 88px 的紧凑轨道，只显示圆形事件图标和相对时间，不渲染会被截断的标题、序号或省略号；完整语义通过展开状态、无障碍名称和左侧图标说明查看。间隔 0s 不单独占行，工具开始与终态可做视觉合并但不改变原始事件；时间线图标含义通过左侧会话统计区的信息入口查看。899px 以下时间线移动到详情顶部，收起态改为横向事件条，避免圆形图标和轮次信息被挤压。
+
+右侧详情不再提供重复的“回合全览”按钮，时间线展开状态本身就是当前回合全览。模型调用列表不再额外渲染重复的分组标题；模型调用信息卡片与当前详情处于同一滚动流中；点击请求、响应或工具阶段后，详情直接插入对应模型调用卡片下方，并在标题中标明模型调用编号和阶段。响应详情只保留一个 inspector，不再重复渲染额外的“最终回复”卡片。系统提示使用一个带折叠控制和操作按钮的内容栏，不再套一层重复的系统提示标题。回合开始、结束和观测缺口没有模型调用归属时，使用独立的固定高度事件详情槽。详情槽内部滚动，展开系统提示、历史消息或工具定义不会改变工作区外部高度。选中状态同步反映在时间线、模型调用卡片和阶段按钮上，轮询不打断用户当前阅读位置。完整的空间、滚动、键盘、Reduced Motion、双主题和验收契约见 [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md) §7.2。
+
 未开启开发者模式时组件不渲染；API 在未开启时返回 403。
 
-支持包在开发者模式开启且指定 `conversation_id` 时，把 `diagnostics/observation/` 下的 JSONL 打进 ZIP 的 `observation/`。
+单回合导出只覆盖当前 retention 窗口，使用已 capture 的事件，因此继续遵循 128 KiB 单事件上限、redaction、截断和媒体 metadata-only；它不是未脱敏 provider wire body，也不改变支持包的最近文件数/4 MiB 诊断包限制。支持包在开发者模式开启且指定 `conversation_id` 时，把 `diagnostics/observation/` 下的 JSONL 打进 ZIP 的 `observation/`。
 
 ## Eval（真实 AgentEngine）
 
@@ -63,27 +72,31 @@ HTTP 路由只输出 `nomifun-api-types` 中的 Session Observation DTO；Agent 
 
 ### 隔离（不得影响真实用户 Agent）
 
-- 工作区：开跑时创建业务命名父目录 `{data_dir}/diagnostics/agent-evals/workspaces/评测-{套件业务名}-{时间戳}-{run短ID}/`，case 在其子目录 `{case_id}/`
+- 工作区：开跑时创建业务命名父目录 `{data_dir}/diagnostics/agent-evals/workspaces/评测-{套件业务名}-{时间戳}-{run短ID}/`，case 在其子目录 `{case_id}/`（`n_trials>1` 时为 `{case_id}__t{n}`）
 - `session.enabled = false`（不写 nomi session 文件）；观测通过显式 `ObservationSession` 写入
 - **不**注册 `AgentRuntimeRegistry`
-- 会话壳：`{case_id} · {category}`，`extra.origin=eval` / `extra.eval=true`，幂等键 `eval:{run_id}:{case_id}`；`extra.workspace` 绑定**父 run 工作区**（使 SessionList 出现独立业务工作区，而非「默认工作空间」）；轨迹投影为 thinking / tool_call / text，并写入 `last_token_usage`；`execute_turn` 包在 `with_flowy_billing_turn_id` 下以便积分芯片
+- 会话壳：`{case_id} · {category}`，`extra.origin=eval` / `extra.eval=true`，幂等键 `eval:{run_id}:{case_id}`（trial>1 为 `eval:{run}:{case}:t{trial}`）；`extra.workspace` 绑定**父 run 工作区**；轨迹投影为 thinking / tool_call / text，并写入 `last_token_usage`；`execute_turn` 包在 `with_flowy_billing_turn_id` 下以便积分芯片
 - Agent 执行 cwd / `write_root` 仍为 case 子目录；`convert.rs` 对 `eval` 会话按 companion 同类规则不标 `is_temporary_workspace`
 - `auto_approve = true`，`write_root` = eval workspace
-- 默认关闭 MCP、browser、computer-use、web search、memory distill、MoA、embedded AgentExecution
+- 隔离 overlay 按套件：`harness_smoke` / `office_core` / `coding_local` 关闭 MCP、browser、computer-use、web search；`browser_smoke` 只开 browser（本地 HTML fixture）；`mcp_fixture` 注入 stdio 假 CRM。仍关闭 memory distill / MoA / embedded AgentExecution
 - 证据 JSONL 不含 workspace 绝对路径；prompt 经 `nomi-redact` 脱敏
-- 完整 trajectory / artifact 不进 JSONL，落在 `{data_dir}/diagnostics/agent-evals/runs/{run_id}/traces/{case_id}.json`
+- 完整 trajectory / artifact 不进 JSONL，落在 `{data_dir}/diagnostics/agent-evals/runs/{run_id}/traces/{case_id}.json`（trial>1 带 `__t{n}`）
 
 ### 套件
 
-评测对象是 **harness / runtime**，不是刷题排行榜。已移除 HumanEval / MBPP / 简单 marker Q&A 作为 live KPI。
+评测对象是 **harness / runtime**，不是刷题排行榜。已移除 HumanEval / MBPP / 简单 marker Q&A 作为 live KPI。旧 id `office_tasks` / `harness_control` / `agent_workflows` 仍可 load（alias）。
 
-| Suite | 来源 |
-| --- | --- |
-| `office_tasks` | 捆绑办公语料（备忘录、纪要、CSV 预算、客户邮件、原地改稿；Office profile，**不是** CodingHarness） |
-| `agent_workflows` | 捆绑多步 agent 语料（多源简报、修测、CSV→JSON、重构+文档、约束编辑） |
-| `aider_polyglot` | [Aider polyglot](https://github.com/Aider-AI/polyglot-benchmark) Python（主 coding-agent 套件：读说明、改 stub、跑测试。去掉 `.meta/example.py`。非官方 Aider 分数） |
-| `classeval` | [ClassEval](https://github.com/FudanSELab/ClassEval)（类级 skeleton + 隐藏 unittest） |
-| `harness_control` | 捆绑 Write/Edit 冒烟 |
+| Suite | 来源 | 层级 |
+| --- | --- | --- |
+| `harness_smoke` | 捆绑 Write/Edit 冒烟（应接近 100%） | 回归 |
+| `office_core` | 捆绑办公语料（结构 oracle；Office profile，**不是** CodingHarness） | 能力 |
+| `coding_local` | 捆绑本地编码（修测 / CSV→JSON / 重构） | 能力 |
+| `browser_smoke` | 本地 HTML fixture + browser 工具 | 能力 |
+| `mcp_fixture` | stdio 假 CRM MCP | 能力 |
+| `private_badcases` | 云端 promoted 同步到本机 private corpus | 私有 |
+| `aider_polyglot` | [Aider polyglot](https://github.com/Aider-AI/polyglot-benchmark) Python | Advanced |
+| `classeval` | [ClassEval](https://github.com/FudanSELab/ClassEval) | Advanced |
+| `harbor_terminal_bench` | Harbor/Docker 占位，`requires_sandbox`，本机不可跑 | 沙箱占位 |
 
 SWE-bench / Terminal-Bench / GAIA / τ-bench / OSWorld 需要 Docker 或评测隔离默认关闭的工具面，**不得**在无沙箱时宣称官方分数。
 
@@ -93,14 +106,20 @@ SWE-bench / Terminal-Bench / GAIA / τ-bench / OSWorld 需要 Docker 或评测�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/debug/agent-evals/suites` | 套件目录与缓存状态 |
+| GET | `/api/debug/agent-evals/suites` | 套件目录（含 `tier` / `default_trials` / `requires_sandbox`） |
 | POST | `/api/debug/agent-evals/datasets/{suite}/pull?limit=` | 下载并缓存 |
-| POST | `/api/debug/agent-evals/runs` | 启动 live 评测（每条 case 绑定 session） |
+| POST | `/api/debug/agent-evals/runs` | 启动 live 评测（`n_trials` 可选） |
 | GET | `/api/debug/agent-evals/runs` | 最近一轮（含进行中） |
-| GET | `/api/debug/agent-evals/runs/{id}` | 单轮快照（进行中含 `current_trace` / `current_conversation_id`） |
-| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/trace` | 该用例完整 trajectory + 工作区产物（相对路径、脱敏） |
-| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/observation` | 与真实会话相同的 Session Observation 投影 |
+| GET | `/api/debug/agent-evals/history` | 本地历史摘要（最多保留 50） |
+| GET | `/api/debug/agent-evals/runs/{a}/diff/{b}` | 两次 run 按 case 对照 |
+| GET | `/api/debug/agent-evals/runs/{id}` | 单轮快照（含 `pass_at_1` / `pass_hat_k` / advisory scorers） |
+| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/trace?trial=` | 该用例完整 trajectory + 工作区产物 |
+| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/observation` | Session Observation 投影 |
 | POST | `/api/debug/agent-evals/runs/{id}/cancel` | 在 **case 边界** 取消 |
+| POST | `/api/debug/agent-evals/report-case` | 手动上报失败回合（excerpt only；需云端登录） |
+| POST | `/api/debug/agent-evals/private/sync` | 拉取 promoted badcase → 本机 private corpus |
+
+云端登记走 FlowyClaw `agent_quality`（不并入 VG 增长事件）：run 摘要与 badcase excerpt。未登录时自动上报跳过；手动上报返回明确错误。默认不上报用户原文。
 
 取消当前正在跑的 case 会等到该 case 结束或超时。进行中再开一轮返回 409。
 
@@ -108,6 +127,9 @@ SWE-bench / Terminal-Bench / GAIA / τ-bench / OSWorld 需要 Docker 或评测�
 
 ```bash
 cargo test -p nomi-agent-eval --all-targets
+
+cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
+  smoke
 
 cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
   demo --output /tmp/agent-eval-demo.jsonl
