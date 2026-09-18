@@ -58,6 +58,8 @@ export type WorkpathSessionListProps = {
   embeddedInPrimarySider?: boolean;
   /** DOM target for the primary sider's fixed workspace heading actions. */
   workspaceActionsTarget?: HTMLElement | null;
+  /** When true, omits the companion group so it can be managed by a separate tab or surface. */
+  hideCompanionGroup?: boolean;
 };
 
 /**
@@ -74,6 +76,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   onBatchModeChange,
   embeddedInPrimarySider = false,
   workspaceActionsTarget = null,
+  hideCompanionGroup = false,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -686,12 +689,14 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
         {/* 桌面伙伴专属工作空间分组（roster-driven，置于项目/工作路径之上）。仅交互式、
             不在此新建；可折叠（状态持久化于 useWorkpathUiState，默认展开）；
             点击伙伴行跳转其唯一会话 /conversation/:id。 */}
-        <CompanionSessionGroup
-          activeConversationId={activeConversationId}
-          onSessionClick={onSessionClick}
-          expanded={ui.companionGroupExpanded}
-          onToggleExpanded={ui.toggleCompanionGroup}
-        />
+        {!hideCompanionGroup && (
+          <CompanionSessionGroup
+            activeConversationId={activeConversationId}
+            onSessionClick={onSessionClick}
+            expanded={ui.companionGroupExpanded}
+            onToggleExpanded={ui.toggleCompanionGroup}
+          />
+        )}
 
         {/* SSH 远程会话分组（设计 §10）：绑定主机的会话不进普通工作会话列表，
             这里按主机二级聚合给它们一个可回访的家。行由 renderSshRow 注入。 */}

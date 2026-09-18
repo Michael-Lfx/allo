@@ -91,7 +91,7 @@ const CompanionChatPanel: React.FC<Props> = ({ conversation, extraTabs }) => {
 
   return renderInExecutionShell(
     <CompanionConversation conversation={conversation} companion={companion} />,
-    true,
+    false,
   );
 };
 

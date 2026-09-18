@@ -12,6 +12,7 @@ import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Attention, Robot } from '@icon-park/react';
+import { SettingConfig } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -38,7 +39,17 @@ interface Props {
   expanded?: boolean;
   /** Toggles the persisted fold state. */
   onToggleExpanded?: () => void;
+  /** When true, omits the section title header row (e.g. inside a dedicated tab). */
+  hideHeader?: boolean;
 }
+
+const MOOD_EMOJIS: Record<string, string> = {
+  happy: '😊',
+  content: '😌',
+  sleepy: '😴',
+  worried: '😟',
+  excited: '✨',
+};
 
 const modelReadyOf = (c: ICompanionWithStatus) => Boolean(c.model?.provider_id && c.model?.model);
 
@@ -60,6 +71,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
   onSessionClick,
   expanded = true,
   onToggleExpanded,
+  hideHeader = false,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -187,8 +199,34 @@ const CompanionSessionGroup: React.FC<Props> = ({
     overflowToggleKey
   );
 
-  // 无伙伴时不渲染分组（避免对不使用伙伴的用户造成噪音；创建后经 WS 刷新即出现）。
-  if (companions.length === 0) return null;
+  // 无伙伴时：若在独立桌宠 Tab 下，提供创建引导空状态；若在混排会话列表中则静默隐藏。
+  if (companions.length === 0) {
+    if (hideHeader) {
+      return (
+        <div className='flex flex-col items-center justify-center p-16px text-center gap-10px rd-10px bg-fill-1 border border-dashed border-[var(--color-border-2)] my-8px'>
+          <div className='text-24px leading-none'>🐱</div>
+          <div className='flex flex-col gap-4px'>
+            <span className='text-12px font-medium text-t-primary'>
+              {t('nomi.companions.emptyTitle', { defaultValue: '还没有桌面伙伴' })}
+            </span>
+            <span className='text-11px text-t-tertiary leading-normal'>
+              {t('nomi.companions.emptyHint', {
+                defaultValue: '创建一个伙伴，给它一个名字和形象，然后配置模型就可以开始对话了。',
+              })}
+            </span>
+          </div>
+          <button
+            type='button'
+            onClick={() => void navigate('/nomi?tab=overview')}
+            className='mt-4px px-12px py-5px text-11px font-medium rd-6px bg-primary-6 text-white hover:bg-primary-5 active:bg-primary-7 border-none cursor-pointer transition-colors flex items-center gap-4px shadow-xs'
+          >
+            <span>{t('nomi.companions.create', { defaultValue: '新建伙伴' })}</span>
+          </button>
+        </div>
+      );
+    }
+    return null;
+  }
 
   if (collapsed) {
     return (
@@ -237,7 +275,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
     setShowAllCompanions((value) => !value);
   };
 
-  const renderCompanion = (c: ICompanionWithStatus) => {
+  const renderCompactCompanion = (c: ICompanionWithStatus) => {
     const active =
       activeConversationId != null &&
       sessionMap.get(c.companion_id) === activeConversationId;
@@ -323,39 +361,202 @@ const CompanionSessionGroup: React.FC<Props> = ({
     );
   };
 
+  const renderRichCard = (c: ICompanionWithStatus) => {
+    const active =
+      activeConversationId != null &&
+      sessionMap.get(c.companion_id) === activeConversationId;
+    const modelReady = modelReadyOf(c);
+    const companionRobots = robotsByCompanion.get(c.companion_id) ?? [];
+    const statusLevel = c.status?.level ?? 1;
+    const levelKey = `nomi.levels.l${Math.min(Math.max(1, statusLevel), 5)}`;
+    const levelTitle = t(levelKey, { defaultValue: '' });
+    const mood = c.status?.mood || 'content';
+    const moodKey = `nomi.moods.${mood}`;
+    const moodText = t(moodKey, { defaultValue: mood });
+    const moodEmoji = (mood && MOOD_EMOJIS[mood]) || '😊';
+    const modelLabel = c.model?.model || t('nomi.chat.modelUnset', { defaultValue: '未配置模型' });
+    const isDesktopOn = Boolean(c.appearance?.companion_enabled);
+
+    return (
+      <React.Fragment key={c.companion_id}>
+        <div
+          onClick={() => void handleOpen(c)}
+          className={classNames(
+            'group relative flex flex-col p-10px rd-12px mb-8px cursor-pointer transition-all box-border min-w-0 border border-solid',
+            active
+              ? '!bg-primary-1/30 !border-primary-3 shadow-sm'
+              : 'bg-fill-1 hover:bg-fill-2 border-[var(--color-border-2)] hover:border-primary-2 active:bg-fill-3'
+          )}
+        >
+          {/* Top row: Avatar + Name + Level Badge */}
+          <div className='flex items-center gap-10px min-w-0'>
+            <div className='relative size-34px shrink-0 flex items-center justify-center'>
+              <CompanionAvatar
+                character={c.character}
+                companionId={c.companion_id}
+                customFigure={customFigureMetaOf(c)}
+                mood={(mood as CompanionMood) || 'content'}
+                activity='idle'
+                size={32}
+              />
+              <span
+                className='absolute -right-1px -bottom-1px w-10px h-10px rd-full border-2px border-solid border-[var(--color-bg-2)]'
+                style={{ background: modelReady ? 'rgb(var(--success-6))' : 'rgb(var(--warning-6))' }}
+                title={modelReady ? undefined : t('nomi.chat.modelUnset')}
+              />
+            </div>
+
+            <div className='flex flex-col gap-2px min-w-0 flex-1'>
+              <div className='flex items-center justify-between gap-4px'>
+                <span
+                  className={classNames(
+                    'text-13px font-600 leading-16px truncate min-w-0',
+                    active ? '!text-primary-6' : 'text-t-primary'
+                  )}
+                >
+                  {c.name}
+                </span>
+                <span className='shrink-0 text-10px px-5px py-0.5px rd-full bg-primary-1 text-primary-6 font-medium border border-solid border-primary-2'>
+                  Lv{statusLevel} {levelTitle}
+                </span>
+              </div>
+              <div className='flex items-center gap-6px text-11px leading-14px text-t-tertiary'>
+                <span className='flex items-center gap-2px text-t-secondary'>
+                  <span>{moodEmoji}</span>
+                  <span>{moodText}</span>
+                </span>
+                {isDesktopOn && (
+                  <span className='text-10px text-success-6 bg-success-1 px-4px py-0.5px rd-3px font-normal'>
+                    {t('nomi.overview.companionOn', { defaultValue: '桌面已显示' })}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Badges row: AI Model + Setting button */}
+          <div className='mt-8px pt-6px border-t border-solid border-[var(--color-border-1)] flex items-center justify-between gap-6px text-10px text-t-tertiary min-w-0'>
+            <div
+              className={classNames(
+                'flex items-center gap-4px px-6px py-2px rd-4px truncate max-w-150px',
+                modelReady ? 'bg-fill-2 text-t-secondary' : 'bg-warning-1 text-warning-6'
+              )}
+              title={modelLabel}
+            >
+              <span
+                className='size-5px rd-full shrink-0'
+                style={{ background: modelReady ? 'rgb(var(--primary-6))' : 'rgb(var(--warning-6))' }}
+              />
+              <span className='truncate'>{modelLabel}</span>
+            </div>
+
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                void navigate(`/nomi?companion=${encodeURIComponent(c.companion_id)}&tab=overview`);
+              }}
+              title={t('nomi.tabs.settings', { defaultValue: '设置' })}
+              className='size-20px flex items-center justify-center rd-4px text-t-tertiary hover:text-t-primary hover:bg-fill-3 transition-colors shrink-0 opacity-70 group-hover:opacity-100 cursor-pointer'
+            >
+              <SettingConfig theme='outline' size={12} fill='currentColor' />
+            </div>
+          </div>
+
+          {/* Bottom stats row: Memories and Skills */}
+          <div className='mt-6px grid grid-cols-2 gap-4px text-10px text-t-tertiary'>
+            <div className='flex items-center gap-4px bg-fill-2/60 px-6px py-2px rd-4px truncate'>
+              <span>🧠</span>
+              <span className='truncate'>
+                <span className='font-600 text-t-primary'>{c.status?.memories_active ?? 0}</span> {t('nomi.overview.memories', { defaultValue: '记忆' })}
+              </span>
+            </div>
+            <div className='flex items-center gap-4px bg-fill-2/60 px-6px py-2px rd-4px truncate'>
+              <span>⚡</span>
+              <span className='truncate'>
+                <span className='font-600 text-t-primary'>{c.status?.skills_active ?? 0}</span> {t('nomi.overview.skillsActive', { defaultValue: '技能' })}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* 机器人对话：归属到该伙伴之下 */}
+        {companionRobots.map((conv) => {
+          const robotId = (conv.extra as { robot_id?: string } | undefined)?.robot_id ?? '';
+          const label = robotNames.get(robotId) ?? t('nomi.robot.group.deviceUnknown');
+          const activeRobot = activeConversationId != null && conv.id === activeConversationId;
+          return (
+            <Tooltip key={conv.id} content={t('nomi.robot.group.deviceTooltip', { robot: label })} position='right' mini>
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openRobotConversation(conv.id);
+                }}
+                className={classNames(
+                  'flex items-center gap-6px shrink-0 rd-8px pl-24px pr-8px py-3px cursor-pointer transition-colors box-border min-w-0 mb-4px',
+                  activeRobot ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+                )}
+              >
+                <span className='size-16px flex items-center justify-center shrink-0 text-t-tertiary'>
+                  <Robot theme='outline' size={12} fill='currentColor' className='block leading-none' />
+                </span>
+                <span
+                  className={classNames(
+                    'text-12px truncate min-w-0',
+                    activeRobot ? '!text-primary-6' : 'text-t-secondary'
+                  )}
+                >
+                  {label}
+                </span>
+              </div>
+            </Tooltip>
+          );
+        })}
+      </React.Fragment>
+    );
+  };
+
+  const renderCompanion = (c: ICompanionWithStatus) => {
+    if (hideHeader) {
+      return renderRichCard(c);
+    }
+    return renderCompactCompanion(c);
+  };
+
   return (
     <div className='min-w-0 mb-2px'>
       {/* 感叹号跟在标题后；黑框提示出现在图标正下方。 */}
-      <div className='pl-10px pr-4px pb-6px flex items-center justify-between gap-8px min-w-0'>
-        <div className='flex items-center gap-4px min-w-0'>
-          <button
-            type='button'
-            aria-expanded={expanded}
-            aria-controls={controlsId}
-            className='sider-section-title appearance-none border-none bg-transparent p-0 text-13px font-[500] leading-none tracking-wide truncate shrink-0 opacity-75 transition-opacity hover:opacity-100 cursor-pointer'
-            onClick={handleGroupToggle}
-          >
-            {t('sessionList.companionGroup')}
-          </button>
-          <Tooltip
-            content={t('sessionList.companionTip')}
-            position='bottom'
-            mini
-            className='sider-tooltip-popup'
-            unmountOnExit
-          >
-            <span
-              role='img'
-              aria-label={t('sessionList.companionTip')}
-              className='inline-flex size-14px shrink-0 items-center justify-center text-t-tertiary opacity-75 hover:opacity-100 cursor-default'
-              onClick={(e) => e.stopPropagation()}
+      {!hideHeader && (
+        <div className='pl-10px pr-4px pb-6px flex items-center justify-between gap-8px min-w-0'>
+          <div className='flex items-center gap-4px min-w-0'>
+            <button
+              type='button'
+              aria-expanded={expanded}
+              aria-controls={controlsId}
+              className='sider-section-title appearance-none border-none bg-transparent p-0 text-13px font-[500] leading-none tracking-wide truncate shrink-0 opacity-75 transition-opacity hover:opacity-100 cursor-pointer'
+              onClick={handleGroupToggle}
             >
-              <Attention theme='outline' size={12} fill='currentColor' className='block leading-none' />
-            </span>
-          </Tooltip>
+              {t('sessionList.companionGroup')}
+            </button>
+            <Tooltip
+              content={t('sessionList.companionTip')}
+              position='bottom'
+              mini
+              className='sider-tooltip-popup'
+              unmountOnExit
+            >
+              <span
+                role='img'
+                aria-label={t('sessionList.companionTip')}
+                className='inline-flex size-14px shrink-0 items-center justify-center text-t-tertiary opacity-75 hover:opacity-100 cursor-default'
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Attention theme='outline' size={12} fill='currentColor' className='block leading-none' />
+              </span>
+            </Tooltip>
+          </div>
+          <span className='text-12px text-t-tertiary leading-none shrink-0'>{companions.length}</span>
         </div>
-        <span className='text-12px text-t-tertiary leading-none shrink-0'>{companions.length}</span>
-      </div>
+      )}
 
       <div
         id={controlsId}

@@ -10,6 +10,7 @@ interface SiderMeetingEntryProps {
   isMobile: boolean;
   isActive: boolean;
   collapsed: boolean;
+  dock?: boolean;
   siderTooltipProps: SiderTooltipProps;
   onClick: () => void;
 }
@@ -18,6 +19,7 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
   isMobile,
   isActive,
   collapsed,
+  dock = false,
   siderTooltipProps,
   onClick,
 }) => {
@@ -37,6 +39,33 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
     const timer = window.setTimeout(() => prefetchMeetingPage(), 250);
     return () => window.clearTimeout(timer);
   }, []);
+
+  if (dock) {
+    return (
+      <Tooltip {...siderTooltipProps} content={t('meeting.title')} position='bottom'>
+        <div
+          className={classNames(
+            'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
+            isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+          )}
+          onClick={onClick}
+          onPointerEnter={() => prefetchMeetingPage()}
+          aria-current={isActive ? 'page' : undefined}
+          data-sider-nav-entry
+          data-active={isActive ? 'true' : 'false'}
+          data-sider-selection-static='true'
+        >
+          <Voice
+            theme='outline'
+            size='15'
+            fill='currentColor'
+            className='block leading-none shrink-0'
+            style={{ lineHeight: 0 }}
+          />
+        </div>
+      </Tooltip>
+    );
+  }
 
   if (collapsed) {
     return (
