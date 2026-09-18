@@ -220,6 +220,7 @@ const NomiSendBox: React.FC<{
    * companion chat, which runs in a fixed yolo mode with a locked model.
    */
   hideModeSelector?: boolean;
+  hideModelSelector?: boolean;
 }> = ({
   conversation_id,
   modelSelection,
@@ -229,6 +230,7 @@ const NomiSendBox: React.FC<{
   dynamicModes,
   turnActivity,
   hideModeSelector,
+  hideModelSelector = false,
 }) => {
   const [workspacePath, setWorkspacePath] = useState('');
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
@@ -398,12 +400,12 @@ const NomiSendBox: React.FC<{
 
   useEffect(() => {
     setActiveChatPopup((current) => {
-      if (current === 'model' && (hideModeSelector || !current_model?.use_model)) return null;
+      if (current === 'model' && (hideModelSelector || !current_model?.use_model)) return null;
       if (current === 'strategy' && !hasStrategySlot) return null;
       if (current === 'context' && !hasContextUsage) return null;
       return current;
     });
-  }, [hasContextUsage, hasStrategySlot, hideModeSelector, current_model?.use_model]);
+  }, [hasContextUsage, hasStrategySlot, hideModelSelector, current_model?.use_model]);
 
   const { atPath, uploadFile, setAtPath, setUploadFile, content, contentRevision, setContent } = useSendBoxDraft(conversation_id);
 
@@ -1651,9 +1653,7 @@ const NomiSendBox: React.FC<{
         : null;
 
     const entries: MobileActionSheetEntry[] = [
-      // Locked surfaces (companion) hide the model + permission entries: model is
-      // pinned to the companion profile and permission is fixed to yolo.
-      ...(hideModeSelector || modelSelectionDisabled
+      ...(hideModelSelector || modelSelectionDisabled
         ? []
         : [
             {
@@ -1851,7 +1851,7 @@ const NomiSendBox: React.FC<{
   }, [conversation_id, t]);
 
   const modelUnavailable =
-    !hideModeSelector &&
+    !hideModelSelector &&
     !modelSelection.isModelCatalogLoading &&
     !modelSelection.isCurrentModelAvailable;
 
@@ -1977,7 +1977,7 @@ const NomiSendBox: React.FC<{
           </div>
         }
         rightTools={
-          hasContextUsage || !hideModeSelector || hasStrategySlot ? (
+          hasContextUsage || !hideModelSelector || hasStrategySlot ? (
             <div
               className='sendbox-responsive-config-group chat-model-picker-config-group'
               data-chat-popup={activeChatPopup ?? undefined}
@@ -2014,7 +2014,7 @@ const NomiSendBox: React.FC<{
                   )}
                 </div>
               )}
-              {!hideModeSelector && (
+              {!hideModelSelector && (
                 <div
                   className='chat-model-picker-slot'
                   data-layout-slot='model'

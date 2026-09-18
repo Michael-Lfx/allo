@@ -33,12 +33,28 @@ interface Props {
  * CompanionChatPanel 持有，保证加载/异常/模型缺失状态也不会丢失执行画布。
  */
 const CompanionConversation: React.FC<Props> = ({ conversation, companion }) => {
-  // 锁定版 modelSelection：current_model = 会话行模型（= profile.model，后端同步保证），
-  // 选择动作空操作（伙伴模型只经 CompanionModelControl → patchCompanion 修改，全局生效）。
-  const lockedSelect = useCallback(async (_provider: IProvider, _modelName: string) => false, []);
+  const { patchCompanion, profile } = companion;
+
+  const handleSelectModel = useCallback(
+    async (provider: IProvider, modelName: string) => {
+      try {
+        await patchCompanion({
+          model: {
+            provider_id: provider.id,
+            model: modelName,
+          },
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [patchCompanion]
+  );
+
   const modelSelection = useNomiModelSelection({
     initialModel: conversation.model,
-    onSelectModel: lockedSelect,
+    onSelectModel: handleSelectModel,
   });
 
   const workspace = conversation.extra?.workspace ?? '';
@@ -50,7 +66,8 @@ const CompanionConversation: React.FC<Props> = ({ conversation, companion }) => 
       modelSelection={modelSelection}
       session_mode='yolo'
       hideModeSelector
-      agent_name={companion.profile?.name}
+      hideModelSelector={false}
+      agent_name={profile?.name}
     />
   );
 };
