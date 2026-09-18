@@ -30,6 +30,7 @@ import { useTranslation } from 'react-i18next';
 // Styles
 import 'uno.css';
 import './styles/arco-override.css';
+import './styles/canvas-utility-shield.css';
 import '@/renderer/components/chat/SendBox/sendbox.css';
 import './styles/themes/index.css';
 

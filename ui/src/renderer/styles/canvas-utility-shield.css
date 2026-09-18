@@ -1,0 +1,39 @@
+/**
+ * 画布移植兼容层 / Canvas utility shield
+ *
+ * 移植的 open-ai-canvas 由 Tailwind v4 驱动，它的 utilities 会在画布 chunk
+ * 加载后全局注入；而应用本体由 UnoCSS 驱动。两套工具类的同名实现不同：
+ * Tailwind 用独立的 `translate` / `rotate` / `scale` 属性，UnoCSS 用
+ * `transform`。同一个元素同时命中两者时会叠加，发生双重位移/旋转/缩放
+ * （表现为 composer 上下文圆点等图标在访问画布后偏移）。
+ *
+ * Tailwind utilities 位于 @layer 中，本文件不加 layer，因此这里的复位
+ * 稳定压过泄漏的 utilities；画布作用域 `.oc-root`（含 portal host）被排除，
+ * 显式的应用样式与内联样式优先级更高，不受影响。
+ */
+
+:where(:not(.oc-root):not(.oc-root *)) {
+  translate: none;
+  rotate: none;
+  scale: none;
+}
+
+/* 反向：画布内以 Tailwind 的独立属性为准，关掉 UnoCSS 的 transform 通道。
+   画布代码按 Tailwind 语义编写，同名 Uno 工具类会把位移/旋转/缩放再叠加一次
+   （hover 等变体特异性更高，故用 !important 复位变量；仅动 --un-*，不碰
+   内联 transform，画布自身的缩放/平移不受影响）。 */
+.oc-root,
+.oc-root * {
+  --un-translate-x: 0 !important;
+  --un-translate-y: 0 !important;
+  --un-translate-z: 0 !important;
+  --un-rotate: 0 !important;
+  --un-rotate-x: 0 !important;
+  --un-rotate-y: 0 !important;
+  --un-rotate-z: 0 !important;
+  --un-skew-x: 0 !important;
+  --un-skew-y: 0 !important;
+  --un-scale-x: 1 !important;
+  --un-scale-y: 1 !important;
+  --un-scale-z: 1 !important;
+}
