@@ -17,7 +17,12 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import quote
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
+from modelscope_site import modelscope_endpoint, modelscope_file_url
 
 DEFAULT_REPO = "flowy2025/flowyaipc"
 DEFAULT_PREFIX = "allo"
@@ -41,13 +46,6 @@ def load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
-
-
-def modelscope_file_url(repo: str, path_in_repo: str) -> str:
-    return (
-        f"https://modelscope.cn/api/v1/models/{repo}/repo"
-        f"?Revision=master&FilePath={quote(path_in_repo, safe='/')}"
-    )
 
 
 def fetch_json(url: str) -> dict:
@@ -108,7 +106,9 @@ def main() -> None:
             f"ERROR: history snapshot version {manifest.get('version')!r} != requested {version!r}"
         )
 
+    hub = modelscope_endpoint()
     print(f"Rollback {channel} -> {version_tag}")
+    print(f"  Hub: {hub}")
     print(f"  Snapshot: {history_url}")
     print(f"  Platforms: {', '.join(sorted((manifest.get('platforms') or {}).keys()))}")
 
@@ -132,7 +132,8 @@ def main() -> None:
     latest_local.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     channel_local.write_text(build_channel_yml(manifest, channel), encoding="utf-8")
 
-    api = HubApi()
+    os.environ["MODELSCOPE_ENDPOINT"] = hub
+    api = HubApi(endpoint=hub)
     api.login(token)
     for local, remote, label in (
         (channel_local, f"{prefix}/channels/{channel}/channel.yml", "channel.yml"),

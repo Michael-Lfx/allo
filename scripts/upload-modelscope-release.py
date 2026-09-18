@@ -22,6 +22,9 @@ Default (no phase flag) runs artifacts then manifests in one process, and never
 writes channel pointers if any artifact upload failed.
 
 Requires ``MODELSCOPE_TOKEN`` and ``pip install modelscope``.
+Hub defaults to international ``https://www.modelscope.ai`` (override with
+``MODELSCOPE_ENDPOINT``). China (``.cn``) and international (``.ai``) tokens
+are not interchangeable.
 """
 from __future__ import annotations
 
@@ -34,7 +37,13 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
+from modelscope_site import modelscope_endpoint, modelscope_file_url
 
 DEFAULT_REPO = "flowy2025/flowyaipc"
 DEFAULT_PREFIX = "allo"
@@ -72,14 +81,6 @@ def load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
-
-
-def modelscope_file_url(repo: str, path_in_repo: str) -> str:
-    """Public ModelScope repo file URL."""
-    return (
-        f"https://modelscope.cn/api/v1/models/{repo}/repo"
-        f"?Revision=master&FilePath={quote(path_in_repo, safe='/')}"
-    )
 
 
 def artifact_basename_from_url(url: str) -> str:
@@ -563,7 +564,9 @@ def main() -> None:
         if args.manifest_only
         else "artifacts+manifest"
     )
+    hub = modelscope_endpoint()
     print(f"Release {version_tag} -> ModelScope {repo}/{prefix}/channels/{channel}/ ({phase_label})")
+    print(f"  Hub: {hub}")
     print(f"  Endpoint: {modelscope_file_url(repo, remote_latest)}")
     if artifact_remotes:
         print(f"  Artifacts ({len(artifact_remotes)}):")
@@ -590,9 +593,10 @@ def main() -> None:
     except ImportError:
         raise SystemExit("ERROR: modelscope package not installed. Run: pip install modelscope")
 
-    api = HubApi()
+    os.environ["MODELSCOPE_ENDPOINT"] = hub
+    api = HubApi(endpoint=hub)
     api.login(token)
-    print(f"\nAuthenticated — uploading to {repo}")
+    print(f"\nAuthenticated — uploading to {repo} via {hub}")
 
     fail_count = 0
     skip_count = 0

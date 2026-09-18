@@ -24,12 +24,12 @@
 --config apps/desktop/tauri.channel.windows.conf.json
 ```
 
-三端 endpoint：
+三端 endpoint（国际站）：
 
 ```text
-.../FilePath=allo/channels/windows/latest.json
-.../FilePath=allo/channels/macos/latest.json
-.../FilePath=allo/channels/linux/latest.json
+https://www.modelscope.ai/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/windows/latest.json
+https://www.modelscope.ai/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/macos/latest.json
+https://www.modelscope.ai/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/linux/latest.json
 ```
 
 旧的共享渠道 `allo/channels/alpha/latest.json` **已废弃**。仍指向 alpha 的旧安装包

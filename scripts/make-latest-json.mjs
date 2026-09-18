@@ -26,6 +26,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_REPO = 'nomifun/nomifun-tauri';
 const DEFAULT_MS_REPO = 'flowy2025/flowyaipc';
 const DEFAULT_MS_PREFIX = 'allo';
+const DEFAULT_MS_ENDPOINT = 'https://www.modelscope.ai';
 const PRODUCT = 'Flowy';
 const ALL_KEYS = ['windows-x86_64', 'windows-aarch64', 'darwin-x86_64', 'darwin-aarch64', 'linux-x86_64', 'linux-aarch64'];
 const ALL_KEYS_SET = new Set(ALL_KEYS);
@@ -37,6 +38,25 @@ const CHANNEL_KEYS = {
 };
 
 const rel = (p) => (p.startsWith(ROOT) ? p.slice(ROOT.length + 1) : p);
+
+function normalizeModelscopeEndpoint(raw) {
+  const value = String(raw || '').trim().replace(/\/+$/, '');
+  if (!value) return DEFAULT_MS_ENDPOINT;
+  const withScheme = value.includes('://') ? value : `https://${value}`;
+  try {
+    const parsed = new URL(withScheme);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'modelscope.ai' || host === 'www.modelscope.ai') return 'https://www.modelscope.ai';
+    if (host === 'modelscope.cn' || host === 'www.modelscope.cn') return 'https://modelscope.cn';
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    throw new Error(`invalid ModelScope endpoint: ${raw}`);
+  }
+}
+
+function isModelscopeUrl(url) {
+  return /modelscope\.(cn|ai)(?:[/:]|$)/i.test(String(url));
+}
 
 function inferHostChannel() {
   if (process.platform === 'win32') return 'windows';
@@ -122,6 +142,12 @@ function flag(name, fallback = undefined) {
 const host = flag('host', 'github');
 const msRepo = flag('ms-repo', DEFAULT_MS_REPO);
 const msPrefix = flag('ms-prefix', DEFAULT_MS_PREFIX);
+const msEndpointArg = flag('ms-endpoint', process.env.MODELSCOPE_ENDPOINT || DEFAULT_MS_ENDPOINT);
+if (typeof msEndpointArg !== 'string') {
+  console.error('✗ --ms-endpoint 需要 URL，例如 https://www.modelscope.ai');
+  process.exit(1);
+}
+const msEndpoint = normalizeModelscopeEndpoint(msEndpointArg);
 const channelArg = flag('channel', inferHostChannel());
 const msChannel = typeof channelArg === 'string' ? channelArg : inferHostChannel();
 try {
@@ -236,7 +262,7 @@ function artifactDownloadUrl(name, platformKey) {
       throw new Error(`unsupported platform key for ModelScope URL: ${platformKey}`);
     }
     const filePath = `${msPrefix}/${folder}/${versionTag}/${name}`;
-    return `https://modelscope.cn/api/v1/models/${msRepo}/repo?Revision=master&FilePath=${filePath}`;
+    return `${msEndpoint}/api/v1/models/${msRepo}/repo?Revision=master&FilePath=${filePath}`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/${name}`;
 }
@@ -415,8 +441,8 @@ if (existsSync(out)) {
           console.warn(`  ! 丢弃遗留产物名条目 ${k}: ${urlName}（需用 Flowy_* 重建）`);
           continue;
         }
-        if (host === 'modelscope' && !String(v.url).includes('modelscope.cn')) continue;
-        if (host === 'github' && String(v.url).includes('modelscope.cn')) continue;
+        if (host === 'modelscope' && !isModelscopeUrl(v.url)) continue;
+        if (host === 'github' && isModelscopeUrl(v.url)) continue;
         manifest.platforms[k] = v;
       }
     } else if (prev.version) {

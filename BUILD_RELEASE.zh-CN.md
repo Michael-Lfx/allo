@@ -10,7 +10,8 @@
 |------|------|
 | 版本号真源 | 根目录 `Cargo.toml` → `[workspace.package].version`（打在本 commit 上） |
 | OTA 渠道 | `windows` / `macos` / `linux`（各自一份 `latest.json`，版本可长期不同步） |
-| ModelScope 仓库 | [flowy2025/flowyaipc](https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo) |
+| ModelScope Hub | 国际站 [`https://www.modelscope.ai`](https://www.modelscope.ai/)（`MODELSCOPE_ENDPOINT`，不是 GitHub secret） |
+| ModelScope 仓库 | [flowy2025/flowyaipc](https://www.modelscope.ai/models/flowy2025/flowyaipc/tree/master/allo) |
 | 客户端拉取端点 | `allo/channels/{windows\|macos\|linux}/latest.json`（构建时用 channel overlay 写入） |
 | Updater 公钥 keyID | `6FD07533C4187B64`（内嵌于 `apps/desktop/tauri.conf.json`） |
 
@@ -56,9 +57,13 @@ allo/
 
 ### 3. ModelScope Token
 
+中国站（`modelscope.cn`）和国际站（`modelscope.ai`）账号、Token 不互通。OTA 默认发国际站。
+
 ```bash
 cp apps/desktop/signing/.env.modelscope.example apps/desktop/signing/.env.modelscope
-# 编辑 .env.modelscope，填入 MODELSCOPE_TOKEN
+# 编辑 .env.modelscope：
+#   MODELSCOPE_ENDPOINT=https://www.modelscope.ai
+#   MODELSCOPE_TOKEN=   # 从 https://www.modelscope.ai/my/myaccesstoken 签发
 ```
 
 ### 4. Windows 构建注意
@@ -246,7 +251,8 @@ git push origin v1.0.6
 - Linux：当前 CI 只打 `linux-x86_64`。
 
 Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（可选）、
-`MODELSCOPE_TOKEN`（推荐放在 `modelscope-alpha` environment）。
+`MODELSCOPE_TOKEN`（推荐放在 `modelscope-alpha` environment，必须是国际站签发）。
+Hub 站点由 workflow 环境变量 `MODELSCOPE_ENDPOINT=https://www.modelscope.ai` 决定，不是 secret。
 
 ---
 
@@ -261,7 +267,7 @@ Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（�
 客户端正式 endpoint 由 channel overlay 写入，例如 Windows：
 
 ```text
-.../FilePath=allo/channels/windows/latest.json
+https://www.modelscope.ai/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/windows/latest.json
 ```
 
 ---
@@ -271,6 +277,7 @@ Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（�
 | 现象 | 处理 |
 |------|------|
 | `MODELSCOPE_TOKEN not set` | 配置 `.env.modelscope` 或导出环境变量 |
+| AccessToken 错误 / token is valid on modelscope.ai | Token 与站点不匹配。国际站 Token 必须配 `MODELSCOPE_ENDPOINT=https://www.modelscope.ai` |
 | `--channel 必须是 windows\|macos\|linux` | 不要再传 `alpha` |
 | `no updater artifacts found` | 确认用了 updater + channel 两份 `--config`，并 `make:latest --collect` |
 | 客户端检查更新失败 | 确认安装包 endpoint 指向正确渠道；公钥匹配 |
@@ -286,6 +293,7 @@ Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（�
 | `apps/desktop/tauri.channel.*.conf.json` | 平台专属 updater endpoint |
 | `apps/desktop/tauri.updater.conf.json` | 启用 `createUpdaterArtifacts` |
 | `apps/desktop/updater/latest.{platform}.json` | 本机维护的分渠道清单 |
+| `scripts/modelscope_site.py` | Hub 站点解析（默认 `https://www.modelscope.ai`） |
 | `scripts/make-latest-json.mjs` | 生成分渠道 `latest.json` |
 | `scripts/upload-modelscope-release.py` | ModelScope 上传 |
 | `scripts/verify-modelscope-release.py` | 发布后校验 |

@@ -6,11 +6,18 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
+from modelscope_site import modelscope_file_url
 
 PLATFORM_FOLDERS = {
     "windows-x86_64": "windows",
@@ -24,12 +31,8 @@ PLATFORM_FOLDERS = {
 PLATFORM_CHANNELS = ("windows", "macos", "linux")
 
 
-def channel_manifest_url(channel: str) -> str:
-    path = f"allo/channels/{channel}/latest.json"
-    return (
-        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo"
-        f"?Revision=master&FilePath={quote(path, safe='/')}"
-    )
+def channel_manifest_url(channel: str, repo: str = "flowy2025/flowyaipc") -> str:
+    return modelscope_file_url(repo, f"allo/channels/{channel}/latest.json")
 
 
 def artifact_basename_from_url(url: str) -> str:

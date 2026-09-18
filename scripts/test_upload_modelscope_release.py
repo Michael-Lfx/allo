@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,11 +61,11 @@ class UploadHelpersTest(unittest.TestCase):
                 "version": "1.2.3",
                 "platforms": {
                     "windows-x86_64": {
-                        "url": "https://modelscope.cn/api/v1/models/r/repo?FilePath=allo/windows/v1.2.3/Flowy_1.2.3_x64-setup.exe",
+                        "url": "https://www.modelscope.ai/api/v1/models/r/repo?FilePath=allo/windows/v1.2.3/Flowy_1.2.3_x64-setup.exe",
                         "signature": "s",
                     },
                     "windows-aarch64": {
-                        "url": "https://modelscope.cn/api/v1/models/r/repo?FilePath=allo/windows/v1.2.3/Flowy_1.2.3_aarch64-setup.exe",
+                        "url": "https://www.modelscope.ai/api/v1/models/r/repo?FilePath=allo/windows/v1.2.3/Flowy_1.2.3_aarch64-setup.exe",
                         "signature": "s",
                     },
                 },
@@ -78,7 +79,7 @@ class UploadHelpersTest(unittest.TestCase):
             "version": "1.1.1",
             "platforms": {
                 "windows-x86_64": {
-                    "url": "https://modelscope.cn/api/v1/models/r/repo?FilePath=allo/windows/v1.1.1/Flowy_1.1.1_x64-setup.exe",
+                    "url": "https://www.modelscope.ai/api/v1/models/r/repo?FilePath=allo/windows/v1.1.1/Flowy_1.1.1_x64-setup.exe",
                     "signature": "s",
                 }
             },
@@ -103,6 +104,27 @@ class UploadHelpersTest(unittest.TestCase):
                 mod.sha256_file(path),
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             )
+
+    def test_file_url_defaults_to_international_hub(self):
+        saved_endpoint = os.environ.pop("MODELSCOPE_ENDPOINT", None)
+        saved_domain = os.environ.pop("MODELSCOPE_DOMAIN", None)
+        try:
+            url = mod.modelscope_file_url("flowy2025/flowyaipc", "allo/channels/windows/latest.json")
+            self.assertTrue(url.startswith("https://www.modelscope.ai/api/v1/models/flowy2025/flowyaipc/repo"))
+            self.assertIn("FilePath=allo/channels/windows/latest.json", url)
+        finally:
+            if saved_endpoint is not None:
+                os.environ["MODELSCOPE_ENDPOINT"] = saved_endpoint
+            if saved_domain is not None:
+                os.environ["MODELSCOPE_DOMAIN"] = saved_domain
+
+    def test_file_url_honors_china_endpoint(self):
+        url = mod.modelscope_file_url(
+            "flowy2025/flowyaipc",
+            "allo/channels/windows/latest.json",
+            endpoint="https://modelscope.cn",
+        )
+        self.assertTrue(url.startswith("https://modelscope.cn/api/v1/models/"))
 
 
 if __name__ == "__main__":

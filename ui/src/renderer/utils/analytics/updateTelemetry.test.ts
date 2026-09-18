@@ -96,7 +96,7 @@ describe('update telemetry', () => {
       duration_ms: 421,
       from_version: '1.0.0',
       to_version: '1.1.0',
-      cdn_host: 'modelscope.cn',
+      cdn_host: 'modelscope.ai',
       network_class: 'fast',
     });
     expect(queued[2]?.properties.bytes_total).toBe(12_345_678);

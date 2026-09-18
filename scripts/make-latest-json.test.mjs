@@ -38,7 +38,7 @@ describe('make:latest --from-dir', () => {
         '--channel-yml',
         channelYml,
       ],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: { ...process.env, MODELSCOPE_ENDPOINT: 'https://www.modelscope.ai' } },
     );
 
     expect(result.status).toBe(0);
@@ -49,5 +49,6 @@ describe('make:latest --from-dir', () => {
     expect(manifest.platforms['windows-aarch64'].signature).toBe('arm-sig');
     expect(manifest.platforms['windows-x86_64'].url).toContain(x64);
     expect(manifest.platforms['windows-aarch64'].url).toContain(arm);
+    expect(manifest.platforms['windows-x86_64'].url).toContain('www.modelscope.ai');
   });
 });

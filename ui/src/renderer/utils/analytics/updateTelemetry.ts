@@ -39,7 +39,7 @@ function normalizeVersion(version?: string | null): string | null {
 }
 
 /** ModelScope is the only OTA origin today; keep host explicit for CDN iteration. */
-export const UPDATE_CDN_HOST = 'modelscope.cn';
+export const UPDATE_CDN_HOST = 'modelscope.ai';
 
 /** Below this sustained rate, mark download/check as slow for growth dashboards. */
 export const SLOW_DOWNLOAD_BPS = 256_000; // 250 KiB/s

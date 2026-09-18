@@ -67,7 +67,8 @@ would only make every pull request red without fixing anything. Add each one to
 ## ModelScope platform release workflow (`release-modelscope.yml`)
 
 `release-modelscope.yml` publishes per-OS OTA channels to
-`flowy2025/flowyaipc` under `allo/`.
+[`flowy2025/flowyaipc`](https://www.modelscope.ai/models/flowy2025/flowyaipc/tree/master/allo)
+on the **international** ModelScope hub (`https://www.modelscope.ai`).
 
 ### Trigger
 
@@ -97,7 +98,14 @@ release-context
 ### Secrets
 
 - `TAURI_SIGNING_PRIVATE_KEY` (+ optional password): build jobs
-- `MODELSCOPE_TOKEN`: publish jobs only (`modelscope-alpha` environment)
+- `MODELSCOPE_TOKEN`: publish jobs only (`modelscope-alpha` environment). Must be
+  issued by the same hub as `MODELSCOPE_ENDPOINT`.
+
+## Hub
+
+- `MODELSCOPE_ENDPOINT`: workflow env (not a secret), currently
+  `https://www.modelscope.ai`. China (`.cn`) and international (`.ai`) tokens
+  are not interchangeable.
 
 ### Ops
 

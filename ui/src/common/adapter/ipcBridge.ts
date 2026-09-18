@@ -1288,7 +1288,7 @@ export const application = {
 // each call with `isTauriRuntime()`, so the WebUI browser degrades to the safe fallback.
 
 /** Releases page shown in the modal's manual-download fallback (WebUI only). */
-const MODELSCOPE_RELEASE_PAGE = 'https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo';
+const MODELSCOPE_RELEASE_PAGE = 'https://www.modelscope.ai/models/flowy2025/flowyaipc/tree/master/allo';
 
 export const update = {
   open: noopEmitter<{ source?: 'menu' | 'about' | 'startup' | 'interval' | 'titlebar' | 'modal' }>(),

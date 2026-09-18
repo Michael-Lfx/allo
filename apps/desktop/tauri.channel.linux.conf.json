@@ -3,7 +3,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/linux/latest.json"
+        "https://www.modelscope.ai/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/linux/latest.json"
       ]
     }
   }
