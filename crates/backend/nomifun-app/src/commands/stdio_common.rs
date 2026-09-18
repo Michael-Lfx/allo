@@ -17,7 +17,7 @@ use nomifun_common::{
     LoopbackCapabilityClaims, LoopbackCapabilityError,
     LoopbackCapabilityRenewalRequest, unix_time_secs,
 };
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
@@ -82,11 +82,11 @@ impl ForwardToolOutcome {
 pub(crate) fn into_mcp_tool_result(outcome: ForwardToolOutcome) -> CallToolResult {
     let (text, is_error) = outcome.into_parts();
     if !text.contains("_mcp_images") {
-        return call_tool_result(vec![Content::text(text)], is_error);
+        return call_tool_result(vec![ContentBlock::text(text)], is_error);
     }
 
     let parsed: Option<serde_json::Value> = serde_json::from_str(&text).ok();
-    let images: Vec<Content> = parsed
+    let images: Vec<ContentBlock> = parsed
         .as_ref()
         .and_then(|value| value.get("_mcp_images"))
         .and_then(serde_json::Value::as_array)
@@ -98,13 +98,13 @@ pub(crate) fn into_mcp_tool_result(outcome: ForwardToolOutcome) -> CallToolResul
                     let mime = image
                         .get("mime_type")
                         .and_then(serde_json::Value::as_str)?;
-                    Some(Content::image(data.to_owned(), mime.to_owned()))
+                    Some(ContentBlock::image(data.to_owned(), mime.to_owned()))
                 })
                 .collect()
         })
         .unwrap_or_default();
     if images.is_empty() {
-        return call_tool_result(vec![Content::text(text)], is_error);
+        return call_tool_result(vec![ContentBlock::text(text)], is_error);
     }
 
     let text_out = match parsed {
@@ -114,12 +114,12 @@ pub(crate) fn into_mcp_tool_result(outcome: ForwardToolOutcome) -> CallToolResul
         }
         _ => text,
     };
-    let mut content = vec![Content::text(text_out)];
+    let mut content = vec![ContentBlock::text(text_out)];
     content.extend(images);
     call_tool_result(content, is_error)
 }
 
-fn call_tool_result(content: Vec<Content>, is_error: bool) -> CallToolResult {
+fn call_tool_result(content: Vec<ContentBlock>, is_error: bool) -> CallToolResult {
     if is_error {
         CallToolResult::error(content)
     } else {

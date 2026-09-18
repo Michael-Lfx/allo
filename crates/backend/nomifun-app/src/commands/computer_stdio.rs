@@ -25,7 +25,7 @@ use nomi_config::config::ComputerConfig;
 use nomi_tools::Tool;
 use nomi_types::tool::ToolResult;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::{schemars, service::ServiceExt, tool, tool_router, transport};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -63,9 +63,9 @@ struct ComputerStdioServer {
 /// Translate a `ComputerTool` `ToolResult` into an MCP `CallToolResult`: the text
 /// content plus any images (screenshots / Set-of-Marks overlay) as image blocks.
 fn to_mcp(tr: ToolResult) -> CallToolResult {
-    let mut content = vec![Content::text(tr.content)];
+    let mut content = vec![ContentBlock::text(tr.content)];
     for img in tr.images {
-        content.push(Content::image(img.data, img.media_type));
+        content.push(ContentBlock::image(img.data, img.media_type));
     }
     if tr.is_error {
         CallToolResult::error(content)
