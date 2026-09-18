@@ -8,7 +8,7 @@
  * Provider key is read from the Hermes attachments config into memory only
  * and never printed.
  */
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import type { RunEvent } from "@flowy-agent-store/protocol";
 
 const HERMES_CONFIG = "C:/Users/15165/AppData/Local/hermes/attachments/config.toml";
@@ -39,10 +39,10 @@ async function postJson(base: string, path: string, body: unknown, connectionId?
   return { json: text ? JSON.parse(text) : null, headers: headersOut };
 }
 
-const launched = await launchClient({
+const harness = await launchHarness({
   client: { name: "sdk-live-follow", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 const base = `http://${server.readiness.host}:${server.readiness.port}`;
 console.log(`LISTENING ${base}`);
 try {
@@ -52,16 +52,16 @@ try {
     api_key: apiKey, models: ["mimo-v2.5"], enabled: true,
   });
   console.log("OK provider");
-  const connectionId = launched.initializeResult.connection_id;
+  const connectionId = harness.handshake.connection_id;
 
-  const imp = await client.runImport({ source_path: FIXTURE, source_kind: "codebuddy-plugin" });
+  const imp = await harness.runImport({ source_path: FIXTURE, source_kind: "codebuddy-plugin" });
   const snapshotId = imp.snapshot_id;
   console.log(`OK import snapshot=${snapshotId}`);
-  await client.runInstall({ snapshot_id: snapshotId });
+  await harness.runInstall({ snapshot_id: snapshotId });
   console.log("OK install");
   void connectionId;
 
-  const receipt = await client.runs.agent({
+  const receipt = await harness.runs.agent({
     agentId: "",
     goal: "用一句话介绍你自己（中文，不要调用任何工具）。",
     mentions: [{ kind: "agent", id: AGENT_MENTION }],
@@ -71,15 +71,15 @@ try {
   void receipt;
 
   const pushed: RunEvent[] = [];
-  const sub = await client.runs.follow(receipt.run_id);
+  const sub = await harness.runs.follow(receipt.run_id);
   sub.onEvent((event) => pushed.push(event));
   sub.onResync((params) => console.log(`resync notice: ${params.reason}`));
 
   const deadline = Date.now() + 8 * 60 * 1000;
-  let view = await client.runs.get(receipt.run_id);
+  let view = await harness.runs.get(receipt.run_id);
   while (!["completed", "failed", "cancelled"].includes(view.status) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10000));
-    view = await client.runs.get(receipt.run_id);
+    view = await harness.runs.get(receipt.run_id);
     console.log(`poll status=${view.status} pushed=${pushed.length} cursor=${sub.lastSequence}`);
   }
   console.log(`FINAL status=${view.status} pushed=${pushed.length}`);
@@ -98,6 +98,6 @@ try {
   await sub.close();
   console.log("LIVE-FOLLOW PASS");
 } finally {
-  await launched.close();
+  await harness.close();
   console.log("closed");
 }

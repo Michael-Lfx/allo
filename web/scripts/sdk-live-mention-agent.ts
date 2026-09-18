@@ -1,7 +1,7 @@
 /** WebUI 的 `@专家` 调用形状在真机上是否生效。
  *
  * WebUI 的 `@` 走的是 `appStore.ts` 里那条分支：只要 mention 里有 `kind === "agent"`，
- * 就调 `client.runs.agent({ agentId: "", goal, mentions })`——**一次 Agent Run**，
+ * 就调 `harness.runs.agent({ agentId: "", goal, mentions })`——**一次 Agent Run**，
  * 不是 `conversation/create({ agentId })`。这个脚本只验证那一件事，顺带把
  * 「未安装的专家」与「团 mention」两条边界用真机钉住。
  *
@@ -9,7 +9,7 @@
  *   AGENT_STORE_BIN=.../target/debug/agent-store.exe bun scripts/sdk-live-mention-agent.ts
  */
 import path from "node:path";
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import type { MentionRef } from "@flowy-agent-store/protocol";
 
 let failures = 0;
@@ -19,11 +19,11 @@ function check(name: string, ok: boolean, detail?: unknown): void {
   if (!ok) failures += 1;
 }
 
-const launched = await launchClient({
+const harness = await launchHarness({
   requestTimeoutMs: 300_000,
   client: { name: "sdk-live-mention-agent", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 console.log(`LISTENING ${server.readiness.host}:${server.readiness.port} data=${server.dataDir}`);
 
 try {
@@ -34,16 +34,16 @@ try {
       import.meta.dir,
       "../../crates/backend/nomifun-importer/tests/fixtures/software-company",
     );
-  const imported = await client.runImport({
+  const imported = await harness.runImport({
     source_path: sourcePath,
     source_kind: "codebuddy-plugin",
   });
-  const installed = await client.runInstall({ snapshot_id: imported.snapshot_id });
+  const installed = await harness.runInstall({ snapshot_id: imported.snapshot_id });
   console.log(
     `INSTALL status=${imported.status} errors=${JSON.stringify(installed.errors)} outcomes=${installed.outcomes?.length ?? 0}`,
   );
 
-  const agents = await client.agents.list();
+  const agents = await harness.agents.list();
   console.log(`AGENTS ${agents.map((agent) => `${agent.id}|preset=${agent.preset_id ?? "none"}`).join(", ")}`);
   const target = agents.find((agent) => agent.name.includes("architect")) ?? agents[0];
   if (!target) {
@@ -56,7 +56,7 @@ try {
     //    只读宿主 DB 的 provider 注册表，而 provider 是**按需注册**的。现在回退也读
     //    `~/.agent-store/config.toml` 的 `default_model`（与会话 / 团同源），这条就成了判据。
     try {
-      const fresh = await client.runs.agent({ agentId: "", goal: "x", mentions: [mention] });
+      const fresh = await harness.runs.agent({ agentId: "", goal: "x", mentions: [mention] });
       check("MA-001.fresh-host-agent-run", Boolean(fresh.run_id), {
         run_id: fresh.run_id,
         status: fresh.status,
@@ -69,13 +69,13 @@ try {
 
     // ① WebUI 的真实顺序：**先有会话**（创建会话会按需把 config.toml 的 provider 注册进库），
     //    再在这个会话里 `@专家`。
-    const conversation = await client.conversations.create({});
+    const conversation = await harness.conversations.create({});
     check("MA-002.conversation-registers-the-provider", Boolean(conversation.model?.model), {
       conversation_id: conversation.conversation_id,
       model: conversation.model,
     });
 
-    const receipt = await client.runs.agent({
+    const receipt = await harness.runs.agent({
       agentId: "",
       goal: "用一句话说明你的职责。",
       mentions: [mention],
@@ -92,7 +92,7 @@ try {
   //    两种码要分清：**id 根本不存在 ⇒ `not_found`**；**id 存在但没有 preset（未 install）⇒
   //    `agent_not_installed`**。文档此前只写了后者，真机第一次跑就暴露了这个差别。
   try {
-    await client.runs.agent({
+    await harness.runs.agent({
       agentId: "",
       goal: "x",
       mentions: [{ kind: "agent", id: "wb-not-installed" }],
@@ -108,10 +108,10 @@ try {
 
   // ③ 「@专家团」在协议层不存在：`MentionKind` 只有 agent / skill / connector，
   //    所以即使硬塞一个 team mention，也只会是 wire 层拒绝。
-  const teams = await client.teams.list();
+  const teams = await harness.teams.list();
   console.log(`TEAMS ${teams.map((team) => `${team.id}|${team.name}`).join(", ")}`);
   try {
-    await client.runs.agent({
+    await harness.runs.agent({
       agentId: "",
       goal: "x",
       mentions: [{ kind: "team", id: teams[0]?.id ?? "wb-team" } as unknown as MentionRef],

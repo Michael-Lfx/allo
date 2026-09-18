@@ -16,7 +16,7 @@
 import path from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { Database } from "bun:sqlite";
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {
@@ -32,11 +32,11 @@ function codeOf(caught: unknown): string {
   return (caught as { code?: string } | null)?.code ?? String(caught).slice(0, 160);
 }
 
-const launched = await launchClient({
+const harness = await launchHarness({
   requestTimeoutMs: 300_000,
   client: { name: "sdk-live-send-model", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 console.log(`LISTENING ${server.readiness.host}:${server.readiness.port} data=${server.dataDir}`);
 
 try {
@@ -47,16 +47,16 @@ try {
       import.meta.dir,
       "../../crates/backend/nomifun-importer/tests/fixtures/software-company",
     );
-  const imported = await client.runImport({ source_path: sourcePath, source_kind: "codebuddy-plugin" });
-  const installed = await client.runInstall({ snapshot_id: imported.snapshot_id });
-  const agents = await client.agents.list();
+  const imported = await harness.runImport({ source_path: sourcePath, source_kind: "codebuddy-plugin" });
+  const installed = await harness.runInstall({ snapshot_id: imported.snapshot_id });
+  const agents = await harness.agents.list();
   const target = agents.find((agent) => agent.name.includes("architect")) ?? agents[0];
   console.log(
     `INSTALL status=${imported.status} errors=${JSON.stringify(installed.errors)} agents=${agents.length}`,
   );
 
   // ── 挑第二个模型：必须是与会话当前模型**不同名字**的一项（同名切换不算切换） ─────────
-  const options = await client.conversations.modelOptions();
+  const options = await harness.conversations.modelOptions();
   const candidates = options.providers.flatMap((provider) =>
     provider.models.map((model) => ({ provider: provider.name, model: model.name })),
   );
@@ -68,8 +68,8 @@ try {
   //    优先挑 **mimo 家族**的另一个模型：本机实测 `opencode/big-pickle` 会让 attempt
   //    `Agent attempt timed out`（与本次改动无关——只带等级的对照变体是 completed），
   //    换一个能跑的模型能让读数干净些；判据本身只看会话行，不看轮次成败。
-  const switchedChat = await client.conversations.create({ name: "switch smoke" });
-  const before = await client.conversations.get(switchedChat.conversation_id);
+  const switchedChat = await harness.conversations.create({ name: "switch smoke" });
+  const before = await harness.conversations.get(switchedChat.conversation_id);
   const second =
     candidates.find((candidate) => candidate.model !== before.model.model && candidate.model.includes("mimo")) ??
     candidates.find((candidate) => candidate.model !== before.model.model) ??
@@ -81,7 +81,7 @@ try {
       current: before.model,
     });
   } else {
-    await client.conversations.send(
+    await harness.conversations.send(
       switchedChat.conversation_id,
       "只回一个字：好。",
       `sm-switch-${Date.now()}`,
@@ -90,7 +90,7 @@ try {
         reasoningEffort: "xhigh",
       },
     );
-    const after = await client.conversations.get(switchedChat.conversation_id);
+    const after = await harness.conversations.get(switchedChat.conversation_id);
     check("SM-001.send-switches-the-model", after.model.model === second.model, {
       from: before.model.model,
       to: after.model.model,
@@ -105,10 +105,10 @@ try {
   }
 
   // ② 词表校验在写库之前：非法等级必须 invalid_request，且会话值不变
-  const invalidChat = await client.conversations.create({ name: "invalid effort smoke" });
-  const beforeInvalid = await client.conversations.get(invalidChat.conversation_id);
+  const invalidChat = await harness.conversations.create({ name: "invalid effort smoke" });
+  const beforeInvalid = await harness.conversations.get(invalidChat.conversation_id);
   try {
-    await client.conversations.send(
+    await harness.conversations.send(
       invalidChat.conversation_id,
       "不该发出去",
       `sm-invalid-${Date.now()}`,
@@ -116,7 +116,7 @@ try {
     );
     check("SM-003.invalid-effort-refused", false, "reasoning_effort=ultra was accepted");
   } catch (caught) {
-    const afterInvalid = await client.conversations.get(invalidChat.conversation_id);
+    const afterInvalid = await harness.conversations.get(invalidChat.conversation_id);
     const code = codeOf(caught);
     check("SM-003.invalid-effort-refused", code === "invalid_request", { code });
     check(
@@ -127,18 +127,18 @@ try {
   }
 
   // ③ 忙判定：会话正跑着一轮时，带切换的 send 必须 conflict（不是把运行时拆掉）
-  const busyChat = await client.conversations.create({ name: "busy smoke" });
-  await client.conversations.send(
+  const busyChat = await harness.conversations.create({ name: "busy smoke" });
+  await harness.conversations.send(
     busyChat.conversation_id,
     "从 1 数到 60，每个数字单独一行。",
     `sm-busy-first-${Date.now()}`,
   );
-  const processingNow = (await client.conversations.get(busyChat.conversation_id)).is_processing;
+  const processingNow = (await harness.conversations.get(busyChat.conversation_id)).is_processing;
   try {
-    await client.conversations.send(busyChat.conversation_id, "换模型", `sm-busy-second-${Date.now()}`, {
+    await harness.conversations.send(busyChat.conversation_id, "换模型", `sm-busy-second-${Date.now()}`, {
       reasoningEffort: "low",
     });
-    const settled = await client.conversations.get(busyChat.conversation_id);
+    const settled = await harness.conversations.get(busyChat.conversation_id);
     observe("SM-005.busy-refuses-the-switch", {
       means: "第二次 send 被受理了——若首轮此刻已跑完（is_processing=false），这只是竞态，不是缺陷",
       processing_at_first_check: processingNow,
@@ -152,22 +152,22 @@ try {
       means: "换模型会拆运行时，所以轮中必须拒绝（send 不是裸 update）",
     });
   }
-  await client.conversations.cancel(busyChat.conversation_id).catch(() => undefined);
+  await harness.conversations.cancel(busyChat.conversation_id).catch(() => undefined);
 
   // ④ 普通发送（不带这两个字段）不改会话设置
-  const plainChat = await client.conversations.create({
+  const plainChat = await harness.conversations.create({
     name: "plain smoke",
     model: second ? { provider_id: second.provider, model: second.model } : undefined,
     reasoningEffort: "high",
   });
-  await client.conversations.send(plainChat.conversation_id, "只回一个字：好。", `sm-plain-${Date.now()}`);
-  const plain = await client.conversations.get(plainChat.conversation_id);
+  await harness.conversations.send(plainChat.conversation_id, "只回一个字：好。", `sm-plain-${Date.now()}`);
+  const plain = await harness.conversations.get(plainChat.conversation_id);
   check(
     "SM-006.a-plain-send-keeps-the-conversation-settings",
     plain.reasoning_effort === "high" && plain.model.model === (second?.model ?? plain.model.model),
     { model: plain.model.model, reasoning_effort: plain.reasoning_effort ?? null },
   );
-  await client.conversations.cancel(plainChat.conversation_id).catch(() => undefined);
+  await harness.conversations.cancel(plainChat.conversation_id).catch(() => undefined);
 
   // ⑤ agent/run：显式模型必须**真的被解析**——不存在的 provider 要以结构化错误失败。
   //    若这个字段被忽略，运行会照常成功，那正是本方案要防的"设了等于没设"。
@@ -176,7 +176,7 @@ try {
   } else {
     const mention = { kind: "agent", id: target.id } as const;
     try {
-      await client.runs.agent({
+      await harness.runs.agent({
         agentId: "",
         goal: "x",
         mentions: [mention],
@@ -196,7 +196,7 @@ try {
 
     // 非法等级同样必须在运行入口被拒（早于任何模板物化）。
     try {
-      await client.runs.agent({
+      await harness.runs.agent({
         agentId: "",
         goal: "x",
         mentions: [mention],
@@ -220,7 +220,7 @@ try {
     };
     let runId: string | null = null;
     try {
-      const receipt = await client.runs.agent({
+      const receipt = await harness.runs.agent({
         agentId: "",
         goal: "用一句话说明你的职责。",
         mentions: [mention],

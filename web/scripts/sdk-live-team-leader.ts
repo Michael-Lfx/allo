@@ -21,7 +21,7 @@
  *          当判据。**2b 要证明的是「客户端首轮能够触发委派」**，由 TL-004 的事件证据与 TL-005 覆盖。
  */
 import path from "node:path";
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import type { ConversationEvent } from "@flowy-agent-store/protocol";
 
 let failures = 0;
@@ -37,16 +37,16 @@ const INSTALL_TIMEOUT_MS = 300_000;
 /** 内置市场源是**异步**注册的（冷启动要几十秒），所以这里是轮询而不是一次读取。 */
 const MARKET_TIMEOUT_MS = 180_000;
 
-const launched = await launchClient({
+const harness = await launchHarness({
   requestTimeoutMs: 300_000,
   client: { name: "sdk-live-team-leader", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 console.log(`LISTENING ${server.readiness.host}:${server.readiness.port} data=${server.dataDir}`);
 
 try {
   // 1. 等市场预热完，再挑一个专家团装上。
-  let store = await client.listStore();
+  let store = await harness.listStore();
   const marketDeadline = Date.now() + MARKET_TIMEOUT_MS;
   while (
     Date.now() < marketDeadline &&
@@ -54,7 +54,7 @@ try {
       !store.items.some((item) => item.kind === "team"))
   ) {
     await Bun.sleep(5_000);
-    store = await client.listStore();
+    store = await harness.listStore();
     const kinds = new Map<string, number>();
     for (const item of store.items) kinds.set(item.kind, (kinds.get(item.kind) ?? 0) + 1);
     console.log(
@@ -70,7 +70,7 @@ try {
   const entry = teamItems[0];
   if (entry) {
     console.log(`TEAM entry=${entry.id} name=${entry.name} installed=${entry.installed}`);
-    const outcome = await client.store.install(entry, { timeoutMs: INSTALL_TIMEOUT_MS });
+    const outcome = await harness.store.install(entry, { timeoutMs: INSTALL_TIMEOUT_MS });
     check("TL-001.market-install", outcome.ok === true, outcome.components?.slice(0, 4) ?? outcome);
   } else {
     // 官方默认市场目前只带 skill / connector（实测 262 + 228，0 个 team），所以退回**本地夹具**，
@@ -82,7 +82,7 @@ try {
         "../../crates/backend/nomifun-importer/tests/fixtures/software-company",
       );
     console.log(`FIXTURE source=${sourcePath}`);
-    const imported = await client.runImport({
+    const imported = await harness.runImport({
       source_path: sourcePath,
       source_kind: "codebuddy-plugin",
     });
@@ -91,7 +91,7 @@ try {
       imported.status !== "failed" && imported.status !== "blocked",
       { status: imported.status, name: imported.name, version: imported.version },
     );
-    const installed = await client.runInstall({ snapshot_id: imported.snapshot_id });
+    const installed = await harness.runInstall({ snapshot_id: imported.snapshot_id });
     // 夹具不是产品包（有 bin/hooks/commands/dependencies），所以这里只记录安装报告，不当判据：
     // 真正的判据是「team/list 里出现了这个团」以及后面 create / 首轮 / 委派。
     console.log(
@@ -100,7 +100,7 @@ try {
   }
 
   // 2. `team/list` 的 Definition id 才是 `conversation/create` 的 `teamId`。
-  const teams = await client.teams.list();
+  const teams = await harness.teams.list();
   console.log(`TEAMS ${teams.map((team) => `${team.id}|${team.name}`).join(", ")}`);
   const target = teams.find((team) => team.name.includes("software-company")) ?? teams[0];
   if (!target) {
@@ -112,10 +112,10 @@ try {
     //     `enabled = false`（既有契约），所以这里先按团声明的连接器把它们打开——走的是
     //     doc `28` 记录的那条第一方路由（本地信任模式，无需 token），否则 `create` 会（正确地）
     //     以 `connector_unavailable` 拒绝，测试就测不到 Leader 那一层。
-    const detail = await client.teams.get(target.id);
+    const detail = await harness.teams.get(target.id);
     const declared = detail.connectors ?? [];
     if (declared.length > 0) {
-      const catalog = await client.connectors.list();
+      const catalog = await harness.connectors.list();
       for (const raw of declared) {
         const connector = catalog.find((item) => item.id === raw || item.name === raw);
         if (!connector) {
@@ -135,19 +135,19 @@ try {
     }
 
     // 3. 以该团开场：这一步只调 create，**不发任何消息**。
-    const conv = await client.conversations.create({
+    const conv = await harness.conversations.create({
       name: `live-leader-${Date.now()}`,
       teamId: target.id,
     });
     check("TL-003.create-leader", Boolean(conv.conversation_id), conv);
 
       // 4. 订阅事件，然后由**客户端**发首轮——这正是 2b 与 `team/run` 的唯一区别。
-      const subscription = await client.conversations.follow(conv.conversation_id);
+      const subscription = await harness.conversations.follow(conv.conversation_id);
       const events: ConversationEvent[] = [];
       subscription.onEvent((event) => events.push(event));
       subscription.onResync((reason) => console.log(`RESYNC ${reason}`));
 
-      const receipt = await client.conversations.send(
+      const receipt = await harness.conversations.send(
         conv.conversation_id,
         "把这版需求拆成计划：一个 hello world REST API，两步以内即可。",
         crypto.randomUUID(),
@@ -206,7 +206,7 @@ try {
         }`,
       );
 
-      const page = await client.conversations.messages({
+      const page = await harness.conversations.messages({
         conversationId: conv.conversation_id,
         pageSize: 50,
       });
@@ -220,7 +220,7 @@ try {
       //    `Conversation already has an authoritative local turn owner` 拒绝），所以先停掉它。
       if (!terminal) {
         try {
-          await client.conversations.cancel(conv.conversation_id);
+          await harness.conversations.cancel(conv.conversation_id);
           console.log("CANCEL in-flight first turn (it was still running)");
           await Bun.sleep(2_000);
         } catch (caught) {
@@ -228,7 +228,7 @@ try {
         }
       }
       const mark = events.length;
-      const directive = await client.conversations.send(
+      const directive = await harness.conversations.send(
         conv.conversation_id,
         "请**调用 nomi_delegate(strategy=\"planned\")** 把目标交给团队执行，目标：设计并实现一个 hello world REST API。不要自己动手做。",
         crypto.randomUUID(),
@@ -276,7 +276,7 @@ try {
       //    execution_id）。把它当一致性断言会把模型行为误判成路径缺陷。
       let teamRunStarted = false;
       try {
-        const teamReceipt = await client.runs.team({
+        const teamReceipt = await harness.runs.team({
           teamId: target.id,
           goal: "让团队并行完成：设计并实现一个 hello world REST API（前端、后端、测试）。",
         });

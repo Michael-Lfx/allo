@@ -481,7 +481,7 @@ Connector/OAuth 能力只有在以下条件全部满足后进入 V1 发布：
 > 运行：`AGENT_STORE_BIN=target/debug/agent-store.exe bun scripts/sdk-live-oauth.ts`
 > 结果：**26/26 PASS**
 > 范围：WP-3 P0-C/D 的 OAuth 运行时部分。协议面全部经 SDK 公共面
-> （`launchClient` + `client.connectors.*`）；宿主管理面（MCP enable）标注 `[host admin]`。
+> （`launchHarness` + `client.connectors.*`）；宿主管理面（MCP enable）标注 `[host admin]`。
 
 ### 1. 环境与 mock 平台
 

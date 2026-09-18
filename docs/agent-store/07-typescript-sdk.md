@@ -378,7 +378,8 @@ installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstal
 （`05` §4.5）。
 
 **② `.store` 子客户端（把五动词编排成一条状态机）**：
-`launchClient(...)`（`@flowy-agent-store/sdk`）返回的 `client` 带
+`launchHarness(...)`（`@flowy-agent-store/sdk`）解析出的对象**就是**一个
+`AppServerClient`（`31` §5 方案 B：返回值即调用入口，没有 `.client` 一跳），它带
 `readonly store: StoreClient`（`@flowy-agent-store/client`）。它回答的是调用方
 **真正**想问的问题——「把这个商店条目装上，并在它可用时告诉我」——而**不新增
 任何 wire 方法**：全部由上面这些既有方法组合而成。

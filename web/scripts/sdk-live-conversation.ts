@@ -1,12 +1,12 @@
 /** WP-4 05d live 验证：多轮 ConversationHandle（REQ-PAR-05d）真机闭环。
  *
- * 协议面全走 SDK 公共面（launchClient + client.conversations + ConversationHandle）。
+ * 协议面全走 SDK 公共面（launchHarness + harness.conversations + ConversationHandle）。
  * 模型 provider 唯一来源是 `~/.agent-store/config.toml`（`[providers.mimo]`），
  * 不再经 `/api/providers` 运行时注册。
  *
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-conversation.ts
  */
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import { ConversationHandle } from "@flowy-agent-store/client";
 
 let failures = 0;
@@ -16,17 +16,17 @@ function check(name: string, ok: boolean, detail?: unknown): void {
   if (!ok) failures += 1;
 }
 
-const launched = await launchClient({
+const harness = await launchHarness({
   requestTimeoutMs: 120_000,
   client: { name: "sdk-live-conversation", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 console.log(`LISTENING ${server.readiness.host}:${server.readiness.port} data=${server.dataDir}`);
 
 try {
   // REQ-PAR-05d: open → send(await terminal) → transcript → cancel-safe close.
   // provider 显式引用 `~/.agent-store/config.toml` 的 `[providers.mimo]`（唯一来源）。
-  const handle = await ConversationHandle.open(client.conversations, {
+  const handle = await ConversationHandle.open(harness.conversations, {
     name: `sdk-live-cv-${Date.now()}`,
     model: { provider_id: "mimo", model: "mimo-v2.5" },
   });

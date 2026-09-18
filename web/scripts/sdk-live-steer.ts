@@ -6,7 +6,7 @@
  * Usage: AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-steer.ts
  * Key from Hermes attachments config, in-memory only.
  */
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import { launchRun } from "@flowy-agent-store/client";
 import type { RunView } from "@flowy-agent-store/protocol";
 
@@ -32,8 +32,8 @@ async function postJson(base: string, path: string, body: unknown, connectionId?
   return text ? JSON.parse(text) : null;
 }
 
-const launched = await launchClient({ client: { name: "sdk-live-steer", version: "1" } });
-const { server, client } = launched;
+const harness = await launchHarness({ client: { name: "sdk-live-steer", version: "1" } });
+const { server } = harness;
 const base = `http://${server.readiness.host}:${server.readiness.port}`;
 console.log(`LISTENING ${base}`);
 try {
@@ -44,12 +44,12 @@ try {
   });
   console.log("OK provider");
 
-  const imp = await client.runImport({ source_path: FIXTURE, source_kind: "codebuddy-plugin" });
-  await client.runInstall({ snapshot_id: imp.snapshot_id });
+  const imp = await harness.runImport({ source_path: FIXTURE, source_kind: "codebuddy-plugin" });
+  await harness.runInstall({ snapshot_id: imp.snapshot_id });
   console.log("OK install");
 
   // Longer goal so the run stays running long enough to steer mid-flight.
-  const handle = await launchRun(client.runs, {
+  const handle = await launchRun(harness.runs, {
     agentId: "",
     goal: "列出你可以使用的全部工具名称（只要名称列表，不要调用任何工具），然后用一句话总结你的能力边界。",
     mentions: [{ kind: "agent", id: AGENT_MENTION }],
@@ -62,7 +62,7 @@ try {
   let steerError: string | null = null;
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
-    const view = await client.runs.get(handle.runId);
+    const view = await harness.runs.get(handle.runId);
     if (["completed", "failed", "cancelled"].includes(view.status)) break;
     if (view.status === "running" || view.status === "planning") {
       try {
@@ -96,6 +96,6 @@ try {
   }
   console.log("LIVE-STEER PASS");
 } finally {
-  await launched.close();
+  await harness.close();
   console.log("closed");
 }

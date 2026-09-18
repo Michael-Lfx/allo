@@ -5,7 +5,7 @@
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-p0a.ts
  * 模型 key 只读自 Hermes attachments config，仅内存持有、不打印。
  */
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import { launchRun } from "@flowy-agent-store/client";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,14 +46,14 @@ async function adminPost(base: string, path: string, body: unknown): Promise<unk
   return text ? JSON.parse(text) : null;
 }
 
-const launched = await launchClient({
+const harness = await launchHarness({
   requestTimeoutMs: 600_000,
   ...(process.env.CHAIN_KEEP_DATA === "1"
     ? { dataDir: join(tmpdir(), `agent-store-p0a-${Date.now()}`) }
     : {}),
   client: { name: "sdk-live-p0a", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 const base = `http://${server.readiness.host}:${server.readiness.port}`;
 console.log(`LISTENING ${base} data=${server.dataDir}`);
 
@@ -69,11 +69,11 @@ try {
   });
 
   // ---- setup: install the fixture agent (mention target) ----
-  const agentImport = await client.runImport({ source_path: SOFTWARE_COMPANY, source_kind: "codebuddy-plugin" });
+  const agentImport = await harness.runImport({ source_path: SOFTWARE_COMPANY, source_kind: "codebuddy-plugin" });
   check("P0A.setup.import", agentImport.status === "completed", agentImport.status);
-  const agentInstall = await client.runInstall({ snapshot_id: agentImport.snapshot_id });
+  const agentInstall = await harness.runInstall({ snapshot_id: agentImport.snapshot_id });
   check("P0A.setup.install", agentInstall.installed_count > 0, agentInstall.installed_count);
-  const agents = await client.agents.list();
+  const agents = await harness.agents.list();
   const expert = agents.find((agent) => agent.id === AGENT_MENTION);
   check("P0A.setup.agent-visible", Boolean(expert?.preset_id), expert?.preset_id);
   check(
@@ -83,27 +83,27 @@ try {
   );
 
   // ================= TC-RT-004 run/cancel =================
-  const cancelHandle = await launchRun(client.runs, {
+  const cancelHandle = await launchRun(harness.runs, {
     agentId: "",
     goal: "逐条列出 40 个 Python 标准库模块，每个写一句用途说明。",
     mentions: [{ kind: "agent", id: AGENT_MENTION }],
     idempotencyKey: `p0a-cancel-${Date.now()}`,
   });
   const observed: string[] = [];
-  let view = await client.runs.get(cancelHandle.runId);
+  let view = await harness.runs.get(cancelHandle.runId);
   const preCancelVersion = view.version;
   observed.push(`${view.status}@v${view.version}`);
   const cancelDeadline = Date.now() + 30_000;
   let cancelError = "";
   while (!TERMINAL.has(view.status) && Date.now() < cancelDeadline) {
     try {
-      await client.runs.cancel({ runId: cancelHandle.runId, expectedVersion: view.version });
+      await harness.runs.cancel({ runId: cancelHandle.runId, expectedVersion: view.version });
       observed.push("cancel-accepted");
       break;
     } catch (error) {
       cancelError = String(error).slice(0, 160);
       await Bun.sleep(150);
-      view = await client.runs.get(cancelHandle.runId);
+      view = await harness.runs.get(cancelHandle.runId);
       observed.push(`${view.status}@v${view.version}`);
     }
   }
@@ -115,7 +115,7 @@ try {
   const finalDeadline = Date.now() + 90_000;
   while (!TERMINAL.has(view.status) && Date.now() < finalDeadline) {
     await Bun.sleep(500);
-    view = await client.runs.get(cancelHandle.runId);
+    view = await harness.runs.get(cancelHandle.runId);
   }
   check("TC-RT-004.terminal-cancelled", view.status === "cancelled", {
     status: view.status,
@@ -138,8 +138,8 @@ try {
     mentions: [{ kind: "agent" as const, id: AGENT_MENTION }],
     idempotencyKey: `p0a-freeze-${Date.now()}`,
   };
-  const freezeHandle = await launchRun(client.runs, freezeInput);
-  let freezeView = await client.runs.get(freezeHandle.runId);
+  const freezeHandle = await launchRun(harness.runs, freezeInput);
+  let freezeView = await harness.runs.get(freezeHandle.runId);
   const frozen = {
     preset_revision: freezeView.preset_revision ?? null,
     content_digest: freezeView.content_digest ?? null,
@@ -157,12 +157,12 @@ try {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version: string };
   manifest.version = "9.9.9";
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-  const bumpImport = await client.runImport({ source_path: bumpedRoot, source_kind: "codebuddy-plugin" });
+  const bumpImport = await harness.runImport({ source_path: bumpedRoot, source_kind: "codebuddy-plugin" });
   check("TC-RT-002.reimport-new-version", bumpImport.status === "completed", bumpImport.status);
-  const bumpInstall = await client.runInstall({ snapshot_id: bumpImport.snapshot_id });
+  const bumpInstall = await harness.runInstall({ snapshot_id: bumpImport.snapshot_id });
   check("TC-RT-002.reinstall-new-version", bumpInstall.installed_count > 0, bumpInstall.installed_count);
 
-  freezeView = await client.runs.get(freezeHandle.runId);
+  freezeView = await harness.runs.get(freezeHandle.runId);
   const after = {
     preset_revision: freezeView.preset_revision ?? null,
     content_digest: freezeView.content_digest ?? null,
@@ -176,7 +176,7 @@ try {
   const freezeFinal = await freezeHandle.finished;
   await freezeHandle.close();
   check("TC-RT-002.run-completes", freezeFinal.status === "completed", freezeFinal.status);
-  const freezeResult = await client.runs.result(freezeHandle.runId).catch(() => null);
+  const freezeResult = await harness.runs.result(freezeHandle.runId).catch(() => null);
   check(
     "TC-RT-002.result-fields-frozen",
     (freezeResult?.preset_revision ?? null) === frozen.preset_revision &&
@@ -185,13 +185,13 @@ try {
   );
 
   // ================= TC-API-002 幂等重放 =================
-  const replay = await client.runs.agent(freezeInput);
+  const replay = await harness.runs.agent(freezeInput);
   check("TC-API-002.replay-same-run", replay.run_id === freezeHandle.runId, {
     first: freezeHandle.runId,
     replay: replay.run_id,
   });
   try {
-    await client.runs.agent({ ...freezeInput, goal: `${freezeInput.goal}（改）` });
+    await harness.runs.agent({ ...freezeInput, goal: `${freezeInput.goal}（改）` });
     check("TC-API-002.conflict-on-different-payload", false, "same key + different payload must conflict");
   } catch (error) {
     const code = (error as { code?: string }).code;
@@ -199,8 +199,8 @@ try {
   }
 
   // ================= TC-API-003 终态一致 =================
-  const terminalView = await client.runs.get(freezeHandle.runId);
-  const terminalResult = await client.runs.result(freezeHandle.runId);
+  const terminalView = await harness.runs.get(freezeHandle.runId);
+  const terminalResult = await harness.runs.result(freezeHandle.runId);
   check(
     "TC-API-003.get-result-consistent",
     terminalView.status === terminalResult.status && terminalView.version === terminalResult.version,
@@ -211,8 +211,8 @@ try {
   );
 
   // ================= TC-RT-010 规范化审计 =================
-  const events = await client.runs.events({ runId: freezeHandle.runId, afterSequence: 0, limit: 500 });
-  const installStatus = await client.getInstallStatus(agentImport.snapshot_id).catch(() => null);
+  const events = await harness.runs.events({ runId: freezeHandle.runId, afterSequence: 0, limit: 500 });
+  const installStatus = await harness.getInstallStatus(agentImport.snapshot_id).catch(() => null);
   const auditTargets: Array<[string, unknown]> = [
     ["run/get", freezeView],
     ["run/result", freezeResult],
@@ -232,7 +232,7 @@ try {
   check("TC-RT-010.no-credentials-or-internal-ids", leaks.length === 0, leaks);
 
   try {
-    await client.runs.cancel({ runId: "01a00000-0000-7000-8000-000000000000", expectedVersion: 1 });
+    await harness.runs.cancel({ runId: "01a00000-0000-7000-8000-000000000000", expectedVersion: 1 });
     check("TC-RT-010.stable-error-code", false, "unknown-run cancel must fail");
   } catch (error) {
     const code = (error as { code?: string }).code;

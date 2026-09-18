@@ -41,7 +41,7 @@ python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Code
 | P0-1 | 就绪协议 | ✅ 已实现：`--port 0` + bind 后 stdout 单行 `{"agent_store":"listening",host,port,url,protocol_version,version,auth}`（SDK 扫描该行；无秘密）。 |
 | P0-2 | 版本探测 | ✅ 已实现：`--version`（clap 自带）+ 就绪行同时带 `version` 与 `protocol_version`（`PROTOCOL_VERSION` 已 `pub`）；SDK 仍需按 `initialize` 返回做兼容检查。 |
 | P0-3 | 数据目录隔离 | ✅ 已实测：第二实例同 data_dir 被单实例锁干净拒绝（`already in use by another running Flowy backend (pid …)`），无损坏风险。结论：SDK 必须自带临时 `--data-dir`（文档写死独占）。 |
-| P0-4 | 回环强制 | ✅ 已落地：`web/src/lib/transport.ts:isLoopbackUrl`（`127/8`、`::1`、`localhost`）+ SDK `launchClient` 非回环拒绝（e2e 覆盖）。 |
+| P0-4 | 回环强制 | ✅ 已落地：`web/src/lib/transport.ts:isLoopbackUrl`（`127/8`、`::1`、`localhost`）+ SDK `launchHarness` 非回环拒绝（e2e 覆盖）。 |
 
 ## 5. P1：包拆分
 

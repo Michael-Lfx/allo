@@ -8,7 +8,7 @@
  * Provider key is read from the Hermes attachments config into memory only
  * and never printed.
  */
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import { launchRun } from "@flowy-agent-store/client";
 
 const HERMES_CONFIG = "C:/Users/15165/AppData/Local/hermes/attachments/config.toml";
@@ -37,10 +37,10 @@ async function postJson(base: string, path: string, body: unknown, connectionId?
   return text ? JSON.parse(text) : null;
 }
 
-const launched = await launchClient({
+const harness = await launchHarness({
   client: { name: "sdk-live-handle", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 const base = `http://${server.readiness.host}:${server.readiness.port}`;
 console.log(`LISTENING ${base}`);
 try {
@@ -50,15 +50,15 @@ try {
     api_key: apiKey, models: ["mimo-v2.5"], enabled: true,
   });
   console.log("OK provider");
-  void launched.initializeResult.connection_id;
+  void harness.handshake.connection_id;
 
-  const imp = await client.runImport({ source_path: FIXTURE, source_kind: "codebuddy-plugin" });
+  const imp = await harness.runImport({ source_path: FIXTURE, source_kind: "codebuddy-plugin" });
   console.log(`OK import snapshot=${imp.snapshot_id}`);
-  await client.runInstall({ snapshot_id: imp.snapshot_id });
+  await harness.runInstall({ snapshot_id: imp.snapshot_id });
   console.log("OK install");
 
   // Codex-parity shape: launch → iterate live events → await finished.
-  const handle = await launchRun(client.runs, {
+  const handle = await launchRun(harness.runs, {
     agentId: "",
     goal: "用一句话介绍你自己（中文，不要调用任何工具）。",
     mentions: [{ kind: "agent", id: AGENT_MENTION }],
@@ -93,6 +93,6 @@ try {
   console.log(`lastSeq=${handle.lastSequence} types=${JSON.stringify([...new Set(seen.map((e) => e.event_type))])}`);
   console.log("LIVE-HANDLE PASS");
 } finally {
-  await launched.close();
+  await harness.close();
   console.log("closed");
 }

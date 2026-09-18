@@ -1,5 +1,5 @@
 /** WP-2 四链路 live 验收：专家 / 技能 / 连接器 / 专家团 的「下载 → 安装 → 使用」
- * 全链路，协议操作全部经 SDK 公共面（launchClient + client.*）。
+ * 全链路，协议操作全部经 SDK 公共面（launchHarness + harness.*）。
  *
  * 宿主管理面（provider 注册、MCP enable）不属于 App Server 协议，用本地
  * admin HTTP 完成，调用点均已标注 `[host admin]`。
@@ -7,7 +7,7 @@
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-store-chain.ts
  * 模型 key 只读自 Hermes attachments config，仅内存持有、不打印。
  */
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import { launchRun } from "@flowy-agent-store/client";
 import { Database } from "bun:sqlite";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -91,7 +91,7 @@ process.stdin.on("data", (chunk) => {
 
 // `CHAIN_KEEP_DATA=1` keeps the instance data dir on exit for forensics;
 // the default owns a fresh temp dir and removes it on close.
-const launched = await launchClient({
+const harness = await launchHarness({
   // The runtime auto-mirrors the host default marketplaces (a public full
   // tree) on the first store call; the 30s default request timeout is too
   // tight for that cold path. 600s matches the server-side bound.
@@ -101,7 +101,7 @@ const launched = await launchClient({
     : {}),
   client: { name: "sdk-live-store-chain", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 const base = `http://${server.readiness.host}:${server.readiness.port}`;
 console.log(`LISTENING ${base} data=${server.dataDir}`);
 
@@ -118,7 +118,7 @@ try {
   });
 
   // ---- S2 public model directory (REQ-PAR-05b) ----
-  const models = await client.models.list();
+  const models = await harness.models.list();
   check(
     "S2.models-listed",
     models.some((entry) => entry.model === "mimo-v2.5"),
@@ -132,19 +132,19 @@ try {
   check("S2.models-no-credentials", !JSON.stringify(models).includes(apiKey), "scanned");
 
   // ============================ C1 专家 ============================
-  const agentImport = await client.runImport({
+  const agentImport = await harness.runImport({
     source_path: SOFTWARE_COMPANY,
     source_kind: "codebuddy-plugin",
   });
   check("C1.import", agentImport.status === "completed", agentImport.status);
-  const agentInstall = await client.runInstall({ snapshot_id: agentImport.snapshot_id });
+  const agentInstall = await harness.runInstall({ snapshot_id: agentImport.snapshot_id });
   check("C1.install", agentInstall.installed_count > 0, agentInstall.installed_count);
 
-  const agents = await client.agents.list();
+  const agents = await harness.agents.list();
   const expert = agents.find((agent) => agent.id === AGENT_MENTION);
   check("C1.catalog-visible", Boolean(expert?.preset_id), expert ? { preset_id: expert.preset_id } : null);
 
-  const c1 = await launchRun(client.runs, {
+  const c1 = await launchRun(harness.runs, {
     agentId: "",
     goal: "用一句话说明你负责什么。",
     mentions: [{ kind: "agent", id: AGENT_MENTION }],
@@ -166,24 +166,24 @@ try {
 
   // ============================ C4 专家团 ============================
   // V1 口径：下载 → 安装 → 可见；运行时为 Phase 2（§12 门禁）。
-  const teams = await client.teams.list();
+  const teams = await harness.teams.list();
   const team = teams.find((candidate) => candidate.lead_agent_id?.includes("software-team-lead"));
   check("C4.team-visible", Boolean(team), team ? { id: team.id, lead: team.lead_agent_id } : teams.map((t) => t.id));
 
   // ============================ C2 技能 ============================
-  const skillImport = await client.runImport({
+  const skillImport = await harness.runImport({
     source_path: SKILL_MARKET,
     source_kind: "workbuddy-skill-market",
   });
   check("C2.import", skillImport.status === "completed", skillImport.status);
-  const skillInstall = await client.runInstall({ snapshot_id: skillImport.snapshot_id });
+  const skillInstall = await harness.runInstall({ snapshot_id: skillImport.snapshot_id });
   check("C2.install", skillInstall.installed_count === 2, skillInstall.installed_count);
 
-  const skills = await client.skills.list();
+  const skills = await harness.skills.list();
   const hello = skills.find((skill) => skill.id === SKILL_NAME || skill.name === SKILL_NAME);
   check("C2.skill-visible", Boolean(hello), hello?.id ?? skills.map((skill) => skill.id).slice(0, 10));
 
-  const c2 = await launchRun(client.runs, {
+  const c2 = await launchRun(harness.runs, {
     agentId: "",
     goal: "请按 hello 技能的指引打个招呼。",
     mentions: [
@@ -264,8 +264,8 @@ try {
     }),
   );
 
-  const market = await client.addMarketplace({ source_kind: "directory", source: marketDir });
-  const store = await client.listStore();
+  const market = await harness.addMarketplace({ source_kind: "directory", source: marketDir });
+  const store = await harness.listStore();
   // S1 real-market smoke: the host default sources must mirror into the store.
   const defaultMarketplaceIds = await readDefaultMarketplaceIds();
   if (defaultMarketplaceIds.length > 0) {
@@ -278,10 +278,10 @@ try {
   const storeItem = store.items.find((item) => item.entry_name === "four-chain-mock");
   check("C3.store-visible", Boolean(storeItem), storeItem?.entry_name);
 
-  const connectorInstall = await client.installStoreEntry(market.marketplace_id, "four-chain-mock");
+  const connectorInstall = await harness.installStoreEntry(market.marketplace_id, "four-chain-mock");
   check("C3.install", connectorInstall.installed_count > 0, connectorInstall.installed_count);
 
-  const connectors = await client.connectors.list();
+  const connectors = await harness.connectors.list();
   const connector = connectors.find((entry) => entry.name === "FourChainMock" || entry.name === "four-chain-mock");
   check(
     "C3.catalog-visible",
@@ -292,10 +292,10 @@ try {
   if (connector) {
     // [host admin] MCP enable/disable is a host config action, not a protocol method.
     await adminPost(base, `/api/mcp/servers/${connector.id}/toggle`, {});
-    const enabled = (await client.connectors.list()).find((entry) => entry.id === connector.id)?.enabled === true;
+    const enabled = (await harness.connectors.list()).find((entry) => entry.id === connector.id)?.enabled === true;
     check("C3.enabled", enabled);
 
-    const probe = await client.connectors.test(connector.id);
+    const probe = await harness.connectors.test(connector.id);
     const tools = (probe.tools ?? []).map((tool) => tool.name);
     check("C3.tool-listing", probe.success && tools.includes("echo"), {
       success: probe.success,
@@ -303,7 +303,7 @@ try {
       error: probe.error,
     });
 
-    const c3 = await launchRun(client.runs, {
+    const c3 = await launchRun(harness.runs, {
       agentId: "",
       goal: "调用 echo 工具，参数 text 为 four-chain，并把工具返回内容原样报告。",
       mentions: [
@@ -314,7 +314,7 @@ try {
     });
     check("C3.mention-accepted", Boolean(c3.runId), c3.runId);
     const c3Final = await c3.finished;
-    const c3Result = await client.runs.result(c3.runId).catch(() => null);
+    const c3Result = await harness.runs.result(c3.runId).catch(() => null);
     await c3.close();
     check("C3.run-completed", c3Final.status === "completed", c3Final.status);
     // 真实调用烟测（best effort）：模型报告里出现 mock 的 echo 前缀。
@@ -323,19 +323,19 @@ try {
 
     // TC-CONN-002: a configured connector whose probe fails must not report
     // connected.
-    const brokenInstall = await client.installStoreEntry(market.marketplace_id, "four-chain-broken");
+    const brokenInstall = await harness.installStoreEntry(market.marketplace_id, "four-chain-broken");
     check("TC-CONN-002.install", brokenInstall.installed_count > 0, brokenInstall.installed_count);
-    const broken = (await client.connectors.list()).find(
+    const broken = (await harness.connectors.list()).find(
       (entry) => entry.name === "four-chain-broken" || entry.name === "FourChainBroken",
     );
     if (broken) {
       await adminPost(base, `/api/mcp/servers/${broken.id}/toggle`, {});
-      const brokenProbe = await client.connectors.test(broken.id).catch((error) => ({
+      const brokenProbe = await harness.connectors.test(broken.id).catch((error) => ({
         connector_id: broken.id,
         success: false,
         error: String(error),
       }));
-      const brokenStatus = await client.connectors.status(broken.id).catch(() => null);
+      const brokenStatus = await harness.connectors.status(broken.id).catch(() => null);
       check(
         "TC-CONN-002.probe-failure-not-connected",
         !brokenProbe.success && brokenStatus?.status !== "connected",

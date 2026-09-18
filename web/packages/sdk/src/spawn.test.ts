@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { APP_SERVER_PROTOCOL_VERSION } from "@flowy-agent-store/protocol";
-import { launchClient } from "./index";
+import { launchHarness } from "./index";
 
 /**
  * Spawn end-to-end (gated): needs a real runtime binary because it boots a
@@ -13,20 +13,22 @@ const BIN = process.env["AGENT_STORE_E2E_BIN"];
 
 (BIN ? describe : describe.skip)("spawn end-to-end", () => {
   it("spawns, initializes and lists the store, then cleans up", async () => {
-    const session = await launchClient({
+    const harness = await launchHarness({
       bin: BIN,
       client: { name: "node-e2e", version: "0.1.0" },
     });
     try {
       // The runtime binary and the SDK must agree on the contract fingerprint;
       // compare against the constant so the two can never drift apart silently.
-      expect(session.initializeResult.protocol_version).toBe(APP_SERVER_PROTOCOL_VERSION);
-      const store = await session.client.listStore();
+      expect(harness.handshake.protocol_version).toBe(APP_SERVER_PROTOCOL_VERSION);
+      // Doc `31` 方案 B：`launchHarness` 返回的对象**就是** client —— 没有 `.client` 一跳。
+      expect(typeof harness.conversations.create).toBe("function");
+      const store = await harness.listStore();
       expect(Array.isArray(store.items)).toBe(true);
-      expect(existsSync(session.server.dataDir)).toBe(true);
+      expect(existsSync(harness.server.dataDir)).toBe(true);
     } finally {
-      await session.close();
+      await harness.close();
     }
-    expect(existsSync(session.server.dataDir)).toBe(false);
+    expect(existsSync(harness.server.dataDir)).toBe(false);
   }, 240_000);
 });

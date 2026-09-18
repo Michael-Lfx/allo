@@ -1587,7 +1587,7 @@ impl std::error::Error for RetainedStartupCleanupError {
 /// It **replaces** the file's `[tools]` table wholesale instead of merging.
 /// Merging can only ever narrow — every policy layer is subtractive — so it
 /// could never switch a family the template turned off back on, which is exactly
-/// what a caller spawning its own host wants (the SDK's `launchClient` passes it
+/// what a caller spawning its own host wants (the SDK's `launchHarness` passes it
 /// through `SpawnOptions.env`). A *partial* merge would also reset every key the
 /// caller did not name; replacement keeps a spawned host deterministic — it gets
 /// the toolset it asked for, not whatever the developer's
@@ -3269,7 +3269,7 @@ impl AppServices {
         // providers/marketplaces, and adopting its tool policy there would
         // silently narrow their sessions too. `AGENT_STORE_TOOLS` (JSON) takes
         // precedence over the file, so a spawned host — the SDK's
-        // `launchClient` via `SpawnOptions.env` — picks its own toolset.
+        // `launchHarness` via `SpawnOptions.env` — picks its own toolset.
         let tools_env = std::env::var(TOOLS_ENV).ok();
         let tool_policy = resolve_host_tool_policy(
             config.adopt_store_tool_policy,

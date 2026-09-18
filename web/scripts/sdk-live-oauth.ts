@@ -10,7 +10,7 @@
  * 3 次（good/forbidden 自动 302 回环回调；timeout 停在 mock 提示页），属预期。
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-oauth.ts
  */
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -229,12 +229,12 @@ async function adminPost(base: string, path: string, body: unknown): Promise<unk
 // ---------------------------------------------------------------------------
 // Main flow
 // ---------------------------------------------------------------------------
-const launched = await launchClient({
+const harness = await launchHarness({
   requestTimeoutMs: 60_000,
   ...(process.env.OAUTH_KEEP_DATA === "1" ? { dataDir: join(tmpdir(), `agent-store-oauth-${Date.now()}`) } : {}),
   client: { name: "sdk-live-oauth", version: "1" },
 });
-const { server, client } = launched;
+const { server } = harness;
 const base = `http://${server.readiness.host}:${server.readiness.port}`;
 console.log(`LISTENING ${base} data=${server.dataDir}`);
 
@@ -268,12 +268,12 @@ try {
     );
   }
 
-  const market = await client.addMarketplace({ source_kind: "directory", source: marketDir });
+  const market = await harness.addMarketplace({ source_kind: "directory", source: marketDir });
   for (const name of SCENARIOS) {
-    const install = await client.installStoreEntry(market.marketplace_id, `oauth-${name}`);
+    const install = await harness.installStoreEntry(market.marketplace_id, `oauth-${name}`);
     check(`install.${name}`, install.installed_count > 0, install.installed_count);
   }
-  const list = await client.connectors.list();
+  const list = await harness.connectors.list();
   const ids: Record<string, string> = {};
   for (const name of SCENARIOS) {
     const found = list.find((entry) => entry.name === `oauth-${name}`);
@@ -288,17 +288,17 @@ try {
   // pending 槽导致 CSRF mismatch），timeout 场景放到最后顺序执行。
 
   // ============================ TC-OAUTH-001 标准 PKCE Loopback ==============
-  const before = await client.connectors.status(ids.good);
+  const before = await harness.connectors.status(ids.good);
   check("OA-001.pre.status", before.status === "authorization_required" || before.status === "installed", before.status);
-  const preAuth = await client.connectors.authStatus(ids.good);
+  const preAuth = await harness.connectors.authStatus(ids.good);
   check("OA-001.pre.unauthenticated", preAuth.state === "not_authenticated", preAuth);
 
-  const start = await client.connectors.authStart(ids.good);
+  const start = await harness.connectors.authStart(ids.good);
   check("OA-001.auth-start-ack", start.state === "started", start);
 
   let authed: { state: string } | null = null;
   for (let i = 0; i < 100; i += 1) {
-    authed = await client.connectors.authStatus(ids.good);
+    authed = await harness.connectors.authStatus(ids.good);
     if (authed.state === "authenticated") break;
     await sleep(300);
   }
@@ -311,22 +311,22 @@ try {
   check("OA-001.pkce-verifier-validated", cGood.pkceFail === 0, cGood.pkceFail);
 
   // probe 证明请求时 Bearer 注入真实生效
-  const probe = await client.connectors.test(ids.good);
+  const probe = await harness.connectors.test(ids.good);
   const tools = (probe.tools ?? []).map((tool) => tool.name);
   check("OA-001.probe-with-injected-token", probe.success && tools.includes("echo"), {
     success: probe.success,
     tools,
     error: probe.error,
   });
-  const afterStatus = await client.connectors.status(ids.good);
+  const afterStatus = await harness.connectors.status(ids.good);
   check("OA-001.post.connected", afterStatus.status === "connected", afterStatus.status);
 
   // ============================ TC-OAUTH-002 凭据隔离 ========================
   const surfaces: Record<string, string> = {
     "auth/status": JSON.stringify(authed),
-    "connector/get": JSON.stringify(await client.connectors.get(ids.good)),
+    "connector/get": JSON.stringify(await harness.connectors.get(ids.good)),
     "connector/status": JSON.stringify(afterStatus),
-    "connector/list": JSON.stringify(await client.connectors.list()),
+    "connector/list": JSON.stringify(await harness.connectors.list()),
     "connector/test": JSON.stringify(probe),
   };
   const secrets = ["oa-access-good", "oa-refresh-good", ...cGood.issued];
@@ -336,9 +336,9 @@ try {
 
   // ============================ TC-OAUTH-004 错误边界 ========================
   // --- Issuer/Resource 不匹配：PRM 指向不发布 RFC 8414 元数据的 AS ---
-  await client.connectors.authStart(ids.mismatch);
+  await harness.connectors.authStart(ids.mismatch);
   await sleep(2500);
-  const mmStatus = await client.connectors.authStatus(ids.mismatch);
+  const mmStatus = await harness.connectors.authStatus(ids.mismatch);
   check("OA-004-mismatch.never-authenticated", mmStatus.state === "not_authenticated", mmStatus);
   check(
     "OA-004-mismatch.no-token-request",
@@ -346,40 +346,40 @@ try {
     { authCode: counters.mismatch.tokenAuthCode, refresh: counters.mismatch.tokenRefresh },
   );
   check("OA-004-mismatch.no-authorize", counters.mismatch.authorize === 0, counters.mismatch.authorize);
-  const mmProbe = await client.connectors.test(ids.mismatch).catch((error) => ({ success: false, error: String(error) }));
+  const mmProbe = await harness.connectors.test(ids.mismatch).catch((error) => ({ success: false, error: String(error) }));
   check("OA-004-mismatch.probe-fails", !mmProbe.success, mmProbe);
 
   // --- 403：授权成功但资源恒 403 → 明确错误，不盲目刷新 ---
-  await client.connectors.authStart(ids.forbidden);
+  await harness.connectors.authStart(ids.forbidden);
   let forbAuthed: { state: string } | null = null;
   for (let i = 0; i < 100; i += 1) {
-    forbAuthed = await client.connectors.authStatus(ids.forbidden);
+    forbAuthed = await harness.connectors.authStatus(ids.forbidden);
     if (forbAuthed.state === "authenticated") break;
     await sleep(300);
   }
   check("OA-004-forbidden.authenticated", forbAuthed?.state === "authenticated", forbAuthed);
-  const forbProbe = await client.connectors.test(ids.forbidden).catch((error) => ({ success: false, error: String(error) }));
+  const forbProbe = await harness.connectors.test(ids.forbidden).catch((error) => ({ success: false, error: String(error) }));
   check(
     "OA-004-forbidden.403-clear-error",
     !forbProbe.success && String(forbProbe.error).includes("403"),
     { success: forbProbe.success, error: forbProbe.error },
   );
   check("OA-004-forbidden.no-blind-refresh", counters.forbidden.tokenRefresh === 0, counters.forbidden.tokenRefresh);
-  const forbAfter = await client.connectors.authStatus(ids.forbidden);
+  const forbAfter = await harness.connectors.authStatus(ids.forbidden);
   check("OA-004-forbidden.token-intact", forbAfter.state === "authenticated", forbAfter);
 
   // --- Callback 超时：authorize 不重定向 → 120s 回调超时 ---
-  await client.connectors.authStart(ids.timeout);
-  check("OA-004-timeout.pre.unauthenticated", (await client.connectors.authStatus(ids.timeout)).state === "not_authenticated");
+  await harness.connectors.authStart(ids.timeout);
+  check("OA-004-timeout.pre.unauthenticated", (await harness.connectors.authStatus(ids.timeout)).state === "not_authenticated");
   await sleep(125_000);
-  const toStatus = await client.connectors.authStatus(ids.timeout);
+  const toStatus = await harness.connectors.authStatus(ids.timeout);
   check("OA-004-timeout.not-authenticated", toStatus.state === "not_authenticated", toStatus);
   check(
     "OA-004-timeout.no-token-request",
     counters.timeout.tokenAuthCode === 0 && counters.timeout.tokenRefresh === 0,
     { authCode: counters.timeout.tokenAuthCode, refresh: counters.timeout.tokenRefresh },
   );
-  const toProbe = await client.connectors.test(ids.timeout).catch((error) => ({ success: false, error: String(error) }));
+  const toProbe = await harness.connectors.test(ids.timeout).catch((error) => ({ success: false, error: String(error) }));
   check("OA-004-timeout.probe-fails", !toProbe.success, toProbe);
 } catch (error) {
   console.error("FAIL:", String(error).slice(0, 600));

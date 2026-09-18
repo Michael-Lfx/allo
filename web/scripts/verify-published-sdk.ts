@@ -3,7 +3,7 @@
  * publishing. Invoked by `publish-packages.ts` with the vendored runtime
  * binary path:
  *
- *   1. spawn the binary via the SDK's own `launchClient` (packaged dist, not
+ *   1. spawn the binary via the SDK's own `launchHarness` (packaged dist, not
  *      `web/src` shims) against a fresh temp data dir,
  *   2. run a protocol roundtrip (`initialize` → `models/list` → `store/list`
  *      first page) through the public client surface,
@@ -12,7 +12,7 @@
  * Also runnable standalone:
  *   bun scripts/verify-published-sdk.ts [path-to-agent-store-exe]
  */
-import { launchClient } from "@flowy-agent-store/sdk";
+import { launchHarness } from "@flowy-agent-store/sdk";
 
 const VERSION = "0.1.0-beta.1";
 
@@ -22,22 +22,24 @@ if (!bin) {
   process.exit(1);
 }
 
-const { server, client } = await launchClient({
+const harness = await launchHarness({
   bin,
   requestTimeoutMs: 120_000,
   client: { name: "verify-published-sdk", version: VERSION },
 });
 try {
-  const init = client as unknown as { serverInfo?: { protocol_version?: string; version?: string } };
-  const models = await client.models.list();
-  const store = await client.listStore();
+  const init = harness as unknown as { serverInfo?: { protocol_version?: string; version?: string } };
+  const models = await harness.models.list();
+  const store = await harness.listStore();
   console.log("VERIFY-OK", JSON.stringify({
-    dataDir: server.dataDir,
-    readiness: { protocol_version: server.readiness.protocol_version, version: server.readiness.version },
+    dataDir: harness.server.dataDir,
+    readiness: { protocol_version: harness.server.readiness.protocol_version, version: harness.server.readiness.version },
     models: models.length,
     storeItems: store.items.length,
   }));
   void init;
 } finally {
-  await server.close();
+  // Doc `31` 方案 B：这一次 close 覆盖「退订 → 关传输 → 杀进程 → 删临时目录」。
+  // 此前这里只调 `server.close()`，客户端传输从未被关闭。
+  await harness.close();
 }
