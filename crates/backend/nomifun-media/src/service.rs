@@ -3,7 +3,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use nomi_config::{
-    GatewayConfig, config_yaml_path, flowy_media_exposed, load_user_config_file, save_config_yaml,
+    GatewayConfig, config_yaml_path, flowy_media_exposed, load_user_config_file,
+    load_user_config_file_for_boot, save_config_yaml,
 };
 use nomi_media::workflows::store::{WorkflowRunRecord, WorkflowRunStore};
 use nomifun_api_types::{
@@ -38,7 +39,9 @@ pub struct MediaApiService {
 impl MediaApiService {
     pub fn new(data_dir: PathBuf) -> Result<Self, AppError> {
         let path = config_yaml_path(Some(&data_dir));
-        let mut config = load_user_config_file(&path).map_err(|e| AppError::Internal(e))?;
+        // Boot path: an unreadable `config.yaml` must not abort startup — it is
+        // moved aside and defaults are used (`load_user_config_file_for_boot`).
+        let mut config = load_user_config_file_for_boot(&path);
         // Match CloudService: empty `server.base_url` must get production defaults,
         // otherwise `flowy_media_exposed` stays false and model lists return empty.
         ensure_gateway_defaults(&mut config);

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use nomi_config::{
-    GatewayConfig, InsightsContributionConfig, config_yaml_path, load_user_config_file,
-    save_config_yaml,
+    GatewayConfig, InsightsContributionConfig, config_yaml_path,
+    load_user_config_file_for_boot, save_config_yaml,
 };
 use nomi_insights_core::{
     ContributionService, INSIGHTS_CONSENT_VERSION, load_or_create_installation_id,
@@ -28,8 +28,9 @@ impl InsightsService {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| data_dir.clone());
-        let config = load_user_config_file(&config_yaml_path(Some(&root)))
-            .map_err(|e| AppError::Internal(e))?;
+        // Boot path: an unreadable `config.yaml` must not abort startup — it is
+        // moved aside and defaults are used (`load_user_config_file_for_boot`).
+        let config = load_user_config_file_for_boot(&config_yaml_path(Some(&root)));
         Ok(Self {
             data_dir,
             config: Mutex::new(config),

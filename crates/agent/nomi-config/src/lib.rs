@@ -20,7 +20,8 @@ pub mod shell;
 
 pub use gateway::{
     GatewayConfig, config_yaml_path, data_dir, default_data_dir, env_var_enabled,
-    env_var_enabled_default_true, load_config, load_user_config_file, save_config_yaml,
+    env_var_enabled_default_true, load_config, load_config_for_boot, load_user_config_file,
+    load_user_config_file_for_boot, save_config_yaml,
 };
 pub use dep_check::{
     RuntimeDep, description as dep_description, is_available as dep_is_available,

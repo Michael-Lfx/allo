@@ -677,12 +677,18 @@ impl AgentStoreConfig {
 
     /// Builtin marketplace sources used when `~/.agent-store/config.toml` is
     /// missing (or has no `[default_marketplaces]`): the product's own public
-    /// market site, so a fresh install can browse the store before touching any
+    /// markets, so a fresh install can browse the store before touching any
     /// config. `id -> (source_kind, source)`.
     ///
-    /// The site repo (`agent-store-site`) owns these three trees and serves
-    /// them under `/source/<market>/…`, each with a pre-generated `_files.txt`,
-    /// so every source below is a full-tree mirror rather than manifest-only.
+    /// Doc 30: each market is **one `zip` archive** on ModelScope, and the
+    /// archive root *is* the market root. That replaced the per-file tree the
+    /// site repo used to serve under `/source/<market>/…` alongside a
+    /// pre-generated `_files.txt`; those URLs and their inventories are retired,
+    /// so nothing here is a "full-tree mirror" any more. The source is a single
+    /// request whose revision comes from `HEAD`'s `X-Linked-Etag` (content
+    /// sha256) — see [`AppServerMarketplaceSourceKind::parse`] and
+    /// `looks_like_market` for the `zip` contract.
+    ///
     /// The fallback short-circuits whenever the user declares their own
     /// `[default_marketplaces]`.
     ///
