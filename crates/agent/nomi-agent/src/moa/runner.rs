@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use nomi_agent_trace::ObservationScope;
 use nomi_config::config::Config;
-use nomi_providers::{LlmProvider, create_provider};
+use nomi_providers::{
+    LlmProvider, create_provider, current_flowy_billing_turn_id, with_optional_flowy_billing_turn_id,
+};
 use nomi_types::llm::{LlmEvent, LlmRequest};
 use nomi_types::message::{ContentBlock, Message, Role, TokenUsage};
 
@@ -152,6 +154,10 @@ impl MoaRunner {
         let timeout = Duration::from_secs(state.config.reference_timeout_secs.max(1));
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REFERENCES));
         let mut join_set: JoinSet<(usize, Result<(String, TokenUsage), String>)> = JoinSet::new();
+        // JoinSet tasks are `tokio::spawn`ed and do not inherit task-locals.
+        // Re-scope the Flowy billing turn so advisor calls still send
+        // `X-Flowy-Turn-Id` (otherwise the account is billed, usageByTurn is not).
+        let billing_turn_id = current_flowy_billing_turn_id();
 
         for (idx, slot) in state.slots.iter().enumerate() {
             let provider = (self.provider_factory)(&slot.config);
@@ -167,14 +173,22 @@ impl MoaRunner {
                 retain_provider_round: false,
             };
             let semaphore = Arc::clone(&semaphore);
+            let billing_turn_id = billing_turn_id.clone();
             join_set.spawn(async move {
-                let _permit = semaphore.acquire_owned().await;
-                let result =
-                    match tokio::time::timeout(timeout, collect_advice(provider, &request, None)).await {
+                with_optional_flowy_billing_turn_id(billing_turn_id, async {
+                    let _permit = semaphore.acquire_owned().await;
+                    let result = match tokio::time::timeout(
+                        timeout,
+                        collect_advice(provider, &request, None),
+                    )
+                    .await
+                    {
                         Ok(result) => result,
                         Err(_) => Err(format!("timeout after {}s", timeout.as_secs())),
                     };
-                (idx, result)
+                    (idx, result)
+                })
+                .await
             });
         }
 
@@ -319,6 +333,7 @@ fn role_tag(role: Role) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use nomi_config::config::{MoaConfig, ProviderType};
@@ -743,5 +758,53 @@ mod tests {
         new_turn.push(user("q3"));
         assert_ne!(sig_base, turn_signature(&new_turn, "labels"));
         assert_ne!(sig_base, turn_signature(&base, "other-labels"));
+    }
+
+    struct TurnIdProbeProvider {
+        observed: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for TurnIdProbeProvider {
+        async fn stream(
+            &self,
+            _request: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            *self.observed.lock().expect("turn-id probe") = current_flowy_billing_turn_id();
+            let (tx, rx) = mpsc::channel(8);
+            let events = advice_events("probe", 1);
+            tokio::spawn(async move {
+                for event in events {
+                    let _ = tx.send(event).await;
+                }
+            });
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn fan_out_re_scopes_flowy_billing_turn_id() {
+        let observed = Arc::new(Mutex::new(None));
+        let observed_for_factory = Arc::clone(&observed);
+        let runner = MoaRunner::with_provider_factory(Arc::new(move |_config: &Config| {
+            let provider: Arc<dyn LlmProvider> = Arc::new(TurnIdProbeProvider {
+                observed: Arc::clone(&observed_for_factory),
+            });
+            provider
+        }));
+        let mut state = enabled_state("user_turn", vec![slot("alpha")]);
+        let messages = vec![user("hello")];
+
+        let outcome = nomi_providers::with_flowy_billing_turn_id("turn-parent", async {
+            runner.run(&mut state, &messages).await
+        })
+        .await
+        .expect("outcome");
+        assert!(!outcome.from_cache);
+        assert_eq!(
+            observed.lock().expect("turn-id probe").as_deref(),
+            Some("turn-parent"),
+            "JoinSet advisor fan-out must re-scope X-Flowy-Turn-Id so usageByTurn includes MoA calls"
+        );
     }
 }

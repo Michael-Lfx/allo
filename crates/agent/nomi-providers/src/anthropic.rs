@@ -43,9 +43,9 @@ impl AnthropicProvider {
 
     fn build_headers(&self, api_key: &str) -> Result<HeaderMap, ProviderError> {
         let mut headers = HeaderMap::new();
-        let api_key = HeaderValue::from_str(api_key)
+        let api_key_header = HeaderValue::from_str(api_key)
             .map_err(|e| ProviderError::Connection(format!("Invalid x-api-key header: {}", e)))?;
-        headers.insert("x-api-key", api_key);
+        headers.insert("x-api-key", api_key_header);
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         if self.cache_enabled {
@@ -54,6 +54,7 @@ impl AnthropicProvider {
                 HeaderValue::from_static("prompt-caching-2024-07-31"),
             );
         }
+        crate::apply_flowy_proxy_headers(&mut headers, &self.compat, api_key)?;
         Ok(headers)
     }
 

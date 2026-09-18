@@ -1,5 +1,4 @@
 
-
 import { ipcBridge } from '@/common';
 import type { CompareResult, FileChangeInfo, SnapshotInfo } from '@/common/types/platform/fileSnapshot';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -29,36 +28,57 @@ type UseFileChangesReturn = {
   resetFile: (file_path: string, operation: FileChangeInfo['operation']) => Promise<void>;
 };
 
+const EMPTY_COMPARE: CompareResult = { staged: [], unstaged: [] };
+
 export function useFileChanges({ workspace, enabled = true }: UseFileChangesParams): UseFileChangesReturn {
-  const [result, setResult] = useState<CompareResult>({ staged: [], unstaged: [] });
-  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<CompareResult>(EMPTY_COMPARE);
+  const [loading, setLoading] = useState(() => Boolean(workspace && enabled));
   const [snapshotInfo, setSnapshotInfo] = useState<SnapshotInfo | null>(null);
   const initializedRef = useRef(false);
+  const generationRef = useRef(0);
 
   useEffect(() => {
-    if (!workspace || !enabled) return;
+    if (!workspace || !enabled) {
+      initializedRef.current = false;
+      setLoading(false);
+      setSnapshotInfo(null);
+      setResult(EMPTY_COMPARE);
+      return;
+    }
 
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
     initializedRef.current = false;
-    setResult({ staged: [], unstaged: [] });
+    setLoading(true);
     setSnapshotInfo(null);
 
-    ipcBridge.fileSnapshot.init
+    void ipcBridge.fileSnapshot.init
       .invoke({ workspace })
-      .then((info) => {
-        // Surface the mode/reason for consumers regardless of outcome.
+      .then(async (info) => {
+        if (generation !== generationRef.current) return;
         setSnapshotInfo(info);
-        // `disabled` means the backend refused to track this workspace (drive
-        // root, system dir, too large) and is NOT tracking it server-side. A
-        // follow-up compare/getInfo would 400, so treat this as a terminal,
-        // non-error state: leave `initializedRef` false so no compare fires.
-        if (info.mode === 'disabled') return;
+        if (info.mode === 'disabled') {
+          initializedRef.current = false;
+          setResult(EMPTY_COMPARE);
+          return;
+        }
         initializedRef.current = true;
+        const res = await ipcBridge.fileSnapshot.compare.invoke({ workspace });
+        if (generation !== generationRef.current) return;
+        setResult(res);
       })
       .catch((err) => {
+        if (generation !== generationRef.current) return;
         console.error('[useFileChanges] Failed to init snapshot:', err);
+        setResult(EMPTY_COMPARE);
+      })
+      .finally(() => {
+        if (generation === generationRef.current) setLoading(false);
       });
 
     return () => {
+      generationRef.current += 1;
+      initializedRef.current = false;
       ipcBridge.fileSnapshot.dispose.invoke({ workspace }).catch(() => {});
     };
   }, [workspace, enabled]);

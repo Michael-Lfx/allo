@@ -144,6 +144,12 @@ describe('MessageText process action chrome', () => {
     expect(source.includes('sawRunningRef')).toBe(true);
   });
 
+  test('does not query usageByTurn while the Agent Run is still in flight', () => {
+    expect(source.includes('turnStillRunning')).toBe(true);
+    expect(source.includes('isStreaming || conversationContext?.isProcessing === true')).toBe(true);
+    expect(source.includes('if (turnStillRunning) return;')).toBe(true);
+  });
+
   test('offers coding turn rollback on the latest editable user message when available', () => {
     expect(source.includes("data-testid='message-coding-rollback-action'")).toBe(true);
     expect(source.includes('ipcBridge.conversation.codingTurnRollbackAvailability.invoke')).toBe(true);

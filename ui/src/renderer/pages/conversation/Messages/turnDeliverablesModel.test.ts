@@ -15,6 +15,8 @@ import { parseMessageId } from '@/common/types/ids';
 import { parseDiff } from '@/renderer/utils/file/diffUtils';
 import {
   collectTurnDeliverables,
+  shouldPresentTurnDeliverables,
+  shouldPrefetchOlderHistoryForDeliverables,
   type TurnDeliverableCandidate,
   type TurnGateInfo,
 } from './turnDeliverablesModel';
@@ -466,5 +468,49 @@ describe('collectTurnDeliverables', () => {
     expect(items).toHaveLength(2);
     expect(items?.map((item) => item.relativePath)).toEqual(['out.md', 'out.md']);
     expect(items?.map((item) => item.absolutePath)).toEqual(['D:/reports/out.md', 'E:/exports/out.md']);
+  });
+});
+
+describe('shouldPresentTurnDeliverables', () => {
+  test('waits for the initial history window', () => {
+    expect(
+      shouldPresentTurnDeliverables({ historyLoading: true, hasMoreOlder: false, turnHasUserAnchor: true })
+    ).toBe(false);
+  });
+
+  test('holds a sliced turn until older pages restore the user request', () => {
+    expect(
+      shouldPresentTurnDeliverables({ historyLoading: false, hasMoreOlder: true, turnHasUserAnchor: false })
+    ).toBe(false);
+    expect(
+      shouldPresentTurnDeliverables({ historyLoading: false, hasMoreOlder: true, turnHasUserAnchor: true })
+    ).toBe(true);
+  });
+
+  test('presents the loaded files when nothing older can be fetched', () => {
+    expect(
+      shouldPresentTurnDeliverables({ historyLoading: false, hasMoreOlder: false, turnHasUserAnchor: false })
+    ).toBe(true);
+  });
+});
+
+describe('shouldPrefetchOlderHistoryForDeliverables', () => {
+  test('prefetches only when the newest turn is still sliced', () => {
+    expect(
+      shouldPrefetchOlderHistoryForDeliverables({
+        newestTurnId: 'turn-new',
+        incompleteTurnIds: ['turn-old', 'turn-new'],
+        hasMoreOlder: true,
+        historyLoading: false,
+      })
+    ).toBe(true);
+    expect(
+      shouldPrefetchOlderHistoryForDeliverables({
+        newestTurnId: 'turn-new',
+        incompleteTurnIds: ['turn-old'],
+        hasMoreOlder: true,
+        historyLoading: false,
+      })
+    ).toBe(false);
   });
 });

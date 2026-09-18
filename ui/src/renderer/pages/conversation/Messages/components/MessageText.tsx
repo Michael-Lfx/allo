@@ -426,10 +426,16 @@ const MessageText: React.FC<{
     };
   }, [conversationId, turnCreditKey]);
   const turnCredits = liveTurnCredits ?? persistedTurnCredits;
+  const turnStillRunning =
+    isStreaming || conversationContext?.isProcessing === true;
   // Historical sessions (including eval shells) may lack live emit — backfill credits.
+  // Never query while the Agent Run is still in flight: the first billed call
+  // would freeze in shouldReuseCachedTurnCredits and hide later goal/plan/tool
+  // rounds from the chip.
   useEffect(() => {
     if (isUserMessage || !conversationId || !turnCreditKey) return;
     if (conversation?.type !== 'nomi') return;
+    if (turnStillRunning) return;
     if (turnCredits != null && (turnCredits.callCount > 0 || turnCredits.creditsConsumed > 0)) {
       return;
     }
@@ -438,7 +444,7 @@ const MessageText: React.FC<{
       turn_id: turnCreditKey,
       delayMs: 400,
     });
-  }, [conversation?.type, conversationId, isUserMessage, turnCreditKey, turnCredits]);
+  }, [conversation?.type, conversationId, isUserMessage, turnCreditKey, turnCredits, turnStillRunning]);
   const { data: providerList } = useProvidersQuery({
     enabled: conversation?.type === 'nomi',
   });

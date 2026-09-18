@@ -16,9 +16,9 @@ describe('ConversationPlanPanel workspace tab', () => {
   test('renders a header strip with count and status, not a duplicate title', () => {
     expect(panel.includes("data-testid='conversation-plan-panel'")).toBe(true);
     expect(panel.includes("data-testid='conversation-plan-header'")).toBe(true);
-    expect(panel.includes("data-testid='conversation-plan-spine'")).toBe(true);
-    expect(panel.includes('spineFill')).toBe(true);
-    expect(panel.includes('PlanThinkingOrb')).toBe(true);
+    expect(panel.includes("data-testid='conversation-plan-spine'")).toBe(false);
+    expect(panel.includes('spineFill')).toBe(false);
+    expect(panel.includes('PlanThinkingOrb')).toBe(false);
     expect(panel.includes("listTestId='conversation-plan-list'")).toBe(true);
     expect(panel.includes("t('conversation.workspace.plan.tab'")).toBe(false);
     expect(panel.includes("t('conversation.workspace.plan.inProgress'")).toBe(true);
@@ -43,30 +43,21 @@ describe('ConversationPlanPanel workspace tab', () => {
     expect(list.includes("case 'completed':")).toBe(true);
     expect(list.includes("case 'pending':")).toBe(true);
     expect(list.includes('const _exhaustive: never = status')).toBe(true);
-    expect(list.includes('PlanThinkingOrb')).toBe(true);
-    expect(list.includes("state='settled'")).toBe(true);
-    expect(list.includes('orbCheck')).toBe(false);
+    expect(list.includes('PlanThinkingOrb')).toBe(false);
+    expect(list.includes("data-testid='conversation-plan-check'")).toBe(true);
     expect(list.includes("@icon-park/react")).toBe(false);
-    expect(list.includes('orbHalo')).toBe(false);
-    expect(list.includes('orbCore')).toBe(false);
     expect(css.includes('-webkit-line-clamp: 2')).toBe(true);
     expect(css.includes('-webkit-line-clamp: 3')).toBe(true);
-    expect(css.includes('plan-node-pulse')).toBe(true);
-    expect(css.includes('orbHalo')).toBe(false);
-    expect(css.includes('orbCore')).toBe(false);
-    expect(css.includes('radial-gradient')).toBe(false);
-    expect(css.includes('nodeSettled')).toBe(true);
-    expect(css.includes('border: 1.5px solid var(--color-text-1)')).toBe(true);
-    expect(css.includes('rgb(var(--success-6))')).toBe(false);
-    expect(css.includes('--plan-node: 20px')).toBe(true);
-    expect(css.includes('--plan-line: 20px')).toBe(true);
-    expect(css.includes('grid-template-columns: var(--plan-node) minmax(0, 1fr)')).toBe(true);
-    expect(css.includes('letter-spacing: -0.01em')).toBe(true);
+    expect(css.includes('plan-node-pulse')).toBe(false);
+    expect(css.includes('spineFill')).toBe(false);
+    expect(css.includes('checkCompleted')).toBe(true);
+    expect(css.includes('checkWorking')).toBe(true);
+    expect(css.includes('--plan-check: 18px')).toBe(true);
+    expect(css.includes('grid-template-columns: var(--plan-check) minmax(0, 1fr)')).toBe(true);
+    expect(css.includes('letter-spacing: -0.015em')).toBe(true);
     expect(css.includes('font-feature-settings: \'tnum\' 1')).toBe(true);
-    expect(css.includes('text-decoration: none')).toBe(true);
     expect(css.includes('prefers-reduced-motion: reduce')).toBe(true);
-    expect(css.includes('spineFill')).toBe(true);
-    expect(css.includes('mask-image: linear-gradient')).toBe(true);
+    expect(css.includes('backdrop-filter: saturate(180%) blur(20px)')).toBe(true);
   });
 
   test('exports a stable workspace tab key for the rail merge', () => {

@@ -5,22 +5,16 @@
  */
 
 import { Empty } from '@arco-design/web-react';
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useConversationPlan } from './conversationPlanContext';
-import PlanTodoList, { PlanThinkingOrb } from './PlanTodoList';
+import PlanTodoList from './PlanTodoList';
 import styles from './planTodoList.module.css';
 
 const ConversationPlanPanel: React.FC = () => {
   const { t } = useTranslation();
   const { plan } = useConversationPlan();
   const inProgressRowRef = useRef<HTMLDivElement | null>(null);
-  const working = Boolean(plan && plan.done < plan.total);
-  const spineFill = useMemo(() => {
-    if (!plan || plan.total <= 0) return '0%';
-    const liveOffset = plan.entries.some((entry) => entry.status === 'in_progress') ? 0.5 : 0;
-    return `${Math.min(100, ((plan.done + liveOffset) / plan.total) * 100)}%`;
-  }, [plan]);
 
   useEffect(() => {
     const row = inProgressRowRef.current;
@@ -33,7 +27,6 @@ const ConversationPlanPanel: React.FC = () => {
   if (!plan) {
     return (
       <div className={styles.empty} data-testid='conversation-plan-panel'>
-        <PlanThinkingOrb state='settled' />
         <Empty
           description={
             <div className='text-center'>
@@ -59,14 +52,8 @@ const ConversationPlanPanel: React.FC = () => {
 
   return (
     <div className={styles.stage} data-testid='conversation-plan-panel'>
-      <div className={styles.track} style={{ '--plan-spine-fill': spineFill } as React.CSSProperties}>
-        <span className={styles.spine} data-testid='conversation-plan-spine' aria-hidden='true'>
-          <span className={styles.spineFill} />
-        </span>
-        <div data-testid='conversation-plan-header' className={`${styles.header} ${working ? styles.headerLive : styles.headerSettled}`}>
-          <span className={styles.glyph}>
-            <PlanThinkingOrb state={working ? 'working' : 'settled'} />
-          </span>
+      <div className={styles.track}>
+        <div data-testid='conversation-plan-header' className={styles.header}>
           <span className={styles.status}>{statusLabel}</span>
           <span className={styles.countPill}>
             {t('messages.planProgress', {

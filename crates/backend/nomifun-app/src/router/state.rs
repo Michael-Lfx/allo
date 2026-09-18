@@ -532,7 +532,8 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
     // is not process-tree terminal proof, so unresolved current backends remain
     // quarantined. This awaited boundary must stay above cron.init, AutoWork
     // persisted resume, channel/plugin receive loops, and router publication.
-    let snapshot_service = Arc::new(SnapshotService::new());
+    let snapshot_root = services.data_dir.join("file-snapshots");
+    let snapshot_service = Arc::new(SnapshotService::with_snapshot_root(snapshot_root));
     let conversation =
         build_conversation_state(services, Some(cron.cron_service.clone()), snapshot_service.clone());
     conversation.service.with_preset_service(preset.service.clone());

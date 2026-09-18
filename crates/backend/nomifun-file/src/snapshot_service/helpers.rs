@@ -3,8 +3,6 @@
 //! All functions here are synchronous and take no `&self` — they can be
 //! called safely inside `spawn_blocking`.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -12,6 +10,7 @@ use git2::{IndexAddOption, Repository, Signature, Status, StatusOptions};
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 use nomifun_common::{AppError, FileChangeOperation};
+use sha2::{Digest, Sha256};
 
 use crate::types::{CompareResult, FileChangeInfo, SnapshotInfo, SnapshotMode};
 
@@ -19,8 +18,11 @@ use crate::types::{CompareResult, FileChangeInfo, SnapshotInfo, SnapshotMode};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Prefix for temporary snapshot directories under the system temp dir.
+/// Prefix for snapshot directories under the durable snapshot root.
 pub(super) const SNAPSHOT_DIR_PREFIX: &str = "nomifun-snapshot-";
+/// Marker file stored next to the snapshot `.git` so reuse does not depend on
+/// git2 resolving `core.worktree` (unreliable across Windows `\\?\` paths).
+const WORKSPACE_MARKER_FILE: &str = "nomifun-workspace";
 
 /// Exclude rules written to `<git-dir>/info/exclude` for snapshot mode.
 /// These patterns prevent large/generated directories from being tracked.
@@ -270,13 +272,14 @@ pub(super) struct WorkspaceState {
     pub mode: SnapshotMode,
     /// Path to the git directory.
     /// - git-repo mode: the workspace path itself (contains `.git/`).
-    /// - snapshot mode: `/tmp/nomifun-snapshot-{hash}` (bare-style git dir).
+    /// - snapshot mode: `{snapshot_root}/nomifun-snapshot-{hash}`.
     pub repo_path: PathBuf,
     /// Canonical path to the actual workspace directory.
     pub workspace_path: PathBuf,
     /// Number of outstanding `init` calls. Each `init` of an already-tracked
-    /// workspace increments it; each `dispose` decrements it. The entry (and,
-    /// in snapshot mode, the temp repo) is only removed when it reaches 0.
+    /// workspace increments it; each `dispose` decrements it. The DashMap entry
+    /// is removed at 0. Snapshot-mode repos stay on disk so a later init
+    /// (including after process restart) can reopen the original baseline.
     pub refcount: usize,
 }
 
@@ -284,33 +287,183 @@ pub(super) struct WorkspaceState {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Compute a deterministic temp directory path for a workspace.
-pub(super) fn temp_repo_path(workspace: &str) -> PathBuf {
-    let mut hasher = DefaultHasher::new();
-    workspace.hash(&mut hasher);
-    let hash = hasher.finish();
-    std::env::temp_dir().join(format!("{}{:016x}", SNAPSHOT_DIR_PREFIX, hash))
+/// Stable hex identity for a workspace path. Must not use `DefaultHasher`
+/// (SipHash keys are process-randomized, so a restart would miss the repo).
+pub(super) fn stable_workspace_hash(workspace: &str) -> String {
+    let digest = Sha256::digest(workspace.as_bytes());
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Open the git repository for a workspace state.
-pub(super) fn open_repo(state: &WorkspaceState) -> Result<Repository, AppError> {
-    Repository::open(&state.repo_path).map_err(|e| {
+/// Snapshot repo directory under `root` for a (usually canonical) workspace path.
+pub(super) fn snapshot_repo_path(root: &Path, workspace: &str) -> PathBuf {
+    root.join(format!("{}{}", SNAPSHOT_DIR_PREFIX, stable_workspace_hash(workspace)))
+}
+
+/// Test helper: snapshot repo under the process temp dir.
+#[cfg(test)]
+pub(super) fn temp_repo_path(workspace: &str) -> PathBuf {
+    snapshot_repo_path(&std::env::temp_dir(), workspace)
+}
+
+fn workspace_marker_path(snapshot_dir: &Path) -> PathBuf {
+    snapshot_dir.join(WORKSPACE_MARKER_FILE)
+}
+
+fn write_workspace_marker(snapshot_dir: &Path, workspace: &Path) -> Result<(), AppError> {
+    std::fs::write(workspace_marker_path(snapshot_dir), workspace.to_string_lossy().as_bytes()).map_err(|e| {
         AppError::Internal(format!(
-            "Failed to open git repo at {}: {}",
-            state.repo_path.display(),
+            "Failed to write snapshot workspace marker in {}: {}",
+            snapshot_dir.display(),
             e
         ))
     })
 }
 
+fn read_workspace_marker(snapshot_dir: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(workspace_marker_path(snapshot_dir)).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+/// Open the git repository for a workspace state.
+/// Snapshot-mode always rebinds `workdir` so status/diff use the workspace tree
+/// even when `core.worktree` failed to round-trip across Windows path forms.
+pub(super) fn open_repo(state: &WorkspaceState) -> Result<Repository, AppError> {
+    let repo = Repository::open(&state.repo_path).map_err(|e| {
+        AppError::Internal(format!(
+            "Failed to open git repo at {}: {}",
+            state.repo_path.display(),
+            e
+        ))
+    })?;
+    if matches!(state.mode, SnapshotMode::Snapshot) {
+        repo.set_workdir(&state.workspace_path, false).map_err(|e| {
+            AppError::Internal(format!(
+                "Failed to set snapshot workdir to {}: {}",
+                state.workspace_path.display(),
+                e
+            ))
+        })?;
+    }
+    Ok(repo)
+}
+
+fn same_workspace_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => {
+            let norm = |path: &Path| {
+                path.to_string_lossy()
+                    .replace('\\', "/")
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase()
+            };
+            norm(left) == norm(right)
+        }
+    }
+}
+
+/// Reopen a leftover snapshot-mode repo when it still belongs to `workspace`.
+///
+/// Returning `true` means the original baseline commit is intact and must not
+/// be recaptured — recapturing would fold agent edits into HEAD so the Changes
+/// rail looks empty after leaving a session or restarting the app.
+pub(super) fn try_reuse_snapshot_repo(workspace: &Path, snapshot_dir: &Path) -> bool {
+    if !snapshot_dir.join(".git").is_dir() {
+        return false;
+    }
+    let Ok(repo) = Repository::open(snapshot_dir) else {
+        return false;
+    };
+    if repo.head().ok().and_then(|head| head.target()).is_none() {
+        return false;
+    }
+
+    let marker_ok = read_workspace_marker(snapshot_dir)
+        .map(|marked| same_workspace_path(&marked, workspace))
+        .unwrap_or(false);
+    let workdir_ok = repo
+        .workdir()
+        .map(|wd| same_workspace_path(wd, workspace))
+        .unwrap_or(false);
+    if !marker_ok && !workdir_ok {
+        return false;
+    }
+
+    if repo.set_workdir(workspace, false).is_err() {
+        return false;
+    }
+    if let Ok(mut config) = repo.config() {
+        let _ = config.set_str("core.worktree", &workspace.to_string_lossy());
+    }
+    let _ = write_workspace_marker(snapshot_dir, workspace);
+    true
+}
+
+/// Pick up a leftover OS-temp snapshot from older builds (`DefaultHasher` /
+/// `std::env::temp_dir()`). Those directories survive a UI remount but are
+/// invisible to the durable `{data_dir}/file-snapshots` path.
+pub(super) fn find_legacy_os_temp_snapshot(workspace: &Path) -> Option<PathBuf> {
+    let temp = std::env::temp_dir();
+    let entries = std::fs::read_dir(&temp).ok()?;
+    let mut seen = 0usize;
+    for entry in entries.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if !name.starts_with(SNAPSHOT_DIR_PREFIX) {
+            continue;
+        }
+        seen += 1;
+        if seen > 128 {
+            break;
+        }
+        let path = entry.path();
+        if try_reuse_snapshot_repo(workspace, &path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Move a leftover snapshot into the durable root when the filesystem allows
+/// it (same volume). Cross-volume rename keeps using `from`.
+pub(super) fn adopt_snapshot_repo(from: &Path, to: &Path) -> PathBuf {
+    if from == to {
+        return to.to_path_buf();
+    }
+    if to.exists() {
+        return from.to_path_buf();
+    }
+    if let Some(parent) = to.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::rename(from, to).is_ok() {
+        to.to_path_buf()
+    } else {
+        from.to_path_buf()
+    }
+}
+
 /// Initialize a snapshot-mode temp repository for a non-git workspace.
 ///
-/// 1. Creates the temp directory with a standard `.git` layout.
-/// 2. Sets `core.worktree` to point at the real workspace.
-/// 3. Writes exclude rules to `.git/info/exclude`.
-/// 4. Adds all workspace files and creates an initial commit as the baseline.
+/// 1. Reuses an existing temp repo for this workspace when it is still valid.
+/// 2. Otherwise creates the temp directory with a standard `.git` layout.
+/// 3. Sets `core.worktree` to point at the real workspace.
+/// 4. Writes exclude rules to `.git/info/exclude`.
+/// 5. Adds all workspace files and creates an initial commit as the baseline.
 pub(super) fn init_snapshot_repo(workspace: &Path, temp_dir: &Path) -> Result<(), AppError> {
-    // Clean up any leftover directory from a previous run with the same hash
+    if try_reuse_snapshot_repo(workspace, temp_dir) {
+        return Ok(());
+    }
     if temp_dir.exists() {
         std::fs::remove_dir_all(temp_dir).map_err(|e| {
             AppError::Internal(format!(
@@ -371,6 +524,7 @@ pub(super) fn init_snapshot_repo(workspace: &Path, temp_dir: &Path) -> Result<()
     repo.commit(Some("HEAD"), &sig, &sig, SNAPSHOT_INITIAL_MSG, &tree, &[])
         .map_err(|e| AppError::Internal(format!("Failed to create initial commit: {}", e)))?;
 
+    write_workspace_marker(temp_dir, workspace)?;
     Ok(())
 }
 
@@ -808,6 +962,48 @@ mod tests {
         let p = temp_repo_path("/ws");
         let name = p.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with(SNAPSHOT_DIR_PREFIX));
+    }
+
+    #[test]
+    fn stable_workspace_hash_is_stable_hex() {
+        let a = stable_workspace_hash("/home/user/project");
+        let b = stable_workspace_hash("/home/user/project");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, stable_workspace_hash("/home/user/other"));
+    }
+
+    #[test]
+    fn snapshot_repo_path_uses_given_root() {
+        let root = PathBuf::from("/data/file-snapshots");
+        let p = snapshot_repo_path(&root, "/home/user/project");
+        assert_eq!(p.parent(), Some(root.as_path()));
+        assert!(p
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with(SNAPSHOT_DIR_PREFIX));
+    }
+
+    #[test]
+    fn try_reuse_accepts_marker_when_workdir_is_wrong() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        let snapshot = tmp.path().join("snap");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("f.txt"), "orig").unwrap();
+        init_snapshot_repo(&workspace, &snapshot).unwrap();
+
+        let repo = Repository::open(&snapshot).unwrap();
+        repo.set_workdir(&snapshot, false).unwrap();
+        drop(repo);
+
+        assert!(
+            try_reuse_snapshot_repo(&workspace, &snapshot),
+            "workspace marker must allow reuse when git2 workdir no longer matches"
+        );
     }
 
     // -- index_operation / worktree_operation --

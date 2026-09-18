@@ -79,6 +79,36 @@ export interface CollectTurnDeliverablesOptions {
   turnGates: ReadonlyMap<string, TurnGateInfo>;
 }
 
+/**
+ * The newest history window can slice a long turn (user request falls off the
+ * oldest edge). Showing that partial set as "5 files" then growing to 26 after
+ * `loadOlder` looks like a stuck count. Hold the card until the originating
+ * user request is in the loaded window, or until there is no older page left.
+ */
+export function shouldPresentTurnDeliverables(options: {
+  historyLoading: boolean;
+  hasMoreOlder: boolean;
+  turnHasUserAnchor: boolean;
+}): boolean {
+  if (options.historyLoading) return false;
+  if (options.hasMoreOlder && !options.turnHasUserAnchor) return false;
+  return true;
+}
+
+/**
+ * Prefetch older history only for the newest turn. Filling every sliced older
+ * turn would walk the whole session on enter.
+ */
+export function shouldPrefetchOlderHistoryForDeliverables(options: {
+  newestTurnId?: string;
+  incompleteTurnIds: readonly string[];
+  hasMoreOlder: boolean;
+  historyLoading: boolean;
+}): boolean {
+  if (options.historyLoading || !options.hasMoreOlder || !options.newestTurnId) return false;
+  return options.incompleteTurnIds.includes(options.newestTurnId);
+}
+
 const normalizeSlashes = (value: string): string => value.trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/');
 
 // Windows canonicalization may return a verbatim path (`\\?\\C:\\...`). Keep

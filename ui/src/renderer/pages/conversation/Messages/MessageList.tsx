@@ -77,6 +77,8 @@ import { getProcessItemState } from './turnProcessState';
 import { planTurnLiveStep } from './turnLiveStepModel';
 import {
   collectTurnDeliverables,
+  shouldPresentTurnDeliverables,
+  shouldPrefetchOlderHistoryForDeliverables,
   type TurnDeliverableCandidate,
   type TurnDeliverableItem,
   type TurnGateInfo,
@@ -896,6 +898,7 @@ const MessageList: React.FC<{
   const targetMessageId = locationState.targetMessageId;
   const [highlightedMessageId, setHighlightedMessageId] = useState<MessageId | undefined>();
   const handledTargetKeyRef = useRef<string>('');
+  const deliverableHistoryGapRef = useRef(false);
 
   const lastRawUserTextIndex = useMemo(() => findLastUserTextIndex(list), [list]);
 
@@ -1224,6 +1227,34 @@ const MessageList: React.FC<{
     }
 
     const deliverablesByTurn = collectTurnDeliverables(candidates, { workspaceRoots, turnGates });
+    const turnsWithUserAnchor = new Set<string>();
+    for (const entry of modelInput) {
+      if (entry.role === 'user' && entry.turnId) turnsWithUserAnchor.add(entry.turnId);
+    }
+    const incompleteTurnIds: string[] = [];
+    for (const turnId of deliverablesByTurn.keys()) {
+      if (
+        !shouldPresentTurnDeliverables({
+          historyLoading: isMessageListLoading,
+          hasMoreOlder: Boolean(hasMoreOlder),
+          turnHasUserAnchor: turnsWithUserAnchor.has(turnId),
+        })
+      ) {
+        incompleteTurnIds.push(turnId);
+      }
+    }
+    let newestTurnId: string | undefined;
+    for (const entry of modelInput) {
+      if (entry.turnId) newestTurnId = entry.turnId;
+    }
+    const needsOlderHistoryForDeliverables = shouldPrefetchOlderHistoryForDeliverables({
+      newestTurnId,
+      incompleteTurnIds,
+      hasMoreOlder: Boolean(hasMoreOlder),
+      historyLoading: isMessageListLoading,
+    });
+    for (const turnId of incompleteTurnIds) deliverablesByTurn.delete(turnId);
+    deliverableHistoryGapRef.current = needsOlderHistoryForDeliverables;
     const liveStepForDisclosures = buildTurnLiveStep(disclosureItems);
     if (deliverablesByTurn.size === 0) {
       return cacheDisplayList(
@@ -1297,6 +1328,8 @@ const MessageList: React.FC<{
     processedList,
     t,
     workspaceRoots,
+    hasMoreOlder,
+    isMessageListLoading,
   ]);
 
   const lastUserTextIndex = useMemo(
@@ -1475,6 +1508,19 @@ const MessageList: React.FC<{
     },
     [handleScroll, onLoadOlder, hasMoreOlder, loadingOlder]
   );
+
+  useEffect(() => {
+    if (
+      !onLoadOlder ||
+      !hasMoreOlder ||
+      loadingOlder ||
+      isMessageListLoading ||
+      !deliverableHistoryGapRef.current
+    ) {
+      return;
+    }
+    void onLoadOlder();
+  }, [displayList, hasMoreOlder, isMessageListLoading, onLoadOlder]);
 
   // Restore the viewport after an older window prepends (content grew at the
   // top). Keyed on the raw `list.length` (always grows by the prepended count,
@@ -1700,7 +1746,16 @@ const MessageList: React.FC<{
           className='min-w-0 message-item px-8px max-w-full md:max-w-780px mx-auto turn_actions'
           style={highlighted ? highlightStyle : undefined}
         >
-          <MessageText message={item.message} actionsOnly creditTurnId={item.turn_id} />
+          <MessageText
+            message={item.message}
+            actionsOnly
+            creditTurnId={item.turn_id}
+            isStreaming={
+              conversationContext?.isProcessing === true &&
+              (conversationContext?.activeTurnId === item.turn_id ||
+                conversationContext?.activeRequestMessageId === item.turn_id)
+            }
+          />
         </div>
       );
     }

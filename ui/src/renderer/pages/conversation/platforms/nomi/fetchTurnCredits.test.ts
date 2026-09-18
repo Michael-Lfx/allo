@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import type { TurnCreditUsageData } from '@/common/config/storage';
 import {
   normalizeTurnCreditUsage,
@@ -25,7 +26,7 @@ const usage = (creditsConsumed: number, callCount: number): TurnCreditUsageData 
 });
 
 describe('turn credit cache', () => {
-  test('reuses a positive snapshot unless force-refresh is requested', () => {
+  test('reuses a positive snapshot unless force-refresh or settle is requested', () => {
     expect(shouldReuseCachedTurnCredits(usage(250, 1), false)).toBe(true);
     expect(shouldReuseCachedTurnCredits(usage(250, 1), true)).toBe(false);
     expect(shouldReuseCachedTurnCredits(usage(0, 0), false)).toBe(false);
@@ -62,5 +63,13 @@ describe('turn credit cache', () => {
         { modelName: 'm', creditConsumed: 30 },
       ],
     });
+  });
+
+  test('terminal fetches settle past a positive mid-turn snapshot', () => {
+    const fetchSource = readFileSync(new URL('./fetchTurnCredits.ts', import.meta.url), 'utf8');
+    const hookSource = readFileSync(new URL('./useNomiMessage.ts', import.meta.url), 'utf8');
+    expect(fetchSource.includes('params.force === true || params.settle === true')).toBe(true);
+    expect(fetchSource.includes('existingInflight && !params.force && !params.settle')).toBe(true);
+    expect(hookSource.includes('settle: true')).toBe(true);
   });
 });
