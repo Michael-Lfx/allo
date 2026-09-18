@@ -2197,7 +2197,7 @@ const SendBox: React.FC<{
       before={
         pinnedPlan ? (
           <div
-            className='absolute left-1/2 bottom-[calc(100%+8px)] -translate-x-1/2 z-30'
+            className='relative z-1 mb-8px flex justify-center'
             data-testid='sendbox-plan-anchor'
           >
             <PinnedPlan plan={pinnedPlan} active={Boolean(loading || isLoading)} />

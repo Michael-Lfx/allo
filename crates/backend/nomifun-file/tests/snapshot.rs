@@ -723,21 +723,25 @@ async fn git_repo_reset_staged_deleted_file() {
 // =======================================================================
 
 #[tokio::test]
-async fn snapshot_dispose_cleans_up_temp_repo() {
+async fn snapshot_dispose_untracks_but_keeps_temp_repo() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("f.txt"), "data").unwrap();
 
     let svc = SnapshotService::new();
     let ws = tmp.path().to_str().unwrap();
     svc.init(ws).await.unwrap();
+    let repo_path = svc.repo_path_for(ws).expect("repo path tracked after init");
 
-    // Verify the workspace is still usable before dispose
     assert!(svc.compare(ws).await.is_ok());
 
     svc.dispose(ws).await.unwrap();
 
-    // After dispose, the workspace is no longer tracked
+    assert!(!svc.is_tracked(ws), "entry must be gone after last dispose");
     assert!(svc.compare(ws).await.is_err());
+    assert!(
+        repo_path.exists(),
+        "snapshot temp repo must survive dispose so re-init can reopen the baseline"
+    );
 }
 
 #[tokio::test]
@@ -915,11 +919,140 @@ async fn snapshot_refcount_disposes_only_on_last() {
     assert!(repo_path.exists(), "temp repo must remain after first dispose");
     assert!(svc.compare(ws).await.is_ok(), "still usable after first dispose");
 
-    // Second dispose drops refcount to 0: entry + temp repo removed.
+    // Second dispose drops refcount to 0: DashMap entry is gone, temp repo stays
+    // so a later init reopens the original baseline instead of recapturing.
     svc.dispose(ws).await.unwrap();
     assert!(!svc.is_tracked(ws), "entry must be gone after last dispose");
-    assert!(!repo_path.exists(), "temp repo must be removed after last dispose");
+    assert!(repo_path.exists(), "temp repo must remain after last dispose");
     assert!(svc.compare(ws).await.is_err(), "no longer usable after last dispose");
+}
+
+#[tokio::test]
+async fn snapshot_reinit_after_dispose_keeps_original_baseline() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("f.txt"), "original").unwrap();
+
+    let svc = SnapshotService::new();
+    let ws = tmp.path().to_str().unwrap();
+    svc.init(ws).await.unwrap();
+
+    let before_leave = svc.compare(ws).await.unwrap();
+    assert!(before_leave.staged.is_empty() && before_leave.unstaged.is_empty());
+
+    std::fs::write(tmp.path().join("f.txt"), "edited by agent").unwrap();
+    std::fs::write(tmp.path().join("new.txt"), "created").unwrap();
+    let while_open = svc.compare(ws).await.unwrap();
+    assert!(
+        !while_open.unstaged.is_empty(),
+        "agent edits must be visible before leaving the session"
+    );
+
+    svc.dispose(ws).await.unwrap();
+    svc.init(ws).await.unwrap();
+
+    let after_reenter = svc.compare(ws).await.unwrap();
+    assert!(
+        !after_reenter.unstaged.is_empty(),
+        "re-entering a session must not recapture agent edits as the snapshot baseline"
+    );
+}
+
+#[tokio::test]
+async fn snapshot_survives_new_service_instance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("ws");
+    let store = tmp.path().join("file-snapshots");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("f.txt"), "original").unwrap();
+    let ws = workspace.to_str().unwrap();
+
+    {
+        let svc = SnapshotService::with_snapshot_root(store.clone());
+        let info = svc.init(ws).await.unwrap();
+        assert!(
+            matches!(info.mode, SnapshotMode::Snapshot),
+            "plain dir must use snapshot mode, got {:?}",
+            info.mode
+        );
+        std::fs::write(workspace.join("f.txt"), "edited by agent").unwrap();
+        std::fs::write(workspace.join("new.txt"), "created").unwrap();
+        assert!(!svc.compare(ws).await.unwrap().unstaged.is_empty());
+        svc.dispose(ws).await.unwrap();
+        assert!(!svc.is_tracked(ws), "dispose must drop in-memory tracking");
+    }
+
+    let svc2 = SnapshotService::with_snapshot_root(store);
+    let info = svc2.init(ws).await.unwrap();
+    assert!(matches!(info.mode, SnapshotMode::Snapshot));
+    let after_restart = svc2.compare(ws).await.unwrap();
+    assert!(
+        !after_restart.unstaged.is_empty(),
+        "a new SnapshotService (app restart) must reopen the original baseline, got {after_restart:?}"
+    );
+}
+
+#[tokio::test]
+async fn snapshot_adopts_legacy_os_temp_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("ws");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("f.txt"), "original").unwrap();
+    let ws = workspace.to_str().unwrap();
+
+    {
+        let svc = SnapshotService::new();
+        svc.init(ws).await.unwrap();
+        std::fs::write(workspace.join("f.txt"), "edited by agent").unwrap();
+        svc.dispose(ws).await.unwrap();
+    }
+
+    let store = tmp.path().join("file-snapshots");
+    let svc2 = SnapshotService::with_snapshot_root(store);
+    let info = svc2.init(ws).await.unwrap();
+    assert!(
+        matches!(info.mode, SnapshotMode::Snapshot),
+        "legacy OS-temp snapshot must be adopted, got {:?}",
+        info.mode
+    );
+    let after = svc2.compare(ws).await.unwrap();
+    assert!(
+        !after.unstaged.is_empty(),
+        "upgrading snapshot root must not recapture the current tree, got {after:?}"
+    );
+}
+
+#[tokio::test]
+async fn snapshot_survives_workspace_git_init_after_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("ws");
+    let store = tmp.path().join("file-snapshots");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("f.txt"), "original").unwrap();
+    let ws = workspace.to_str().unwrap();
+
+    {
+        let svc = SnapshotService::with_snapshot_root(store.clone());
+        svc.init(ws).await.unwrap();
+        std::fs::write(workspace.join("f.txt"), "edited by agent").unwrap();
+        svc.dispose(ws).await.unwrap();
+    }
+
+    // Agent later inits git and commits the edited tree. Git status vs HEAD is
+    // clean; the session Changes rail must still diff against the snapshot.
+    init_repo_with_file(&workspace, "f.txt", "edited by agent");
+
+    let svc2 = SnapshotService::with_snapshot_root(store);
+    let info = svc2.init(ws).await.unwrap();
+    assert!(
+        matches!(info.mode, SnapshotMode::Snapshot),
+        "existing session snapshot must win over a later workspace .git, got {:?}",
+        info.mode
+    );
+    let after = svc2.compare(ws).await.unwrap();
+    assert!(
+        !after.unstaged.is_empty(),
+        "committed workspace git HEAD must not hide session snapshot diffs, got {after:?}"
+    );
 }
 
 // =======================================================================

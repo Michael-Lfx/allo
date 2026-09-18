@@ -197,13 +197,13 @@ pub trait IFileWatchService: Send + Sync {
 /// Git-based workspace snapshot system for tracking file changes.
 ///
 /// Supports two modes:
-/// - **git-repo**: directory already has `.git` — uses it directly.
-/// - **snapshot**: no `.git` — creates a temporary repo under
-///   `/tmp/nomifun-snapshot-*`.
+/// - **git-repo**: directory already has `.git` and no session snapshot exists.
+/// - **snapshot**: durable shadow git repo under the app `file-snapshots/` dir.
 #[async_trait::async_trait]
 pub trait ISnapshotService: Send + Sync {
     /// Initialize the snapshot system for a workspace.
-    /// Auto-detects `git-repo` or `snapshot` mode.
+    /// Reuses a durable session snapshot when one exists; otherwise git-repo
+    /// if the workspace has `.git`, else creates a new snapshot baseline.
     async fn init(&self, workspace: &str) -> Result<SnapshotInfo, AppError>;
 
     /// Compare workspace state against the baseline.
@@ -242,8 +242,8 @@ pub trait ISnapshotService: Send + Sync {
         operation: FileChangeOperation,
     ) -> Result<(), AppError>;
 
-    /// Clean up snapshot resources.
-    /// For snapshot mode, deletes the temporary git repository.
+    /// Drop the in-memory tracking entry. Snapshot-mode repos stay on disk so
+    /// a later init (including after process restart) can reopen the baseline.
     async fn dispose(&self, workspace: &str) -> Result<(), AppError>;
 
     /// Capture the current worktree as a turn checkpoint (coding rollback).

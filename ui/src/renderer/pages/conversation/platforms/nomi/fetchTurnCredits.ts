@@ -239,6 +239,12 @@ export async function fetchAndPersistTurnCredits(params: {
   alias_turn_ids?: Array<MessageId | string | null | undefined>;
   /** Bypass the positive-cache skip (write-back settled / late billing). */
   force?: boolean;
+  /**
+   * Agent Run terminal: ignore a positive in-memory snapshot (often the first
+   * billed call captured while tools/goal continuations were still running)
+   * and run the settle loop. Unlike `force`, this still schedules late refresh.
+   */
+  settle?: boolean;
   /** Internal: late retries after empty first-turn billing lag. */
   retryAttempt?: number;
 }): Promise<TurnCreditUsageData | null> {
@@ -249,12 +255,12 @@ export async function fetchAndPersistTurnCredits(params: {
 
   const key = memoryKey(String(params.conversation_id), turnId);
   const existingInflight = inflightFetches.get(key);
-  if (existingInflight && !params.force) {
+  if (existingInflight && !params.force && !params.settle) {
     return existingInflight;
   }
 
   const cached = peekTurnCredits(params.conversation_id, turnId);
-  if (shouldReuseCachedTurnCredits(cached, params.force === true)) {
+  if (shouldReuseCachedTurnCredits(cached, params.force === true || params.settle === true)) {
     return cached;
   }
 

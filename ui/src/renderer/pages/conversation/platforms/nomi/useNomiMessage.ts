@@ -546,6 +546,7 @@ export const useNomiMessage = (
                 message.msg_id,
               ],
               delayMs: 800,
+              settle: true,
             });
           }
         }
@@ -710,6 +711,7 @@ export const useNomiMessage = (
                 ],
                 // Brief delay so the last model call can finish server-side billing.
                 delayMs: 800,
+                settle: true,
               });
             }
             reconcileAfterStreamTerminal();
@@ -823,6 +825,7 @@ export const useNomiMessage = (
                   message.msg_id,
                 ],
                 delayMs: 800,
+                settle: true,
               });
             }
             reconcileAfterStreamTerminal();
@@ -968,6 +971,7 @@ export const useNomiMessage = (
           turn_id: creditTurnId,
           alias_turn_ids: [rootTurnId, activeMsgIdRef.current],
           delayMs: 400,
+          settle: true,
         });
       }
 

@@ -98,9 +98,11 @@ pub struct OfficeFileAddedEvent {
 /// Snapshot mode for a workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotMode {
-    /// Directory already has a `.git` — use it directly.
+    /// Directory already has a `.git` and no durable session snapshot exists —
+    /// use the workspace repo directly (compare vs `HEAD`).
     GitRepo,
-    /// No `.git` — a temporary repo is created under `/tmp/nomifun-snapshot-*`.
+    /// Session-scoped shadow git repo under the app data dir. Survives leaving
+    /// the session and restarting the app; the original tree is the baseline.
     Snapshot,
     /// Snapshot tracking was refused for this workspace (e.g. drive/fs root,
     /// a well-known system directory, or too large to safely snapshot).

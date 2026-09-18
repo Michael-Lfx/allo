@@ -9,8 +9,8 @@ pub mod retry;
 pub mod vertex;
 
 pub use billing_turn::{
-    FLOWY_TURN_ID_HEADER, current_flowy_billing_turn_id, with_flowy_billing_turn_id,
-    with_optional_flowy_billing_turn_id,
+    FLOWY_TURN_ID_HEADER, apply_flowy_proxy_headers, current_flowy_billing_turn_id,
+    with_flowy_billing_turn_id, with_optional_flowy_billing_turn_id,
 };
 
 use std::sync::atomic::{AtomicUsize, Ordering};

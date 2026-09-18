@@ -47,13 +47,14 @@ impl OpenAIResponsesProvider {
         self.compat.sanitize_schema() || self.sanitize_tool_schemas.load(Ordering::Acquire)
     }
 
-    fn build_headers(api_key: &str) -> Result<HeaderMap, ProviderError> {
+    fn build_headers(&self, api_key: &str) -> Result<HeaderMap, ProviderError> {
         let mut headers = HeaderMap::new();
         let auth = HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|error| {
             ProviderError::Connection(format!("Invalid authorization header: {error}"))
         })?;
         headers.insert(AUTHORIZATION, auth);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        crate::apply_flowy_proxy_headers(&mut headers, &self.compat, api_key)?;
         Ok(headers)
     }
 
@@ -204,7 +205,7 @@ impl OpenAIResponsesProvider {
             &self.api_keys,
             &self.current_api_key,
             "openai.responses",
-            Self::build_headers,
+            |api_key| self.build_headers(api_key),
         )
         .await
     }

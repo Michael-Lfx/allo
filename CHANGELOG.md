@@ -5,6 +5,9 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Session turn credit chips wait for the Agent Run to finish and include Flowy-proxied Anthropic/Responses, MoA, and goal auto-draft model calls.
+- Session file-change counts wait until the full turn is in the history window, and the Changes rail keeps its session snapshot across leave/re-enter and app restart.
+- The conversation task queue sits in the composer layout instead of covering messages, with a quieter Reminders-style checklist.
 - Lesson practice sections present questions one at a time with instant grading feedback ("Next question" after each submit); the stepper is gated per practice section and unlocks past it only once its questions are answered. Answered questions stay reviewable with your own response and the grader's feedback.
 - Wan 3.0 video create requests now send DashScope `input`/`parameters` (not Seedance `content[]`), with 2–30s clips and `480P`/`720P`/`1080P` resolution tokens.
 

@@ -14,6 +14,7 @@ describe('TurnDeliverablesCard structure', () => {
   test('never renders an empty or unverified card', () => {
     // Availability must settle before anything is shown, and zero trustworthy
     // items must render nothing.
+    expect(cardSource.includes('DELIVERABLE_SETTLE_MS')).toBe(true);
     expect(cardSource.includes('if (pending || available.length === 0) return null;')).toBe(true);
     // Reported items are gated on a backend existence probe; only committed
     // receipts skip the client-side probe.
@@ -63,6 +64,8 @@ describe('TurnDeliverablesCard structure', () => {
 
   test('message list mounts the card once per turn behind the deliverables model', () => {
     expect(listSource.includes('collectTurnDeliverables')).toBe(true);
+    expect(listSource.includes('shouldPresentTurnDeliverables')).toBe(true);
+    expect(listSource.includes('shouldPrefetchOlderHistoryForDeliverables')).toBe(true);
     expect(listSource.includes("type: 'turn_deliverables'")).toBe(true);
     // Stable anchor id keyed by turn identity (React key + jump-target contract).
     expect(listSource.includes('`turn-deliverables-${turnId}`')).toBe(true);
@@ -78,7 +81,9 @@ describe('TurnDeliverablesCard structure', () => {
     expect(listSource.indexOf("type: 'turn_deliverables'")).toBeLessThan(
       listSource.lastIndexOf("type: 'turn_actions'")
     );
-    expect(listSource.includes('<MessageText message={item.message} actionsOnly creditTurnId={item.turn_id} />')).toBe(true);
+    expect(listSource.includes('actionsOnly')).toBe(true);
+    expect(listSource.includes('creditTurnId={item.turn_id}')).toBe(true);
+    expect(listSource.includes('conversationContext?.activeTurnId === item.turn_id')).toBe(true);
     expect(listSource.includes('movedActionMessageIds.has((item as TMessage).id)')).toBe(true);
   });
 });

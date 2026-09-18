@@ -3041,46 +3041,50 @@ impl NomiAgentManager {
         let cfg = self.distill_cfg.clone();
         let repo = self.goal_repo_handle();
         let session_id = self.runtime.conversation_id().to_string();
+        let billing_turn_id = nomi_providers::current_flowy_billing_turn_id();
         tokio::spawn(async move {
-            // Same resolved provider/model the engine runs on, WITHOUT the
-            // engine mutex (mirrors the explicit "draft" action).
-            let provider = nomi_providers::create_provider(&cfg);
-            let client =
-                nomi_agent::goal::judge::ProviderJudgeClient::new(provider, cfg.model.clone());
-            let contract = match nomi_agent::goal::judge::draft_contract(&objective, &client).await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = %e,
-                        "Goal contract auto-draft failed — goal continues without a contract"
-                    );
+            nomi_providers::with_optional_flowy_billing_turn_id(billing_turn_id, async move {
+                // Same resolved provider/model the engine runs on, WITHOUT the
+                // engine mutex (mirrors the explicit "draft" action).
+                let provider = nomi_providers::create_provider(&cfg);
+                let client =
+                    nomi_agent::goal::judge::ProviderJudgeClient::new(provider, cfg.model.clone());
+                let contract =
+                    match nomi_agent::goal::judge::draft_contract(&objective, &client).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %e,
+                                "Goal contract auto-draft failed — goal continues without a contract"
+                            );
+                            return;
+                        }
+                    };
+                // Re-check before applying: the user may have set a contract,
+                // replaced the goal, or ended it while the draft was in flight.
+                let current = rt.snapshot();
+                if current.contract.is_some()
+                    || current.objective != objective
+                    || current.status != GoalStatus::Active
+                {
                     return;
                 }
-            };
-            // Re-check before applying: the user may have set a contract,
-            // replaced the goal, or ended it while the draft was in flight.
-            let current = rt.snapshot();
-            if current.contract.is_some()
-                || current.objective != objective
-                || current.status != GoalStatus::Active
-            {
-                return;
-            }
-            rt.set_contract(contract);
-            let state = rt.snapshot();
-            tracing::info!(session_id = %session_id, "Goal contract auto-drafted");
-            if let Some(repo) = repo {
-                let params = crate::goal_bridge::goal_state_to_upsert(&session_id, &state);
-                if let Err(e) = repo.upsert(&params).await {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = %e,
-                        "Failed to persist auto-drafted goal contract"
-                    );
+                rt.set_contract(contract);
+                let state = rt.snapshot();
+                tracing::info!(session_id = %session_id, "Goal contract auto-drafted");
+                if let Some(repo) = repo {
+                    let params = crate::goal_bridge::goal_state_to_upsert(&session_id, &state);
+                    if let Err(e) = repo.upsert(&params).await {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to persist auto-drafted goal contract"
+                        );
+                    }
                 }
-            }
+            })
+            .await;
         });
     }
 

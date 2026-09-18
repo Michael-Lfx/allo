@@ -35,6 +35,7 @@ import { useTranslation } from 'react-i18next';
 import type { TurnDeliverableItem } from '../turnDeliverablesModel';
 
 const DEFAULT_VISIBLE_COUNT = 3;
+const DELIVERABLE_SETTLE_MS = 180;
 const DIRECTORY_PATH_COLOR = 'color-mix(in srgb, var(--text-secondary) 82%, var(--bg-base))';
 
 const ARCHIVE_EXTENSIONS = new Set(['zip', '7z', 'rar', 'tar', 'gz', 'bz2', 'xz', 'tgz']);
@@ -118,32 +119,34 @@ export const useTurnDeliverableAvailability = (
 
   useEffect(() => {
     let alive = true;
-
-    void Promise.all(
-      itemsRef.current.map(async (item): Promise<ResolvedDeliverable | null> => {
-        const statPath = getStatPath(item, workspace);
-        // Committed receipts are already integrity-audited by the backend on
-        // both commit and history read; never re-gate them on a client probe.
-        if (item.tier === 'receipt') return { ...item, statPath };
-        if (!statPath) return null;
-        try {
-          const size = await probeAvailability(statPath, workspace);
-          if (size === null) return null;
-          return { ...item, statPath, sizeBytes: item.sizeBytes ?? size };
-        } catch {
-          return null;
-        }
-      })
-    ).then((resolved) => {
-      if (!alive) return;
-      setState({
-        key: itemsKey,
-        available: resolved.filter((item): item is ResolvedDeliverable => item !== null),
+    const timer = window.setTimeout(() => {
+      void Promise.all(
+        itemsRef.current.map(async (item): Promise<ResolvedDeliverable | null> => {
+          const statPath = getStatPath(item, workspace);
+          // Committed receipts are already integrity-audited by the backend on
+          // both commit and history read; never re-gate them on a client probe.
+          if (item.tier === 'receipt') return { ...item, statPath };
+          if (!statPath) return null;
+          try {
+            const size = await probeAvailability(statPath, workspace);
+            if (size === null) return null;
+            return { ...item, statPath, sizeBytes: item.sizeBytes ?? size };
+          } catch {
+            return null;
+          }
+        })
+      ).then((resolved) => {
+        if (!alive) return;
+        setState({
+          key: itemsKey,
+          available: resolved.filter((item): item is ResolvedDeliverable => item !== null),
+        });
       });
-    });
+    }, DELIVERABLE_SETTLE_MS);
 
     return () => {
       alive = false;
+      window.clearTimeout(timer);
     };
   }, [itemsKey, workspace]);
 
