@@ -28,6 +28,7 @@ import {
   SiderVideoGenerationGroup,
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
+import { formatSiderAccountLabel } from './accountLabel';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
@@ -76,9 +77,9 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const showLogout = showLocalLogout || showCloudLogout;
   const userLabel = useMemo(() => {
     if (showCloudLogout) {
-      return whoami?.email ?? whoami?.username ?? '';
+      return formatSiderAccountLabel({ username: whoami?.username, email: whoami?.email });
     }
-    return localUser?.username ?? whoami?.email ?? whoami?.username ?? '';
+    return localUser?.username ?? formatSiderAccountLabel({ username: whoami?.username, email: whoami?.email });
   }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
   const planLabel = whoami?.plan ?? '';
 
