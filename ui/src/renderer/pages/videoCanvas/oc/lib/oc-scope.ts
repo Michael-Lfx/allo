@@ -43,4 +43,8 @@ export function disposeOcPortalHost(): void {
     themeObserver?.disconnect();
     themeObserver = null;
     observedShell = null;
+    const host = document.querySelector<HTMLElement>(`.${PORTAL_HOST_CLASS}`);
+    if (host && host.childElementCount === 0) {
+        host.classList.remove("dark");
+    }
 }

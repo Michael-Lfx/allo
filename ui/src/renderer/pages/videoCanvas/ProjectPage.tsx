@@ -47,7 +47,11 @@ const VideoCanvasProjectPage: React.FC = () => {
   const [catalogRetrying, setCatalogRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const colorTheme = useVideoCanvasTheme();
-  useEffect(() => () => disposeOcPortalHost(), []);
+  useEffect(() => {
+    if (!ready || !canvasId || error) return;
+    getOcPortalHost();
+    return () => disposeOcPortalHost();
+  }, [ready, canvasId, error]);
   const { whoami, authState } = useCloudAuth();
   const catalogSyncGeneration = useRef(0);
 
