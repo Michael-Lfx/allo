@@ -409,3 +409,73 @@ test result: ok. 1 passed ... finished in 9.71s
 - **不做** 老用户地址自动改写（D3）。
 - **不修** §9.3 的长路径风险（登记为独立项，不是本批的必要条件）。
 - **不动** `tools_updated_at` 等 `26` §10 已登记项。
+
+## 11. 默认市场改为**按需下载**（2026-09-18，用户拍板）
+
+### 11.1 问题
+
+doc 30 把「全量镜像」变成「一次请求」之后，**首个请求仍然太大**：三包合计 **324.2 MiB**（实测见
+下表），而 `warm_default_marketplaces` 在**路由构造时**就调用（D-SDK-1 ① 的「把镜像提前到启动」），
+于是全新安装、无任何配置的机器**在启动过程中**就把这 324 MiB 拉下来——即使用户从没打开过商店。
+
+| market | 归档字节 | 占比 |
+| --- | ---: | ---: |
+| `experts` | 303,624,783（289.6 MiB） | 89.3% |
+| `skills` | 18,732,558（17.9 MiB） | 5.5% |
+| `connectors` | 17,500,163（16.7 MiB） | 5.2% |
+| **合计** | **339,857,504（324.2 MiB）** | |
+
+体积用 `curl -r 0-0`（1 字节 range）读 `Content-Range` 得到：ModelScope 的 `HEAD` 只给
+`X-Linked-Etag`，**不给 `Content-Length`**，所以「先问大小再决定」在 HEAD 上做不到。
+
+一个绕不开的结构性约束：`zip` 源里「注册」就等于「下整包」——`marketplace.json` 在归档**内部**，
+不像 `url` 源那样可先单独取清单。因此要「默认不下载」，只能把**注册**与**取包**拆开。
+
+### 11.2 决策与实现
+
+默认注册**只写注册表行，不下载**；下载由用户在「市场源」点一次触发。三类落点：
+
+1. **`MarketplaceProvider::register_unfetched`（新，内部 seam）**：写一行 `entries=[]`、
+   `resolved_revision=NULL`、`auto_update=0` 的市场行。**幂等且非破坏**——同 id 已存在（无论已下载
+   还是已被用户移除）就原样返回：重启不会清掉已下载的目录，也不会把用户删掉的市场复活（这正是会
+   「重新激活」的 `add` 会干的事）。同 source 换 id 的重复入口也不新建第二行。
+   `auto_update` 刻意**不**取 `is_official_source()`：三个内置源都是官方的，若默认置 1，任何声明了
+   `[marketplace] auto_update_interval_hours` 的宿主会在扫掠第一个 tick 就把 324 MiB 拉回来——正是
+   本决策要避免的那次下载。「现在下载」与「以后一直自动下载」是两个决定，后者由用户在该市场的开关上
+   自己做（`is_auto_update_eligible` 因此也天然排除占位行）。
+2. **`default_marketplace_plan()`（新，纯函数）**：决定「注册哪些源 + 是否连下载一起做」。
+   - 配置里**显式声明**了 `[default_marketplaces.*]` → 注册**并下载**（保持原语义：写进配置就是明确
+     要求，也是天然的 opt-in 开关，不新增配置键）；
+   - 配置文件缺失 / 不可读 / 声明为空 → 内置三源，**只注册不下载**。
+   `ensure_default_marketplaces` 只是它的执行者，两条分支各自 `provider.add` / `register_unfetched`。
+3. **`agent-store init` 模板**：三源改为**注释掉的 opt-in 示例**（`# [default_marketplaces.experts]`
+   等）。这一条是必需的——模板原先写**活行**，而活行就是「启动时下载」的声明，不改模板等于全新安装
+   仍会下载（§7 的迁移口径、§9 的落地描述都以 `init.rs:139` 写活行为前提，故在此订正）。
+
+**前端**（`web/`）：`MarketSourcesPanel` 用 `resolved_revision` 缺失判定「未下载」——所有会取包的路径
+都会记录 revision，所以缺它意味着「一个字节都还没拉」，而不是「这个市场是空的」。卡片副标题与条目数
+显示「未下载」，详情页的主按钮由「检查更新」变为**「下载」**（同一个 `market/refresh`，没有新 wire
+方法），并补一条说明。**无协议改动**：`MarketplaceSummary.resolved_revision` 本来就是
+`Option<String>`（`to_summary` 直接透传），TS 侧也已声明 → **指纹不动、站点仓不动**。
+
+### 11.3 验证读数（2026-09-18）
+
+- `cargo test -p nomifun-app-server --lib only_declared_default_marketplaces_are_fetched_at_boot` **ok**
+  （无配置 → 内置三源 + `fetch=false`；有空 `[memory]` 的配置 → 同上；声明一条 → `fetch=true` 且内置
+  不搭车）。
+- `cargo test -p nomifun-app --lib unfetched_registration_stores_a_source_without_downloading_it` **ok**
+  （真实 SQLite 仓储：占位行 0 条目 / 无 revision / `auto_update=0` 且 `is_auto_update_eligible=false`；
+  幂等不增行；已下载后重注册**保留** 1 条目与 `rev-1`；同 source 异 id 不复制；软删后重注册**不复活**）。
+- `cargo test -p agent-store` **9 passed**（含新 `template_offers_the_builtin_markets_without_opting_in`：
+  模板里只有注释行，且经宿主自己的解析器读到 `default_marketplaces` **为空**）。
+- `cd web && bun run typecheck` **0 错误**、`bun run test` **513 passed / 1 skipped**。
+- `cargo check -p nomifun-app-server --tests` / `-p nomifun-app --tests -p agent-store` **exit 0**。
+
+### 11.4 交换掉的代价（如实登记）
+
+- **首屏商店在下载前是空的**（`storeEmpty` 文案已改为指向「市场源」，该分区仍是唯一的下载入口）。
+  这是本次决策**主动买下**的代价：用首次发现性换掉 324 MiB 的默认流量。真要「目录立刻可见、载荷按需
+  拉」需要 §10 已登记的「索引包 + 按需拉载荷」（新协议面），不在本批。
+- **下载是「一次性、不回头」**：`auto_update` 初始为 0，点过「下载」的市场**不会**自动进入更新扫掠，
+  除非用户再单独打开该开关。这是刻意的（§11.2 第 1 点）。
+

@@ -32,6 +32,19 @@ import type {
 import { DialogShell } from "../dialogs/DialogShell";
 import { InitialBadge, MetaRow, marketKindLabel } from "./shared";
 
+/**
+ * Registered but never fetched.
+ *
+ * The builtin official sources are registered **without** downloading them
+ * (their archives total 324 MiB, `experts` alone 289.6 MiB), and every path
+ * that does fetch one records a revision — so an absent `resolved_revision`
+ * means "no bytes have been fetched yet", not "this market is empty". That is
+ * also what decides whether the market's action button reads 下载 or 检查更新.
+ */
+function isUnfetched(market: MarketplaceSummary): boolean {
+  return !market.resolved_revision;
+}
+
 export function MarketSourcesPanel() {
   const { t } = useTranslation();
   const lang = useLocalizedLang();
@@ -51,7 +64,7 @@ export function MarketSourcesPanel() {
   /** Install targets for the entry cards (see the module doc). */
   const [storeItems, setStoreItems] = useState<StoreItem[]>([]);
   const [storeInstallBusy, setStoreInstallBusy] = useState<string | null>(null);
-  /** True while the builtin marketplaces are still mirroring (D-SDK-1 ①). */
+  /** True while the builtin marketplaces are still registering (D-SDK-1 ①). */
   const [storePending, setStorePending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -128,6 +141,12 @@ export function MarketSourcesPanel() {
 
   const refreshMarket = useCallback(async (marketplaceId: string) => {
     if (!client) return;
+    // For a market that was never fetched this call *is* the first download
+    // (`refresh` fetches when there is no revision to short-circuit on), so the
+    // wording follows the state the user acted on, not the route name. An
+    // unknown market keeps the neutral wording rather than claiming a download.
+    const target = markets?.find((market) => market.marketplace_id === marketplaceId);
+    const wasUnfetched = target !== undefined && isUnfetched(target);
     setMarketRefreshBusy(marketplaceId);
     setError(null);
     try {
@@ -140,21 +159,22 @@ export function MarketSourcesPanel() {
       setMarkets(list);
       if (detail) setMarketDetail(detail);
       // W8 余项: a refresh used to be visible only through `last_checked_at`.
-      pushToast(
-        "success",
-        result.changed ? "catalog.marketRefreshDone" : "catalog.marketRefreshUnchanged",
-        {
-          name: list.find((item) => item.marketplace_id === marketplaceId)?.name ?? marketplaceId,
-          count: result.entry_count,
-        },
-      );
+      const key = !result.changed
+        ? "catalog.marketRefreshUnchanged"
+        : wasUnfetched
+          ? "catalog.marketDownloadDone"
+          : "catalog.marketRefreshDone";
+      pushToast("success", key, {
+        name: list.find((item) => item.marketplace_id === marketplaceId)?.name ?? marketplaceId,
+        count: result.entry_count,
+      });
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     } finally {
       if (activeRef.current) setMarketRefreshBusy(null);
     }
-  }, [client, pushToast]);
+  }, [client, markets, pushToast]);
 
   const openMarket = useCallback(async (marketplaceId: string) => {
     if (!client) return;
@@ -355,7 +375,10 @@ export function MarketSourcesPanel() {
                   <div className="market-card-main">
                     <span className="market-card-title">{market.name}</span>
                     <span className="market-card-sub">
-                      {marketKindLabel(t, market.source_kind)} · {t("catalog.marketEntries", { count: market.entry_count })}
+                      {marketKindLabel(t, market.source_kind)} ·{" "}
+                      {isUnfetched(market)
+                        ? t("catalog.marketNotDownloaded")
+                        : t("catalog.marketEntries", { count: market.entry_count })}
                       {market.auto_update ? ` · ${t("catalog.marketAutoUpdate")}` : ""}
                     </span>
                   </div>
@@ -400,12 +423,12 @@ export function MarketSourcesPanel() {
                     <span className="switch-pill-knob" aria-hidden="true" />
                   </button>
                 </span>
-                <button className="quiet-button" type="button"
+                <button className={isUnfetched(marketDetail) ? "primary-button" : "quiet-button"} type="button"
                   disabled={marketRefreshBusy === marketDetail.marketplace_id}
                   onClick={() => void refreshMarket(marketDetail.marketplace_id)}>
                   {marketRefreshBusy === marketDetail.marketplace_id
-                    ? t("catalog.marketRefreshing")
-                    : t("catalog.marketRefresh")}
+                    ? (isUnfetched(marketDetail) ? t("catalog.marketDownloading") : t("catalog.marketRefreshing"))
+                    : (isUnfetched(marketDetail) ? t("catalog.marketDownload") : t("catalog.marketRefresh"))}
                 </button>
                 {/* Outline, not a solid red block: removal is confirmed in a
                     dialog anyway, and this row's other controls are quiet. */}
@@ -424,7 +447,14 @@ export function MarketSourcesPanel() {
                 label={t("catalog.marketEnabled")}
                 value={marketDetail.enabled ? t("catalog.marketEnabledOn") : t("catalog.marketEnabledOff")}
               />
-              <MetaRow label={t("catalog.marketEntriesLabel")} value={String(marketDetail.entry_count)} />
+              {/* `0` would read as "this market has nothing in it"; an unfetched
+                  market has nothing *yet*, which is a different fact. */}
+              <MetaRow
+                label={t("catalog.marketEntriesLabel")}
+                value={isUnfetched(marketDetail)
+                  ? t("catalog.marketNotDownloaded")
+                  : String(marketDetail.entry_count)}
+              />
               <MetaRow label={t("catalog.marketAddedAt")} value={new Date(marketDetail.added_at).toLocaleString()} />
               <MetaRow label={t("catalog.marketRevision")} value={marketDetail.resolved_revision} mono />
               {/* `last_checked_at` is written by refresh only, so a freshly
@@ -435,6 +465,9 @@ export function MarketSourcesPanel() {
                 value={marketDetail.last_checked_at ? new Date(marketDetail.last_checked_at).toLocaleString() : "—"}
               />
             </dl>
+            {isUnfetched(marketDetail) && (
+              <p className="market-pending-note">{t("catalog.marketDownloadHint")}</p>
+            )}
             <div className="market-list">
               {marketDetail.entries.map((entry) => {
                 const storeItem = storeItems.find(

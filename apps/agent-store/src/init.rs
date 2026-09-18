@@ -1,8 +1,9 @@
 //! `agent-store init` — first-run configuration wizard.
 //!
 //! Creates `~/.agent-store/config.toml` (or the `--config` path) with the
-//! builtin public marketplace sources wired in, so a fresh install can
-//! browse the store immediately, plus the host defaults a fresh install should
+//! builtin public marketplace sources documented but **commented out** (they
+//! are registered unfetched by default; declaring them is the opt-in to
+//! downloading them at startup), plus the host defaults a fresh install should
 //! start from (memory distillation off, and the host's tool ceiling — see
 //! [`TEMPLATE_DEFAULTS`]). Optionally collects one provider (name /
 //! type / base URL / model) interactively; API keys are never echoed — take
@@ -55,11 +56,21 @@ const TEMPLATE_BODY: &str = r#"
 # capabilities = ["thinking", "tool_use"]
 
 # ── Marketplace sources ────────────────────────────────────────
-# The three sources above are the official ones: each market ships as **one
-# archive** hosted on ModelScope, and the archive's root *is* the market root.
-# Registered automatically before the first store/market call. A refresh only
-# downloads an archive whose content digest changed.
-# Remove a line to stop using that source; add your own mirrors here.
+# Without any [default_marketplaces.*] line the three official sources are
+# still registered, but **not downloaded**: they show up under 设置 →「市场源」
+# as 未下载, and one click on 下载 fetches that market's archive. The archives
+# are 290 MiB (experts) / 18 MiB (skills) / 17 MiB (connectors), so a first
+# launch does not pay for a store you may never open.
+# Uncomment the block at the top of this file to opt back in to registering +
+# downloading them at startup; add your own mirrors the same way.
+"#;
+
+/// Opt-in block header for the official sources, written in the template as
+/// comments only.
+const TEMPLATE_MARKETS_HEAD: &str = r#"# ── Official marketplace sources (opt-in) ──────────────────────
+# Commented out on purpose: every source declared here is registered **and
+# downloaded** at startup, and the three official archives total 324 MiB.
+# Left out, they are registered unfetched and downloaded on demand instead.
 "#;
 
 /// Live defaults written by `init`. Unlike [`TEMPLATE_BODY`] — examples, every
@@ -99,15 +110,25 @@ companion = false     # recall_memories / propose_companion_memory + in-session 
 requirement = false   # requirement_complete / requirement_update_status (AutoWork)
 "#;
 
-/// Build the full template with the builtin marketplace sources.
+/// Build the full template: the builtin marketplace sources as a
+/// **commented-out** opt-in block, plus the host defaults.
+///
+/// The sources must not be live lines. A source declared under
+/// `[default_marketplaces]` is registered *and downloaded* at startup, and the
+/// three official archives are 324 MiB together — writing them live would
+/// silently opt every fresh install into exactly the download they are
+/// commented out to avoid. Uncommenting the block is also the documented way
+/// back to eager registration.
 fn template_with_markets(markets: &[(String, String, String)]) -> String {
     let mut out = String::from(TEMPLATE_HEAD);
     out.push('\n');
+    out.push_str(TEMPLATE_MARKETS_HEAD);
     for (id, kind, source) in markets {
-        out.push_str(&format!("[default_marketplaces.{id}]\n"));
-        out.push_str(&format!("source_kind = \"{kind}\"\n"));
-        out.push_str(&format!("source = \"{source}\"\n\n"));
+        out.push_str(&format!("# [default_marketplaces.{id}]\n"));
+        out.push_str(&format!("# source_kind = \"{kind}\"\n"));
+        out.push_str(&format!("# source = \"{source}\"\n"));
     }
+    out.push('\n');
     out.push_str(TEMPLATE_DEFAULTS.trim_start_matches('\n'));
     out.push('\n');
     out.push_str(TEMPLATE_BODY.trim_start_matches('\n'));
@@ -228,31 +249,36 @@ mod tests {
     use super::*;
     use nomifun_app_server::agent_store::AgentStoreConfig;
 
+    /// The wizard must **document** the official markets without opting the
+    /// install into them. A live `[default_marketplaces.*]` block is consent to
+    /// a 324 MiB download at the next boot (`ensure_default_marketplaces`
+    /// fetches what the config declares), so the lines are written commented —
+    /// asserted through the host's own parser, which is the same reader that
+    /// decides whether a fresh install downloads anything at all.
     #[test]
-    fn template_includes_builtin_markets() {
+    fn template_offers_the_builtin_markets_without_opting_in() {
         let markets = nomifun_app_server::agent_store::AgentStoreConfig::builtin_default_marketplaces();
         assert!(markets.len() >= 3);
         let template = template_with_markets(&markets);
         for (id, kind, source) in &markets {
-            assert!(template.contains(&format!("[default_marketplaces.{id}]")));
-            assert!(template.contains(&format!("source_kind = \"{kind}\"")));
-            assert!(template.contains(&format!("source = \"{source}\"")));
+            // Offered: the id, kind and address are all in the file…
+            assert!(template.contains(&format!("# [default_marketplaces.{id}]")));
+            assert!(template.contains(&format!("# source_kind = \"{kind}\"")));
+            assert!(template.contains(&format!("# source = \"{source}\"")));
+            // …and nothing is declared.
+            assert!(!template.contains(&format!("\n[default_marketplaces.{id}]")));
         }
         assert!(template.contains("default_model"));
 
-        // String containment is not enough: the template is only worth writing
-        // if the loader accepts it. Asserted through the host's own parser, so
-        // a source kind the loader refuses (or a block that lands in the wrong
-        // table) fails here instead of shipping a config with no markets.
+        // The decisive assertion: the loader sees no declared market, which is
+        // the condition the builtin fallback (register-only, no download) keys
+        // off. String containment alone would pass a template that had drifted
+        // into a live block.
         let config = AgentStoreConfig::from_source(&template).expect("template must parse");
-        assert_eq!(config.default_marketplaces.len(), markets.len());
-        for (id, kind, source) in &markets {
-            let entry = config
-                .default_marketplaces
-                .get(id)
-                .unwrap_or_else(|| panic!("{id} must survive the load"));
-            assert_eq!(entry.resolved().as_ref(), Some(&(kind.clone(), source.clone())));
-        }
+        assert!(
+            config.default_marketplaces.is_empty(),
+            "a fresh install must not opt into registering + downloading the official markets"
+        );
     }
 
     /// The template's whole point beyond the markets: distillation and the
