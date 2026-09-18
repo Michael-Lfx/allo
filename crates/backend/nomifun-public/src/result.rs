@@ -2,7 +2,7 @@
 //! `CallToolResult`. Mirrors `nomifun-app`'s `gateway_stdio::build_tool_result`
 //! image seam, but operates on the in-process `Value` directly (no HTTP hop).
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
 /// Build the MCP tool result from a gateway dispatch result envelope.
@@ -26,17 +26,17 @@ pub fn build_tool_result(value: Value) -> CallToolResult {
         return protocol_error("gateway response mixed a confirmation with a result envelope");
     }
     if let Some(error) = value.get("error") {
-        return CallToolResult::error(vec![Content::text(format!("Error: {error}"))]);
+        return CallToolResult::error(vec![ContentBlock::text(format!("Error: {error}"))]);
     }
     let Some(result) = value.get("result") else {
         if is_confirmation {
-            return CallToolResult::success(vec![Content::text(value.to_string())]);
+            return CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
         }
         return protocol_error("gateway response was missing `result` or `error`");
     };
 
     let mut result = result.clone();
-    let images: Vec<Content> = result
+    let images: Vec<ContentBlock> = result
         .get("_mcp_images")
         .and_then(Value::as_array)
         .map(|arr| {
@@ -44,7 +44,7 @@ pub fn build_tool_result(value: Value) -> CallToolResult {
                 .filter_map(|img| {
                     let data = img.get("data").and_then(Value::as_str)?;
                     let mime = img.get("mime_type").and_then(Value::as_str)?;
-                    Some(Content::image(data.to_owned(), mime.to_owned()))
+                    Some(ContentBlock::image(data.to_owned(), mime.to_owned()))
                 })
                 .collect()
         })
@@ -60,13 +60,13 @@ pub fn build_tool_result(value: Value) -> CallToolResult {
         Value::String(text) => text,
         other => serde_json::to_string(&other).unwrap_or_else(|_| other.to_string()),
     };
-    let mut contents = vec![Content::text(text)];
+    let mut contents = vec![ContentBlock::text(text)];
     contents.extend(images);
     CallToolResult::success(contents)
 }
 
 fn protocol_error(message: &str) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(format!(
+    CallToolResult::error(vec![ContentBlock::text(format!(
         "Error: invalid gateway tool response ({message})"
     ))])
 }
