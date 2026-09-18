@@ -188,8 +188,14 @@ mod tests {
 
     #[test]
     fn flowy_cloud_model_prefers_use_model() {
-        let json = r#"{"provider_id":"flowy-cloud","model":"default","use_model":"AIPC-glm-4.7"}"#;
-        let row = row_with_model(Some(json));
+        // The provider id must be the canonical built-in one, not the retired
+        // literal: `a6441b35b` made every persisted id a canonical UUIDv7, so
+        // a hard-coded `"flowy-cloud"` no longer matches the built-in provider.
+        let json = format!(
+            r#"{{"provider_id":"{}","model":"default","use_model":"AIPC-glm-4.7"}}"#,
+            nomifun_common::FLOWY_BUILTIN_PROVIDER_ID
+        );
+        let row = row_with_model(Some(&json));
         assert_eq!(
             flowy_cloud_model_from_conversation_row(&row).as_deref(),
             Some("AIPC-glm-4.7")

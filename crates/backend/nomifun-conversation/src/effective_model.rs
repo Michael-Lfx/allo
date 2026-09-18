@@ -65,7 +65,9 @@ mod tests {
     use super::*;
     use nomifun_common::ConversationId;
 
-    const PROVIDER_ID: &str = "prov_0190f5fe-7c00-7a00-8000-000000000001";
+    // Canonical UUIDv7, no `prov_` prefix: `a6441b35b` made the persisted
+    // provider id a canonical UUID and rejects the retired prefixed form.
+    const PROVIDER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000001";
 
     fn row(model: Option<&str>) -> ConversationRow {
         ConversationRow {
