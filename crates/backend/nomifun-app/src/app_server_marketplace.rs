@@ -521,6 +521,75 @@ impl AppServerMarketplaceProvider {
     }
 }
 
+/// [`MarketplaceProvider::register_unfetched`] against the registry seam
+/// directly: the rule lives here so it is testable without the importer +
+/// installer + market-root graph the provider itself drags in.
+///
+/// Non-destructive by construction — two pre-checks, in the order the two
+/// UNIQUE constraints on the table can fire:
+///
+/// 1. **Same id.** Returned as-is whether it holds a downloaded catalog or is a
+///    soft-removed row: a restart must not clear the first, and it must not
+///    resurrect the second behind the user's back (which is what a
+///    reactivating `add` does).
+/// 2. **Same source under another id** (the host re-pointed its default ids, or
+///    the operator added this archive by hand). A second row would just
+///    duplicate the catalog under a second name.
+async fn register_unfetched_row(
+    markets: &Arc<dyn IMarketplaceRepository>,
+    marketplace_id: &str,
+    name: &str,
+    source_kind: &str,
+    source: &str,
+) -> Result<AppServerMarketplaceSummary, AppError> {
+    if let Some(existing) = markets
+        .get_marketplace(marketplace_id)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Ok(to_summary(&existing));
+    }
+    if let Some(existing) = markets
+        .find_by_source(source_kind, source)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Ok(to_summary(&existing));
+    }
+    markets
+        .insert_marketplace(NewPluginMarketplace {
+            marketplace_id,
+            name,
+            description: None,
+            source_kind,
+            source_uri: source,
+            owner_json: None,
+            version: None,
+            content_digest: None,
+            // No entries: this is the whole point — "registered" is a registry
+            // fact, not a download.
+            entries: Vec::new(),
+            // Deliberately *not* `is_official_source`: all three builtin
+            // sources are official, so the sweep would fetch their 324 MiB on
+            // the first tick of any host that declared `[marketplace]
+            // auto_update_interval_hours` — exactly the download the lazy
+            // default exists to avoid. "Download this now" is one decision;
+            // "keep re-downloading it" is a separate one the user makes on the
+            // market's own switch.
+            auto_update: false,
+        })
+        .await
+        .map_err(AppError::from)?;
+    let row = markets
+        .get_marketplace(marketplace_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| {
+            AppError::Internal(format!("marketplace {marketplace_id} missing after insert"))
+        })?;
+    Ok(to_summary(&row))
+}
+
 fn to_summary(row: &PluginMarketplaceRow) -> AppServerMarketplaceSummary {
     AppServerMarketplaceSummary {
         marketplace_id: row.marketplace_id.clone(),
@@ -689,6 +758,16 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 .map_err(AppError::from)?
         };
         Ok(to_summary(&row))
+    }
+
+    async fn register_unfetched(
+        &self,
+        marketplace_id: &str,
+        name: &str,
+        source_kind: &str,
+        source: &str,
+    ) -> Result<AppServerMarketplaceSummary, AppError> {
+        register_unfetched_row(&self.markets, marketplace_id, name, source_kind, source).await
     }
 
     async fn list(&self) -> Result<Vec<AppServerMarketplaceSummary>, AppError> {
@@ -1281,6 +1360,103 @@ mod tests {
         let mut removed = marketplace_row(&official_kind, &official_source, 1);
         removed.removed_at = Some(1);
         assert!(!is_auto_update_eligible(&removed));
+    }
+
+    /// The lazy default-marketplace registration: a registry row with no
+    /// entries, no revision and no auto-update — written without touching the
+    /// network — and never allowed to disturb a row that is already there.
+    #[tokio::test]
+    async fn unfetched_registration_stores_a_source_without_downloading_it() {
+        let db = nomifun_db::init_database_memory().await.expect("in-memory db");
+        let markets: Arc<dyn IMarketplaceRepository> =
+            Arc::new(nomifun_db::SqliteMarketplaceRepository::new(db.pool().clone()));
+        let (id, kind, source) =
+            nomifun_app_server::AgentStoreConfig::builtin_default_marketplaces()
+                .into_iter()
+                .next()
+                .expect("builtin mirrors are configured");
+
+        // 1. Registered, with nothing behind it.
+        let summary = register_unfetched_row(&markets, &id, &id, &kind, &source)
+            .await
+            .expect("register");
+        assert_eq!(summary.marketplace_id, id);
+        assert_eq!(summary.source_kind, kind);
+        assert_eq!(summary.entry_count, 0);
+        assert!(summary.resolved_revision.is_none());
+        assert!(
+            !summary.auto_update,
+            "an unfetched official market must not be swept before it is ever downloaded"
+        );
+        let row = markets.get_marketplace(&id).await.unwrap().expect("row");
+        assert!(
+            !is_auto_update_eligible(&row),
+            "the sweep would otherwise re-download the archive the lazy default exists to defer"
+        );
+
+        // 2. Idempotent: the next boot does not insert a second row.
+        register_unfetched_row(&markets, &id, &id, &kind, &source)
+            .await
+            .expect("re-register");
+        assert_eq!(markets.list_marketplaces().await.unwrap().len(), 1);
+
+        // 3. Non-destructive: once the user has downloaded it, a restart keeps
+        //    the catalog (a reactivating `add` would clear both fields).
+        let entry = MarketplaceEntry {
+            name: "formatter".to_owned(),
+            source_kind: "directory".to_owned(),
+            source_uri: "./plugins/formatter".to_owned(),
+            version: None,
+            description: None,
+            keywords: vec![],
+            category: None,
+            published_at: None,
+            localized: std::collections::BTreeMap::new(),
+            strict: false,
+            blocked_reason: None,
+        };
+        markets
+            .update_marketplace_entries(&id, &[entry], "digest", None)
+            .await
+            .unwrap();
+        markets
+            .record_resolved_revision(&id, "rev-1", "/tmp/live")
+            .await
+            .unwrap();
+        register_unfetched_row(&markets, &id, &id, &kind, &source)
+            .await
+            .expect("re-register");
+        let row = markets.get_marketplace(&id).await.unwrap().expect("row");
+        assert_eq!(row.entries().len(), 1);
+        assert_eq!(row.resolved_revision.as_deref(), Some("rev-1"));
+
+        // 4. The same source under a different id does not duplicate the
+        //    catalog under a second name.
+        let alias = register_unfetched_row(&markets, "experts-mirror", "experts-mirror", &kind, &source)
+            .await
+            .expect("alias");
+        assert_eq!(alias.marketplace_id, id);
+        assert_eq!(markets.list_marketplaces().await.unwrap().len(), 1);
+
+        // 5. A removed market stays removed. This registration runs on **every**
+        //    boot, so resurrecting here would make a removal impossible to keep.
+        markets
+            .soft_remove_marketplace(&id, nomifun_common::now_ms())
+            .await
+            .unwrap();
+        register_unfetched_row(&markets, &id, &id, &kind, &source)
+            .await
+            .expect("re-register after removal");
+        assert!(markets.list_marketplaces().await.unwrap().is_empty());
+        assert!(
+            markets
+                .get_marketplace(&id)
+                .await
+                .unwrap()
+                .expect("row kept")
+                .removed_at
+                .is_some()
+        );
     }
 
     #[test]

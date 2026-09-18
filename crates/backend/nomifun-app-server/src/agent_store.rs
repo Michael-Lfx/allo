@@ -43,9 +43,11 @@ pub struct AgentStoreConfig {
     /// Keyed by `"<provider>/<model>"`.
     #[serde(default)]
     pub models: HashMap<String, AgentStoreModel>,
-    /// Default marketplace sources (store software sources) registered
-    /// automatically by the App Server; keyed by a stable marketplace id
-    /// (`experts` etc.).
+    /// Default marketplace sources (store software sources) declared by this
+    /// host; keyed by a stable marketplace id (`experts` etc.). The App Server
+    /// registers each one **and downloads it** during boot, so this table is
+    /// the opt-in to downloading: leave it out and the builtin official sources
+    /// are still registered, but fetched only when the user asks for them.
     ///
     /// ```toml
     /// [default_marketplaces.experts]
@@ -677,8 +679,13 @@ impl AgentStoreConfig {
 
     /// Builtin marketplace sources used when `~/.agent-store/config.toml` is
     /// missing (or has no `[default_marketplaces]`): the product's own public
-    /// markets, so a fresh install can browse the store before touching any
-    /// config. `id -> (source_kind, source)`.
+    /// markets, so a fresh install can *see* the official sources in the store
+    /// registry without touching any config.
+    ///
+    /// Registering them is **not** downloading them: the fallback path
+    /// registers these unfetched (`register_unfetched`) and waits for an
+    /// explicit `market/refresh`. Declaring a source in the config file is the
+    /// opt-in to registering *and fetching* it at startup.
     ///
     /// Doc 30: each market is **one `zip` archive** on ModelScope, and the
     /// archive root *is* the market root. That replaced the per-file tree the
@@ -694,9 +701,11 @@ impl AgentStoreConfig {
     ///
     /// This list is the release default **and** the definition of "official":
     /// `is_official_source` compares the `(source_kind, source)` pair against
-    /// it, and official rows are the ones that default to `auto_update = true`
-    /// and are covered by the auto-update sweep. Moving a URL here therefore
-    /// re-classifies the old address as third-party.
+    /// it, so it classifies a source by **address**, not by who declared it —
+    /// and it is what makes a manually added official archive eligible for the
+    /// auto-update sweep. Moving a URL here therefore re-classifies the old
+    /// address as third-party. (The lazy fallback registration deliberately
+    /// pins `auto_update = false` anyway: see `register_unfetched`.)
     pub fn builtin_default_marketplaces() -> Vec<(String, String, String)> {
         // Doc 30: the official bundles ship as **one archive per market** on
         // ModelScope, not as a file-per-entry tree on the site. The `url` form

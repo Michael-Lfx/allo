@@ -383,3 +383,38 @@
    `client: ClientInfo`）已按「补齐用例、不放宽已发布契约」修掉，`cd web && bun run typecheck` →
    **0 错误**。**仍未做**：把 `typecheck:web` / `test:web` 接进 `check`（`web/` 至今不在任何仓级
    门禁里，前置条件现已具备）。
+
+## 追补（2026-09-18）· 默认市场按需下载
+
+**背景**：`30` §11。doc 30 把「全量镜像」变成「一次请求」后，三包合计仍是 **324.2 MiB**
+（`experts` 289.6 / `skills` 17.9 / `connectors` 16.7，用 1 字节 range 读 `Content-Range` 实测；
+ModelScope 的 `HEAD` 只给 `X-Linked-Etag`，不给 `Content-Length`），而 `warm_default_marketplaces`
+在**路由构造时**就调（D-SDK-1 ①），于是全新安装、无配置的机器**启动过程中**就拉完 324 MiB ——
+即使用户从没打开过商店。用户拍板：**默认不下载，点了才下**。
+
+1. **注册与取包拆开**（`nomifun-app` / `nomifun-app-server`）：新增内部 seam
+   `MarketplaceProvider::register_unfetched`（占位行：`entries=[]`、`resolved_revision=NULL`、
+   `auto_update=0`），`ensure_default_marketplaces` 的源选择抽成纯函数 `default_marketplace_plan()`：
+   **配置里显式声明**的源照旧「注册 + 下载」（写进配置就是明确要求，也是天然 opt-in 开关，**不新增
+   配置键**），**内置兜底**三源只注册不下载。`auto_update` 刻意不取 `is_official_source()`——否则任何
+   声明了 `[marketplace] auto_update_interval_hours` 的宿主会在扫掠第一个 tick 把 324 MiB 拉回来；
+   占位行的幂等是**非破坏**的：同 id 已存在（已下载 / 已移除）一律原样返回，重启不清目录、也不复活
+   用户删掉的市场。
+2. **`agent-store init` 模板改为注释示例**（`apps/agent-store/src/init.rs`）：模板原先把三源写成**活行**，
+   而活行正是「启动时下载」的声明——不改模板等于全新安装仍会下载（`30` §7 / §9 以 `init.rs:139`
+   写活行为前提，已在 §11 订正）。测试同步改名并加断言：经宿主自己的解析器读到 `default_marketplaces`
+   **为空**。
+3. **前端**（`web/src/components/catalog/MarketSourcesPanel.tsx` + `web/src/i18n/{zh-CN,en-US}.ts`）：
+   以 `resolved_revision` 缺失判定「未下载」（所有取包路径都会记 revision，缺它 = 一个字节都没拉，
+   而非「市场为空」）；卡片副标题与「条目数」显示**未下载**，详情页主按钮变**下载**（复用同一
+   `market/refresh`，**无新 wire 方法**），toast 文案随「下载 / 检查更新」分流；目录页空态文案改为
+   指向「市场源」。**指纹不动、站点仓不动**（`MarketplaceSummary.resolved_revision` 本就是
+   `Option<String>`，`to_summary` 直接透传）。
+4. **读数**：`cargo test -p nomifun-app-server --lib only_declared_default_marketplaces_are_fetched_at_boot`
+   ok；`-p nomifun-app --lib unfetched_registration_stores_a_source_without_downloading_it` ok（真实
+   SQLite 仓储，覆盖幂等 / 非破坏 / 同 source 异 id / 软删不复活）；`cargo test -p agent-store`
+   **9 passed**；`cd web && bun run typecheck` 0 错误、`bun run test` **513 passed / 1 skipped**；
+   `cargo check -p nomifun-app-server --tests`、`-p nomifun-app --tests -p agent-store` 均 exit 0。
+   **未做**：`web/` 那个面板至今没有渲染测试（它读 zustand client 并在 mount 时取数，现有多是
+   prop 驱动的静态渲染），因此「未下载 → 下载按钮」这一映射没有自动化用例，只有 `tsc` + 人工。
+

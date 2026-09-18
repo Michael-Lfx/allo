@@ -111,11 +111,13 @@ pub struct Cli {
     pub local: bool,
 
     /// Agent-store config file (`~/.agent-store/config.toml` convention).
-    /// When set, default marketplace sources declared under
-    /// `[default_marketplaces.*]` are auto-registered before the first
-    /// store/market call. The `nomifun-web` host defaults it to
+    /// When set, the host's default marketplaces are registered before the
+    /// first store/market call: sources declared under
+    /// `[default_marketplaces.*]` are registered *and downloaded*, while the
+    /// builtin fallback (no such table) is registered unfetched and waits for
+    /// an explicit `market/refresh`. The `nomifun-web` host defaults it to
     /// `~/.agent-store/config.toml` when unset; other hosts keep `None`
-    /// (no auto-registration).
+    /// (no default-marketplace registration at all).
     #[arg(long)]
     pub agent_store_config: Option<PathBuf>,
 

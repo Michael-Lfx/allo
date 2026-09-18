@@ -2099,19 +2099,49 @@ fn marketplace_provider(
     })
 }
 
-/// Register marketplace sources declared under `[default_marketplaces.*]` in
-/// the agent-store config. Idempotent (same source returns the existing row).
-/// Failures are non-fatal: a broken default source is reported as a warning and
-/// the rest keeps working. Network reach is bounded by `tokio::time::timeout`.
+/// The default-marketplace plan: which sources to register, and whether
+/// registering them includes **fetching** them.
+///
+/// Split out because that single boolean is the whole download policy
+/// (`ensure_default_marketplaces`): a source the operator declared is an
+/// explicit request and is fetched; the builtin fallback is registered
+/// unfetched. Kept pure — same argument, same answer — so the rule is pinned
+/// by a test that needs neither a provider nor a database.
+fn default_marketplace_plan(path: &std::path::Path) -> (Vec<(String, String, String)>, bool) {
+    match AgentStoreConfig::load(path) {
+        Ok(config) if !config.default_marketplaces.is_empty() => (
+            config
+                .default_marketplaces
+                .iter()
+                .filter_map(|(id, entry)| {
+                    let (kind, source) = entry.resolved()?;
+                    Some((id.clone(), kind, source))
+                })
+                .collect(),
+            true,
+        ),
+        Ok(_) | Err(_) => (AgentStoreConfig::builtin_default_marketplaces(), false),
+    }
+}
+
+/// Register the default marketplace sources for this host. Idempotent (same
+/// source returns the existing row). Failures are non-fatal: a broken default
+/// source is reported as a warning and the rest keeps working.
+///
+/// **Two classes, deliberately different** (doc 30 / D-SDK-1 ④):
+/// - a source the operator **declared** under `[default_marketplaces.*]` is an
+///   explicit request, so it is registered *and fetched* here (network reach
+///   bounded by `tokio::time::timeout`);
+/// - the **builtin fallback** — no config file, or one that declares no
+///   `default_marketplaces` — is registered **without fetching**. The three
+///   official archives are 324 MiB together (289.6 MiB of it `experts` alone),
+///   and a fresh install that may never open the store used to pay all of it
+///   during boot. Those rows land as "registered, not downloaded" and are
+///   fetched by an explicit `market/refresh`.
 ///
 /// Returns `true` when every source is registered (or there is nothing to
-/// register) and `false` when at least one source could not be fetched; the
+/// register) and `false` when at least one source could not be registered; the
 /// caller uses that to decide whether a later attempt should retry.
-///
-/// When the config file is absent (fresh install), the builtin public mirror
-/// is registered instead, so a new user can browse the store before touching
-/// any config. A config file that exists but declares no `default_marketplaces`
-/// also falls back. Explicit user markets always win over builtin ones.
 async fn ensure_default_marketplaces(state: &AppServerRouterState) -> bool {
     let provider = match marketplace_provider(state) {
         Ok(provider) => provider,
@@ -2124,20 +2154,10 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) -> bool {
     let Some(path) = state.agent_store_config_path.clone() else {
         return true;
     };
-    // Load the user config; a missing/unreadable file falls back to the
-    // builtin public mirror, an existing file drives the source list.
-    let sources: Vec<(String, String, String)> = match AgentStoreConfig::load(&path) {
-        Ok(config) if !config.default_marketplaces.is_empty() => config
-            .default_marketplaces
-            .iter()
-            .filter_map(|(id, entry)| {
-                let (kind, source) = entry.resolved()?;
-                Some((id.clone(), kind, source))
-            })
-            .collect(),
-        Ok(_) => AgentStoreConfig::builtin_default_marketplaces(),
-        Err(_) => AgentStoreConfig::builtin_default_marketplaces(),
-    };
+    // Load the user config. A file that declares sources drives the list *and*
+    // opts into the download; a missing/unreadable file, or one with nothing to
+    // declare, falls back to the builtin mirrors, registered unfetched.
+    let (sources, fetch) = default_marketplace_plan(&path);
     let mut complete = true;
     for (marketplace_id, source_kind, source) in sources {
         // An unknown kind must not be guessed at: `parse` returns `None` and
@@ -2154,6 +2174,19 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) -> bool {
             complete = false;
             continue;
         };
+        if !fetch {
+            // Registry-only: no network, so no timeout and no staging to
+            // reclaim. A failure here is a database failure, and `complete`
+            // stays clear so the next store/market call retries.
+            if provider
+                .register_unfetched(&marketplace_id, &marketplace_id, kind.as_str(), &source)
+                .await
+                .is_err()
+            {
+                complete = false;
+            }
+            continue;
+        }
         let request = AppServerMarketplaceAddRequest {
             name: Some(marketplace_id.clone()),
             source_kind: kind,
@@ -9166,6 +9199,50 @@ model = "mimo-v2.5-free"
 max_context_size = 200000
 display_name = "MiMo V2.5 Free"
 "#;
+
+    /// The download policy of the default marketplace fallback: only a source
+    /// the operator **declared** is fetched during boot. The three builtin
+    /// mirrors are 324 MiB together (`experts` alone is 289.6 MiB), so a host
+    /// that declares nothing must register them and download nothing.
+    #[test]
+    fn only_declared_default_marketplaces_are_fetched_at_boot() {
+        let dir = std::env::temp_dir().join(format!("allo-defaults-{}", generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        // No config file at all: the fresh-install case.
+        let (sources, fetch) = default_marketplace_plan(&dir.join("absent.toml"));
+        assert_eq!(sources, AgentStoreConfig::builtin_default_marketplaces());
+        assert!(!fetch, "a fresh install must not download the official archives");
+
+        // A config file that exists but declares no marketplace: same answer.
+        let bare = dir.join("bare.toml");
+        std::fs::write(&bare, "[memory]\ndistill_enabled = false\n").expect("bare config");
+        let (sources, fetch) = default_marketplace_plan(&bare);
+        assert_eq!(sources, AgentStoreConfig::builtin_default_marketplaces());
+        assert!(!fetch, "declaring no source must not mean 'download the builtin ones'");
+
+        // A declared source is an explicit request: registered *and* fetched,
+        // and the builtin mirrors do not ride along.
+        let declared = dir.join("declared.toml");
+        std::fs::write(
+            &declared,
+            "[default_marketplaces.company]\nsource_kind = \"directory\"\n\
+             source = \"/tmp/company-tools\"\n",
+        )
+        .expect("declared config");
+        let (sources, fetch) = default_marketplace_plan(&declared);
+        assert!(fetch, "declaring a source is the opt-in to downloading it");
+        assert_eq!(
+            sources,
+            vec![(
+                "company".to_owned(),
+                "directory".to_owned(),
+                "/tmp/company-tools".to_owned()
+            )]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn app_server_chat_resolves_and_registers_agent_store_providers() {

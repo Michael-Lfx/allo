@@ -222,6 +222,27 @@ pub trait MarketplaceProvider: Send + Sync {
         request: AppServerMarketplaceAddRequest,
     ) -> Result<AppServerMarketplaceSummary, AppError>;
 
+    /// Register a source **without fetching it**: the row lands in
+    /// `market/list` with no entries and no resolved revision, and stays that
+    /// way until a `refresh` actually downloads the source.
+    ///
+    /// The builtin default-marketplace fallback registers this way instead of
+    /// through [`Self::add`]: the three official archives are 324 MiB together,
+    /// ~290 MiB of it in `experts` alone, and a fresh install that may never
+    /// open the store must not pay that during boot.
+    ///
+    /// Idempotent and **non-destructive**: an existing row — already fetched,
+    /// or removed by the user — is returned exactly as it stands, so a host
+    /// restart never clears a downloaded catalog and never resurrects a
+    /// market the user removed.
+    async fn register_unfetched(
+        &self,
+        marketplace_id: &str,
+        name: &str,
+        source_kind: &str,
+        source: &str,
+    ) -> Result<AppServerMarketplaceSummary, AppError>;
+
     /// All active marketplaces (registry projection, no entries).
     async fn list(&self) -> Result<Vec<AppServerMarketplaceSummary>, AppError>;
 
@@ -726,6 +747,25 @@ impl MarketplaceProvider for FakeMarketplaceProvider {
         _request: AppServerMarketplaceAddRequest,
     ) -> Result<AppServerMarketplaceSummary, AppError> {
         Ok(self.added.clone())
+    }
+
+    async fn register_unfetched(
+        &self,
+        marketplace_id: &str,
+        name: &str,
+        source_kind: &str,
+        _source: &str,
+    ) -> Result<AppServerMarketplaceSummary, AppError> {
+        // The shape this method exists to pin: a row with nothing behind it.
+        Ok(AppServerMarketplaceSummary {
+            marketplace_id: marketplace_id.to_owned(),
+            name: name.to_owned(),
+            source_kind: source_kind.to_owned(),
+            entry_count: 0,
+            resolved_revision: None,
+            last_checked_at: None,
+            ..self.added.clone()
+        })
     }
 
     async fn list(&self) -> Result<Vec<AppServerMarketplaceSummary>, AppError> {
