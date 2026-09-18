@@ -27,6 +27,8 @@ describe('oc css scope containment', () => {
             .filter((selector) => !selector.startsWith('@'));
         expect(selectors.length).toBeGreaterThan(30);
         expect(selectors.every((selector) => selector.includes('.oc-root'))).toBe(true);
+        expect(preflight.includes('.oc-root fieldset')).toBe(true);
+        expect(preflight.includes('.oc-root legend')).toBe(true);
     });
 
     test('tailwind only scans the ported canvas trees', () => {
@@ -37,15 +39,17 @@ describe('oc css scope containment', () => {
 
     test('utility shield splits Tailwind and UnoCSS transform semantics by scope', () => {
         expect(mainEntry.includes("import './styles/canvas-utility-shield.css';")).toBe(true);
-        expect(shield.includes(':where(:not(.oc-root):not(.oc-root *))')).toBe(true);
+        expect(shield.includes(':where(:not(.oc-canvas):not(.oc-canvas *))')).toBe(true);
+        expect(shield.includes('.oc-canvas,')).toBe(true);
         expect(shield.includes('translate: none;')).toBe(true);
         expect(shield.includes('--un-translate-x: 0 !important;')).toBe(true);
         expect(shield.includes('--un-scale-x: 1 !important;')).toBe(true);
     });
 
     test('canvas route keeps the scope class and portals through the shared host', () => {
-        expect(projectPage.includes('oc-root oc-shell')).toBe(true);
+        expect(projectPage.includes('oc-root oc-shell oc-canvas')).toBe(true);
         expect(projectPage.includes('getOcPortalHost')).toBe(true);
+        expect(projectPage.includes('disposeOcPortalHost')).toBe(true);
         expect(projectPage.includes('antd/dist/reset.css')).toBe(false);
         expect(projectPage.includes('documentElement.classList')).toBe(false);
         expect(projectPage.includes("import '@oc/styles/globals.css';")).toBe(true);

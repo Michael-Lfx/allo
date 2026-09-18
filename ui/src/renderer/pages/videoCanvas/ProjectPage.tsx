@@ -23,7 +23,7 @@ import { useCanvasStore } from '@oc/stores/canvas/use-canvas-store';
 import { useThemeStore } from '@oc/stores/use-theme-store';
 import { useUserStore } from '@oc/stores/use-user-store';
 import { setActiveUserScope } from '@oc/lib/user-scope';
-import { getOcPortalHost } from '@oc/lib/oc-scope';
+import { getOcPortalHost, disposeOcPortalHost } from '@oc/lib/oc-scope';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import styles from './index.module.css';
 
@@ -32,7 +32,7 @@ import styles from './index.module.css';
 import '@oc/styles/globals.css';
 import '@oc/components/video-player.css';
 
-function useVideoCanvasThemeSync() {
+function useVideoCanvasTheme() {
   return useThemeStore((s) => s.theme);
 }
 
@@ -46,7 +46,8 @@ const VideoCanvasProjectPage: React.FC = () => {
   const [modelCatalogFailed, setModelCatalogFailed] = useState(false);
   const [catalogRetrying, setCatalogRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const colorTheme = useVideoCanvasThemeSync();
+  const colorTheme = useVideoCanvasTheme();
+  useEffect(() => () => disposeOcPortalHost(), []);
   const { whoami, authState } = useCloudAuth();
   const catalogSyncGeneration = useRef(0);
 
@@ -201,7 +202,7 @@ const VideoCanvasProjectPage: React.FC = () => {
   }
 
   return (
-    <div className={`${styles.ocShell} oc-root oc-shell${colorTheme === 'dark' ? ' dark' : ''}`}>
+    <div className={`${styles.ocShell} oc-root oc-shell oc-canvas${colorTheme === 'dark' ? ' dark' : ''}`}>
       <QueryClientProvider client={videoCanvasQueryClient}>
         <ConfigProvider theme={getVideoCanvasAntTheme(colorTheme === 'dark')} getPopupContainer={getOcPortalHost}>
           <AntApp>

@@ -1,4 +1,10 @@
 /**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
  * 画布移植兼容层 / Canvas utility shield
  *
  * 移植的 open-ai-canvas 由 Tailwind v4 驱动，它的 utilities 会在画布 chunk
@@ -7,12 +13,16 @@
  * `transform`。同一个元素同时命中两者时会叠加，发生双重位移/旋转/缩放
  * （表现为 composer 上下文圆点等图标在访问画布后偏移）。
  *
- * Tailwind utilities 位于 @layer 中，本文件不加 layer，因此这里的复位
- * 稳定压过泄漏的 utilities；画布作用域 `.oc-root`（含 portal host）被排除，
- * 显式的应用样式与内联样式优先级更高，不受影响。
+ * 语义分区锚点是 `.oc-canvas`（画布 shell + oc-portal-host），与 token 作用域
+ * `.oc-root`（画布 + videoGeneration）区分开：
+ *  - 画布外（含 videoGeneration）：复位 Tailwind 的独立属性，UnoCSS 的
+ *    transform 正常生效；
+ *  - 画布内：复位 UnoCSS 的 `--un-*` 变量，Tailwind 的独立属性生效。
+ * Tailwind utilities 位于 @layer 中，本文件不加 layer，因此复位稳定压过泄漏
+ * 的 utilities；显式应用样式与内联样式优先级更高，不受影响。
  */
 
-:where(:not(.oc-root):not(.oc-root *)) {
+:where(:not(.oc-canvas):not(.oc-canvas *)) {
   translate: none;
   rotate: none;
   scale: none;
@@ -22,8 +32,8 @@
    画布代码按 Tailwind 语义编写，同名 Uno 工具类会把位移/旋转/缩放再叠加一次
    （hover 等变体特异性更高，故用 !important 复位变量；仅动 --un-*，不碰
    内联 transform，画布自身的缩放/平移不受影响）。 */
-.oc-root,
-.oc-root * {
+.oc-canvas,
+.oc-canvas * {
   --un-translate-x: 0 !important;
   --un-translate-y: 0 !important;
   --un-translate-z: 0 !important;

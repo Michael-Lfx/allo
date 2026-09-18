@@ -1,5 +1,10 @@
 /**
- * Scoped copy of Tailwind CSS v4.3.3 preflight.
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Scoped copy of Tailwind CSS v4.3.3 preflight (MIT,
+ * https://github.com/tailwindlabs/tailwindcss/blob/main/packages/tailwindcss/preflight.css).
  *
  * The ported canvas app originally pulled preflight in globally through
  * `@import "tailwindcss"`, which leaked element resets (svg display, border
@@ -258,6 +263,106 @@
 .oc-root dl {
     margin-top: 0;
     margin-bottom: 1em;
+}
+
+.oc-root dl dl,
+.oc-root ol ol,
+.oc-root ul ul,
+.oc-root ol ul,
+.oc-root ul ol {
+    margin-bottom: 0;
+}
+
+.oc-root dt {
+    font-weight: 500;
+}
+
+.oc-root dd {
+    margin-bottom: 0.5em;
+    margin-left: 0;
+}
+
+.oc-root blockquote {
+    margin: 0 0 1em;
+}
+
+.oc-root figure {
+    margin: 0 0 1em;
+}
+
+.oc-root address {
+    margin-bottom: 1em;
+    font-style: normal;
+    line-height: inherit;
+}
+
+.oc-root pre {
+    margin-top: 0;
+    margin-bottom: 1em;
+    overflow: auto;
+}
+
+.oc-root caption {
+    padding-top: 0.75em;
+    padding-bottom: 0.3em;
+    text-align: left;
+    caption-side: bottom;
+}
+
+.oc-root fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.oc-root legend {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    margin-bottom: 0.5em;
+    padding: 0;
+    color: inherit;
+    font-size: 1.5em;
+    line-height: inherit;
+    white-space: normal;
+}
+
+.oc-root output {
+    display: inline-block;
+}
+
+.oc-root template {
+    display: none;
+}
+
+.oc-root input[type='text'],
+.oc-root input[type='password'],
+.oc-root input[type='number'],
+.oc-root textarea {
+    -webkit-appearance: none;
+}
+
+.oc-root [type='search'] {
+    outline-offset: -2px;
+    -webkit-appearance: none;
+}
+
+.oc-root [type='search']::-webkit-search-cancel-button,
+.oc-root [type='search']::-webkit-search-decoration {
+    -webkit-appearance: none;
+}
+
+.oc-root a,
+.oc-root area,
+.oc-root button,
+.oc-root [role='button'],
+.oc-root input:not([type='range']),
+.oc-root label,
+.oc-root select,
+.oc-root summary,
+.oc-root textarea {
+    touch-action: manipulation;
 }
 
 .oc-root [tabindex='-1']:focus {

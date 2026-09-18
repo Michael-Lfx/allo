@@ -15,7 +15,8 @@
  *  - 禁止全局引入 `antd/dist/reset.css`(画布基线由 oc-scoped-preflight.css 承担)。
  *
  * 扫描范围:`ui/src/renderer/pages/videoCanvas/**` 与
- * `ui/src/renderer/pages/videoGeneration/**` 下的全部 .css,外加 ui/src 下
+ * `ui/src/renderer/pages/videoGeneration/**` 下的全部 .css,外加画布兼容层
+ * `ui/src/renderer/styles/canvas-utility-shield.css`,以及 ui/src 下
  * 全部 .ts/.tsx 的禁用 import(测试文件除外:断言里的反例字符串不算违规)。
  *
  * 用法 / Usage:
@@ -32,6 +33,7 @@ const CSS_SCAN_DIRS = [
   join(UI_SRC, 'renderer', 'pages', 'videoCanvas'),
   join(UI_SRC, 'renderer', 'pages', 'videoGeneration'),
 ];
+const EXTRA_CSS_FILES = [join(UI_SRC, 'renderer', 'styles', 'canvas-utility-shield.css')];
 
 const GLOBAL_ROOT_RE = /^(?::root\b|html\b|body\b|#root\b|\*)/;
 const FULL_TAILWIND_IMPORT_RE = /@import\s+["']tailwindcss(?:\/preflight\.css)?["']/;
@@ -148,17 +150,26 @@ const problems = [];
 let cssScanned = 0;
 let importsScanned = 0;
 
+function scanCssFile(file) {
+  const source = readFileSync(file, 'utf8');
+  for (const v of scanCssSource(source)) {
+    problems.push(`${relative(ROOT, file)}:${v.line} 裸根选择器 "${v.selector}"`);
+  }
+  for (const v of scanImports(blankComments(source))) {
+    problems.push(`${relative(ROOT, file)} ${v}`);
+  }
+}
+
 for (const dir of CSS_SCAN_DIRS) {
   for (const file of walk(dir, (name) => name.endsWith('.css'))) {
     cssScanned += 1;
-    const source = readFileSync(file, 'utf8');
-    for (const v of scanCssSource(source)) {
-      problems.push(`${relative(ROOT, file)}:${v.line} 裸根选择器 "${v.selector}"`);
-    }
-    for (const v of scanImports(blankComments(source))) {
-      problems.push(`${relative(ROOT, file)} ${v}`);
-    }
+    scanCssFile(file);
   }
+}
+
+for (const file of EXTRA_CSS_FILES) {
+  cssScanned += 1;
+  scanCssFile(file);
 }
 
 for (const file of walk(UI_SRC, (name) => /\.(ts|tsx)$/.test(name) && !/\.(test|spec)\./.test(name))) {
