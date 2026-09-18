@@ -33,9 +33,9 @@ export const getNomiHydrationLifecycleFence = (
  * cannot revive activity, reconcile completion, change thought/tool state, or
  * overwrite metrics for another turn.
  *
- * Exception: callers may still apply `turn_completed` metrics after the fence
- * closes — that event is additive gauge data for the context usage ring and
- * does not mutate turn lifecycle state.
+ * Exception: callers may still apply `turn_completed` and `usage_updated`
+ * metrics after the fence closes — those events are additive gauge data for
+ * the context usage ring and do not mutate turn lifecycle state.
  */
 export const shouldApplyNomiStreamEventToTurn = ({
   eventTurnId,

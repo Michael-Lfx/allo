@@ -4,6 +4,7 @@ pub mod terminal;
 
 use crossterm::execute;
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+use nomi_types::context_usage::ContextUsageBreakdown;
 use nomi_types::tool::ToolImage;
 use std::io::{self, Write};
 
@@ -964,6 +965,22 @@ pub struct ToolCallExecutionContext {
     pub retry: ToolCallRetryContext,
 }
 
+/// Live context-occupancy snapshot after one provider round.
+///
+/// Distinct from turn-end `TurnCompleted`: this is a gauge update and must not
+/// be billed or accumulated as a finished turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextUsageSnapshot {
+    pub context_tokens: u64,
+    pub context_window: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub elapsed_ms: i64,
+    pub breakdown: Option<ContextUsageBreakdown>,
+}
+
 pub trait OutputSink: Send + Sync {
     /// Stream text delta from LLM
     fn emit_text_delta(&self, text: &str, msg_id: &str);
@@ -1107,6 +1124,9 @@ pub trait OutputSink: Send + Sync {
         cache_creation_tokens: u64,
         cache_read_tokens: u64,
     );
+    /// Publish a live context-occupancy snapshot after a provider round.
+    /// Default no-op keeps existing sinks source-compatible.
+    fn emit_context_usage(&self, _snapshot: &ContextUsageSnapshot) {}
     /// Display error
     fn emit_error(&self, msg: &str);
     /// Display informational message

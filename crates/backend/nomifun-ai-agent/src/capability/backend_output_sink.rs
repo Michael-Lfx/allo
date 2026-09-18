@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use nomi_agent::output::{
-    ArtifactContract, ArtifactExpectation, ArtifactRequirement, OutputSink, ToolMediaDelivery,
-    ToolCallExecutionContext, ToolCallRetryContext, artifact_contract,
+    ArtifactContract, ArtifactExpectation, ArtifactRequirement, ContextUsageSnapshot, OutputSink,
+    ToolMediaDelivery, ToolCallExecutionContext, ToolCallRetryContext, artifact_contract,
     artifact_contract_with_input, is_context_only_image_tool,
 };
 use nomi_types::tool::ToolImage;
@@ -15,10 +15,10 @@ use tokio::sync::broadcast;
 
 use crate::artifact_store::{ArtifactKind, ArtifactStore, PersistedArtifact};
 use crate::protocol::events::{
-    AgentStatusEventData, AgentStreamEvent, ErrorEventData, FinishEventData,
+    AgentStatusEventData, AgentStreamEvent, ContextBreakdownData, ErrorEventData, FinishEventData,
     MoaProgressEventData, MoaReferenceEventData, OutputDiscardedEventData, PlanEventData,
     StartEventData, TextEventData, ThinkingEventData, TipType, TipsEventData, ToolCallEventData,
-    ToolCallRetryData, ToolCallStatus,
+    ToolCallRetryData, ToolCallStatus, TurnCompletedEventData,
 };
 
 pub struct BackendOutputSink {
@@ -1885,6 +1885,23 @@ impl OutputSink for BackendOutputSink {
             }));
     }
 
+    fn emit_context_usage(&self, snapshot: &ContextUsageSnapshot) {
+        let _ = self
+            .event_tx
+            .send(AgentStreamEvent::UsageUpdated(TurnCompletedEventData {
+                elapsed_ms: snapshot.elapsed_ms,
+                input_tokens: snapshot.input_tokens,
+                output_tokens: snapshot.output_tokens,
+                cache_creation_tokens: snapshot.cache_creation_tokens,
+                cache_read_tokens: snapshot.cache_read_tokens,
+                context_tokens: snapshot.context_tokens,
+                context_window: snapshot.context_window,
+                stop_reason: None,
+                context_breakdown: snapshot.breakdown.as_ref().map(ContextBreakdownData::from),
+                moa: None,
+            }));
+    }
+
     fn emit_error(&self, msg: &str) {
         let _ = self
             .event_tx
@@ -2453,6 +2470,39 @@ mod tests {
         match event {
             AgentStreamEvent::Finish(_) => {}
             other => panic!("Expected Finish, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn emit_context_usage_sends_usage_updated_without_stop_reason() {
+        use nomi_types::context_usage::ContextUsageBreakdown;
+
+        let (sink, mut rx) = make_sink();
+        sink.emit_context_usage(&ContextUsageSnapshot {
+            context_tokens: 1800,
+            context_window: 200_000,
+            input_tokens: 120,
+            output_tokens: 40,
+            cache_creation_tokens: 10,
+            cache_read_tokens: 80,
+            elapsed_ms: 1500,
+            breakdown: Some(ContextUsageBreakdown {
+                conversation: 900,
+                ..Default::default()
+            }),
+        });
+        match rx.try_recv().unwrap() {
+            AgentStreamEvent::UsageUpdated(data) => {
+                assert_eq!(data.context_tokens, 1800);
+                assert_eq!(data.context_window, 200_000);
+                assert_eq!(data.input_tokens, 120);
+                assert_eq!(data.output_tokens, 40);
+                assert_eq!(data.elapsed_ms, 1500);
+                assert!(data.stop_reason.is_none());
+                assert!(data.moa.is_none());
+                assert_eq!(data.context_breakdown.unwrap().conversation, 900);
+            }
+            other => panic!("Expected UsageUpdated, got {other:?}"),
         }
     }
 
