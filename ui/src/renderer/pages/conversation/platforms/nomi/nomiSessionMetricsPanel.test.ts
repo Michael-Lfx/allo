@@ -23,6 +23,8 @@ describe('Nomi session metrics panel notice', () => {
 
     expect(source.includes('getConversationOrNull')).toBe(true);
     expect(source.includes('getPersistedUsage(latest)')).toBe(true);
+    expect(source.includes('recalledNomiUsage')).toBe(true);
+    expect(source.includes('setUsage(getPersistedUsage(conversation));')).toBe(false);
   });
 });
 

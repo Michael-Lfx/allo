@@ -3399,6 +3399,12 @@ impl StreamRelay {
                             }
                             self.forward_to_websocket(&event);
                         }
+                        AgentStreamEvent::UsageUpdated(_) => {
+                            // Live per-round occupancy. Same payload as
+                            // TurnCompleted, but must not accumulate into the
+                            // conversation runtime token total.
+                            self.forward_to_websocket(&event);
+                        }
                         _ => {
                             self.forward_to_websocket(&event);
                         }
@@ -3603,6 +3609,7 @@ impl StreamRelay {
             AgentStreamEvent::SlashCommandsUpdated(_) => "SlashCommandsUpdated",
             AgentStreamEvent::AvailableCommands(_) => "AvailableCommands",
             AgentStreamEvent::TurnCompleted(_) => "TurnCompleted",
+            AgentStreamEvent::UsageUpdated(_) => "UsageUpdated",
             AgentStreamEvent::MoaReference(_) => "MoaReference",
             AgentStreamEvent::MoaProgress(_) => "MoaProgress",
             AgentStreamEvent::Finish(_) => "Finish",
@@ -8491,6 +8498,35 @@ mod tests {
 
         // The relay was never given this runtime state, so it cannot have written.
         assert_eq!(observer.take_turn_tokens(&conversation_id), None);
+    }
+
+    #[tokio::test]
+    async fn usage_updated_does_not_accumulate_tokens_into_runtime_state() {
+        use nomifun_ai_agent::protocol::events::TurnCompletedEventData;
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let runtime_state = Arc::new(ConversationRuntimeStateService::default());
+
+        let conversation_id = test_conversation_id();
+        let relay = StreamRelay::new(conversation_id.clone(), TEST_ASSISTANT_MESSAGE_ID.into(), TEST_USER_ID.into(), repo, bus, None)
+            .with_runtime_state(runtime_state.clone());
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::UsageUpdated(TurnCompletedEventData {
+            input_tokens: 100,
+            output_tokens: 40,
+            context_tokens: 1800,
+            context_window: 200_000,
+            ..Default::default()
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let _ = relay.consume(rx).await;
+
+        assert_eq!(runtime_state.take_turn_tokens(&conversation_id), None);
     }
 
     #[tokio::test]

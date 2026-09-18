@@ -27,7 +27,9 @@ use crate::tool_execution::{
     ExecutionControl, ProviderToolAuthority, SKIPPED_AFTER_PRIOR_ERROR,
     execute_tool_calls_scoped, execute_tool_calls_with_approval,
 };
-use crate::output::{OutputSink, ToolCallExecutionContext, ToolCallRetryContext};
+use crate::output::{
+    ContextUsageSnapshot, OutputSink, ToolCallExecutionContext, ToolCallRetryContext,
+};
 use crate::plan::prompt as plan_prompt;
 use crate::plan::state::{PlanPhase, PlanState};
 use crate::round;
@@ -1100,6 +1102,20 @@ impl AgentEngine {
         self.compact_config.context_window as u64
     }
 
+    fn emit_live_context_usage(&self, turn_started_at: Instant) {
+        let elapsed_ms = i64::try_from(turn_started_at.elapsed().as_millis()).unwrap_or(i64::MAX);
+        self.output.emit_context_usage(&ContextUsageSnapshot {
+            context_tokens: self.context_tokens(),
+            context_window: self.context_window(),
+            input_tokens: self.total_usage.input_tokens,
+            output_tokens: self.total_usage.output_tokens,
+            cache_creation_tokens: self.total_usage.cache_creation_tokens,
+            cache_read_tokens: self.total_usage.cache_read_tokens,
+            elapsed_ms,
+            breakdown: self.context_breakdown().cloned(),
+        });
+    }
+
     /// Install (or clear) the steering inbox used for mid-turn interjections.
     pub fn set_steering_inbox(
         &mut self,
@@ -1743,6 +1759,7 @@ impl AgentEngine {
         }
         self.current_msg_id = msg_id.to_string();
         self.output.emit_stream_start(msg_id);
+        let turn_started_at = Instant::now();
         if self
             .editable_turn
             .as_ref()
@@ -2601,6 +2618,7 @@ impl AgentEngine {
 
             request_breakdown.calibrate_to(effective_watermark);
             self.last_context_breakdown = Some(request_breakdown);
+            self.emit_live_context_usage(turn_started_at);
 
             // Cache break detection
             let cache_stats = CacheStats {
