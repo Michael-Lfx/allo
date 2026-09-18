@@ -1,10 +1,12 @@
 /**
  * @license
  * Copyright 2025-2026 NomiFun (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: Apache-2.0 AND MIT
  *
- * Scoped copy of Tailwind CSS v4.3.3 preflight (MIT,
- * https://github.com/tailwindlabs/tailwindcss/blob/main/packages/tailwindcss/preflight.css).
+ * Scoped copy of Tailwind CSS v4.3.3 preflight,
+ * https://github.com/tailwindlabs/tailwindcss/blob/main/packages/tailwindcss/preflight.css
+ * Copyright (c) Tailwind Labs, Inc. (MIT), plus baseline parity rules from
+ * antd/dist/reset.css, Copyright (c) Ant Design Team (MIT).
  *
  * The ported canvas app originally pulled preflight in globally through
  * `@import "tailwindcss"`, which leaked element resets (svg display, border
