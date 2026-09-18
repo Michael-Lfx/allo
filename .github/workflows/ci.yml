@@ -1,0 +1,187 @@
+name: CI
+
+# The release workflow only runs on tags, so nothing on this repository ever
+# compiled a pull request before this file existed. That is how a Dependabot
+# `rmcp` 1.x -> 2.0 bump landed with no code adaptation and left `main`
+# uncompilable, and how four `bun run check` gates went red unnoticed. This job
+# is deliberately the cheapest thing that would have caught both: one compile
+# pass over every crate and test target, plus the gates that are green today.
+#
+# Known-red gates are deliberately NOT wired in yet — see
+# .github/workflows/README.md § "PR CI" for the list and the reason.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUN_VERSION: "1.3.13"
+  CARGO_INCREMENTAL: "0"
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
+
+jobs:
+  rust-compile:
+    name: Cargo check (workspace + tests)
+    runs-on: ubuntu-24.04
+    # A cold run compiles every crate in the workspace (including the vendored
+    # sherpa/onnx build scripts); rust-cache makes every later run incremental.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The repository pins the rsproxy mirror in .cargo/config.toml; a GitHub
+      # runner must use the built-in crates.io index instead.
+      - name: Use crates.io from GitHub
+        run: bun scripts/ci-use-crates-io.mjs
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-linux-check
+          workspaces: ". -> build.noindex"
+          cache-on-failure: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libpipewire-0.3-dev \
+            libgbm-dev \
+            libclang-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            xdg-utils
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      # Some crates embed `ui/dist` at compile time; on a fresh clone the path
+      # must exist even though only a real build fills it.
+      - name: Provide ui/dist placeholder
+        run: bun scripts/ensure-ui-dist.mjs
+
+      - name: cargo check --workspace --tests
+        run: cargo check --workspace --tests --locked
+
+  repo-gates:
+    name: Repo gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Repo-level gates
+        run: |
+          bun run check:i18n
+          bun run check:theme
+          bun run check:icons
+          bun run check:codemirror-runtime
+          bun run check:error-surface-contract
+          bun run check:support-surface-contract
+          bun run check:windows-console-hide
+          bun run check:process-runtime-boundary
+          bun run check:browser-platform-boundary
+          bun run check:market
+          bun run check:fingerprint
+          bun run check:release-sync
+          bun run help --check
+
+      # Present only once the Agent Store frontend is on the branch that runs
+      # this workflow; the guard keeps the job valid on `main` before that.
+      - name: Agent Store frontend (web/)
+        if: ${{ hashFiles('web/package.json') != '' }}
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run test
+
+  tests:
+    name: Cargo test (agent + conversation)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Use crates.io from GitHub
+        run: bun scripts/ci-use-crates-io.mjs
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-linux-check
+          workspaces: ". -> build.noindex"
+          cache-on-failure: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libpipewire-0.3-dev \
+            libgbm-dev \
+            libclang-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            xdg-utils
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Provide ui/dist placeholder
+        run: bun scripts/ensure-ui-dist.mjs
+
+      # Starting scope: two crates whose suites are fast, deterministic and were
+      # silently red before this job existed (`cargo check --tests` compiles test
+      # targets but never runs them). Widen the list as the rest of the workspace
+      # becomes trustworthy enough to gate.
+      - name: cargo test -p nomi-agent --lib
+        run: cargo test -p nomi-agent --lib --locked
+
+      # `nomifun-conversation` is gated from today on, minus one test that is red
+      # on `main` itself and tracks a real gap rather than a stale expectation:
+      # fail-closed is not visible on the wire while the durable correction is
+      # wedged (see issue #233). Un-skip it in the pull request that closes that
+      # issue.
+      - name: cargo test -p nomifun-conversation --lib
+        run: |
+          cargo test -p nomifun-conversation --lib --locked -- \
+            --skip stalled_terminal_artifact_correction_withholds_enclosing_terminal

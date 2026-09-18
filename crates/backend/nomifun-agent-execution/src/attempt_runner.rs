@@ -21,7 +21,7 @@ use nomifun_ai_agent::{
 };
 use nomifun_api_types::{
     CreateConversationRequest, ExecutionModelPool, ExecutionModelRef, ExecutionParticipant,
-    ListMessagesQuery, MessageResponse, SendMessageRequest,
+    ListMessagesQuery, MessageResponse, ResolvedPresetSnapshot, SendMessageRequest,
 };
 use nomifun_common::{
     AgentToolPolicy, AgentType, AppError, DecisionPolicy, DelegationPolicy,
@@ -429,6 +429,23 @@ impl AttemptRunner for ConversationAttemptRunner {
             extra["preset_revision"] = Value::Number(snapshot.preset_revision.into());
             extra["preset_snapshot"] = serde_json::to_value(snapshot)
                 .map_err(|error| AppError::Internal(format!("encode preset snapshot: {error}")))?;
+            // doc `29` §6.4：运行级思考等级随快照到这里，落进尝试会话的 `extra`——之后的读取
+            // 路径与普通会话**完全相同**（`AgentBuildExtra.reasoning_effort` ←
+            // `conversation.extra.reasoning_effort`）。
+            apply_preset_run_preferences(&mut extra, snapshot);
+        }
+        // Preset MCP references reach the runtime through the Conversation
+        // layer's standard `selected_mcp_server_ids` seam: the create path
+        // validates the UUIDv7 ids, filters enabled servers and persists the
+        // frozen `mcp_server_ids` on the conversation, which the Nomi factory
+        // injects for instance owners. Missing/disabled ids are dropped there —
+        // the App Server run entry rejects them up-front with
+        // `connector_unavailable` (execute_agent_run pre-validation).
+        if let Some(snapshot) = participant.preset_snapshot.as_ref()
+            && !snapshot.mcp_server_ids.is_empty()
+        {
+            extra["selected_mcp_server_ids"] =
+                Value::Array(snapshot.mcp_server_ids.iter().cloned().map(Value::String).collect());
         }
 
         let request = CreateConversationRequest {
@@ -616,6 +633,22 @@ fn build_agent_extra(
         extra["workspace"] = json!(workspace);
     }
     extra
+}
+
+/// Project a preset snapshot's **run-scoped** preferences into the attempt conversation's `extra`
+/// (doc `29` §6.4).
+///
+/// Today that is the reasoning effort. It rides here rather than on the execution aggregate because
+/// the participant row already stores the snapshot as JSON (no migration), and because the runtime
+/// reads the level from `conversation.extra.reasoning_effort` — the very same path an ordinary
+/// conversation uses, so there is exactly one reader for it.
+///
+/// A snapshot that carries no effort writes **no key at all**: an unlevelled run must keep the extra
+/// shape it had before this field existed.
+fn apply_preset_run_preferences(extra: &mut Value, snapshot: &ResolvedPresetSnapshot) {
+    if let Some(effort) = snapshot.reasoning_effort.as_deref() {
+        extra["reasoning_effort"] = Value::String(effort.to_owned());
+    }
 }
 
 fn tool_policy_allowed_tools(policy: AgentToolPolicy) -> Option<Vec<&'static str>> {
@@ -988,6 +1021,40 @@ mod tests {
 
     fn sha256_hex(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// doc `29` §6.4 / §6.5 单测 5：快照带等级 ⇒ 尝试会话 extra 里出现该键；不带 ⇒ **键不存在**
+    /// （不是 `null`），这样不带等级的运行其 extra 形状与引入这个字段之前逐字相同。
+    #[test]
+    fn preset_run_preferences_project_the_effort_and_leave_no_key_behind() {
+        let mut snapshot = ResolvedPresetSnapshot {
+            preset_id: "0190f5fe-7c00-7a00-8000-000000000301".to_owned(),
+            preset_revision: 1,
+            preset_name: "agent-store: demo".to_owned(),
+            target: nomifun_api_types::PresetTarget::ExecutionStep,
+            routing_description: None,
+            instructions: String::new(),
+            resolved_agent_id: None,
+            resolved_agent_type: None,
+            resolved_agent_backend: None,
+            resolved_model: None,
+            reasoning_effort: None,
+            included_skills: Vec::new(),
+            excluded_auto_skills: Vec::new(),
+            knowledge_policy: Default::default(),
+            knowledge_base_ids: Vec::new(),
+            mcp_server_ids: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let mut unlevelled = json!({"system_prompt": "brief"});
+        apply_preset_run_preferences(&mut unlevelled, &snapshot);
+        assert!(unlevelled.get("reasoning_effort").is_none(), "{unlevelled}");
+
+        snapshot.reasoning_effort = Some("xhigh".to_owned());
+        let mut levelled = json!({"system_prompt": "brief"});
+        apply_preset_run_preferences(&mut levelled, &snapshot);
+        assert_eq!(levelled["reasoning_effort"], json!("xhigh"));
     }
 
     fn message(

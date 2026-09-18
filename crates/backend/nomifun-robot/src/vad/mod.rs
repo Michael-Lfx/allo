@@ -2,7 +2,10 @@
 //! so `mode=auto` sessions end **only** when this decides they did.
 
 pub mod energy;
-#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+#[cfg(all(
+    feature = "silero-vad",
+    not(all(target_os = "macos", target_arch = "x86_64"))
+))]
 pub mod silero;
 
 pub use energy::EnergyVad;
@@ -82,7 +85,10 @@ pub fn frame_ms(samples: usize, sample_rate: u32) -> u32 {
 /// `x86_64-apple-darwin`), so Silero is compile-time unavailable there.
 pub fn build_engine(engine: &str, tuning: VadTuning) -> Box<dyn VadEngine> {
     if engine == DEFAULT_VAD_ENGINE {
-        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+        #[cfg(all(
+            feature = "silero-vad",
+            not(all(target_os = "macos", target_arch = "x86_64"))
+        ))]
         {
             match silero::SileroVad::new(tuning) {
                 Ok(vad) => return Box::new(vad),
@@ -91,10 +97,13 @@ pub fn build_engine(engine: &str, tuning: VadTuning) -> Box<dyn VadEngine> {
                 }
             }
         }
-        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        #[cfg(any(
+            not(feature = "silero-vad"),
+            all(target_os = "macos", target_arch = "x86_64")
+        ))]
         {
             tracing::warn!(
-                "robot: silero VAD not linked on Intel macOS (ONNX Runtime unavailable), using energy VAD"
+                "robot: silero VAD not linked (silero-vad feature off or ONNX Runtime unavailable), using energy VAD"
             );
         }
     }
@@ -222,7 +231,10 @@ mod tests {
         );
     }
 
-    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+    #[cfg(all(
+        feature = "silero-vad",
+        not(all(target_os = "macos", target_arch = "x86_64"))
+    ))]
     #[test]
     fn silero_ends_an_utterance_on_real_speech_then_silence() {
         let Ok(mut vad) = crate::vad::silero::SileroVad::new(VadTuning {

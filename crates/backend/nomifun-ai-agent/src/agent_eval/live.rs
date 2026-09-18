@@ -406,6 +406,10 @@ pub(crate) fn isolate_eval_config(
                 headers: None,
                 deferred: Some(false),
                 request_timeout_secs: Some(20),
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         );
     }
@@ -523,6 +527,10 @@ mod tests {
                 headers: None,
                 deferred: None,
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         );
         isolate_eval_config(

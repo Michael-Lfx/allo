@@ -8,6 +8,7 @@ use serde_json::json;
 
 use nomi_config::file_cache::FileCacheConfig;
 use nomi_tools::Tool;
+use nomi_tools::anchors::{ANCHOR_SEPARATOR, parse_anchor};
 use nomi_tools::edit::EditTool;
 use nomi_tools::file_cache::FileStateCache;
 use nomi_tools::read::ReadTool;
@@ -16,6 +17,21 @@ use nomi_tools::write::WriteTool;
 fn make_cache() -> Arc<RwLock<FileStateCache>> {
     let config = FileCacheConfig::default();
     Arc::new(RwLock::new(FileStateCache::new(&config)))
+}
+
+/// Read renders each line as a `line:hash→content` anchor
+/// (`nomi_tools::anchors`); Edit anchor mode consumes exactly that prefix. Assert
+/// the production contract — line number, parseable hash, separator, exact body —
+/// rather than a hard-coded separator, so a future format change fails here
+/// instead of silently passing.
+fn anchored_line(content: &str, line: usize, text: &str) -> bool {
+    content.lines().any(|rendered| {
+        rendered
+            .split_once(ANCHOR_SEPARATOR)
+            .is_some_and(|(anchor, body)| {
+                body == text && parse_anchor(anchor).is_some_and(|parsed| parsed.line == line)
+            })
+    })
 }
 
 /// TC-A5-01: Read dedup (LOCAL, no LLM).
@@ -35,21 +51,23 @@ async fn read_dedup_returns_stub_on_second_read() {
 
     let input = json!({ "file_path": path_str });
 
-    // First read: should return full line:hash→numbered content.
+    // First read: should return the full anchored content.
     let r1 = read_tool.execute(input.clone()).await;
     assert!(!r1.is_error, "first read should succeed: {}", r1.content);
     assert!(
-        r1.content.contains("1:") && r1.content.contains("→line one"),
-        "first read should contain line-numbered content, got: {}",
+        anchored_line(&r1.content, 1, "line one"),
+        "first read should contain the line-1 anchor, got: {}",
         r1.content
     );
     assert!(
-        r1.content.contains("→line two"),
-        "first read should contain line 2"
+        anchored_line(&r1.content, 2, "line two"),
+        "first read should contain the line-2 anchor, got: {}",
+        r1.content
     );
     assert!(
-        r1.content.contains("→line three"),
-        "first read should contain line 3"
+        anchored_line(&r1.content, 3, "line three"),
+        "first read should contain the line-3 anchor, got: {}",
+        r1.content
     );
 
     // Second read WITHOUT modifying the file: should return dedup stub.

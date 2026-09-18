@@ -10,8 +10,8 @@ use nomifun_common::{
 
 use crate::error::DbError;
 use crate::models::{
-    ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow,
-    ConversationSkillLoad, MessageRow,
+    AppServerContextUsageRow, ConversationArtifactRow, ConversationDeliveryReceiptRow,
+    ConversationRow, ConversationSkillLoad, MessageRow,
 };
 use crate::repository::bind::{BindValue, bind_value, bind_value_as};
 use crate::repository::conversation::{
@@ -4617,6 +4617,10 @@ impl IConversationRepository for SqliteConversationRepository {
             .bind(conversation_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM app_server_context_usage WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM idmm_action_reservations WHERE conversation_id = ?")
             .bind(conversation_id)
             .execute(&mut *tx)
@@ -4649,6 +4653,65 @@ impl IConversationRepository for SqliteConversationRepository {
 
         tx.commit().await?;
         Ok(deleted_cron_job_ids)
+    }
+
+    async fn upsert_app_server_context_usage(
+        &self,
+        conversation_id: &str,
+        context_tokens: i64,
+        window_tokens: i64,
+        last_turn_input_tokens: Option<i64>,
+        last_turn_output_tokens: Option<i64>,
+        updated_at: i64,
+    ) -> Result<(), DbError> {
+        // `None` stays NULL (not reported), so it is only the *reported* values
+        // that must be non-negative.
+        let negative_last_turn = last_turn_input_tokens.is_some_and(|value| value < 0)
+            || last_turn_output_tokens.is_some_and(|value| value < 0);
+        if conversation_id.trim().is_empty()
+            || context_tokens < 0
+            || window_tokens < 0
+            || negative_last_turn
+        {
+            return Err(DbError::Conflict(
+                "App Server context usage requires a conversation id and non-negative token counts"
+                    .to_owned(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO app_server_context_usage \
+                 (conversation_id, context_tokens, window_tokens, \
+                  last_turn_input_tokens, last_turn_output_tokens, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(conversation_id) DO UPDATE SET \
+                 context_tokens = excluded.context_tokens, \
+                 window_tokens = excluded.window_tokens, \
+                 last_turn_input_tokens = excluded.last_turn_input_tokens, \
+                 last_turn_output_tokens = excluded.last_turn_output_tokens, \
+                 updated_at = excluded.updated_at",
+        )
+        .bind(conversation_id)
+        .bind(context_tokens)
+        .bind(window_tokens)
+        .bind(last_turn_input_tokens)
+        .bind(last_turn_output_tokens)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_app_server_context_usage(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<AppServerContextUsageRow>, DbError> {
+        sqlx::query_as::<_, AppServerContextUsageRow>(
+            "SELECT * FROM app_server_context_usage WHERE conversation_id = ?",
+        )
+        .bind(conversation_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DbError::Query)
     }
 
     async fn list_paginated(

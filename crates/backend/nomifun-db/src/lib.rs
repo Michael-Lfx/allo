@@ -13,9 +13,12 @@ pub use database::{
 };
 pub use error::DbError;
 pub use id_schema_contract::{
-    repair_logical_reference_orphans, validate_id_data_contract, validate_id_schema_contract,
+    NON_REFERENCE_ID_COLUMNS, repair_logical_reference_orphans, validate_id_data_contract,
+    validate_id_schema_contract,
 };
 pub use models::{
+    AppServerIdempotencyReceiptRow, AppServerIdempotencyScope,
+    AppServerRunMappingRow, NewAppServerIdempotencyReceipt,
     AgentExecutionAttemptDetailRow, AgentExecutionAttemptRow, AgentExecutionDetailRows,
     AgentExecutionEventRow, AgentExecutionParticipantRow, AgentExecutionRow,
     AgentExecutionStepDependencyRow, AgentExecutionStepDetailRow, AgentExecutionStepRow,
@@ -47,6 +50,8 @@ pub use models::{
     NewProviderModel, ProviderConnectionRow, ProviderModelRow, ProviderModelUpdate,
     UpsertProviderConnectionParams,
 };
+pub use models::OAuthClientRegistrationRow;
+pub use models::{MarketplaceEntry, PluginMarketplaceRow, PluginSnapshotComponentRow, PluginSnapshotListRow, PluginSnapshotRow};
 pub use models::GoalRow;
 pub use models::{
     MeetingSegmentRow, MeetingSessionRow, MeetingSpeakerRow, MeetingVoiceprintRow,
@@ -79,6 +84,7 @@ pub use repository::cron::{
     UpdateCronJobParams,
 };
 pub use repository::mcp_server::{CreateMcpServerParams, UpdateMcpServerParams};
+pub use repository::oauth_client_registration::UpsertOAuthClientRegistrationParams;
 pub use repository::oauth_token::UpsertOAuthTokenParams;
 pub use repository::provider::{
     CreateProviderParams, FLOWY_CATALOG_AUTO_TIER_PARAM, FLOWY_CATALOG_CREDIT_RATE_PARAM,
@@ -92,6 +98,11 @@ pub use repository::ssh_host::{
 pub use repository::SqliteSshHostRepository;
 pub use models::SshHostRow;
 pub use repository::{
+    AppServerIdempotencyCommit, AppServerIdempotencyLookup,
+    IAppServerIdempotencyRepository, IAppServerRunMappingRepository,
+    IAppServerWorkspaceRepository,
+    SqliteAppServerIdempotencyRepository, SqliteAppServerRunMappingRepository,
+    SqliteAppServerWorkspaceRepository,
     AdoptAgentExecutionStepOutputParams, AgentExecutionAttemptRecoveryDisposition,
     AgentExecutionAttemptRecoveryResult, AgentExecutionLeaseToken, AgentExecutionTurnAuthority,
     AppendAgentExecutionStepsFromAttemptParams, AppendAgentExecutionStepsFromAttemptResult,
@@ -112,7 +123,8 @@ pub use repository::{
     IConversationRepository, ICronRepository, IIdmmInterventionRepository,
     IdmmActionReservationKey, IdmmActionReserveResult, IdmmActionSettleResult,
     IdmmActionSettlement, IdmmActionTurnIdentity, IKnowledgeRepository,
-    IMcpServerRepository, IOAuthTokenRepository,
+    IMcpServerRepository, IOAuthClientRegistrationRepository, IOAuthTokenRepository,
+    IPluginSnapshotRepository, ComponentRuntimeRef,
     IProviderConnectionRepository, IProviderModelRepository, IProviderRepository,
     IRemoteAgentRepository, IRequirementRepository, ISettingsRepository, ISkillTagRepository,
     ITagSettingRepository, ITerminalRepository, IUserRepository, IWebhookRepository,
@@ -126,13 +138,20 @@ pub use repository::{
     SqliteChannelRepository, SqliteClientPreferenceRepository, SqliteCompanionTokenRepository,
     SqliteConversationRepository, SqliteCronRepository,
     SqliteIdmmInterventionRepository, SqliteKnowledgeRepository, SqliteMcpServerRepository,
+    SqliteOAuthClientRegistrationRepository,
     SqliteOAuthTokenRepository,
+    SqlitePluginSnapshotRepository,
     SqliteProviderConnectionRepository, SqliteProviderModelRepository, SqliteProviderRepository,
     SqliteRemoteAgentRepository, SqliteRequirementRepository, SqliteSettingsRepository,
     SqliteSkillTagRepository, SqliteTagSettingRepository, SqliteTerminalRepository,
     SqliteUserRepository, SqliteWebhookRepository, TerminalTurnAdmissionClaim,
     TerminalTurnAdmissionKey, TerminalTurnAdmissionScope, TerminalTurnEffectsStart,
     TerminalTurnOutcome, TerminalTurnSettlement, TTL_MS,
+    NewPluginSnapshot, NewPluginSnapshotComponent,
+};
+pub use repository::{
+    IMarketplaceRepository, NewPluginMarketplace,
+    SqliteMarketplaceRepository,
 };
 pub use repository::{
     IPresetRepository, IPresetStateRepository, IPresetTagRepository,

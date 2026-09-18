@@ -40,6 +40,8 @@ use nomifun_cloud::cloud_routes;
 use nomifun_mcp::mcp_routes;
 use nomifun_office::{office_proxy_routes, office_routes};
 use nomifun_agent_execution::{agent_execution_routes, agent_execution_template_routes};
+use nomifun_app_server::{AgentRuntimeAdapter, AppServerRouterState, app_server_routes};
+use nomifun_db::IPluginSnapshotRepository;
 use nomifun_realtime::{UserEventEnvelope, WebSocketManager, WsHandlerState, ws_upgrade_handler};
 use nomifun_requirement::requirement_routes;
 use nomifun_shell::shell_routes;
@@ -703,11 +705,18 @@ pub fn create_router_with_all_state(
         .ws_manager
         .ensure_heartbeat(ws_state.token_authenticator.clone());
 
+    // One registry shared by the App Server router and the logout revocation
+    // hook (`22` §7.1 A2): `POST /logout` drops that principal's App Server
+    // connection tokens immediately, and the same registry serves their calls.
+    let app_server_registry = nomifun_app_server::AppServerRegistry::default();
     let auth_state = AuthRouterState {
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         cookie_config: services.cookie_config.clone(),
         qr_token_store: services.qr_token_store.clone(),
+        session_revocation: Some(Arc::new(
+            nomifun_app_server::AppServerSessionRevocation::new(app_server_registry.clone()),
+        )),
     };
 
     let auth_mw_state = AuthState {
@@ -743,12 +752,23 @@ pub fn create_router_with_all_state(
         token_validator: services.companion_token_validator.clone(),
     };
 
+    // The App Server owns no provider UI of its own: it reuses the system
+    // provider service (encryption + model rows) when it registers providers
+    // that came from the local agent-store config. The public model directory
+    // (`models/list`) projects the same service.
+    let app_server_provider_service = std::sync::Arc::new(states.system.provider_service.clone());
+
     // System routes protected by auth middleware
     let system_authenticated = protect_instance_owner(
         system_routes(states.system),
         &auth_mw_state,
         &instance_owner_state,
     );
+
+    // App Server and first-party routes deliberately share this exact
+    // Conversation module so one Nomi runtime/session can be resumed through
+    // either transport without a parallel chat state machine.
+    let app_server_conversation = states.conversation.clone();
 
     // Conversation routes protected by auth middleware
     let conversation_authenticated = conversation_routes(states.conversation.clone())
@@ -815,7 +835,7 @@ pub fn create_router_with_all_state(
 
     // MCP routes protected by auth middleware
     let mcp_authenticated = protect_instance_owner(
-        mcp_routes(states.mcp),
+        mcp_routes(states.mcp.clone()),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -836,7 +856,7 @@ pub fn create_router_with_all_state(
 
     // Skill routes protected by auth middleware
     let skill_authenticated = protect_instance_owner(
-        skill_routes(states.skill),
+        skill_routes(states.skill.clone()),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -958,6 +978,209 @@ pub fn create_router_with_all_state(
     // state machine. They share the same Engine facade and auth boundary.
     let agent_execution_template_authenticated = protect_instance_owner(
         agent_execution_template_routes(states.agent_execution.clone()),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
+    // Versioned App Server protocol boundary. Agent Store consumers use this
+    // connection lifecycle instead of calling allo UI routes directly.
+    let plugin_snapshot_repository: Arc<dyn IPluginSnapshotRepository> = Arc::new(
+        nomifun_db::SqlitePluginSnapshotRepository::new(services.database.pool().clone()),
+    );
+    let import_root = services.work_dir.join("agent-store-imports");
+    // Shared Agent Store Installer: used by the `installs` capability and by
+    // marketplace remove-cascade (uninstalls snapshots imported from a market).
+    let installer: std::sync::Arc<dyn nomifun_app_server::InstallProvider> = std::sync::Arc::new(
+        crate::app_server_installer::AppServerInstallProvider::new(
+            import_root.clone(),
+            states.skill.skill_paths.user_skills_dir.clone(),
+            plugin_snapshot_repository.clone(),
+            std::sync::Arc::new(crate::app_server_installer::AppServerPresetRegistrar::new(
+                states.preset.service.clone(),
+            )),
+            std::sync::Arc::new(crate::app_server_installer::AppServerMcpRegistrar::new(
+                states.mcp.config_service.clone(),
+            )),
+        ),
+    );
+    // `[import].strict_dependencies` (`16` R23 / `17` §7): one policy for every
+    // import path — the imports catalog, marketplace entries, and the store's
+    // one-click install. Built once here so the consumers cannot drift apart
+    // (and so the config file is read once, not per provider).
+    let importer = nomifun_importer::ImporterService::new(
+        import_root.clone(),
+        plugin_snapshot_repository.clone(),
+    )
+    .with_strict_dependencies(super::state::strict_dependencies_enabled(services));
+    // One marketplace-asset resolver shared by the store and the read-side
+    // catalogs: an installed product (skill on disk / connector in mcp_servers)
+    // borrows the icon of the market entry it came from, so the installed
+    // panel renders real icons instead of initial badges.
+    let app_server_entry_assets =
+        crate::app_server_entry_assets::AppServerEntryAssets::new(
+            plugin_snapshot_repository.clone(),
+            services.work_dir.join("agent-store-markets"),
+        );
+    let app_server_state = AppServerRouterState {
+        registry: app_server_registry,
+            runtime: Some(AgentRuntimeAdapter::new(states.agent_execution.clone())),
+            conversation_service: Some(app_server_conversation.service.clone()),
+            conversation_runtime_registry: Some(app_server_conversation.runtime_registry.clone()),
+            preset_service: Some(states.preset.service.clone()),
+            idempotency: Some(Arc::new(nomifun_db::SqliteAppServerIdempotencyRepository::new(
+                services.database.pool().clone(),
+            ))),
+            run_mappings: Some(Arc::new(nomifun_db::SqliteAppServerRunMappingRepository::new(
+                services.database.pool().clone(),
+            ))),
+            workspaces: Some(Arc::new(nomifun_db::SqliteAppServerWorkspaceRepository::new(
+                services.database.pool().clone(),
+            ))),
+            workspace_resolver: Some(Arc::new(
+                nomifun_app_server::FilesystemWorkspaceResolver::new(&services.work_dir)
+                    .expect("App Server workspace registry must be available at router startup"),
+            )),
+            event_bus: Some(services.event_bus.clone()),
+            provider_service: Some(app_server_provider_service.clone()),
+            models: Some(std::sync::Arc::new(
+                crate::app_server_catalog::AppServerModelCatalog::new(
+                    app_server_provider_service.clone(),
+                    services.agent_store_config_path.clone(),
+                ),
+            )),
+            agent_store_config_path: services.agent_store_config_path.clone(),
+            // The host's own answer to "do you use `mcp.json`?" — the settings
+            // screen has to be able to say "declared here, inert here".
+            adopt_store_mcp_declarations: Some(services.adopt_store_mcp_declarations),
+            // Agent Store Skill/Connector catalog over the system services.
+            // `None` keeps the capabilities off and yields
+            // `unsupported_operation` on the protocol surface; production
+            // always wires them. Both catalogs share one marketplace-asset
+            // resolver so an installed product shows its market icon.
+            skills: Some(Arc::new(
+                crate::app_server_catalog::AppServerSkillCatalog::new(
+                    states.skill.skill_paths.clone(),
+                )
+                .with_assets(app_server_entry_assets.clone()),
+            )),
+            // Skill file tree read face (`skill/files` / `skill/file`, doc 24 §4).
+            // Same `SkillPaths` as the catalog so an id the catalog publishes
+            // always resolves here; the id space intentionally cannot drift.
+            skill_files: Some(Arc::new(
+                crate::app_server_skill_files::AppServerSkillFiles::new(
+                    states.skill.skill_paths.clone(),
+                ),
+            )),
+            // Skill write face (`skill/create|update|delete`, `16` R17 / W12).
+            // Same `SkillPaths` as the read catalog, so the id the write face
+            // resolves and the id `skill/get` serves can never disagree.
+            skill_writes: Some(Arc::new(nomifun_app_server::SkillAdmin::new(
+                states.skill.skill_paths.clone(),
+            ))),
+            connectors: Some(Arc::new(
+                crate::app_server_catalog::AppServerConnectorCatalog::new(
+                    states.mcp.config_service.clone(),
+                    states.mcp.connection_test_service.clone(),
+                    states.mcp.oauth_service.clone(),
+                )
+                .with_assets(app_server_entry_assets.clone()),
+            )),
+            connector_auth: Some(Arc::new(
+                crate::app_server_catalog::AppServerConnectorAuth::new(
+                    states.mcp.config_service.clone(),
+                    states.mcp.oauth_service.clone(),
+                ),
+            )),
+            // Connector call proxy (`connector/call`, doc 24 §5). Wired
+            // unconditionally, but the provider's first gate is the host's
+            // `[connector_proxy]` policy — an opted-out host refuses every call
+            // without touching the database, so "wired" never means "callable".
+            connector_calls: Some(Arc::new(
+                crate::app_server_connector_call::AppServerConnectorCall::new(
+                    states.mcp.config_service.clone(),
+                    states.mcp.connection_test_service.clone(),
+                    services.connector_proxy_policy.clone(),
+                ),
+            )),
+            // Agent Store Importer / PluginSnapshot catalog (roadmap Phase 1).
+            // The importer writes only into the work-dir-owned immutable
+            // cache; source paths stay internal.
+            imports: Some(Arc::new(
+                crate::app_server_importer::AppServerImportProvider::new(
+                    importer.clone(),
+                    plugin_snapshot_repository.clone(),
+                ),
+            )),
+            // Agent Store Installer (roadmap Phase 2): materializes snapshot
+            // components into the runtime (skills root / Presets / MCP config).
+            installs: Some(installer.clone()),
+            // Agent Store Marketplaces (roadmap Phase 2): directory catalogs
+            // discovered on the trusted host; entries import through the same
+            // snapshot pipeline with provenance linkage.
+            markets: Some(Arc::new(
+                crate::app_server_marketplace::AppServerMarketplaceProvider::new(
+                    importer.clone(),
+                    Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
+                        services.database.pool().clone(),
+                    )),
+                    installer.clone(),
+                    services.work_dir.join("agent-store-markets"),
+                ),
+            )),
+            agent_catalog: Some(Arc::new(
+                crate::app_server_importer::AppServerAgentCatalog::new(
+                    plugin_snapshot_repository.clone(),
+                ),
+            )),
+            team_catalog: Some(Arc::new(
+                crate::app_server_importer::AppServerTeamCatalog::new(
+                    plugin_snapshot_repository.clone(),
+                ),
+            )),
+            // The same facade every other host surface uses: `team/run` materializes
+            // the Team template and reverse-maps the Leader's execution here.
+            engine: Some(states.agent_execution.clone()),
+            // Winget-style unified store: aggregated items over all enabled
+            // marketplaces with install state + one-click install.
+            store: Some(Arc::new(
+                crate::app_server_store::AppServerStoreProvider::new(
+                    Arc::new(crate::app_server_marketplace::AppServerMarketplaceProvider::new(
+                        importer.clone(),
+                        Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
+                            services.database.pool().clone(),
+                        )),
+                        installer.clone(),
+                        services.work_dir.join("agent-store-markets"),
+                    )),
+                    Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
+                        services.database.pool().clone(),
+                    )),
+                    plugin_snapshot_repository.clone(),
+                    importer.clone(),
+                    installer,
+                    services.work_dir.join("agent-store-markets"),
+                ),
+            )),
+            snapshot_assets_root: Some(import_root.clone()),
+    };
+    // D-SDK-1 ①: warm the default marketplaces at startup instead of waiting for
+    // the first store/market request, so a cold install's mirroring overlaps with
+    // app boot rather than with the user's first click. Guarded: a caller that
+    // builds this state outside a Tokio runtime keeps the lazy path in the
+    // request handlers.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        nomifun_app_server::warm_default_marketplaces(&app_server_state);
+        // D7 ①: the auto-update sweep is off unless `[marketplace]
+        // auto_update_interval_hours` is declared, and even then only official
+        // sources are polled. Same runtime guard as the warm-up above.
+        nomifun_app_server::start_marketplace_auto_update(&app_server_state);
+    }
+    // Display assets (avatars / market icons) are referenced by plain
+    // `<img>` tags and must not sit behind the owner auth middleware.
+    let app_server_public =
+        nomifun_app_server::app_server_public_routes(app_server_state.clone());
+    let app_server_authenticated = protect_instance_owner(
+        app_server_routes(app_server_state),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -1184,6 +1407,7 @@ pub fn create_router_with_all_state(
         .merge(webhook_authenticated)
         .merge(agent_execution_authenticated)
         .merge(agent_execution_template_authenticated)
+        .merge(app_server_authenticated)
         .merge(secret_authenticated)
         .merge(terminal_authenticated)
         .merge(office_authenticated)
@@ -1226,7 +1450,8 @@ pub fn create_router_with_all_state(
     .merge(public_assets)
     .merge(companion_public)
     .merge(workshop_public)
-    .merge(video_canvas_public);
+    .merge(video_canvas_public)
+    .merge(app_server_public);
 
     // Robot device face. `nest` (not `merge`) scopes it to `/robot`, and it sits
     // in this post-CSRF group on purpose: a robot presents a bearer token minted
@@ -1291,6 +1516,13 @@ pub fn create_router_with_all_state(
                 Method::OPTIONS,
             ])
             .allow_headers(Any)
+            // The App Server HTTP helpers (workspace registration, imports)
+            // hand back their connection id in this response header; without
+            // exposing it, cross-origin browsers silently drop it and the 200
+            // response is misread as a failure ("http 200 from app-server").
+            .expose_headers([
+                axum::http::header::HeaderName::from_static("x-app-server-connection-id"),
+            ])
             .allow_private_network(true);
         router.layer(cors)
     } else {

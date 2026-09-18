@@ -12,7 +12,7 @@ pub use nomifun_common::McpServerId;
 /// MCP server transport configuration (tagged union).
 ///
 /// `http` represents Streamable HTTP (the MCP standard); `sse` is legacy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum McpTransport {
     #[serde(rename = "stdio")]
@@ -227,6 +227,7 @@ pub enum McpConnectionTestErrorCode {
     Timeout,
     RpcError,
     ProtocolError,
+    ReauthorizationRequired,
 }
 
 impl McpConnectionTestErrorCode {
@@ -240,6 +241,7 @@ impl McpConnectionTestErrorCode {
             Self::Timeout => "MCP_TIMEOUT",
             Self::RpcError => "MCP_RPC_ERROR",
             Self::ProtocolError => "MCP_PROTOCOL_ERROR",
+            Self::ReauthorizationRequired => "MCP_REAUTHORIZATION_REQUIRED",
         }
     }
 }
@@ -276,9 +278,28 @@ pub struct OAuthCheckStatusRequest {
 }
 
 /// Response for OAuth status check.
+///
+/// `state` is the structured authorization state (design doc §8):
+/// `not_authenticated | authorization_pending | authenticated | connected |
+/// reauthorization_required | pre_registered_client_required |
+/// unsupported_auth | error`. `authenticated` remains as a compatibility
+/// boolean (`state == "authenticated"`).
 #[derive(Debug, Serialize)]
 pub struct OAuthStatusResponse {
     pub authenticated: bool,
+    pub state: String,
+}
+
+/// Stable OAuth authorization state names (design doc §8).
+pub mod oauth_state {
+    pub const NOT_AUTHENTICATED: &str = "not_authenticated";
+    pub const AUTHORIZATION_PENDING: &str = "authorization_pending";
+    pub const AUTHENTICATED: &str = "authenticated";
+    pub const CONNECTED: &str = "connected";
+    pub const REAUTHORIZATION_REQUIRED: &str = "reauthorization_required";
+    pub const PRE_REGISTERED_CLIENT_REQUIRED: &str = "pre_registered_client_required";
+    pub const UNSUPPORTED_AUTH: &str = "unsupported_auth";
+    pub const ERROR: &str = "error";
 }
 
 /// Request body for `POST /api/mcp/oauth/login`.
@@ -294,6 +315,13 @@ pub struct OAuthLoginResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Stable structured error code (design doc §6.2), e.g.
+    /// `pre_registered_client_required`, `redirect_uri_not_allowed`,
+    /// `dynamic_registration_failed`, `invalid_registration_response`,
+    /// `registration_not_supported`, `unsupported_auth`. Never contains
+    /// tokens, authorization codes or full authorization URLs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 /// Request body for `POST /api/mcp/oauth/logout`.
@@ -639,9 +667,16 @@ mod tests {
 
     #[test]
     fn test_oauth_status_response() {
-        let resp = OAuthStatusResponse { authenticated: true };
+        let resp = OAuthStatusResponse {
+            authenticated: true,
+            state: oauth_state::AUTHENTICATED.into(),
+        };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["authenticated"], true);
+        // The stable state name is part of the wire contract (design doc §8):
+        // a client must be able to tell "authenticated" from "needs reauth"
+        // without guessing from the boolean.
+        assert_eq!(json["state"], oauth_state::AUTHENTICATED);
     }
 
     #[test]
@@ -649,10 +684,12 @@ mod tests {
         let resp = OAuthLoginResponse {
             success: false,
             error: Some("discovery failed".into()),
+            error_code: Some("pre_registered_client_required".into()),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["success"], false);
         assert_eq!(json["error"], "discovery failed");
+        assert_eq!(json["error_code"], "pre_registered_client_required");
     }
 
     // -- DetectedMcpServerResponse --------------------------------------------

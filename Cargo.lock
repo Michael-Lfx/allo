@@ -177,6 +177,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-store"
+version = "1.4.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "mime_guess",
+ "nomifun-ai-agent",
+ "nomifun-app",
+ "nomifun-app-server",
+ "nomifun-common",
+ "nomifun-runtime",
+ "nomifun-shell",
+ "rust-embed",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6578,6 +6600,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures",
+ "glob",
  "httpdate",
  "nomi-config",
  "nomi-process-runtime",
@@ -6844,6 +6867,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "tracing",
 ]
@@ -6955,6 +6979,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "git2",
+ "hex",
  "http-body-util",
  "if-addrs",
  "image",
@@ -6968,6 +6993,7 @@ dependencies = [
  "nomifun-agent-execution",
  "nomifun-ai-agent",
  "nomifun-api-types",
+ "nomifun-app-server",
  "nomifun-assets",
  "nomifun-audio",
  "nomifun-auth",
@@ -6987,6 +7013,7 @@ dependencies = [
  "nomifun-file",
  "nomifun-gateway",
  "nomifun-idmm",
+ "nomifun-importer",
  "nomifun-insights",
  "nomifun-knowledge",
  "nomifun-learning",
@@ -7034,6 +7061,40 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "wiremock",
+ "zip 2.4.2",
+]
+
+[[package]]
+name = "nomifun-app-server"
+version = "1.4.2"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "glob",
+ "http-body-util",
+ "nomifun-agent-execution",
+ "nomifun-ai-agent",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-common",
+ "nomifun-conversation",
+ "nomifun-db",
+ "nomifun-extension",
+ "nomifun-models-dev",
+ "nomifun-preset",
+ "nomifun-realtime",
+ "nomifun-system",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 0.8.2",
+ "toml_edit 0.20.2",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -7556,6 +7617,27 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nomifun-importer"
+version = "1.4.2"
+dependencies = [
+ "async-trait",
+ "hex",
+ "nomifun-api-types",
+ "nomifun-common",
+ "nomifun-db",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "walkdir",
 ]
 
 [[package]]

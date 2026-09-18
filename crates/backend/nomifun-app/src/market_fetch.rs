@@ -1,0 +1,540 @@
+//! Marketplace fetch coordination (roadmap Phase 2, phase B).
+//!
+//! Bridges the low-level `market_source` primitives (clone / download /
+//! promote) with the directory probe installed in `app_server_marketplace`:
+//! fetch a remote source into a staging dir, validate + probe the content,
+//! and atomically promote it into the live root. `refresh` reuses the same
+//! path with a *new* staging dir so the live root is last-good during any
+//! failure window.
+//!
+//! Layout under the marketplace root:
+//!   {root}/{marketplace_id}/live            # promoted, validated content
+//!   {root}/{marketplace_id}/staging-<ts>    # in-flight fetch (removed on
+//!                                             failure or after promotion)
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use nomifun_common::{AppError, collect_localized_variants};
+use nomifun_db::{IMarketplaceRepository, MarketplaceEntry};
+
+use crate::market_source;
+
+/// One resolved + validated marketplace root after `fetch_remote`.
+pub struct FetchedEntrySet {
+    /// The live root (already promoted; immutable for this cycle).
+    pub live_root: PathBuf,
+    /// Resolved revision (git commit / freshness marker).
+    pub revision: String,
+    /// The HTTP source's raw conditional-request validators, when it sent any
+    /// (doc 18 D4 ①). `None` for git sources.
+    pub validators: Option<market_source::HttpValidators>,
+    /// Probed entries (relative sources inside the live root).
+    pub entries: Vec<(MarketplaceEntry, String)>, // (entry, relative source)
+}
+
+/// Remote fetch outcome: fresh content or a 304-style no-op.
+pub enum RemoteFetchOutcome {
+    /// New content was fetched, validated and promoted.
+    Fresh(FetchedEntrySet),
+    /// The server answered 304 / unchanged revision — last-good stays.
+    Unchanged { revision: String },
+}
+
+/// Resolve a remote source into a local, validated tree.
+///
+/// `source_kind` is `github` | `git` | `url` | `zip`; directory sources are
+/// handled by the caller before this point. When `current_revision` is
+/// provided, an unchanged server revision short-circuits to `Unchanged` (git:
+/// same HEAD commit; http: `304 Not Modified`; zip: same archive digest).
+pub async fn fetch_remote(
+    source_kind: &str,
+    source: &str,
+    marketplace_root: PathBuf,
+    current_revision: Option<&str>,
+    // The raw validators persisted from the previous fetch (doc 18 D4 ①).
+    // `None` on a first fetch or for a source that never sent any.
+    current_validators: Option<&market_source::HttpValidators>,
+) -> Result<RemoteFetchOutcome, AppError> {
+    let normalized = market_source::normalize_source_url(source_kind, source)
+        .map_err(AppError::BadRequest)?;
+    std::fs::create_dir_all(&marketplace_root)
+        .map_err(|error| AppError::Internal(format!("create market root: {error}")))?;
+
+    let staging = marketplace_root.join(format!("staging-{}", nomifun_common::generate_id()));
+    let live_root = marketplace_root.join("live");
+    // Staging is owned by this fetch regardless of how it ends: a normal
+    // completion promotes it (and the guard disarms), an early return or an
+    // outer `tokio::time::timeout` drop removes it. Without the guard a
+    // timeout strand leaves staging-* dirs accumulating under
+    // `{market_root}/{marketplace_id}/` (observed in the wild).
+    let mut staging_guard = StagingGuard::new(staging.clone());
+
+    // Fetch into staging; validate the tree looks like a market after the
+    // fetch (git clones the whole repo; http downloads the manifest only; zip
+    // downloads one archive and unpacks it).
+    let (revision, manifest_only, validators) = match source_kind {
+        "github" | "git" => {
+            let (hash, _repo) = market_source::clone_git(&normalized, &staging)
+                .map_err(|error| AppError::Internal(error))?;
+            if !market_source::looks_like_market(&staging) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(AppError::BadRequest(format!(
+                    "source {source} does not look like a marketplace (no manifest in the checkout)"
+                )));
+            }
+            if current_revision == Some(hash.as_str()) {
+                // Same HEAD commit: no content change; the clone in staging is
+                // discarded, last-good stays.
+                let _ = std::fs::remove_dir_all(&staging);
+                return Ok(RemoteFetchOutcome::Unchanged { revision: hash });
+            }
+            (hash, false, None)
+        }
+        "url" => {
+            // Real conditional request (doc 18 D4 ①): the raw validators, so a
+            // compliant server answers 304 instead of shipping the body.
+            let outcome = market_source::fetch_http_market(
+                &normalized,
+                &staging,
+                current_validators,
+            )
+            .await
+            .map_err(|error| AppError::Internal(error))?;
+            match outcome {
+                market_source::HttpFetchOutcome::NotModified => {
+                    let _ = std::fs::remove_dir_all(&staging);
+                    return Ok(RemoteFetchOutcome::Unchanged {
+                        revision: current_revision.unwrap_or("http").to_owned(),
+                    });
+                }
+                market_source::HttpFetchOutcome::Fresh {
+                    revision,
+                    validators,
+                } => {
+                    if current_revision == Some(revision.as_str()) {
+                        // Same etag/last-modified marker: content unchanged;
+                        // the freshly fetched body is discarded, last-good stays.
+                        // The marker is derived from the validators, so an equal
+                        // marker means an equal validator set — nothing to update.
+                        let _ = std::fs::remove_dir_all(&staging);
+                        return Ok(RemoteFetchOutcome::Unchanged { revision });
+                    }
+                    // Full-tree URL market: when the source exposes a file
+                    // listing (`/_files.txt`), mirror every listed asset over
+                    // HTTP so relative entry sources resolve inside the live
+                    // tree (unlike a manifest-only market, whose entries are
+                    // mirror-impossible and stay `external`).
+                    let has_listing = market_source::has_file_listing(&normalized).await;
+                    if has_listing {
+                        market_source::mirror_http_tree(&normalized, &staging).await
+                            .map_err(|error| AppError::Internal(error))?;
+                    }
+                    (revision, !has_listing, Some(validators))
+                }
+            }
+        }
+        // Doc 30: one archive whose root is the market root. Replaces the
+        // `url` full-tree mirror for the official bundles, where `experts` cost
+        // 14,714 requests / 611 MiB per first fetch.
+        "zip" => {
+            // Freshness first: when the host reports the archive digest (a
+            // `HEAD`, no body), an unchanged archive short-circuits before a
+            // multi-hundred-MiB transfer. `None` means "not told" — never
+            // "unchanged"; the download below is the fallback.
+            let probed = market_source::probe_archive_digest(&normalized).await;
+            if let (Some(probed), Some(current)) = (probed.as_deref(), current_revision) {
+                if probed == current {
+                    return Ok(RemoteFetchOutcome::Unchanged {
+                        revision: probed.to_owned(),
+                    });
+                }
+            }
+            // The archive is a sibling of staging, never inside it: `promote`
+            // renames staging into the live root, so an archive placed inside
+            // would be promoted as market content (289 MiB of it).
+            let archive =
+                marketplace_root.join(format!("download-{}.zip", nomifun_common::generate_id()));
+            let mut archive_guard = ArchiveGuard::new(archive.clone());
+            let (local_digest, server_digest) =
+                market_source::download_archive(&normalized, &archive)
+                    .await
+                    .map_err(AppError::Internal)?;
+            // The digest doubles as a free integrity check: when the host
+            // advertised one, the bytes we received must hash to it.
+            if let Some(server) = server_digest.as_deref() {
+                if server != local_digest {
+                    return Err(AppError::Internal(format!(
+                        "archive digest mismatch for {source}: host reports {server}, \
+                         downloaded bytes hash to {local_digest}"
+                    )));
+                }
+            }
+            if current_revision == Some(local_digest.as_str()) {
+                return Ok(RemoteFetchOutcome::Unchanged {
+                    revision: local_digest,
+                });
+            }
+            std::fs::create_dir_all(&staging)
+                .map_err(|error| AppError::Internal(format!("create staging: {error}")))?;
+            market_source::extract_zip_market(&archive, &staging)
+                .map_err(AppError::Internal)?;
+            archive_guard.remove();
+            if !market_source::looks_like_market(&staging) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(AppError::BadRequest(format!(
+                    "source {source} does not look like a marketplace (no manifest in the archive)"
+                )));
+            }
+            (local_digest, false, None)
+        }
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "unsupported remote source kind `{other}`"
+            )));
+        }
+    };
+    // Probe the staged content (URL markets have only marketplace.json; their
+    // entries are inlined relative paths and must resolve inside the same
+    // fetch — CodeBuddy document semantics).
+    let entries = if manifest_only {
+        probe_url_entries(&staging)?
+    } else {
+        let (kind, scanned) = crate::app_server_marketplace::probe_directory(&staging)?;
+        scan_to_entries(scanned, kind.as_str())
+    };
+
+    // Atomic promotion; on failure the staging is cleaned and last-good stays.
+    market_source::promote(&staging, &live_root).map_err(|error| {
+        let _ = std::fs::remove_dir_all(&staging);
+        AppError::Internal(error)
+    })?;
+    staging_guard.disarm();
+
+    Ok(RemoteFetchOutcome::Fresh(FetchedEntrySet {
+        live_root,
+        revision,
+        validators,
+        entries,
+    }))
+}
+
+/// RAII cleanup for a `fetch_remote` staging dir: removes it on Drop unless
+/// disarmed (promotion succeeded). Covers early returns, `?` failures, and —
+/// critically — an outer `tokio::time::timeout` cancelling the future, where
+/// the normal error paths never run.
+struct StagingGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl StagingGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// RAII cleanup for a downloaded market archive.
+///
+/// The archive is a *sibling* of the staging dir, not a child, because
+/// `promote` renames staging into the live root — an archive inside staging
+/// would be promoted as market content. Being outside staging, it also falls
+/// outside `StagingGuard`'s reach, so it gets its own guard: an early return, a
+/// `?` failure, or an outer `tokio::time::timeout` cancellation all have to
+/// reclaim it, or every failed fetch strands a multi-hundred-MiB file under the
+/// market root.
+struct ArchiveGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl ArchiveGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// Delete now (the success path) and disarm.
+    fn remove(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        self.armed = false;
+    }
+}
+
+impl Drop for ArchiveGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Probe entries from an HTTP-manifest-only market: each declared entry must
+/// be fully inlined (its source is a *relative* path that resolves inside the
+/// same fetched directory tree, or a `data:`-style inline payload). Phase B
+/// accepts relative paths only and validates them against the live tree.
+fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, AppError> {
+    let manifest_path = staging.join("marketplace.json");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|error| AppError::Internal(format!("read manifest: {error}")))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| AppError::Internal(format!("parse manifest: {error}")))?;
+    let mut entries = Vec::new();
+    for (key_list, key_kind) in [("skills", "skill"), ("connectors", "connector"), ("plugins", "plugin")] {
+        let Some(items) = value.get(key_list).and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for (index, item) in items.iter().enumerate() {
+            let name = item
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_owned();
+            if name.is_empty() {
+                continue;
+            }
+            let source = item
+                .get("source")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim_start_matches("./")
+                .to_owned();
+            // `strict` is a market-entry field (`02` §8), but the rule it
+            // carries is about a **plugin** source shipping its own
+            // `plugin.json` — a `skills[]` / `connectors[]` row that happens to
+            // declare it must not be refused for it. The directory prober
+            // pins `false` for those kinds for the same reason.
+            let strict = key_kind == "plugin"
+                && item.get("strict").and_then(|value| value.as_bool()).unwrap_or(false);
+            // URL markets: only inlined/relative entries are resolvable.
+            // A `source` that is itself an absolute URL or git reference is
+            // recorded but flagged via a marker source kind.
+            let relative = if source.starts_with("http") || source.contains("github.com") {
+                // Entries with a fetchable external source cannot be mirrored
+                // by a URL marketplace; keep the entry discoverable but mark it
+                // as `external` so the UI can explain the limitation.
+                entries.push((
+                    MarketplaceEntry {
+                        name,
+                        source_kind: "external".into(),
+                        source_uri: source,
+                        version: item.get("version").and_then(as_str).map(str::to_owned),
+                        description: item.get("description").and_then(as_str).map(str::to_owned),
+                        keywords: Vec::new(),
+                        category: item.get("category").and_then(as_str).map(str::to_owned),
+                        published_at: crate::app_server_marketplace::published_at_of(item),
+                        localized: collect_localized_variants(item),
+                        strict,
+                        // `source_kind = "external"` already says why this row
+                        // cannot be installed; no second reason needed.
+                        blocked_reason: None,
+                    },
+                    String::new(),
+                ));
+                continue;
+            } else {
+                source.clone()
+            };
+            if !staging.join(&relative).exists() && key_kind != "plugin" {
+                // Declared but missing on the live tree (directory not
+                // mirrored) — keep discoverable with an empty source marker.
+                entries.push((
+                    MarketplaceEntry {
+                        name,
+                        source_kind: "external".into(),
+                        source_uri: relative,
+                        version: None,
+                        description: item.get("description").and_then(as_str).map(str::to_owned),
+                        keywords: Vec::new(),
+                        category: None,
+                        published_at: crate::app_server_marketplace::published_at_of(item),
+                        localized: collect_localized_variants(item),
+                        strict,
+                        blocked_reason: None,
+                    },
+                    String::new(),
+                ));
+                continue;
+            }
+            // A directory row is the only one whose `strict` claim can be
+            // checked here: the source is in the fetched tree.
+            let blocked_reason = crate::app_server_marketplace::strict_entry_block(
+                strict,
+                staging
+                    .join(&relative)
+                    .join(".codebuddy-plugin/plugin.json")
+                    .is_file(),
+            );
+            let _ = index;
+            entries.push((
+                MarketplaceEntry {
+                    name,
+                    source_kind: "directory".into(),
+                    source_uri: relative.clone(),
+                    version: item.get("version").and_then(as_str).map(str::to_owned),
+                    description: item.get("description").and_then(as_str).map(str::to_owned),
+                    keywords: Vec::new(),
+                    category: item.get("category").and_then(as_str).map(str::to_owned),
+                    published_at: crate::app_server_marketplace::published_at_of(item),
+                    localized: collect_localized_variants(item),
+                    strict,
+                    blocked_reason,
+                },
+                relative,
+            ));
+        }
+    }
+    Ok(entries)
+}
+
+fn as_str(value: &serde_json::Value) -> Option<&str> {
+    value.as_str()
+}
+
+/// Convert probed directory entries into marketplace entries (relative
+/// sources inside the live tree), plus the (entry, relative) pair.
+fn scan_to_entries(
+    scanned: Vec<crate::app_server_marketplace::ScannedEntry>,
+    _kind: &str,
+) -> Vec<(MarketplaceEntry, String)> {
+    scanned
+        .into_iter()
+        .map(|entry| {
+            let relative = entry.relative.clone();
+            (
+                MarketplaceEntry {
+                    name: entry.name,
+                    source_kind: "directory".into(),
+                    source_uri: relative.clone(),
+                    version: None,
+                    description: entry.description,
+                    keywords: entry.keywords,
+                    category: entry.category,
+                    published_at: entry.published_at,
+                    localized: entry.localized,
+                    strict: entry.strict,
+                    blocked_reason: entry.blocked_reason,
+                },
+                relative,
+            )
+        })
+        .collect()
+}
+
+/// The live root for a marketplace (when materialized), `None` for directory
+/// sources (which read their source in place).
+pub fn live_root_for(root: &Path, marketplace_id: &str) -> PathBuf {
+    root.join(marketplace_id).join("live")
+}
+
+/// Resolve an entry's source path inside the marketplace tree. Directory
+/// sources use the source directory directly; remote sources resolve inside
+/// the live root.
+pub fn entry_source_path(
+    source_kind: &str,
+    row_source: &str,
+    marketplace_root: &Path,
+    marketplace_id: &str,
+    entry_relative: &str,
+) -> PathBuf {
+    if source_kind == "directory" {
+        let root = PathBuf::from(row_source);
+        if entry_relative == "." {
+            root
+        } else {
+            root.join(entry_relative)
+        }
+    } else {
+        let live = live_root_for(marketplace_root, marketplace_id);
+        if entry_relative.is_empty() {
+            live
+        } else {
+            live.join(entry_relative)
+        }
+    }
+}
+
+/// Register a marketplace row for a remote source after a successful fetch.
+/// A previously soft-removed row (same `marketplace_id`) is reactivated
+/// instead of inserted (the id column is unique).
+pub async fn register_remote(
+    markets: Arc<dyn IMarketplaceRepository>,
+    marketplace_id: &str,
+    name: &str,
+    source_kind: &str,
+    source: &str,
+    fetched: &FetchedEntrySet,
+) -> Result<(), AppError> {
+    let entries: Vec<MarketplaceEntry> = fetched.entries.iter().map(|(entry, _)| entry.clone()).collect();
+    let existing = markets
+        .get_marketplace(marketplace_id)
+        .await
+        .map_err(AppError::from)?;
+    // Any existing row is reactivated with the current source — a re-source
+    // (same id, new source, e.g. default sources re-pointed in config.toml)
+    // must update the row instead of tripping the unique id on insert.
+    if let Some(_) = existing {
+        markets
+            .reactivate_marketplace(
+                marketplace_id,
+                source_kind,
+                source,
+                &entries,
+                &fetched.revision,
+                None,
+                // A re-pointed row takes the *current* source's class default
+                // (doc 18 D1): keeping the old flag would leave a market that
+                // just moved to an official source out of the auto-update sweep.
+                crate::app_server_marketplace::is_official_source(source_kind, source),
+            )
+            .await
+            .map_err(AppError::from)?;
+    } else {
+        markets
+            .insert_marketplace(nomifun_db::NewPluginMarketplace {
+                marketplace_id,
+                name,
+                description: None,
+                source_kind,
+                source_uri: source,
+                owner_json: None,
+                version: None,
+                content_digest: None,
+                entries,
+                auto_update: crate::app_server_marketplace::is_official_source(source_kind, source),
+            })
+            .await
+            .map_err(AppError::from)?;
+    }
+    markets
+        .record_resolved_revision(
+            marketplace_id,
+            &fetched.revision,
+            fetched.live_root.to_str().unwrap_or(""),
+        )
+        .await
+        .map_err(AppError::from)?;
+    // D4 ①: keep the validators so the next refresh can be conditional.
+    if let Some(validators) = fetched.validators.as_ref() {
+        markets
+            .record_source_validators(
+                marketplace_id,
+                validators.etag.as_deref(),
+                validators.last_modified.as_deref(),
+            )
+            .await
+            .map_err(AppError::from)?;
+    }
+    Ok(())
+}

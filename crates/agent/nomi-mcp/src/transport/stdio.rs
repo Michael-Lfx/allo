@@ -38,6 +38,9 @@ struct SpawnSpec {
     command: String,
     args: Vec<String>,
     env: HashMap<String, String>,
+    /// Working directory for the child; `None` inherits the host's own. Captured
+    /// in the spec so a respawn lands in the same directory as the first spawn.
+    cwd: Option<std::path::PathBuf>,
     init_params: InitializeParams,
 }
 
@@ -251,6 +254,7 @@ impl StdioTransport {
             command,
             args,
             env,
+            None,
             crate::protocol::default_init_params(),
             ConnectionCleanupRegistry::new(),
         )
@@ -261,6 +265,7 @@ impl StdioTransport {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        cwd: Option<std::path::PathBuf>,
         init_params: InitializeParams,
         cleanup_registry: Arc<ConnectionCleanupRegistry>,
     ) -> Result<Self, McpError> {
@@ -268,6 +273,7 @@ impl StdioTransport {
             command: command.to_string(),
             args: args.to_vec(),
             env: env.clone(),
+            cwd,
             init_params,
         };
         let conn = Self::spawn_child(&spec, &cleanup_registry).await?;
@@ -294,6 +300,13 @@ impl StdioTransport {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .envs(&spec.env);
+        // A declared `cwd` is applied here rather than by changing the host's own
+        // directory: the child gets its directory and the host keeps its own.
+        // A missing directory is the spawn error below, which already names the
+        // command — the message a user needs to fix the declaration.
+        if let Some(cwd) = &spec.cwd {
+            cmd.current_dir(cwd);
+        }
         // Put the child in its own process group so killing it takes down any
         // grandchildren (npx → node, etc.) instead of orphaning them.
         // CREATE_NO_WINDOW: MCP stdio servers (npx/node/bun/python) must not
@@ -817,6 +830,7 @@ mod tests {
             command,
             &args,
             &HashMap::new(),
+            None,
             init_params,
             Arc::clone(&cleanup_registry),
         )

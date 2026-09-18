@@ -1,0 +1,368 @@
+# 市场规范（兼容层）
+
+> 状态：**现行正文（未正式发版，可改；改动同步更新）**——本规范在发版前只有一个版本（统一称 v1），不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。覆盖范围：目录布局与发现优先级（§3）、条目模型（§4）、获取与晋升不变式（§5）、`_files.txt`（§6）、注册表与命名空间（§7）、发布自检（§8）、客户端契约（§9），以及机器可校验形态（`docs/agent-store/schemas/marketplace.schema.json` + `scripts/check-agent-store-market.mjs`）。
+> 已知偏差见 §11：**D1–D8 全部已处理**（D8 与 D4 于 2026-09-10 批 1 实现，属「实现对齐正文」而非改规范）。**保留的约束**：任何变更走**显式修订 + 偏差登记**，不静默修改本规范。
+> 定位：定义**市场的目录形态、清单发现、远程获取与晋升、发布流程、客户端契约**。依 `16` §4 Q5 决策，当前只覆盖 CodeBuddy / WorkBuddy 兼容格式，**不定义 Agent Store 原生市场格式**。
+> 代码事实来源：`crates/backend/nomifun-app/src/market_source.rs`、`market_fetch.rs`、`app_server_marketplace.rs`、`scripts/serve-agent-store-market.mjs`、`05-flowy-agent-store-app-server-protocol.md`。
+
+---
+
+## 1. 模型与术语
+
+| 术语 | 含义 |
+| --- | --- |
+| 市场（marketplace） | 一个可被注册、刷新、投影出条目的目录树 |
+| 条目（entry） | 市场内一个可安装单元（插件 / 技能 / 连接器 / 专家） |
+| 快照（snapshot） | 一次导入产生的不可变结果（见 `17-plugin-spec.zh.md` §5） |
+
+**市场类型（探测结果，`MarketKind`）**
+
+| `kind` | 探测条件 | 条目粒度 |
+| --- | --- | --- |
+| `connector-market` | `.codebuddy-connector/connectors.json` | 每个连接器一条 |
+| `skill-market` | `.codebuddy-skill/marketplace.json` | 每个技能一条 |
+| `plugin-market` | `.codebuddy-plugin/marketplace.json` | `plugins[]` 每项一条 |
+| `plugin-root` | `.codebuddy-plugin/plugin.json`（根） | 根本身一条 |
+| `cli-connector` | `cli.json`（根） | 根本身一条 |
+| `plugin-collection` | 子目录含 `plugin.json` / `cli.json` / `SKILL.md` | 每个子目录一条 |
+
+---
+
+## 2. 市场源类型与地址解析
+
+| `source_kind` | 输入形态 | 归一化 | 拒绝条件 |
+| --- | --- | --- | --- |
+| `directory` | 本地目录路径 | 由调用方单独处理（不走远程获取） | 目录不存在 |
+| `github` | `owner/repo` | `https://github.com/{owner}/{repo}.git` | 非两段路径 / 空段 |
+| `git` | `https://` `http://` `git@` `ssh://` `git://` 前缀 | 原样 | 其他前缀且非 `.git` 结尾、且不是已存在目录 |
+| `url` | HTTP(S) 清单地址 | 原样 | 非 `http(s)://` |
+| `zip` | HTTP(S) 归档地址 | 原样 | 非 `http(s)://` |
+
+> `directory` 之外的四种均为**远程源**，走 §5 的获取与晋升流程。
+>
+> **`zip`（2026-09-17 加入，doc 30）**：一个归档，**归档根目录即市场根**（清单在归档根，不套一层目录）。用于官方源——`url` 形态下 `experts` 的首次获取要发 **14,714 次请求 / 611 MiB**（逐文件镜像），归档是 **1 次请求 / 289 MiB**，且是同样那些字节。新鲜度与完整性见 §5.3。`url` / `git` / `github` **全部保留**，第三方源继续可用整树镜像。
+
+---
+
+## 3. 目录布局与清单发现优先级
+
+探测按**固定顺序**，命中即返回：
+
+1. `.codebuddy-connector/connectors.json` → `connector-market`
+2. `.codebuddy-skill/marketplace.json` → `skill-market`
+3. `.codebuddy-plugin/marketplace.json` → `plugin-market`
+4. `.codebuddy-plugin/plugin.json` → `plugin-root`
+5. `cli.json` → `cli-connector`
+6. 否则扫描子目录，命中 `looks_like_plugin` 的作为 `plugin-collection`
+
+**「像市场」的判定**（远程获取后的校验）——根目录存在以下任一即通过：
+
+```
+.codebuddy-skill/marketplace.json
+.codebuddy-connector/connectors.json
+.codebuddy-plugin/marketplace.json
+.codebuddy-plugin/plugin.json
+marketplace.json
+cli.json
+```
+
+> **订正（2026-09-17，doc 30）**：`.codebuddy-plugin/marketplace.json` 原先**只在上面的发现顺序里、不在这一份校验清单里**，而 `probe_directory` 一直认它。后果比「少一条」严重：官方 `experts` 市场的根目录**只有**这一个文件，所以 `github` / `git` / `zip` 三种远程获取拿到的正是这种布局，却被 `looks_like_market` 判成「不像市场」而拒绝——发现顺序注释里举的 `marketplaces/experts/.codebuddy-plugin/marketplace.json` 就是被拒的那个例子。已修（`market_source::MARKET_MANIFEST_PLUGIN_MARKET`），回归钉 `looks_like_market_accepts_a_plugin_market_root`。
+
+**「像插件」的判定**（子目录）——存在以下任一即通过：`.codebuddy-plugin/plugin.json`、`cli.json`、`SKILL.md`。
+
+**清单基址推导**（`url` 源）：从清单 URL 剥离以下后缀得到 `base`，用于拼接 `_files.txt` 与镜像资源：
+
+```
+{base}/.codebuddy-plugin/marketplace.json
+{base}/.codebuddy-skill/marketplace.json
+{base}/.codebuddy-connector/connectors.json
+{base}/marketplace.json
+```
+
+**清单自身的结构**：`plugin.json` 字段见 `17-plugin-spec.zh.md` §3；市场清单（`marketplace.json` / `connectors.json`）的条目字段（`name`、`source`、`version`、`strict`、`commands`、`agents`、`skills`、`hooks`、`mcpServers`）与合并/冲突规则见 `02-codebuddy-workbuddy-import-spec.md` §8。**本规范定义市场如何被解析与获取，不重复清单字段。**
+
+---
+
+## 4. 条目模型
+
+条目字段（`market/get` 投影）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 条目名（市场内唯一） |
+| `source_kind` | 条目来源类型 |
+| `source` | **一律相对市场根**的路径（不暴露绝对路径） |
+| `version` | 条目声明版本（可缺省） |
+| `description` / `keywords` / `category` | 展示元数据（基线字段，单语言） |
+| `publishedAt` | 条目**发布时间**，严格 `YYYY-MM-DD` 日历日（§4.2） |
+| `localized` | 清单里 `<字段>_<语言>` 形式的本地化变体，**原样透传**（§4.1） |
+| `snapshot` | 该条目导入后的快照与安装计数（D8，可缺省） |
+
+**硬约束**：条目 `source` 必须是相对路径，保证 `entries/{entry}/import` 在不暴露宿主文件系统的前提下解析。
+
+**跨市场命名空间**：条目 `name` 仅在**市场内**唯一。`store/list` 聚合多个启用市场时，条目标识为 **`{marketplace_id}/{entry_name}`**，因此不同市场的同名条目互不冲突。`market/entries/{entry}/import` 的 `entry` 参数在指定市场内按 `name` 查找，找不到返回 `not_found`。
+
+### 4.1 本地化变体（`localized`，已收编）
+
+真实清单把同一份展示文案按语言写成基线字段的兄弟键（`description_zh` / `description`），本规范**不在服务端选语言**：只有客户端知道读者的界面语言，所以服务端只**原样透传**变体，由客户端按 **D8=A** 回退（决策正文见 `21`）。
+
+**采集规则**（服务端）：键以 `_zh` / `_en` 结尾，且值为**字符串**或**字符串数组**时收进 `localized`；其余一律丢弃（`featured` 是数字、`name_map` 是对象，都不会进入投影）。空串 / 空数组不收，空映射不上 wire。
+
+**wire 形状**（键为清单里的原始字段名）：
+
+```json
+"localized": {
+  "description_zh": "PDF 工具集",
+  "description_en": "PDF toolkit",
+  "tags_zh": ["文档"],
+  "tags_en": ["documents"],
+  "legacy_tags_zh": ["旧文档"]
+}
+```
+
+**客户端回退链**（`@flowy-agent-store/protocol` 的 `pickLocalized` / `pickVariantText` / `pickVariantList` / `pickEntryTags` / `pickEntryText`）：
+
+1. `<字段>_<界面语言>` → 2. `<字段>_<另一语言>` → 3. 基线字段（`description` / `name` / `keywords`）→ 4. 空。
+2. **族优先级**：`tags_*` 整体优先于 `legacy_tags_*`——`legacy_tags_*` 只在 `tags_*` 两种语言都缺失时才顶上（老市场只发了 legacy 字段的情形）。
+3. 回退链**按字段**独立求值，不做「整条记录的语言一致性」判断：一条记录里可能出现英文名 + 中文描述。
+
+**消费面**（R28 已接）：`market/get` 条目卡（名称 / 描述 / 标签）、`store/list` 卡片与抽屉（走既有的 `display_*` 结构化字段）、`@` 提及菜单。
+
+**仍未消费的字段（普查 2026-09-10，T20；本地化变体收编后复核）**：
+
+| 字段 | 出现次数（skills 市场） | 现状 |
+| --- | --- | --- |
+| `description_zh` / `description_en` | 268 / 268 | ✅ 已收编（`localized` + 回退链） |
+| `name_zh` / `name_en` | 15 / 2 | ✅ 已收编 |
+| `category_zh` / `category_en` | 1 / 1 | ✅ 已收编（透传，UI 暂未展示分类） |
+| `tags_zh` / `tags_en` | 268 / 268 | ✅ 已收编（族优先级见上） |
+| `legacy_tags_zh` / `legacy_tags_en` | 154 / 154 | ✅ 已收编（降级为 `tags_*` 的兜底） |
+| `examples_zh` / `examples_en` | 268 / 268 | ⏳ 已透传、**UI 未展示**（无对应展示位，不新造控件） |
+| `featured` | 3 | ⏳ 未收编；注意是**数字**而非布尔 |
+| `publishedAt` | 0 | ✅ 已收编（§4.2）；**真实市场普查（2026-09-10）里一条都没有**，故 UI 的「最新」排序在有数据前不出现 |
+
+> 复现：`node scripts/check-agent-store-market.mjs --census --market <name>=<dir>`。市场清单层面的 `owner`（`{name,email}`）见 §11 D3；marketplace 清单字段的完整普查结果见 §11 D7。
+
+### 4.2 发布时间（`publishedAt`，已收编）
+
+条目可声明 `publishedAt`——**一个日历日**（`YYYY-MM-DD`），**不是**时间戳。它只表示「这个市场说这条是什么时候发布的」，没有任何本地事实可以替代它。
+
+**采集与规范化**（服务端一次完成，`published_at_of` / `is_calendar_date`，`nomifun-app/src/app_server_marketplace.rs`）：
+
+- 只接受严格的 `YYYY-MM-DD`，且月/日真实存在（闰年按格里高利规则：`2024-02-29` 收，`2025-02-29` 与 `1900-02-29` 拒），年份非 `0000`；
+- 值先 `trim()`，再整体判定——**不做任何重新解释**：`2026-07-30T00:00:00Z`（时间戳是另一种值，不截断成日期）、`2026/07/30`、`2026-7-30`、数字、`null`、蛇形 `published_at`（清单字段是 camelCase，与 `strict` / `source` 一致）**一律丢弃**；
+- **丢弃不阻断条目**：坏日期只是让该行没有日期。第三方数据里一个坏日期不该让条目消失——列不出来的条目也装不了。
+
+**绝不派生**：宿主不会用导入时间、快照 `added_at` 或市场刷新时间顶上。字段缺席就是「这个市场没有声明日期」。
+
+**wire 形状**：`store/list` 条目的 `published_at?: string`，缺席即未声明（`market/get` 的条目投影当前不含此字段）。
+
+**消费面**：商店卡片的 muted 日期标签；「最新」排序——**只有当该 kind 至少有一条带日期时才渲染**。真实市场普查（2026-09-10）里 `publishedAt` **出现 0 次**，所以上线初期这个排序不出现，市场补齐数据后自动出现；不做一个看得见却不排序的控件。
+
+**存储与前向兼容**：条目投影存在 `plugin_marketplaces.entries_json`（JSON blob）里，字段是**纯加法**，旧行反序列化为 `None`，**无须迁移**；但旧行要等 `market/refresh` 重新探测才会长出日期（缓存 blob 不会自己更新），因此 UI 不得替它编造。
+
+---
+
+## 5. 远程获取与晋升
+
+**不变式**：失败**绝不触碰** last-good 内容根。
+
+### 5.1 Git 源（`github` / `git`）
+
+1. 克隆到独立 staging 目录；
+2. 解析到 HEAD commit 作为 `resolved_revision`；
+3. 校验 `looks_like_market`，不通过则**阻断并清理 staging**；
+4. 与当前 revision 相同 → **no-op**（丢弃 staging，last-good 保留）；
+5. 通过 → **原子晋升**（backup + rename），新根就位后才删除备份。
+
+### 5.2 HTTP 源（`url`）
+
+1. **条件请求短路（revision 比对兜底）**：清单请求按上次记录的**原始校验值**发条件头——有 `ETag` 发 `If-None-Match`，有 `Last-Modified` 发 `If-Modified-Since`（两者都有则都发）。服务器返回 `304` → `Unchanged`；若仍返回 `200`，再比对 revision **摘要**（`sha256(ETag|Last-Modified)`，规则未变）——相同同样按 `Unchanged` 处理，作为「忽略条件头的服务器」的兜底；
+2. 客户端：User-Agent `flowy-agent-store/1.0`，超时 **15s**——清单抓取、`_files.txt` 探测与整树镜像**共用同一个 client 工厂**（§11 D5）；
+3. `304 Not Modified` → `Unchanged`（保留 last-good）；
+4. `Fresh` → 全量校验清单 → 与当前 revision 相同则丢弃；否则晋升；
+5. **若源暴露 `_files.txt`**，镜像整棵条目树（见 §6）；否则条目保持 `manifest-only`，按条目类型标记来源：`skills` / `connectors` 条目解析不到时标 **`external`**（不可镜像），`plugins[]` 条目保留 `directory` + 相对 `source`（导入时再解析并给出缺失报错，§11 D6）。
+
+### 5.3 zip 源（归档，官方源现用形态）
+
+1. **新鲜度先探，不带正文**：对稳定 URL 发 `HEAD`，读 `X-Linked-Etag`——ModelScope 在该头返回归档内容的 **sha256**（已本地复算核对）。与库中 `resolved_revision` 相同 → `Unchanged`，**不下载**。**不使用条件请求**：modelscope.cn 那层对非 LFS 文件忽略 `If-None-Match`；LFS 文件虽有 CDN `304`，但要走一次跨源重定向，契约比一次 `HEAD` 窄得多。头缺失 = 「没被告知」，**绝不等价于「未变化」**——此时以下载后本地 sha256 兜底；
+2. **下载**：`GET` 稳定 URL，**跟随重定向**（LFS 首发 `302`，`Location` 带**临时签名** `auth_key`，**不得固化任何 CDN 地址**），**流式落盘**并顺带计算 sha256。压缩体积上限 **2 GiB**，按**实际收到**的字节判定（声明的 `Content-Length` 只用于提前拒绝）；
+3. **完整性**：服务器给了摘要时，本地 sha256 必须与之相同，否则报错且不动 last-good；
+4. **解压**：安全原语取自 `nomifun-common::zip_safe`（zip-slip、符号链接条目、盘符前缀均拒绝；`ZipColonPolicy::RejectDrivePrefix`，重名后者胜）。解压预算**必须显式给**——`ZipExtractionBudget` 默认 20,000 条目 / **256 MiB** 不够：官方 `experts` 是 14,714 条目 / **611 MiB**。本模块给 200,000 条目 / 4 GiB；
+5. **归档不得进入 staging**：`promote` 把 staging 整体重命名进 live root，归档若放在 staging 内就会**被当成市场内容晋升**（289 MiB）。它下载到 staging 的**兄弟路径**，由独立守卫在成功/失败/外层超时三条路径上都回收；
+6. 解压后 `looks_like_market` 校验 → `probe_directory` → 原子晋升（同 §5.1 第 5 步）。
+
+**超时**：归档不用清单那套 15s（那是**整请求**超时，会掐断任何真实归档），改用 **900s**；仓内先例是托管运行时归档的 300s（`runtime_dep_install/ffmpeg.rs`）。
+
+### 5.4 staging 生命周期
+
+staging 目录由本次获取独占：正常完成时晋升并解除守卫；提前返回或外层超时**必须清理**，避免 `staging-*` 残留堆积。
+
+### 5.5 `content_digest` 算法
+
+✅ **已统一为一套实现（2026-09-10，D2 收口 / T20）**：
+
+| 场景 | 实现 | 算法 |
+| --- | --- | --- |
+| 导入 / 快照幂等 | `tree_digest`（`nomifun-importer/src/digest.rs`） | 对**按相对路径排序**的每个文件，依次喂入 `relative + "\n"` + 该文件的 SHA-256 十六进制 + `"\n"`，最后整体 SHA-256 |
+| 目录市场刷新（变更检测） | **同一个** `tree_digest`，经目录入口 `tree_digest_of_dir(root)` | 同上：先遍历出 `(相对路径, 文件 SHA-256)` 对，再套用同一个 `tree_digest` |
+
+**规范要求（已满足）**：摘要必须**路径敏感、内容敏感、顺序稳定**，不得依赖文件系统遍历顺序；跨路径比对必须用同一算法。排序在 `tree_digest` **内部**完成（不再只依赖 `copy_tree` 的调用约定），并由 `digest.rs` 单测钉住「目录入口与拷贝清单入口对同一棵树给出相同摘要」。
+
+> **迁移影响（一次性）**：目录源市场此前按旧算法写入的 `content_digest` 与新算法不同 → 下一次刷新会判定「内容变了」并重建一次投影。幂等语义、条目内容与安装状态均不受影响。
+
+---
+
+## 6. `_files.txt` 规范
+
+| 项 | 规定 |
+| --- | --- |
+| 位置 | `{base}/_files.txt` |
+| 格式 | UTF-8 纯文本，**每行一个相对路径**，无头部、无注释 |
+| 空行 | 忽略 |
+| 自身 | 列表中应排除 `_files.txt` |
+| 安全 | 消费方必须拒绝绝对路径、含 `..` 的路径、含反斜杠的路径（列表为**不可信输入**） |
+| 生成 | `scripts/serve-agent-store-market.mjs --emit-listings`（静态托管如 EdgeOne Pages 需预生成） |
+| 语义 | 存在 → **full-tree mirror**（镜像每个列出的文件，保留相对路径）；缺失 → **manifest-only**，条目为 `external` |
+| 镜像并发 | 分批（每批 32）并发下载，单文件沿用 15s 超时 |
+
+---
+
+## 7. 注册表与命名空间
+
+| 字段 | 说明 |
+| --- | --- |
+| `marketplace_id` | 稳定 ID，派生规则见下 |
+| `name` / `description` | 展示名与描述 |
+| `source_kind` / `source_uri` | 源类型与地址 |
+| `version` / `content_digest` | 清单版本与内容摘要（算法见 §5.4） |
+| `auto_update` | 自动更新开关（默认值偏差见 §11）。**后台执行已实现（2026-09-10，批 1 / R27）**：宿主 `~/.agent-store/config.toml` 声明 `[marketplace] auto_update_interval_hours` 后，运行时按该间隔在后台轮询；**不声明即关闭**（`0` 亦视为关闭）。轮询对象 = 开关为开 **且** 源属官方镜像——第三方源永不自动拉取（§11 D1）。每次轮询仍走 §5.2 的 revision / ETag 短路，内容未变不重新下载 |
+| `enabled` | 是否参与 `store/list` 聚合 |
+| `entry_count` | 条目投影数量 |
+| `added_at` | 注册时间 |
+
+**`marketplace_id` 派生规则**（规范定义，实现不得偏离）：
+
+1. 取 `market/add` 的显式 `name`；
+2. `name` 缺失或空白 → 取 `source` 的 `file_name`（目录名 / 仓库名）；
+3. 做 slug 化：**仅保留 `[A-Za-z0-9-_]`**，其余字符替换为 `-`，连续 `-` 合并为一个，首尾 `-` 去除；
+4. 结果为空 → 字面量 `market`。
+
+> 稳定性要求：同一 `source` 反复注册必须得到同一 `marketplace_id`；`name` 变化会改变 ID，属破坏性变更（需重新注册）。
+
+- **命名空间**：多市场并存时以 `marketplace_id` 隔离；条目 `name` 仅在市场内唯一（见 §4）。
+- **级联移除**：`market/remove` 默认 `cascade=true`，同时卸载由该市场安装的快照并清空组件安装状态。
+- ⚠️ **`auto_update` 默认值偏差**见 §11。
+
+---
+
+## 8. 发布流程
+
+1. 按 §3 的布局组织目录（四类资产可各自独立成市场）；
+2. 生成 `_files.txt`（`--emit-listings`）；
+3. 头像等资产用**相对路径**，随树镜像；
+4. 自检清单：
+   - 根目录存在 §3 的任一「像市场」清单；
+   - 每个条目 `source` 为相对路径；
+   - `_files.txt` 覆盖全部需要镜像的文件且不含 `_files.txt` 自身；
+   - 非法路径（绝对 / `..` / 反斜杠）为 0。
+5. 现有示例：VPS 上的 `experts` / `skills` / `connectors` 三个市场。
+
+> **第 4 步已可自动校验（D2 / T19，2026-09-10）**：`scripts/check-agent-store-market.mjs` 把上述四条实现为机器检查（外加清单发现优先级、条目重名、镜像模式下的 `source` 存在性），每条发现带 `文件#/指针`；`--emit-listings` 写完清单后会串行跑它，不合格即 `exit 1`，因此**发布流程自带这道闸门**。`--self-test` 用 14 个非法样例保证校验器自身不退化成「什么都通过」。参见 `docs/agent-store/schemas/marketplace.schema.json`。
+
+---
+
+## 9. 客户端契约（协议面）
+
+| 方法 | 语义 |
+| --- | --- |
+| `market/add` | 注册市场；`directory` 立即探测，远程源按 §5 获取 |
+| `market/list` | 注册表投影（**不含条目**） |
+| `market/get` | 含发现条目与安装快照 |
+| `market/refresh` | 重新获取 + 重建投影；按 revision / ETag 短路 |
+| `market/remove` | 默认级联卸载 |
+| `market/auto-update` | 切换 `auto_update` |
+| `market/entries/{entry}/import` | 复用导入管线（`import/*`） |
+
+- 能力协商：`capabilities.marketplaces`；
+- 幂等：重复 `market/add` 同一源不产生重复注册；相同内容重复导入返回已有快照；
+- 协议面细节以 `05-flowy-agent-store-app-server-protocol.md` 为唯一正文。
+
+### 9.1 Store 一键安装的版本语义（2026-09-15）
+
+`store/install-entry` 是 `market/entry-import` + `install/run` 的合成面，其版本
+判定已收敛到**一个共享 helper**（`entry_live_version`），`store/list` 的
+`update_available` 与本方法共用它，因此目录与安装器不可能各说一套：
+
+- 条目**已安装** → no-op（`reused=true`）。在这里重新导入等于把「安装」变成一次
+  **隐藏的升级**；
+- 条目**未安装**且快照版本 == 市场当前版本 → 装该快照；
+- 条目**未安装**且版本不同（前进或回滚）→ 经 `market/entry-import` **重新导入**
+  并装新快照；旧快照保持不可变、历史保留。
+
+**wire 上没有更新动词**（`store/update-entry` 不存在），所以客户端唯一的升级
+路径是「卸载，再安装一次」；`install_entry` 的版本感知正是让这条路径**真的能**
+取到新版本。这与 §7 的自动更新扫掠职责不同：**扫掠只刷新「索引」——它从不更新
+已安装的快照**（§9.2）。
+
+### 9.2 自动更新扫掠的边界（2026-09-15 订正）
+
+`auto_update` 的后台扫掠**已实现**（§7 表、2026-09-10 批 1 / R27）：宿主
+`config.toml` 声明 `[marketplace] auto_update_interval_hours` 后按该间隔轮询，
+**不声明即关闭**，且只对**官方镜像**源生效（第三方源永不自动拉取，§11 D1）。
+
+必须写明的边界：**扫掠只刷新索引/投影**（重新获取清单、重建条目投影，仍走 §5 的
+条件请求短路），**绝不改动任何已安装快照**——升级已安装条目始终是用户的显式动作
+（§9.1 的「卸载再安装」）。
+
+---
+
+### 9.3 条目发布时间的投影（2026-09-16）
+
+**背景**：WebUI 的排序需要「最新」。本仓**没有任何发布时间**——`StoreItem` 只有 `version` /
+`installed_version`，唯一的 `imported_at` 是**导入时间**而非发布时间。所以按「不派生、不假造」
+的原则，只能把发布时间做成市场自己声明的字段。
+
+**落地**：条目新增可选 `publishedAt`（`YYYY-MM-DD` 日历日，规格见 §4.2），投影到
+`store/list` 的 `published_at`。
+
+- **规范化在服务端一次完成**（`published_at_of` / `is_calendar_date`，`nomifun-app/src/app_server_marketplace.rs`）：
+  只接受严格 `YYYY-MM-DD` 且月/日真实存在（闰年按格里高利规则），时间戳 / 数字 / 蛇形 /
+  非法日期**一律丢弃**，且**不阻断条目**；
+- **绝不派生**：不用导入时间、快照 `added_at`、市场刷新时间顶上。缺席 = 这个市场没声明；
+- **存储无迁移**：条目投影在 `plugin_marketplaces.entries_json`（JSON blob）里，字段是纯加法，
+  旧行反序列化为 `None`；但旧行要等 `market/refresh` 重新探测才会长出日期；
+- **消费面**：商店卡片的 muted 日期标签 + 「最新」排序，且**只有当该 kind 至少一条带日期时
+  才渲染该排序**。真实市场普查（§D7，2026-09-10）里 `publishedAt` 出现 **0 次**，所以上线
+  初期这个排序不出现——不做看得见却不排序的死控件；
+- **校验脚本同步**：`scripts/check-agent-store-market.mjs` 的 `KNOWN_ENTRY_FIELDS` 收编该字段。
+
+**真实读数**：`nomifun-app --lib app_server_marketplace` **17 passed**（+3：日历日表、只读声明值、
+探针带走声明日期）；`nomifun-db --lib models::plugin_marketplace` **2 passed**（旧行反序列化 +
+往返且缺席不写 `null`）；`nomifun-app --test importer_e2e` **15 passed**；web `store-sort` **7 passed**；
+`check:market` 自检 **17/17**。协议指纹 `2026-09-15` → `2026-09-16`（现有 DTO 加字段，方法计数不变）。
+
+## 10. 非目标与演进
+
+- 不定义 Agent Store 原生市场格式；
+- 不做市场审核后台、签名与信任链（见 `16-sdk-webui-site-priority-plan.zh.md` §6.2.2 明确非目标）；
+- 原生格式与市场签名体系待生态起量后单独立项。
+
+---
+
+## 11. 已知偏差
+
+**登记规则（强制）**：规范与实现不一致时，**先在本节登记，再择一修正**——要么改实现，要么改规范，不允许默默不一致。
+
+| # | 现象 | 证据 | 影响 | 待决 |
+| --- | --- | --- | --- | --- |
+| D1 | **`auto_update` 默认值与文档不符** | `02` §8 称「官方市场默认开启、第三方默认关闭」；`market/add` 恒写入 `auto_update: false`（`app_server_marketplace.rs:527`），不存在官方/第三方区分 | 第三方无法预期自动更新行为；webui 的 auto-update 开关语义不明（W13） | ✅ **已定（2026-09-10）：采纳 ①**——改实现以区分官方/第三方（官方默认开、第三方默认关，V1 不自动更新第三方来源）；`02` §8 表述不动 ✅ **已修（2026-09-10，T14）**：新增 `is_official_source()`（`nomifun-app/src/app_server_marketplace.rs`，与 `AgentStoreConfig::builtin_default_marketplaces()` 同一事实源），`market/add` 的 directory 分支与 `register_remote`（远程源）都改用该默认值；「官方」按**源地址**判定（`source_kind` + `source` 落在 `builtin_default_marketplaces()` 集合内），**不按「由谁声明」判定**：`config.toml [default_marketplaces]` 里指向**其它地址**的源自成第三方（不默认自动更新），而本机 config 声明的三个源正指向官方镜像地址，故按官方处理。实测（重建二进制）：三个官方源 `auto_update=true`，本地第三方 `directory` 市场 `false`。Rust 单测 `official_sources_are_the_builtin_public_mirror` + `cargo check -p nomifun-app --tests` 通过。~~注意：当前尚无自动更新后台任务~~ → **订正（2026-09-15）：后台任务已实现（2026-09-10，批 1 / R27，见 §7 表与 §9.2）**；本项当初只修默认标记语义，自动更新本体已另行落地。它与「给用户更新已装条目」无关：**扫掠只刷新索引，绝不更新已安装快照**（§9.2）。✅ **订正（2026-09-15）：官方地址集已由旧公网 IP 镜像迁至官网站点**——`AgentStoreConfig::builtin_default_marketplaces()` 现为 `https://agent-store.flowyaipc.cn/source/{experts,skills,connectors}/…`（与站点仓 `market-source/` 的发布挂载 `/source/<market>/…` 一致，三条都带 `_files.txt`，属整树镜像）。因「官方」按**地址**判定，旧 `http://111.170.173.22:10072/…` 与本机 dev 用的 `http://127.0.0.1:5173/source/…` 自此都是**第三方**源（`auto_update=false`、不进自动更新扫掠）；上文「本机 config 的三个源按官方处理」只对当时的地址成立 |
+| D2 | **两套 `content_digest` 算法** | `tree_digest`（导入）vs `simple_tree_digest`（目录刷新），见 §5.4 | 同一内容在两条路径下摘要不同，跨路径比对不可行 | ✅ **已定（2026-09-10，用户拍板）：采纳 ①——统一为一套算法**。实现：`tree_digest` 内部排序；新增目录入口 `tree_digest_of_dir(root)`（`nomifun-importer/src/digest.rs`），`app_server_marketplace.rs` 的两处调用改走它，`simple_tree_digest` / `collect_files` 已删除（§5.4 已改写）。验证：`cargo check -p nomifun-app -p nomifun-importer --tests` exit 0；`cargo test -p nomifun-importer --lib digest` **4 passed**（含「两条路径摘要一致」新用例）。迁移：目录源市场首次刷新会因摘要变化重建一次投影 |
+| D3 | **清单 `owner` 字段本规范未定义，真实数据是对象** | 真实 `skills` 与 `connectors` 市场的 `owner` 为 `{name, email}`（CodeBuddy），而 `17` §3 只固定了 `author`（`string \| {name, email}`），§3 又把清单字段整体让给 `02` §8 | 机器校验若把 `owner` 当字符串，会把两个真实市场判错（T19 首轮即发生，被自检/真实市场跑检验出） | ✅ **已处理（2026-09-10，T19）**：`docs/agent-store/schemas/marketplace.schema.json` 按 `author` 同形接受 `owner`；规范正文不改（该字段归 `02` §8），仅记此观察项 |
+| D4 | **清单条件请求的取值不是服务器原始 `ETag`，且从不发送 `If-Modified-Since`** | `market/refresh` 把存库的 `resolved_revision`（= `sha256_hex(etag \| last-modified)`，`market_source.rs:278-282`）当作 `if-none-match` 发出（`market_fetch.rs:88` → `market_source.rs:246-248`）；`Last-Modified` 只参与摘要计算，从未用于条件请求 | 对真实服务器 304 分支不可达 → §5.2 声称的「条件请求短路」在 v1 实际由 revision 摘要比对兜底。**功能结果一致**（清单未变仍判 `Unchanged`、不重镜像），代价是每次刷新多下载一次清单 | ✅ **已实现（2026-09-10，批 1 / R26）**：新增迁移 `063_marketplace_source_validators.sql` 持久化**原始** `source_etag` / `source_last_modified`（内部可追溯字段，与 `resolved_revision` 同级、不上协议）；`fetch_http_market` 改发真条件头（有 ETag 发 `If-None-Match`、有 Last-Modified 发 `If-Modified-Since`），刷新成功后写回。`resolved_revision` 的标记规则**保持不变**（ETag 优先 → Last-Modified 兜底 → `http`），因此升级**不会**让任何 URL 市场「看起来变了一次」。验证：`nomifun-db --lib marketplace` **9 passed**（写入 / 清除回读）、`nomifun-app --lib market_source` **10 passed**（304 条件请求、`If-Modified-Since` 实际发出、标记规则回归） |
+| D5 | **清单抓取那条路径漏设 15s 超时** | `fetch_http_market` 自建 `reqwest::Client`（`market_source.rs:241-244`）只设 UA，无 `.timeout()`；同文件 `http_client()`（`:107-113`）才是 UA + 15s | 清单服务器挂起时 `market/refresh` 无自身超时（只剩外层 600s 兜底），与 §5.2 步骤 2 不符 | ✅ **已修（2026-09-10，T20）：改实现**——`fetch_http_market` 改用 `http_client()?`，与探测/镜像共用同一 client 工厂 |
+| D6 | **manifest-only 模式下 `plugins[]` 条目未标 `external`** | `market_fetch.rs:226` 的 `key_kind != "plugin"` 例外：skills/connectors 解析不到时标 `external`（`:229-241`），plugins 仍标 `directory`（`:244-255`） | 与 §5.2 步骤 5 原文「条目标记为 external」不符；plugin 市场在 manifest-only 场景下 UI 显示成本地目录，导入时才报缺失 | ✅ **已定（2026-09-10，T20）：采纳 ② 改规范**——§5.2 步骤 5 已按条目类型写明；① 改实现（去掉例外）会改变 `store/list` 投影与既有断言，收益不抵风险 |
+| D7 | **真实市场携带规范未列的清单/条目字段** | `scripts/check-agent-store-market.mjs --census`（T20 新增模式）对三个真实市场普查：manifest 层 spec-silent = `plugin`(×7)、`members`(×3)、`license`(×1)（experts）/ `distribution`、`homepage`、`license`、`repository`、`settings`（skills）；**entry 层** = `description_zh/en`(×268)、`examples_zh/en`(×268)、`legacy_tags_zh/en`(×154)、`name_zh`(×15)、`featured`(×3, number)、`name_en`(×2)、`category_zh/en`(×1) | 这些字段当前靠 schema `additionalProperties` 容忍（不报错、不消费）。但 §3/§4 的字段表声称固定「必填/可选/默认」，表里没有它们 → 第三方无法从规范判断哪些会被消费 | ✅ **已定（2026-09-10，T20）：采纳 ①**——在 §3 末尾补「真实市场已出现、规范未消费」清单（标注**透传、不消费**），使字段表与真实数据一致；后续若要消费其中某项（如本地化变体），按显式修订定义。→ **2026-09-10（批 1，R28）本地化变体已收编**：新增 `localized` 通用映射并定义客户端回退链与 `tags_*` 族优先级（§4.1）；`examples_*` 已透传但无展示位、`featured` 维持透传不消费 |
+| D8 | **`market/get` 未返回条目安装快照** | 响应结构 `AppServerMarketplaceDetail`（`app_server.rs:592-599`）只有 `summary + entries`；类型 `AppServerMarketplaceEntrySnapshot`（`:583-590`）已定义却未挂载；`to_entry`（`app_server_marketplace.rs:409-419`）不含 `snapshot_id` / 安装态 | §9 声称 `market/get`「含发现条目**与安装快照**」；W13 的「移除市场」影响面因此只能从聚合的 `store/list` 派生（见 `16` 已知偏差 D-W13-1） | ✅ **已实现（2026-09-10，批 1；D11=A 批准协议增量）**：`market/get` 的每条目新增可选 `snapshot`（`AppServerMarketplaceEntrySnapshot` 增 `installed_count`，纯 additive、缺省不上 wire），由 `app_server_marketplace.rs` 的 `get()` 经新增仓储查询 `list_snapshot_provenance_by_marketplace`（一次 JOIN 出 component / installed 计数）投影；TS 侧补 `MarketplaceEntrySnapshot`。验证：`cargo test -p nomifun-db --lib marketplace` **8 passed**（含新用例）、`market_impls_route_through_the_provider_and_gate` 通过 —— **§9 声称的「`market/get` 含发现条目与安装快照」由此成立** |
+
+> D1 影响 webui 的 W13（市场管理）排期，需优先拍板（主计划 Q7）。

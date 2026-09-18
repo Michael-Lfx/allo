@@ -1,0 +1,10 @@
+{
+  "name": "author-object",
+  "version": "1.0.0",
+  "description": "Fixture: author as object + string component roots",
+  "author": { "name": "数字生命卡兹克", "email": "k@example.com" },
+  "agents": "./agents/author-object.md",
+  "skills": "./skills/author-object",
+  "expertType": "agent",
+  "agentName": "author-object"
+}

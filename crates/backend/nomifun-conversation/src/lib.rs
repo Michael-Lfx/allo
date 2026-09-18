@@ -44,6 +44,7 @@ pub use routes::conversation_routes;
 pub use routes_aux::conversation_ops_routes;
 pub use routes_trace::conversation_trace_routes;
 pub use service::{
+    APP_SERVER_CHAT_EXTRA_KEY, AppServerChatBindings, AppServerTeamLeaderBindings,
     ConversationService, ConversationSupervisionHook, DELIVERY_NOTIFY_ORIGIN,
     DeliveryNotifyRegistration, IdempotentMessageDelivery, IdmmTurnScope,
     EditResubmitDeliveryState, EditResubmitObservation, PublicTurnDeliveryState,

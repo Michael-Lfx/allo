@@ -259,6 +259,7 @@ fn connection_test_failure_status(code: McpConnectionTestErrorCode) -> StatusCod
         | McpConnectionTestErrorCode::HttpError
         | McpConnectionTestErrorCode::RpcError
         | McpConnectionTestErrorCode::ProtocolError => StatusCode::BAD_GATEWAY,
+        McpConnectionTestErrorCode::ReauthorizationRequired => StatusCode::UNAUTHORIZED,
     }
 }
 

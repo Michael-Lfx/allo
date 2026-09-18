@@ -16,7 +16,10 @@ use std::time::Duration;
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+// Keep in sync with the runtime transport's CLIENT_PROTOCOL_VERSION
+// (nomi-mcp remote_peer.rs). Real-world gateways (e.g. QQ Mail MCP) reject
+// older protocol years with a server-side error.
+const PROTOCOL_VERSION: &str = "2025-11-25";
 const CLIENT_NAME: &str = "nomifun-mcp-test";
 const CLIENT_VERSION: &str = "1.0.0";
 
@@ -148,8 +151,32 @@ pub(super) async fn run_stdio_protocol(
     success_result(tools_resp.result)
 }
 
+/// The upstream reply to one `tools/call`.
+///
+/// `result` is kept **verbatim** — `content`, `structuredContent` and anything
+/// a newer server adds all survive, because this layer has no business
+/// reshaping what an MCP server returned. `is_error` is the one field lifted
+/// out, because a tool-level failure is a *result* a caller branches on rather
+/// than a transport error it catches.
+pub(super) struct ToolCallReply {
+    pub is_error: bool,
+    pub result: serde_json::Value,
+}
+
+/// Lift `isError` off a `tools/call` result, leaving the rest untouched.
+pub(super) fn tool_call_reply(result: serde_json::Value) -> ToolCallReply {
+    let is_error = result
+        .get("isError")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    ToolCallReply { is_error, result }
+}
+
 /// Write a JSON-RPC message as a newline-delimited line to stdin.
-async fn write_jsonrpc_line<T: Serialize>(stdin: &mut tokio::process::ChildStdin, msg: &T) -> std::io::Result<()> {
+pub(super) async fn write_jsonrpc_line<T: Serialize>(
+    stdin: &mut tokio::process::ChildStdin,
+    msg: &T,
+) -> std::io::Result<()> {
     let json = serde_json::to_string(msg).map_err(std::io::Error::other)?;
     stdin.write_all(json.as_bytes()).await?;
     stdin.write_all(b"\n").await?;
@@ -160,7 +187,9 @@ async fn write_jsonrpc_line<T: Serialize>(stdin: &mut tokio::process::ChildStdin
 ///
 /// Skips server notifications (messages without an `id` field) and
 /// non-JSON lines (e.g. logging output).
-async fn read_jsonrpc_response(reader: &mut BufReader<tokio::process::ChildStdout>) -> Result<JsonRpcResponse, String> {
+pub(super) async fn read_jsonrpc_response(
+    reader: &mut BufReader<tokio::process::ChildStdout>,
+) -> Result<JsonRpcResponse, String> {
     let mut line = String::new();
     loop {
         line.clear();
@@ -365,6 +394,28 @@ pub(super) fn build_tools_list_request(id: u64) -> JsonRpcRequest {
     }
 }
 
+/// `tools/call` for one tool.
+///
+/// `arguments` is passed through as an arbitrary JSON value: an MCP tool's
+/// parameters are described by an arbitrary JSON Schema, so there is nothing
+/// to type them against here. A server validating them itself is the whole
+/// point of the protocol.
+pub(super) fn build_tools_call_request(
+    id: u64,
+    tool: &str,
+    arguments: &serde_json::Value,
+) -> JsonRpcRequest {
+    JsonRpcRequest {
+        jsonrpc: "2.0",
+        id: id.to_string(),
+        method: "tools/call".into(),
+        params: Some(serde_json::json!({
+            "name": tool,
+            "arguments": arguments,
+        })),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Result builders
 // ---------------------------------------------------------------------------
@@ -529,6 +580,37 @@ pub(super) fn auth_result(headers: &reqwest::header::HeaderMap) -> McpConnection
         auth_method,
         www_authenticate,
     }
+}
+
+pub(super) fn auth_result_from_www_authenticate(value: Option<String>) -> McpConnectionTestResult {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(value) = value
+        && let Ok(value) = reqwest::header::HeaderValue::from_str(&value)
+    {
+        headers.insert(reqwest::header::WWW_AUTHENTICATE, value);
+    }
+    auth_result(&headers)
+}
+
+pub(super) fn reauthorization_result() -> McpConnectionTestResult {
+    McpConnectionTestResult {
+        success: false,
+        tools: None,
+        error: Some("OAuth reauthorization required".into()),
+        code: Some(McpConnectionTestErrorCode::ReauthorizationRequired),
+        details: None,
+        needs_auth: Some(true),
+        auth_method: Some(McpAuthMethod::Oauth),
+        www_authenticate: None,
+    }
+}
+
+pub(super) fn oauth_error_result(error: String) -> McpConnectionTestResult {
+    error_result(
+        McpConnectionTestErrorCode::ConnectionFailed,
+        format!("OAuth request failed: {error}"),
+        Some(serde_json::json!({ "transport": "oauth" })),
+    )
 }
 
 fn detect_auth_method(www_authenticate: &str) -> McpAuthMethod {

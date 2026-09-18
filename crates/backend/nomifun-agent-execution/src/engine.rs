@@ -272,6 +272,52 @@ impl AgentExecutionEngine {
         self.create_inner(owner_id, actor, request, lead_preset).await
     }
 
+    /// App Server entry point: create an execution whose immutable Preset
+    /// snapshot is persisted in the Execution Participant.
+    /// The snapshot is written atomically with the Planning aggregate and its Created event.
+    pub async fn create_for_app_server(
+        &self,
+        owner_id: &str,
+        actor: &AgentExecutionActor,
+        request: CreateAgentExecutionRequest,
+        preset: ResolvedPresetSnapshot,
+    ) -> Result<AgentExecution, AppError> {
+        if request.lead_conversation_id.is_some() {
+            return Err(AppError::BadRequest(
+                "conversation-less Agent execution must not declare a lead conversation"
+                    .to_owned(),
+            ));
+        }
+        let participants = self
+            .resolver
+            .resolve(&request.model_pool, request.lead_model.as_ref())
+            .await?;
+        let mut participants = participants;
+        if let Some(lead) = participants.first_mut() {
+            lead.preset_id = Some(preset.preset_id.clone());
+            lead.preset_revision = Some(preset.preset_revision);
+            lead.preset_snapshot = Some(
+                serde_json::to_string(&preset)
+                    .map_err(|error| AppError::Internal(format!("encode App Server preset: {error}")))?,
+            );
+            lead.system_prompt = Some(preset.instructions.clone());
+            lead.enabled_skills = serde_json::to_string(&preset.included_skills)
+                .map_err(|error| AppError::Internal(format!("encode App Server skills: {error}")))?;
+            // Preset MCP references stay in the frozen participant snapshot;
+            // the attempt runner projects them into the attempt conversation
+            // (`selected_mcp_server_ids`) so the Nomi runtime attaches the
+            // authenticated owner's configured MCP servers.
+        }
+        self.persist_execution(
+            owner_id,
+            actor,
+            request,
+            participants,
+            None,
+        )
+        .await
+    }
+
     /// Instantiate reusable authoring input into one independent execution.
     /// The template is read once and then forgotten: participants and planner
     /// context are copied into immutable execution-owned state, with no FK or
@@ -831,6 +877,41 @@ impl AgentExecutionEngine {
         if links.next().is_some() {
             return Err(AppError::Internal(
                 "conversation has multiple execution attempt relations".to_owned(),
+            ));
+        }
+        Ok(execution)
+    }
+
+    /// Resolve the aggregate a **lead** Conversation owns.
+    ///
+    /// The mirror of [`Self::execution_for_attempt_conversation`], and the only
+    /// door `team/run` has to the execution its Leader created: the public
+    /// protocol never sees an internal execution id that the client did not
+    /// already hold, so the run receipt has to be derived from the binding the
+    /// server itself wrote (`16` §7 决策 3).
+    ///
+    /// Only `active` lead links count. A soft-deleted or superseded relation is
+    /// transcription provenance, not "this conversation currently leads that
+    /// aggregate", and an attempt relation must never resolve here — an attempt
+    /// transcript that could masquerade as a lead would let a second aggregate be
+    /// addressed through a step's conversation.
+    pub async fn execution_for_lead_conversation(
+        &self,
+        owner_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        canonical_id::<ConversationId>("conversation_id", conversation_id)?;
+        let mut links = self
+            .repository
+            .resolve_conversation_link(owner_id, conversation_id)
+            .await?
+            .into_iter()
+            .filter(|link| link.relation == "lead" && link.active)
+            .map(|link| link.execution_id);
+        let execution = links.next();
+        if links.next().is_some() {
+            return Err(AppError::Internal(
+                "conversation leads multiple active executions".to_owned(),
             ));
         }
         Ok(execution)
@@ -2757,7 +2838,7 @@ impl AgentExecutionEngine {
         Ok(self.detail(owner_id, execution_id).await?.execution)
     }
 
-    async fn detail(
+    pub(crate) async fn detail(
         &self,
         owner_id: &str,
         execution_id: &str,

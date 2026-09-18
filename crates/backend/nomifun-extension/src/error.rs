@@ -76,6 +76,11 @@ pub enum ExtensionError {
     #[error("Skill not found: {0}")]
     SkillNotFound(String),
 
+    /// A skill directory that already exists — the write face never overwrites
+    /// or merges into an existing skill (`16` R17: same-name is a `conflict`).
+    #[error("Skill already exists: {0}")]
+    SkillExists(String),
+
     #[error("Invalid skill path: {0}")]
     InvalidSkillPath(String),
 
@@ -114,6 +119,9 @@ impl From<ExtensionError> for AppError {
                 AppError::BadRequest(format!("Cannot delete built-in skill: {name}"))
             }
             ExtensionError::SkillNotFound(name) => AppError::NotFound(format!("Skill not found: {name}")),
+            ExtensionError::SkillExists(name) => {
+                AppError::Conflict(format!("Skill already exists: {name}"))
+            }
             ExtensionError::InvalidSkillPath(path) => AppError::BadRequest(format!("Invalid skill path: {path}")),
             ExtensionError::Io(e) => AppError::Internal(e.to_string()),
             ExtensionError::JsonParse(e) => AppError::BadRequest(e.to_string()),

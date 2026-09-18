@@ -1,5 +1,5 @@
 use nomifun_common::{ConversationId, TerminalId, validate_uuidv7};
-use nomifun_db::{init_database_memory, validate_id_schema_contract};
+use nomifun_db::{NON_REFERENCE_ID_COLUMNS, init_database_memory, validate_id_schema_contract};
 use sqlx::Row;
 
 const BASELINE: &str = include_str!("../migrations/001_v3_baseline.sql");
@@ -28,6 +28,7 @@ const UNCONDITIONAL_UUIDV7_BUSINESS_IDS: &[(&str, &str)] = &[
     ("providers", "provider_id"),
     ("agent_execution_templates", "execution_template_id"),
     ("agent_executions", "execution_id"),
+    ("app_server_run_mappings", "public_run_id"),
     ("agent_metadata", "agent_id"),
     ("knowledge_bases", "knowledge_base_id"),
     ("knowledge_bindings", "knowledge_binding_id"),
@@ -127,10 +128,12 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     .await
     .expect("tables");
 
-    // 048 学习图:+learning_graph_prerequisites;050 课时分节:
+    // 数字跟着 schema 走，是两侧迁移合并后的显式契约（新增表时应当被刻意改一次），不是
+    // 从迁移里推出来的——所以坏掉时说明有人加了表而没更新契约，不是测试需要放宽。
+    // 学习侧:048 学习图:+learning_graph_prerequisites;050 课时分节:
     // +learning_lesson_sections;052 复习日志:+learning_review_log。
-    // 新增产品表时必须同步 +1。
-    assert_eq!(tables.len(), 109);
+    // Agent Store 侧:`058` / `059` / `061` 共 4 张。
+    assert_eq!(tables.len(), 117);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
@@ -256,11 +259,22 @@ async fn all_nontechnical_id_columns_are_text_and_only_id_is_a_technical_key() {
                 "{table}.{name} must not reintroduce a dual-key technical ID"
             );
             if name != "id" && name.ends_with("_id") {
-                assert_eq!(
-                    column.get::<String, _>("type").to_ascii_uppercase(),
-                    "TEXT",
-                    "{table}.{name} must be a logical/business ID, not an inter-table integer"
-                );
+                // 例外由 `nomifun_db::NON_REFERENCE_ID_COLUMNS` 统一定义（契约的单一
+                // 事实源）。本用例原先**自带一份副本**，迁移加上
+                // `oauth_tokens.registration_id`（INTEGER 逻辑链接，v3 只把 TEXT/UUID
+                // 建模为逻辑引用）之后，两份定义就开始打架——现在改为读同一张表。
+                let registered = NON_REFERENCE_ID_COLUMNS
+                    .iter()
+                    .any(|(registered_table, registered_column)| {
+                        *registered_table == table.as_str() && *registered_column == name.as_str()
+                    });
+                if !registered {
+                    assert_eq!(
+                        column.get::<String, _>("type").to_ascii_uppercase(),
+                        "TEXT",
+                        "{table}.{name} must be a logical/business ID, not an inter-table integer"
+                    );
+                }
                 assert_eq!(
                     column.get::<i64, _>("pk"),
                     0,
@@ -305,6 +319,8 @@ async fn runtime_v3_schema_has_no_physical_foreign_keys_or_cascades_and_only_gua
     assert_eq!(
         triggers,
         vec![
+            "app_server_idempotency_receipts_immutable",
+            "app_server_idempotency_receipts_no_delete",
             "channel_inbound_receipts_identity_immutable",
             "channel_inbound_receipts_no_delete",
             "channel_inbound_receipts_scope_set_once",

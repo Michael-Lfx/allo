@@ -396,6 +396,10 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
         app_version: cli.app_version.clone(),
         auth_policy,
         local_trust_secret: None,
+        agent_store_config_path: cli.agent_store_config.clone(),
+        adopt_store_tool_policy: cli.adopt_store_tool_policy,
+        adopt_store_mcp_declarations: cli.adopt_store_mcp_declarations,
+        install_embedded_agent_execution: !cli.no_embedded_agent_execution,
     };
     info!(
         "Running with auth policy {:?} — authentication is {}",
@@ -959,6 +963,10 @@ mod tests {
             local: true,
             log_level: None,
             command: None,
+            agent_store_config: None,
+            adopt_store_tool_policy: false,
+            adopt_store_mcp_declarations: false,
+            no_embedded_agent_execution: false,
         }
     }
 

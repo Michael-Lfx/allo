@@ -1705,10 +1705,24 @@ impl ExecutionScheduler {
         // A concrete model turn owns exactly the Step/Attempt generations it
         // started with. A question, answer, pause, retry, or replacement bumps
         // either version; its late callback must never settle that successor.
+        // Steer is the one same-generation exception: enqueue/acknowledge bump
+        // the attempt version without changing the attempt identity, status,
+        // or lease, so the in-flight callback remains the legitimate owner and
+        // must re-pin the fence to the current versions instead of dropping
+        // the settlement (a dropped settlement orphans the running attempt and
+        // fails the whole execution with "no schedulable active step").
+        let mut fence = settlement_fence;
         if step.version != settlement_fence.step_version
             || attempt.version != settlement_fence.attempt_version
         {
-            return Ok(());
+            let same_generation = attempt.status == ExecutionAttemptStatus::Running
+                && attempt.version > settlement_fence.attempt_version
+                && step.version >= settlement_fence.step_version;
+            if !same_generation {
+                return Ok(());
+            }
+            fence.step_version = step.version;
+            fence.attempt_version = attempt.version;
         }
 
         let (attempt_status, step_status, error, output, output_files, tokens, retry_after) = match outcome {
@@ -1797,32 +1811,33 @@ impl ExecutionScheduler {
         };
         let output_files = serde_json::to_string(&output_files)
             .map_err(|error| AppError::Internal(format!("encode verified attempt output files: {error}")))?;
-        let settled = self.inner
+        let settle_params = SettleAgentExecutionAttemptParams {
+            attempt_status,
+            step_status,
+            execution_status: None,
+            question: Some(None),
+            error: Some(error),
+            output_summary: Some(output),
+            output_files: Some(output_files.clone()),
+            tokens: Some(tokens),
+            retry_after: Some(retry_after),
+            runtime_state: Some(None),
+            started_at: None,
+            finished_at: Some(Some(now_ms())),
+            loop_repeat_reset: None,
+        };
+        let mut settled = self.inner
             .deps
             .repository
             .settle_attempt(
                 owner_id,
                 execution_id,
                 step_id,
-                settlement_fence.step_version,
+                fence.step_version,
                 attempt_id,
-                settlement_fence.attempt_version,
+                fence.attempt_version,
                 lease,
-                &SettleAgentExecutionAttemptParams {
-                    attempt_status,
-                    step_status,
-                    execution_status: None,
-                    question: Some(None),
-                    error: Some(error),
-                    output_summary: Some(output),
-                    output_files: Some(output_files),
-                    tokens: Some(tokens),
-                    retry_after: Some(retry_after),
-                    runtime_state: Some(None),
-                    started_at: None,
-                    finished_at: Some(Some(now_ms())),
-                    loop_repeat_reset: None,
-                },
+                &settle_params,
                 &system_event(
                     AgentExecutionEventKind::AttemptChanged,
                     Some(step_id),
@@ -1838,12 +1853,72 @@ impl ExecutionScheduler {
                 .repository
                 .get_step_detail(owner_id, execution_id, step_id)
                 .await?;
+            // Same-generation steer bump (see the fence re-pin above): the CAS
+            // lost only because the steer enqueue/acknowledge advanced the
+            // version. Re-pin and retry the settlement once.
+            if let Some(current) = current.as_ref().filter(|current| {
+                current.step.version > settlement_fence.step_version
+                    && current
+                        .current_attempt
+                        .as_ref()
+                        .is_some_and(|attempt| {
+                            attempt.attempt.attempt_id == attempt_id
+                                && attempt.attempt.version > settlement_fence.attempt_version
+                                && attempt.attempt.status == "running"
+                        })
+            }) {
+                let repinned = AttemptSettlementFence {
+                    step_version: current.step.version,
+                    attempt_version: current
+                        .current_attempt
+                        .as_ref()
+                        .map(|attempt| attempt.attempt.version)
+                        .unwrap_or(settlement_fence.attempt_version),
+                };
+                settled = self
+                    .inner
+                    .deps
+                    .repository
+                    .settle_attempt(
+                        owner_id,
+                        execution_id,
+                        step_id,
+                        repinned.step_version,
+                        attempt_id,
+                        repinned.attempt_version,
+                        lease,
+                        &SettleAgentExecutionAttemptParams {
+                            attempt_status,
+                            step_status,
+                            ..settle_params.clone()
+                        },
+                        &system_event(
+                            AgentExecutionEventKind::AttemptChanged,
+                            Some(step_id),
+                            Some(attempt_id),
+                            json!({"attempt_status":attempt_status,"step_status":step_status}),
+                        ),
+                    )
+                    .await;
+            }
             if current.as_ref().is_some_and(|current| {
-                current.step.version != settlement_fence.step_version
-                    || current.current_attempt.as_ref().is_none_or(|attempt| {
-                        attempt.attempt.attempt_id != attempt_id
-                            || attempt.attempt.version != settlement_fence.attempt_version
-                    })
+                let repinned = current.step.version > settlement_fence.step_version
+                    && current.current_attempt.as_ref().is_some_and(|attempt| {
+                        attempt.attempt.attempt_id == attempt_id
+                            && attempt.attempt.version > settlement_fence.attempt_version
+                            && attempt.attempt.status == "running"
+                    });
+                if repinned {
+                    // The re-pin retry above consumed this race; a Conflict
+                    // there means a newer generation genuinely took over.
+                    false
+                } else {
+                    current.step.version != settlement_fence.step_version
+                        || current.current_attempt.as_ref().is_none_or(|attempt| {
+                            attempt.attempt.attempt_id != attempt_id
+                                || attempt.attempt.version != settlement_fence.attempt_version
+                        })
+                }
             }) {
                 return Ok(());
             }

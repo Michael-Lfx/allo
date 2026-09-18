@@ -296,6 +296,42 @@ pub(crate) fn should_register_learning_generate_course(
     has_sink && !bases.is_empty()
 }
 
+/// Effective `config.tools.builtin_allowlist` from every layer that constrains
+/// it: the engine's own config (`global ∪ project`), the session-scoped list the
+/// factory computed, and the host's `[tools].enabled`.
+///
+/// **An empty layer means "no constraint", not "deny everything"** — that is the
+/// established meaning of `builtin_allowlist` (`空 = 不限制`), so empty layers are
+/// skipped rather than intersecting the result down to nothing. Only non-empty
+/// layers intersect.
+///
+/// The returned list is handed to `retain_named`, where an empty list is a
+/// **no-op**. So when at least one layer constrained the set and the
+/// intersection is empty, the caller must not write this (empty) value into
+/// `builtin_allowlist`; it sets `ToolsConfig::builtin_deny_all` instead, which
+/// bootstrap turns into an explicit deny-all. Callers should therefore derive
+/// both values from the same layer slice, as the manager does.
+pub(crate) fn intersect_allowlists(layers: &[Vec<String>]) -> Vec<String> {
+    let mut constrained = layers
+        .iter()
+        .filter(|layer| !layer.is_empty())
+        .map(|layer| {
+            let mut names = layer.clone();
+            names.sort();
+            names.dedup();
+            names
+        });
+
+    let Some(first) = constrained.next() else {
+        return Vec::new();
+    };
+    constrained.fold(first, |acc, layer| {
+        acc.into_iter()
+            .filter(|name| layer.contains(name))
+            .collect()
+    })
+}
+
 /// Tool name of the native knowledge write-back tool. Allow-listed past the
 /// approval gate (DIRECT/STAGED writes go to the user's own managed base, and
 /// companion/channel sessions have no confirmation UI), mirroring the companion
@@ -474,6 +510,10 @@ pub(crate) struct NomiHostWiring {
     /// engine) so teardown has something to report on: a runtime that dropped its
     /// lease could never say whether the operator's shell survived it.
     pub ssh_lease: Option<Arc<dyn crate::SshSessionLease>>,
+    /// MCP OAuth refresher (401 → refresh once → update Authorization header →
+    /// single retry). Backed by the encrypted token store; `None` keeps the
+    /// fail-fast behavior.
+    pub mcp_oauth_refresher: Option<Arc<dyn nomi_mcp::manager::McpOAuthRefresher>>,
 }
 
 impl Default for NomiHostWiring {
@@ -483,6 +523,7 @@ impl Default for NomiHostWiring {
             browser_lane_binding: None,
             ssh_backend: None,
             ssh_lease: None,
+            mcp_oauth_refresher: None,
         }
     }
 }
@@ -869,11 +910,41 @@ impl NomiAgentManager {
         if config_extra.browser_use {
             config.tools.browser.enabled = true;
         }
+        // 宿主级工具策略中由**引擎配置**承载的开关。它们在工厂里置没有用：
+        // `Config::resolve` 在这里才读 `%APPDATA%\nomi\config.toml` 与
+        // `<workspace>/.nomi.toml`，所以必须在 resolve 之后落。三个开关都只
+        // 有「关」这一方向（策略字段默认 true = 不干预）。
+        if !config_extra.tool_policy.web {
+            config.tools.web.enabled = false;
+        }
+        if !config_extra.tool_policy.plan {
+            config.plan.enabled = false;
+        }
+        if !config_extra.tool_policy.lsp {
+            // `Lsp` 只在 `lsp_servers` 非空时注册；清空是唯一的会话级关法。
+            config.tools.lsp_servers.clear();
+        }
         // Per-session 工具白名单（工厂已算好；bootstrap 的 retain_named
         // 会安装持久注册策略，后续 post-build / dynamic 工具也受同一策略约束）。
         // Embedded AgentExecution 的 host composition 不写入 ToolsConfig，
         // 而是在 bootstrap builder 上单独注入。
-        config.tools.builtin_allowlist = config_extra.allowed_tools.clone();
+        //
+        // 三层求交（「更严者胜」）：引擎配置（global∪project，可能来自用户
+        // config.toml）× 会话白名单（工厂算好的受限角色名单）× 宿主 [tools].enabled。
+        // **空层表示「不约束」而不是「全裁」**，因此不能用空列表去覆盖。
+        let allow_layers = [
+            config.tools.builtin_allowlist.clone(),
+            config_extra.allowed_tools.clone(),
+            config_extra.tool_policy.enabled.clone(),
+        ];
+        config.tools.builtin_allowlist = intersect_allowlists(&allow_layers);
+        // 若确有层在做限制、但求交为空（各层彼此不相容），必须**显式** deny-all：
+        // `builtin_allowlist` 的空值语义是「不限制」，直接传空会把最严变成最松。
+        config.tools.builtin_deny_all =
+            allow_layers.iter().any(|layer| !layer.is_empty())
+                && config.tools.builtin_allowlist.is_empty();
+        // 宿主减项：与白名单正交，交给 bootstrap 在注册后统一裁剪（含动态注册）。
+        config.tools.builtin_denylist = config_extra.tool_policy.disabled.clone();
         // 原生文件工具写根钳制（Write/Edit/ApplyPatch），按会话信任面由工厂解析：
         // 本地桌面 = None（不钳制，OS 用户全权，今日行为）；渠道/远程/对外 =
         // Some(workspace)（收窄到会话工作区）。仅在有非空值时覆盖，故桌面会话保留
@@ -1023,6 +1094,7 @@ impl NomiAgentManager {
             .coding_boundary(
                 nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref()).is_coding(),
             )
+            .mcp_oauth_refresher(host_wiring.mcp_oauth_refresher.clone())
             .observation(Arc::clone(&observation));
         bootstrap = match search_provider {
             nomi_agent::SearchProviderBinding::Provided(provider) => {
@@ -1296,19 +1368,24 @@ impl NomiAgentManager {
             }
         }
 
-        let media_wired = nomi_media::wire_flowy_media(
-            engine.registry_mut(),
-            &gateway_config,
-            &gateway_data_dir,
-        );
-        if media_wired.has_image || media_wired.has_video {
-            debug!(
-                conversation_id = %conversation_id,
-                has_image = media_wired.has_image,
-                has_video = media_wired.has_video,
-                has_workflow = media_wired.has_workflow,
-                "Registered Flowy media generation tools"
+        // Host policy: the Flowy media family is the one domain that is neither a
+        // sink nor a tool name — it is wired from the host `config.toml` `[media]`
+        // table right here, so the domain switch has to gate it at this call.
+        if config_extra.tool_policy.domains.media {
+            let media_wired = nomi_media::wire_flowy_media(
+                engine.registry_mut(),
+                &gateway_config,
+                &gateway_data_dir,
             );
+            if media_wired.has_image || media_wired.has_video {
+                debug!(
+                    conversation_id = %conversation_id,
+                    has_image = media_wired.has_image,
+                    has_video = media_wired.has_video,
+                    has_workflow = media_wired.has_workflow,
+                    "Registered Flowy media generation tools"
+                );
+            }
         }
         if nomi_briefing::wire_briefing_tools(engine.registry_mut(), &gateway_data_dir) {
             debug!(
@@ -1868,7 +1945,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     input_tokens = agent_result.usage.input_tokens,
                     output_tokens = agent_result.usage.output_tokens,
                     ?stop_reason,
-                    "Nomi engine.execute_turn() completed; closing exact post-turn effects before Finish"
+                    "Nomi engine.execute_turn() completed; starting post-turn effects (R30: memory distillation is spawned, not awaited, so it no longer delays Finish)"
                 );
 
                 self.backend_output_sink.fail_active_tool_calls(&format!(
@@ -1977,7 +2054,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     }),
                 );
 
-                // —— Post-session memory distillation (exact turn child) ——
+                // —— Post-session memory distillation (background exact child) ——
                 // Eligibility gates, cheapest first:
                 //   1. host opt-in flag (token cost; default off)
                 //   2. this session distills at all (distill_dir set; companion
@@ -1985,11 +2062,23 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 //   3. run-time origin empty (cron/autowork/idmm turns excluded,
                 //      same rule as the collector's payload_origin red line)
                 // All satisfied → snapshot the just-saved transcript, release
-                // the engine lock, then await the complete provider+apply
-                // effect. Finish is forbidden until this child closes; stop
-                // drops the provider future before it can reach the synchronous
-                // apply stage. Distill failures remain best-effort and never
-                // masquerade as a failed model turn.
+                // the engine lock, then spawn the provider+apply child in the
+                // background (R30 / `21` D9=A: "回答完成" ＝ "轮次结束", so Finish
+                // is no longer forbidden until this child closes).
+                //
+                // Two invariants are deliberately preserved:
+                //   * the transcript snapshot is still taken *before* the engine
+                //     lock is released (order unchanged), and
+                //   * the child holds a clone of this turn's `turn_cancel`, so a
+                //     stop/kill that lands before or after the terminal event
+                //     drops the provider future before it can reach the
+                //     synchronous apply stage — no late provider call, no late
+                //     filesystem write (same `await_exact_turn_child` contract as
+                //     before, now enforced inside the spawned task).
+                // A turn already cancelled when this point is reached starts no
+                // child at all; the cancel branch below owns the terminal event.
+                // Distill failures remain best-effort (debug/warn logs only) and
+                // never masquerade as a failed model turn.
                 let origin_is_human = data
                     .origin
                     .as_deref()
@@ -2017,22 +2106,18 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     self.spawn_goal_persist(state);
                 }
 
-                let distill_completed = match distill_job {
-                    Some((cfg, dir, transcript)) => {
-                        nomi_providers::with_flowy_billing_turn_id(
-                            billing_turn_id.clone(),
-                            super::distill::run_distill_exact_turn(
-                                &turn_cancel,
-                                cfg,
-                                dir,
-                                transcript,
-                            ),
-                        )
-                        .await
-                    }
-                    None => !turn_cancel.is_cancelled(),
-                };
-                if !distill_completed || turn_cancel.is_cancelled() {
+                if let Some((cfg, dir, transcript)) = distill_job {
+                    // `false` = the token was already cancelled; the cancel
+                    // branch below is then the terminal owner.
+                    let _spawned = super::distill::spawn_distill_exact_turn(
+                        billing_turn_id.clone(),
+                        turn_cancel.clone(),
+                        cfg,
+                        dir,
+                        transcript,
+                    );
+                }
+                if turn_cancel.is_cancelled() {
                     self.emit_observation_turn_end(
                         nomi_agent_trace::ExecutionStatus::Cancelled,
                         elapsed_ms,
@@ -2659,6 +2744,27 @@ impl NomiAgentManager {
         reg.register(Box::new(CronListTool::new(sink.clone())));
         reg.register(Box::new(CronDeleteTool::new(sink)));
         debug!(conversation_id = %self.runtime.conversation_id(), "Registered cron native tools");
+    }
+
+    /// Register the host-backed `nomi_delegate` backed by `sink`. Same
+    /// post-construction slot as [`Self::register_cron_sink`]: the tool is
+    /// advertised from the first model request, and a session whose host never
+    /// installed a provider simply has no such tool.
+    ///
+    /// The registry's persistent policy still applies, so a session with a
+    /// narrowed allowlist (the model-only ceiling) never sees it.
+    pub async fn register_delegate_sink(
+        &self,
+        sink: Arc<dyn nomi_agent::host_delegate_tool::HostDelegateSink>,
+    ) {
+        let mut engine = self.engine.lock().await;
+        engine
+            .registry_mut()
+            .register(Box::new(nomi_agent::host_delegate_tool::HostDelegateTool::new(sink)));
+        debug!(
+            conversation_id = %self.runtime.conversation_id(),
+            "Registered host-backed nomi_delegate"
+        );
     }
 
     /// Register G3 meeting tools (`meeting.list` / `meeting.start` / …) backed by
@@ -4017,6 +4123,9 @@ mod tests {
                 "0190f5fe-7c00-7a00-8000-000000000001",
             )
             .unwrap(),
+            // Tests start from the permissive policy: the session-level switches
+            // below are the only thing under test.
+            tool_policy: nomifun_api_types::NomiToolPolicy::default(),
             provider: "anthropic".into(),
             api_key: "sk-test-key".into(),
             model: "claude-sonnet-4-20250514".into(),
@@ -4055,6 +4164,364 @@ mod tests {
             coding_protect_read: None,
             coding_micro_keep_recent: None,
         }
+    }
+
+    // ---- host tool policy (`20-tool-injection-policy.zh.md`) ----------------
+
+    /// Each layer that constrains the allowlist intersects; an empty layer means
+    /// "no constraint" (`空 = 不限制`), so it must not narrow the result to nothing.
+    #[test]
+    fn intersect_allowlists_skips_empty_layers_and_intersects_the_rest() {
+        // Nothing constrains → empty (= unrestricted for `retain_named`).
+        assert!(intersect_allowlists(&[]).is_empty());
+        assert!(intersect_allowlists(&[vec![], vec![], vec![]]).is_empty());
+
+        // A single non-empty layer is used verbatim (canonicalised).
+        assert_eq!(
+            intersect_allowlists(&[vec![], vec!["Read".into(), "Read".into()], vec![]]),
+            vec!["Read".to_owned()]
+        );
+
+        // Two non-empty layers intersect, regardless of position.
+        let session = vec!["Read".to_owned(), "Grep".to_owned(), "Bash".to_owned()];
+        let host = vec!["Grep".to_owned(), "Read".to_owned()];
+        assert_eq!(
+            intersect_allowlists(&[session.clone(), host.clone()]),
+            vec!["Grep".to_owned(), "Read".to_owned()]
+        );
+        assert_eq!(
+            intersect_allowlists(&[host, session]),
+            vec!["Grep".to_owned(), "Read".to_owned()]
+        );
+
+        // An empty *intersection* of constrained layers is reported as empty; the
+        // caller must turn that into an explicit deny-all (see the manager).
+        assert!(
+            intersect_allowlists(&[vec!["Read".into()], vec!["Grep".into()]]).is_empty(),
+            "disjoint constrained layers must not silently mean 'unrestricted'"
+        );
+    }
+
+    /// Build a manager with the given host policy and session allowlist, and read
+    /// back the provider-visible tool names.
+    async fn tool_names_for(
+        policy: nomifun_api_types::NomiToolPolicy,
+        allowed_tools: Vec<String>,
+    ) -> Vec<String> {
+        let mut config = make_test_config();
+        config.tool_policy = policy;
+        config.allowed_tools = allowed_tools;
+        tool_names_for_config(config).await
+    }
+
+    /// Same, from a fully prepared config (used by the MCP declaration test,
+    /// which needs to set `extra_mcp_servers` as well).
+    async fn tool_names_for_config(config: NomiResolvedConfig) -> Vec<String> {
+        let agent = NomiAgentManager::new(
+            "conv-tool-policy".into(),
+            "/project".into(),
+            config,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        agent.engine.lock().await.tool_names()
+    }
+
+    /// The MCP declaration path asserted at **session level**: a server declared
+    /// in `~/.agent-store/mcp.json` really reaches the provider-visible tool
+    /// surface, and the host `[tools]` denylist can still take the whole server
+    /// away (`20` §7.9 / `21` D14).
+    ///
+    /// The server is a wiremock Streamable-HTTP MCP endpoint, so this covers the
+    /// real connect → `tools/list` → registry path without spawning a child
+    /// process and without needing a model.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn declared_mcp_servers_reach_the_session_tool_surface() {
+        use nomifun_api_types::{NomiMcpDeclarations, NomiToolPolicy};
+
+        /// Minimal MCP endpoint: answers `initialize` and `tools/list`, echoing
+        /// the request id so the engine's own id sequence is not assumed.
+        struct McpEndpoint;
+        impl wiremock::Respond for McpEndpoint {
+            fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+                let body = String::from_utf8_lossy(&request.body);
+                let id = body
+                    .split("\"id\":")
+                    .nth(1)
+                    .and_then(|rest| {
+                        rest.trim_start()
+                            .split(|character: char| !character.is_ascii_digit())
+                            .next()
+                    })
+                    .and_then(|digits| digits.parse::<u64>().ok())
+                    .unwrap_or(1);
+                if body.contains("\"initialize\"") {
+                    return wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "protocolVersion": "2025-03-26", "capabilities": { "tools": {} } }
+                    }));
+                }
+                if body.contains("notifications/initialized") {
+                    return wiremock::ResponseTemplate::new(200).set_body_string("");
+                }
+                if body.contains("tools/list") {
+                    return wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "tools": [{
+                            "name": "ping",
+                            "description": "health probe",
+                            "inputSchema": { "type": "object", "properties": {} }
+                        }] }
+                    }));
+                }
+                wiremock::ResponseTemplate::new(200).set_body_string("")
+            }
+        }
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/mcp"))
+            .respond_with(McpEndpoint)
+            .mount(&server)
+            .await;
+
+        let declaration = |entry: &str| {
+            NomiMcpDeclarations::parse(&format!(
+                r#"{{ "mcpServers": {{ "declared": {} }} }}"#,
+                entry.replace("URL", &format!("{}/mcp", server.uri()))
+            ))
+            .expect("declaration file must parse")
+        };
+        // The real merge, not a copy of it: this is the seam the factory uses.
+        let merged = |declarations: &NomiMcpDeclarations| {
+            let mut servers = std::collections::HashMap::new();
+            crate::factory::nomi::merge_host_declared_mcp_servers(
+                &mut servers,
+                declarations,
+                "conv-declared",
+                true,
+            );
+            servers
+        };
+
+        // 1. The declared server's tool is on the surface under its canonical
+        //    `mcp__<server>__…` name.
+        let declared = declaration(r#"{ "url": "URL" }"#);
+        let servers = merged(&declared);
+        assert_eq!(servers.len(), 1, "{servers:?}");
+        let mut config = make_test_config();
+        config.extra_mcp_servers = servers;
+        let names = tool_names_for_config(config).await;
+        assert!(
+            names.iter().any(|name| name.starts_with("mcp__declared__")),
+            "a declared server must reach the session tool surface: {names:?}"
+        );
+
+        // 2. `[tools]` is still the last word: the whole server goes away.
+        let mut config = make_test_config();
+        config.tool_policy = NomiToolPolicy {
+            disabled: vec!["mcp__declared__*".to_owned()],
+            ..NomiToolPolicy::default()
+        };
+        config.extra_mcp_servers = merged(&declared);
+        let names = tool_names_for_config(config).await;
+        assert!(
+            !names.iter().any(|name| name.starts_with("mcp__declared__")),
+            "the host denylist must remove the whole declared server: {names:?}"
+        );
+
+        // 3. `enabled: false` declares the server without connecting to it.
+        let disabled = declaration(r#"{ "url": "URL", "enabled": false }"#);
+        assert!(
+            merged(&disabled).is_empty(),
+            "a disabled declaration must not merge"
+        );
+
+        // 4. Non-vacuity + the owner gate, at session level: the same file in a
+        //    non-owner session produces no such tool at all. Without this the
+        //    first assertion could pass for the wrong reason.
+        let mut servers = std::collections::HashMap::new();
+        crate::factory::nomi::merge_host_declared_mcp_servers(
+            &mut servers,
+            &declared,
+            "conv-secondary",
+            false,
+        );
+        assert!(servers.is_empty(), "{servers:?}");
+        let mut config = make_test_config();
+        config.extra_mcp_servers = servers;
+        let names = tool_names_for_config(config).await;
+        assert!(
+            !names.iter().any(|name| name.starts_with("mcp__declared__")),
+            "a non-owner session must not receive host declarations: {names:?}"
+        );
+    }
+
+    /// A1 + A4: adopting no policy must leave the tool surface exactly as it was,
+    /// and the switches must only ever subtract from it.
+    ///
+    /// Asserted as a *subset* relation plus specific absences: a host whose own
+    /// `%APPDATA%/nomi/config.toml` narrows the list further does not make this
+    /// test lie, while the absences still prove the policy took effect.
+    #[tokio::test]
+    async fn host_tool_policy_switches_only_subtract() {
+        use nomifun_api_types::NomiToolPolicy;
+
+        let baseline = tool_names_for(NomiToolPolicy::default(), Vec::new()).await;
+        for name in ["remember", "update_plan", "EnterPlanMode", "ExitPlanMode"] {
+            assert!(
+                baseline.iter().any(|registered| registered == name),
+                "precondition: `{name}` is registered when no policy is adopted: {baseline:?}"
+            );
+        }
+
+        let restricted = tool_names_for(
+            NomiToolPolicy {
+                web: false,
+                plan: false,
+                lsp: false,
+                disabled: vec!["remember".into(), "update_plan".into()],
+                ..NomiToolPolicy::default()
+            },
+            Vec::new(),
+        )
+        .await;
+
+        for name in &restricted {
+            assert!(
+                baseline.iter().any(|registered| registered == name),
+                "a restriction may never widen the tool surface: `{name}` appeared"
+            );
+        }
+        for removed in [
+            "remember",
+            "update_plan",
+            "EnterPlanMode",
+            "ExitPlanMode",
+            "WebSearch",
+            "WebExtract",
+        ] {
+            assert!(
+                !restricted.iter().any(|registered| registered == removed),
+                "`{removed}` must be gone under the policy: {restricted:?}"
+            );
+        }
+        // The load-bearing baseline tools survive: the policy subtracts, it does
+        // not replace an allowlist.
+        for kept in ["Read", "Write", "Edit", "Grep", "Glob", "Skill", "ToolSearch"] {
+            assert!(
+                restricted.iter().any(|registered| registered == kept),
+                "`{kept}` must survive a denylist-only policy: {restricted:?}"
+            );
+        }
+    }
+
+    /// Build a manager with explicit host composition, optionally registering a
+    /// host-backed delegate sink, and read back the provider-visible tool names.
+    async fn tool_names_with_composition(
+        install_embedded: bool,
+        delegate: Option<Arc<dyn crate::factory::delegate::HostDelegateSink>>,
+    ) -> Vec<String> {
+        let mut config = make_test_config();
+        config.install_embedded_agent_execution = install_embedded;
+        let agent = NomiAgentManager::new(
+            "conv-delegate-composition".into(),
+            "/project".into(),
+            config,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        if let Some(sink) = delegate {
+            agent.register_delegate_sink(sink).await;
+        }
+        agent.engine.lock().await.tool_names()
+    }
+
+    struct StubDelegateSink;
+
+    #[async_trait::async_trait]
+    impl crate::factory::delegate::HostDelegateSink for StubDelegateSink {
+        async fn plan(
+            &self,
+            _goal: &str,
+        ) -> Result<nomifun_common::AgentExecutionReceipt, String> {
+            Err("stub sink never plans".to_owned())
+        }
+    }
+
+    /// The two halves of the Store delegate composition must be switchable
+    /// independently, and the host-backed one must occupy the same tool name.
+    ///
+    /// This is the guard for the pair `--no-embedded-agent-execution` + a late
+    /// provider install: turning the embedded deployment off without the provider
+    /// would leave the session with no delegate at all, and keeping both would let
+    /// the model pick the non-durable one.
+    #[tokio::test]
+    async fn host_composition_switches_the_delegate_deployment() {
+        // 1. Default composition: the embedded (synchronous, parallel-only) one.
+        let embedded = tool_names_with_composition(true, None).await;
+        assert!(
+            embedded.iter().any(|name| name == "nomi_delegate"),
+            "the embedded deployment is registered by default: {embedded:?}"
+        );
+
+        // 2. A host that owns a durable facade turns it off: no delegate at all,
+        //    until the provider is installed.
+        let switched_off = tool_names_with_composition(false, None).await;
+        assert!(
+            !switched_off.iter().any(|name| name == "nomi_delegate"),
+            "the embedded deployment must be gone: {switched_off:?}"
+        );
+
+        // 3. ...and installing the provider puts the host-backed one back under the
+        //    same name, so the model sees one contract either way.
+        let host_backed =
+            tool_names_with_composition(false, Some(Arc::new(StubDelegateSink))).await;
+        assert!(
+            host_backed.iter().any(|name| name == "nomi_delegate"),
+            "the host-backed deployment must occupy the same tool name: {host_backed:?}"
+        );
+    }
+
+    /// A5: when every layer constrains and they disagree, the intersection is
+    /// empty — which `builtin_allowlist` cannot express (empty there means
+    /// "unrestricted"), so the manager must ask for an explicit deny-all.
+    #[tokio::test]
+    async fn incompatible_allowlist_layers_deny_everything() {        use nomifun_api_types::NomiToolPolicy;
+
+        let names = tool_names_for(
+            NomiToolPolicy {
+                enabled: vec!["Grep".into()],
+                ..NomiToolPolicy::default()
+            },
+            vec!["Read".into()],
+        )
+        .await;
+
+        assert!(
+            names.is_empty(),
+            "an empty intersection must deny every tool (not fall back to unrestricted): {names:?}"
+        );
     }
 
     struct ScriptedProvider {
@@ -4331,6 +4798,240 @@ mod tests {
             .expect_err("Anthropic requires an explicit output ceiling");
 
         assert!(error.to_string().contains("Max output tokens"));
+    }
+
+    // -- R30 (`21` D9=A): distillation is a background child -------------------
+
+    /// Install a distillation child the test holds open: it signals `entered`
+    /// when it starts and only completes after `release` receives a permit.
+    fn hold_distillation_child(
+        dir: &std::path::Path,
+        entered: &Arc<tokio::sync::Semaphore>,
+        release: &Arc<tokio::sync::Semaphore>,
+        completed: &Arc<AtomicUsize>,
+    ) {
+        let entered = Arc::clone(entered);
+        let release = Arc::clone(release);
+        let completed = Arc::clone(completed);
+        super::super::distill::install_test_child(
+            dir,
+            Box::new(move || {
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                let completed = Arc::clone(&completed);
+                Box::pin(async move {
+                    entered.add_permits(1);
+                    let _ = release.acquire().await;
+                    completed.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+        );
+    }
+
+    fn quiet_send_data(content: &str) -> SendMessageData {
+        SendMessageData {
+            content: content.into(),
+            msg_id: "msg-r30".into(),
+            source_message_id: None,
+            files: Vec::new(),
+            inject_skills: Vec::new(),
+            loaded_skill_snapshots: Vec::new(),
+            origin: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_does_not_wait_for_the_background_distillation_child() {
+        // R30 / `21` D9=A: "回答完成" ＝ "轮次结束". The turn's terminal event must be
+        // published while the distillation child is still in flight, and the child
+        // must then still complete inside the same lifecycle. Both facts are
+        // asserted with channels (child held open by the test) — never by timing.
+        let dir = tempfile::tempdir().unwrap();
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        hold_distillation_child(dir.path(), &entered, &release, &completed);
+
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta("the answer".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Default::default(),
+            },
+        ]]));
+        let mut agent = make_agent_with_provider(provider);
+        agent.distill_dir = Some(dir.path().to_path_buf());
+        assert!(
+            super::super::distill::distill_enabled(&agent.distill_cfg),
+            "this test needs the distillation gate ON; NOMIFUN_MEMORY_DISTILL must be unset"
+        );
+        let mut rx = agent.subscribe();
+
+        let send = tokio::spawn(async move {
+            let result = agent.send_message(quiet_send_data("remember this")).await;
+            (result, agent)
+        });
+
+        // The child is in flight before anything below is asserted.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            entered.acquire(),
+        )
+        .await
+        .expect("the distillation child must be spawned for an eligible turn")
+        .expect("entered semaphore stays open")
+        .forget();
+
+        // Nothing has released the child yet: a `Finish`-blocking turn would hang
+        // here instead of returning.
+        let (result, agent) = tokio::time::timeout(std::time::Duration::from_secs(5), send)
+            .await
+            .expect("the turn must not await the distillation child")
+            .expect("send task must not panic");
+        assert!(result.is_ok(), "turn must succeed: {result:?}");
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            0,
+            "the child must still be in flight when the turn already returned"
+        );
+        assert_eq!(agent.status(), Some(ConversationStatus::Finished));
+
+        let finish_reasons = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                AgentStreamEvent::Finish(data) => Some(data.stop_reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            finish_reasons,
+            vec![Some(TurnStopReason::EndTurn)],
+            "the terminal Finish must be published before distillation completes"
+        );
+
+        // The held child still runs to completion in the same lifecycle.
+        release.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while completed.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the background distillation child must complete after the terminal event");
+    }
+
+    #[tokio::test]
+    async fn cancelled_turn_never_starts_distillation_and_keeps_the_cancelled_terminal() {
+        // Cancellation semantics are unchanged by R30: a cancelled turn still
+        // terminates as `TurnStopReason::Cancelled` and leaves no distillation
+        // child behind (pre-spawn judgment).
+        let dir = tempfile::tempdir().unwrap();
+        let child_runs = Arc::new(AtomicUsize::new(0));
+        let hook_runs = Arc::clone(&child_runs);
+        super::super::distill::install_test_child(
+            dir.path(),
+            Box::new(move || {
+                let hook_runs = Arc::clone(&hook_runs);
+                Box::pin(async move {
+                    hook_runs.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+        );
+
+        let provider = Arc::new(BlockingProvider::new());
+        let mut agent = make_agent_with_provider(provider.clone());
+        agent.distill_dir = Some(dir.path().to_path_buf());
+        let agent = Arc::new(agent);
+        let mut rx = agent.subscribe();
+        let send = {
+            let agent = Arc::clone(&agent);
+            tokio::spawn(async move { agent.send_message(quiet_send_data("stop me")).await })
+        };
+        provider.called.acquire().await.unwrap().forget();
+
+        agent.cancel().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), send)
+            .await
+            .expect("cancellation must not wait for anything")
+            .expect("send task must not panic")
+            .expect("a cancelled turn still returns Ok");
+
+        assert_eq!(agent.status(), Some(ConversationStatus::Finished));
+        let finish_reasons = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                AgentStreamEvent::Finish(data) => Some(data.stop_reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            finish_reasons,
+            vec![Some(TurnStopReason::Cancelled)],
+            "a cancelled turn must still terminalize as Cancelled"
+        );
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            child_runs.load(Ordering::SeqCst),
+            0,
+            "a cancelled turn must not leave a distillation child running"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_distillation_never_turns_the_turn_into_an_error() {
+        // A child that returns without doing anything stands in for the real
+        // provider-failure path (`run_distill` returns `()` after a warn log).
+        // The turn must stay a successful EndTurn turn with no Error event.
+        let dir = tempfile::tempdir().unwrap();
+        let child_runs = Arc::new(AtomicUsize::new(0));
+        let hook_runs = Arc::clone(&child_runs);
+        super::super::distill::install_test_child(
+            dir.path(),
+            Box::new(move || {
+                let hook_runs = Arc::clone(&hook_runs);
+                Box::pin(async move {
+                    hook_runs.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+        );
+
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta("the answer".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Default::default(),
+            },
+        ]]));
+        let mut agent = make_agent_with_provider(provider);
+        agent.distill_dir = Some(dir.path().to_path_buf());
+        let mut rx = agent.subscribe();
+
+        agent
+            .send_message(quiet_send_data("distill me"))
+            .await
+            .expect("a best-effort distillation failure must not fail the send");
+
+        assert_eq!(agent.status(), Some(ConversationStatus::Finished));
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentStreamEvent::Finish(_))),
+            "the turn must still publish its Finish"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentStreamEvent::Error(_))),
+            "distillation is best-effort and must never surface as a session error"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while child_runs.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the gate was open, so the child must have run");
     }
 
     fn make_agent_with_provider(provider: Arc<dyn LlmProvider>) -> NomiAgentManager {
@@ -4842,13 +5543,32 @@ mod tests {
             .iter()
             .find(|message| message.role == Role::User)
             .expect("provider request should contain the user message");
-        assert!(matches!(
-            &user.content[..],
-            [ContentBlock::Text { text }, ContentBlock::Image { media_type, data }]
-                if text == "What is shown?"
-                    && media_type == "image/png"
-                    && !data.is_empty()
-        ));
+        // The turn tail carries the shared `[Context]` block (date, plan, …) ahead
+        // of the user's own content, so the question is asserted by value instead
+        // of by position, and the attachment by its own block.
+        assert!(
+            user.content.iter().any(
+                |block| matches!(block, ContentBlock::Text { text } if text == "What is shown?")
+            ),
+            "the user question must reach the provider verbatim: {:?}",
+            user.content
+        );
+        let images = user
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image { media_type, data } => Some((media_type, data)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            images.len(),
+            1,
+            "the attached PNG must reach the provider as one image block: {:?}",
+            user.content
+        );
+        assert_eq!(images[0].0, "image/png");
+        assert!(!images[0].1.is_empty());
     }
 
     #[tokio::test]
@@ -5078,16 +5798,40 @@ mod tests {
                 },
                 LlmEvent::Error("malformed structured tool arguments".into()),
             ],
-            vec![LlmEvent::Done {
-                stop_reason: StopReason::MaxTokens,
-                usage: Default::default(),
-            }],
+            // The second turn's output ceiling truncates a `Write` call, so the
+            // restart happens inside the engine (`round.rs`) instead of in a
+            // host-side continue loop — that is the path which must not recover
+            // the failed call above.
+            vec![
+                LlmEvent::ToolUseTruncated {
+                    id: "cutoff-preview".into(),
+                    name: "Write".into(),
+                    argument_bytes: 8_192,
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::MaxTokens,
+                    usage: Default::default(),
+                },
+            ],
             vec![LlmEvent::Done {
                 stop_reason: StopReason::EndTurn,
                 usage: Default::default(),
             }],
         ]));
-        let agent = make_agent_with_provider(provider.clone());
+        let mut agent = make_agent_with_provider(provider.clone());
+        // `Write` must be advertised: it makes the scripted `LlmEvent::Error` —
+        // not an "unadvertised tool progress" violation — the cause of the first
+        // turn's failure, and the engine drops a truncation naming a tool the
+        // request never advertised, so without this the second turn would not
+        // restart at all.
+        assert!(
+            agent
+                .engine
+                .get_mut()
+                .registry_mut()
+                .register(Box::new(PreviewOnlyWriteTool)),
+            "Write must be advertised in the request that emits its progress"
+        );
         let mut rx = agent.subscribe();
 
         let first_result = agent
@@ -5101,7 +5845,14 @@ mod tests {
                 origin: None,
             })
             .await;
-        assert!(first_result.is_err());
+        let first_failure = format!(
+            "{:?}",
+            first_result.expect_err("a provider error must fail the turn")
+        );
+        assert!(
+            first_failure.contains("malformed structured tool arguments"),
+            "the turn must fail on the provider's own error: {first_failure}"
+        );
 
         let first_statuses = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -5139,6 +5890,8 @@ mod tests {
             !resurrected,
             "a later MaxTokens continuation must not recover a failed prior call"
         );
+        // One call for the failed turn, one for the truncated pass, one for the
+        // engine's restart pass.
         assert_eq!(provider.calls(), 3);
     }
 
@@ -5647,13 +6400,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_tokens_continuation_prompt_forbids_repeating_large_write() {
+    // The host-side auto-continue prompt was deleted (`cbe698ff2`): a
+    // ceiling-truncated tool call is now a resumable round INSIDE the engine
+    // (`crates/agent/nomi-agent/src/round.rs`), and a truncation is only
+    // evidence when the provider says so (`LlmEvent::ToolUseTruncated`). This
+    // keeps the original guarantees — the deleted draft is never resumed, and
+    // uncommitted provider progress never enters the frontend lifecycle.
+    async fn max_tokens_truncated_write_restarts_without_repeating_the_large_write() {
         let provider = Arc::new(ScriptedProvider::new(vec![
             vec![
                 LlmEvent::ToolUseDelta {
                     id: "call-large-write".into(),
                     name: "Write".into(),
                     input: None,
+                },
+                LlmEvent::ToolUseTruncated {
+                    id: "call-large-write".into(),
+                    name: "Write".into(),
+                    argument_bytes: 65_536,
                 },
                 LlmEvent::Done {
                     stop_reason: StopReason::MaxTokens,
@@ -5690,24 +6454,76 @@ mod tests {
             .unwrap();
 
         let requests = provider.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests.len(),
+            2,
+            "the engine must re-attempt the requirement inside this one turn"
+        );
+        // The restart re-states the ORIGINAL user requirement verbatim (the
+        // engine's own section says so, and deliberately does not restate it)
+        // instead of appending a host-authored "continue where you left off"
+        // prompt.
+        // The restart no longer re-pushes the requirement into the tail: the
+        // engine keeps it where it already sits and appends a cache-stable
+        // `[Context]`-only user message instead (see the `[Context]`-only tail
+        // handling in `nomi-agent`'s resumable-round path). The guarantees below
+        // are therefore asserted over the whole request, not just its last user
+        // message; the tail is asserted separately for the deleted host prompt.
         let continuation_text = requests[1]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tail_user_text = requests[1]
             .messages
             .iter()
             .rev()
             .find(|message| message.role == Role::User)
-            .and_then(|message| {
-                message.content.iter().find_map(|block| match block {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
+            .map(|message| {
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
             .expect("continuation request should contain a user text prompt");
 
-        assert!(continuation_text.contains("Do not call Write with a full large file in one call"));
-        assert!(continuation_text.contains("First create a small complete deliverable"));
-        assert!(continuation_text.contains("append or edit in chunks"));
-        assert!(continuation_text.contains("verify the target file exists"));
+        assert!(
+            continuation_text.contains("create a polished single page site"),
+            "the restart must restate the original requirement: {continuation_text}"
+        );
+        assert!(
+            !continuation_text.contains("continue where you left off")
+                && !tail_user_text.contains("continue where you left off"),
+            "the deleted host auto-continue prompt must not come back: {continuation_text}"
+        );
+        assert!(
+            continuation_text.contains("[resumable round 2/3]"),
+            "the second pass must be marked as a restart: {continuation_text}"
+        );
+        assert!(
+            continuation_text.contains("WHAT WAS CUT OFF:"),
+            "the truncated call must be carried into the restart: {continuation_text}"
+        );
+        assert!(
+            continuation_text.contains("Write (65536 bytes of arguments streamed, NOT executed)"),
+            "the cutoff entry must name the tool and its payload size: {continuation_text}"
+        );
+        assert!(
+            continuation_text.contains(
+                "Split any large file: write a small complete version first, then edit or append."
+            ),
+            "the large-write rule must survive the mechanism change: {continuation_text}"
+        );
 
         let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         let leaked_partial_call = events.iter().any(|event| {

@@ -1,6 +1,7 @@
 //! All HTTP request/response DTOs shared across the API surface.
 mod agent_eval;
 mod acp;
+pub mod app_server;
 mod agent_build_extra;
 mod agent_discovery;
 mod agent_error;
@@ -31,6 +32,7 @@ mod knowledge;
 mod lifecycle;
 mod managed_model;
 mod mcp;
+mod mcp_declarations;
 pub mod dispatch_target;
 mod media;
 pub mod model_capability;
@@ -54,6 +56,7 @@ mod session_observation;
 mod system;
 mod mcp_bridge;
 mod terminal;
+mod tool_policy;
 mod webhook;
 mod websocket;
 
@@ -69,6 +72,30 @@ pub use acp::{
     SetModeRequest, SetModelRequest, SideQuestionRequest, SideQuestionResponse,
     TryConnectCustomAgentRequest, TryConnectCustomAgentResponse, WorkspaceBrowseQuery,
     WorkspaceEntry,
+};
+pub use app_server::{
+    AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityStatus,
+    AppServerCompatibilityTriple, AppServerConfigMcpRejectionView, AppServerConfigMcpServerView,
+    AppServerConfigMcpView, AppServerConfigMemoryView, AppServerConfigProviderView,
+    AppServerConfigView, AppServerMcpSourceView,
+    AppServerConnectorDetail, AppServerConnectorCallResult, AppServerConnectorProbeResult,
+    AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
+    AppServerConnectorTool, AppServerImportComponent, AppServerImportDetail,
+    AppServerImportRequest, AppServerImportResult, AppServerImportSourceKind,
+    AppServerImportSummary, AppServerInstallComponent, AppServerInstallOutcome,
+    AppServerInstallRequest,
+    AppServerInstallResult, AppServerInstallState, AppServerInstallStatus,
+    AppServerLocalizedText,
+    AppServerMarketplaceAddRequest, AppServerMarketplaceDetail, AppServerMarketplaceEntry,
+    AppServerMarketplaceEntrySnapshot,
+    AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
+    AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
+    AppServerModelList, AppServerModelSummary,
+    AppServerOAuthStartResult, AppServerOAuthStatusView,
+    AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFile, AppServerSkillFileList,
+    AppServerSkillSummary,
+    AppServerStoreInstallResult,
+    AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,
@@ -245,6 +272,12 @@ pub use mcp::{
     OAuthLoginResponse, OAuthLogoutRequest, OAuthStatusResponse, TestMcpConnectionRequest,
     UpdateMcpServerRequest,
 };
+pub use mcp::oauth_state;
+pub use mcp_declarations::{
+    MAX_DECLARATION_KEY_LEN, MAX_STARTUP_TIMEOUT_MS, MAX_TOOL_TIMEOUT_MS, MIN_STARTUP_TIMEOUT_MS,
+    MIN_TOOL_TIMEOUT_MS, McpSourceEditError, NomiMcpDeclarationRejection, NomiMcpDeclarations,
+    ResolvedNomiMcpServer, set_server_enabled_in_source,
+};
 pub use media::{
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,
     MediaModelListResponse, MediaModelOption, MediaSettingsResponse, MediaTurnCreditUsage,
@@ -357,6 +390,7 @@ pub use terminal::{
     CreateTerminalRequest, TerminalExitEvent, TerminalInputRequest, TerminalOutputEvent,
     TerminalRemovedPayload, TerminalResizeRequest, TerminalSessionResponse, UpdateTerminalRequest,
 };
+pub use tool_policy::{NomiToolDomains, NomiToolPolicy};
 pub use webhook::{
     CreateWebhookRequest, TagBinding, TagBindings, TagSetting, UpdateWebhookRequest,
     UpsertTagSettingRequest, Webhook, WebhookId, WebhookPlatform,

@@ -110,6 +110,47 @@ pub struct Cli {
     #[arg(long)]
     pub local: bool,
 
+    /// Agent-store config file (`~/.agent-store/config.toml` convention).
+    /// When set, default marketplace sources declared under
+    /// `[default_marketplaces.*]` are auto-registered before the first
+    /// store/market call. The `nomifun-web` host defaults it to
+    /// `~/.agent-store/config.toml` when unset; other hosts keep `None`
+    /// (no auto-registration).
+    #[arg(long)]
+    pub agent_store_config: Option<PathBuf>,
+
+    /// Adopt the agent-store config file's `[tools]` table as this host's
+    /// global tool policy (`20-tool-injection-policy.zh.md`).
+    ///
+    /// Deliberately **not** the default, and not a function of the config file
+    /// existing: the desktop and web hosts read the same
+    /// `~/.agent-store/config.toml` for providers and marketplaces, so adopting
+    /// its tool policy there would silently narrow *their* sessions too. Only
+    /// `apps/agent-store` (the dedicated Store host) turns this on.
+    #[arg(long, hide = true)]
+    pub adopt_store_tool_policy: bool,
+
+    /// Adopt `~/.agent-store/mcp.json` as this host's MCP server declaration
+    /// file (the user-level `mcpServers` object; `20` §7.9 / `21` D14).
+    ///
+    /// Same posture as `--adopt-store-tool-policy`: the desktop and web hosts
+    /// point at the same agent-store directory, so reading declarations there
+    /// would silently add MCP servers to *their* sessions too. Only
+    /// `apps/agent-store` (the dedicated Store host) turns this on.
+    #[arg(long, hide = true)]
+    pub adopt_store_mcp_declarations: bool,
+
+    /// Do **not** install the embedded (synchronous, parallel-only) Agent
+    /// execution deployment for this host's Nomi sessions.
+    ///
+    /// Set only by a host that owns a durable Agent Execution facade of its own
+    /// (`apps/agent-store`), which must expose that facade to its sessions
+    /// instead (`16` §7 决策 3). Host composition, never user configuration —
+    /// the same posture `check-agent-vocabulary.mjs` enforces for the config file.
+    /// Default `false`, i.e. every existing host keeps the embedded deployment.
+    #[arg(long, hide = true)]
+    pub no_embedded_agent_execution: bool,
+
     /// Directory for log files. Defaults to {data-dir}/logs/.
     #[arg(long)]
     pub log_dir: Option<PathBuf>,

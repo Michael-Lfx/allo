@@ -2118,7 +2118,17 @@ mod tests {
         let err = state
             .try_acquire_turn("conv-1")
             .expect_err("second acquisition should fail");
-        assert!(err.to_string().contains("already running"));
+        // Assert the typed failure, not the old prose: `4ef0d4538` structured the
+        // public conflict and rewrote this message, so `contains("already running")`
+        // went stale. What must hold is that the second acquisition loses the
+        // admission race as a *conflict* that names the admission fence.
+        let nomifun_common::AppError::Conflict(message) = &err else {
+            panic!("second acquisition must lose the admission race, got: {err:?}");
+        };
+        assert!(
+            message.contains("cannot admit a turn"),
+            "the conflict must name the admission fence, got: {message}"
+        );
     }
 
     #[test]

@@ -457,7 +457,11 @@ async fn st7_stt_api_failure() {
         &csrf,
         "openai",
         "Failing Speech Provider",
-        &mock_server.uri(),
+        // An `openai` provider's base_url carries the API version (the preset
+        // root is `https://api.openai.com/v1`) and the adapter appends the task
+        // path verbatim — a bare origin requests `/audio/transcriptions`, which
+        // misses every `/v1/...` mock and made this test pass on a 404.
+        &format!("{}/v1", mock_server.uri()),
         "sk-fake-key",
         &["whisper-1"],
     )
@@ -563,7 +567,11 @@ async fn st1_openai_transcription_success() {
         &csrf,
         "openai",
         "Speech Provider",
-        &mock_server.uri(),
+        // An `openai` provider's base_url carries the API version (the preset
+        // root is `https://api.openai.com/v1`) and the adapter appends the task
+        // path verbatim; a bare origin would request `/audio/transcriptions`
+        // instead of the `/v1/audio/transcriptions` these mocks expect.
+        &format!("{}/v1", mock_server.uri()),
         "sk-test-key",
         &["whisper-1"],
     )
@@ -795,7 +803,11 @@ async fn st10_language_hint_passed() {
         &csrf,
         "openai",
         "Speech Provider",
-        &mock_server.uri(),
+        // An `openai` provider's base_url carries the API version (the preset
+        // root is `https://api.openai.com/v1`) and the adapter appends the task
+        // path verbatim; a bare origin would request `/audio/transcriptions`
+        // instead of the `/v1/audio/transcriptions` these mocks expect.
+        &format!("{}/v1", mock_server.uri()),
         "sk-test-key",
         &["whisper-1"],
     )

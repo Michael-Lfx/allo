@@ -7,7 +7,22 @@ edition.workspace = true
 nomifun-common.workspace = true
 nomifun-db.workspace = true
 nomifun-api-types.workspace = true
-jsonwebtoken = "9" # pinned: be-rs auth was written against v10 (workspace default is v10 for nomi-providers)
+# PINNED ON PURPOSE — do not bump this line without doing the migration.
+#
+# `src/jwt.rs` depends on v9's `exp`/`nbf` validation semantics: pointing this
+# crate at the workspace default (v10, which nomi-providers already uses)
+# compiles, but fails 38 tests here. So v9 -> v10 is a reviewed migration, not a
+# version bump.
+#
+# v9 carries GHSA-h395-gr6q-cpjc ("Type Confusion ... potential authorization
+# bypass", patched in 10.3.0). Assessed 2026-09-18 and **risk accepted**: the
+# vulnerable "exp/nbf not required" configuration is reachable here only through
+# the explicit `validate_exp = false` path, and tokens are minted in-process by
+# this local-first single-device app. Both Dependabot alerts for it are dismissed
+# as `tolerable_risk` and point back here; the migration is tracked separately
+# and has to judge each of those 38 expectations, since some of them may encode
+# the old behaviour.
+jsonwebtoken = "9"
 bcrypt.workspace = true
 tower.workspace = true
 dashmap.workspace = true

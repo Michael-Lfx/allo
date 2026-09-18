@@ -60,6 +60,10 @@ pub struct CompactResult {
     /// mechanical fold digest was used instead. The engine can surface a
     /// warning so the user knows the summary is a placeholder.
     pub mechanical_fold: bool,
+    /// Why the deterministic digest replaced an LLM summary. `Some` exactly when
+    /// [`Self::mechanical_fold`] is true, so a caller that surfaces the warning
+    /// can name the cause instead of guessing.
+    pub mechanical_reason: Option<String>,
 }
 
 /// Errors specific to autocompact.
@@ -423,6 +427,7 @@ pub async fn autocompact_with(
             messages_summarized: 0,
             pre_compact_tokens,
             mechanical_fold: false,
+            mechanical_reason: None,
         });
     };
 
@@ -439,6 +444,7 @@ pub async fn autocompact_with(
             messages_summarized: 0,
             pre_compact_tokens,
             mechanical_fold: false,
+            mechanical_reason: None,
         });
     }
 
@@ -454,8 +460,14 @@ pub async fn autocompact_with(
     // digest — a deterministic stand-in that notes the gap. This ensures
     // compaction always frees context and auto-compaction can't loop on a
     // still-full window. Mirrors Reasonix's `mechanicalFoldDigest`.
-    let (summary_text, mechanical_fold) = if request.force_mechanical {
-        (mechanical_fold_digest(messages_summarized), true)
+    let (summary_text, mechanical_fold, mechanical_reason) = if request.force_mechanical {
+        // No summarizer was attempted: the caller forced a mechanical fold
+        // (emergency recovery, or autocompact was stuck / circuit-broken).
+        (
+            mechanical_fold_digest(messages_summarized),
+            true,
+            Some("the summarizer was skipped".to_string()),
+        )
     } else {
         match summarize_with_retry(
             provider,
@@ -467,10 +479,14 @@ pub async fn autocompact_with(
         )
         .await
         {
-            Ok(text) => (text, false),
+            Ok(text) => (text, false, None),
             Err(e) => {
                 tracing::warn!(target: "nomi_agent", error = %e, "compaction summary unavailable; folding mechanically");
-                (mechanical_fold_digest(messages_summarized), true)
+                (
+                    mechanical_fold_digest(messages_summarized),
+                    true,
+                    Some(e.to_string()),
+                )
             }
         }
     };
@@ -519,6 +535,7 @@ pub async fn autocompact_with(
         messages_summarized,
         pre_compact_tokens,
         mechanical_fold,
+        mechanical_reason,
     })
 }
 

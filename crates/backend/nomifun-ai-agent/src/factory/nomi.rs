@@ -5,8 +5,9 @@ use std::sync::Arc;
 use nomi_agent::session::{Session, SessionManager};
 use nomi_config::config::{CliArgs, Config, McpServerConfig, TransportType};
 use nomifun_api_types::{
-    GatewayMcpConfig, HealthStatus, McpServerId, ModelHealthStatus, ModelTask, ModelTrait,
-    NomiBuildExtra, SessionMcpServer, SessionMcpTransport,
+    GatewayMcpConfig, HealthStatus, McpServerId, McpTransport, ModelHealthStatus, ModelTask,
+    ModelTrait, NomiBuildExtra, NomiMcpDeclarations, NomiToolPolicy, SessionMcpServer,
+    SessionMcpTransport,
 };
 use nomifun_common::{
     AppError, DelegationPolicy, ExecutionAuthority, LoopbackCapabilityLease,
@@ -15,9 +16,11 @@ use nomifun_common::{
 };
 use nomifun_db::IMcpServerRepository;
 use nomifun_db::models::McpServerRow;
+use nomifun_mcp::McpOAuthService;
 use nomifun_runtime::resolve_command_path;
 use tracing::{debug, info, warn};
 
+use crate::factory::mcp_oauth::{NomiMcpOAuthRefresher, inject_oauth_bearer};
 use crate::runtime_handle::AgentRuntimeHandle;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
@@ -34,6 +37,11 @@ use crate::types::{
 /// MCP, platform domains, knowledge mounts, autonomous goal loop or Agent
 /// delegation.  The non-empty allowlist is intentional because an empty
 /// `retain_named` list means "keep everything".
+/// Marker written only by the trusted ConversationService App Server creation
+/// seam. It is not a client-facing capability grant: factory code uses it only
+/// to subtract integrations from an already-authorized Nomi runtime.
+const APP_SERVER_CHAT_EXTRA_KEY: &str = "app_server_chat";
+
 fn apply_model_only_ceiling(overrides: &mut NomiBuildExtra) {
     overrides.computer_use = Some(false);
     overrides.browser_use = Some(false);
@@ -54,6 +62,74 @@ fn apply_model_only_ceiling(overrides: &mut NomiBuildExtra) {
     overrides.delegation_policy = DelegationPolicy::Disabled;
     // Summon loads local companion memories/skills — installation-owner only.
     overrides.summon = None;
+}
+
+/// App Server chat is an owner-visible Nomi session, but intentionally not an
+/// integration host. Keep ordinary local Agent tools available while removing
+/// every dynamic Team/Skill/MCP path before any process-owned gateway or
+/// repository-backed server configuration is considered.
+///
+/// This ceiling deliberately does **not** touch `delegation_policy`. Delegation is
+/// a first-class typed Conversation field, and the tier a Store chat runs on is
+/// decided by *which trusted seam created it*: `create_app_server_nomi_chat`
+/// writes `Disabled` (a single Agent Run gets no `nomi_delegate`), while
+/// `create_app_server_team_leader_chat` writes the Team tier. Clamping it here
+/// would make every Store chat structurally unable to delegate — including the
+/// Team Leader, whose entire purpose is to call `nomi_delegate(strategy=planned)`
+/// (`16` §7 决策 3). Forging the `app_server_chat` marker cannot widen anything
+/// either: the marker only ever subtracts, and a Conversation *without* it keeps
+/// whatever policy its own row carries.
+fn apply_app_server_chat_ceiling(overrides: &mut NomiBuildExtra) {
+    overrides.gateway_mcp_config = None;
+    // Connectors are fenced by **explicit id**, never by an absent key: `None`
+    // means "every enabled MCP server on this host" to `load_user_mcp_servers`.
+    // The trusted create seam always writes `extra.mcp_server_ids` (possibly
+    // empty), so this only backstops a legacy/malformed row — and it must not
+    // wipe the fence when the Definition did bind Connectors.
+    if overrides.mcp_server_ids.is_none() {
+        overrides.mcp_server_ids = Some(Vec::new());
+    }
+    overrides.session_mcp_servers.clear();
+    overrides.summon = None;
+}
+
+/// Apply the host's global tool policy on top of whatever the session asked for.
+///
+/// This is the *only* place the policy subtracts from a session, and it runs
+/// unconditionally: every field can only narrow, so it composes safely with both
+/// the App Server ceiling above and the secondary-principal model-only ceiling
+/// below (order between them cannot matter).
+///
+/// Deliberately split from `[tools]`-driven switches the *engine* owns:
+/// `web` / `plan` / `lsp` are read from `Config::resolve` in the manager, so
+/// they are applied there, not here (see `NomiResolvedConfig::tool_policy`).
+fn apply_host_tool_policy(overrides: &mut NomiBuildExtra, policy: &NomiToolPolicy) {
+    if !policy.computer {
+        overrides.computer_use = Some(false);
+    }
+    if !policy.browser {
+        overrides.browser_use = Some(false);
+    }
+    // Companion sessions own memory/skill tools and a persona prompt; without
+    // the domain there is no companion binding to host.
+    if !policy.domains.companion {
+        overrides.companion = false;
+        overrides.companion_id = None;
+        overrides.summon = None;
+    }
+    // Knowledge mounts drive both the retrieval tools and the system-prompt
+    // section, so clearing the mounts is what actually removes the surface
+    // (a `None` sink alone would leave `knowledge_search` visible).
+    if !policy.domains.knowledge {
+        overrides.knowledge_mounts.clear();
+        overrides.knowledge_writeback = false;
+        overrides.knowledge_channel_write_enabled = false;
+    }
+    // Goals come from conversation config/DB; both the fresh spec and the
+    // restore snapshot must go, or `update_goal` stays registered.
+    if !policy.domains.goal {
+        overrides.goal = None;
+    }
 }
 
 fn retarget_resumed_session(session: &mut Session, provider: &str, model: &str) -> bool {
@@ -134,6 +210,11 @@ pub(super) async fn build(
     ctx: FactoryContext,
     authority: ExecutionAuthority,
 ) -> Result<AgentRuntimeHandle, AppError> {
+    let is_app_server_chat = options
+        .extra
+        .get(APP_SERVER_CHAT_EXTRA_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let mut overrides: NomiBuildExtra = serde_json::from_value(options.extra)
         .map_err(|error| AppError::BadRequest(format!("Invalid Nomi build options: {error}")))?;
     overrides.user_id = Some(options.user_id.clone());
@@ -141,6 +222,13 @@ pub(super) async fn build(
     // open-ended extra payload override execution policy.
     overrides.delegation_policy = options.delegation_policy;
     let is_instance_owner = authority.controls_host();
+    if is_app_server_chat {
+        apply_app_server_chat_ceiling(&mut overrides);
+    }
+    // Host policy is applied after the session's own request so it can only ever
+    // subtract from it, and before every capability-resolution site below so the
+    // cleared fields actually change what gets wired.
+    apply_host_tool_policy(&mut overrides, &deps.tool_policy);
 
     // Gateway entitlement is derived from the immutable principal, never from
     // persisted/open JSON. Process-owned config is injected only after the
@@ -186,7 +274,7 @@ pub(super) async fn build(
     // non-companion work sessions. The persona is never taken
     // over — the system prompt gains exactly one loading notice; memories are
     // injected per turn by a ContextContributor and stay read-only.
-    let summon_config = if is_instance_owner && !overrides.companion {
+    let summon_config = if is_instance_owner && !is_app_server_chat && !overrides.companion {
         overrides.summon.clone()
     } else {
         None
@@ -255,7 +343,7 @@ pub(super) async fn build(
                     }
                 }
             }
-            None if is_instance_owner && !overrides.companion => {
+            None if is_instance_owner && !is_app_server_chat && !overrides.companion => {
                 // A cleared (or never-set) summon unloads its manifest-owned
                 // skills on the next build. No-op without a manifest; companion
                 // threads manage their own manifest and are excluded above.
@@ -279,7 +367,8 @@ pub(super) async fn build(
 
     // A process-owned configuration object is the capability. There is no
     // serializable boolean grant that persisted or client JSON can forge.
-    let platform_gateway_entitled = is_instance_owner && overrides.allowed_tools.is_empty();
+    let platform_gateway_entitled =
+        is_instance_owner && !is_app_server_chat && overrides.allowed_tools.is_empty();
     overrides.gateway_mcp_config = if platform_gateway_entitled {
         deps.gateway_mcp_config.clone()
     } else {
@@ -294,20 +383,57 @@ pub(super) async fn build(
     }
     let has_platform_gateway = overrides.gateway_mcp_config.is_some();
 
+    // Host composition is decided once per session: either the embedded
+    // (synchronous, parallel-only) deployment or the host's durable facade owns the
+    // `nomi_delegate` name — never both, since a second registration under the same
+    // name is rejected as a duplicate route. Computed here (not just before the
+    // registration below) because the *prompt* must describe whichever deployment
+    // actually owns the name, and the prompt is assembled a few lines down.
+    let install_embedded_agent_execution = should_install_embedded_agent_execution(
+        has_platform_gateway,
+        is_instance_owner,
+        deps.embedded_agent_execution,
+    );
+    let delegate_deployment = delegate_deployment(
+        has_platform_gateway,
+        install_embedded_agent_execution,
+        is_instance_owner
+            && deps
+                .delegate_sink_provider
+                .as_ref()
+                .and_then(|slot| slot.get())
+                .is_some(),
+    );
+
     let (mut extra_mcp_servers, loopback_capability_leases) =
         resolve_mcp_servers(&overrides, &ctx.conversation_id);
+    // Host-declared servers load next, before the `mcp_servers` rows below, so a
+    // declaration wins a name collision against an imported row (that loop is
+    // first-writer-wins) while a request-level binding still outranks both.
+    // Owner-gated exactly like those rows: a declaration is a host capability.
+    merge_host_declared_mcp_servers(
+        &mut extra_mcp_servers,
+        &deps.mcp_declarations,
+        &ctx.conversation_id,
+        is_instance_owner,
+    );
+    // Connector rows load for App Server chats too, but strictly by the id fence
+    // the ceiling above established: an App Server chat with no bound Connector
+    // carries `Some(vec![])`, so this selects nothing. Session-scoped servers
+    // (a desktop-request concept) stay owner-only and are cleared by the ceiling.
     if is_instance_owner && let Some(repo) = deps.mcp_server_repo.as_ref() {
         for (name, config) in load_user_mcp_servers(
             repo.as_ref(),
             overrides.mcp_server_ids.as_deref(),
             &ctx.conversation_id,
+            deps.mcp_oauth_service.as_ref(),
         )
         .await
         {
             extra_mcp_servers.entry(name).or_insert(config);
         }
     }
-    if is_instance_owner {
+    if is_instance_owner && !is_app_server_chat {
         let enabled_session_mcp_servers = super::filter_enabled_session_mcp_servers(
             deps.mcp_server_repo.as_deref(),
             &overrides.session_mcp_servers,
@@ -318,7 +444,9 @@ pub(super) async fn build(
             &mut extra_mcp_servers,
             &enabled_session_mcp_servers,
             &ctx.conversation_id,
-        );
+            deps.mcp_oauth_service.as_ref(),
+        )
+        .await;
     }
 
     // Per-surface write policy (spec §3.2 unit 5): companion → direct, external
@@ -362,19 +490,37 @@ pub(super) async fn build(
         knowledge_write_enabled,
     );
 
-    // 持久委派提示：对普通桌面会话按 typed delegation policy 塑形，指导 Agent 在
-    // 合适场景使用统一 `nomi_delegate` 并在执行画布呈现。该策略只影响提示，不授予
-    // 工具能力或改变审批模式。伙伴、渠道/远程和对外服务走各自受限能力面。
-    let delegation_hint_available = should_inject_delegation_hint(
-        has_platform_gateway,
-        overrides.companion,
-        overrides.channel_platform.is_some(),
-    );
-    overrides.system_prompt = compose_delegation_hint(
-        overrides.system_prompt.take(),
-        delegation_hint_available,
-        overrides.delegation_policy,
-    );
+    // 持久委派提示：**必须描述实际拥有 `nomi_delegate` 这个名字的那个部署**。
+    // 同一个名字下有三种实现，能力完全不同（见 `DelegateDeployment`）：Gateway
+    // 版有 planned + parallel + `nomi_execution_get`；宿主自有持久 facade 版
+    // **只有 planned**（`host_delegate_tool.rs` 的 schema 直接拒绝其它字段）；
+    // 嵌入式版只支持 parallel、不落库，且它自己用工具描述向模型表达。所以这里按
+    // 部署挑提示，而不是按「有没有 gateway」挑——App Server（Store）会话永远没有
+    // gateway，但仍可能有宿主 facade 版，Team 的 Leader 完全依赖它。该策略只影响
+    // 提示，不授予工具能力或改变审批模式。
+    let delegation_hint = match delegate_deployment {
+        DelegateDeployment::Gateway => compose_delegation_hint(
+            overrides.system_prompt.take(),
+            should_inject_delegation_hint(
+                has_platform_gateway,
+                overrides.companion,
+                overrides.channel_platform.is_some(),
+            ),
+            overrides.delegation_policy,
+        ),
+        DelegateDeployment::HostFacade => compose_host_delegation_hint(
+            overrides.system_prompt.take(),
+            should_inject_delegation_hint(
+                true,
+                overrides.companion,
+                overrides.channel_platform.is_some(),
+            ),
+            overrides.delegation_policy,
+        ),
+        // Embedded describes itself; `None` has nothing to describe.
+        DelegateDeployment::Embedded | DelegateDeployment::None => overrides.system_prompt.take(),
+    };
+    overrides.system_prompt = delegation_hint;
 
     // Every native Nomi session — regular desktop chat, companion, IM
     // Channel Agent — must think AND reply in the
@@ -736,6 +882,14 @@ pub(super) async fn build(
                 None => None,
             },
         };
+    // Host policy: with the goal domain off, a persisted active row must not
+    // re-arm the loop either (the fresh spec was already cleared above), or
+    // `update_goal` would stay registered through the restore path.
+    let goal_resume_state = if deps.tool_policy.domains.goal {
+        goal_resume_state
+    } else {
+        None
+    };
 
     let output_ceiling = fields.output_limit;
     let reasoning_effort = resolve_session_reasoning_effort(
@@ -743,6 +897,8 @@ pub(super) async fn build(
         fields.compat_overrides.effort_levels.as_deref(),
     );
 
+    // Host composition was decided once near the top of this function (it also
+    // shapes the delegation prompt); nothing recomputes it here.
     let config = NomiResolvedConfig {
         // provider_id was validated as a canonical UUID just above.
         provider_id: ProviderId::parse(&model_selection.provider_id).expect(
@@ -814,12 +970,11 @@ pub(super) async fn build(
         // Platform Gateway owns persistent AgentExecution; secondary users
         // cannot install host execution. Only trusted no-gateway standalone
         // sessions receive the embedded adapter.
-        install_embedded_agent_execution: should_install_embedded_agent_execution(
-            has_platform_gateway,
-            is_instance_owner,
-        ),
+        install_embedded_agent_execution,
         // Per-session 工具白名单（受限角色的 Agent attempt；普通会话恒空）。
         allowed_tools: overrides.allowed_tools.clone(),
+        // 宿主级工具策略（agent-store `[tools]`；未采纳的宿主为 permissive 默认值）。
+        tool_policy: deps.tool_policy.clone(),
         // 原生文件工具写根：本地桌面全权（None），渠道会话收窄到工作区。
         // Coding profile forces workspace containment when write_root would
         // otherwise be None (local desktop unrestricted).
@@ -874,7 +1029,7 @@ pub(super) async fn build(
     // backend learning service. Owner-authority only, same posture as the
     // knowledge retrieval sinks above; the manager further gates registration
     // on mounted bases.
-    let learning_course_sink = is_instance_owner
+    let learning_course_sink = (is_instance_owner && deps.tool_policy.domains.learning)
         .then(|| deps.learning_course.clone())
         .flatten();
 
@@ -940,19 +1095,31 @@ pub(super) async fn build(
         browser_lane_binding,
         ssh_backend: ssh_session.as_ref().map(|s| Arc::clone(&s.backend)),
         ssh_lease: ssh_session.map(|s| s.lease),
+        // Engine-side OAuth refresh hook: on a 401 the MCP manager refreshes
+        // once, updates the Authorization header and retries once.
+        mcp_oauth_refresher: deps
+            .mcp_oauth_service
+            .as_ref()
+            .map(|oauth| -> Arc<dyn nomi_mcp::manager::McpOAuthRefresher> {
+                Arc::new(NomiMcpOAuthRefresher::new(oauth.clone()))
+            }),
     };
     let agent = NomiAgentManager::new_with_search_provider(
         ctx.conversation_id,
         ctx.workspace,
         config,
         resume_session,
-        is_instance_owner.then(|| deps.requirement_sink.clone()).flatten(),
+        (is_instance_owner && deps.tool_policy.domains.requirement)
+            .then(|| deps.requirement_sink.clone())
+            .flatten(),
         if is_instance_owner && overrides.companion {
             deps.companion_sink.clone()
         } else {
             None
         },
-        is_instance_owner.then(|| deps.knowledge_retrieval.clone()).flatten(),
+        (is_instance_owner && deps.tool_policy.domains.knowledge)
+            .then(|| deps.knowledge_retrieval.clone())
+            .flatten(),
         knowledge_kb_ids,
         knowledge_prelude,
         knowledge_writeback_sink,
@@ -990,6 +1157,7 @@ pub(super) async fn build(
     // secondary principal's model-only ceiling. Register them only for the
     // installation owner, after the manager has been assembled.
     if is_instance_owner
+        && deps.tool_policy.domains.cron
         && let (Some(make_sink), Some(owner_id)) =
         (deps.cron_sink_factory.as_ref(), owner_id_for_cron.as_deref())
     {
@@ -998,6 +1166,7 @@ pub(super) async fn build(
             .await;
     }
     if is_instance_owner
+        && deps.tool_policy.domains.meeting
         && let (Some(make_sink), Some(owner_id)) =
         (deps.meeting_sink_factory.as_ref(), owner_id_for_cron.as_deref())
     {
@@ -1006,10 +1175,29 @@ pub(super) async fn build(
             .await;
     }
     if is_instance_owner
+        && deps.tool_policy.domains.meeting
         && let Some(make_listen) = deps.meeting_listen_context_factory.as_ref()
     {
         agent
             .register_meeting_listen_context(make_listen(&conv_id_for_cron))
+            .await;
+    }
+    // Host-backed `nomi_delegate` (`16` §7 决策 3): the host owns a durable Agent
+    // execution facade, so its leader sessions delegate through that. Registered
+    // only when this session did **not** get the embedded deployment — one tool
+    // name, one owner. A slot that was never installed (or a host without one)
+    // registers nothing, which is the same shape as cron/meeting above.
+    if is_instance_owner
+        && !install_embedded_agent_execution
+        && let (Some(provider), Some(owner_id)) = (
+            deps.delegate_sink_provider
+                .as_ref()
+                .and_then(|slot| slot.get()),
+            owner_id_for_cron.as_deref(),
+        )
+    {
+        agent
+            .register_delegate_sink(provider.sink_for(owner_id, &conv_id_for_cron))
             .await;
     }
     // Per-turn background review (optimization 2): register the default
@@ -1451,11 +1639,56 @@ pub(crate) const DELEGATION_PREFER_PARALLEL_HINT: &str = "本会话偏好并行�
 /// WebUI 未授信、对外服务被钳制关网关等）。伙伴、渠道/远程和对外服务
 /// 都走各自的受限能力面，故一并排除。
 pub(crate) fn should_inject_delegation_hint(
-    has_gateway: bool,
+    has_durable_delegation: bool,
     is_companion: bool,
     is_channel: bool,
 ) -> bool {
-    has_gateway && !is_companion && !is_channel
+    has_durable_delegation && !is_companion && !is_channel
+}
+
+/// Which implementation owns the `nomi_delegate` tool name in this session.
+///
+/// One name, three contracts — and they are not interchangeable:
+///
+/// - [`DelegateDeployment::Gateway`] is Platform Gateway's capability surface
+///   (`planned` + `parallel` + `nomi_execution_get` reads);
+/// - [`DelegateDeployment::HostFacade`] is the host's **own** durable execution
+///   facade (`nomifun-app::app_server_delegate`, `16` §7 决策 3). Its tool schema
+///   accepts only `{strategy: "planned", goal}`;
+/// - [`DelegateDeployment::Embedded`] is the in-process engine delegate
+///   (`nomi_agent::local_delegate_tool`): `parallel` only, no persistence.
+///
+/// The distinction matters because the *prompt* must not advertise a capability
+/// the session does not have. A Store session never has the Gateway (the App
+/// Server ceiling clears `gateway_mcp_config`), so gating the hint on "has
+/// gateway" alone would leave the Team Leader with `nomi_delegate` registered and
+/// no idea it exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DelegateDeployment {
+    Gateway,
+    HostFacade,
+    Embedded,
+    None,
+}
+
+/// Exactly one deployment owns the name; this is the single place that decides
+/// which. `host_facade_available` must already include the owner check and the
+/// "embedded is off" half of the one-or-the-other rule, because the registration
+/// site below re-derives it the same way.
+pub(crate) fn delegate_deployment(
+    has_platform_gateway: bool,
+    install_embedded: bool,
+    host_facade_available: bool,
+) -> DelegateDeployment {
+    if has_platform_gateway {
+        DelegateDeployment::Gateway
+    } else if install_embedded {
+        DelegateDeployment::Embedded
+    } else if host_facade_available {
+        DelegateDeployment::HostFacade
+    } else {
+        DelegateDeployment::None
+    }
 }
 
 /// Append typed persistent-delegation guidance without replacing preset,
@@ -1482,15 +1715,45 @@ pub(crate) fn compose_delegation_hint(
     })
 }
 
+/// Planned-only guidance for a host whose `nomi_delegate` is its own durable
+/// execution facade ([`DelegateDeployment::HostFacade`]).
+///
+/// It deliberately does **not** reuse [`DELEGATION_STANDARD_HINT`]: that text
+/// teaches `strategy=parallel` and `nomi_execution_get`, and this deployment has
+/// neither. Advertising them would produce tool calls rejected by the schema.
+pub(crate) const HOST_DELEGATE_STANDARD_HINT: &str = "需要成体系拆解的复杂、多步目标时，用 `nomi_delegate(strategy=\"planned\", goal=\"…\")` 把目标交给宿主规划：宿主会基于绑定的 Team 模板生成依赖 DAG，并让成员 Agent 分工执行。这个入口只接受 `goal`——成员、并发上限、规划与重规划策略都由宿主与服务端决定，不要尝试在调用里指定它们。发出调用后立刻结束本轮，不要轮询等待，也不要重复调用；规划与执行结果会由宿主写回本会话。简单或单步问题直接作答，无需委派。";
+
+/// Append the host-facade delegation guidance without replacing preset, persona
+/// or knowledge context. Unavailable surfaces and [`DelegationPolicy::Disabled`]
+/// preserve `base` unchanged (same contract as [`compose_delegation_hint`]).
+pub(crate) fn compose_host_delegation_hint(
+    base: Option<String>,
+    available: bool,
+    policy: DelegationPolicy,
+) -> Option<String> {
+    if !available || policy == DelegationPolicy::Disabled {
+        return base;
+    }
+    Some(match base {
+        Some(existing) if !existing.is_empty() => {
+            format!("{existing}\n\n{HOST_DELEGATE_STANDARD_HINT}")
+        }
+        _ => HOST_DELEGATE_STANDARD_HINT.to_owned(),
+    })
+}
+
 /// Backend-authoritative host composition gate. It is intentionally derived
-/// from resolved runtime authority rather than user configuration: Platform
-/// Gateway owns persistent AgentExecution, and untrusted identities never
-/// receive an embedded host execution surface.
+/// from resolved runtime authority plus the host's own composition decision
+/// rather than user configuration: Platform Gateway owns durable Agent
+/// execution, a dedicated host that owns its own execution facade opts out
+/// (`AgentFactoryDeps::embedded_agent_execution`), and untrusted identities
+/// never receive an embedded host execution surface.
 pub(crate) fn should_install_embedded_agent_execution(
     has_platform_gateway: bool,
     is_instance_owner: bool,
+    host_allows_embedded: bool,
 ) -> bool {
-    !has_platform_gateway && is_instance_owner
+    host_allows_embedded && !has_platform_gateway && is_instance_owner
 }
 
 /// 原生文件工具（Write/Edit/ApplyPatch）的写根钳制解析（纯函数，可单测）。与
@@ -1571,7 +1834,16 @@ pub(crate) fn resolve_nomi_url_and_compat(
 
     if is_full_url {
         let trimmed = raw_base_url.trim_end_matches('/');
-        compat.api_path = Some("/chat/completions".to_string());
+        // The configured URL already IS the request URL (`is_full_url` means
+        // "base_url is the complete endpoint" — the same rule
+        // `nomifun-api-types::dispatch_target` applies), so the path suffix must
+        // stay empty. `nomi-providers::openai` builds
+        // `format!("{base_url}{api_path}")`, so any non-empty suffix here appends
+        // a SECOND `/chat/completions` to a URL that already ends with one.
+        // Matches the openai-responses branch above, this function's own doc
+        // comment, and the `resolve_full_url_mode_*` tests / platform snapshot in
+        // this module.
+        compat.api_path = Some(String::new());
         return (Some(trimmed.to_owned()), compat);
     }
 
@@ -1633,6 +1905,7 @@ async fn load_user_mcp_servers(
     repo: &dyn IMcpServerRepository,
     selected_ids: Option<&[McpServerId]>,
     conversation_id: &str,
+    oauth: Option<&McpOAuthService>,
 ) -> HashMap<String, McpServerConfig> {
     let rows_result = match selected_ids {
         Some(ids) => {
@@ -1660,7 +1933,24 @@ async fn load_user_mcp_servers(
         }
 
         match row_to_mcp_server_config(&row) {
-            Ok(config) => {
+            Ok(mut config) => {
+                // Request-time OAuth bearer injection for remote transports
+                // (stdio servers carry no URL; user-configured Authorization
+                // headers win). A missing token leaves the header untouched —
+                // the engine's 401-refresh path covers expiry at call time.
+                if let Some(url) = config.url.clone()
+                    && let Some(headers) = config.headers.as_mut()
+                {
+                    if let Err(error) = inject_oauth_bearer(oauth, &url, headers).await {
+                        warn!(
+                            conversation_id,
+                            mcp_server_id = %row.mcp_server_id,
+                            server_name = %row.name,
+                            %error,
+                            "user_mcp: oauth token lookup failed; continuing without injection"
+                        );
+                    }
+                }
                 servers.insert(row.name.clone(), config);
             }
             Err(err) => {
@@ -1676,6 +1966,266 @@ async fn load_user_mcp_servers(
     }
 
     servers
+}
+
+/// Merge the host's `mcp.json` declarations into this session's extra servers
+/// (`20` §7.9 / `21` D14).
+///
+/// Called **before** the `mcp_servers` rows load, because that loop uses
+/// `entry().or_insert()` (first writer wins): the declaration file is the
+/// operator's explicit intent, while a row is usually the residue of an import.
+/// A name a request-level binding already took is left alone — that caller asked
+/// for *that* server on this run.
+///
+/// `secret:NAME` references resolve here, at session build time, so a credential
+/// installed in-process is honoured exactly as it is for a row. HTTP headers are
+/// resolved too: the declaration contract points header credentials at
+/// `secret:NAME` (`20` §7.9), and a literal value simply passes through.
+///
+/// Returns early unless `is_instance_owner`: a declaration is a **host
+/// capability** — a stdio server runs a local process and a remote one can carry
+/// credentials — and a non-owner principal only ever gets a plain Nomi
+/// conversation (see `docs/architecture/data-and-storage.zh.md` §安装级执行权限).
+///
+/// `pub(crate)` so the manager-level session test can drive the real merge
+/// instead of a copy of it (`manager::nomi::agent::tests`).
+pub(crate) fn merge_host_declared_mcp_servers(
+    extra_mcp_servers: &mut HashMap<String, McpServerConfig>,
+    declarations: &NomiMcpDeclarations,
+    conversation_id: &str,
+    is_instance_owner: bool,
+) {
+    if !is_instance_owner {
+        return;
+    }
+    for declared in declarations.enabled_servers() {
+        if extra_mcp_servers.contains_key(&declared.name) {
+            continue;
+        }
+        let startup_timeout_secs = declared.startup_timeout_secs;
+        let enabled_tools = declared.enabled_tools.clone();
+        let disabled_tools = declared.disabled_tools.clone();
+        let config = match &declared.transport {
+            McpTransport::Stdio { command, args, env } => {
+                let resolved = nomifun_common::secret_ref::resolve_env(env);
+                report_missing_credentials(
+                    conversation_id,
+                    &declared.name,
+                    "env",
+                    &resolved.missing,
+                );
+                McpServerConfig {
+                    transport: TransportType::Stdio,
+                    command: Some(command.clone()),
+                    args: Some(args.clone()),
+                    env: Some(resolved.env),
+                    url: None,
+                    headers: None,
+                    // Eager schemas, matching how a `mcp_servers` row is mapped.
+                    deferred: Some(false),
+                    request_timeout_secs: declared.request_timeout_secs,
+                    startup_timeout_secs,
+                    // Already absolute: the host resolved it against the
+                    // declaration file when the file was loaded.
+                    cwd: declared.cwd.clone(),
+                    enabled_tools,
+                    disabled_tools,
+                }
+            }
+            McpTransport::Sse { url, headers } => {
+                let headers = declared_remote_headers(
+                    conversation_id,
+                    &declared.name,
+                    headers,
+                    declared.bearer_token_env_var.as_deref(),
+                );
+                McpServerConfig {
+                    transport: TransportType::Sse,
+                    command: None,
+                    args: None,
+                    env: None,
+                    url: Some(url.clone()),
+                    headers: Some(headers),
+                    deferred: Some(false),
+                    request_timeout_secs: declared.request_timeout_secs,
+                    startup_timeout_secs,
+                    cwd: None,
+                    enabled_tools,
+                    disabled_tools,
+                }
+            }
+            McpTransport::Http { url, headers } => {
+                let headers = declared_remote_headers(
+                    conversation_id,
+                    &declared.name,
+                    headers,
+                    declared.bearer_token_env_var.as_deref(),
+                );
+                McpServerConfig {
+                    transport: TransportType::StreamableHttp,
+                    command: None,
+                    args: None,
+                    env: None,
+                    url: Some(url.clone()),
+                    headers: Some(headers),
+                    deferred: Some(false),
+                    request_timeout_secs: declared.request_timeout_secs,
+                    startup_timeout_secs,
+                    cwd: None,
+                    enabled_tools,
+                    disabled_tools,
+                }
+            }
+        };
+        extra_mcp_servers.insert(declared.name.clone(), config);
+    }
+}
+
+/// The header map a declared remote server connects with: `secret:<NAME>`
+/// references resolved in memory, then the optional `bearerTokenEnvVar` turned
+/// into an `Authorization` header.
+fn declared_remote_headers(
+    conversation_id: &str,
+    server_name: &str,
+    headers: &HashMap<String, String>,
+    bearer_token_env_var: Option<&str>,
+) -> HashMap<String, String> {
+    let mut headers = resolve_header_secrets(Some(conversation_id), server_name, headers);
+    if bearer_token_env_var.is_some() {
+        // Cloned only when a bearer token was actually declared; the
+        // `resolve_header_secrets` call above already clones the same map once.
+        let credentials = nomifun_common::secret_ref::credentials();
+        apply_bearer_token(
+            conversation_id,
+            server_name,
+            bearer_token_env_var,
+            &mut headers,
+            &credentials,
+        );
+    }
+    headers
+}
+
+/// Turn `bearerTokenEnvVar` into `Authorization: Bearer <value>`.
+///
+/// The field names the variable rather than carrying the token, so the token is
+/// still never persisted — the same rule as `secret:<NAME>`, with the lookup
+/// precedence owned by `nomifun_common::secret_ref` (`config.toml [credentials]`
+/// first, process environment as the fallback).
+///
+/// An explicitly declared `Authorization` header wins, because the declaration
+/// said so literally. A name that resolves to nothing omits the header and says
+/// which name failed — never a literal `Bearer <name>` and never an empty value.
+///
+/// The credential map is a parameter rather than a global read so both rules are
+/// assertable without mutating the process-wide store.
+fn apply_bearer_token(
+    conversation_id: &str,
+    server_name: &str,
+    bearer_token_env_var: Option<&str>,
+    headers: &mut HashMap<String, String>,
+    credentials: &HashMap<String, String>,
+) {
+    let Some(name) = bearer_token_env_var else {
+        return;
+    };
+    if headers.contains_key("Authorization") {
+        warn!(
+            conversation_id,
+            server_name,
+            env_var = name,
+            "host_mcp: declaration sets both `headers.Authorization` and \
+             `bearerTokenEnvVar`; the explicit header wins"
+        );
+        return;
+    }
+    match nomifun_common::secret_ref::lookup_with(name, credentials) {
+        Some(token) => {
+            headers.insert("Authorization".to_owned(), format!("Bearer {token}"));
+        }
+        None => {
+            warn!(
+                conversation_id,
+                server_name,
+                env_var = name,
+                "host_mcp: `bearerTokenEnvVar` names a variable that is neither in \
+                 `[credentials]` nor in the process environment; sending no Authorization header"
+            );
+        }
+    }
+}
+
+/// Resolve `secret:<NAME>` references in a header map exactly as the env map is
+/// resolved, and report the shapes that *look* like a reference but are not one.
+///
+/// The DB-row and session-snapshot paths used to hand headers to the engine
+/// verbatim while resolving `env`, so a reference written into a header — the
+/// natural way to supply a bearer token without persisting it — was sent as the
+/// literal text and authentication failed with no local signal. All three paths
+/// (DB row, session snapshot, `mcp.json` declaration) now go through here.
+///
+/// A reference has to be the **whole** value (`secret_ref::parse_secret_ref`),
+/// so `Authorization: Bearer secret:TOKEN` is not one; that shape is the likeliest
+/// mistake and is therefore named in a warning. The header *name* is logged, never
+/// the value.
+fn resolve_header_secrets(
+    conversation_id: Option<&str>,
+    server_name: &str,
+    headers: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let resolved = nomifun_common::secret_ref::resolve_env(headers);
+    if !resolved.missing.is_empty() {
+        match conversation_id {
+            Some(conversation_id) => {
+                report_missing_credentials(
+                    conversation_id,
+                    server_name,
+                    "headers",
+                    &resolved.missing,
+                );
+            }
+            None => warn!(
+                server_name,
+                field = "headers",
+                missing = ?resolved.missing,
+                "host_mcp: unresolved credential references; omitting them"
+            ),
+        }
+    }
+    for (name, value) in headers {
+        let is_a_reference =
+            nomifun_common::secret_ref::parse_secret_ref(value).is_some();
+        if !is_a_reference && value.contains(nomifun_common::secret_ref::SECRET_PREFIX) {
+            warn!(
+                server_name,
+                header = %name,
+                "host_mcp: a header value contains `secret:` but is not exactly a \
+                 `secret:<NAME>` reference, so it is sent literally; use the whole value as the \
+                 reference, or `bearerTokenEnvVar` for an `Authorization: Bearer <token>` header"
+            );
+        }
+    }
+    resolved.env
+}
+
+/// The name of an unresolved reference is not a secret, so it is safe to log;
+/// the value never was available. The variable is omitted rather than sent as
+/// the literal `secret:NAME`.
+fn report_missing_credentials(
+    conversation_id: &str,
+    server_name: &str,
+    field: &str,
+    missing: &[String],
+) {
+    if !missing.is_empty() {
+        warn!(
+            conversation_id,
+            server_name,
+            field,
+            missing = ?missing,
+            "host_mcp: unresolved credential references; omitting them"
+        );
+    }
 }
 
 fn should_load_user_mcp_row(row: &McpServerRow, selected_ids: Option<&[McpServerId]>) -> bool {
@@ -1715,16 +2265,32 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
+            // `17` §6 / `21` D5=C: the persisted row holds `secret:NAME`
+            // references, never values. Resolve them in memory right before the
+            // child is spawned; a reference with no credential is omitted.
+            let env = nomifun_common::secret_ref::resolve_env(&env);
+            if !env.missing.is_empty() {
+                warn!(
+                    mcp_server_id = %row.mcp_server_id,
+                    server_name = %row.name,
+                    missing = ?env.missing,
+                    "user_mcp: unresolved credential references; omitting them"
+                );
+            }
 
             Ok(McpServerConfig {
                 transport: TransportType::Stdio,
                 command: Some(resolved_command),
                 args: Some(args),
-                env: Some(env),
+                env: Some(env.env),
                 url: None,
                 headers: None,
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         "http" | "streamable_http" => {
@@ -1741,6 +2307,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
+            let headers = resolve_header_secrets(None, &row.name, &headers);
 
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
@@ -1751,6 +2318,10 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         "sse" => {
@@ -1767,6 +2338,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
+            let headers = resolve_header_secrets(None, &row.name, &headers);
 
             Ok(McpServerConfig {
                 transport: TransportType::Sse,
@@ -1777,6 +2349,10 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         other => Err(format!("unsupported transport_type: {other}")),
@@ -1791,73 +2367,116 @@ fn session_server_to_mcp_server_config(
             if command.is_empty() {
                 return Err("stdio: missing command".to_owned());
             }
+            // `17` §6 / `21` D5=C: resolve `secret:NAME` references from a
+            // session-carried snapshot just as for a persisted row.
+            let resolved = nomifun_common::secret_ref::resolve_env(env);
+            if !resolved.missing.is_empty() {
+                warn!(
+                    server_name = %server.name,
+                    missing = ?resolved.missing,
+                    "user_mcp: unresolved credential references; omitting them"
+                );
+            }
             Ok(McpServerConfig {
                 transport: TransportType::Stdio,
                 command: Some(resolve_stdio_command(command)),
                 args: Some(args.clone()),
-                env: Some(env.clone()),
+                env: Some(resolved.env),
                 url: None,
                 headers: None,
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         SessionMcpTransport::Http { url, headers } => {
             if url.is_empty() {
                 return Err("http: missing url".to_owned());
             }
+            let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
                 command: None,
                 args: None,
                 env: None,
                 url: Some(url.clone()),
-                headers: Some(headers.clone()),
+                headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         SessionMcpTransport::Sse { url, headers } => {
             if url.is_empty() {
                 return Err("sse: missing url".to_owned());
             }
+            let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::Sse,
                 command: None,
                 args: None,
                 env: None,
                 url: Some(url.clone()),
-                headers: Some(headers.clone()),
+                headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         SessionMcpTransport::StreamableHttp { url, headers } => {
             if url.is_empty() {
                 return Err("streamable_http: missing url".to_owned());
             }
+            let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
                 command: None,
                 args: None,
                 env: None,
                 url: Some(url.clone()),
-                headers: Some(headers.clone()),
+                headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
     }
 }
 
-fn merge_session_snapshot_mcp_servers(
+async fn merge_session_snapshot_mcp_servers(
     extra_mcp_servers: &mut HashMap<String, McpServerConfig>,
     session_mcp_servers: &[SessionMcpServer],
     conversation_id: &str,
+    oauth: Option<&McpOAuthService>,
 ) {
     for server in session_mcp_servers {
         match session_server_to_mcp_server_config(server) {
-            Ok(config) => {
+            Ok(mut config) => {
+                if let Some(url) = config.url.clone()
+                    && let Some(headers) = config.headers.as_mut()
+                {
+                    if let Err(error) = inject_oauth_bearer(oauth, &url, headers).await {
+                        warn!(
+                            conversation_id = %conversation_id,
+                            mcp_server_id = %server.mcp_server_id,
+                            server_name = %server.name,
+                            %error,
+                            "session_mcp: oauth token lookup failed; continuing without injection"
+                        );
+                    }
+                }
                 if extra_mcp_servers
                     .insert(server.name.clone(), config)
                     .is_some()
@@ -1975,6 +2594,10 @@ fn gateway_mcp_to_config(
         headers: None,
         deferred: Some(true),
         request_timeout_secs: None,
+        startup_timeout_secs: None,
+        cwd: None,
+        enabled_tools: None,
+        disabled_tools: None,
     };
 
     Some((
@@ -2089,8 +2712,203 @@ mod tests {
     }
 
     #[test]
-    fn secondary_nomi_session_is_model_only() {
+    fn app_server_chat_ceiling_clears_integrations_and_normalises_the_connector_fence() {
         let mcp_server_id = McpServerId::new();
+        let mut overrides = NomiBuildExtra {
+            // Absent on purpose: the ceiling must turn it into an explicit empty
+            // fence, because `None` would bind every enabled host MCP server.
+            mcp_server_ids: None,
+            session_mcp_servers: vec![SessionMcpServer {
+                mcp_server_id,
+                name: "test-mcp".into(),
+                transport: SessionMcpTransport::Stdio {
+                    command: "server".into(),
+                    args: Vec::new(),
+                    env: Default::default(),
+                },
+            }],
+            summon: Some(nomifun_api_types::SummonConfig {
+                companion_id: "0190f5fe-7c00-7a00-8abc-012345678969".into(),
+                memory_ids: vec![],
+                skill_exclusions: vec![],
+                summoned_at: 1,
+            }),
+            delegation_policy: DelegationPolicy::Automatic,
+            ..Default::default()
+        };
+
+        apply_app_server_chat_ceiling(&mut overrides);
+
+        assert!(overrides.gateway_mcp_config.is_none());
+        // The fence, not `None`: `None` would mean "bind every enabled host MCP
+        // server" (see `load_user_mcp_servers`), which is the opposite of intent.
+        assert_eq!(
+            overrides.mcp_server_ids,
+            Some(Vec::new()),
+            "an App Server chat with no bound Connector must bind none, not all"
+        );
+        assert!(overrides.session_mcp_servers.is_empty());
+        assert!(overrides.summon.is_none());
+        assert_eq!(
+            overrides.delegation_policy,
+            DelegationPolicy::Automatic,
+            "the ceiling must not clamp the Conversation's own typed delegation tier"
+        );
+    }
+
+    /// The delegation tier is the create seam's decision, never the ceiling's:
+    /// whether a Store chat may delegate is already fully expressed by the
+    /// Conversation row the trusted seam wrote, and the ceiling must leave it
+    /// alone in *both* directions.
+    #[test]
+    fn app_server_chat_ceiling_leaves_the_delegation_tier_untouched() {
+        let mut disabled = NomiBuildExtra {
+            delegation_policy: DelegationPolicy::Disabled,
+            ..Default::default()
+        };
+        apply_app_server_chat_ceiling(&mut disabled);
+        assert_eq!(disabled.delegation_policy, DelegationPolicy::Disabled);
+
+        let mut prefer_parallel = NomiBuildExtra {
+            delegation_policy: DelegationPolicy::PreferParallel,
+            ..Default::default()
+        };
+        apply_app_server_chat_ceiling(&mut prefer_parallel);
+        assert_eq!(
+            prefer_parallel.delegation_policy,
+            DelegationPolicy::PreferParallel,
+            "a Team Leader tier must survive the ceiling"
+        );
+    }
+
+    /// Definition-bound Connectors must survive the ceiling: it may only add the
+    /// empty fence when the key is absent, never overwrite a real binding.
+    #[test]
+    fn app_server_chat_ceiling_keeps_bound_connectors() {
+        let bound = McpServerId::new();
+        let mut overrides = NomiBuildExtra {
+            mcp_server_ids: Some(vec![bound.clone()]),
+            ..Default::default()
+        };
+
+        apply_app_server_chat_ceiling(&mut overrides);
+
+        assert_eq!(overrides.mcp_server_ids, Some(vec![bound]));
+    }
+
+    /// A session that opts into everything the host policy is able to remove.
+    fn fully_opted_in_session() -> NomiBuildExtra {
+        NomiBuildExtra {
+            computer_use: Some(true),
+            browser_use: Some(true),
+            companion: true,
+            companion_id: Some("0190f5fe-7c00-7a00-8abc-012345678969".into()),
+            summon: Some(nomifun_api_types::SummonConfig {
+                companion_id: "0190f5fe-7c00-7a00-8abc-012345678969".into(),
+                memory_ids: vec![],
+                skill_exclusions: vec![],
+                summoned_at: 1,
+            }),
+            knowledge_mounts: vec![nomifun_api_types::KnowledgeMountInfo {
+                knowledge_base_id: nomifun_common::KnowledgeBaseId::new(),
+                name: "test knowledge".into(),
+                description: "mount".into(),
+                rel_path: ".flowy/knowledge/test".into(),
+                toc: Vec::new(),
+                summary: None,
+                live_sources: Vec::new(),
+            }],
+            knowledge_writeback: true,
+            knowledge_channel_write_enabled: true,
+            goal: Some(nomifun_api_types::NomiGoalSpec {
+                objective: "finish the task".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn permissive_host_policy_changes_nothing() {
+        let mut overrides = fully_opted_in_session();
+        apply_host_tool_policy(&mut overrides, &NomiToolPolicy::default());
+
+        assert_eq!(overrides.computer_use, Some(true));
+        assert_eq!(overrides.browser_use, Some(true));
+        assert!(overrides.companion && overrides.companion_id.is_some());
+        assert!(overrides.summon.is_some());
+        assert_eq!(overrides.knowledge_mounts.len(), 1);
+        assert!(overrides.knowledge_writeback && overrides.knowledge_channel_write_enabled);
+        assert!(overrides.goal.is_some());
+    }
+
+    /// The host policy subtracts exactly the families it names and leaves every
+    /// other opt-in alone — it is not a ceiling that resets the session.
+    #[test]
+    fn host_tool_policy_subtracts_only_the_named_families() {
+        use nomifun_api_types::NomiToolDomains;
+
+        let mut overrides = fully_opted_in_session();
+        apply_host_tool_policy(
+            &mut overrides,
+            &NomiToolPolicy {
+                computer: false,
+                browser: false,
+                domains: NomiToolDomains {
+                    companion: false,
+                    knowledge: false,
+                    goal: false,
+                    // Deliberately left on: these must survive untouched.
+                    cron: true,
+                    meeting: true,
+                    learning: true,
+                    media: true,
+                    requirement: true,
+                },
+                ..NomiToolPolicy::default()
+            },
+        );
+
+        // `Some(false)` (not `None`) is what defeats the coding-profile branch in
+        // the computer/browser resolution further down.
+        assert_eq!(overrides.computer_use, Some(false));
+        assert_eq!(overrides.browser_use, Some(false));
+        assert!(
+            !overrides.companion && overrides.companion_id.is_none(),
+            "without the companion domain there is no binding to host"
+        );
+        assert!(overrides.summon.is_none());
+        assert!(overrides.knowledge_mounts.is_empty());
+        assert!(!overrides.knowledge_writeback && !overrides.knowledge_channel_write_enabled);
+        assert!(overrides.goal.is_none());
+    }
+
+    /// `web` / `plan` / `lsp` are deliberately *not* handled here: the engine owns
+    /// them through its own config file, and the manager applies them after
+    /// `Config::resolve`. Turning them off in the policy must not touch the
+    /// session's build extra.
+    #[test]
+    fn engine_owned_switches_are_left_to_the_manager() {
+        let mut overrides = fully_opted_in_session();
+        let before = overrides.clone();
+        apply_host_tool_policy(
+            &mut overrides,
+            &NomiToolPolicy {
+                web: false,
+                plan: false,
+                lsp: false,
+                ..NomiToolPolicy::default()
+            },
+        );
+
+        assert_eq!(overrides.computer_use, before.computer_use);
+        assert_eq!(overrides.browser_use, before.browser_use);
+        assert_eq!(overrides.companion, before.companion);
+        assert_eq!(overrides.goal.is_some(), before.goal.is_some());
+    }
+
+    #[test]
+    fn secondary_nomi_session_is_model_only() {        let mcp_server_id = McpServerId::new();
         let mut overrides = NomiBuildExtra {
             computer_use: Some(true),
             browser_use: Some(true),
@@ -2620,8 +3438,8 @@ mod tests {
         assert!(leases.is_empty());
     }
 
-    #[test]
-    fn session_snapshot_overrides_repo_backed_mcp_config() {
+    #[tokio::test]
+    async fn session_snapshot_overrides_repo_backed_mcp_config() {
         let mut servers = HashMap::from([(
             "demo-mcp".to_owned(),
             McpServerConfig {
@@ -2633,6 +3451,10 @@ mod tests {
                 headers: None,
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         )]);
 
@@ -2646,7 +3468,7 @@ mod tests {
             },
         }];
 
-        merge_session_snapshot_mcp_servers(&mut servers, &snapshot, "conv-override");
+        merge_session_snapshot_mcp_servers(&mut servers, &snapshot, "conv-override", None).await;
 
         let server = servers.get("demo-mcp").expect("snapshot should remain");
         assert_eq!(server.transport, TransportType::Stdio);
@@ -2666,6 +3488,347 @@ mod tests {
             server.env.as_ref().and_then(|env| env.get("TOKEN")),
             Some(&"abc".to_owned())
         );
+    }
+
+    fn declarations_from(source: &str) -> NomiMcpDeclarations {
+        let declarations = NomiMcpDeclarations::parse(source).expect("declarations must parse");
+        assert!(
+            declarations.rejected.is_empty(),
+            "unexpected rejections: {:?}",
+            declarations.rejected
+        );
+        declarations
+    }
+
+    /// `~/.agent-store/mcp.json` entries reach a session with every transport
+    /// mapped, the per-server timeout applied and disabled entries left out.
+    #[test]
+    fn host_declarations_reach_the_session_and_map_every_transport() {
+        let declarations = declarations_from(
+            r#"{ "mcpServers": {
+                 "filesystem": { "command": "npx", "args": ["-y", "srv"], "env": { "TOKEN": "literal" }, "toolTimeoutMs": 2500 },
+                 "linear": { "url": "https://x/mcp", "headers": { "X-Tenant": "acme" } },
+                 "legacy": { "transport": "sse", "url": "https://x/sse" },
+                 "off": { "command": "never", "enabled": false }
+               } }"#,
+        );
+
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(&mut servers, &declarations, "conv-decl", true);
+
+        assert_eq!(
+            servers.len(),
+            3,
+            "the disabled entry must not be merged: {servers:?}"
+        );
+        assert!(!servers.contains_key("off"));
+
+        let filesystem = &servers["filesystem"];
+        assert_eq!(filesystem.transport, TransportType::Stdio);
+        assert_eq!(filesystem.command.as_deref(), Some("npx"));
+        assert_eq!(
+            filesystem.args.as_deref(),
+            Some(&["-y".to_owned(), "srv".to_owned()][..])
+        );
+        // A literal value passes through the `secret:` resolver untouched.
+        assert_eq!(
+            filesystem
+                .env
+                .as_ref()
+                .and_then(|env| env.get("TOKEN"))
+                .map(String::as_str),
+            Some("literal")
+        );
+        // 2500ms rounds up to the engine's whole-second granularity.
+        assert_eq!(filesystem.request_timeout_secs, Some(3));
+        assert_eq!(filesystem.deferred, Some(false));
+
+        assert_eq!(servers["linear"].transport, TransportType::StreamableHttp);
+        assert_eq!(servers["linear"].url.as_deref(), Some("https://x/mcp"));
+        assert_eq!(
+            servers["linear"]
+                .headers
+                .as_ref()
+                .and_then(|headers| headers.get("X-Tenant"))
+                .map(String::as_str),
+            Some("acme")
+        );
+        assert_eq!(servers["legacy"].transport, TransportType::Sse);
+    }
+
+    /// A declared entry's stdio extras and tool filters reach the engine config
+    /// verbatim, so the engine stays the single place they take effect: `cwd` for
+    /// the child process, the filters inside `nomi-mcp`'s registration.
+    #[test]
+    fn declared_extras_reach_the_engine_config() {
+        let declarations = declarations_from(
+            r#"{ "mcpServers": {
+                 "filesystem": {
+                   "command": "npx",
+                   "cwd": "/srv/data",
+                   "startupTimeoutMs": 5000,
+                   "enabledTools": ["read_file"],
+                   "disabledTools": ["write_file"]
+                 },
+                 "linear": { "url": "https://x/mcp" }
+               } }"#,
+        );
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(&mut servers, &declarations, "conv-extras", true);
+
+        let filesystem = &servers["filesystem"];
+        assert_eq!(filesystem.cwd.as_deref(), Some("/srv/data"));
+        assert_eq!(filesystem.startup_timeout_secs, Some(5));
+        assert_eq!(filesystem.enabled_tools, Some(vec!["read_file".to_owned()]));
+        assert_eq!(filesystem.disabled_tools, Some(vec!["write_file".to_owned()]));
+
+        // The remote entry declares none of them, and gains none by accident.
+        let linear = &servers["linear"];
+        assert!(linear.cwd.is_none());
+        assert!(linear.enabled_tools.is_none());
+        assert!(linear.disabled_tools.is_none());
+        assert!(linear.startup_timeout_secs.is_none());
+    }
+
+    /// `bearerTokenEnvVar` names a credential instead of carrying it, and becomes
+    /// a real `Authorization: Bearer …` header — with an explicit header winning
+    /// and an unresolvable name omitting the header rather than inventing one.
+    #[test]
+    fn bearer_token_env_var_becomes_an_authorization_header() {
+        let credentials = HashMap::from([("GITHUB_TOKEN".to_owned(), "s3cr3t".to_owned())]);
+
+        let mut headers = HashMap::new();
+        apply_bearer_token(
+            "conv-bearer",
+            "linear",
+            Some("GITHUB_TOKEN"),
+            &mut headers,
+            &credentials,
+        );
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer s3cr3t")
+        );
+
+        // A declared `Authorization` header wins: the declaration said so literally.
+        let mut headers = HashMap::from([("Authorization".to_owned(), "Basic abc".to_owned())]);
+        apply_bearer_token(
+            "conv-bearer",
+            "linear",
+            Some("GITHUB_TOKEN"),
+            &mut headers,
+            &credentials,
+        );
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Basic abc")
+        );
+
+        // A name with no value omits the header — never a literal `Bearer <name>`.
+        let mut headers = HashMap::new();
+        apply_bearer_token(
+            "conv-bearer",
+            "linear",
+            Some("__NOMIFUN_DEFINITELY_UNSET__"),
+            &mut headers,
+            &credentials,
+        );
+        assert!(headers.is_empty(), "{headers:?}");
+
+        let mut headers = HashMap::new();
+        apply_bearer_token("conv-bearer", "linear", None, &mut headers, &credentials);
+        assert!(headers.is_empty(), "{headers:?}");
+    }
+
+    /// Every path that builds an engine config resolves `secret:<NAME>` in
+    /// **headers**, not only in `env`. A reference written into a header used to be
+    /// forwarded verbatim from a DB row or a session snapshot, so the literal text
+    /// was sent and the remote end answered 401 with nothing local to explain it.
+    #[test]
+    fn a_header_reference_resolves_on_every_path() {
+        let declarations = declarations_from(
+            r#"{ "mcpServers": {
+                 "linear": { "url": "https://x/mcp", "headers": {
+                   "Authorization": "secret:__NOMIFUN_DEFINITELY_UNSET__",
+                   "X-Tenant": "acme"
+                 } }
+               } }"#,
+        );
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(&mut servers, &declarations, "conv-headers", true);
+        let headers = servers["linear"].headers.as_ref().expect("headers");
+        assert!(
+            !headers.contains_key("Authorization"),
+            "an unresolvable reference is omitted, never sent literally: {headers:?}"
+        );
+        assert_eq!(headers.get("X-Tenant").map(String::as_str), Some("acme"));
+
+        // The session-snapshot path calls this same helper.
+        let resolved = resolve_header_secrets(
+            None,
+            "linear",
+            &HashMap::from([(
+                "Authorization".to_owned(),
+                "secret:__NOMIFUN_DEFINITELY_UNSET__".to_owned(),
+            )]),
+        );
+        assert!(resolved.is_empty(), "{resolved:?}");
+
+        // `Bearer secret:X` is *not* a whole-value reference, so it is forwarded
+        // and only warned about — the shape a user is likeliest to write, and the
+        // reason that warning exists.
+        let resolved = resolve_header_secrets(
+            None,
+            "linear",
+            &HashMap::from([("Authorization".to_owned(), "Bearer secret:X".to_owned())]),
+        );
+        assert_eq!(
+            resolved.get("Authorization").map(String::as_str),
+            Some("Bearer secret:X")
+        );
+    }
+
+    /// A persisted `mcp_servers` row is not a weaker path than a declaration: it
+    /// goes through the same header resolution.
+    #[test]
+    fn a_persisted_row_resolves_its_headers_too() {
+        let row = McpServerRow {
+            mcp_server_id: "0192f000-0000-7000-8000-000000000000".to_owned(),
+            name: "linear".to_owned(),
+            description: None,
+            enabled: true,
+            transport_type: "http".to_owned(),
+            transport_config: serde_json::json!({
+                "url": "https://x/mcp",
+                "headers": {
+                    "X-Tenant": "acme",
+                    "Authorization": "secret:__NOMIFUN_DEFINITELY_UNSET__"
+                }
+            })
+            .to_string(),
+            tools: None,
+            last_test_status: "disconnected".to_owned(),
+            last_connected: None,
+            original_json: None,
+            builtin: false,
+            deleted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        let config = row_to_mcp_server_config(&row).expect("row must map");
+        let headers = config.headers.as_ref().expect("headers");
+        assert!(
+            !headers.contains_key("Authorization"),
+            "the row path resolves references instead of forwarding them: {headers:?}"
+        );
+        assert_eq!(headers.get("X-Tenant").map(String::as_str), Some("acme"));
+    }
+
+    /// The declaration merge never clobbers a name that is already taken. In the
+    /// factory that name is either a request-level binding (merged before it) or
+    /// a `mcp_servers` row is *skipped* by the same rule — declarations are
+    /// merged first and that loop is `entry().or_insert(...)`.
+    ///
+    /// The two steps are mirrored here because the ordering lives at the call
+    /// site; the end-to-end shape is covered by the real-binary run recorded in
+    /// `docs/agent-store/20-tool-injection-policy.zh.md` §9.3.
+    #[test]
+    fn host_declarations_never_clobber_a_name_that_is_already_taken() {
+        let declarations =
+            declarations_from(r#"{ "mcpServers": { "shared": { "command": "from-file" } } }"#);
+
+        // (1) Request-level binding first: the declared server must not replace it.
+        let mut bound = HashMap::from([(
+            "shared".to_owned(),
+            McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some("from-request".into()),
+                args: None,
+                env: None,
+                url: None,
+                headers: None,
+                deferred: Some(false),
+                request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
+            },
+        )]);
+        merge_host_declared_mcp_servers(&mut bound, &declarations, "conv-bound", true);
+        assert_eq!(bound["shared"].command.as_deref(), Some("from-request"));
+
+        // (2) Declarations first, then a repo row via the production rule: the
+        // declaration owns the name, so the row cannot overwrite it.
+        let mut merged = HashMap::new();
+        merge_host_declared_mcp_servers(&mut merged, &declarations, "conv-row", true);
+        merged.entry("shared".to_owned()).or_insert(McpServerConfig {
+            transport: TransportType::Stdio,
+            command: Some("from-row".into()),
+            args: None,
+            env: None,
+            url: None,
+            headers: None,
+            deferred: Some(false),
+            request_timeout_secs: None,
+            startup_timeout_secs: None,
+            cwd: None,
+            enabled_tools: None,
+            disabled_tools: None,
+        });
+        assert_eq!(merged["shared"].command.as_deref(), Some("from-file"));
+    }
+
+    /// A declaration is a host capability (a stdio server runs a local process),
+    /// so a non-owner principal must not receive one — the same gate the
+    /// `mcp_servers` rows already sit behind.
+    #[test]
+    fn host_declarations_are_owner_gated() {
+        let declarations =
+            declarations_from(r#"{ "mcpServers": { "filesystem": { "command": "npx" } } }"#);
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(&mut servers, &declarations, "conv-secondary", false);
+        assert!(servers.is_empty(), "{servers:?}");
+    }
+
+    /// The default (a host that never opted in, or a `mcp.json` that is absent
+    /// or broken) declares nothing and therefore changes nothing.
+    #[test]
+    fn empty_declarations_are_a_no_op() {
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(
+            &mut servers,
+            &NomiMcpDeclarations::default(),
+            "conv-empty",
+            true,
+        );
+        assert!(servers.is_empty());
+    }
+
+    /// The §7.9 key rules (length + charset) exist so that a user's whole-server
+    /// pattern `mcp__<key>__*` really addresses **every** tool of a declared
+    /// server. This is the cross-crate half of that promise: the pattern is
+    /// matched against the engine's real canonical tool name, for every accepted
+    /// key length and for tool names long enough to force slug truncation.
+    #[test]
+    fn declaration_keys_stay_addressable_by_a_whole_server_pattern() {
+        use nomifun_api_types::MAX_DECLARATION_KEY_LEN;
+
+        for length in 1..=MAX_DECLARATION_KEY_LEN {
+            let key = "k".repeat(length);
+            let pattern = format!("mcp__{key}__");
+            for tool in [
+                "read",
+                "a_very_long_tool_name_that_will_definitely_be_truncated_by_the_slug_budget",
+            ] {
+                let canonical = nomi_mcp::tool_proxy::canonical_mcp_display_name(&key, tool);
+                assert!(
+                    canonical.starts_with(&pattern),
+                    "`mcp__{key}__*` must match {canonical} (key length {length})"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2760,9 +3923,12 @@ mod tests {
 
     #[test]
     fn embedded_agent_execution_requires_trusted_no_gateway_host() {
-        assert!(should_install_embedded_agent_execution(false, true));
-        assert!(!should_install_embedded_agent_execution(true, true));
-        assert!(!should_install_embedded_agent_execution(false, false));
+        assert!(should_install_embedded_agent_execution(false, true, true));
+        assert!(!should_install_embedded_agent_execution(true, true, true));
+        assert!(!should_install_embedded_agent_execution(false, false, true));
+        // A host that owns its own durable execution facade opts out even when it
+        // is the installation owner and runs no gateway.
+        assert!(!should_install_embedded_agent_execution(false, true, false));
     }
 
     #[test]
@@ -2827,6 +3993,67 @@ mod tests {
         assert_eq!(
             super::compose_delegation_hint(base.clone(), true, DelegationPolicy::Disabled),
             base
+        );
+    }
+
+    /// One tool name, exactly one owner, and the precedence is the registration
+    /// precedence: Gateway wins, then the embedded engine, then the host facade.
+    #[test]
+    fn exactly_one_delegate_deployment_owns_the_name() {
+        assert_eq!(
+            delegate_deployment(true, false, true),
+            DelegateDeployment::Gateway,
+            "the Gateway owns the name whenever it is wired"
+        );
+        assert_eq!(delegate_deployment(false, true, true), DelegateDeployment::Embedded);
+        assert_eq!(
+            delegate_deployment(false, false, true),
+            DelegateDeployment::HostFacade
+        );
+        assert_eq!(delegate_deployment(false, false, false), DelegateDeployment::None);
+    }
+
+    /// The facade hint must describe the facade, not Platform Gateway: this
+    /// deployment rejects `strategy=parallel` and has no `nomi_execution_get`.
+    #[test]
+    fn host_facade_delegation_hint_is_planned_only() {
+        let out = compose_host_delegation_hint(
+            Some("基础提示".to_string()),
+            true,
+            DelegationPolicy::Automatic,
+        )
+        .unwrap();
+        assert!(out.starts_with("基础提示"), "preset context must survive");
+        assert!(out.contains("nomi_delegate"));
+        assert!(out.contains("planned"));
+        assert!(
+            !out.contains("strategy=parallel"),
+            "the facade schema rejects parallel: {out}"
+        );
+        assert!(
+            !out.contains("nomi_execution_get"),
+            "this deployment exposes no execution reads: {out}"
+        );
+    }
+
+    #[test]
+    fn host_facade_delegation_hint_respects_surface_and_policy() {
+        let base = Some("仅基础".to_string());
+        for policy in [DelegationPolicy::Automatic, DelegationPolicy::PreferParallel] {
+            assert_eq!(
+                compose_host_delegation_hint(base.clone(), false, policy),
+                base,
+                "companion / channel surfaces get no delegation hint"
+            );
+        }
+        assert_eq!(
+            compose_host_delegation_hint(base.clone(), true, DelegationPolicy::Disabled),
+            base,
+            "a Disabled tier has no delegate to describe"
+        );
+        assert_eq!(
+            compose_host_delegation_hint(None, true, DelegationPolicy::Automatic),
+            Some(super::HOST_DELEGATE_STANDARD_HINT.to_owned())
         );
     }
 

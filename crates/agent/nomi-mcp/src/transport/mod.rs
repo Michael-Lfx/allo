@@ -53,6 +53,16 @@ pub trait McpTransport: Send + Sync {
     /// Send a JSON-RPC request and receive the response
     async fn request(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError>;
 
+    /// Update the bearer-token authorization header of a remote transport.
+    ///
+    /// Used by the OAuth 401-refresh path: after a refresh, the manager calls
+    /// this once with the fresh `Bearer <token>` value and retries the
+    /// request. Stdio transports have no HTTP headers and keep the default
+    /// no-op.
+    async fn update_auth_header(&self, _value: &str) -> Result<(), McpError> {
+        Ok(())
+    }
+
     /// Abort the currently outstanding request after the manager's bounded
     /// request deadline expires.  Implementations must make the transport safe
     /// for a later request (for example, a stdio response must not be left in a
@@ -79,6 +89,13 @@ pub enum McpError {
 
     #[error("Transport error: {0}")]
     Transport(String),
+
+    /// The remote server rejected the request with HTTP 401. Raised by the
+    /// remote transports so the manager can trigger the OAuth refresh path
+    /// (refresh once → update auth header → single retry). Carries the server
+    /// name for correlation.
+    #[error("MCP server {server} requires authorization (401)")]
+    Unauthorized { server: String },
 
     #[error("JSON-RPC error {code}: {message}")]
     JsonRpc { code: i64, message: String },

@@ -1828,6 +1828,14 @@ pub struct StreamRelay {
     ///     is never touched. Deliberately narrower than the ungated precedent of
     ///     `strip_think_tags` / `strip_cron_commands`.
     robot_session: bool,
+    /// True for the narrow App Server chat projection (the conversation row
+    /// carries `extra.app_server_chat`). When set, the relay persists the
+    /// server-measured context snapshot on each `TurnCompleted` (last prompt
+    /// occupancy + effective window) and publishes a `context.usage` user
+    /// event, so the WebUI can show real context occupancy instead of
+    /// estimating token counts. Observability only: a persist failure logs
+    /// and never fails or delays the turn.
+    app_server_chat: bool,
     /// Phase 3 (review #1/#5): predicate telling the relay whether a PRE-RESPONSE
     /// terminal provider-fault with this error code WILL be failed over by the
     /// send loop. When it returns `true` the relay suppresses the user-visible
@@ -1926,6 +1934,7 @@ impl StreamRelay {
             origin: None,
             channel_platform: None,
             robot_session: false,
+            app_server_chat: false,
             failover_suppressor: None,
             runtime_state: None,
             cancellation: None,
@@ -1973,6 +1982,13 @@ impl StreamRelay {
     /// chat and companion turns leave it unset.
     pub fn with_runtime_state(mut self, runtime_state: Arc<ConversationRuntimeStateService>) -> Self {
         self.runtime_state = Some(runtime_state);
+        self
+    }
+
+    /// Mark the relay as serving the narrow App Server chat projection so
+    /// `TurnCompleted` metrics are persisted and projected as `context.usage`.
+    pub fn with_app_server_chat(mut self, app_server_chat: bool) -> Self {
+        self.app_server_chat = app_server_chat;
         self
     }
 
@@ -2719,12 +2735,12 @@ impl StreamRelay {
                             }
                             self.finalize_active_plans(
                                 &mut active_plan_ids,
-                                Self::plan_terminal_status(&event),
+                                Self::plan_terminal_status(),
                             )
                             .await;
                             self.finalize_active_agent_status(
                                 &mut active_agent_status,
-                                Self::plan_terminal_status(&event),
+                                Self::agent_status_terminal_status(&event),
                             )
                             .await;
                             let outcome = self
@@ -2941,7 +2957,10 @@ impl StreamRelay {
                                         "Artifact delivery could not claim a durable message identity"
                                             .to_owned(),
                                     );
-                                    self.forward_to_websocket(&AgentStreamEvent::ToolCall(failed));
+                                    self.forward_to_websocket_with_msg_id(
+                                        &self.tool_message_id(&data.call_id).await,
+                                        &AgentStreamEvent::ToolCall(failed),
+                                    );
                                     fatal_tracking_error = Some(
                                         "Artifact delivery could not be projected durably; the turn was terminated"
                                             .to_owned(),
@@ -2955,7 +2974,10 @@ impl StreamRelay {
                                 // history hydration; the full Completed frame is
                                 // published by the terminal commit barrier.
                                 let provisional = Self::provisional_artifact_tool_call(data);
-                                self.forward_to_websocket(&AgentStreamEvent::ToolCall(provisional));
+                                self.forward_to_websocket_with_msg_id(
+                                    &self.tool_message_id(&data.call_id).await,
+                                    &AgentStreamEvent::ToolCall(provisional),
+                                );
                                 let _ = self
                                     .ordered_event_side_effect(
                                         "persist_provisional_artifact_tool_call",
@@ -2963,7 +2985,18 @@ impl StreamRelay {
                                     )
                                     .await;
                             } else {
-                                self.forward_to_websocket(&event);
+                                // Forward with the call's own durable id, never the
+                                // shared turn id (`self.msg_id`): that id is also
+                                // this turn's first thinking segment, and clients
+                                // key transcript items by `msg_id` — a shared id
+                                // made the tool row overwrite that thinking segment
+                                // (and two tool calls in one turn overwrite each
+                                // other). The persisted row uses the same derived
+                                // id, so live and reloaded history agree.
+                                self.forward_to_websocket_with_msg_id(
+                                    &self.tool_message_id(&data.call_id).await,
+                                    &event,
+                                );
                                 let _ = self
                                     .ordered_event_side_effect(
                                         "persist_tool_call",
@@ -3286,7 +3319,20 @@ impl StreamRelay {
                                     ),
                                 )
                                 .await;
-                            self.forward_to_websocket(&AgentStreamEvent::ToolGroup(entries.to_vec()));
+                            // Same derived id the persisted group row gets, so the
+                            // live row updates in place instead of colliding with
+                            // the turn id shared by every other record.
+                            let group_source = entries
+                                .first()
+                                .map(|entry| entry.call_id.clone())
+                                .unwrap_or_else(ConversationService::mint_msg_id);
+                            let group_id = self
+                                .derived_message_id("tool_group", &group_source)
+                                .await;
+                            self.forward_to_websocket_with_msg_id(
+                                &group_id,
+                                &AgentStreamEvent::ToolGroup(entries.to_vec()),
+                            );
                             let _ = self
                                 .ordered_event_side_effect(
                                     "persist_tool_group",
@@ -3295,7 +3341,13 @@ impl StreamRelay {
                                 .await;
                         }
                         AgentStreamEvent::AgentStatus(data) => {
-                            self.forward_to_websocket(&event);
+                            // The status pill is one durable record per turn
+                            // (`agent_status_message_id`); using the shared turn id
+                            // would let it overwrite the first thinking segment.
+                            self.forward_to_websocket_with_msg_id(
+                                &self.agent_status_message_id().await,
+                                &event,
+                            );
                             if data.backend == "nomi" && (data.status == "preparing" || data.status == "prepared") {
                                 active_agent_status = Some(data.clone());
                                 let persisted = self
@@ -3397,6 +3449,19 @@ impl StreamRelay {
                                 runtime_state
                                     .add_turn_tokens(&self.conversation_id, turn_tokens as i64);
                             }
+                            // App Server chats persist the measured context occupancy
+                            // (last prompt tokens + effective window) and, in the same
+                            // row, the runtime's own per-turn token split, so the WebUI
+                            // can render a real percentage and last turn's cost across
+                            // reloads. Never infer tokens from text length; a missing
+                            // report simply stays "unknown" in the projection. The
+                            // trigger stays exactly what it was (占用或窗口有测量值才写)
+                            // — a turn that measured neither has no snapshot to refresh.
+                            if self.app_server_chat
+                                && (metrics.context_tokens > 0 || metrics.context_window > 0)
+                            {
+                                self.persist_app_server_context_usage(metrics).await;
+                            }
                             self.forward_to_websocket(&event);
                         }
                         AgentStreamEvent::UsageUpdated(_) => {
@@ -3406,7 +3471,22 @@ impl StreamRelay {
                             self.forward_to_websocket(&event);
                         }
                         _ => {
-                            self.forward_to_websocket(&event);
+                            // Never the shared turn id. That id is also this
+                            // turn's first thinking segment, and clients key
+                            // transcript items by `msg_id`, so an unenumerated
+                            // kind would overwrite it. `Tips` is the live
+                            // example: the client renders it (its noise set is
+                            // only start / finish / error / turn_started /
+                            // turn_completed) yet it has no arm above, so it
+                            // used to land here and take the turn id.
+                            //
+                            // Derive from the event's own kind, so one kind
+                            // keeps one row per turn and updates it in place
+                            // instead of colliding with unrelated records.
+                            let kind_id = self
+                                .derived_message_id("event", Self::event_kind(&event))
+                                .await;
+                            self.forward_to_websocket_with_msg_id(&kind_id, &event);
                         }
                     }
                 }
@@ -3511,12 +3591,12 @@ impl StreamRelay {
                             .await;
                         self.finalize_active_plans(
                             &mut active_plan_ids,
-                            Self::plan_terminal_status(&terminal_event),
+                            Self::plan_terminal_status(),
                         )
                         .await;
                         self.finalize_active_agent_status(
                             &mut active_agent_status,
-                            Self::plan_terminal_status(&terminal_event),
+                            Self::agent_status_terminal_status(&terminal_event),
                         )
                         .await;
                         let text_persistence_complete = self
@@ -5490,7 +5570,11 @@ impl StreamRelay {
         }
     }
 
-    fn plan_terminal_status(event: &AgentStreamEvent) -> &'static str {
+    /// Terminal status for the **agent-status pill**.
+    ///
+    /// An abnormal terminal really does leave the agent in an error state, so
+    /// this keeps the `error` reading.
+    fn agent_status_terminal_status(event: &AgentStreamEvent) -> &'static str {
         match event {
             AgentStreamEvent::Finish(data)
                 if matches!(
@@ -5500,6 +5584,23 @@ impl StreamRelay {
             AgentStreamEvent::Finish(_) | AgentStreamEvent::Error(_) => "error",
             _ => "error",
         }
+    }
+
+    /// Terminal status for a **plan row**.
+    ///
+    /// A plan is a statement of intent, not an execution result. When the turn
+    /// ends — for any reason — the plan has simply stopped being live, which is
+    /// `finish`. What actually became of the plan is carried by its own
+    /// `entries`, not by this column.
+    ///
+    /// This used to share [`Self::agent_status_terminal_status`], so an
+    /// enclosing turn that was cancelled / truncated / failed stamped `error`
+    /// onto plans that had not failed at all — their `entries` still read
+    /// `in_progress`. That is why the UI showed a plan with an error badge.
+    /// (It also matches `boot.rs`, which terminalizes a leftover `work` row to
+    /// `finish` rather than to `error`.)
+    fn plan_terminal_status() -> &'static str {
+        "finish"
     }
 
     async fn finalize_active_plans(&self, active_plan_ids: &mut HashSet<String>, status: &str) {
@@ -6184,6 +6285,83 @@ impl StreamRelay {
         }
 
         debug!(conversation_id, status = "finished", "Turn completed");
+    }
+
+    /// Persist the measured context snapshot for an App Server chat and
+    /// publish a `context.usage` user event. Best-effort observability: the
+    /// repository write and the broadcast are isolated so a broken sink can
+    /// never unwind the relay owner or delay turn completion.
+    ///
+    /// The same statement also refreshes the row's per-turn token pair (W9 /
+    /// R14 ③) from the identical `TurnCompleted` frame — that is what lets the
+    /// WebUI show the last turn's tokens (and catalog-priced cost) after a
+    /// reload. The gauge never stands in for it: occupancy is the last
+    /// request's prompt size, not what one turn cost.
+    async fn persist_app_server_context_usage(
+        &self,
+        metrics: &nomifun_ai_agent::protocol::events::TurnCompletedEventData,
+    ) {
+        let last_turn = Self::reported_turn_tokens(metrics);
+        let updated_at = now_ms();
+        if let Err(error) = self
+            .repo
+            .upsert_app_server_context_usage(
+                &self.conversation_id,
+                metrics.context_tokens.min(i64::MAX as u64) as i64,
+                metrics.context_window.min(i64::MAX as u64) as i64,
+                last_turn.map(|(input, _)| input),
+                last_turn.map(|(_, output)| output),
+                updated_at,
+            )
+            .await
+        {
+            warn!(
+                conversation_id = %self.conversation_id,
+                error = %ErrorChain(&error),
+                "Failed to persist App Server context usage"
+            );
+            return;
+        }
+        let payload = json!({
+            "conversation_id": self.conversation_id,
+            "context_usage": {
+                "used_tokens": metrics.context_tokens,
+                "window_tokens": metrics.context_window,
+                "updated_at": updated_at,
+                "source": "measured",
+            },
+        });
+        // Same resilience contract as the other user-event projections: a sink
+        // panic must be contained.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.user_events
+                .send_to_user(&self.user_id, WebSocketMessage::new("context.usage", payload));
+        }))
+        .is_err()
+        {
+            error!(
+                conversation_id = %self.conversation_id,
+                "User event sink panicked while projecting context.usage"
+            );
+        }
+    }
+
+    /// Per-turn token pair from the runtime's own `TurnCompleted` report, or
+    /// `None` when the turn reported nothing usable (a zero/zero frame).
+    ///
+    /// `None` must reach the database as SQL NULL: a stored `0` would read back
+    /// as "this turn was free", which is exactly the fabrication the cost 口径
+    /// forbids, and the context gauge must never be borrowed to fill the gap.
+    fn reported_turn_tokens(
+        metrics: &nomifun_ai_agent::protocol::events::TurnCompletedEventData,
+    ) -> Option<(i64, i64)> {
+        if metrics.input_tokens == 0 && metrics.output_tokens == 0 {
+            return None;
+        }
+        Some((
+            metrics.input_tokens.min(i64::MAX as u64) as i64,
+            metrics.output_tokens.min(i64::MAX as u64) as i64,
+        ))
     }
 
     async fn try_derived_message_id(
@@ -8580,6 +8758,80 @@ mod tests {
         assert!(outcome.emitted_response);
     }
 
+    /// 计划是**陈述**，不是执行结果：回合异常收尾（取消 / 触顶 / 报错）之后，计划本身
+    /// 并没有失败，只是不再活跃 —— 状态列必须是 `finish`。
+    ///
+    /// 回归：这两个收尾状态此前共用 `plan_terminal_status`，其 `_ => "error"` 兜底会把
+    /// `Cancelled` / `MaxTokens` / `Error` 全部盖成 `error`，界面上就出现了一张
+    /// `entries` 里写着 `in_progress`、却挂着红色 error 徽章的计划（现场数据的第 15 行）。
+    #[tokio::test]
+    async fn cancelled_turn_finishes_its_plan_without_calling_it_a_failure() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Plan(PlanEventData {
+            session_id: Some("session-cancelled".into()),
+            source_call_id: None,
+            entries: vec![json!({ "content": "step one", "status": "in_progress" })],
+        }))
+        .unwrap();
+        // 非 EndTurn 的收尾：这一轮确实没跑完，但计划没失败。
+        tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::Cancelled),
+        }))
+        .unwrap();
+
+        let _ = relay.consume(rx).await;
+
+        let plan_id = repo
+            .take_inserts()
+            .iter()
+            .find(|m| m.r#type == "plan")
+            .expect("plan row must be persisted")
+            .message_id
+            .clone();
+        let terminal = repo
+            .take_updates()
+            .into_iter()
+            .find(|(id, update)| id == &plan_id && update.status.is_some())
+            .expect("the plan must be closed with the turn");
+        assert_eq!(
+            terminal.1.status.as_ref().map(|status| status.as_deref()),
+            Some(Some("finish")),
+            "a cancelled turn does not make the plan itself fail"
+        );
+    }
+
+    /// 药丸是**另一回事**：异常收尾确实是 agent 的错误状态，不能被上面那次拆分带偏。
+    #[test]
+    fn agent_status_pill_still_reports_abnormal_terminals_as_error() {
+        let cancelled = AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::Cancelled),
+        });
+        assert_eq!(StreamRelay::agent_status_terminal_status(&cancelled), "error");
+
+        let normal = AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::EndTurn),
+        });
+        assert_eq!(StreamRelay::agent_status_terminal_status(&normal), "finish");
+
+        // 计划侧不再看事件，任何收尾都只代表「不再活跃」。
+        assert_eq!(StreamRelay::plan_terminal_status(), "finish");
+    }
+
     #[tokio::test]
     async fn run_plan_event_completes_and_hides_its_source_tool() {
         use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
@@ -10091,11 +10343,22 @@ mod tests {
             rows.iter().filter(|row| row.r#type == "tool_call").count(),
             MAX_TERMINAL_ACTIVE_ITEMS + 1
         );
+        // The cap bounds the *tool-call* corrections. The turn's own row is also
+        // stamped `error` once the turn fails closed, so counting every error
+        // update would fold an unbounded row into a bounded assertion — the
+        // invariant being pinned here is "the untracked 257th call gets no
+        // durable correction", not "exactly N rows in the whole table".
+        let type_by_id: std::collections::HashMap<&str, &str> = rows
+            .iter()
+            .map(|row| (row.message_id.as_str(), row.r#type.as_str()))
+            .collect();
         assert_eq!(
             repo.take_updates()
                 .iter()
-                .filter(|(_, update)| {
-                    update.status.as_ref().map(|status| status.as_deref()) == Some(Some("error"))
+                .filter(|(id, update)| {
+                    type_by_id.get(id.as_str()).copied() == Some("tool_call")
+                        && update.status.as_ref().map(|status| status.as_deref())
+                            == Some(Some("error"))
                 })
                 .count(),
             MAX_TERMINAL_ACTIVE_ITEMS

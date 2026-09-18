@@ -96,7 +96,7 @@ Vite 是否仍监听 5173、`cargo`/`rustc`/Tauri 是否残留，再查看 super
 | `bun run check:i18n` | i18n key 类型生成是否最新。 |
 | `bun run check:theme` | 主题 token 契约。 |
 | `bun run check:codemirror-runtime` | CodeMirror/Lezer 运行时闭包与共享编辑器入口。 |
-| `bun run check` | 聚合前端类型、i18n、主题、图标、CodeMirror、运行时边界和脚本登记门禁。 |
+| `bun run check` | 聚合**仓级**门禁：错误面板契约、进程运行时边界、浏览器平台边界、市场清单、脚本登记（`ui/` 的前端检查已移出此链，脚本保留、按需手动跑）。 |
 | `bun run help --check` | 根脚本帮助文本。 |
 | `bun run build:ui` | 生产 Vite 构建。 |
 | `bun run build` | 当前 OS 的 Tauri 桌面包。 |

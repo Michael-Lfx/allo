@@ -14,6 +14,10 @@ use crate::error::DbError;
 
 pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "acp_session",
+    "app_server_context_usage",
+    "app_server_idempotency_receipts",
+    "app_server_run_mappings",
+    "app_server_workspaces",
     "agent_execution_attempts",
     "agent_execution_events",
     "agent_execution_participants",
@@ -89,7 +93,11 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "meeting_voiceprints",
     "message_correlations",
     "messages",
+    "oauth_client_registrations",
     "oauth_tokens",
+    "plugin_snapshot_components",
+    "plugin_snapshots",
+    "plugin_marketplaces",
     "preset_agent_preferences",
     "preset_examples",
     "preset_knowledge_bases",
@@ -135,6 +143,8 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ),
     ("agent_execution_templates", "execution_template_id"),
     ("agent_executions", "execution_id"),
+    ("app_server_run_mappings", "public_run_id"),
+    ("app_server_workspaces", "workspace_id"),
     ("agent_metadata", "agent_id"),
     ("attachments", "attachment_id"),
     ("channel_plugins", "channel_plugin_id"),
@@ -175,6 +185,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("meeting_speakers", "speaker_id"),
     ("meeting_voiceprints", "voiceprint_id"),
     ("messages", "message_id"),
+    ("plugin_snapshots", "snapshot_id"),
     ("preset_tags", "preset_tag_id"),
     ("presets", "preset_id"),
     ("provider_connections", "connection_id"),
@@ -197,10 +208,25 @@ const UUIDV7_MANAGED_VALUE_COLUMNS: &[(&str, &str)] = &[("creation_tasks", "node
 /// `_id` columns that are identities, operation tokens, platform handles, or
 /// opaque remote handles rather than relational links. Every other physical
 /// `_id` column must be present in [`LOGICAL_REFERENCES`].
-const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
+///
+/// Exported because it is the **single source of truth** for this half of the
+/// contract: the schema test that used to assert "every `*_id` is TEXT" kept
+/// its own copy of the exception list and drifted from this one the moment a
+/// migration added `oauth_tokens.registration_id` (an INTEGER logical link).
+/// The test now reads this list instead of restating it.
+pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("acp_session", "acp_session_id"),
+    ("app_server_idempotency_receipts", "client_id"),
+    ("app_server_idempotency_receipts", "principal_id"),
+    ("app_server_run_mappings", "public_run_id"),
+    ("app_server_workspaces", "workspace_id"),
     ("agent_metadata", "agent_id"),
     ("agent_metadata", "yolo_id"),
+    ("plugin_snapshot_components", "component_id"),
+    ("plugin_snapshot_components", "preset_id"),
+    ("plugin_snapshots", "snapshot_id"),
+    ("plugin_snapshots", "plugin_id"),
+    ("plugin_marketplaces", "marketplace_id"),
     ("agent_execution_attempts", "attempt_id"),
     ("agent_execution_participants", "participant_id"),
     ("agent_execution_steps", "step_id"),
@@ -278,6 +304,14 @@ const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("meeting_speakers", "session_id"),
     ("meeting_voiceprints", "voiceprint_id"),
     ("messages", "message_id"),
+    // OAuth client identity handle, not a relational link to another row.
+    ("oauth_client_registrations", "client_id"),
+    // Application-managed link to a local INTEGER-registry row (v3 logical
+    // references only model TEXT/UUID links); integrity is enforced by the
+    // OAuth service, and `principal_id` is reserved for a future multi-user
+    // owner, not a `users` row in the current single-device mode.
+    ("oauth_tokens", "registration_id"),
+    ("oauth_tokens", "principal_id"),
     // Source-qualified Skill catalog key, not a relational business ID.
     ("preset_skill_bindings", "skill_id"),
     ("preset_tags", "preset_tag_id"),
@@ -650,6 +684,11 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("agent_execution_templates", "primary_participant_id" => "agent_execution_template_participants", "template_participant_id", false, "idx_execution_templates_primary_participant_id", Restrict)
         .with_aggregate_scope("parent.template_id = child.execution_template_id"),
     text_ref!("agent_executions", "user_id" => "users", "user_id", false, "idx_agent_executions_user_id", Cascade),
+    text_ref!("app_server_run_mappings", "execution_id" => "agent_executions", "execution_id", false, "uq_app_server_run_mappings_execution_id", KeepHistory),
+    text_ref!("app_server_run_mappings", "user_id" => "users", "user_id", false, "idx_app_server_run_mappings_user_id", KeepHistory),
+    text_ref!("app_server_workspaces", "user_id" => "users", "user_id", false, "idx_app_server_workspaces_user_id", KeepHistory),
+    text_ref!("plugin_snapshot_components", "snapshot_id" => "plugin_snapshots", "snapshot_id", false, "idx_plugin_snapshot_components_snapshot_id", KeepHistory),
+    opaque_text_ref!("plugin_snapshots", "marketplace_id" => "plugin_marketplaces", "marketplace_id", true, "idx_plugin_snapshots_marketplace_id", SetNull),
     text_ref!("attachments", "requirement_id" => "requirements", "requirement_id", false, "idx_attachments_requirement_id", Cascade),
     text_ref!("channel_inbound_receipts", "user_id" => "users", "user_id", true, "idx_channel_inbound_receipts_user_id", SetNull),
     text_ref!("channel_inbound_receipts", "channel_plugin_id" => "channel_plugins", "channel_plugin_id", true, "idx_channel_inbound_receipts_channel_plugin_id", SetNull),
@@ -728,6 +767,7 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("agent_execution_template_participants", "source_agent_id" => "agent_metadata", "agent_id", false, "idx_template_participants_source_agent_id", Restrict),
     text_ref!("agent_execution_template_participants", "preset_id" => "presets", "preset_id", true, "idx_template_participants_preset_id", SetNull),
     text_ref!("agent_execution_template_participants", "provider_id" => "providers", "provider_id", true, "idx_template_participants_provider_id", Restrict),
+    text_ref!("app_server_context_usage", "conversation_id" => "conversations", "conversation_id", false, "idx_app_server_context_usage_conversation_id", Cascade),
     text_ref!("conversation_artifacts", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_artifacts_conversation_id", Cascade),
     text_ref!("conversation_artifacts", "cron_job_id" => "cron_jobs", "cron_job_id", true, "idx_conversation_artifacts_cron_job_id", SetNull),
     text_ref!("conversation_execution_links", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_execution_links_conversation_id", KeepHistory),
@@ -1480,6 +1520,20 @@ async fn validate_no_physical_foreign_keys(pool: &SqlitePool) -> Result<(), DbEr
 
 async fn validate_no_triggers(pool: &SqlitePool) -> Result<(), DbError> {
     const TRIGGER_CONTRACTS: &[(&str, &[&str])] = &[
+        (
+            "app_server_idempotency_receipts_immutable",
+            &[
+                "BEFORE UPDATE ON APP_SERVER_IDEMPOTENCY_RECEIPTS",
+                "RAISE(ABORT, 'APP SERVER IDEMPOTENCY RECEIPTS ARE IMMUTABLE')",
+            ],
+        ),
+        (
+            "app_server_idempotency_receipts_no_delete",
+            &[
+                "BEFORE DELETE ON APP_SERVER_IDEMPOTENCY_RECEIPTS",
+                "RAISE(ABORT, 'APP SERVER IDEMPOTENCY RECEIPTS ARE RETAINED INDEFINITELY')",
+            ],
+        ),
         (
             "channel_inbound_receipts_identity_immutable",
             &[

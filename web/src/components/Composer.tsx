@@ -1,0 +1,677 @@
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useClickAway } from "ahooks";
+import {
+  ArrowUp,
+  AtSign,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Folder,
+  FolderPlus,
+  Layers,
+  Mic,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Square,
+  Wrench,
+  X,
+} from "lucide-react";
+import { AttachmentPicker } from "./AttachmentPicker";
+import { IconButton } from "./IconButton";
+import { ContextIndicator } from "./ContextIndicator";
+import { ModelPicker } from "./ModelPicker";
+import { useTranslation } from "react-i18next";
+import { ComposerCatalogMenu } from "./ComposerCatalogMenu";
+import { CommandPalette } from "./CommandPalette";
+import {
+  PALETTE_GROUP_KEYS,
+  compactPaletteRows,
+  filterPaletteItems,
+  type PaletteItem,
+  type PaletteItemKind,
+} from "../lib/palette-model";
+import { useAppStore, registerComposerFocus } from "../store/appStore";
+import { latestRunStatus, terminalRunStatus } from "../lib/run-notify";
+import { contextAdvice } from "../lib/context-advice";
+import { costRateText, costText, modelFactsFor, turnCostUsd } from "../lib/model-facts";
+import { steerAvailability } from "../lib/run-steer";
+import { formatTokens, modelChipLabel } from "../ui/format";
+import { attachmentName, classifyAttachment } from "../lib/attachments";
+import { pickLocalized, useLocalizedLang } from "../ui/localize";
+import type {
+  AgentSummary,
+  ConversationModelOptions,
+  ConversationView,
+  LocalizedText,
+  MentionKind,
+  MentionRef,
+  ProviderWithModel,
+  ReasoningEffort,
+  SkillSummary,
+} from "../lib/protocol";
+
+/** Human label for a reasoning-effort value shown in the model chip. */
+function effortLabelOf(effort: ReasoningEffort | ""): string {
+  switch (effort) {
+    case "low": return "低";
+    case "medium": return "中";
+    case "high": return "高";
+    case "max": return "超高";
+    case "xhigh": return "极高";
+    default: return "";
+  }
+}
+
+export function Composer(props: {
+  composerRef: RefObject<HTMLTextAreaElement | null>;
+}) {
+  const composerRef = props.composerRef;
+  const { t } = useTranslation();
+  const draft = useAppStore((s) => s.draft);
+  const phase = useAppStore((s) => s.phase);
+  const connected = useAppStore((s) => s.phase === "online");
+  const isSending = useAppStore((s) => s.isSending);
+  const isProcessing = useAppStore((s) => s.stream.isProcessing);
+  const conversations = useAppStore((s) => s.conversations);
+  const selectedConversationId = useAppStore((s) => s.selectedConversationId);
+  const providerId = useAppStore((s) => s.providerId);
+  const model = useAppStore((s) => s.model);
+  const modelOptions = useAppStore((s) => s.modelOptions);
+  const modelDirectory = useAppStore((s) => s.modelDirectory);
+  const selectedModelKey = useAppStore((s) => s.selectedModelKey);
+  const streamTurnUsage = useAppStore((s) => s.stream.turnUsage);
+  const selectedEffort = useAppStore((s) => s.selectedEffort);
+  const hasConversation = useAppStore((s) => s.selectedConversationId !== null);
+  const composerMenuOpen = useAppStore((s) => s.composerMenuOpen);
+  const modelPickerOpen = useAppStore((s) => s.modelPickerOpen);
+  const workspaces = useAppStore((s) => s.workspaces);
+  const openNewChatDialog = useAppStore((s) => s.openNewChatDialog);
+
+  const setDraft = useAppStore((s) => s.setDraft);
+  const send = useAppStore((s) => s.send);
+  const newChat = useAppStore((s) => s.newChat);
+  const toggleComposerMenu = useAppStore((s) => s.toggleComposerMenu);
+  const closeComposerMenu = useAppStore((s) => s.closeComposerMenu);
+  const toggleModelPicker = useAppStore((s) => s.toggleModelPicker);
+  const chooseModel = useAppStore((s) => s.chooseModel);
+  const chooseEffort = useAppStore((s) => s.chooseEffort);
+  const closeModelPicker = useAppStore((s) => s.closeModelPicker);
+  const cancel = useAppStore((s) => s.cancel);
+
+  /** Which catalog submenu (agents/skills/connectors) is expanded, if any. */
+  const [catalogMenu, setCatalogMenu] = useState<"agents" | "skills" | "connectors" | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  /** Workspace picker under the composer (Kimi-style). */
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const workspacePickerRef = useRef<HTMLDivElement | null>(null);
+  useClickAway(() => setWorkspacePickerOpen(false), workspacePickerRef, ["mousedown", "touchstart"]);
+
+  // R15（W10）：附件选择面板（只列会话工作区里的、运行时真能送进模型的图片）。
+  const [attachPickerOpen, setAttachPickerOpen] = useState(false);
+  const attachPickerRef = useRef<HTMLDivElement | null>(null);
+  useClickAway(() => setAttachPickerOpen(false), attachPickerRef, ["mousedown", "touchstart"]);
+  const composerAttachments = useAppStore((s) => s.composerAttachments);
+  const addComposerAttachments = useAppStore((s) => s.addComposerAttachments);
+  const removeComposerAttachment = useAppStore((s) => s.removeComposerAttachment);
+
+  const setComposerMentions = useAppStore((s) => s.setComposerMentions);
+  const composerMentions = useAppStore((s) => s.composerMentions);
+  // W3 中断引导：有在跑的 Run 时，输入框切「引导输入」形态（Enter 走 run/steer，
+  // 不打断当前回合）；Run 到终态后 steerAvailability 变为 terminal，提交被拒。
+  const activeRunId = useAppStore((s) => s.activeRunId);
+  const runEvents = useAppStore((s) => s.runEvents);
+  const runSteerBusy = useAppStore((s) => s.runSteerBusy);
+  const runSteerError = useAppStore((s) => s.runSteerError);
+  const steerRun = useAppStore((s) => s.steerRun);
+  const steering =
+    steerAvailability({
+      hasRun: activeRunId !== null,
+      busy: runSteerBusy,
+      status: latestRunStatus(runEvents),
+      terminal: terminalRunStatus(runEvents) !== null,
+    }) === "available";
+
+  /** Pick a catalog entry: record it as a structured mention and backfill the
+   *  draft with `@name` so the user sees the reference (docs/agent-store/05
+   *  §4.7). The whole pick is resolved on send.
+   *
+   *  只有专家与技能走这条路径：连接器没有 `@` 语义——它换的是宿主的工具面，
+   *  所以 `+` 菜单里的连接器行是开关，不产生 mention（见 ComposerCatalogMenu，doc `28`）。 */
+  const pickCatalogItem = (kind: "agents" | "skills", item: { id: string; name: string }) => {
+    const mentionKind: MentionKind = kind === "agents" ? "agent" : "skill";
+    const mentions = composerMentions ?? [];
+    const existing = mentions.findIndex((m) => m.id === item.id && m.kind === mentionKind);
+    const next =
+      existing >= 0
+        ? [...mentions.slice(0, existing), ...mentions.slice(existing + 1)]
+        : [...mentions, { kind: mentionKind, id: item.id }];
+    setComposerMentions(next);
+    const token = `@${item.name}`;
+    const current = draft.trim();
+    setDraft(current ? `${current} ${token}` : token);
+    // Track the token so deleting it also drops the structured mention (AC-1).
+    mentionTokensRef.current.set(token, { kind: mentionKind, id: item.id });
+    setCatalogMenu(null);
+    toggleComposerMenu();
+  };
+
+  /** ── W1 command palette (doc 19 §3 W1) ─────────────────────────────────
+   *  The palette never takes focus: its query is derived from the draft text
+   *  after the `/` or `@` trigger, so ordinary typing and IME composition keep
+   *  working, and deleting the inserted token can drop the structured mention.
+   */
+  const client = useAppStore((s) => s.client);
+  const pushToast = useAppStore((s) => s.pushToast);
+  const [palette, setPalette] = useState<{ mode: "command" | "mention"; start: number; active: number } | null>(null);
+  const [catalogs, setCatalogs] = useState<{
+    agents: AgentSummary[];
+    skills: SkillSummary[];
+  } | null>(null);
+  const [paletteLoading, setPaletteLoading] = useState(false);
+  /** Caret index, tracked outside React state (read synchronously on keydown). */
+  const cursorRef = useRef(0);
+  /** `@name` token → structured mention, so token deletion is observable. */
+  const mentionTokensRef = useRef(new Map<string, MentionRef>());
+
+  // D8=A: localized display text resolves by the current UI language.
+  const lang = useLocalizedLang();
+  const localize = (text: LocalizedText | null | undefined): string => pickLocalized(text, lang);
+
+  // Mention mode: load the two `@`-mentionable catalogs once per connection.
+  // Connectors are deliberately absent — they are switched in the "+" menu, not
+  // mentioned (an `@连接器` token would promise a binding `conversation/send`
+  // has no field for; doc `28` §4.1).
+  useEffect(() => {
+    if (palette?.mode !== "mention" || catalogs || !client) return;
+    let cancelled = false;
+    setPaletteLoading(true);
+    void Promise.all([client.agents.list(), client.skills.list()])
+      .then(([agents, skills]) => {
+        if (!cancelled) setCatalogs({ agents, skills });
+      })
+      .catch(() => {
+        if (!cancelled) setCatalogs({ agents: [], skills: [] });
+      })
+      .finally(() => {
+        if (!cancelled) setPaletteLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [palette?.mode, catalogs, client]);
+
+  // The store clears mentions after a send / draft reset: drop the token map too.
+  useEffect(() => {
+    if (!composerMentions || composerMentions.length === 0) mentionTokensRef.current.clear();
+  }, [composerMentions]);
+
+  /** Drop mentions whose `@token` is no longer present in the draft (AC-1). */
+  const syncMentionTokens = (nextDraft: string) => {
+    const tokens = mentionTokensRef.current;
+    if (tokens.size === 0) return;
+    const alive = new Set<MentionRef>();
+    let removed = false;
+    for (const [token, ref] of [...tokens]) {
+      if (nextDraft.includes(token)) {
+        alive.add(ref);
+      } else {
+        tokens.delete(token);
+        removed = true;
+      }
+    }
+    if (!removed) return;
+    const next = (composerMentions ?? []).filter((m) => [...alive].some((r) => r.id === m.id && r.kind === m.kind));
+    setComposerMentions(next.length > 0 ? next : null);
+  };
+
+  /** Re-derive the open palette (if any) from the draft up to the caret. */
+  const syncPalette = (value: string, cursor: number) => {
+    const before = value.slice(0, cursor);
+    const at = Math.max(before.lastIndexOf("/"), before.lastIndexOf("@"));
+    if (at < 0) {
+      setPalette(null);
+      return;
+    }
+    const preceding = at === 0 ? "" : before[at - 1];
+    // Only a line-leading or whitespace-preceded trigger counts, and a query
+    // containing whitespace means ordinary prose — not a palette.
+    if ((preceding && !/\s/.test(preceding)) || /\s/.test(before.slice(at + 1))) {
+      setPalette(null);
+      return;
+    }
+    setPalette({ mode: before[at] === "/" ? "command" : "mention", start: at, active: 0 });
+  };
+
+  const paletteQuery = palette ? draft.slice(palette.start + 1, cursorRef.current).trim().toLowerCase() : "";
+
+  const paletteItems = useMemo<PaletteItem[]>(() => {
+    if (!palette) return [];
+    const rowsFor = (kind: PaletteItemKind, list: Array<{ id: string; name: string }>): PaletteItem[] =>
+      list.map((row) => ({
+        id: row.id,
+        kind,
+        groupKey: PALETTE_GROUP_KEYS.mention,
+        label: localize((row as { display_name?: LocalizedText | null }).display_name) || row.name,
+      }));
+    if (palette.mode === "command") {
+      // `/` 模式只剩引擎侧的 `/compact`；其他斜杠命令已移除。
+      return filterPaletteItems(compactPaletteRows(selectedConversationId !== null, t), paletteQuery);
+    }
+    if (!catalogs) return [];
+    return filterPaletteItems(
+      [
+        ...rowsFor("agent", catalogs.agents),
+        ...rowsFor("skill", catalogs.skills),
+      ],
+      paletteQuery,
+    );
+  }, [palette, paletteQuery, catalogs, t, selectedConversationId, lang]);
+
+  /** Swap the typed `/query` or `@query` (trigger → caret) for `inserted`. */
+  const replaceTrigger = (inserted: string) => {
+    if (!palette) return;
+    const cursor = cursorRef.current;
+    setDraft(`${draft.slice(0, palette.start)}${inserted}${draft.slice(cursor)}`);
+  };
+
+  const pickPaletteItem = (item: PaletteItem) => {
+    const current = palette;
+    if (!current) return;
+    // 不可用的行（例如没有会话时的 `/compact`）即使被键盘选中也不执行。
+    if (item.disabled) return;
+    if (current.mode === "command") {
+      // `/compact` 与桌面端一致：插入命令文本，由用户回车发送；压缩由后端引擎完成。
+      replaceTrigger("/compact ");
+      setPalette(null);
+      return;
+    }
+    const kind: MentionKind = item.kind === "agent" ? "agent" : "skill";
+    const token = `@${item.label}`;
+    replaceTrigger(`${token} `);
+    const ref: MentionRef = { kind, id: item.id };
+    mentionTokensRef.current.set(token, ref);
+    setComposerMentions([...(composerMentions ?? []).filter((m) => !(m.id === ref.id && m.kind === ref.kind)), ref]);
+    setPalette(null);
+  };
+
+  /** Escape: close and drop the half-typed trigger so the draft stays clean. */
+  const dismissPalette = () => {
+    replaceTrigger("");
+    setPalette(null);
+  };
+
+  /** `Cmd/Ctrl+K` summons the same panel (doc 19 §3 W1 ④). */
+  const summonPalette = () => {
+    const cursor = composerRef.current?.selectionStart ?? draft.length;
+    cursorRef.current = cursor + 1;
+    setDraft(`${draft.slice(0, cursor)}/${draft.slice(cursor)}`);
+    setPalette({ mode: "command", start: cursor, active: 0 });
+  };
+
+  const paletteNote =
+    paletteItems.length > 0 ? null : !client ? t("palette.offline") : paletteLoading ? null : t("palette.empty");
+
+  // Clicking outside the composer menu closes it (whole popover).
+  useClickAway(() => { closeComposerMenu(); setCatalogMenu(null); }, popoverRef, ["mousedown", "touchstart"]);
+
+  const currentConversation = useMemo<ConversationView | null>(
+    () => conversations.find((item) => item.conversation_id === selectedConversationId) ?? null,
+    [conversations, selectedConversationId],
+  );
+  const currentModel = useMemo<ProviderWithModel | null>(
+    () => currentConversation?.model ?? (providerId && model ? { provider_id: providerId, model } : null),
+    [currentConversation, providerId, model],
+  );
+
+  const currentWorkspace = useMemo(
+    () => currentConversation == null || !currentConversation.workspace_id ? null : workspaces.find((w) => w.workspace_id === currentConversation.workspace_id) ?? null,
+    [currentConversation, workspaces],
+  );
+
+  /**
+   * R15：粘贴 / 拖拽的本地文件 → 先落到**会话工作区**，再作为路径引用附件。
+   *
+   * 浏览器里 `File.path` 不存在（Electron 专有），没有「直接拿到绝对路径」这条路；
+   * 唯一的办法是把字节交给宿主写进工作区（`/api/fs/upload` + `workspace` 字段）再
+   * 拿回落点。无工作区、非支持类型、上传失败都**明确说明**，不静默丢弃。
+   */
+  const uploadLocalFiles = async (files: File[]) => {
+    if (files.length === 0) return;
+    const root = currentWorkspace?.canonical_path ?? null;
+    if (!client || !root) {
+      pushToast("error", "composer.attachNoWorkspace");
+      return;
+    }
+    const accepted: string[] = [];
+    for (const file of files) {
+      if (classifyAttachment(file.name).kind !== "supported") {
+        pushToast("error", "composer.attachRejectedFile");
+        continue;
+      }
+      try {
+        accepted.push(await client.uploadFileToWorkspace(root, file));
+      } catch {
+        pushToast("error", "composer.attachUploadFailed");
+      }
+    }
+    if (accepted.length > 0) addComposerAttachments(accepted);
+  };
+
+  /** W9（R14）：上下文建议——按服务端测量值分级，未测量就不提示（不猜窗口）。 */
+  const contextAdviceNow = contextAdvice(currentConversation?.context_usage ?? null);
+
+  /**
+   * W9（R14）：本轮用量行。token 数字来自实时 `turn_completed` 事件，模型键是事件到达
+   * 那一刻的快照（用户之后换模型也不会把旧轮次的金额按新费率重算）。
+   *
+   * 金额只在**费率与 token 两者都在**时出现：目录没有该模型的价格就只显示 token，
+   * 整段不渲染金额——不拿 0 站台，更不拿上下文占用乘费率冒充本轮花费。
+   */
+  const turnUsageNow = useMemo(() => {
+    if (!streamTurnUsage) return null;
+    const { usage, modelKey: usageModelKey } = streamTurnUsage;
+    const facts = modelFactsFor(modelOptions, usageModelKey);
+    const rate = facts ? costRateText(facts) : null;
+    const amount = costText(turnCostUsd(facts, usage));
+    const tokens = t("context.turnUsage", {
+      input: formatTokens(usage.input_tokens),
+      output: formatTokens(usage.output_tokens),
+    });
+    return {
+      text: amount ? `${tokens} · ${amount}` : tokens,
+      title: amount !== null && rate !== null
+        ? t("context.turnUsageCost", { input: usage.input_tokens, output: usage.output_tokens, rate, cost: amount })
+        : usageModelKey
+          ? t("context.turnUsageNoRate", { input: usage.input_tokens, output: usage.output_tokens })
+          : t("context.turnUsageNoModel", { input: usage.input_tokens, output: usage.output_tokens }),
+    };
+  }, [streamTurnUsage, modelOptions, t]);
+
+  /** Register this textarea so the store's send / create flows can refocus it
+   *  after a conversation opens (they call `composerFocusRequest`). */
+  useEffect(() => {
+    registerComposerFocus(() => composerRef.current?.focus());
+  }, [composerRef]);
+
+  /** True while an IME composition is active: Enter then commits a candidate,
+   *  it must not submit the message. Never lifted to React state — this flag
+   *  is read synchronously inside the key handler. */
+  const composingRef = useRef(false);
+
+  /** Keep the composer textarea at 3 visible rows minimum, growing with the
+   *  draft up to a viewport-relative cap, and shrinking when emptied. */
+  useEffect(() => {
+    const element = composerRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    const capped = Math.min(element.scrollHeight, Math.max(96, Math.round(window.innerHeight * 0.35)));
+    element.style.height = `${capped}px`;
+  }, [draft, composerRef]);
+
+  return <div className="composer-area">
+    {/* R15：拖拽本地文件 → 落会话工作区 → 变成路径引用附件。只有带 Files 的
+        drag 才 preventDefault（否则会吞掉普通的文本拖拽）。 */}
+    <div
+      className="composer-shell"
+      onDragOver={(event) => {
+        if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+      }}
+      onDrop={(event) => {
+        const files = Array.from(event.dataTransfer?.files ?? []);
+        if (files.length === 0) return;
+        event.preventDefault();
+        void uploadLocalFiles(files);
+      }}
+    >
+      {/* R15（W10）：已选附件。载体是路径引用，发送时随 `conversation/send` 的
+          `attachments` 走；服务端只接受**会话工作区内**的真实文件。 */}
+      {composerAttachments.length > 0 && (
+        <div className="composer-attachments">
+          {composerAttachments.map((path) => (
+            <span className="composer-attachment" key={path} title={path}>
+              <span className="composer-attachment-name">{attachmentName(path)}</span>
+              <button
+                className="composer-attachment-remove"
+                type="button"
+                aria-label={t("composer.attachRemove", { name: attachmentName(path) })}
+                onClick={() => removeComposerAttachment(path)}
+              >
+                <X aria-hidden="true" size={12} strokeWidth={2} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {/* R15：粘贴图片 → 落会话工作区 → 变成路径引用附件。有文件就接管这次粘贴
+          （不然文本与图片可能同时进来）。 */}
+      <textarea
+        ref={composerRef}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData?.files ?? []);
+          if (files.length === 0) return;
+          event.preventDefault();
+          void uploadLocalFiles(files);
+        }}
+        value={draft}
+        onChange={(event) => {
+          const next = event.target.value;
+          cursorRef.current = event.target.selectionStart ?? next.length;
+          setDraft(next);
+          syncMentionTokens(next);
+          syncPalette(next, cursorRef.current);
+        }}
+        onSelect={(event) => { cursorRef.current = event.currentTarget.selectionStart ?? cursorRef.current; }}
+        onKeyDown={(event) => {
+          // `Cmd/Ctrl+K` summons the palette while typing (W1 ④).
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+            event.preventDefault();
+            summonPalette();
+            return;
+          }
+          // An active IME composition owns Enter and the arrow keys.
+          if (composingRef.current) return;
+          if (palette) {
+            const count = paletteItems.length;
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              if (count > 0) {
+                const delta = event.key === "ArrowDown" ? 1 : -1;
+                setPalette((p) => (p ? { ...p, active: (p.active + delta + count) % count } : p));
+              }
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              dismissPalette();
+              return;
+            }
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              const item = paletteItems[palette.active];
+              if (item) pickPaletteItem(item);
+              return;
+            }
+          }
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            void (steering ? steerRun(draft) : send());
+          }
+        }}
+        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionEnd={() => { composingRef.current = false; }}
+        placeholder={
+          !connected
+            ? t("composer.placeholderDisconnected")
+            : steering
+              ? t("composer.placeholderSteer")
+              : t("composer.placeholderConnected")
+        }
+        disabled={!connected || isSending || isProcessing || runSteerBusy}
+        rows={3}
+        aria-label={t("composer.messageAria")}
+        aria-keyshortcuts="Enter"
+      />
+      {palette && (
+        <CommandPalette
+          mode={palette.mode}
+          items={paletteItems}
+          activeIndex={palette.active}
+          loading={paletteLoading}
+          note={paletteNote}
+          onPick={pickPaletteItem}
+          onHover={(index) => setPalette((p) => (p ? { ...p, active: index } : p))}
+        />
+      )}
+      <div className="composer-footer">
+        <div className="composer-footer-left">
+          <div className="composer-add-menu">
+            <IconButton label={t("composer.addMenu")} className="composer-add" onClick={toggleComposerMenu} onMouseDown={(event) => event.stopPropagation()} aria-expanded={composerMenuOpen}>
+              <Plus size={19} strokeWidth={1.8} />
+            </IconButton>
+            {composerMenuOpen && <div className={`composer-popover ${catalogMenu ? "has-submenu" : ""}`} role="menu" ref={popoverRef}>
+              <div className="composer-menu">
+                <div className="composer-menu-search">
+                  <Search aria-hidden="true" size={15} />
+                  <input type="text" placeholder={t("composer.menuSearch")} aria-label={t("composer.menuSearch")} />
+                </div>
+                <div className="composer-menu-items">
+                  {/* R15（W10）：原先是空占位，现在打开附件选择面板（附件只走
+                      普通聊天；`@agent` 起 Run 时会被明确拒绝而不是悄悄丢掉）。 */}
+                  <button type="button" role="menuitem" onClick={() => { closeComposerMenu(); setCatalogMenu(null); setAttachPickerOpen(true); }}><FileText aria-hidden="true" size={17} /> <span>{t("composer.addFile")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
+                  <button type="button" role="menuitem" onClick={() => void newChat()}><Layers aria-hidden="true" size={17} /> <span>{t("composer.modeOption")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
+                  <button type="button" role="menuitem" className={catalogMenu === "agents" ? "is-active" : ""} onClick={() => setCatalogMenu("agents")}><AtSign aria-hidden="true" size={17} /> <span>{t("composer.expert")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
+                  <button type="button" role="menuitem" className={catalogMenu === "skills" ? "is-active" : ""} onClick={() => setCatalogMenu("skills")}><SlidersHorizontal aria-hidden="true" size={17} /> <span>{t("composer.skill")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
+                  <button type="button" role="menuitem" className={catalogMenu === "connectors" ? "is-active" : ""} onClick={() => setCatalogMenu("connectors")}><Wrench aria-hidden="true" size={17} /> <span>{t("composer.connector")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
+                </div>
+              </div>
+              {catalogMenu && (
+                <ComposerCatalogMenu
+                  kind={catalogMenu}
+                  onClose={() => setCatalogMenu(null)}
+                  onPick={pickCatalogItem}
+                />
+              )}
+            </div>}
+          </div>
+        </div>
+        <div className="composer-footer-right">
+          {/* W9（R14）：本轮用量（token 恒显，金额仅在费率与 token 都在时显示）。 */}
+          {currentConversation && turnUsageNow && (
+            <span className="turn-usage" title={turnUsageNow.title} aria-label={turnUsageNow.title}>
+              {turnUsageNow.text}
+            </span>
+          )}
+          {currentConversation && <ContextIndicator usage={currentConversation.context_usage ?? null} compact />}
+          <div className="model-picker-wrap">
+            <button className="model-chip" type="button" onClick={toggleModelPicker} onMouseDown={(event) => event.stopPropagation()} title={t("composer.modelPickerTitle")} aria-expanded={modelPickerOpen}>
+              <span className={`composer-model-dot ${phase}`} aria-hidden="true" />
+              <span>{modelChipLabel(currentModel, selectedModelKey, modelOptions, t("modelPicker.defaultModel"), effortLabelOf(selectedEffort))}</span>
+              <ChevronDown aria-hidden="true" size={13} strokeWidth={1.8} />
+            </button>
+            {modelPickerOpen && (
+              <ModelPicker
+                options={modelOptions}
+                directory={modelDirectory}
+                selectedKey={selectedModelKey}
+                effort={selectedEffort}
+                hasConversation={hasConversation}
+                onSelectModel={chooseModel}
+                onSelectEffort={chooseEffort}
+                onClose={closeModelPicker}
+              />
+            )}
+          </div>
+          <button className="voice-button" type="button" aria-label={t("composer.voice")} title={t("composer.voice")}>
+            <Mic size={17} strokeWidth={1.8} />
+          </button>
+          {/* 回合进行中：同一个位置换成「停止生成」。此前这里只是把发送按钮置灰，而输入框
+              此时也是 disabled，于是整条底部没有任何中断入口——只有顶栏那个按钮能停。
+              动作是 `cancel()`（`conversation/cancel`），不是「暂停」：协议没有暂停语义，
+              运行状态里的 `paused` 是另一回事（目标暂停），恢复不了当前这轮。 */}
+          {isProcessing && connected && !steering ? (
+            <button
+              className="send-button is-stop"
+              type="button"
+              onClick={() => void cancel()}
+              aria-label={t("composer.stopGenerating")}
+              title={t("composer.stopGenerating")}
+            >
+              <Square aria-hidden="true" size={13} fill="currentColor" strokeWidth={2} />
+            </button>
+          ) : (
+          <button
+            className="send-button"
+            type="button"
+            onClick={() => void (steering ? steerRun(draft) : send())}
+            disabled={!connected || !draft.trim() || isSending || isProcessing || runSteerBusy}
+            aria-label={steering ? t("composer.steerSend") : t("composer.send")}
+            title={steering ? t("composer.steerSend") : t("composer.send")}
+          >
+            <ArrowUp size={18} strokeWidth={2} />
+          </button>
+          )}
+        </div>
+      </div>
+      {/* W3: while a Run is live the composer is in steer mode; the hint states
+          that Enter goes to the run rather than starting a new turn. */}
+      {steering && <p className="composer-run-hint">{t("composer.steerHint")}</p>}
+      {/* W9（R14）：接近上限的建议。压缩不是协议能力，所以只建议「新建会话」。 */}
+      {contextAdviceNow?.level === "near" && (
+        <p className="composer-context-hint">
+          {t("common.contextNearLimit", { percent: contextAdviceNow.percent })}
+          <button className="quiet-button" type="button" onClick={() => void newChat()}>{t("sidebar.newChat")}</button>
+        </p>
+      )}
+      {runSteerError && (
+        <p className="composer-run-error" role="alert">
+          {t(runSteerError, { defaultValue: runSteerError })}
+        </p>
+      )}
+    </div>
+    {/* R15（W10）：附件选择面板。只列会话工作区里的文件——载体是路径引用，
+        服务端只收工作区内的真实文件，所以入口与准入是同一集合。 */}
+    {attachPickerOpen && (
+      <div className="composer-attach-wrap" ref={attachPickerRef}>
+        <AttachmentPicker
+          root={currentWorkspace?.canonical_path ?? null}
+          picked={composerAttachments}
+          onPick={addComposerAttachments}
+          onClose={() => setAttachPickerOpen(false)}
+        />
+      </div>
+    )}
+    {!hasConversation && (
+    <div className={`composer-workspace ${workspacePickerOpen ? "is-open" : ""}`} ref={workspacePickerRef}>
+      <button className="composer-workspace-trigger" type="button" onClick={() => setWorkspacePickerOpen((v) => !v)} aria-expanded={workspacePickerOpen}>
+        <Folder size={15} strokeWidth={1.7} aria-hidden="true" />
+        <span className="composer-workspace-name">{currentWorkspace?.name ?? workspaces[0]?.name ?? t("composer.noWorkspace")}</span>
+        {workspacePickerOpen ? <ChevronDown size={14} className="is-up" /> : <ChevronRight size={14} />}
+      </button>
+      {workspacePickerOpen && (
+        <div className="composer-workspace-pop" role="listbox" aria-label={t("composer.workspacePicker")}>
+          <div className="composer-workspace-pop-title">{t("composer.recentFolders")}</div>
+          {workspaces.map((workspace) => {
+            const isCurrent = currentWorkspace?.workspace_id === workspace.workspace_id;
+            return (
+              <button key={workspace.workspace_id} className={`composer-workspace-item ${isCurrent ? "is-current" : ""}`} type="button" onClick={() => { setWorkspacePickerOpen(false); void newChat(workspace.workspace_id); }}>
+                <Folder size={15} strokeWidth={1.7} aria-hidden="true" />
+                <span className="composer-workspace-item-main">
+                  <span className="composer-workspace-item-name">{workspace.name}</span>
+                  <span className="composer-workspace-item-path">{workspace.canonical_path?.startsWith("\\\\?\\") ? workspace.canonical_path.slice(4) : (workspace.canonical_path ?? "")}</span>
+                </span>
+                {isCurrent && <Check size={14} strokeWidth={2.2} className="composer-workspace-item-check" />}
+              </button>
+            );
+          })}
+          <button className="composer-workspace-item composer-workspace-add" type="button" onClick={() => { setWorkspacePickerOpen(false); openNewChatDialog(); }}>
+            <FolderPlus size={15} strokeWidth={1.7} aria-hidden="true" />
+            <span className="composer-workspace-item-name">{t("composer.chooseFolder")}</span>
+          </button>
+        </div>
+      )}
+    </div>
+    )}
+    {hasConversation && <p className="composer-disclaimer">{t("composer.disclaimer")}</p>}
+  </div>;
+}

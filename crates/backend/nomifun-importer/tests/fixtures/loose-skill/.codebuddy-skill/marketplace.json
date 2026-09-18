@@ -1,0 +1,6 @@
+{
+  "name": "codebuddy-skills-loose",
+  "description": "Fixture: market with malformed frontmatter",
+  "owner": { "name": "Fixtures", "email": "fixtures@example.com" },
+  "skills": []
+}

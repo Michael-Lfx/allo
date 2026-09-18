@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/web", "apps/desktop"]
+members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/desktop", "apps/web"]
 
 [workspace.package]
 version = "1.4.2"
@@ -17,7 +17,9 @@ nomifun-api-types = { path = "crates/backend/nomifun-api-types" }
 nomifun-realtime = { path = "crates/backend/nomifun-realtime" }
 nomifun-runtime = { path = "crates/backend/nomifun-runtime" }
 nomifun-auth = { path = "crates/backend/nomifun-auth" }
-nomifun-system = { path = "crates/backend/nomifun-system" }
+# default-features=false: the bedrock feature is opt-in (host-specific) —
+# headless hosts (agent-store) skip the AWS SDK entirely.
+nomifun-system = { path = "crates/backend/nomifun-system", default-features = false }
 nomifun-file = { path = "crates/backend/nomifun-file" }
 nomifun-office = { path = "crates/backend/nomifun-office" }
 nomifun-shell = { path = "crates/backend/nomifun-shell" }
@@ -45,7 +47,8 @@ nomifun-secret = { path = "crates/backend/nomifun-secret" }
 nomifun-customer-service = { path = "crates/backend/nomifun-customer-service" }
 nomifun-workshop = { path = "crates/backend/nomifun-workshop" }
 nomifun-creation = { path = "crates/backend/nomifun-creation" }
-nomifun-app = { path = "crates/backend/nomifun-app" }
+nomifun-app = { path = "crates/backend/nomifun-app", default-features = false }
+nomifun-app-server = { path = "crates/backend/nomifun-app-server" }
 nomifun-cloud = { path = "crates/backend/nomifun-cloud" }
 nomifun-insights = { path = "crates/backend/nomifun-insights" }
 nomifun-media = { path = "crates/backend/nomifun-media" }
@@ -53,11 +56,14 @@ nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
 nomifun-briefing = { path = "crates/backend/nomifun-briefing" }
 nomifun-canvas = { path = "crates/backend/nomifun-canvas" }
 nomifun-browser-platform = { path = "crates/backend/nomifun-browser-platform" }
-nomifun-robot = { path = "crates/backend/nomifun-robot" }
+# default-features=false: silero-vad is opt-in (host-specific) — headless
+# hosts (agent-store) run the energy VAD only and skip ONNX Runtime.
+nomifun-robot = { path = "crates/backend/nomifun-robot", default-features = false }
 nomifun-audio = { path = "crates/backend/nomifun-audio" }
 sherpa-onnx = { path = "crates/vendor/sherpa-onnx", default-features = false, features = ["static"] }
 sherpa-onnx-sys = { path = "crates/vendor/sherpa-onnx-sys", default-features = false, features = ["static"] }
 nomifun-ssh = { path = "crates/backend/nomifun-ssh" }
+nomifun-importer = { path = "crates/backend/nomifun-importer" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
@@ -206,6 +212,8 @@ xz2 = "0.1"
 git2 = { version = "0.20", default-features = false }
 mime_guess = "2"
 rust-embed = "8"
+# URL percent-encoding used by the standalone agent-store binary.
+percent-encoding = "2"
 fs2 = "0.4"
 anydoc = "=0.1.8"
 zstd = "0.13"
@@ -266,6 +274,10 @@ oauth2 = "5.0.0-rc.1"
 # NOTE: nomi-config uses toml 1.0; be-rs (nomifun-mcp/runtime) uses 0.8 which is
 # the workspace default. nomi-config pins 1.0 in its own manifest.
 toml = "0.8"
+# Comment/format-preserving TOML edits (`config/set` must rewrite one key and
+# leave the user's file — including comments — otherwise byte-identical).
+# 0.20 matches the version the `toml 0.8` chain already pulls in.
+toml_edit = "0.20"
 
 # --- Encoding / misc ---
 base64 = "0.22"

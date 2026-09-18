@@ -24,6 +24,11 @@ crates/backend/nomifun-app/data/
 node_modules/
 **/node_modules/
 ui/dist/
+web/dist/
+web/packages/*/dist/
+# Agent Store CLI 发布产物（由 scripts/copy-agent-store-cli.mjs 生成）
+cli/agent-store.exe
+
 .bun/
 *.tsbuildinfo
 
@@ -104,3 +109,6 @@ Thumbs.db
 # Staged ffmpeg archives for CDN upload (large binaries, never commit)
 .ffmpeg-upload/
 .jspace/
+
+.codebuddy/
+web/packages/runtime/vendor/

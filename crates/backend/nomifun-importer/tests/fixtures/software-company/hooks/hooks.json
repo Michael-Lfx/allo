@@ -1,0 +1,4 @@
+{
+  "SessionStart": { "type": "agent", "agent": "software-team-lead" },
+  "UserPromptSubmit": { "type": "command", "command": "triage" }
+}

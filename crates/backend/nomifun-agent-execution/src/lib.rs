@@ -19,10 +19,17 @@ mod plan_materializer;
 mod planner;
 mod production;
 mod routes;
+mod runtime_adapter;
 mod scheduler;
 mod template_routes;
 
 pub use engine::AgentExecutionEngine;
 pub use production::AgentExecutionEngineConfig;
 pub use routes::agent_execution_routes;
+pub use runtime_adapter::{
+    AgentRunEvent, AgentRunPlan, AgentRunPlanAttempt, AgentRunPlanDependency, AgentRunPlanStep,
+    AgentRunReceipt, AgentRunResult, AgentRunStatus, AgentRunSteerRequest,
+    AgentRunView, AgentRuntimeAdapter, PresetSnapshot, PresetSnapshotInput, RuntimeAdapterError,
+    TeamRunReceipt,
+};
 pub use template_routes::agent_execution_template_routes;

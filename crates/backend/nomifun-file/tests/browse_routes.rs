@@ -1,12 +1,12 @@
-//! Router-level regression tests for `GET /api/fs/browse` — the WebUI
-//! directory-picker endpoint.
+//! Router-level regression tests for the WebUI host file routes
+//! (`GET /api/fs/browse`, `POST /api/fs/list`).
 //!
-//! The desktop shell uses the native OS dialog and never hits this route, so
+//! The desktop shell uses the native OS dialog and never hits these routes, so
 //! contract breaks here only surface in WebUI deployments (the picker's first
 //! load shows "Unknown error"). These tests drive the real axum router with
-//! the exact query string `DirectorySelectionModal` sends, so an extractor
-//! rejection (e.g. a camelCase/snake_case mismatch under
-//! `deny_unknown_fields`) fails here instead of in production.
+//! the exact wire format the frontend sends, so an extractor rejection (e.g. a
+//! camelCase/snake_case mismatch under `deny_unknown_fields`) fails here
+//! instead of in production.
 
 use std::sync::Arc;
 
@@ -129,6 +129,63 @@ async fn browse_error_bodies_are_json_envelopes() {
         json["error"].as_str().is_some_and(|e| !e.is_empty()),
         "error body must carry a human-readable message: {raw}"
     );
+}
+
+#[tokio::test]
+async fn list_accepts_the_workspace_the_frontend_registered() {
+    // The Artifact panel lists the **selected conversation's workspace**, and
+    // the owner registers that path through the picker — anywhere on disk, so
+    // routinely outside this service's `allowed_roots` (temp / home / work
+    // dir). Unlike `/api/fs/read`, a list request carries no separate
+    // `workspace` field to authorize against: its `root` *is* the workspace,
+    // so the route itself has to admit it the way the read / metadata / zip
+    // routes admit theirs through `extra_root`. Without that the panel's only
+    // data path is dead for every such workspace (HTTP 403
+    // `PATH_OUTSIDE_SANDBOX`).
+    //
+    // The service-level sandbox is deliberately untouched — the non-scoped
+    // `IFileService::list_workspace_files` still confines to `allowed_roots`
+    // (`directory_browsing::list_workspace_files_rejects_outside_sandbox`),
+    // which is what the Channel / Remote gateway caller relies on.
+    let sandbox = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("artifact.txt"), "hi").unwrap();
+
+    let (status, json, raw) = post_json(
+        make_router(sandbox.path()),
+        "/api/fs/list",
+        serde_json::json!({ "root": workspace.path().to_str().unwrap() }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "list rejected the owner's workspace: {raw}");
+    assert_eq!(json["success"], true, "unexpected envelope: {raw}");
+    let names: Vec<&str> = json["data"]
+        .as_array()
+        .expect("list array")
+        .iter()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert!(names.contains(&"artifact.txt"), "expected the workspace listing, got {names:?}");
+}
+
+#[tokio::test]
+async fn list_still_rejects_a_root_that_does_not_exist() {
+    // Widening the authority must not turn a bad `root` into a silent empty
+    // listing: the panel renders "no files" from a 200, so a typo'd or deleted
+    // workspace has to stay an error.
+    let sandbox = tempfile::tempdir().unwrap();
+    let missing = sandbox.path().join("not-a-directory");
+
+    let (status, json, raw) = post_json(
+        make_router(sandbox.path()),
+        "/api/fs/list",
+        serde_json::json!({ "root": missing.to_str().unwrap() }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "expected a resolution error: {raw}");
+    assert_eq!(json["success"], false, "unexpected envelope: {raw}");
 }
 
 #[tokio::test]

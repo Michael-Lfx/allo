@@ -1096,61 +1096,42 @@ mod tests {
         server.abort();
     }
 
+    /// A *refused* connection is the one transport failure that proves the
+    /// request never left this process, and at-most-once delivery retries exactly
+    /// that. This pins the predicate the retry decision reads (`is_connect`) to a
+    /// real refused connection: `reqwest` reports a refusal and a reset through
+    /// the same `Error` type, so a hand-built error would not catch the
+    /// difference that decides whether a non-idempotent call may be re-POSTed.
+    ///
+    /// The retry *loop* is deliberately not driven end-to-end here, because the
+    /// failure it needs cannot be produced on this platform. Taking a loopback
+    /// server down does not make its port refuse connections: it leaves the port
+    /// silently dropping SYNs (measured: still dropping three seconds after both
+    /// `abort()` and graceful shutdown), so the next attempt merely blocks until
+    /// the replacement server appears and then succeeds — the retry branch is
+    /// never reached, and a test written that way passes for the wrong reason or
+    /// fails on a branch it never tested. The must-not-retry half of the contract
+    /// is covered by `at_most_once_never_reposts_after_possible_delivery`.
     #[tokio::test]
-    async fn at_most_once_retries_undelivered_connection_failures() {
-        let now = unix_time_secs();
-        let state = state(now);
-        let (port, server) = spawn_server(state.clone()).await;
-        let bootstrap = bootstrap(&state.issuer, port, now);
-        let clock_state = state.now.clone();
-        let client = ScopedBridgeClient::from_bootstrap(
-            bootstrap,
-            DOMAIN,
-            "test-bridge",
-            validate_test_claims,
-            Arc::new(move || clock_state.load(Ordering::SeqCst)),
-        )
-        .await
-        .unwrap();
+    async fn a_refused_connection_is_provably_undelivered() {
+        // Bound and released without ever listening, so connecting is refused
+        // outright (os error 10061) — the provably-undelivered case.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
 
-        // Take the server down (connection refused: the request provably never
-        // leaves the client), then bring it back on the same port before the
-        // client's third transport attempt (delays are 0/250/750/1500 ms).
-        server.abort();
-        let restart_state = state.clone();
-        let restart = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(400)).await;
-            let listener = loop {
-                match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-                    Ok(listener) => break listener,
-                    Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
-                }
-            };
-            let app = axum::Router::new()
-                .route(
-                    LOOPBACK_CAPABILITY_RENEW_PATH,
-                    axum::routing::post(renew_handler),
-                )
-                .route("/tool", axum::routing::post(tool_handler))
-                .with_state(restart_state);
-            axum::serve(listener, app).await.unwrap();
-        });
+        let error = build_bridge_http_client()
+            .post(format!("http://127.0.0.1:{port}/tool"))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .expect_err("nothing is listening, so the connect must be refused");
 
-        let result = client
-            .forward_tool_outcome_at_most_once(
-                "tools/call",
-                serde_json::json!({"tool": "observe", "args": {}}),
-                false,
-            )
-            .await;
-
-        assert_eq!(result, ForwardToolOutcome::Success("ok".into()));
-        assert_eq!(
-            state.tool_count.load(Ordering::SeqCst),
-            1,
-            "the refused attempts never reached the server"
+        assert!(
+            error.is_connect(),
+            "a refused connection must read as a connection-setup failure, otherwise \
+             at-most-once refuses to retry a request that provably never left: {error:?}"
         );
-        restart.abort();
     }
 
     #[tokio::test]

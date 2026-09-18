@@ -45,7 +45,8 @@ use nomifun_common::{
     generate_id, now_ms, validate_uuidv7, workspace_path_has_edge_whitespace_segment,
 };
 use nomifun_db::models::{
-    AgentMetadataRow, ConversationRow, ConversationSkillLoad, MessageRow, NewConversationSkillLoad,
+    AgentMetadataRow, AppServerContextUsageRow, ConversationRow, ConversationSkillLoad, MessageRow,
+    NewConversationSkillLoad,
 };
 use nomifun_db::{
     AgentExecutionTurnAuthority, ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
@@ -5029,7 +5030,315 @@ impl ConversationService {
 
 // ── Conversation CRUD ───────────────────────────────────────────────
 
+/// Trusted marker for the narrow App Server chat projection. It is deliberately
+/// not runtime authority: ownership, model selection and capabilities remain in
+/// typed Conversation fields and process-owned factory dependencies.
+pub const APP_SERVER_CHAT_EXTRA_KEY: &str = "app_server_chat";
+
+/// What a Store Definition binds into its App Server chat.
+///
+/// Both lists are **explicit fences**, never grants, and both are resolved by the
+/// caller against the catalog before it gets here:
+///
+/// - `connector_ids` becomes `extra.selected_mcp_server_ids`. An **empty** list
+///   binds no Connector; an *absent* key would instead mean "every enabled MCP
+///   server on this host" (`load_user_mcp_servers` treats `None` that way), so
+///   the seam always writes it.
+/// - `skill_names` becomes the frozen `preset_enabled_skills` snapshot, which
+///   wins over the host's auto-inject exclusion
+///   (`compute_initial_skills`: `(auto_inject − exclude) ∪ preset_enabled`).
+///
+/// There is deliberately no "bind everything" variant.
+#[derive(Debug, Clone, Default)]
+pub struct AppServerChatBindings {
+    pub connector_ids: Vec<McpServerId>,
+    pub skill_names: Vec<String>,
+    /// 专家（AgentDefinition）的身份，doc `27` §5.2。
+    ///
+    /// 由 App Server 解析后交进来（它已经查过来源白名单与 `enabled`）：`create` 会把它冻进
+    /// 会话的 `preset_snapshot` / `preset_revision` 列，运行时据此投影专家的提示词。
+    /// **只在创建时接受**——`ConversationService::update` 明确拒绝改动 preset 快照，
+    /// 「换专家 = 新建会话」是刻意的语义。
+    pub preset_snapshot: Option<ResolvedPresetSnapshot>,
+}
+
+/// What an installed Team Definition binds into its **Leader Conversation**
+/// (`16` §7 决策 3).
+///
+/// A Leader Conversation is the one Store chat that is supposed to delegate: the
+/// Leader model calls `nomi_delegate(strategy=planned)` inside its own turn, and
+/// the host turns that into a durable `AgentExecution` materialized from
+/// `execution_template_id`. So this seam carries everything
+/// [`AppServerChatBindings`] does **plus** the two things that make the Team tier
+/// a Team tier:
+///
+/// - `execution_template_id` is the Team's already-materialized
+///   `AgentExecutionTemplate`. It is the only source of the member pool, the
+///   routing constraints and the concurrency ceiling — none of which the model
+///   may supply.
+/// - `delegation_policy` is the tier itself, computed by the server. It is
+///   rejected when `Disabled`, because a Leader Conversation that cannot
+///   delegate is a contradiction: `nomi_delegate` would be registered and then
+///   refuse every call.
+#[derive(Debug, Clone)]
+pub struct AppServerTeamLeaderBindings {
+    /// Same explicit fence as [`AppServerChatBindings::connector_ids`].
+    pub connector_ids: Vec<McpServerId>,
+    /// Same frozen snapshot as [`AppServerChatBindings::skill_names`].
+    pub skill_names: Vec<String>,
+    pub execution_template_id: String,
+    pub delegation_policy: DelegationPolicy,
+}
+
 impl ConversationService {
+    /// Create a presetless, single-Nomi conversation for the App Server.
+    ///
+    /// This is the seam used by the versioned App Server protocol. Callers get
+    /// one deep operation rather than assembling open Conversation JSON: the
+    /// host's auto-injected Skills stay excluded, and the only Skill/Connector
+    /// surface is what `bindings` names explicitly. The supplied workspace has
+    /// already been resolved by the App Server's owner-scoped workspace
+    /// authority; arbitrary raw paths never cross this interface.
+    ///
+    /// Delegation is `Disabled` **here, not in the factory ceiling**: a single
+    /// Agent Run is one Agent's turn and deliberately has no `nomi_delegate`.
+    /// The Team tier uses [`Self::create_app_server_team_leader_chat`].
+    pub async fn create_app_server_nomi_chat(
+        &self,
+        user_id: &str,
+        name: Option<String>,
+        model: ProviderWithModel,
+        workspace: String,
+        workspace_id: Option<String>,
+        reasoning_effort: Option<String>,
+        bindings: AppServerChatBindings,
+    ) -> Result<ConversationResponse, AppError> {
+        let AppServerChatBindings {
+            connector_ids,
+            skill_names,
+            preset_snapshot,
+        } = bindings;
+        self.create_app_server_chat(
+            user_id,
+            name,
+            model,
+            workspace,
+            workspace_id,
+            reasoning_effort,
+            connector_ids,
+            skill_names,
+            DelegationPolicy::Disabled,
+            None,
+            preset_snapshot,
+        )
+        .await
+    }
+
+    /// Create the Leader Conversation of one Team Run (`16` §7 决策 3).
+    ///
+    /// Identical fences to [`Self::create_app_server_nomi_chat`] — no host
+    /// auto-injected Skills, Connectors bound by explicit id — plus the Team
+    /// binding. The returned Conversation is the Leader: its `nomi_delegate`
+    /// calls append or instantiate executions built from
+    /// `bindings.execution_template_id`.
+    pub async fn create_app_server_team_leader_chat(
+        &self,
+        user_id: &str,
+        name: Option<String>,
+        model: ProviderWithModel,
+        workspace: String,
+        workspace_id: Option<String>,
+        reasoning_effort: Option<String>,
+        bindings: AppServerTeamLeaderBindings,
+    ) -> Result<ConversationResponse, AppError> {
+        let AppServerTeamLeaderBindings {
+            connector_ids,
+            skill_names,
+            execution_template_id,
+            delegation_policy,
+        } = bindings;
+        if delegation_policy == DelegationPolicy::Disabled {
+            return Err(AppError::BadRequest(
+                "a Team Leader Conversation must be allowed to delegate".to_owned(),
+            ));
+        }
+        let execution_template_id = execution_template_id.trim().to_owned();
+        if execution_template_id.is_empty() {
+            return Err(AppError::BadRequest(
+                "a Team Leader Conversation requires an execution_template_id".to_owned(),
+            ));
+        }
+        AgentExecutionTemplateId::try_from(execution_template_id.as_str())
+            .map_err(|error| AppError::BadRequest(format!("invalid execution_template_id: {error}")))?;
+        self.create_app_server_chat(
+            user_id,
+            name,
+            model,
+            workspace,
+            workspace_id,
+            reasoning_effort,
+            connector_ids,
+            skill_names,
+            delegation_policy,
+            Some(execution_template_id),
+            // A Team Leader's identity is the Team template, not an expert preset:
+            // member presets travel with the template participants (doc `27` §5.3).
+            None,
+        )
+        .await
+    }
+
+    /// One implementation for both App Server chat tiers.
+    ///
+    /// The fences live here so the two public seams cannot drift: a new tier
+    /// chooses a `delegation_policy` and (optionally) a template, and inherits
+    /// every other guarantee. `delegation_policy` is a first-class typed field,
+    /// never `extra` — `reject_execution_policy_extra_keys` refuses that name in
+    /// the open bag.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_app_server_chat(
+        &self,
+        user_id: &str,
+        name: Option<String>,
+        model: ProviderWithModel,
+        workspace: String,
+        workspace_id: Option<String>,
+        reasoning_effort: Option<String>,
+        connector_ids: Vec<McpServerId>,
+        skill_names: Vec<String>,
+        delegation_policy: DelegationPolicy,
+        execution_template_id: Option<String>,
+        // doc `27` §5.2：专家身份（已解析快照）。`None` = 普通会话。
+        preset_snapshot: Option<ResolvedPresetSnapshot>,
+    ) -> Result<ConversationResponse, AppError> {
+        model
+            .validate()
+            .map_err(AppError::BadRequest)?;
+        if workspace.trim().is_empty() || workspace.trim() != workspace {
+            return Err(AppError::BadRequest(
+                "App Server chat workspace must be a non-empty trimmed path".to_owned(),
+            ));
+        }
+        if let Some(effort) = reasoning_effort.as_deref()
+            && effort.trim().is_empty()
+        {
+            return Err(AppError::BadRequest(
+                "reasoning_effort must not be empty when provided".to_owned(),
+            ));
+        }
+
+        // The host's auto-inject Skills stay excluded so the Store sees only its
+        // Definition's bindings; the Definition's own Skills are frozen in via
+        // `preset_enabled_skills` below. Connectors are fenced by explicit id —
+        // never by an absent key, which would mean "every enabled host server".
+        let excluded_auto_skills = self.skill_resolver.auto_inject_names().await;
+        let mut extra = serde_json::json!({
+            "workspace": workspace,
+            "exclude_auto_inject_skills": excluded_auto_skills,
+            "selected_mcp_server_ids": connector_ids,
+            "preset_enabled_skills": skill_names,
+            APP_SERVER_CHAT_EXTRA_KEY: true,
+        });
+        if let Some(workspace_id) = workspace_id {
+            extra["workspace_id"] = serde_json::Value::String(workspace_id);
+        }
+        if let Some(effort) = reasoning_effort {
+            extra["reasoning_effort"] = serde_json::Value::String(effort);
+        }
+        let request = CreateConversationRequest {
+            r#type: AgentType::Nomi,
+            name,
+            model: Some(model),
+            source: Some(ConversationSource::Nomifun),
+            channel_chat_id: None,
+            preset_id: None,
+            preset_overrides: None,
+            delegation_policy,
+            execution_model_pool: None,
+            decision_policy: DecisionPolicy::Automatic,
+            execution_template_id,
+            extra,
+        };
+        match preset_snapshot {
+            // doc `27` §5.2：专家（AgentDefinition）的身份只在**创建时**绑定，且走「已解析
+            // 快照」的可信通道——快照由 App Server 解析（来源白名单与 enabled 它已经查过）。
+            //
+            // 这里唯一要补的是**本宿主的 auto-inject 名单**：`create_inner` 会用快照的
+            // `excluded_auto_skills` 覆盖上面那条栅栏，而 agent-store 专家装出来的 preset
+            // 这一项是空的（`app_server_installer` 写的是 `vec![]`）——不并进来，宿主的自动
+            // 技能就会漏进这个会话，正是 `app_server_chat_binds_exactly_the_definition_*`
+            // 当初要挡的那件事。
+            Some(mut snapshot) => {
+                for name in &excluded_auto_skills {
+                    if !snapshot.excluded_auto_skills.contains(name) {
+                        snapshot.excluded_auto_skills.push(name.clone());
+                    }
+                }
+                self.create_from_preset_snapshot(user_id, request, snapshot).await
+            }
+            None => self.create(user_id, request).await,
+        }
+    }
+
+    /// Read an App Server-owned chat without exposing arbitrary first-party
+    /// conversations through the protocol surface.
+    pub async fn get_app_server_chat(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<ConversationResponse, AppError> {
+        let conversation = self.get(user_id, conversation_id).await?;
+        if is_app_server_chat(&conversation) {
+            Ok(conversation)
+        } else {
+            Err(AppError::NotFound(format!(
+                "App Server conversation {conversation_id} not found"
+            )))
+        }
+    }
+
+    /// Read the last measured context occupancy snapshot for an App Server
+    /// chat. `None` means no `TurnCompleted` with usage has been recorded yet
+    /// (or the conversation is not an App Server chat); the projection then
+    /// reports "unknown" instead of fabricating a percentage.
+    pub async fn get_app_server_context_usage(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<AppServerContextUsageRow>, AppError> {
+        self.conversation_repo
+            .get_app_server_context_usage(parse_conv_id(conversation_id)?)
+            .await
+            .map_err(AppError::from)
+    }
+
+    /// Return the most recent App Server chats for this owner. The durable
+    /// Conversation table stays authoritative; this projection merely filters
+    /// rows carrying the trusted creation marker above.
+    pub async fn list_app_server_chats(
+        &self,
+        user_id: &str,
+        limit: u32,
+    ) -> Result<Vec<ConversationResponse>, AppError> {
+        let result = self
+            .list(
+                user_id,
+                ListConversationsQuery {
+                    cursor: None,
+                    limit: Some(limit.clamp(1, 200)),
+                    source: None,
+                    cron_job_id: None,
+                    pinned: None,
+                },
+                false,
+            )
+            .await?;
+        Ok(result
+            .items
+            .into_iter()
+            .filter(is_app_server_chat)
+            .collect())
+    }
+
     /// Create a new conversation.
     ///
     /// Generates a canonical bare UUIDv7 ID, sets status to `pending`, defaults
@@ -9693,6 +10002,7 @@ impl ConversationService {
             .filter(|r| r.user_id == user_id)
             .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
         let conversation_key = row.conversation_id.clone();
+        let app_server_chat = is_app_server_chat_row(&row);
         if let Some(lease) = runtime_build_lease.as_ref() {
             lease.ensure_active()?;
         }
@@ -10795,6 +11105,7 @@ impl ConversationService {
                 .with_origin(origin.clone())
                 .with_channel_platform(channel_platform.clone())
                 .with_robot_session(robot_session)
+                .with_app_server_chat(app_server_chat)
                 .with_artifact_workspace(agent.workspace());
 
                 // Execution-attempt turns: let the relay accumulate this turn's
@@ -15893,6 +16204,29 @@ fn validate_url_field(transport: &str, url: Option<&str>) -> Result<(), String> 
     }
 }
 
+/// Identify the narrow App Server chat projection without treating the marker
+/// as capability authority.
+fn is_app_server_chat(conversation: &ConversationResponse) -> bool {
+    conversation
+        .extra
+        .get(APP_SERVER_CHAT_EXTRA_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Row-level variant of [`is_app_server_chat`] for the send loop, which holds
+/// the persisted `ConversationRow` rather than a `ConversationResponse`.
+fn is_app_server_chat_row(row: &ConversationRow) -> bool {
+    serde_json::from_str::<serde_json::Value>(&row.extra)
+        .ok()
+        .and_then(|extra| {
+            extra
+                .get(APP_SERVER_CHAT_EXTRA_KEY)
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
+}
+
 /// Serialize a serde-compatible enum to its JSON string form for DB storage.
 ///
 /// e.g. `AgentType::Acp` → `"acp"`
@@ -16392,6 +16726,7 @@ mod tests {
             resolved_agent_type: Some("nomi".to_owned()),
             resolved_agent_backend: None,
             resolved_model: None,
+            reasoning_effort: None,
             included_skills: Vec::new(),
             excluded_auto_skills: Vec::new(),
             knowledge_policy: Default::default(),

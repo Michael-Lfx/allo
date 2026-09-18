@@ -29,6 +29,33 @@ pub struct AppConfig {
     /// Per-boot secret the desktop's own webview presents to be trusted as the
     /// local client. Only `Some` under `AuthPolicy::TrustLocalToken`.
     pub local_trust_secret: Option<Arc<str>>,
+    /// Explicit path to the agent-store config file (`~/.agent-store/config.toml`
+    /// convention). `None` disables default-marketplace auto-registration —
+    /// tests rely on that (an injected `None` keeps the store free of the
+    /// host user's personal sources).
+    pub agent_store_config_path: Option<PathBuf>,
+    /// Adopt that file's `[tools]` table as this host's global tool policy.
+    ///
+    /// `false` on every host except `apps/agent-store`: the desktop and web
+    /// hosts read the same file for providers/marketplaces, and a tool policy is
+    /// a property of the *deployment*, not of the file being readable.
+    pub adopt_store_tool_policy: bool,
+    /// Adopt that directory's `mcp.json` as this host's MCP server declaration
+    /// file (`20` §7.9 / `21` D14).
+    ///
+    /// Resolved as the sibling of `agent_store_config_path`, so a host that
+    /// points at a custom config file gets a matching declaration file. `false`
+    /// on every host except `apps/agent-store`, for the same reason as
+    /// `adopt_store_tool_policy`: readability is not ownership.
+    pub adopt_store_mcp_declarations: bool,
+    /// Whether this host installs the **embedded** (synchronous, parallel-only)
+    /// Agent execution deployment for its Nomi sessions.
+    ///
+    /// `true` (the historical behaviour) everywhere except a host that owns a
+    /// durable Agent Execution facade of its own — `apps/agent-store` — because
+    /// such a host must expose that facade instead of a non-durable shell
+    /// (`16` §7 决策 3). Host composition: never user configuration.
+    pub install_embedded_agent_execution: bool,
 }
 
 impl AppConfig {
@@ -82,6 +109,10 @@ impl Default for AppConfig {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             auth_policy: AuthPolicy::Required,
             local_trust_secret: None,
+            agent_store_config_path: None,
+            adopt_store_tool_policy: false,
+            adopt_store_mcp_declarations: false,
+            install_embedded_agent_execution: true,
         }
     }
 }

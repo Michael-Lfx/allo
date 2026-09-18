@@ -44,7 +44,7 @@ backend crates without a feature gate and documented reason.
 | `bun run build:ui` | Build the React SPA to `ui/dist/`. |
 | `bun run test` | Run `cargo test` (full Rust suite). |
 | `bun run test:fast` | Run `cargo nextest` (faster Rust tests). |
-| `bun run check` | All quality gates: typecheck + i18n + theme + icons + process-runtime-boundary + agent-vocabulary + script-registry. |
+| `bun run check` | All quality gates: `ui/` frontend (typecheck · i18n · theme · button-layout · icons · dead-css · codemirror) + repo-level (error-surface contract · support-surface contract · process-runtime-boundary · browser-platform-boundary · agent-vocabulary · windows-console-hide) + Agent Store (market manifest · protocol fingerprint · cross-repo release sync) + script-registry. |
 | `bun run typecheck` | TypeScript type check for `ui/`. |
 | `bun run fmt` | Format Rust code (`cargo fmt`). |
 | `bun run clean` | Deep reclaim of build space. |
@@ -61,15 +61,24 @@ Run the smallest check that covers your change. See
 
 | Change type | Minimum check |
 | --- | --- |
-| Frontend TypeScript | `bun run typecheck` |
-| Frontend feature | `bun run check` |
-| i18n / theme / icons | `bun run check:i18n` / `check:theme` / `check:icons` |
+| Frontend TypeScript (`ui/`) | `bun run typecheck` |
+| Agent Store frontend (`web/`) | `cd web && bun run typecheck && bun run test` |
+| Frontend checks (`ui/`) | covered by `bun run check` (`check:i18n` / `check:theme` / `check:icons` / …) |
 | Rust compile | `cargo check -p <crate>` |
 | Rust behavior | `cargo test -p <crate>` |
 | Database migration | Migration test + `cargo test -p nomifun-db` |
 | Root scripts | `bun run help --check` |
 
 Broad pre-PR pass: `cargo check --workspace && bun run check`
+
+> `bun run check` is the aggregate gate. It runs the `ui/` frontend checks
+> (typecheck · i18n · theme · button-layout · icons · dead-css · codemirror ·
+> agent-vocabulary), the repo-level gates (error-surface contract ·
+> support-surface contract · process runtime boundary · browser platform
+> boundary · windows-console-hide) and the Agent Store gates (market manifest ·
+> protocol fingerprint · cross-repo release sync), then the script registry. The
+> Agent Store frontend (`web/`) is **not** in this chain — run
+> `cd web && bun run typecheck && bun run test` by hand when you work in `web/`.
 
 ## High-Risk Areas
 

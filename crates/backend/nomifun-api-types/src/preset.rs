@@ -394,6 +394,13 @@ pub struct ResolvedPresetSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub resolved_agent_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub resolved_agent_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub resolved_model: Option<ModelPreference>,
+    /// App Server `agent/run` 的**运行级**思考等级（doc `29` §6.3）。
+    ///
+    /// **preset 解析永不设置它**——只有 App Server 的运行入口会写。因此对会话 / 定时 / 伙伴 /
+    /// 模板 / 网关这些既有的快照生产者与已落库的行**逐字不变**（`None` 不上 wire）。它随参与者
+    /// 行持久化（JSON 列，故免迁移），由 attempt runner 投影进尝试会话的
+    /// `extra.reasoning_effort`，从而走与普通会话**完全相同**的运行时读取路径。
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub reasoning_effort: Option<String>,
     /// Source-qualified Skill IDs frozen when this preset revision resolves.
     #[serde(default)] pub included_skills: Vec<String>,
     #[serde(default)] pub excluded_auto_skills: Vec<String>,
@@ -634,6 +641,7 @@ mod tests {
             resolved_agent_type: None,
             resolved_agent_backend: None,
             resolved_model: None,
+            reasoning_effort: None,
             included_skills: vec![],
             excluded_auto_skills: vec![],
             knowledge_policy: PresetKnowledgePolicy::default(),
@@ -646,6 +654,43 @@ mod tests {
         let restored: ResolvedPresetSnapshot = serde_json::from_value(value).unwrap();
         assert_eq!(restored.mcp_server_ids, vec![mcp_a, mcp_b]);
         assert_eq!(restored, snapshot);
+    }
+
+    /// doc `29` §6.3：运行级思考等级是**纯加法**——缺席时该键根本不出现（既有快照的序列化逐字
+    /// 不变），带上时原样往返，且**没有该键的旧 JSON 仍然解析成功**（= `None`）。
+    #[test]
+    fn resolved_preset_snapshot_reasoning_effort_is_additive() {
+        let mut snapshot = ResolvedPresetSnapshot {
+            preset_id: PRESET_ID.into(),
+            preset_revision: 3,
+            preset_name: "Config One".into(),
+            target: PresetTarget::Conversation,
+            routing_description: None,
+            instructions: String::new(),
+            resolved_agent_id: None,
+            resolved_agent_type: None,
+            resolved_agent_backend: None,
+            resolved_model: None,
+            reasoning_effort: None,
+            included_skills: vec![],
+            excluded_auto_skills: vec![],
+            knowledge_policy: PresetKnowledgePolicy::default(),
+            knowledge_base_ids: vec![],
+            mcp_server_ids: vec![],
+            warnings: vec![],
+        };
+        let absent = serde_json::to_value(&snapshot).unwrap();
+        assert!(absent.get("reasoning_effort").is_none(), "{absent}");
+
+        snapshot.reasoning_effort = Some("high".into());
+        let present = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(present["reasoning_effort"], json!("high"));
+        let restored: ResolvedPresetSnapshot = serde_json::from_value(present).unwrap();
+        assert_eq!(restored, snapshot);
+
+        // A snapshot persisted before this field existed still parses.
+        let legacy: ResolvedPresetSnapshot = serde_json::from_value(absent).unwrap();
+        assert!(legacy.reasoning_effort.is_none());
     }
 
     #[test]

@@ -3827,6 +3827,17 @@ impl AgentEngine {
                             "Autocompact: summarized {} messages ({} tokens → compact)",
                             result.messages_summarized, result.pre_compact_tokens
                         ));
+                        if result.mechanical_fold {
+                            // 摘要降级为确定性占位符：上下文确实释放了，但用户必须知道这段
+                            // 历史是被丢弃而不是被总结的（见 `CompactResult::mechanical_fold`）。
+                            self.output.emit_warning(&format!(
+                                "Autocompact: the summary is a placeholder ({})",
+                                result
+                                    .mechanical_reason
+                                    .as_deref()
+                                    .unwrap_or("no reason recorded")
+                            ));
+                        }
                         self.editable_turn = None;
                         // Freeze the rewritten prefix BEFORE post_compact_reinject
                         // so persist_turn_tail cannot mutate it (prefix-cache).

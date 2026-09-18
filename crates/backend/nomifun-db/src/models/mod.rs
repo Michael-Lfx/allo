@@ -1,4 +1,8 @@
 mod acp_session;
+mod app_server_context_usage;
+mod app_server_idempotency;
+mod app_server_run_mapping;
+mod app_server_workspace;
 mod agent_metadata;
 mod agent_execution;
 mod agent_execution_template;
@@ -18,7 +22,10 @@ mod knowledge;
 mod mcp_server;
 mod meeting;
 mod message;
+mod oauth_client_registration;
 mod oauth_token;
+mod plugin_marketplace;
+mod plugin_snapshot;
 mod provider;
 mod provider_connection;
 mod provider_model;
@@ -36,6 +43,16 @@ mod webhook;
 mod workshop;
 
 pub use acp_session::AcpSessionRow;
+pub use app_server_context_usage::AppServerContextUsageRow;
+pub use app_server_idempotency::{
+    AppServerIdempotencyReceiptRow, AppServerIdempotencyScope,
+    NewAppServerIdempotencyReceipt,
+};
+pub use app_server_run_mapping::AppServerRunMappingRow;
+pub use app_server_workspace::{
+    AppServerWorkspaceRow, APP_SERVER_WORKSPACE_STATUS_ACTIVE,
+    APP_SERVER_WORKSPACE_STATUS_REVOKED,
+};
 pub use agent_metadata::{AgentMetadataRow, UpdateAgentHandshakeParams, UpsertAgentMetadataParams};
 pub use agent_execution::*;
 pub use agent_execution_template::*;
@@ -71,7 +88,12 @@ pub use meeting::{
     MeetingSegmentRow, MeetingSessionRow, MeetingSpeakerRow, MeetingVoiceprintRow,
 };
 pub use message::MessageRow;
+pub use oauth_client_registration::OAuthClientRegistrationRow;
 pub use oauth_token::OAuthTokenRow;
+pub use plugin_marketplace::{MarketplaceEntry, PluginMarketplaceRow};
+pub use plugin_snapshot::{
+    PluginSnapshotComponentRow, PluginSnapshotListRow, PluginSnapshotProvenanceRow, PluginSnapshotRow,
+};
 pub use provider::Provider;
 pub use provider_connection::{ProviderConnectionRow, UpsertProviderConnectionParams};
 pub use provider_model::{NewProviderModel, ProviderModelRow, ProviderModelUpdate};

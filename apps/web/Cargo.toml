@@ -24,7 +24,14 @@ tempfile = "3"
 # P2 will expose nomifun_app's boot entry (init_environment / data layer /
 # AppServices) so this host can mount the real /api router. For now this host
 # serves the built SPA (ui/dist) and a health endpoint.
-nomifun-app.workspace = true
+# The workspace root declares nomifun-app with default-features=false (the
+# agent-store host opts in per-feature). Feature inheritance cannot re-enable
+# defaults, so this host lists nomifun-app's full default set explicitly.
+nomifun-app = { workspace = true, features = [
+    "telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix",
+    "mattermost", "slack", "twitch", "nostr", "qqbot",
+    "bedrock", "silero-vad",
+] }
 nomifun-common.workspace = true
 nomifun-runtime.workspace = true
 

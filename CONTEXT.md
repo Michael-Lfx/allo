@@ -4,6 +4,8 @@
 
 术语体系继承自同作者的 learnhub-plugin（大愿景一致，本项目当前聚焦学习模块），两边词汇保持同源同步；差异处以本文件为准。
 
+> 其它子上下文的领域词表不在本文件：Agent Store 见 [`docs/architecture/agent-store-CONTEXT.md`](docs/architecture/agent-store-CONTEXT.md)。
+
 ## Language
 
 **Course（课程）**:

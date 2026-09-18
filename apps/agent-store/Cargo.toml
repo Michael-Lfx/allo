@@ -1,0 +1,55 @@
+[package]
+name = "agent-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agent-store"
+path = "src/main.rs"
+
+[features]
+default = []
+# Embed (release) / serve-from-disk (debug) the Agent Store Web UI
+# (`web/dist`). Enabling this feature requires `bun --cwd web run build` to
+# have produced `web/dist` first — exactly like `nomifun-web`'s same-named
+# feature. Without it the binary is API-only: the SPA fallback serves 404.
+static-webui = []
+
+[build-dependencies]
+anyhow.workspace = true
+
+[dependencies]
+# The unified backend, consumed in-process as a library (no spawned binary):
+# `nomifun_app::bootstrap` boots environment/data/services and `create_router`
+# mounts the full API surface (App Server WS + HTTP helpers, conversations,
+# workspaces, imports, marketplaces, OAuth, etc.).
+#
+# Size-trimmed feature set for the headless store host:
+# - `default-features = false` drops the chat-channel plugins (telegram/
+#   lark/.../nostr) and the Bedrock/Silero-VAD native stacks — none of them
+#   serve the store's browse/install/run surface (no voice pipeline, no
+#   channel inboxes, no AWS catalog fetch). Cuts ~90 MB off the binary.
+# - Only the channel the store actually uses is re-enabled below.
+nomifun-app = { workspace = true, default-features = false, features = ["qqbot"] }
+nomifun-ai-agent.workspace = true
+nomifun-app-server.workspace = true
+nomifun-common.workspace = true
+nomifun-runtime.workspace = true
+serde_json.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["trace"] }
+tracing.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+
+# Embedded Agent Store Web UI (web/dist, gated by `static-webui`) + MIME +
+# the reviewed OS hand-off seam for opening the browser (`nomifun-shell`'s
+# opener is on `check-process-runtime-boundary.mjs`'s allowlist; this app does
+# not depend on `open` directly).
+rust-embed.workspace = true
+mime_guess.workspace = true
+nomifun-shell.workspace = true

@@ -46,6 +46,8 @@ async fn check_status_authenticated_returns_true() {
         token_type: "bearer",
         // Expires in the far future.
         expires_at: Some(nomifun_common::now_ms() + 3_600_000),
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
@@ -69,6 +71,8 @@ async fn check_status_expired_token_returns_false() {
         token_type: "bearer",
         // Already expired.
         expires_at: Some(1000),
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
@@ -91,6 +95,8 @@ async fn check_status_no_expiry_treated_as_valid() {
         refresh_token: None,
         token_type: "bearer",
         expires_at: None,
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
@@ -113,6 +119,8 @@ async fn get_authenticated_servers_returns_all_urls() {
         refresh_token: None,
         token_type: "bearer",
         expires_at: None,
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
@@ -123,6 +131,8 @@ async fn get_authenticated_servers_returns_all_urls() {
         refresh_token: None,
         token_type: "bearer",
         expires_at: None,
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
@@ -149,8 +159,11 @@ async fn login_invalid_url_returns_error() {
     let (svc, _repo) = make_service().await;
     // This URL won't have .well-known endpoints.
     let result = svc.login("https://127.0.0.1:1").await;
-    // Should return an McpError::OAuth about discovery failure.
-    assert!(result.is_err());
+    // Discovery failures surface as a structured failed login (no Err), with
+    // a stable error code and a UI-safe message.
+    let result = result.expect("login never errors at the transport level");
+    assert!(!result.success);
+    assert!(result.error.is_some(), "a failure reason must be present");
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +180,8 @@ async fn logout_deletes_stored_token() {
         refresh_token: None,
         token_type: "bearer",
         expires_at: None,
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
@@ -215,6 +230,8 @@ async fn get_token_returns_access_token_when_valid() {
         refresh_token: None,
         token_type: "bearer",
         expires_at: Some(nomifun_common::now_ms() + 3_600_000),
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
@@ -233,13 +250,18 @@ async fn get_token_returns_expired_token_when_no_refresh_token() {
         refresh_token: None,
         token_type: "bearer",
         expires_at: Some(1000),
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
 
-    // With no refresh_token, returns the expired token as-is.
-    let token = svc.get_token("https://expired.example.com").await.unwrap();
-    assert_eq!(token.as_deref(), Some("old_access"));
+    // An expired access token without a refresh token must fail closed.
+    let error = svc
+        .get_token("https://expired.example.com")
+        .await
+        .expect_err("expired token without refresh must require reauthorization");
+    assert!(matches!(error, nomifun_mcp::McpError::ReauthorizationRequired));
 }
 
 #[tokio::test]
@@ -252,6 +274,8 @@ async fn get_token_returns_no_expiry_token() {
         refresh_token: None,
         token_type: "bearer",
         expires_at: None,
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();

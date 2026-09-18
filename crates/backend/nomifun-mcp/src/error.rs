@@ -30,11 +30,59 @@ pub enum McpError {
     #[error("OAuth error: {0}")]
     OAuth(String),
 
+    /// The authorization server publishes no registration endpoint and no
+    /// pre-registered client identity is configured for this connector.
+    #[error("OAuth pre-registered client required: {0}")]
+    PreRegisteredClientRequired(String),
+
+    /// The authorization server advertises no RFC 7591 registration endpoint
+    /// (raised when dynamic registration was explicitly attempted).
+    #[error("OAuth registration not supported: {0}")]
+    RegistrationNotSupported(String),
+
+    /// RFC 7591 dynamic registration failed at the authorization server.
+    #[error("OAuth dynamic registration failed: {0}")]
+    DynamicRegistrationFailed(String),
+
+    /// RFC 7591 registration response was malformed (e.g. missing client_id).
+    #[error("Invalid OAuth registration response: {0}")]
+    InvalidRegistrationResponse(String),
+
+    /// The authorization server rejected the redirect URI.
+    #[error("OAuth redirect URI not allowed: {0}")]
+    RedirectUriNotAllowed(String),
+
+    /// The configured callback/redirect setup is not supported (non-loopback
+    /// host, missing port, path mismatch on the callback listener).
+    #[error("Unsupported OAuth auth setup: {0}")]
+    UnsupportedAuth(String),
+
+    #[error("OAuth reauthorization required")]
+    ReauthorizationRequired,
+
     #[error("{0}")]
     Database(#[from] nomifun_db::DbError),
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+impl McpError {
+    /// Stable client-facing code for OAuth flows (RFC 7591/8414/9728), or
+    /// `None` for errors that carry no structured OAuth code. Mirrors the
+    /// codes defined in `docs/agent-store/06-connector-oauth-security.md` §14 (appendix C; §6.2/§8).
+    pub fn oauth_error_code(&self) -> Option<&'static str> {
+        match self {
+            McpError::PreRegisteredClientRequired(_) => Some("pre_registered_client_required"),
+            McpError::RegistrationNotSupported(_) => Some("registration_not_supported"),
+            McpError::DynamicRegistrationFailed(_) => Some("dynamic_registration_failed"),
+            McpError::InvalidRegistrationResponse(_) => Some("invalid_registration_response"),
+            McpError::RedirectUriNotAllowed(_) => Some("redirect_uri_not_allowed"),
+            McpError::UnsupportedAuth(_) => Some("unsupported_auth"),
+            McpError::ReauthorizationRequired => Some("reauthorization_required"),
+            _ => None,
+        }
+    }
 }
 
 impl From<McpError> for AppError {
@@ -48,6 +96,27 @@ impl From<McpError> for AppError {
             McpError::AgentOperationFailed(msg) => AppError::Internal(msg),
             McpError::ConnectionFailed(msg) => AppError::BadGateway(msg),
             McpError::OAuth(msg) => AppError::Internal(format!("OAuth error: {msg}")),
+            McpError::PreRegisteredClientRequired(msg) => {
+                AppError::BadRequest(format!("pre_registered_client_required: {msg}"))
+            }
+            McpError::RegistrationNotSupported(msg) => {
+                AppError::BadRequest(format!("registration_not_supported: {msg}"))
+            }
+            McpError::DynamicRegistrationFailed(msg) => {
+                AppError::BadGateway(format!("dynamic_registration_failed: {msg}"))
+            }
+            McpError::InvalidRegistrationResponse(msg) => {
+                AppError::BadGateway(format!("invalid_registration_response: {msg}"))
+            }
+            McpError::RedirectUriNotAllowed(msg) => {
+                AppError::BadRequest(format!("redirect_uri_not_allowed: {msg}"))
+            }
+            McpError::UnsupportedAuth(msg) => {
+                AppError::BadRequest(format!("unsupported_auth: {msg}"))
+            }
+            McpError::ReauthorizationRequired => {
+                AppError::Unauthorized("OAuth reauthorization required".into())
+            }
             McpError::Database(db_err) => AppError::from(db_err),
             McpError::Json(e) => AppError::Internal(format!("JSON error: {e}")),
         }
@@ -104,6 +173,12 @@ mod tests {
     fn oauth_maps_to_internal() {
         let err: AppError = McpError::OAuth("discovery failed".into()).into();
         assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn reauthorization_required_maps_to_unauthorized() {
+        let err: AppError = McpError::ReauthorizationRequired.into();
+        assert!(matches!(err, AppError::Unauthorized(_)));
     }
 
     #[test]

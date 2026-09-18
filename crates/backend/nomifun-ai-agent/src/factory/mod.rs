@@ -1,11 +1,13 @@
 pub mod acp_assembler;
 #[cfg(feature = "browser-use")]
 pub mod browser_lane;
+pub mod delegate;
 pub mod provider_config;
 
 mod acp;
 pub(crate) mod construction_guard;
 mod context;
+pub mod mcp_oauth;
 pub(crate) mod moa;
 mod nanobot;
 pub(crate) mod nomi;
@@ -21,14 +23,15 @@ use futures_util::FutureExt;
 use nomi_agent::companion_tools::{CompanionMemorySink, CompanionSkillSink};
 use nomi_agent::requirement_tools::RequirementSink;
 use nomifun_api_types::{
-    BrowserMcpConfig, ComputerMcpConfig, GatewayMcpConfig, OpenMcpConfig, RequirementMcpConfig,
-    SessionMcpServer,
+    BrowserMcpConfig, ComputerMcpConfig, GatewayMcpConfig, NomiMcpDeclarations, NomiToolPolicy,
+    OpenMcpConfig, RequirementMcpConfig, SessionMcpServer,
 };
 use nomifun_common::{AgentType, AppError, ExecutionAuthority};
 use nomifun_db::{
     IClientPreferenceRepository, IMcpServerRepository, IProviderRepository, IRemoteAgentRepository,
     ISettingsRepository,
 };
+use nomifun_mcp::McpOAuthService;
 
 use crate::runtime_handle::AgentRuntimeHandle;
 use crate::capability::skill_manager::AcpSkillManager;
@@ -168,6 +171,40 @@ pub struct AgentFactoryDeps {
     pub search_provider: nomi_agent::SearchProviderBinding,
     /// Explicit host-owned extract composition. Default is local-only.
     pub extract_coordinator: nomi_agent::ExtractCoordinatorBinding,
+    /// Host-owned global tool policy (`20-tool-injection-policy.zh.md`).
+    ///
+    /// Process-owned configuration, exactly like the two bindings above: it is
+    /// never read from conversation `extra`, so no request can forge it, and
+    /// every field can only ever *narrow* the tool surface. The default
+    /// ([`NomiToolPolicy::default`]) constrains nothing, so a host that does not
+    /// adopt an agent-store `[tools]` table behaves exactly as before.
+    pub tool_policy: NomiToolPolicy,
+    /// Host-owned MCP server declarations (`~/.agent-store/mcp.json`,
+    /// `20` §7.9 / `21` D14).
+    ///
+    /// Process-owned configuration, exactly like `tool_policy`: read from the
+    /// host's own file, never from conversation `extra`, so no request can forge
+    /// a declaration. It widens the *sources* of the MCP tool surface but not the
+    /// *policy* over it — the host `[tools]` denylist is applied last. The
+    /// default (empty) declares nothing, so a host that does not opt in behaves
+    /// exactly as before.
+    pub mcp_declarations: NomiMcpDeclarations,
+    /// Whether this host installs the **embedded** (synchronous, parallel-only)
+    /// Agent execution deployment for its Nomi sessions.
+    ///
+    /// Host composition, never user configuration — the same posture
+    /// `check-agent-vocabulary.mjs` enforces for the config file. A dedicated host
+    /// that owns a durable execution facade sets this `false` so its sessions
+    /// expose that facade instead of a non-durable shell
+    /// (`16` §7 决策 3: 不得用于 Team Runtime).
+    pub embedded_agent_execution: bool,
+    /// Late-wired provider for host-backed `nomi_delegate` sinks.
+    ///
+    /// `None` (or a slot that was never installed) means this host has no durable
+    /// execution to delegate to, so no such tool is registered. Installed by the
+    /// composition root once its Agent Execution facade exists — the factory is
+    /// built first (see [`delegate::DelegateSinkProviderSlot`]).
+    pub delegate_sink_provider: Option<delegate::DelegateSinkProviderSlot>,
     pub skill_manager: Arc<AcpSkillManager>,
     pub remote_agent_repo: Arc<dyn IRemoteAgentRepository>,
     pub provider_repo: Arc<dyn IProviderRepository>,
@@ -244,6 +281,11 @@ pub struct AgentFactoryDeps {
     /// inject enabled servers into `session/new` (ELECTRON-1JG fix).
     /// `None` for tests/composition paths that do not need MCP injection.
     pub mcp_server_repo: Option<Arc<dyn IMcpServerRepository>>,
+    /// MCP OAuth service for remote (SSE/Streamable HTTP) servers: injects
+    /// the stored bearer token into transport headers at session build and
+    /// backs the runtime 401 → refresh → single-retry path. `None` keeps
+    /// remote servers unauthenticated (401 surfaces to the caller).
+    pub mcp_oauth_service: Option<McpOAuthService>,
     /// Optional sink enabling nomi native requirement tools. When `Some`,
     /// `requirement_complete` / `requirement_update_status` are registered into
     /// the in-process engine. `None` (e.g. standalone) leaves them unregistered.

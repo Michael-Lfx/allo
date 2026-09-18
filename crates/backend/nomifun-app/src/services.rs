@@ -20,9 +20,11 @@ use nomifun_conversation::{
 };
 use nomifun_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, ICompanionTokenRepository,
-    IConversationRepository, IMcpServerRepository, IProviderModelRepository, IProviderRepository,
-    IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    IConversationRepository, IMcpServerRepository, IOAuthClientRegistrationRepository,
+    IOAuthTokenRepository, IProviderModelRepository,
+    IProviderRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
+    SqliteOAuthClientRegistrationRepository, SqliteOAuthTokenRepository,
     SqliteProviderModelRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
     SqliteSettingsRepository, SqliteTerminalRepository, SqliteUserRepository,
 };
@@ -1171,6 +1173,39 @@ pub struct AppServices {
     pub data_dir: PathBuf,
     pub work_dir: PathBuf,
     pub work_dir_is_cli_override: bool,
+    /// Explicit agent-store config path (or `None` in tests / when default
+    /// default-marketplace auto-registration is disabled).
+    pub agent_store_config_path: Option<PathBuf>,
+    /// Host-owned global tool policy, resolved **once at startup** from the
+    /// agent-store config file's `[tools]` table (`20-tool-injection-policy.zh.md`).
+    /// Per the file's own contract this is a launch-time policy: a later
+    /// `config/set` write takes effect on the next start, exactly like
+    /// `[memory].distill_enabled`. Every host that does not opt in carries
+    /// [`nomifun_api_types::NomiToolPolicy::default`], which constrains nothing.
+    pub tool_policy: nomifun_api_types::NomiToolPolicy,
+    /// The host's `[connector_proxy]` policy, resolved once at startup (doc `24`
+    /// §5.1, doc `26`).
+    ///
+    /// Fail-closed at the table: every host that does not declare
+    /// `[connector_proxy]` carries
+    /// [`nomifun_app_server::agent_store::ConnectorProxyPolicy::deny_all`], so
+    /// the call proxy is off unless an operator turned it on. Inside a table
+    /// that *is* on, `allow` narrows and `deny` subtracts — an absent `allow`
+    /// lets the enabled connectors through (doc `26` §4).
+    pub connector_proxy_policy: nomifun_app_server::agent_store::ConnectorProxyPolicy,
+    /// The raw `--adopt-store-mcp-declarations` flag the resolved
+    /// `mcp_declarations` below came from.
+    ///
+    /// Kept as the flag rather than re-derived from `mcp_declarations`: "adopted
+    /// a file that declares nothing" and "never looked at the file" both resolve
+    /// to nothing declared, but only one of them makes the declaration file
+    /// meaningful on this host.
+    pub adopt_store_mcp_declarations: bool,
+    /// Host-owned MCP server declarations, resolved **once at startup** from
+    /// `mcp.json` next to the agent-store config file (`20` §7.9 / `21` D14).
+    /// Same launch-time contract as `tool_policy`; every host that does not opt
+    /// in carries the empty default, which declares nothing.
+    pub mcp_declarations: nomifun_api_types::NomiMcpDeclarations,
     pub runtime_capabilities: RuntimeCapabilities,
     /// Authentication policy (single source of truth, replaces `local: bool`).
     pub auth_policy: AuthPolicy,
@@ -1259,6 +1294,13 @@ pub struct AppServices {
     #[cfg(feature = "browser-use")]
     _browser_lane_provider_slot:
         nomifun_ai_agent::BrowserLaneClientProviderSlot,
+    /// Late-wired host-backed `nomi_delegate` provider, shared with the already
+    /// built Agent factory. The Agent Execution facade does not exist yet when
+    /// the factory is built, so the composition root installs this afterwards
+    /// (`router::state::build_agent_execution_engine`). A host that never
+    /// installs one simply exposes no host-backed delegate.
+    pub delegate_sink_provider_slot:
+        nomifun_ai_agent::factory::delegate::DelegateSinkProviderSlot,
     /// Keeps the authenticated ACP browser loopback proxy alive. Its issuer is
     /// process-private; child runtimes receive only scoped capabilities.
     #[cfg(feature = "browser-use")]
@@ -1534,6 +1576,212 @@ impl std::error::Error for RetainedStartupCleanupError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.error.source()
     }
+}
+
+/// Environment override for the host's `[tools]` policy.
+///
+/// The value is a JSON object with the same shape as the config table (the
+/// `NomiToolPolicy` serde), e.g. `{"web":true,"domains":{"cron":false}}`; `{}`
+/// asks for the permissive default (every family on).
+///
+/// It **replaces** the file's `[tools]` table wholesale instead of merging.
+/// Merging can only ever narrow — every policy layer is subtractive — so it
+/// could never switch a family the template turned off back on, which is exactly
+/// what a caller spawning its own host wants (the SDK's `launchClient` passes it
+/// through `SpawnOptions.env`). A *partial* merge would also reset every key the
+/// caller did not name; replacement keeps a spawned host deterministic — it gets
+/// the toolset it asked for, not whatever the developer's
+/// `~/.agent-store/config.toml` happens to say.
+///
+/// Gated by the same `adopt` flag as the file, so the desktop and web hosts
+/// cannot be narrowed through the environment either.
+const TOOLS_ENV: &str = "AGENT_STORE_TOOLS";
+
+/// Environment override for the connector call policy (`[connector_proxy]`).
+///
+/// Same shape and same whole-replacement rule as [`TOOLS_ENV`] / `[tools]`, and
+/// gated by the same adopt flag so the desktop and web hosts cannot be given a
+/// call proxy through the environment either.
+const CONNECTOR_PROXY_ENV: &str = "AGENT_STORE_CONNECTOR_PROXY";
+
+/// Resolve this host's connector call policy (doc `24` §5.1, doc `26`).
+///
+/// Two deliberate properties, both load-bearing:
+///
+/// - **Opt-in, not file-presence-driven.** Gated on the same `adopt` flag as
+///   `[tools]` (`--adopt-store-tool-policy`, set only by `apps/agent-store`), so
+///   the desktop and web hosts — which read the same file for providers and
+///   marketplaces — never expose a call proxy because of it.
+/// - **Fail-closed about the decision to grant.** A missing file, a missing
+///   table or an unparseable override all yield
+///   [`ConnectorProxyPolicy::deny_all`]. The tool policy fails *open* because it
+///   only ever subtracts from a surface the host already had; this one grants a
+///   third party the ability to execute tools on the host's connections, so a
+///   typo must never be the difference between "the proxy is off" and "the proxy
+///   is on". (What the *contents* of an enabled table allow is a separate
+///   question, answered by `allow`/`deny` — doc `26` §4.)
+///
+/// Kept pure so the rule above is testable without booting a database.
+fn resolve_connector_proxy_policy(
+    adopt: bool,
+    path: Option<&std::path::Path>,
+    env: Option<&str>,
+) -> nomifun_app_server::agent_store::ConnectorProxyPolicy {
+    use nomifun_app_server::agent_store::{AgentStoreConfig, AgentStoreConnectorProxy, ConnectorProxyPolicy};
+
+    if !adopt {
+        return ConnectorProxyPolicy::deny_all();
+    }
+    if let Some(raw) = env.map(str::trim).filter(|raw| !raw.is_empty()) {
+        match serde_json::from_str::<AgentStoreConnectorProxy>(raw) {
+            Ok(declared) => {
+                tracing::info!(
+                    target: "agent_store_connector_proxy",
+                    "connector call policy taken from {CONNECTOR_PROXY_ENV}; the config file's [connector_proxy] table is ignored"
+                );
+                return ConnectorProxyPolicy::from_declared(&declared);
+            }
+            // Still fail closed: an unusable override does not fall back to a
+            // possibly-wider file, because "the operator's intent is unclear" is
+            // not a reason to grant execution.
+            Err(error) => tracing::warn!(
+                target: "agent_store_connector_proxy",
+                "{CONNECTOR_PROXY_ENV} is not a valid connector proxy policy ({error}); the call proxy stays off"
+            ),
+        }
+        return ConnectorProxyPolicy::deny_all();
+    }
+    path.and_then(AgentStoreConfig::load_ok)
+        .map(|stored| stored.connector_proxy_policy())
+        .unwrap_or_else(ConnectorProxyPolicy::deny_all)
+}
+
+/// Resolve this host's global tool policy from the agent-store config file.
+///
+/// Two deliberate properties, both load-bearing:
+///
+/// - **Opt-in, not file-presence-driven.** `adopt` is a host decision
+///   (`--adopt-store-tool-policy`, set only by `apps/agent-store`), so the
+///   desktop and web hosts — which read the same file for providers and
+///   marketplaces — never let it narrow their sessions.
+/// - **Fail-open to the permissive default.** A missing or unparseable file, or
+///   no `[tools]` table, yields [`NomiToolPolicy::default`], which constrains
+///   nothing. A broken hand-edit must not be able to strip a host's tool surface.
+///
+/// `env` is the value of [`TOOLS_ENV`], passed in rather than read here so the
+/// rule stays testable without mutating the process environment.
+///
+/// Kept pure so the rule above is testable without booting a database.
+fn resolve_host_tool_policy(
+    adopt: bool,
+    path: Option<&std::path::Path>,
+    env: Option<&str>,
+) -> nomifun_api_types::NomiToolPolicy {
+    if !adopt {
+        return nomifun_api_types::NomiToolPolicy::default();
+    }
+    // An empty value means "unset", not "deny everything": the permissive
+    // default is spelled `{}`, which is what serde makes of it anyway.
+    if let Some(raw) = env.map(str::trim).filter(|raw| !raw.is_empty()) {
+        match serde_json::from_str::<nomifun_api_types::NomiToolPolicy>(raw) {
+            Ok(policy) => {
+                tracing::info!(
+                    target: "agent_store_tools",
+                    "host tool policy taken from {TOOLS_ENV}; the config file's [tools] table is ignored"
+                );
+                return policy;
+            }
+            // Fail open to the file, exactly like an unusable file fails open to
+            // the default: the operator's own declared policy beats silently
+            // narrowing the surface because of a typo.
+            Err(error) => tracing::warn!(
+                target: "agent_store_tools",
+                "{TOOLS_ENV} is not a valid tool policy ({error}); falling back to the config file"
+            ),
+        }
+    }
+    path.and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok)
+        .map(|stored| stored.tool_policy())
+        .unwrap_or_default()
+}
+
+/// Resolve this host's MCP server declarations from `mcp.json`.
+///
+/// The declaration file is the **sibling** of the resolved agent-store config
+/// file, so a host pointed at a custom `config.toml` gets a matching `mcp.json`
+/// and tests can inject both at once. Same two load-bearing properties as the
+/// tool policy above, with one addition:
+///
+/// - **Opt-in, not file-presence-driven** (`--adopt-store-mcp-declarations`, set
+///   only by `apps/agent-store`);
+/// - **fail-open to *nothing declared*.** A missing or unparseable file, or a
+///   rejected entry, yields fewer servers — never a widened tool surface, and
+///   never a change to any existing behaviour. The reasons are returned so the
+///   host can report them once at startup instead of on every session build.
+///
+/// Kept pure so the rule above is testable without booting a database.
+fn resolve_host_mcp_declarations(
+    adopt: bool,
+    config_path: Option<&std::path::Path>,
+) -> (nomifun_api_types::NomiMcpDeclarations, Vec<String>) {
+    if !adopt {
+        return (nomifun_api_types::NomiMcpDeclarations::default(), Vec::new());
+    }
+    let Some(path) = config_path.map(declaration_file_for_config) else {
+        return (nomifun_api_types::NomiMcpDeclarations::default(), Vec::new());
+    };
+    let mut warnings = Vec::new();
+    if !path.is_file() {
+        // Absent is the normal state for a host that never declared a server.
+        return (nomifun_api_types::NomiMcpDeclarations::default(), warnings);
+    }
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => {
+            warnings.push(format!(
+                "{} is unreadable ({error}); declaring no MCP servers",
+                path.display()
+            ));
+            return (nomifun_api_types::NomiMcpDeclarations::default(), warnings);
+        }
+    };
+    match nomifun_api_types::NomiMcpDeclarations::parse(&source) {
+        Ok(mut declarations) => {
+            // A declared `cwd` is relative to **this file**, not to whatever
+            // directory the host happened to be started from: the same
+            // declaration must not mean two directories on two launches. The
+            // engine therefore only ever receives an absolute path.
+            declarations.resolve_cwd_relative_to(
+                &path.parent().map(std::path::Path::to_path_buf).unwrap_or_default(),
+            );
+            for rejection in &declarations.rejected {
+                warnings.push(format!(
+                    "{}: mcpServers.{} was refused: {}",
+                    path.display(),
+                    rejection.name,
+                    rejection.reason
+                ));
+            }
+            (declarations, warnings)
+        }
+        Err(error) => {
+            warnings.push(format!(
+                "{} could not be parsed ({error}); declaring no MCP servers",
+                path.display()
+            ));
+            (nomifun_api_types::NomiMcpDeclarations::default(), warnings)
+        }
+    }
+}
+
+/// `mcp.json` lives next to the resolved `config.toml` (`~/.agent-store/mcp.json`
+/// by convention). The file with no parent (`config.toml` relative) resolves to
+/// a relative `mcp.json`, which is still the sibling a caller would expect.
+fn declaration_file_for_config(config_path: &std::path::Path) -> std::path::PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join("mcp.json")
 }
 
 impl AppServices {
@@ -2169,6 +2417,16 @@ impl AppServices {
         // so the agent gets the operator's tools (ELECTRON-1JG fix).
         let mcp_server_repo: Arc<dyn IMcpServerRepository> =
             Arc::new(SqliteMcpServerRepository::new(database.pool().clone()));
+        // MCP OAuth service for remote (SSE/Streamable HTTP) servers: injects
+        // the stored bearer token into transport headers at session build and
+        // backs the runtime 401 → refresh → single-retry path.
+        let mcp_oauth_service = nomifun_mcp::McpOAuthService::new_dynamic(
+            Arc::new(SqliteOAuthTokenRepository::new(database.pool().clone()))
+                as Arc<dyn IOAuthTokenRepository>,
+        )
+        .with_registration_repository(Arc::new(
+            SqliteOAuthClientRegistrationRepository::new(database.pool().clone()),
+        ) as Arc<dyn IOAuthClientRegistrationRepository>);
 
         let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> =
             Arc::new(SqliteAgentMetadataRepository::new(database.pool().clone()));
@@ -2916,6 +3174,12 @@ impl AppServices {
         let browser_lane_provider_slot =
             nomifun_ai_agent::BrowserLaneClientProviderSlot::new();
 
+        // Host-backed `nomi_delegate`: created here because the Agent factory
+        // below is its first consumer, installed by
+        // `router::state::build_agent_execution_engine` once the facade exists.
+        let delegate_sink_provider_slot =
+            nomifun_ai_agent::factory::delegate::DelegateSinkProviderSlot::new();
+
         // SSH remote sessions: ONE process-level connection pool, built here
         // because the agent factory below is its first consumer and the host-book
         // routes plus the conversation-delete cascade must receive this very
@@ -2999,7 +3263,119 @@ impl AppServices {
             nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault,
         );
 
+        // Host-owned tool policy, read once at startup from the same agent-store
+        // config file (`[tools]`), mirroring `[memory]`. Only the dedicated
+        // Store host opts in: the desktop and web hosts read the same file for
+        // providers/marketplaces, and adopting its tool policy there would
+        // silently narrow their sessions too. `AGENT_STORE_TOOLS` (JSON) takes
+        // precedence over the file, so a spawned host — the SDK's
+        // `launchClient` via `SpawnOptions.env` — picks its own toolset.
+        let tools_env = std::env::var(TOOLS_ENV).ok();
+        let tool_policy = resolve_host_tool_policy(
+            config.adopt_store_tool_policy,
+            config.agent_store_config_path.as_deref(),
+            tools_env.as_deref(),
+        );
+        if config.adopt_store_tool_policy {
+            // Syntactic problems are host-level and knowable now, so report them
+            // once here instead of on every session build. Whether an entry
+            // matches a *registered* tool depends on the session's wiring and is
+            // reported by the registry at bootstrap.
+            for warning in tool_policy.syntax_warnings() {
+                tracing::warn!(target: "agent_store_tools", "{warning}");
+            }
+            tracing::info!(
+                target: "agent_store_tools",
+                enabled = tool_policy.enabled.len(),
+                disabled = tool_policy.disabled.len(),
+                unrestricted = tool_policy.is_unrestricted(),
+                "agent-store [tools] policy adopted for this host"
+            );
+        }
+
+        // Host-owned connector call policy, read at startup from the same file
+        // (`[connector_proxy]`, doc `24` §5.1). Same host gating as `[tools]`:
+        // only the dedicated Store host exposes a call proxy. Inside an enabled
+        // table `allow` narrows and `deny` subtracts, so the operator's own
+        // config is the whole story — including the case where they narrowed a
+        // stale spelling, which `warnings()` names out loud (doc `26` §4.4).
+        // `AGENT_STORE_CONNECTOR_PROXY` (JSON) precedes the file so a spawned
+        // host gets the policy it asked for.
+        let proxy_env = std::env::var(CONNECTOR_PROXY_ENV).ok();
+        let connector_proxy_policy = resolve_connector_proxy_policy(
+            config.adopt_store_tool_policy,
+            config.agent_store_config_path.as_deref(),
+            proxy_env.as_deref(),
+        );
+        if config.adopt_store_tool_policy && connector_proxy_policy.is_enabled() {
+            tracing::info!(
+                target: "agent_store_connector_proxy",
+                "connector call proxy enabled for this host"
+            );
+            // Once per boot, like the `mcp.json` report below: whether a call
+            // reaches a connector is per-session work, but *what the policy
+            // allows* is a single fact — and the permissive default is
+            // invisible without being said out loud.
+            for warning in connector_proxy_policy.warnings() {
+                tracing::warn!(target: "agent_store_connector_proxy", "{warning}");
+            }
+        }
+
+        // Host-owned MCP server declarations, read once at startup from
+        // `mcp.json` next to the same config file (`20` §7.9 / `21` D14). Same
+        // host gating as `[tools]`, and the same "report once here" posture:
+        // whether a declared server actually connects is per-session work.
+        let (mcp_declarations, declaration_warnings) = resolve_host_mcp_declarations(
+            config.adopt_store_mcp_declarations,
+            config.agent_store_config_path.as_deref(),
+        );
+        if config.adopt_store_mcp_declarations {
+            for warning in &declaration_warnings {
+                tracing::warn!(target: "agent_store_mcp", "{warning}");
+            }
+            tracing::info!(
+                target: "agent_store_mcp",
+                declared = mcp_declarations.servers.len(),
+                enabled = mcp_declarations.enabled_servers().count(),
+                refused = mcp_declarations.rejected.len(),
+                "agent-store mcp.json declarations adopted for this host"
+            );
+            // Once per boot, not once per session: whether a declared server
+            // connects is per-session work, but *what was declared* — the
+            // directory a stdio child will run in, how many tools each filter
+            // admits, and whether a credential is named at all — is a single
+            // fact. A surprising `cwd` is otherwise invisible until the child
+            // misbehaves.
+            for server in mcp_declarations.servers.iter() {
+                tracing::debug!(
+                    target: "agent_store_mcp",
+                    server = %server.name,
+                    transport = server.transport_kind(),
+                    enabled = server.enabled,
+                    cwd = ?server.cwd,
+                    enabled_tools = server.enabled_tools.as_ref().map(Vec::len),
+                    disabled_tools = server.disabled_tools.as_ref().map(Vec::len),
+                    bearer_token_env_var = ?server.bearer_token_env_var,
+                    request_timeout_secs = ?server.request_timeout_secs,
+                    startup_timeout_secs = ?server.startup_timeout_secs,
+                    "agent-store declared MCP server"
+                );
+            }
+        }
+
         let factory = build_agent_factory(AgentFactoryDeps {
+            // Cloned: the same policy is kept on `AppServices` so the host's
+            // resolved policy is inspectable (doctor/logs) without rebuilding it.
+            tool_policy: tool_policy.clone(),
+            // Same deal for the declarations: the factory consumes one clone and
+            // `AppServices` keeps the other for read views / diagnostics.
+            mcp_declarations: mcp_declarations.clone(),
+            // Host composition: the desktop and web hosts install the embedded
+            // (synchronous) deployment; a host that owns the durable execution
+            // facade sets `--no-embedded-agent-execution`, so its sessions expose
+            // that facade instead (see `apps/agent-store`).
+            embedded_agent_execution: config.install_embedded_agent_execution,
+            delegate_sink_provider: Some(delegate_sink_provider_slot.clone()),
             authoritative_user_id: authoritative_user_id.clone(),
             search_provider,
             extract_coordinator,
@@ -3036,6 +3412,7 @@ impl AppServices {
                 database.pool().clone(),
             )) as Arc<dyn nomifun_db::ISettingsRepository>),
             mcp_server_repo: Some(mcp_server_repo),
+            mcp_oauth_service: Some(mcp_oauth_service),
             requirement_sink: Some(requirement_sink),
             // Native cron tools: agent schedules/lists/deletes its own recurring
             // prompts. The closure resolves the process CronService lazily (it is
@@ -3269,6 +3646,12 @@ impl AppServices {
             data_dir,
             work_dir,
             work_dir_is_cli_override,
+            agent_store_config_path: config.agent_store_config_path.clone(),
+            adopt_store_mcp_declarations: config.adopt_store_mcp_declarations,
+            tool_policy,
+            connector_proxy_policy,
+            mcp_declarations,
+            delegate_sink_provider_slot,
             runtime_capabilities: capabilities.runtime_capabilities,
             auth_policy,
             local_trust_secret,
@@ -3592,8 +3975,7 @@ fn rewrite_legacy_speech_preference(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    #[cfg(feature = "browser-use")]
+    use std::sync::atomic::{AtomicUsize, Ordering};    #[cfg(feature = "browser-use")]
     use std::sync::atomic::AtomicBool;
     #[cfg(feature = "browser-use")]
     use std::time::Duration;
@@ -3612,6 +3994,247 @@ mod tests {
     };
     #[cfg(feature = "browser-use")]
     use tokio::sync::{Notify, Semaphore};
+
+    /// The desktop/web hosts share `~/.agent-store/config.toml` with the Store
+    /// host for providers and marketplaces. A `[tools]` table in that file must
+    /// therefore not narrow *their* sessions: only the host that opted in
+    /// (`apps/agent-store`) adopts it.
+    #[test]
+    fn tool_policy_is_adopted_only_by_the_host_that_opts_in() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[tools]\ndisabled = [\"remember\"]\ncomputer = false\n\n[tools.domains]\ncron = false\n",
+        )
+        .unwrap();
+
+        // Not opted in: the file is readable and does contain `[tools]`, but the
+        // host ignores it.
+        let ignored = resolve_host_tool_policy(false, Some(&path), None);
+        assert!(ignored.is_unrestricted(), "{ignored:?}");
+
+        // Opted in: the policy is adopted.
+        let adopted = resolve_host_tool_policy(true, Some(&path), None);
+        assert_eq!(adopted.disabled, vec!["remember".to_owned()]);
+        assert!(!adopted.computer);
+        assert!(!adopted.domains.cron);
+        assert!(adopted.domains.meeting, "undeclared switches stay on");
+        assert!(adopted.web, "undeclared switches stay on");
+    }
+
+    /// A broken or absent file must fall back to the permissive default rather
+    /// than stripping the host's tool surface (fail-open by design).
+    #[test]
+    fn tool_policy_fails_open_when_the_file_is_unusable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("absent.toml");
+        assert!(resolve_host_tool_policy(true, Some(&missing), None).is_unrestricted());
+
+        let broken = dir.path().join("broken.toml");
+        std::fs::write(&broken, "not = = toml\n").unwrap();
+        assert!(resolve_host_tool_policy(true, Some(&broken), None).is_unrestricted());
+
+        // No path at all (tests / hosts without the convention).
+        assert!(resolve_host_tool_policy(true, None, None).is_unrestricted());
+
+        // A file with no `[tools]` table is the pre-policy shape.
+        let plain = dir.path().join("plain.toml");
+        std::fs::write(&plain, "default_model = \"opencode/mimo\"\n").unwrap();
+        assert!(resolve_host_tool_policy(true, Some(&plain), None).is_unrestricted());
+    }
+
+    /// `AGENT_STORE_TOOLS` is what lets a caller spawning its own host pick the
+    /// toolset. It **replaces** the file's table wholesale, so it can switch a
+    /// family the file turned off back on, and every key it does not name falls
+    /// back to the permissive default rather than inheriting the file's value.
+    #[test]
+    fn tool_policy_env_replaces_the_file_policy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[tools]\nbrowser = false\n\n[tools.domains]\nknowledge = false\nmedia = false\n",
+        )
+        .unwrap();
+
+        // The file alone: all three are off.
+        let from_file = resolve_host_tool_policy(true, Some(&path), None);
+        assert!(!from_file.browser && !from_file.domains.knowledge && !from_file.domains.media);
+
+        // The env document replaces it. `browser` comes back on (impossible
+        // under the subtractive overlay rule, which is the point), `media` stays
+        // off because the document says so, and `knowledge` — never mentioned —
+        // returns to the permissive default instead of inheriting the file's
+        // `false`.
+        let policy = resolve_host_tool_policy(
+            true,
+            Some(&path),
+            Some(r#"{"browser":true,"domains":{"media":false}}"#),
+        );
+        assert!(policy.browser, "env may widen: {policy:?}");
+        assert!(!policy.domains.media, "{policy:?}");
+        assert!(policy.domains.knowledge, "{policy:?}");
+
+        // `{}` is the explicit "permissive default" spelling.
+        let everything = resolve_host_tool_policy(true, Some(&path), Some("{}"));
+        assert!(everything.is_unrestricted(), "{everything:?}");
+    }
+
+    /// The env override rides the same opt-in as the file: a host that never
+    /// adopted `[tools]` cannot be narrowed through the environment either.
+    #[test]
+    fn tool_policy_env_requires_the_same_opt_in_as_the_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_model = \"opencode/mimo\"\n").unwrap();
+
+        let ignored = resolve_host_tool_policy(false, Some(&path), Some(r#"{"computer":false}"#));
+        assert!(ignored.is_unrestricted(), "{ignored:?}");
+    }
+
+    /// An unusable value falls back to the file — never a silently narrowed
+    /// surface, and an empty value means "unset" rather than "deny everything".
+    #[test]
+    fn tool_policy_env_falls_back_to_the_file_when_unusable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[tools]\ncomputer = false\n").unwrap();
+
+        // Reading the file is what `!computer` proves: the permissive default
+        // would have left it on.
+        let malformed = resolve_host_tool_policy(true, Some(&path), Some("not json"));
+        assert!(!malformed.computer, "{malformed:?}");
+        let blank = resolve_host_tool_policy(true, Some(&path), Some("   "));
+        assert!(!blank.computer, "{blank:?}");
+
+        // Unusable value and no usable file at all: the permissive default.
+        let missing = dir.path().join("absent.toml");
+        assert!(
+            resolve_host_tool_policy(true, Some(&missing), Some("not json")).is_unrestricted()
+        );
+    }
+
+    /// Same ownership rule for the MCP declaration file: it is read only by the
+    /// host that opted in, and it is resolved as the sibling of the config file.
+    #[test]
+    fn mcp_declarations_are_adopted_only_by_the_host_that_opts_in() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_model = \"opencode/mimo\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("mcp.json"),
+            r#"{ "mcpServers": { "filesystem": { "command": "npx", "args": ["-y", "srv"] } } }"#,
+        )
+        .unwrap();
+
+        // Not opted in: the sibling is readable, and still ignored.
+        let (ignored, warnings) = resolve_host_mcp_declarations(false, Some(&path));
+        assert!(ignored.is_empty(), "{ignored:?}");
+        assert!(warnings.is_empty(), "an ignored file must not warn: {warnings:?}");
+
+        // Opted in: the declaration is adopted.
+        let (adopted, warnings) = resolve_host_mcp_declarations(true, Some(&path));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(adopted.servers.len(), 1);
+        assert_eq!(adopted.enabled_servers().count(), 1);
+        assert_eq!(adopted.servers[0].name, "filesystem");
+        assert_eq!(adopted.servers[0].transport_kind(), "stdio");
+    }
+
+    /// A declared `cwd` is resolved against the directory holding `mcp.json`, not
+    /// against the host's own working directory: one file has to mean one
+    /// directory on every launch, and the engine only ever receives an absolute
+    /// path (it is applied to the child process at spawn).
+    #[test]
+    fn declared_cwd_is_resolved_against_the_declaration_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        let absolute = std::env::temp_dir().join("mcp-absolute-cwd");
+        std::fs::write(
+            dir.path().join("mcp.json"),
+            serde_json::json!({
+                "mcpServers": {
+                    "relative": { "command": "npx", "cwd": "servers/fs" },
+                    "absolute": { "command": "npx", "cwd": absolute.to_string_lossy() }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (declarations, warnings) = resolve_host_mcp_declarations(true, Some(&config));
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let cwd = |name: &str| {
+            declarations
+                .servers
+                .iter()
+                .find(|server| server.name == name)
+                .expect("server must be present")
+                .cwd
+                .clone()
+        };
+        let expected_relative = dir.path().join("servers/fs").to_string_lossy().into_owned();
+        assert_eq!(
+            cwd("relative").as_deref(),
+            Some(expected_relative.as_str()),
+            "a relative cwd belongs to the declaration file"
+        );
+        let expected_absolute = absolute.to_string_lossy().into_owned();
+        assert_eq!(
+            cwd("absolute").as_deref(),
+            Some(expected_absolute.as_str()),
+            "an absolute cwd is kept verbatim"
+        );
+    }
+
+    /// A broken file, a bad entry or no file at all must declare **nothing**
+    /// (never a widened surface, never a change to existing behaviour), and the
+    /// reason must be reportable once at startup.
+    #[test]
+    fn mcp_declarations_fail_open_to_nothing_declared() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+
+        // Absent file: the normal state, and not a warning.
+        let (absent, warnings) = resolve_host_mcp_declarations(true, Some(&config));
+        assert!(absent.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // Unparseable file: nothing declared, one actionable warning.
+        std::fs::write(dir.path().join("mcp.json"), "{ not json").unwrap();
+        let (broken, warnings) = resolve_host_mcp_declarations(true, Some(&config));
+        assert!(broken.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("mcp.json"), "{warnings:?}");
+
+        // A rejected entry keeps its siblings and reports only itself.
+        std::fs::write(
+            dir.path().join("mcp.json"),
+            r#"{ "mcpServers": {
+                 "good": { "command": "npx" },
+                 "bad":  { "command": "npx", "headers": { "X": "1" } }
+               } }"#,
+        )
+        .unwrap();
+        let (mixed, warnings) = resolve_host_mcp_declarations(true, Some(&config));
+        assert_eq!(mixed.servers.len(), 1);
+        assert_eq!(mixed.servers[0].name, "good");
+        assert_eq!(mixed.rejected.len(), 1);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("bad") && warnings[0].contains("`headers`"),
+            "{warnings:?}"
+        );
+
+        // No path at all (tests / hosts without the convention).
+        let (none, warnings) = resolve_host_mcp_declarations(true, None);
+        assert!(none.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
 
     #[cfg(feature = "browser-use")]
     #[derive(Default)]

@@ -8,7 +8,9 @@ use nomi_types::tool::{JsonSchema, ToolResult};
 use crate::Tool;
 
 const INCOMPLETE_PLAN_REMINDER: &str = "\
-[progress] Plan updated. Continue the next incomplete step, or stop with a clear status if blocked. \
+[progress] Plan updated. Do the next incomplete step now (a real action: read/write/run/check), \
+or — when only \"tell the user X\" remains — write that reply and send one all-completed snapshot. \
+Rewording the remaining steps is not progress; if you are blocked, stop with a clear status. \
 Do not start an open-ended exploration tour.\n";
 
 const COMPLETED_PLAN_NOTE: &str = "\
@@ -80,6 +82,11 @@ impl Tool for UpdatePlanTool {
          a meaningful milestone, not an individual tool call or internal sub-step. Do not send an \
          unchanged snapshot or one that changes only the explanation. At a transition, use one \
          snapshot that marks the previous milestone completed and the next milestone in_progress. \
+         A step names work you DO (read, write, run, check) — never the answer itself: \
+         \"explain/provide/summarize X\" is your reply, not a step. When only that kind of step is \
+         left, write the reply and close the plan instead of re-planning. Every snapshot must \
+         follow real progress: a step you actually completed, or a course change the user asked \
+         for. Never send a snapshot that only rewords or re-splits steps that are still open. \
          Before the final response send a full snapshot where every real step is completed. \
          For code/file/user-visible changes, include and complete a verification step before \
          finalizing. After calling it, do not repeat the full plan in your reply — just note \
@@ -233,6 +240,23 @@ mod tests {
         assert!(description.contains("previous milestone completed"));
     }
 
+    /// 回归：计划里混进「交付物本身」时，模型会为了「计划全完成」反复重规划
+    /// ——每轮 thinking → update_plan → thinking → update_plan，永远给不出答复
+    /// （现场：chat 里让 agent「试试 update_plan」，步骤写成「提供日程安排」）。
+    #[test]
+    fn description_forbids_planning_the_answer_itself() {
+        let tool = UpdatePlanTool::new();
+        let description = tool.description();
+        assert!(
+            description.contains("never the answer itself"),
+            "the model must be told a deliverable is not a plan step"
+        );
+        assert!(
+            description.contains("follow real progress"),
+            "a reworded snapshot must not count as progress"
+        );
+    }
+
     #[tokio::test]
     async fn execute_rejects_empty_plan() {
         let r = UpdatePlanTool::new().execute(json!({ "plan": [] })).await;
@@ -313,6 +337,32 @@ mod tests {
         let start = r.content.find('{').unwrap();
         let v: serde_json::Value = serde_json::from_str(&r.content[start..]).unwrap();
         assert_eq!(v["kind"], "plan_update");
+    }
+
+    /// 回归：未完成的计划不能只催「继续下一步」。当剩下的步骤本身就是答复
+    /// （"tell the user X"）时，模型必须被告知**现在就写答复**，否则它会为了
+    /// 「计划全完成」反复重规划（现场：chat 里 update_plan 一轮空转 6 次，答不出来）。
+    #[tokio::test]
+    async fn execute_incomplete_plan_points_at_the_reply_instead_of_replanning() {
+        let r = UpdatePlanTool::new()
+            .execute(json!({
+                "plan": [
+                    { "step": "Inspect", "status": "completed" },
+                    { "step": "Provide the schedule", "status": "pending" }
+                ]
+            }))
+            .await;
+        assert!(!r.is_error);
+        assert!(
+            r.content.contains("write that reply"),
+            "an incomplete plan must offer the \"write the reply now\" exit"
+        );
+        assert!(
+            r.content.contains("Rewording the remaining steps is not progress"),
+            "a reworded snapshot must not read as progress"
+        );
+        // 解析契约：提醒文案里不能有 `{` —— 前后端都从第一个 `{` 开始读 JSON 载荷。
+        assert!(!INCOMPLETE_PLAN_REMINDER.contains('{'));
     }
 
     #[tokio::test]
