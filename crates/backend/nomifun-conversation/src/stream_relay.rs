@@ -2537,6 +2537,45 @@ impl StreamRelay {
                                 }
                             }
 
+                            // Visibility must not depend on durability. A
+                            // terminal that already invalidates artifact
+                            // receipts retracts them on the wire *here* —
+                            // before the first persistence await below — so a
+                            // wedged repository can never leave an
+                            // already-failed turn showing a tool that is still
+                            // running (issue #233). Only the enclosing
+                            // terminal stays withheld until the durable
+                            // correction returns; the tool row's fail-closed
+                            // projection does not.
+                            //
+                            // The retraction is drained here but still
+                            // persisted at its original cutpoint in
+                            // `terminal_cleanup`, so durable write ordering is
+                            // unchanged. A terminal that only becomes
+                            // invalidating later (an assistant-segment
+                            // durability failure rewrites Finish to Error) is
+                            // untouched by this step and is handled by that
+                            // same cleanup.
+                            let retracted_before_persistence = if !suppress_error
+                                && Self::invalidates_completed_artifacts(&event)
+                            {
+                                let reason = Self::incomplete_tool_reason(&event)
+                                    .unwrap_or("incomplete_turn");
+                                let tools = Self::take_failed_tool_calls(
+                                    &mut completed_artifact_tool_calls,
+                                    reason,
+                                );
+                                let acp_tools = Self::take_failed_acp_tool_calls(
+                                    &mut completed_artifact_acp_tool_calls,
+                                    reason,
+                                );
+                                self.broadcast_failed_tool_calls(&tools);
+                                self.broadcast_failed_acp_tool_calls(&acp_tools);
+                                (tools, acp_tools)
+                            } else {
+                                (Vec::new(), Vec::new())
+                            };
+
                             // Visible assistant-segment durability is a
                             // prerequisite for committing successful artifact
                             // receipts. If this bounded write cannot settle,
@@ -2686,26 +2725,33 @@ impl StreamRelay {
                             // effect and are all broadcast before any repository
                             // await. Even a wedged DB cannot leave strict live
                             // consumers with an earlier green receipt.
+                            //
+                            // An already-invalidating terminal was retracted on
+                            // the wire before the assistant-segment
+                            // persistence above; those drained receipts are
+                            // persisted here so durable ordering is unchanged.
+                            // A terminal that only became invalidating during
+                            // that persistence is retracted at this point.
+                            let (mut failed_completed_tools, mut failed_completed_acp_tools) =
+                                retracted_before_persistence;
                             let invalidates_artifacts =
                                 !suppress_error && Self::invalidates_completed_artifacts(&event);
-                            let (failed_completed_tools, failed_completed_acp_tools) =
-                                if invalidates_artifacts {
-                                    let reason = Self::incomplete_tool_reason(&event)
-                                        .unwrap_or("incomplete_turn");
-                                    let tools = Self::take_failed_tool_calls(
-                                        &mut completed_artifact_tool_calls,
-                                        reason,
-                                    );
-                                    let acp_tools = Self::take_failed_acp_tool_calls(
-                                        &mut completed_artifact_acp_tool_calls,
-                                        reason,
-                                    );
-                                    self.broadcast_failed_tool_calls(&tools);
-                                    self.broadcast_failed_acp_tool_calls(&acp_tools);
-                                    (tools, acp_tools)
-                                } else {
-                                    (Vec::new(), Vec::new())
-                                };
+                            if invalidates_artifacts {
+                                let reason = Self::incomplete_tool_reason(&event)
+                                    .unwrap_or("incomplete_turn");
+                                let tools = Self::take_failed_tool_calls(
+                                    &mut completed_artifact_tool_calls,
+                                    reason,
+                                );
+                                let acp_tools = Self::take_failed_acp_tool_calls(
+                                    &mut completed_artifact_acp_tool_calls,
+                                    reason,
+                                );
+                                self.broadcast_failed_tool_calls(&tools);
+                                self.broadcast_failed_acp_tool_calls(&acp_tools);
+                                failed_completed_tools.extend(tools);
+                                failed_completed_acp_tools.extend(acp_tools);
+                            }
 
                             let _ = tokio::join!(
                                 self.persist_failed_tool_calls(&failed_completed_tools),
