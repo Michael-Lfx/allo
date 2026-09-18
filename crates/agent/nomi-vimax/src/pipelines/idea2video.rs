@@ -264,16 +264,39 @@ impl Idea2VideoPipeline {
                 "正在生成全局角色定妆图",
                 35.0,
             );
-            film.generate_character_portraits(&characters, &style, &story, &progress)
-                .await?;
+            if let Err(err) = film
+                .generate_character_portraits(&characters, &style, &story, &progress)
+                .await
+            {
+                emit_pct(
+                    &progress,
+                    "character_portraits_start",
+                    "角色定妆图生成失败",
+                    35.0,
+                );
+                return Err(err);
+            }
             emit_pct(
                 &progress,
                 "voice_references_start",
                 "正在生成角色音色参考音频",
                 43.0,
             );
-            film.ensure_character_voice_references(&characters, &progress)
+            match film
+                .ensure_character_voice_references(&characters, &progress)
                 .await
+            {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    emit_pct(
+                        &progress,
+                        "voice_references_start",
+                        "音色参考生成失败",
+                        43.0,
+                    );
+                    Err(err)
+                }
+            }
         };
         let world = async {
             emit_pct(
@@ -284,7 +307,7 @@ impl Idea2VideoPipeline {
             );
             let world_planner = self.backends.world_planner(&self.working_dir).await;
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-            world_planner
+            match world_planner
                 .ensure(
                     &self.working_dir,
                     &story,
@@ -293,8 +316,19 @@ impl Idea2VideoPipeline {
                     &scene_hint,
                     &lock_token,
                 )
-                .await?;
-            Ok::<_, VimaxError>(())
+                .await
+            {
+                Ok(_) => Ok::<_, VimaxError>(()),
+                Err(err) => {
+                    emit_pct(
+                        &progress,
+                        "world_assets_start",
+                        "世界参考图生成失败",
+                        45.0,
+                    );
+                    Err(err)
+                }
+            }
         };
         let script_fp = artifact_fingerprint(&[&story, drama_requirement]);
         let script = async {
@@ -540,7 +574,10 @@ impl Idea2VideoPipeline {
                 serde_json::json!({ "scene_idx": i }),
             );
             let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_dir.clone());
-            match s2v
+            // Keep the last working stage (`render_scene` / `video_clip_start`).
+            // Wrapping as Video() hid Cancelled, duplicated checkpoint copy, and
+            // truncated the provider reason (copyright / privacy / Shot N).
+            let video = s2v
                 .render_with_prior_continuity(
                     scene_script,
                     &scene_req,
@@ -548,39 +585,14 @@ impl Idea2VideoPipeline {
                     progress.clone(),
                     reel.tail_frame(),
                 )
-                .await
-            {
-                Ok(video) => {
-                    reel.push(video, &scene_dir).await;
-                    emit_pct(
-                        &progress,
-                        "render_scene_done",
-                        &format!("场景 {}/{scene_total} 渲染完成", i + 1),
-                        20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
-                    );
-                }
-                Err(e) => {
-                    // User cancelled — stop gracefully without an error message.
-                    if crate::error::VimaxError::is_cancelled(&e) {
-                        return Err(e);
-                    }
-                    emit_pct(
-                        &progress,
-                        "render_scene_failed",
-                        &format!(
-                            "Scene {}/{scene_total} failed; {} scene(s) already on disk — resume from checkpoint",
-                            i + 1,
-                            reel.len()
-                        ),
-                        pct,
-                    );
-                    return Err(crate::error::VimaxError::Video(format!(
-                        "Scene {}/{scene_total} render failed ({} scene(s) already on disk — resume from checkpoint): {e}",
-                        i + 1,
-                        reel.len()
-                    )));
-                }
-            }
+                .await?;
+            reel.push(video, &scene_dir).await;
+            emit_pct(
+                &progress,
+                "render_scene_done",
+                &format!("场景 {}/{scene_total} 渲染完成", i + 1),
+                20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
+            );
         }
 
         let final_path = self.working_dir.join("final_video.mp4");

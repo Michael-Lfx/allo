@@ -3,7 +3,9 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/macos/latest.json"
+        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/macos/latest.json",
+        "https://modelscope.ai/api/v1/models/flowy2025/flowy/repo?Revision=master&FilePath=allo/channels/macos/latest.json",
+        "https://github.com/Michael-Lfx/allo/releases/latest/download/latest-macos.json"
       ]
     }
   }

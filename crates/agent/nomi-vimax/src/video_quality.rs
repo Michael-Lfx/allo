@@ -57,6 +57,32 @@ fn is_seedance_fast_or_mini(model: &str) -> bool {
     b.contains("seedance") && (b.contains("fast") || b.contains("mini"))
 }
 
+/// Seedance 2.0 / 2.0-fast R2V rejects each `reference_audio` shorter than 1.8s.
+/// Submit 1.9s so encoder/probe rounding cannot fall under the floor.
+pub const SEEDANCE_REF_AUDIO_MIN_SECS: f64 = 1.9;
+/// Combined `reference_audio` ceiling documented for Seedance 2.0 (3 files).
+pub const SEEDANCE_REF_AUDIO_TOTAL_BUDGET_SECS: f64 = 15.0;
+/// Wan 3.0: keep Σ under 15s with a small mux margin.
+pub const WAN3_REF_AUDIO_TOTAL_BUDGET_SECS: f64 = 14.5;
+/// Wan 3.0 per-clip trim cap so five slots still fit the combined budget.
+pub const WAN3_VOICE_REF_MAX_SECS: f64 = 4.0;
+
+/// How one video model wants `reference_audio` sized at submit time.
+///
+/// Planning uses [`Self::max_count`] as the unique-named-speaker cap per
+/// generated file. Duration floors/ceilings are applied to **copies** at
+/// submit so a Wan trim cannot poison a later Seedance run (and vice versa).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReferenceAudioPolicy {
+    pub max_count: usize,
+    /// Combined duration ceiling. `None` = no sum cap.
+    pub max_total_secs: Option<f64>,
+    /// Per-clip floor (Seedance R2V ≥ 1.8s). `0` = do not pad.
+    pub min_clip_secs: f64,
+    /// Per-clip ceiling used when shrinking a copy to fit the total budget.
+    pub max_clip_secs: f64,
+}
+
 /// Max `reference_audio` clips one generate call should bind for this model.
 ///
 /// Seedance 2.0 documents 3 audio refs (Σ ≤ 15s). Wan 3.0 documents 5 files
@@ -67,15 +93,82 @@ fn is_seedance_fast_or_mini(model: &str) -> bool {
 /// every speaking character can keep a timbre bible. Extra speakers become
 /// another row (story is kept; nothing is dropped).
 pub fn max_reference_audio(model: &str) -> usize {
+    reference_audio_policy(model).max_count
+}
+
+pub fn reference_audio_policy(model: &str) -> ReferenceAudioPolicy {
     if is_minimax_h3_model(model) {
-        0
+        ReferenceAudioPolicy {
+            max_count: 0,
+            max_total_secs: None,
+            min_clip_secs: 0.0,
+            max_clip_secs: 0.0,
+        }
     } else if is_wan3_model(model) {
-        5
+        ReferenceAudioPolicy {
+            max_count: 5,
+            max_total_secs: Some(WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            min_clip_secs: 0.0,
+            max_clip_secs: WAN3_VOICE_REF_MAX_SECS,
+        }
     } else if is_seedance(model) {
-        3
+        ReferenceAudioPolicy {
+            max_count: 3,
+            max_total_secs: Some(SEEDANCE_REF_AUDIO_TOTAL_BUDGET_SECS),
+            min_clip_secs: SEEDANCE_REF_AUDIO_MIN_SECS,
+            max_clip_secs: SEEDANCE_REF_AUDIO_TOTAL_BUDGET_SECS,
+        }
     } else {
-        3
+        // Unknown ids: satisfy Seedance's floor and Wan's combined ceiling.
+        ReferenceAudioPolicy {
+            max_count: 3,
+            max_total_secs: Some(WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            min_clip_secs: SEEDANCE_REF_AUDIO_MIN_SECS,
+            max_clip_secs: WAN3_VOICE_REF_MAX_SECS,
+        }
     }
+}
+
+/// Per-clip target durations for the prefix of `durations` that fits `policy`.
+///
+/// Drops trailing clips when `min_clip * n` cannot fit the combined ceiling.
+/// Callers write **sidecars** to these targets and leave the canonical wavs alone.
+pub fn plan_reference_audio_targets(durations: &[f64], policy: ReferenceAudioPolicy) -> Vec<f64> {
+    if policy.max_count == 0 {
+        return Vec::new();
+    }
+    let min_c = policy.min_clip_secs.max(0.0);
+    let max_c = if policy.max_clip_secs > 0.0 {
+        policy.max_clip_secs
+    } else {
+        f64::INFINITY
+    };
+    let max_total = policy.max_total_secs.filter(|v| *v > 0.0).unwrap_or(f64::INFINITY);
+
+    let mut n = durations.len().min(policy.max_count);
+    while n > 0 {
+        if min_c * n as f64 > max_total + 1e-6 {
+            n -= 1;
+            continue;
+        }
+        let per_cap = (max_total / n as f64).min(max_c);
+        if per_cap + 1e-6 < min_c {
+            n -= 1;
+            continue;
+        }
+        return durations[..n]
+            .iter()
+            .map(|&d| {
+                let d = if d.is_finite() && d > 0.0 { d } else { 0.0 };
+                let mut t = d;
+                if t + 1e-3 < min_c {
+                    t = min_c;
+                }
+                t.min(per_cap).max(min_c)
+            })
+            .collect();
+    }
+    Vec::new()
 }
 
 /// Accepted single-clip duration window for a Flowy video model id or display name.
@@ -311,5 +404,54 @@ mod tests {
             video_model_capabilities("AIPC-Doubao-Seedance-2.0").clip,
             seedance
         );
+    }
+
+    #[test]
+    fn seedance_pads_short_reference_audio_clips() {
+        let policy = reference_audio_policy("AIPC-Doubao-Seedance-2.0-fast");
+        assert_eq!(policy.max_count, 3);
+        assert!(policy.min_clip_secs >= 1.8);
+        let targets = plan_reference_audio_targets(&[1.2, 1.5, 2.0], policy);
+        assert_eq!(targets.len(), 3);
+        assert!(targets[0] >= 1.8);
+        assert!(targets[1] >= 1.8);
+        assert!((targets[2] - 2.0).abs() < 1e-9);
+        assert!(targets.iter().sum::<f64>() <= SEEDANCE_REF_AUDIO_TOTAL_BUDGET_SECS + 1e-6);
+    }
+
+    #[test]
+    fn wan3_trims_copies_instead_of_dropping_speakers() {
+        let policy = reference_audio_policy("flowy/wan3.0-video");
+        let targets = plan_reference_audio_targets(&[5.2, 5.2, 5.2], policy);
+        assert_eq!(targets.len(), 3);
+        assert!(targets.iter().all(|&t| t <= WAN3_VOICE_REF_MAX_SECS + 1e-9));
+        assert!(targets.iter().sum::<f64>() <= WAN3_REF_AUDIO_TOTAL_BUDGET_SECS + 1e-6);
+    }
+
+    #[test]
+    fn wan3_five_long_clips_share_the_combined_budget() {
+        let policy = reference_audio_policy("flowy/wan3.0-video");
+        let targets = plan_reference_audio_targets(&[10.0; 5], policy);
+        assert_eq!(targets.len(), 5);
+        let expected = WAN3_REF_AUDIO_TOTAL_BUDGET_SECS / 5.0;
+        assert!(targets.iter().all(|&t| (t - expected).abs() < 1e-9));
+    }
+
+    #[test]
+    fn minimax_h3_binds_no_reference_audio() {
+        assert!(
+            plan_reference_audio_targets(&[3.0, 3.0], reference_audio_policy("flowy/MiniMax-H3"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unknown_model_satisfies_seedance_floor_and_wan_ceiling() {
+        let policy = reference_audio_policy("some-unreleased-model");
+        let targets = plan_reference_audio_targets(&[1.0, 8.0, 8.0], policy);
+        assert_eq!(targets.len(), 3);
+        assert!(targets[0] >= 1.8);
+        assert!(targets.iter().all(|&t| t <= WAN3_VOICE_REF_MAX_SECS + 1e-9));
+        assert!(targets.iter().sum::<f64>() <= WAN3_REF_AUDIO_TOTAL_BUDGET_SECS + 1e-6);
     }
 }

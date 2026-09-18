@@ -52,7 +52,9 @@
     },
     "updater": {
       "endpoints": [
-        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/windows/latest.json"
+        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/windows/latest.json",
+        "https://modelscope.ai/api/v1/models/flowy2025/flowy/repo?Revision=master&FilePath=allo/channels/windows/latest.json",
+        "https://github.com/Michael-Lfx/allo/releases/latest/download/latest-windows.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZGRDA3NTMzQzQxODdCNjQKUldSa2V4akVNM1hRYjlrRmZLalZRdGpaM0FzeGxVd0s3VkdoY0VMY01lY2UrQ2dMdkVMTWF6SFUK"
     }

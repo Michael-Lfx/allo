@@ -23,9 +23,10 @@ import { fileURLToPath } from 'node:url';
 import { platformKeysForArtifactName } from './make-latest-lib.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_REPO = 'nomifun/nomifun-tauri';
+const DEFAULT_REPO = 'Michael-Lfx/allo';
 const DEFAULT_MS_REPO = 'flowy2025/flowyaipc';
 const DEFAULT_MS_PREFIX = 'allo';
+const DEFAULT_MS_API_HOST = 'modelscope.cn';
 const PRODUCT = 'Flowy';
 const ALL_KEYS = ['windows-x86_64', 'windows-aarch64', 'darwin-x86_64', 'darwin-aarch64', 'linux-x86_64', 'linux-aarch64'];
 const ALL_KEYS_SET = new Set(ALL_KEYS);
@@ -122,6 +123,10 @@ function flag(name, fallback = undefined) {
 const host = flag('host', 'github');
 const msRepo = flag('ms-repo', DEFAULT_MS_REPO);
 const msPrefix = flag('ms-prefix', DEFAULT_MS_PREFIX);
+const msApiHost = String(flag('ms-api-host', DEFAULT_MS_API_HOST) || DEFAULT_MS_API_HOST)
+  .replace(/^https?:\/\//, '')
+  .replace(/^www\./, '')
+  .split('/')[0];
 const channelArg = flag('channel', inferHostChannel());
 const msChannel = typeof channelArg === 'string' ? channelArg : inferHostChannel();
 try {
@@ -236,7 +241,7 @@ function artifactDownloadUrl(name, platformKey) {
       throw new Error(`unsupported platform key for ModelScope URL: ${platformKey}`);
     }
     const filePath = `${msPrefix}/${folder}/${versionTag}/${name}`;
-    return `https://modelscope.cn/api/v1/models/${msRepo}/repo?Revision=master&FilePath=${filePath}`;
+    return `https://${msApiHost}/api/v1/models/${msRepo}/repo?Revision=master&FilePath=${filePath}`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/${name}`;
 }
@@ -415,8 +420,8 @@ if (existsSync(out)) {
           console.warn(`  ! 丢弃遗留产物名条目 ${k}: ${urlName}（需用 Flowy_* 重建）`);
           continue;
         }
-        if (host === 'modelscope' && !String(v.url).includes('modelscope.cn')) continue;
-        if (host === 'github' && String(v.url).includes('modelscope.cn')) continue;
+        if (host === 'modelscope' && !String(v.url).includes(msApiHost)) continue;
+        if (host === 'github' && /modelscope\.(cn|ai)/.test(String(v.url))) continue;
         manifest.platforms[k] = v;
       }
     } else if (prev.version) {

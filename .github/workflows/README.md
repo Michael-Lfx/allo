@@ -5,7 +5,7 @@ Two workflows live here:
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
 | `ci.yml` | every pull request, every push to `main` | compile every crate + test target, run the repo gates that are green |
-| `release-modelscope.yml` | tag `vX.Y.Z` (or `workflow_dispatch`) | publish per-OS OTA channels to `flowy2025/flowyaipc` |
+| `release-modelscope.yml` | tag `vX.Y.Z` (or `workflow_dispatch`) | publish per-OS OTA to ModelScope CN, ModelScope AI, and GitHub Releases |
 
 ## PR CI (`ci.yml`)
 
@@ -66,8 +66,13 @@ would only make every pull request red without fixing anything. Add each one to
 
 ## ModelScope platform release workflow (`release-modelscope.yml`)
 
-`release-modelscope.yml` publishes per-OS OTA channels to
-`flowy2025/flowyaipc` under `allo/`.
+`release-modelscope.yml` publishes the same `allo/` tree to three OTA origins:
+
+- CN: `modelscope.cn` model `flowy2025/flowyaipc`
+- AI: `modelscope.ai` model `flowy2025/flowy`
+- GitHub Releases on this repo (`Michael-Lfx/allo`), including `latest-{channel}.json`
+
+Python upload deps are installed with `uv pip`, not `pip`.
 
 ### Trigger
 
@@ -87,17 +92,22 @@ release-context
 ```
 
 - **Build jobs** use `TAURI_SIGNING_*` only and upload `dist/desktop/` as GitHub
-  Artifacts. They do **not** receive `MODELSCOPE_TOKEN`.
+  Artifacts. They do **not** receive ModelScope tokens.
 - **Publish jobs** run in the `modelscope-alpha` environment, download build
-  artifacts, then two-phase upload:
+  artifacts, then for CN and AI:
   1. `--artifacts-only` (binaries + `.sig`, per-file retry / skip-existing)
   2. `--manifest-only` (`latest.json` + `channel.yml` + `history/vX.Y.Z.json`)
+  3. verify that host
+  Then `scripts/publish-github-ota.sh` appends updater assets to the GitHub
+  Release for the tag.
 - **release-status** fails unless all three publishes succeeded.
 
 ### Secrets
 
 - `TAURI_SIGNING_PRIVATE_KEY` (+ optional password): build jobs
-- `MODELSCOPE_TOKEN`: publish jobs only (`modelscope-alpha` environment)
+- `MODELSCOPE_CN_TOKEN`: CN uploads (`MODELSCOPE_TOKEN` is a CN-only fallback)
+- `MODELSCOPE_AI_TOKEN`: AI uploads
+- `GITHUB_TOKEN`: provided by Actions (`contents: write`) for Release upload
 
 ### Ops
 
@@ -107,6 +117,7 @@ bun run rollback:modelscope -- --channel windows --to-version 1.0.9
 
 # Verify remote manifest (+ optional size check against release-metadata.json)
 bun run verify:modelscope -- --channel linux --version 1.1.0 --platform linux-x86_64 --check-artifacts
+bun run verify:modelscope -- --channel linux --api-host modelscope.ai --repo flowy2025/flowy --version 1.1.0 --platform linux-x86_64 --check-artifacts
 ```
 
 Pinned SDK: `scripts/requirements-modelscope.txt`.

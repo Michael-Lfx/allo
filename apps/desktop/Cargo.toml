@@ -32,6 +32,9 @@ nomifun-app = { workspace = true, features = [
 nomifun-common.workspace = true
 nomifun-runtime.workspace = true
 clap.workspace = true
+iana-time-zone = "0.1"
+reqwest.workspace = true
+url = "2"
 
 # `macos-private-api` is required for the transparent nomi companion window on macOS.
 # `tray-icon` powers the system tray (close-to-tray default + tray Show/Quit menu).

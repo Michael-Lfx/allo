@@ -433,11 +433,24 @@ impl WorldAssetsPlanner {
                         env_image: image,
                         chat,
                     };
-                    planner
+                    match planner
                         .generate_empty_plate_resilient(&prompt, &refs, &out)
-                        .await?;
-                    let _ = write_generation_prompt_sidecar(&out, &prompt).await;
-                    Ok::<_, VimaxError>(())
+                        .await
+                    {
+                        Ok(()) => {
+                            let _ = write_generation_prompt_sidecar(&out, &prompt).await;
+                            Ok::<_, VimaxError>(())
+                        }
+                        Err(err) if err.is_occupied_empty_set_plate() => {
+                            tracing::warn!(
+                                path = %out.display(),
+                                error = %err,
+                                "skipping occupied empty-set plate after retries; continuing without it"
+                            );
+                            Ok(())
+                        }
+                        Err(err) => Err(err),
+                    }
                 });
             }
             let gen_result = async {
@@ -457,6 +470,9 @@ impl WorldAssetsPlanner {
         // same per-plate checkpoint writes as before, in deterministic order.
         for plate in &prepared {
             let out = &plate.out;
+            if !crate::media_local::is_usable_image_file(out) {
+                continue;
+            }
             if plate.prompt.is_none() {
                 let _ = ensure_world_prompt_sidecar(
                     out,
@@ -646,19 +662,60 @@ or framed photo of people."
                 return false;
             }
         };
-        let upper = raw.trim().to_ascii_uppercase();
-        let trimmed = raw.trim();
-        if upper.starts_with("NO")
-            || trimmed.starts_with('否')
-            || trimmed.starts_with("没有")
-            || trimmed.starts_with("無")
-        {
-            return false;
-        }
-        upper.starts_with("YES")
-            || trimmed.starts_with('是')
-            || trimmed.starts_with("有人")
+        vision_reply_has_people(&raw)
     }
+}
+
+/// Parse a vision YES/NO (or Chinese 是/否) reply.
+///
+/// Models rarely obey "YES or NO only". Leading `是` used to treat
+/// `是的，没有人` / `是一张空镜` as occupied. Explicit denials win; anything
+/// other than a clear YES fails open (same as a vision API error).
+fn vision_reply_has_people(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let compact = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = compact.to_ascii_lowercase();
+    let first = compact
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | '.' | '!' | '?' | '。' | '，' | '！' | '？')
+        })
+        .find(|s| !s.is_empty())
+        .unwrap_or("");
+    let first_upper = first.to_ascii_uppercase();
+
+    let denies = lower.contains("no people")
+        || lower.contains("nobody")
+        || lower.contains("no person")
+        || lower.contains("no human")
+        || lower.contains("not contain")
+        || compact.contains("没有")
+        || compact.contains("无人")
+        || compact.contains("不含人")
+        || compact.contains("空镜")
+        || compact.contains("空荡");
+
+    if first_upper == "NO"
+        || first == "否"
+        || first == "没有"
+        || first == "無"
+        || first == "无"
+        || first == "不是"
+        || first == "无人"
+    {
+        return false;
+    }
+    if denies {
+        return false;
+    }
+
+    first_upper == "YES"
+        || first_upper == "TRUE"
+        || first == "是"
+        || first == "是的"
+        || first.starts_with("有人")
 }
 
 static VISION_THUMB_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -1077,7 +1134,8 @@ fn theme_excerpt(script_or_story: &str) -> String {
         .take(40)
         .collect::<Vec<_>>()
         .join(" ");
-    compact.chars().take(140).collect()
+    let excerpt: String = compact.chars().take(140).collect();
+    strip_people_mentions(&excerpt)
 }
 
 /// Drop human/crowd cues from LLM descriptions so image prompts stay empty-set.
@@ -1086,6 +1144,7 @@ fn strip_people_mentions(text: &str) -> String {
     for p in [
         "人影", "人群", "人们", "行人", "顾客", "客人", "路人", "男人", "女人", "小孩", "儿童",
         "店员", "服务员", "职员", "乘客", "观众", "游客", "士兵", "警察", "司机", "老板", "主角",
+        "男主", "女主", "男二", "女二", "男三", "女三", "男一号", "女一号", "反派", "配角",
         "角色", "身影", "背影", "侧影", "有人", "众人", "男女老少", "熙熙攘攘", "站着", "坐着的人",
         "合照", "全家福", "自拍", "人像", "肖像", "证件照", "大头照",
     ] {
@@ -1297,6 +1356,7 @@ mod tests {
         is_look_plate_path, is_people_centric_prop, is_safe_world_style_ref, is_world_vision_thumb,
         prop_plate_prompt, rank_world_pairs_for_frame, resolve_environment_plate,
         select_environment_plate, strip_people_mentions, sweep_world_vision_thumbs,
+        theme_excerpt, vision_reply_has_people,
     };
     use std::path::{Path, PathBuf};
 
@@ -1310,6 +1370,28 @@ mod tests {
         assert!(!lower.contains("people"));
         assert!(!lower.contains("woman"));
         assert!(lower.contains("permanent"));
+    }
+
+    #[test]
+    fn strips_short_drama_cast_labels_from_theme() {
+        let out = theme_excerpt("第一场 日 内 客厅 男主走进客厅，女主坐在沙发上喝咖啡");
+        assert!(!out.contains("男主"), "{out}");
+        assert!(!out.contains("女主"), "{out}");
+        assert!(out.contains("客厅"), "{out}");
+    }
+
+    #[test]
+    fn vision_yes_no_does_not_treat_empty_set_prose_as_people() {
+        assert!(!vision_reply_has_people("NO"));
+        assert!(!vision_reply_has_people("否"));
+        assert!(!vision_reply_has_people("是的，没有人"));
+        assert!(!vision_reply_has_people("是一张空镜"));
+        assert!(!vision_reply_has_people("YES, there are no people"));
+        assert!(vision_reply_has_people("YES"));
+        assert!(vision_reply_has_people("是"));
+        assert!(vision_reply_has_people("有人"));
+        assert!(vision_reply_has_people("YES, a crowd in the street"));
+        assert!(!vision_reply_has_people("The lighting looks warm"));
     }
 
     #[test]

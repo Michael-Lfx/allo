@@ -5,6 +5,7 @@ import {
     COPYRIGHT_RESTRICTION_MESSAGE,
     REFERENCE_IMAGE_MODERATION_MESSAGE,
     REF_AUDIO_DURATION_MESSAGE,
+    REF_AUDIO_TOO_SHORT_MESSAGE,
     generationErrorMessage,
     generationFailureMetadata,
     isContentModerationError,
@@ -65,5 +66,11 @@ describe("generation-error", () => {
         const raw = "video generation failed: InvalidParameter: reference_audio total duration 15.6s exceeds max 15s";
         expect(generationErrorMessage(raw)).toBe(REF_AUDIO_DURATION_MESSAGE);
         expect(generationErrorMessage(raw)).not.toContain("网络异常");
+    });
+
+    test("maps seedance per-clip audio floor without calling it a 15s cap", () => {
+        const raw = "The parameter `content[4]` specified in the request is not valid: the parameter audio duration (seconds) specified in the request must be greater than or equal to 1.8 for model doubao-seedance-2-0-fast in r2v.";
+        expect(generationErrorMessage(raw)).toBe(REF_AUDIO_TOO_SHORT_MESSAGE);
+        expect(generationErrorMessage(raw)).not.toBe(REF_AUDIO_DURATION_MESSAGE);
     });
 });

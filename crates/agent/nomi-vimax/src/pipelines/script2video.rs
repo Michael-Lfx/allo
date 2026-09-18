@@ -181,16 +181,39 @@ impl Script2VideoPipeline {
                     "正在生成全局角色定妆图",
                     22.0,
                 );
-                self.generate_character_portraits(&characters, &style, script, &progress)
-                    .await?;
+                if let Err(err) = self
+                    .generate_character_portraits(&characters, &style, script, &progress)
+                    .await
+                {
+                    emit_pct(
+                        &progress,
+                        "character_portraits_start",
+                        "角色定妆图生成失败",
+                        22.0,
+                    );
+                    return Err(err);
+                }
                 emit_pct(
                     &progress,
                     "voice_references_start",
                     "正在生成角色音色参考音频",
                     24.0,
                 );
-                self.ensure_character_voice_references(&characters, &progress)
+                match self
+                    .ensure_character_voice_references(&characters, &progress)
                     .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        emit_pct(
+                            &progress,
+                            "voice_references_start",
+                            "音色参考生成失败",
+                            24.0,
+                        );
+                        Err(err)
+                    }
+                }
             };
             let world = async {
                 emit_pct(
@@ -201,7 +224,7 @@ impl Script2VideoPipeline {
                 );
                 let world_planner = self.backends.world_planner(&film_root).await;
                 let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-                world_planner
+                match world_planner
                     .ensure(
                         &film_root,
                         script,
@@ -210,8 +233,20 @@ impl Script2VideoPipeline {
                         &scene_hint,
                         &lock_token,
                     )
-                    .await?;
-                Ok(())
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(err) => {
+                        // try_join siblings (voice_references_done) can clobber this stage.
+                        emit_pct(
+                            &progress,
+                            "world_assets_start",
+                            "世界参考图生成失败",
+                            30.0,
+                        );
+                        Err(err)
+                    }
+                }
             };
             let board = async {
                 emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
@@ -438,6 +473,11 @@ impl Script2VideoPipeline {
             registry = read_json_artifact(&registry_path).await?;
         }
 
+        emit(
+            &progress,
+            "world_assets_start",
+            "正在确认全局环境与道具参考图",
+        );
         let world_pairs = {
             let world_planner = self.backends.world_planner(&film_root).await;
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
@@ -1058,16 +1098,8 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 }
                 Err(e) => {
                     errors.push(format!("Shot {}: {e}", shot.idx));
-                    emit_pct(
-                        progress,
-                        "video_clips_partial",
-                        &format!(
-                            "Shot {} failed; succeeded {ok}/{total}. Stopping further submits — resume from checkpoint.",
-                            shot.idx
-                        ),
-                        pct,
-                    );
-                    // User cancelled — stop gracefully without an error message.
+                    // Keep the last working stage (video_clip_start / video_poll).
+                    // A `_partial` emit would clobber it and get wrapped again at finish_job.
                     if VimaxError::is_cancelled(&e) {
                         return Err(e);
                     }

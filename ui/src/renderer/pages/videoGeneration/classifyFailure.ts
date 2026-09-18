@@ -9,6 +9,7 @@ import {
   isContentPolicyRejection,
   isCopyrightRestriction,
   isReferenceImageModeration,
+  isRefAudioClipTooShort,
   isRefAudioDurationLimit,
   extractProviderErrorCode,
   extractProviderErrorMessage,
@@ -64,6 +65,8 @@ const IMAGE_STAGES = new Set([
 
 const VIDEO_STAGES = new Set([
   'video_clips_start',
+  'video_clip_start',
+  'video_clip_done',
   'video_create',
   'video_poll',
   'video_download',
@@ -96,6 +99,21 @@ export function classifyFailure(
   const providerMessage = extractProviderErrorMessage(error) ?? undefined;
   const errorCode = extractProviderErrorCode(error) ?? undefined;
 
+  if (isRefAudioClipTooShort(error)) {
+    return {
+      kind: 'video',
+      title: t('videoGeneration.workspace.failure.refAudioTooShortTitle', {
+        defaultValue: '参考音频单段过短',
+      }),
+      hint: t('videoGeneration.workspace.failure.refAudioTooShortHint', {
+        defaultValue:
+          'Seedance 2.0 R2V 要求每段角色参考音频不少于 1.8 秒。系统会在提交时把副本加长到该下限，不会改写原始 TTS。请从断点继续。',
+      }),
+      errorCode,
+      providerMessage,
+    };
+  }
+
   if (isRefAudioDurationLimit(error)) {
     return {
       kind: 'video',
@@ -104,7 +122,7 @@ export function classifyFailure(
       }),
       hint: t('videoGeneration.workspace.failure.refAudioDurationHint', {
         defaultValue:
-          'Wan 3.0 要求角色参考音频合计不超过 15 秒（其他视频模型各自有不同限制）。请从断点继续；系统会仅对 Wan 3.0 自动截短角色参考音。若仍失败，可打开到 Canvas 精调。',
+          'Wan 3.0 与 Seedance 2.0 都限制角色参考音频合计不超过 15 秒。系统会按模型生成截短副本并在必要时减少说话人，不会改写原始 TTS。请从断点继续；若仍失败，可打开到 Canvas 精调。',
       }),
       errorCode,
       providerMessage,
@@ -199,20 +217,31 @@ export function classifyFailure(
         lower.includes('three_view') ||
         lower.includes('character_portrait')));
 
-  let kind: FailureKind = 'unknown';
-  if (looksLikeBadImage) {
-    kind = 'image';
-  } else if (looksLikeLlm || PLANNING_LLM_STAGES.has(stageKey) || RENDER_LLM_STAGES.has(stageKey)) {
-    kind = 'llm';
-  } else if (lower.includes('image') || lower.includes('图片') || IMAGE_STAGES.has(stageKey)) {
-    kind = 'image';
-  } else if (
+  const looksLikeImageText =
+    lower.includes('image generation failed') ||
+    lower.includes('empty-set plate') ||
+    lower.includes('图片生成');
+  const looksLikeVideoText =
     lower.includes('video generation failed') ||
+    lower.includes('shot video generation failed') ||
     lower.includes('视频生成') ||
-    VIDEO_STAGES.has(stageKey)
-  ) {
+    /scene \d+\s*\/\s*\d+\s+render failed/.test(lower) ||
+    /场次\s*\d+\s*\/\s*\d+\s*渲染失败/.test(error);
+
+  // Text modality beats stage membership: `render_scene` is in RENDER_LLM_STAGES
+  // but scene 1/5 failures are almost always image/video.
+  let kind: FailureKind = 'unknown';
+  if (looksLikeBadImage || looksLikeImageText) {
+    kind = 'image';
+  } else if (looksLikeVideoText) {
     kind = 'video';
-  } else if (isChannel) {
+  } else if (looksLikeLlm || PLANNING_LLM_STAGES.has(stageKey)) {
+    kind = 'llm';
+  } else if (IMAGE_STAGES.has(stageKey)) {
+    kind = 'image';
+  } else if (VIDEO_STAGES.has(stageKey)) {
+    kind = 'video';
+  } else if (RENDER_LLM_STAGES.has(stageKey) || isChannel) {
     kind = 'llm';
   }
 

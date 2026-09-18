@@ -20,6 +20,15 @@ const capability = JSON.parse(
 ) as { permissions: string[] };
 
 describe('desktop updater security boundary', () => {
+  test('check goes through the native regional-endpoint command', () => {
+    expect(updaterSource.includes("invoke<{")).toBe(true);
+    expect(updaterSource.includes("'check_update'")).toBe(true);
+    expect(updaterSource.includes("@tauri-apps/plugin-updater")).toBe(false);
+    expect(desktopSource.includes('async fn check_update(')).toBe(true);
+    expect(desktopSource.includes('parse_ota_endpoints()')).toBe(true);
+    expect(desktopSource.includes('select_ota_artifact_url(')).toBe(true);
+  });
+
   test('renderer exposes download but no raw updater install path', () => {
     expect(updaterSource.includes('download(onEvent?')).toBe(false);
     expect(updaterSource.includes('install(): Promise<void>')).toBe(false);

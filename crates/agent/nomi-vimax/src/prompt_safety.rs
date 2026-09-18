@@ -165,7 +165,8 @@ Rules:
 4. Preserve the requested visual style from the original prompt when safe (photoreal, cinematic, illustration, anime, animation, etc.). If the original asked for anime/animation/illustration, KEEP that look — do NOT convert it to live-action cinematic.
 5. CRITICAL: If the prompt includes children/kids/teens, keep them in the SAME visual style as adults. Never convert only children into a different medium than adults.
 6. Output ONLY the rewritten prompt text. No quotes, no markdown, no explanation.
-7. Keep under 500 characters."#;
+7. Keep under 500 characters.
+8. If the original is a vacant empty-set / prop bible (unoccupied location or isolated object), do NOT add characters, figures, silhouettes, crowds, or portraits. Keep the plate unoccupied."#;
 
 /// Sanitize an image prompt before the first generation attempt.
 pub fn sanitize_image_prompt(prompt: &str) -> String {
@@ -217,6 +218,9 @@ pub fn sanitize_image_prompt(prompt: &str) -> String {
     } else {
         format!("{prefix}{softened}")
     };
+    if vacant {
+        out = scrub_vacant_safety_leaks(&out);
+    }
     // Cloud filters often anime-ify kids; reinforce cast-wide style lock (not for vacant plates).
     if !vacant
         && crate::planning::looks_like_child_character("", &out)
@@ -274,13 +278,41 @@ pub fn sanitize_image_prompt_strict(prompt: &str) -> String {
     } else {
         SAFETY_PREFIX_STRICT
     };
-    format!("{prefix}Scene: {core}")
+    let mut out = format!("{prefix}Scene: {core}");
+    if vacant {
+        out = scrub_vacant_safety_leaks(&out);
+    }
+    out
+}
+
+/// Safety replacements turn corpses into "figures" / massacres into "crowded"
+/// scenes. Vacant plates must not inherit those people-shaped substitutes.
+fn scrub_vacant_safety_leaks(text: &str) -> String {
+    let mut s = text.to_string();
+    for (from, to) in [
+        ("fallen stylized figures", "empty floor"),
+        ("fallen stylized figure", "empty floor"),
+        ("crowded tense scene", "tense empty location"),
+        ("倒下的风格化身影", "空荡场地"),
+    ] {
+        if from.is_ascii() {
+            s = replace_ascii_case_insensitive(&s, from, to);
+        } else if s.contains(from) {
+            s = s.replace(from, to);
+        }
+    }
+    s
 }
 
 /// Build the user message for LLM safety rewrite.
 pub fn llm_rewrite_user_message(original: &str) -> String {
+    let vacant_note = if looks_like_vacant_world_prompt(original) {
+        "\n\nThis is a VACANT empty-set or prop plate. Do not add people, faces, figures, silhouettes, or crowds."
+    } else {
+        ""
+    };
     format!(
-        "Rewrite this image prompt to pass all-ages cloud safety filters:\n\n{}",
+        "Rewrite this image prompt to pass all-ages cloud safety filters:{vacant_note}\n\n{}",
         original.trim()
     )
 }
@@ -524,6 +556,21 @@ mod tests {
             "vacant sanitize must not ask for characters: {out}"
         );
         assert!(looks_like_vacant_world_prompt(&out) || lower.contains("no people"));
+    }
+
+    #[test]
+    fn vacant_safety_does_not_inject_figures_for_corpses() {
+        let out = sanitize_image_prompt(
+            "vacant empty-set plate. Completely unoccupied. Theme: a corpse on the floor. Zero people.",
+        );
+        let lower = out.to_ascii_lowercase();
+        assert!(
+            !lower.contains("figure"),
+            "vacant sanitize must not inject figures: {out}"
+        );
+        assert!(!out.contains("身影"), "{out}");
+        assert!(!lower.contains("crowded"), "{out}");
+        assert!(!lower.contains("fully clothed characters"), "{out}");
     }
 
     #[test]

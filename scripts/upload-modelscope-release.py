@@ -21,7 +21,8 @@ Industrial publish flow:
 Default (no phase flag) runs artifacts then manifests in one process, and never
 writes channel pointers if any artifact upload failed.
 
-Requires ``MODELSCOPE_TOKEN`` and ``pip install modelscope``.
+Requires ``MODELSCOPE_CN_TOKEN`` (CN; falls back to ``MODELSCOPE_TOKEN``) or
+``MODELSCOPE_AI_TOKEN`` (AI) and ``pip install modelscope`` / ``uv pip install``.
 """
 from __future__ import annotations
 
@@ -38,6 +39,8 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 DEFAULT_REPO = "flowy2025/flowyaipc"
 DEFAULT_PREFIX = "allo"
+DEFAULT_API_HOST = "modelscope.cn"
+KNOWN_API_HOSTS = ("modelscope.cn", "modelscope.ai")
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / "apps/desktop/signing/.env.modelscope"
 DEFAULT_RETRIES = 5
 DEFAULT_RETRY_BASE_SEC = 30.0
@@ -74,12 +77,76 @@ def load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
-def modelscope_file_url(repo: str, path_in_repo: str) -> str:
+def normalize_api_host(host: str) -> str:
+    value = host.strip().lower()
+    for prefix in ("https://", "http://"):
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+    if value.startswith("www."):
+        value = value[4:]
+    value = value.split("/", 1)[0]
+    if value not in KNOWN_API_HOSTS:
+        raise ValueError(f"unsupported ModelScope API host: {host} (expected modelscope.cn or modelscope.ai)")
+    return value
+
+
+def hub_endpoint(api_host: str) -> str:
+    return f"https://www.{normalize_api_host(api_host)}"
+
+
+def default_token_env(api_host: str) -> str:
+    return "MODELSCOPE_AI_TOKEN" if normalize_api_host(api_host) == "modelscope.ai" else "MODELSCOPE_CN_TOKEN"
+
+
+def resolve_modelscope_token(token_env: str, api_host: str) -> str:
+    token = os.environ.get(token_env, "").strip()
+    if not token and token_env != "MODELSCOPE_TOKEN" and normalize_api_host(api_host) == "modelscope.cn":
+        token = os.environ.get("MODELSCOPE_TOKEN", "").strip()
+    if not token:
+        raise SystemExit(
+            f"ERROR: {token_env} not set. Add it to apps/desktop/signing/.env.modelscope "
+            "(see .env.modelscope.example) or export it in your shell."
+            + (
+                " CN uploads also accept MODELSCOPE_TOKEN as a fallback."
+                if normalize_api_host(api_host) == "modelscope.cn"
+                else ""
+            )
+        )
+    return token
+
+
+def modelscope_file_url(repo: str, path_in_repo: str, api_host: str = DEFAULT_API_HOST) -> str:
     """Public ModelScope repo file URL."""
+    host = normalize_api_host(api_host)
     return (
-        f"https://modelscope.cn/api/v1/models/{repo}/repo"
+        f"https://{host}/api/v1/models/{repo}/repo"
         f"?Revision=master&FilePath={quote(path_in_repo, safe='/')}"
     )
+
+
+def rewrite_manifest_urls(
+    manifest: dict,
+    *,
+    api_host: str,
+    repo: str,
+    prefix: str,
+    version_tag: str,
+) -> dict:
+    """Point each platform URL at this ModelScope host/repo; keep signatures."""
+    platforms = dict(manifest.get("platforms") or {})
+    rewritten: dict[str, dict] = {}
+    for key, entry in platforms.items():
+        item = dict(entry or {})
+        name = artifact_basename_from_url(str(item.get("url", "")))
+        if name:
+            folder = platform_folder_for_key(key)
+            item["url"] = modelscope_file_url(
+                repo, f"{prefix}/{folder}/{version_tag}/{name}", api_host
+            )
+        rewritten[key] = item
+    out = dict(manifest)
+    out["platforms"] = rewritten
+    return out
 
 
 def artifact_basename_from_url(url: str) -> str:
@@ -192,9 +259,9 @@ def merge_remote_same_channel(manifest: dict, remote: dict, channel: str) -> dic
     return merged
 
 
-def fetch_remote_latest(repo: str, prefix: str, channel: str) -> dict | None:
+def fetch_remote_latest(repo: str, prefix: str, channel: str, api_host: str = DEFAULT_API_HOST) -> dict | None:
     """Best-effort download of the current channel manifest from ModelScope."""
-    url = modelscope_file_url(repo, f"{prefix}/channels/{channel}/latest.json")
+    url = modelscope_file_url(repo, f"{prefix}/channels/{channel}/latest.json", api_host)
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -202,9 +269,9 @@ def fetch_remote_latest(repo: str, prefix: str, channel: str) -> dict | None:
         return None
 
 
-def remote_content_length(repo: str, path_in_repo: str) -> int | None:
+def remote_content_length(repo: str, path_in_repo: str, api_host: str = DEFAULT_API_HOST) -> int | None:
     """Return Content-Length of a remote repo file, or None if unavailable."""
-    url = modelscope_file_url(repo, path_in_repo)
+    url = modelscope_file_url(repo, path_in_repo, api_host)
     request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "flowy-release-upload"})
     try:
         with urllib.request.urlopen(request, timeout=30) as resp:
@@ -287,6 +354,7 @@ def write_release_metadata(
     version: str,
     repo: str,
     prefix: str,
+    api_host: str,
     artifacts: list[tuple[Path, str]],
 ) -> Path:
     """Write local release-metadata.json (SBOM-lite) for CI archival."""
@@ -298,7 +366,7 @@ def write_release_metadata(
                 "remote_path": remote_path,
                 "size": local_path.stat().st_size,
                 "sha256": sha256_file(local_path),
-                "url": modelscope_file_url(repo, remote_path),
+                "url": modelscope_file_url(repo, remote_path, api_host),
             }
         )
     payload = {
@@ -307,6 +375,7 @@ def write_release_metadata(
         "version": version,
         "repo": repo,
         "prefix": prefix,
+        "api_host": normalize_api_host(api_host),
         "files": files,
     }
     out = dist_dir / "release-metadata.json"
@@ -334,11 +403,12 @@ def upload_file_with_retry(
     retries: int,
     retry_base_sec: float,
     skip_existing: bool,
+    api_host: str = DEFAULT_API_HOST,
 ) -> str:
     """Upload one file. Returns 'ok' | 'skipped'."""
     local_size = local_path.stat().st_size
     if skip_existing:
-        remote_size = remote_content_length(repo, remote_path)
+        remote_size = remote_content_length(repo, remote_path, api_host)
         if remote_size is not None and remote_size == local_size:
             print(f"  [SKIP] {local_path.name} -> {remote_path} (remote size matches {local_size:,})")
             return "skipped"
@@ -387,6 +457,21 @@ def main() -> None:
         default=None,
         choices=PLATFORM_CHANNELS,
         help="OTA channel: windows | macos | linux (inferred from latest.json when omitted)",
+    )
+    parser.add_argument(
+        "--api-host",
+        default=DEFAULT_API_HOST,
+        help="Public ModelScope host: modelscope.cn or modelscope.ai (default: modelscope.cn)",
+    )
+    parser.add_argument(
+        "--endpoint",
+        default=None,
+        help="Hub API login endpoint (default: https://www.<api-host>)",
+    )
+    parser.add_argument(
+        "--token-env",
+        default=None,
+        help="Env var holding the upload token (default: MODELSCOPE_CN_TOKEN or MODELSCOPE_AI_TOKEN)",
     )
     parser.add_argument(
         "--dist-dir",
@@ -441,6 +526,13 @@ def main() -> None:
 
     if args.retries < 1:
         raise SystemExit("ERROR: --retries must be >= 1")
+
+    try:
+        api_host = normalize_api_host(args.api_host)
+    except ValueError as exc:
+        raise SystemExit(f"ERROR: {exc}") from exc
+    endpoint = (args.endpoint or hub_endpoint(api_host)).rstrip("/")
+    token_env = args.token_env or default_token_env(api_host)
 
     load_env_file(Path(args.env_file))
 
@@ -506,7 +598,7 @@ def main() -> None:
         pass
 
     if args.merge_remote:
-        remote = fetch_remote_latest(repo, prefix, channel)
+        remote = fetch_remote_latest(repo, prefix, channel, api_host)
         if remote is None:
             raise SystemExit(
                 f"ERROR: --merge-remote set but could not fetch "
@@ -528,6 +620,9 @@ def main() -> None:
             "Ensure dist/desktop/ contains the updater package(s) referenced in latest.json."
         )
 
+    manifest = rewrite_manifest_urls(
+        manifest, api_host=api_host, repo=repo, prefix=prefix, version_tag=version_tag
+    )
     latest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     remote_latest = f"{prefix}/channels/{channel}/latest.json"
@@ -553,6 +648,7 @@ def main() -> None:
             version=version,
             repo=repo,
             prefix=prefix,
+            api_host=api_host,
             artifacts=artifact_remotes,
         )
 
@@ -563,8 +659,8 @@ def main() -> None:
         if args.manifest_only
         else "artifacts+manifest"
     )
-    print(f"Release {version_tag} -> ModelScope {repo}/{prefix}/channels/{channel}/ ({phase_label})")
-    print(f"  Endpoint: {modelscope_file_url(repo, remote_latest)}")
+    print(f"Release {version_tag} -> ModelScope {api_host}/{repo}/{prefix}/channels/{channel}/ ({phase_label})")
+    print(f"  Endpoint: {modelscope_file_url(repo, remote_latest, api_host)}")
     if artifact_remotes:
         print(f"  Artifacts ({len(artifact_remotes)}):")
         for artifact, remote_path in artifact_remotes:
@@ -578,21 +674,16 @@ def main() -> None:
         print("\nDry run — no uploads performed.")
         return
 
-    token = os.environ.get("MODELSCOPE_TOKEN")
-    if not token:
-        raise SystemExit(
-            "ERROR: MODELSCOPE_TOKEN not set. Add it to apps/desktop/signing/.env.modelscope "
-            "(see .env.modelscope.example) or export MODELSCOPE_TOKEN in your shell."
-        )
+    token = resolve_modelscope_token(token_env, api_host)
 
     try:
         from modelscope.hub.api import HubApi
     except ImportError:
         raise SystemExit("ERROR: modelscope package not installed. Run: pip install modelscope")
 
-    api = HubApi()
+    api = HubApi(endpoint=endpoint)
     api.login(token)
-    print(f"\nAuthenticated — uploading to {repo}")
+    print(f"\nAuthenticated — uploading to {endpoint} {repo}")
 
     fail_count = 0
     skip_count = 0
@@ -609,6 +700,7 @@ def main() -> None:
                     retries=args.retries,
                     retry_base_sec=args.retry_base_sec,
                     skip_existing=args.skip_existing,
+                    api_host=api_host,
                 )
                 if result == "skipped":
                     skip_count += 1
@@ -637,6 +729,7 @@ def main() -> None:
                     retries=args.retries,
                     retry_base_sec=args.retry_base_sec,
                     skip_existing=False,
+                    api_host=api_host,
                 )
                 if result == "skipped":
                     skip_count += 1

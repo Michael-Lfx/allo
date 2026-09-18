@@ -398,55 +398,66 @@ pub async fn probe_media_duration_secs(path: &Path) -> Option<f64> {
     probe_duration_secs(&ffmpeg, path).await
 }
 
-/// Rewrite `path` in place as a prefix clip when it is longer than `max_secs`.
+/// Write `dest` as a clip of `secs` seconds without mutating `src`.
 ///
-/// Used by Wan 3.0 submit to keep Σ `reference_audio` under 15s. Probe or
-/// ffmpeg failure leaves the original file (callers must still drop extras).
-pub async fn trim_audio_to_max_secs(path: &Path, max_secs: f64) -> bool {
-    if max_secs <= 0.0 || !is_usable_audio_file(path) {
+/// Short sources are loop-padded (`-stream_loop -1`); long sources are cut
+/// with `-t`. Used so Wan 3.0 can shrink copies for the 15s sum cap while
+/// Seedance 2.0 R2V can lengthen copies to the 1.8s floor — both from the
+/// same canonical TTS wav.
+pub async fn fit_audio_to_duration(src: &Path, dest: &Path, secs: f64) -> bool {
+    if secs <= 0.0 || !is_usable_audio_file(src) || src == dest {
         return false;
     }
-    let Some(dur) = probe_media_duration_secs(path).await else {
-        return false;
-    };
-    if !dur.is_finite() || dur <= max_secs + 0.05 {
-        return false;
+    if let Some(parent) = dest.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+            tracing::warn!(
+                dest = %dest.display(),
+                error = %err,
+                "could not create directory for fitted voice ref"
+            );
+            return false;
+        }
     }
     let ffmpeg = match ensure_ffmpeg_ready().await {
         Ok(bin) => bin,
         Err(err) => {
             tracing::warn!(
-                path = %path.display(),
+                path = %src.display(),
                 error = %err,
-                "ffmpeg unavailable; leaving long voice ref untrimmed"
+                "ffmpeg unavailable; cannot fit voice ref duration"
             );
             return false;
         }
     };
     let part = {
-        let mut s = path.as_os_str().to_owned();
-        s.push(".trim.part");
+        let mut s = dest.as_os_str().to_owned();
+        s.push(".part");
         PathBuf::from(s)
     };
-    let input = path.to_string_lossy().into_owned();
+    let input = src.to_string_lossy().into_owned();
     let output = part.to_string_lossy().into_owned();
-    let limit = format!("{max_secs:.3}");
-    let copy_args = vec![
+    let limit = format!("{secs:.3}");
+    let loop_args = vec![
         "-y".into(),
+        "-stream_loop".into(),
+        "-1".into(),
         "-i".into(),
         input.clone(),
         "-t".into(),
         limit.clone(),
-        "-c".into(),
-        "copy".into(),
+        "-vn".into(),
+        "-c:a".into(),
+        "pcm_s16le".into(),
         output.clone(),
     ];
-    let copied = match run_ffmpeg_owned_capture(&ffmpeg, &copy_args).await {
+    let looped = match run_ffmpeg_owned_capture(&ffmpeg, &loop_args).await {
         Ok((ok, _)) => ok && is_usable_audio_file(&part),
         Err(_) => false,
     };
-    if !copied {
-        let encode_args = vec![
+    if !looped {
+        let trim_args = vec![
             "-y".into(),
             "-i".into(),
             input,
@@ -457,38 +468,40 @@ pub async fn trim_audio_to_max_secs(path: &Path, max_secs: f64) -> bool {
             "pcm_s16le".into(),
             output,
         ];
-        match run_ffmpeg_owned_capture(&ffmpeg, &encode_args).await {
+        match run_ffmpeg_owned_capture(&ffmpeg, &trim_args).await {
             Ok((ok, _)) if ok && is_usable_audio_file(&part) => {}
             Ok((_, err)) => {
                 tracing::warn!(
-                    path = %path.display(),
+                    src = %src.display(),
+                    dest = %dest.display(),
                     stderr = %err,
-                    "ffmpeg could not trim voice ref; leaving original"
+                    "ffmpeg could not fit voice ref duration"
                 );
                 let _ = tokio::fs::remove_file(&part).await;
                 return false;
             }
             Err(err) => {
                 tracing::warn!(
-                    path = %path.display(),
+                    src = %src.display(),
+                    dest = %dest.display(),
                     error = %err,
-                    "ffmpeg could not trim voice ref; leaving original"
+                    "ffmpeg could not fit voice ref duration"
                 );
                 let _ = tokio::fs::remove_file(&part).await;
                 return false;
             }
         }
     }
-    if let Err(err) = tokio::fs::rename(&part, path).await {
+    if let Err(err) = tokio::fs::rename(&part, dest).await {
         tracing::warn!(
-            path = %path.display(),
+            dest = %dest.display(),
             error = %err,
-            "could not replace voice ref with trimmed clip"
+            "could not move fitted voice ref into place"
         );
         let _ = tokio::fs::remove_file(&part).await;
         return false;
     }
-    true
+    is_usable_audio_file(dest)
 }
 
 /// Probe the first video stream size.

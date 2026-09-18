@@ -2,26 +2,27 @@
 
 /**
  * Tauri-native in-app updater adapter. Backs the ipcBridge `update` /
- * `autoUpdate` channels with `@tauri-apps/plugin-updater` (+ `plugin-process`
- * for relaunch). Mirrors tauriShell.ts: every call is GUARDED by `isTauriRuntime()`
- * and the Tauri modules load via dynamic `import()` so the WebUI browser bundle
- * never evaluates Tauri IPC code.
+ * `autoUpdate` channels with native `check_update` / `download_update` /
+ * `install_update` commands (+ `plugin-process` for relaunch). Mirrors
+ * tauriShell.ts: every call is GUARDED by `isTauriRuntime()` and Tauri modules
+ * load via dynamic `import()` so the WebUI browser bundle never evaluates Tauri
+ * IPC code.
  *
- * Lifecycle — one shared renderer `Update` resource flows across check →
- * metadata display only. Package download and installation are separate custom
- * Rust commands backed by one native cache: download verifies and retains the
- * exact package, while install can only consume those retained bytes and never
+ * Check metadata is memoized in the renderer. Package bytes are owned by the
+ * Rust-side DownloadedUpdateState: download verifies and retains the exact
+ * package, while install can only consume those retained bytes and never
  * performs network I/O. The modal performs two back-to-back checks
  * (autoUpdate.check then update.check); `checkPromise` memoizes them into ONE
  * network round-trip, while `force` re-checks on retry / modal reopen.
  *
  * The updater compares against the running bundle's version (Tauri reads it from
- * the workspace `Cargo.toml`, the single source of truth) and fetches the signed
- * `latest.json` from `plugins.updater.endpoints` in tauri.conf.json, verifying
- * each artifact against `plugins.updater.pubkey`.
+ * the workspace `Cargo.toml`) and fetches signed `latest.json` from regional
+ * ModelScope / GitHub endpoints, verifying each artifact against
+ * `plugins.updater.pubkey`.
  */
 
 import type { AutoUpdateStatus } from '@/common/update/updateTypes';
+import { setUpdateCdnHost } from '@/common/update/cdnHost';
 import { isTauriRuntime } from './tauriRuntime';
 import {
   tauriDownloadUpdate,
@@ -33,38 +34,24 @@ import {
 } from './tauriShell';
 import { installUpdateWithPreflight } from './tauriUpdateInstall';
 
-interface TauriUpdate {
-  version: string;
-  currentVersion: string;
-  date?: string;
-  body?: string;
-  close(): Promise<void>;
-}
-
 export interface TauriUpdateInfo {
   version: string;
-  /** Version of the currently running bundle (from the Update handle). */
   currentVersion: string;
   releaseNotes?: string;
   releaseDate?: string;
 }
 
-// Keep the check resource for version/release metadata. Package bytes — and the
-// FACT that a package exists — are owned by the Rust-side DownloadedUpdateState.
-// This module deliberately keeps no mirror of that fact: a renderer-local
-// `downloadComplete` boolean used to be cleared at the start of every download
-// attempt and never restored on failure, so a rejected attempt disabled the
-// install action while Rust still held verified bytes, and the only way to
-// re-arm it was to run a whole download again.
-let pendingUpdate: TauriUpdate | null = null;
+// Keep check metadata in the renderer. Package bytes are owned by the Rust-side
+// DownloadedUpdateState.
+let pendingUpdate: TauriUpdateInfo | null = null;
 // Memoize the in-flight/last check so the modal's autoUpdate.check + update.check
 // share ONE round-trip. Checks are also SERIALIZED through it (each chains after
 // any in-flight one) so two never run concurrently — concurrent runs would each
 // mint an Update handle and leak all but the last, and could clobber the memo.
 let checkPromise: Promise<TauriUpdateInfo | null> | null = null;
 
-function infoFromHandle(u: TauriUpdate): TauriUpdateInfo {
-  return { version: u.version, currentVersion: u.currentVersion, releaseNotes: u.body, releaseDate: u.date };
+function infoFromHandle(u: TauriUpdateInfo): TauriUpdateInfo {
+  return u;
 }
 
 /**
@@ -85,22 +72,23 @@ async function nativeActiveVersion(): Promise<string | null> {
 }
 
 async function runCheck(): Promise<TauriUpdateInfo | null> {
-  const { check } = await import('@tauri-apps/plugin-updater');
-  // Free the previous handle before replacing it (releases the Rust resource).
-  // Safe to do sequentially because checks are serialized (see tauriUpdateCheck),
-  // so no concurrent run is mid-flight on this handle.
-  if (pendingUpdate) {
-    try {
-      await pendingUpdate.close();
-    } catch {
-      /* handle already gone — ignore */
-    }
-    pendingUpdate = null;
-  }
+  const { invoke } = await import('@tauri-apps/api/core');
   try {
-    const update = (await check()) as TauriUpdate | null;
-    pendingUpdate = update;
-    return update ? infoFromHandle(update) : null;
+    const update = await invoke<{
+      version: string;
+      currentVersion: string;
+      releaseNotes?: string | null;
+      releaseDate?: string | null;
+    } | null>('check_update');
+    pendingUpdate = update
+      ? {
+          version: update.version,
+          currentVersion: update.currentVersion,
+          releaseNotes: update.releaseNotes ?? undefined,
+          releaseDate: update.releaseDate ?? undefined,
+        }
+      : null;
+    return pendingUpdate;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(message);
@@ -205,6 +193,7 @@ export async function tauriUpdateDownload(emit: (s: AutoUpdateStatus) => void): 
   });
 
   await tauriDownloadUpdate(downloadVersion, (event: TauriDownloadUpdateProgress) => {
+    if (event.cdnHost) setUpdateCdnHost(event.cdnHost);
     if (event.phase === 'checking') return;
     if (event.phase === 'downloading') {
       total = event.contentLength ?? total;
