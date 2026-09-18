@@ -1329,7 +1329,7 @@ async fn migrations_preserve_the_published_v3_baseline_and_apply_additive_upgrad
     assert!(CONVERSATION_RECEIPT_LIFECYCLE.contains("OLD.status = 'completed'"));
     assert!(CONVERSATION_RECEIPT_LIFECYCLE.contains("NEW.status IS NOT OLD.status"));
     assert!(AUTOWORK_PROVENANCE_AUTHORITY_RECOVERY.contains("created_by IN ('user', 'agent')"));
-    assert!(migrations.iter().any(|(version, description)| *version == 48
+    assert!(migrations.iter().any(|(version, description)| *version == 54
         && description.contains("app server idempotency receipts")));
     assert!(APP_SERVER_IDEMPOTENCY_RECEIPTS.contains(
         "UNIQUE (principal_id, client_id, method, idempotency_key)"
