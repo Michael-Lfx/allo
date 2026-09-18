@@ -675,7 +675,7 @@ jobs:
             --version "$EXPECTED_VERSION" \
             --platform linux-x86_64 \
             --platform linux-aarch64 \
-            --check-sizes \
+            --check-artifacts \
             --metadata dist/desktop/release-metadata.json
 
       - uses: actions/upload-artifact@v7
