@@ -14,6 +14,14 @@ describe('formatSiderAccountLabel', () => {
     expect(formatSiderAccountLabel({ username: 'hoyework@qq.com', email: 'hoyework@qq.com' })).toBe('hoyework');
   });
 
+  test('masks a username that itself looks like an email', () => {
+    expect(formatSiderAccountLabel({ username: 'alias@corp.com', email: 'real@home.com' })).toBe('alias');
+  });
+
+  test('keeps a handle-like value without a local part untouched', () => {
+    expect(formatSiderAccountLabel({ username: '@hoyework' })).toBe('@hoyework');
+  });
+
   test('keeps a value without a domain separator untouched', () => {
     expect(formatSiderAccountLabel({ email: 'hoyework' })).toBe('hoyework');
   });

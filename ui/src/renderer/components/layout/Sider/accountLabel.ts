@@ -4,10 +4,7 @@ export type SiderAccountIdentity = {
 };
 
 export function formatSiderAccountLabel(identity: SiderAccountIdentity): string {
-  const username = identity.username?.trim() ?? '';
-  const email = identity.email?.trim() ?? '';
-  if (username && username !== email) return username;
-  const atIndex = email.lastIndexOf('@');
-  if (atIndex > 0) return email.slice(0, atIndex);
-  return username || email;
+  const candidate = identity.username?.trim() || identity.email?.trim() || '';
+  const atIndex = candidate.lastIndexOf('@');
+  return atIndex > 0 ? candidate.slice(0, atIndex) : candidate;
 }

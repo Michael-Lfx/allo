@@ -52,6 +52,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   const [menuVisible, setMenuVisible] = useState(false);
   const [skinVisible, setSkinVisible] = useState(false);
   const [languageVisible, setLanguageVisible] = useState(false);
+  const [creditsHovered, setCreditsHovered] = useState(false);
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
 
   const handleMenuVisibleChange = (visible: boolean) => {
@@ -300,6 +301,8 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
                 className='inline-flex shrink-0'
                 onClick={stopAccountTrigger}
                 onMouseDown={stopAccountTrigger}
+                onMouseEnter={() => setCreditsHovered(true)}
+                onMouseLeave={() => setCreditsHovered(false)}
               >
                 <CreditsWebsiteButton size='xs' className='!size-14px' />
               </span>
@@ -328,6 +331,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         {...siderTooltipProps}
         content={planText ? `${displayName} · ${planText}` : displayName}
         position='right'
+        disabled={creditsHovered}
       >
         {trigger}
       </Tooltip>

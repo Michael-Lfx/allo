@@ -79,7 +79,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     if (showCloudLogout) {
       return formatSiderAccountLabel({ username: whoami?.username, email: whoami?.email });
     }
-    return localUser?.username ?? formatSiderAccountLabel({ username: whoami?.username, email: whoami?.email });
+    return formatSiderAccountLabel({
+      username: localUser?.username ?? whoami?.username,
+      email: whoami?.email,
+    });
   }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
   const planLabel = whoami?.plan ?? '';
 

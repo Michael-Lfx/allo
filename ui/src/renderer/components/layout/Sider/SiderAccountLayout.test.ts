@@ -27,6 +27,12 @@ describe('sider account layout stability', () => {
     expect(footerSource.includes('data-sider-footer-expanded')).toBe(true);
     expect(footerSource.includes("className='h-40px flex items-center gap-2px min-w-0'")).toBe(true);
   });
+
+  test('suppresses the account tooltip while the credits button is hovered', () => {
+    expect(userMenuSource.includes('creditsHovered')).toBe(true);
+    expect(userMenuSource.includes('disabled={creditsHovered}')).toBe(true);
+    expect(userMenuSource.includes('setCreditsHovered(true)')).toBe(true);
+  });
 });
 
 describe('desktop companion user-menu entry', () => {
