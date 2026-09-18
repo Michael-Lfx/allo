@@ -62,7 +62,13 @@ pub enum AgentStreamEvent {
     /// Emitted once at the end of a turn with aggregate metrics so the UI can
     /// show duration / token cost and telemetry can record per-turn stats.
     /// Purely additive: consumers that don't recognise it ignore it.
+    /// `UsageUpdated` reuses the same payload for live per-round snapshots and
+    /// must not be treated as a finished turn.
     TurnCompleted(TurnCompletedEventData),
+    /// Live context-occupancy snapshot after a provider round. Same payload as
+    /// `TurnCompleted` minus a stop reason; StreamRelay must forward it without
+    /// accumulating conversation runtime tokens.
+    UsageUpdated(TurnCompletedEventData),
     /// One MoA reference model's advisory answer for the current message.
     /// Purely additive: consumers that don't recognise it ignore it.
     MoaReference(MoaReferenceEventData),
@@ -2833,6 +2839,28 @@ mod tests {
     }
 
     #[test]
+    fn usage_updated_event_roundtrip() {
+        let event = AgentStreamEvent::UsageUpdated(TurnCompletedEventData {
+            elapsed_ms: 88,
+            input_tokens: 12,
+            output_tokens: 4,
+            context_tokens: 400,
+            context_window: 32_000,
+            ..Default::default()
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "usage_updated");
+        assert_eq!(json["data"]["context_tokens"], 400);
+        assert!(json["data"]["stop_reason"].is_null());
+        let back: AgentStreamEvent = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            AgentStreamEvent::UsageUpdated(d)
+                if d.elapsed_ms == 88 && d.context_tokens == 400 && d.stop_reason.is_none()
+        ));
+    }
+
+    #[test]
     fn moa_turn_stats_roundtrip_preserves_optional_costs() {
         // A mixed-pricing payload survives a serde roundtrip: unpriced slot
         // keeps `cost_usd: None` (wire `null`), priced slot keeps its value.
@@ -2886,6 +2914,7 @@ mod tests {
                 "tips",
             ),
             (AgentStreamEvent::TurnCompleted(TurnCompletedEventData::default()), "turn_completed"),
+            (AgentStreamEvent::UsageUpdated(TurnCompletedEventData::default()), "usage_updated"),
             (AgentStreamEvent::Finish(FinishEventData::default()), "finish"),
             (AgentStreamEvent::Error(ErrorEventData::legacy("e", None)), "error"),
             (AgentStreamEvent::Permission(serde_json::json!({})), "permission"),

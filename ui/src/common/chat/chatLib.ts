@@ -1637,6 +1637,8 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
     case 'acp_model_info': // Model info updates, handled by AcpModelSelector
     case 'codex_model_info': // Legacy Codex model info updates
     case 'acp_context_usage': // Context usage updates, handled by AcpSendBox
+    case 'turn_completed': // Nomi occupancy at turn end, handled by useNomiMessage
+    case 'usage_updated': // Live Nomi occupancy, handled by useNomiMessage
     case 'moa_progress': // MoA fan-out progress, surfaced via the turn status rail only
     case 'request_trace': // Request trace events, logged to F12 console (not persisted)
       return undefined;

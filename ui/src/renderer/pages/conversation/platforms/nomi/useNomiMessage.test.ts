@@ -66,4 +66,17 @@ describe('useNomiMessage live event subscriptions', () => {
     expect(handler.includes('resetState')).toBe(false);
     expect(handler.includes('clearNomiMessageBuffer')).toBe(false);
   });
+
+  test('applies live usage_updated snapshots through the same metrics path as turn_completed', () => {
+    const source = readFileSync(fileURLToPath(import.meta.resolve('./useNomiMessage.ts')), 'utf8');
+    const start = source.indexOf("case 'turn_completed':");
+    const end = source.indexOf("case 'finish':", start);
+    const handler = source.slice(start, end);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(handler.includes("case 'usage_updated':")).toBe(true);
+    expect(handler.includes('tokenUsageFromMetricsPayload')).toBe(true);
+    expect(handler.includes('rememberNomiUsage')).toBe(true);
+  });
 });

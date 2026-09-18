@@ -5,6 +5,7 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Session context occupancy and the Metrics rail refresh after each model request, not only when the whole turn finishes.
 - Session turn credit chips wait for the Agent Run to finish and include Flowy-proxied Anthropic/Responses, MoA, and goal auto-draft model calls.
 - Session file-change counts wait until the full turn is in the history window, and the Changes rail keeps its session snapshot across leave/re-enter and app restart.
 - The conversation task queue sits in the composer layout instead of covering messages, with a quieter Reminders-style checklist.

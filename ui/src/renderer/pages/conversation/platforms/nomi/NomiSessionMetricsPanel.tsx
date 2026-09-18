@@ -14,6 +14,7 @@ import {
   resolveMountedSkillLabel,
   type MountedMcpChip,
 } from './mountedCapabilities';
+import { recalledNomiUsage } from './nomiUsageGauge';
 import {
   calculateCacheHitRatePercent,
   calculateContextUsagePercent,
@@ -205,19 +206,26 @@ const MountedCapabilitiesSection: React.FC<{ conversation: TChatConversation }> 
 
 const NomiSessionMetricsPanel: React.FC<{ conversation: TChatConversation }> = ({ conversation }) => {
   const { t } = useTranslation();
-  const [usage, setUsage] = useState<TokenUsageData | null>(() => getPersistedUsage(conversation));
+  const [usage, setUsage] = useState<TokenUsageData | null>(
+    () => recalledNomiUsage(conversation.id) ?? getPersistedUsage(conversation)
+  );
 
   useEffect(() => {
-    setUsage(getPersistedUsage(conversation));
-  }, [conversation]);
+    setUsage(recalledNomiUsage(conversation.id) ?? getPersistedUsage(conversation));
+  }, [conversation.id]);
 
   // Metrics tab content mounts only while selected, so live `nomi.usage.updated`
-  // events during a turn are often missed. Re-read the conversation row on mount
-  // (and when switching conversations) to pick up persisted last_token_usage.
+  // events during a turn are often missed. Prefer the in-memory live snapshot,
+  // then re-read the conversation row for persisted last_token_usage.
   useEffect(() => {
     let cancelled = false;
     void getConversationOrNull(conversation.id).then((latest) => {
       if (cancelled || !latest) return;
+      const recalled = recalledNomiUsage(conversation.id);
+      if (recalled) {
+        setUsage(recalled);
+        return;
+      }
       const persisted = getPersistedUsage(latest);
       if (hasUsageData(persisted)) {
         setUsage(persisted);

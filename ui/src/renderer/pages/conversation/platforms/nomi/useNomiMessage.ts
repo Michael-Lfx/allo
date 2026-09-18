@@ -7,7 +7,6 @@ import { isToolGroupStatusActive, normalizeToolGroupStatus } from '@/common/chat
 import { extractResponseTextChunk, optionalDisplayText, toDisplayText } from '@/common/chat/displayText';
 import type { IResponseMessage } from '@/common/adapter/ipcBridge';
 import type { MoaProgressEventData } from '@/common/protocolBindings/MoaProgressEventData';
-import type { MoaTurnStatsData } from '@/common/protocolBindings/MoaTurnStatsData';
 import type { TChatConversation, TokenUsageData } from '@/common/config/storage';
 import { uuid } from '@/common/utils';
 import { useAddOrUpdateMessage } from '@/renderer/pages/conversation/Messages/hooks';
@@ -48,6 +47,7 @@ import {
   getNomiHydrationLifecycleFence,
   shouldApplyNomiStreamEventToTurn,
 } from './nomiLifecycleFence';
+import { recalledNomiUsage, rememberNomiUsage, tokenUsageFromMetricsPayload } from './nomiUsageGauge';
 import { initialNomiTurnState, isTurnRunning, nomiTurnReducer, type NomiTurnEvent } from './nomiTurnState';
 import {
   initialTurnPresentationState,
@@ -517,12 +517,14 @@ export const useNomiMessage = (
       // boundary for lifecycle state. Late output is still renderable history,
       // but it cannot reopen a completed turn or mutate a newer accepted turn.
       // Config changes are session-scoped rather than turn-scoped.
-      // `turn_completed` is metrics-only (context usage / token gauge) and must
-      // still apply after the turn fence closes — otherwise the context ring
-      // never appears after durable-lifecycle settlement.
+      // `turn_completed` / `usage_updated` are metrics-only (context usage /
+      // token gauge) and must still apply after the turn fence closes —
+      // otherwise the context ring never appears after durable-lifecycle
+      // settlement, and per-round snapshots would be dropped too.
       if (
         message.type !== 'config_changed' &&
         message.type !== 'turn_completed' &&
+        message.type !== 'usage_updated' &&
         !shouldApplyNomiStreamEventToTurn({
           eventTurnId: message.turn_id,
           activeTurnId: rootTurnIdRef.current,
@@ -614,49 +616,17 @@ export const useNomiMessage = (
           setThought({ subject: '', description: '' });
           break;
         case 'turn_completed':
+        case 'usage_updated':
           {
-            // Phase 3 observability: the engine emits one turn_completed per turn
-            // carrying real aggregate metrics. This is the genuine source of token
-            // usage for nomi turns (the finish event has never carried usage) —
-            // it updates the send-box metrics chip and persists for rehydration.
-            const metrics = message.data as
-              | {
-                  elapsed_ms?: number;
-                  input_tokens?: number;
-                  output_tokens?: number;
-                  reasoning_tokens?: number;
-                  cache_creation_tokens?: number;
-                  cache_read_tokens?: number;
-                  context_tokens?: number;
-                  context_window?: number;
-                  context_breakdown?: TokenUsageData['context_breakdown'];
-                  moa?: MoaTurnStatsData | null;
-                }
-              | undefined;
-            if (metrics && typeof metrics === 'object') {
-              const validTokenCount = (value: unknown): number | undefined =>
-                typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
-              const inputTokens = validTokenCount(metrics.input_tokens);
-              const outputTokens = validTokenCount(metrics.output_tokens);
-              const reasoningTokens = validTokenCount(metrics.reasoning_tokens);
-              const cacheCreationTokens = validTokenCount(metrics.cache_creation_tokens);
-              const cacheReadTokens = validTokenCount(metrics.cache_read_tokens);
-              const newTokenUsage: TokenUsageData = {
-                total_tokens: (inputTokens ?? 0) + (outputTokens ?? 0),
-                ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
-                ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
-                ...(reasoningTokens !== undefined ? { reasoning_tokens: reasoningTokens } : {}),
-                ...(cacheCreationTokens !== undefined ? { cache_creation_tokens: cacheCreationTokens } : {}),
-                ...(cacheReadTokens !== undefined ? { cache_read_tokens: cacheReadTokens } : {}),
-                ...(typeof metrics.elapsed_ms === 'number' && Number.isFinite(metrics.elapsed_ms)
-                  ? { elapsed_ms: metrics.elapsed_ms }
-                  : {}),
-                context_tokens: validTokenCount(metrics.context_tokens),
-                context_window: validTokenCount(metrics.context_window),
-                context_breakdown: metrics.context_breakdown,
-                moa: metrics.moa ?? null,
-              };
+            // Phase 3 observability: the engine emits usage_updated after each
+            // provider round and one turn_completed at turn end. Both carry the
+            // occupancy gauge plus session-lifetime totals (finish never has
+            // usage). They update the send-box ring / metrics rail and persist
+            // for rehydration.
+            const newTokenUsage = tokenUsageFromMetricsPayload(message.data);
+            if (newTokenUsage) {
               setTokenUsage(newTokenUsage);
+              rememberNomiUsage(conversation_id, newTokenUsage);
               if (!readOnly) {
                 emitter.emit('nomi.usage.updated', { conversation_id, tokenUsage: newTokenUsage });
                 void ipcBridge.conversation.update
@@ -1066,10 +1036,12 @@ export const useNomiMessage = (
       // settle activity from a late prior-turn stream. A local submit advances
       // the generation and never reaches this branch.
       dispatchTurn({ type: 'hydrate', isRunning, settleIdle: true });
-      // Load persisted token usage / context gauge. Prefer any payload that
-      // carries a usable context window so the context ring can rehydrate even
-      // when total_tokens was never recorded (or was zero).
-      if (res.type === 'nomi' && res.extra?.last_token_usage) {
+      // Load persisted token usage / context gauge. Prefer any in-memory live
+      // snapshot so a remount mid-turn does not regress to a stale extra row.
+      const recalled = recalledNomiUsage(conversation_id);
+      if (recalled) {
+        setTokenUsage(recalled);
+      } else if (res.type === 'nomi' && res.extra?.last_token_usage) {
         const { last_token_usage } = res.extra;
         const hasContextGauge =
           typeof last_token_usage.context_window === 'number' &&
@@ -1077,6 +1049,7 @@ export const useNomiMessage = (
           typeof last_token_usage.context_tokens === 'number';
         if (hasContextGauge || last_token_usage.total_tokens > 0) {
           setTokenUsage(last_token_usage);
+          rememberNomiUsage(conversation_id, last_token_usage);
         }
       }
       setHasHydratedRunningState(runtimeAuthority !== 'unknown');
