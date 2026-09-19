@@ -7043,7 +7043,7 @@ dependencies = [
  "nomifun-workshop",
  "percent-encoding",
  "reqwest 0.12.28",
- "rmcp 2.0.0",
+ "rmcp 2.1.0",
  "sentry",
  "sentry-tracing",
  "serde",
@@ -7900,7 +7900,7 @@ dependencies = [
  "nomifun-browser-platform",
  "nomifun-common",
  "nomifun-gateway",
- "rmcp 2.0.0",
+ "rmcp 2.1.0",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -10341,9 +10341,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d52d21e5b342699bc4de690e6104fc4e43255e4e8420ff0f2cbb963aac09da6f"
+checksum = "f00a32c3b81b7b254076a65abd5ab2551209146713ba38f73818657e865e9433"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
