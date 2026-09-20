@@ -9,6 +9,12 @@ name: CI
 #
 # Known-red gates are deliberately NOT wired in yet — see
 # .github/workflows/README.md § "PR CI" for the list and the reason.
+#
+# Documentation-only changes skip both Rust jobs; `changes` decides. The
+# allowlist, and why it is narrow rather than "every *.md" (markdown reaches the
+# compiled binary through `include_str!`), live in scripts/ci-changed-paths.mjs
+# and .github/workflows/README.md § "Docs-only changes". `repo-gates` is never
+# skipped — it reads the docs and the docs site.
 
 on:
   pull_request:
@@ -32,8 +38,57 @@ env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
 
 jobs:
+  # Decides whether the two Rust jobs below are needed at all. It is meant to be
+  # the cheapest job in the workflow: `sparse-checkout: scripts` keeps it off the
+  # 111 MiB / 6508-file working tree, and for a sparse checkout the action
+  # applies `filter: blob:none` itself — setting `filter` explicitly would
+  # *override* sparse-checkout and pull the whole tree anyway.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      docs_only: ${{ steps.decide.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # 0 = all history for all branches and tags, so the base and head
+          # commits named by the event payload are present locally and
+          # `git merge-base` is meaningful.
+          fetch-depth: 0
+          sparse-checkout: scripts
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # The detector decides whether the Rust jobs run, so assert its contract
+      # first. If this fails, `decide` is skipped and its output stays empty —
+      # and an empty value is still `!= 'true'`, so the Rust jobs run anyway.
+      # Red, never silent.
+      - name: Changed-path detector contract
+        run: bun scripts/ci-changed-paths.mjs --self-test
+
+      - name: Decide whether the Rust jobs are needed
+        id: decide
+        run: bun scripts/ci-changed-paths.mjs
+
   rust-compile:
     name: Cargo check (workspace + tests)
+    needs: changes
+    # Three things this condition has to get right:
+    #   1. A job-level `if`, not a trigger-level `paths-ignore`. A skipped job is
+    #      still reported as a check run on the pull request; a path filter makes
+    #      the check never appear at all, which would leave a docs-only pull
+    #      request waiting forever the day `main` gains required checks.
+    #   2. `!cancelled()` is load-bearing. The implicit condition is `success()`,
+    #      so if the detector job ever fails these two jobs would be *skipped* —
+    #      the exact silent skip this arrangement must not introduce. `always()`
+    #      would also work, but would resurrect jobs in a run that concurrency
+    #      already cancelled.
+    #   3. A missing or empty output is not the string 'true', so every failure
+    #      mode runs the Rust jobs rather than skipping them.
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     # A cold run compiles every crate in the workspace (including the vendored
     # sherpa/onnx build scripts); rust-cache makes every later run incremental.
@@ -127,6 +182,9 @@ jobs:
 
   tests:
     name: Cargo test (agent + conversation)
+    needs: changes
+    # Same gate as `rust-compile`; the reasoning is in the comment there.
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
