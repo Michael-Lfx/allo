@@ -497,6 +497,10 @@ struct CreateTaskBody {
     #[serde(default)]
     reference_media_ids: Vec<String>,
     #[serde(default)]
+    audio_media_ids: Vec<String>,
+    #[serde(default)]
+    reference_video_media_id: Option<String>,
+    #[serde(default)]
     first_frame_media_id: Option<String>,
     #[serde(default)]
     last_frame_media_id: Option<String>,
@@ -520,6 +524,8 @@ async fn create_task(
             resolution: body.resolution,
             duration_secs: body.duration_secs,
             reference_media_ids: body.reference_media_ids,
+            audio_media_ids: body.audio_media_ids,
+            reference_video_media_id: body.reference_video_media_id,
             first_frame_media_id: body.first_frame_media_id,
             last_frame_media_id: body.last_frame_media_id,
             project_id: body.project_id,

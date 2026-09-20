@@ -5,6 +5,7 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Video canvas no longer treats WAV clips as images, keeps reference audio on Seedance/Wan, and opens audio settings above the prompt overlay.
 - Video generation credit-shortage failures now show a Buy credits action that opens the in-app billing page.
 - Session context occupancy and the Metrics rail refresh after each model request, not only when the whole turn finishes.
 - Session turn credit chips wait for the Agent Run to finish and include Flowy-proxied Anthropic/Responses, MoA, and goal auto-draft model calls.

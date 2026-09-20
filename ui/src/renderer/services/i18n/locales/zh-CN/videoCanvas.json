@@ -2266,6 +2266,11 @@
     "urlUnavailable": "生成服务地址不可用，请检查渠道配置。",
     "refAudioDuration": "参考音频总时长不能超过 15 秒。请缩短或减少角色参考音后重试。",
     "refAudioTooShort": "每段参考音频不能短于 1.8 秒。系统会在提交时加长副本；请重试。",
+    "audioUnsupported": "当前视频模型不支持参考音频。请改用 Seedance 或 Wan 3.0，或断开音频节点。",
+    "audioNeedsVisual": "参考音频需要同时连接至少一张参考图或参考视频。Seedance / Wan 不能只凭音频生成。",
+    "frameNotImage": "首帧/尾帧必须是图片（PNG/JPEG/WebP），不能使用音频或视频。",
+    "imageNotDecodable": "这张图不是可用的 PNG/JPEG/WebP。请重新导出或换一张图。",
+    "audioAsImage": "不能把音频文件当作参考图。请把 WAV 连到音频节点后再生成。",
     "failed": "生成失败，请稍后重试。"
   },
   "userError": {

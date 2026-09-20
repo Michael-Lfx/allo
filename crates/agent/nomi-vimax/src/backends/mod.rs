@@ -420,27 +420,8 @@ fn oss_url_cache_put(
     );
 }
 
-/// Cap oversized images before OSS upload (shared by image + video backends).
-pub(crate) fn prepare_media_image_upload(
-    bytes: Vec<u8>,
-) -> Result<(Vec<u8>, &'static str), crate::error::VimaxError> {
-    const MAX_BYTES: usize = 1_200_000;
-    let kind = crate::media_local::image_magic_kind(&bytes);
-    if bytes.len() <= MAX_BYTES {
-        let mime = match kind {
-            Some("jpeg") => "image/jpeg",
-            Some("webp") => "image/webp",
-            Some("png") => "image/png",
-            _ => {
-                return Err(crate::error::VimaxError::msg(
-                    "image is not a decodable PNG/JPEG/WEBP".to_string(),
-                ));
-            }
-        };
-        return Ok((bytes, mime));
-    }
-
-    let img = ::image::load_from_memory(&bytes)
+fn reencode_image_jpeg(bytes: &[u8]) -> Result<(Vec<u8>, &'static str), crate::error::VimaxError> {
+    let img = ::image::load_from_memory(bytes)
         .map_err(|e| crate::error::VimaxError::msg(format!("decode image: {e}")))?;
     let img = img.resize(1280, 720, ::image::imageops::FilterType::Triangle);
     let mut out = Vec::new();
@@ -453,6 +434,47 @@ pub(crate) fn prepare_media_image_upload(
         ));
     }
     Ok((out, "image/jpeg"))
+}
+
+/// Cap oversized images before OSS upload (shared by image + video backends).
+pub(crate) fn prepare_media_image_upload(
+    bytes: Vec<u8>,
+) -> Result<(Vec<u8>, &'static str), crate::error::VimaxError> {
+    const MAX_BYTES: usize = 1_200_000;
+    if crate::media_local::looks_like_wav(&bytes) {
+        return Err(crate::error::VimaxError::msg(
+            "audio file cannot be used as an image reference (got WAV)".to_string(),
+        ));
+    }
+    if crate::media_local::looks_like_video_container(&bytes) {
+        return Err(crate::error::VimaxError::msg(
+            "video file cannot be used as an image reference".to_string(),
+        ));
+    }
+    let stripped = crate::media_local::skip_image_prefix(&bytes);
+    let kind = crate::media_local::image_magic_kind(stripped);
+    if stripped.len() <= MAX_BYTES {
+        let mime = match kind {
+            Some("jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("png") => "image/png",
+            _ => {
+                return reencode_image_jpeg(stripped).map_err(|_| {
+                    crate::error::VimaxError::msg(
+                        "image is not a decodable PNG/JPEG/WEBP".to_string(),
+                    )
+                });
+            }
+        };
+        let out = if stripped.len() == bytes.len() {
+            bytes
+        } else {
+            stripped.to_vec()
+        };
+        return Ok((out, mime));
+    }
+
+    reencode_image_jpeg(stripped)
 }
 
 pub(crate) fn map_server_err(err: nomifun_cloud::ServerClientError) -> crate::error::VimaxError {
@@ -573,5 +595,49 @@ pub(crate) fn map_model_err(
         "image" => crate::error::VimaxError::Image(msg),
         "video" => crate::error::VimaxError::Video(msg),
         _ => crate::error::VimaxError::Llm(msg),
+    }
+}
+
+#[cfg(test)]
+mod prepare_media_image_upload_tests {
+    use super::prepare_media_image_upload;
+    use image::{ImageFormat, Rgb, RgbImage};
+
+    fn png_bytes() -> Vec<u8> {
+        let mut out = Vec::new();
+        RgbImage::from_pixel(8, 8, Rgb([12, 34, 56]))
+            .write_to(&mut std::io::Cursor::new(&mut out), ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn accepts_png_and_bom_prefixed_png() {
+        let png = png_bytes();
+        let (got, mime) = prepare_media_image_upload(png.clone()).expect("png");
+        assert_eq!(mime, "image/png");
+        assert_eq!(got, png);
+
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice(&png);
+        let (got, mime) = prepare_media_image_upload(bom).expect("bom png");
+        assert_eq!(mime, "image/png");
+        assert_eq!(got, png);
+    }
+
+    #[test]
+    fn rejects_wav_as_image() {
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&[0, 0, 0, 0]);
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(&[0u8; 24]);
+        let err = prepare_media_image_upload(wav).expect_err("wav");
+        assert!(err.to_string().contains("WAV"), "{err}");
+    }
+
+    #[test]
+    fn rejects_html_as_image() {
+        let err = prepare_media_image_upload(b"<html>error</html>".to_vec()).expect_err("html");
+        assert!(err.to_string().contains("PNG/JPEG/WEBP"), "{err}");
     }
 }

@@ -49,6 +49,8 @@ export type GenerationTaskView = {
   resolution?: string | null;
   duration_secs?: number | null;
   reference_media_ids?: string[];
+  audio_media_ids?: string[];
+  reference_video_media_id?: string | null;
   first_frame_media_id?: string | null;
   last_frame_media_id?: string | null;
   /** Set when the job was started from a canvas node. Empty for home clip tasks. */
@@ -65,6 +67,8 @@ export type CreateGenerationBody = {
   resolution?: string;
   duration_secs?: number;
   reference_media_ids?: string[];
+  audio_media_ids?: string[];
+  reference_video_media_id?: string;
   first_frame_media_id?: string;
   last_frame_media_id?: string;
   project_id?: string;

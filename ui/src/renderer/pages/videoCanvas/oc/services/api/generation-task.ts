@@ -114,12 +114,20 @@ async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAud
     if (!blob && (url.startsWith("blob:") || url.startsWith("data:"))) blob = await (await fetch(url)).blob();
     if (!blob) throw new Error("参考媒体尚未保存，请重新上传后再生成");
     try {
-        const kind: "video" | "audio" | "file" = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
+        const kind: "video" | "audio" | "file" = inferPreparedMediaKind(blob, media);
         const resource = await uploadResourceFile(blob, kind, { fileName: media.name, width: "width" in media ? media.width : undefined, height: "height" in media ? media.height : undefined, durationMs: media.durationMs });
         return backendMediaReference(media, { storageKey: resourceStorageKey(resource.id), type: resource.mimeType || media.type || blob.type });
     } catch (error) {
         throw new Error(error instanceof Error ? `参考媒体上传失败：${error.message}` : "参考媒体上传失败");
     }
+}
+
+function inferPreparedMediaKind(blob: Blob, media: ReferenceVideo | ReferenceAudio): "video" | "audio" | "file" {
+    const type = `${blob.type || media.type || ""}`.toLowerCase();
+    const name = `${media.name || ""}`.toLowerCase();
+    if (type.startsWith("video/") || /\.(mp4|webm|mov|mkv|m4v)$/.test(name)) return "video";
+    if (type.startsWith("audio/") || /\.(wav|mp3|m4a|ogg|aac|flac|opus)$/.test(name)) return "audio";
+    return "file";
 }
 
 async function prepareBackendImageReference(image: ReferenceImage) {

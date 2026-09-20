@@ -1158,7 +1158,8 @@ fn walk_collect(value: &Value, out: &mut BTreeSet<String>) {
                             out.insert(id.to_string());
                         }
                     }
-                    "reference_media_ids" | "referenceMediaIds" => {
+                    "reference_media_ids" | "referenceMediaIds" | "audio_media_ids"
+                    | "audioMediaIds" => {
                         if let Some(arr) = child.as_array() {
                             for item in arr {
                                 if let Some(id) =
@@ -1167,6 +1168,11 @@ fn walk_collect(value: &Value, out: &mut BTreeSet<String>) {
                                     out.insert(id.to_string());
                                 }
                             }
+                        }
+                    }
+                    "reference_video_media_id" | "referenceVideoMediaId" => {
+                        if let Some(id) = child.as_str().map(str::trim).filter(|s| is_media_id(s)) {
+                            out.insert(id.to_string());
                         }
                     }
                     _ => walk_collect(child, out),
@@ -1549,6 +1555,21 @@ mod tests {
         let ids = collect_media_ids(&doc);
         assert!(ids.contains(id));
         assert!(ids.contains(id2));
+    }
+
+    #[test]
+    fn collect_media_ids_from_generation_audio_and_video_refs() {
+        let audio = "0190f5fe-7c00-7a00-8000-000000000333";
+        let video = "0190f5fe-7c00-7a00-8000-000000000444";
+        let doc = json!({
+            "tasks": [{
+                "audio_media_ids": [audio],
+                "reference_video_media_id": video
+            }]
+        });
+        let ids = collect_media_ids(&doc);
+        assert!(ids.contains(audio));
+        assert!(ids.contains(video));
     }
 
     #[test]

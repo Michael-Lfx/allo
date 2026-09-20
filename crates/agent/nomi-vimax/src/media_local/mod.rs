@@ -21,20 +21,45 @@ fn ffmpeg_command(bin: impl AsRef<Path>) -> Command {
     hidden_command(bin.as_ref())
 }
 
+/// Drop a UTF-8 BOM and leading whitespace so Windows/clipboard wrappers still
+/// match PNG/JPEG/WEBP magic. WAV (`RIFF....WAVE`) is *not* an image.
+pub fn skip_image_prefix(bytes: &[u8]) -> &[u8] {
+    let mut rest = bytes;
+    if rest.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        rest = &rest[3..];
+    }
+    while let Some((&b, tail)) = rest.split_first() {
+        if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+            rest = tail;
+        } else {
+            break;
+        }
+    }
+    rest
+}
+
 /// PNG / JPEG / WEBP magic — used to reject HTML error bodies saved as `.png`.
 pub fn image_magic_kind(bytes: &[u8]) -> Option<&'static str> {
+    let bytes = skip_image_prefix(bytes);
     if bytes.len() >= 8 && bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
         Some("png")
     } else if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff {
         Some("jpeg")
-    } else if bytes.len() >= 12
-        && &bytes[0..4] == b"RIFF"
-        && &bytes[8..12] == b"WEBP"
-    {
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some("webp")
     } else {
         None
     }
+}
+
+pub(crate) fn looks_like_wav(bytes: &[u8]) -> bool {
+    let bytes = skip_image_prefix(bytes);
+    bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE"
+}
+
+pub(crate) fn looks_like_video_container(bytes: &[u8]) -> bool {
+    let bytes = skip_image_prefix(bytes);
+    bytes.len() >= 12 && &bytes[4..8] == b"ftyp"
 }
 
 /// True when path exists and decodes as a real raster image (not HTML/JSON mislabeled as PNG).
@@ -2201,6 +2226,20 @@ mod tests {
         std::fs::write(&p, b"<html>error</html>").unwrap();
         assert!(!is_usable_image_file(&p));
         assert!(image_magic_kind(b"<html>error</html>").is_none());
+    }
+
+    #[test]
+    fn png_magic_ignores_utf8_bom() {
+        use image::{ImageFormat, Rgb, RgbImage};
+        let mut png = Vec::new();
+        RgbImage::from_pixel(4, 4, Rgb([1, 2, 3]))
+            .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice(&png);
+        assert_eq!(image_magic_kind(&bom), Some("png"));
+        assert!(looks_like_wav(b"RIFF\0\0\0\0WAVEfmt "));
+        assert!(!looks_like_wav(&png));
     }
 
     #[test]

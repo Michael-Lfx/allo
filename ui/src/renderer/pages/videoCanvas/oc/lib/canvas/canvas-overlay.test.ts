@@ -25,4 +25,11 @@ describe("anchoredOverlayStyle", () => {
         const style = anchoredOverlayStyle(right, viewport, { width: 200, placement: "topRight" });
         expect(style.left).toBe(right.right - 200);
     });
+
+    test("keeps a tall audio settings card below the composer footer when there is room", () => {
+        const style = anchoredOverlayStyle(button, viewport, { width: 356, placement: "bottomLeft", estimatedHeight: 520 });
+        expect(style.top).toBe(116);
+        expect(style.bottom).toBeUndefined();
+        expect(style.zIndex).toBe("var(--z-popover)");
+    });
 });

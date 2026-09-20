@@ -6,6 +6,11 @@ import {
     REFERENCE_IMAGE_MODERATION_MESSAGE,
     REF_AUDIO_DURATION_MESSAGE,
     REF_AUDIO_TOO_SHORT_MESSAGE,
+    IMAGE_NOT_DECODABLE_MESSAGE,
+    AUDIO_AS_IMAGE_MESSAGE,
+    AUDIO_UNSUPPORTED_MESSAGE,
+    AUDIO_NEEDS_VISUAL_MESSAGE,
+    FRAME_NOT_IMAGE_MESSAGE,
     generationErrorMessage,
     generationFailureMetadata,
     isContentModerationError,
@@ -72,5 +77,13 @@ describe("generation-error", () => {
         const raw = "The parameter `content[4]` specified in the request is not valid: the parameter audio duration (seconds) specified in the request must be greater than or equal to 1.8 for model doubao-seedance-2-0-fast in r2v.";
         expect(generationErrorMessage(raw)).toBe(REF_AUDIO_TOO_SHORT_MESSAGE);
         expect(generationErrorMessage(raw)).not.toBe(REF_AUDIO_DURATION_MESSAGE);
+    });
+
+    test("maps WAV uploaded as an image reference", () => {
+        expect(generationErrorMessage("Internal error: image is not a decodable PNG/JPEG/WEBP")).toBe(IMAGE_NOT_DECODABLE_MESSAGE);
+        expect(generationErrorMessage("audio file cannot be used as an image reference (got WAV)")).toBe(AUDIO_AS_IMAGE_MESSAGE);
+        expect(generationErrorMessage("Bad request: 当前视频模型不支持参考音频。请改用 Seedance 或 Wan 3.0，或断开音频节点。")).toBe(AUDIO_UNSUPPORTED_MESSAGE);
+        expect(generationErrorMessage("Bad request: 参考音频需要同时连接至少一张参考图或参考视频。Seedance / Wan 不能只凭音频生成。")).toBe(AUDIO_NEEDS_VISUAL_MESSAGE);
+        expect(generationErrorMessage("Bad request: 首帧/尾帧必须是图片（PNG/JPEG/WebP），不能使用音频或视频。")).toBe(FRAME_NOT_IMAGE_MESSAGE);
     });
 });
