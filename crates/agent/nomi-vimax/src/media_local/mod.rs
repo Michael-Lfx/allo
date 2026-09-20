@@ -170,12 +170,13 @@ pub fn clear_return_last_frame_url(still_path: &Path) {
     let _ = std::fs::remove_file(return_last_frame_url_sidecar(still_path));
 }
 
-/// Sidecar for the front (left) panel of a three-view bible, used as a Seedance identity ref.
+/// Sidecar for the hero (left) panel of a character design sheet, used as a Seedance identity ref.
 const THREE_VIEW_VIDEO_FRONT_SUFFIX: &str = "_video_front.png";
 
-/// Crop the left panel of a three-view turnaround for video identity refs.
+/// Crop the left panel of a landscape character sheet for video identity refs.
 ///
-/// Full front/side/back sheets confuse Seedance into split-screens or extra people.
+/// Equal front/side/back turnarounds confuse Seedance into split-screens or extra people.
+/// New sheets keep a full-body hero in the left third so this crop still yields one person.
 /// Cameo photos and non-strip images are returned unchanged. Failures fall back to `sheet`.
 pub fn ensure_three_view_front_panel(sheet: &Path) -> PathBuf {
     let Some(name) = sheet.file_name().and_then(|s| s.to_str()) else {

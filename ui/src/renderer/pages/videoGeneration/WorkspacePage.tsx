@@ -1478,7 +1478,7 @@ const WorkspacePage: React.FC = () => {
                 <span className='text-11px text-[var(--color-text-4)]'>
                   {t('videoGeneration.workspace.source.styleHint', {
                     defaultValue:
-                      '定妆为单张三视图；面部轻微柔化但五官清晰。规划阶段也会生成全局环境与道具参考图。',
+                      '定妆为单张标准人物设定图（全身立绘 + 面部特写）；面部轻微柔化但五官清晰。规划阶段也会生成全局环境与道具参考图。',
                   })}
                 </span>
               </div>

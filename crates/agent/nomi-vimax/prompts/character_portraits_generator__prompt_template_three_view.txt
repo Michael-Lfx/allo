@@ -1,10 +1,12 @@
-Generate a full-body three-view turnaround of {identifier} based on the following description, with a pure white background. Use a wide 16:9 landscape canvas, not a vertical portrait canvas. Each figure should be centered in each panel, occupying the middle of the frame with enough empty space. Standing with arms relaxed at sides. Natural expression.
+Generate a standard character design sheet (人物设定图) of {identifier} based on the following description, with a pure white background. Use a wide 16:9 landscape canvas, not a vertical portrait canvas. Standing with arms relaxed at sides. Natural expression.
 Features: {features}
 Style: {style}
 人物安全约束：一定要使用AI人脸，仅限原创虚构人物，**不得套用现实真人、明星长相**。
 
-Output ONE wide 16:9 three-panel sheet of this SAME person (not three different people). Panels left → right:
-1) FRONT — gazing straight ahead, full body
-2) LEFT PROFILE — facing left, full body
-3) BACK — no facial features should be visible, full body
-Identical face, hair, body, and wardrobe in all three panels.
+Output ONE wide 16:9 character design sheet of this SAME person (not three different people). Panels left → right:
+1) HERO BODY — full-body standing front (or slight 3/4), head-to-toe, centered in this panel with enough empty space. This is the identity lock.
+2) FACE PLATE — large close-up of the SAME face, clean and sharp, gazing toward camera. Same hair, makeup, and age.
+3) DESIGN NOTES — same person only: a 3/4 or left-profile bust and optional small back/silhouette. Never a second full-body figure the same size as panel 1.
+
+Identical face, hair, body, and wardrobe throughout.
+FORBIDDEN: three equal orthographic full-body turnaround panels; three co-stars; split-screen of different people.

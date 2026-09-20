@@ -26,7 +26,7 @@ impl CharacterPortraitsGenerator {
     }
 
     fn build_three_view_prompt(character: &CharacterInScene, style: &str) -> String {
-        three_view_image_prompt(
+        character_sheet_image_prompt(
             &character.identifier_in_scene,
             &Self::features_line(character),
             style,
@@ -42,7 +42,7 @@ impl CharacterPortraitsGenerator {
         }
     }
 
-    /// One character → one `{id}_three_view.png` (meaningful name for multi-ref prompts).
+    /// One character → one `{id}_three_view.png` (stable artifact name for multi-ref prompts).
     ///
     /// Always text-to-image. Style lives in the prompt (`production_look_lock`);
     /// never pass a look plate or other image as img2img.
@@ -98,13 +98,13 @@ impl CharacterPortraitsGenerator {
                 view_item(
                     &sheet,
                     &format!(
-                        "File [{sheet_name}] = GLOBAL three-view character bible for <{id}> (left=front, center=side, right=back). Features: {feat_hint}. Lock identity to this sheet."
+                        "File [{sheet_name}] = GLOBAL character design sheet for <{id}> (left=full-body hero, center=face close-up, right=design notes). Features: {feat_hint}. Lock identity to this sheet."
                     ),
                 ),
             );
         } else {
             return Err(crate::error::VimaxError::Image(format!(
-                "three-view sheet missing after generation: {}",
+                "character design sheet missing after generation: {}",
                 sheet.display()
             )));
         }
@@ -115,13 +115,18 @@ impl CharacterPortraitsGenerator {
     }
 }
 
-/// Shared three-view prompt so revise / sidecar rebuild matches first generation.
-pub fn three_view_image_prompt(identifier: &str, features: &str, style: &str) -> String {
+/// Shared character-sheet prompt so revise / sidecar rebuild matches first generation.
+pub(crate) fn character_sheet_image_prompt(identifier: &str, features: &str, style: &str) -> String {
     let features: String = features.chars().take(520).collect();
     include_str!("../../prompts/character_portraits_generator__prompt_template_three_view.txt")
         .replace("{identifier}", identifier)
         .replace("{features}", &features)
         .replace("{style}", &crate::planning::style_for_three_view_image(style))
+}
+
+/// Legacy alias for [`character_sheet_image_prompt`].
+pub fn three_view_image_prompt(identifier: &str, features: &str, style: &str) -> String {
+    character_sheet_image_prompt(identifier, features, style)
 }
 
 fn safe_file_stem(s: &str) -> String {
@@ -231,7 +236,11 @@ mod tests {
         let lower = prompt.to_ascii_lowercase();
         assert!(lower.contains("pure white"));
         assert!(lower.contains("16:9"));
-        assert!(lower.contains("front") && lower.contains("profile") && lower.contains("back"));
+        assert!(lower.contains("character design sheet") || prompt.contains("人物设定图"));
+        assert!(lower.contains("hero body") && lower.contains("face plate"));
+        assert!(lower.contains("close-up"));
+        assert!(lower.contains("forbidden"));
+        assert!(!lower.contains("three-panel"));
         assert!(prompt.contains("red hanfu"));
         assert!(prompt.contains("人物安全约束"));
         assert!(prompt.contains("一定要使用AI人脸"));

@@ -552,7 +552,7 @@
       "requirementPlaceholder": "时长、节奏、受众等",
       "styleLabel": "视觉风格（人物与成片）",
       "stylePlaceholder": "搜索或选择视觉风格",
-      "styleHint": "风格会锁定定妆、场景与成片的统一媒介；定妆为单张三视图，面部干净清晰。规划阶段也会生成全局环境与道具参考图。",
+      "styleHint": "风格会锁定定妆、场景与成片的统一媒介；定妆为单张标准人物设定图（全身立绘 + 面部特写），面部干净清晰。规划阶段也会生成全局环境与道具参考图。",
       "styleCategories": {
         "liveAction": "实拍电影",
         "genreMood": "类型氛围",

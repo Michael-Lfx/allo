@@ -552,7 +552,7 @@
       "requirementPlaceholder": "Duration, pacing, audience…",
       "styleLabel": "Visual style (cast & film)",
       "stylePlaceholder": "Search or select a visual style",
-      "styleHint": "Style locks cast, sets, and final film to one medium. Portraits are a single three-view sheet with clean, sharp faces. Planning also builds global environment and prop plates.",
+      "styleHint": "Style locks cast, sets, and final film to one medium. Portraits are a single character design sheet (full-body hero plus a sharp face plate). Planning also builds global environment and prop plates.",
       "styleCategories": {
         "liveAction": "Live-action film",
         "genreMood": "Genre & mood",
