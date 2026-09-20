@@ -110,6 +110,43 @@ Ask first before touching these:
 - HTTP DTOs belong in `nomifun-api-types`.
 - Commit messages: Conventional Commits style (`feat:`, `fix:`, `docs:`, etc.).
 
+## Git Workflow: Branch Off `origin/main`, Rebase, Then PR
+
+**Never commit to `main`.** Not on the local branch, and not by pushing it. Every
+change — including a one-line documentation fix — goes through a branch and a
+pull request.
+
+1. **Start from the remote, not from your local `main`.** `git fetch origin`,
+   then `git checkout -b <branch> origin/main`. A stale local `main` is the most
+   common cause of a branch that cannot be merged without a merge commit.
+2. **Commit on the branch.** Conventional Commits (see § Coding Conventions) and
+   human attribution (see § Git Attribution Must Identify a Human).
+3. **Before opening the PR, catch up by rebasing.** `git fetch origin` and
+   `git rebase origin/main`, so the branch stays linear and carries no merge
+   commits. Rebase again if the PR sits open while `main` moves.
+4. **Push the branch, open the PR, wait for CI, merge.** Do not merge a PR whose
+   required checks are red or still pending.
+5. **After the merge**, `git checkout main && git pull --ff-only`.
+
+**A branch created from `origin/main` inherits it as its upstream**, so a bare
+`git push` on that branch can target `main`. Push explicitly
+(`git push -u origin <branch>`) or `git branch --unset-upstream` first.
+
+**What this prevents** — all three have happened here, all three were avoidable:
+
+- A branch built on a stale `main` later needs `git merge origin/main`, which
+  puts `Merge remote-tracking branch 'origin/main'` commits into the branch — and
+  if `main` moves between that merge and the push, **a second, identical merge
+  commit** appears. Rebasing produces neither.
+- Pushing a local `main` that is ahead of `origin/main` publishes whatever is
+  sitting on it — possibly someone else's unreviewed or breaking work — with no
+  PR, no review and no CI gate on the change itself.
+- If commits are already stranded on an unpushed local `main`, **ask the owner
+  what to do with them**; never publish them on their behalf.
+
+Do not resolve divergence by merging into `main`, and never force-push `main`
+without explicit owner approval.
+
 ## Git Attribution Must Identify a Human
 
 This is a repository-local rule for `nomifun-tauri`. Do not change any
