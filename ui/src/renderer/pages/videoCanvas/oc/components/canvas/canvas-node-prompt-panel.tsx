@@ -234,6 +234,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 ) : mode === "audio" ? (
                     <CanvasAudioSettingsPopover
                         config={config}
+                        placement="bottomLeft"
                         onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))}
                     />
                 ) : null}

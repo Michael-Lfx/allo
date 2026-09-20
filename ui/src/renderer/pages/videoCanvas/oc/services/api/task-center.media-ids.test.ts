@@ -50,6 +50,79 @@ describe("collectMediaIds / alloBodyFromCreateInput", () => {
         expect(body.mode).toBe("video");
         expect(body.first_frame_media_id).toBe("media-a");
         expect(body.reference_media_ids).toEqual(["media-b"]);
+        expect(body.audio_media_ids).toBeUndefined();
+    });
+
+    test("video mode sends WAV on audio_media_ids instead of mixing it into image refs", () => {
+        const wav = {
+            id: "wav",
+            name: "voice.wav",
+            type: "audio/wav",
+            dataUrl: "",
+            storageKey: "resource:media-wav",
+        };
+        const body = alloBodyFromCreateInput({
+            type: "canvas_video",
+            operation: "image_to_video",
+            prompt: "animate with voice",
+            input: {
+                mode: "video",
+                prompt: "animate with voice",
+                referenceImages: [refA],
+                referenceAudios: [wav],
+            },
+        });
+        expect(body.first_frame_media_id).toBe("media-a");
+        expect(body.reference_media_ids).toEqual([]);
+        expect(body.audio_media_ids).toEqual(["media-wav"]);
+        expect(body.reference_video_media_id).toBeUndefined();
+    });
+
+    test("image mode keeps WAV out of Seedream reference_media_ids", () => {
+        const wav = {
+            id: "wav",
+            name: "voice.wav",
+            type: "audio/wav",
+            dataUrl: "",
+            storageKey: "resource:media-wav",
+        };
+        const body = alloBodyFromCreateInput({
+            type: "canvas_image",
+            operation: "image",
+            prompt: "edit",
+            input: {
+                mode: "image",
+                prompt: "edit",
+                referenceImages: [refA],
+                referenceAudios: [wav],
+            },
+        });
+        expect(body.reference_media_ids).toEqual(["media-a"]);
+        expect(body.audio_media_ids).toEqual(["media-wav"]);
+        expect(body.first_frame_media_id).toBeUndefined();
+    });
+
+    test("WAV dumped into referenceImages is still routed to audio_media_ids", () => {
+        const wav = {
+            id: "wav",
+            name: "voice.wav",
+            type: "audio/wav",
+            dataUrl: "",
+            storageKey: "resource:media-wav",
+        };
+        const body = alloBodyFromCreateInput({
+            type: "canvas_video",
+            operation: "image_to_video",
+            prompt: "animate with voice",
+            input: {
+                mode: "video",
+                prompt: "animate with voice",
+                referenceImages: [refA, wav],
+            },
+        });
+        expect(body.first_frame_media_id).toBe("media-a");
+        expect(body.reference_media_ids).toEqual([]);
+        expect(body.audio_media_ids).toEqual(["media-wav"]);
     });
 
     test("video start/end frame node ids map onto first/last frame media ids", () => {

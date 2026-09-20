@@ -35,4 +35,10 @@ describe("formatCanvasUserError", () => {
   test("maps wan3 reference_audio duration cap", () => {
     expect(formatCanvasUserError("InvalidParameter: reference_audio total duration 15.6s exceeds max 15s")).toContain("15 秒");
   });
+
+  test("maps wav-as-image and missing visual refs", () => {
+    expect(formatCanvasUserError("audio file cannot be used as an image reference (got WAV)")).toContain("音频");
+    expect(formatCanvasUserError("image is not a decodable PNG/JPEG/WEBP")).toContain("PNG");
+    expect(formatCanvasUserError("Bad request: 参考音频需要同时连接至少一张参考图或参考视频。Seedance / Wan 不能只凭音频生成。")).toContain("参考图");
+  });
 });

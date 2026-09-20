@@ -2266,6 +2266,11 @@
     "urlUnavailable": "Generation service endpoint is unavailable. Check the channel configuration.",
     "refAudioDuration": "Combined reference audio cannot exceed 15 seconds. Shorten or drop character voice refs and retry.",
     "refAudioTooShort": "Each reference audio clip must be at least 1.8 seconds. The client loop-pads a copy at submit; retry.",
+    "audioUnsupported": "This video model does not accept reference audio. Switch to Seedance or Wan 3.0, or disconnect the audio node.",
+    "audioNeedsVisual": "Reference audio needs at least one connected image or video. Seedance / Wan cannot generate from audio alone.",
+    "frameNotImage": "Start and end frames must be images (PNG/JPEG/WebP), not audio or video.",
+    "imageNotDecodable": "That file is not a usable PNG, JPEG, or WebP. Re-export or pick another image.",
+    "audioAsImage": "Audio files cannot be used as image references. Connect the WAV to an audio node, then generate.",
     "failed": "Generation failed. Please try again later."
   },
   "userError": {

@@ -249,6 +249,17 @@ export function mapAlloTask(view: GenerationTaskView, extra?: Partial<Generation
  * when no explicit frame is set. Named start/end frame node ids win over that
  * fallback. Image / img2img must keep every reference in `reference_media_ids`.
  */
+function mediaRefLooksLike(item: unknown, kind: "audio" | "video"): boolean {
+  if (!item || typeof item !== "object") return false;
+  const rec = item as { type?: string; name?: string };
+  const type = String(rec.type || "").toLowerCase();
+  const name = String(rec.name || "").toLowerCase();
+  if (kind === "audio") {
+    return type.startsWith("audio/") || /\.(wav|mp3|m4a|ogg|aac|flac|opus)$/.test(name);
+  }
+  return type.startsWith("video/") || /\.(mp4|webm|mov|mkv|m4v)$/.test(name);
+}
+
 export function collectMediaIds(
   input?: Record<string, unknown>,
   options?: { promoteFirstImageToFrame?: boolean },
@@ -256,20 +267,33 @@ export function collectMediaIds(
   referenceIds: string[];
   firstFrameId?: string;
   lastFrameId?: string;
+  audioIds: string[];
+  videoIds: string[];
 } {
-  if (!input) return { referenceIds: [] };
-  const refs: string[] = [];
-  const pushKey = (storageKey?: unknown) => {
-    if (typeof storageKey !== 'string') return;
-    const id = resourceIdFromStorageKey(storageKey);
-    if (id) refs.push(id);
+  if (!input) return { referenceIds: [], audioIds: [], videoIds: [] };
+  const pushIds = (items: unknown[], into: string[]) => {
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const id = resourceIdFromStorageKey((item as { storageKey?: string }).storageKey);
+      if (id) into.push(id);
+    }
   };
   const images = Array.isArray(input.referenceImages) ? input.referenceImages : [];
   const videos = Array.isArray(input.referenceVideos) ? input.referenceVideos : [];
   const audios = Array.isArray(input.referenceAudios) ? input.referenceAudios : [];
-  for (const item of [...images, ...videos, ...audios]) {
-    if (item && typeof item === 'object') pushKey((item as { storageKey?: string }).storageKey);
-  }
+  const looksLikeAudio = (item: unknown) => mediaRefLooksLike(item, "audio");
+  const looksLikeVideo = (item: unknown) => mediaRefLooksLike(item, "video");
+  const imageItems = images.filter((item) => !looksLikeAudio(item) && !looksLikeVideo(item));
+  const strayAudios = images.filter(looksLikeAudio);
+  const strayVideos = images.filter(looksLikeVideo);
+  const imageIds: string[] = [];
+  const audioIds: string[] = [];
+  const videoIds: string[] = [];
+  pushIds(imageItems, imageIds);
+  pushIds(audios, audioIds);
+  pushIds(strayAudios, audioIds);
+  pushIds(videos, videoIds);
+  pushIds(strayVideos, videoIds);
   const metadata =
     input.metadata && typeof input.metadata === 'object'
       ? (input.metadata as Record<string, unknown>)
@@ -284,7 +308,7 @@ export function collectMediaIds(
   // semantics — canvas keeps "first connected image becomes first_frame, rest
   // stay references" unless the user named the frames.
   const namedFrames = Boolean(options?.promoteFirstImageToFrame) && hasExplicitVideoFrames(videoOptions);
-  const imageList = images.flatMap((item) => {
+  const imageList = imageItems.flatMap((item) => {
     if (!item || typeof item !== 'object') return [];
     const image = item as { id?: string; storageKey?: string };
     return typeof image.id === 'string' ? [image as { id: string; storageKey?: string }] : [];
@@ -300,7 +324,7 @@ export function collectMediaIds(
     (typeof metadata.first_frame_media_id === 'string' && metadata.first_frame_media_id) ||
     undefined;
   if (bindAsReferences) {
-    return { referenceIds: refs, firstFrameId: undefined, lastFrameId: undefined };
+    return { referenceIds: imageIds, firstFrameId: undefined, lastFrameId: undefined, audioIds, videoIds };
   }
   const firstFrameId =
     metadataFirstFrame ||
@@ -308,9 +332,9 @@ export function collectMediaIds(
     (options?.promoteFirstImageToFrame &&
     !namedFrames &&
     !metadataFirstFrame &&
-    images[0] &&
-    typeof images[0] === 'object'
-      ? resourceIdFromStorageKey((images[0] as { storageKey?: string }).storageKey) ||
+    imageItems[0] &&
+    typeof imageItems[0] === 'object'
+      ? resourceIdFromStorageKey((imageItems[0] as { storageKey?: string }).storageKey) ||
         undefined
       : undefined);
   const lastFrameId =
@@ -318,8 +342,8 @@ export function collectMediaIds(
     (typeof metadata.last_frame_media_id === 'string' && metadata.last_frame_media_id) ||
     (roleLast ? resourceIdFromStorageKey(roleLast.image.storageKey) : undefined) ||
     undefined;
-  const referenceIds = refs.filter((id) => id !== firstFrameId && id !== lastFrameId);
-  return { referenceIds, firstFrameId: firstFrameId || undefined, lastFrameId: lastFrameId || undefined };
+  const referenceIds = imageIds.filter((id) => id !== firstFrameId && id !== lastFrameId);
+  return { referenceIds, firstFrameId: firstFrameId || undefined, lastFrameId: lastFrameId || undefined, audioIds, videoIds };
 }
 
 export function resolveAlloGenerationMode(input: CreateTaskInput): string {
@@ -346,7 +370,7 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     payload.metadata && typeof payload.metadata === 'object'
       ? (payload.metadata as Record<string, unknown>)
       : {};
-    const { referenceIds, firstFrameId, lastFrameId } = collectMediaIds(payload, {
+    const { referenceIds, firstFrameId, lastFrameId, audioIds, videoIds } = collectMediaIds(payload, {
     // Only video tasks use first/last frame slots. Named start/end frames win
     // over promoting the first connected image.
     promoteFirstImageToFrame: isVideo,
@@ -396,6 +420,8 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     resolution,
     duration_secs,
     reference_media_ids: referenceIds,
+    ...(audioIds.length ? { audio_media_ids: audioIds } : {}),
+    ...(videoIds[0] ? { reference_video_media_id: videoIds[0] } : {}),
     first_frame_media_id: firstFrameId,
     last_frame_media_id: lastFrameId,
     ...(input.projectId?.trim() ? { project_id: input.projectId.trim() } : {}),

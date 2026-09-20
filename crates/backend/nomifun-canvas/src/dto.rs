@@ -77,6 +77,10 @@ pub struct GenerationTaskView {
     pub duration_secs: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reference_media_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_media_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_video_media_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_frame_media_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

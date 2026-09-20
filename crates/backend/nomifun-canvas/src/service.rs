@@ -48,6 +48,10 @@ pub struct InternalTask {
     #[serde(default)]
     pub reference_media_ids: Vec<String>,
     #[serde(default)]
+    pub audio_media_ids: Vec<String>,
+    #[serde(default)]
+    pub reference_video_media_id: Option<String>,
+    #[serde(default)]
     pub first_frame_media_id: Option<String>,
     #[serde(default)]
     pub last_frame_media_id: Option<String>,
@@ -84,6 +88,8 @@ impl InternalTask {
             resolution: self.resolution.clone(),
             duration_secs: self.duration_secs,
             reference_media_ids: self.reference_media_ids.clone(),
+            audio_media_ids: self.audio_media_ids.clone(),
+            reference_video_media_id: self.reference_video_media_id.clone(),
             first_frame_media_id: self.first_frame_media_id.clone(),
             last_frame_media_id: self.last_frame_media_id.clone(),
             project_id: self.project_id.clone(),
@@ -135,6 +141,8 @@ pub struct NewGenerationRequest {
     pub resolution: Option<String>,
     pub duration_secs: Option<u32>,
     pub reference_media_ids: Vec<String>,
+    pub audio_media_ids: Vec<String>,
+    pub reference_video_media_id: Option<String>,
     pub first_frame_media_id: Option<String>,
     pub last_frame_media_id: Option<String>,
     pub project_id: Option<String>,
@@ -596,24 +604,7 @@ impl CanvasService {
                 "media exceeds {MAX_MEDIA_BYTES} bytes"
             )));
         }
-        let ext = Path::new(&file_name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("bin")
-            .to_ascii_lowercase();
-        let mime = content_type
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| mime_guess::from_path(&file_name).first().map(|m| m.to_string()))
-            .unwrap_or_else(|| "application/octet-stream".into());
-        let kind = if mime.starts_with("video/") {
-            "video"
-        } else if mime.starts_with("audio/") {
-            "audio"
-        } else if mime.starts_with("image/") {
-            "image"
-        } else {
-            "file"
-        };
+        let (kind, mime, ext) = infer_stored_media_kind(&bytes, &file_name, content_type.as_deref());
         let title = title
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
@@ -661,6 +652,14 @@ impl CanvasService {
     }
 
     pub async fn media_file_path(&self, media_id: &str) -> Result<PathBuf, AppError> {
+        Ok(self.media_kind_mime_path(media_id).await?.3)
+    }
+
+    /// Index kind/mime/ext plus the on-disk path. Used to split image vs audio vs video refs.
+    pub(crate) async fn media_kind_mime_path(
+        &self,
+        media_id: &str,
+    ) -> Result<(String, String, String, PathBuf), AppError> {
         validate_project_id(media_id)?;
         let idx = self.load_media_index().await?;
         let entry = idx
@@ -672,7 +671,12 @@ impl CanvasService {
         if !path.exists() {
             return Err(AppError::NotFound(format!("media file {media_id}")));
         }
-        Ok(path)
+        Ok((
+            entry.kind.clone(),
+            entry.mime.clone(),
+            entry.ext.clone(),
+            path,
+        ))
     }
 
     /// Lookup metadata for `HEAD /media/{id}`: index-only, never opens the
@@ -832,6 +836,8 @@ impl CanvasService {
         for id in req
             .reference_media_ids
             .iter()
+            .chain(req.audio_media_ids.iter())
+            .chain(req.reference_video_media_id.iter())
             .chain(req.first_frame_media_id.iter())
             .chain(req.last_frame_media_id.iter())
         {
@@ -856,6 +862,8 @@ impl CanvasService {
             resolution: req.resolution.filter(|s| !s.trim().is_empty()),
             duration_secs: req.duration_secs,
             reference_media_ids: req.reference_media_ids,
+            audio_media_ids: req.audio_media_ids,
+            reference_video_media_id: req.reference_video_media_id,
             first_frame_media_id: req.first_frame_media_id,
             last_frame_media_id: req.last_frame_media_id,
             project_id: project_id.clone(),
@@ -1292,6 +1300,65 @@ impl CanvasService {
     }
 }
 
+/// Prefer file magic over the browser-supplied MIME. Windows often uploads
+/// WAV as `application/octet-stream` named `audio.bin`, which used to be
+/// stored as a generic file and later treated as an image reference.
+pub(crate) fn infer_stored_media_kind(
+    bytes: &[u8],
+    file_name: &str,
+    content_type: Option<&str>,
+) -> (&'static str, String, String) {
+    let mut bytes = bytes;
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        bytes = &bytes[3..];
+    }
+    let ext = Path::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin")
+        .to_ascii_lowercase();
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
+        return ("audio", "audio/wav".into(), "wav".into());
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let ext = if matches!(ext.as_str(), "mov" | "m4v" | "webm" | "mkv") {
+            ext
+        } else {
+            "mp4".into()
+        };
+        return ("video", "video/mp4".into(), ext);
+    }
+    if bytes.len() >= 8 && bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
+        return ("image", "image/png".into(), "png".into());
+    }
+    if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff {
+        return ("image", "image/jpeg".into(), "jpg".into());
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return ("image", "image/webp".into(), "webp".into());
+    }
+    let mime = content_type
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| mime_guess::from_path(file_name).first().map(|m| m.to_string()))
+        .unwrap_or_else(|| "application/octet-stream".into());
+    let kind = if mime.starts_with("video/") {
+        "video"
+    } else if mime.starts_with("audio/") {
+        "audio"
+    } else if mime.starts_with("image/") {
+        "image"
+    } else if matches!(ext.as_str(), "wav" | "mp3" | "m4a" | "ogg" | "aac" | "flac") {
+        "audio"
+    } else if matches!(ext.as_str(), "mp4" | "webm" | "mov" | "mkv") {
+        "video"
+    } else {
+        "file"
+    };
+    (kind, mime, ext)
+}
+
 pub(crate) fn validate_project_id(id: &str) -> Result<(), AppError> {
     if id.is_empty()
         || id.contains("..")
@@ -1374,6 +1441,38 @@ mod tests {
         assert_eq!(got, payload);
     }
 
+    #[test]
+    fn infers_wav_even_when_named_bin_with_octet_stream() {
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&[0, 0, 0, 0]);
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(&[0u8; 24]);
+        let (kind, mime, ext) =
+            infer_stored_media_kind(&wav, "audio.bin", Some("application/octet-stream"));
+        assert_eq!(kind, "audio");
+        assert_eq!(mime, "audio/wav");
+        assert_eq!(ext, "wav");
+    }
+
+    #[test]
+    fn infers_png_from_magic_when_mime_is_missing() {
+        let png = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0];
+        let (kind, mime, ext) = infer_stored_media_kind(&png, "still.bin", None);
+        assert_eq!(kind, "image");
+        assert_eq!(mime, "image/png");
+        assert_eq!(ext, "png");
+    }
+
+    #[test]
+    fn infers_png_when_utf8_bom_prefixes_magic() {
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0]);
+        let (kind, mime, ext) = infer_stored_media_kind(&bom, "still.png", Some("image/png"));
+        assert_eq!(kind, "image");
+        assert_eq!(mime, "image/png");
+        assert_eq!(ext, "png");
+    }
+
     fn sample_task(id: &str, status: GenerationTaskStatus) -> InternalTask {
         InternalTask {
             task_id: id.into(),
@@ -1385,6 +1484,8 @@ mod tests {
             resolution: Some("720p".into()),
             duration_secs: Some(5),
             reference_media_ids: vec![],
+            audio_media_ids: vec![],
+            reference_video_media_id: None,
             first_frame_media_id: None,
             last_frame_media_id: None,
             project_id: None,

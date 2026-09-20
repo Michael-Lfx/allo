@@ -21,7 +21,7 @@ type CanvasAudioSettingsPopoverProps = {
     placement?: OverlayPlacement;
 };
 
-export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft" }: CanvasAudioSettingsPopoverProps) {
+export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClassName, placement = "bottomLeft" }: CanvasAudioSettingsPopoverProps) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLButtonElement>(null);
@@ -30,7 +30,9 @@ export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClass
     const summary = audioVoiceLabel(config.audioVoice);
     const close = useCallback(() => setOpen(false), []);
     const rect = useAnchoredOverlay(open, buttonRef, panelRef, close);
-    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 356, placement }) : null;
+    const geometry = rect
+        ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 356, placement, estimatedHeight: 520 })
+        : null;
 
     return (
         <>

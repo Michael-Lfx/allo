@@ -8,7 +8,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { getGenerationResourceNodes, getMentionResourceNodes } from "@oc/lib/canvas/canvas-resource-references";
 import { resolveCanvasDrawingReference } from "@oc/lib/canvas/canvas-drawing-reference";
 import { compileCharacterReferencePrompt } from "@oc/lib/canvas/canvas-character-reference";
-import { nodeReferenceImage } from "@oc/lib/canvas/canvas-project-generation";
+import { audioExtension, nodeReferenceImage } from "@oc/lib/canvas/canvas-project-generation";
 
 export type CharacterGenerationReference = {
     nodeId: string;
@@ -567,10 +567,13 @@ function readReferenceVideo(node: CanvasNodeData): ReferenceVideo | null {
 
 function readReferenceAudio(node: CanvasNodeData): ReferenceAudio | null {
     if (node.type !== CanvasNodeType.Audio || !node.metadata?.content) return null;
+    const mimeType = node.metadata.mimeType || "audio/mpeg";
+    const title = node.title || node.id;
+    const name = /\.(wav|mp3|m4a|ogg|aac|flac|opus)$/i.test(title) ? title : `${title}.${audioExtension(mimeType)}`;
     return {
         id: node.id,
-        name: `${node.title || node.id}.mp3`,
-        type: node.metadata.mimeType || "audio/mpeg",
+        name,
+        type: mimeType,
         url: node.metadata.content,
         storageKey: node.metadata.storageKey,
         durationMs: node.metadata.durationMs,

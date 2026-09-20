@@ -7,6 +7,11 @@ export const COPYRIGHT_RESTRICTION_MESSAGE = "提示词可能涉及版权受限�
 export const REFERENCE_IMAGE_MODERATION_MESSAGE = "参考图未通过内容审核（可能含真人肖像等）。请更换参考图或调整提示词后重试。";
 export const REF_AUDIO_DURATION_MESSAGE = "参考音频总时长不能超过 15 秒。请缩短或减少角色参考音后重试。";
 export const REF_AUDIO_TOO_SHORT_MESSAGE = "每段参考音频不能短于 1.8 秒。系统会在提交时加长副本；请重试。";
+export const AUDIO_UNSUPPORTED_MESSAGE = "当前视频模型不支持参考音频。请改用 Seedance 或 Wan 3.0，或断开音频节点。";
+export const AUDIO_NEEDS_VISUAL_MESSAGE = "参考音频需要同时连接至少一张参考图或参考视频。Seedance / Wan 不能只凭音频生成。";
+export const FRAME_NOT_IMAGE_MESSAGE = "首帧/尾帧必须是图片（PNG/JPEG/WebP），不能使用音频或视频。";
+export const IMAGE_NOT_DECODABLE_MESSAGE = "这张图不是可用的 PNG/JPEG/WebP。请重新导出或换一张图。";
+export const AUDIO_AS_IMAGE_MESSAGE = "不能把音频文件当作参考图。请把 WAV 连到音频节点后再生成。";
 
 const DEFAULT_GENERATION_ERROR_MESSAGE = "生成失败，请稍后重试。";
 const NETWORK_ERROR_MESSAGE = "网络异常。";
@@ -19,6 +24,11 @@ const GENERATION_ERROR_DISPLAY_KEYS: ReadonlyArray<readonly [string, string]> = 
     ["videoCanvas.genError.referenceModeration", REFERENCE_IMAGE_MODERATION_MESSAGE],
     ["videoCanvas.genError.refAudioDuration", REF_AUDIO_DURATION_MESSAGE],
     ["videoCanvas.genError.refAudioTooShort", REF_AUDIO_TOO_SHORT_MESSAGE],
+    ["videoCanvas.genError.audioUnsupported", AUDIO_UNSUPPORTED_MESSAGE],
+    ["videoCanvas.genError.audioNeedsVisual", AUDIO_NEEDS_VISUAL_MESSAGE],
+    ["videoCanvas.genError.frameNotImage", FRAME_NOT_IMAGE_MESSAGE],
+    ["videoCanvas.genError.imageNotDecodable", IMAGE_NOT_DECODABLE_MESSAGE],
+    ["videoCanvas.genError.audioAsImage", AUDIO_AS_IMAGE_MESSAGE],
     ["videoCanvas.genError.network", NETWORK_ERROR_MESSAGE],
     ["videoCanvas.genError.busy", "服务当前繁忙，请稍后重试。"],
     ["videoCanvas.genError.authFailed", "生成服务鉴权失败，请检查渠道配置。"],
@@ -66,6 +76,21 @@ export function generationErrorMessage(error: unknown) {
     }
     if (isRefAudioDurationError(displayMessage) || isRefAudioDurationError(unwrapped) || isRefAudioDurationError(raw)) {
         return REF_AUDIO_DURATION_MESSAGE;
+    }
+    if (isAudioAsImageError(displayMessage) || isAudioAsImageError(unwrapped) || isAudioAsImageError(raw)) {
+        return AUDIO_AS_IMAGE_MESSAGE;
+    }
+    if (isImageNotDecodableError(displayMessage) || isImageNotDecodableError(unwrapped) || isImageNotDecodableError(raw)) {
+        return IMAGE_NOT_DECODABLE_MESSAGE;
+    }
+    if (isAudioUnsupportedError(displayMessage) || isAudioUnsupportedError(unwrapped)) {
+        return AUDIO_UNSUPPORTED_MESSAGE;
+    }
+    if (isAudioNeedsVisualError(displayMessage) || isAudioNeedsVisualError(unwrapped)) {
+        return AUDIO_NEEDS_VISUAL_MESSAGE;
+    }
+    if (isFrameNotImageError(displayMessage) || isFrameNotImageError(unwrapped)) {
+        return FRAME_NOT_IMAGE_MESSAGE;
     }
     if (isNetworkFailure(displayMessage) || isNetworkFailure(raw)) return NETWORK_ERROR_MESSAGE;
     if (hasHttpStatus(raw, 429) || hasHttpStatus(unwrapped, 429)) return "服务当前繁忙，请稍后重试。";
@@ -134,6 +159,30 @@ function isRefAudioDurationError(raw: string) {
     );
 }
 
+function isAudioAsImageError(raw: string) {
+    const lower = raw.toLowerCase();
+    return (
+        (lower.includes("cannot be used as an image") && (lower.includes("audio") || lower.includes("wav")))
+        || raw.includes("不能把音频文件当作参考图")
+    );
+}
+
+function isImageNotDecodableError(raw: string) {
+    return /not a decodable png\/?jpe?g\/?webp/i.test(raw) || raw.includes("不是可用的 PNG/JPEG/WebP");
+}
+
+function isAudioUnsupportedError(raw: string) {
+    return raw.includes("不支持参考音频") || /does not support reference audio/i.test(raw);
+}
+
+function isAudioNeedsVisualError(raw: string) {
+    return raw.includes("不能只凭音频生成") || /cannot be the only reference/i.test(raw);
+}
+
+function isFrameNotImageError(raw: string) {
+    return raw.includes("首帧/尾帧必须是图片") || /first\/last frame must be an image/i.test(raw);
+}
+
 /** 与后端 nomi-vimax / nomifun-cloud 的敏感内容判定对齐。 */
 function isProviderContentPolicyRejection(lower: string) {
     return (
@@ -186,6 +235,11 @@ function looksLikeProviderBusinessRejection(raw: string) {
         || lower.includes("余额不足")
         || lower.includes("额度")
         || (lower.includes("reference_audio") && (lower.includes("exceeds max") || lower.includes("total duration")))
+        || lower.includes("not a decodable png")
+        || lower.includes("cannot be used as an image")
+        || lower.includes("首帧/尾帧必须是图片")
+        || lower.includes("不支持参考音频")
+        || lower.includes("不能只凭音频生成")
     );
 }
 
@@ -199,6 +253,7 @@ function unwrapGenerationErrorLayers(raw: string) {
     let text = raw.trim();
     if (!text) return "";
     text = text.replace(/^Internal error:\s*/i, "");
+    text = text.replace(/^Bad request:\s*/i, "");
     text = text.replace(/^(?:video|image) generation failed:\s*/i, "");
     const cause = text.match(/(?:^|\n)Cause:\s*(.+?)(?:\nHint:|\nRequest id:|$)/is);
     if (cause?.[1]) text = cause[1].trim();

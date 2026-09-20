@@ -323,7 +323,10 @@ function extensionFromMime(mimeType: string, kind: string) {
   if (mimeType.includes('gif')) return 'gif';
   if (mimeType.includes('mp4')) return 'mp4';
   if (mimeType.includes('webm')) return 'webm';
-  if (mimeType.includes('mpeg')) return 'mp3';
+  if (mimeType.includes('mpeg') || mimeType.includes('mp3')) return 'mp3';
   if (mimeType.includes('wav')) return 'wav';
-  return kind === 'image' ? 'png' : 'bin';
+  if (kind === 'audio') return 'wav';
+  if (kind === 'video') return 'mp4';
+  if (kind === 'image') return 'png';
+  return 'bin';
 }
