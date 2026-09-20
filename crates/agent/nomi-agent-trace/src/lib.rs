@@ -9,6 +9,7 @@ mod event;
 mod project;
 mod recorder;
 mod redact;
+mod repro;
 mod session;
 
 /// Shared major schema version for observation events and eval alignment.
@@ -43,4 +44,5 @@ pub use redact::{
     redact_preview, truncate_chars, MAX_PREVIEW_CHARS, OMITTED_REASON_EVENT_SIZE_LIMIT,
     OMITTED_REASON_INPUT_SCHEMA,
 };
+pub use repro::{ReproBundle, ReproEnvironment, REPRO_SCHEMA_VERSION};
 pub use session::{classify_session_kind, is_session_dialogue};

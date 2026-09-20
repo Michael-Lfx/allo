@@ -200,6 +200,7 @@ async fn export_session_observation(
     let body = serde_json::to_string_pretty(&export).map_err(|error| {
         AppError::Internal(format!("failed to serialize session observation export: {error}"))
     })?;
+    let body = nomi_redact::redact_secrets_owned(body);
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
