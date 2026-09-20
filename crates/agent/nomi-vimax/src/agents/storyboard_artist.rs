@@ -114,6 +114,7 @@ Do NOT pad filler holds. Pack related beats into the same row when speakers and 
 
         let issues = crate::drama::lint_storyboard_performance(&rows);
         if issues.is_empty() {
+            polish_storyboard_audio(&mut rows);
             return Ok(rows);
         }
         tracing::info!(
@@ -141,16 +142,20 @@ split, merge, or re-camera anything — only the wording of visual/audio descrip
                         "storyboard performance lint still failing after repair; proceeding with repaired board"
                     );
                 }
-                Ok(repaired.storyboard)
+                let mut repaired_rows = repaired.storyboard;
+                polish_storyboard_audio(&mut repaired_rows);
+                Ok(repaired_rows)
             }
             Ok(_) => {
                 tracing::warn!(
                     "storyboard repair changed row/beat/camera structure; discarding repair and keeping original board"
                 );
+                polish_storyboard_audio(&mut rows);
                 Ok(rows)
             }
             Err(e) => {
                 tracing::warn!(error = %e, "storyboard repair round failed; keeping original board");
+                polish_storyboard_audio(&mut rows);
                 Ok(rows)
             }
         }
@@ -296,4 +301,17 @@ fn packed_beats_block(brief: &ShotBriefDescription) -> String {
         "\n<CLIP_BEATS>\nThis storyboard row is ONE generated video ({n} beats). {cut_rule}\n{lines}</CLIP_BEATS>\n",
         n = brief.beats.len(),
     )
+}
+
+fn polish_storyboard_audio(rows: &mut [ShotBriefDescription]) {
+    for row in rows.iter_mut() {
+        if let Some(audio) = row.audio_desc.as_mut() {
+            *audio = crate::dialogue::rewrite_spoken_payloads(audio);
+        }
+        for beat in &mut row.beats {
+            if let Some(audio) = beat.audio_desc.as_mut() {
+                *audio = crate::dialogue::rewrite_spoken_payloads(audio);
+            }
+        }
+    }
 }

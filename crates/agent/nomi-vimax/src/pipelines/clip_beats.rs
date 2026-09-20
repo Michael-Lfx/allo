@@ -612,60 +612,6 @@ fn named_dialogue_speakers(blob: &str) -> HashSet<String> {
         .collect()
 }
 
-fn speaker_name_before_quote(blob: &str, quote_byte: usize) -> Option<String> {
-    let prefix = blob.get(..quote_byte)?;
-    let chars: Vec<char> = prefix.chars().collect();
-    let mut i = chars.len();
-    while i > 0 && chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    if i == 0 || !matches!(chars[i - 1], ':' | '：') {
-        return None;
-    }
-    i -= 1;
-    while i > 0 && chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    if i > 0 && chars[i - 1] == '道' {
-        i -= 1;
-        if i > 0 && chars[i - 1] == '说' {
-            i -= 1;
-        }
-        while i > 0 && chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-    } else if i > 0 && chars[i - 1] == '说' {
-        i -= 1;
-        while i > 0 && chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-    }
-    let end = i;
-    let mut start = i;
-    let mut taken = 0u32;
-    while start > 0 && is_packed_speaker_name_char(chars[start - 1]) && taken < 12 {
-        start -= 1;
-        taken += 1;
-    }
-    if taken == 0 {
-        return None;
-    }
-    let name: String = chars[start..end].iter().collect::<String>();
-    let name = name.trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
-    }
-}
-
-fn is_packed_speaker_name_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric()
-        || matches!(ch as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
-        || ch == '_'
-        || ch == '-'
-}
-
 static CUT_SPLIT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)(?:；\s*然后切到新机位：|然后切到新机位：|；\s*CUT TO[:：]?\s*|CUT TO[:：]?\s*|切到新机位[，,:：]?)",
@@ -720,16 +666,11 @@ pub(crate) fn peel_trailing_stage_sfx(raw: &str) -> (String, String) {
         }
         i += 1;
     }
-    let Some(end) = last_end else {
+    let Some(end) = crate::dialogue::last_spoken_quote_end(t).or(last_end) else {
         return (t.to_string(), String::new());
     };
     let rest = t[end..].trim();
-    if rest.is_empty()
-        || rest.contains('「')
-        || rest.contains('“')
-        || rest.contains('{')
-        || rest.contains('"')
-    {
+    if rest.is_empty() || crate::dialogue::find_spoken_quote_byte(rest).is_some() {
         return (t.to_string(), String::new());
     }
     let line = t[..end].trim().to_string();
@@ -783,8 +724,8 @@ fn parse_spoken_turns(audio: &str) -> (Vec<SpokenTurn>, String) {
             break;
         };
         let quote_at = i + rel;
-        let speaker = speaker_name_before_quote(&line, quote_at).unwrap_or_default();
-        let start = speaker_span_start(&line, quote_at);
+        let speaker = crate::dialogue::speaker_name_before_quote(&line, quote_at).unwrap_or_default();
+        let start = crate::dialogue::speaker_line_start(&line, quote_at);
         let close = matching_quote_end(&line, quote_at).unwrap_or(line.len());
         let text = line[start..close].trim().to_string();
         if !text.is_empty() {
@@ -803,7 +744,7 @@ fn parse_spoken_turns(audio: &str) -> (Vec<SpokenTurn>, String) {
 }
 
 fn find_dialogue_quote_rel(s: &str) -> Option<usize> {
-    s.find(['「', '“', '"', '{'])
+    crate::dialogue::find_spoken_quote_byte(s)
 }
 
 fn matching_quote_end(s: &str, open_at: usize) -> Option<usize> {
@@ -818,53 +759,6 @@ fn matching_quote_end(s: &str, open_at: usize) -> Option<usize> {
     let after = open_at + open.len_utf8();
     let rel = s[after..].find(close)?;
     Some(after + rel + close.len_utf8())
-}
-
-fn speaker_span_start(blob: &str, quote_byte: usize) -> usize {
-    if speaker_name_before_quote(blob, quote_byte).is_none() {
-        return quote_byte;
-    }
-    let prefix = &blob[..quote_byte];
-    let chars: Vec<(usize, char)> = prefix.char_indices().collect();
-    let mut i = chars.len();
-    while i > 0 && chars[i - 1].1.is_whitespace() {
-        i -= 1;
-    }
-    if i == 0 {
-        return 0;
-    }
-    // skip : / 说 / 道
-    if matches!(chars[i - 1].1, ':' | '：') {
-        i -= 1;
-    }
-    while i > 0 && chars[i - 1].1.is_whitespace() {
-        i -= 1;
-    }
-    if i > 0 && chars[i - 1].1 == '道' {
-        i -= 1;
-        if i > 0 && chars[i - 1].1 == '说' {
-            i -= 1;
-        }
-        while i > 0 && chars[i - 1].1.is_whitespace() {
-            i -= 1;
-        }
-    } else if i > 0 && chars[i - 1].1 == '说' {
-        i -= 1;
-        while i > 0 && chars[i - 1].1.is_whitespace() {
-            i -= 1;
-        }
-    }
-    let mut start = i;
-    let mut taken = 0u32;
-    while start > 0 && is_packed_speaker_name_char(chars[start - 1].1) && taken < 12 {
-        start -= 1;
-        taken += 1;
-    }
-    if taken == 0 {
-        quote_byte
-    } else {
-        chars[start].0
-    }
 }
 
 fn lens_mentions_speaker(visual: &str, speaker: &str) -> bool {
@@ -912,34 +806,7 @@ fn bracket_names(visual: &str) -> Vec<String> {
 }
 
 fn quoted_payloads(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let close = match chars[i] {
-            '「' => Some('」'),
-            '“' => Some('”'),
-            '"' => Some('"'),
-            '{' => Some('}'),
-            _ => None,
-        };
-        if let Some(close) = close {
-            i += 1;
-            let start = i;
-            while i < chars.len() && chars[i] != close {
-                i += 1;
-            }
-            if i > start {
-                out.push(chars[start..i].iter().collect());
-            }
-            if i < chars.len() {
-                i += 1;
-            }
-            continue;
-        }
-        i += 1;
-    }
-    out
+    crate::dialogue::spoken_payloads(s)
 }
 
 /// One visual beat the video prompt should play, in order.
@@ -2992,6 +2859,26 @@ mod tests {
         assert!(inline.contains("陈俊生开口 {不是我！我没点！}"), "{inline}");
         assert!(!inline.contains("低音铺底"), "{inline}");
         assert!(!inline.contains("弹幕"), "{inline}");
+    }
+
+    #[test]
+    fn format_inline_spoken_skips_sfx_quotes_and_strips_book_quotes() {
+        let silent = format_inline_spoken(
+            "键盘「咔哒」一声脆响,屏幕提示音「面试课降价公告已发布」;随后是<粉总>轻轻呼出一口气的声音。",
+        );
+        assert!(silent.is_empty(), "{silent}");
+        let slam = format_inline_spoken("手机扣在桌面的「砰」一声闷响,办公室空调低鸣。");
+        assert!(slam.is_empty(), "{slam}");
+        let thanks = format_inline_spoken(
+            "袁老师:「感谢『追梦人超哥』的火箭！超哥你是来听课的还是来拱火的？」",
+        );
+        assert!(thanks.contains("袁老师开口 {感谢追梦人超哥的火箭！超哥你是来听课的还是来拱火的？}"), "{thanks}");
+        assert!(!thanks.contains('『') && !thanks.contains('』'), "{thanks}");
+        let dash = format_inline_spoken("袁老师:「不是来——」");
+        assert!(dash.contains("不是来......"), "{dash}");
+        let phone = format_inline_spoken("四海老板(听筒,压着火):「粉总,你那条长文什么意思？」");
+        assert!(phone.contains("四海老板开口"), "{phone}");
+        assert!(phone.contains("粉总,你那条长文什么意思？"), "{phone}");
     }
 
     #[test]
