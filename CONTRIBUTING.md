@@ -304,6 +304,14 @@ PR.
 > `check:agent-vocabulary`, …) but are deliberately outside that chain — run them
 > by hand when you work in `ui/`.
 
+> Markdown/docs-only changes are recognised by CI and skip the two Rust jobs
+> (`Cargo check (workspace + tests)` and `Cargo test (agent + conversation)`);
+> `Repo gates` still runs. The allowlist is deliberately narrow — `docs/`,
+> markdown at the repository root, and `.github/*.md`: markdown under `crates/`
+> reaches the compiled binary through `include_str!`, so changing it is not a
+> documentation-only change. See
+> [.github/workflows/README.md](.github/workflows/README.md) § Docs-only changes.
+
 For a broad pre-PR pass, run:
 
 ```bash

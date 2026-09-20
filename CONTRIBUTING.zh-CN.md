@@ -225,6 +225,12 @@ build(mac): generate updater latest.json after signed bundle
 | 打包/发布 | 相关 build script 加你修改过的 release docs。 |
 | 安全敏感路径 | 聚焦测试、PR 中写 threat-model 备注；私密漏洞不要公开细节。 |
 
+> 如果改动的路径全部是文档，CI 会跳过两个 Rust job（`Cargo check (workspace + tests)`
+> 与 `Cargo test (agent + conversation)`），`Repo gates` 照常跑。白名单刻意保持窄：
+> `docs/`、仓库根目录的 markdown、以及 `.github/*.md` —— `crates/` 下的 markdown
+> 会经 `include_str!` 编进二进制，改它不算纯文档改动。见
+> [.github/workflows/README.md](.github/workflows/README.md) § Docs-only changes。
+
 大范围提交前建议跑：
 
 ```bash
