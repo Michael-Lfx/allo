@@ -211,8 +211,6 @@ const BASELINE = new Map([
   ['ui/src/renderer/components/layout/SettingsSiderErrorBoundary.tsx', { deadBorder: 2, ramp: 1 }],
   ['ui/src/renderer/components/layout/Sider/CompanionAccessTokenPanel.tsx', { ramp: 1 }],
   ['ui/src/renderer/components/layout/Sider/SiderNav/SiderEvalEntry.tsx', { ramp: 1 }],
-  ['ui/src/renderer/components/layout/Sider/SiderNav/SiderLearningEntry.tsx', { ramp: 1 }],
-  ['ui/src/renderer/components/layout/Sider/SiderNav/SiderVideoGenerationGroup.tsx', { ramp: 1 }],
   ['ui/src/renderer/components/layout/Sider/SiderNav/SiderWorkshopEntry.tsx', { ramp: 1 }],
   ['ui/src/renderer/components/layout/Sider/WebuiControlPanel.tsx', { ramp: 1 }],
   ['ui/src/renderer/components/settings/SettingsModal/contents/ModelModalContent.tsx', { ramp: 9 }],

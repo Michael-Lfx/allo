@@ -17,6 +17,7 @@
     "entry": "Video Generation",
     "shortTitle": "Video",
     "recentCreations": "Recent Projects",
+    "recentEmpty": "No recent projects",
     "enterHome": "Studio Home",
     "newProject": "New Video Project",
     "hoverCard": {

@@ -296,7 +296,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
         {items.length === 0 ? (
           <div className='flex flex-col items-center justify-center py-24px px-8px text-center gap-8px'>
             <span className='text-12px text-t-tertiary'>
-              {t('videoGeneration.list.empty', { defaultValue: '暂无创作记录' })}
+              {t('videoGeneration.nav.recentEmpty', { defaultValue: '暂无创作记录' })}
             </span>
             <button
               type='button'
@@ -405,7 +405,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                         theme='outline'
                         size={11}
                         fill='currentColor'
-                        className='block shrink-0 animate-spin text-[rgb(var(--primary-6))]'
+                        className='block shrink-0 animate-spin text-primary-6'
                         style={{ lineHeight: 0 }}
                         aria-label={busyHint}
                       />
@@ -572,7 +572,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                       theme='outline'
                       size={14}
                       fill='currentColor'
-                      className='block shrink-0 animate-spin text-[rgb(var(--primary-6))]'
+                      className='block shrink-0 animate-spin text-primary-6'
                       style={{ lineHeight: 0 }}
                       aria-label={busyHint}
                     />

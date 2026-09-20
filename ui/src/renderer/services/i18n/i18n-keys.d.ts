@@ -9900,6 +9900,7 @@ export type I18nKey =
   | 'videoGeneration.nav.hoverCard.status'
   | 'videoGeneration.nav.newProject'
   | 'videoGeneration.nav.recentCreations'
+  | 'videoGeneration.nav.recentEmpty'
   | 'videoGeneration.nav.shortTitle'
   | 'videoGeneration.skills.alreadyInstalled'
   | 'videoGeneration.skills.authRequired.desc'

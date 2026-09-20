@@ -17,6 +17,7 @@
     "entry": "视频生成",
     "shortTitle": "视频",
     "recentCreations": "最近创作",
+    "recentEmpty": "暂无创作记录",
     "enterHome": "创作主页",
     "newProject": "新建视频工程",
     "hoverCard": {
