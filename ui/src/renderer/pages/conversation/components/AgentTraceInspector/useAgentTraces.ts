@@ -65,6 +65,7 @@ export interface ProjectedGap {
   reason?: string | null;
   from_seq?: number | null;
   to_seq?: number | null;
+  error?: string | null;
 }
 
 export interface ProjectedTokenUsage {
@@ -163,6 +164,7 @@ export interface ProjectedTurn {
   status?: ExecutionStatus;
   integrity: ObservationIntegrity;
   interrupted: boolean;
+  error?: string | null;
   started_at_ms?: number | null;
   ended_at_ms?: number | null;
   elapsed_ms?: number | null;
@@ -197,6 +199,7 @@ export interface SessionObservationExportTurn {
   status: ExecutionStatus;
   integrity: ObservationIntegrity;
   interrupted: boolean;
+  error?: string | null;
   started_at_ms?: number | null;
   ended_at_ms?: number | null;
   elapsed_ms?: number | null;

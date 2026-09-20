@@ -1089,7 +1089,15 @@
     "glossaryNotes": "Notes",
     "notesHint": "Kept records on this computer only. About 1 GB shared. Older files are cleared when idle.",
     "identityFields": "IDs",
-    "copyField": "Copy {{label}}"
+    "copyField": "Copy {{label}}",
+    "failureInspectorTitle": "Failure Inspector & Diagnostics",
+    "failureInspectorDesc": "This turn did not complete normally. Below are the underlying error details and execution diagnostics captured by the system.",
+    "failureError": "Error Cause",
+    "failurePreparationPhase": "Preparation Phase Failure (Pre-Model Call)",
+    "failurePreparationHint": "The error occurred during message preprocessing, attachment parsing, context assembly, or initial provider connection before any model request was dispatched.",
+    "failureGapHeader": "Associated Observation Gaps",
+    "failureCopyError": "Copy error message",
+    "failureRawDetails": "Technical Error Details (Raw Payload)"
   },
   "reasoningEffort": {
     "switchFailed": "Failed to update reasoning effort",
