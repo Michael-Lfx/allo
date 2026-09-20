@@ -44,6 +44,9 @@ function iconParkPlugin() {
     transform(source: string, id: string) {
       if (!id.endsWith('.tsx') || id.includes('node_modules')) return null;
       if (!source.includes('@icon-park/react')) return null;
+      // One HOC import per file: two `@icon-park/react` lines used to emit
+      // `import IconParkHOC` twice and Babel died on the duplicate binding.
+      let hocImported = false;
       const transformed = source.replace(
         /import\s+\{\s*([^}]+)\s*\}\s+from\s+['"]@icon-park\/react['"](;?)/g,
         (str, match: string, semi: string) => {
@@ -60,9 +63,14 @@ function iconParkPlugin() {
             .map(({ exportName, localName }) => `${exportName} as _${localName}`)
             .join(', ');
           const importLine = `import { ${importList} } from '@icon-park/react'${semi || ';'}`;
-          const hoc = `import IconParkHOC from '@renderer/components/IconParkHOC';
-${parsed.map(({ localName }) => `const ${localName} = IconParkHOC(_${localName})`).join(';\n')}`;
-          return `${importLine}${hoc}`;
+          const hocImport = hocImported
+            ? ''
+            : "import IconParkHOC from '@renderer/components/IconParkHOC';\n";
+          hocImported = true;
+          const wrappers = `${parsed
+            .map(({ localName }) => `const ${localName} = IconParkHOC(_${localName})`)
+            .join(';\n')};`;
+          return `${importLine}${hocImport}${wrappers}`;
         }
       );
       return transformed !== source ? { code: transformed, map: null } : null;
