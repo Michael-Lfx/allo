@@ -165,7 +165,7 @@ Store 会话走的是与桌面会话同一条链路，逐层如下。
 | 工具 | 默认 | 表达层 | 理由 |
 |---|---|---|---|
 | `WebSearch` / `WebExtract` | 关 | `[tools].web = false` | `04` §3.2 工具面是 Connector 驱动；联网应由 Connector 表达。仅当 Definition 未绑定 web connector 时才考虑开 |
-| `remember` | 关 | `[tools].deny = ["remember"]` | V1 领域模型无跨 Run 记忆；Run/Attempt 持久化已独立。**当前无任何开关，必须靠新增的减项关闭**（§7.4） |
+| `remember` | 关 | `[tools].deny = ["remember"]`；或整体的 `[memory].enabled = false` | V1 领域模型无跨 Run 记忆；Run/Attempt 持久化已独立。**订正（2026-09-20）**：原文写「当前无任何开关，必须靠新增的减项关闭」——现在 `remember` 所在的**整个内置记忆子系统**已有一个宿主级总开关 `[memory].enabled`（`33-memory-master-switch.zh.md`），它同时停掉提示词段落、`remember`、轮后蒸馏与引用回写四面；`[tools].deny` 仍可用于**只**摘掉这一个工具而保留另外三面 |
 | `EnterPlanMode` / `ExitPlanMode` | 关 | `[tools].plan = false` | `plan_gate` 是 Execution 级策略；Team 计划由服务端 Planner 产出，模型自驱 plan mode 会与 `plan.created` 语义冲突 |
 
 ### 6.3 关闭
@@ -284,7 +284,7 @@ Skill 快照在 `create_inner` 冻结：`compute_initial_skills(auto_inject, pre
 | `update_plan` | `bootstrap.rs:1117-1119` 无条件注册，无 Config 开关 | `[tools].disabled` |
 | `ToolSearch` | 无条件 + `retain_named` 强制保留 | **不应关闭** |
 | `Skill` | 无条件；目录来自 workspace 扫描 | 由快照控制暴露面（§7.4） |
-| `remember` | `bootstrap.rs:723-724`（`if let Some(mem_dir)`），`memory_dir` 实际恒为 `Some` | `[tools].disabled` |
+| `remember` | `bootstrap.rs:768-770`（`if let Some(mem_dir)`）。**订正（2026-09-20）**：原文写「`memory_dir` 实际恒为 `Some`」，现已有第二个 `None` 来源——宿主可在 `~/.agent-store/config.toml` 里写 `[memory].enabled = false` 把整个内置记忆关掉（`33-memory-master-switch.zh.md`）；此时该工具**根本不注册**，因此它也**不在** `[tools]` 减项的管辖范围内（不存在的工具无从匹配，见 §7.7 的 no-match 告警语义） | `[tools].disabled`，或宿主级 `[memory].enabled` |
 | embedded `nomi_delegate` | `bootstrap.rs:952-954`，由 `install_embedded_agent_execution`（`:915`）决定 | **不可配置**，见下 |
 
 **为什么 embedded vs platform 不能做成配置**：`scripts/check-agent-vocabulary.mjs:342-358` 扫描 `ToolsConfig` 结构体块，禁止出现 `install_embedded_agent_execution` / `in_process_delegation` / `in_process_spawn` / `delegation_execution` 一类标识符；`nomi-config/src/config.rs:975-979` 还会把这三个历史键从配置文件里主动删除。执行部署形态是**嵌入宿主的决定**，不是用户配置。任何把它做成 `[tools]` 开关的方案都会同时踩到门禁与历史迁移。

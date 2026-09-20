@@ -467,6 +467,23 @@ pub struct AgentBootstrap {
     /// once, updates the transport's Authorization header and retries once.
     /// `None` keeps the current fail-fast behavior.
     mcp_oauth_refresher: Option<Arc<dyn nomi_mcp::manager::McpOAuthRefresher>>,
+    /// Master switch for the built-in file-based memory system, resolved by the
+    /// host from its own agent-store config (`~/.agent-store/config.toml`
+    /// `[memory] enabled`). `true` (default) keeps today's behaviour: the memory
+    /// section is injected into the system prompt and the `remember` tool is
+    /// registered. `false` resolves
+    /// [`nomi_memory::paths::auto_memory_dir`] to `None` at build time, which
+    /// turns off *both* consumers at once — the prompt section
+    /// (`context::build_system_prompt`) and the tool registration below.
+    ///
+    /// Threaded as a plain value rather than a process-global (unlike the
+    /// distillation override in `nomifun-ai-agent`) because it is read per build
+    /// and a global would leak between concurrently-built sessions.
+    ///
+    /// This deliberately does not delete or hide anything already on disk: the
+    /// memory files stay where they are, so flipping this back to `true`
+    /// restores the previous state exactly.
+    memory_enabled: bool,
 }
 
 impl AgentBootstrap {
@@ -492,7 +509,17 @@ impl AgentBootstrap {
             coding_boundary: false,
             observation: None,
             mcp_oauth_refresher: None,
+            memory_enabled: true,
         }
+    }
+
+    /// Host master switch for the built-in file-based memory system. `false`
+    /// drops both of its consumers: the system-prompt section and the
+    /// `remember` tool. Defaults to `true`, so every existing caller is
+    /// unaffected. See the field docs for what it deliberately does not do.
+    pub fn memory_enabled(mut self, enabled: bool) -> Self {
+        self.memory_enabled = enabled;
+        self
     }
 
     /// Register the host-provided MCP OAuth refresher (401 → refresh once →
@@ -644,7 +671,19 @@ impl AgentBootstrap {
             .provider
             .unwrap_or_else(|| nomi_providers::create_provider(&self.config));
 
-        let memory_dir = nomi_memory::paths::auto_memory_dir(cwd_path);
+        // Built-in file-based memory: one `Option` gates every consumer below.
+        // `None` (host switched it off, or the platform has no config dir) means
+        // no prompt section and no `remember` tool — see `memory_enabled`.
+        let memory_dir = if self.memory_enabled {
+            nomi_memory::paths::auto_memory_dir(cwd_path)
+        } else {
+            tracing::info!(
+                target: "nomi_agent",
+                workspace = %cwd,
+                "built-in memory disabled; no memory prompt section and no `remember` tool",
+            );
+            None
+        };
 
         let file_cache = if self.config.file_cache.enabled {
             Some(Arc::new(std::sync::RwLock::new(

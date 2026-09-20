@@ -975,6 +975,8 @@ pub(super) async fn build(
         allowed_tools: overrides.allowed_tools.clone(),
         // 宿主级工具策略（agent-store `[tools]`；未采纳的宿主为 permissive 默认值）。
         tool_policy: deps.tool_policy.clone(),
+        // 宿主级内置记忆总开关（agent-store `[memory] enabled`；未声明的宿主为 ON）。
+        memory_enabled: deps.memory_enabled,
         // 原生文件工具写根：本地桌面全权（None），渠道会话收窄到工作区。
         // Coding profile forces workspace containment when write_root would
         // otherwise be None (local desktop unrestricted).

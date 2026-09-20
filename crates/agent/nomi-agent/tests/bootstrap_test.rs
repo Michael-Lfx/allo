@@ -413,3 +413,93 @@ async fn bootstrap_with_external_provider() {
 
     assert!(!result.engine.tool_names().is_empty());
 }
+
+// -- built-in memory master switch (`~/.agent-store/config.toml` `[memory]`) --
+//
+// `memory_enabled(false)` must turn off BOTH engine-side consumers at once:
+// the `remember` tool registration and the system-prompt memory section. The
+// remaining two consumers (post-answer distillation and citation write-back)
+// live on the backend manager's `distill_dir` and are covered in
+// `nomifun-ai-agent`.
+
+/// The `remember` tool is registered by default and gone when switched off.
+#[tokio::test]
+async fn memory_switch_controls_the_remember_tool() {
+    let on = AgentBootstrap::new(minimal_config(), "/tmp/ws-mem-on", null_output())
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        on.engine.tool_names().iter().any(|name| name == "remember"),
+        "default bootstrap should register `remember`"
+    );
+
+    let off = AgentBootstrap::new(minimal_config(), "/tmp/ws-mem-off", null_output())
+        .memory_enabled(false)
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        !off.engine.tool_names().iter().any(|name| name == "remember"),
+        "memory_enabled(false) must not register `remember`"
+    );
+}
+
+/// The memory section is absent from the system prompt when switched off, and
+/// the rest of the prompt still builds (no accidental whole-prompt loss).
+#[tokio::test]
+async fn memory_switch_controls_the_prompt_section() {
+    // Positive control first: with the switch left at its default the section
+    // IS present, so the negative assertion below cannot pass vacuously.
+    let on_systems = Arc::new(Mutex::new(Vec::new()));
+    let mut on_engine = AgentBootstrap::new(minimal_config(), "/tmp/ws-mem-prompt-on", null_output())
+        .provider(Arc::new(CapturingProvider {
+            systems: Arc::clone(&on_systems),
+        }))
+        .build()
+        .await
+        .unwrap()
+        .engine;
+    on_engine
+        .execute_turn("hello", "/tmp/ws-mem-prompt-on")
+        .await
+        .unwrap();
+    let on_system = on_systems.lock().unwrap()[0].clone();
+    assert!(
+        on_system.contains("auto memory"),
+        "default bootstrap should inject the memory section, got:\n{on_system}"
+    );
+
+    let systems = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(CapturingProvider {
+        systems: Arc::clone(&systems),
+    });
+    let mut engine = AgentBootstrap::new(minimal_config(), "/tmp/ws-mem-prompt", null_output())
+        .memory_enabled(false)
+        .provider(provider)
+        .build()
+        .await
+        .unwrap()
+        .engine;
+
+    engine
+        .execute_turn("hello", "/tmp/ws-mem-prompt")
+        .await
+        .unwrap();
+
+    let captured = systems.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let system = &captured[0];
+    assert!(
+        !system.contains("auto memory"),
+        "memory section must be absent when disabled, got:\n{system}"
+    );
+    assert!(
+        !system.contains("MEMORY.md"),
+        "the MEMORY.md index must not be injected when disabled, got:\n{system}"
+    );
+    assert!(
+        system.contains("gpt-test-model"),
+        "the rest of the system prompt must still be built"
+    );
+}

@@ -179,6 +179,22 @@ pub struct AgentFactoryDeps {
     /// ([`NomiToolPolicy::default`]) constrains nothing, so a host that does not
     /// adopt an agent-store `[tools]` table behaves exactly as before.
     pub tool_policy: NomiToolPolicy,
+    /// Host master switch for the built-in file-based memory system
+    /// (`~/.agent-store/config.toml` `[memory] enabled`).
+    ///
+    /// Process-owned configuration exactly like `tool_policy` above: read from
+    /// the host's own file once at composition, never from conversation `extra`,
+    /// so no request can forge it. `true` (the default) keeps every consumer on,
+    /// which is why a host that never declares `[memory]` behaves as before.
+    ///
+    /// Distinct from the `distill_enabled` half in
+    /// [`crate::manager::nomi::distill`]: that one governs only the post-answer
+    /// distillation call, while this one also covers the system-prompt memory
+    /// section, the `remember` tool, and citation usage write-back.
+    ///
+    /// Threaded by value rather than as a process-global so it cannot leak
+    /// between sessions built concurrently in one process.
+    pub memory_enabled: bool,
     /// Host-owned MCP server declarations (`~/.agent-store/mcp.json`,
     /// `20` §7.9 / `21` D14).
     ///

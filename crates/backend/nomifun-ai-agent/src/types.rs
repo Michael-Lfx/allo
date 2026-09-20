@@ -320,6 +320,13 @@ pub struct NomiResolvedConfig {
     /// 默认值（[`NomiToolPolicy::default`]）不约束任何东西，故未采纳该策略的
     /// 宿主行为与之前完全一致。
     pub tool_policy: NomiToolPolicy,
+    /// 内置（文件型）记忆系统的宿主总开关（agent-store 的 `[memory] enabled`），
+    /// 由 `AgentFactoryDeps` 注入。`false` 时 manager 不解析 distill 目标目录
+    /// （不蒸馏、不回写引用计数），bootstrap 也不注入记忆提示词段落、不注册
+    /// `remember` 工具。它是**宿主策略而非会话输入**（不走 `NomiBuildExtra`），
+    /// 默认 `true` = 与之前完全一致。注意它比
+    /// `manager::nomi::distill` 的 `distill_enabled` 更宽：后者只管轮后蒸馏。
+    pub memory_enabled: bool,
     /// 原生文件工具（Write/Edit/ApplyPatch）的写根钳制，按会话**信任面**解析：
     /// 本地桌面（`Private` 且非渠道）= `None`（OS 用户全权，不钳制，今日行为）；
     /// 渠道 / 远程 / 对外 = `Some(workspace)`（收窄到会话工作区，堵住对外面过度开放）。

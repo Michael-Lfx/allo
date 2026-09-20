@@ -809,7 +809,16 @@ impl NomiAgentManager {
         // project-level auto-memory dir (same resolution as the engine's
         // bootstrap `auto_memory_dir(cwd)`). A run-time origin check in
         // `send_message` is the second gate (cron/autowork/idmm turns).
-        let distill_dir: Option<PathBuf> = if companion_sink.is_some() {
+        //
+        // Host master switch: `~/.agent-store/config.toml` `[memory] enabled =
+        // false` zeroes the target for every session kind. With no distill dir
+        // the post-answer distillation child is never spawned and citation
+        // usage write-back is skipped. The same flag reaches the engine's
+        // bootstrap for the prompt section and `remember` (threaded through
+        // `NomiResolvedConfig`), so all four consumers of "built-in memory"
+        // agree by construction rather than by independent file reads.
+        let memory_enabled = config_extra.memory_enabled;
+        let distill_dir: Option<PathBuf> = if companion_sink.is_some() || !memory_enabled {
             None
         } else {
             nomi_memory::paths::auto_memory_dir(std::path::Path::new(&workspace))
@@ -1094,6 +1103,7 @@ impl NomiAgentManager {
             .coding_boundary(
                 nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref()).is_coding(),
             )
+            .memory_enabled(memory_enabled)
             .mcp_oauth_refresher(host_wiring.mcp_oauth_refresher.clone())
             .observation(Arc::clone(&observation));
         bootstrap = match search_provider {
@@ -4126,6 +4136,9 @@ mod tests {
             // Tests start from the permissive policy: the session-level switches
             // below are the only thing under test.
             tool_policy: nomifun_api_types::NomiToolPolicy::default(),
+            // Same posture for memory: ON (the upstream default), so only the
+            // tests that flip it observe a difference.
+            memory_enabled: true,
             provider: "anthropic".into(),
             api_key: "sk-test-key".into(),
             model: "claude-sonnet-4-20250514".into(),
@@ -6688,6 +6701,36 @@ mod tests {
         assert!(
             agent.distill_dir_for_test().is_some(),
             "normal sessions should resolve a distill target dir"
+        );
+    }
+
+    /// `config.yaml`-independent host switch: `[memory] enabled = false` in
+    /// `~/.agent-store/config.toml` arrives as this flag and must zero the
+    /// distill target, which is what removes the post-answer distillation child
+    /// and the citation usage write-back (both keyed on `distill_dir`).
+    #[tokio::test]
+    async fn host_memory_switch_zeroes_the_distill_dir() {
+        let mut config = make_test_config();
+        config.memory_enabled = false;
+        let agent = NomiAgentManager::new(
+            "conv-memory-off".into(),
+            "/project".into(),
+            config,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            agent.distill_dir_for_test().is_none(),
+            "memory_enabled = false must leave no distill target"
         );
     }
 

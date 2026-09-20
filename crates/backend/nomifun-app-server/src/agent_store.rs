@@ -364,11 +364,17 @@ pub struct AgentStoreImport {
 
 /// `[memory]` in `~/.agent-store/config.toml`.
 ///
-/// Upstream (`nomi` `[memory].distill_enabled`) defaults to ON: after every
-/// human turn the runtime makes one extra model call that distils the session
-/// into file-based memory. That call is awaited **before** the turn's terminal
-/// `Finish`, so a client sees its answer complete while the turn still reports
-/// "processing" for the whole call (measured 6–15s in the agent-store host).
+/// Two independent switches live here, both of them this host's opt-out from an
+/// upstream default that is ON:
+///
+/// - `distill_enabled` — the post-answer distillation half, which is one extra
+///   model call awaited **before** the turn's terminal `Finish`, so a client
+///   sees its answer complete while the turn still reports "processing" for the
+///   whole call (measured 6–15s in the agent-store host).
+/// - `enabled` — the whole built-in file-based memory system, including the
+///   parts that are *not* distillation: the system-prompt memory section and
+///   the `remember` tool.
+///
 /// Declaring this table is how the Agent Store host opts out without touching
 /// upstream defaults for other hosts.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -378,6 +384,38 @@ pub struct AgentStoreMemory {
     /// overrides whichever value lands here.
     #[serde(default)]
     pub distill_enabled: Option<bool>,
+    /// `false` turns the entire built-in file-based memory system off on this
+    /// host: no memory section in the system prompt, no `remember` tool, no
+    /// post-answer distillation, and no citation usage write-back. `true` or an
+    /// absent key keeps the upstream default (ON).
+    ///
+    /// Distinct from — and strictly wider than — `distill_enabled`: turning
+    /// `enabled` off makes `distill_enabled` irrelevant, so the two are not
+    /// required to agree. Memory files already on disk are left alone, so
+    /// setting this back to `true` restores exactly what was there.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+impl AgentStoreMemory {
+    /// Whether the built-in memory system is enabled. An absent table, an empty
+    /// table and an absent key all mean enabled: opting out must be explicit, so
+    /// a host that only ever wrote `distill_enabled` keeps the full system.
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+}
+
+impl AgentStoreConfig {
+    /// `[memory] enabled`, defaulted ON for the same reason
+    /// [`Self::tool_policy`] defaults permissive: a host that declares no
+    /// `[memory]` table must behave exactly as it did before the key existed.
+    pub fn memory_enabled(&self) -> bool {
+        self.memory
+            .as_ref()
+            .map(AgentStoreMemory::enabled)
+            .unwrap_or(true)
+    }
 }
 
 /// `[marketplace]` in `~/.agent-store/config.toml`.
@@ -456,8 +494,26 @@ pub struct AgentStoreModel {
     pub display_name: Option<String>,
     #[serde(default)]
     pub max_context_size: Option<i64>,
+    /// Per-request output ceiling, mapped onto `provider_models.output_limit`.
+    ///
+    /// This is the key whose absence fails an `anthropic` provider at runtime
+    /// (`Config::requires_output_ceiling`): the request really does need
+    /// `max_tokens` on the wire, so a NULL row here is not "let the provider
+    /// decide", it is a build error. Values `<= 0` are dropped by
+    /// [`AgentStoreConfig::output_limits_for_provider`] because the column
+    /// carries `CHECK (output_limit IS NULL OR output_limit > 0)`.
     #[serde(default)]
     pub max_output_size: Option<i64>,
+    /// Per-model protocol override (`"anthropic"`, `"openai.responses"`, ...).
+    ///
+    /// Only the spellings `map_nomi_provider` already honours take effect
+    /// (`new-api` + `anthropic`, and the responses forms); the point of
+    /// carrying it here is that it is no longer *silently* discarded.
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Not consumed yet: declared-and-ignored like `max_output_size` used to
+    /// be. Kept parseable so the file stays compatible with the kimi-code
+    /// layout this section follows.
     #[serde(default)]
     pub capabilities: Vec<String>,
     #[serde(default)]
@@ -803,6 +859,50 @@ impl AgentStoreConfig {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())?;
                 Some((model.to_owned(), display_name.to_owned()))
+            })
+            .collect()
+    }
+
+    /// Output-ceiling map for `provider_models` (`model -> max_output_size`).
+    ///
+    /// Non-positive values are deliberately dropped: the column is guarded by
+    /// `CHECK (output_limit IS NULL OR output_limit > 0)` (migration `045`), so
+    /// forwarding a `0` would fail the write instead of meaning "no ceiling".
+    /// An absent or unusable value therefore leaves the row NULL — the same
+    /// state as before this key was wired up, never a synthesized default.
+    pub fn output_limits_for_provider(&self, provider_key: &str) -> HashMap<String, i64> {
+        self.models
+            .iter()
+            .filter(|(_, entry)| entry.provider.as_deref() == Some(provider_key))
+            .filter_map(|(_, entry)| {
+                let model = entry
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())?;
+                let limit = entry.max_output_size.filter(|limit| *limit > 0)?;
+                Some((model.to_owned(), limit))
+            })
+            .collect()
+    }
+
+    /// Per-model protocol map for `provider_models` (`model -> protocol`).
+    pub fn protocols_for_provider(&self, provider_key: &str) -> HashMap<String, String> {
+        self.models
+            .iter()
+            .filter(|(_, entry)| entry.provider.as_deref() == Some(provider_key))
+            .filter_map(|(_, entry)| {
+                let model = entry
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())?;
+                let protocol = entry
+                    .protocol
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())?;
+                Some((model.to_owned(), protocol.to_owned()))
             })
             .collect()
     }
@@ -1288,6 +1388,8 @@ display_name = "Laguna S 2.1 Free"
 provider = "opencode"
 model = "mimo-v2.5-free"
 max_context_size = 200000
+max_output_size = 32000
+protocol = "anthropic"
 display_name = "MiMo V2.5 Free"
 reasoning_key = "reasoning_content"
 "#;
@@ -1318,6 +1420,90 @@ reasoning_key = "reasoning_content"
         assert_eq!(limits.get("laguna-s-2.1-free"), Some(&256_000));
         let names = config.display_names_for_provider("opencode");
         assert_eq!(names.get("mimo-v2.5-free").map(String::as_str), Some("MiMo V2.5 Free"));
+        let outputs = config.output_limits_for_provider("opencode");
+        assert_eq!(outputs.get("mimo-v2.5-free"), Some(&32_000));
+        // Only the model that declares the key is present: an absent
+        // `max_output_size` must not be invented.
+        assert_eq!(outputs.get("laguna-s-2.1-free"), None);
+        let protocols = config.protocols_for_provider("opencode");
+        assert_eq!(protocols.get("mimo-v2.5-free").map(String::as_str), Some("anthropic"));
+        assert_eq!(protocols.get("laguna-s-2.1-free"), None);
+    }
+
+    /// The output ceiling feeds a column guarded by
+    /// `CHECK (output_limit IS NULL OR output_limit > 0)`, so a non-positive
+    /// value must be dropped here rather than forwarded into a failed write.
+    /// "No ceiling declared" and "declared as 0" both mean NULL.
+    #[test]
+    fn output_limits_drop_non_positive_values_and_stay_per_provider() {
+        let config = AgentStoreConfig::load_from_str(
+            r#"
+[providers.a]
+type = "anthropic"
+
+[providers.b]
+type = "anthropic"
+
+[models."a/zero"]
+provider = "a"
+model = "zero"
+max_output_size = 0
+
+[models."a/negative"]
+provider = "a"
+model = "negative"
+max_output_size = -5
+
+[models."a/absent"]
+provider = "a"
+model = "absent"
+
+[models."a/good"]
+provider = "a"
+model = "good"
+max_output_size = 8192
+
+[models."b/other-provider"]
+provider = "b"
+model = "other-provider"
+max_output_size = 4096
+"#,
+        );
+
+        let limits = config.output_limits_for_provider("a");
+        assert_eq!(limits.get("zero"), None, "0 must not reach the CHECK constraint");
+        assert_eq!(limits.get("negative"), None);
+        assert_eq!(limits.get("absent"), None);
+        assert_eq!(limits.get("good"), Some(&8192));
+        // A sibling provider's ceiling must not leak into this one.
+        assert_eq!(limits.get("other-provider"), None);
+        assert_eq!(config.output_limits_for_provider("b").get("other-provider"), Some(&4096));
+    }
+
+    /// Blank / whitespace-only `protocol` values are "absent", matching the
+    /// trim-and-drop rule every other per-model map in this module uses.
+    #[test]
+    fn protocols_drop_blank_values() {
+        let config = AgentStoreConfig::load_from_str(
+            r#"
+[providers.a]
+type = "anthropic"
+
+[models."a/blank"]
+provider = "a"
+model = "blank"
+protocol = "   "
+
+[models."a/real"]
+provider = "a"
+model = "real"
+protocol = "anthropic"
+"#,
+        );
+
+        let protocols = config.protocols_for_provider("a");
+        assert_eq!(protocols.get("blank"), None);
+        assert_eq!(protocols.get("real").map(String::as_str), Some("anthropic"));
     }
 
     /// Hand-edited host config with comments in every position the write path
@@ -1598,6 +1784,69 @@ base_url = "https://example.test/v1"
         assert_eq!(off.memory.and_then(|memory| memory.distill_enabled), Some(false));
         let on = AgentStoreConfig::load_from_str("[memory]\ndistill_enabled = true\n");
         assert_eq!(on.memory.and_then(|memory| memory.distill_enabled), Some(true));
+    }
+
+    #[test]
+    fn memory_enabled_reads_the_real_file_shape() {
+        // The shipped `agent-store init` output is a *full* file: providers,
+        // models and (now) a host-policy table. Assert the switch resolves
+        // correctly alongside all of it, not just in isolation — a realistic
+        // file is where a misplaced key or an interaction with a sibling table
+        // would actually show up.
+        let source = format!("{SAMPLE}\n[memory]\nenabled = false\n");
+        let config = AgentStoreConfig::load_from_str(&source);
+        assert!(!config.memory_enabled());
+        // The sibling tables must be unaffected by the new section.
+        assert!(
+            config.default_selection().is_some(),
+            "default_model must still resolve"
+        );
+        assert!(config.providers.contains_key("opencode"));
+    }
+
+    #[test]
+    fn memory_enabled_defaults_on_and_is_independent_of_distill() {
+        // No `[memory]` table at all → the system stays on, so a host that only
+        // ever wrote providers behaves exactly as it did before the key existed.
+        let absent = AgentStoreConfig::load_from_str("default_model = \"octo/coral\"\n");
+        assert!(absent.memory_enabled());
+
+        // Declared but silent → still on: the table alone is not consent to turn
+        // the whole memory system off.
+        let silent = AgentStoreConfig::load_from_str("[memory]\n");
+        assert!(silent.memory_enabled());
+
+        // The wide switch this host reads for the prompt section + `remember`.
+        let off = AgentStoreConfig::load_from_str("[memory]\nenabled = false\n");
+        assert!(!off.memory_enabled());
+        let on = AgentStoreConfig::load_from_str("[memory]\nenabled = true\n");
+        assert!(on.memory_enabled());
+
+        // The two keys are independent, in both directions: turning the wide
+        // switch off while distillation is nominally on must still disable the
+        // system, and vice versa must keep it on.
+        let wide_off_narrow_on =
+            AgentStoreConfig::load_from_str("[memory]\nenabled = false\ndistill_enabled = true\n");
+        assert!(!wide_off_narrow_on.memory_enabled());
+        assert_eq!(
+            wide_off_narrow_on
+                .memory
+                .as_ref()
+                .and_then(|memory| memory.distill_enabled),
+            Some(true),
+            "the narrow key must still parse; `enabled` is what gates it"
+        );
+
+        let wide_on_narrow_off =
+            AgentStoreConfig::load_from_str("[memory]\nenabled = true\ndistill_enabled = false\n");
+        assert!(wide_on_narrow_off.memory_enabled());
+        assert_eq!(
+            wide_on_narrow_off
+                .memory
+                .as_ref()
+                .and_then(|memory| memory.distill_enabled),
+            Some(false)
+        );
     }
 
     #[test]

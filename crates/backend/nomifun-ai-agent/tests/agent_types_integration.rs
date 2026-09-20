@@ -100,6 +100,9 @@ fn make_nomi_config() -> NomiResolvedConfig {
     NomiResolvedConfig {
         // Tests use the permissive host policy: no tool surface is subtracted.
         tool_policy: nomifun_api_types::NomiToolPolicy::default(),
+        // Same for memory: the upstream default (on), so only tests that flip it
+        // observe a difference.
+        memory_enabled: true,
         provider_id: nomifun_common::ProviderId::parse("0190f5fe-7c00-7a00-8000-000000000001")
             .unwrap(),
         provider: "anthropic".into(),

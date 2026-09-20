@@ -88,12 +88,12 @@ use nomifun_api_types::{
     AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
     AnswerExecutionDecisionRequest, CreateProviderRequest, ListMessagesQuery, McpServerId, MessageResponse,
     PresetOverrides, PresetSource,
-    PresetTarget, SendMessageRequest,
+    PresetTarget, SendMessageRequest, UpdateProviderModelRequest,
 };
 use nomifun_conversation::{AppServerChatBindings, ConversationService, IdempotentMessageDelivery};
 use nomifun_preset::PresetService;
 use nomifun_realtime::{BroadcastEventBus, UserEventEnvelope};
-use nomifun_system::ProviderService;
+use nomifun_system::{ProviderModelService, ProviderService};
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use futures_util::{SinkExt, StreamExt};
@@ -1096,6 +1096,12 @@ pub struct AppServerRouterState {
     /// routes so App Server chats can register providers read from the local
     /// agent-store config.
     pub provider_service: Option<Arc<ProviderService>>,
+    /// Row-level `provider_models` writer. Used by the agent-store registration
+    /// path to persist the per-model fields the provider DTO has no map column
+    /// for (`output_limit`, `protocol`) — this is the same row-level face the
+    /// settings UI writes those two through, so both paths land on one column
+    /// instead of one of them silently dropping the value.
+    pub provider_model_service: Option<Arc<ProviderModelService>>,
     /// Optional override for the agent-store config location. `None` resolves
     /// `~/.agent-store/config.toml` on every request.
     pub agent_store_config_path: Option<std::path::PathBuf>,
@@ -1179,6 +1185,7 @@ impl Default for AppServerRouterState {
             workspace_resolver: None,
             event_bus: None,
             provider_service: None,
+            provider_model_service: None,
             agent_store_config_path: None,
             adopt_store_mcp_declarations: None,
             skills: None,
@@ -4211,9 +4218,14 @@ async fn resolve_app_server_model(
             true,
         )
     })?;
-    let provider_id =
-        ensure_agent_store_provider(provider_service, &config, &provider_key, Some(&model_name))
-            .await?;
+    let provider_id = ensure_agent_store_provider(
+        provider_service,
+        state.provider_model_service.as_deref(),
+        &config,
+        &provider_key,
+        Some(&model_name),
+    )
+    .await?;
     Ok(ProviderWithModel {
         provider_id,
         model: model_name,
@@ -4651,13 +4663,93 @@ fn model_selection_error(model: Option<&ProviderWithModel>) -> AppServerError {
     }
 }
 
+/// Persist the agent-store per-model fields that have no provider-level map
+/// column: `max_output_size` → `provider_models.output_limit`, and the model's
+/// `protocol` → `provider_models.protocol`.
+///
+/// The settings UI writes these two through the same row-level face
+/// (`providerModel.update`), which is why this path uses it too rather than
+/// growing `CreateProviderParams`: one column, one write route.
+///
+/// **Fill-in-only, never overwrite.** A row whose column already holds a value
+/// is left exactly as it is; only a NULL column is seeded from the config. Two
+/// reasons: `resolve_app_server_model` runs on every model resolution, so this
+/// must be idempotent; and the error message that motivated this fix tells the
+/// operator to set the ceiling in Settings → Models, so re-asserting the
+/// config value afterwards would silently undo their edit.
+///
+/// Best-effort by design, matching `ProviderService::seed_inferred_profiles_best_effort`:
+/// the provider row is already committed, so a failed per-model write must not
+/// turn the whole resolution into an error. The anthropic build guard still
+/// reports a genuinely missing ceiling with an actionable message.
+async fn reconcile_agent_store_model_limits(
+    provider_model_service: Option<&ProviderModelService>,
+    provider: &nomifun_api_types::ProviderResponse,
+    config: &AgentStoreConfig,
+    provider_key: &str,
+) {
+    let Some(service) = provider_model_service else {
+        return;
+    };
+    let output_limits = config.output_limits_for_provider(provider_key);
+    let protocols = config.protocols_for_provider(provider_key);
+    if output_limits.is_empty() && protocols.is_empty() {
+        return;
+    }
+
+    // `ProviderResponse.models_detail` is the row-level projection, so the
+    // current stored value is read from the response we already have — no
+    // extra query, and "already set" is decided against the real column.
+    for row in &provider.models_detail {
+        let output_limit = output_limits
+            .get(&row.model)
+            .filter(|_| row.output_limit.is_none())
+            .map(|limit| Some(*limit));
+        let protocol = protocols
+            .get(&row.model)
+            .filter(|_| row.protocol.is_none())
+            .map(|protocol| Some(protocol.clone()));
+        if output_limit.is_none() && protocol.is_none() {
+            continue;
+        }
+
+        // Only the two fields this function owns are named; everything else is
+        // "keep the current value" (absent = keep for every column here).
+        let request = UpdateProviderModelRequest {
+            provider_id: provider.provider_id.clone(),
+            model: row.model.clone(),
+            enabled: None,
+            sort_order: None,
+            tasks: None,
+            traits: None,
+            protocol,
+            connection_role: None,
+            params: None,
+            context_limit: None,
+            output_limit,
+            description: None,
+        };
+        if let Err(error) = service.update(request).await {
+            tracing::warn!(
+                provider_id = %provider.provider_id,
+                model = %row.model,
+                %error,
+                "failed to persist agent-store model output ceiling/protocol"
+            );
+        }
+    }
+}
+
 /// Register (idempotently) the provider named `provider_key` from the
 /// agent-store config, returning its canonical provider UUID. Registration
 /// reuses `ProviderService::create` so encryption and `provider_models`
 /// reconciliation are identical to the normal Allo provider UI path. A
-/// previously registered provider with the same `name` is reused as-is.
+/// previously registered provider with the same `name` is reused as-is — but
+/// its per-model `output_limit`/`protocol` columns are still reconciled, so a
+/// row registered by an earlier build (which dropped both) is repaired here.
 async fn ensure_agent_store_provider(
     provider_service: &ProviderService,
+    provider_model_service: Option<&ProviderModelService>,
     config: &AgentStoreConfig,
     provider_key: &str,
     requested_model: Option<&str>,
@@ -4707,6 +4799,17 @@ async fn ensure_agent_store_provider(
         .into_iter()
         .find(|row| row.name == provider_key);
     if let Some(existing) = existing {
+        // Reused row, but not necessarily a complete one: a provider
+        // registered before the output ceiling was wired up still carries
+        // NULL `output_limit`, which fails an `anthropic` build. Repair it
+        // here so every resolution path heals the row it is about to use.
+        reconcile_agent_store_model_limits(
+            provider_model_service,
+            &existing,
+            config,
+            provider_key,
+        )
+        .await;
         return Ok(existing.provider_id);
     }
 
@@ -4743,7 +4846,11 @@ async fn ensure_agent_store_provider(
             enabled: provider_cfg.enabled.unwrap_or(true),
             capabilities: Vec::new(),
             model_context_limits: Some(config.context_limits_for_provider(provider_key)),
-            model_protocols: None,
+            // Seeds fresh membership rows only (`replace = false`), exactly like
+            // the context-limit map above; an empty map and `None` are
+            // equivalent on create, so a config declaring no protocol is
+            // unaffected.
+            model_protocols: Some(config.protocols_for_provider(provider_key)),
             model_descriptions: Some(config.display_names_for_provider(provider_key)),
             model_enabled: None,
             model_health: None,
@@ -4753,6 +4860,15 @@ async fn ensure_agent_store_provider(
         })
         .await
         .map_err(AppServerError::from)?;
+    // The provider DTO has no output-limit map column, so the ceiling is
+    // written through the row-level face after the row exists.
+    reconcile_agent_store_model_limits(
+        provider_model_service,
+        &created,
+        config,
+        provider_key,
+    )
+    .await;
     Ok(created.provider_id)
 }
 
@@ -5771,6 +5887,7 @@ async fn default_run_model(
         // conversation and team paths do — one resolution, one behaviour.
         let provider_id = ensure_agent_store_provider(
             provider_service,
+            state.provider_model_service.as_deref(),
             &config,
             &provider_key,
             Some(&model_name),
@@ -9197,6 +9314,8 @@ display_name = "Laguna S 2.1 Free"
 provider = "opencode"
 model = "mimo-v2.5-free"
 max_context_size = 200000
+max_output_size = 32000
+protocol = "anthropic"
 display_name = "MiMo V2.5 Free"
 "#;
 
@@ -9262,6 +9381,14 @@ display_name = "MiMo V2.5 Free"
         std::fs::write(&path, AGENT_STORE_TEST_CONFIG).expect("temp config file");
         let state = AppServerRouterState {
             provider_service: Some(Arc::new(service)),
+            // The row-level writer the registration path uses for the
+            // per-model fields the provider DTO has no map column for.
+            provider_model_service: Some(Arc::new(
+                nomifun_system::ProviderModelService::new(
+                    Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
+                    Arc::new(nomifun_db::SqliteProviderRepository::new(pool.clone())),
+                ),
+            )),
             agent_store_config_path: Some(path.clone()),
             ..Default::default()
         };
@@ -9307,6 +9434,30 @@ display_name = "MiMo V2.5 Free"
             Some("MiMo V2.5 Free")
         );
 
+        // 3b. The output ceiling and per-model protocol land on the row. These
+        //     two have no provider-level map column, so they are written
+        //     through the row-level face; a NULL `output_limit` here is what
+        //     makes an `anthropic` provider fail to build at all.
+        let mimo_row = provider
+            .models_detail
+            .iter()
+            .find(|row| row.model == "mimo-v2.5-free")
+            .expect("mimo row must exist");
+        assert_eq!(
+            mimo_row.output_limit,
+            Some(32_000),
+            "max_output_size must reach provider_models.output_limit"
+        );
+        assert_eq!(mimo_row.protocol.as_deref(), Some("anthropic"));
+        // A sibling that declares neither key stays NULL — no invented values.
+        let laguna_row = provider
+            .models_detail
+            .iter()
+            .find(|row| row.model == "laguna-s-2.1-free")
+            .expect("laguna row must exist");
+        assert_eq!(laguna_row.output_limit, None);
+        assert_eq!(laguna_row.protocol, None);
+
         // 4. An explicit config-key selection registers nothing new and rewrites
         //    the selection to the same provider UUID.
         let keyed = resolve_app_server_model(
@@ -9346,6 +9497,218 @@ display_name = "MiMo V2.5 Free"
         assert_eq!(error.code, "invalid_request");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Config A declares no per-model ceiling; config B adds one. A provider
+    /// first registered under A carries a NULL `output_limit`, which is exactly
+    /// the state that fails an `anthropic` runtime build. Resolving again under
+    /// B must repair that existing row — not just seed brand-new ones.
+    #[tokio::test]
+    async fn agent_store_registration_repairs_a_previously_null_output_ceiling() {
+        let db = nomifun_db::init_database_memory_with_owner(UserId::new())
+            .await
+            .expect("in-memory db");
+        let pool = db.pool().clone();
+
+        let dir = std::env::temp_dir().join(format!("allo-repair-test-{}", generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp config dir");
+        let path = dir.join("config.toml");
+
+        let without_ceiling = r#"
+default_model = "mify/mimo-v2.5-pro"
+
+[providers.mify]
+type = "anthropic"
+api_key = "sk-test-not-a-real-key"
+base_url = "https://example.invalid/v1"
+
+[models."mify/mimo-v2.5-pro"]
+provider = "mify"
+model = "mimo-v2.5-pro"
+max_context_size = 1024000
+"#;
+        let with_ceiling = r#"
+default_model = "mify/mimo-v2.5-pro"
+
+[providers.mify]
+type = "anthropic"
+api_key = "sk-test-not-a-real-key"
+base_url = "https://example.invalid/v1"
+
+[models."mify/mimo-v2.5-pro"]
+provider = "mify"
+model = "mimo-v2.5-pro"
+max_context_size = 1024000
+max_output_size = 8000
+"#;
+
+        let state = |path: &std::path::Path| AppServerRouterState {
+            provider_service: Some(Arc::new(ProviderService::new(
+                Arc::new(nomifun_db::SqliteProviderRepository::new(pool.clone())),
+                Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
+                [9u8; 32],
+            ))),
+            provider_model_service: Some(Arc::new(
+                nomifun_system::ProviderModelService::new(
+                    Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
+                    Arc::new(nomifun_db::SqliteProviderRepository::new(pool.clone())),
+                ),
+            )),
+            agent_store_config_path: Some(path.to_path_buf()),
+            ..Default::default()
+        };
+
+        let read_output_limit = |pool: nomifun_db::SqlitePool, provider_name: &str| {
+            let provider_name = provider_name.to_owned();
+            async move {
+                let providers = ProviderService::new(
+                    Arc::new(nomifun_db::SqliteProviderRepository::new(pool.clone())),
+                    Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
+                    [9u8; 32],
+                )
+                .list()
+                .await
+                .expect("provider list");
+                providers
+                    .into_iter()
+                    .find(|provider| provider.name == provider_name)
+                    .expect("provider row")
+                    .models_detail
+                    .into_iter()
+                    .find(|row| row.model == "mimo-v2.5-pro")
+                    .expect("model row")
+                    .output_limit
+            }
+        };
+
+        // Register under the ceiling-less config: the row exists but is NULL.
+        std::fs::write(&path, without_ceiling).expect("config without ceiling");
+        let first = state(&path);
+        resolve_app_server_model(&first, None).await.expect("first resolution");
+        assert_eq!(
+            read_output_limit(pool.clone(), "mify").await,
+            None,
+            "no declared ceiling must stay NULL"
+        );
+
+        // The same provider key, now resolved under a config that declares the
+        // ceiling: the existing row must be repaired in place.
+        std::fs::write(&path, with_ceiling).expect("config with ceiling");
+        let second = state(&path);
+        resolve_app_server_model(&second, None).await.expect("second resolution");
+        assert_eq!(
+            read_output_limit(pool.clone(), "mify").await,
+            Some(8_000),
+            "an existing NULL ceiling must be filled in from the config"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The repair pass runs on every model resolution, so it must never
+    /// overwrite a value that is already set: the runtime tells the operator to
+    /// fix a missing ceiling in Settings → Models, and re-asserting the config
+    /// afterwards would silently undo that edit.
+    #[tokio::test]
+    async fn agent_store_registration_never_overwrites_an_explicit_output_ceiling() {
+        let db = nomifun_db::init_database_memory_with_owner(UserId::new())
+            .await
+            .expect("in-memory db");
+        let pool = db.pool().clone();
+
+        let dir = std::env::temp_dir().join(format!("allo-nooverwrite-test-{}", generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp config dir");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+default_model = "mify/mimo-v2.5-pro"
+
+[providers.mify]
+type = "anthropic"
+api_key = "sk-test-not-a-real-key"
+base_url = "https://example.invalid/v1"
+
+[models."mify/mimo-v2.5-pro"]
+provider = "mify"
+model = "mimo-v2.5-pro"
+max_context_size = 1024000
+max_output_size = 8000
+"#,
+        )
+        .expect("temp config file");
+
+        let provider_service = Arc::new(ProviderService::new(
+            Arc::new(nomifun_db::SqliteProviderRepository::new(pool.clone())),
+            Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
+            [11u8; 32],
+        ));
+        let provider_model_service = Arc::new(nomifun_system::ProviderModelService::new(
+            Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
+            Arc::new(nomifun_db::SqliteProviderRepository::new(pool.clone())),
+        ));
+        let state = AppServerRouterState {
+            provider_service: Some(provider_service.clone()),
+            provider_model_service: Some(provider_model_service.clone()),
+            agent_store_config_path: Some(path.clone()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_app_server_model(&state, None).await.expect("resolution");
+        assert_eq!(
+            read_ceiling(&provider_service, &resolved.provider_id, "mimo-v2.5-pro").await,
+            Some(8_000),
+            "the config value seeds a NULL row"
+        );
+
+        // Simulate the operator setting a different ceiling in Settings → Models.
+        provider_model_service
+            .update(UpdateProviderModelRequest {
+                provider_id: resolved.provider_id.clone(),
+                model: "mimo-v2.5-pro".to_owned(),
+                enabled: None,
+                sort_order: None,
+                tasks: None,
+                traits: None,
+                protocol: None,
+                connection_role: None,
+                params: None,
+                context_limit: None,
+                output_limit: Some(Some(4096)),
+                description: None,
+            })
+            .await
+            .expect("operator edit");
+
+        // Another resolution must leave that explicit value alone.
+        resolve_app_server_model(&state, None).await.expect("re-resolution");
+        assert_eq!(
+            read_ceiling(&provider_service, &resolved.provider_id, "mimo-v2.5-pro").await,
+            Some(4_096),
+            "an already-set ceiling must never be overwritten by the config"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Read one model row's `output_limit` through the provider projection.
+    async fn read_ceiling(
+        provider_service: &ProviderService,
+        provider_id: &str,
+        model: &str,
+    ) -> Option<i64> {
+        provider_service
+            .list()
+            .await
+            .expect("provider list")
+            .into_iter()
+            .find(|provider| provider.provider_id == provider_id)
+            .expect("provider row")
+            .models_detail
+            .into_iter()
+            .find(|row| row.model == model)
+            .expect("model row")
+            .output_limit
     }
 
     #[test]

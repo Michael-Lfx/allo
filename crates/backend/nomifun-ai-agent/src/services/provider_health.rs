@@ -201,6 +201,10 @@ impl ProviderHealthCheckService {
         Ok(NomiResolvedConfig {
             // Provider probes never adopt a host tool policy.
             tool_policy: nomifun_api_types::NomiToolPolicy::default(),
+            // Nor a host memory policy: the probe is not a conversation, and it
+            // had the upstream default (memory on) before this field existed.
+            // Kept `true` so the probe's behaviour is unchanged.
+            memory_enabled: true,
             provider_id: ProviderId::parse(&row.provider_id).map_err(|e| {
                 AppError::Internal(format!(
                     "provider row {} has an invalid provider id: {e}",
@@ -699,6 +703,7 @@ mod tests {
         NomiResolvedConfig {
             // Provider probes never adopt a host tool policy.
             tool_policy: nomifun_api_types::NomiToolPolicy::default(),
+            memory_enabled: true,
             provider_id: ProviderId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
             provider: "openai".to_owned(),
             api_key: "sk-test".to_owned(),
@@ -801,6 +806,7 @@ mod tests {
         let config = NomiResolvedConfig {
             // Provider probes never adopt a host tool policy.
             tool_policy: nomifun_api_types::NomiToolPolicy::default(),
+            memory_enabled: true,
             provider_id: ProviderId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
             provider: "openai".to_owned(),
             api_key: "sk-test".to_owned(),

@@ -757,6 +757,12 @@ pub fn create_router_with_all_state(
     // that came from the local agent-store config. The public model directory
     // (`models/list`) projects the same service.
     let app_server_provider_service = std::sync::Arc::new(states.system.provider_service.clone());
+    // Same reason as the provider service above: the App Server writes the
+    // per-model `output_limit`/`protocol` columns through the row-level face,
+    // so it needs that service too. Cloned before `states.system` moves into
+    // `system_routes` below.
+    let app_server_provider_model_service =
+        std::sync::Arc::new(states.system.provider_model_service.clone());
 
     // System routes protected by auth middleware
     let system_authenticated = protect_instance_owner(
@@ -1042,6 +1048,7 @@ pub fn create_router_with_all_state(
             )),
             event_bus: Some(services.event_bus.clone()),
             provider_service: Some(app_server_provider_service.clone()),
+            provider_model_service: Some(app_server_provider_model_service.clone()),
             models: Some(std::sync::Arc::new(
                 crate::app_server_catalog::AppServerModelCatalog::new(
                     app_server_provider_service.clone(),

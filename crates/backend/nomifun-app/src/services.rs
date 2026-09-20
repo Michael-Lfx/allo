@@ -1656,6 +1656,31 @@ fn resolve_connector_proxy_policy(
         .unwrap_or_else(ConnectorProxyPolicy::deny_all)
 }
 
+/// Resolve whether this host's built-in file-based memory system is enabled,
+/// from the agent-store config file's `[memory] enabled`.
+///
+/// Same two properties as [`resolve_host_tool_policy`], for the same reasons:
+///
+/// - **Opt-in, not file-presence-driven.** The desktop and web hosts point at
+///   the same `~/.agent-store/config.toml` for providers and marketplaces, so
+///   letting its `[memory]` table govern *their* sessions would silently change
+///   behaviour on a host whose operator never intended it. Only
+///   `apps/agent-store` adopts it (`--adopt-store-tool-policy`, the same flag
+///   that already means "this host owns this file's host-policy tables").
+/// - **Fail-open to enabled.** A missing or unparseable file, or no `[memory]`
+///   table, keeps the upstream default (ON) — a typo must not silently strip a
+///   host's memory.
+///
+/// Kept pure so the rule is testable without booting a database.
+fn resolve_host_memory_enabled(adopt: bool, path: Option<&std::path::Path>) -> bool {
+    if !adopt {
+        return true;
+    }
+    path.and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok)
+        .map(|stored| stored.memory_enabled())
+        .unwrap_or(true)
+}
+
 /// Resolve this host's global tool policy from the agent-store config file.
 ///
 /// Two deliberate properties, both load-bearing:
@@ -3293,6 +3318,27 @@ impl AppServices {
             );
         }
 
+        // Host-owned built-in-memory master switch, read once at startup from
+        // the same file (`[memory] enabled`). Same host gating and same
+        // fail-open rule as `[tools]` directly above. It is deliberately
+        // separate from `[memory] distill_enabled`, which `apps/agent-store`
+        // installs unconditionally via `set_distill_host_override` and which
+        // only governs the post-answer distillation call — this one also covers
+        // the system-prompt memory section, the `remember` tool and citation
+        // write-back. Leaving it at `true` (the default) keeps every host
+        // byte-for-byte unchanged.
+        let memory_enabled = resolve_host_memory_enabled(
+            config.adopt_store_tool_policy,
+            config.agent_store_config_path.as_deref(),
+        );
+        if config.adopt_store_tool_policy && !memory_enabled {
+            tracing::info!(
+                target: "agent_store_memory",
+                "agent-store [memory] enabled = false adopted: the built-in memory system is off \
+                 for this host (no prompt section, no `remember`, no distillation, no citation reflow)"
+            );
+        }
+
         // Host-owned connector call policy, read at startup from the same file
         // (`[connector_proxy]`, doc `24` §5.1). Same host gating as `[tools]`:
         // only the dedicated Store host exposes a call proxy. Inside an enabled
@@ -3367,6 +3413,10 @@ impl AppServices {
             // Cloned: the same policy is kept on `AppServices` so the host's
             // resolved policy is inspectable (doctor/logs) without rebuilding it.
             tool_policy: tool_policy.clone(),
+            // Same posture: the host's built-in-memory master switch is threaded
+            // by value (never a process-global) so concurrently built sessions
+            // cannot leak it into each other.
+            memory_enabled,
             // Same deal for the declarations: the factory consumes one clone and
             // `AppServices` keeps the other for read views / diagnostics.
             mcp_declarations: mcp_declarations.clone(),
@@ -3995,13 +4045,52 @@ mod tests {
     #[cfg(feature = "browser-use")]
     use tokio::sync::{Notify, Semaphore};
 
+    /// `[memory] enabled` follows the same adoption contract as `[tools]`: only
+    /// the host that opted in lets the shared file switch its memory system off.
+    #[test]
+    fn host_memory_switch_is_adopted_only_by_the_host_that_opts_in() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[memory]\nenabled = false\n").unwrap();
+
+        // Not opted in: the file is readable and does contain `[memory]`, but the
+        // host ignores it (the desktop/web hosts point at the same path).
+        assert!(
+            resolve_host_memory_enabled(false, Some(&path)),
+            "a host that did not opt in must keep its memory system"
+        );
+
+        // Opted in: the switch is adopted.
+        assert!(!resolve_host_memory_enabled(true, Some(&path)));
+    }
+
+    /// A broken or absent file must keep memory ON rather than silently
+    /// stripping it (fail-open, mirroring the tool policy).
+    #[test]
+    fn host_memory_switch_fails_open_when_the_file_is_unusable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("absent.toml");
+        assert!(resolve_host_memory_enabled(true, Some(&missing)));
+
+        let broken = dir.path().join("broken.toml");
+        std::fs::write(&broken, "not = = toml\n").unwrap();
+        assert!(resolve_host_memory_enabled(true, Some(&broken)));
+
+        // No path at all (tests / hosts without the convention).
+        assert!(resolve_host_memory_enabled(true, None));
+
+        // A file that is fine but declares nothing relevant.
+        let plain = dir.path().join("plain.toml");
+        std::fs::write(&plain, "default_model = \"octo/coral\"\n").unwrap();
+        assert!(resolve_host_memory_enabled(true, Some(&plain)));
+    }
+
     /// The desktop/web hosts share `~/.agent-store/config.toml` with the Store
     /// host for providers and marketplaces. A `[tools]` table in that file must
     /// therefore not narrow *their* sessions: only the host that opted in
     /// (`apps/agent-store`) adopts it.
     #[test]
-    fn tool_policy_is_adopted_only_by_the_host_that_opts_in() {
-        let dir = tempfile::TempDir::new().unwrap();
+    fn tool_policy_is_adopted_only_by_the_host_that_opts_in() {        let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,

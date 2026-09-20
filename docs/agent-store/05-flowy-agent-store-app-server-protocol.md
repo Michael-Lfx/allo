@@ -1047,6 +1047,15 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
 不含 `/`、或 provider key 不在 `[providers.<key>]` 中同样被拒——**运行时解析不了
 的默认值不写**（未声明的 *model* 允许，运行时按请求注册它）。
 
+> **`[memory] enabled` 是宿主策略，不在白名单里**（2026-09-20 加入）。它是内置（文件型）
+> 记忆系统的**总开关**，比同一张表的 `distill_enabled` 宽：`false` 时系统提示词的记忆段落、
+> `remember` 工具、轮后蒸馏、引用回写**四面同时停**。读取口径与 `[tools]` 完全一致——
+> 由**采纳了该文件的宿主**（`apps/agent-store`）在启动时读一次（`AppServices::from_config`
+> 的 `resolve_host_memory_enabled`），经 `AgentFactoryDeps.memory_enabled` **按值**透到
+> `NomiResolvedConfig`；桌面端与 Web 宿主读同一文件但**不采纳**。缺省 `true` = 与以前逐字节一致。
+> 刻意**不**开写入白名单、设置界面也不给开关：总开关影响面远大于蒸馏，`distill_enabled`
+> 有 UI 而它只能手改 + 重启。失败模式与 `[tools]` 同为 **fail-open**（文件坏 / 无此表 → 保持开启）。
+
 写入是**最小改动**：只重写目标键，文件其余内容、注释与排版原样保留（`toml_edit`）；
 缺失的键插在文件头注释之后、第一个 `[table]` 之前（绝不落到某张表里），并以同目录
 临时文件 + `rename` 原子替换。响应是**写后重读**的 `AppServerConfigView`，客户端看到
@@ -1595,6 +1604,27 @@ create 相同的模型解析（已注册 UUID 直通或 config.toml provider key
 2. `[providers.<provider>]` 中的 `type` / `api_key` / `base_url` / `enabled`；
 3. `[models."<provider>/<model>"]` 中的 `model` / `display_name` /
    `max_context_size` 等。
+
+`[models.*]` 各键的实际落点：
+
+| 键 | 落点 | 说明 |
+| --- | --- | --- |
+| `model` / `display_name` / `max_context_size` | provider 的 `models` 与 `provider_models` 行 | 随注册写入（`model_context_limits` / `model_descriptions` 映射） |
+| `max_output_size` | `provider_models.output_limit` | 经**行级** `provider_models` 写面（与设置界面同一路径）：provider DTO 没有对应的 map 列。缺失或 `<= 0` 时保持 NULL——即"没声明上限"，绝不编造默认值 |
+| `protocol` | `provider_models.protocol` | 同上。仅 `map_nomi_provider` 已识别的拼写生效（`new-api` + `anthropic`，以及 responses 两种写法），其余如实入库但引擎当前不采纳 |
+| `capabilities` / `reasoning_key` | — | 目前**仅解析、不消费**（保留键位以兼容 kimi-code 的配置文件布局） |
+
+`max_output_size` 的上限语义是硬性的：`anthropic` / `bedrock` / `vertex`
+协议的线上请求必须带 `max_tokens`，这三者的模型行若 `output_limit` 为
+NULL，运行时构建直接以 `BAD_REQUEST` 失败（`nomi-config` 的
+`requires_output_ceiling`）。因此该键**不填即无上限**，不是"交给上游取默认
+值"——`openai` / `openai-responses` 才允许省略。
+
+`output_limit` / `protocol` 的补齐是**只填空、不覆盖**：仅当行为 NULL 时用
+配置值写入。理由是 `resolve_app_server_model` 每次模型解析都会跑，必须幂等；
+而运行时那条报错本身引导用户去「设置 → 模型」手填，若之后又用配置回写就会
+静默推翻用户的选择。同一 provider key 复用时也会执行这次补齐，所以早前版本
+注册出的 NULL 行会在下次解析时被就地修复。
 
 首次使用时后端**原子地**把该 provider 注册进 Allo provider 仓储
 （API key 加密存储、`provider_models` 同步生成），并以注册得到的规范
