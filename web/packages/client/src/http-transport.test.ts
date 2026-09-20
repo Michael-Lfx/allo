@@ -254,7 +254,7 @@ describe("HttpTransport · route table count guard", () => {
    * Mapping a new method (or dropping one) fails the assertions below — update
    * the guide in the same change.
    */
-  const DOCUMENTED_ROUTE_SPLIT = { mapped: 48, unmapped: 23 } as const;
+  const DOCUMENTED_ROUTE_SPLIT = { mapped: 48, unmapped: 25 } as const;
 
   const DOCUMENTED_UNMAPPED = [
     "initialize",
@@ -270,6 +270,11 @@ describe("HttpTransport · route table count guard", () => {
     "agent/get",
     "team/list",
     "team/get",
+    // Expert definition export (doc 32): the whole agent/team family is
+    // WebSocket-only — not one of these four has an HTTP route — so the two
+    // export methods join them here rather than adding mapped entries.
+    "agent/export",
+    "team/export",
     // Host settings file (doc 16 R16): WebSocket-only host management surface,
     // like the catalogs above — and deliberately absent from this package's
     // client. Deliberately *not* an access boundary: the transport is public and

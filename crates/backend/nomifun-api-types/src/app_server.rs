@@ -557,6 +557,202 @@ pub struct AppServerTeamDetail {
 }
 
 // ---------------------------------------------------------------------------
+// Expert export / ExpertPack (docs/agent-store/32-expert-pack-export.zh.md)
+// ---------------------------------------------------------------------------
+
+/// Format version of [`AppServerExpertPack`].
+///
+/// **Deliberately independent of the protocol fingerprint** (`fp-<n>`): the
+/// fingerprint versions *our* App Server wire compatibility, while this value
+/// versions the **artifact contract for third-party runtimes**. Binding the two
+/// would make every unrelated wire change force every external runtime to
+/// re-adapt; omitting it would let a field change break them silently. Bump it
+/// only when the pack's shape changes (doc `32` §4.4).
+pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 1;
+
+/// Which catalog kind a pack describes.
+///
+/// The wire keeps `agent` / `team` as two kinds (cf. `MentionKind`). A pack is an
+/// *artifact*, not a third kind, so `expert` never appears in a `kind` position
+/// (doc `32` §4.1 — the word does exist elsewhere on the wire, e.g.
+/// `AppServerAgentDetail::expert_type`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppServerExpertPackKind {
+    Agent,
+    Team,
+}
+
+/// A portable expert definition produced by `agent/export` / `team/export`.
+///
+/// This is the **only** public face that carries an expert's persona. It is
+/// deliberately *not* a field on [`AppServerAgentDetail`]: the catalog face is
+/// what every store UI calls, and doc `32` §2 keeps the two apart precisely so
+/// the export gate can live on its own methods.
+///
+/// A pack carries a **definition, not execution semantics**. How a team plans and
+/// schedules its steps, how tool and credential policy is applied, and the shape
+/// of its events are all enforced by the runtime and are *not* here — doc `32` §5
+/// (R1–R11) lists what a consumer has to implement itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertPack {
+    pub pack_format: u32,
+    pub kind: AppServerExpertPackKind,
+    pub id: String,
+    pub version: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<AppServerLocalizedText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub persona: AppServerExpertPersona,
+    pub model: AppServerExpertModel,
+    #[serde(default)]
+    pub skills: Vec<AppServerExpertSkillRef>,
+    #[serde(default)]
+    pub connectors: Vec<AppServerExpertConnectorRef>,
+    pub tool_policy: AppServerExpertToolPolicy,
+    /// Present exactly when `kind == Team`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<AppServerExpertTeamPack>,
+    pub provenance: AppServerExpertProvenance,
+    pub runtime_binding: AppServerExpertRuntimeBinding,
+}
+
+/// The expert's persona — the only body of text this face carries.
+///
+/// `instructions` is the Agent Markdown body **verbatim**: the importer projects
+/// it into the snapshot payload and the installer copies it into the Preset. The
+/// catalog face withholds exactly this field by design (`frontmatter.rs:114`,
+/// `app_server.rs:435`), so a value here must never also appear there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertPersona {
+    pub instructions: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+}
+
+/// Declared and resolved model hints. Neither is binding.
+///
+/// `declared` is the source frontmatter string (often a name this host cannot
+/// resolve) and `resolved` is what *this* host resolved the preset to. A
+/// consumer resolves its own model and its own precedence chain — doc `32` §5 R6.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertModel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<AppServerExpertModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+}
+
+/// `(provider_id, model)` as resolved on the host that produced the pack.
+///
+/// `provider_id` is **host-local** (a row id on that host) and is not portable;
+/// `model` is the portable half. Both are reported so a consumer can tell "same
+/// model, different host" from "different model".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertModelRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    pub model: String,
+}
+
+/// One skill the expert declares, **by reference**.
+///
+/// The bytes are deliberately not inlined (doc `32` §2): a skill is a directory
+/// (auxiliary files included), `skill/files` / `skill/file` already serve it, and
+/// inlining would create a second source of truth. `id` and `name` are the same
+/// string — `skill/list` publishes the skill name as its id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertSkillRef {
+    pub name: String,
+    pub id: String,
+}
+
+/// One connector a **team's own snapshot** installed and left enabled.
+///
+/// Identity and switch only — no transport, env, headers or token ever crosses
+/// this seam (`24` §2/§5.3); tool schemas stay on `connector/get`.
+///
+/// An **agent** pack's list is always empty, and that is faithful rather than a
+/// gap: this format has no agent-level connector dependency (`02` §5.1 — a
+/// plugin-level `mcpServers` is a plugin capability and explicitly *not* a
+/// per-agent grant), so mapping it would invent authority the import never
+/// established.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertConnectorRef {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// The expert's declared tool surface.
+///
+/// A **declaration, never a permission boundary**: tool / file / network /
+/// credential authority is computed by runtime policy, not from persona text
+/// (`04` §3.2; doc `32` §5 R9).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertToolPolicy {
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
+}
+
+/// Team roster and policy.
+///
+/// The **roster is a hard boundary**; the policy fields are free-form *intent*
+/// that a consumer must translate into its own enforceable rules (doc `32` §5
+/// R2/R3/R4). The runtime's own planner is not part of the pack.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertTeamPack {
+    pub lead_agent_id: String,
+    pub member_agent_ids: Vec<String>,
+    pub planner_policy: String,
+    #[serde(default)]
+    pub routing_constraints: Vec<String>,
+    pub workflow_limits: serde_json::Value,
+    #[serde(default)]
+    pub team_runtime_capabilities: Vec<String>,
+    /// Fully expanded member packs, **leader first**. `team/export` fails rather
+    /// than emit a partial roster (doc `32` §6.4).
+    pub members: Vec<AppServerExpertPack>,
+}
+
+/// Where a pack came from, for attribution and drift detection.
+///
+/// There is deliberately **no export timestamp**: two exports of one snapshot are
+/// byte-identical, so a consumer can key a cache on `content_digest` and diff two
+/// exports to answer "what changed upstream" (doc `32` §4.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertProvenance {
+    pub source: String,
+    pub snapshot_id: String,
+    pub content_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_revision: Option<i64>,
+}
+
+/// Which engine this definition was bound to on the host that produced it.
+///
+/// `portable: false` is the normal case, not an error: an installed expert is a
+/// Preset pinned to that host's own runtime agent, which no other runtime has.
+/// The field exists so a consumer can *state* that fact instead of discovering it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppServerExpertRuntimeBinding {
+    pub runtime: String,
+    pub portable: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Installer / runtime registration (roadmap Phase 2)
 // ---------------------------------------------------------------------------
 

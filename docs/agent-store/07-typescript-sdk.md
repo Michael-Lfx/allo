@@ -168,16 +168,26 @@ connect transport
 interface AgentClient {
   list(input?: ListInput): Promise<Page<AgentSummary>>;
   get(id: AgentId, version?: string): Promise<AgentDetail>;
+  // fp-8：导出一份可移植定义。**这是唯一携带 persona 正文的方法**——`get` 刻意没有承载它的字段。
+  export(id: AgentId): Promise<ExpertPack>;
 }
 
 interface TeamClient {
   list(input?: ListInput): Promise<Page<TeamSummary>>;
   get(id: TeamId, version?: string): Promise<TeamDetail>;
   run(input: TeamRunInput): Promise<TeamRunReceipt>;
+  // fp-8：成员逐级展开、**团长在首位**；任一成员不可用则整包失败（不产出残缺名单）。
+  export(id: TeamId, version?: string): Promise<ExpertPack>;
 }
 ```
 
 `TeamDetail.teamRuntimeCapabilities` 必须由服务端返回，SDK 不自行推断完整 Team 能力。Team 详情中的 Leader 是规划角色；单次 TeamRun 的 `planningContextDigest` 只从 Run 查询结果读取，不混入静态 Team 定义。`TeamDetail` 另带 `connectors`：该 Team 快照在本机**已安装且启用**的 Connector id 列表——它是 Team Run 唯一可绑定的 Connector 面（成员 Agent 的 `mcpServers` 按 `02` §5.1 只记录、不映射为授权）。
+
+`export()` 返回的 `ExpertPack` 是**定义，不是执行语义**：persona 正文、模型提示、按引用的技能清单、
+（团的）名单与策略都在，但编排、步骤调度、工具与凭据策略、事件形状都不在。接入方必须逐条回答
+`32-expert-pack-export.zh.md` §5 的 **R1–R11**。两个方法都是 **WebSocket-only**（与 `agent/*` · `team/*`
+整族一致），`HttpTransport` 上没有绑定；`capabilities.expert_export` 只说明方法存在，不保证某个 id
+可导出（那由宿主 `[expert_export]` 逐请求判定，拒绝时是 `policy_denied`）。约定见 `05` §4.1.1 / §4.2.1。
 
 ### 4.2 Skill 与 Connector
 

@@ -1193,6 +1193,15 @@ pub struct AppServices {
     /// that *is* on, `allow` narrows and `deny` subtracts — an absent `allow`
     /// lets the enabled connectors through (doc `26` §4).
     pub connector_proxy_policy: nomifun_app_server::agent_store::ConnectorProxyPolicy,
+    /// The host's `[expert_export]` gate, resolved once at startup (doc `32`
+    /// §6.2).
+    ///
+    /// Fail-**open** at the table: every host that does not declare
+    /// `[expert_export]` carries
+    /// [`nomifun_app_server::agent_store::ExpertExportPolicy::allow_all`],
+    /// because this table only subtracts. `enabled = false` is the operator's
+    /// opt-out; `deny` subtracts individual ids.
+    pub expert_export_policy: nomifun_app_server::agent_store::ExpertExportPolicy,
     /// The raw `--adopt-store-mcp-declarations` flag the resolved
     /// `mcp_declarations` below came from.
     ///
@@ -1604,6 +1613,14 @@ const TOOLS_ENV: &str = "AGENT_STORE_TOOLS";
 /// call proxy through the environment either.
 const CONNECTOR_PROXY_ENV: &str = "AGENT_STORE_CONNECTOR_PROXY";
 
+/// Environment override for the expert export gate (`[expert_export]`, doc `32`
+/// §6.2).
+///
+/// Same shape and same whole-replacement rule as [`TOOLS_ENV`] / `[tools]`, and
+/// gated by the same adopt flag so the desktop and web hosts cannot be
+/// *narrowed* through the environment either.
+const EXPERT_EXPORT_ENV: &str = "AGENT_STORE_EXPERT_EXPORT";
+
 /// Resolve this host's connector call policy (doc `24` §5.1, doc `26`).
 ///
 /// Two deliberate properties, both load-bearing:
@@ -1728,6 +1745,54 @@ fn resolve_host_tool_policy(
     path.and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok)
         .map(|stored| stored.tool_policy())
         .unwrap_or_default()
+}
+
+/// Resolve this host's expert export gate (doc `32` §6.2).
+///
+/// Deliberately the **`[tools]` shape, not the `[connector_proxy]` shape**:
+/// `[expert_export]` only ever subtracts, so every failure arm lands on the
+/// permissive default rather than on deny-all.
+///
+/// - **A non-adopting host gets the default, not `deny_all`.** The desktop and
+///   web hosts point at the same config file for providers and marketplaces;
+///   letting its `[expert_export]` table govern *their* export face would be a
+///   silent policy change neither host asked for. Their default is "nothing
+///   subtracted", which is what the table means when absent.
+/// - **An unusable `AGENT_STORE_EXPERT_EXPORT` falls back to the file**, exactly
+///   like [`TOOLS_ENV`]: the operator's own declared table beats silently
+///   ignoring their intent over a typo. (Contrast
+///   [`resolve_connector_proxy_policy`], where the same failure stays deny-all
+///   because that table *grants* execution.)
+///
+/// Kept pure so the rule above is testable without booting a database.
+fn resolve_expert_export_policy(
+    adopt: bool,
+    path: Option<&std::path::Path>,
+    env: Option<&str>,
+) -> nomifun_app_server::agent_store::ExpertExportPolicy {
+    use nomifun_app_server::agent_store::{AgentStoreConfig, AgentStoreExpertExport, ExpertExportPolicy};
+
+    if !adopt {
+        return ExpertExportPolicy::allow_all();
+    }
+    if let Some(raw) = env.map(str::trim).filter(|raw| !raw.is_empty()) {
+        match serde_json::from_str::<AgentStoreExpertExport>(raw) {
+            Ok(declared) => {
+                tracing::info!(
+                    target: "agent_store_expert_export",
+                    "expert export policy taken from {EXPERT_EXPORT_ENV}; the config file's [expert_export] table is ignored"
+                );
+                return ExpertExportPolicy::from_declared(&declared);
+            }
+            Err(error) => tracing::warn!(
+                target: "agent_store_expert_export",
+                "{EXPERT_EXPORT_ENV} is not a valid expert export policy ({error}); falling back to the config file"
+            ),
+        }
+    }
+    path.and_then(AgentStoreConfig::load_ok)
+        .map(|stored| stored.expert_export_policy())
+        .unwrap_or_else(ExpertExportPolicy::allow_all)
 }
 
 /// Resolve this host's MCP server declarations from `mcp.json`.
@@ -3367,6 +3432,28 @@ impl AppServices {
             }
         }
 
+        // Host-owned expert **definition export** gate (`[expert_export]`, doc
+        // `32` §6.2). Read here for the same reason as the two above: it is a
+        // host fact decided at startup, not a per-request lookup.
+        //
+        // Unlike `[connector_proxy]` this table only *subtracts*, so it adopts
+        // the `[tools]` failure direction (fail-open) and the default is "on".
+        // That default is invisible without being said out loud, so it is logged
+        // once per boot.
+        let export_env = std::env::var(EXPERT_EXPORT_ENV).ok();
+        let expert_export_policy = resolve_expert_export_policy(
+            config.adopt_store_tool_policy,
+            config.agent_store_config_path.as_deref(),
+            export_env.as_deref(),
+        );
+        if config.adopt_store_tool_policy {
+            tracing::info!(
+                target: "agent_store_expert_export",
+                enabled = expert_export_policy.is_enabled(),
+                "expert definition export gate resolved for this host"
+            );
+        }
+
         // Host-owned MCP server declarations, read once at startup from
         // `mcp.json` next to the same config file (`20` §7.9 / `21` D14). Same
         // host gating as `[tools]`, and the same "report once here" posture:
@@ -3700,6 +3787,7 @@ impl AppServices {
             adopt_store_mcp_declarations: config.adopt_store_mcp_declarations,
             tool_policy,
             connector_proxy_policy,
+            expert_export_policy,
             mcp_declarations,
             delegate_sink_provider_slot,
             runtime_capabilities: capabilities.runtime_capabilities,

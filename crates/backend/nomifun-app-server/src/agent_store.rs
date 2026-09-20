@@ -133,6 +133,23 @@ pub struct AgentStoreConfig {
     /// expose a call proxy.
     #[serde(default)]
     pub connector_proxy: Option<AgentStoreConnectorProxy>,
+    /// `[expert_export]` — the expert-definition export face (`agent/export`,
+    /// `team/export`; doc `32` §6.2).
+    ///
+    /// ```toml
+    /// [expert_export]
+    /// enabled = true    # absent table = on
+    /// deny = []         # optional subtraction; agent or team ids
+    /// ```
+    ///
+    /// **A *subtraction* table, and therefore fail-open** — the opposite of
+    /// `[connector_proxy]`, which *grants* execution. This face only reads
+    /// curated bytes, which is the same class of thing `skill/files` already
+    /// serves with no gate at all; a broken file here is at worst "the
+    /// subtraction did not happen". Doc `32` §6.2 records why the earlier
+    /// fail-closed shape was wrong.
+    #[serde(default)]
+    pub expert_export: Option<AgentStoreExpertExport>,
     /// `[credentials]` — values for `secret:NAME` references (`17` §6 / `21`
     /// D5=C).
     ///
@@ -326,6 +343,98 @@ fn clean_entries(entries: &[String]) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// `[expert_export]` in `~/.agent-store/config.toml` (doc `32` §6.2).
+///
+/// Hand-edited, and **not** on the `config/set` whitelist — same reason as
+/// `[connector_proxy]`: it is a host-policy table, not a per-request setting, and
+/// a remote caller has no business widening who may take definitions off this
+/// machine.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentStoreExpertExport {
+    /// Absent = **on**. `false` switches the whole export face off.
+    ///
+    /// The default is deliberately the permissive one: this table only
+    /// subtracts, and `enabled = false` is an operator's opt-out, not the
+    /// baseline (doc `32` §6.2).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// **Optional subtraction**: these ids are never exported. Entries are agent
+    /// or team component ids (the same opaque ids `agent/list` / `team/list`
+    /// publish).
+    ///
+    /// Absent and empty mean the same thing here — nothing is subtracted — which
+    /// is why this is an `Option` purely for shape symmetry with
+    /// `[connector_proxy]`, not because the two states differ.
+    #[serde(default)]
+    pub deny: Option<Vec<String>>,
+}
+
+/// The `[expert_export]` table, resolved into the form the export gate uses.
+///
+/// Fail-**open** on purpose (see [`AgentStoreConfig::expert_export_policy`]):
+/// the wire still distinguishes `policy_denied` from `not_found`, so a caller can
+/// tell "you turned this off" from "there is no such expert" — the same
+/// distinction `preset_disabled` / `agent_not_installed` exist for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpertExportPolicy {
+    enabled: bool,
+    deny: std::collections::HashSet<String>,
+}
+
+impl Default for ExpertExportPolicy {
+    /// The default-open policy: the face is available and nothing is subtracted.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            deny: std::collections::HashSet::new(),
+        }
+    }
+}
+
+impl ExpertExportPolicy {
+    /// The default-open policy, named so call sites read as an intent rather than
+    /// as `::default()`.
+    pub fn allow_all() -> Self {
+        Self::default()
+    }
+
+    /// Build from the declared table. A table with no `enabled` key is **on**.
+    pub fn from_declared(declared: &AgentStoreExpertExport) -> Self {
+        Self {
+            enabled: declared.enabled.unwrap_or(true),
+            deny: declared
+                .deny
+                .as_ref()
+                .map(|entries| clean_entries(entries))
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// `Ok(())` when `id` may be exported, otherwise the operator-facing reason.
+    ///
+    /// Messages are caller-rendered, the same shape
+    /// [`ConnectorProxyPolicy::decide`] uses. The id is matched exactly: unlike
+    /// `[tools]`, there is no glob namespace here, so a typo narrows nothing and
+    /// silently leaves the entry exportable — which is the honest reading of a
+    /// subtraction table.
+    pub fn decide(&self, id: &str) -> Result<(), String> {
+        if !self.enabled {
+            return Err(
+                "expert export is switched off on this host; remove `[expert_export] enabled = false`"
+                    .to_owned(),
+            );
+        }
+        if self.deny.contains(id) {
+            return Err(format!("`{id}` is listed in [expert_export].deny"));
+        }
+        Ok(())
+    }
+}
+
 impl AgentStoreConfig {
     /// The `[connector_proxy]` policy, defaults filled in.
     ///
@@ -341,6 +450,20 @@ impl AgentStoreConfig {
         match self.connector_proxy.as_ref() {
             Some(declared) => ConnectorProxyPolicy::from_declared(declared),
             None => ConnectorProxyPolicy::deny_all(),
+        }
+    }
+
+    /// The `[expert_export]` policy, defaults filled in.
+    ///
+    /// Absent **table** → [`ExpertExportPolicy::allow_all`], mirroring `[tools]`
+    /// (fail-open): this table only ever subtracts, so "unset" means "nothing was
+    /// subtracted", not "everything was granted". Compare
+    /// [`AgentStoreConfig::connector_proxy_policy`], where the same absence means
+    /// deny-all — because *that* table grants execution.
+    pub fn expert_export_policy(&self) -> ExpertExportPolicy {
+        match self.expert_export.as_ref() {
+            Some(declared) => ExpertExportPolicy::from_declared(declared),
+            None => ExpertExportPolicy::allow_all(),
         }
     }
 }

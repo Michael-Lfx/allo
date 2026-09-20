@@ -12,7 +12,7 @@ use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityTriple,
     AppServerConnectorCallResult, AppServerConnectorDetail, AppServerConnectorProbeResult,
     AppServerConnectorStatusView,
-    AppServerConnectorSummary, AppServerImportDetail, AppServerImportRequest,
+    AppServerConnectorSummary, AppServerExpertPack, AppServerImportDetail, AppServerImportRequest,
     AppServerImportResult, AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceEntry, AppServerMarketplaceEntrySnapshot, AppServerMarketplaceRefreshResult,
@@ -333,6 +333,66 @@ pub trait StoreProvider: Send + Sync {
 pub trait TeamCatalogProvider: Send + Sync {
     async fn list(&self) -> Result<Vec<AppServerTeamSummary>, AppError>;
     async fn get(&self, id: &str) -> Result<AppServerTeamDetail, AppError>;
+}
+
+/// Why an expert export failed, at the seam.
+///
+/// A dedicated type rather than [`AppError`] for the same reason
+/// [`SkillFileError`] is one: the wire has to distinguish "your policy said no"
+/// and "you never installed this" from "there is no such Definition", and
+/// `AppError` cannot carry a new code without widening the shared enum that every
+/// crate matches on exhaustively.
+#[derive(Debug)]
+pub enum ExpertPackError {
+    /// The host's `[expert_export]` table switched the face off, or the id is in
+    /// its `deny` list. Never conflated with `NotFound`: "you turned this off"
+    /// and "this does not exist" are different answers (same rule as
+    /// `preset_disabled` / `agent_not_installed`).
+    PolicyDenied(String),
+    /// The Definition exists but was never installed, so there is no Preset and
+    /// nothing runnable to describe. For a team this names the missing member —
+    /// a ten-member roster must not answer "some member is missing".
+    NotInstalled(String),
+    /// Installed but switched off by `install/disable`.
+    Disabled(String),
+    NotFound(String),
+    /// Refused before serializing because the pack would exceed the cap.
+    TooLarge { size: u64, limit: u64 },
+    Internal(String),
+}
+
+/// Largest serialized pack this face will return.
+///
+/// A pack is a *definition*, not a payload — skills travel by reference
+/// (`docs/agent-store/32` §2), so even a large team lands far below this. The cap
+/// exists so a pathological roster cannot turn one call into an unbounded
+/// response. An oversized pack is **refused rather than truncated**: a shortened
+/// JSON document would be parsed and believed.
+pub const MAX_EXPERT_PACK_BYTES: u64 = 1024 * 1024;
+
+/// Expert definition export (`agent/export`, `team/export`, doc `32`).
+///
+/// Deliberately separate from [`AgentCatalogProvider`] / [`TeamCatalogProvider`]:
+/// those two never carry a persona (`frontmatter.rs:114`, `app_server.rs:435`),
+/// and the store UI calls them on every browse. Folding the body into
+/// `agent/get` would move this face's gate onto a method that cannot have one —
+/// which is the whole reason it is its own seam.
+///
+/// The persona is the only bulk text that crosses here. Connector transport,
+/// credentials, tool schemas and every runtime-internal id stay behind
+/// (`24` §2/§5.3).
+#[async_trait]
+pub trait ExpertPackProvider: Send + Sync {
+    /// One AgentDefinition as a portable pack.
+    async fn export_agent(&self, agent_id: &str) -> Result<AppServerExpertPack, ExpertPackError>;
+
+    /// One TeamDefinition as a portable pack: the roster, its policy, and every
+    /// member expanded with the **leader first**.
+    ///
+    /// Fails as a whole when a member cannot be described. A partial roster is
+    /// precisely the "looks usable" artifact doc `32` §6.4 refuses to emit, and
+    /// `team/run` already refuses the same case before creating anything.
+    async fn export_team(&self, team_id: &str) -> Result<AppServerExpertPack, ExpertPackError>;
 }
 
 /// Public model directory seam (`models/list`, REQ-PAR-05b). Projects the

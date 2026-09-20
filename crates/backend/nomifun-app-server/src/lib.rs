@@ -18,9 +18,10 @@ pub use agent_store::{
 };
 pub use catalog::{
     AgentCatalogProvider, ConnectorAuthProvider, ConnectorCallError, ConnectorCallProvider,
-    ConnectorCatalogProvider, ImportProvider,
+    ConnectorCatalogProvider, ExpertPackError, ExpertPackProvider, ImportProvider,
     InstallProvider, MarketplaceProvider, ModelCatalogProvider, MAX_CONNECTOR_CALL_RESULT_BYTES,
     MAX_CONNECTOR_TOOLS_BYTES,
+    MAX_EXPERT_PACK_BYTES,
     MAX_SKILL_FILE_BYTES,
     SkillCatalogProvider, SkillFileBytes, SkillFileError, SkillFileProvider, StoreProvider,
     TeamCatalogProvider,
@@ -77,6 +78,7 @@ use nomifun_api_types::{
     AppServerConnectorCallResult,
     AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
+    AppServerExpertPack,
     AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
     AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
@@ -152,7 +154,15 @@ use tokio::sync::mpsc;
 /// `source_kind: "zip"` — one archive whose root *is* the market root — and the
 /// official bundles move to it, because the old `url` form made a first fetch
 /// mirror 14,714 files (611 MiB) for `experts` alone (doc 30).
-pub const PROTOCOL_VERSION: &str = "fp-7";
+/// **`fp-8` adds expert definition export**: `agent/export` and `team/export`
+/// return a portable `AppServerExpertPack` — the persona, model hints, skill
+/// references and (for a team) the roster with every member expanded. No method
+/// is *removed* and nothing existing changes shape, but the response carries the
+/// Agent Markdown body, which the catalog faces deliberately never do
+/// (`frontmatter.rs:114`, `app_server.rs:435`); see doc 32. Both methods are
+/// WebSocket-only, like the rest of the agent/team family, so the documented
+/// route split moves to `48 / 73` (mapped unchanged, two new unmapped).
+pub const PROTOCOL_VERSION: &str = "fp-8";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +276,13 @@ pub struct CapabilityAvailability {
     pub team_runtime: bool,
     pub store: bool,
     pub models: bool,
+    /// `agent/export` / `team/export` readiness — the expert **definition**
+    /// seam, which is wired independently of the catalogs it reads (doc `32`).
+    ///
+    /// Reports the seam, not the policy: the `[expert_export]` table is evaluated
+    /// per request by the provider (same split as `connector_calls`, which is
+    /// wired even on a host whose `[connector_proxy]` is off).
+    pub expert_export: bool,
 }
 
 impl CapabilityAvailability {
@@ -286,6 +303,7 @@ impl CapabilityAvailability {
             team_runtime: state.team_catalog.is_some() && state.engine.is_some(),
             store: state.store.is_some(),
             models: state.models.is_some(),
+            expert_export: state.expert_packs.is_some(),
         }
     }
 }
@@ -497,6 +515,10 @@ pub struct Capabilities {
     pub marketplaces: bool,
     pub store: bool,
     pub models: bool,
+    /// `agent/export` / `team/export` readiness — see
+    /// [`CapabilityAvailability::expert_export`]. Reports the **seam**, not the
+    /// host's `[expert_export]` policy (that decision is made per request).
+    pub expert_export: bool,
 }
 
 impl Capabilities {
@@ -524,6 +546,7 @@ impl Capabilities {
             marketplaces: availability.marketplaces,
             store: availability.store,
             models: availability.models,
+            expert_export: availability.expert_export,
         }
     }
 }
@@ -1149,6 +1172,13 @@ pub struct AppServerRouterState {
     pub agent_catalog: Option<Arc<dyn AgentCatalogProvider>>,
     /// Agent Store Team catalog (05 §4.2). `None` keeps `teams` off.
     pub team_catalog: Option<Arc<dyn TeamCatalogProvider>>,
+    /// Expert **definition export** (`agent/export`, `team/export`, doc `32`).
+    ///
+    /// Wired unconditionally where the agent/team catalogs exist, exactly like
+    /// `connector_calls`: the provider's own first gate is the host's
+    /// `[expert_export]` table, so "wired" never means "exportable". `None` keeps
+    /// the `expert_export` capability off and answers `unsupported_operation`.
+    pub expert_packs: Option<Arc<dyn ExpertPackProvider>>,
     /// The single Agent Execution facade (`16` §7 决策 3).
     ///
     /// `team/run` needs more than the [`AgentRuntimeAdapter`] projection: it
@@ -1199,6 +1229,7 @@ impl Default for AppServerRouterState {
             markets: None,
             agent_catalog: None,
             team_catalog: None,
+            expert_packs: None,
             engine: None,
             store: None,
             models: None,
@@ -2006,6 +2037,99 @@ fn team_catalog_provider(
             false,
         )
     })
+}
+
+// --- expert definition export (doc 32) -------------------------------------
+
+fn expert_pack_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn ExpertPackProvider>, AppServerError> {
+    state.expert_packs.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "expert export is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+/// Map a seam-level export failure onto its stable wire code.
+///
+/// `policy_denied` is kept distinct from `not_found`, and `agent_not_installed` /
+/// `agent_disabled` from both: "you turned this off" and "you never installed
+/// this" and "there is no such Definition" are three different answers, exactly
+/// as they are for `preset_disabled` / `agent_not_installed` on the run paths.
+fn expert_pack_error(error: ExpertPackError) -> AppServerError {
+    match error {
+        ExpertPackError::PolicyDenied(message) => {
+            AppServerError::new("policy_denied", message, StatusCode::FORBIDDEN, false)
+        }
+        ExpertPackError::NotInstalled(message) => {
+            AppServerError::new("agent_not_installed", message, StatusCode::BAD_REQUEST, false)
+        }
+        ExpertPackError::Disabled(message) => {
+            AppServerError::new("agent_disabled", message, StatusCode::BAD_REQUEST, false)
+        }
+        ExpertPackError::NotFound(message) => {
+            AppServerError::new("not_found", message, StatusCode::NOT_FOUND, false)
+        }
+        ExpertPackError::TooLarge { size, limit } => AppServerError::new(
+            "response_too_large",
+            format!("expert pack is {size} bytes; the limit is {limit}"),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+        ),
+        ExpertPackError::Internal(message) => AppServerError::new(
+            "internal_error",
+            message,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            true,
+        ),
+    }
+}
+
+async fn export_agent_impl(
+    state: &AppServerRouterState,
+    agent_id: &str,
+) -> Result<AppServerExpertPack, AppServerError> {
+    expert_pack_provider(state)?
+        .export_agent(agent_id)
+        .await
+        .map_err(expert_pack_error)
+}
+
+/// `team/export`, with the `team_version` guard the other team entry points share.
+///
+/// The version check runs against the **pack's own** version rather than being
+/// pushed into the seam: the pack already carries it, so the protocol layer has
+/// everything it needs and the seam stays a two-method read face. A mismatch
+/// still fails before the caller sees anything, which is the whole point of the
+/// guard (`team/run` answers `version_mismatch` for the same input).
+async fn export_team_impl(
+    state: &AppServerRouterState,
+    team_id: &str,
+    team_version: Option<&str>,
+) -> Result<AppServerExpertPack, AppServerError> {
+    let pack = expert_pack_provider(state)?
+        .export_team(team_id)
+        .await
+        .map_err(expert_pack_error)?;
+    if let Some(requested) = team_version.map(str::trim)
+        && !requested.is_empty()
+        && requested != pack.version
+    {
+        return Err(AppServerError::new(
+            "version_mismatch",
+            format!(
+                "team {team_id} is installed at version {}, not {requested}",
+                pack.version
+            ),
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    Ok(pack)
 }
 
 async fn run_import_impl(
@@ -7126,6 +7250,23 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode team: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // ---------------- Expert definition export (doc 32) ----------------
+        "agent/export" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsAgentExport>(params)?;
+            let pack = export_agent_impl(state, &params.agent_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(pack).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode expert pack: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "team/export" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsTeamExport>(params)?;
+            let pack = export_team_impl(state, &params.team_id, params.team_version.as_deref()).await?;
+            Ok(ws_response(request_id, serde_json::to_value(pack).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode expert pack: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         // ---------------- Agent Store unified store catalog (Phase 3) ----------------
         "store/list" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
@@ -7438,6 +7579,25 @@ struct WsAgentQuery {
 #[serde(deny_unknown_fields)]
 struct WsTeamQuery {
     team_id: String,
+}
+
+/// `agent/export` params (doc `32` §6.1). Deliberately no `agent_version`: the
+/// agent entry points do not pin one either (`agent/get`, `agent/run`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsAgentExport {
+    agent_id: String,
+}
+
+/// `team/export` params. `team_version` is accepted here for the same reason
+/// `team/run` accepts it — a caller that pinned a version wants to know it got
+/// that version — but it is checked against the pack, not the catalog.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsTeamExport {
+    team_id: String,
+    #[serde(default)]
+    team_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -11465,6 +11625,259 @@ model = "mimo-v2.5-free"
 
     // ---- Skill file tree: `skill/files` · `skill/file` (doc 24 §4) ----------
     //
+    // --- expert definition export (doc `32`) -------------------------------
+    //
+    // These pin the *protocol* layer's half of the contract, mirroring the
+    // skill-file group below: the capability bit tracks the seam, an uninjected
+    // seam stays closed, and every seam error keeps its own stable wire code —
+    // notably that a policy refusal is `policy_denied` and NOT `not_found`, and
+    // that `response_too_large` is not folded into `invalid_request`.
+
+    /// A persona body distinctive enough that finding it anywhere else is proof
+    /// of a leak, not a coincidence.
+    const PERSONA_SENTINEL: &str = "PERSONA-ONLY-IN-THE-PACK-e7f1";
+
+    fn sample_expert_pack() -> AppServerExpertPack {
+        AppServerExpertPack {
+            pack_format: nomifun_api_types::APP_SERVER_EXPERT_PACK_FORMAT,
+            kind: nomifun_api_types::AppServerExpertPackKind::Agent,
+            id: "wb-demo-software-team-lead".into(),
+            version: "1.0.0".into(),
+            name: "software-team-lead".into(),
+            display_name: None,
+            description: Some("lead".into()),
+            persona: nomifun_api_types::AppServerExpertPersona {
+                instructions: PERSONA_SENTINEL.into(),
+                memory: None,
+                background: None,
+            },
+            model: nomifun_api_types::AppServerExpertModel {
+                declared: Some("gpt-5".into()),
+                resolved: None,
+                effort: None,
+                max_turns: None,
+            },
+            skills: vec![nomifun_api_types::AppServerExpertSkillRef {
+                name: "release-notes".into(),
+                id: "release-notes".into(),
+            }],
+            connectors: vec![],
+            tool_policy: nomifun_api_types::AppServerExpertToolPolicy {
+                tools: vec!["read_file".into()],
+                disallowed_tools: vec![],
+            },
+            team: None,
+            provenance: nomifun_api_types::AppServerExpertProvenance {
+                source: "codebuddy-plugin".into(),
+                snapshot_id: "snap-demo".into(),
+                content_digest: "digest-demo".into(),
+                preset_id: Some("preset-demo".into()),
+                preset_revision: Some(3),
+            },
+            runtime_binding: nomifun_api_types::AppServerExpertRuntimeBinding {
+                runtime: "nomi".into(),
+                portable: false,
+            },
+        }
+    }
+
+    /// Expert pack seam stub. `fail` is interior-mutable for the same reason
+    /// `FakeSkillFiles::fail` is: the trait takes `&self` while a test needs to
+    /// hand back one specific error.
+    struct FakeExpertPacks {
+        pack: AppServerExpertPack,
+        fail: std::sync::Mutex<Option<ExpertPackError>>,
+    }
+
+    impl FakeExpertPacks {
+        fn ok(pack: AppServerExpertPack) -> Self {
+            Self {
+                pack,
+                fail: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn failing(error: ExpertPackError) -> Self {
+            Self {
+                pack: sample_expert_pack(),
+                fail: std::sync::Mutex::new(Some(error)),
+            }
+        }
+
+        fn take_failure(&self) -> Option<ExpertPackError> {
+            self.fail.lock().expect("fake expert pack lock").take()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ExpertPackProvider for FakeExpertPacks {
+        async fn export_agent(
+            &self,
+            _agent_id: &str,
+        ) -> Result<AppServerExpertPack, ExpertPackError> {
+            if let Some(error) = self.take_failure() {
+                return Err(error);
+            }
+            Ok(self.pack.clone())
+        }
+
+        async fn export_team(&self, _team_id: &str) -> Result<AppServerExpertPack, ExpertPackError> {
+            if let Some(error) = self.take_failure() {
+                return Err(error);
+            }
+            Ok(self.pack.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn expert_export_requires_its_own_capability() {
+        // The agent/team catalogs alone must NOT advertise export: a client that
+        // saw `agents: true` and called `agent/export` would get
+        // `unsupported_operation` after the fact.
+        let catalog_only = AppServerRouterState {
+            agent_catalog: Some(Arc::new(crate::catalog::FakeAgentCatalog { agents: vec![] })),
+            team_catalog: Some(Arc::new(crate::catalog::FakeTeamCatalog {
+                teams: vec![],
+                connectors: vec![],
+            })),
+            ..Default::default()
+        };
+        let availability = CapabilityAvailability::from_state(&catalog_only);
+        assert!(availability.agents && availability.teams);
+        assert!(
+            !availability.expert_export,
+            "the catalogs alone must not advertise the export face"
+        );
+        assert!(!Capabilities::from_availability(availability).expert_export);
+
+        let wired = AppServerRouterState {
+            expert_packs: Some(Arc::new(FakeExpertPacks::ok(sample_expert_pack()))),
+            ..Default::default()
+        };
+        assert!(CapabilityAvailability::from_state(&wired).expert_export);
+    }
+
+    #[tokio::test]
+    async fn expert_export_is_closed_without_a_provider() {
+        let bare = AppServerRouterState::default();
+        assert!(expert_pack_provider(&bare).is_err());
+        assert_eq!(
+            code_of(export_agent_impl(&bare, "demo").await),
+            "unsupported_operation"
+        );
+        assert_eq!(
+            code_of(export_team_impl(&bare, "demo", None).await),
+            "unsupported_operation"
+        );
+    }
+
+    #[tokio::test]
+    async fn expert_export_impls_round_trip_through_the_provider() {
+        let state = AppServerRouterState {
+            expert_packs: Some(Arc::new(FakeExpertPacks::ok(sample_expert_pack()))),
+            ..Default::default()
+        };
+        let pack = export_agent_impl(&state, "wb-demo-software-team-lead")
+            .await
+            .unwrap();
+        assert_eq!(pack.pack_format, nomifun_api_types::APP_SERVER_EXPERT_PACK_FORMAT);
+        assert_eq!(pack.persona.instructions, PERSONA_SENTINEL);
+        assert_eq!(pack.skills[0].name, "release-notes");
+        // A pinned version that matches passes; see the mismatch test below.
+        export_team_impl(&state, "wb-demo-team", Some("1.0.0")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn team_export_version_guard_refuses_a_mismatch() {
+        let state = AppServerRouterState {
+            expert_packs: Some(Arc::new(FakeExpertPacks::ok(sample_expert_pack()))),
+            ..Default::default()
+        };
+        // An empty/absent pin is not a mismatch — the same reading `team/run`
+        // takes (`team_version` is optional, and blank means "unset").
+        export_team_impl(&state, "wb-demo-team", None).await.unwrap();
+        export_team_impl(&state, "wb-demo-team", Some("   ")).await.unwrap();
+        assert_eq!(
+            code_of(export_team_impl(&state, "wb-demo-team", Some("2.0.0")).await),
+            "version_mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn expert_export_errors_keep_their_stable_codes() {
+        // `policy_denied` must stay distinguishable from `not_found`: "you turned
+        // this off" and "there is no such expert" call for completely different
+        // client behaviour. `agent_not_installed` / `agent_disabled` likewise.
+        let cases = [
+            (ExpertPackError::PolicyDenied("denied".into()), "policy_denied"),
+            (
+                ExpertPackError::NotInstalled("member x is not installed".into()),
+                "agent_not_installed",
+            ),
+            (ExpertPackError::Disabled("off".into()), "agent_disabled"),
+            (ExpertPackError::NotFound("gone".into()), "not_found"),
+            (
+                ExpertPackError::TooLarge { size: 10, limit: 5 },
+                "response_too_large",
+            ),
+            (ExpertPackError::Internal("boom".into()), "internal_error"),
+        ];
+        for (error, expected) in cases {
+            let state = AppServerRouterState {
+                expert_packs: Some(Arc::new(FakeExpertPacks::failing(error))),
+                ..Default::default()
+            };
+            assert_eq!(code_of(export_agent_impl(&state, "demo").await), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_persona_lives_on_the_pack_and_never_on_the_catalog_faces() {
+        // This is the guard that keeps the two faces apart. `agent/get` is what
+        // every store UI calls while browsing; if the persona ever became a field
+        // there, the export gate would be decorative — and the next person to
+        // "just add a field" would have no way to tell.
+        let mut summary = sample_agent_summary();
+        summary.preset_id = Some("preset-demo".into());
+        let detail = nomifun_api_types::AppServerAgentDetail {
+            summary,
+            effort: Some("high".into()),
+            max_turns: Some(40),
+            disallowed_tools: vec![],
+            // Deliberately set to the sentinel: these two frontmatter fields ARE
+            // on the catalog face, so the guard has to be about `instructions`
+            // specifically, not about "any long string".
+            memory: Some(PERSONA_SENTINEL.into()),
+            background: None,
+            isolation: None,
+            permission_mode_ignored: false,
+            display_description: None,
+            quick_prompts: vec![],
+            tags: vec![],
+            default_init_prompt: None,
+            expert_type: None,
+            category_id: None,
+        };
+        let catalog_json = serde_json::to_value(&detail).unwrap();
+        assert!(
+            catalog_json.get("instructions").is_none(),
+            "the catalog face must have no field that could carry the persona body"
+        );
+        assert!(
+            catalog_json.get("persona").is_none(),
+            "the catalog face must not grow a persona object"
+        );
+
+        let pack_json = serde_json::to_value(sample_expert_pack()).unwrap();
+        assert_eq!(pack_json["persona"]["instructions"], PERSONA_SENTINEL);
+        assert_eq!(
+            pack_json["pack_format"],
+            nomifun_api_types::APP_SERVER_EXPERT_PACK_FORMAT
+        );
+        // And the pack really is the only place it appears.
+        assert!(!serde_json::to_string(&detail).unwrap().contains("persona"));
+    }
+
     // The real path-safety logic lives in the host adapter
     // (`nomifun-app/src/app_server_skill_files.rs`), which owns the filesystem.
     // These tests pin the *protocol* layer's half of the contract: the

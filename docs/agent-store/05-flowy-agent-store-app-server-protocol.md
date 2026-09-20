@@ -1,7 +1,15 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-7`** —— 2026-09-23 起承载 **`zip` 市场源类型**：`AppServerMarketplaceSourceKind`
+> 指纹：**`fp-8`** —— 2026-09-24 起承载**专家 / 专家团定义导出**：新增两个 **WebSocket-only** 方法
+> `agent/export` 与 `team/export`，回一份可移植的 `AppServerExpertPack`——persona 正文、模型提示、
+> **按引用**的技能清单、以及（团的）固定名单加逐成员展开。这是本文**第一次把 Agent Markdown 正文
+> 放上协议面**：目录面（`agent/list` / `agent/get`）**刻意永远不带**它（`frontmatter.rs:114`、
+> `app_server.rs:435`），导出因此是独立 seam + 独立闸门（`[expert_export]`，默认开的减项表）。
+> 规格见 §4.1.1 与 §4.2.1；方案、**「外部 runtime 必须自己实现什么」的 R1–R11 责任清单**与实测见
+> `32-expert-pack-export.zh.md`。两个方法都无 HTTP 路由（与 `agent/*` · `team/*` 整族一致），
+> 故方法计数 `48 / 71` → **`48 / 73`**（**映射数不变**）。
+> 上一值 **`fp-7`**（2026-09-23）承载 **`zip` 市场源类型**：`AppServerMarketplaceSourceKind`
 > 新增 `Zip`，`market/add` 可接受 `source_kind: "zip"`——一个归档，**归档根目录即市场根**。
 > 官方三个市场（`experts` / `skills` / `connectors`）改用它：`url` 形态下 `experts` 的首次获取
 > 要发 **14,714 次请求 / 611 MiB**（逐文件镜像），归档是 **1 次请求 / 289 MiB**。规格见 §4.6 与
@@ -258,6 +266,62 @@ display_description / quick_prompts / tags / default_init_prompt / expert_type /
 永不暴露 prompt 文件）。
 
 不返回真实凭据、隐藏系统指令或任意内部 Prompt（除非调用方策略允许且产品明确需要）。
+
+不返回真实凭据、隐藏系统指令或任意内部 Prompt（除非调用方策略允许且产品明确需要）。
+
+#### 4.1.1 `agent/export`（`fp-8` 加入，WebSocket-only）
+
+```text
+agent/export { agent_id } → AppServerExpertPack   (kind = "agent")
+```
+
+把一份 AgentDefinition 导出成**可移植的定义**，交给外部 runtime 自己跑。**这是本文唯一携带
+persona 正文的面**——上面的 `agent/get` 刻意没有承载它的字段，也不得增加（方案 `32` §2）。
+
+```text
+pack_format                       // = 1，**独立于 fp-n**：产物契约的版本
+kind / id / version / name / display_name / description
+persona { instructions, memory?, background? }   // instructions = Agent Markdown 正文，逐字
+model   { declared?, resolved?{provider_id?, model}, effort?, max_turns? }
+skills  [ { name, id } ]          // **按引用**：正文走 skill/files
+connectors []                     // agent 恒空（该格式没有 Agent 级连接器声明，02 §5.1）
+tool_policy { tools[], disallowed_tools[] }      // 声明，不是权限边界
+provenance { source, snapshot_id, content_digest, preset_id?, preset_revision? }
+runtime_binding { runtime, portable }            // 恒 { "nomi", false }
+```
+
+**发布与否**：`agent_not_installed`（未 `install/*`）、`agent_disabled`（装了就关）、
+`policy_denied`（宿主 `[expert_export]` 关了，或该 id 在 `deny` 里）、`not_found`、
+`unsupported_operation`（宿主未接此 seam）、`response_too_large`（包 > 1 MiB）。
+**不返回**连接器 transport / env / headers / token（`24` §2/§5.3）、技能字节、绝对路径、运行时内部 id。
+包**不含时间戳**：同一快照两次导出逐字节相同。
+
+#### 4.2.1 `team/export`（`fp-8` 加入，WebSocket-only）
+
+```text
+team/export { team_id, team_version? } → AppServerExpertPack   (kind = "team")
+```
+
+在 §4.1.1 的形状上多一个 `team`（**`connectors` 仍在顶层**——agent 恒空、team 放该团快照装好且启用的）：
+
+```text
+team {
+  lead_agent_id / member_agent_ids / planner_policy
+  routing_constraints / workflow_limits / team_runtime_capabilities
+  members [ AppServerExpertPack ]        // 逐成员展开，**团长在首位**
+}
+```
+
+- **成员顺序与去重与 `team/run` 逐字一致**：团长在前，其后按声明顺序，同名成员只占一个位置。
+- **要么全给、要么明确失败**：任一成员未安装 / 已停用 / 被 `deny` ⇒ 整包失败并**指名**该成员，
+  不产出残缺名单（与 `team/run` 创建前硬失败同码同义）。
+- `team_version` 给了且与包的 `version` 不同 ⇒ `version_mismatch`（与 `team/run` 同）。
+- 团自己的那份 Preset **不进包**：它不是定义的一部分（`preset_revision` 因此恒缺省），
+  团也没有自己的模型——模型在成员身上。
+
+> **`ExpertPack` 是「定义」不是「执行语义」。** 团的编排、步骤调度、工具与凭据策略、事件形状都由
+> Runtime 执行，包里没有。接入方必须逐条回答 `32` §5 的 **R1–R11**——那是一份责任清单，不是一个
+> 可选参考。
 
 ### 4.2 Team
 
