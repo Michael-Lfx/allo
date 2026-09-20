@@ -100,6 +100,24 @@
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
+## 本轮（2026-09-20 发布 `0.1.0-beta.7`）
+
+**第四次走完整发布链**，也是**第一次发布带真实 wire 变更的版本**（前三版都只动 TS 侧或纯加法）：
+
+1. **npm**：`protocol` / `client` / `runtime-win32-x64` / `sdk` 四包同为 `0.1.0-beta.7`，dist-tag `beta`；`latest` 仍指 `0.1.0-beta.2`（按手册**有意不动**）。包内顺序 protocol → client → runtime → sdk。注册表 `time`（sdk 口径）`2026-09-20T10:33:48.685Z`；另三包 protocol `10:33:40` / client `10:34:16` / runtime `10:35:01`。**CDN 读取侧滞后这次比上一版更久**：manifest 约 1 分钟后转正，但 tarball 持续 404 达 **10 分钟以上**（`npm i` 报 `ETARGET` / `404`，而 `npm view <version>` 已经能打印），最终自行恢复——与手册 §1 的告警一致，**不是发布失败**。
+2. **同一个 exe 服务两个出口**：`target/release/agent-store.exe`（`--features static-webui`，构建 **29m38s**，`sha256 A36DF518…BC3934D5`）经两个出口发布——npm runtime 包里**从干净目录 `npm i` 装回来复核，包内 exe 与本地构建逐字节相同**，且装回来的 `protocol` 声明确为 `fp-8`、`client` 声明确有 `agents.export` / `teams.export`；站点 Release 资产 zip 76,239,655 B，`release:publish` 的**下载回验 sha256 一致**。
+3. **本版是破坏性发布，判据是指纹严格相等**：`fp-7` → **`fp-8`**，新增两个 **WebSocket-only** 方法 `agent/export` / `team/export`（方法计数 `48 / 71` → **`48 / 73`**，映射数不变）。**但没有类型收窄或改名**，`launchHarness` 用法不变，所以调用方代码通常无需改动。方案、责任清单 R1–R11 与全部读数见 `32-expert-pack-export.zh.md`；发布前 `verify-published-sdk` 对自建 exe 报 `VERIFY-OK { fp-8, 1.4.4, models: 5, storeItems: 0 }`。
+4. **工作树干净，没有上版那种「exe 含未提交代码」问题**：构建输入的 Rust 源码与 `origin/main` **逐字节等价**（工作树当时停在分支 `docs/context-injection-and-projection`，只多 3 个 `docs/architecture/*.zh.md`，已核实它们**不参与编译**——没有被任何 `include_str!` 引用）。发布基线 `7e400a2a9`，所以**「已发布二进制 == 某个提交」本版成立**（上一版不成立）。
+5. **发版前修正站点文档 9 类事实问题**（子代理审计 + 逐条对源码/仓库核验）：
+   - **英文 `upgrade` §2 缺 `0.1.0-beta.6` 整行、§3 dist-tag 与 JSON 停在 `beta.5`**（`62dacb26` 当时只更新了中文，中英不一致而 `check:docs-sync` 看不见——它只比标题层级/代码块/表格列数/内链）；
+   - `typescript-sdk` §4.1 指向 `upgrade` **§8.2 的死链**（该节已在 `62dacb26` 并入 §6.5，指针没跟着改）；
+   - `typescript-sdk` §3.4 与 §5.2 漏登记 `agents.export()` / `teams.export()`（`examples-sdk` §9.1 早已写了用法）；
+   - `examples-sdk` 路由表外方法数 `23` → **`25`**（`48 / 73` 之下，`62dacb26` 改了 `typescript-sdk` 却漏了这一处）；
+   - `changelog` §1「破坏性变更走 minor 号」与同页 §3 的 2026-09-16 修订口径自相矛盾。
+   - **一处审计结论我没有采纳**：审计说 `changelog` §4 的 `截至 2026-09-24` 是「未来日期」。它不是笔误——`fp-` 谱系本就有「按谱系取标签、常超前于日历」的既有约定（本索引上一轮条目 §日期标签说明、`30` §D4 已记），而且该行随本次发版**整体改写**，不再是问题。
+6. **站点同步**：`changelog` 新增 §2.1（破坏性 + 升级影响 + 新增 + 修复），JSON 块与版本表按注册表输出逐字更新，旧 §2.1–§2.6 顺延为 §2.2–§2.7 并把交叉引用（§2.1/§2.2/§2.3）同步，§4 台账清零；`upgrade` §2 版本表（补 beta.7 + 英文补 beta.6）、§3 dist-tag/JSON、**新增 §6.6**（`beta.6` → `beta.7` 迁移，含「断言过指纹字面值会失败」与 `AGENT_STORE_BIN` 两条要确认的事）、§8 改为「工作区与产物一致」并记录两批已发布增量；`typescript-sdk` §1 版本状态与协议面口径；`content/release.json` 同值。站点提交 `786232fb`。
+7. **自检读数**：`check:fingerprint`（`fp-8`，本仓 7 文件 10 处 + 站点 2 文件）/ `check:release-sync`（`beta.7` 四 manifest + 8 pin + 站点 release.json + `48 / 73`）/ `web typecheck` / `web test`（**513 passed, 1 skipped**）/ `cargo test -p nomifun-app-server`（**173 passed**，比上版多 8 条——含 `agent_store_registration_repairs_a_previously_null_output_ceiling` 与 `never_overwrites_an_explicit_output_ceiling` 两条新钉）/ 站点 `check:release`（`check:docs-sync` 0 drift + `test:docs-sync` + `check:market` + `test:market` + `test:market-zips` + `typecheck`）**全绿**。
+
 ## 本轮（2026-09-18 发布 `0.1.0-beta.6`）
 
 **第三次走完整发布链**，也是第一次**发版前先做文档事实核验**：
