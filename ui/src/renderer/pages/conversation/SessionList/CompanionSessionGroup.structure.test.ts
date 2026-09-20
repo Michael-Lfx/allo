@@ -52,7 +52,7 @@ describe('CompanionSessionGroup structure', () => {
   test('shows the purpose tip in a popup below the title icon', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'CompanionSessionGroup.tsx'), 'utf8');
 
-    expect(source.includes("import { Attention, Robot } from '@icon-park/react';")).toBe(true);
+    expect(source.includes("import { Attention, Robot, SettingConfig } from '@icon-park/react';")).toBe(true);
     expect(source.includes("t('sessionList.companionTip')")).toBe(true);
     expect(source.includes("<Attention theme='outline' size={12}")).toBe(true);
     expect(source.includes("position='bottom'")).toBe(true);
