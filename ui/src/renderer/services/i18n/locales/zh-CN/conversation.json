@@ -1089,7 +1089,17 @@
     "glossaryNotes": "注意",
     "notesHint": "仅本机还留着的记录，约 1 GB 共用。空闲时清较旧的文件。",
     "identityFields": "身份",
-    "copyField": "复制 {{label}}"
+    "copyField": "复制 {{label}}",
+    "failureInspectorTitle": "故障诊断与失败分析",
+    "failureInspectorDesc": "当前回合执行未能正常完成，以下是系统捕获的底层错误与上下文信息。",
+    "failureError": "错误原因",
+    "failurePreparationPhase": "准备阶段失败（模型调用前）",
+    "failurePreparationHint": "该错误发生在消息预处理、附件解析、上下文拼接或 Provider 初始建连阶段，尚未发起模型请求。",
+    "failureGapHeader": "伴随观测缺口 (Gap)",
+    "failureCopyError": "复制错误信息",
+    "failureCopyRepro": "复制复现排障包 (Repro JSON)",
+    "failureCopiedRepro": "已复制复现排障包",
+    "failureRawDetails": "技术错误载荷 (Raw Payload)"
   },
   "reasoningEffort": {
     "switchFailed": "更新推理深度失败",

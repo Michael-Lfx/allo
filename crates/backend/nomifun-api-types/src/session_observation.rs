@@ -53,6 +53,8 @@ pub struct SessionObservationTurnDto {
     pub integrity: String,
     pub interrupted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at_ms: Option<u64>,
@@ -219,6 +221,8 @@ pub struct SessionObservationGapDto {
     pub from_seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -249,6 +253,8 @@ pub struct SessionObservationExportTurnDto {
     pub status: String,
     pub integrity: String,
     pub interrupted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

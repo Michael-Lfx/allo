@@ -326,9 +326,10 @@ impl AgentRuntimeHandle {
         elapsed_ms: i64,
         stop_reason: Option<&str>,
         usage: Option<serde_json::Value>,
+        error: Option<&str>,
     ) {
         if let Self::Nomi(manager) = self {
-            manager.emit_observation_turn_end(status, elapsed_ms, stop_reason, usage);
+            manager.emit_observation_turn_end(status, elapsed_ms, stop_reason, usage, error);
         }
     }
 

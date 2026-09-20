@@ -1998,6 +1998,96 @@ button.session-logs-tile:disabled:hover {
 
 }
 
+.session-logs-failure-inspector {
+  margin: 8px 12px 6px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, rgb(var(--danger-6)) 30%, var(--color-border-2));
+  background: color-mix(in srgb, rgb(var(--danger-6)) 5%, var(--color-bg-2));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-logs-failure-inspector__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, rgb(var(--danger-6)) 15%, var(--color-border-2));
+  background: color-mix(in srgb, rgb(var(--danger-6)) 8%, var(--color-bg-2));
+}
+
+.session-logs-failure-inspector__badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, rgb(var(--danger-6)) 20%, transparent);
+  color: rgb(var(--danger-6));
+}
+
+.session-logs-failure-inspector__body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-logs-failure-inspector__prep-callout {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, rgb(var(--danger-6)) 10%, var(--color-bg-1));
+  border-left: 3px solid rgb(var(--danger-6));
+}
+
+.session-logs-failure-inspector__prep-title {
+  font-weight: 500;
+  font-size: 12px;
+  color: rgb(var(--danger-6));
+}
+
+.session-logs-failure-inspector__error-box {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--color-bg-1);
+  border: 1px solid var(--color-border-2);
+}
+
+.session-logs-failure-inspector__pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 16px;
+  color: rgb(var(--danger-6));
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.session-logs-failure-inspector__gap-row {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--color-bg-1);
+  border: 1px dashed var(--color-border-2);
+}
+
+.session-logs-failure-inspector__gap-seq {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  font-weight: 500;
+  color: rgb(var(--warning-6));
+}
+
+.session-logs-failure-inspector__gap-error {
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: rgb(var(--danger-6));
+  margin-top: 2px;
+  word-break: break-all;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .session-logs-inspector,
   .session-logs-call--compact,
@@ -2012,3 +2102,4 @@ button.session-logs-tile:disabled:hover {
     transition: none;
   }
 }
+

@@ -38,6 +38,7 @@ import {
   type TimelineRow,
 } from './ObservationTimeline';
 import ObservationJsonTree from './ObservationJsonTree';
+import ObservationFailureInspector from './ObservationFailureInspector';
 import {
   asRecord,
   canonicalRequestFromPayload,
@@ -1206,6 +1207,7 @@ const ObservationWorkflow: React.FC<ObservationWorkflowProps> = ({
       </div>
 
       <div className='session-logs-detail__scroll'>
+        <ObservationFailureInspector turn={turn} />
         {selectedEvent && !selectedEvent.target ? (
           <div className='session-logs-round-event-slot'>
             <TimelineEventContext turn={turn} roundNumber={roundNumber} event={selectedEvent} />

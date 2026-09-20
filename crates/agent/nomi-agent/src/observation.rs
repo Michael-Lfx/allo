@@ -93,11 +93,15 @@ impl ObservationSession {
         elapsed_ms: u64,
         stop_reason: Option<&str>,
         usage: Option<Value>,
+        error: Option<&str>,
     ) {
         let ids = self.ids();
         if !self.recorder.claim_turn_end(&ids) {
             return;
         }
+        let redacted_error = error.map(|e| {
+            nomi_agent_trace::truncate_chars(&redact_preview(e), 1000)
+        });
         observe_with_model_call(
             self,
             EVENT_TURN_END,
@@ -106,6 +110,7 @@ impl ObservationSession {
                 "elapsed_ms": elapsed_ms,
                 "stop_reason": stop_reason,
                 "usage": usage,
+                "error": redacted_error,
             }),
             None,
         );
@@ -1091,11 +1096,13 @@ mod tests {
             11,
             Some("end_turn"),
             Some(json!({ "input_tokens": 3 })),
+            None,
         );
         rebuilt.emit_turn_end(
             ExecutionStatus::Cancelled,
             99,
             Some("cancelled"),
+            None,
             None,
         );
 
@@ -1116,7 +1123,7 @@ mod tests {
 
         recorder.clear_conversation("c-share").unwrap();
         rebuilt.bind_ids(ids);
-        rebuilt.emit_turn_end(ExecutionStatus::Completed, 4, Some("end_turn"), None);
+        rebuilt.emit_turn_end(ExecutionStatus::Completed, 4, Some("end_turn"), None, None);
         let after = recorder.read_events(Some("c-share")).unwrap();
         assert!(
             after
