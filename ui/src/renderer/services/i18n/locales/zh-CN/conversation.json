@@ -1097,6 +1097,8 @@
     "failurePreparationHint": "该错误发生在消息预处理、附件解析、上下文拼接或 Provider 初始建连阶段，尚未发起模型请求。",
     "failureGapHeader": "伴随观测缺口 (Gap)",
     "failureCopyError": "复制错误信息",
+    "failureCopyRepro": "复制复现排障包 (Repro JSON)",
+    "failureCopiedRepro": "已复制复现排障包",
     "failureRawDetails": "技术错误载荷 (Raw Payload)"
   },
   "reasoningEffort": {

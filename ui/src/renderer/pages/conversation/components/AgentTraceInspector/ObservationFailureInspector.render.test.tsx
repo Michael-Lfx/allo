@@ -10,7 +10,7 @@ import React from 'react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { renderToStaticMarkup } from 'react-dom/server';
 import conversation from '@/renderer/services/i18n/locales/zh-CN/conversation.json';
-import ObservationFailureInspector from './ObservationFailureInspector';
+import ObservationFailureInspector, { buildReproBundle } from './ObservationFailureInspector';
 import type { ProjectedTurn } from './useAgentTraces';
 
 const testI18n = createInstance();
@@ -33,6 +33,14 @@ const baseTurn: ProjectedTurn = {
   gaps: [],
 };
 
+const failedTurn: ProjectedTurn = {
+  ...baseTurn,
+  root_turn_id: 'turn_fail_1',
+  status: 'failed',
+  error: 'Network connection timeout to provider gateway',
+  model_calls: [],
+};
+
 describe('ObservationFailureInspector render contract', () => {
   test('does not render when turn completed normally without errors', () => {
     const html = renderToStaticMarkup(
@@ -44,12 +52,6 @@ describe('ObservationFailureInspector render contract', () => {
   });
 
   test('renders preparation failure callout when turn fails before model calls', () => {
-    const failedTurn: ProjectedTurn = {
-      ...baseTurn,
-      status: 'failed',
-      error: 'Network connection timeout to provider gateway',
-      model_calls: [],
-    };
     const html = renderToStaticMarkup(
       <I18nextProvider i18n={testI18n}>
         <ObservationFailureInspector turn={failedTurn} />
@@ -187,5 +189,22 @@ describe('ObservationFailureInspector render contract', () => {
     expect(html).not.toContain('准备阶段失败（模型调用前）');
     expect(html).toContain('Connection dropped during observation');
     expect(html).toContain('伴随观测缺口 (Gap)');
+  });
+
+  test('builds a structured repro bundle with turn context and environment', () => {
+    const bundle = buildReproBundle(failedTurn);
+    expect(bundle.schema_version).toBe(1);
+    expect((bundle.turn as { root_turn_id: string }).root_turn_id).toBe('turn_fail_1');
+    expect((bundle.turn as { error: string }).error).toBe('Network connection timeout to provider gateway');
+    expect(typeof bundle.generated_at_ms).toBe('number');
+  });
+
+  test('renders the repro copy button with proper tooltip and aria-label', () => {
+    const html = renderToStaticMarkup(
+      <I18nextProvider i18n={testI18n}>
+        <ObservationFailureInspector turn={failedTurn} />
+      </I18nextProvider>
+    );
+    expect(html).toContain('aria-label="复制复现排障包 (Repro JSON)"');
   });
 });

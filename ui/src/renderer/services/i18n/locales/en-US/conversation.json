@@ -1097,6 +1097,8 @@
     "failurePreparationHint": "The error occurred during message preprocessing, attachment parsing, context assembly, or initial provider connection before any model request was dispatched.",
     "failureGapHeader": "Associated Observation Gaps",
     "failureCopyError": "Copy error message",
+    "failureCopyRepro": "Copy reproduction bundle (Repro JSON)",
+    "failureCopiedRepro": "Reproduction bundle copied",
     "failureRawDetails": "Technical Error Details (Raw Payload)"
   },
   "reasoningEffort": {
