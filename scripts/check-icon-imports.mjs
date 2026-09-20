@@ -62,6 +62,16 @@ function scanSource(source) {
       kind: 'namespace',
     });
   }
+  const namedMatches = [...source.matchAll(NAMED_IMPORT_RE)];
+  if (namedMatches.length > 1) {
+    for (let i = 1; i < namedMatches.length; i++) {
+      violations.push({
+        line: lineOf(source, namedMatches[i].index),
+        snippet: namedMatches[i][0].replace(/\s+/g, ' ').slice(0, 120),
+        kind: 'duplicate-import',
+      });
+    }
+  }
   return violations;
 }
 
@@ -73,6 +83,7 @@ function selfTest() {
     { src: "import {\n  Cycle,\n  Play as Run,\n} from '@icon-park/react';", bad: 1 },
     { src: "import type { Icon as I } from '@icon-park/react';", bad: 1 },
     { src: "import * as Icons from '@icon-park/react';", bad: 1 },
+    { src: "import { Left } from '@icon-park/react';\nimport { Right } from '@icon-park/react';", bad: 1 },
     { src: "import { Left } from '@icon-park/svg';", bad: 0 }, // 别的包不管
     { src: "import { renderAs } from 'other'; // as 在别处", bad: 0 },
   ];
