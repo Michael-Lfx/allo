@@ -119,6 +119,7 @@ struct DeferredObservationTurnEnd {
     elapsed_ms: i64,
     stop_reason: Option<String>,
     usage: Option<serde_json::Value>,
+    error: Option<String>,
 }
 
 pub struct NomiAgentManager {
@@ -127,7 +128,7 @@ pub struct NomiAgentManager {
     engine: Mutex<AgentEngine>,
     observation: Option<Arc<nomi_agent::ObservationSession>>,
     /// Conversation host owns `turn/end` for failover/continuation segments.
-    defer_observation_turn_end: AtomicBool,
+    defer_observation_turn_end: Arc<AtomicBool>,
     pending_observation_turn_end: std::sync::Mutex<Option<DeferredObservationTurnEnd>>,
     /// Shared authority for every shell/tool process owned by this runtime.
     ///
@@ -576,6 +577,7 @@ impl NomiAgentManager {
         elapsed_ms: i64,
         stop_reason: Option<&str>,
         usage: Option<serde_json::Value>,
+        error: Option<&str>,
     ) {
         if self.defer_observation_turn_end.load(Ordering::Acquire) {
             *self
@@ -586,11 +588,12 @@ impl NomiAgentManager {
                 elapsed_ms,
                 stop_reason: stop_reason.map(str::to_owned),
                 usage,
+                error: error.map(str::to_owned),
             });
             return;
         }
         if let Some(session) = &self.observation {
-            session.emit_turn_end(status, elapsed_ms.max(0) as u64, stop_reason, usage);
+            session.emit_turn_end(status, elapsed_ms.max(0) as u64, stop_reason, usage, error);
         }
     }
 
@@ -613,12 +616,14 @@ impl NomiAgentManager {
                 .as_ref()
                 .map(|end| end.elapsed_ms)
                 .unwrap_or(elapsed_ms);
-            let usage = pending.and_then(|end| end.usage);
+            let usage = pending.as_ref().and_then(|end| end.usage.clone());
+            let error = pending.as_ref().and_then(|end| end.error.as_deref());
             self.emit_observation_turn_end(
                 nomi_agent_trace::ExecutionStatus::Cancelled,
                 elapsed,
                 Some("cancelled"),
                 usage,
+                error,
             );
             return;
         }
@@ -628,6 +633,7 @@ impl NomiAgentManager {
                 pending.elapsed_ms,
                 pending.stop_reason.as_deref(),
                 pending.usage,
+                pending.error.as_deref(),
             );
             return;
         }
@@ -645,7 +651,12 @@ impl NomiAgentManager {
                 ),
             }
         };
-        self.emit_observation_turn_end(status, elapsed_ms, reason, None);
+        let fallback_error = if !finished {
+            Some("Relay session aborted unexpectedly before completion")
+        } else {
+            None
+        };
+        self.emit_observation_turn_end(status, elapsed_ms, reason, None, fallback_error);
     }
 
     /// Fill conversation/msg ids for this send without clobbering a wire
@@ -1454,7 +1465,7 @@ impl NomiAgentManager {
             backend_output_sink,
             engine: Mutex::new(engine),
             observation: Some(observation),
-            defer_observation_turn_end: AtomicBool::new(false),
+            defer_observation_turn_end: Arc::new(AtomicBool::new(false)),
             pending_observation_turn_end: std::sync::Mutex::new(None),
             process_supervisor,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
@@ -1696,6 +1707,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             mcp_managers: self.mcp_managers.clone(),
             turn_teardown_fence: Arc::clone(&self.turn_teardown_fence),
             observation: self.observation.clone(),
+            defer_observation_turn_end: Arc::clone(&self.defer_observation_turn_end),
             #[cfg(feature = "browser-use")]
             browser_lane_binding: self.browser_lane_binding.clone(),
             armed: true,
@@ -1763,11 +1775,13 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     let send_error = AgentSendError::from_app_error(AppError::BadRequest(format!(
                         "Invalid parameters: {error}"
                     )));
+                    let err_msg = format!("Invalid parameters: {error}");
                     self.emit_observation_turn_end(
                         nomi_agent_trace::ExecutionStatus::Failed,
                         now_ms().saturating_sub(started_at),
                         Some("error"),
                         None,
+                        Some(&err_msg),
                     );
                     self.backend_output_sink.fail_active_tool_calls(
                         "The turn failed while loading its attachments.",
@@ -1921,6 +1935,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 now_ms().saturating_sub(started_at),
                 Some("cancelled"),
                 None,
+                None,
             );
             self.backend_output_sink.cancel_active_tool_calls(
                 "The tool call was cancelled because the user stopped the turn.",
@@ -1975,11 +1990,13 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     let send_error = AgentSendError::from_app_error(AppError::Internal(format!(
                         "Artifact delivery failed: {delivery_error}"
                     )));
+                    let err_msg = format!("Artifact delivery failed: {delivery_error}");
                     self.emit_observation_turn_end(
                         nomi_agent_trace::ExecutionStatus::Failed,
                         elapsed_ms,
                         Some("error"),
                         None,
+                        Some(&err_msg),
                     );
                     let stream_error = send_error.stream_error().clone();
                     term_guard.terminalize(move |runtime, turn| {
@@ -2133,6 +2150,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                         elapsed_ms,
                         Some("cancelled"),
                         None,
+                        None,
                     );
                     self.backend_output_sink.cancel_active_tool_calls(
                         "The tool call was cancelled because the user stopped the turn.",
@@ -2153,6 +2171,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     observation_end.1,
                     Some(observation_end.2),
                     Some(observation_end.3),
+                    None,
                 );
 
                 if origin_is_human
@@ -2207,11 +2226,13 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     "Nomi engine.execute_turn() failed, emitting terminal Error"
                 );
                 let send_error = nomi_engine_error_to_send_error(error_msg);
+                let err_str = e.to_string();
                 self.emit_observation_turn_end(
                     nomi_agent_trace::ExecutionStatus::Failed,
                     elapsed_ms,
                     Some("error"),
                     None,
+                    Some(&err_str),
                 );
                 self.backend_output_sink.fail_active_tool_calls(&format!(
                     "The model/provider turn failed before this tool call completed: {e}"
@@ -2242,11 +2263,6 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             binding.revoke();
         }
         if !was_running {
-            let observation = if self.defer_observation_turn_end.load(Ordering::Acquire) {
-                None
-            } else {
-                self.observation.clone()
-            };
             schedule_nomi_cancelled_terminal_after_process_fence(
                 self.runtime.clone(),
                 Arc::clone(&self.active_turn),
@@ -2257,7 +2273,8 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 self.mcp_managers.clone(),
                 #[cfg(feature = "browser-use")]
                 self.browser_lane_binding.clone(),
-                observation,
+                self.observation.clone(),
+                Arc::clone(&self.defer_observation_turn_end),
             )?;
         }
         Ok(())
@@ -2281,6 +2298,7 @@ struct TurnTerminationGuard {
     mcp_managers: Vec<Arc<McpManager>>,
     turn_teardown_fence: Arc<TurnTeardownFence>,
     observation: Option<Arc<nomi_agent::ObservationSession>>,
+    defer_observation_turn_end: Arc<AtomicBool>,
     /// Reusable runtime binding. Turn cleanup closes its current Lanes but must
     /// not revoke the owner lease; the next turn lazily opens a fresh Lane.
     #[cfg(feature = "browser-use")]
@@ -2360,16 +2378,20 @@ impl Drop for TurnTerminationGuard {
             let mcp_managers = self.mcp_managers.clone();
             let turn_teardown_fence = Arc::clone(&self.turn_teardown_fence);
             let observation = self.observation.clone();
+            let defer_observation_turn_end = Arc::clone(&self.defer_observation_turn_end);
             #[cfg(feature = "browser-use")]
             let browser_lane_binding = self.browser_lane_binding.clone();
             let terminalize = move || {
-                if let Some(session) = &observation {
-                    session.emit_turn_end(
-                        nomi_agent_trace::ExecutionStatus::Cancelled,
-                        0,
-                        Some("cancelled"),
-                        None,
-                    );
+                if !defer_observation_turn_end.load(Ordering::Acquire) {
+                    if let Some(session) = &observation {
+                        session.emit_turn_end(
+                            nomi_agent_trace::ExecutionStatus::Cancelled,
+                            0,
+                            Some("cancelled"),
+                            None,
+                            None,
+                        );
+                    }
                 }
                 terminalize_exact_nomi_turn(
                     &runtime,
@@ -2607,6 +2629,7 @@ fn schedule_nomi_cancelled_terminal_after_process_fence(
     mcp_managers: Vec<Arc<McpManager>>,
     #[cfg(feature = "browser-use")] browser_lane_binding: Option<crate::BrowserLaneBinding>,
     observation: Option<Arc<nomi_agent::ObservationSession>>,
+    defer_observation_turn_end: Arc<AtomicBool>,
 ) -> Result<(), AppError> {
     let terminalize = move || {
         backend_output_sink.cancel_active_tool_calls(
@@ -2619,13 +2642,16 @@ fn schedule_nomi_cancelled_terminal_after_process_fence(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        if let Some(session) = &observation {
-            session.emit_turn_end(
-                nomi_agent_trace::ExecutionStatus::Cancelled,
-                0,
-                Some("cancelled"),
-                None,
-            );
+        if !defer_observation_turn_end.load(Ordering::Acquire) {
+            if let Some(session) = &observation {
+                session.emit_turn_end(
+                    nomi_agent_trace::ExecutionStatus::Cancelled,
+                    0,
+                    Some("cancelled"),
+                    None,
+                    None,
+                );
+            }
         }
         let runtime_turn = active_turn
             .lock()
@@ -3986,6 +4012,7 @@ mod tests {
             #[cfg(feature = "browser-use")]
             None,
             Some(session),
+            Arc::new(AtomicBool::new(false)),
         )
         .expect("idle-kill fence should run immediately without process owners");
         let events = recorder.read_events(Some("c-idle-obs")).unwrap();
@@ -4026,6 +4053,7 @@ mod tests {
                 mcp_managers: Vec::new(),
                 turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
                 observation: Some(session),
+                defer_observation_turn_end: Arc::new(AtomicBool::new(false)),
                 #[cfg(feature = "browser-use")]
                 browser_lane_binding: None,
                 armed: true,
@@ -5081,7 +5109,7 @@ mod tests {
             backend_output_sink,
             engine: Mutex::new(engine),
             observation: None,
-            defer_observation_turn_end: AtomicBool::new(false),
+            defer_observation_turn_end: Arc::new(AtomicBool::new(false)),
             pending_observation_turn_end: std::sync::Mutex::new(None),
             process_supervisor: None,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
@@ -5402,6 +5430,75 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn deferred_turn_termination_guard_drop_does_not_claim_turn_end_and_preserves_relay_error() {
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let mut agent = make_agent_with_provider(provider);
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = nomi_agent::ObservationSession::new(recorder.clone());
+        let ids = crate::ObservationIds {
+            conversation_id: Some("conv-guard-defer".into()),
+            msg_id: Some("guard-defer-msg".into()),
+            root_turn_id: Some("guard-defer-turn".into()),
+            ..crate::ObservationIds::default()
+        };
+        agent.observation = Some(Arc::clone(&session));
+        agent.bind_observation_ids_with_preview(ids, Some("hello"));
+        agent.set_observation_turn_end_deferred(true);
+        let turn = agent.runtime.reset_for_new_turn(ConversationStatus::Running);
+
+        // Simulate an abnormal unwind: TurnTerminationGuard drops while armed
+        {
+            let _guard = TurnTerminationGuard {
+                runtime: agent.runtime.clone(),
+                turn,
+                active_turn: Arc::clone(&agent.active_turn),
+                lifecycle_gate: Arc::clone(&agent.lifecycle_gate),
+                steering_inbox: Arc::clone(&agent.steering_inbox),
+                backend_output_sink: agent.backend_output_sink.clone(),
+                process_supervisor: agent.process_supervisor.clone(),
+                mcp_managers: agent.mcp_managers.clone(),
+                turn_teardown_fence: Arc::clone(&agent.turn_teardown_fence),
+                observation: agent.observation.clone(),
+                defer_observation_turn_end: Arc::clone(&agent.defer_observation_turn_end),
+                #[cfg(feature = "browser-use")]
+                browser_lane_binding: None,
+                armed: true,
+            };
+        }
+        // Yield to allow any spawned teardown task to run
+        tokio::task::yield_now().await;
+
+        let events = recorder.read_events(Some("conv-guard-defer")).unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != nomi_agent_trace::EVENT_TURN_END),
+            "guard drop while deferred must NOT emit turn/end, got {events:?}"
+        );
+
+        // Relay loop finishes turn with finished = false
+        agent.close_observation_turn_from_relay(false, None, false, 42);
+
+        let events = recorder.read_events(Some("conv-guard-defer")).unwrap();
+        let end = events
+            .iter()
+            .find(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END)
+            .expect("host close must emit turn/end");
+        assert_eq!(
+            end.payload["status"],
+            serde_json::json!("failed"),
+            "expected failed status from relay close"
+        );
+        assert_eq!(
+            end.payload["error"],
+            serde_json::json!("Relay session aborted unexpectedly before completion"),
+            "expected fallback relay error"
+        );
+    }
+
     #[test]
     fn reasoning_effort_change_is_recycled_only_at_the_next_turn_boundary() {
         let provider = Arc::new(ScriptedProvider::new(Vec::new()));
@@ -5609,7 +5706,7 @@ mod tests {
             backend_output_sink,
             engine: Mutex::new(engine),
             observation: None,
-            defer_observation_turn_end: AtomicBool::new(false),
+            defer_observation_turn_end: Arc::new(AtomicBool::new(false)),
             pending_observation_turn_end: std::sync::Mutex::new(None),
             process_supervisor: None,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
@@ -7070,6 +7167,7 @@ mod tests {
                 mcp_managers: Vec::new(),
                 turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
                 observation: None,
+                defer_observation_turn_end: Arc::new(AtomicBool::new(false)),
                 #[cfg(feature = "browser-use")]
                 browser_lane_binding: None,
                 armed: true,
@@ -7120,6 +7218,7 @@ mod tests {
                 mcp_managers: Vec::new(),
                 turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
                 observation: None,
+                defer_observation_turn_end: Arc::new(AtomicBool::new(false)),
                 #[cfg(feature = "browser-use")]
                 browser_lane_binding: None,
                 armed: true,

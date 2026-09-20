@@ -126,6 +126,8 @@ pub struct ProjectedTurn {
     pub integrity: Integrity,
     pub interrupted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at_ms: Option<u64>,
@@ -252,6 +254,8 @@ pub struct ProjectedGap {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_seq: Option<u64>,
@@ -306,7 +310,9 @@ pub fn event_belongs_to_turn(event: &ObservationEvent, root_turn_id: &str) -> bo
     turn_key(event) == root_turn_id
 }
 
-/// Drop request/response/tool payloads so list APIs can return counts only.
+/// Drops large payload blobs (LLM request/response, tool events) from
+/// `ProjectedTurn` to reduce memory usage for the observation list endpoint.
+/// Metadata fields such as `error`, `status`, and `integrity` are intentionally preserved.
 pub fn strip_projected_turn_payloads(turn: &mut ProjectedTurn) {
     for call in &mut turn.model_calls {
         call.request = None;
@@ -334,6 +340,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
     let mut has_turn_end = false;
     let mut turn_end_status: Option<ExecutionStatus> = None;
     let mut turn_end_elapsed_ms: Option<u64> = None;
+    let mut turn_end_error: Option<String> = None;
     let mut turn_start_preview: Option<String> = None;
     let mut latest_request: Option<&ObservationEvent> = None;
     let mut started_at_ms = events.first().map(|event| event.timestamp_ms);
@@ -364,6 +371,9 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
                     .or_else(|| {
                         started_at_ms.map(|start| event.timestamp_ms.saturating_sub(start))
                     });
+                if turn_end_error.is_none() {
+                    turn_end_error = string_field(&event.payload, "error");
+                }
             }
             EVENT_LLM_REQUEST => {
                 let model_call_id = ids
@@ -439,6 +449,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
                 gaps.push(ProjectedGap {
                     event_seq: event.event_seq,
                     reason: string_field(&event.payload, "reason"),
+                    error: string_field(&event.payload, "error"),
                     from_seq: event.payload.get("from_seq").and_then(Value::as_u64),
                     to_seq: event.payload.get("to_seq").and_then(Value::as_u64),
                 });
@@ -503,6 +514,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
 
     populate_request_metadata(&mut calls);
     let timeline = project_timeline(events, started_at_ms);
+    let turn_error = turn_end_error;
 
     ProjectedTurn {
         root_turn_id,
@@ -515,6 +527,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
         status,
         integrity,
         interrupted,
+        error: turn_error,
         started_at_ms,
         ended_at_ms,
         elapsed_ms: turn_end_elapsed_ms,
@@ -2507,4 +2520,77 @@ mod tests {
         assert_eq!(calls[0].system_prompt_state, Some(SystemPromptState::First));
         assert_eq!(calls[1].system_prompt_state, Some(SystemPromptState::Unavailable));
     }
+
+    #[test]
+    fn project_turn_preserves_error_from_turn_end_and_gap() {
+        let events = vec![
+            event(
+                EVENT_TURN_START,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "prompt_preview": "test prompt" }),
+            ),
+            event(
+                EVENT_OBSERVATION_GAP,
+                2,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "reason": "provider_stream_failed",
+                    "error": "HTTP 401: Unauthorized API key"
+                }),
+            ),
+            event(
+                EVENT_TURN_END,
+                3,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "status": "failed",
+                    "error": "Turn failed during provider call"
+                }),
+            ),
+        ];
+        let turns = project_turns(&events);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].status, ExecutionStatus::Failed);
+        assert_eq!(turns[0].error.as_deref(), Some("Turn failed during provider call"));
+        assert_eq!(turns[0].gaps.len(), 1);
+        assert_eq!(turns[0].gaps[0].reason.as_deref(), Some("provider_stream_failed"));
+        assert_eq!(turns[0].gaps[0].error.as_deref(), Some("HTTP 401: Unauthorized API key"));
+    }
+
+    #[test]
+    fn project_turn_keeps_gap_error_independent_when_turn_end_has_no_error() {
+        let events = vec![
+            event(
+                EVENT_TURN_START,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "prompt_preview": "test prompt" }),
+            ),
+            event(
+                EVENT_OBSERVATION_GAP,
+                2,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "reason": "buffer_overflow",
+                    "error": "event queue saturated"
+                }),
+            ),
+            event(
+                EVENT_TURN_END,
+                3,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "status": "completed"
+                }),
+            ),
+        ];
+        let turns = project_turns(&events);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].status, ExecutionStatus::Completed);
+        assert_eq!(turns[0].error, None);
+        assert_eq!(turns[0].gaps.len(), 1);
+        assert_eq!(turns[0].gaps[0].error.as_deref(), Some("event queue saturated"));
+    }
 }
+

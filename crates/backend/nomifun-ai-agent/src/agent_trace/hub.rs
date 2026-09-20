@@ -182,6 +182,7 @@ fn gap_dto(value: ProjectedGap) -> SessionObservationGapDto {
         reason: value.reason,
         from_seq: value.from_seq,
         to_seq: value.to_seq,
+        error: value.error,
     }
 }
 
@@ -233,6 +234,7 @@ fn turn_dto(value: ProjectedTurn) -> SessionObservationTurnDto {
         status: execution_status_string(value.status),
         integrity: integrity_string(value.integrity),
         interrupted: value.interrupted,
+        error: value.error,
         started_at_ms: value.started_at_ms,
         ended_at_ms: value.ended_at_ms,
         elapsed_ms: value.elapsed_ms,
@@ -290,6 +292,7 @@ fn export_turn_dto(value: &ProjectedTurn) -> SessionObservationExportTurnDto {
         status: execution_status_string(value.status),
         integrity: integrity_string(value.integrity),
         interrupted: value.interrupted,
+        error: value.error.clone(),
         started_at_ms: value.started_at_ms,
         ended_at_ms: value.ended_at_ms,
         elapsed_ms: value.elapsed_ms,
@@ -818,6 +821,7 @@ mod tests {
                 status: ExecutionStatus::Interrupted,
                 integrity: Integrity::Degraded,
                 interrupted: true,
+                error: None,
                 started_at_ms: Some(1),
                 ended_at_ms: Some(13),
                 elapsed_ms: Some(12),

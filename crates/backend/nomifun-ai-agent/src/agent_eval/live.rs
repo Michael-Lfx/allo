@@ -246,6 +246,7 @@ impl LiveNomiHarness {
                         "input_tokens": result.usage.input_tokens,
                         "output_tokens": result.usage.output_tokens,
                     })),
+                    None,
                 );
                 Ok((
                     assistant_text,
@@ -256,22 +257,26 @@ impl LiveNomiHarness {
                 ))
             }
             Ok(Err(error)) => {
+                let error_str = format!("eval execute_turn: {error}");
                 observation.emit_turn_end(
                     ExecutionStatus::Failed,
                     elapsed_ms,
                     Some("error"),
                     None,
+                    Some(&error_str),
                 );
-                Err(AppError::Internal(format!("eval execute_turn: {error}")))
+                Err(AppError::Internal(error_str))
             }
             Err(_) => {
+                let error_str = format!("eval case {} timed out", case.id);
                 observation.emit_turn_end(
                     ExecutionStatus::Failed,
                     elapsed_ms,
                     Some("timeout"),
                     None,
+                    Some(&error_str),
                 );
-                Err(AppError::Timeout(format!("eval case {} timed out", case.id)))
+                Err(AppError::Timeout(error_str))
             }
         };
 
