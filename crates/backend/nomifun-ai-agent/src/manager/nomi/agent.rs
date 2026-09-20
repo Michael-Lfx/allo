@@ -3931,6 +3931,7 @@ mod tests {
                 mcp_managers: Vec::new(),
                 turn_teardown_fence: Arc::clone(&fence),
                 observation: None,
+                defer_observation_turn_end: Arc::new(AtomicBool::new(false)),
                 browser_lane_binding: Some(binding),
                 armed: true,
             };
@@ -3985,6 +3986,7 @@ mod tests {
             mcp_managers: Vec::new(),
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             observation: None,
+            defer_observation_turn_end: Arc::new(AtomicBool::new(false)),
             browser_lane_binding: Some(binding),
             armed: true,
         };
@@ -4137,6 +4139,7 @@ mod tests {
             Vec::new(),
             Some(binding),
             None,
+            Arc::new(AtomicBool::new(false)),
         )
         .expect("idle-kill fence should schedule");
 
@@ -4182,6 +4185,7 @@ mod tests {
             Vec::new(),
             Some(binding),
             None,
+            Arc::new(AtomicBool::new(false)),
         )
         .expect("idle-kill fence should schedule");
 
