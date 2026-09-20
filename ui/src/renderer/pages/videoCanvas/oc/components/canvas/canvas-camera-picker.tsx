@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, type ReactNode, type WheelEvent } from "react";
 import { createPortal } from "react-dom";
+import { getOcPortalHost } from "@oc/lib/oc-scope";
 import { ChevronDown, ChevronUp, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -139,7 +140,7 @@ export function CanvasCameraPicker({ rig, onChange, placement = "top", buttonCla
                             />
                         </div>
                     </div>,
-                    document.body,
+                    getOcPortalHost(),
                 )
                 : null}
         </>

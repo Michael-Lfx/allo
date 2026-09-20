@@ -1,4 +1,4 @@
-import { Plus } from '@icon-park/react';
+import { ShoppingCart } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -12,7 +12,7 @@ type CreditsWebsiteButtonProps = {
 };
 
 /**
- * 积分余额旁的「+」：进入隐藏的应用内结账页。
+ * 积分余额旁的购物车按钮：进入隐藏的应用内结账页。
  */
 const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({ size = 'sm', className }) => {
   const { t } = useTranslation();
@@ -35,6 +35,7 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({ size = 'sm'
       role='button'
       tabIndex={0}
       aria-label={label}
+      title={label}
       onClick={(event) => {
         event.stopPropagation();
         openBilling();
@@ -48,7 +49,7 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({ size = 'sm'
         className
       )}
     >
-      <Plus
+      <ShoppingCart
         theme='outline'
         size={size === 'xs' ? '12' : '14'}
         fill='currentColor'

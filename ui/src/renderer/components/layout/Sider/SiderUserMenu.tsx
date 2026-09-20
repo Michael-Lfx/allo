@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
 import { Check, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
@@ -52,7 +52,12 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   const [menuVisible, setMenuVisible] = useState(false);
   const [skinVisible, setSkinVisible] = useState(false);
   const [languageVisible, setLanguageVisible] = useState(false);
+  const [creditsHovered, setCreditsHovered] = useState(false);
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
+
+  useEffect(() => {
+    if (!authenticated) setCreditsHovered(false);
+  }, [authenticated]);
 
   const handleMenuVisibleChange = (visible: boolean) => {
     setMenuVisible(visible);
@@ -300,6 +305,8 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
                 className='inline-flex shrink-0'
                 onClick={stopAccountTrigger}
                 onMouseDown={stopAccountTrigger}
+                onMouseEnter={() => setCreditsHovered(true)}
+                onMouseLeave={() => setCreditsHovered(false)}
               >
                 <CreditsWebsiteButton size='xs' className='!size-14px' />
               </span>
@@ -328,6 +335,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         {...siderTooltipProps}
         content={planText ? `${displayName} · ${planText}` : displayName}
         position='right'
+        disabled={creditsHovered}
       >
         {trigger}
       </Tooltip>

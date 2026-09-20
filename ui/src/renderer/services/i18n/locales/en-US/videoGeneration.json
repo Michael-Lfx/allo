@@ -15,6 +15,10 @@
   },
   "nav": {
     "entry": "Video Generation",
+    "shortTitle": "Video",
+    "recentCreations": "Recent Projects",
+    "enterHome": "Studio Home",
+    "newProject": "New Video Project",
     "hoverCard": {
       "name": "Project name",
       "id": "Project ID",

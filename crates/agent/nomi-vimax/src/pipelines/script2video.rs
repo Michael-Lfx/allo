@@ -751,10 +751,10 @@ impl Script2VideoPipeline {
         let mut set = tokio::task::JoinSet::new();
         let sem = Arc::new(tokio::sync::Semaphore::new(4));
         for character in characters {
-            if !character.is_visible {
+            if super::cameo_bind::is_body_part_character(character) {
                 continue;
             }
-            if super::cameo_bind::is_body_part_character(character) {
+            if !character.needs_identity_assets() {
                 continue;
             }
             // Skip when user Cameo or a usable three-view sheet already exists.
@@ -2569,7 +2569,7 @@ fn render_lens_audio(
     } else {
         split_dialogue_and_sfx(&mined)
     };
-    let line = trim_audio_brackets(&line);
+    let line = crate::dialogue::rewrite_spoken_payloads(&trim_audio_brackets(&line));
     let (line, peeled_sfx) = super::clip_beats::peel_trailing_stage_sfx(&line);
     let mut sfx = trim_audio_brackets(&sfx);
     if !peeled_sfx.is_empty() {
@@ -2899,69 +2899,10 @@ fn find_post_bgm_resume(rest: &str) -> Option<usize> {
             consider(&mut resume, pos);
         }
     }
-    if let Some(quote_at) = find_dialogue_quote_byte(rest) {
-        consider(&mut resume, speaker_prefix_start(rest, quote_at));
+    if let Some(quote_at) = crate::dialogue::find_spoken_quote_byte(rest) {
+        consider(&mut resume, crate::dialogue::speaker_line_start(rest, quote_at));
     }
     resume
-}
-
-fn find_dialogue_quote_byte(s: &str) -> Option<usize> {
-    s.find(['「', '{', '“', '"'])
-}
-
-/// Include `萧彻:` / `李薇说：` immediately before a quote so the speaker tag
-/// is not left inside the discarded BGM span. Stop at punctuation/whitespace
-/// so leading SFX is not swallowed into the name.
-fn speaker_prefix_start(s: &str, quote_byte: usize) -> usize {
-    let Some(prefix) = s.get(..quote_byte) else {
-        return 0;
-    };
-    let chars: Vec<(usize, char)> = prefix.char_indices().collect();
-    let mut i = chars.len();
-    while i > 0 && chars[i - 1].1.is_whitespace() {
-        i -= 1;
-    }
-    if i == 0 {
-        return quote_byte;
-    }
-    let last = chars[i - 1].1;
-    let tagged = if matches!(last, ':' | '：') {
-        i -= 1;
-        true
-    } else if is_say_verb_char(last) {
-        i -= 1;
-        if last == '道' && i > 0 && chars[i - 1].1 == '说' {
-            i -= 1;
-        }
-        true
-    } else {
-        false
-    };
-    if !tagged {
-        return quote_byte;
-    }
-    while i > 0 && chars[i - 1].1.is_whitespace() {
-        i -= 1;
-    }
-    let mut name_chars = 0u32;
-    while i > 0 && is_speaker_name_char(chars[i - 1].1) && name_chars < 12 {
-        i -= 1;
-        name_chars += 1;
-    }
-    if name_chars == 0 {
-        return quote_byte;
-    }
-    chars[i].0
-}
-
-fn is_say_verb_char(ch: char) -> bool {
-    matches!(ch, '说' | '道' | '喊' | '叫' | '吼')
-}
-
-fn is_speaker_name_char(ch: char) -> bool {
-    matches!(ch, '<' | '>' | '《' | '》' | '·' | '-' | '_')
-        || ch.is_ascii_alphanumeric()
-        || crate::planning::is_cjk_speech_char(ch)
 }
 
 fn collapse_ws(s: &str) -> String {
@@ -3159,10 +3100,10 @@ fn format_storyboard_audio_caption(raw: &str) -> String {
     let has_line_marker = LINE.iter().any(|m| find_case_insensitive(raw, m).is_some());
     let already_typed = (raw.contains('{') || raw.contains('<')) && !has_line_marker;
     if already_typed {
-        return raw.trim().to_string();
+        return crate::dialogue::rewrite_spoken_payloads(raw.trim());
     }
     let (line, sfx) = split_dialogue_and_sfx(raw);
-    let line = trim_audio_brackets(&line);
+    let line = crate::dialogue::rewrite_spoken_payloads(&trim_audio_brackets(&line));
     let sfx = trim_audio_brackets(&sfx);
     match (line.is_empty(), sfx.is_empty()) {
         (true, true) => raw.trim().to_string(),
@@ -3201,30 +3142,8 @@ fn split_dialogue_and_sfx(raw: &str) -> (String, String) {
         (Some(l), Some(x)) => (l, x),
         (Some(l), None) => (l, String::new()),
         (None, Some(x)) => (String::new(), x),
-        (None, None) => {
-            if crate::planning::text_looks_like_dialogue(raw) {
-                split_unmarked_dialogue_and_sfx(raw)
-            } else {
-                (String::new(), raw.trim().to_string())
-            }
-        }
+        (None, None) => crate::dialogue::split_spoken_and_sfx(raw),
     }
-}
-
-/// Unmarked `音效… 角色:「台词」` → keep the spoken span in `{…}` and the
-/// leading foley in `<…>`, so Seedance does not try to vocalize ambience.
-fn split_unmarked_dialogue_and_sfx(raw: &str) -> (String, String) {
-    let Some(quote_at) = find_dialogue_quote_byte(raw) else {
-        return (raw.trim().to_string(), String::new());
-    };
-    let line_start = speaker_prefix_start(raw, quote_at);
-    let line = raw[line_start..].trim().to_string();
-    let sfx = raw[..line_start]
-        .trim()
-        .trim_end_matches(['；', ';', '，', ',', '。', '.'])
-        .trim()
-        .to_string();
-    (line, sfx)
 }
 
 /// Force the scene-stable `(music)` caption: replace an existing music `(…)`
@@ -3817,6 +3736,66 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         assert!(
             replaced.contains("gentle piano motif") && !replaced.contains("EDM"),
             "per-shot music must be replaced by scene-stable BGM: {replaced}"
+        );
+    }
+
+    #[test]
+    fn audio_caption_does_not_vocalize_sfx_or_book_quotes() {
+        let scene_bgm = "(gentle piano motif, steady tempo, same across shots)";
+        let shot4 = seedance_audio_caption_block(
+            Some("BGM:同前,弦乐渐强至收束。键盘「咔哒」一声脆响,屏幕提示音「面试课降价公告已发布」;随后是<粉总>轻轻呼出一口气的声音。"),
+            "按下回车",
+            "屏幕弹出面试课降价公告",
+            scene_bgm,
+            false,
+        );
+        assert!(!shot4.contains("{面试课降价公告已发布}"), "{shot4}");
+        assert!(!shot4.contains("{咔哒}"), "{shot4}");
+        assert!(shot4.contains('<'), "{shot4}");
+
+        let shot10 = seedance_audio_caption_block(
+            Some("手机扣在桌面的「砰」一声闷响,办公室空调低鸣。BGM:同前。"),
+            "扣手机",
+            "粉总坐在电脑前",
+            scene_bgm,
+            false,
+        );
+        assert!(!shot10.contains("{砰}"), "{shot10}");
+
+        let thanks = seedance_audio_caption_block(
+            Some("袁老师:「感谢『追梦人超哥』的火箭！超哥你是来听课的还是来拱火的？」"),
+            "开口",
+            "直播间",
+            scene_bgm,
+            false,
+        );
+        assert!(thanks.contains("追梦人超哥"), "{thanks}");
+        assert!(!thanks.contains('『') && !thanks.contains('』'), "{thanks}");
+
+        let mut s = shot(0, 0);
+        s.audio_desc = Some("键盘「咔哒」一声脆响,屏幕提示音「面试课降价公告已发布」".into());
+        s.visual_desc = "粉总按下回车".into();
+        s.motion_desc = "按下回车".into();
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            5,
+            SpliceSeam::Cut,
+            scene_bgm,
+            false,
+            &[],
+            "",
+        );
+        assert!(
+            !prompt.contains("台词：{面试课降价公告已发布}")
+                && !prompt.contains("Line: {面试课降价公告已发布}"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("音效") || prompt.contains("SFX") || prompt.contains('<'),
+            "{prompt}"
         );
     }
 

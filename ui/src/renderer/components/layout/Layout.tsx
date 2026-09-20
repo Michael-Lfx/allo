@@ -93,7 +93,7 @@ const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_SIDER_WIDTH = 184;
 const RAIL_MIN_WIDTH = 160;
 const RAIL_MAX_WIDTH = 300;
-const DESKTOP_COLLAPSED_WIDTH = 0;
+const DESKTOP_COLLAPSED_WIDTH = 48;
 const RAIL_COLLAPSE_THRESHOLD = 140;
 const SIDER_DRAG_HYSTERESIS = 6;
 const RAIL_WIDTH_STORAGE_KEY = 'nomifun:rail-width';
@@ -647,7 +647,7 @@ const Layout: React.FC<{
 
               <ArcoLayout className={'size-full layout flex-1 min-h-0'}>
                 <ArcoLayout.Sider
-                  collapsedWidth={isMobile ? 0 : 0}
+                  collapsedWidth={isMobile ? 0 : DESKTOP_COLLAPSED_WIDTH}
                   collapsed={collapsed}
                   width={siderWidth}
                   className={classNames('!bg-2 layout-sider', {
@@ -657,18 +657,19 @@ const Layout: React.FC<{
                 >
                   <ArcoLayout.Header
                     className={classNames(
-                      'flex items-center justify-start pt-8px pb-8px pl-18px pr-16px gap-12px layout-sider-header',
+                      'flex items-center justify-start pt-6px pb-6px pl-14px pr-12px gap-10px layout-sider-header',
                       isMobile && 'layout-sider-header--mobile',
                       {
                         'cursor-pointer group ': collapsed,
+                        '!justify-center !px-0': collapsed,
                       }
                     )}
+                    onClick={collapsed ? () => setCollapsed(false) : undefined}
                   >
                     <div
                       className={classNames('shrink-0 size-32px relative rd-0.5rem overflow-hidden', {
                         '!size-24px': collapsed,
                       })}
-                      onClick={onClick}
                     >
                       <img src={appLogo} alt='Flowy' className='absolute inset-0 w-full h-full object-cover' />
                     </div>

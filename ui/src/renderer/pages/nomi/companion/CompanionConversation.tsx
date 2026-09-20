@@ -1,7 +1,7 @@
 
 
-import React, { useCallback } from 'react';
-import type { IProvider, TChatConversation } from '@/common/config/storage';
+import React, { useCallback, useMemo } from 'react';
+import type { IProvider, TChatConversation, TProviderWithModel } from '@/common/config/storage';
 import NomiChat from '@/renderer/pages/conversation/platforms/nomi/NomiChat';
 import { useNomiModelSelection } from '@/renderer/pages/conversation/platforms/nomi/useNomiModelSelection';
 import type { useCompanion } from '../useNomi';
@@ -33,12 +33,38 @@ interface Props {
  * CompanionChatPanel 持有，保证加载/异常/模型缺失状态也不会丢失执行画布。
  */
 const CompanionConversation: React.FC<Props> = ({ conversation, companion }) => {
-  // 锁定版 modelSelection：current_model = 会话行模型（= profile.model，后端同步保证），
-  // 选择动作空操作（伙伴模型只经 CompanionModelControl → patchCompanion 修改，全局生效）。
-  const lockedSelect = useCallback(async (_provider: IProvider, _modelName: string) => false, []);
+  const { patchCompanion, profile } = companion;
+
+  const handleSelectModel = useCallback(
+    async (provider: IProvider, modelName: string) => {
+      try {
+        await patchCompanion({
+          model: {
+            provider_id: provider.id,
+            model: modelName,
+          },
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [patchCompanion]
+  );
+
+  const effectiveModel = useMemo(() => {
+    if (profile?.model) {
+      return {
+        id: profile.model.provider_id,
+        use_model: profile.model.model,
+      } as TProviderWithModel;
+    }
+    return conversation.model;
+  }, [profile?.model, conversation.model]);
+
   const modelSelection = useNomiModelSelection({
-    initialModel: conversation.model,
-    onSelectModel: lockedSelect,
+    initialModel: effectiveModel,
+    onSelectModel: handleSelectModel,
   });
 
   const workspace = conversation.extra?.workspace ?? '';
@@ -50,7 +76,8 @@ const CompanionConversation: React.FC<Props> = ({ conversation, companion }) => 
       modelSelection={modelSelection}
       session_mode='yolo'
       hideModeSelector
-      agent_name={companion.profile?.name}
+      hideModelSelector={false}
+      agent_name={profile?.name}
     />
   );
 };

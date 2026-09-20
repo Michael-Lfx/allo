@@ -42,6 +42,8 @@ const NomiChat: React.FC<{
   isProcessing?: boolean;
   /** Hide the permission/agent-mode selector in the send box (locked surfaces). */
   hideModeSelector?: boolean;
+  /** Hide the model selector in the send box. */
+  hideModelSelector?: boolean;
 }> = ({
   conversation_id,
   workspace,
@@ -57,6 +59,7 @@ const NomiChat: React.FC<{
   agent_name,
   isProcessing,
   hideModeSelector,
+  hideModelSelector,
 }) => {
   // Windowed history: load only the newest page on mount + lazily prepend older
   // pages on scroll-up. The nomi surface backs both work conversations and the
@@ -147,6 +150,7 @@ const NomiChat: React.FC<{
                 reasoning_effort={reasoning_effort}
                 agent_name={agent_name}
                 hideModeSelector={hideModeSelector}
+                hideModelSelector={hideModelSelector}
                 dynamicModes={dynamicModes}
                 turnActivity={turnActivity}
               />
