@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { Attention, PlayOne, Robot, User } from '@icon-park/react';
+import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import { getArtifact } from '../api';
 import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
+import { resolveVideoFailureRecoveryAction } from '../videoFailureRecovery';
 import {
   groupPortraitMedia,
   loadStudioMediaPreviewUrl,
@@ -403,6 +406,7 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
   onOpenMedia,
 }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const isUser = item.role === 'user';
   const isGate = item.kind === 'gate_render' || item.kind === 'gate_action';
@@ -415,6 +419,8 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
   if (isIssue) {
     const kind = issueKind ?? 'unknown';
     const warn = item.kind === 'cancelled';
+    const recovery =
+      item.kind === 'failure' ? resolveVideoFailureRecoveryAction(issueKind) : null;
     return (
       <div className={styles.row}>
         <span className={`${styles.avatar} ${warn ? styles.avatarWarn : styles.avatarDanger}`} aria-hidden>
@@ -428,6 +434,25 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
           </div>
           {title ? <p className={styles.issueTitle}>{title}</p> : null}
           {body ? <p className={styles.issueBody}>{body}</p> : null}
+          {recovery ? (
+            <div className={styles.issueActions}>
+              <button
+                type='button'
+                className={styles.issueAction}
+                data-testid='video-failure-open-billing'
+                onClick={() => {
+                  trackFunnelEvent('prerequisite_resolved', {
+                    kind: recovery.source,
+                    source: 'error_recovery',
+                    feature: 'video_generation',
+                  });
+                  navigate(recovery.href);
+                }}
+              >
+                {t(recovery.labelKey, { defaultValue: '购买积分' })}
+              </button>
+            </div>
+          ) : null}
           {detail ? (
             <details className={styles.issueDetail}>
               <summary>
