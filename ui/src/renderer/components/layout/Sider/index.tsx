@@ -213,10 +213,11 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   }, [navigate, onSessionClick]);
 
   const handleConversationSelect = useCallback(() => {
+    handleSelectHistoryTab('workspaces');
     if (onSessionClick) {
       onSessionClick();
     }
-  }, [onSessionClick]);
+  }, [handleSelectHistoryTab, onSessionClick]);
 
   const compactDisplayPreferences = useMemo(() => {
     if (typeof localStorage !== 'undefined' && localStorage.getItem('nomifun:session-sidebar-display-preferences')) {
@@ -564,7 +565,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       isTabDomainActive('workspaces')
                         ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
                         : activeHistoryTab === 'workspaces'
-                          ? 'bg-fill-2 text-t-secondary font-medium'
+                          ? 'bg-fill-2 text-t-secondary font-medium hover:text-t-primary'
                           : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
@@ -581,7 +582,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       isTabDomainActive('video')
                         ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
                         : activeHistoryTab === 'video'
-                          ? 'bg-fill-2 text-t-secondary font-medium'
+                          ? 'bg-fill-2 text-t-secondary font-medium hover:text-t-primary'
                           : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
@@ -598,7 +599,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       isTabDomainActive('companions')
                         ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
                         : activeHistoryTab === 'companions'
-                          ? 'bg-fill-2 text-t-secondary font-medium'
+                          ? 'bg-fill-2 text-t-secondary font-medium hover:text-t-primary'
                           : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >

@@ -19,7 +19,7 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes("isTabDomainActive('workspaces')")).toBe(true);
     expect(siderSource.includes("isTabDomainActive('video')")).toBe(true);
     expect(siderSource.includes("isTabDomainActive('companions')")).toBe(true);
-    expect(siderSource.includes('bg-fill-2 text-t-secondary font-medium')).toBe(true);
+    expect(siderSource.includes('bg-fill-2 text-t-secondary font-medium hover:text-t-primary')).toBe(true);
   });
 
   test('synchronizes routes bidirectionally without trampling companion conversations', () => {
@@ -28,6 +28,9 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes("handleSelectHistoryTab('workspaces')")).toBe(true);
     expect(siderSource.includes("handleSelectHistoryTab('video')")).toBe(true);
     expect(siderSource.includes("handleSelectHistoryTab('companions')")).toBe(true);
+
+    // Search entry selection switches drawer tab to workspaces
+    expect(siderSource.includes("handleSelectHistoryTab('workspaces');\n    if (onSessionClick)")).toBe(true);
 
     // Clicking workspaces tab while in session does not discard current conversation
     expect(siderSource.includes('if (!isSessionRoute)')).toBe(true);
