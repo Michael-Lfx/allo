@@ -169,15 +169,15 @@ fn semantic_status(triple: &AppServerCompatibilityTriple) -> AppServerCompatibil
     }
 }
 
-fn payload(row: &PluginSnapshotComponentRow) -> serde_json::Value {
+pub(crate) fn payload(row: &PluginSnapshotComponentRow) -> serde_json::Value {
     serde_json::from_str(&row.payload_json).unwrap_or_else(|_| serde_json::json!({}))
 }
 
-fn string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+pub(crate) fn string_field(value: &serde_json::Value, key: &str) -> Option<String> {
     value.get(key).and_then(|value| value.as_str()).map(str::to_owned)
 }
 
-fn localized_field(value: &serde_json::Value, key: &str) -> Option<AppServerLocalizedText> {
+pub(crate) fn localized_field(value: &serde_json::Value, key: &str) -> Option<AppServerLocalizedText> {
     let field = value.get(key)?;
     let mut out = AppServerLocalizedText { en: None, zh: None };
     match field {
@@ -227,7 +227,7 @@ fn localized_list(value: &serde_json::Value, key: &str) -> Vec<AppServerLocalize
         .unwrap_or_default()
 }
 
-fn string_array(value: &serde_json::Value, key: &str) -> Vec<String> {
+pub(crate) fn string_array(value: &serde_json::Value, key: &str) -> Vec<String> {
     value
         .get(key)
         .and_then(|value| value.as_array())

@@ -56,8 +56,14 @@
  * `source_kind: "zip"`, one archive whose root *is* the market root. The
  * official bundles move to it because the old `url` form made a first fetch
  * mirror 14,714 files (611 MiB) for `experts` alone (doc `30`).
+ * **`fp-8` adds expert definition export**: `agent/export` and `team/export`
+ * return an {@link ExpertPack} — the persona, model hints, skill references and
+ * (for a team) the roster with every member expanded. Nothing existing changes
+ * shape, but the response carries the Agent Markdown body, which the catalog
+ * faces deliberately never do; both methods are WebSocket-only, so the
+ * documented route split becomes `48 / 73` (doc `32`).
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-7";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-8";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -193,6 +199,17 @@ export interface Capabilities {
   marketplaces: boolean;
   store: boolean;
   models: boolean;
+  /**
+   * The expert **definition export** face (`agent/export` / `team/export`,
+   * doc 32).
+   *
+   * Reports the *seam*, not the policy — same split as `connector_calls`. A host
+   * wires it and then decides per request whether its `[expert_export]` table
+   * allows the id, so this flag says the methods exist, not that any given
+   * expert is exportable: a refusal arrives as `policy_denied`. Do not use it to
+   * grey out a button and assume that is the whole answer.
+   */
+  expert_export: boolean;
 }
 
 export interface WorkspaceRef { id: string }
@@ -1387,4 +1404,143 @@ export interface TeamDetail extends TeamSummary {
    * `mcpServers` are recorded, not mapped to grants (docs/agent-store/02 §5.1).
    */
   connectors: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Expert definition export (`agent/export` / `team/export`, doc 32)
+// ---------------------------------------------------------------------------
+
+/**
+ * Format version of {@link ExpertPack}.
+ *
+ * **Independent of {@link APP_SERVER_PROTOCOL_VERSION}** on purpose: the
+ * fingerprint versions *our* wire compatibility, this versions the **artifact
+ * contract for third-party runtimes**. Gate on this one; the fingerprint is
+ * about whether your client can talk to the host at all.
+ */
+export const APP_SERVER_EXPERT_PACK_FORMAT = 1;
+
+export type ExpertPackKind = "agent" | "team";
+
+/** The expert's persona — the only body of text this face carries. */
+export interface ExpertPersona {
+  /**
+   * The Agent Markdown body, verbatim. The catalog face deliberately has no
+   * field that could carry it (`AgentDetail`), so this is the only place it
+   * appears — see doc 32 §2.
+   */
+  instructions: string;
+  memory?: string | null;
+  background?: string | null;
+}
+
+export interface ExpertModelRef {
+  /** Host-local row id on the host that produced the pack; not portable. */
+  provider_id?: string | null;
+  model: string;
+}
+
+/**
+ * Declared and resolved model hints. Neither is binding: `declared` is the
+ * source frontmatter string and `resolved` is what the producing host resolved
+ * it to. A consumer resolves its own model (doc 32 §5 R6).
+ */
+export interface ExpertModel {
+  declared?: string | null;
+  resolved?: ExpertModelRef | null;
+  effort?: string | null;
+  max_turns?: number | null;
+}
+
+/**
+ * One Skill the expert declares, **by reference** — fetch the bytes with
+ * `skills.files()` / `skills.readFile()`. `name` and `id` are the same string:
+ * `skill/list` publishes the Skill name as its id.
+ */
+export interface ExpertSkillRef {
+  name: string;
+  id: string;
+}
+
+/**
+ * One Connector a **team's own snapshot** installed and left enabled. Identity
+ * and switch only — never transport, env, headers or token (doc 24 §2/§5.3);
+ * tool schemas stay on `connector/get`.
+ *
+ * An **agent** pack's list is always empty, faithfully: this format has no
+ * agent-level connector dependency (doc 02 §5.1).
+ */
+export interface ExpertConnectorRef {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+/** A declaration, never a permission boundary (doc 32 §5 R9). */
+export interface ExpertToolPolicy {
+  tools: string[];
+  disallowed_tools: string[];
+}
+
+export interface ExpertProvenance {
+  source: string;
+  snapshot_id: string;
+  content_digest: string;
+  preset_id?: string | null;
+  preset_revision?: number | null;
+}
+
+/**
+ * Which engine the definition was bound to on the producing host.
+ *
+ * `portable: false` is the normal case, not an error: an installed expert is a
+ * Preset pinned to that host's runtime agent, which no other runtime has.
+ */
+export interface ExpertRuntimeBinding {
+  runtime: string;
+  portable: boolean;
+}
+
+/** Team roster and policy. The roster is a hard boundary; the rest is intent. */
+export interface ExpertTeamPack {
+  lead_agent_id: string;
+  member_agent_ids: string[];
+  planner_policy: string;
+  routing_constraints: string[];
+  workflow_limits: Record<string, unknown>;
+  team_runtime_capabilities: string[];
+  /** Fully expanded member packs, **leader first**. */
+  members: ExpertPack[];
+}
+
+/**
+ * A portable expert definition (`agent/export` / `team/export`, doc 32).
+ *
+ * A **definition, not execution semantics**: how a team plans and schedules its
+ * steps, how tool and credential policy is applied, and the shape of its events
+ * are all enforced by the runtime and are absent here. Doc 32 §5 (R1–R11) lists
+ * what a consumer has to implement itself — answer that list rather than only
+ * reading this shape.
+ *
+ * There is deliberately no export timestamp, so two exports of one snapshot are
+ * byte-identical: `provenance.content_digest` is usable as a cache key, and two
+ * exports can be diffed to answer "what changed upstream".
+ */
+export interface ExpertPack {
+  pack_format: number;
+  kind: ExpertPackKind;
+  id: string;
+  version: string;
+  name: string;
+  display_name?: LocalizedText | null;
+  description?: string | null;
+  persona: ExpertPersona;
+  model: ExpertModel;
+  skills: ExpertSkillRef[];
+  connectors: ExpertConnectorRef[];
+  tool_policy: ExpertToolPolicy;
+  /** Present exactly when `kind === "team"`. */
+  team?: ExpertTeamPack | null;
+  provenance: ExpertProvenance;
+  runtime_binding: ExpertRuntimeBinding;
 }

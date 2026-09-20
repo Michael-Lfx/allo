@@ -39,6 +39,7 @@
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | `25-release-runbook.zh.md` | **发布操作手册（本文）**：一次发布的两个出口（npm 四包 / 站点仓 GitHub Release）、7 条不变量及其机械判据、有序清单 S0–S8、**站点文档同步清单**、失败与回退、已知缺口 | ✅ 现行（每次发版照做；不含产品准入判定） |
+| `32-expert-pack-export.zh.md` | **专家 / 专家团导出给外部 runtime（`ExpertPack`）**：`agent/export` · `team/export` 把专家降级成一份可移植定义（persona / 模型 / 技能 / 连接器 / 团名单）；**明确不导出执行语义**，并把「外部 runtime 必须自己实现什么」列成 R1–R11 责任清单；闸门是**默认开的减项表**（与 `[tools]` 同族）；含 `pack_format` 独立于指纹、确定性导出、物化配方（站点 + live 脚本，不新增 SDK 面）与验收口径 | 📋 **待动工**（2026-09-18 五个分叉均已拍板，见 §1.1） |
 | `33-memory-master-switch.zh.md` | **内置记忆总开关 `[memory] enabled`**：`~/.agent-store/config.toml` 新增一个键，`false` 时**四面同时停**（提示词记忆段落 / `remember` / 轮后蒸馏 / 引用回写）；与同表 `distill_enabled` **独立**（后者只管蒸馏一半），`enabled = false` 使其失去意义。含**命名陷阱的排除**（口语「config.yaml」指的是 TOML 的 `config.toml`，与真叫 `config.yaml` 的 `GatewayConfig` 云登录面无关）、宿主采纳规则（照抄 `[tools]` 的宿主位）、fail-open 口径、跨 crate 的按值透传（**不用进程全局**）、四个门控点与反向验证读数 | ✅ **已实现**（2026-09-20，零 wire 变更故指纹不动；代码未提交） |
 | `28-webui-composer-connector-switch-plan.zh.md` | **WebUI 输入区**：连接器退出 `@` 提及、`+` 菜单与连接器抽屉改为真正的启用开关（宿主级 `enabled`，走第一方 `POST /api/mcp/servers/:id/toggle`，零 wire 变更）；行内「连接」＝发起 OAuth；含语义边界、验收与偏差 | ✅ 已落地（2026-09-23；4 处实现期偏差见 §9.1，手测项待用户验证） |
 | `27-conversation-binding-plan.zh.md` | **会话绑定**：每轮技能（`conversation/send` 收 `mentions`）+ 会话级专家 / 专家团（`conversation/create` 收互斥的 `agent_id` / `team_id`）；含**不做每轮连接器**的理由与将来的两条路、验收口径、指纹与跨仓步骤 | ✅ 阶段 1 / 2a / 2b 均已落地（`fp-3`/`fp-4`/`fp-5`）；仅剩「Leader 首轮委派」真机实测 |
@@ -158,6 +159,45 @@
    `changelog` §4）；顺带把 `changelog` §4 那张未发布表的「协议方法面增量」一行补上三个 MCP 方法
    与 `store/list` 的 `published_at`。**版本号口径未动**：工作区仍是 `0.1.0-beta.3`，与文档
    「本文与仓库当前对应 `0.1.0-beta.3`」一致——有张力的是 **wire 面**，不是版本号。
+
+## 本轮（2026-09-24）
+
+> **日期标签说明**：`2026-09-24` 是**按 `fp-` 谱系取的标签**（紧接 `fp-7` 的 `2026-09-23`），
+> **不是日历日期**——`30` §D4 已记过这个习惯（日期戳只是标签，常超前于日历；wire 身份以 `fp-<n>` 为准）。
+> 下面这条记的是当日的真实工作。
+
+1. **专家 / 专家团导出给外部 runtime —— `fp-7` → `fp-8`**（方案、责任清单与全部读数：
+   `32-expert-pack-export.zh.md`；规格：`05` §4.1.1 / §4.2.1；SDK：`07` §4.1）。新增两个
+   **WebSocket-only** 方法 `agent/export` / `team/export`，返回可移植的 `AppServerExpertPack`：
+   persona 正文、模型提示、**按引用**的技能清单、（团的）固定名单加逐成员展开。**这是本仓第一次把
+   Agent Markdown 正文放上协议面**——目录面（`agent/list` / `agent/get` / `team/get`）**刻意永远不带**
+   它，所以导出是**独立 seam + 独立闸门**，而不是给 `agent/get` 加字段。
+   1. **形状**：`pack_format`（=1）**独立于 `fp-n`**——指纹管「我们的 wire 兼容」，它管「给第三方的
+      产物契约」，绑在一起会让每个无关方法都逼第三方重新适配。**没有时间戳**：同一快照两次导出
+      **逐字节相同**，消费方才能拿 `content_digest` 当缓存键、做 diff。
+   2. **闸门 `[expert_export]` 是「默认开的减项表」**（与 `[tools]` 同族，**不是** `[connector_proxy]`
+      那种授权表）：它只**读**策展内容的字节，与 `skill/files` 同级，而那一面根本没有门禁。方案里我
+      先按 fail-closed 写、**落地时订正**——按表的**用途**分类才是仓库的既有口径。已知并接受的风险
+      （本机任意客户端可批量拉走 persona）与三条理由写在 `32` §6.2。
+   3. **不导出执行语义**：团队的编排、步骤调度、工具/凭据策略、事件形状都由运行时执行。方案 §5 把
+      「外部 runtime 必须自己实现什么」列成 **R1–R11 责任清单**——要接入就得逐条回应，标 N/A 本身
+      就是答案。
+   4. **`[expert_export]` 的默认开**（用 `enabled = false` / `deny` 收紧），env 覆盖
+      `AGENT_STORE_EXPERT_EXPORT`（整份替换，解析失败**回落到文件**——减项表的 fail-open 方向）。
+2. **测试与验收（16 条新单测 + 9 条真机判据全绿）**。协议面 6 条（`nomifun-app-server`：能力位独立性、
+   未接 seam 关闭、往返、`team_version` 守卫、6 个错误码各自的稳定码、**persona 只在 pack 上而不在目录
+   面上**）；adapter 10 条（`nomifun-app`，真内存 SQLite：正文保真、确定性、名单展开与去重、缺员硬失败、
+   安装态与**「关掉的权威信号是 Preset 不是组件行」**、闸门先于读库、`not_found`、连接器安装态、
+   凭据与绝对路径不出门）；真机 `web/scripts/sdk-live-expert-export.ts` **9/9 PASS**（EX-001–EX-009，
+   读数见 `32` §9.1）。三处**实现期订正**（无 HTTP 路由 ⇒ 计数是「未映射 +2」`48/23 → 48/25`；
+   能力位报 seam 不报策略；`05` §4.2.1 的 `connectors` 位置）与**两处我自己写错的词/断言**都记在 `32` §9.1。
+3. **真机给出的一条产品性质**：包里的技能是**声明**，而「声明在本机能不能解析」是**宿主事实**——
+   仓库夹具声明的 3 个技能在 21 个已装技能里一个都没有，包**如实上报**（与 `agent/run` 的失败关闭一致）。
+   所以 §6.5 的物化配方必须自己决定遇到悬空引用怎么办：**记录并继续，不静默跳过**。
+4. **跨仓同步**：站点 `typescript-sdk` 两语言 §2 常量 + 两处计数（`48 / 71 → 48 / 73`）+ §5.3 未映射
+   清单 `23 → 25`；`changelog` §4 台账重排为「两批、最新在前」并新增 `fp-8` 破坏性条目；`examples-sdk`
+   中英各新增 **§9.1 导出专家给外部 runtime**（含 11 行物化配方与三个错误码的分工）。
+   `check:docs-sync` **0 drift**、`test:docs-sync` **16 pass**、`check:release-sync` 两边 `48 / 73` 一致。
 
 ## 本轮（2026-09-23）
 

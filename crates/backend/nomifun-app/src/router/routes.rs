@@ -1144,6 +1144,23 @@ pub fn create_router_with_all_state(
                     plugin_snapshot_repository.clone(),
                 ),
             )),
+            // Expert **definition export** (`agent/export`, `team/export`, doc
+            // `32`). Wired unconditionally, like `connector_calls`: the provider's
+            // first gate is the host's `[expert_export]` policy, so "wired" never
+            // means "exportable". What it hands out is a *definition* — the
+            // persona, the model hints, skill references and the team roster —
+            // never execution semantics, credentials or skill bytes.
+            expert_packs: Some(Arc::new(
+                crate::app_server_expert_export::AppServerExpertExport::new(
+                    plugin_snapshot_repository.clone(),
+                    Arc::new(
+                        crate::app_server_expert_export::AppServerExpertPresetReader::new(
+                            states.preset.service.clone(),
+                        ),
+                    ),
+                    services.expert_export_policy.clone(),
+                ),
+            )),
             // The same facade every other host surface uses: `team/run` materializes
             // the Team template and reverse-maps the Leader's execution here.
             engine: Some(states.agent_execution.clone()),
