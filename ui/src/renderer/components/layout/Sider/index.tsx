@@ -113,19 +113,51 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     }
   }, []);
 
-  useEffect(() => {
-    if (pathname.startsWith('/video-generation')) {
-      handleSelectHistoryTab('video');
-    } else if (pathname.startsWith('/nomi')) {
-      handleSelectHistoryTab('companions');
-    }
-  }, [pathname, handleSelectHistoryTab]);
-
   const isSessionRoute =
     pathname === '/guid' ||
     pathname.startsWith('/conversation/') ||
     pathname === '/terminal-new' ||
     pathname.startsWith('/terminal/');
+  const isVideoRoute = pathname.startsWith('/video-generation');
+  const isCompanionRoute = pathname.startsWith('/nomi');
+
+  const isDockRoute =
+    pathname.startsWith('/knowledge') ||
+    pathname.startsWith('/learn') ||
+    pathname === '/scheduled' ||
+    pathname.startsWith('/meeting') ||
+    pathname.startsWith('/eval');
+
+  const isOtherTopRoute =
+    pathname.startsWith('/models') ||
+    pathname.startsWith('/settings');
+
+  useEffect(() => {
+    if (pathname.startsWith('/video-generation')) {
+      handleSelectHistoryTab('video');
+    } else if (pathname.startsWith('/nomi')) {
+      handleSelectHistoryTab('companions');
+    } else if (
+      pathname === '/guid' ||
+      pathname === '/terminal-new' ||
+      pathname.startsWith('/terminal/') ||
+      (pathname.startsWith('/conversation/') && activeHistoryTab === 'video')
+    ) {
+      handleSelectHistoryTab('workspaces');
+    }
+  }, [pathname, activeHistoryTab, handleSelectHistoryTab]);
+
+  const isTabDomainActive = useCallback(
+    (tab: 'workspaces' | 'companions' | 'video') => {
+      if (activeHistoryTab !== tab) return false;
+      if (isDockRoute || isOtherTopRoute) return false;
+      if (tab === 'workspaces') return isSessionRoute;
+      if (tab === 'video') return isVideoRoute;
+      if (tab === 'companions') return isCompanionRoute || isSessionRoute;
+      return false;
+    },
+    [activeHistoryTab, isDockRoute, isOtherTopRoute, isSessionRoute, isVideoRoute, isCompanionRoute]
+  );
   const selectionIndicator = useSlidingSelectionIndicator({
     containerRef: siderRef,
     activeSelector: '[data-sider-nav-entry][data-active="true"]:not([data-sider-selection-static])',
@@ -207,12 +239,16 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     (tab: 'workspaces' | 'companions' | 'video') => {
       handleSelectHistoryTab(tab);
       if (tab === 'workspaces') {
-        handleNewChat();
+        if (!isSessionRoute) {
+          handleNewChat();
+        }
       } else if (tab === 'video') {
-        handleVideoGenerationHome();
+        if (!isVideoRoute) {
+          handleVideoGenerationHome();
+        }
       }
     },
-    [handleNewChat, handleSelectHistoryTab, handleVideoGenerationHome]
+    [handleNewChat, handleSelectHistoryTab, handleVideoGenerationHome, isSessionRoute, isVideoRoute]
   );
 
   const activeVideoGenerationSessionId = useMemo(() => {
@@ -520,44 +556,53 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                   <button
                     type='button'
                     role='tab'
+                    title={t('sessionList.projectsTab', { defaultValue: '项目' })}
                     aria-selected={activeHistoryTab === 'workspaces'}
                     onClick={() => handleTabClick('workspaces')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
-                      activeHistoryTab === 'workspaces'
-                        ? 'bg-fill-3 text-t-primary shadow-xs font-semibold'
-                        : 'bg-transparent text-t-secondary hover:text-t-primary hover:bg-fill-2'
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-all duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      isTabDomainActive('workspaces')
+                        ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
+                        : activeHistoryTab === 'workspaces'
+                          ? 'bg-fill-2 text-t-secondary font-medium'
+                          : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
-                    <span>{t('sessionList.projectsTab', { defaultValue: '项目' })}</span>
+                    <span className='truncate'>{t('sessionList.projectsTab', { defaultValue: '项目' })}</span>
                   </button>
                   <button
                     type='button'
                     role='tab'
+                    title={t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}
                     aria-selected={activeHistoryTab === 'video'}
                     onClick={() => handleTabClick('video')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
-                      activeHistoryTab === 'video'
-                        ? 'bg-fill-3 text-t-primary shadow-xs font-semibold'
-                        : 'bg-transparent text-t-secondary hover:text-t-primary hover:bg-fill-2'
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-all duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      isTabDomainActive('video')
+                        ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
+                        : activeHistoryTab === 'video'
+                          ? 'bg-fill-2 text-t-secondary font-medium'
+                          : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
-                    <span>{t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}</span>
+                    <span className='truncate'>{t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}</span>
                   </button>
                   <button
                     type='button'
                     role='tab'
+                    title={t('nomi.shortTitle', { defaultValue: '桌宠' })}
                     aria-selected={activeHistoryTab === 'companions'}
                     onClick={() => handleTabClick('companions')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors cursor-pointer border-none select-none whitespace-nowrap',
-                      activeHistoryTab === 'companions'
-                        ? 'bg-fill-3 text-t-primary shadow-xs font-semibold'
-                        : 'bg-transparent text-t-secondary hover:text-t-primary hover:bg-fill-2'
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-all duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      isTabDomainActive('companions')
+                        ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
+                        : activeHistoryTab === 'companions'
+                          ? 'bg-fill-2 text-t-secondary font-medium'
+                          : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
-                    <span>{t('nomi.shortTitle', { defaultValue: '桌宠' })}</span>
+                    <span className='truncate'>{t('nomi.shortTitle', { defaultValue: '桌宠' })}</span>
                   </button>
                 </div>
               </div>

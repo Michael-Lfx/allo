@@ -217,9 +217,9 @@ const CompanionSessionGroup: React.FC<Props> = ({
           <button
             type='button'
             onClick={() => void navigate('/nomi?tab=overview')}
-            className='mt-4px px-12px py-5px text-11px font-medium rd-6px bg-primary-6 text-white hover:bg-primary-5 active:bg-primary-7 border-none cursor-pointer transition-colors flex items-center gap-4px shadow-xs'
+            className='mt-4px px-12px py-5px text-11px font-medium rd-6px bg-primary-6 text-white hover:bg-primary-5 active:bg-primary-7 border-none cursor-pointer transition-colors flex items-center gap-4px shadow-sm'
           >
-            <span>{t('nomi.companions.create', { defaultValue: '新建伙伴' })}</span>
+            <span>{t('nomi.companions.createTitle', { defaultValue: '新建伙伴' })}</span>
           </button>
         </div>
       );
@@ -383,7 +383,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
           className={classNames(
             'group relative flex flex-col p-10px rd-12px mb-8px cursor-pointer transition-all box-border min-w-0 border border-solid',
             active
-              ? '!bg-primary-1/30 !border-primary-3 shadow-sm'
+              ? '!bg-[rgba(var(--primary-1),0.3)] !border-primary-3 shadow-sm'
               : 'bg-fill-1 hover:bg-fill-2 border-[var(--color-border-2)] hover:border-primary-2 active:bg-fill-3'
           )}
         >
@@ -463,13 +463,13 @@ const CompanionSessionGroup: React.FC<Props> = ({
 
           {/* Bottom stats row: Memories and Skills */}
           <div className='mt-6px grid grid-cols-2 gap-4px text-10px text-t-tertiary'>
-            <div className='flex items-center gap-4px bg-fill-2/60 px-6px py-2px rd-4px truncate'>
+            <div className='flex items-center gap-4px bg-fill-2 px-6px py-2px rd-4px truncate'>
               <span>🧠</span>
               <span className='truncate'>
                 <span className='font-600 text-t-primary'>{c.status?.memories_active ?? 0}</span> {t('nomi.overview.memories', { defaultValue: '记忆' })}
               </span>
             </div>
-            <div className='flex items-center gap-4px bg-fill-2/60 px-6px py-2px rd-4px truncate'>
+            <div className='flex items-center gap-4px bg-fill-2 px-6px py-2px rd-4px truncate'>
               <span>⚡</span>
               <span className='truncate'>
                 <span className='font-600 text-t-primary'>{c.status?.skills_active ?? 0}</span> {t('nomi.overview.skillsActive', { defaultValue: '技能' })}
