@@ -1654,7 +1654,7 @@ fn character_identity_clause(characters: &[CharacterInScene], idxs: &[i32], styl
         return String::new();
     }
     let mut out = format!(
-        "CAST LOCK (must match three-view bible): {}. Do not invent new faces/outfits. ",
+        "CAST LOCK (must match character design sheet): {}. Do not invent new faces/outfits. ",
         parts.join("; ")
     );
     if has_child {
