@@ -1660,36 +1660,10 @@ fn speech_pause_secs(spoken: &str) -> f32 {
     pause.min(SPEECH_PAUSE_MAX_SECS)
 }
 
-/// Prefer dialogue inside 「」 / “” / "" / `{…}`. Unquoted ambient/BGM/SFX is not speech.
+/// Prefer spoken dialogue inside 「」 / “” / "" / `{…}`. SFX/UI quotes and
+/// unquoted ambient/BGM are not speech.
 fn extract_spoken_payload(audio_desc: &str) -> String {
-    let mut chunks: Vec<String> = Vec::new();
-    let chars: Vec<char> = audio_desc.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let open = chars[i];
-        let close = match open {
-            '「' => Some('」'),
-            '“' => Some('”'),
-            '"' => Some('"'),
-            '{' => Some('}'),
-            _ => None,
-        };
-        if let Some(close) = close {
-            i += 1;
-            let start = i;
-            while i < chars.len() && chars[i] != close {
-                i += 1;
-            }
-            if i > start {
-                chunks.push(chars[start..i].iter().collect());
-            }
-            if i < chars.len() {
-                i += 1; // consume closer
-            }
-            continue;
-        }
-        i += 1;
-    }
+    let chunks = crate::dialogue::spoken_payloads(audio_desc);
     if !chunks.is_empty() {
         return chunks.join(" ");
     }
@@ -1876,32 +1850,9 @@ fn is_visual_speech_cue_only(part: &str) -> bool {
 }
 
 /// True when text carries spoken lines (quotes / dialogue verbs) rather than
-/// pure camera direction like "hold/pan".
+/// pure camera direction like "hold/pan". Foley/UI quotes are not dialogue.
 pub fn text_looks_like_dialogue(text: &str) -> bool {
-    let t = text.trim();
-    if t.is_empty() {
-        return false;
-    }
-    let lower = t.to_ascii_lowercase();
-    t.contains('「')
-        || t.contains('」')
-        || t.contains('"')
-        || t.contains('“')
-        || t.contains('”')
-        || t.contains('{')
-        || lower.contains("says")
-        || lower.contains("said")
-        || lower.contains("dialogue")
-        || lower.contains("speech")
-        || lower.contains("voice")
-        || lower.contains("whisper")
-        || lower.contains("shouts")
-        || lower.contains("台词")
-        || lower.contains("说道")
-        || lower.contains("喊道")
-        || lower.contains("怒吼")
-        || lower.contains("说话")
-        || lower.contains("轻声")
+    crate::dialogue::text_looks_like_dialogue(text)
 }
 
 /// Allocate per-shot durations from content needs (audio + motion), then fit the
@@ -2478,6 +2429,17 @@ eleven twelve thirteen fourteen";
         assert_eq!(estimate_speech_secs(en), 7);
         assert_eq!(estimate_speech_secs(""), 0);
         assert_eq!(estimate_speech_secs("   "), 0);
+        // Foley / UI quotes must not count as 台词.
+        assert_eq!(
+            estimate_speech_secs(
+                "BGM:同前,弦乐渐强至收束。键盘「咔哒」一声脆响,屏幕提示音「面试课降价公告已发布」;随后是<粉总>轻轻呼出一口气的声音。"
+            ),
+            0
+        );
+        assert_eq!(
+            estimate_speech_secs("手机扣在桌面的「砰」一声闷响,办公室空调低鸣。BGM:同前。"),
+            0
+        );
     }
 
     #[test]

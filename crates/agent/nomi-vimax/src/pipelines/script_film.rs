@@ -27,8 +27,8 @@ use crate::session::{
 };
 
 use super::cameo_bind::{
-    apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
-    world_cameo_context,
+    apply_session_cameos, cameo_extractor_hint, classify_session_references, is_body_part_character,
+    resolve_session_root, world_cameo_context,
 };
 use super::scene_reel::SceneReel;
 use super::script2video::{PlanArtifacts, Script2VideoPipeline};
@@ -319,7 +319,10 @@ impl ScriptFilmPipeline {
                     HashMap::new()
                 };
             for character in &characters {
-                if !character.is_visible {
+                if is_body_part_character(character) {
+                    continue;
+                }
+                if !character.needs_identity_assets() {
                     continue;
                 }
                 if has_usable_portrait(&registry, &character.identifier_in_scene) {

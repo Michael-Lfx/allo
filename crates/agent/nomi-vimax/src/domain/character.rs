@@ -231,6 +231,19 @@ pub struct CharacterInScene {
     pub voice_profile: Option<VoiceProfile>,
 }
 
+impl CharacterInScene {
+    /// Three-view + voice-ref: on-camera cast, or anyone with a usable speaking
+    /// bible (phone VO / off-screen). `is_visible` is camera presence only —
+    /// named speakers still need identity assets.
+    pub fn needs_identity_assets(&self) -> bool {
+        self.is_visible
+            || self
+                .voice_profile
+                .as_ref()
+                .is_some_and(VoiceProfile::is_usable)
+    }
+}
+
 /// True when `text` names this character, including unique short forms
 /// (`老祖` → `玄霄老祖`). Ambiguous suffixes (two *老祖 in the cast) do not match.
 pub fn character_mentioned_in(
@@ -397,5 +410,23 @@ mod tests {
         assert!(!character_mentioned_in("老祖开口", &cast[0], &cast));
         assert!(!character_mentioned_in("老祖开口", &cast[1], &cast));
         assert!(character_mentioned_in("<玄霄老祖>开口", &cast[0], &cast));
+    }
+
+    #[test]
+    fn off_screen_speaker_still_needs_identity_assets() {
+        let mut vo = ch(1, "四海老板");
+        vo.is_visible = false;
+        vo.voice_profile = Some(VoiceProfile {
+            timbre: "低沉男中音".into(),
+            volume: Some("normal".into()),
+            pitch: Some("low".into()),
+            speaking_style: "沉稳".into(),
+            caption_clause: None,
+            tts_voice: None,
+        });
+        assert!(vo.needs_identity_assets());
+        let mut extra = ch(2, "路人甲");
+        extra.is_visible = false;
+        assert!(!extra.needs_identity_assets());
     }
 }

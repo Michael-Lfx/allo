@@ -6,6 +6,7 @@ pub mod aspect;
 pub mod backends;
 pub mod clip_bounds;
 pub mod creative;
+pub mod dialogue;
 pub mod domain;
 pub mod drama;
 pub mod error;

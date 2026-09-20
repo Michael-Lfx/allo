@@ -25,7 +25,8 @@ impl VoiceReferenceGenerator {
         Self { services }
     }
 
-    /// Ensure every visible cast member with a voice bible has a local `*_voice_ref.wav`.
+    /// Ensure every cast member that needs identity assets (on-camera or a
+    /// usable speaking bible, including phone VO) has a local `*_voice_ref.wav`.
     pub async fn ensure_voice_references(
         &self,
         characters: &[CharacterInScene],
@@ -38,7 +39,7 @@ impl VoiceReferenceGenerator {
         tokio::fs::create_dir_all(portraits_dir).await?;
 
         for ch in characters {
-            if !ch.is_visible {
+            if !ch.needs_identity_assets() {
                 continue;
             }
             let Some(vp) = ch.voice_profile.as_ref().filter(|v| v.is_usable()) else {
