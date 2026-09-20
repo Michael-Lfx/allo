@@ -1,6 +1,6 @@
 # 云服务与计费域（Flowy Cloud）
 
-> **最后维护：** 2026-09-01 · 核对基准：源码（nomifun-cloud 遥测出站 + FlowyClaw ingest）
+> **最后维护：** 2026-09-20 · 核对基准：源码（nomifun-cloud 遥测出站 + FlowyClaw ingest）
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) 是"远程 LLM 服务器客户端"：
@@ -58,6 +58,9 @@
   设计稿：
   [`superpowers/specs/2026-08-21-desktop-airwallex-billing-design.md`](../superpowers/specs/2026-08-21-desktop-airwallex-billing-design.md)。
   托管式 `redirectToCheckout` 明确不在范围内（仅 drop-in）。
+  积分不足的恢复入口与对话错误卡共用该路由：视频生成失败卡在
+  `classifyFailure.kind === 'credits'` 时显示「购买积分」并 `navigate('/billing')`；
+  未登录云时由 BillingPage 回跳 `/cloud-login?next=/billing`。
 
 ## 第一方产品遥测（增长仓）
 

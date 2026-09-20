@@ -719,7 +719,7 @@
       "moderationTitle": "Clip failed content review",
       "moderationHint": "The model flagged this generation as against safety policy. Change the storyboard wording or references, then resume from checkpoint — finished clips will not be billed again.",
       "creditsTitle": "Insufficient credits",
-      "creditsHint": "Not enough credits to finish this generation. Top up or shorten the duration, then resume from checkpoint — finished clips will not be billed again.",
+      "creditsHint": "Not enough credits to finish this generation. Buy credits, or shorten the duration and resume from checkpoint — finished clips will not be billed again.",
       "creditsToast": "Insufficient credits. Top up or shorten the duration, then resume from checkpoint.",
       "unknownTitle": "Execution failed",
       "unknownHint": "Artifacts were kept. If the error mentions All channel models failed, switch the related model and resume from checkpoint.",

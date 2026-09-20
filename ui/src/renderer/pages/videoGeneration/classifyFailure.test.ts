@@ -117,6 +117,18 @@ describe('classifyFailure', () => {
     expect(result.hint).toContain('15');
   });
 
+  test('insufficient credits is a dedicated credits failure', () => {
+    const result = classifyFailure(
+      'Failed at stage `video_poll`\nHint: INSUFFICIENT_CREDITS — Flowy credits are too low. Top up or shorten duration, then resume from checkpoint (finished clips are not re-billed).',
+      'video_poll',
+      [{ stage: 'video_poll', message: '', at: 'a' }],
+      t
+    );
+    expect(result.kind).toBe('credits');
+    expect(result.title).toBe('积分不足');
+    expect(result.hint).toContain('购买积分');
+  });
+
   test('seedance per-clip audio floor is not the wan 15s cap', () => {
     const result = classifyFailure(
       'The parameter `content[4]` specified in the request is not valid: the parameter audio duration (seconds) specified in the request must be greater than or equal to 1.8 for model doubao-seedance-2-0-fast in r2v. Request id: 021789715359358873b68ad3a5b1c0a1311de00f33c085717a7d2',

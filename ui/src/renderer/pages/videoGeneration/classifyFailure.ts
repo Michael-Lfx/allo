@@ -91,7 +91,7 @@ export function classifyFailure(
       }),
       hint: t('videoGeneration.workspace.failure.creditsHint', {
         defaultValue:
-          '当前积分不足以完成本次生成。请充值或缩短时长后，点击「从断点继续」；已成功的片段不会重复扣费。',
+          '当前积分不足以完成本次生成。点击「购买积分」充值，或缩短时长后点击「从断点继续」；已成功的片段不会重复扣费。',
       }),
     };
   }
