@@ -596,11 +596,13 @@ companion 强制 yolo），并说明为何必须有一道**不经 approval pipel
 
 上面的序 4（层 2）不是"加一个 `SandboxPolicy` 变体"，实际是 6 组工作。
 
-**❌ D 组已于 2026-09-21 实测：走"每命令包装"（P1）不可行。**
+**⚠️ D 组已于 2026-09-21 实测（含一次结论校订）：走"每命令包装"（P1）不可行，
+但理由不是 Job 冲突 —— 那条已撤回。**
 证据见 [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md)，
-判定细节见 [`agent-harness-mxc-process-wrapper-feasibility.zh.md`](agent-harness-mxc-process-wrapper-feasibility.zh.md)（五门已全部更新为实测结论）。
+判定见 [`agent-harness-mxc-feasibility-report.zh.md`](agent-harness-mxc-feasibility-report.zh.md)（可行性汇报）。
 **⇒ C / F 的形状取决于 P2（长驻沙箱会话）的评估结论，不应按 P1 的假设开工。**
-另外 §层 2 的"四件事"新增了两条**接上即不可用**的前置（只读策略失效、`ui.disable` 默认值打死原生运行时）。
+层 2 新增的**接上即不可用**前置：`ui.disable` 默认值打死主力工具链、
+读权限需宽读根而 `deniedPaths` 在 Windows 不可用。
 
 #### A · 前置决策（3 条，纯拍板）
 
@@ -631,7 +633,7 @@ companion 强制 yolo），并说明为何必须有一道**不经 approval pipel
 | C6 | **按后端生成策略** | 「reject it rather than weakening the policy」【官】——一份策略走不通所有后端 |
 | C7 | 扩展 `enforce_sandbox` | `platform/windows.rs:2874-2886`，现只有 3 个静态分支 |
 
-#### D · 进程劫持与生命周期 ← **❌ 已实测阻断（2026-09-21）**
+#### D · 进程劫持与生命周期 ← **⚠️ 条件性阻断，且不命中本 crate（二次校订）**
 
 现状链：`CommandBuilder` → `spawn_child_process` → `platform/windows.rs` 的 **Job Object + `ExactProcessIdentity`**，
 同时支撑 `recovery.rs` 的孤儿检测、`ChildProcessCleanup` 的"进程树清理已证明"语义
@@ -642,15 +644,19 @@ companion 强制 yolo），并说明为何必须有一道**不经 approval pipel
 
 | 门 | 实测结论 |
 |---|---|
-| D-A | **❌ 阻断成立** —— 外层 Job 带 UI 限制时 `processcontainer` 每次 spawn 都失败 `ERROR_NOT_SUPPORTED (50)`；外层 Job 无 UI 限制则正常 |
-| D-B | **⚠️ 只到 wrapper** —— 沙箱内真实进程是另一个 PID，DSH 的 `ExactProcessIdentity` 只覆盖 wrapper |
-| D-C | **✅ 0 存活** —— 强杀 wrapper 不遗留沙箱内进程树（机制未定，依赖前需补对照） |
-| D-D | **❌ 不可分型** + **🔴 只读策略失效**（见层 2） |
+| D-A | **⚠️ 条件性，且不命中本 crate** —— 外层 Job **带 UI 限制**时才失败 `ERROR_NOT_SUPPORTED(50)`；`arm_process_job`（`windows.rs:1679`）**只设 `KILL_ON_JOB_CLOSE`**，故不触发。**用真实 `ProcessSupervisor` 实测跑通**（`tests/mxc_supervision_probe.rs`） |
+| D-B | **⚠️ 只到 wrapper** —— 沙箱内真实进程是另一个 PID，`ExactProcessIdentity` 只覆盖 wrapper |
+| D-C | **✅ 0 存活，机制为 Job 驱动** —— 只关 Job 不杀 wrapper 也能杀净整棵树 |
+| D-D | **❌ 不可分型** —— 文件类拒绝不进 `captureDenials`；读权限受允许根约束、无细粒度读拒绝（见层 2 / 0b） |
 | D-E | **⚠️ 放弃 P1（每命令包装），转 P2（长驻沙箱会话）** |
 
-**⇒ 结论：`processcontainer` 不能以"每命令包装"形态接入 DSH。**
+**⇒ 结论：`processcontainer` 不能以"每命令包装"形态接入，但理由不是 Job 冲突
+（那条已撤回），而是 D-D 的不可分型与工具链开口。**
 `windows_sandbox` 是 state-aware 生命周期支持的三个后端之一（源码实证），
 故 P2 不必锁死在 `isolation_session`（该后端在本机 `--probe` 为 `false`）。
+
+**⚠️ 一条未来风险：若给 `arm_process_job` 加上 UI 限制，D-A 会立即生效。
+建议在该函数处留注释，并写入接入评审清单。**
 
 **实验前的推断（保留以追溯）：**
 

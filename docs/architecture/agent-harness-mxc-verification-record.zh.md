@@ -4,9 +4,31 @@
 > **对应：** [`agent-harness-mxc-process-wrapper-feasibility.zh.md`](agent-harness-mxc-process-wrapper-feasibility.zh.md) 的五个验证门
 > **分支：** `feat/mxc-feasibility-verification`（基线 `origin/main` @ `37701ba85`）
 >
-> **总判定：D 组不能走"每命令包装 `wxc-exec`"这条形态（P1），必须转向 P2（长驻沙箱会话）
-> 或 R1（DSH 让出 Job）。D-D 还额外暴露了一个与 D-A 无关、但同样阻断的事**：
-> **只读路径策略在本机不生效**。
+> **⚠️ 术语与验证对象的澄清（重要，2026-09-21 补）：**
+>
+> 本文中的 **"DSH" 指的是验证时用的替身 harness**（手写的 `job-harness.ps1` 等
+> PowerShell 脚本），**不是** `crates/agent/nomi-agent`，也不是我所在的 harness。
+> 该替身**复刻**了 `nomi-process-runtime/src/platform/windows.rs` 的
+> `arm_process_job` / `spawn_child_process` 的形态，以便隔离变量。
+>
+> **替身能验证 Windows Job 语义，不能验证宿主代码路径。** 因此凡涉及
+> "本仓库能不能接入"的结论，一律以
+> `crates/shared/nomi-process-runtime/tests/mxc_supervision_probe.rs`
+> （走**真实** `ProcessSupervisor`）为准，**不以替身结果外推**。
+> §2.2 就是这条规则纠正一处外推错误的实例。
+>
+> 文中残留的 "DSH 的 Job" 一律应读作"**调用方 Job**"。
+>
+> **总判定（二次校订后）：D 组不能走"每命令包装 `wxc-exec`"这条形态（P1）——
+> 但主要理由不是 D-A。** D-A 经真实代码路径实测**不构成阻断**
+> （`nomi-process-runtime` 的 Job 只设 `KILL_ON_JOB_CLOSE`，不带 UI 限制；真实
+> `ProcessSupervisor` 实测能跑通）。真正拦住 P1 的是：
+
+1. **§5（D-D）拒绝不可分型** —— 文件类策略拒绝不进 `captureDenials`
+2. **§10.1 工具链** —— 默认 UI 策略打死 node/cargo/git/powershell 等主力运行时
+
+D-D 还暴露了一个与 D-A 无关的问题：**读权限受允许根约束，且无细粒度读拒绝**
+（见 §10.4 的校正口径）。
 >
 > **✅ 全部验证已完成（2026-09-21 续）。** 五门之外还补了四项：
 > **运行时×UI 矩阵** · **`captureDenials` 覆盖范围** · **`process.env` 语义** · **读边界定性**。
@@ -47,21 +69,72 @@
 
 ---
 
-## 二、D-A · 沙箱化进程能否加入调用方 Job 层次 —— ❌ 阻断成立
+## 二、D-A · 沙箱化进程能否加入调用方 Job 层次 —— ⚠️ 条件性，且**不适用于 `nomi-process-runtime` 的现路径**
+
+> **🔴 本节结论已于 2026-09-21 二次校订。** 原判定写的是"阻断成立 ⇒ DSH 不能用"，
+> **这个推论是错的**（把"外层 Job 带 UI 限制时失败"错读成了"调用方持有 Job 就失败"）。
+> 下面的 harness 测量不变，结论口径与适用范围见 §2.2。
+
+### 2.1 harness 测量（不变）
+
+**用替身 harness 复刻 `arm_process_job` 的形状，改变唯一变量：**
 
 | 场景 | 外层 Job | 结果 |
 |---|---|---|
 | `wxc-exec` 独立运行 | 无 | ✅ `WXC_RAN_OK`，exit 0 |
 | `wxc-exec` 在 Job 内（`KILL_ON_JOB_CLOSE` **+ UI 限制**） | `0x10` | ❌ exit `0xFFFFFFFF`，`CreateProcessW failed with error code 50` |
-| `wxc-exec` 在 Job 内（`KILL_ON_JOB_CLOSE` **无 UI 限制**） | 无 | ✅ `WXC_RAN_OK`，exit 0 |
+| `wxc-exec` 在 Job 内（`KILL_ON_JOB_CLOSE`**只此一项**） | 无 UI 限制 | ✅ `WXC_RAN_OK`，exit 0 |
 
 `0x32 = 50 = ERROR_NOT_SUPPORTED`。
 
 **内核层独立复现**（不依赖 MXC）：子进程查自己的即时 Job UI 限制，
 `0x0` 时 `AssignProcessToJobObject(self, own_job)` 成功；`0x10` 时返回 **win32=50**。
-与官方 "neither job sets UI limits" 条款方向一致。
 
-**判定：D-1（透明包装）不可行；DSH 现在对每个受管子进程都建 Job，故 `processcontainer` 不能用。**
+**⇒ 决定成败的变量是「外层 Job 是否带 UI 限制」，不是「外层是否持有 Job」。**
+
+### 2.2 🔴 关键校正：这条阻断不命中 `nomi-process-runtime`
+
+读完真实实现后确认两者不同：
+
+```rust
+// crates/shared/nomi-process-runtime/src/platform/windows.rs
+// :1677-1695  arm_process_job
+limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;  // ← 仅此一项，无任何 UI 限制
+```
+
+而 harness 失败的那一组，**唯一差别就是多设了 `ui_mask = 0x10`**。
+
+**⇒ `nomi-process-runtime` 的 Job 不带 UI 限制 ⇒ 落在"✅ 成功"那一行。**
+
+**并用真实代码路径实测确证**（不是替身）：新增
+`crates/shared/nomi-process-runtime/tests/mxc_supervision_probe.rs`，
+用**本 crate 的 `ProcessSupervisor`** 把 `wxc-exec.exe` 当子进程启动：
+
+```
+Exited { code: Some(0), signal: None,
+         output: "NOMI_SUPERVISED_OK\r\n",
+         cleanup: CleanupReport { reaped: true, errors: [] } }
+test wxc_exec_runs_as_a_supervised_child_process ... ok
+```
+
+**⇒ `nomi-process-runtime` 能正常监督 `wxc-exec` 子进程。D-A 不构成接入阻断。**
+
+**该测试的适用边界（诚实声明）：**
+
+| 证明了 | 没证明 |
+|---|---|
+| 本 crate 的 Job（`KILL_ON_JOB_CLOSE` only）+ 真实 `ProcessSupervisor` 能跑通 MXC | 生产 `nomi-agent` 的**完整工具链**在沙箱内可用（那是 §10.1 矩阵的事） |
+| 该结论在 Windows build 29671 / MXC `ca7ea12` 上成立 | 其他宿主或未来给 Job 加 UI 限制后仍成立 |
+| — | 原 harness 的失败条件**未**在本 crate 路径上复现（见下） |
+
+**控制实验的负结果：** 尝试在本 crate 路径上复现原条件（把已启动的子进程
+后挂到一个带 UI 限制的 Job）——**得到 "nesting allowed"，即未复现**。
+说明该冲突**特异地依赖 harness 的时序**（对**仍挂起**的子进程先分配、再恢复），
+本 crate 的公开 API 刻意不设 UI 限制，因此触达不到该路径。
+控制实验保留在测试文件里并明确标注为"未复现 D-A"。
+
+**这条同时修正了 `arm_process_job` 的一个潜在未来风险**：
+**若将来给这个 Job 加上 UI 限制，D-A 就会真的生效。** 建议在 `arm_process_job` 处留注释。
 
 ### 2.1 一个错误结论的纠正（方法论）
 
@@ -304,7 +377,7 @@ Windows 未支持。
 
 | 形态 | 评估 |
 |---|---|
-| **P1 · 每命令包装** | ❌ **否决**。D-A 阻断（外层 Job 有 UI 限制即失败）；且即便 R1 让出 Job，D-B 仍只到 wrapper、D-D 仍不可分型 |
+| **P1 · 每命令包装** | ❌ **否决**。原写"D-A 阻断 / 外层 Job 有 UI 限制即失败" —— **该理由已撤回**：本 crate 的 Job 不带 UI 限制，真实 `ProcessSupervisor` 实测跑通。否决理由是 D-B 只到 wrapper + D-D 不可分型 |
 | **P2 · 长驻沙箱会话** | ⚠️ **架构上可行且是唯一出路**，但本机只能用 `windows_sandbox`（VM 级，重）；且引入了"DSH 的 `ProcessSupervisor` 与 MXC 的沙箱生命周期如何共存"的新问题 |
 | **R1 · DSH 让出 Job** | ⚠️ 仍可作为 P1 的解药（§三 已证明外层 Job 无 UI 限制时 MXC 正常），但**解决不了 D-D 的不可分型**，且放弃 DSH 自身的清理兜底 |
 

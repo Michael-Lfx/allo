@@ -8,15 +8,16 @@
 >
 > | 门 | 结论 |
 > |---|---|
-> | D-A | **❌ 阻断成立** —— 外层 Job 带 UI 限制时 `processcontainer` 每次 spawn 都失败 `ERROR_NOT_SUPPORTED` |
+> | D-A | **⚠️ 条件性阻断，且不命中本 crate** —— 外层 Job **带 UI 限制**时 `processcontainer` 失败 `ERROR_NOT_SUPPORTED`；`nomi-process-runtime` 的 Job **不带** UI 限制，**真实 `ProcessSupervisor` 实测能跑通 `wxc-exec`** |
 > | D-B | **⚠️ 只到 wrapper** —— 沙箱内进程是另一个 PID；必须补沙箱会话级存活探针 |
-> | D-C | **✅ 0 存活** —— 强杀 wrapper 不遗留沙箱内进程树（机制未定，依赖前应补对照） |
-> | D-D | **❌ 不可分型** + **🔴 只读策略在 Tier 1 主机上不生效**（沙箱内可读用户主目录） |
-> | D-E | **⚠️ 放弃 P1，转 P2** —— state-aware 有 `windows_sandbox` 可用，非仅 `isolation_session` |
+> | D-C | **✅ 0 存活** —— 且机制已定为 **Job 驱动**（关 Job 即杀树），非 wrapper 驱动 |
+> | D-D | **❌ 不可分型** + 文件类拒绝不进 `captureDenials`；读权限受允许根约束、无细粒度读拒绝 |
+> | D-E | **⚠️ 放弃 P1，转 P2** —— state-aware 有 `windows_sandbox` 可用，非仅 `isolation_session`；但本机该功能 Disabled |
 >
-> **总判定：不能走"每命令包装 `wxc-exec`"（P1）。**
-> 另有两个与退路选择无关、但同样阻断的前置：**只读策略失效** 与
-> **默认 `ui.disable` 会打死 Node/.NET/pwsh 等原生运行时**。
+> **总判定（二次校订）：不能走"每命令包装 `wxc-exec`"（P1），但主要理由不是 D-A**
+> ——是 D-D 的不可分型 + 工具链需多处开口。
+> 另有两个刚性前置：**默认 `ui.disable` 会打死主力工具链**、
+> **读权限需宽读根而 `deniedPaths` 在 Windows 不可用**。
 > 下文 §一 保留实验前的推断原貌；§三 各门的判定已按实测更新。
 >
 > **目的：** 在投入 C 组（策略作者层）与 F 组（残留物治理）之前，先确定
@@ -124,20 +125,30 @@ QueryInformationJobObject(dsh_job, JobObjectBasicProcessIdList, ...)
 **通过标准（D-1）：** 沙箱内真实进程在 DSH 的 job 链内，`TerminateJobObject(dsh_job)` 能终结它，
 且 MXC 的 UI 限制仍然生效（两者都要，不能只顾一个）。
 
-**🛑 实测结论（2026-09-21）：❌ 阻断成立 —— 走"MXC 报 job 分配失败"这一行。**
+**🛑 实测结论（2026-09-21，二次校订）：❌ 阻断成立 —— 但仅当外层 Job 带 UI 限制。**
 
 | 场景 | 外层 Job | 结果 |
 |---|---|---|
 | `wxc-exec` 独立运行 | 无 | ✅ `WXC_RAN_OK`，exit 0 |
 | `wxc-exec` 在 Job 内（`KILL_ON_JOB_CLOSE` **+ UI 限制**） | `0x10` | ❌ exit `0xFFFFFFFF`，`CreateProcessW failed with error code 50` |
-| `wxc-exec` 在 Job 内（`KILL_ON_JOB_CLOSE` **无 UI 限制**） | 无 | ✅ `WXC_RAN_OK`，exit 0 |
+| `wxc-exec` 在 Job 内（`KILL_ON_JOB_CLOSE`**只此一项**） | 无 UI 限制 | ✅ `WXC_RAN_OK`，exit 0 |
 
-内核层已独立复现同一机制（不依赖 MXC）：子进程的即时 Job UI 限制为 `0x0` 时
-`AssignProcessToJobObject(self, own_job)` 成功；为 `0x10` 时返回 **win32=50 `ERROR_NOT_SUPPORTED`**。
-与官方文档 "neither job sets UI limits" 条款方向一致。
+**⇒ 决定变量是「外层 Job 是否带 UI 限制」，不是「外层是否持有 Job」。**
 
-**→ 因此 R1 上升为最直接可行的一条，R4（长驻沙箱 / 换后端）优先级上升，
-R2 仍不推荐。详见验证记录 §六。**
+**🔴 而这条件不命中 `nomi-process-runtime`：** 其 `arm_process_job`
+（`platform/windows.rs:1677-1695`）**只设 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，无 UI 限制**。
+并用**真实代码路径**实测确证（`tests/mxc_supervision_probe.rs`，用本 crate 的
+`ProcessSupervisor` 启动 `wxc-exec`）：
+
+```
+Exited { code: Some(0), output: "NOMI_SUPERVISED_OK", cleanup: CleanupReport { reaped: true, errors: [] } }
+```
+
+**⇒ D-A 不构成对本 crate 的阻断。** 控制实验（后挂 UI 限制 Job）未复现该失败，
+说明冲突特异依赖 harness 的时序（对**仍挂起**的子进程先分配、再恢复）。
+
+**⚠️ 但这是一条未来风险：若给 `arm_process_job` 加上 UI 限制，D-A 就会真的生效。**
+建议在该函数处留注释。
 
 **退路（按代价排序）：**
 
@@ -350,7 +361,7 @@ DSH 的 Bash 工具链必须能读工作区外路径（`~/.cargo/registry`、`%B
 
 | 形态 | 判定 |
 |---|---|
-| **P1 · 每命令包装** | ❌ **否决**：D-A 阻断；即便 R1 让出 Job，D-B 仍只到 wrapper、D-D 仍不可分型 |
+| **P1 · 每命令包装** | ❌ **否决**：**不是因为 D-A**（那条已撤回 —— 本 crate 的 Job 不带 UI 限制，实测跑通）；而是 D-B 只到 wrapper + D-D 不可分型 |
 | **P2 · 长驻沙箱会话** | ⚠️ **唯一出路**，架构可行；本机只能走 `windows_sandbox`，且引入"两套生命周期如何共存"的新问题 |
 | **R1 · DSH 让出 Job** | ⚠️ 可解 D-A（§三 已证外层 Job 无 UI 限制时正常），但**解决不了 D-D 的不可分型**，且放弃 DSH 自身清理兜底 |
 
@@ -382,33 +393,32 @@ D-D（拒绝分型）───────────────────�
 | ❌ 阻断成立 | — | — | — | 评估 R1–R3；转 D-E 的 P2 评估，C 组形状待定 |
 | — | — | — | ❌ 不可分型 | 不阻断接入，但完成率受损；E 组退化为"越界即 Abort" |
 
-**🛑 实测落点（2026-09-21）：不是矩阵里任何一行 —— 是"两行同时成立"。**
+**🛑 实测落点（2026-09-21，二次校订）：D-A 不再是阻断，落点变为 D-B + D-D。**
 
 ```
-D-A = ❌ 阻断成立
+D-A = ⚠️ 条件性，且不命中本 crate（真实 ProcessSupervisor 实测跑通）
 D-B = ⚠️ 只到 wrapper
-D-C = ✅ 覆盖完整
-D-D = ❌ 不可分型（且叠加只读策略失效）
+D-C = ✅ 覆盖完整（机制已定为 Job 驱动）
+D-D = ❌ 不可分型 + 文件类拒绝不进 captureDenials
 ```
 
-**⇒ P1 全部形态否决；C 组形状待 P2 结论。**
-且 D-D 暴露的"只读策略不生效"**独立于 D-A**，任何 Windows 沙箱方案都要面对它。
+**⇒ P1 仍被否决，但理由是 D-D 的不可分型 + §10.1 的工具链开口，不是 Job 冲突。**
 
-**下一步（按实测结论重排）：**
+**下一步（按二次校订后的结论重排）：**
 
 | 优先 | 事项 | 依据 |
 |---|---|---|
-| **1** | **验证 `windows_sandbox` 的 state-aware 会话**（本机 P2 唯一路径） | D-E |
-| **2** | **`ui.disable` × 运行时的组合矩阵**：哪些工具链在哪种 UI 策略下能跑 | `ui.disable` 默认值会打死 Node/.NET/pwsh 7 |
-| **3** | **把只读敞口立为独立问题** | D-D §5.3，影响整个 Windows 沙箱方案而非仅 MXC 接入 |
-| **4** | **D-C 的机制对照**（只关 Job、不杀 wrapper） | 若将来依赖"Job 兜住沙箱" |
-| **5** | **E 组按"越界即 Abort"落地** | D-D 已判不可分型，E 组设计前提已变 |
-| **6** | 向 MXC 上游提 issue：`processcontainer` 在带 UI 限制的宿主 Job 内无法启动 | D-A，可复现 |
+| **1** | **实测 `nomi-agent` 的完整工具链在沙箱内可用性**（cargo/bun/git/gh 在 `ui.disable=false` + 宽读根 + 可写根下的可跑性） | §10.1 矩阵是**运行时**层面的，不是 crate 层面的；本 crate 已证明能启动 `wxc-exec` |
+| **2** | **验证 `windows_sandbox` 的 state-aware 会话**（本机 P2 唯一路径） | D-E；需启用 Windows 功能 + 重启 |
+| **3** | **E 组按"越界即 `Abort`"落地**（不可分型已判） | D-D |
+| **4** | **把"读权限受允许根约束、无细粒度读拒绝"立为独立问题** | §10.4 |
+| **5** | 向 MXC 上游提 issue：文件类策略拒绝不进 `captureDenials` | D-D，可复现 |
+| **6** | 在 `arm_process_job` 处留注释：**加 UI 限制会触发 D-A** | D-A 的未来风险 |
 
 **无论结论如何，这三条今天就能并行开工：**
 
 1. **A 组前置决策**（`[approvals]` 默认口径 / 无人值守超时行为 / MXC 定位）
-2. **B 组策略学习**（`--audit`，零依赖，产出喂 C / E / F）
+2. **B 组策略学习**（改用 `captureDenials.mode:"block"`，比 `--audit` 安全；产出喂 C / E / F）
 3. **E 组错误契约**（`hint` / `RetryDecision` / `Denied` vs `Abort`）——不依赖 D 的结论
 
 ---

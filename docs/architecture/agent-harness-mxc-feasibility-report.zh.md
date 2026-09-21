@@ -15,13 +15,25 @@
 > 但**建议立即接入它的学习/采集面**（`captureDenials`），因为它零风险、
 > 不需要提权、且能产出 DSH 目前完全缺失的能力面证据。
 
-**三条决定性理由（每一条都独立足以否决"现在就当边界用"）：**
+**三条决定性理由：**
 
 | # | 理由 | 证据强度 |
 |---|---|---|
-| 1 | **UI 策略与 DSH 的 Job 模型互斥** —— MXC 要设 UI 限制，DSH 必须持有 Job 才能证明进程树清理。两者同时成立时 `processcontainer` 每次 spawn 都失败 | 强：端到端 + 内核层双重复现 |
-| 2 | **被策略拦下的文件写入不会出现在 `captureDenials` 里** —— 主机拿不到文件类拒绝的分类，无法支撑 E 组的 `RetryDecision` | 强：净室隔离实验 |
-| 3 | **默认策略下 DSH 的主力工具链跑不起来**，需要一次性打开多项策略开关（含 MSIX 的 Python 无解） | 强：11 × 2 运行时矩阵 |
+| 1 | **被策略拦下的文件写入不会出现在 `captureDenials` 里** —— 拿不到文件类拒绝的分类，无法支撑 E 组的 `RetryDecision` | 强：净室隔离实验 |
+| 2 | **默认策略下主力工具链跑不起来** —— 需一次性打开多项策略开关（含 MSIX 的 Python 无解） | 强：11 × 2 运行时矩阵 |
+| 3 | **读权限需宽读根、且无细粒度读拒绝** —— 于是凭据目录随之可读，网络隔离成为唯一防线 | 强：策略形态对照 |
+
+> **🔴 二次校订（2026-09-21）：本文初版把"UI 策略 × Job 模型互斥"列为第 1 条理由，
+> 该结论已撤回。** 经真实代码路径实测：
+> `nomi-process-runtime` 的 Job **只设 `KILL_ON_JOB_CLOSE`、不带 UI 限制**，
+> 而 D-A 的失败条件**恰恰是"外层 Job 带 UI 限制"**。用本 crate 的真实
+> `ProcessSupervisor` 启动 `wxc-exec` **实测通过**（exit 0 / `reaped: true` / 无 error）。
+> **故 D-A 不构成对本仓库的阻断。** 详见
+> [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md) §2.2。
+>
+> 附一处方法论问题：初版用 PowerShell 替身 harness（复刻 `arm_process_job` 的形状）
+> 得出结论，再推广到"DSH/nomi 不能用"。**替身能验证 Windows Job 语义，不能验证宿主代码路径。**
+> 现在的结论以 `tests/mxc_supervision_probe.rs` 的真实路径为准。
 
 **可行的起点是 `captureDenials` 而不是强制隔离**：它给的是**能力面证据**
 （被拦的 capability 清单），这正是 B 组策略学习缺的那部分输入。
@@ -47,24 +59,33 @@
 
 ## 三、关键发现（每条都有原始读数支撑）
 
-### 3.1 🔴 UI 策略 × Job 模型互斥（D-A）
+### 3.1 ⚠️ UI 策略 × Job 模型：条件性，**不命中 `nomi-process-runtime`**
 
 | 外层 Job | 结果 |
 |---|---|
 | 无 | ✅ `WXC_RAN_OK`，exit 0 |
 | `KILL_ON_JOB_CLOSE` + UI 限制 `0x10` | ❌ exit `0xFFFFFFFF`，`CreateProcessW ... WIN32_ERROR(50)` |
-| `KILL_ON_JOB_CLOSE` 无 UI 限制 | ✅ `WXC_RAN_OK`，exit 0 |
+| `KILL_ON_JOB_CLOSE` **只此一项** | ✅ `WXC_RAN_OK`，exit 0 |
 
 内核层独立复现（不依赖 MXC）：子进程即时 Job UI 限制 `0x0` → `AssignProcessToJobObject` 成功；
 `0x10` → **win32=50**。与官方 "neither job sets UI limits" 条款一致。
 
-**冲突的实质**：DSH 的 `arm_process_job`（`platform/windows.rs:1677-1695`）必须建 Job 来承载
-`ChildProcessCleanup` 的"清理已证明"语义；而 MXC 必须设 UI 限制才能拦剪贴板/输入注入。
-**两者不可同时满足。**
+**⇒ 决定变量是「外层 Job 是否带 UI 限制」。**
 
-**注意一个反直觉的限定条件**（本轮新发现）：**"调用方自己给子进程设了 UI 限制"并不触发失败。**
-测试中 `job_ui=0x0` 出现在**调用方持有 UI 限制 Job** 的情形下且工作正常；
-只有**外层 Job 自身带 UI 限制**才失败。
+**🔴 真实代码路径实测（`tests/mxc_supervision_probe.rs`）：** 用本 crate 的
+`ProcessSupervisor` 启动 `wxc-exec.exe`：
+
+```
+Exited { code: Some(0), output: "NOMI_SUPERVISED_OK",
+         cleanup: CleanupReport { reaped: true, errors: [] } }
+```
+
+而 `nomi-process-runtime` 的 `arm_process_job`（`platform/windows.rs:1677-1695`）
+**只设 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`**，无 UI 限制
+⇒ **落在成功那一行，D-A 不构成阻断。**
+
+**⚠️ 这是未来风险而非当前缺陷**：若给该 Job 加上 UI 限制，D-A 立即生效。
+建议在 `arm_process_job` 处留注释，并把这个条件写进接入时的评审清单。
 
 ### 3.2 ✅ D-C 机制确定：Job 驱动，非 wrapper 驱动
 
@@ -166,24 +187,22 @@ DSH 为了让工具链工作必须给出宽读根，于是凭据目录随之可�
 
 | 形态 | 判定 | 依据 |
 |---|---|---|
-| **P1 · 每命令包装** | ❌ **否决** | §3.1 UI×Job 互斥；§3.3 拒绝不可分型 |
-| **P1 + R1（DSH 让出 Job）** | ❌ **否决** | 解决 §3.1，但 §3.3 仍不可分型；且放弃 DSH 自身清理兜底 |
-| **P2 · 长驻沙箱会话** | ⚠️ **唯一未否决，但未实跑** | 本机只能走 `windows_sandbox`，而该功能 **Disabled** |
+| **P1 · 每命令包装** | ❌ **否决** | §3.3 拒绝不可分型；§3.4 工具链需多处开口。**注意：不是 Job 冲突**（§3.1 已撤回该理由） |
+| **P1 + R1（调用方让出 Job）** | ❌ **不必要** | R1 原本是为解 Job 冲突；该冲突不成立，故 R1 不再需要 |
+| **P2 · 长驻沙箱会话** | ⚠️ **未否决，但未实跑** | 本机只能走 `windows_sandbox`，而该功能 **Disabled** |
 | **仅采集面（`captureDenials`）** | ✅ **建议立即采用** | §3.3 证明它在能力面有价值且零成本 |
 | **不接入，维持现状** | ✅ 作为兜底 | 但 Windows 继续零隔离 |
 
-### 4.2 三条独立否决理由的强度
+### 4.2 两条独立否决理由的强度
 
-1. **§3.1（UI×Job）** —— 强度最高。有端到端 + 内核层双重证据，
-   且**有明确的机制解释**（Windows 嵌套作业的 UI 限制条款）。
-   不是"配置问题"，是**两个设计假设的直接冲突**。
-2. **§3.3（拒绝不可分型）** —— 强度高。净室隔离实验，且用"只做一次被拒写入"的
-   workload 排除了噪声干扰。
-3. **§3.4（工具链）** —— 强度高但**可工程化绕过**：`ui.disable: false`
+1. **§3.3（拒绝不可分型）** —— 强度高。净室隔离实验，用"只做一次被拒写入"的
+   workload 排除了噪声干扰。**这是当前最主要的拦路石。**
+2. **§3.4（工具链）** —— 强度高但**可工程化绕过**：`ui.disable: false`
    + 宽读根 + 完整 env 块 + 可写根，是能配出来的。**成本是策略复杂度**，
-   不是不可能。python 的 MSIX 除外（无解）。
+   不是不可能。Python 的 MSIX 除外（无解）。
 
-**⇒ 真正拦住 MXC 的是 1 和 2，不是 3。** 3 只是抬高接入成本。
+**⇒ 真正拦住 MXC 的是 1，不是 3；而 3 只是抬高接入成本。**
+（初版曾把"UI×Job 互斥"列为最强理由——**已撤回**，见 §3.1。）
 
 ---
 
@@ -246,21 +265,27 @@ DSH 为了让工具链工作必须给出宽读根，于是凭据目录随之可�
 ## 八、一页速览
 
 ```
-问：MXC 现在能当 DSH 的执行边界吗？
-答：不能。三条独立理由：UI×Job 互斥 / 文件类拒绝不可分型 / 工具链需多处开口。
+问：MXC 现在能当 DSH/nomi 的执行边界吗？
+答：不能。两条理由：文件类拒绝不可分型 / 工具链需多处开口。
 
-问：哪一条最致命？
-答：UI×Job 互斥 —— 它是两个设计假设的直接冲突，不是配置问题。
+问：之前说"UI 策略与 Job 模型互斥"，还算数吗？
+答：不算。已撤回。那只在"外层 Job 自带 UI 限制"时成立，
+    而 nomi-process-runtime 的 Job 只设 KILL_ON_JOB_CLOSE。
+    用真实 ProcessSupervisor 实测：wxc-exec 跑通，exit 0，reaped: true。
 
-问：那 MXC 现在对 DSH 有什么用？
-答：captureDenials 的采集面。零提权、不降安全、产出 DSH 缺失的能力面证据。
+问：那 MXC 现在对 nomi 有什么用？
+答：captureDenials 的采集面。零提权、不降安全、产出缺失的能力面证据。
     建议把 B 组策略学习从 --audit 改为 captureDenials.mode=block。
 
 问：还有多少不确定？
-答：一项 —— windows_sandbox 的 state-aware 会话未实跑（本机功能 Disabled，需重启）。
-    其余五门 + 四个附属项都已实测。
+答：最主要两项 ——
+    ① windows_sandbox 的 state-aware 会话未实跑（本机功能 Disabled，需重启）
+    ② nomi-agent 的完整工具链（cargo/bun/git/gh）未在沙箱内端到端实跑
+       （crate 层已证明能启动 wxc-exec；运行时矩阵只在"运行时"层面测过）
 
 问：下一步最该做什么？
-答：① 接 captureDenials 采集 ② E 组改"越界即 Abort" ③ 提两个上游 issue
-    ④ 拍板是否启用 Windows Sandbox 功能以验证 P2
+答：① 实测 nomi-agent 完整工具链在沙箱内的可用性
+    ② 接 captureDenials 采集 ③ E 组改"越界即 Abort"
+    ④ 提上游 issue（文件类拒绝不进 captureDenials）
+    ⑤ 拍板是否启用 Windows Sandbox 功能以验证 P2
 ```
