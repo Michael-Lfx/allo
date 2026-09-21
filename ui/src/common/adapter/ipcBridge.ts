@@ -7715,106 +7715,6 @@ export interface ICloudWebsiteEntry {
   url: string;
 }
 
-export type ICloudBillingItemType = 'plan' | 'pack';
-export type ICloudBillingPlanPeriod = 'MONTH' | 'HALF_YEAR' | 'YEAR';
-
-export interface ICloudBillingPlan {
-  id: number;
-  code?: string;
-  planPeriod?: string;
-  name?: string;
-  nameEn?: string;
-  description?: string;
-  descriptionEn?: string;
-  currency?: string;
-  currentPriceCent?: number;
-  originalPriceCent?: number;
-  grantPoints?: number;
-  durationDays?: number;
-  durationMonths?: number;
-  isHot?: boolean;
-  isCurrent?: boolean;
-  benefitList?: string[];
-  benefitListEn?: string[];
-}
-
-export interface ICloudBillingCreditPack {
-  id: number;
-  code?: string;
-  name?: string;
-  nameEn?: string;
-  description?: string;
-  descriptionEn?: string;
-  currency?: string;
-  priceCent?: number;
-  points?: number;
-  validDays?: number;
-}
-
-export interface ICloudBillingCoupon {
-  id: number;
-  title?: string;
-  currency?: string;
-  discountCent?: number;
-  applicableItemTypes?: string;
-  status?: string;
-  expiresAt?: string;
-}
-
-export interface ICloudBillingCouponList {
-  list: ICloudBillingCoupon[];
-}
-
-export interface ICloudBillingPaymentChannel {
-  code: string;
-  name?: string;
-}
-
-export interface ICloudBillingCreateOrderRequest {
-  itemType: ICloudBillingItemType;
-  itemId: number;
-  payChannel: 'airwallex';
-  idempotencyKey: string;
-  couponId?: number;
-  planPeriod?: ICloudBillingPlanPeriod;
-}
-
-export interface ICloudBillingPaymentInfo {
-  channel?: string;
-  paymentIntentId?: string;
-  clientSecret?: string;
-  intentId?: string;
-  id?: string;
-  currency?: string;
-}
-
-export interface ICloudBillingOrder {
-  id?: number;
-  orderNo?: string;
-  itemType?: string;
-  itemId?: number;
-  title?: string;
-  titleEn?: string;
-  currency?: string;
-  amountCent?: number;
-  status?: string;
-  payChannel?: string;
-  expiresAt?: string;
-  paidAt?: string;
-  payment?: ICloudBillingPaymentInfo;
-  paymentIntentId?: string;
-  clientSecret?: string;
-}
-
-export interface ICloudBillingAirwallexSession {
-  paymentIntentId?: string;
-  clientSecret?: string;
-  intentId?: string;
-  id?: string;
-  currency?: string;
-  status?: string;
-}
-
 export interface ICloudLoginStartResponse {
   pendingId: string;
   method: string;
@@ -7867,41 +7767,19 @@ export const cloud = {
   ),
   logout: httpPost<boolean, void>('/api/cloud/logout'),
   /** Official website URL with `?token=` auto-login (FlowyClaw client contract). */
-  getWebsiteEntry: httpGet<ICloudWebsiteEntry, { language?: string }>(
+  getWebsiteEntry: httpGet<ICloudWebsiteEntry, { language?: string; landing?: 'credits' }>(
     (p) => {
+      const params = new URLSearchParams();
       const language = p?.language?.trim();
-      if (!language) return '/api/cloud/website-entry';
-      return `/api/cloud/website-entry?language=${encodeURIComponent(language)}`;
+      if (language) params.set('language', language);
+      const landing = p?.landing?.trim();
+      if (landing) params.set('landing', landing);
+      const query = params.toString();
+      return query ? `/api/cloud/website-entry?${query}` : '/api/cloud/website-entry';
     }
   ),
   /** Re-fetch Flowy chat catalog into the local builtin provider (soft no-op if not logged in). */
   syncModels: httpPost<ICloudSyncModelsResponse, void>('/api/cloud/sync-models'),
-  listPlans: httpGet<ICloudBillingPlan[], void>('/api/cloud/plans'),
-  listCreditPacks: httpGet<ICloudBillingCreditPack[], void>('/api/cloud/credit-packs'),
-  listCoupons: httpGet<ICloudBillingCouponList, { itemType?: ICloudBillingItemType }>((p) => {
-    const itemType = p?.itemType?.trim();
-    if (!itemType) return '/api/cloud/coupons';
-    return `/api/cloud/coupons?itemType=${encodeURIComponent(itemType)}`;
-  }),
-  listPaymentChannels: httpGet<
-    ICloudBillingPaymentChannel[],
-    { itemType: ICloudBillingItemType; itemId: number; planPeriod?: string }
-  >((p) => {
-    const params = new URLSearchParams({
-      itemType: p.itemType,
-      itemId: String(p.itemId),
-    });
-    if (p.planPeriod) params.set('planPeriod', p.planPeriod);
-    return `/api/cloud/payment-channels?${params.toString()}`;
-  }),
-  createOrder: httpPost<ICloudBillingOrder, ICloudBillingCreateOrderRequest>('/api/cloud/orders'),
-  getOrderByNo: httpGet<ICloudBillingOrder, { orderNo: string }>(
-    (p) => `/api/cloud/orders/by-order-no?orderNo=${encodeURIComponent(p.orderNo)}`
-  ),
-  initAirwallex: httpPost<ICloudBillingAirwallexSession, { orderNo: string }>(
-    (p) => `/api/cloud/orders/${encodeURIComponent(p.orderNo)}/airwallex/init`,
-    () => ({})
-  ),
 };
 
 // ---------------------------------------------------------------------------

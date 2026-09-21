@@ -11,7 +11,6 @@ import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 import { requiresCloudAuthGate, resolvePostLocalAuthPath } from '@renderer/utils/auth/authGate';
-import { cloudLoginRedirectForPath } from '@renderer/pages/billing/billingAuth';
 import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
 import { loadVideoCanvasProjectPage } from '@renderer/pages/videoCanvas/loadProjectPage';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
@@ -72,7 +71,6 @@ const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/Clo
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
-const BillingPage = React.lazy(() => import('@renderer/pages/billing'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
 const ColorLabPage = React.lazy(() => import('@renderer/pages/colorLab'));
@@ -192,7 +190,6 @@ const getHashRouteRedirectUrl = () => {
 const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
   const { status: localStatus } = useAuth();
   const { authState: cloudAuthState, ready: cloudReady } = useCloudAuth();
-  const location = useLocation();
   const cloudGate = requiresCloudAuthGate();
   const authChecking =
     localStatus === 'checking' || (cloudGate && (!cloudReady || cloudAuthState.phase === 'unknown'));
@@ -203,7 +200,7 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
 
   // Desktop: Flowy account is the product key. WebUI: local instance admin is enough.
   if (cloudGate && !authChecking && cloudAuthState.phase === 'unauthenticated') {
-    return <Navigate to={cloudLoginRedirectForPath(location.pathname)} replace />;
+    return <Navigate to='/cloud-login' replace />;
   }
 
   // Keep chrome mounted while auth resolves; only the outlet region shows a shell-safe loader.
@@ -418,7 +415,6 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/scheduled/:cron_job_id' element={withRouteFallback(TaskDetailPage)} />
           <Route path='/meeting' element={withRouteFallback(MeetingPage)} />
           <Route path='/meeting/:sessionId' element={withRouteFallback(MeetingDetailPage)} />
-          <Route path='/billing' element={withRouteFallback(BillingPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}
           <Route path='/requirements' element={withRouteFallback(RequirementsLayout)}>
             <Route index element={withRouteFallback(WorkspacePage)} />

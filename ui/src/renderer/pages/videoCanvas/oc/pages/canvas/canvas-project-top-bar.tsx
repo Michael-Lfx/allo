@@ -18,6 +18,7 @@ import { useUserStore } from "@oc/stores/use-user-store";
 import type { CanvasMediaPerformanceMode } from "@oc/types/canvas";
 import { CanvasShortcutsModal } from "./canvas-shortcuts-modal";
 import { VIDEO_CANVAS_LIBRARY_PATH } from "@renderer/pages/videoCanvas/routes";
+import { openOfficialWebsiteCredits } from "@renderer/utils/openOfficialWebsiteCredits";
 
 type CanvasTopBarProps = {
     title: string;
@@ -226,15 +227,18 @@ export function CanvasTopBar({
                     ) : null}
                     {compactAgentStatus ? <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} /> : null}
                     {user && creditsEnabled ? (
-                        <Link
-                            to="/billing"
+                        <button
+                            type="button"
                             className="inline-flex h-7 min-w-[4.5rem] items-center justify-center gap-1 rounded-lg px-2 text-[var(--fs-label)] font-medium tabular-nums"
                             style={{ color: theme.node.text }}
                             title={canvasT("videoCanvas.chrome.credits", "查看积分明细")}
+                            onClick={() => {
+                                void openOfficialWebsiteCredits();
+                            }}
                         >
                             {refreshing && availableMicrocredits === null ? <LoaderCircle className="size-3.5 animate-spin opacity-60" /> : <Coins className="size-3.5" />}
                             <span>{availableMicrocredits === null ? "--" : (availableMicrocredits / 1_000_000).toLocaleString(i18n.language, { maximumFractionDigits: 3 })}</span>
-                        </Link>
+                        </button>
                     ) : null}
                     <CanvasChromeButton className="is-icon" style={{ color: theme.node.text }} onClick={onEnterFocusMode} title={canvasT("videoCanvas.chrome.focusMode", "进入专注模式（{{shortcut}}）", { shortcut: canvasAccel.focus() })} aria-label={canvasT("videoCanvas.chrome.focusMode", "进入专注模式（{{shortcut}}）", { shortcut: canvasAccel.focus() })}>
                         <Focus className="size-3.5" />

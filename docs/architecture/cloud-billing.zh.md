@@ -1,11 +1,11 @@
 # 云服务与计费域（Flowy Cloud）
 
-> **最后维护：** 2026-09-20 · 核对基准：源码（nomifun-cloud 遥测出站 + FlowyClaw ingest）
+> **最后维护：** 2026-09-21 · 核对基准：源码（nomifun-cloud 遥测出站 + FlowyClaw ingest）
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) 是"远程 LLM 服务器客户端"：
 只做云登录与 OpenAI 兼容推理网关调用，agent 逻辑全部留在本地。它是云登录、
-云端模型目录、积分与内购计费四件事的后端支点。
+云端模型目录、积分消费与官网购买入口三件事的后端支点。
 
 ## 双身份车道
 
@@ -48,19 +48,11 @@
   `GET /api/media/credits`（余额）、`POST .../checkin`（按时区每日打卡）、
   `GET .../usage-by-turn`（每回合 prompt/completion/cache token 与积分明细）；
   前端 `CreditsContext` 消费，未登录云时按回合芯片隐藏。
-- **内购计费**（花钱买）：`/billing` 路由 → `pages/billing/` 应用内结账向导
-  （catalog → confirm → pay → success），USD 套餐 + 积分包；
-  `AirwallexDropIn.tsx` 用 `@airwallex/components-sdk` drop-in 卡片组件
-  （`VITE_AIRWALLEX_ENV`，默认 prod）。**已完整实现**（非纯设计稿）：后端
-  `/api/cloud/*` 下有 plans / credit-packs / coupons / payment-channels / orders /
-  orders/:orderNo/airwallex/init 等处理器并带测试；待支付订单号暂存
-  sessionStorage `flowy.billing.pendingOrderNo`，云登录回跳白名单仅 `/billing`。
-  设计稿：
-  [`superpowers/specs/2026-08-21-desktop-airwallex-billing-design.md`](../superpowers/specs/2026-08-21-desktop-airwallex-billing-design.md)。
-  托管式 `redirectToCheckout` 明确不在范围内（仅 drop-in）。
-  积分不足的恢复入口与对话错误卡共用该路由：视频生成失败卡在
-  `classifyFailure.kind === 'credits'` 时显示「购买积分」并 `navigate('/billing')`；
-  未登录云时由 BillingPage 回跳 `/cloud-login?next=/billing`。
+- **购买积分**（花钱买）：侧栏购物车、对话错误卡、视频失败卡走
+  `GET /api/cloud/website-entry?landing=credits`，由 Rust 拼出官网
+  `{website}/?tab=credits&token=&language=#pricing`（FlowyClaw 首页「积分增值」
+  tab，同一套云 JWT），前端 `openOfficialWebsiteCredits` 再 `openExternalUrl`。
+  云 JWT 不下发渲染进程。应用内不再托管 Airwallex `/billing` 结账页。
 
 ## 第一方产品遥测（增长仓）
 
@@ -104,7 +96,7 @@ ClickHouse 是后续双写出口，当前权威存储是 MySQL 事件表 + 会�
 `auth`（首选登录方式 / 轮询间隔 / OTP TTL）、`llm`（path_prefix / 默认模型 /
 超时）。相关环境变量：`NOMIFUN_SERVER_TOKEN`、`NOMIFUN_SERVER_ENABLED`、
 `NOMIFUN_SERVER_URL`、`NOMIFUN_TOKEN_STORE_KEY_B64`、`NOMIFUN_ENABLE_FREE_MODELS`、
-`NOMIFUN_SKIP_GEOIP`、前端 `VITE_AIRWALLEX_ENV`。
+`NOMIFUN_SKIP_GEOIP`。
 
 ## 消费者
 

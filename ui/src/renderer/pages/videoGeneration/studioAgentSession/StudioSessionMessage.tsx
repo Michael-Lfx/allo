@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { Attention, PlayOne, Robot, User } from '@icon-park/react';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
+import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 import { getArtifact } from '../api';
 import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
@@ -406,7 +406,6 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
   onOpenMedia,
 }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const isUser = item.role === 'user';
   const isGate = item.kind === 'gate_render' || item.kind === 'gate_action';
@@ -446,7 +445,7 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
                     source: 'error_recovery',
                     feature: 'video_generation',
                   });
-                  navigate(recovery.href);
+                  void openOfficialWebsiteCredits();
                 }}
               >
                 {t(recovery.labelKey, { defaultValue: '购买积分' })}

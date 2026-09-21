@@ -14,7 +14,6 @@ describe('message error recovery action', () => {
       resolveMessageErrorRecoveryAction(error({ kind: 'check_provider_billing', target: 'provider_settings' }))
     ).toEqual({
       labelKey: 'conversation.agentError.openBillingAction',
-      href: '/billing',
       source: 'open_billing',
     });
   });
