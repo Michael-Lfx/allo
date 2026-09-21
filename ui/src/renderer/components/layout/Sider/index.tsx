@@ -17,6 +17,7 @@ import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import { useSlidingSelectionIndicator } from '@renderer/hooks/ui/useSlidingSelectionIndicator';
 import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
+import { resolveSettingsTogglePath } from '@/renderer/utils/settingsToggle';
 import {
   ConversationSiderActions,
   SiderConversationEntry,
@@ -336,17 +337,16 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleSettingsClick = () => {
     cleanupSiderTooltips();
     blurActiveElement();
-    if (isSettings) {
-      const target = lastNonSettingsPathRef.current || '/guid';
-      Promise.resolve(navigate(target)).catch((error) => {
+    const target = resolveSettingsTogglePath(pathname, lastNonSettingsPathRef.current);
+    const go = () => {
+      Promise.resolve(navigate(target.path)).catch((error) => {
         console.error('Navigation failed:', error);
       });
+    };
+    if (target.enter) {
+      navigateWithSettingsTransition(target.path, go);
     } else {
-      navigateWithSettingsTransition('/settings/system', () => {
-        Promise.resolve(navigate('/settings/system')).catch((error) => {
-          console.error('Navigation failed:', error);
-        });
-      });
+      go();
     }
     if (onSessionClick) {
       onSessionClick();

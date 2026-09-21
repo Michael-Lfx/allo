@@ -13,6 +13,8 @@ import {
   SettingsStatus,
 } from '@/renderer/components/settings/SettingsPagePrimitives';
 import { iconColors } from '@/renderer/styles/colors';
+import { formatAppChromeShortcut } from '@/renderer/utils/appChromeShortcuts';
+import { emitter } from '@/renderer/utils/emitter';
 import { isDesktopShell } from '@/renderer/utils/platform';
 import { useKeepAwake } from '@renderer/hooks/ui/useKeepAwake';
 import { Button, Form, Modal, Switch, Tooltip } from '@arco-design/web-react';
@@ -325,6 +327,16 @@ const SystemModalContent: React.FC = () => {
               </NomiSelect>
             }
             controlLayout='field'
+          />
+          <SettingsRow
+            label={t('settings.viewShortcuts')}
+            description={t('settings.viewShortcutsDesc')}
+            control={
+              <Button onClick={() => emitter.emit('app.shortcuts.open')}>
+                {t('settings.viewShortcutsAction')} {formatAppChromeShortcut('cheatsheet')}
+              </Button>
+            }
+            controlLayout='actions'
           />
           <SettingsRow
             label={t('settings.modelHub.imageAnalysis.title')}

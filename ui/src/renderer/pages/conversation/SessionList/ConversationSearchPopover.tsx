@@ -7,7 +7,10 @@ import NomiModal from '@/renderer/components/base/NomiModal';
 import { usePresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
 import { getAgentLogo } from '@/renderer/utils/model/agentLogo';
 import { blockMobileInputFocus, blurActiveElement } from '@/renderer/utils/ui/focus';
-import { isDesktopShell, isMacOS } from '@/renderer/utils/platform';
+import {
+  APP_CHROME_SHORTCUT_BADGE_CLASS,
+  formatAppChromeShortcut,
+} from '@/renderer/utils/appChromeShortcuts';
 import { Empty, Spin, Typography } from '@arco-design/web-react';
 import { Close, CloseSmall, MessageOne, Search } from '@icon-park/react';
 import classNames from 'classnames';
@@ -571,9 +574,7 @@ const ConversationSearchPopover: React.FC<ConversationSearchPopoverProps> = ({
             <span className='collapsed-hidden text-t-primary text-14px font-[500] leading-24px'>{label}</span>
           ) : null}
           {fullWidth && (
-            <span className='collapsed-hidden ml-auto text-10px text-t-tertiary px-5px py-2px rd-4px border border-solid border-[var(--color-border-2)] bg-fill-1 font-mono leading-none select-none'>
-              {isMacOS() ? '⌘K' : 'Ctrl+K'}
-            </span>
+            <span className={APP_CHROME_SHORTCUT_BADGE_CLASS}>{formatAppChromeShortcut('search')}</span>
           )}
         </button>
       )}

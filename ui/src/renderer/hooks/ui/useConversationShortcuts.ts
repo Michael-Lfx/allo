@@ -32,10 +32,6 @@ const isConversationTabShortcut = (event: KeyboardEvent): boolean => {
   return event.ctrlKey && !event.metaKey && !event.altKey && event.key === 'Tab';
 };
 
-const isNewConversationShortcut = (event: KeyboardEvent): boolean => {
-  return (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 't';
-};
-
 export const useConversationShortcuts = ({ navigate }: UseConversationShortcutsParams): void => {
   const location = useLocation();
   const visibleConversationIds = useVisibleConversationIds();
@@ -63,12 +59,6 @@ export const useConversationShortcuts = ({ navigate }: UseConversationShortcutsP
         if (targetConversationId != null) {
           void navigate(`/conversation/${targetConversationId}`);
         }
-        return;
-      }
-
-      if (isNewConversationShortcut(event)) {
-        event.preventDefault();
-        void navigate('/guid');
       }
     };
 

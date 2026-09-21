@@ -443,6 +443,7 @@ const SendBox: React.FC<{
   // Listen for reply events from message actions
   useAddEventListener('sendbox.reply', (quote) => setReplyQuote(quote), []);
   useAddEventListener('sendbox.reply.clear', () => setReplyQuote(null), []);
+  useAddEventListener('composer.focus', () => tokenInputRef.current?.focus(), []);
   useAddEventListener(
     'sendbox.open-add',
     () => {

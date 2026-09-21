@@ -7,6 +7,7 @@ import { ArrowCircleLeft, SettingTwo } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { prefetchSettingsPages } from '@renderer/pages/settings/prefetch';
+import { appChromeShortcutTooltip } from '@/renderer/utils/appChromeShortcuts';
 import SiderUserMenu from './SiderUserMenu';
 
 interface SiderFooterProps {
@@ -43,7 +44,10 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
   onSettingsClick,
 }) => {
   const { t } = useTranslation();
-  const settingsTooltip = isSettings ? t('common.back') : t('common.settings');
+  const settingsTooltipBase = isSettings ? t('common.back') : t('common.settings');
+  const settingsTooltip = isMobile
+    ? settingsTooltipBase
+    : appChromeShortcutTooltip(settingsTooltipBase, 'settings');
 
   // Warm the settings route chunks while the app is idle so the first click
   // does not wait on dev-server/bundle loading. Pointer enter covers the
@@ -88,6 +92,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
         onClick={onSettingsClick}
         onPointerEnter={() => prefetchSettingsPages()}
         className={iconButtonClass(collapsed, isMobile, isSettings)}
+        aria-label={settingsTooltip}
         aria-current={isSettings ? 'page' : undefined}
         data-sider-nav-entry
         data-sider-selection-static

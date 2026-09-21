@@ -19,6 +19,8 @@ describe('system settings visual contract', () => {
     expect(source).toContain('settings.disabledByNotifications');
     expect(source).toContain('useDeveloperModeGate');
     expect(source).toContain('uiEnabled &&');
+    expect(source).toContain("t('settings.viewShortcuts')");
+    expect(source).toContain("emitter.emit('app.shortcuts.open')");
   });
 
   test('restores local state and reports a localized failure when auto-save fails', () => {
