@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { Experiment } from '@icon-park/react';
 import classNames from 'classnames';
+import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 
 interface SiderEvalEntryProps {
@@ -38,13 +39,14 @@ const SiderEvalEntry: React.FC<SiderEvalEntryProps> = ({
 
   if (dock) {
     return (
-      <Tooltip {...siderTooltipProps} content={tooltipContent} position='bottom'>
+      <InstantHoverTooltip content={tooltipContent} position='bottom'>
         <div
           className={classNames(
             'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
             isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
           onClick={onClick}
+          aria-label={tooltipContent}
           aria-current={isActive ? 'page' : undefined}
           data-sider-nav-entry
           data-active={isActive ? 'true' : 'false'}
@@ -58,7 +60,7 @@ const SiderEvalEntry: React.FC<SiderEvalEntryProps> = ({
             style={{ lineHeight: 0 }}
           />
         </div>
-      </Tooltip>
+      </InstantHoverTooltip>
     );
   }
 

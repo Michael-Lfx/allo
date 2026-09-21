@@ -50,4 +50,12 @@ describe('getSiderTooltipProps', () => {
   test('disables hover tooltips when the caller turns them off', () => {
     expect(getSiderTooltipProps(false).disabled).toBe(true);
   });
+
+  test('omits popupVisible when enabled so Arco stays hover-controlled', () => {
+    expect(Object.prototype.hasOwnProperty.call(getSiderTooltipProps(true), 'popupVisible')).toBe(false);
+  });
+
+  test('forces popupVisible false only when disabled', () => {
+    expect(getSiderTooltipProps(false).popupVisible).toBe(false);
+  });
 });

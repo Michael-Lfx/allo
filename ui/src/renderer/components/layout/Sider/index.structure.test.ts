@@ -29,4 +29,23 @@ describe('Primary sider structure', () => {
   test('exposes a stable control target for the sidebar toggle', () => {
     expect(source.includes("id='flowy-primary-sider'")).toBe(true);
   });
+
+  test('expanded icon dock still shows hover menu names', () => {
+    const dockEntries = [
+      './SiderNav/SiderKnowledgeEntry.tsx',
+      './SiderNav/SiderLearningEntry.tsx',
+      './SiderNav/SiderScheduledEntry.tsx',
+      './SiderNav/SiderMeetingEntry.tsx',
+    ];
+
+    for (const relativePath of dockEntries) {
+      const entrySource = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+      const dockStart = entrySource.indexOf('if (dock)');
+      expect(dockStart).toBeGreaterThan(-1);
+      const instantIdx = entrySource.indexOf('<InstantHoverTooltip', dockStart);
+      const tooltipIdx = entrySource.indexOf('<Tooltip', dockStart);
+      expect(instantIdx).toBeGreaterThan(dockStart);
+      expect(tooltipIdx === -1 || instantIdx < tooltipIdx).toBe(true);
+    }
+  });
 });

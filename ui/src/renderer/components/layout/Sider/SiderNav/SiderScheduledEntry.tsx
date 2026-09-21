@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { AlarmClock } from '@icon-park/react';
 import classNames from 'classnames';
+import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { prefetchScheduledTasksPage } from '@renderer/pages/cron/prefetch';
 
@@ -26,6 +27,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
   onClick,
 }) => {
   const { t } = useTranslation();
+  const label = t('cron.scheduledTasks');
 
   useEffect(() => {
     const idleWindow = window as Window & {
@@ -44,7 +46,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
 
   if (dock) {
     return (
-      <Tooltip {...siderTooltipProps} content={t('cron.scheduledTasks')} position='bottom'>
+      <InstantHoverTooltip content={label} position='bottom'>
         <div
           className={classNames(
             'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
@@ -52,6 +54,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
           )}
           onClick={onClick}
           onPointerEnter={() => prefetchScheduledTasksPage()}
+          aria-label={label}
           aria-current={isActive ? 'page' : undefined}
           data-sider-nav-entry
           data-active={isActive ? 'true' : 'false'}
@@ -65,13 +68,13 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
             style={{ lineHeight: 0 }}
           />
         </div>
-      </Tooltip>
+      </InstantHoverTooltip>
     );
   }
 
   if (collapsed) {
     return (
-      <Tooltip {...siderTooltipProps} content={t('cron.scheduledTasks')} position='right'>
+      <Tooltip {...siderTooltipProps} content={label} position='right'>
         <div
           className={classNames(
             'w-full h-34px flex items-center justify-center cursor-pointer transition-colors rd-8px text-t-primary',
@@ -96,7 +99,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
   }
 
   return (
-    <Tooltip {...siderTooltipProps} content={t('cron.scheduledTasks')} position='right'>
+    <Tooltip {...siderTooltipProps} content={label} position='right'>
       <div
         className={classNames(
           'box-border group h-34px w-full flex items-center justify-start gap-8px pl-10px pr-8px rd-0.5rem cursor-pointer shrink-0 transition-all text-t-primary',
@@ -118,9 +121,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
             style={{ lineHeight: 0 }}
           />
         </span>
-        <span className='collapsed-hidden text-14px font-[500] leading-24px'>
-          {t('cron.scheduledTasks')}
-        </span>
+        <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
       </div>
     </Tooltip>
   );
