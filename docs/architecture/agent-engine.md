@@ -188,9 +188,17 @@ without the coding overlay.
   only the parent's own tour turns. `Lsp` is in the coding core advertise list
   when servers are configured. `verify_change` with an exact `command` runs
   shell directly (no nested LLM). Non-verify Bash is recon and does not reset
-  the tour budget; request-lifetime recon and consecutive 1-tool round-trip
-  caps also apply. Engine hard-stop only forced-finalizes — it does not
+  the tour budget. Request-lifetime recon bounds touring *before the first
+  file mutation*; after Edit/Write, consecutive-tour and 1-tool round-trip
+  caps remain the wander gates so compile/read interleaved with writes is
+  not aborted. Engine hard-stop only forced-finalizes — it does not
   `reset_progress`.
+- **Live plan snapshots:** `update_plan` is a full checklist snapshot, not a
+  live progress counter. After four successful Edit/Write/ApplyPatch calls
+  without a new snapshot, the harness injects a one-shot stale-plan nudge.
+  A later snapshot re-arms it. The host stream relay pumps the 128-slot
+  agent broadcast into an unbounded queue before SQLite persist so a slow
+  write cannot `Lagged`-kill a healthy provider turn.
 - **Completion:** coding defaults to EvidenceRequired (`HardGate`). Natural
   EndTurn after Edit/Write needs a verify receipt (or a harness-classified
   trivial mutation). Format/test retries cap at 3. `ExitPlanMode` can carry a

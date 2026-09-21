@@ -27,7 +27,7 @@ describe('PinnedPlan composer chip', () => {
     expect(source.includes('flex flex-col items-center')).toBe(true);
     expect(source.includes("from 'thinking-orbs'")).toBe(false);
     expect(source.includes("from '@icon-park/react'")).toBe(false);
-    expect(source.includes('{active && done < total && (')).toBe(true);
+    expect(source.includes('planDisplayStatus')).toBe(true);
     expect(source.includes("data-testid='pinned-plan-popover'")).toBe(true);
     expect(source.includes('absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-full')).toBe(
       false

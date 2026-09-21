@@ -168,8 +168,13 @@ surfaces 意味着真实规则是“主接缝 + 明确记录的 feature-gated ex
   Agent Execution）。父进程 explore hard-stop 只统计父自己的旅游回合。配置了
   `tools.lsp_servers` 时，`Lsp` 进入 coding 核心广告面。`verify_change` 带精确
   `command` 时直接跑 shell，不套 nested LLM。非 verify Bash 计为 recon，不能清掉
-  探测预算；另有请求级 recon 上限和连续单工具 round-trip 硬停。engine hard-stop
-  只 forced finalize，不清 `CodingProgressGuard`。
+  探测预算。请求级 recon 上限只约束**第一次文件改动之前**的侦察；Edit/Write 之后
+  改由连续侦察与单工具 round-trip 硬停守门，避免「写文件 + 编译读回」被当成旅游
+  中断。engine hard-stop 只 forced finalize，不清 `CodingProgressGuard`。
+- **Live plan：** `update_plan` 是整份清单快照，不是实时计数器。上次快照之后连续
+  四次成功 Edit/Write/ApplyPatch 仍未再申报时，harness 注入一次性 stale-plan
+  nudge；新快照会重新武装。宿主 StreamRelay 先把 128 槽 broadcast 泵进无界队列
+  再做 SQLite persist，避免慢写入把健康的 provider 流 `Lagged` 杀掉。
 - **完成：** coding 默认 EvidenceRequired（`HardGate`）。有 Edit/Write 后的自然
   EndTurn 必须看到验证 receipt（或 harness 判定的琐碎改动）。格式/测试重试封顶 3。
   `ExitPlanMode` 可携带 `PlanArtifact`。办公纯问答保持 Conversation；文件写入或

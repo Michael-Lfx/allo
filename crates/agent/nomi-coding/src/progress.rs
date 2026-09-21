@@ -65,7 +65,8 @@ pub struct CodingProgressGuard {
     /// Consecutive recon-only turns (resets on file mutation, verify, or a
     /// non-recon parent tool). Bash without verify counts as recon.
     explore_only_turns: usize,
-    /// Recon-only turns this user request. Does **not** reset on Edit.
+    /// Recon-only turns this user request (observability; still counted after Edit).
+    /// Lifetime nudge/hard-stop only apply **before** the first file mutation.
     recon_turns_total: usize,
     /// Consecutive recon-only turns that issued exactly one parent tool.
     serial_recon_turns: usize,
@@ -114,9 +115,9 @@ pub struct ProgressObserveParams {
     pub explore_budget: usize,
     /// Hard stop after this many consecutive recon-only turns.
     pub explore_hard_stop: usize,
-    /// Soft request-lifetime recon-round nudge (does not reset on Edit).
+    /// Soft request-lifetime recon-round nudge (pre-mutation touring only).
     pub recon_lifetime_budget: usize,
-    /// Hard request-lifetime recon-round stop.
+    /// Hard request-lifetime recon-round stop (pre-mutation touring only).
     pub recon_lifetime_hard_stop: usize,
     /// Soft consecutive 1-tool recon nudge (provider round-trip tax).
     pub serial_recon_budget: usize,
@@ -144,7 +145,7 @@ impl CodingProgressGuard {
     pub const DEFAULT_EXPLORE_BUDGET: usize = 6;
     /// Hard stop shortly after consecutive soft budget (then forced finalize).
     pub const DEFAULT_EXPLORE_HARD_STOP: usize = 10;
-    /// Soft request-lifetime recon rounds (survives Edit; resets on new user request).
+    /// Soft request-lifetime recon rounds before the first file mutation.
     pub const DEFAULT_RECON_LIFETIME_BUDGET: usize = 10;
     pub const DEFAULT_RECON_LIFETIME_HARD_STOP: usize = 16;
     /// Soft 1-tool recon streak. Each such turn is a full provider RTT.
@@ -279,7 +280,10 @@ impl CodingProgressGuard {
         let serial_hard = params.serial_recon_hard_stop.max(serial_soft);
 
         // Hard stops first. Serial is the round-trip tax; consecutive is a
-        // no-edit tour; lifetime survives interleaved Edit+Read.
+        // no-edit tour. Lifetime bounds *pre-implementation* touring only:
+        // after a successful Edit/Write, compile-Read / API-Grep interleaved
+        // with writes is progress (session 01a0c30d), not a budget dodge.
+        // Consecutive + serial remain the post-mutation wander gates.
         if self.serial_recon_turns >= serial_hard && !self.serial_hard_stop_sent {
             self.serial_hard_stop_sent = true;
             self.force_allow_finish = true;
@@ -290,7 +294,10 @@ impl CodingProgressGuard {
             self.force_allow_finish = true;
             return CodingProgressAction::HardStopExplore(ExploreBudgetKind::ConsecutiveTour);
         }
-        if self.recon_turns_total >= lifetime_hard && !self.lifetime_hard_stop_sent {
+        if !self.mutated_files
+            && self.recon_turns_total >= lifetime_hard
+            && !self.lifetime_hard_stop_sent
+        {
             self.lifetime_hard_stop_sent = true;
             self.force_allow_finish = true;
             return CodingProgressAction::HardStopExplore(ExploreBudgetKind::LifetimeRecon);
@@ -304,7 +311,10 @@ impl CodingProgressGuard {
             self.explore_budget_nudge_sent = true;
             return CodingProgressAction::NudgeExploreBudget(ExploreBudgetKind::ConsecutiveTour);
         }
-        if self.recon_turns_total >= lifetime_soft && !self.lifetime_nudge_sent {
+        if !self.mutated_files
+            && self.recon_turns_total >= lifetime_soft
+            && !self.lifetime_nudge_sent
+        {
             self.lifetime_nudge_sent = true;
             return CodingProgressAction::NudgeExploreBudget(ExploreBudgetKind::LifetimeRecon);
         }
@@ -371,16 +381,27 @@ one-tool recon turns. Stop now. Summarize what you already know. If more files a
 user can ask again — do not continue a serial Read/Grep/Bash tour.";
 
 pub const CODING_LIFETIME_RECON_NUDGE: &str = "Coding recon lifetime: this user request has already \
-spent many provider rounds on Read/Grep/Glob/non-verify Bash (edits do not reset this budget). \
-Make the remaining change, run one verify command, or stop with status. Do not start another tour.";
+spent many provider rounds only reading/searching before any file change. Make the smallest \
+Edit/Write that solves the task now, or stop with a short status. Do not continue an open-ended tour.";
 
-pub const CODING_LIFETIME_RECON_HARD_STOP: &str = "Coding recon lifetime hard-stop: recon round \
-budget for this request is exhausted. Stop now. Summarize findings and any remaining blocker. \
-Do not call more Read/Grep/Glob/DirTree or non-verify Bash unless the user asks again.";
+pub const CODING_LIFETIME_RECON_HARD_STOP: &str = "Coding recon lifetime hard-stop: exploration \
+before any file change is exhausted. Stop now. Summarize findings and the smallest next edit \
+(or the blocker). Do not call more Read/Grep/Glob/DirTree unless the user asks again.";
 
 pub const CODING_VERIFY_NUDGE: &str = "Coding verification gate: you changed files but have not \
 yet run a build/test/lint command that exercises those changes. Run the narrowest verification \
 now before claiming the task is done. If verification is impossible, say why and stop.";
+
+/// Successful Edit/Write/ApplyPatch calls after the last `update_plan` before
+/// the live checklist is treated as stale. One snapshot per milestone, not
+/// per tool call — this is the missed-milestone floor, not a per-turn tax.
+pub const PLAN_STALE_MUTATION_THRESHOLD: usize = 4;
+
+pub const CODING_STALE_PLAN_NUDGE: &str = "Coding plan snapshot is stale: you have made file \
+changes since the last `update_plan`, but the user-visible checklist still shows the previous \
+milestone. Submit one full snapshot that marks finished milestones completed and the current \
+milestone in_progress, then continue the actual work. Do not send an unchanged snapshot, and \
+do not turn this into a plan-only loop.";
 
 pub const CODING_PLAN_TIMEOUT_NUDGE: &str = "Coding plan-mode budget: you have spent many turns \
 exploring in plan mode. Finish the plan text and call ExitPlanMode now, or stop and ask the user \
@@ -485,7 +506,40 @@ mod tests {
     }
 
     #[test]
-    fn edit_does_not_reset_lifetime_recon() {
+    fn lifetime_recon_hard_stop_before_any_edit() {
+        let mut guard = CodingProgressGuard::default();
+        let read: HashSet<String> = ["Read"].into_iter().map(str::to_owned).collect();
+        let p = ProgressObserveParams {
+            explore_budget: 20,
+            explore_hard_stop: 20,
+            serial_recon_budget: 20,
+            serial_recon_hard_stop: 20,
+            recon_lifetime_budget: 3,
+            recon_lifetime_hard_stop: 4,
+            ..params()
+        };
+        assert_eq!(
+            observe(&mut guard, &read, true, 1, p),
+            CodingProgressAction::Continue
+        );
+        assert_eq!(
+            observe(&mut guard, &read, true, 1, p),
+            CodingProgressAction::Continue
+        );
+        assert_eq!(
+            observe(&mut guard, &read, true, 1, p),
+            CodingProgressAction::NudgeExploreBudget(ExploreBudgetKind::LifetimeRecon)
+        );
+        assert_eq!(
+            observe(&mut guard, &read, true, 1, p),
+            CodingProgressAction::HardStopExplore(ExploreBudgetKind::LifetimeRecon)
+        );
+        assert_eq!(guard.recon_turns_total(), 4);
+        assert!(!guard.mutated_files());
+    }
+
+    #[test]
+    fn file_mutation_retires_lifetime_recon() {
         let mut guard = CodingProgressGuard::default();
         let read: HashSet<String> = ["Read"].into_iter().map(str::to_owned).collect();
         let edit: HashSet<String> = ["Edit"].into_iter().map(str::to_owned).collect();
@@ -503,21 +557,18 @@ mod tests {
             CodingProgressAction::Continue
         );
         let _ = guard.observe_tool_turn(&edit, false, true, true, false, 1, p);
+        assert!(guard.mutated_files());
         assert_eq!(guard.recon_turns_total(), 1);
         assert_eq!(guard.explore_only_turns(), 0);
-        assert_eq!(
-            observe(&mut guard, &read, true, 1, p),
-            CodingProgressAction::Continue
-        );
-        assert_eq!(
-            observe(&mut guard, &read, true, 1, p),
-            CodingProgressAction::NudgeExploreBudget(ExploreBudgetKind::LifetimeRecon)
-        );
-        assert_eq!(
-            observe(&mut guard, &read, true, 1, p),
-            CodingProgressAction::HardStopExplore(ExploreBudgetKind::LifetimeRecon)
-        );
-        assert_eq!(guard.recon_turns_total(), 4);
+        for _ in 0..6 {
+            assert_eq!(
+                observe(&mut guard, &read, true, 1, p),
+                CodingProgressAction::Continue,
+                "lifetime must not abort an in-progress implementation"
+            );
+        }
+        assert_eq!(guard.recon_turns_total(), 7);
+        assert!(!guard.force_allow_finish());
     }
 
     #[test]
@@ -580,6 +631,7 @@ mod tests {
         assert!(is_recon_tool("Bash", Some("ls -la")));
         assert!(is_recon_tool("Bash", Some("git status")));
         assert!(!is_recon_tool("Bash", Some("cargo test -p foo")));
+        assert!(!is_recon_tool("Bash", Some("go build ./...")));
         assert!(!is_recon_tool("Edit", None));
         assert!(is_recon_tool("Lsp", None));
         assert!(!is_recon_tool("explore_code", None));

@@ -434,6 +434,7 @@
       "empty": "暂无计划",
       "emptyDescription": "Agent 开始执行计划后，待办会显示在这里",
       "inProgress": "进行中",
+      "incomplete": "未完成",
       "completed": "已完成"
     },
     "openWorkspace": "打开项目文件夹",

@@ -802,6 +802,8 @@ impl NomiAgentManager {
         summon_wiring: Option<NomiSummonWiring>,
         host_wiring: NomiHostWiring,
     ) -> Result<Self, AppError> {
+        // 128 is a burst buffer for the StreamRelay pump task, not the
+        // durability consumer. Persist must not share this ring.
         let runtime = AgentRuntimeState::new(conversation_id.clone(), workspace.clone(), 128);
         let loopback_capability_leases = config_extra.loopback_capability_leases.clone();
         #[cfg(feature = "browser-use")]
