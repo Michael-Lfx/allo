@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { BookOpen } from '@icon-park/react';
 import classNames from 'classnames';
+import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
 
@@ -37,7 +38,7 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
 
   if (dock) {
     return (
-      <Tooltip {...siderTooltipProps} content={label} position='bottom'>
+      <InstantHoverTooltip content={label} position='bottom'>
         <div
           className={classNames(
             'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
@@ -45,6 +46,7 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
           )}
           onClick={onClick}
           onPointerEnter={() => prefetchLearningPage()}
+          aria-label={label}
           aria-current={isActive ? 'page' : undefined}
           data-sider-nav-entry
           data-active={isActive ? 'true' : 'false'}
@@ -58,7 +60,7 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
             style={{ lineHeight: 0 }}
           />
         </div>
-      </Tooltip>
+      </InstantHoverTooltip>
     );
   }
 

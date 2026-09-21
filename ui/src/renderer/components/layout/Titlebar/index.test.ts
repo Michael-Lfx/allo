@@ -12,6 +12,20 @@ describe('Titlebar instant icon tooltips', () => {
     expect(titlebarSource.includes("className='app-titlebar__tooltip-anchor'")).toBe(true);
   });
 
+  test('surfaces sidebar and new-conversation shortcuts on icon tooltips', () => {
+    expect(titlebarSource.includes("appChromeShortcutTooltip(siderTooltipBase, 'sidebar')")).toBe(true);
+    expect(titlebarSource.includes("appChromeShortcutTooltip(newConversationTooltipBase, 'newConversation')")).toBe(
+      true
+    );
+  });
+
+  test('wires desktop history back and forward shortcuts into the nav buttons', () => {
+    expect(titlebarSource.includes('useHistoryNavigationShortcuts')).toBe(true);
+    expect(titlebarSource.includes('formatHistoryBackShortcut()')).toBe(true);
+    expect(titlebarSource.includes('formatHistoryForwardShortcut()')).toBe(true);
+    expect(titlebarSource.includes('enabled: showHistoryNav')).toBe(true);
+  });
+
   test('does not use native title fallbacks for titlebar icon buttons', () => {
     expect(titlebarSource.includes('title={historyBackTooltip}')).toBe(false);
     expect(titlebarSource.includes('title={historyForwardTooltip}')).toBe(false);

@@ -33,6 +33,7 @@ import {
 } from '@renderer/utils/theme/themeControlContract';
 import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
+import AppChromeShortcutsHost from '@renderer/components/layout/AppChromeShortcutsHost';
 import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShortcuts';
 import { useActiveConversationRouteSync } from '@renderer/hooks/ui/useActiveConversationRouteSync';
 import { isDesktopShell } from '@renderer/utils/platform';
@@ -740,6 +741,7 @@ const Layout: React.FC<{
               </ArcoLayout>
             </div>
             <NotificationHost />
+            <AppChromeShortcutsHost />
           </WebuiServerProvider>
         </NavigationHistoryProvider>
       </SettingsNavigationTransitionProvider>

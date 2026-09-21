@@ -57,7 +57,7 @@ pub use http_routes::{CloudRouterState, cloud_routes};
 pub use http_service::CloudService;
 pub use telemetry::start_cloud_telemetry;
 pub use transport::HttpTransport;
-pub use website::{build_website_entry_url, website_language};
+pub use website::{build_website_entry_url, website_language, WebsiteLanding};
 
 #[cfg(test)]
 mod tests {

@@ -5,6 +5,7 @@ import { Tooltip } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import classNames from 'classnames';
 import ConversationSearchPopover from '@renderer/pages/conversation/SessionList/ConversationSearchPopover';
+import { appChromeShortcutTooltip } from '@/renderer/utils/appChromeShortcuts';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 
 interface SiderSearchEntryProps {
@@ -23,10 +24,11 @@ const SiderSearchEntry: React.FC<SiderSearchEntryProps> = ({
   onSessionClick,
 }) => {
   const { t } = useTranslation();
+  const searchTooltip = appChromeShortcutTooltip(t('conversation.historySearch.tooltip'), 'search');
 
   if (collapsed) {
     return (
-      <Tooltip {...siderTooltipProps} content={t('conversation.historySearch.tooltip')} position='right'>
+      <Tooltip {...siderTooltipProps} content={searchTooltip} position='right'>
         <div className='w-full'>
           <ConversationSearchPopover
             onSessionClick={onSessionClick}
@@ -40,7 +42,7 @@ const SiderSearchEntry: React.FC<SiderSearchEntryProps> = ({
   }
 
   return (
-    <Tooltip {...siderTooltipProps} content={t('conversation.historySearch.tooltip')} position='right'>
+    <Tooltip {...siderTooltipProps} content={searchTooltip} position='right'>
       <div className='w-full'>
         <ConversationSearchPopover
           onSessionClick={onSessionClick}

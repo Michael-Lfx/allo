@@ -15,6 +15,15 @@ import { dispatchWorkspaceToggleEvent } from '@renderer/utils/workspace/workspac
 
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useNavigationHistory } from '@/renderer/hooks/context/NavigationHistoryContext';
+import { useHistoryNavigationShortcuts } from '@/renderer/hooks/ui/useHistoryNavigationShortcuts';
+import {
+  appChromeShortcutTooltip,
+  isAppChromeShortcutAvailable,
+} from '@/renderer/utils/appChromeShortcuts';
+import {
+  formatHistoryBackShortcut,
+  formatHistoryForwardShortcut,
+} from '@/renderer/utils/historyNavigationShortcut';
 import { isDesktopShell, isMacOS } from '@/renderer/utils/platform';
 import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
 import SidebarToggleIcon from '../Sider/SidebarToggleIcon';
@@ -23,6 +32,8 @@ import './titlebar.css';
 interface TitlebarProps {
   workspaceAvailable: boolean;
 }
+
+const noopHistoryNav = (): void => undefined;
 
 type TitlebarIconButtonOptions = {
   tooltip: string;
@@ -107,22 +118,39 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   // 统一在标题栏左侧展示主侧栏开关 / Always expose sidebar toggle on titlebar left side
   const showSiderToggle = Boolean(layout?.setSiderCollapsed) && !(layout?.isMobile && isSettingsRoute);
   const showBackToChatButton = Boolean(layout?.isMobile && isSettingsRoute);
-  const siderTooltip = layout?.siderCollapsed
+  const siderTooltipBase = layout?.siderCollapsed
     ? t('common.navExpand', { defaultValue: '展开应用导航' })
     : t('common.navCollapse', { defaultValue: '收起应用导航' });
+  const siderTooltip = layout?.isMobile
+    ? siderTooltipBase
+    : appChromeShortcutTooltip(siderTooltipBase, 'sidebar');
   // 前进/后退仅在桌面端显示（移动端空间有限，保留原有的返回到聊天按钮）
   // Show back/forward on desktop only; mobile keeps the existing back-to-chat button.
   const showHistoryNav = Boolean(navigationHistory) && !layout?.isMobile;
-  const historyBackTooltip = t('common.historyBack', { defaultValue: 'Back' });
-  const historyForwardTooltip = t('common.forward', { defaultValue: 'Forward' });
+  const historyBack = navigationHistory?.back;
+  const historyForward = navigationHistory?.forward;
+  useHistoryNavigationShortcuts({
+    enabled: showHistoryNav,
+    back: historyBack ?? noopHistoryNav,
+    forward: historyForward ?? noopHistoryNav,
+  });
+  const historyBackTooltip = `${t('common.historyBack', { defaultValue: 'Back' })} ${formatHistoryBackShortcut()}`;
+  const historyForwardTooltip = `${t('common.forward', { defaultValue: 'Forward' })} ${formatHistoryForwardShortcut()}`;
   // The homepage already is the new-conversation surface. Keep this action for
   // a concrete chat, where it creates a useful escape hatch, and Settings,
   // where the Home icon returns to that surface.
   const showNewConversationAction =
     !layout?.isMobile && (isSettingsRoute || activeWorkspaceTarget?.kind === 'conversation');
-  const newConversationTooltip = isSettingsRoute
+  const newConversationTooltipBase = isSettingsRoute
     ? t('common.titlebar.home', { defaultValue: 'Home' })
     : t('terminal.newConversation');
+  const newConversationTooltip =
+    isAppChromeShortcutAvailable('newConversation', {
+      desktop: isDesktopRuntime,
+      mobile: Boolean(layout?.isMobile),
+    })
+      ? appChromeShortcutTooltip(newConversationTooltipBase, 'newConversation')
+      : newConversationTooltipBase;
   const handleSiderToggle = () => {
     if (!showSiderToggle || !layout?.setSiderCollapsed) return;
     layout.setSiderCollapsed(!layout.siderCollapsed);

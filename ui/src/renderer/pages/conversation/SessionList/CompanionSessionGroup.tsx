@@ -74,7 +74,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { companions } = useCompanions();
+  const { companions, loading } = useCompanions();
   const [showAllCompanions, setShowAllCompanions] = useState(false);
   const [groupToggleKey, setGroupToggleKey] = useState(0);
   const [overflowToggleKey, setOverflowToggleKey] = useState(0);
@@ -199,7 +199,11 @@ const CompanionSessionGroup: React.FC<Props> = ({
   );
 
   // 无伙伴时：若在独立桌宠 Tab 下，提供创建引导空状态；若在混排会话列表中则静默隐藏。
+  // Roster fetch starts as []; showing the create CTA while loading is the tab flash.
   if (companions.length === 0) {
+    if (loading) {
+      return null;
+    }
     if (hideHeader) {
       return (
         <div className='flex flex-col items-center justify-center p-16px text-center gap-10px rd-10px bg-fill-1 border border-dashed border-[var(--color-border-2)] my-8px'>
@@ -381,7 +385,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
         <div
           onClick={() => void handleOpen(c)}
           className={classNames(
-            'group relative flex flex-col p-10px rd-12px mb-8px cursor-pointer transition-all box-border min-w-0 border border-solid',
+            'group relative flex flex-col p-10px rd-12px mb-8px cursor-pointer transition-colors box-border min-w-0 border border-solid',
             active
               ? '!bg-[rgba(var(--primary-1),0.3)] !border-primary-3 shadow-sm'
               : 'bg-fill-1 hover:bg-fill-2 border-[var(--color-border-2)] hover:border-primary-2 active:bg-fill-3'

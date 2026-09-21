@@ -1,7 +1,7 @@
 import appLogo from '@renderer/assets/logo.svg';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Refresh } from '@icon-park/react';
 import WindowControls from '@renderer/components/layout/WindowControls';
 import AuthCooldownHint from '@renderer/components/auth/AuthCooldownHint';
@@ -19,7 +19,6 @@ import type {
 import useEmailOtpLogin, { EMAIL_OTP_LENGTH } from '@renderer/hooks/auth/useEmailOtpLogin';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { isDesktopShell, isMacOS } from '@renderer/utils/platform';
-import { resolvePostCloudLoginPath } from '@renderer/pages/billing/billingAuth';
 import { preloadCommercialPathChunks, preloadGuidPathChunk } from '@renderer/utils/motion/flowyMotion';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import type { CloudAuthStatus } from '@renderer/hooks/context/CloudAuthContext';
@@ -141,7 +140,6 @@ const CloudLoginTransition: React.FC<CloudLoginTransitionProps> = ({
 const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout, onSuccess }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const location = useLocation();
   const [emailTouched, setEmailTouched] = useState(false);
   const [blueprintStep, setBlueprintStep] = useState<BlueprintRouteStep>(0);
   const flow = useEmailOtpLogin({
@@ -275,7 +273,7 @@ const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout,
             <p className='cloud-login-account__identity'>{whoami.email ?? whoami.username}</p>
           )}
           <div className='cloud-login-account__actions'>
-            <AuthPrimaryButton type='button' onClick={() => navigate(resolvePostCloudLoginPath(location.search))}>
+            <AuthPrimaryButton type='button' onClick={() => navigate('/guid')}>
               {t('cloudLogin.login.continue')}
             </AuthPrimaryButton>
             <button
@@ -435,7 +433,6 @@ const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout,
 const CloudLoginPage: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const location = useLocation();
   const { status, whoami, refresh, logout } = useCloudAuth();
   const justLoggedInRef = useRef(false);
   const navigationRunRef = useRef(0);
@@ -502,12 +499,12 @@ const CloudLoginPage: React.FC = () => {
     preloadCommercialPathChunks();
     void preloadGuidPathChunk().catch(() => undefined);
     justLoggedInRef.current = false;
-    navigate(resolvePostCloudLoginPath(location.search), { replace: true });
+    navigate('/guid', { replace: true });
 
     return () => {
       navigationRunRef.current += 1;
     };
-  }, [isCompleting, isSessionReady, location.search, navigate, status]);
+  }, [isCompleting, isSessionReady, navigate, status]);
 
   if (isCompleting || status === 'checking') {
     const isCompletionError = isCompleting && completionError;

@@ -36,7 +36,9 @@ export const getSiderTooltipProps = (enabled = false): SiderTooltipProps => {
     disabled,
     unmountOnExit: true,
     popupHoverStay: false,
-    popupVisible: disabled ? false : undefined,
+    // Arco treats `popupVisible` as controlled whenever the key exists, even if
+    // the value is `undefined`. Only pass it when we must keep the popup closed.
+    ...(disabled ? { popupVisible: false } : {}),
     getPopupContainer: getSiderPopupContainer,
     triggerProps: {
       mouseEnterDelay: 0,

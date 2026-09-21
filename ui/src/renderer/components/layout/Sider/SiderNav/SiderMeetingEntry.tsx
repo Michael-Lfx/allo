@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { Voice } from '@icon-park/react';
 import classNames from 'classnames';
+import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { prefetchMeetingPage } from '@renderer/pages/meeting/prefetch';
 
@@ -24,6 +25,7 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
   onClick,
 }) => {
   const { t } = useTranslation();
+  const label = t('meeting.title');
 
   useEffect(() => {
     const idleWindow = window as Window & {
@@ -42,7 +44,7 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
 
   if (dock) {
     return (
-      <Tooltip {...siderTooltipProps} content={t('meeting.title')} position='bottom'>
+      <InstantHoverTooltip content={label} position='bottom'>
         <div
           className={classNames(
             'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
@@ -50,6 +52,7 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
           )}
           onClick={onClick}
           onPointerEnter={() => prefetchMeetingPage()}
+          aria-label={label}
           aria-current={isActive ? 'page' : undefined}
           data-sider-nav-entry
           data-active={isActive ? 'true' : 'false'}
@@ -63,13 +66,13 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
             style={{ lineHeight: 0 }}
           />
         </div>
-      </Tooltip>
+      </InstantHoverTooltip>
     );
   }
 
   if (collapsed) {
     return (
-      <Tooltip {...siderTooltipProps} content={t('meeting.title')} position='right'>
+      <Tooltip {...siderTooltipProps} content={label} position='right'>
         <div
           className={classNames(
             'w-full h-34px flex items-center justify-center cursor-pointer transition-colors rd-8px text-t-primary',
@@ -94,7 +97,7 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
   }
 
   return (
-    <Tooltip {...siderTooltipProps} content={t('meeting.title')} position='right'>
+    <Tooltip {...siderTooltipProps} content={label} position='right'>
       <div
         className={classNames(
           'box-border group h-34px w-full flex items-center justify-start gap-8px pl-10px pr-8px rd-0.5rem cursor-pointer shrink-0 transition-all text-t-primary',
@@ -116,7 +119,7 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
             style={{ lineHeight: 0 }}
           />
         </span>
-        <span className='collapsed-hidden text-14px font-[500] leading-24px'>{t('meeting.title')}</span>
+        <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
       </div>
     </Tooltip>
   );

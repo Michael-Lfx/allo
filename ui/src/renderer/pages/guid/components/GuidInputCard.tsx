@@ -11,6 +11,7 @@ import ComposerSkillTokenInput, {
 import type { ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useCompositionInput } from '@/renderer/hooks/chat/useCompositionInput';
+import { useAddEventListener } from '@/renderer/utils/emitter';
 import React from 'react';
 import styles from '../index.module.css';
 import GuidWorkspaceFootnote from './GuidWorkspaceFootnote';
@@ -104,6 +105,17 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const { compositionHandlers, isImeActive } = useCompositionInput();
+  useAddEventListener(
+    'composer.focus',
+    () => {
+      if (tokenInputRef && typeof tokenInputRef !== 'function') {
+        tokenInputRef.current?.focus();
+        return;
+      }
+      document.querySelector<HTMLElement>('[data-testid="guid-input"]')?.focus();
+    },
+    []
+  );
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (isImeActive(e)) return;
     onKeyDown(e);

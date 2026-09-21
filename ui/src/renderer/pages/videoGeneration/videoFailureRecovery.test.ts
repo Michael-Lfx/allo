@@ -6,7 +6,6 @@ describe('video failure recovery action', () => {
   test('always opens billing for insufficient-credit failures', () => {
     expect(resolveVideoFailureRecoveryAction('credits')).toEqual({
       labelKey: 'billing.openBilling',
-      href: '/billing',
       source: 'open_billing',
     });
   });

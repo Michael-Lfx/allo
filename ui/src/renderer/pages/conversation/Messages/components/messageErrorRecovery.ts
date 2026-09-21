@@ -1,11 +1,20 @@
 import type { AgentStreamErrorInfo } from '@/common/chat/chatLib';
-import { BILLING_PATH } from '@renderer/pages/billing/billingAuth';
 
-export type MessageErrorRecoveryAction = {
-  labelKey: string;
-  href: string;
-  source: 'open_billing' | 'change_model' | 'fix_agent_config';
-};
+export type MessageErrorRecoveryAction =
+  | {
+      labelKey: string;
+      source: 'open_billing';
+    }
+  | {
+      labelKey: string;
+      href: string;
+      source: 'change_model';
+    }
+  | {
+      labelKey: string;
+      href: string;
+      source: 'fix_agent_config';
+    };
 
 const MODEL_RECOVERY_KINDS = new Set([
   'change_model',
@@ -30,7 +39,6 @@ export function resolveMessageErrorRecoveryAction(
   if (kind === 'check_provider_billing') {
     return {
       labelKey: 'conversation.agentError.openBillingAction',
-      href: BILLING_PATH,
       source: 'open_billing',
     };
   }

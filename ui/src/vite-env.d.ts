@@ -6,7 +6,6 @@ interface ImportMetaEnv {
   readonly PROD: boolean;
   readonly MODE: string;
   readonly BASE_URL: string;
-  readonly VITE_AIRWALLEX_ENV?: string;
   readonly VITE_CANVAS_BACKEND_URL?: string;
   readonly VITE_COMMERCIAL_SLICE?: string | boolean;
   readonly VITE_POSTHOG_HOST?: string;

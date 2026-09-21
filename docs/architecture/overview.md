@@ -24,7 +24,7 @@ This document is the map. The sibling documents drill into the parts:
   and lifecycle authority.
 - Domain docs: [`media-creation.zh.md`](media-creation.zh.md) (workshop / video
   generation / model-invocation layer), [`cloud-billing.zh.md`](cloud-billing.zh.md)
-  (cloud login, catalog sync, credits & Airwallex checkout),
+  (cloud login, catalog sync, credits & official-website checkout),
   [`learning.zh.md`](learning.zh.md) (knowledge-base course engine),
   [`poi-insights.zh.md`](poi-insights.zh.md) (local interest topics &
   de-identified contribution), [`customer-service.zh.md`](customer-service.zh.md)

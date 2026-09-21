@@ -1,11 +1,17 @@
 
-
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { Plus } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
+import {
+  APP_CHROME_SHORTCUT_BADGE_CLASS,
+  appChromeShortcutTooltip,
+  formatAppChromeShortcut,
+  isAppChromeShortcutAvailable,
+} from '@/renderer/utils/appChromeShortcuts';
+import { isDesktopShell } from '@/renderer/utils/platform';
 import styles from '../Sider.module.css';
 
 type SiderNewConversationEntryProps = {
@@ -24,10 +30,15 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
 }) => {
   const { t } = useTranslation();
   const label = t('common.tray.newChat');
+  const shortcutAvailable = isAppChromeShortcutAvailable('newConversation', {
+    desktop: isDesktopShell(),
+    mobile: isMobile,
+  });
+  const tooltip = shortcutAvailable ? appChromeShortcutTooltip(label, 'newConversation') : label;
 
   if (collapsed) {
     return (
-      <Tooltip {...siderTooltipProps} content={label} position='right'>
+      <Tooltip {...siderTooltipProps} content={tooltip} position='right'>
         <button
           type='button'
           data-testid='sider-new-conversation-entry'
@@ -36,7 +47,7 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
             styles.newChatTrigger
           )}
           onClick={onClick}
-          aria-label={label}
+          aria-label={tooltip}
         >
           <Plus
             theme='outline'
@@ -52,7 +63,7 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
 
   // Expanded: 单独的新建对话全宽按钮，与搜索按钮完全统一对齐（左对齐、size-22px 图标盒、统一内边距与字体）
   return (
-    <Tooltip {...siderTooltipProps} content={label} position='right'>
+    <Tooltip {...siderTooltipProps} content={tooltip} position='right'>
       <button
         type='button'
         data-testid='sider-new-conversation-entry'
@@ -62,7 +73,7 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
           isMobile && 'sider-action-btn-mobile'
         )}
         onClick={onClick}
-        aria-label={label}
+        aria-label={tooltip}
       >
         <span className='size-22px flex items-center justify-center shrink-0 text-t-primary'>
           <Plus
@@ -76,6 +87,9 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
         <span className='collapsed-hidden text-t-primary text-14px font-[500] leading-24px truncate'>
           {label}
         </span>
+        {shortcutAvailable ? (
+          <span className={APP_CHROME_SHORTCUT_BADGE_CLASS}>{formatAppChromeShortcut('newConversation')}</span>
+        ) : null}
       </button>
     </Tooltip>
   );

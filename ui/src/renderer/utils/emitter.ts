@@ -89,6 +89,8 @@ interface EventTypes {
   'sendbox.reply.clear': void; // clear reply quote
   'sendbox.edit': [{ msgId: MessageId; createdAt: number; content: string }]; // edit a sent user message (recall into composer)
   'sendbox.retry': [{ content: string; msgId?: MessageId; createdAt?: number }]; // retry last user turn from an error tip
+  'composer.focus': void;
+  'app.shortcuts.open': void;
   'staroffice.install.request': [{ conversation_id: ConversationId; text: string; detectedUrl?: string | null }];
   'staroffice.install.finished': [{ conversation_id: ConversationId }];
   // goal 状态刷新事件：/goal 操作后由 useGoalCommand 发出（携带新快照），GoalStatusNotice 消费

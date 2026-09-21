@@ -17,9 +17,7 @@ use crate::session::ServerSession;
 use nomifun_api_types::{
     AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
     CloudImConversation, CloudImLogUploadResponse, CloudImMessage, CloudImMessageList,
-    CloudImSendMessageRequest, CloudBillingAirwallexSession, CloudBillingCouponList,
-    CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
-    CloudBillingPaymentChannel, CloudBillingPlan, VideoGrowthEventBatchRequest,
+    CloudImSendMessageRequest, VideoGrowthEventBatchRequest,
     VideoGrowthEventBatchResponse,
 };
 use nomifun_common::AppError;
@@ -274,6 +272,7 @@ impl CloudService {
     pub async fn website_entry(
         &self,
         language: Option<&str>,
+        landing: Option<&str>,
     ) -> Result<nomifun_api_types::CloudWebsiteEntryResponse, AppError> {
         let cfg = self.gateway_config();
         let website_url = cfg.server.effective_website_url();
@@ -293,87 +292,9 @@ impl CloudService {
                 &website_url,
                 token.as_deref(),
                 language.unwrap_or("en"),
+                crate::website::WebsiteLanding::from_query(landing),
             ),
         })
-    }
-
-    pub async fn list_billing_plans(&self) -> Result<Vec<CloudBillingPlan>, AppError> {
-        let (client, session) = self.im_client_and_session().await?;
-        let channel = self.gateway_config().server.channel;
-        client
-            .list_billing_plans(&session, &channel)
-            .await
-            .map_err(map_im_client_error)
-    }
-
-    pub async fn list_billing_credit_packs(&self) -> Result<Vec<CloudBillingCreditPack>, AppError> {
-        let (client, session) = self.im_client_and_session().await?;
-        client
-            .list_billing_credit_packs(&session)
-            .await
-            .map_err(map_im_client_error)
-    }
-
-    pub async fn list_billing_coupons(
-        &self,
-        item_type: Option<&str>,
-    ) -> Result<CloudBillingCouponList, AppError> {
-        let (client, session) = self.im_client_and_session().await?;
-        match client.list_billing_coupons(&session, item_type).await {
-            Ok(list) => Ok(list),
-            Err(ServerClientError::AuthRequired(msg)) => Err(AppError::Unauthorized(msg)),
-            Err(ServerClientError::Api { code, msg }) if code == 401 || code == 403 => {
-                Err(AppError::Unauthorized(msg))
-            }
-            Err(_) => Ok(CloudBillingCouponList { list: Vec::new() }),
-        }
-    }
-
-    pub async fn list_billing_payment_channels(
-        &self,
-        item_type: &str,
-        item_id: i64,
-        plan_period: Option<&str>,
-    ) -> Result<Vec<CloudBillingPaymentChannel>, AppError> {
-        let (client, session) = self.im_client_and_session().await?;
-        client
-            .list_billing_payment_channels(&session, item_type, item_id, plan_period)
-            .await
-            .map_err(map_im_client_error)
-    }
-
-    pub async fn create_billing_order(
-        &self,
-        mut request: CloudBillingCreateOrderRequest,
-    ) -> Result<CloudBillingOrder, AppError> {
-        request.pay_channel = "airwallex".into();
-        let (client, session) = self.im_client_and_session().await?;
-        client
-            .create_billing_order(&session, &request)
-            .await
-            .map_err(map_im_client_error)
-    }
-
-    pub async fn get_billing_order_by_no(
-        &self,
-        order_no: &str,
-    ) -> Result<CloudBillingOrder, AppError> {
-        let (client, session) = self.im_client_and_session().await?;
-        client
-            .get_billing_order_by_no(&session, order_no)
-            .await
-            .map_err(map_im_client_error)
-    }
-
-    pub async fn init_billing_airwallex(
-        &self,
-        order_no: &str,
-    ) -> Result<CloudBillingAirwallexSession, AppError> {
-        let (client, session) = self.im_client_and_session().await?;
-        client
-            .init_billing_airwallex(&session, order_no)
-            .await
-            .map_err(map_im_client_error)
     }
 
     pub async fn upload_video_growth_events(
@@ -683,7 +604,7 @@ mod tests {
     async fn website_entry_uses_default_host_and_language() {
         let dir = tempfile::tempdir().unwrap();
         let svc = CloudService::new(dir.path().to_path_buf()).unwrap();
-        let entry = svc.website_entry(Some("zh-CN")).await.unwrap();
+        let entry = svc.website_entry(Some("zh-CN"), None).await.unwrap();
         let parsed = url::Url::parse(&entry.url).unwrap();
         assert_eq!(parsed.host_str(), Some(FLOWY_WEBSITE_HOST));
         assert_eq!(
@@ -693,5 +614,24 @@ mod tests {
                 .map(|(_, v)| v.into_owned()),
             Some("zh".into())
         );
+        assert!(!parsed.query_pairs().any(|(k, _)| k == "tab"));
+        assert_eq!(parsed.fragment(), None);
+    }
+
+    #[tokio::test]
+    async fn website_entry_credits_landing_adds_tab_and_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CloudService::new(dir.path().to_path_buf()).unwrap();
+        let entry = svc
+            .website_entry(Some("zh-CN"), Some("credits"))
+            .await
+            .unwrap();
+        let parsed = url::Url::parse(&entry.url).unwrap();
+        let query: Vec<(String, String)> = parsed
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert!(query.contains(&("tab".into(), "credits".into())));
+        assert_eq!(parsed.fragment(), Some("pricing"));
     }
 }

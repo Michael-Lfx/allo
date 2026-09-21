@@ -159,14 +159,24 @@ export const useCompanion = (companionId: CompanionId | null) => {
   };
 };
 
+/** Process-local roster so a sider remount does not flash the empty CTA. */
+let companionsRosterCache: ICompanionWithStatus[] | null = null;
+
+const rememberCompanionsRoster = (next: ICompanionWithStatus[]): ICompanionWithStatus[] => {
+  companionsRosterCache = next;
+  return next;
+};
+
 /** The companion roster (profiles + statuses), kept fresh via WS events. */
 export const useCompanions = () => {
-  const [companions, setCompanions] = useState<ICompanionWithStatus[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [companions, setCompanions] = useState<ICompanionWithStatus[]>(
+    () => companionsRosterCache ?? [],
+  );
+  const [loading, setLoading] = useState(() => companionsRosterCache == null);
 
   const refresh = useCallback(async () => {
     try {
-      setCompanions(await ipcBridge.companion.listCompanions.invoke());
+      setCompanions(rememberCompanionsRoster(await ipcBridge.companion.listCompanions.invoke()));
     } finally {
       setLoading(false);
     }
@@ -182,10 +192,10 @@ export const useCompanions = () => {
         const p = await ipcBridge.companion.getCompanion.invoke({ companion_id: companionId });
         setCompanions((prev) => {
           const idx = prev.findIndex((x) => x.companion_id === p.companion_id);
-          if (idx === -1) return [...prev, p];
+          if (idx === -1) return rememberCompanionsRoster([...prev, p]);
           const next = prev.slice();
           next[idx] = p;
-          return next;
+          return rememberCompanionsRoster(next);
         });
       } catch {
         // Row may be gone (deleted between event and fetch) — resync the list.
@@ -200,7 +210,9 @@ export const useCompanions = () => {
     const unsubs = [
       ipcBridge.companion.onCompanionCreated.on((evt) => void refreshOne(evt.companion_id)),
       ipcBridge.companion.onCompanionDeleted.on((evt) =>
-        setCompanions((prev) => prev.filter((p) => p.companion_id !== evt.companion_id))
+        setCompanions((prev) =>
+          rememberCompanionsRoster(prev.filter((p) => p.companion_id !== evt.companion_id)),
+        )
       ),
       ipcBridge.companion.onConfigUpdated.on((evt) => {
         const pid = evt.companion_id ?? (evt.scope && evt.scope !== 'shared' ? evt.scope : undefined);

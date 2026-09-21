@@ -23,6 +23,7 @@ import { resolveMessageErrorRecoveryAction } from './messageErrorRecovery';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { useNavigate } from 'react-router-dom';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
 import {
   buildAgentErrorDiagnostic,
@@ -365,7 +366,19 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                             kind: recoveryAction.source,
                             source: 'error_recovery',
                           });
-                          navigate(recoveryAction.href);
+                          switch (recoveryAction.source) {
+                            case 'open_billing':
+                              void openOfficialWebsiteCredits();
+                              return;
+                            case 'change_model':
+                            case 'fix_agent_config':
+                              navigate(recoveryAction.href);
+                              return;
+                            default: {
+                              const _exhaustive: never = recoveryAction;
+                              return _exhaustive;
+                            }
+                          }
                         }}
                       >
                         {recoveryActionLabel}

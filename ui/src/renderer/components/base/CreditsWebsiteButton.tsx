@@ -2,8 +2,7 @@ import { ShoppingCart } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
-import { BILLING_PATH } from '@renderer/pages/billing/billingAuth';
+import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 
 type CreditsWebsiteButtonProps = {
   /** xs = 侧栏弹层（12px 图标）；sm = 设置页头（14px 图标）。 */
@@ -12,15 +11,14 @@ type CreditsWebsiteButtonProps = {
 };
 
 /**
- * 积分余额旁的购物车按钮：进入隐藏的应用内结账页。
+ * 积分余额旁的购物车按钮：打开官网积分增值 tab（带云 JWT 自动登录）。
  */
 const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({ size = 'sm', className }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const label = t('billing.openBilling');
 
   const openBilling = () => {
-    navigate(BILLING_PATH);
+    void openOfficialWebsiteCredits();
   };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
