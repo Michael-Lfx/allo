@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test';
 import { parseConversationId } from '@/common/types/ids';
 import type { IMessagePlan, TMessage } from '@/common/chat/chatLib';
-import { derivePinnedPlan } from './pinnedPlanModel';
+import { derivePinnedPlan, displayPlanEntries, planDisplayStatus } from './pinnedPlanModel';
 
 type PlanEntry = IMessagePlan['content']['entries'][number];
 
@@ -89,5 +89,81 @@ describe('derivePinnedPlan', () => {
     expect(result!.done).toBe(1);
     expect(result!.total).toBe(2);
     expect(result!.active).toBe(false);
+  });
+
+  test('treats a finished incomplete plan as incomplete, not in progress', () => {
+    const result = derivePinnedPlan([
+      planMsg(
+        [
+          { content: 'done', status: 'completed' },
+          { content: 'still open', status: 'in_progress' },
+          { content: 'later', status: 'pending' },
+        ],
+        'p-idle',
+        'finish'
+      ),
+    ]);
+    expect(result).not.toBeNull();
+    expect(planDisplayStatus(result!)).toBe('incomplete');
+    expect(displayPlanEntries(result!).map((entry) => entry.status)).toEqual([
+      'completed',
+      'pending',
+      'pending',
+    ]);
+  });
+
+  test('keeps in_progress live while the owning turn is active', () => {
+    const result = derivePinnedPlan([
+      planMsg(
+        [
+          { content: 'working', status: 'in_progress' },
+          { content: 'later', status: 'pending' },
+        ],
+        'p-live'
+      ),
+    ]);
+    expect(result).not.toBeNull();
+    expect(planDisplayStatus(result!)).toBe('in_progress');
+    expect(displayPlanEntries(result!)[0].status).toBe('in_progress');
+  });
+
+  test('hides a fully completed plan so it is not the next request\'s live queue', () => {
+    expect(
+      derivePinnedPlan([
+        planMsg(
+          [
+            { content: '调研 Eino', status: 'completed' },
+            { content: '输出架构文档', status: 'completed' },
+            { content: '回复骨架', status: 'completed' },
+          ],
+          'p-round-1',
+          'finish'
+        ),
+        textMsg('round-2-implement'),
+      ])
+    ).toBeNull();
+  });
+
+  test('hides a fully completed plan even while its owning turn is still open', () => {
+    expect(
+      derivePinnedPlan([
+        planMsg(
+          [
+            { content: 'a', status: 'completed' },
+            { content: 'b', status: 'completed' },
+          ],
+          'p-just-finished'
+        ),
+      ])
+    ).toBeNull();
+  });
+
+  test('does not resurrect an older incomplete plan after a completed snapshot', () => {
+    expect(
+      derivePinnedPlan([
+        planMsg([{ content: 'old leftover', status: 'pending' }], 'p-old'),
+        planMsg([{ content: 'done', status: 'completed' }], 'p-new', 'finish'),
+      ])
+    ).toBeNull();
   });
 });

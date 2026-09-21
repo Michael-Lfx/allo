@@ -12,16 +12,16 @@ use crate::edit_hints::infer_edit_failure_kind;
 use crate::env::CodingEnvContext;
 use crate::profile::TaskProfile;
 use crate::progress::{
-    CODING_EXPLORE_NUDGE, CODING_PLAN_HARD_STOP, CODING_PLAN_TIMEOUT_NUDGE, CODING_VERIFY_NUDGE,
-    CodingProgressAction, CodingProgressGuard, ProgressObserveParams, explore_budget_nudge_text,
-    explore_hard_stop_text, is_recon_tool,
+    CODING_EXPLORE_NUDGE, CODING_PLAN_HARD_STOP, CODING_PLAN_TIMEOUT_NUDGE, CODING_STALE_PLAN_NUDGE,
+    CODING_VERIFY_NUDGE, PLAN_STALE_MUTATION_THRESHOLD, CodingProgressAction, CodingProgressGuard,
+    ProgressObserveParams, explore_budget_nudge_text, explore_hard_stop_text, is_recon_tool,
 };
 use crate::read_repeat::{
     CODING_READ_REPEAT_HARD_STOP, CODING_READ_REPEAT_NUDGE, CODING_UNCHANGED_STUB_NUDGE,
     DEFAULT_READ_REPEAT_HARD, DEFAULT_READ_REPEAT_SOFT, ReadRepeatAction, ReadRepeatTracker,
 };
 use crate::todo_continuation::{
-    parse_plan_update_content, TodoContinuationMode, TodoContinuationTracker,
+    parse_plan_update_content, PlanSnapshot, TodoContinuationMode, TodoContinuationTracker,
 };
 use crate::tools::advertise_tool;
 use crate::verify::{is_mutating_tool, looks_like_verification_command};
@@ -273,6 +273,10 @@ pub struct CodingHarness {
     constitution_sent_this_request: bool,
     /// When set, the next provider turn advertises no tools and must EndTurn.
     forced_finalize: Option<String>,
+    /// Successful file mutations since the last accepted `update_plan`.
+    mutations_since_plan: usize,
+    /// One-shot latch so a stale checklist nudges once until the model snapshots again.
+    stale_plan_nudge_sent: bool,
 }
 
 impl CodingHarness {
@@ -294,6 +298,8 @@ impl CodingHarness {
             trivial_mutation: false,
             constitution_sent_this_request: false,
             forced_finalize: None,
+            mutations_since_plan: 0,
+            stale_plan_nudge_sent: false,
         }
     }
 
@@ -326,6 +332,8 @@ impl CodingHarness {
         self.continuations = ContinuationBudget::new(self.config.max_system_continuations);
         self.constitution_sent_this_request = false;
         self.forced_finalize = None;
+        self.mutations_since_plan = 0;
+        self.stale_plan_nudge_sent = false;
     }
 
     pub fn reset_progress(&mut self) {
@@ -354,6 +362,20 @@ impl CodingHarness {
 
     pub fn take_forced_finalize(&mut self) -> Option<String> {
         self.forced_finalize.take()
+    }
+
+    /// Last accepted plan snapshot if it still has uncompleted steps.
+    ///
+    /// Forced finalize clears tools, including `update_plan`, so this is the
+    /// only remaining machine evidence of open work to inject into the closing
+    /// instruction.
+    pub fn remaining_plan(&self) -> Option<PlanSnapshot> {
+        let latest = self.todo.latest();
+        if latest.is_empty() || latest.all_completed() {
+            None
+        } else {
+            Some(latest.clone())
+        }
     }
 
     pub fn set_env(&mut self, env: Option<CodingEnvContext>) {
@@ -512,6 +534,8 @@ impl CodingHarness {
         let mut had_successful_verification = false;
         let mut had_file_mutation = false;
         let mut had_any_successful_result = false;
+        let mut had_plan_update = false;
+        let mut mutation_count = 0usize;
         let mut edit_action = EditConvergeAction::None;
         let mut hard_stop: Option<String> = None;
         let mut texts: Vec<String> = Vec::new();
@@ -524,6 +548,7 @@ impl CodingHarness {
             }
             if flags.file_mutation {
                 had_file_mutation = true;
+                mutation_count = mutation_count.saturating_add(1);
             }
             if flags.verification {
                 had_successful_verification = true;
@@ -533,6 +558,7 @@ impl CodingHarness {
                 if let Some(content) = o.result_content.as_deref() {
                     if let Some(snap) = parse_plan_update_content(content) {
                         self.todo.observe_plan(snap);
+                        had_plan_update = true;
                     }
                 }
             }
@@ -700,6 +726,24 @@ impl CodingHarness {
             texts.push(CODING_VERIFY_NUDGE.to_string());
         }
 
+        if had_plan_update {
+            self.mutations_since_plan = 0;
+            self.stale_plan_nudge_sent = false;
+        } else if mutation_count > 0 {
+            self.mutations_since_plan = self
+                .mutations_since_plan
+                .saturating_add(mutation_count);
+            let latest = self.todo.latest();
+            if !self.stale_plan_nudge_sent
+                && !latest.is_empty()
+                && !latest.all_completed()
+                && self.mutations_since_plan >= PLAN_STALE_MUTATION_THRESHOLD
+            {
+                self.stale_plan_nudge_sent = true;
+                texts.push(CODING_STALE_PLAN_NUDGE.to_string());
+            }
+        }
+
         // Plan-mode hard stop may have been set in before_provider_turn; surface it.
         if hard_stop.is_none() && self.progress.force_allow_finish() {
             // Explore/edit already set hard_stop when escalating; plan timeout
@@ -790,6 +834,7 @@ pub struct ToolSuccessFlags {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::PLAN_STALE_MUTATION_THRESHOLD;
 
     fn edit_ok() -> ToolCallOutcome {
         ToolCallOutcome {
@@ -981,7 +1026,48 @@ mod tests {
     }
 
     #[test]
-    fn lifetime_recon_survives_edits() {
+    fn lifetime_recon_hard_stop_before_any_edit() {
+        let mut h = CodingHarness::new(
+            None,
+            CodingConfig {
+                explore_budget: 20,
+                explore_hard_stop: 20,
+                serial_recon_budget: 20,
+                serial_recon_hard_stop: 20,
+                recon_lifetime_budget: 3,
+                recon_lifetime_hard_stop: 4,
+                read_repeat_soft: 20,
+                read_repeat_hard: 20,
+                ..Default::default()
+            },
+        );
+        let read = |i: usize| ToolCallOutcome {
+            name: "Read".into(),
+            success: true,
+            file_path: Some(format!("src/g{i}.rs")),
+            result_content: Some(format!("{i}:abcd→body")),
+            ..Default::default()
+        };
+        let _ = h.after_tool_turn(&[read(0)]);
+        let _ = h.after_tool_turn(&[read(1)]);
+        let soft = h.after_tool_turn(&[read(2)]);
+        assert!(
+            soft.texts.iter().any(|t| t.contains("recon lifetime")),
+            "got texts: {:?}",
+            soft.texts
+        );
+        let hard = h.after_tool_turn(&[read(3)]);
+        assert!(
+            hard.hard_stop
+                .as_deref()
+                .is_some_and(|t| t.contains("lifetime hard-stop")),
+            "got hard_stop: {:?}",
+            hard.hard_stop
+        );
+    }
+
+    #[test]
+    fn lifetime_recon_does_not_abort_after_edits() {
         let mut h = CodingHarness::new(
             None,
             CodingConfig {
@@ -1005,21 +1091,19 @@ mod tests {
         };
         let _ = h.after_tool_turn(&[read(0)]);
         let _ = h.after_tool_turn(&[edit_ok()]);
-        let _ = h.after_tool_turn(&[read(1)]);
-        let soft = h.after_tool_turn(&[read(2)]);
-        assert!(
-            soft.texts.iter().any(|t| t.contains("recon lifetime")),
-            "got texts: {:?}",
-            soft.texts
-        );
-        let hard = h.after_tool_turn(&[read(3)]);
-        assert!(
-            hard.hard_stop
-                .as_deref()
-                .is_some_and(|t| t.contains("lifetime hard-stop")),
-            "got hard_stop: {:?}",
-            hard.hard_stop
-        );
+        for i in 1..8 {
+            let n = h.after_tool_turn(&[read(i)]);
+            assert!(
+                n.hard_stop.is_none(),
+                "lifetime must not abort after a file mutation, got {:?}",
+                n.hard_stop
+            );
+            assert!(
+                n.texts.iter().all(|t| !t.contains("recon lifetime")),
+                "lifetime nudge must retire after a file mutation, got {:?}",
+                n.texts
+            );
+        }
     }
 
     #[test]
@@ -1033,6 +1117,80 @@ mod tests {
             FinishDecision::ContinueWithNudge { .. }
         ));
         assert_eq!(h.on_natural_end(), FinishDecision::Allow);
+    }
+
+    #[test]
+    fn stale_plan_nudges_once_after_enough_mutations_without_a_new_snapshot() {
+        let mut h = CodingHarness::with_defaults(None);
+        let _ = h.after_tool_turn(&[plan_ok(
+            r#"{"kind":"plan_update","entries":[{"content":"A","status":"in_progress"},{"content":"B","status":"pending"}]}"#,
+        )]);
+        for _ in 0..(PLAN_STALE_MUTATION_THRESHOLD - 1) {
+            let n = h.after_tool_turn(&[edit_ok()]);
+            assert!(
+                n.texts.iter().all(|t| !t.contains("plan snapshot is stale")),
+                "must not tax every file mutation, got {:?}",
+                n.texts
+            );
+        }
+        let nudged = h.after_tool_turn(&[edit_ok()]);
+        assert!(
+            nudged
+                .texts
+                .iter()
+                .any(|t| t.contains("plan snapshot is stale")),
+            "missed-milestone floor must fire, got {:?}",
+            nudged.texts
+        );
+        let again = h.after_tool_turn(&[edit_ok()]);
+        assert!(
+            again.texts.iter().all(|t| !t.contains("plan snapshot is stale")),
+            "stale-plan nudge is one-shot until the next snapshot, got {:?}",
+            again.texts
+        );
+        let _ = h.after_tool_turn(&[plan_ok(
+            r#"{"kind":"plan_update","entries":[{"content":"A","status":"completed"},{"content":"B","status":"in_progress"}]}"#,
+        )]);
+        for _ in 0..(PLAN_STALE_MUTATION_THRESHOLD - 1) {
+            let n = h.after_tool_turn(&[edit_ok()]);
+            assert!(n.texts.iter().all(|t| !t.contains("plan snapshot is stale")));
+        }
+        let after_refresh = h.after_tool_turn(&[edit_ok()]);
+        assert!(
+            after_refresh
+                .texts
+                .iter()
+                .any(|t| t.contains("plan snapshot is stale")),
+            "a new snapshot must re-arm the missed-milestone floor, got {:?}",
+            after_refresh.texts
+        );
+    }
+
+    #[test]
+    fn stale_plan_does_not_nudge_when_there_is_no_plan() {
+        let mut h = CodingHarness::with_defaults(None);
+        for _ in 0..(PLAN_STALE_MUTATION_THRESHOLD + 1) {
+            let n = h.after_tool_turn(&[edit_ok()]);
+            assert!(n.texts.iter().all(|t| !t.contains("plan snapshot is stale")));
+        }
+    }
+
+    #[test]
+    fn forced_finalize_keeps_incomplete_plan_for_closing_instruction() {
+        let mut h = CodingHarness::with_defaults(None);
+        let _ = h.after_tool_turn(&[plan_ok(
+            r#"{"kind":"plan_update","entries":[{"content":"A","status":"in_progress"},{"content":"B","status":"pending"}]}"#,
+        )]);
+        h.begin_forced_finalize("Coding lifetime recon hard-stop".into());
+        let remaining = h.remaining_plan().expect("open plan must survive hard-stop");
+        assert_eq!(remaining.pending().len(), 2);
+        let text = crate::finalize::forced_finalize_instruction_for_plan(
+            h.forced_finalize_reason().expect("finalize scheduled"),
+            Some(&remaining),
+        );
+        assert!(text.contains("A"));
+        assert!(text.contains("B"));
+        assert!(text.contains("Do not tell the user the task is finished"));
     }
 
     #[test]

@@ -40,6 +40,8 @@ pub fn looks_like_verification_command(command: &str) -> bool {
         "pnpm test",
         "bun test",
         "go test",
+        "go build",
+        "go vet",
         "mvn test",
         "gradle test",
         "make test",
@@ -69,6 +71,8 @@ mod tests {
         assert!(looks_like_verification_command("cargo test -p foo"));
         assert!(looks_like_verification_command("bun run check:quick"));
         assert!(looks_like_verification_command("bunx biome check ."));
+        assert!(looks_like_verification_command("go build ./..."));
+        assert!(looks_like_verification_command("go vet ./internal/..."));
         assert!(!looks_like_verification_command("ls -la"));
     }
 }

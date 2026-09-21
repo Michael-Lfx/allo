@@ -1873,13 +1873,17 @@ impl AgentEngine {
                     );
                     harness.begin_forced_finalize(reason.to_string());
                 }
-                if let Some(reason) = harness.forced_finalize_reason() {
+                if let Some(reason) = harness.forced_finalize_reason().map(str::to_owned) {
                     // Empty tools JSON is an accepted one-time miss. Do not
                     // freeze the empty list; the next non-finalize request
                     // restores `frozen_provider_tools`.
                     tools.clear();
                     tool_authority = ProviderToolAuthority::from_request_tools(&tools);
-                    turn_tail_extras.push(nomi_coding::forced_finalize_instruction(reason));
+                    let remaining = harness.remaining_plan();
+                    turn_tail_extras.push(nomi_coding::forced_finalize_instruction_for_plan(
+                        &reason,
+                        remaining.as_ref(),
+                    ));
                 }
                 let last_user_has_text = self.messages.last().is_some_and(|m| {
                     m.role == Role::User

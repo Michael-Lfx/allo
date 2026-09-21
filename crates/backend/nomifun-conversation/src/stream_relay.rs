@@ -33,7 +33,8 @@ use nomifun_db::{
 use nomifun_db::models::MessageRow;
 use nomifun_realtime::UserEventSink;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex as AsyncMutex, Notify, broadcast, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, Notify, broadcast, mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 /// Number of text chunks to accumulate before flushing to the database.
@@ -1883,6 +1884,50 @@ pub struct StreamRelay {
     error_provider_id: Option<String>,
 }
 
+/// Drain the lossy agent broadcast on a dedicated task so SQLite persist
+/// in the relay loop cannot wrap the ring and skip events. Lagged remains
+/// the last-resort terminal if this pump itself falls behind.
+struct BroadcastEventPump {
+    rx: mpsc::UnboundedReceiver<Result<AgentStreamEvent, broadcast::error::RecvError>>,
+    join: JoinHandle<()>,
+}
+
+impl BroadcastEventPump {
+    fn spawn(mut broadcast_rx: broadcast::Receiver<AgentStreamEvent>) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let join = tokio::spawn(async move {
+            loop {
+                let result = broadcast_rx.recv().await;
+                let stop = matches!(
+                    result,
+                    Err(broadcast::error::RecvError::Closed)
+                        | Err(broadcast::error::RecvError::Lagged(_))
+                );
+                if tx.send(result).is_err() {
+                    break;
+                }
+                if stop {
+                    break;
+                }
+            }
+        });
+        Self { rx, join }
+    }
+
+    async fn recv(&mut self) -> Result<AgentStreamEvent, broadcast::error::RecvError> {
+        self.rx
+            .recv()
+            .await
+            .unwrap_or(Err(broadcast::error::RecvError::Closed))
+    }
+}
+
+impl Drop for BroadcastEventPump {
+    fn drop(&mut self) {
+        self.join.abort();
+    }
+}
+
 impl StreamRelay {
     /// Await one ordered stream projection to a definitive repository result.
     ///
@@ -2135,11 +2180,12 @@ impl StreamRelay {
 
     async fn consume_inner(
         self,
-        mut rx: broadcast::Receiver<AgentStreamEvent>,
+        rx: broadcast::Receiver<AgentStreamEvent>,
         mut send_error_rx: Option<oneshot::Receiver<Result<(), AgentSendError>>>,
     ) -> RelayOutcome {
         let started_at = now_ms();
         info!("StreamRelay started");
+        let mut event_rx = BroadcastEventPump::spawn(rx);
 
         let mut full_text_buffer = String::new();
         // Robot threads only (see `robot_session`): withholds at most one
@@ -2168,6 +2214,7 @@ impl StreamRelay {
             Vec<nomifun_ai_agent::protocol::events::tool_call::ToolGroupEntry>,
         > = HashMap::new();
         let mut active_plan_ids: HashSet<String> = HashSet::new();
+        let mut last_plan_payloads: HashMap<String, PlanEventData> = HashMap::new();
         let mut active_agent_status: Option<nomifun_ai_agent::protocol::events::AgentStatusEventData> = None;
         let mut first_agent_event_logged = false;
         let mut first_visible_output_logged = false;
@@ -2207,14 +2254,14 @@ impl StreamRelay {
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => Ok(Self::cancelled_finish_event()),
-                        recv = rx.recv() => recv,
+                        recv = event_rx.recv() => recv,
                     }
                 }
                 (Some(cancellation), false) => {
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => Ok(Self::cancelled_finish_event()),
-                        recv = rx.recv() => recv,
+                        recv = event_rx.recv() => recv,
                         send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
                             send_error_done = true;
                             match send_error {
@@ -2237,10 +2284,10 @@ impl StreamRelay {
                         }
                     }
                 }
-                (None, true) => rx.recv().await,
+                (None, true) => event_rx.recv().await,
                 (None, false) => {
                     tokio::select! {
-                        recv = rx.recv() => recv,
+                        recv = event_rx.recv() => recv,
                         send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
                             send_error_done = true;
                             match send_error {
@@ -2282,7 +2329,7 @@ impl StreamRelay {
 
             match recv_result {
                 Ok(mut event) => {
-                    // Cancellation is authoritative even if `rx.recv()` won
+                    // Cancellation is authoritative even if `event_rx.recv()` won
                     // just before the token fired. Re-check after receive so a
                     // concurrently queued ordinary Finish cannot execute
                     // middleware/cron or be reported as successful.
@@ -2781,6 +2828,7 @@ impl StreamRelay {
                             }
                             self.finalize_active_plans(
                                 &mut active_plan_ids,
+                                &mut last_plan_payloads,
                                 Self::plan_terminal_status(),
                             )
                             .await;
@@ -3466,12 +3514,13 @@ impl StreamRelay {
                                 entry.get("status").and_then(serde_json::Value::as_str) == Some("completed")
                             }) {
                                 active_plan_ids.remove(&plan_id);
-                            } else {
-                                remember_bounded(
-                                    &mut active_plan_ids,
-                                    plan_id.clone(),
-                                    "active_plan",
-                                );
+                                last_plan_payloads.remove(&plan_id);
+                            } else if remember_bounded(
+                                &mut active_plan_ids,
+                                plan_id.clone(),
+                                "active_plan",
+                            ) {
+                                last_plan_payloads.insert(plan_id.clone(), data.clone());
                             }
                             self.forward_to_websocket_with_msg_id(&plan_id, &event);
                             let _ = self
@@ -3637,6 +3686,7 @@ impl StreamRelay {
                             .await;
                         self.finalize_active_plans(
                             &mut active_plan_ids,
+                            &mut last_plan_payloads,
                             Self::plan_terminal_status(),
                         )
                         .await;
@@ -5639,6 +5689,10 @@ impl StreamRelay {
     /// `finish`. What actually became of the plan is carried by its own
     /// `entries`, not by this column.
     ///
+    /// `in_progress` means "the agent is working on this step now". That claim
+    /// dies with the turn, so finalize rewrites leftover `in_progress` entries
+    /// to `pending` instead of inventing `completed`.
+    ///
     /// This used to share [`Self::agent_status_terminal_status`], so an
     /// enclosing turn that was cancelled / truncated / failed stamped `error`
     /// onto plans that had not failed at all — their `entries` still read
@@ -5649,13 +5703,60 @@ impl StreamRelay {
         "finish"
     }
 
-    async fn finalize_active_plans(&self, active_plan_ids: &mut HashSet<String>, status: &str) {
+    /// Host rewrite: a step cannot stay `in_progress` after the agent stopped.
+    /// Returns whether any entry changed.
+    fn pause_in_progress_plan_entries(entries: &mut [serde_json::Value]) -> bool {
+        let mut changed = false;
+        for entry in entries {
+            let Some(status) = entry.get("status").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if status != "in_progress" {
+                continue;
+            }
+            if let Some(object) = entry.as_object_mut() {
+                object.insert("status".to_owned(), json!("pending"));
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    async fn finalize_active_plans(
+        &self,
+        active_plan_ids: &mut HashSet<String>,
+        last_plan_payloads: &mut HashMap<String, PlanEventData>,
+        status: &str,
+    ) {
         if active_plan_ids.len() > MAX_TERMINAL_ACTIVE_ITEMS {
             warn!(count = active_plan_ids.len(), "Truncating active plans during terminal cleanup");
         }
         for plan_id in active_plan_ids.drain().take(MAX_TERMINAL_ACTIVE_ITEMS) {
+            let mut content = None;
+            if let Some(mut payload) = last_plan_payloads.remove(&plan_id) {
+                if Self::pause_in_progress_plan_entries(&mut payload.entries) {
+                    let session_id = payload
+                        .session_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|session_id| !session_id.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| self.root_turn_id.clone());
+                    content = Some(
+                        json!({
+                            "session_id": session_id,
+                            "entries": payload.entries,
+                        })
+                        .to_string(),
+                    );
+                    self.forward_to_websocket_with_msg_id(
+                        &plan_id,
+                        &AgentStreamEvent::Plan(payload),
+                    );
+                }
+            }
             let update = nomifun_db::MessageRowUpdate {
-                content: None,
+                content,
                 status: Some(Some(status.to_owned())),
                 hidden: None,
             };
@@ -5668,6 +5769,7 @@ impl StreamRelay {
                 );
             }
         }
+        last_plan_payloads.clear();
     }
 
     fn take_failed_tool_calls(
@@ -8657,6 +8759,100 @@ mod tests {
         assert!(tx.send(AgentStreamEvent::Finish(FinishEventData::default())).is_err());
     }
 
+    #[tokio::test]
+    async fn broadcast_event_pump_keeps_events_when_consumer_is_slow() {
+        let (tx, rx) = broadcast::channel(8);
+        let mut pump = BroadcastEventPump::spawn(rx);
+        let producer = tokio::spawn(async move {
+            for i in 0..64 {
+                tx.send(AgentStreamEvent::Text(TextEventData {
+                    content: format!("chunk-{i}"),
+                }))
+                .expect("broadcast still has the pump receiver");
+                tokio::task::yield_now().await;
+            }
+            tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+                .expect("finish still has the pump receiver");
+        });
+
+        let mut texts = 0usize;
+        loop {
+            tokio::task::yield_now().await;
+            match pump.recv().await {
+                Ok(AgentStreamEvent::Text(_)) => texts += 1,
+                Ok(AgentStreamEvent::Finish(_)) => break,
+                Ok(_) => {}
+                Err(err) => panic!("pump must not lag behind a slow consumer: {err:?}"),
+            }
+        }
+        producer.await.expect("producer");
+        assert_eq!(texts, 64);
+    }
+
+    #[tokio::test]
+    async fn slow_persist_does_not_lag_skip_a_bounded_broadcast() {
+        let repo = Arc::new(RecordingRepo::new());
+        repo.set_block_message_inserts(true);
+        let bus = Arc::new(TestUserEventBus::new(256));
+        let (tx, _) = broadcast::channel(8);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        let relay_task = tokio::spawn(relay.consume(rx));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        for _ in 0..FLUSH_INTERVAL {
+            tx.send(AgentStreamEvent::Text(TextEventData {
+                content: "a".into(),
+            }))
+            .expect("pump must be subscribed before the first flush");
+            tokio::task::yield_now().await;
+        }
+        for _ in 0..256 {
+            if repo.message_insert_attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            repo.message_insert_attempts() > 0,
+            "relay must be blocked in the first text persist"
+        );
+
+        for i in 0..64 {
+            tx.send(AgentStreamEvent::Text(TextEventData {
+                content: format!("burst-{i}"),
+            }))
+            .expect("broadcast send during slow persist");
+            tokio::task::yield_now().await;
+        }
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .expect("finish still has the pump receiver");
+
+        for _ in 0..32 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !relay_task.is_finished(),
+            "slow persist must not Lagged-terminate the turn"
+        );
+
+        repo.set_block_message_inserts(false);
+        let outcome = tokio::time::timeout(Duration::from_secs(2), relay_task)
+            .await
+            .expect("relay completed after persist unblocked")
+            .expect("relay task");
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+    }
+
     // UC-2b: a relay wired with runtime state accumulates the TurnCompleted token
     // usage (input + output) into the conversation's running total — the seam the
     // owning execution attempt reads the accumulated total after settle.
@@ -8801,6 +8997,15 @@ mod tests {
             terminal_update.status.as_ref().map(|status| status.as_deref()),
             Some(Some("finish"))
         );
+        let paused: serde_json::Value = serde_json::from_str(
+            terminal_update
+                .content
+                .as_deref()
+                .expect("turn end must pause leftover in_progress steps"),
+        )
+        .unwrap();
+        assert_eq!(paused["entries"][0]["status"], "completed");
+        assert_eq!(paused["entries"][1]["status"], "pending");
         assert!(outcome.emitted_response);
     }
 
@@ -8857,6 +9062,15 @@ mod tests {
             Some(Some("finish")),
             "a cancelled turn does not make the plan itself fail"
         );
+        let paused: serde_json::Value = serde_json::from_str(
+            terminal
+                .1
+                .content
+                .as_deref()
+                .expect("cancelled turn must pause leftover in_progress steps"),
+        )
+        .unwrap();
+        assert_eq!(paused["entries"][0]["status"], "pending");
     }
 
     /// 药丸是**另一回事**：异常收尾确实是 agent 的错误状态，不能被上面那次拆分带偏。
@@ -8876,6 +9090,20 @@ mod tests {
 
         // 计划侧不再看事件，任何收尾都只代表「不再活跃」。
         assert_eq!(StreamRelay::plan_terminal_status(), "finish");
+    }
+
+    #[test]
+    fn pause_in_progress_plan_entries_does_not_invent_completions() {
+        let mut entries = vec![
+            json!({ "content": "done", "status": "completed" }),
+            json!({ "content": "now", "status": "in_progress" }),
+            json!({ "content": "later", "status": "pending" }),
+        ];
+        assert!(StreamRelay::pause_in_progress_plan_entries(&mut entries));
+        assert_eq!(entries[0]["status"], "completed");
+        assert_eq!(entries[1]["status"], "pending");
+        assert_eq!(entries[2]["status"], "pending");
+        assert!(!StreamRelay::pause_in_progress_plan_entries(&mut entries));
     }
 
     #[tokio::test]

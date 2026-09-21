@@ -5,15 +5,49 @@
 //! tags as plain text. That markup is machine protocol, not a reply — strip
 //! it before the host shows the turn to the user.
 
+use crate::todo_continuation::PlanSnapshot;
+
 /// Turn-tail instruction for a forced finalize provider pass (no tools).
 pub fn forced_finalize_instruction(reason: &str) -> String {
-    format!(
+    forced_finalize_instruction_for_plan(reason, None)
+}
+
+/// Same as [`forced_finalize_instruction`], plus remaining plan steps when the
+/// last accepted `update_plan` snapshot is still incomplete.
+///
+/// Tools are cleared on this pass, so the model cannot close the checklist.
+/// Remaining steps are facts it already declared — omitting them is how a
+/// hard-stop reply claimed "done" while the UI still showed open todos.
+pub fn forced_finalize_instruction_for_plan(
+    reason: &str,
+    remaining: Option<&PlanSnapshot>,
+) -> String {
+    let mut text = format!(
         "{reason}\n\n\
          Write a concise final reply for the user now in plain prose (markdown \
          is fine). Do not call tools. Do not emit XML/HTML tags, `<tool_call>` \
          markup, `<summary>` blocks, JSON tool envelopes, or internal policy \
          jargon — only what the user should read."
-    )
+    );
+    let Some(plan) = remaining.filter(|plan| !plan.is_empty() && !plan.all_completed()) else {
+        return text;
+    };
+    let pending = plan.pending();
+    let done = plan.steps.len() - pending.len();
+    let total = plan.steps.len();
+    let list = pending
+        .iter()
+        .enumerate()
+        .map(|(i, step)| format!("  {}. [{}] {}", i + 1, step.status, step.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.push_str(&format!(
+        "\n\nThe declared plan still has {} uncompleted step(s) ({done}/{total} done):\n{list}\n\n\
+         Do not tell the user the task is finished. Report what actually completed, \
+         what is blocked, and the remaining steps. Do not invent completions.",
+        pending.len()
+    ));
+    text
 }
 
 /// Friendly fallback when the finalize pass produces no usable prose.
@@ -160,5 +194,34 @@ mod tests {
         assert!(text.contains("plain prose"));
         assert!(text.contains("<tool_call>"));
         assert!(text.contains("Coding explore hard-stop"));
+        assert!(!text.contains("uncompleted step"));
+    }
+
+    #[test]
+    fn instruction_lists_remaining_plan_and_forbids_claiming_done() {
+        let remaining = PlanSnapshot {
+            steps: vec![
+                crate::todo_continuation::PlanStepView {
+                    content: "Inspect renderer".into(),
+                    status: "completed".into(),
+                },
+                crate::todo_continuation::PlanStepView {
+                    content: "Write the patch".into(),
+                    status: "in_progress".into(),
+                },
+                crate::todo_continuation::PlanStepView {
+                    content: "Verify build".into(),
+                    status: "pending".into(),
+                },
+            ],
+        };
+        let text = forced_finalize_instruction_for_plan(
+            "Coding lifetime recon hard-stop",
+            Some(&remaining),
+        );
+        assert!(text.contains("Write the patch"));
+        assert!(text.contains("Verify build"));
+        assert!(text.contains("Do not tell the user the task is finished"));
+        assert!(!text.contains("Inspect renderer"));
     }
 }

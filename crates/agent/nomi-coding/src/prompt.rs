@@ -17,8 +17,10 @@ A message with a single Read or Grep is a failed orientation. Do not think-then-
 Preamble at most 1–2 sentences; skip it for trivial reads.
 2. Change: prefer **Edit (anchor mode)** or Write. Read each **unread range once** before the \
 first Edit of that range so you can copy `line:hash` anchors verbatim.
-3. Track: for non-trivial multi-step work, keep `update_plan` honest; mark steps \
-completed as you finish them. Complex work should ExitPlanMode with a PlanArtifact \
+3. Track: for non-trivial multi-step work, keep `update_plan` honest; mark a \
+milestone completed in one snapshot before starting the next. Do not leave the \
+user-visible checklist on an old `in_progress` step after you have moved on. \
+Complex work should ExitPlanMode with a PlanArtifact \
 (goal, scope, verify commands) before editing.
 4. Verify once at the end: after the edits that satisfy the ask, call `verify_change` \
 **one time** with the exact `command` (cargo/bun/npm/…). Do not verify after every tiny Edit. \

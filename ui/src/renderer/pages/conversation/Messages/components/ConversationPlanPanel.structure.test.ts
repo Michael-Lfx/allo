@@ -22,7 +22,10 @@ describe('ConversationPlanPanel workspace tab', () => {
     expect(panel.includes("listTestId='conversation-plan-list'")).toBe(true);
     expect(panel.includes("t('conversation.workspace.plan.tab'")).toBe(false);
     expect(panel.includes("t('conversation.workspace.plan.inProgress'")).toBe(true);
+    expect(panel.includes("t('conversation.workspace.plan.incomplete'")).toBe(true);
     expect(panel.includes("t('conversation.workspace.plan.completed'")).toBe(true);
+    expect(panel.includes('planDisplayStatus')).toBe(true);
+    expect(panel.includes('displayPlanEntries')).toBe(true);
     expect(panel.includes("t('conversation.workspace.plan.empty'")).toBe(true);
     expect(panel.includes('<Empty')).toBe(true);
     expect(panel.includes("variant='panel'")).toBe(true);

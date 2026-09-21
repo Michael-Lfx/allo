@@ -2066,6 +2066,7 @@ export type I18nKey =
   | 'conversation.workspace.plan.empty'
   | 'conversation.workspace.plan.emptyDescription'
   | 'conversation.workspace.plan.inProgress'
+  | 'conversation.workspace.plan.incomplete'
   | 'conversation.workspace.plan.tab'
   | 'conversation.workspace.preview.errors.notFound'
   | 'conversation.workspace.preview.errors.outsideSandbox'

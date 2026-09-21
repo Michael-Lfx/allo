@@ -9,6 +9,7 @@ import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useConversationPlan } from './conversationPlanContext';
 import PlanTodoList from './PlanTodoList';
+import { displayPlanEntries, planDisplayStatus } from './pinnedPlanModel';
 import styles from './planTodoList.module.css';
 
 const ConversationPlanPanel: React.FC = () => {
@@ -16,6 +17,7 @@ const ConversationPlanPanel: React.FC = () => {
   const { plan } = useConversationPlan();
   const inProgressRowRef = useRef<HTMLDivElement | null>(null);
 
+  // useEffect必要性：浏览器 scrollIntoView；目的：进行中步骤进入视口。ahooks 无滚动原语。
   useEffect(() => {
     const row = inProgressRowRef.current;
     if (!row) return;
@@ -45,10 +47,13 @@ const ConversationPlanPanel: React.FC = () => {
     );
   }
 
+  const display = planDisplayStatus(plan);
   const statusLabel =
-    plan.done >= plan.total
+    display === 'completed'
       ? t('conversation.workspace.plan.completed', { defaultValue: 'Completed' })
-      : t('conversation.workspace.plan.inProgress', { defaultValue: 'In progress' });
+      : display === 'in_progress'
+        ? t('conversation.workspace.plan.inProgress', { defaultValue: 'In progress' })
+        : t('conversation.workspace.plan.incomplete', { defaultValue: 'Incomplete' });
 
   return (
     <div className={styles.stage} data-testid='conversation-plan-panel'>
@@ -64,7 +69,7 @@ const ConversationPlanPanel: React.FC = () => {
           </span>
         </div>
         <PlanTodoList
-          entries={plan.entries}
+          entries={displayPlanEntries(plan)}
           variant='panel'
           listTestId='conversation-plan-list'
           inProgressRowRef={inProgressRowRef}

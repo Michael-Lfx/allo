@@ -38,7 +38,7 @@ pub use edit_hints::{EditFailureKind, append_edit_recovery_hint, infer_edit_fail
 pub use env::{CodingEnvContext, format_env_context};
 pub use finalize::{
     FRIENDLY_FINALIZE_FALLBACK, finalize_reply_or_fallback, forced_finalize_instruction,
-    sanitize_user_facing_reply,
+    forced_finalize_instruction_for_plan, sanitize_user_facing_reply,
 };
 pub use harness::{
     CodingConfig, CodingHarness, CompactPolicyOverrides, FinishDecision, ToolCallOutcome,
@@ -53,9 +53,9 @@ pub use progress::{
     CODING_EXPLORE_BUDGET_NUDGE, CODING_EXPLORE_HARD_STOP, CODING_EXPLORE_NUDGE,
     CODING_LIFETIME_RECON_HARD_STOP, CODING_LIFETIME_RECON_NUDGE, CODING_PLAN_HARD_STOP,
     CODING_PLAN_TIMEOUT_NUDGE, CODING_SERIAL_RECON_HARD_STOP, CODING_SERIAL_RECON_NUDGE,
-    CODING_VERIFY_NUDGE, CodingProgressAction, CodingProgressGuard, ExploreBudgetKind,
-    ProgressObserveParams, explore_budget_nudge_text, explore_hard_stop_text, is_explore_tool,
-    is_recon_tool,
+    CODING_STALE_PLAN_NUDGE, CODING_VERIFY_NUDGE, PLAN_STALE_MUTATION_THRESHOLD,
+    CodingProgressAction, CodingProgressGuard, ExploreBudgetKind, ProgressObserveParams,
+    explore_budget_nudge_text, explore_hard_stop_text, is_explore_tool, is_recon_tool,
 };
 pub use failure::{ToolFailureClass, failure_nudge, failure_nudge_if_useful, skip_failure_nudge};
 pub use metrics::HarnessKpi;

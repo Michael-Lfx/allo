@@ -434,6 +434,7 @@
       "empty": "No plan yet",
       "emptyDescription": "When the agent starts a plan, its tasks will show up here",
       "inProgress": "In progress",
+      "incomplete": "Incomplete",
       "completed": "Completed"
     },
     "openWorkspace": "Open project folder",

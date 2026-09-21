@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { useMessageList } from '@renderer/pages/conversation/Messages/hooks';
 import { useConversationPlan } from './conversationPlanContext';
 import PlanTodoList from './PlanTodoList';
-import { derivePinnedPlan, type PinnedPlanData } from './pinnedPlanModel';
+import { derivePinnedPlan, displayPlanEntries, planDisplayStatus, type PinnedPlanData } from './pinnedPlanModel';
 import styles from './planTodoList.module.css';
 
 /**
@@ -34,8 +34,10 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
 
   if (!plan) return null;
 
-  const { entries, done, total } = plan;
+  const { done, total } = plan;
   const active = suppliedActive ?? plan.active;
+  const visiblePlan = { ...plan, active };
+  const live = planDisplayStatus(visiblePlan) === 'in_progress';
   const showInPlaceList = !canOpenPlanTab && expanded;
 
   const handleSummaryActivate = () => {
@@ -59,7 +61,7 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
           data-testid='pinned-plan-popover'
           className='w-[min(320px,calc(100vw-32px))] mb-6px'
         >
-          <PlanTodoList entries={entries} variant='compact' listTestId='pinned-plan-list' />
+          <PlanTodoList entries={displayPlanEntries(visiblePlan)} variant='compact' listTestId='pinned-plan-list' />
         </div>
       )}
       <div
@@ -71,7 +73,7 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
         onClick={handleSummaryActivate}
         onKeyDown={handleSummaryKeyDown}
       >
-        {active && done < total && (
+        {live && (
           <span
             aria-hidden='true'
             data-testid='pinned-plan-progress-indicator'
