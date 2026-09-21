@@ -1,12 +1,11 @@
 import type { TooltipProps } from '@arco-design/web-react';
 
 /**
- * 侧边栏内 Tooltip 的挂载容器：将 popup 挂到左侧边栏根节点，
- * 这样在收起/关闭侧边栏时 tooltip 会随侧边栏一起隐藏，避免残留在屏幕遮挡内容。
- * See: https://github.com/nomifun/nomifun-app/issues/987
+ * 侧边栏 Tooltip 挂到 document.body。
+ * `.layout-sider` 有 overflow-x: hidden，收起态向右弹出的菜单名会被裁成竖条。
+ * 关闭侧栏时仍靠 cleanupSiderTooltips 清掉残留节点（issue #987）。
  */
-export const getSiderPopupContainer = (_node: HTMLElement): Element =>
-  document.querySelector('.layout-sider') || document.body;
+export const getSiderPopupContainer = (_node: HTMLElement): Element => document.body;
 
 const SIDER_TOOLTIP_CLASS = 'sider-tooltip-popup';
 

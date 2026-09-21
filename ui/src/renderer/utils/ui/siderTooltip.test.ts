@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from 'bun:test';
 
-import { getSiderTooltipProps } from './siderTooltip';
+import { getSiderPopupContainer, getSiderTooltipProps } from './siderTooltip';
 
 describe('getSiderTooltipProps', () => {
   const originalWindow = globalThis.window;
@@ -57,5 +57,31 @@ describe('getSiderTooltipProps', () => {
 
   test('forces popupVisible false only when disabled', () => {
     expect(getSiderTooltipProps(false).popupVisible).toBe(false);
+  });
+
+  test('mounts hover popups on document.body so collapsed labels are not clipped', () => {
+    const sider = { id: 'layout-sider' };
+    const body = { id: 'document-body' };
+    const originalDocument = globalThis.document;
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: {
+        body,
+        querySelector: () => sider,
+      },
+    });
+    try {
+      expect(getSiderPopupContainer(sider as unknown as HTMLElement)).toBe(body);
+      expect(getSiderTooltipProps(true).getPopupContainer?.(sider as unknown as HTMLElement)).toBe(body);
+    } finally {
+      if (originalDocument === undefined) {
+        Reflect.deleteProperty(globalThis, 'document');
+      } else {
+        Object.defineProperty(globalThis, 'document', {
+          configurable: true,
+          value: originalDocument,
+        });
+      }
+    }
   });
 });
