@@ -145,6 +145,13 @@ pub fn supports_ingress_host_loopback_allow() -> bool {
 | `cargo fetch`（经代理） | ❌ exit 101，**95.9 秒**后 `[28] Timeout was reached (Failed to connect to 127.0.0.1 port 7890 after 21038 ms)` |
 | TCP 直连宿主 `127.0.0.1:7890` | ❌ `timeout` |
 | **连沙箱内自己起的 HTTP 服务** | ✅ **成功**（`http_200`）← 关键对照 |
+| **宿主局域网地址**（服务监听 `0.0.0.0`） | ❌ **timeout** ← 排除"改 LAN 代理"这条绕法 |
+| **外部 IP 裸 TCP**（`140.82.121.4:443`） | ❌ `timeout`（而同一次运行里 `gh` 成功） |
+
+**⚠️ 探针方法的一次校正：** 早期用 `Invoke-WebRequest` 做探针时，PowerShell 5.1 会读取
+系统代理设置（本机 `ProxyEnable=1 → 127.0.0.1:7890`），导致**外部对照也失败**——读数被污染。
+改用**裸 TCP + `gh`（不经系统代理）**后才得到自洽结果。
+**凡是用 `Invoke-WebRequest` 得出的网段可达性结论，应以此表为准。**
 
 **⚠️ 关键对照推翻了"loopback 被整体拦掉"这一解释（2026-09-21 二次校正）。**
 
@@ -169,17 +176,43 @@ pub fn supports_ingress_host_loopback_allow() -> bool {
 （附带解释一个早先的异常：沙箱内 `netstat` 看不到监听行但连接成功，
 正因为沙箱看到的是自己的网络栈。）
 
-**根因（已定位到具体配置）：**
+**根因（三层，逐层收窄）：**
 
-| 事实 | 值 |
-|---|---|
-| 宿主上 7890 端口有代理在监听 | ✅ `Get-NetTCPConnection` 确认（PID 23188） |
-| `git config --global` 配了代理 | `http.proxy = http://127.0.0.1:7890` |
-| 仓库 config 启用了 cargo 走 git CLI | `[net] git-fetch-with-cli = true` |
-| ⇒ 结果 | cargo 下载依赖**必须经这个宿主本地代理**，而沙箱看不到宿主的回环 |
-| 宿主对照 | 同一命令**成功**（`Downloaded serde v1.0.229 (registry rsproxy-sparse)`） |
+**第一层 · Windows 的回环隔离（Loopback Restriction）**
 
-**关键平台限制：`hostLoopback: "allow"` 在本机不可用。**
+Windows 对 AppContainer 类沙箱进程**默认禁止访问 `127.0.0.1`**。设计初衷是防逃逸：
+若允许沙箱随意访问本机端口，它可能利用本机其他本地服务的漏洞反向攻击宿主。
+（这也是"装了本地代理后某些商店应用无法联网"的同一根因，代理软件里常见的
+"UWP 回环豁免"小工具就是为此。）
+
+**佐证：** 本机 `CheckNetIsolation.exe LoopbackExempt -s` 的回环豁免列表**原本为空**，
+正好解释"代理对普通程序有效、对沙箱进程无效"。
+
+**第二层 · 官方豁免工具对 MXC 不适用**
+
+以管理员身份实测：
+
+```
+CheckNetIsolation.exe LoopbackExempt -a -n=<containerId>
+→ exit=0「完成」，列表出现 SID: S-1-15-2-4083123861-...-3367644864
+→ 但加豁免后沙箱仍连不上宿主（回环 / LAN 均 timeout）
+```
+
+原因：`CheckNetIsolation` 面向**打包应用（按包名查表）**，
+而 MXC 的 base-container tier 用的是 **PSEC 身份**（`base_container_runner.rs:822`
+里 `identity = "<process-security-environment>"`），且 profile **用完即删**
+（`sandbox_tracking.rs:186`）—— 文件系统与注册表均查不到，故列表显示 "AppContainer NOT FOUND"。
+
+| | UWP / 商店应用 | MXC 沙箱 |
+|---|---|---|
+| 身份 | 打包应用（有包名） | 进程安全环境（PSEC） |
+| 配置生命周期 | 常驻 | **用完即删** |
+| `CheckNetIsolation` | ✅ 可用 | ❌ **不适用** |
+
+**第三层 · MXC 自己的等价开关在本机不可用**
+
+MXC 提供 `network.ingress.hostLoopback`（宿主回环），**即回环豁免的官方等价物**，
+但本机系统不提供该能力位：
 
 ```
 network.ingress.hostLoopback='allow' requires Process Security Environment
@@ -187,8 +220,9 @@ contract version 1.1 with ingress support
 ```
 
 与 `--probe` 的 `baseContainerSupportsIngressHostLoopbackAllow: false` **完全一致**。
-**⇒ 这台机器上，沙箱内的进程永远无法连到宿主回环上的服务（含本地代理）。**
-且因为要改的是"两张网卡之间通不通"，**不是"开个权限"**，所以无法用配置绕过。
+
+**⇒ 结论：回环隔离的两条正统解法（`CheckNetIsolation` / `hostLoopback`）均已实测排除，**
+**不存在靠改配置绕过的路径 —— 这是 Windows 的隔离设计使然，不是接线问题。**
 
 **代码级依据：** 该档由 `query_psec_ingress_support()` 独立门控，
 与 `egress` 无关 —— `base_container_runner.rs:446-449`：
@@ -231,17 +265,28 @@ pub fn supports_ingress_host_loopback_allow() -> bool {
 **⇒ 沙箱能否工作部分取决于用户机器配置，而我们无法列举这些配置。**
 这类失败在用户侧难以归因，也难以让用户自行解决。
 
-**产品侧可考虑的应对（均未实施）：**
+**产品侧可考虑的应对（唯一可行项）：**
 
 - 沙箱启动前**检测本机代理配置**，命中时给出明确提示
 - 或**明确适用范围**：需要联网拉依赖的场景不走沙箱
 - 即 §五 提到的"**沙箱负责编译与测试，依赖安装留在沙箱外**"形态
 
-**可行的绕法（均未验证）：**
+**绕法清单 —— 五条里四条已实测排除：**
 
-1. **改用局域网可达的上游代理**（不用 loopback），并显式设给沙箱
-2. 把代理链去掉，让工具直连（需要网络本身可直连）
-3. 等 MXC 的 PSEC 1.1 支持落地
+| # | 绕法 | 状态 |
+|---|---|---|
+| 1 | 改用**局域网可达**的上游代理（不用 loopback） | ❌ **已实测排除**：沙箱连宿主 LAN 地址同样 `timeout` |
+| 2 | 用 `CheckNetIsolation` 给 MXC 加**回环豁免** | ❌ **已实测排除**：该工具面向打包应用，对 MXC 的 PSEC 身份不适用 |
+| 3 | 打开 MXC 自己的 `hostLoopback` | ❌ **本机系统不支持**该能力位（PSEC 1.1 未落地） |
+| 4 | 把代理链去掉、让工具直连 | ⚠️ 需用户改机器配置，我们控制不了 |
+| 5 | 等 MXC/系统支持宿主回环 | ⚠️ 时序不可控 |
+
+**⇒ 前三条都是"看起来可行但实测不通"**：根因是 Windows 的 AppContainer 回环隔离，
+**不存在靠改配置绕过的路径**。**因此实际可用的只有产品侧检测 + 提示（表中 4/5 亦不可依赖）。**
+
+**一处未查清（不作为结论）：** 宿主**局域网地址**为何同样被拦，我们没有查出确切原因
+（早先"缺 privateNetworkClientServer 能力"的推测不成立，因为回环隔离是独立机制）。
+不排除是 MXC 自身的策略限制。
 
 **这是本次验证里最实际的阻断**：它意味着
 **"能联网的沙箱"在用户装了本地代理时等于"不能拉依赖"，并且以 Agent 失败的形式暴露。**
