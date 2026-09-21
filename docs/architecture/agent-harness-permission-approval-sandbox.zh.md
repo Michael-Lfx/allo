@@ -258,15 +258,24 @@ MXC 是**进程级**的，与既有 `ProcessSupervisor` 同构，因此接入成
 **接入必须同时处理的四件事（否则是净负）：**
 
 0. **🔴 两个"接上即不可用"的前置（2026-09-21 实测，见
-   [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md)）：**
-   - **只读路径策略在 Tier 1 (BaseContainer) 主机上不生效** —— 沙箱内实测可读 `C:\Users\<user>\.gitconfig`、
-     `C:\Windows\win.ini`，即 `readonlyPaths` / `readwritePaths` **只约束"写"不约束"读"**。
-     而 DSH 的 Bash 必须能读 `~/.cargo/registry` / Bun 缓存 / `%TEMP%` 才能工作，
-     那里恰好有 `~/.cargo/credentials.toml`、`~/.gitconfig`、`~/.ssh`。
-     **⇒ 网络隔离从"纵深防御的一层"变成"唯一防线"**
-   - **默认 `ui.disable`（默认策略）会打死原生运行时** —— Node / .NET / pwsh 7 均以
-     `STATUS_DLL_INIT_FAILED` 启动失败（MXC 自身报错并提示设 `ui.disable: false`），
-     而 DSH 的工具链正是这些。**必须显式设 `ui.disable: false`**，否则接上当天 Bash 全不可用
+   [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md) 与
+   [`agent-harness-mxc-feasibility-report.zh.md`](agent-harness-mxc-feasibility-report.zh.md)）：**
+   - **读权限受"允许根"约束，且没有细粒度读拒绝** —— 沙箱内不在任何允许根下的路径**连自己的脚本都读不到**
+     （实测：不给 `readonlyPaths` 时 PS 起不来）。但 `deniedPaths` 在 Windows 不可用，
+     而为让 cargo/git/bun 工作**必须**给出宽读根（如 `C:\`），于是 `~/.gitconfig`、
+     `~/.cargo/credentials.toml` 随之可读。
+     **⇒ 网络隔离从"纵深防御的一层"变成"唯一防线"**（`egress: deny` 已实测生效）
+   - **默认 `ui.disable`（默认策略）会打死主力工具链** —— 实测矩阵：
+     `node` / `cargo` / `rustc` / `git` / `powershell 5.1` / `pwsh 7` / `dotnet`
+     在默认 UI 策略下**全部启动失败**（`STATUS_DLL_INIT_FAILED` 或 CoreCLR 绑定失败），
+     只有 `cmd` / `rg` / `bun` 可用。**必须显式设 `ui.disable: false`**，否则接上当天 Bash 大部分不可用。
+     （附带：MSIX 打包的 `python` 在沙箱内**无解**）
+
+0b. **🔴 E 组（层 3）的设计前提需要重审（2026-09-21 实测）：**
+   原设想"从 MXC 的 `captureDenials` 取拒绝分类码"。实测结论：
+   `captureDenials` 提供**结构化 capability 拒绝**（`internetClient` 等），
+   但**被策略拦下的文件系统写入不产生任何条目**（净室隔离实验：10 条 denial 中 `write` 为 0）。
+   ⇒ **文件类拒绝在 MXC 侧无分类码可依，层 3 必须回到"DSH 侧按调用点/参数自行分类"。**
 
 1. **UI 策略默认全关 = 能力归零。** `allowWindows:false` + `allowInputInjection:false`
    + `clipboard:"none"` 会让 `nomi-computer` / `nomi-browser` / `nomi-a11y`

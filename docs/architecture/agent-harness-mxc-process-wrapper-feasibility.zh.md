@@ -236,6 +236,18 @@ R2 仍不推荐。详见验证记录 §六。**
 (a) MXC 自身的 `KILL_ON_JOB_CLOSE`、(b) DSH 的 Job 兜住、还是 (c) OS 连带终止子进程。
 **对 DSH 的结论相同（无孤儿），但若要依赖它，应补一次"只关 DSH 的 Job、不杀 wrapper"的对照。**
 
+**✅ 该对照已完成（2026-09-21 续）：机制确定为 (b) —— Job 驱动。**
+
+```
+[kill] === CONTROL: closing ONLY the job handle, wrapper left running ===
+[kill] job contents after wrapper kill: [47860,18160,47208]   <- 关 Job 前 wrapper/PS/conhost 仍 ALIVE
+[kill] job handle closed
+[kill] --- liveness AFTER job close --- 全部 reaped, survivors = 0
+```
+
+**⇒ `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 确实覆盖沙箱内整棵树。
+DSH 的 Job 是有效的清理载体，不需要额外的"沙箱后端专用终结点"。**
+
 **退路：** 在 `ProcessSupervisor` 的终结路径上增加"沙箱后端专用"的终结点
 （调 MXC 的 stop/deprovision，或用 MXC 自己的 job 作为清理载体），
 并让 `ChildProcessCleanup` 的"已证明"语义包含它。

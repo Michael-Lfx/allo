@@ -7,6 +7,20 @@
 > **总判定：D 组不能走"每命令包装 `wxc-exec`"这条形态（P1），必须转向 P2（长驻沙箱会话）
 > 或 R1（DSH 让出 Job）。D-D 还额外暴露了一个与 D-A 无关、但同样阻断的事**：
 > **只读路径策略在本机不生效**。
+>
+> **✅ 全部验证已完成（2026-09-21 续）。** 五门之外还补了四项：
+> **运行时×UI 矩阵** · **`captureDenials` 覆盖范围** · **`process.env` 语义** · **读边界定性**。
+> 结论汇总见 [`agent-harness-mxc-feasibility-report.zh.md`](agent-harness-mxc-feasibility-report.zh.md)
+> （可行性汇报）。本文件是原始读数；汇报是判定。
+>
+> **两项需要修正的先期结论（本轮更正）：**
+> 1. **§5.3 的"只读策略不生效"要改口径** —— 读取并非无限制，而是**受允许根约束**；
+>    上一轮"什么都能读"是我自己给了 `readonlyPaths: ["C:\\"]` 造成的。见 §十。
+> 2. **§一 的"环境被剥离"是错的** —— 默认环境**继承 ~40 个父进程变量**，
+>    只有 `LOCALAPPDATA`/`TEMP`/`TMP` 被改写进 AppContainer 包目录。见 §十。
+>
+> **唯一未完成项**：`windows_sandbox` 的 state-aware 会话**实跑**
+> （本机 `Containers-DisposableClientVM` 为 Disabled，启用需重启；未擅自执行）。
 
 ---
 
@@ -147,6 +161,29 @@ PROBE|pid=26440|ppid=1840|parent=powershell.exe|job_ui=0x0|in_job=1|grandchild=4
 > (b) DSH 的 Job 兜住、
 > 还是 (c) wrapper 死时 OS 连带终止了它的子进程。
 > **对 DSH 的结论相同（无孤儿），但机制未定 → 若要依赖它，应补一次"只关 DSH 的 Job、不杀 wrapper"的对照。**
+
+### 4.1 ✅ 机制对照已完成（2026-09-21 续）
+
+跑 `kill-harness.ps1 -JobCloseOnly`（**不杀 wrapper，只关 Job**）：
+
+```
+[kill] === CONTROL: closing ONLY the job handle, wrapper left running ===
+[kill] job contents after wrapper kill: [47860,18160,47208]   <- Job 内仍有 wrapper/PS/conhost
+[kill] --- liveness while job still OPEN ---
+[kill] ALIVE  pid=47860 wxc-exec
+[kill] ALIVE  pid=18160 powershell
+[kill] ALIVE  pid=47208 conhost
+[kill] job handle closed
+[kill] --- liveness AFTER job close (survivors = orphans) ---
+[kill] reaped   pid=47860 / 18160 / 47208 / 46380
+[kill] survivors = 0
+```
+
+**⇒ 机制确定为 (b)：清理是 Job 驱动，不是 wrapper 驱动。**
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 确实覆盖沙箱内整棵树 ——
+这与 D-B 的"沙箱进程在调用方 Job 链上"互为印证。
+
+**这条对 DSH 是有利的：DSH 的 Job 是有效的清理载体**，不需要额外的沙箱专用终结点。
 
 ---
 
@@ -333,3 +370,109 @@ Windows 未支持。
 # 所有沙箱内策略都必须带
 #   "ui": { "disable": false }
 ```
+
+---
+
+## 十、补充验证（2026-09-21 续）
+
+### 10.1 运行时 × UI 策略矩阵（11 种运行时 × 2 种 UI 策略）
+
+| 运行时 | 默认 UI | `ui.disable=false` | 失败原因 |
+|---|---|---|---|
+| `cmd.exe` | ✅ | ✅ | — |
+| `rg` | ✅ | ✅ | — |
+| `bun` | ✅ | ✅ | — |
+| `node` | ❌ DLL_INIT | ✅ | Win32k |
+| `cargo` | ❌ DLL_INIT | ✅（需 fs 策略） | Win32k；否则 `could not create home directory: C:\Users\...\.rustup` |
+| `rustc` | ❌ DLL_INIT | ✅ | 同上 |
+| `git` | ❌ DLL_INIT | ✅（需 fs 策略） | 无策略时 `error launching git:` |
+| `powershell 5.1` | ❌ DLL_INIT | ✅ | Win32k |
+| `pwsh 7` | ❌ DLL_INIT | ⚠️ `NEEDS_ROOT_RO` | 「pwsh.exe versions before 7.7 require read-only access to the root drive (`C:\`)」 |
+| `dotnet` | ❌ CoreCLR 绑定失败 | ✅ 输出 `10.0.401` | 默认策略下 `Failed to load coreclr.dll, HRESULT: 0x8007045A` |
+| `python`（WindowsApps） | ❌ | ❌ | **MSIX 打包应用不可在沙箱内启动**，MXC 明确报错且无 workaround |
+
+**⇒ `ui.disable: false` 是刚性前置。** DSH 的 Bash 工具链（cargo/bun/git/node）里
+除 `bun` 外都受默认 UI 策略影响。
+
+### 10.2 🔴 `captureDenials` 覆盖范围（D-D 的决定性补充）
+
+用「只做一次被拒写入」的净室 workload 隔离，避免噪声干扰：
+
+```
+ONLYWRITE=UnauthorizedAccessException        <- 写入确实被拒，文件未落盘
+{"type":"captureDenials",...,"totalDenials":10,...}
+```
+
+10 条 denial 的全部内容：
+
+| accessType | resourceType | resource |
+|---|---|---|
+| read | other | `\REGISTRY\USER\S-1-5-21-...\Console` |
+| unknown | ui | `Handles` |
+| read | other | `\REGISTRY\MACHINE\Software\...\WSMAN` |
+| unknown | capability | `sharedUserCertificates` |
+| read | other | `\REGISTRY\MACHINE\SOFTWARE\...\BidInterface\Loader` |
+| read | other | `\REGISTRY\MACHINE\SYSTEM\...\Cryptography\ECCParameters` |
+| unknown | capability | `internetClient` |
+| unknown | capability | `internetClientServer` |
+| unknown | capability | `privateNetworkClientServer` |
+| read | other | `\REGISTRY\USER\.DEFAULT\...\User Shell Folders` |
+
+分布：`capability` 4 · `other` 5 · `ui` 1；`read` 5 · `unknown` 5 · **`write` 0**。
+
+**⇒ 被策略拦下的文件写入完全不在其中。**
+
+| 好的部分 | 坏的部分 |
+|---|---|
+| 提供**结构化的 capability 拒绝**（`internetClient` 等）——对"网络能力被拦"有用 | **文件系统写入拒绝不产生条目**——而"写越界"是 DSH 最需要分型的一类 |
+| `mode: "block"` **不需要提权**、不降安全 | 条目里**没有 MXC 专有标志**能区别于应用自身失败 |
+
+**机制注：** `captureDenials` 走 ETW 学习模式；真正的写拦截走另一条路径
+（`--probe` 报 `tier: base-container` + `needsDaclAugmentation: false` +
+`baseContainerSupportsDenyPaths: true`，即 Tier 1 PSEC/文件规则）。两者不共享计数。
+
+**验证方式（可复现）：** 策略里加
+
+```json
+"processContainer": { "captureDenials": { "mode": "block", "retainEtl": false } }
+```
+
+`mode: "allow"` 是 permissive（等同 `--audit` 的学习模式），**不要在生产机用**。
+省略 `outputPath` 时产物落在 `%TEMP%\mxc_denials_<pid>_<hash>.json`，
+stderr 会打一行 `{"type":"captureDenials","outputPath":...}` 指针。
+
+### 10.3 `process.env` 语义
+
+| 事实 | 读数 |
+|---|---|
+| 默认是否继承父进程环境 | **继承**（约 40 个变量）。`Path` / `USERPROFILE` / `ComSpec` / `SystemRoot` / `PATHEXT` 都在 |
+| 哪些被改写 | `LOCALAPPDATA`、`TEMP`、`TMP` → `C:\Users\15165\AppData\Local\Packages\sandbox.{GUID}\AC[\Temp]` |
+| 哪些不存在 | `HOME`、`CARGO_HOME`、`RUSTUP_HOME` |
+| 显式给 `process.env` | **完全替换**默认环境（不是叠加） |
+| 替换时的强制要求 | 必须含 `SYSTEMROOT` 与 `LOCALAPPDATA`，否则启动失败：<br>「missing the required variable(s): SYSTEMROOT, LOCALAPPDATA … any value will do because the Windows requirement is presence-only」 |
+| `inheritDefaultEnv` | **stable 0.8 schema 里不存在**（`unknown field`）；它是 dev/0.9 的字段 |
+
+**⇒ 修正 §五 的先期结论**：环境**不是**被剥离的；工具链失败的真正原因是
+`LOCALAPPDATA` 被改写进 AppContainer 包目录 + 缺少 `CARGO_HOME`/`RUSTUP_HOME`。
+DSH 若要用 `process.env` 钉住缓存落点，**必须自己拼一份含 `SYSTEMROOT`/`LOCALAPPDATA` 的完整环境块**。
+
+### 10.4 🟢 读边界定性（修正 §5.3）
+
+| 策略形态 | 结果 |
+|---|---|
+| `readwrite=scratch`，**无** `readonlyPaths` | **PS 根本起不来**（`-File` 路径不可达） |
+| `readwrite=scratch` + `readonly=C:\` | `blocked\secret.txt`、`C:\Windows\win.ini`、`~\.gitconfig` **全部可读** |
+| 无 `filesystem` 段 | PS 起不来 |
+| `readonly` 只给 `build\` | PS 起不来 |
+
+**⇒ 修正口径：读取并非"无限制"，而是"受允许根约束"。**
+上一轮"只读策略不生效 / 什么都能读"的结论是**我自己给了 `readonlyPaths: ["C:\\"]`** 造成的假象。
+
+**真正的结论（更准确也更重要）：**
+
+1. 读权限由**允许根**决定 —— 不在任何允许根下的路径，进程连自己的脚本都读不到
+2. **没有细粒度的"读拒绝"**（`deniedPaths` 在 Windows 不可用），
+   所以一旦为工具链给出宽读根（`C:\`），**该根下的凭据文件随之可读**
+3. 这不是策略漏洞，而是**能力缺口 × DSH 的必然取舍**：
+   宽读根是 cargo/git/bun 的硬需求
+4. ⇒ **网络隔离成为唯一防线**（§5.4 已实测 `egress: deny` 生效）
