@@ -257,6 +257,17 @@ MXC 是**进程级**的，与既有 `ProcessSupervisor` 同构，因此接入成
 
 **接入必须同时处理的四件事（否则是净负）：**
 
+0. **🔴 两个"接上即不可用"的前置（2026-09-21 实测，见
+   [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md)）：**
+   - **只读路径策略在 Tier 1 (BaseContainer) 主机上不生效** —— 沙箱内实测可读 `C:\Users\<user>\.gitconfig`、
+     `C:\Windows\win.ini`，即 `readonlyPaths` / `readwritePaths` **只约束"写"不约束"读"**。
+     而 DSH 的 Bash 必须能读 `~/.cargo/registry` / Bun 缓存 / `%TEMP%` 才能工作，
+     那里恰好有 `~/.cargo/credentials.toml`、`~/.gitconfig`、`~/.ssh`。
+     **⇒ 网络隔离从"纵深防御的一层"变成"唯一防线"**
+   - **默认 `ui.disable`（默认策略）会打死原生运行时** —— Node / .NET / pwsh 7 均以
+     `STATUS_DLL_INIT_FAILED` 启动失败（MXC 自身报错并提示设 `ui.disable: false`），
+     而 DSH 的工具链正是这些。**必须显式设 `ui.disable: false`**，否则接上当天 Bash 全不可用
+
 1. **UI 策略默认全关 = 能力归零。** `allowWindows:false` + `allowInputInjection:false`
    + `clipboard:"none"` 会让 `nomi-computer` / `nomi-browser` / `nomi-a11y`
    （含 Windows actor：`crates/agent/nomi-a11y/src/windows/`）**结构性失效**。
@@ -576,9 +587,11 @@ companion 强制 yolo），并说明为何必须有一道**不经 approval pipel
 
 上面的序 4（层 2）不是"加一个 `SandboxPolicy` 变体"，实际是 6 组工作。
 
-**⚠️ D 组存在已定位的硬阻断点**，详见
-[`agent-harness-mxc-process-wrapper-feasibility.zh.md`](agent-harness-mxc-process-wrapper-feasibility.zh.md)。
-**D 组的可行性结论必须先出，否则 C / F 的投入可能全部作废。**
+**❌ D 组已于 2026-09-21 实测：走"每命令包装"（P1）不可行。**
+证据见 [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md)，
+判定细节见 [`agent-harness-mxc-process-wrapper-feasibility.zh.md`](agent-harness-mxc-process-wrapper-feasibility.zh.md)（五门已全部更新为实测结论）。
+**⇒ C / F 的形状取决于 P2（长驻沙箱会话）的评估结论，不应按 P1 的假设开工。**
+另外 §层 2 的"四件事"新增了两条**接上即不可用**的前置（只读策略失效、`ui.disable` 默认值打死原生运行时）。
 
 #### A · 前置决策（3 条，纯拍板）
 
@@ -609,13 +622,28 @@ companion 强制 yolo），并说明为何必须有一道**不经 approval pipel
 | C6 | **按后端生成策略** | 「reject it rather than weakening the policy」【官】——一份策略走不通所有后端 |
 | C7 | 扩展 `enforce_sandbox` | `platform/windows.rs:2874-2886`，现只有 3 个静态分支 |
 
-#### D · 进程劫持与生命周期 ← **硬阻断点在此**
+#### D · 进程劫持与生命周期 ← **❌ 已实测阻断（2026-09-21）**
 
 现状链：`CommandBuilder` → `spawn_child_process` → `platform/windows.rs` 的 **Job Object + `ExactProcessIdentity`**，
 同时支撑 `recovery.rs` 的孤儿检测、`ChildProcessCleanup` 的"进程树清理已证明"语义
 （`command_builder.rs:518-531`）、`ManagedChildProcess` 的单权威所有权。
 
-**已核实的阻断**（详见可行性清单）：
+**五门全部实测完毕，完整证据见
+[`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md)：**
+
+| 门 | 实测结论 |
+|---|---|
+| D-A | **❌ 阻断成立** —— 外层 Job 带 UI 限制时 `processcontainer` 每次 spawn 都失败 `ERROR_NOT_SUPPORTED (50)`；外层 Job 无 UI 限制则正常 |
+| D-B | **⚠️ 只到 wrapper** —— 沙箱内真实进程是另一个 PID，DSH 的 `ExactProcessIdentity` 只覆盖 wrapper |
+| D-C | **✅ 0 存活** —— 强杀 wrapper 不遗留沙箱内进程树（机制未定，依赖前需补对照） |
+| D-D | **❌ 不可分型** + **🔴 只读策略失效**（见层 2） |
+| D-E | **⚠️ 放弃 P1（每命令包装），转 P2（长驻沙箱会话）** |
+
+**⇒ 结论：`processcontainer` 不能以"每命令包装"形态接入 DSH。**
+`windows_sandbox` 是 state-aware 生命周期支持的三个后端之一（源码实证），
+故 P2 不必锁死在 `isolation_session`（该后端在本机 `--probe` 为 `false`）。
+
+**实验前的推断（保留以追溯）：**
 
 - MXC 在 `appcontainer_runner.rs:1186-1206` 创建自己的 Job Object 并设 UI 限制（`:1192`），
   然后把**仍挂起**的子进程 `AssignProcessToJobObject` 进去（`:1193`）；

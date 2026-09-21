@@ -3,12 +3,21 @@
 > **最后维护：** 2026-09-21 · 性质：**只读验证清单**（不含生产代码改动）
 > 归属：`agent-harness-permission-approval-sandbox.zh.md` §5.1 D 组的前置验证
 >
-> **🛑 D-A 已于 2026-09-21 实测：阻断成立。**
-> 在本机（Windows 11 build 29671）+ MXC `ca7ea12` 上，把 `wxc-exec.exe` 放进任意
-> Job Object 后，`processcontainer` 稳定失败 `WIN32_ERROR(50)`（`ERROR_NOT_SUPPORTED`）；
-> 去掉该 Job 的 UI 限制则成功。**完整证据见
-> [`agent-harness-mxc-d-a-verification-record.zh.md`](agent-harness-mxc-d-a-verification-record.zh.md)。**
-> 下文 §一 保留实验前的推断原貌；§三 D-A 的判定已按实测更新；D-B～D-E 仍未验证。
+> **✅ 五门已全部实测（2026-09-21，Windows 11 build 29671 + MXC `ca7ea12`）。
+> 完整证据见 [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md)。**
+>
+> | 门 | 结论 |
+> |---|---|
+> | D-A | **❌ 阻断成立** —— 外层 Job 带 UI 限制时 `processcontainer` 每次 spawn 都失败 `ERROR_NOT_SUPPORTED` |
+> | D-B | **⚠️ 只到 wrapper** —— 沙箱内进程是另一个 PID；必须补沙箱会话级存活探针 |
+> | D-C | **✅ 0 存活** —— 强杀 wrapper 不遗留沙箱内进程树（机制未定，依赖前应补对照） |
+> | D-D | **❌ 不可分型** + **🔴 只读策略在 Tier 1 主机上不生效**（沙箱内可读用户主目录） |
+> | D-E | **⚠️ 放弃 P1，转 P2** —— state-aware 有 `windows_sandbox` 可用，非仅 `isolation_session` |
+>
+> **总判定：不能走"每命令包装 `wxc-exec`"（P1）。**
+> 另有两个与退路选择无关、但同样阻断的前置：**只读策略失效** 与
+> **默认 `ui.disable` 会打死 Node/.NET/pwsh 等原生运行时**。
+> 下文 §一 保留实验前的推断原貌；§三 各门的判定已按实测更新。
 >
 > **目的：** 在投入 C 组（策略作者层）与 F 组（残留物治理）之前，先确定
 > `wxc-exec.exe` 能否作为**透明包装层**接入 `nomi-process-runtime` 现有的
@@ -168,6 +177,18 @@ R2 仍不推荐。详见验证记录 §六。**
 **通过标准：** DSH 持有的身份能唯一标识"整个沙箱会话"，并且该身份的存活/退出
 与沙箱内进程树的存活/退出**一一对应**。
 
+**⚠️ 实测结论（2026-09-21）：落到第 2 行 —— "不同 PID，且 DSH 只持 wrapper"。**
+
+| 观测 | 实测值 |
+|---|---|
+| DSH 直接子进程（`wxc-exec.exe`） | pid **42544**（`capture_child_identity` 拿到的是这个） |
+| 沙箱内真实进程 | pid **45596**，其 `ppid` = **42544**（即它是 wrapper 的子进程） |
+| 沙箱内进程在调用方 Job 链上吗 | **在**（出现在 `JobPids` 采样里，`in_job=1`） |
+| 沙箱内**自己看到的**即时 Job UI 限制 | **`0x0`** —— MXC 为它建了自己的无 UI 限制 Job，且它继承了调用方 Job |
+
+**→ D-B 的退路成为必需：必须补一个"沙箱会话级"的存活探针，
+否则 `recovery.rs` 的孤儿回收对沙箱会话失效。**
+
 **退路：** 若只能拿到 wrapper 身份，则必须补一个"沙箱会话级"的存活探针
 （例如查询 MXC 的作业/会话状态），否则 `recovery.rs` 的孤儿回收对沙箱会话失效。
 
@@ -197,6 +218,24 @@ R2 仍不推荐。详见验证记录 §六。**
 
 **通过标准：** 三种观测下都无游离进程，且 `ActiveProcesses` 与实际系统状态一致。
 
+**✅ 实测结论（2026-09-21）：通过 —— 0 survivors。**
+
+```
+[kill] job contents before force-kill: [1840,26440,46028]    <- wrapper + 沙箱内 PS + 孙进程
+[kill] === FORCE-KILL the direct child (wrapper) ===
+[kill] wrapper exit code = 4294967295
+[kill] job contents after wrapper kill: []                    <- Job 已空
+[kill] --- liveness while job still OPEN ---  全部 gone
+[kill] --- liveness AFTER job close ---       全部 reaped, survivors = 0
+```
+
+三种观测都过：沙箱内子进程退出、无游离进程、Job 进程表归零且系统里确实无残留
+（"计数器撒谎"的最坏情况**未发生**）。
+
+**⚠️ 但机制未定：** 强杀 wrapper 时沙箱内进程全部消失，无法区分是
+(a) MXC 自身的 `KILL_ON_JOB_CLOSE`、(b) DSH 的 Job 兜住、还是 (c) OS 连带终止子进程。
+**对 DSH 的结论相同（无孤儿），但若要依赖它，应补一次"只关 DSH 的 Job、不杀 wrapper"的对照。**
+
 **退路：** 在 `ProcessSupervisor` 的终结路径上增加"沙箱后端专用"的终结点
 （调 MXC 的 stop/deprovision，或用 MXC 自己的 job 作为清理载体），
 并让 `ChildProcessCleanup` 的"已证明"语义包含它。
@@ -224,6 +263,33 @@ R2 仍不推荐。详见验证记录 §六。**
 **通过标准：** 能稳定地判定"这是沙箱策略拒绝"，并拿到至少一个稳定的分类码——
 足以支撑 E 组的 `RetryDecision`（策略拒绝 → `Retryable`；后端不支持 → `Fatal`）。
 
+**❌ 实测结论（2026-09-21）：不通过 —— 拒绝生效，但不可分型。**
+
+拒绝本身是真的（净室复现：删文件后重跑，`blocked\` 与 `System32` 的写入均未落盘，
+`scratch\` 的写入落盘）。但**表面信息只有普通 Windows 拒绝**：
+
+| 操作 | 沙箱内表现 | 事后文件 |
+|---|---|---|
+| 写 `scratch\`（`readwritePaths`） | `OK` | ✅ 存在 |
+| 写 `blocked\`（未列出） | `CLR:UnauthorizedAccessException` | ❌ 不存在 |
+| 写 `System32` | `CLR:UnauthorizedAccessException` | ❌ 不存在 |
+| `cmd` 子进程写 `blocked\` | 文本 `Access is denied.`，exit 1 | ❌ 不存在 |
+
+**判定：沙箱拒绝与"程序自己没权限"在子进程错误面上完全同形** ——
+无专用标志、无稳定分类码、退出码也不区分（子进程正常 `return 0`）。
+`denials.json` / `captureDenials` 本轮未验证（`--audit` 需隔离机/权限）。
+
+**🔴 同时发现一条与 D-A 无关的更重阻断：只读路径策略在 Tier 1 主机上不生效。**
+
+```
+READ1=OK  READ2=OK  LIST=OK  SYSTEM_READ=OK  HOMEDIR_READ=OK   <- 读到了 C:\Users\15165\.gitconfig
+```
+
+即 `readwritePaths` / `readonlyPaths` **对"读"没有约束力**，被约束的只有"写"。
+DSH 的 Bash 工具链必须能读工作区外路径（`~/.cargo/registry`、`%Bun%` 缓存、`%TEMP%`），
+而那里恰好有 `~/.cargo/credentials.toml`、`~/.gitconfig`、`~/.ssh`。
+**网络隔离因此从"纵深防御的一层"变成"唯一防线"**（本轮实测 `egress: deny` 生效）。
+
 **退路：** 若 MXC 只给出非结构化 stderr，则 DSH 侧无法可靠分型，
 必须退化为"越界即 `Abort`（停下等人）"的保守口径——**可用但会伤完成率**。
 
@@ -248,8 +314,33 @@ R2 仍不推荐。详见验证记录 §六。**
   （而 DSH 的 `ProcessSupervisor` 已经是这样一套东西——两套生命周期要合并还是并存？）
 - **`exec` 是否还返回可用的 stdio / 子进程身份**？若返回的是一个会话内的句柄而非 PID，
   D-B 的问题会以另一种形式回来
-- 今天只有 **Isolation Session** 后端实现了 state-aware 生命周期【MXC】——
-  即 P2 可能把后端选择**锁死**在 `isolation_session` 上，而它需要 Insider 构建
+- ~~今天只有 **Isolation Session** 后端实现了 state-aware 生命周期~~ —— **此条已被源码证伪，见下**
+
+**⚠️ 实测结论（2026-09-21）：放弃 P1，转 P2 评估。**
+
+**先纠正一条此前的转引错误：state-aware 不止一个后端。**
+
+| 事实 | 位置 |
+|---|---|
+| `impl StatefulSandboxBackend for IsolationSessionRunner` | `src/backends/isolation_session/common/src/state_aware.rs:79` |
+| **`impl StatefulSandboxBackend for WindowsSandboxRunner`** | `src/backends/windows_sandbox/lifecycle/src/state_aware.rs:603` |
+| **`impl StatefulSandboxBackend for WslcStateAwareRunner`** | `src/backends/wslc/common/src/state_aware.rs:53` |
+| SDK 联合类型 | `sdk/node/src/state-aware-types.ts:22-25` → `'isolation_session' \| 'windows_sandbox' \| 'wslc'` |
+| 契约版本 | `STATE_AWARE_VERSION = '0.9.0-alpha'` |
+
+因此"P2 会把后端锁死在 `isolation_session`"这条代价**不成立**：
+`windows_sandbox` 也在其中，而它**不经过"每命令套 Job"**（沙箱在独立 VM 内）。
+
+**本机可用性（`--probe`）：** `isolationSessionAvailable: **false**` ·
+`hyperlightAvailable: false` · `windows_sandbox` 需 `--experimental` 且需 Windows Sandbox 功能 ·
+`wslc` 需 WSL2 + 预拉镜像。
+**⇒ 本机 P2 只能走 `windows_sandbox`（VM 级，重）。**
+
+| 形态 | 判定 |
+|---|---|
+| **P1 · 每命令包装** | ❌ **否决**：D-A 阻断；即便 R1 让出 Job，D-B 仍只到 wrapper、D-D 仍不可分型 |
+| **P2 · 长驻沙箱会话** | ⚠️ **唯一出路**，架构可行；本机只能走 `windows_sandbox`，且引入"两套生命周期如何共存"的新问题 |
+| **R1 · DSH 让出 Job** | ⚠️ 可解 D-A（§三 已证外层 Job 无 UI 限制时正常），但**解决不了 D-D 的不可分型**，且放弃 DSH 自身清理兜底 |
 
 **通过标准（决策）：** 明确选 P1 或 P2，并写明另一个形态被否决的**具体理由**，
 而不是"P1 有阻断所以退到 P2"。P2 必须独立成立。
@@ -276,15 +367,31 @@ D-D（拒绝分型）───────────────────�
 | ✅ 嵌套成立 | ✅ 同一身份 | ✅ 覆盖完整 | ✅ 可分型 | **P1 可行**，C/F 按原计划 |
 | ✅ | ⚠️ 只到 wrapper | ✅ | ✅ | P1 可行，但需补**沙箱会话级存活探针**（D-B 退路） |
 | ✅ | ✅ | ❌ 有游离 | ✅ | P1 需补**沙箱后端专用终结点**（D-C 退路）——量级上升 |
-| **❌ 阻断成立（已实测）** | — | — | — | **评估 R1–R3；当前应优先做 D-E 的 P2 评估**，C 组形状待定 |
+| ❌ 阻断成立 | — | — | — | 评估 R1–R3；转 D-E 的 P2 评估，C 组形状待定 |
 | — | — | — | ❌ 不可分型 | 不阻断接入，但完成率受损；E 组退化为"越界即 Abort" |
+
+**🛑 实测落点（2026-09-21）：不是矩阵里任何一行 —— 是"两行同时成立"。**
+
+```
+D-A = ❌ 阻断成立
+D-B = ⚠️ 只到 wrapper
+D-C = ✅ 覆盖完整
+D-D = ❌ 不可分型（且叠加只读策略失效）
+```
+
+**⇒ P1 全部形态否决；C 组形状待 P2 结论。**
+且 D-D 暴露的"只读策略不生效"**独立于 D-A**，任何 Windows 沙箱方案都要面对它。
 
 **下一步（按实测结论重排）：**
 
-1. **D-E（形态决策）优先** —— 它很可能从"退路"变成主路径（长驻沙箱会话 / 换后端）
-2. **R1 的代价评估** —— DSH 对"沙箱化会话"让出 Job 后，如何维持"清理已证明"的语义
-3. **向 MXC 上游提 issue** —— 本记录给出的是可复现的具体缺陷：
-   `processcontainer` 在已有 Job（带 UI 限制）的宿主进程内无法启动
+| 优先 | 事项 | 依据 |
+|---|---|---|
+| **1** | **验证 `windows_sandbox` 的 state-aware 会话**（本机 P2 唯一路径） | D-E |
+| **2** | **`ui.disable` × 运行时的组合矩阵**：哪些工具链在哪种 UI 策略下能跑 | `ui.disable` 默认值会打死 Node/.NET/pwsh 7 |
+| **3** | **把只读敞口立为独立问题** | D-D §5.3，影响整个 Windows 沙箱方案而非仅 MXC 接入 |
+| **4** | **D-C 的机制对照**（只关 Job、不杀 wrapper） | 若将来依赖"Job 兜住沙箱" |
+| **5** | **E 组按"越界即 Abort"落地** | D-D 已判不可分型，E 组设计前提已变 |
+| **6** | 向 MXC 上游提 issue：`processcontainer` 在带 UI 限制的宿主 Job 内无法启动 | D-A，可复现 |
 
 **无论结论如何，这三条今天就能并行开工：**
 
