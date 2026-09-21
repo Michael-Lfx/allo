@@ -143,11 +143,31 @@ pub fn supports_ingress_host_loopback_allow() -> bool {
 |---|---|
 | `gh api /rate_limit`（直连，不经代理） | ✅ **exit 0，0.6 秒**，确实到达 GitHub |
 | `cargo fetch`（经代理） | ❌ exit 101，**95.9 秒**后 `[28] Timeout was reached (Failed to connect to 127.0.0.1 port 7890 after 21038 ms)` |
-| TCP 直连 `127.0.0.1:7890` | ❌ `timeout` |
-| **连接沙箱内自己起的监听端口** | ❌ **失败** ← 关键对照 |
+| TCP 直连宿主 `127.0.0.1:7890` | ❌ `timeout` |
+| **连沙箱内自己起的 HTTP 服务** | ✅ **成功**（`http_200`）← 关键对照 |
 
-**最后一行排除了"宿主代理没在跑"这一解释：连沙箱自己起的端口都连不上，
-说明 loopback 被容器整体拦掉，是设计而非故障。**
+**⚠️ 关键对照推翻了"loopback 被整体拦掉"这一解释（2026-09-21 二次校正）。**
+
+同一次运行内，用同一个 `127.0.0.1`，结果相反：
+
+| 探针 | 结果 |
+|---|---|
+| A. 连沙箱内自己起的服务（`127.0.0.1:18111`） | ✅ `connected` |
+| B. 连宿主上的代理（`127.0.0.1:7890`） | ❌ `timeout` |
+
+**⇒ 沙箱并未禁止 loopback，而是拥有自己独立的回环接口。**
+
+| 谁 | `127.0.0.1` 指向 |
+|---|---|
+| 宿主上的代理软件 | **宿主的**回环接口 |
+| 沙箱内运行的进程 | **沙箱自己的**回环接口 |
+
+**⇒ 沙箱能连自己起的服务，但连不到宿主回环上的服务。**
+这也是 MXC 的字段名为 `network.ingress.**hostLoopback**`（宿主回环）的原因 ——
+**它存在的意义正是打通"沙箱回环 ↔ 宿主回环"这一对。**
+
+（附带解释一个早先的异常：沙箱内 `netstat` 看不到监听行但连接成功，
+正因为沙箱看到的是自己的网络栈。）
 
 **根因（已定位到具体配置）：**
 
@@ -156,7 +176,7 @@ pub fn supports_ingress_host_loopback_allow() -> bool {
 | 宿主上 7890 端口有代理在监听 | ✅ `Get-NetTCPConnection` 确认（PID 23188） |
 | `git config --global` 配了代理 | `http.proxy = http://127.0.0.1:7890` |
 | 仓库 config 启用了 cargo 走 git CLI | `[net] git-fetch-with-cli = true` |
-| ⇒ 结果 | cargo 下载依赖**必须经这个本地代理**，而代理在 loopback 上 |
+| ⇒ 结果 | cargo 下载依赖**必须经这个宿主本地代理**，而沙箱看不到宿主的回环 |
 | 宿主对照 | 同一命令**成功**（`Downloaded serde v1.0.229 (registry rsproxy-sparse)`） |
 
 **关键平台限制：`hostLoopback: "allow"` 在本机不可用。**
@@ -167,7 +187,18 @@ contract version 1.1 with ingress support
 ```
 
 与 `--probe` 的 `baseContainerSupportsIngressHostLoopbackAllow: false` **完全一致**。
-**⇒ 这台机器上，沙箱内的进程永远无法连到宿主上的本地代理。**
+**⇒ 这台机器上，沙箱内的进程永远无法连到宿主回环上的服务（含本地代理）。**
+且因为要改的是"两张网卡之间通不通"，**不是"开个权限"**，所以无法用配置绕过。
+
+**代码级依据：** 该档由 `query_psec_ingress_support()` 独立门控，
+与 `egress` 无关 —— `base_container_runner.rs:446-449`：
+
+```rust
+pub fn supports_ingress_host_loopback_allow() -> bool {
+    Self::is_process_security_environment_usable()
+        && Self::query_psec_ingress_support().unwrap_or(false)   // PSE_SUPPORT_NETWORK_INGRESS = 0x0008
+}
+```
 
 **影响面（需产品侧知悉）：**
 
