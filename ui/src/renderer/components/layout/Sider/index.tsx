@@ -35,6 +35,7 @@ import {
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
 import { formatSiderAccountLabel } from './accountLabel';
+import { historyTabAfterPathChange, type SiderHistoryTab } from './historyTab';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
@@ -95,7 +96,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
   const activeConversationId = activeRoute?.kind === 'conversation' ? activeRoute.id : null;
 
-  const [activeHistoryTab, setActiveHistoryTab] = useState<'workspaces' | 'companions' | 'video'>(() => {
+  const [activeHistoryTab, setActiveHistoryTab] = useState<SiderHistoryTab>(() => {
     try {
       const saved = window.localStorage.getItem('flowy.sider.historyTab');
       if (saved === 'companions' || saved === 'video' || saved === 'workspaces') return saved;
@@ -105,7 +106,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     return 'workspaces';
   });
 
-  const handleSelectHistoryTab = useCallback((tab: 'workspaces' | 'companions' | 'video') => {
+  const handleSelectHistoryTab = useCallback((tab: SiderHistoryTab) => {
     setActiveHistoryTab(tab);
     try {
       window.localStorage.setItem('flowy.sider.historyTab', tab);
@@ -119,46 +120,22 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     pathname.startsWith('/conversation/') ||
     pathname === '/terminal-new' ||
     pathname.startsWith('/terminal/');
-  const isVideoRoute = pathname.startsWith('/video-generation');
-  const isCompanionRoute = pathname.startsWith('/nomi');
 
-  const isDockRoute =
-    pathname.startsWith('/knowledge') ||
-    pathname.startsWith('/learn') ||
-    pathname === '/scheduled' ||
-    pathname.startsWith('/meeting') ||
-    pathname.startsWith('/eval');
-
-  const isOtherTopRoute =
-    pathname.startsWith('/models') ||
-    pathname.startsWith('/settings');
-
+  // Pathname-only: a tab click must not be overwritten just because the current
+  // route still belongs to another domain (that was the snap-back flicker).
   useEffect(() => {
-    if (pathname.startsWith('/video-generation')) {
-      handleSelectHistoryTab('video');
-    } else if (pathname.startsWith('/nomi')) {
-      handleSelectHistoryTab('companions');
-    } else if (
-      pathname === '/guid' ||
-      pathname === '/terminal-new' ||
-      pathname.startsWith('/terminal/') ||
-      (pathname.startsWith('/conversation/') && activeHistoryTab === 'video')
-    ) {
-      handleSelectHistoryTab('workspaces');
-    }
-  }, [pathname, activeHistoryTab, handleSelectHistoryTab]);
+    setActiveHistoryTab((current) => {
+      const next = historyTabAfterPathChange(pathname, current);
+      if (next === current) return current;
+      try {
+        window.localStorage.setItem('flowy.sider.historyTab', next);
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, [pathname]);
 
-  const isTabDomainActive = useCallback(
-    (tab: 'workspaces' | 'companions' | 'video') => {
-      if (activeHistoryTab !== tab) return false;
-      if (isDockRoute || isOtherTopRoute) return false;
-      if (tab === 'workspaces') return isSessionRoute;
-      if (tab === 'video') return isVideoRoute;
-      if (tab === 'companions') return isCompanionRoute || isSessionRoute;
-      return false;
-    },
-    [activeHistoryTab, isDockRoute, isOtherTopRoute, isSessionRoute, isVideoRoute, isCompanionRoute]
-  );
   const selectionIndicator = useSlidingSelectionIndicator({
     containerRef: siderRef,
     activeSelector: '[data-sider-nav-entry][data-active="true"]:not([data-sider-selection-static])',
@@ -236,22 +213,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleVideoGenerationHome = useCallback(() => {
     navTo('/video-generation');
   }, [navTo]);
-
-  const handleTabClick = useCallback(
-    (tab: 'workspaces' | 'companions' | 'video') => {
-      handleSelectHistoryTab(tab);
-      if (tab === 'workspaces') {
-        if (!isSessionRoute) {
-          handleNewChat();
-        }
-      } else if (tab === 'video') {
-        if (!isVideoRoute) {
-          handleVideoGenerationHome();
-        }
-      }
-    },
-    [handleNewChat, handleSelectHistoryTab, handleVideoGenerationHome, isSessionRoute, isVideoRoute]
-  );
 
   const activeVideoGenerationSessionId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
@@ -559,14 +520,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     role='tab'
                     title={t('sessionList.projectsTab', { defaultValue: '项目' })}
                     aria-selected={activeHistoryTab === 'workspaces'}
-                    onClick={() => handleTabClick('workspaces')}
+                    onClick={() => handleSelectHistoryTab('workspaces')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-all duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      isTabDomainActive('workspaces')
-                        ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
-                        : activeHistoryTab === 'workspaces'
-                          ? 'bg-fill-2 text-t-secondary font-medium hover:text-t-primary'
-                          : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      activeHistoryTab === 'workspaces'
+                        ? 'bg-fill-3 text-t-primary shadow-sm'
+                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
                     <span className='truncate'>{t('sessionList.projectsTab', { defaultValue: '项目' })}</span>
@@ -576,14 +535,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     role='tab'
                     title={t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}
                     aria-selected={activeHistoryTab === 'video'}
-                    onClick={() => handleTabClick('video')}
+                    onClick={() => handleSelectHistoryTab('video')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-all duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      isTabDomainActive('video')
-                        ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
-                        : activeHistoryTab === 'video'
-                          ? 'bg-fill-2 text-t-secondary font-medium hover:text-t-primary'
-                          : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      activeHistoryTab === 'video'
+                        ? 'bg-fill-3 text-t-primary shadow-sm'
+                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
                     <span className='truncate'>{t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}</span>
@@ -593,14 +550,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     role='tab'
                     title={t('nomi.shortTitle', { defaultValue: '桌宠' })}
                     aria-selected={activeHistoryTab === 'companions'}
-                    onClick={() => handleTabClick('companions')}
+                    onClick={() => handleSelectHistoryTab('companions')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-all duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      isTabDomainActive('companions')
-                        ? 'bg-fill-3 text-t-primary shadow-sm font-semibold'
-                        : activeHistoryTab === 'companions'
-                          ? 'bg-fill-2 text-t-secondary font-medium hover:text-t-primary'
-                          : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      activeHistoryTab === 'companions'
+                        ? 'bg-fill-3 text-t-primary shadow-sm'
+                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
                     <span className='truncate'>{t('nomi.shortTitle', { defaultValue: '桌宠' })}</span>
@@ -625,7 +580,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 data-testid='sider-workspaces-scroll-area'
                 className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pt-0 pb-8px`}
               >
-                {activeHistoryTab === 'workspaces' && (
+                <div hidden={activeHistoryTab !== 'workspaces'}>
                   <WorkpathSessionList
                     collapsed={false}
                     tooltipEnabled={false}
@@ -636,38 +591,34 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     embeddedInPrimarySider
                     hideCompanionGroup={true}
                   />
-                )}
-                {activeHistoryTab === 'companions' && (
-                  <div className='px-4px py-2px'>
-                    <CompanionSessionGroup
-                      activeConversationId={activeConversationId}
-                      onSessionClick={onSessionClick}
-                      expanded={true}
-                      hideHeader={true}
-                    />
-                  </div>
-                )}
-                {activeHistoryTab === 'video' && (
-                  <div className='px-4px py-2px'>
-                    <SiderVideoGenerationGroup
-                      isMobile={isMobile}
-                      moduleActive={pathname.startsWith('/video-generation')}
-                      activeSessionId={activeVideoGenerationSessionId}
-                      activeClipTaskId={activeClipTaskId}
-                      activeCanvasProjectId={activeCanvasProjectId}
-                      activeBriefingId={activeBriefingId}
-                      collapsed={false}
-                      dock={false}
-                      flat={true}
-                      siderTooltipProps={siderTooltipProps}
-                      onEnterHome={handleVideoGenerationHome}
-                      onOpenProject={handleOpenRecentVideoGeneration}
-                      onOpenClipTask={handleOpenRecentClipTask}
-                      onOpenCanvasProject={handleOpenRecentCanvasProject}
-                      onOpenBriefing={handleOpenRecentBriefing}
-                    />
-                  </div>
-                )}
+                </div>
+                <div hidden={activeHistoryTab !== 'companions'} className='px-4px py-2px'>
+                  <CompanionSessionGroup
+                    activeConversationId={activeConversationId}
+                    onSessionClick={onSessionClick}
+                    expanded={true}
+                    hideHeader={true}
+                  />
+                </div>
+                <div hidden={activeHistoryTab !== 'video'} className='px-4px py-2px'>
+                  <SiderVideoGenerationGroup
+                    isMobile={isMobile}
+                    moduleActive={pathname.startsWith('/video-generation')}
+                    activeSessionId={activeVideoGenerationSessionId}
+                    activeClipTaskId={activeClipTaskId}
+                    activeCanvasProjectId={activeCanvasProjectId}
+                    activeBriefingId={activeBriefingId}
+                    collapsed={false}
+                    dock={false}
+                    flat={true}
+                    siderTooltipProps={siderTooltipProps}
+                    onEnterHome={handleVideoGenerationHome}
+                    onOpenProject={handleOpenRecentVideoGeneration}
+                    onOpenClipTask={handleOpenRecentClipTask}
+                    onOpenCanvasProject={handleOpenRecentCanvasProject}
+                    onOpenBriefing={handleOpenRecentBriefing}
+                  />
+                </div>
               </div>
             </section>
           )}
