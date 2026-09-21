@@ -174,6 +174,26 @@ impl AuthManager {
         Ok(profile)
     }
 
+    pub async fn update_nickname(&self, nickname: &str) -> Result<UserMe, ServerClientError> {
+        let status = self.whoami().await?;
+        if !status.is_logged_in() {
+            return Err(ServerClientError::AuthRequired(
+                "cloud login required".into(),
+            ));
+        }
+        let nickname = self.api.update_nickname(&self.session, nickname).await?;
+        match self.fetch_profile().await {
+            Ok(profile) => Ok(profile),
+            Err(err) => {
+                tracing::warn!(error = %err, "refresh profile after nickname update failed");
+                let mut profile = self.profile_store.load().await?.unwrap_or_default();
+                profile.nickname = Some(nickname);
+                self.profile_store.save(&profile).await?;
+                Ok(profile)
+            }
+        }
+    }
+
     /// Best-effort activation for the current user and app version (no-op if already reported).
     pub async fn ensure_device_activation(&self) -> Result<bool, ServerClientError> {
         let status = self.whoami().await?;
@@ -323,5 +343,120 @@ mod tests {
             !body.contains("report_client_package(&self.session).await"),
             "client package report must not run on the request path"
         );
+    }
+
+    #[tokio::test]
+    async fn update_nickname_refreshes_cached_profile() {
+        use nomi_config::ServerConfig;
+        use tempfile::tempdir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        use crate::session::ServerTokens;
+
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/user/nickname"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"nickname":"Alice"}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"id":2318038547,"nickname":"Alice","email":"user@example.com"}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let data_dir = tempdir().expect("tmpdir");
+        let config = ServerConfig {
+            base_url: server.uri(),
+            ..Default::default()
+        };
+        let mgr = super::AuthManager::new(config, data_dir.path()).expect("auth manager");
+        mgr.session()
+            .save_tokens(ServerTokens::from_jwt("jwt-nickname".into()))
+            .await
+            .expect("save token");
+
+        let profile = mgr.update_nickname("Alice").await.expect("update");
+        assert_eq!(profile.nickname.as_deref(), Some("Alice"));
+        assert_eq!(profile.display_name(), "Alice");
+        let cached = mgr.cached_profile().await.expect("cache").expect("profile");
+        assert_eq!(cached.nickname.as_deref(), Some("Alice"));
+        assert_eq!(cached.display_name(), "Alice");
+    }
+
+    #[tokio::test]
+    async fn update_nickname_requires_login() {
+        use nomi_config::ServerConfig;
+        use tempfile::tempdir;
+
+        let data_dir = tempdir().expect("tmpdir");
+        let config = ServerConfig {
+            base_url: "https://example.test/claw".into(),
+            ..Default::default()
+        };
+        let mgr = super::AuthManager::new(config, data_dir.path()).expect("auth manager");
+        let err = mgr
+            .update_nickname("Alice")
+            .await
+            .expect_err("logged out");
+        assert!(matches!(err, crate::error::ServerClientError::AuthRequired(_)));
+    }
+
+    #[tokio::test]
+    async fn update_nickname_patches_cache_when_profile_refresh_fails() {
+        use nomi_config::ServerConfig;
+        use tempfile::tempdir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        use crate::flowy::UserMe;
+        use crate::profile::ProfileStore;
+        use crate::session::ServerTokens;
+
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/user/nickname"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"nickname":"Alice"}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/me"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(
+                r#"{"code":500,"msg":"boom","data":null}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let data_dir = tempdir().expect("tmpdir");
+        ProfileStore::new(data_dir.path())
+            .save(&UserMe {
+                id: 2318038547,
+                nickname: Some("old".into()),
+                email: Some("user@example.com".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("seed profile");
+        let config = ServerConfig {
+            base_url: server.uri(),
+            ..Default::default()
+        };
+        let mgr = super::AuthManager::new(config, data_dir.path()).expect("auth manager");
+        mgr.session()
+            .save_tokens(ServerTokens::from_jwt("jwt-nickname".into()))
+            .await
+            .expect("save token");
+
+        let profile = mgr.update_nickname("Alice").await.expect("update");
+        assert_eq!(profile.nickname.as_deref(), Some("Alice"));
+        assert_eq!(profile.email.as_deref(), Some("user@example.com"));
+        assert_eq!(profile.display_name(), "Alice");
     }
 }

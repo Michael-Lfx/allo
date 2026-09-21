@@ -7692,6 +7692,8 @@ export interface ICloudWhoami {
   plan?: string;
   /** Raw plan code, e.g. "FreePlan". */
   planCode?: string;
+  /** Cloud nickname from `/user/me` when set. */
+  nickname?: string;
 }
 
 export interface ICloudDeviceActivationStatus {
@@ -7756,6 +7758,9 @@ export const cloud = {
   getSettings: httpGet<ICloudServerSettings, void>('/api/cloud/settings'),
   updateSettings: httpPatch<ICloudServerSettings, IUpdateCloudServerSettings>('/api/cloud/settings'),
   whoami: httpGet<ICloudWhoami, void>('/api/cloud/whoami'),
+  updateNickname: httpPut<ICloudWhoami, { nickname: string }>('/api/cloud/nickname', (p) => ({
+    nickname: p.nickname,
+  })),
   deviceStatus: httpGet<ICloudDeviceActivationStatus, void>('/api/cloud/device/status'),
   retryDeviceActivation: httpPost<ICloudDeviceActivationRetryResponse, void>('/api/cloud/device/activate'),
   loginStart: httpPost<ICloudLoginStartResponse, { method?: string }>('/api/cloud/login/start', (p) => ({

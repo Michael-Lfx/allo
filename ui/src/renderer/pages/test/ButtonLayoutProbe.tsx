@@ -190,6 +190,7 @@ const CHAT_PROBE_CLOUD_AUTH: CloudAuthContextValue = {
   refresh: async () => 'authenticated',
   retryModelEnvironment: async () => undefined,
   logout: async () => undefined,
+  updateNickname: async () => ({ authenticated: true }),
 };
 
 const ProbeCloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children }) => (

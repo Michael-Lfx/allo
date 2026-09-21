@@ -21,7 +21,7 @@
 `CloudAuthContext` 驱动（whoami 轮询、offline 容忍、失效重定向）。
 
 后端路由挂载在 `/api/cloud/*` 且套 `auth_middleware`：`login/start` /
-`login/continue` / `logout` / `whoami` / `settings` / `website-entry` /
+`login/continue` / `logout` / `whoami` / `nickname` / `settings` / `website-entry` /
 `device/status|activate`（设备指纹 + GeoIP，尽力而为）/ `sync-models`。
 
 ## 云端模型目录

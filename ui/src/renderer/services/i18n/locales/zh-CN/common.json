@@ -205,7 +205,14 @@
     "loadingCredits": "加载中…",
     "creditsUnavailable": "—",
     "refreshCredits": "刷新积分余额",
-    "openWebsite": "打开官网"
+    "openWebsite": "打开官网",
+    "editNickname": "修改昵称",
+    "nicknamePlaceholder": "输入要展示的名字",
+    "nicknameSaved": "昵称已更新",
+    "nicknameRequired": "请输入昵称",
+    "nicknameTooLong": "昵称最多 50 个字符",
+    "nicknameInvalid": "昵称不能包含换行等控制字符",
+    "nicknameSaveFailed": "保存昵称失败"
   },
   "supportChat": {
     "title": "联系客服",

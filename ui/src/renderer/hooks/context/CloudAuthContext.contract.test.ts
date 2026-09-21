@@ -44,4 +44,10 @@ describe('cloud authentication model-environment contract', () => {
     expect(text.includes('CloudSessionExpiredModal')).toBe(true);
     expect(text.includes("window.location.hash = '/cloud-login'")).toBe(true);
   });
+
+  test('applies nickname whoami without a full auth refresh', () => {
+    const text = source();
+    expect(text.includes('updateNickname')).toBe(true);
+    expect(text.includes('ipcBridge.cloud.updateNickname.invoke')).toBe(true);
+  });
 });

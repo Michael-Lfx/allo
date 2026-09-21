@@ -63,6 +63,7 @@ export interface CloudAuthContextValue {
   refresh: (options?: { forceModelSync?: boolean; waitForModels?: boolean }) => Promise<CloudAuthRefreshResult>;
   retryModelEnvironment: () => Promise<void>;
   logout: () => Promise<void>;
+  updateNickname: (nickname: string) => Promise<ICloudWhoami>;
 }
 
 export const CloudAuthContext = createContext<CloudAuthContextValue | undefined>(undefined);
@@ -373,6 +374,12 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
     }
   }, [beginRun, isCurrentRun]);
 
+  const updateNickname = useCallback(async (nickname: string): Promise<ICloudWhoami> => {
+    const profile = await ipcBridge.cloud.updateNickname.invoke({ nickname });
+    setWhoami(profile);
+    return profile;
+  }, []);
+
   React.useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const onCloudAuthExpired = () => {
@@ -424,8 +431,9 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
       refresh,
       retryModelEnvironment,
       logout,
+      updateNickname,
     }),
-    [authState, logout, modelEnvironment, modelError, modelStatus, ready, refresh, retryModelEnvironment, status, whoami]
+    [authState, logout, modelEnvironment, modelError, modelStatus, ready, refresh, retryModelEnvironment, status, updateNickname, whoami]
   );
 
   return (

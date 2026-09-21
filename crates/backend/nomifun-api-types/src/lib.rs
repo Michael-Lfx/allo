@@ -159,7 +159,8 @@ pub use cloud::{
     CloudLoginContinueRequest, CloudLoginFailedResponse, CloudLoginInput,
     CloudLoginPendingResponse, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudSyncModelsResponse,
-    CloudWebsiteEntryResponse, CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+    CloudWebsiteEntryResponse, CloudWhoamiResponse, UpdateCloudNicknameRequest,
+    UpdateCloudServerSettingsRequest,
     VideoGrowthEvent, VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse,
     VideoGrowthMetricsResponse,
 };

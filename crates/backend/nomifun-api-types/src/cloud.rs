@@ -81,6 +81,15 @@ pub struct CloudWhoamiResponse {
     /// Raw plan code from server, e.g. "FreePlan" / "ProPlan".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_code: Option<String>,
+    /// Cloud nickname from `/user/me` when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCloudNicknameRequest {
+    pub nickname: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
