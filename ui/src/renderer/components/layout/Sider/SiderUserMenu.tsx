@@ -6,11 +6,14 @@
 
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Popover, Tooltip } from '@arco-design/web-react';
-import { Check, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
+import { Input, Modal, Popover, Tooltip } from '@arco-design/web-react';
+import { Check, Edit, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
 import classNames from 'classnames';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
+import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
 import CreditsWebsiteButton from '@/renderer/components/base/CreditsWebsiteButton';
+import { AppMessage as MessageToast } from '@/renderer/components/notifications';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 import { changeLanguage, normalizeLanguageCode, supportedLanguages } from '@/renderer/services/i18n';
@@ -21,6 +24,12 @@ const LANGUAGE_LABELS: Record<string, string> = {
   'en-US': 'English',
 };
 
+const NICKNAME_MAX_CHARS = 50;
+
+const nicknameCharCount = (value: string): number => Array.from(value).length;
+
+const clipNickname = (value: string): string => Array.from(value).slice(0, NICKNAME_MAX_CHARS).join('');
+
 interface SiderUserMenuProps {
   isMobile: boolean;
   collapsed: boolean;
@@ -28,6 +37,7 @@ interface SiderUserMenuProps {
   userLabel?: string;
   planLabel?: string;
   showLogout?: boolean;
+  showEditNickname?: boolean;
   onLogout?: () => void;
   onOpenCompanion?: () => void;
 }
@@ -42,17 +52,22 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   userLabel,
   planLabel,
   showLogout = false,
+  showEditNickname = false,
   onLogout,
   onOpenCompanion,
 }) => {
   const { t, i18n } = useTranslation();
   const { openSupportChat, hasUnread, unreadCount } = useSupportChat();
+  const { whoami, updateNickname } = useCloudAuth();
   const displayName = userLabel?.trim() || '—';
   const planText = planLabel?.trim() || '';
   const [menuVisible, setMenuVisible] = useState(false);
   const [skinVisible, setSkinVisible] = useState(false);
   const [languageVisible, setLanguageVisible] = useState(false);
   const [creditsHovered, setCreditsHovered] = useState(false);
+  const [nicknameModalVisible, setNicknameModalVisible] = useState(false);
+  const [nicknameDraft, setNicknameDraft] = useState('');
+  const [nicknameSaving, setNicknameSaving] = useState(false);
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
 
   useEffect(() => {
@@ -86,6 +101,56 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     setSkinVisible(false);
     setLanguageVisible(false);
     onOpenCompanion?.();
+  };
+
+  const handleOpenNickname = () => {
+    setMenuVisible(false);
+    setSkinVisible(false);
+    setLanguageVisible(false);
+    const initial = (whoami?.nickname ?? whoami?.username ?? '').trim();
+    setNicknameDraft(clipNickname(initial));
+    setNicknameModalVisible(true);
+  };
+
+  const nicknameErrorMessage = (error: unknown): string => {
+    const raw = isBackendHttpError(error)
+      ? error.backendMessage || error.message
+      : error instanceof Error
+        ? error.message
+        : '';
+    const lower = raw.toLowerCase();
+    if (lower.includes('required') || lower.includes('empty')) {
+      return t('common.userMenu.nicknameRequired', { defaultValue: '请输入昵称' });
+    }
+    if (lower.includes('too long') || lower.includes('at most 50')) {
+      return t('common.userMenu.nicknameTooLong', { defaultValue: '昵称最多 50 个字符' });
+    }
+    if (lower.includes('invalid')) {
+      return t('common.userMenu.nicknameInvalid', { defaultValue: '昵称不能包含换行等控制字符' });
+    }
+    return raw.trim() || t('common.userMenu.nicknameSaveFailed', { defaultValue: '保存昵称失败' });
+  };
+
+  const handleSaveNickname = async () => {
+    const next = nicknameDraft.trim();
+    if (!next) {
+      MessageToast.error(t('common.userMenu.nicknameRequired', { defaultValue: '请输入昵称' }));
+      return;
+    }
+    if (nicknameCharCount(next) > NICKNAME_MAX_CHARS) {
+      MessageToast.error(t('common.userMenu.nicknameTooLong', { defaultValue: '昵称最多 50 个字符' }));
+      return;
+    }
+    setNicknameSaving(true);
+    try {
+      await updateNickname(next);
+      MessageToast.success(t('common.userMenu.nicknameSaved', { defaultValue: '昵称已更新' }));
+      setNicknameModalVisible(false);
+    } catch (error) {
+      MessageToast.error(nicknameErrorMessage(error));
+    } finally {
+      setNicknameSaving(false);
+    }
   };
 
   const currentLanguage = normalizeLanguageCode(i18n.language);
@@ -237,6 +302,15 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         ) : null}
       </button>
 
+      {showEditNickname && (
+        <button type='button' className={menuRowClass} onClick={handleOpenNickname}>
+          <Edit theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <span className='flex-1 text-12px text-t-primary'>
+            {t('common.userMenu.editNickname', { defaultValue: '修改昵称' })}
+          </span>
+        </button>
+      )}
+
       {showLogout && onLogout && (
         <>
           <div className='mx-4px mt-8px h-1px bg-[var(--color-border-2)]' />
@@ -318,6 +392,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   );
 
   return (
+    <>
     <Popover
       className='sider-soft-popover sider-user-menu-popover'
       trigger='click'
@@ -340,6 +415,33 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         {trigger}
       </Tooltip>
     </Popover>
+    <Modal
+      title={t('common.userMenu.editNickname', { defaultValue: '修改昵称' })}
+      visible={nicknameModalVisible}
+      onOk={() => void handleSaveNickname()}
+      onCancel={() => setNicknameModalVisible(false)}
+      okText={t('common.save')}
+      cancelText={t('common.cancel')}
+      confirmLoading={nicknameSaving}
+      okButtonProps={{ disabled: !nicknameDraft.trim() || nicknameSaving }}
+      style={{ borderRadius: '12px' }}
+      alignCenter
+      getPopupContainer={() => document.body}
+    >
+      <Input
+        autoFocus
+        value={nicknameDraft}
+        maxLength={NICKNAME_MAX_CHARS}
+        onChange={(value) => setNicknameDraft(clipNickname(value))}
+        onPressEnter={() => void handleSaveNickname()}
+        placeholder={t('common.userMenu.nicknamePlaceholder', { defaultValue: '输入要展示的名字' })}
+        allowClear
+      />
+      <div className='mt-8px text-11px text-t-tertiary tabular-nums'>
+        {nicknameCharCount(nicknameDraft)}/{NICKNAME_MAX_CHARS}
+      </div>
+    </Modal>
+    </>
   );
 };
 

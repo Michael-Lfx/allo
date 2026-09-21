@@ -18,6 +18,7 @@ interface SiderFooterProps {
   userLabel?: string;
   planLabel?: string;
   showLogout?: boolean;
+  showEditNickname?: boolean;
   onLogout?: () => void;
   onOpenCompanion?: () => void;
   onSettingsClick: () => void;
@@ -39,6 +40,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
   userLabel,
   planLabel,
   showLogout = false,
+  showEditNickname = false,
   onLogout,
   onOpenCompanion,
   onSettingsClick,
@@ -114,6 +116,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
             userLabel={userLabel}
             planLabel={planLabel}
             showLogout={showLogout}
+            showEditNickname={showEditNickname}
             onLogout={onLogout}
             onOpenCompanion={onOpenCompanion}
           />
@@ -128,6 +131,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
             userLabel={userLabel}
             planLabel={planLabel}
             showLogout={showLogout}
+            showEditNickname={showEditNickname}
             onLogout={onLogout}
             onOpenCompanion={onOpenCompanion}
           />

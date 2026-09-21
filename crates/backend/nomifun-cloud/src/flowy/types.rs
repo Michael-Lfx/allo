@@ -157,6 +157,50 @@ impl UserMe {
     }
 }
 
+pub const NICKNAME_MAX_CHARS: usize = 50;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NicknameError {
+    Required,
+    TooLong,
+    Invalid,
+}
+
+impl NicknameError {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Required => "nickname is required",
+            Self::TooLong => "nickname must be at most 50 characters",
+            Self::Invalid => "nickname contains invalid characters",
+        }
+    }
+}
+
+/// Trim and validate a cloud display nickname (matches Flowy `PUT /user/nickname`).
+pub fn normalize_nickname(raw: &str) -> Result<String, NicknameError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(NicknameError::Required);
+    }
+    if trimmed.chars().count() > NICKNAME_MAX_CHARS {
+        return Err(NicknameError::TooLong);
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(NicknameError::Invalid);
+    }
+    Ok(trimmed.to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateNicknameRequest {
+    pub nickname: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateNicknameResponse {
+    pub nickname: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreditsBalance {
     pub balance: i64,
@@ -653,10 +697,7 @@ pub struct ChatSessionReportResponse {
 
 #[cfg(test)]
 mod plan_label_tests {
-    use super::{
-        completion_max_tokens, format_plan_tier, strip_plan_suffix, AvailableModelsClaw,
-        ClawModelEntry, ClawModelExtra, UserCurrentPlan,
-    };
+    use super::{format_plan_tier, strip_plan_suffix, UserCurrentPlan};
 
     #[test]
     fn strip_plan_suffix_removes_english_plan() {
@@ -687,6 +728,53 @@ mod plan_label_tests {
         };
         assert_eq!(plan.display_label().as_deref(), Some("Free"));
     }
+}
+
+#[cfg(test)]
+mod nickname_tests {
+    use super::{normalize_nickname, NicknameError, NICKNAME_MAX_CHARS};
+
+    #[test]
+    fn trims_and_accepts_unicode_nickname() {
+        assert_eq!(normalize_nickname("  Alice  ").unwrap(), "Alice");
+        assert_eq!(normalize_nickname("你好🎉").unwrap(), "你好🎉");
+    }
+
+    #[test]
+    fn rejects_blank_nickname() {
+        assert_eq!(normalize_nickname("").unwrap_err(), NicknameError::Required);
+        assert_eq!(normalize_nickname("   ").unwrap_err(), NicknameError::Required);
+    }
+
+    #[test]
+    fn rejects_nickname_longer_than_fifty_unicode_chars() {
+        let too_long: String = "你".repeat(NICKNAME_MAX_CHARS + 1);
+        assert_eq!(
+            normalize_nickname(&too_long).unwrap_err(),
+            NicknameError::TooLong
+        );
+        let max: String = "你".repeat(NICKNAME_MAX_CHARS);
+        assert_eq!(normalize_nickname(&max).unwrap(), max);
+    }
+
+    #[test]
+    fn rejects_control_characters() {
+        assert_eq!(
+            normalize_nickname("Alice\nBob").unwrap_err(),
+            NicknameError::Invalid
+        );
+        assert_eq!(
+            normalize_nickname("Alice\tBob").unwrap_err(),
+            NicknameError::Invalid
+        );
+    }
+}
+
+#[cfg(test)]
+mod claw_catalog_tests {
+    use super::{
+        completion_max_tokens, AvailableModelsClaw, ClawModelEntry, ClawModelExtra,
+    };
 
     #[test]
     fn claw_model_extra_parses_model_dev_fields() {
@@ -750,6 +838,7 @@ mod plan_label_tests {
         assert_eq!(completion_max_tokens(Some(0), 8192), 8192);
     }
 
+    #[test]
     fn claw_model_extra_treats_zero_or_empty_as_unset() {
         assert_eq!(ClawModelExtra::parse("").context_window_tokens(), None);
         assert_eq!(ClawModelExtra::parse("").max_output_tokens(), None);

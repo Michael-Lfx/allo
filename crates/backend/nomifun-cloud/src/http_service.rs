@@ -227,6 +227,7 @@ impl CloudService {
                     server_base_url: None,
                     plan: None,
                     plan_code: None,
+                    nickname: None,
                 });
             }
             Err(e) => return Err(AppError::Internal(e.to_string())),
@@ -257,7 +258,25 @@ impl CloudService {
             },
             plan,
             plan_code,
+            nickname: profile.as_ref().and_then(|p| {
+                p.nickname
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+            }),
         })
+    }
+
+    pub async fn update_nickname(
+        &self,
+        nickname: String,
+    ) -> Result<nomifun_api_types::CloudWhoamiResponse, AppError> {
+        let mgr = self.auth_manager()?;
+        mgr.update_nickname(&nickname)
+            .await
+            .map_err(ServerClientError::into_app_error)?;
+        self.whoami().await
     }
 
     pub fn data_dir(&self) -> &PathBuf {

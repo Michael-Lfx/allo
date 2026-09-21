@@ -181,6 +181,28 @@ impl FlowyApiClient {
         self.get_data("/user/me", Some(session)).await
     }
 
+    pub async fn update_nickname(
+        &self,
+        session: &ServerSession,
+        nickname: &str,
+    ) -> Result<String, ServerClientError> {
+        let nickname = normalize_nickname(nickname).map_err(|err| ServerClientError::Api {
+            code: 400,
+            msg: err.message().to_string(),
+        })?;
+        let body = UpdateNicknameRequest {
+            nickname: nickname.clone(),
+        };
+        let response: UpdateNicknameResponse = self
+            .put_data("/user/nickname", Some(session), &body)
+            .await?;
+        let returned = response.nickname.trim();
+        if returned.is_empty() {
+            return Ok(nickname);
+        }
+        Ok(returned.to_string())
+    }
+
     pub async fn get_credits_balance(
         &self,
         session: &ServerSession,
@@ -430,6 +452,36 @@ impl FlowyApiClient {
             .map_err(|e| ServerClientError::Http(e.to_string()))?;
         handle_http_and_envelope(status, &body)
     }
+
+    async fn put_data<T, B: Serialize>(
+        &self,
+        path: &str,
+        session: Option<&ServerSession>,
+        body: &B,
+    ) -> Result<T, ServerClientError>
+    where
+        T: DeserializeOwned,
+    {
+        let env = self.put_envelope(path, session, body).await?;
+        env.into_data()
+    }
+
+    async fn put_envelope<B: Serialize>(
+        &self,
+        path: &str,
+        session: Option<&ServerSession>,
+        body: &B,
+    ) -> Result<FlowyEnvelope, ServerClientError> {
+        let json = serde_json::to_value(body)
+            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
+        let resp = self.transport.put_json(path, session, json).await?;
+        let status = resp.status().as_u16();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| ServerClientError::Http(e.to_string()))?;
+        handle_http_and_envelope(status, &body)
+    }
 }
 
 #[cfg(test)]
@@ -556,5 +608,58 @@ mod api_tests {
             available_models_claw_path(6, ""),
             "/api/v2/model/availableListClaw?category=6"
         );
+    }
+
+    #[tokio::test]
+    async fn update_nickname_puts_trimmed_body() {
+        use wiremock::matchers::body_json;
+
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/user/nickname"))
+            .and(body_json(serde_json::json!({ "nickname": "Alice" })))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"操作成功","data":{"nickname":"Alice"}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let config = test_config(&server.uri());
+        let api = FlowyApiClient::new(&config).expect("client");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let session = ServerSession::from_config(&config, tmp.path());
+        session
+            .save_tokens(crate::session::ServerTokens::from_jwt("jwt-nickname".into()))
+            .await
+            .expect("save token");
+
+        let nickname = api
+            .update_nickname(&session, "  Alice  ")
+            .await
+            .expect("update nickname");
+        assert_eq!(nickname, "Alice");
+    }
+
+    #[tokio::test]
+    async fn update_nickname_rejects_blank_without_http() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/user/nickname"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let config = test_config(&server.uri());
+        let api = FlowyApiClient::new(&config).expect("client");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let session = ServerSession::from_config(&config, tmp.path());
+        let err = api
+            .update_nickname(&session, "   ")
+            .await
+            .expect_err("blank nickname");
+        match err {
+            crate::error::ServerClientError::Api { code: 400, .. } => {}
+            other => panic!("expected 400, got {other}"),
+        }
     }
 }

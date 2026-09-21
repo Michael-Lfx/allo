@@ -2578,33 +2578,31 @@ fn complete_main_thread_setup(
     // Mission Control while leaving the titlebar visually empty.
     //
     // Vertically center the traffic lights on the React toolbar's button
-    // line. The React titlebar (`.app-titlebar--mac`, height 45px in
-    // ui/.../titlebar.css) centers its 36px buttons at y≈22.5px from the
-    // window top, but AppKit's default places the 16px lights at center
-    // y≈16px — ~6.5px too high. tao's `inset_traffic_lights` (view.rs)
-    // makes `y` the height of the button *container* (16 + y) and
-    // bottom-anchors the lights in it with a ~10px margin, so the lights'
-    // center-from-top works out to (y - 2). To land the center at 22.5px:
-    // y = 24.5 (empirically verified via the Accessibility API).
+    // line. The React titlebar (`.app-titlebar--mac`, `--titlebar-height`
+    // 36px in ui/.../titlebar.css) centers its 28px buttons at y≈18px
+    // from the window top, but AppKit's default places the 16px lights
+    // at center y≈16px — ~2px too high. tao's `inset_traffic_lights`
+    // (view.rs) makes `y` the height of the button *container* (16 + y)
+    // and bottom-anchors the lights in it with a ~10px margin, so the
+    // lights' center-from-top works out to (y - 2). To land the center
+    // at 18px: y = 20.
     //
     // Horizontally, `x` is the left edge of the close button's frame
     // (tao sets `rect.origin.x = x` per button). That frame is 14px
     // wide with the visible 12px circle centered in it (1px each
     // side), so the circle's left gap from the window edge is x + 1.
     // Balance that gap with the vertical whitespace around the lights:
-    // (45 - 12) / 2 = 16.5px above/below the circle, hence
-    // x = 16.5 - 1 = 15.5. (AppKit's native ~8px inset assumes a 28px
-    // titlebar and looks glued to the corner in a 45px one; Apple's
-    // own apps use ~16-20px in tall toolbars.) The lights then span up
-    // to zoom's right edge at 15.5 + 2*20 + 14 = 69.5px, still clear
-    // of the React menu, which starts at 84px (8px titlebar padding +
-    // 76px margin-left in Titlebar/index.tsx).
+    // (36 - 12) / 2 = 12px above/below the circle, hence
+    // x = 12 - 1 = 11. The lights then span up to zoom's right edge at
+    // 11 + 2*20 + 14 = 65px, still clear of the React menu, which
+    // starts at 76px (`margin-left` in Titlebar/index.tsx; mac overlay
+    // titlebar padding is 0).
     // (`traffic_light_position` requires Overlay + decorations:true, both set.)
     #[cfg(target_os = "macos")]
     let win_builder = win_builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(15.5, 24.5));
+        .traffic_light_position(tauri::LogicalPosition::new(11.0, 20.0));
     #[cfg(not(target_os = "macos"))]
     let win_builder = win_builder.decorations(false);
     if let Some(error) = server.current_failure() {

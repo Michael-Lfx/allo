@@ -17,4 +17,10 @@ describe('sider user language menu', () => {
     expect(source.includes('setMenuVisible(false)')).toBe(true);
     expect(source.includes('window.requestAnimationFrame(() => window.requestAnimationFrame(apply))')).toBe(true);
   });
+
+  test('offers a nickname editor for cloud-authenticated desktop accounts', () => {
+    expect(source.includes('showEditNickname')).toBe(true);
+    expect(source.includes('common.userMenu.editNickname')).toBe(true);
+    expect(source.includes('updateNickname(next)')).toBe(true);
+  });
 });

@@ -48,6 +48,18 @@ describe('Titlebar instant icon tooltips', () => {
     expect(titlebarSource.includes('collapsed={Boolean(layout?.siderCollapsed)}')).toBe(true);
   });
 
+  test('sizes the desktop titlebar from the shared height token', () => {
+    expect(titlebarStyles).toMatch(/\.app-titlebar\s*\{[\s\S]*?height:\s*var\(--titlebar-height\)/);
+    expect(titlebarStyles).toMatch(/\.app-titlebar--mac\s*\{[\s\S]*?height:\s*var\(--titlebar-height\)/);
+    expect(titlebarStyles).toMatch(/\.app-titlebar__button\s*\{[\s\S]*?height:\s*28px/);
+  });
+
+  test('keeps window-control hover chips at the compact titlebar button size', () => {
+    expect(titlebarStyles).toMatch(/\.app-window-controls__button\s*\{[\s\S]*?height:\s*28px/);
+    expect(titlebarStyles).toMatch(/\.app-window-controls__button\s*\{[\s\S]*?border-radius:\s*6px/);
+    expect(titlebarStyles).not.toMatch(/\.app-window-controls__button\s*\{[\s\S]*?height:\s*100%/);
+  });
+
   test('uses a stable three-column desktop layout and limits new-conversation to chats and Settings', () => {
     expect(titlebarSource.includes("'app-titlebar--wide': !layout?.isMobile")).toBe(true);
     expect(titlebarSource.includes("data-titlebar-group='navigation'")).toBe(true);

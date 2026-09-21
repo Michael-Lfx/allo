@@ -84,13 +84,17 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const showLogout = showLocalLogout || showCloudLogout;
   const userLabel = useMemo(() => {
     if (showCloudLogout) {
-      return formatSiderAccountLabel({ username: whoami?.username, email: whoami?.email });
+      return formatSiderAccountLabel({
+        nickname: whoami?.nickname,
+        username: whoami?.username,
+        email: whoami?.email,
+      });
     }
     return formatSiderAccountLabel({
       username: localUser?.username ?? whoami?.username,
       email: whoami?.email,
     });
-  }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
+  }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.nickname, whoami?.username]);
   const planLabel = whoami?.plan ?? '';
 
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
@@ -643,6 +647,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           userLabel={userLabel}
           planLabel={planLabel}
           showLogout={showLogout}
+          showEditNickname={showCloudLogout}
           onLogout={handleLogout}
           onOpenCompanion={handleNomiClick}
           onSettingsClick={handleSettingsClick}

@@ -237,6 +237,15 @@ impl HttpTransport {
         self.request(Method::POST, path, session, Some(body)).await
     }
 
+    pub async fn put_json(
+        &self,
+        path: &str,
+        session: Option<&ServerSession>,
+        body: serde_json::Value,
+    ) -> Result<Response, ServerClientError> {
+        self.request(Method::PUT, path, session, Some(body)).await
+    }
+
     pub async fn delete(
         &self,
         path: &str,

@@ -74,6 +74,7 @@ const PROBE_AUTH: CloudAuthContextValue = {
   refresh: async () => 'authenticated',
   retryModelEnvironment: async () => undefined,
   logout: async () => undefined,
+  updateNickname: async () => ({ authenticated: true }),
 };
 
 const makeMessage = (

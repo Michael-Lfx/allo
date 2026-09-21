@@ -30,4 +30,24 @@ describe('formatSiderAccountLabel', () => {
     expect(formatSiderAccountLabel({})).toBe('');
     expect(formatSiderAccountLabel({ username: '  ', email: null })).toBe('');
   });
+
+  test('shows a custom nickname as-is even when it looks like an email', () => {
+    expect(
+      formatSiderAccountLabel({
+        nickname: 'foo@bar.com',
+        username: 'foo@bar.com',
+        email: 'foo@bar.com',
+      })
+    ).toBe('foo@bar.com');
+  });
+
+  test('prefers nickname over username and email', () => {
+    expect(
+      formatSiderAccountLabel({
+        nickname: '你好🎉',
+        username: '2318038547',
+        email: 'user@example.com',
+      })
+    ).toBe('你好🎉');
+  });
 });

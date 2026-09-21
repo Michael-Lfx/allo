@@ -205,7 +205,14 @@
     "loadingCredits": "Loading…",
     "creditsUnavailable": "—",
     "refreshCredits": "Refresh balance",
-    "openWebsite": "Open website"
+    "openWebsite": "Open website",
+    "editNickname": "Edit nickname",
+    "nicknamePlaceholder": "Enter a display name",
+    "nicknameSaved": "Nickname updated",
+    "nicknameRequired": "Enter a nickname",
+    "nicknameTooLong": "Nickname must be at most 50 characters",
+    "nicknameInvalid": "Nickname cannot include line breaks or other control characters",
+    "nicknameSaveFailed": "Could not save nickname"
   },
   "supportChat": {
     "title": "Contact support",
