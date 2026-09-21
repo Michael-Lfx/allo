@@ -117,13 +117,37 @@ A_spawned=12   A_alive_after_spawn=8   A_still_running_after_3s=0
 
 **这不是"没测"，是"测了且不通"。**
 
-**现象：** 在 `egress: allow` 下，直接访问外网**可以**，但**走本地代理的连接全部超时**。
+**⚠️ 准确的问题定性：触发条件是"请求要经过本机端口上的代理"，与联网权限无关。**
 
-| 探针 | 结果 |
+一开始的猜测是"把联网权限打开就好了"——**实测证明不行**。出网与 loopback 是**两档独立权限**：
+
+| 权限 | 控制字段 | 本机状态 |
+|---|---|---|
+| 出网 | `network.egress` | ✅ 已开且**有效** |
+| 本机端口（loopback） | `network.ingress.hostLoopback`，需 OS 的 **ingress 支持位**（`PSE_SUPPORT_NETWORK_INGRESS`） | ❌ **系统不提供，无法打开** |
+
+**代码级依据：**
+
+```rust
+// base_container_runner.rs:446-449
+/// Whether BaseContainer can enforce `network.ingress.hostLoopback = "allow"`.
+pub fn supports_ingress_host_loopback_allow() -> bool {
+    Self::is_process_security_environment_usable()
+        && Self::query_psec_ingress_support().unwrap_or(false)      // ← 独立于 egress 的一位
+}
+```
+
+**现象：** 在 `egress: allow` 下，直接访问外网**可以**，但**凡是被派往 loopback 代理的连接全部超时**。
+
+| 探针（全部在 `egress: allow` 下） | 结果 |
 |---|---|
-| `gh api /rate_limit`（直连） | ✅ **exit 0，0.6 秒**，确实到达 GitHub |
-| `cargo fetch`（冷缓存，走代理） | ❌ exit 101，**95.9 秒**后 `[28] Timeout was reached (Failed to connect to 127.0.0.1 port 7890 after 21038 ms)` |
+| `gh api /rate_limit`（直连，不经代理） | ✅ **exit 0，0.6 秒**，确实到达 GitHub |
+| `cargo fetch`（经代理） | ❌ exit 101，**95.9 秒**后 `[28] Timeout was reached (Failed to connect to 127.0.0.1 port 7890 after 21038 ms)` |
 | TCP 直连 `127.0.0.1:7890` | ❌ `timeout` |
+| **连接沙箱内自己起的监听端口** | ❌ **失败** ← 关键对照 |
+
+**最后一行排除了"宿主代理没在跑"这一解释：连沙箱自己起的端口都连不上，
+说明 loopback 被容器整体拦掉，是设计而非故障。**
 
 **根因（已定位到具体配置）：**
 
