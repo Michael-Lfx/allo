@@ -549,3 +549,90 @@ DSH 若要用 `process.env` 钉住缓存落点，**必须自己拼一份含 `SYS
 3. 这不是策略漏洞，而是**能力缺口 × DSH 的必然取舍**：
    宽读根是 cargo/git/bun 的硬需求
 4. ⇒ **网络隔离成为唯一防线**（§5.4 已实测 `egress: deny` 生效）
+
+---
+
+## 十一、端到端验证：`nomi` 的真实工具链在沙箱内（2026-09-21 续）
+
+**这是"接入 `nomi-agent` 到底行不行"的最终答案。** 前几节测的是运行时与机制；
+本节让沙箱**跑仓库的真实命令**，并用「可写性矩阵 + 产物落盘」证明工作真的发生了。
+
+### 11.1 策略形态
+
+```json
+{
+  "version": "0.8.0-alpha",
+  "containment": "processcontainer",
+  "ui": { "disable": false },
+  "filesystem": {
+    "readwritePaths": ["C:\\workspace\\allo", "C:\\Users\\15165\\.cargo"],
+    "readonlyPaths":  ["C:\\"]
+  },
+  "network": { "egress": { "default": "deny" }, "ingress": { "default": "deny", "hostLoopback": "deny" } }
+}
+```
+
+**该形态下 `egress: deny` 全程未被触碰** —— 所有步骤都在离线状态完成。
+（仓库 `.cargo/config.toml` 用 rsproxy.cn 稀疏镜像 + `build-dir = build.noindex`；
+本轮编译未出网，靠的是**已预热的 1.8 GB registry 缓存**。）
+
+### 11.2 可写性矩阵（沙箱内实测）
+
+| 根 | 可写 | 说明 |
+|---|---|---|
+| `scratch` | ✅ | — |
+| 工作区 `C:\workspace\allo` | ✅ | 含 `.git`（`w_gitdir=yes`） |
+| `~/.cargo` 与其 `registry` | ✅ | 1.8 GB 依赖缓存，已挂载 |
+| `ui\node_modules` | ✅ | 前端依赖，已挂载 |
+| `%TEMP%`（AppContainer 包目录内） | ✅ | MXC 改写的路径 |
+| `~/.bun\install\cache` | ❌ `UnauthorizedAccessException` | 11.2 GB，**未挂载** |
+| `C:\Windows\System32` | ❌ `UnauthorizedAccessException` | 预期拒绝 |
+
+### 11.3 结果
+
+| 工具 | 命令 | 结果 |
+|---|---|---|
+| **cargo** | `build -p nomi-process-runtime --lib` | ✅ **exit 0**，产物 `libnomi_process_runtime.rlib` **16169 KB 落盘验证**，3 个 crate 真实编译 |
+| **git** | `rev-parse` / `status` / `rev-list` / `log` | ✅ HEAD=`c08d2d1da`，`status --porcelain` 0 行，`rev-list --count HEAD`=**4555**，`log -1` 正常 |
+| **bun** | `--version` / 包管理器 / 脚本执行 | ✅ `1.4.2`；**完整跑完 `bun run typecheck`，耗时 71.9s** |
+| **rustc** | `--version` | ✅ — |
+| **node** | `-e console.log` | ✅ `v26.8.2` |
+| **pwsh 5.1** | 沙箱内探针宿主 | ✅ — |
+
+### 11.4 `bun typecheck exit=2` 的归因 —— 与沙箱无关
+
+沙箱内 `bun_typecheck_exit=2`，末行 `vite.config.ts(185,24): error TS7006`。
+**在宿主上跑同一条命令做对照：**
+
+```
+HOST:    exit=2   secs=71.5   error lines: 73
+SANDBOX: exit=2              （同类 TS 错误）
+```
+
+**⇒ 类型检查失败是仓库既有状态，不是沙箱造成的。**
+两侧 exit code 一致、错误数量一致（73）、耗时接近（71.5s vs 71.9s）——
+**说明 `bun` 在沙箱内完整、忠实地跑完了一次真实的前端类型检查，性能几乎无损。**
+
+### 11.5 结论
+
+> **`nomi` 的真实工具链可以在 MXC 沙箱内正常工作**，且在 `egress: deny` 下完成
+> cargo 编译 + git 仓库读取 + bun 脚本执行。
+
+**但代价是这份策略很宽**：`readonlyPaths: ["C:\\"]` 意味着沙箱**可读整盘**。
+这是 §10.4 所述「无细粒度读拒绝」的直接后果 —— 也正是 `~/.bun` 缓存只能整体挂载
+（不能只授权必需子路径）的原因。
+
+**按用途分级策略是可行且必要的：**
+
+| 场景 | 建议策略 | 状态 |
+|---|---|---|
+| **编译 / 测试 / 类型检查** | 上面这份（宽读根 + 精确可写根） | ✅ 本轮实测通过 |
+| **安装依赖 / 拉取代码** | 需 `egress: allow`（或指向本地代理） | ❌ 未验证 |
+| **写工作区外** | 显式加入 `readwritePaths` | ✅ 机制已验证（`~/.cargo` 即此例） |
+
+### 11.6 待补（诚实声明）
+
+1. **`bun install` 未实测** —— 需 `egress: allow` 或预热的 `~/.bun` 缓存（当前被拒）
+2. **`gh` 未测** —— 同样需出网
+3. **全工作区 `cargo check`（27 crate）未测** —— 只测了单 crate，规模上限未知
+4. **`cargo fetch` 冷缓存未测** —— 本轮缓存是热的，冷缓存行为未知

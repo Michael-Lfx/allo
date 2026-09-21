@@ -11,29 +11,32 @@
 
 ## 一、结论
 
-> **不建议在当前状态下把 MXC 接入为 DSH 的执行边界。**
-> 但**建议立即接入它的学习/采集面**（`captureDenials`），因为它零风险、
-> 不需要提权、且能产出 DSH 目前完全缺失的能力面证据。
+> **结论（2026-09-21 两次校订后）：MXC 在技术上已经可用 ——
+> `nomi` 的真实工具链能在沙箱内跑通（cargo / git / bun，且 `egress: deny`）；
+> 缺的不是能力，是"越界可归因"这一环。**
+>
+> **建议：先在非交互/离线场景试点，同时把 E 组（类型化拒绝）提升为接入前置。**
+> 并立即接入 `captureDenials` 的采集面 —— 它零风险且产出目前完全缺失的能力面证据。
 
-**三条决定性理由：**
+**唯一剩余的拦路石：**
 
 | # | 理由 | 证据强度 |
 |---|---|---|
-| 1 | **被策略拦下的文件写入不会出现在 `captureDenials` 里** —— 拿不到文件类拒绝的分类，无法支撑 E 组的 `RetryDecision` | 强：净室隔离实验 |
-| 2 | **默认策略下主力工具链跑不起来** —— 需一次性打开多项策略开关（含 MSIX 的 Python 无解） | 强：11 × 2 运行时矩阵 |
-| 3 | **读权限需宽读根、且无细粒度读拒绝** —— 于是凭据目录随之可读，网络隔离成为唯一防线 | 强：策略形态对照 |
+| **1** | **被策略拦下的文件写入不会出现在 `captureDenials` 里** —— 越界不可归因，无法支撑 E 组的 `RetryDecision` | 强：净室隔离实验 |
+| 2 | **读权限需宽读根、且无细粒度读拒绝** —— 凭据目录随之可读，网络隔离成为唯一防线 | 强：策略形态对照 |
 
-> **🔴 二次校订（2026-09-21）：本文初版把"UI 策略 × Job 模型互斥"列为第 1 条理由，
-> 该结论已撤回。** 经真实代码路径实测：
-> `nomi-process-runtime` 的 Job **只设 `KILL_ON_JOB_CLOSE`、不带 UI 限制**，
-> 而 D-A 的失败条件**恰恰是"外层 Job 带 UI 限制"**。用本 crate 的真实
-> `ProcessSupervisor` 启动 `wxc-exec` **实测通过**（exit 0 / `reaped: true` / 无 error）。
-> **故 D-A 不构成对本仓库的阻断。** 详见
-> [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md) §2.2。
->
-> 附一处方法论问题：初版用 PowerShell 替身 harness（复刻 `arm_process_job` 的形状）
-> 得出结论，再推广到"DSH/nomi 不能用"。**替身能验证 Windows Job 语义，不能验证宿主代码路径。**
-> 现在的结论以 `tests/mxc_supervision_probe.rs` 的真实路径为准。
+**已撤回的两条（供追溯）：**
+
+| ~~初版理由~~ | 撤回依据 |
+|---|---|
+| ~~UI 策略与 Job 模型互斥~~ | `nomi-process-runtime` 的 Job **不带 UI 限制**；用真实 `ProcessSupervisor` 实测跑通 `wxc-exec`（§3.1） |
+| ~~默认策略下工具链跑不起来~~ | 端到端实测：`ui.disable:false` + 宽读根 + 精确可写根下，cargo 编译 / git 读取 / bun typecheck 全部正常（§3.7） |
+
+**方法论教训（写进本文档以免重犯）：** 初版用 PowerShell **替身** harness 复刻
+`arm_process_job` 的形状，再把结论外推到"本仓库不能用"。
+**替身能验证 Windows 语义，不能验证宿主代码路径。** 凡涉及本仓库可否接入的结论，
+一律以 `crates/shared/nomi-process-runtime/tests/mxc_supervision_probe.rs`
+（走真实 `ProcessSupervisor`）为准。
 
 **可行的起点是 `captureDenials` 而不是强制隔离**：它给的是**能力面证据**
 （被拦的 capability 清单），这正是 B 组策略学习缺的那部分输入。
@@ -152,6 +155,38 @@ totalDenials: 10                            <- 有捕获，但内容是：
 且 `LOCALAPPDATA` 被 MXC 改写进 AppContainer 包目录
 （`...\Packages\sandbox.{GUID}\AC`），这会改变工具链的缓存/配置落点。
 
+> **⚠️ 本节初版据此把"工具链"列为否决理由之一，该定位已被 §3.7 的端到端结果推翻**：
+> `ui.disable: false` 是**可配置的一次性前置**，不是不可逾越的障碍。
+
+### 3.7 ✅ 端到端验证：`nomi` 的真实工具链在沙箱内**能跑**（新增，2026-09-21）
+
+在 `ui.disable: false` + 宽读根 + 精确可写根 + **`egress: deny`** 下，让沙箱跑仓库真实命令：
+
+| 工具 | 命令 | 结果 |
+|---|---|---|
+| **cargo** | `build -p nomi-process-runtime --lib` | ✅ exit 0，`libnomi_process_runtime.rlib` **16169 KB 落盘验证**，3 crate 真实编译 |
+| **git** | `rev-parse` / `status` / `rev-list` / `log` | ✅ HEAD `c08d2d1da`，`rev-list --count HEAD`=**4555** |
+| **bun** | 包管理器 + 脚本执行 | ✅ `1.4.2`，**完整跑完 `bun run typecheck`（71.9s）** |
+| node / rustc | version / eval | ✅ |
+
+**`bun typecheck` 报 exit=2 与沙箱无关** —— 宿主对照同为 `exit=2`、同为 **73 个** TS 错误、
+耗时 71.5s vs 71.9s。**⇒ 真实前端类型检查在沙箱内完整跑完，性能几乎无损。**
+
+**可用策略（已验证）：**
+
+```json
+{ "ui": { "disable": false },
+  "filesystem": { "readwritePaths": ["<workspace>", "<CARGO_HOME>"], "readonlyPaths": ["C:\\"] },
+  "network": { "egress": { "default": "deny" } } }
+```
+
+**⇒ 这一条把"工具链"从否决理由降级为"可配置前置"。**
+代价是策略宽（`readonlyPaths: ["C:\\"]` = 可读整盘，即 §3.3 的后果），
+但**编译 / 测试 / 类型检查这一整类任务在离线沙箱内是可行的**。
+
+**未验证的边界：** `bun install` / `gh`（需出网）· 全工作区 27 crate ·
+冷缓存 `cargo fetch`。
+
 ### 3.5 🟢 只读边界比初判更好（纠正 §上一轮结论）
 
 | 策略形态 | 结果 |
@@ -187,22 +222,25 @@ DSH 为了让工具链工作必须给出宽读根，于是凭据目录随之可�
 
 | 形态 | 判定 | 依据 |
 |---|---|---|
-| **P1 · 每命令包装** | ❌ **否决** | §3.3 拒绝不可分型；§3.4 工具链需多处开口。**注意：不是 Job 冲突**（§3.1 已撤回该理由） |
+| **P1 · 每命令包装** | ⚠️ **可试点（有条件）** | 唯一剩余拦路石是 §3.3 拒绝不可分型；**Job 冲突已撤回**（§3.1）、**工具链已验证可跑**（§3.7）。建议先在**非交互/离线**场景试点 |
 | **P1 + R1（调用方让出 Job）** | ❌ **不必要** | R1 原本是为解 Job 冲突；该冲突不成立，故 R1 不再需要 |
 | **P2 · 长驻沙箱会话** | ⚠️ **未否决，但未实跑** | 本机只能走 `windows_sandbox`，而该功能 **Disabled** |
 | **仅采集面（`captureDenials`）** | ✅ **建议立即采用** | §3.3 证明它在能力面有价值且零成本 |
 | **不接入，维持现状** | ✅ 作为兜底 | 但 Windows 继续零隔离 |
 
-### 4.2 两条独立否决理由的强度
+### 4.2 唯一剩余的拦路石
 
-1. **§3.3（拒绝不可分型）** —— 强度高。净室隔离实验，用"只做一次被拒写入"的
-   workload 排除了噪声干扰。**这是当前最主要的拦路石。**
-2. **§3.4（工具链）** —— 强度高但**可工程化绕过**：`ui.disable: false`
-   + 宽读根 + 完整 env 块 + 可写根，是能配出来的。**成本是策略复杂度**，
-   不是不可能。Python 的 MSIX 除外（无解）。
+**§3.3（文件类拒绝不可分型）** —— 强度高。净室隔离实验，用"只做一次被拒写入"的
+workload 排除了噪声干扰。**这是当前唯一把 P1 从"可行"压回"有条件试点"的因素。**
 
-**⇒ 真正拦住 MXC 的是 1，不是 3；而 3 只是抬高接入成本。**
-（初版曾把"UI×Job 互斥"列为最强理由——**已撤回**，见 §3.1。）
+已撤回的两条理由（供追溯）：
+
+- ~~§3.1 UI×Job 互斥~~ —— 条件不成立；`nomi-process-runtime` 的 Job 不带 UI 限制，实测跑通
+- ~~§3.4 工具链不可用~~ —— 已由 §3.7 端到端实测推翻：cargo / git / bun 在离线沙箱内正常
+
+**⇒ 结论收敛为：技术上能跑，缺的是"拒绝可归因"这一环。**
+这恰好把优先级指向 **E 组**（类型化拒绝）——它不再只是"完成率优化"，
+而是**接入 MXC 的前置**。
 
 ---
 
@@ -212,22 +250,24 @@ DSH 为了让工具链工作必须给出宽读根，于是凭据目录随之可�
 
 | # | 行动 | 理由 |
 |---|---|---|
-| **1** | **接入 `captureDenials`（`mode: "block"`）作为能力面采集**：在隔离机上跑 DSH 的真实任务，收集 `capabilities` 类拒绝 | 零提权、不降安全（`block` 非 permissive）、产出 DSH 缺失的能力面证据 |
-| **2** | **把 B 组策略学习改用 `captureDenials` 而非 `--audit`** | `--audit` 注入 `permissiveLearningMode`（AppContainer 限制**不被强制**），只能在隔离机跑；`captureDenials.mode:"block"` 保持强制 |
-| **3** | **E 组按"越界即 `Abort`"落地** | §3.3 已判不可分型，E 组的设计前提已变 |
-| **4** | **向 MXC 上游提两个 issue** | ① `processcontainer` 在带 UI 限制的宿主 Job 内无法启动（可复现）② 文件类策略拒绝不进 `captureDenials` |
+| **1** | **接入 `captureDenials`（`mode: "block"`）作为能力面采集**：在隔离机上跑真实任务，收集 `capabilities` 类拒绝 | 零提权、不降安全（`block` 非 permissive）、产出缺失的能力面证据 |
+| **2** | **把 B 组策略学习改用 `captureDenials` 而非 `--audit`** | `--audit` 注入 `permissiveLearningMode`（限制**不被强制**），只能在隔离机跑；`captureDenials.mode:"block"` 保持强制 |
+| **3** | **E 组优先做，且定位升级为"接入前置"** | §3.3 判定文件类拒绝不可分型。E 组不再是完成率优化，而是让越界可归因的**必需件** |
+| **4** | **把 §3.7 已验证的策略固化为"沙箱化会话（离线编译/测试）"的基线** | `ui.disable:false` + 宽读根 + 精确可写根 + `egress:deny` 已实测可跑 cargo/git/bun |
+| **5** | **向 MXC 上游提 issue** | 文件类策略拒绝不进 `captureDenials`（可复现） |
 
 ### 5.2 需要先拍板才能做
 
 | # | 行动 | 待决 |
 |---|---|---|
-| **5** | 实跑 `windows_sandbox` 的 state-aware 会话 | 需启用 Windows 功能 **+ 重启**（见 §六） |
-| **6** | 是否接受 `ui.disable: false` 带来的 UI 隔离损失 | 该开关同时放开 Win32k，削弱剪贴板/输入注入隔离 |
+| **6** | 在**非交互 / 离线**场景试点 P1（编译、测试、类型检查） | 需接受 `ui.disable:false` 与宽读根（见 §六 D-2） |
+| **7** | 实跑 `windows_sandbox` 的 state-aware 会话 | 需启用 Windows 功能 **+ 重启**（见 §六 D-1） |
 
-### 5.3 明确不建议
+### 5.3 明确不要做
 
-- ❌ 把 MXC 当作"现在就能生效的安全边界"接入（README 自陈"任何 MXC profile 都不应被视为安全边界"）
-- ❌ 为接入 MXC 而让 DSH 放弃 Job（§4.1 P1+R1）
+- ❌ 把 MXC 当作"现在就能生效的完整安全边界"接入（README 自陈"任何 MXC profile 都不应被视为安全边界"）
+- ❌ 在**交互式**场景先试点（那会立刻撞上 §3.3 的不可归因 + 无人值守超时未定义）
+- ❌ 为接入 MXC 而让 `nomi-process-runtime` 放弃 Job（R1 已不必要）
 - ❌ 在用户机器上跑 `--audit`
 
 ### 5.4 与既有文档的关系
@@ -265,27 +305,30 @@ DSH 为了让工具链工作必须给出宽读根，于是凭据目录随之可�
 ## 八、一页速览
 
 ```
-问：MXC 现在能当 DSH/nomi 的执行边界吗？
-答：不能。两条理由：文件类拒绝不可分型 / 工具链需多处开口。
+问：MXC 现在能接入吗？
+答：技术上能。nomi 的真实工具链已在沙箱内跑通（cargo 编译 + git 读取 +
+    bun typecheck），而且是 egress: deny 离线跑通的。
 
-问：之前说"UI 策略与 Job 模型互斥"，还算数吗？
-答：不算。已撤回。那只在"外层 Job 自带 UI 限制"时成立，
-    而 nomi-process-runtime 的 Job 只设 KILL_ON_JOB_CLOSE。
-    用真实 ProcessSupervisor 实测：wxc-exec 跑通，exit 0，reaped: true。
+问：那还差什么？
+答：一样东西 —— 越界不可归因。被策略拦下的文件写入不进 captureDenials，
+    所以 DSH 分不清"策略拒绝"和"程序自己没权限"。
+    这正是 E 组（类型化拒绝）的活，它因此从优化项升级为接入前置。
 
-问：那 MXC 现在对 nomi 有什么用？
-答：captureDenials 的采集面。零提权、不降安全、产出缺失的能力面证据。
-    建议把 B 组策略学习从 --audit 改为 captureDenials.mode=block。
+问：之前说"UI×Job 互斥"和"工具链跑不起来"，还算数吗？
+答：都不算数，已撤回。
+    前者：nomi 的 Job 只设 KILL_ON_JOB_CLOSE，真实 ProcessSupervisor 实测跑通。
+    后者：ui.disable:false + 宽读根 + 精确可写根 = cargo/git/bun 全部正常。
+
+问：代价是什么？
+答：策略宽。readonlyPaths: ["C:\"] 是可读整盘，因为 Windows 没有细粒度读拒绝。
+    于是网络隔离（egress: deny，已实测生效）成为唯一防线。
 
 问：还有多少不确定？
-答：最主要两项 ——
-    ① windows_sandbox 的 state-aware 会话未实跑（本机功能 Disabled，需重启）
-    ② nomi-agent 的完整工具链（cargo/bun/git/gh）未在沙箱内端到端实跑
-       （crate 层已证明能启动 wxc-exec；运行时矩阵只在"运行时"层面测过）
+答：① windows_sandbox 的 state-aware 会话未实跑（本机功能 Disabled，需重启）
+    ② bun install / gh 未测（都需出网）
+    ③ 全工作区 27 crate 与冷缓存 cargo fetch 未测
 
 问：下一步最该做什么？
-答：① 实测 nomi-agent 完整工具链在沙箱内的可用性
-    ② 接 captureDenials 采集 ③ E 组改"越界即 Abort"
-    ④ 提上游 issue（文件类拒绝不进 captureDenials）
-    ⑤ 拍板是否启用 Windows Sandbox 功能以验证 P2
+答：① E 组（接入前置）② 接 captureDenials 采集
+    ③ 在非交互/离线场景试点 P1 ④ 提上游 issue（文件类拒绝不进 captureDenials）
 ```
