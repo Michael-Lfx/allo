@@ -4,6 +4,8 @@
 > **分支：** `feat/mxc-feasibility-verification`（基线 `origin/main` @ `37701ba85`）
 > **验证环境：** Windows 11 Insider build **29671** · MXC `ca7ea12ac6bd9f5420d6adecb37e32a8158da476`（`wxc-exec` 0.8.0，本机构建）
 > **原始证据：** [`agent-harness-mxc-verification-record.zh.md`](agent-harness-mxc-verification-record.zh.md)
+> **风险登记：** [`agent-harness-mxc-risk-register.zh.md`](agent-harness-mxc-risk-register.zh.md)
+> —— **本文答"能不能做"，风险清单答"做了会踩什么"。可行性验证不覆盖后者。**
 > **验证清单：** [`agent-harness-mxc-process-wrapper-feasibility.zh.md`](agent-harness-mxc-process-wrapper-feasibility.zh.md)
 > **上游语境：** [`agent-harness-permission-approval-sandbox.zh.md`](agent-harness-permission-approval-sandbox.zh.md)
 

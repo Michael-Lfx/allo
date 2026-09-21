@@ -4,6 +4,10 @@
 > **对应：** [`agent-harness-mxc-process-wrapper-feasibility.zh.md`](agent-harness-mxc-process-wrapper-feasibility.zh.md) 的五个验证门
 > **分支：** `feat/mxc-feasibility-verification`（基线 `origin/main` @ `37701ba85`）
 >
+> **⚠️ 本文只覆盖"可行性"（能不能跑通），不覆盖"接入风险"。**
+> 已实测的风险、未验证的未知、以及架构层面的缺口另见
+> [`agent-harness-mxc-risk-register.zh.md`](agent-harness-mxc-risk-register.zh.md)。
+>
 > **⚠️ 术语与验证对象的澄清（重要，2026-09-21 补）：**
 >
 > 本文中的 **"DSH" 指的是验证时用的替身 harness**（手写的 `job-harness.ps1` 等
@@ -260,7 +264,7 @@ PROBE|pid=26440|ppid=1840|parent=powershell.exe|job_ui=0x0|in_job=1|grandchild=4
 
 ---
 
-## 五、D-D · 运行时拒绝能否与启动失败区分 —— ❌ 不可分型 + 🔴 发现只读策略失效
+## 五、D-D · 运行时拒绝能否与启动失败区分 —— ❌ 不可分型（三个实例，见 §5.2b）
 
 ### 5.1 拒绝**确实生效**（先确认这一点）
 
@@ -298,6 +302,55 @@ cmd /c echo x > ...\blocked\fromcmd.txt
 
 **→ E 组的 `RetryDecision` 无法从子进程错误面可靠推导。** 必须走 D-D 的退路：
 **越界一律 `Abort`（停下等人）的保守口径**，或改从 MXC 的外层错误通道取信息（未验证）。
+
+### 5.2b 🔴 三个实例：拒绝不可归因的完整证据（2026-09-21 续）
+
+上面的判定是"不可区分"。补全后可见，实际情况比"不可区分"更糟 ——
+**三类完全不同的后果在子进程侧呈现为同一句话。**
+
+| # | 实例 | 实际读数 | 性质 |
+|---|---|---|---|
+| **1** | 被策略拦下的**文件写入** | 文件未落盘，子进程只看到 `UnauthorizedAccessException`；且**不进 `captureDenials`**（净室实验：10 条 denial 中 `write` 为 **0**） | 信息**缺失** |
+| **2** | **网络**被策略拦下 | `cargo fetch` → `exit=101`、`拒绝访问。(os error 5)`，**全文无一处提到网络**（`net_mention=False`） | 信息**主动误导** |
+| **3** | **冷缓存缺依赖** | 与实例 2 **完全同形**（同一退出码、同一句错误） | 与 2 不可区分 |
+
+**实例 2 的完整读数：**
+
+```
+R5|cargo_home_writable=yes          <- 排除文件权限因素
+R5|fetch_exit=101
+R5|fetch_secs=0.3
+R5|fetch_last= 拒绝访问。 (os error 5)
+R5|net_mention=False                <- 错误信息里没有任何网络线索
+```
+
+`os error 5` = `ERROR_ACCESS_DENIED`，在 Windows 上**同时也是文件权限错误**。
+为隔离变量，把 `CARGO_HOME` 指到**可写**目录后**仍是同一个 `os error 5`**
+（`cargo_home_writable=yes`），证明它来自网络策略而非文件权限。
+
+**为什么这一条最值钱：**
+
+前两个实例是"信息缺失"（agent 不知道发生了什么），
+**实例 2 是"信息主动误导"** —— 错误信息会把 agent 引向
+"检查文件权限 / 换路径 / 改 ACL"，而真实原因是网络被策略禁止。
+对照 §3.4 的完成率分析，这正好落在"第 2 类失败：看到普通报错 → 开始 debug
+一个不存在的问题"上。
+
+**⇒ E 组（类型化拒绝）从"完成率优化"升级为接入前置**，
+且**不能靠 `captureDenials` 解决**（见下）。
+
+### 5.2c 为什么 `captureDenials` 补不上这个洞
+
+已验证的机制分工：
+
+| 通道 | 覆盖什么 | 证据 |
+|---|---|---|
+| `captureDenials`（ETW 学习模式） | **capability** 类拒绝（`internetClient` 等）、registry 读、UI handles | 净室实验 10 条，`resourceType` = capability 4 / other 5 / ui 1 |
+| **另一条路径**（Tier 1 PSEC 文件规则 + AppContainer capability） | **文件与网络的实际拦截** | `--probe`：`tier: base-container` + `needsDaclAugmentation: false` + `baseContainerSupportsDenyPaths: true` |
+
+**两者不共享计数** ⇒ 文件与网络拒绝**不产生 `captureDenials` 条目**。
+`captureDenials` 对"哪些 capability 被拦"是有用的，但对"某个写/某个连接被拒了"无用 ——
+**而后者恰是 DSH 最需要分型的那一类。**
 
 ### 5.3 🔴 与 D-A 无关的第二个阻断：只读路径策略在本机**不生效**
 
