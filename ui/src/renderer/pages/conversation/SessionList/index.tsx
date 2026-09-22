@@ -16,11 +16,57 @@ import { cleanupSiderTooltips } from '@/renderer/utils/ui/siderTooltip';
 import { Input, Modal } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { FolderOpen } from '@icon-park/react';
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+  type Modifier,
+  type PointerSensorOptions,
+} from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
+
+class SmartPointerSensor extends PointerSensor {
+  static activators = [
+    {
+      eventName: 'onPointerDown' as const,
+      handler: (
+        { nativeEvent: event }: React.PointerEvent,
+        { onActivation }: PointerSensorOptions
+      ) => {
+        if (!event.isPrimary || event.button !== 0) {
+          return false;
+        }
+
+        const target = event.target as HTMLElement | null;
+        if (target) {
+          const isInteractive = target.closest(
+            '.sider-action-btn, .workpath-action-btn, .arco-checkbox, .session-batch-selection-checkbox, .arco-dropdown, [role="menuitem"], input, textarea, a'
+          );
+          if (isInteractive) {
+            return false;
+          }
+        }
+
+        onActivation?.({ event });
+        return true;
+      },
+    },
+  ];
+}
+
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
 
 import ConversationRow from './ConversationRow';
 import CompanionSessionGroup from './CompanionSessionGroup';
@@ -109,9 +155,69 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   }, []);
 
   const tree = useMemo(
-    () => buildWorkpathTree(conversations, [], ui.pinnedKeys, emptyProjectWorkpaths),
-    [conversations, ui.pinnedKeys, emptyProjectWorkpaths]
+    () => buildWorkpathTree(conversations, [], ui.pinnedKeys, emptyProjectWorkpaths, ui.customOrderKeys),
+    [conversations, ui.pinnedKeys, emptyProjectWorkpaths, ui.customOrderKeys]
   );
+
+  const sensors = useSensors(
+    useSensor(SmartPointerSensor, {
+      activationConstraint: {
+        delay: 250,
+        tolerance: 5,
+      },
+    })
+  );
+  const workpathKeys = useMemo(() => tree.map((node) => node.key), [tree]);
+
+  const [activeWorkpathDragKey, setActiveWorkpathDragKey] = useState<string | null>(null);
+
+  const handleWorkpathDragStart = useCallback((event: DragStartEvent) => {
+    setActiveWorkpathDragKey(String(event.active.id));
+  }, []);
+
+  const handleWorkpathDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      setActiveWorkpathDragKey(null);
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      ui.reorderWorkpaths(String(active.id), String(over.id), workpathKeys);
+    },
+    [ui, workpathKeys]
+  );
+
+  const handleWorkpathDragCancel = useCallback(() => {
+    setActiveWorkpathDragKey(null);
+  }, []);
+
+  // 脱手与异常释放防护：窗口失焦、系统取消或按 Escape 时安全复位，防止卡在拖拽状态；拖拽中切换全局光标
+  useEffect(() => {
+    if (!activeWorkpathDragKey) return;
+
+    document.body.classList.add('flowy-is-dragging-workpath');
+    document.body.style.cursor = 'grabbing';
+
+    const handleEscapeOrBlur = () => {
+      document.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }));
+      setActiveWorkpathDragKey(null);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        handleEscapeOrBlur();
+      }
+    };
+
+    window.addEventListener('blur', handleEscapeOrBlur);
+    window.addEventListener('pointercancel', handleEscapeOrBlur);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.classList.remove('flowy-is-dragging-workpath');
+      document.body.style.cursor = '';
+      window.removeEventListener('blur', handleEscapeOrBlur);
+      window.removeEventListener('pointercancel', handleEscapeOrBlur);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeWorkpathDragKey]);
 
   const projectWorkpathKeys = useMemo(() => new Set(emptyProjectWorkpaths), [emptyProjectWorkpaths]);
 
@@ -281,7 +387,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     };
   }, []);
 
-  const { expand: expandWorkpathDrawer } = ui;
+  const { expand: expandWorkpathDrawer, isExpanded: isWorkpathExpanded } = ui;
   useEffect(() => {
     const pending = pendingRevealRef.current;
     if (!pending) return;
@@ -291,6 +397,14 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     expandWorkpathDrawer(node.key);
     scrollSidebarItemIntoView('c-' + pending);
   }, [tree, revealTick, expandWorkpathDrawer]);
+
+  useEffect(() => {
+    if (!activeConversationId) return;
+    const owningNode = tree.find((candidate) => candidate.interactive.some((entry) => entry.id === activeConversationId));
+    if (owningNode && !isWorkpathExpanded(owningNode.key)) {
+      expandWorkpathDrawer(owningNode.key);
+    }
+  }, [activeConversationId, tree, expandWorkpathDrawer, isWorkpathExpanded]);
 
   /* ------------------------- workspace dropdown UI ------------------------- */
 
@@ -720,22 +834,35 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
         )}
 
         <div id='flowy-workpath-tree' aria-hidden={!expanded}>
-          {expanded && tree.map((node) => (
-            <WorkpathDrawer
-              key={node.key}
-              node={node}
-              ui={ui}
-              activeConversationId={activeConversationId}
-              onCreateInteractive={handleCreateInteractive}
-              onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
-              isProjectWorkpath={projectWorkpathKeys.has(node.key)}
-              batchMode={batchMode}
-              batchSelectionState={batchSelectionState}
-              onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
-              renderEntry={renderEntry}
-              displayPreferences={displayPreferences}
-            />
-          ))}
+          {expanded && (
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToVerticalAxis]}
+              onDragStart={handleWorkpathDragStart}
+              onDragEnd={handleWorkpathDragEnd}
+              onDragCancel={handleWorkpathDragCancel}
+            >
+              <SortableContext items={workpathKeys} strategy={verticalListSortingStrategy}>
+                {tree.map((node) => (
+                  <WorkpathDrawer
+                    key={node.key}
+                    node={node}
+                    ui={ui}
+                    activeConversationId={activeConversationId}
+                    onCreateInteractive={handleCreateInteractive}
+                    onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
+                    isProjectWorkpath={projectWorkpathKeys.has(node.key)}
+                    batchMode={batchMode}
+                    batchSelectionState={batchSelectionState}
+                    onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
+                    renderEntry={renderEntry}
+                    displayPreferences={displayPreferences}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+          )}
         </div>
 
         {/* 空态提示已移除（导航精简） */}

@@ -11,8 +11,13 @@ const SIDER_TOOLTIP_CLASS = 'sider-tooltip-popup';
 
 export const cleanupSiderTooltips = () => {
   if (typeof document === 'undefined') return;
-  // Arco Tooltip occasionally leaves detached popup nodes; remove both scoped and global tooltip popups.
-  document.querySelectorAll(`.${SIDER_TOOLTIP_CLASS}, .arco-tooltip-popup`).forEach((node) => node.remove());
+  // Do NOT call native `node.remove()` on elements managed by Arco Trigger / React Portal.
+  // Directly severing them from the DOM causes:
+  // "NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node."
+  // when Arco unmounts the popup. Instead, hide them immediately so they vanish without breaking React.
+  document.querySelectorAll<HTMLElement>(`.${SIDER_TOOLTIP_CLASS}, .arco-tooltip-popup`).forEach((node) => {
+    node.style.display = 'none';
+  });
 };
 
 export type SiderTooltipProps = Pick<

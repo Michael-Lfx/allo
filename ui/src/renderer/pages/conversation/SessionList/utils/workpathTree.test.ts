@@ -75,7 +75,7 @@ describe('buildWorkpathTree', () => {
     expect(node.interactive[0].createdAt).toBe(1_000);
     expect(node.terminal[0].createdAt).toBe(2_000);
   });
-  test('组内排序：pinned(pinnedAt 倒序) 在前，余者创建时间倒序', () => {
+  test('组内排序：pinned(pinnedAt 倒序) 在前，余者活跃时间倒序', () => {
     const oldId = conversationId(20);
     const newId = conversationId(21);
     const pin1Id = conversationId(22);
@@ -90,9 +90,9 @@ describe('buildWorkpathTree', () => {
       [],
       []
     );
-    expect(node.find((n) => n.key === '/p')!.interactive.map((s) => s.id)).toEqual([pin2Id, pin1Id, newId, oldId]);
+    expect(node.find((n) => n.key === '/p')!.interactive.map((s) => s.id)).toEqual([pin2Id, pin1Id, oldId, newId]);
   });
-  test('未置顶会话不会因系统更新 activity 而重排', () => {
+  test('未置顶会话按最新活跃/回复时间排序', () => {
     const firstCreatedId = conversationId(24);
     const laterCreatedId = conversationId(25);
     const node = buildWorkpathTree(
@@ -115,8 +115,8 @@ describe('buildWorkpathTree', () => {
     );
 
     expect(node.find((n) => n.key === '/stable')!.interactive.map((s) => s.id)).toEqual([
-      laterCreatedId,
       firstCreatedId,
+      laterCreatedId,
     ]);
   });
   test('节点排序：置顶序 → default → activity 倒序', () => {
@@ -154,5 +154,19 @@ describe('buildWorkpathTree', () => {
     const node = buildWorkpathTree([plain, colPinned as never], [], []).find((n) => n.key === '/p')!;
     expect(node.interactive.map((s) => s.id)).toEqual([colPinnedId, plainId]);
     expect(node.interactive[0].pinnedAt).toBe(500);
+  });
+  test('支持 customOrderKeys 对非置顶节点进行拖拽排序', () => {
+    const tree = buildWorkpathTree(
+      [
+        conv({ id: conversationId(50), modified_at: 10, extra: { workspace: '/p1', custom_workspace: true } }),
+        conv({ id: conversationId(51), modified_at: 99, extra: { workspace: '/p2', custom_workspace: true } }),
+        conv({ id: conversationId(52), modified_at: 50, extra: { workspace: '/p3', custom_workspace: true } }),
+      ],
+      [],
+      [],
+      [],
+      ['/p1', '/p3', '/p2']
+    );
+    expect(tree.map((n) => n.key)).toEqual(['/p1', '/p3', '/p2', DEFAULT_WORKPATH_KEY]);
   });
 });

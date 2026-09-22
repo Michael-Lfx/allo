@@ -139,7 +139,7 @@
     "created": "{{companionName}} 来啦！",
     "empty": "还没有伙伴，先创建一个吧～",
     "emptyTitle": "还没有桌面伙伴",
-    "emptyHint": "创建一个伙伴，给它一个名字和形象，然后配置模型就可以开始对话了。",
+    "emptyHint": "创建伙伴并配置模型，即可开启对话。",
     "reorder": "拖动调整位置"
   },
   "levels": {

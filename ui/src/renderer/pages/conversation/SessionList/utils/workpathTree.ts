@@ -52,7 +52,8 @@ export function buildWorkpathTree(
   conversations: TChatConversation[],
   terminals: ITerminalSession[],
   pinnedWorkpathKeys: string[],
-  emptyWorkpaths: string[] = []
+  emptyWorkpaths: string[] = [],
+  customOrderKeys: string[] = []
 ): WorkpathNode[] {
   const nodes = new Map<string, WorkpathNode>();
   const ensure = (key: string): WorkpathNode => {
@@ -87,7 +88,7 @@ export function buildWorkpathTree(
       name: c.name,
       pinned: c.pinned === true,
       pinnedAt: c.pinned_at ?? 0,
-      activityAt: c.modified_at ?? 0,
+      activityAt: c.modified_at ?? c.created_at ?? 0,
       createdAt: c.created_at ?? 0,
       conversation: c,
     });
@@ -100,7 +101,7 @@ export function buildWorkpathTree(
       name: t.name,
       pinned: !!t.pinned,
       pinnedAt: t.pinned_at ?? 0,
-      activityAt: t.updated_at ?? 0,
+      activityAt: t.updated_at ?? t.created_at ?? 0,
       createdAt: t.created_at ?? 0,
       terminal: t,
     });
@@ -109,10 +110,12 @@ export function buildWorkpathTree(
   const byGroupOrder = (a: SessionEntry, b: SessionEntry) =>
     Number(b.pinned) - Number(a.pinned) ||
     (a.pinned ? b.pinnedAt - a.pinnedAt : 0) ||
+    b.activityAt - a.activityAt ||
     b.createdAt - a.createdAt;
 
   // 置顶 key 入口处归一化，调用方传原始路径（带尾斜杠等）也不会静默失配
   const pinIndex = new Map(pinnedWorkpathKeys.map((k, i) => [workpathKey(k), i]));
+  const customOrderIndex = new Map(customOrderKeys.map((k, i) => [workpathKey(k), i]));
   const result = [...nodes.values()].map((n) => {
     n.interactive.sort(byGroupOrder);
     n.terminal.sort(byGroupOrder);
@@ -125,6 +128,13 @@ export function buildWorkpathTree(
     const pb = pinIndex.has(b.key);
     if (pa !== pb) return pa ? -1 : 1;
     if (pa && pb) return pinIndex.get(a.key)! - pinIndex.get(b.key)!;
+
+    // 自定义排序（仅对非置顶生效）
+    const ca = customOrderIndex.has(a.key);
+    const cb = customOrderIndex.has(b.key);
+    if (ca && cb) return customOrderIndex.get(a.key)! - customOrderIndex.get(b.key)!;
+    if (ca !== cb) return ca ? -1 : 1;
+
     const da = a.key === DEFAULT_WORKPATH_KEY;
     const db = b.key === DEFAULT_WORKPATH_KEY;
     if (da !== db) return da ? -1 : 1;

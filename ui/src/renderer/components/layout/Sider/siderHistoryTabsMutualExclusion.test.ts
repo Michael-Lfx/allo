@@ -4,7 +4,7 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('sider history tabs mutual exclusion and empty states', () => {
-  test('history tab pills follow the selected list tab without a two-phase route wait', () => {
+  test('history tab pills follow activeBar2Module and mutually exclude Dock rail routes', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
     expect(siderSource.includes("pathname.startsWith('/knowledge')")).toBe(true);
@@ -17,9 +17,36 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes('bg-fill-2 text-t-secondary font-medium hover:text-t-primary')).toBe(false);
     expect(siderSource.includes('bg-fill-3 text-t-primary shadow-sm')).toBe(true);
     expect(siderSource.includes('font-semibold')).toBe(false);
+
+    // Active and optimistic Bar 2 module drives tab selection rather than unconditionally glowing
+    expect(siderSource.includes('activeBar2Module')).toBe(true);
+    expect(siderSource.includes('effectiveBar2Module')).toBe(true);
+    expect(siderSource.includes('optimisticBar2Module')).toBe(true);
+    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'workspaces'}")).toBe(true);
+    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'video'}")).toBe(true);
+    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'companions'}")).toBe(true);
+
+    // Module icons on workspaces, video, and companion (<Ghost />), without emoji
+    expect(siderSource.includes('<MessageOne')).toBe(true);
+    expect(siderSource.includes('<VideoOne')).toBe(true);
+    expect(siderSource.includes('<Ghost')).toBe(true);
+    expect(siderSource.includes('🐱')).toBe(false);
   });
 
-  test('synchronizes routes one-way without trampling companion conversations or navigating on tab click', () => {
+  test('warms companion and video home on hover and app idle', () => {
+    const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+
+    expect(siderSource.includes("import { prefetchNomiPage } from '@renderer/pages/nomi/prefetch'")).toBe(true);
+    expect(
+      siderSource.includes("import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch'")
+    ).toBe(true);
+    expect(siderSource.includes('prefetchNomiPage()')).toBe(true);
+    expect(siderSource.includes('prefetchVideoGenerationHome()')).toBe(true);
+    expect(siderSource.includes('onPointerEnter={() => prefetchNomiPage()}')).toBe(true);
+    expect(siderSource.includes('onPointerEnter={() => prefetchVideoGenerationHome()}')).toBe(true);
+  });
+
+  test('synchronizes routes one-way and navigates module on tab click when not already on route', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
     expect(siderSource.includes('historyTabAfterPathChange')).toBe(true);
@@ -28,11 +55,15 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     // Search entry selection switches drawer tab to workspaces
     expect(siderSource.includes("handleSelectHistoryTab('workspaces');\n    if (onSessionClick)")).toBe(true);
 
-    // History tabs only switch the list; they must not navigate the main outlet
-    expect(siderSource.includes('if (!isSessionRoute)')).toBe(false);
-    expect(siderSource.includes('if (!isVideoRoute)')).toBe(false);
-    expect(siderSource.includes('handleNewChat();')).toBe(false);
-    expect(siderSource.includes('handleVideoGenerationHome();')).toBe(false);
+    // Collapsed rail restores recent active conversation while top + starts a new chat
+    expect(siderSource.includes('getRecentConversationPath')).toBe(true);
+    expect(siderSource.includes('lastActiveConversationPathRef')).toBe(true);
+    expect(siderSource.includes('handleConversationClick')).toBe(true);
+
+    // Expanded workspaces tab navigates to recent conversation; video routes home
+    expect(siderSource.includes("if (tab === 'workspaces')")).toBe(true);
+    expect(siderSource.includes('if (!isVideoRoute)')).toBe(true);
+    expect(siderSource.includes('handleVideoGenerationHome();')).toBe(true);
   });
 
   test('adds narrow rail text truncation, titles, and color-only motion to history tabs', () => {
@@ -81,5 +112,33 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(companionGroupSource.includes('const { companions, loading } = useCompanions()')).toBe(true);
     expect(companionGroupSource.includes('if (loading)')).toBe(true);
     expect(companionGroupSource.includes('cursor-pointer transition-all box-border')).toBe(false);
+  });
+
+  test('unifies empty state rendering across workspaces, video, and companion tabs', () => {
+    const placeholderSource = readSource(new URL('./SiderEmptyPlaceholder.tsx', import.meta.url));
+    const videoGroupSource = readSource(new URL('./SiderNav/SiderVideoGenerationGroup.tsx', import.meta.url));
+    const companionGroupSource = readSource(
+      new URL('../../../pages/conversation/SessionList/CompanionSessionGroup.tsx', import.meta.url)
+    );
+    const workpathDrawerSource = readSource(
+      new URL('../../../pages/conversation/SessionList/WorkpathDrawer.tsx', import.meta.url)
+    );
+
+    // All three tabs render the unified placeholder
+    expect(videoGroupSource.includes('<SiderEmptyPlaceholder')).toBe(true);
+    expect(companionGroupSource.includes('<SiderEmptyPlaceholder')).toBe(true);
+    expect(workpathDrawerSource.includes('<SiderEmptyPlaceholder')).toBe(true);
+
+    // SiderEmptyPlaceholder enforces the design spec: 28px height, 8px radius, theme tokens
+    expect(placeholderSource.includes('h-28px px-12px rd-8px')).toBe(true);
+    expect(placeholderSource.includes('bg-fill-2 hover:bg-fill-3 active:bg-fill-4')).toBe(true);
+    expect(placeholderSource.includes('border-[var(--color-border-2)]')).toBe(true);
+
+    // Companion tab preserves the distinctive cat emoji
+    expect(companionGroupSource.includes('🐱')).toBe(true);
+
+    // Workpath drawer renders localized empty text and initiates conversation
+    expect(workpathDrawerSource.includes("t('sessionList.drawerEmpty'")).toBe(true);
+    expect(workpathDrawerSource.includes("onCreateInteractive(node)")).toBe(true);
   });
 });

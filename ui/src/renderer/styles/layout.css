@@ -70,6 +70,7 @@
   background: var(--flowy-panel);
   box-shadow: var(--flowy-shadow-structure) !important;
   border-right: 1px solid var(--flowy-border-subtle);
+  transition: width 240ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 
 .sidebar-toggle-icon__caret {
@@ -200,6 +201,29 @@
   }
 }
 
+.flowy-disclosure-content {
+  display: grid !important;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.flowy-disclosure-content[data-disclosure-phase='open'] {
+  grid-template-rows: 1fr;
+}
+
+.flowy-disclosure-content[data-disclosure-phase='entering'],
+.flowy-disclosure-content[data-disclosure-phase='exiting'] {
+  grid-template-rows: 0fr;
+}
+
+.flowy-disclosure-content > * {
+  min-height: 0;
+  overflow: hidden;
+  transition:
+    opacity 180ms cubic-bezier(0.25, 1, 0.5, 1),
+    transform 200ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
 .flowy-disclosure-content[data-disclosure-phase='entering'] > *,
 .flowy-disclosure-content[data-disclosure-phase='exiting'] > * {
   opacity: 0;
@@ -213,12 +237,6 @@
 
 .flowy-disclosure-content[data-disclosure-phase='exiting'] {
   pointer-events: none;
-}
-
-.flowy-disclosure-content > * {
-  transition:
-    opacity var(--flowy-motion-base) var(--flowy-ease-enter),
-    transform var(--flowy-motion-base) var(--flowy-ease-move);
 }
 
 /* Shared page frame for settings and standalone hubs. Keeping this at the

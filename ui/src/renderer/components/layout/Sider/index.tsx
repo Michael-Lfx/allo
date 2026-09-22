@@ -2,9 +2,11 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Ghost, MessageOne, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
+import { useOptionalConversationHistoryContext } from '@renderer/hooks/context/ConversationHistoryContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
@@ -39,6 +41,8 @@ import { historyTabAfterPathChange, type SiderHistoryTab } from './historyTab';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
+import { prefetchNomiPage } from '@renderer/pages/nomi/prefetch';
+import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -162,6 +166,46 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     [measureElement]
   );
 
+  const conversationHistory = useOptionalConversationHistoryContext();
+  const conversations = conversationHistory?.conversations;
+
+  const lastActiveConversationPathRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (pathname.startsWith('/conversation') || pathname.startsWith('/terminal')) {
+      lastActiveConversationPathRef.current = `${pathname}${search}${hash}`;
+    }
+  }, [hash, pathname, search]);
+
+  const getRecentConversationPath = useCallback(() => {
+    // 1. Prioritize globally most recently active / latest replied conversation
+    if (conversations && conversations.length > 0) {
+      const sorted = [...conversations].sort(
+        (a, b) => (b.modified_at ?? b.created_at ?? 0) - (a.modified_at ?? a.created_at ?? 0)
+      );
+      if (sorted[0]?.id) {
+        return `/conversation/${encodeURIComponent(sorted[0].id)}`;
+      }
+    }
+
+    // 2. Fallback if conversation history is still loading or empty
+    if (lastActiveConversationPathRef.current) {
+      const purePath = lastActiveConversationPathRef.current.split(/[?#]/)[0];
+      const route = parseSessionRoute(purePath);
+      if (route?.kind === 'conversation') {
+        const exists = !conversations || conversations.some((c) => c.id === route.id);
+        if (exists) {
+          return lastActiveConversationPathRef.current;
+        }
+      } else {
+        return lastActiveConversationPathRef.current;
+      }
+    }
+
+    // 3. Fallback to new chat page
+    return '/guid';
+  }, [conversations]);
+
   useEffect(() => {
     if (!pathname.startsWith('/settings')) {
       lastNonSettingsPathRef.current = `${pathname}${search}${hash}`;
@@ -182,7 +226,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     [navigate, onSessionClick]
   );
 
-  const handleConversationClick = () => navTo('/guid');
+  const handleConversationClick = useCallback(() => {
+    navTo(getRecentConversationPath());
+  }, [getRecentConversationPath, navTo]);
+
   const handleNewChat = useCallback(() => {
     cleanupSiderTooltips();
     blurActiveElement();
@@ -217,6 +264,77 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleVideoGenerationHome = useCallback(() => {
     navTo('/video-generation');
   }, [navTo]);
+
+  const isVideoRoute = pathname.startsWith('/video-generation');
+  const isCompanionRoute = pathname.startsWith('/nomi');
+
+  const activeBar2Module: SiderHistoryTab | null = useMemo(() => {
+    if (isSessionRoute) return 'workspaces';
+    if (isVideoRoute) return 'video';
+    if (isCompanionRoute) return 'companions';
+    return null;
+  }, [isCompanionRoute, isSessionRoute, isVideoRoute]);
+
+  const [optimisticBar2Module, setOptimisticBar2Module] = useState<SiderHistoryTab | null>(null);
+  const lastPathnameRef = useRef(pathname);
+
+  // Clear optimistic override once route catch-up happens
+  useEffect(() => {
+    if (optimisticBar2Module && activeBar2Module === optimisticBar2Module) {
+      setOptimisticBar2Module(null);
+    }
+  }, [activeBar2Module, optimisticBar2Module]);
+
+  // If the route changed to something else, clear optimistic override
+  useEffect(() => {
+    if (lastPathnameRef.current !== pathname) {
+      lastPathnameRef.current = pathname;
+      if (optimisticBar2Module && activeBar2Module !== optimisticBar2Module) {
+        setOptimisticBar2Module(null);
+      }
+    }
+  }, [pathname, optimisticBar2Module, activeBar2Module]);
+
+  // Safety fallback: reset optimistic override if navigation takes unexpectedly long
+  useEffect(() => {
+    if (!optimisticBar2Module) return;
+    const timer = window.setTimeout(() => {
+      setOptimisticBar2Module(null);
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [optimisticBar2Module]);
+
+  const effectiveBar2Module: SiderHistoryTab | null = optimisticBar2Module ?? activeBar2Module;
+
+  const handleTabClick = useCallback(
+    (tab: SiderHistoryTab) => {
+      setOptimisticBar2Module(tab);
+      handleSelectHistoryTab(tab);
+      if (tab === 'workspaces') {
+        const recentPath = getRecentConversationPath();
+        if (pathname !== recentPath) {
+          navTo(recentPath);
+        }
+      } else if (tab === 'video') {
+        if (!isVideoRoute) {
+          handleVideoGenerationHome();
+        }
+      } else if (tab === 'companions') {
+        if (!isCompanionRoute) {
+          navTo('/nomi?tab=overview');
+        }
+      }
+    },
+    [
+      getRecentConversationPath,
+      handleSelectHistoryTab,
+      handleVideoGenerationHome,
+      isCompanionRoute,
+      isVideoRoute,
+      navTo,
+      pathname,
+    ]
+  );
 
   const activeVideoGenerationSessionId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
@@ -271,11 +389,27 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     },
     [navTo]
   );
-  const handleScheduledClick = () => navTo('/scheduled');
-  const handleMeetingClick = () => navTo('/meeting');
-  const handleKnowledgeClick = () => navTo('/knowledge');
-  const handleNomiClick = () => navTo('/nomi');
-  const handleLearningClick = () => navTo('/learn');
+  const handleScheduledClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/scheduled');
+  };
+  const handleMeetingClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/meeting');
+  };
+  const handleKnowledgeClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/knowledge');
+  };
+  const handleNomiClick = () => {
+    setOptimisticBar2Module('companions');
+    handleSelectHistoryTab('companions');
+    navTo('/nomi');
+  };
+  const handleLearningClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/learn');
+  };
 
   useEffect(() => {
     if (isSettings) return;
@@ -283,23 +417,32 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
       cancelIdleCallback?: (handle: number) => void;
     };
+    const warmIdleRoutes = () => {
+      prefetchLearningPage();
+      prefetchNomiPage();
+      prefetchVideoGenerationHome();
+    };
     if (typeof idleWindow.requestIdleCallback === 'function') {
-      const idleId = idleWindow.requestIdleCallback(() => prefetchLearningPage(), {
+      const idleId = idleWindow.requestIdleCallback(warmIdleRoutes, {
         timeout: 1800,
       });
       return () => idleWindow.cancelIdleCallback?.(idleId);
     }
-    const timer = window.setTimeout(() => prefetchLearningPage(), 250);
+    const timer = window.setTimeout(warmIdleRoutes, 250);
     return () => window.clearTimeout(timer);
   }, [isSettings]);
 
-  const handleEvalClick = () => navTo('/eval');
+  const handleEvalClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/eval');
+  };
   const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
   
   const handleSettingsClick = () => {
+    setOptimisticBar2Module(null);
     cleanupSiderTooltips();
     blurActiveElement();
     const target = resolveSettingsTogglePath(pathname, lastNonSettingsPathRef.current);
@@ -406,10 +549,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
             {/* 业务功能横向 Dock 栏（展开态下高度仅 34px，容纳 5 个无历史纯功能模块；收起态下恢复纵向一列） */}
             <div
+              role={collapsed ? undefined : 'toolbar'}
+              aria-label={t('common.titlebar.sections.work', { defaultValue: '功能导航' })}
               className={classNames(
                 collapsed
                   ? 'flex flex-col gap-2px'
-                  : 'flex items-center justify-between px-6px py-3px my-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
+                  : 'flex items-center gap-2px p-2px my-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
               )}
             >
               <SiderSectionHeader label={t('common.titlebar.sections.work')} collapsed={collapsed} compact hidden />
@@ -448,7 +593,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
               <SiderKnowledgeEntry
                 isMobile={isMobile}
-                isActive={pathname.startsWith('/knowledge')}
+                isActive={!effectiveBar2Module && pathname.startsWith('/knowledge')}
                 collapsed={collapsed}
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
@@ -456,7 +601,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
               <SiderLearningEntry
                 isMobile={isMobile}
-                isActive={pathname.startsWith('/learn')}
+                isActive={!effectiveBar2Module && pathname.startsWith('/learn')}
                 collapsed={collapsed}
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
@@ -471,7 +616,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
               <SiderScheduledEntry
                 isMobile={isMobile}
-                isActive={pathname === '/scheduled'}
+                isActive={!effectiveBar2Module && pathname === '/scheduled'}
                 collapsed={collapsed}
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
@@ -479,7 +624,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
               <SiderMeetingEntry
                 isMobile={isMobile}
-                isActive={pathname.startsWith('/meeting')}
+                isActive={!effectiveBar2Module && pathname.startsWith('/meeting')}
                 collapsed={collapsed}
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
@@ -488,7 +633,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               {developerMode === true && (
                 <SiderEvalEntry
                   isMobile={isMobile}
-                  isActive={pathname.startsWith('/eval')}
+                  isActive={!effectiveBar2Module && pathname.startsWith('/eval')}
                   collapsed={collapsed}
                   dock={!collapsed}
                   siderTooltipProps={siderTooltipProps}
@@ -512,56 +657,107 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 hidden
               />
 
-              {/* 三段式会话分类切换器：区分项目、视频创作、桌宠（与功能 Dock 栏等宽满铺） */}
+              {/* 三段式会话分类切换器：区分项目、视频创作、桌宠 */}
               <div className='w-full my-2px shrink-0'>
                 <div
                   role='tablist'
                   aria-label={t('common.titlebar.sections.workspaces', { defaultValue: '工作区' })}
-                  className='flex items-center p-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
+                  className='relative flex items-center p-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
                 >
+                  <span
+                    aria-hidden='true'
+                    className='absolute h-26px rd-6px bg-fill-3 text-t-primary shadow-sm transition-transform duration-220 ease-[cubic-bezier(0.25,1,0.5,1)] pointer-events-none'
+                    style={{
+                      width: 'calc((100% - 4px) / 3)',
+                      left: '2px',
+                      top: '2px',
+                      transform: `translateX(${
+                        effectiveBar2Module === 'video' ? '100%' : effectiveBar2Module === 'companions' ? '200%' : '0%'
+                      })`,
+                      opacity: effectiveBar2Module ? 1 : 0,
+                    }}
+                  />
                   <button
                     type='button'
                     role='tab'
                     title={t('sessionList.projectsTab', { defaultValue: '项目' })}
-                    aria-selected={activeHistoryTab === 'workspaces'}
-                    onClick={() => handleSelectHistoryTab('workspaces')}
+                    aria-selected={effectiveBar2Module === 'workspaces'}
+                    onClick={() => handleTabClick('workspaces')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      activeHistoryTab === 'workspaces'
-                        ? 'bg-fill-3 text-t-primary shadow-sm'
-                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
+                      effectiveBar2Module === 'workspaces'
+                        ? 'text-t-primary'
+                        : 'text-t-tertiary hover:text-t-primary'
                     )}
                   >
+                    <MessageOne
+                      theme='outline'
+                      size={15}
+                      fill='currentColor'
+                      className={classNames(
+                        'block leading-none shrink-0 transition-colors duration-180',
+                        effectiveBar2Module === 'workspaces'
+                          ? 'text-primary-6'
+                          : 'text-t-tertiary group-hover:text-t-primary'
+                      )}
+                      style={{ lineHeight: 0 }}
+                    />
                     <span className='truncate'>{t('sessionList.projectsTab', { defaultValue: '项目' })}</span>
                   </button>
                   <button
                     type='button'
                     role='tab'
                     title={t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}
-                    aria-selected={activeHistoryTab === 'video'}
-                    onClick={() => handleSelectHistoryTab('video')}
+                    aria-selected={effectiveBar2Module === 'video'}
+                    onClick={() => handleTabClick('video')}
+                    onPointerEnter={() => prefetchVideoGenerationHome()}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      activeHistoryTab === 'video'
-                        ? 'bg-fill-3 text-t-primary shadow-sm'
-                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
+                      effectiveBar2Module === 'video'
+                        ? 'text-t-primary'
+                        : 'text-t-tertiary hover:text-t-primary'
                     )}
                   >
+                    <VideoOne
+                      theme='outline'
+                      size={15}
+                      fill='currentColor'
+                      className={classNames(
+                        'block leading-none shrink-0 transition-colors duration-180',
+                        effectiveBar2Module === 'video'
+                          ? 'text-primary-6'
+                          : 'text-t-tertiary group-hover:text-t-primary'
+                      )}
+                      style={{ lineHeight: 0 }}
+                    />
                     <span className='truncate'>{t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}</span>
                   </button>
                   <button
                     type='button'
                     role='tab'
                     title={t('nomi.shortTitle', { defaultValue: '桌宠' })}
-                    aria-selected={activeHistoryTab === 'companions'}
-                    onClick={() => handleSelectHistoryTab('companions')}
+                    aria-selected={effectiveBar2Module === 'companions'}
+                    onClick={() => handleTabClick('companions')}
+                    onPointerEnter={() => prefetchNomiPage()}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      activeHistoryTab === 'companions'
-                        ? 'bg-fill-3 text-t-primary shadow-sm'
-                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
+                      effectiveBar2Module === 'companions'
+                        ? 'text-t-primary'
+                        : 'text-t-tertiary hover:text-t-primary'
                     )}
                   >
+                    <Ghost
+                      theme='outline'
+                      size={15}
+                      fill='currentColor'
+                      className={classNames(
+                        'block leading-none shrink-0 transition-colors duration-180',
+                        effectiveBar2Module === 'companions'
+                          ? 'text-primary-6'
+                          : 'text-t-tertiary group-hover:text-t-primary'
+                      )}
+                      style={{ lineHeight: 0 }}
+                    />
                     <span className='truncate'>{t('nomi.shortTitle', { defaultValue: '桌宠' })}</span>
                   </button>
                 </div>

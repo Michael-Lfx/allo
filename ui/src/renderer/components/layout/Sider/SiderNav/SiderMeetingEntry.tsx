@@ -44,25 +44,35 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
 
   if (dock) {
     return (
-      <InstantHoverTooltip content={label} position='bottom'>
+      <InstantHoverTooltip content={label} position='bottom' className='flex-1 min-w-0'>
         <div
+          role='button'
+          tabIndex={0}
           className={classNames(
-            'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
-            isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+            'group w-full h-26px flex items-center justify-center cursor-pointer transition-colors rd-6px outline-none focus-visible:ring-1 focus-visible:ring-primary-6',
+            isActive
+              ? 'bg-fill-3 text-primary-6 shadow-sm'
+              : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
           )}
           onClick={onClick}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onClick?.();
+            }
+          }}
           onPointerEnter={() => prefetchMeetingPage()}
           aria-label={label}
           aria-current={isActive ? 'page' : undefined}
-          data-sider-nav-entry
-          data-active={isActive ? 'true' : 'false'}
-          data-sider-selection-static='true'
         >
           <Voice
             theme='outline'
             size='15'
             fill='currentColor'
-            className='block leading-none shrink-0'
+            className={classNames(
+              'block leading-none shrink-0 transition-colors duration-180',
+              isActive ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
+            )}
             style={{ lineHeight: 0 }}
           />
         </div>

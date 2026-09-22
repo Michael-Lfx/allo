@@ -31,6 +31,37 @@ export function prefetchCanvasWorkspace(): void {
   prefetchCanvasAssistantPanel();
 }
 
+export function prefetchVideoWorkspace(): void {
+  void import('./WorkspacePage').catch(() => undefined);
+}
+
+export function prefetchVideoClipResult(): void {
+  void import('./ClipResultPage').catch(() => undefined);
+}
+
+export function prefetchVideoBriefing(): void {
+  void import('./briefing/BriefingWorkspacePage').catch(() => undefined);
+}
+
+export function prefetchRecentCreationItem(source: 'session' | 'task' | 'canvas' | 'briefing'): void {
+  switch (source) {
+    case 'session':
+      prefetchVideoWorkspace();
+      break;
+    case 'task':
+      prefetchVideoClipResult();
+      break;
+    case 'canvas':
+      prefetchCanvasWorkspace();
+      break;
+    case 'briefing':
+      prefetchVideoBriefing();
+      break;
+    default:
+      break;
+  }
+}
+
 export function prefetchVideoGenerationHome(): void {
   void import('./index').catch(() => undefined);
   void import('./components/TvShowPanel').catch(() => undefined);
@@ -41,3 +72,4 @@ export function prefetchVideoGenerationHome(): void {
   prefetchVerticalSkillMenu();
   prefetchLookStyleMenu();
 }
+

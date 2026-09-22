@@ -39,24 +39,34 @@ const SiderEvalEntry: React.FC<SiderEvalEntryProps> = ({
 
   if (dock) {
     return (
-      <InstantHoverTooltip content={tooltipContent} position='bottom'>
+      <InstantHoverTooltip content={tooltipContent} position='bottom' className='flex-1 min-w-0'>
         <div
+          role='button'
+          tabIndex={0}
           className={classNames(
-            'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
-            isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+            'group w-full h-26px flex items-center justify-center cursor-pointer transition-colors rd-6px outline-none focus-visible:ring-1 focus-visible:ring-primary-6',
+            isActive
+              ? 'bg-fill-3 text-primary-6 shadow-sm'
+              : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
           )}
           onClick={onClick}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onClick?.();
+            }
+          }}
           aria-label={tooltipContent}
           aria-current={isActive ? 'page' : undefined}
-          data-sider-nav-entry
-          data-active={isActive ? 'true' : 'false'}
-          data-sider-selection-static='true'
         >
           <Experiment
             theme='outline'
             size='15'
             fill='currentColor'
-            className='block leading-none'
+            className={classNames(
+              'block leading-none transition-colors duration-180',
+              isActive ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
+            )}
             style={{ lineHeight: 0 }}
           />
         </div>

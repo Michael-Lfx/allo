@@ -9,13 +9,18 @@ import {
   FolderClose,
   FolderOpen,
   Home,
+  MessageOne,
   MoreOne,
   Plus,
   Pushpin,
+  Right,
 } from '@icon-park/react';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import classNames from 'classnames';
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import SiderEmptyPlaceholder from '@renderer/components/layout/Sider/SiderEmptyPlaceholder';
 
 import CapabilityIcon, { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
 import { AppMessage as Message } from '@/renderer/components/notifications';
@@ -121,6 +126,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
 
   const activeEntry =
     activeConversationId === null ? null : (node.interactive.find((entry) => entry.id === activeConversationId) ?? null);
+  const isActiveWorkpath = activeEntry !== null;
   const activeDisplayIndex = activeEntry ? getWorkpathEntryDisplayIndex(node, activeEntry) : null;
   const forceShowAllForActiveConversation = activeDisplayIndex !== null && activeDisplayIndex >= WORKPATH_COLLAPSED_SESSION_LIMIT;
   const visibleEntries = getVisibleWorkpathEntries(node, {
@@ -144,6 +150,37 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     showAllConversations || forceShowAllForActiveConversation,
     overflowToggleKey
   );
+
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: node.key,
+    disabled: batchMode,
+    attributes: {
+      role: 'region',
+      tabIndex: -1,
+    },
+  });
+
+  const handleRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      setNodeRef(el);
+      (workpathRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+    },
+    [setNodeRef, workpathRef]
+  );
+
+  const sortableStyle: React.CSSProperties = {
+    transform: CSS.Translate.toString(transform ? { ...transform, x: 0 } : null),
+    transition: transition || 'transform 200ms cubic-bezier(0.25, 1, 0.5, 1), opacity 180ms ease',
+    opacity: isDragging ? 0.88 : 1,
+    zIndex: isDragging ? 40 : undefined,
+  };
 
   // Workpath-level capability: knowledge base. P2 临时点亮规则（组内任一成员
   // binding enabled）— Task 11 / P3 切到 workpath 级单次查询后由 hook 内部替换。
@@ -179,11 +216,29 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   };
 
   const headerIcon = isDefault ? (
-    <Home theme='outline' size={16} fill='currentColor' className='line-height-0' />
+    <Home
+      theme='outline'
+      size={16}
+      fill='currentColor'
+      className={classNames(
+        'line-height-0 shrink-0 transition-colors duration-200',
+        expanded ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
+      )}
+    />
   ) : expanded ? (
-    <FolderOpen theme='outline' size={16} fill='currentColor' className='line-height-0' />
+    <FolderOpen
+      theme='two-tone'
+      size={16}
+      fill={['currentColor', 'currentColor']}
+      className='line-height-0 text-primary-6 shrink-0 transition-all duration-200'
+    />
   ) : (
-    <FolderClose theme='outline' size={16} fill='currentColor' className='line-height-0' />
+    <FolderClose
+      theme='outline'
+      size={16}
+      fill='currentColor'
+      className='line-height-0 text-t-tertiary group-hover:text-t-primary shrink-0 transition-all duration-200'
+    />
   );
 
   const nameSpan = (
@@ -252,14 +307,20 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     ) : null;
 
   return (
-    <div ref={workpathRef} className='workpath-drawer min-w-0'>
+    <div ref={handleRef} style={sortableStyle} className='workpath-drawer min-w-0'>
       {/* Drawer header */}
       <div
         data-testid='workpath-toggle-row'
+        data-active={isActiveWorkpath ? 'true' : 'false'}
+        data-dragging={isDragging ? 'true' : 'false'}
         className={classNames(
-          'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group',
-          twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px'
+          'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group transition-all duration-200',
+          twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px',
+          isActiveWorkpath && 'flowy-workpath-drawer-header-active !bg-[rgba(var(--primary-6),0.08)] border-l-2px border-l-solid border-primary-6',
+          isDragging ? 'shadow-lg border border-solid border-primary-6/40 !bg-[rgba(var(--primary-6),0.06)] cursor-grabbing select-none' : 'cursor-pointer'
         )}
+        {...attributes}
+        {...listeners}
       >
         {batchMode && (
           <span
@@ -298,7 +359,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             type='button'
             aria-expanded={batchMode ? undefined : expanded}
             aria-controls={batchMode ? undefined : controlsId}
-            className='flex min-w-0 flex-1 items-center gap-8px appearance-none border-none bg-transparent p-0 text-left'
+            className='flex min-w-0 flex-1 items-center gap-2px appearance-none border-none bg-transparent p-0 text-left cursor-pointer'
             onClick={() => {
               if (batchMode && !workpathSelectionState.disabled) {
                 onToggleBatchSelectionScope?.(workpathSelectionScope);
@@ -309,6 +370,15 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             onPointerEnter={() => setWorkpathIdentityHovered(true)}
             onPointerLeave={() => setWorkpathIdentityHovered(false)}
           >
+            <span
+              data-testid='workpath-disclosure-caret'
+              className={classNames(
+                'w-10px h-14px flex items-center justify-center shrink-0 transition-transform duration-220 ease-[cubic-bezier(0.25,1,0.5,1)] -ml-2px -mr-2px',
+                expanded ? 'rotate-90 text-primary-6' : 'text-t-tertiary group-hover:text-t-secondary'
+              )}
+            >
+              <Right theme='outline' size={9} fill='currentColor' />
+            </span>
             <span
               className='relative size-22px flex items-center justify-center shrink-0 text-t-primary'
             >
@@ -343,6 +413,15 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
                   user's display preference, with the complete path still available
                   from the tooltip, hover card, and copy op beside it. */}
               {renderWorkpathName()}
+              {isActiveWorkpath && (
+                <span
+                  data-testid='workpath-active-badge'
+                  title={t('sessionList.currentActiveWorkpath', { defaultValue: '当前活跃工作区' })}
+                  className='shrink-0 px-5px h-16px rd-4px text-10px font-[500] leading-16px bg-[rgba(var(--primary-6),0.12)] text-primary-6 flex items-center select-none'
+                >
+                  {t('sessionList.activeWorkpathBadge', { defaultValue: '当前' })}
+                </span>
+              )}
               {branchBadge}
             </div>
           </button>
@@ -463,7 +542,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
         )}
       >
         {drawerMotion.shouldRender && (
-          <>
+          <div className='flowy-disclosure-content-inner min-h-0 min-w-0 flex flex-col gap-2px'>
             {baseInteractiveEntries.map((entry) => renderEntry(entry))}
             {overflowInteractiveEntries.length > 0 && (
               <div
@@ -473,7 +552,9 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
                 data-disclosure-phase={overflowMotion.phase}
                 className='flowy-disclosure-content flex flex-col'
               >
-                {overflowMotion.shouldRender && overflowInteractiveEntries.map((entry) => renderEntry(entry))}
+                <div className='flowy-disclosure-content-inner min-h-0 min-w-0 flex flex-col gap-2px'>
+                  {overflowMotion.shouldRender && overflowInteractiveEntries.map((entry) => renderEntry(entry))}
+                </div>
               </div>
             )}
             {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
@@ -485,7 +566,25 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
                 className='flowy-workpath-session-overflow'
               />
             )}
-          </>
+            {!hasInteractiveContent && !batchMode && (
+              <SiderEmptyPlaceholder
+                icon={
+                  <MessageOne
+                    theme='outline'
+                    size={18}
+                    fill='currentColor'
+                    className='block leading-none text-t-tertiary'
+                    style={{ lineHeight: 0 }}
+                  />
+                }
+                title={t('sessionList.drawerEmpty', { defaultValue: '暂无会话' })}
+                action={{
+                  label: `+ ${t('sessionList.newInteractive', { defaultValue: '发起对话' })}`,
+                  onClick: () => onCreateInteractive(node),
+                }}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>

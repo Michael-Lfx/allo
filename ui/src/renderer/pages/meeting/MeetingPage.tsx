@@ -27,6 +27,7 @@ const MeetingPage: React.FC = () => {
   } = useMeetings();
 
   const [creating, setCreating] = useState(false);
+  const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
   const [dismissedDetection, setDismissedDetection] = useState<string | null>(null);
 
   const groups = useMemo(() => groupSessionsByDate(sessions), [sessions]);
@@ -34,10 +35,17 @@ const MeetingPage: React.FC = () => {
 
   const openSession = useCallback(
     (sessionId: string) => {
+      setOpeningSessionId(sessionId);
       navigate(`/meeting/${sessionId}`);
     },
     [navigate]
   );
+
+  useEffect(() => {
+    if (!openingSessionId) return;
+    const timer = window.setTimeout(() => setOpeningSessionId(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [openingSessionId]);
 
   const createAndOpen = useCallback(
     async (title: string, start: boolean) => {
@@ -140,11 +148,13 @@ const MeetingPage: React.FC = () => {
                       <li key={session.session_id}>
                         <button
                           type='button'
-                          className='meeting-session-row appearance-none w-full text-left !border-0 !outline-none !shadow-none flex items-start gap-12px rounded-8px px-12px py-8px'
+                          className='meeting-session-row appearance-none w-full text-left !border-0 !outline-none !shadow-none flex items-start gap-12px rounded-8px px-12px py-8px cursor-pointer'
                           onClick={() => openSession(session.session_id)}
                         >
                           <span className='mt-2px flex size-20px items-center justify-center text-t-tertiary'>
-                            {live ? (
+                            {openingSessionId === session.session_id ? (
+                              <Spin size={14} />
+                            ) : live ? (
                               <span className='meeting-live-dot' />
                             ) : (
                               <FileText theme='outline' size={18} fill='currentColor' />
