@@ -53,8 +53,6 @@ fn make_engine(model: &str, allow_list: Vec<String>) -> super::AgentEngine {
         toon_enabled: false,
         max_recent_images: 3,
         commands: crate::commands::default_registry(),
-        goal: None,
-        goal_wait_probe: None,
         system_prompt_sections: std::collections::HashMap::new(),
         last_context_breakdown: None,
         moa: None,
@@ -74,7 +72,6 @@ fn make_engine(model: &str, allow_list: Vec<String>) -> super::AgentEngine {
         features: Default::default(),
         reminders: Default::default(),
         provider_passes_in_turn: 0,
-        horizon: Default::default(),
     }
 }
 

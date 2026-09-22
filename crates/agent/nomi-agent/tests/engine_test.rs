@@ -1794,6 +1794,111 @@ async fn plan_mode_instructions_ride_the_system_reminder_channel() {
     );
 }
 
+/// Build an engine with the goal feature registered and a goal installed, the
+/// way `AgentBootstrap` does it (`set_features`, then `set_goal`).
+fn goal_enabled_engine(
+    provider: Arc<dyn LlmProvider>,
+    output: Arc<dyn OutputSink>,
+    objective: &str,
+) -> AgentEngine {
+    let mut features = nomi_agent::features::FeatureRegistry::new();
+    features.register(Arc::new(nomi_agent::features::GoalFeature::new()));
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        ToolRegistry::new(),
+        output,
+        std::env::temp_dir(),
+    );
+    engine.set_features(features);
+    engine.set_goal(objective.to_string(), 4);
+    engine
+}
+
+#[tokio::test]
+async fn goal_context_rides_the_system_reminder_channel() {
+    // A real `MockLlmProvider` rather than the recording one: a goal makes the
+    // engine take an extra judge pass, and the recorder panics once its script
+    // runs out. The reminder contract is about the transcript, so assert there.
+    let provider = Arc::new(MockLlmProvider::with_turns(vec![vec![
+        LlmEvent::TextDelta("working".to_string()),
+        done(StopReason::EndTurn),
+    ]]));
+    let mut engine = goal_enabled_engine(provider, silent_output(), "ship the parser fix");
+
+    engine
+        .execute_turn("start", "")
+        .await
+        .expect("engine should succeed");
+
+    assert!(
+        !engine.system_prompt().contains("standing goal"),
+        "the goal block must not be merged into the system prompt"
+    );
+
+    let transcript = engine.messages_transcript();
+    let mut goal_blocks = Vec::new();
+    for (start, marker) in transcript.match_indices("<system-reminder>") {
+        let _ = marker;
+        let Some(end) = transcript[start..].find("</system-reminder>") else {
+            panic!("unterminated system-reminder envelope");
+        };
+        let block = &transcript[start..start + end + "</system-reminder>".len()];
+        if block.contains("standing goal") {
+            goal_blocks.push(block.to_owned());
+        }
+    }
+    assert_eq!(
+        goal_blocks.len(),
+        1,
+        "the goal status block is appended once, not re-pasted per pass: {goal_blocks:?}"
+    );
+    assert!(
+        goal_blocks[0].contains("ship the parser fix"),
+        "the objective must reach the model"
+    );
+    assert!(
+        goal_blocks[0].contains("update_goal"),
+        "the active block keeps the completion-judge rules"
+    );
+    assert!(
+        !goal_blocks[0].contains("[Context]"),
+        "the goal block must not ride the turn tail"
+    );
+}
+
+#[tokio::test]
+async fn a_goal_less_session_gets_no_goal_reminder() {
+    let provider = Arc::new(MockLlmProvider::with_turns(vec![vec![
+        LlmEvent::TextDelta("hi".to_string()),
+        done(StopReason::EndTurn),
+    ]]));
+    // The feature is registered but no goal is set: registering a feature must
+    // not, by itself, put a single reminder byte on the wire.
+    let mut features = nomi_agent::features::FeatureRegistry::new();
+    features.register(Arc::new(nomi_agent::features::GoalFeature::new()));
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    engine.set_features(features);
+
+    engine.execute_turn("hello", "").await.expect("turn succeeds");
+
+    let transcript = engine.messages_transcript();
+    assert!(
+        !transcript.contains("standing goal"),
+        "a goal-less session must carry no goal block"
+    );
+    assert!(
+        !transcript.contains("<system-reminder>"),
+        "no reminder of any kind without a goal or plan"
+    );
+}
+
 #[tokio::test]
 async fn persisted_turn_tail_is_replayed_as_the_next_request_prefix() {
     let provider = Arc::new(FullRequestRecordingProvider::new(vec![

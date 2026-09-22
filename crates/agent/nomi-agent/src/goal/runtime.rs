@@ -45,6 +45,14 @@ const CONTINUATION_CONTRACT_TEMPLATE: &str = include_str!("templates/continuatio
 /// auto-continues — so it optimizes for a one-shot final answer and the goal
 /// dies after one round. Rendered every turn while the goal can still run.
 const GOAL_CONTEXT_TEMPLATE: &str = include_str!("templates/goal_context.md");
+/// Status block for a paused goal. Unlike the active block this is **not** a
+/// licence to keep working: it exists so the model stops self-starting new work
+/// toward a target the host deliberately parked, and knows what would resume it.
+const GOAL_PAUSED_TEMPLATE: &str = include_str!("templates/goal_paused.md");
+/// Status block for a blocked goal: the judge determined no progress is
+/// possible without user input, so the model must surface the blocker instead
+/// of retrying.
+const GOAL_BLOCKED_TEMPLATE: &str = include_str!("templates/goal_blocked.md");
 
 /// What a caller supplies to start a goal-driven session.
 #[derive(Debug, Clone)]
@@ -188,8 +196,50 @@ impl GoalRuntime {
         ))
     }
 
-    /// Called at the engine's natural-termination point. Runs the judge on
-    /// the assistant's last response and returns `Some(message)` to inject a
+    /// Three-state status block for the reminder channel.
+    ///
+    /// - `Active` / `Waiting`: the goal can still run, so the model needs the
+    ///   full objective + judge rules (the historical `turn_context` text).
+    /// - `Paused`: the loop is stopped; the model must not self-start new work.
+    /// - `Blocked`: the judge gave up pending user input; the model must surface
+    ///   the blocker instead of retrying.
+    /// - `Complete` / `Cleared`: terminal and silent — nothing to say, which
+    ///   also keeps those requests byte-identical to a goal-less session.
+    ///
+    /// `reason` is the status-specific explanation (`paused_reason` for a pause,
+    /// the judge's `last_reason` for a block). Deterministic: same state →
+    /// byte-identical output.
+    pub fn status_context(&self) -> Option<String> {
+        let g = self.state.lock().unwrap();
+        match g.status {
+            GoalStatus::Active | GoalStatus::Waiting => Some(render_goal_context(
+                &g.objective,
+                &g.subgoals,
+                g.contract.as_ref(),
+            )),
+            GoalStatus::Paused => Some(render_status_block(
+                GOAL_PAUSED_TEMPLATE,
+                "{{paused_reason}}",
+                &g.objective,
+                &g.subgoals,
+                g.contract.as_ref(),
+                g.paused_reason.as_deref().unwrap_or("no reason recorded"),
+            )),
+            GoalStatus::Blocked => Some(render_status_block(
+                GOAL_BLOCKED_TEMPLATE,
+                "{{blocked_reason}}",
+                &g.objective,
+                &g.subgoals,
+                g.contract.as_ref(),
+                g.last_reason
+                    .as_deref()
+                    .unwrap_or("the judge found no way to progress without user input"),
+            )),
+            GoalStatus::Complete | GoalStatus::Cleared => None,
+        }
+    }
+
+    /// Called at the engine's natural-termination point. Runs the judge on    /// the assistant's last response and returns `Some(message)` to inject a
     /// continuation (verdict = continue), or `None` to stop.
     ///
     /// Judge parse/transport failures are **fail-closed**: the goal pauses
@@ -542,6 +592,39 @@ fn render_goal_context(
     GOAL_CONTEXT_TEMPLATE
         .replace("{{objective}}", objective)
         .replace("{{criteria}}", &criteria)
+}
+
+/// Render a paused/blocked status block.
+///
+/// Shares the criteria rendering with the active block so a goal with subgoals
+/// or a contract shows the same authoritative completion criteria in every
+/// state — only the leading status sentence and the reason differ.
+fn render_status_block(
+    template: &str,
+    reason_placeholder: &str,
+    objective: &str,
+    subgoals: &[String],
+    contract: Option<&GoalContract>,
+    reason: &str,
+) -> String {
+    let contract = contract.filter(|c| !c.is_empty());
+    let criteria = if let Some(c) = contract {
+        format!(
+            "\n目标完成契约（判定完成的权威标准，附加准则已并入）：\n<contract>\n{}\n</contract>\n",
+            render_contract_block(c, subgoals)
+        )
+    } else if !subgoals.is_empty() {
+        format!(
+            "\n用户附加的完成准则（全部满足才算完成）：\n<subgoals>\n{}\n</subgoals>\n",
+            render_subgoals_block(subgoals)
+        )
+    } else {
+        String::new()
+    };
+    template
+        .replace("{{objective}}", objective)
+        .replace("{{criteria}}", &criteria)
+        .replace(reason_placeholder, reason)
 }
 
 #[cfg(test)]

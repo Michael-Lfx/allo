@@ -34,8 +34,8 @@ mod goal;
 pub mod plan;
 pub mod reminder;
 
-pub use goal::GoalFeature;
-pub use plan::PlanFeature;
+pub use goal::{GOAL_INJECTION_VARIANT, GoalFeature, GoalService};
+pub use plan::{PLAN_INJECTION_VARIANT, PLAN_REFRESH_AFTER_PASSES, PlanFeature, PlanService};
 
 // ---------------------------------------------------------------------------
 // Context and result types
@@ -197,11 +197,31 @@ pub struct ToolCallObservation {
 
 /// Per-request facts a feature needs when deciding whether to continue a turn
 /// after the model stopped naturally.
-#[derive(Debug, Clone, Default)]
+///
+/// `cwd` and `observation` are engine-owned context a goal feature needs but
+/// cannot hold: the workspace directory is resolved per turn, and the
+/// observation session is installed by the host after bootstrap.
+#[derive(Clone, Default)]
 pub struct NaturalEndCtx {
     pub assistant_text: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cwd: Option<std::path::PathBuf>,
+    /// Whether this request may auto-continue at all. Coding sessions set this
+    /// false, because incomplete work there is the coding harness's business.
+    pub auto_continue_allowed: bool,
+}
+
+impl std::fmt::Debug for NaturalEndCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NaturalEndCtx")
+            .field("assistant_text_len", &self.assistant_text.len())
+            .field("input_tokens", &self.input_tokens)
+            .field("output_tokens", &self.output_tokens)
+            .field("cwd", &self.cwd)
+            .field("auto_continue_allowed", &self.auto_continue_allowed)
+            .finish()
+    }
 }
 
 /// What a feature asks the engine to do at a natural termination point.

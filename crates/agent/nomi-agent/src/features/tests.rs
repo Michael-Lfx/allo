@@ -352,6 +352,8 @@ async fn every_natural_end_hook_runs_but_the_first_continuation_wins() {
         assistant_text: "done".into(),
         input_tokens: 10,
         output_tokens: 2,
+        cwd: None,
+        auto_continue_allowed: true,
     };
     let decision = registry.resolve_natural_end(&ctx, PlanStatus::default()).await;
 

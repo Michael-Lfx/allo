@@ -618,8 +618,6 @@ pub struct AgentEngine {
     compact_config: CompactConfig,
     /// Runtime compaction state (circuit breaker, last input tokens)
     compact_state: CompactState,
-    /// Unique owner of Goal auto-continue and office Plan overlay.
-    horizon: crate::horizon::HorizonController,
     /// Prompt cache break detector for diagnostics.
     cache_detector: CacheBreakDetector,
     compaction_level: nomi_compact::CompactionLevel,
@@ -627,12 +625,6 @@ pub struct AgentEngine {
     /// How many recent image-bearing tool results keep their images.
     max_recent_images: usize,
     commands: crate::commands::CommandRegistry,
-    /// Opt-in goal-driven continuation. `None` (the default) means the engine
-    /// behaves exactly as before — no continuation, no `update_goal` tool.
-    goal: Option<crate::goal::runtime::GoalRuntime>,
-    /// Host liveness probe for goal pid/session wait barriers. Applied to the
-    /// current runtime and every later `set_goal` / `set_goal_state`.
-    goal_wait_probe: Option<Arc<dyn crate::goal::runtime::GoalWaitProbe>>,
     /// Bootstrap-captured system prompt sections for context-usage bucketing.
     system_prompt_sections: HashMap<&'static str, String>,
     /// Cursor-style category breakdown for the last provider request.
@@ -768,14 +760,11 @@ impl AgentEngine {
             file_cache: None,
             compact_config,
             compact_state: CompactState::new(),
-            horizon: crate::horizon::HorizonController::default(),
             cache_detector: CacheBreakDetector::new(),
             compaction_level: config.compact.compaction,
             toon_enabled: config.compact.toon,
             max_recent_images: config.tools.max_recent_images,
             commands: crate::commands::default_registry(),
-            goal: None,
-            goal_wait_probe: None,
             system_prompt_sections: HashMap::new(),
             last_context_breakdown: None,
             moa: None,
@@ -863,14 +852,11 @@ impl AgentEngine {
             file_cache: None,
             compact_config,
             compact_state,
-            horizon: crate::horizon::HorizonController::default(),
             cache_detector: CacheBreakDetector::new(),
             compaction_level: config.compact.compaction,
             toon_enabled: config.compact.toon,
             max_recent_images: config.tools.max_recent_images,
             commands: crate::commands::default_registry(),
-            goal: None,
-            goal_wait_probe: None,
             system_prompt_sections: HashMap::new(),
             last_context_breakdown: None,
             moa: None,
@@ -991,46 +977,48 @@ impl AgentEngine {
     /// tool and installs a `GoalRuntime` that injects a continuation prompt at
     /// each natural-termination point until the goal is proven complete /
     /// blocked, or the auto-continuation cap (or `max_turns`) is hit.
+    ///
+    /// The state and every gate live in the goal feature; this façade only has
+    /// to register the tool against the service's own state slot, which is what
+    /// keeps the tool and the runtime from disagreeing about the goal.
     pub fn set_goal(&mut self, objective: String, max_auto_continuations: usize) {
-        let rt = crate::goal::runtime::GoalRuntime::new(objective, max_auto_continuations);
-        if let Some(probe) = self.goal_wait_probe.as_ref() {
-            rt.set_wait_probe(Arc::clone(probe));
-        }
-        self.tools
-            .register(Box::new(crate::goal::tool::UpdateGoalTool::new(
-                rt.shared_state(),
-            )));
-        self.goal = Some(rt);
-        self.horizon.reset();
-        self.horizon.configure_goal(max_auto_continuations, None);
+        let Some(service) = self.goal_service() else {
+            return;
+        };
+        service.set_goal(objective, max_auto_continuations);
+        self.register_update_goal_tool(&service);
     }
 
     /// Restore-semantics counterpart of [`Self::set_goal`].
     pub fn set_goal_state(&mut self, state: crate::goal::state::GoalState) {
-        self.horizon
-            .configure_goal(state.max_auto_continuations, state.contract.as_ref());
-        match self.goal.as_ref() {
-            Some(rt) => rt.restore(state),
-            None => {
-                let rt = crate::goal::runtime::GoalRuntime::from_state(state);
-                if let Some(probe) = self.goal_wait_probe.as_ref() {
-                    rt.set_wait_probe(Arc::clone(probe));
-                }
-                self.tools
-                    .register(Box::new(crate::goal::tool::UpdateGoalTool::new(
-                        rt.shared_state(),
-                    )));
-                self.goal = Some(rt);
-            }
+        let Some(service) = self.goal_service() else {
+            return;
+        };
+        service.set_goal_state(state);
+        self.register_update_goal_tool(&service);
+    }
+
+    /// Register `update_goal` against the service's live state slot.
+    ///
+    /// The feature cannot do this itself: the tool needs the engine's registry,
+    /// which a feature hook has no handle on, and the slot only exists once a
+    /// goal does.
+    fn register_update_goal_tool(&mut self, service: &Arc<crate::features::GoalService>) {
+        let Some(state) = service.tool_state() else {
+            return;
+        };
+        if self.tools.get("update_goal").is_some() {
+            return;
         }
+        self.tools
+            .register(Box::new(crate::goal::tool::UpdateGoalTool::new(state)));
     }
 
     /// Install the host's liveness probe for goal pid/session wait barriers.
     pub fn set_goal_wait_probe(&mut self, probe: Arc<dyn crate::goal::runtime::GoalWaitProbe>) {
-        if let Some(g) = self.goal.as_ref() {
-            g.set_wait_probe(Arc::clone(&probe));
+        if let Some(service) = self.goal_service() {
+            service.set_wait_probe(probe);
         }
-        self.goal_wait_probe = Some(probe);
     }
 
     /// Install host-resolved Mixture of Agents state.
@@ -1039,6 +1027,10 @@ impl AgentEngine {
     }
 
     pub fn set_observation(&mut self, session: Arc<crate::observation::ObservationSession>) {
+        if let Some(service) = self.goal_service() {
+            let (provider, model) = (Arc::clone(&self.provider), self.model.clone());
+            service.configure(provider, model, Some(Arc::clone(&session)));
+        }
         self.observation = Some(session);
     }
 
@@ -1109,12 +1101,13 @@ impl AgentEngine {
 
     /// Serializable snapshot of the goal state for host emission.
     pub fn goal_state(&self) -> Option<crate::goal::state::GoalState> {
-        self.goal.as_ref().map(|g| g.snapshot())
+        self.goal_service().and_then(|service| service.snapshot())
     }
 
     /// Clone of the goal runtime handle (shared `Arc` state).
     pub fn goal_runtime_handle(&self) -> Option<crate::goal::runtime::GoalRuntime> {
-        self.goal.clone()
+        self.goal_service()
+            .and_then(|service| service.runtime_handle())
     }
 
     /// Install bootstrap-captured system prompt sections used for category bucketing.
@@ -1525,54 +1518,56 @@ impl AgentEngine {
         self.provider_passes_in_turn = self.provider_passes_in_turn.saturating_add(1);
     }
 
-    fn horizon_observe_tools(&mut self, tool_calls: &[ContentBlock], results: &[ContentBlock]) {
-        let mut observations = Vec::new();
-        for call in tool_calls {
-            let ContentBlock::ToolUse { id, name, input, .. } = call else {
-                continue;
-            };
-            let success = results.iter().any(|block| match block {
-                ContentBlock::ToolResult {
-                    tool_use_id,
-                    is_error,
-                    ..
-                } if tool_use_id == id => !is_error,
-                _ => false,
-            });
-            let command = input
-                .get("command")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            observations.push(crate::horizon::ToolObservation {
-                name: name.clone(),
-                command,
-                success,
-            });
-        }
-        self.horizon.observe_tools(&observations);
-        self.sync_goal_progress();
+    /// The goal service, when the session registered the goal feature.
+    ///
+    /// Only the façade and the turn loop's generic folds read this; nothing here
+    /// branches on goal semantics.
+    fn goal_service(&self) -> Option<Arc<crate::features::GoalService>> {
+        self.features
+            .service::<crate::features::GoalFeature>("goal")
+            .map(|feature| Arc::clone(feature.service()))
     }
 
-    fn sync_goal_progress(&mut self) {
-        let snap = self.horizon.progress();
-        if let Some(g) = self.goal.as_ref() {
-            g.sync_progress(
-                snap.mutated,
-                snap.verify_ok,
-                snap.workspace_changed,
-                snap.no_progress_streak,
-            );
-        }
+    /// Observe one finished tool turn through the feature folds.
+    ///
+    /// The engine builds the raw observations (name/command/success are
+    /// tool-result facts, not goal facts) and hands them to every feature.
+    async fn observe_tool_turn(&mut self, tool_calls: &[ContentBlock], results: &[ContentBlock]) {
+        let calls: Vec<crate::features::ToolCallObservation> = tool_calls
+            .iter()
+            .filter_map(|call| {
+                let ContentBlock::ToolUse {
+                    id, name, input, ..
+                } = call
+                else {
+                    return None;
+                };
+                let success = results.iter().any(|block| match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error,
+                        ..
+                    } if tool_use_id == id => !is_error,
+                    _ => false,
+                });
+                Some(crate::features::ToolCallObservation {
+                    name: name.clone(),
+                    command: input
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    success,
+                })
+            })
+            .collect();
+        self.features
+            .observe_tool_turn(
+                crate::features::ToolTurn { calls },
+                self.plan_status(),
+            )
+            .await;
     }
 
-    fn emit_horizon_decision(&self, decision: &crate::horizon::HorizonDecision) {
-        if let Some(obs) = self.observation.as_ref() {
-            let _ = obs.emit(
-                nomi_agent_trace::EVENT_HORIZON_DECISION,
-                self.horizon.observation_payload(decision),
-            );
-        }
-    }
 
     /// Default thinking budget when "enabled" is requested without a specific budget.
     const DEFAULT_THINKING_BUDGET: u32 = 10_000;
@@ -1883,7 +1878,9 @@ impl AgentEngine {
         // #1 User entry. One generic fold: a feature that treats this message as
         // an approval publishes the resulting allow-list, and the engine applies
         // it without knowing which feature asked.
-        self.horizon.on_user_request();
+        if let Some(service) = self.goal_service() {
+            service.on_user_request();
+        }
         let entry_hooks = self.features.run_user_request();
         if let Some(allow_list) = entry_hooks.take_allow_list() {
             self.allow_list = allow_list;
@@ -1991,10 +1988,12 @@ impl AgentEngine {
             // feature delivers them through the `<system-reminder>` channel, so
             // the model reads them once per turn instead of once per pass.
             if self.coding_harness.is_none() {
-                if let Some(text) = self
-                    .horizon
-                    .observe_office_plan_turn(plan_status.active)
-                    .text()
+                // Office plan overlay. The horizon that owns this counter lives
+                // in the goal feature, which is also where the ledger and the
+                // auto-continue budget are; the engine only asks for this pass's
+                // nudge text.
+                if let Some(service) = self.goal_service()
+                    && let Some(text) = service.observe_office_plan_turn(plan_status.active)
                 {
                     turn_tail_extras.push(text.to_string());
                 }
@@ -2046,9 +2045,10 @@ impl AgentEngine {
             {
                 turn_tail_extras.push(self.harness_runtime.office_working_set.index_block());
             }
-            if let Some(ctx) = self.goal.as_ref().and_then(|g| g.turn_context()) {
-                turn_tail_extras.push(ctx);
-            }
+            // Goal awareness no longer rides the turn tail: the goal feature
+            // delivers its three-state status block through the
+            // `<system-reminder>` channel, once per turn instead of once per
+            // pass.
             // What this exact request made possible, captured after every local
             // tool-surface mutation (plan mode, forced finalize, harness) and
             // before `tools` moves into the LlmRequest below.
@@ -3074,63 +3074,40 @@ impl AgentEngine {
                     }
                 }
 
-                // Goal-driven continuation (opt-in). Coding mode disables
-                // auto-continue by default — incomplete work is handled by the
-                // coding harness todo/explore gates instead.
-                let skip_goal = self
+                // #6 Natural-end continuation. One generic fold: the engine
+                // supplies the termination facts plus the two verdicts it owns
+                // (plan status, and whether this profile may auto-continue at
+                // all), and a feature returns the message to push. No call site
+                // here knows what a goal is.
+                //
+                // Coding sessions disable auto-continue: incomplete work there is
+                // the coding harness's business, handled by its todo/explore
+                // gates above.
+                let auto_continue_allowed = !self
                     .coding_harness
                     .as_ref()
                     .is_some_and(|h| h.disables_goal_auto_continue());
-                self.horizon.record_usage(
-                    turn_usage.input_tokens,
-                    turn_usage.output_tokens,
-                );
-                let cwd = self.workspace_cwd();
-                self.horizon
-                    .observe_end_turn(&assistant_text, cwd.as_deref(), 0);
-                self.sync_goal_progress();
-                self.horizon.consume_turn_scoped();
-                let continuation = if skip_goal {
-                    None
-                } else if let Some(snap) = self.goal.as_ref().map(|g| g.snapshot()) {
-                    self.horizon.align_budget(
-                        snap.max_auto_continuations,
-                        snap.contract.as_ref(),
-                        snap.auto_continuations,
-                    );
-                    let awaiting = plan_status.awaiting_approval;
-                    let decision = self.horizon.decide(plan_status.active, awaiting);
-                    self.emit_horizon_decision(&decision);
-                    let delta = self.horizon.continuation_delta(
-                        &snap.objective,
-                        snap.contract.as_ref(),
-                        &crate::goal::state::render_subgoals_block(&snap.subgoals),
-                    );
-                    let gate = crate::goal::runtime::GoalContinueGate {
-                        allow_continue: decision.allow_continue,
-                        pause_on_veto: decision.pause_goal,
-                        veto_reason: Some(decision.reason.clone()),
-                        continuation_delta: Some(delta),
-                        observed: true,
-                    };
-                    let mut judge = crate::goal::judge::ProviderJudgeClient::new(
-                        Arc::clone(&self.provider),
-                        self.model.clone(),
-                    );
-                    if let Some(session) = self.observation.clone() {
-                        judge = judge.with_observation(session);
-                    }
-                    self.goal
-                        .as_ref()
-                        .unwrap()
-                        .evaluate_and_continue_with(&assistant_text, &judge, gate)
-                        .await
-                } else {
-                    None
+                let natural_end_ctx = crate::features::NaturalEndCtx {
+                    assistant_text: assistant_text.clone(),
+                    input_tokens: turn_usage.input_tokens,
+                    output_tokens: turn_usage.output_tokens,
+                    cwd: self.workspace_cwd(),
+                    auto_continue_allowed,
                 };
-                if let Some(cont) = continuation {
-                    self.horizon.record_continuation();
-                    self.messages.push(cont);
+                let decision = self
+                    .features
+                    .resolve_natural_end(&natural_end_ctx, plan_status)
+                    .await;
+                if let Some(text) = decision.continuation {
+                    if decision.record_continuation
+                        && let Some(service) = self.goal_service()
+                    {
+                        service.record_continuation();
+                    }
+                    self.messages.push(Message::now(
+                        Role::User,
+                        vec![ContentBlock::Text { text }],
+                    ));
                     self.save_session();
                     // Do not reset `turn`: the 200-turn net budget is global.
                     // Goal auto-continue is additionally capped by HorizonBudget.
@@ -3510,7 +3487,7 @@ impl AgentEngine {
             if self.coding_harness.is_none() {
                 self.observe_office_tool_turn(&tool_calls, &outcome.results);
             }
-            self.horizon_observe_tools(&tool_calls, &outcome.results);
+            self.observe_tool_turn(&tool_calls, &outcome.results).await;
 
             // Apply any context modifiers from skill executions before the next turn
             self.apply_context_modifiers(&outcome.modifiers);
