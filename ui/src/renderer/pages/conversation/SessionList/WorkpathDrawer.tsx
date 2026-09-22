@@ -8,10 +8,12 @@ import {
   DeleteOne,
   FolderClose,
   FolderOpen,
+  Home,
   MessageOne,
   MoreOne,
   Plus,
   Pushpin,
+  Right,
 } from '@icon-park/react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -209,7 +211,17 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     setShowAllConversations((value) => !value);
   };
 
-  const headerIcon = expanded ? (
+  const headerIcon = isDefault ? (
+    <Home
+      theme='outline'
+      size={16}
+      fill='currentColor'
+      className={classNames(
+        'line-height-0 shrink-0 transition-colors',
+        expanded ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
+      )}
+    />
+  ) : expanded ? (
     <FolderOpen
       theme='two-tone'
       size={16}
@@ -343,7 +355,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             type='button'
             aria-expanded={batchMode ? undefined : expanded}
             aria-controls={batchMode ? undefined : controlsId}
-            className='flex min-w-0 flex-1 items-center gap-8px appearance-none border-none bg-transparent p-0 text-left'
+            className='flex min-w-0 flex-1 items-center gap-4px appearance-none border-none bg-transparent p-0 text-left cursor-pointer'
             onClick={() => {
               if (batchMode && !workpathSelectionState.disabled) {
                 onToggleBatchSelectionScope?.(workpathSelectionScope);
@@ -354,6 +366,15 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             onPointerEnter={() => setWorkpathIdentityHovered(true)}
             onPointerLeave={() => setWorkpathIdentityHovered(false)}
           >
+            <span
+              data-testid='workpath-disclosure-caret'
+              className={classNames(
+                'size-14px flex items-center justify-center shrink-0 transition-transform duration-150',
+                expanded ? 'rotate-90 text-primary-6' : 'text-t-tertiary group-hover:text-t-secondary'
+              )}
+            >
+              <Right theme='outline' size={10} fill='currentColor' />
+            </span>
             <span
               className='relative size-22px flex items-center justify-center shrink-0 text-t-primary'
             >

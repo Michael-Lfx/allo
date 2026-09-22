@@ -134,7 +134,7 @@ describe('WorkpathDrawer structure', () => {
     expect(sessionListSource.includes('onCreateTerminal={handleCreateTerminal}')).toBe(false);
   });
 
-  test('uses folder icons as the expansion cue without a separate caret', () => {
+  test('provides recognizable expand and collapse disclosure indicators and distinct Home and Folder icons', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
 
     expect(source.includes("data-testid='workpath-toggle-row'")).toBe(true);
@@ -148,8 +148,9 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes('const overflowControlsId = disclosureIds.overflowId')).toBe(true);
     expect(source.includes('FolderOpen')).toBe(true);
     expect(source.includes('FolderClose')).toBe(true);
-    expect(source.includes('workpath-disclosure-caret')).toBe(false);
-    expect(source.includes('<Right')).toBe(false);
+    expect(source.includes('Home')).toBe(true);
+    expect(source.includes("data-testid='workpath-disclosure-caret'")).toBe(true);
+    expect(source.includes('<Right')).toBe(true);
     expect(source.includes('flowy-disclosure-content')).toBe(true);
     expect(source.includes('id={controlsId}')).toBe(true);
     expect(source.includes("aria-hidden={!drawerMotion.shouldRender || drawerMotion.phase === 'exiting'}")).toBe(true);

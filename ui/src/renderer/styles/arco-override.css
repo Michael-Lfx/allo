@@ -34,6 +34,13 @@ body {
   margin-top: 2px;
 }
 
+/* Workpath drag-and-drop: force grabbing cursor across all elements while dragging */
+body.flowy-is-dragging-workpath,
+body.flowy-is-dragging-workpath * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
 /* Active session rows need a visible but quiet tint so they remain distinct
    from the lighter hover state without returning to the old dark fill. */
 .session-list-active-row {

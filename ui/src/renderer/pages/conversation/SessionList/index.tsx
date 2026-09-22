@@ -192,6 +192,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   useEffect(() => {
     if (!activeWorkpathDragKey) return;
 
+    document.body.classList.add('flowy-is-dragging-workpath');
     document.body.style.cursor = 'grabbing';
 
     const handleEscapeOrBlur = () => {
@@ -202,6 +203,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     window.addEventListener('blur', handleEscapeOrBlur);
     window.addEventListener('pointercancel', handleEscapeOrBlur);
     return () => {
+      document.body.classList.remove('flowy-is-dragging-workpath');
       document.body.style.cursor = '';
       window.removeEventListener('blur', handleEscapeOrBlur);
       window.removeEventListener('pointercancel', handleEscapeOrBlur);
