@@ -25,6 +25,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
   type Modifier,
+  type PointerSensorOptions,
 } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import classNames from 'classnames';
@@ -38,8 +39,8 @@ class SmartPointerSensor extends PointerSensor {
     {
       eventName: 'onPointerDown' as const,
       handler: (
-        { nativeEvent: event }: { nativeEvent: PointerEvent },
-        { onActivation }: { onActivation?: (opts: { event: PointerEvent }) => void }
+        { nativeEvent: event }: React.PointerEvent,
+        { onActivation }: PointerSensorOptions
       ) => {
         if (!event.isPrimary || event.button !== 0) {
           return false;
