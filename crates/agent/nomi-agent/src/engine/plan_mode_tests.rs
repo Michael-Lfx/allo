@@ -78,6 +78,7 @@ fn make_plan_engine(allow_list: Vec<String>) -> super::AgentEngine {
         editable_turn: None,
         observation: None,
         features: Default::default(),
+        reminders: Default::default(),
         horizon: Default::default(),
         plan_exit_latch: None,
     }

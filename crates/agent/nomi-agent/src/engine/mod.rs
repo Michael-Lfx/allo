@@ -690,6 +690,10 @@ pub struct AgentEngine {
     /// (tests, low-level embeddings) behaves exactly as it did before the seam:
     /// every fold iterates nothing and returns its input.
     features: FeatureRegistry,
+    /// `<system-reminder>` notification channel, built from the registered
+    /// features' reminder specs. Empty when no feature declares one, in which
+    /// case no message is ever appended.
+    reminders: crate::features::reminder::ReminderService,
 }
 
 /// Moves the transcript into the provider request and puts the same `Vec`
@@ -782,6 +786,7 @@ impl AgentEngine {
             editable_turn: None,
             observation: None,
             features: FeatureRegistry::new(),
+            reminders: crate::features::reminder::ReminderService::new(),
         }
     }
 
@@ -878,6 +883,7 @@ impl AgentEngine {
             editable_turn,
             observation: None,
             features: FeatureRegistry::new(),
+            reminders: crate::features::reminder::ReminderService::new(),
         }
     }
 
@@ -952,10 +958,16 @@ impl AgentEngine {
     }
 
     /// Install the session's features. Registration also contributes each
-    /// feature's tools, so a caller must install features before the first
-    /// provider request (which is what `AgentBootstrap::build` does).
+    /// feature's tools and builds the reminder channel, so a caller must
+    /// install features before the first provider request (which is what
+    /// `AgentBootstrap::build` does).
     pub fn set_features(&mut self, features: FeatureRegistry) {
         features.register_tools(&mut self.tools);
+        let mut reminders = crate::features::reminder::ReminderService::new();
+        for spec in features.reminders() {
+            reminders.register(spec.variant, move |ctx| (spec.render)(ctx), spec.refresh_after_passes);
+        }
+        self.reminders = reminders;
         self.features = features;
     }
 

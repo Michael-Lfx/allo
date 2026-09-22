@@ -1001,6 +1001,7 @@ fn make_engine(model: &str) -> super::AgentEngine {
         editable_turn: None,
         observation: None,
         features: Default::default(),
+        reminders: Default::default(),
         horizon: Default::default(),
         plan_exit_latch: None,
     }

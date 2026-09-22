@@ -149,6 +149,7 @@ fn make_compact_engine_with_output(
         editable_turn: None,
         observation: None,
         features: Default::default(),
+        reminders: Default::default(),
         horizon: Default::default(),
         plan_exit_latch: None,
     }

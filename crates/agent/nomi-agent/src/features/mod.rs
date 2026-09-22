@@ -32,6 +32,7 @@ mod goal;
 // Plan mode keeps a second, compatibility path at `crate::plan` so existing
 // hosts and integration tests resolve unchanged; the implementation lives here.
 pub mod plan;
+pub mod reminder;
 
 pub use goal::GoalFeature;
 pub use plan::PlanFeature;
@@ -225,22 +226,41 @@ pub struct FeatureHooks {
 
 /// When a reminder is being rendered.
 ///
-/// `pass_in_turn` counts provider passes since the current turn started
-/// (0-based); `turn_start` is true only on the first pass of a turn.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ReminderTrigger {
-    pub turn_start: bool,
-    pub pass_in_turn: usize,
-    /// A new root user message arrived since the previous rendering.
-    pub new_user_message: bool,
-}
+/// The service owns the ctx type; features receive it through their render
+/// closure. Re-exported here so a feature module imports one path.
+pub use reminder::ReminderCtx;
 
 /// A reminder variant a feature wants delivered through
-/// [`crate::features::reminder::ReminderService`].
+/// [`reminder::ReminderService`].
+///
+/// `refresh_after_passes` re-states unchanged text once that many provider
+/// passes have elapsed in a turn, so a long tool loop still re-reads a stale
+/// reminder without re-emitting it on every pass. `None` renders at most once
+/// per turn.
 #[derive(Clone)]
 pub struct ReminderSpec {
     pub variant: &'static str,
-    pub render: Arc<dyn Fn(&ReminderTrigger) -> Option<String> + Send + Sync + 'static>,
+    pub render: Arc<dyn Fn(&ReminderCtx) -> Option<String> + Send + Sync + 'static>,
+    pub refresh_after_passes: Option<usize>,
+}
+
+impl ReminderSpec {
+    pub fn new(
+        variant: &'static str,
+        render: impl Fn(&ReminderCtx) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            variant,
+            render: Arc::new(render),
+            refresh_after_passes: None,
+        }
+    }
+
+    /// Re-state unchanged text every `passes` provider passes within a turn.
+    pub fn refreshing_every(mut self, passes: usize) -> Self {
+        self.refresh_after_passes = Some(passes);
+        self
+    }
 }
 
 /// One self-registering agent mode.
