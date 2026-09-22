@@ -109,7 +109,23 @@ The judge itself is deliberately cheap. Runtime auto-continue is **fail-closed**
   Recon-only tools and near-duplicate assistant text do not reset that streak.
   The first idle EndTurn still gets one delta continuation; the second pauses.
 - **Continuation prompts are per-turn deltas**, not a byte-identical "keep
-  going" blob. The standing-goal *context* on the turn tail stays cache-stable.
+  going" blob.
+- **The standing-goal block rides a `<system-reminder>` user message**, not the
+  turn tail `[Context]`. It is appended once per turn rather than re-pasted on
+  every provider pass, so the objective stays visible without being repeated
+  inside a turn. Three states are dispatched:
+  - **active / waiting** — the objective plus the judge rules (this is the block
+    that tells the model an external judge audits each natural termination);
+  - **paused** — a short status block saying the loop is stopped, why, and that
+    the model must not self-start new work toward it. It renders only on a turn
+    boundary that carries a new user message;
+  - **blocked** — a short status block naming the reason and what you must
+    supply to unblock it, again only at a turn boundary;
+  - **complete / cleared** — nothing, so a finished goal costs no tokens and the
+    request stays byte-identical to a goal-less session.
+
+  The block is derived from live goal state, so it is regenerable: if
+  compaction drops it, the next turn rebuilds it.
 - Free-form goals (no Verification field) auto-continue at most **3** times
   even if `max_turns` is 8. With a Verification contract the requested budget
   is used. The engine's 200-turn net budget is never reset to 0 on continue.

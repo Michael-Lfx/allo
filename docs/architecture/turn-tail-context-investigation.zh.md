@@ -1,7 +1,8 @@
 # Turn-tail `[Context]` 注入：现状记录与待验证项
 
-> 状态：**已记录，暂不改**（2026-09-22）。这不是一份方案，是一份**现状与证据的登记**——
-> 机制已读准，处置未定，且**还没有测量**。
+> 状态：**部分处置已完成**（2026-09-22 记录；plan/goal 注入已迁出，见 §7）。
+> 这不是一份方案，是一份**现状与证据的登记**——
+> 机制已读准，P2 已消除，其余处置仍未定，且**本机仍未采集到生产基线**。
 > 前置：`docs/architecture/agent-engine.zh.md`、`docs/agent-store/20-tool-injection-policy.zh.md`。
 > 用途：回答「turn-tail `[Context]` 目前是什么问题」。**改动前请先读 §4**：现在的判断仍是
 > 假设，先量再改。
@@ -104,3 +105,38 @@ message should stay a single message」。谁按名字去「修」实现，就�
 把 `Text` 块插在 `ToolResult` 块**之前**，对某些 provider 的 tool_result 配对规则是否合规。
 生产上没出 API 错，所以大概率没事，但这条只有推理没有证据；它影响的是「会不会报错」，
 不影响 P1 的「模型读到什么」。**要动 §5 的 A/B 之前，这一条应当顺手确认一次。**
+
+---
+
+## 7. 已完成的处置：plan/goal 指令迁出 `[Context]`
+
+`docs/architecture/plan-goal-feature-seam.zh.md` 已实施（Phase 1–5）。其中与本文件直接
+相关的部分：
+
+- **P2 就此消除。** plan 与 goal 的指令/状态不再混进 `[Context]` 块，改走
+  `<system-reminder>` 持久 user 消息（`nomi-agent` 的 `features/reminder/`）。
+  信封文案明确声明「这是环境/状态信息，不是用户的新指令」（吸收 §5-A 的措辞），
+  且信封不以 `[Context]` 开头，因此不会被 truncation-restart 的两个谓词误判。
+- **P3 部分缓解。** reminder 同一回合内去重（相同文本只发一次），plan 每 8 个
+  provider pass 刷新一次、goal 每 12 个刷新一次；不再每个 pass 重贴。
+- **P4 不受影响。** `Current date` 仍无条件注入 turn tail，`build_turn_tail_context`
+  仍恒返回 `Some`。
+- **P1 的机制面减少但未消失。** 最高显著位置上不再出现「长指令块」，但
+  `Current date` 依旧落在那里——§5-A/B 对 date/ledger/contributor 的处置**仍待各自排期**。
+
+### 基线采集状态：**未采集**
+
+按 §4 的步骤在本机重放不可行，因此本文件的 P1 假设**至今未被生产数据验证**：
+
+- 本地 session store（`%LOCALAPPDATA%\nomifun\nomi-sessions`）只有 5 个会话，
+  最后写入时间均为 2026-08-10 / 08-12；
+- turn-tail 持久化机制于 2026-08-28 才落地（`f17af9963`），晚于这些会话；
+- 5 个文件的原始 JSON 中 `[Context]` 出现次数为 **0**，无法据以对齐「思考段数 /
+  tail 注入位置 / 文本稳定性」。
+
+**残余风险：** 无法用真实会话确认迁移是否改善或恶化了复述行为。部分对冲来自
+可复现的测试而非生产数据——`features/reminder/` 的单测钉死「同回合去重 / 每回合
+重发 / 刷新间隔 / compaction 后可再生」四条策略，`engine_test.rs` 钉死「plan/goal
+块恰好一次、走信封、不含 `[Context]`、goal-less 会话零注入」。
+
+**补采义务：** 若后续环境能起整栈，应按 §4 补采一次并回填本节。

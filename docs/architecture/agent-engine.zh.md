@@ -149,7 +149,70 @@ Nomi-engine session 在进程内运行。ACP-style session 会 spawn 并管理�
 历史资料。当前代码仍保持强边界，但 browser/computer bridge 与 public gateway
 surfaces 意味着真实规则是“主接缝 + 明确记录的 feature-gated exceptions”。
 
+## Feature 接缝（plan / goal）
+
+plan 与 goal 不再内联在引擎主循环里，而是各自收敛为一个**自注册 feature**，
+通过统一的三条贡献通道接入：工具、reminder、生命周期钩子。
+
+```text
+crates/agent/nomi-agent/src/features/
+├── mod.rs            Feature / FeatureRegistry / FeatureHooks / HookCtx / DispatchGate
+├── reminder/         ReminderService：<system-reminder> 通知通道
+├── plan/             state.rs（PlanService）/ tools/ / prompt.rs / file.rs
+└── goal.rs           GoalService：horizon + GoalRuntime + judge 接线
+```
+
+- **状态归属：** plan 状态（phase / pre-plan allow-list / pending plan / exit
+  latch）在 `PlanService`；horizon（progress ledger + 续作预算 + office plan
+  overlay 计数）、`GoalRuntime`、宿主 liveness probe、judge 的 provider/model
+  在 `GoalService`。引擎**不再持有**任何 plan/goal 字段。
+- **六个钩点全部收敛为通用折叠**，调用处不认识 plan/goal：
+  `on_user_request`（用户入口）、`request_gates`（请求参数门控）、
+  `dispatch_gate`（分发门禁）、`apply_modifier`（工具 modifier 迁移）、
+  `on_tool_turn`（工具轮观测）、`on_natural_end`（自然结束续作）。
+  引擎侧只有一行循环/折叠；`engine/mod.rs` 中残留的 `goal_service()` /
+  `plan_service()` 只出现在公开 façade（`set_goal*` / `goal_state` /
+  `set_plan_active_flag` 等）里，签名与 backend 调用方零改动。
+- **钩子按注册顺序链式调用**，`on_natural_end` 的顺序即现契约
+  （steering → coding harness → office nudge → goal）。注册按 name 幂等，
+  双重 bootstrap 不会重复触发。
+- **`HookCtx` 双向携带跨 feature 事实**：plan 状态向外发布（goal 的续作决策
+  要用），allow-list 替换请求向内传递（plan 审批恢复写工具）。第一个发布者胜出，
+  因此结果与注册顺序无关。
+- **`DispatchGate` 冻结进 per-request 授权快照**
+  （`ProviderToolAuthority`）：`plan_mode_read_only` 布尔位已被替换，只读拒绝在
+  dispatch 处求值（那里才知道本次调用的 category），但门禁判定读取的是**产生这批
+  工具调用那次请求**的状态快照，而不是 dispatch 时刻的状态。
+- **硬化闸门原样保留**：plan 滞留预算（office soft 8 / hard 12）、goal blocked
+  证据 ≥3 次、judge fail-closed、horizon 对 plan 的续作否决、无进展 idle-streak
+  否决、judge 无机械证据不得判完成。
+
+### 注入通道：`<system-reminder>`
+
+plan/goal 的指令与状态**不再走 turn-tail `[Context]`**，改为追加一条持久的
+`Role::User` 消息，包在 `<system-reminder>…</system-reminder>` 信封里
+（`ReminderService`）：
+
+- 信封不等于 `[Context]`，因此 truncation-restart 的
+  `is_turn_tail_context_text` / `is_context_only_user_content` 谓词永不匹配它；
+- **每回合一次**，同一回合内相同文本不重复（消除「每个 provider pass 重贴一遍」）；
+- `begin_turn` 重置去重状态，站立目标因此每回合重新可见；`urgent` 支持回合内
+  状态变更与 compaction splice 后的重新注入；
+- `refresh_after_passes` 让长工具循环重新读到（plan 8 pass、goal 12 pass）；
+- 文本由 feature 状态派生 ⇒ **可再生**：compaction 丢弃后下个触发点自动重建。
+  消息上不存任何标记（`Message` 的 serde 形状属 wire 契约，不能为一个内部标记
+  改动）。
+- 注入发生在 turn-tail 组装**之后**，所以 reminder 消息不会被贴上 `[Context]`
+  块；是**追加**而非前插，已发送前缀只增不改。
+- goal 状态块按三态派发：`Active`/`Waiting` 用原 `goal_context.md`；`Paused` /
+  `Blocked` 用 nomi 自身语义的简短状态块（为何暂停/阻塞、如何恢复），且只在
+  带新用户消息的回合边界渲染；`Complete`/`Cleared` 静默。
+
+安全边界不变：注入通道只承担**告知与引导**，强制力仍来自 `dispatch_gate` 与
+`on_user_request`。即使模型忽略 reminder，只读门禁照样拒绝。
+
 ## Coding / 办公 Harness v2
+
 
 仍然只有一套循环：`AgentEngine::execute_turn_inner`，外加可选的
 `CodingHarness`（`task_profile=coding`）。办公模式走同一引擎，不安装 coding overlay。
