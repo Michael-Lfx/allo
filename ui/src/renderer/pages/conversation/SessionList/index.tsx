@@ -189,7 +189,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     setActiveWorkpathDragKey(null);
   }, []);
 
-  // 脱手与异常释放防护：窗口失焦、系统取消时安全复位，防止卡在拖拽状态；拖拽中切换全局光标
+  // 脱手与异常释放防护：窗口失焦、系统取消或按 Escape 时安全复位，防止卡在拖拽状态；拖拽中切换全局光标
   useEffect(() => {
     if (!activeWorkpathDragKey) return;
 
@@ -201,13 +201,21 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
       setActiveWorkpathDragKey(null);
     };
 
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        handleEscapeOrBlur();
+      }
+    };
+
     window.addEventListener('blur', handleEscapeOrBlur);
     window.addEventListener('pointercancel', handleEscapeOrBlur);
+    window.addEventListener('keydown', handleKeyDown);
     return () => {
       document.body.classList.remove('flowy-is-dragging-workpath');
       document.body.style.cursor = '';
       window.removeEventListener('blur', handleEscapeOrBlur);
       window.removeEventListener('pointercancel', handleEscapeOrBlur);
+      window.removeEventListener('keydown', handleKeyDown);
     };
   }, [activeWorkpathDragKey]);
 
@@ -379,7 +387,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     };
   }, []);
 
-  const { expand: expandWorkpathDrawer } = ui;
+  const { expand: expandWorkpathDrawer, isExpanded: isWorkpathExpanded } = ui;
   useEffect(() => {
     const pending = pendingRevealRef.current;
     if (!pending) return;
@@ -393,10 +401,10 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   useEffect(() => {
     if (!activeConversationId) return;
     const owningNode = tree.find((candidate) => candidate.interactive.some((entry) => entry.id === activeConversationId));
-    if (owningNode && !ui.isExpanded(owningNode.key)) {
+    if (owningNode && !isWorkpathExpanded(owningNode.key)) {
       expandWorkpathDrawer(owningNode.key);
     }
-  }, [activeConversationId, tree, expandWorkpathDrawer, ui]);
+  }, [activeConversationId, tree, expandWorkpathDrawer, isWorkpathExpanded]);
 
   /* ------------------------- workspace dropdown UI ------------------------- */
 

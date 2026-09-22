@@ -1,6 +1,6 @@
 
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { SessionKind } from '../utils/workpathTree';
 
@@ -289,20 +289,38 @@ export const useWorkpathUiState = (): WorkpathUiState => {
     []
   );
 
-  return {
-    pinnedKeys,
-    togglePinned,
-    customOrderKeys,
-    reorderWorkpaths,
-    isExpanded,
-    toggleExpanded,
-    expand,
-    isSubgroupExpanded,
-    toggleSubgroup,
-    expandSubgroup,
-    companionGroupExpanded,
-    toggleCompanionGroup,
-    sshGroupExpanded,
-    toggleSshGroup,
-  };
+  return useMemo(
+    () => ({
+      pinnedKeys,
+      togglePinned,
+      customOrderKeys,
+      reorderWorkpaths,
+      isExpanded,
+      toggleExpanded,
+      expand,
+      isSubgroupExpanded,
+      toggleSubgroup,
+      expandSubgroup,
+      companionGroupExpanded,
+      toggleCompanionGroup,
+      sshGroupExpanded,
+      toggleSshGroup,
+    }),
+    [
+      pinnedKeys,
+      togglePinned,
+      customOrderKeys,
+      reorderWorkpaths,
+      isExpanded,
+      toggleExpanded,
+      expand,
+      isSubgroupExpanded,
+      toggleSubgroup,
+      expandSubgroup,
+      companionGroupExpanded,
+      toggleCompanionGroup,
+      sshGroupExpanded,
+      toggleSshGroup,
+    ]
+  );
 };
