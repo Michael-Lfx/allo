@@ -93,7 +93,7 @@ const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
     <>
       <div
         ref={refs.setReference}
-        className={classNames('relative inline-flex shrink-0', className)}
+        className={classNames('relative inline-flex', className || 'shrink-0')}
         data-tauri-no-drag={dataTauriNoDrag || undefined}
         onMouseEnter={showAfterHoverDelay}
         onMouseLeave={hide}

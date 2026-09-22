@@ -2,7 +2,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { MessageOne, VideoOne } from '@icon-park/react';
+import { MessageOne, Robot, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -448,7 +448,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               className={classNames(
                 collapsed
                   ? 'flex flex-col gap-2px'
-                  : 'flex items-center justify-between px-6px py-3px my-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
+                  : 'flex items-center gap-2px p-2px my-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
               )}
             >
               <SiderSectionHeader label={t('common.titlebar.sections.work')} collapsed={collapsed} compact hidden />
@@ -625,6 +625,18 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
+                    <Robot
+                      theme='outline'
+                      size={12}
+                      fill='currentColor'
+                      className={classNames(
+                        'block leading-none shrink-0 transition-colors duration-180',
+                        activeBar2Module === 'companions'
+                          ? 'text-primary-6'
+                          : 'text-t-tertiary group-hover:text-t-primary'
+                      )}
+                      style={{ lineHeight: 0 }}
+                    />
                     <span className='truncate'>{t('nomi.shortTitle', { defaultValue: '桌宠' })}</span>
                   </button>
                 </div>

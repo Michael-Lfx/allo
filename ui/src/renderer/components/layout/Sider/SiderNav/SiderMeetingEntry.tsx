@@ -44,10 +44,10 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
 
   if (dock) {
     return (
-      <InstantHoverTooltip content={label} position='bottom'>
+      <InstantHoverTooltip content={label} position='bottom' className='flex-1 min-w-0'>
         <div
           className={classNames(
-            'size-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
+            'w-full h-26px flex items-center justify-center cursor-pointer transition-colors rd-6px text-t-secondary hover:text-t-primary',
             isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
           onClick={onClick}
