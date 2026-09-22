@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import {
+  listQueuedTelemetryEventsForTests,
+  resetTelemetryOutboxForTests,
+} from './analytics/telemetryOutbox';
+import { resetFunnelForTests } from './analytics/productFunnel';
 import { openOfficialWebsiteCredits } from './openOfficialWebsiteCredits';
 import type { OfficialWebsiteCreditsOpener } from './openOfficialWebsiteCredits';
 
@@ -96,5 +101,37 @@ describe('openOfficialWebsiteCredits', () => {
     expect(source.includes('openExternalUrl')).toBe(true);
     expect(source.includes('tokens.json')).toBe(false);
     expect(source.includes('access_token')).toBe(false);
+  });
+
+  test('records catalog view with source and balance, and open failure separately', async () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    const opened = opener();
+    await openOfficialWebsiteCredits('zh-CN', opened, { source: 'sider', balance: 12 });
+    const viewed = listQueuedTelemetryEventsForTests().find(
+      (event) => event.name === 'billing_catalog_viewed'
+    );
+    expect(viewed?.module).toBe('commerce');
+    expect(viewed?.properties.source).toBe('sider');
+    expect(viewed?.properties.balance).toBe(12);
+
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    const failed = opener({
+      getWebsiteEntry: async () => {
+        throw new Error('offline');
+      },
+    });
+    await openOfficialWebsiteCredits('zh-CN', failed, {
+      source: 'conversation_error_card',
+      balance: 0,
+    });
+    const openFailed = listQueuedTelemetryEventsForTests().find(
+      (event) => event.name === 'billing_catalog_open_failed'
+    );
+    expect(openFailed?.module).toBe('commerce');
+    expect(openFailed?.properties.source).toBe('conversation_error_card');
+    expect(openFailed?.properties.balance).toBe(0);
+    expect(openFailed?.properties.error_code).toBe('website_entry_failed');
   });
 });

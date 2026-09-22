@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Attention, PlayOne, Robot, User } from '@icon-park/react';
+import { useCredits } from '@renderer/hooks/context/CreditsContext';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 import { getArtifact } from '../api';
@@ -406,6 +407,7 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
   onOpenMedia,
 }) => {
   const { t } = useTranslation();
+  const { balance } = useCredits();
   const [expanded, setExpanded] = useState(false);
   const isUser = item.role === 'user';
   const isGate = item.kind === 'gate_render' || item.kind === 'gate_action';
@@ -445,7 +447,10 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
                     source: 'error_recovery',
                     feature: 'video_generation',
                   });
-                  void openOfficialWebsiteCredits();
+                  void openOfficialWebsiteCredits(undefined, undefined, {
+                    source: 'video_failure_card',
+                    balance,
+                  });
                 }}
               >
                 {t(recovery.labelKey, { defaultValue: '购买积分' })}

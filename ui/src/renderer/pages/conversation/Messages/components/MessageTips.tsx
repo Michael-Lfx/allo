@@ -9,7 +9,7 @@ import { Attention, CheckOne } from '@icon-park/react';
 import { theme } from '@/platform';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import classNames from 'classnames';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownView from '@renderer/components/Markdown';
 import FeedbackButton from '@renderer/components/base/FeedbackButton';
@@ -22,7 +22,8 @@ import { parseMessageFileMarker } from './messageFileMarker';
 import { resolveMessageErrorRecoveryAction } from './messageErrorRecovery';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { useNavigate } from 'react-router-dom';
-import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+import { useCredits } from '@/renderer/hooks/context/CreditsContext';
+import { trackFunnelEvent, trackLowCreditBalance } from '@/renderer/utils/analytics/productFunnel';
 import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
 import {
@@ -162,6 +163,7 @@ const useTruncatedContinuation = (message: IMessageTips) => {
 const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { balance } = useCredits();
   const messageList = useMessageList();
   const { type } = message.content;
   const content = toDisplayText(message.content.content);
@@ -232,6 +234,10 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
     () => resolveMessageErrorRecoveryAction(structuredError),
     [structuredError?.code, structuredError?.resolution?.kind]
   );
+  useEffect(() => {
+    if (recoveryAction?.source !== 'open_billing') return;
+    trackLowCreditBalance({ source: 'conversation_error_card', balance });
+  }, [balance, recoveryAction?.source]);
   const recoveryActionLabel = recoveryAction
     ? t(recoveryAction.labelKey, {
         defaultValue:
@@ -368,7 +374,10 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                           });
                           switch (recoveryAction.source) {
                             case 'open_billing':
-                              void openOfficialWebsiteCredits();
+                              void openOfficialWebsiteCredits(undefined, undefined, {
+                                source: 'conversation_error_card',
+                                balance,
+                              });
                               return;
                             case 'change_model':
                             case 'fix_agent_config':

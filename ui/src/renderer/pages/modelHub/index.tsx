@@ -35,6 +35,7 @@ import ImageModelsContent from './ImageModelsContent';
 import VideoModelsContent from './VideoModelsContent';
 import EmbeddingModelsContent from './EmbeddingModelsContent';
 import { useManagedFreeModelsEnabled } from '@/renderer/hooks/agent/useManagedFreeModelsEnabled';
+import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 
 type Section =
   | 'models'
@@ -207,6 +208,10 @@ const ModelHubPage: React.FC = () => {
   const [section, setSection] = useState<Section>(
     () => resolveSection(searchParams.get('section')) ?? 'chat'
   );
+
+  useEffect(() => {
+    trackFunnelEvent('home_viewed', { feature: 'model_hub', source: 'model_hub' });
+  }, []);
 
   useEffect(() => {
     const resolved = resolveSection(searchParams.get('section'));

@@ -25,6 +25,7 @@ import { useUserStore } from '@oc/stores/use-user-store';
 import { setActiveUserScope } from '@oc/lib/user-scope';
 import { getOcPortalHost, disposeOcPortalHost } from '@oc/lib/oc-scope';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
+import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import styles from './index.module.css';
 
 // Ant Design component styles are configured through ConfigProvider; the
@@ -47,6 +48,9 @@ const VideoCanvasProjectPage: React.FC = () => {
   const [catalogRetrying, setCatalogRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const colorTheme = useVideoCanvasTheme();
+  useEffect(() => {
+    trackFunnelEvent('home_viewed', { feature: 'canvas', source: 'canvas' });
+  }, []);
   useEffect(() => {
     if (!ready || !canvasId || error) return;
     getOcPortalHost();

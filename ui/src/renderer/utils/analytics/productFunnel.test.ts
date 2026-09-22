@@ -66,6 +66,7 @@ describe('product funnel', () => {
     expect(queued.find((event) => event.name === 'first_token')?.properties.ttft_ms).toEqual(expect.any(Number));
     expect(queued.find((event) => event.name === 'first_token')?.properties.request_key).toBe('req-1');
     expect(queued.find((event) => event.name === 'turn_idle')?.properties.outcome).toBe('completed');
+    expect(queued.find((event) => event.name === 'turn_idle')?.properties.feature).toBe('conversation');
     expect(queued.find((event) => event.name === 'first_value_confirmed')?.module).toBe('conversation');
     expect(queued.find((event) => event.name === 'value_confirmed')?.module).toBe('conversation');
   });
@@ -201,6 +202,21 @@ describe('product funnel', () => {
       ['home_interactive', 'platform'],
       ['home_viewed', 'platform'],
       ['home_viewed', 'video_generation'],
+    ]);
+  });
+
+  test('queues feature homes outside video as platform', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    trackFunnelEvent('home_viewed', { feature: 'conversation', source: 'conversation' });
+    trackFunnelEvent('home_viewed', { feature: 'canvas', source: 'canvas' });
+    trackFunnelEvent('home_viewed', { feature: 'scheduled', source: 'scheduled' });
+    trackFunnelEvent('home_viewed', { feature: 'model_hub', source: 'model_hub' });
+    expect(listQueuedTelemetryEventsForTests().map((event) => [event.properties.feature, event.module])).toEqual([
+      ['conversation', 'platform'],
+      ['canvas', 'platform'],
+      ['scheduled', 'platform'],
+      ['model_hub', 'platform'],
     ]);
   });
 

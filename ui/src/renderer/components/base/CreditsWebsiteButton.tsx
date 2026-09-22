@@ -2,6 +2,7 @@ import { ShoppingCart } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 
 type CreditsWebsiteButtonProps = {
@@ -15,10 +16,11 @@ type CreditsWebsiteButtonProps = {
  */
 const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({ size = 'sm', className }) => {
   const { t } = useTranslation();
+  const { balance } = useCredits();
   const label = t('billing.openBilling');
 
   const openBilling = () => {
-    void openOfficialWebsiteCredits();
+    void openOfficialWebsiteCredits(undefined, undefined, { source: 'sider', balance });
   };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {

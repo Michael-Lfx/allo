@@ -20,6 +20,7 @@ import { filterCronJobsByQuery, filterCronJobsByStatus, type CronJobStatusFilter
 import { parseScheduledConversationId } from './scheduledConversationId';
 import { DESKTOP_SCHEDULED_TASK_COLUMNS } from './scheduledTaskLayout';
 import ScheduledTaskActions from './ScheduledTaskActions';
+import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 
 const CreateTaskDialog = React.lazy(() => import('./CreateTaskDialog'));
 
@@ -36,6 +37,9 @@ const ScheduledTasksPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { jobs, loading, pauseJob, resumeJob, deleteJob } = useAllCronJobs();
+  useEffect(() => {
+    trackFunnelEvent('home_viewed', { feature: 'scheduled', source: 'scheduled' });
+  }, []);
   const { cliAgents } = useConversationAgents();
   const [createDialogVisible, setCreateDialogVisible] = useState(false);
   const [lockedCreateConversationId, setLockedCreateConversationId] = useState<ConversationId | undefined>(undefined);

@@ -22,6 +22,7 @@ import { ipcBridge } from '@/common';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useDeveloperModeGate } from '@renderer/hooks/config/useDeveloperModeGate';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
+import { useCredits } from '@renderer/hooks/context/CreditsContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
@@ -159,6 +160,7 @@ const WorkspacePage: React.FC = () => {
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
   const { status: cloudStatus, logout } = useCloudAuth();
+  const { balance } = useCredits();
   const { active: developerMode } = useDeveloperModeGate();
 
   const [session, setSession] = useState<VimaxSession | null>(null);
@@ -518,7 +520,7 @@ const WorkspacePage: React.FC = () => {
     const key = `${sessionId}:credits`;
     if (creditsFailToastKeyRef.current === key) return;
     creditsFailToastKeyRef.current = key;
-    trackLowCreditBalance('video_workspace');
+    trackLowCreditBalance({ source: 'video_failure_card', balance });
     message.error(
       t('videoGeneration.workspace.failure.creditsToast', {
         defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
@@ -532,6 +534,7 @@ const WorkspacePage: React.FC = () => {
     statusFlags.status,
     message,
     t,
+    balance,
   ]);
 
   // Load artifact preview when selection changes (blob URLs for media + auth).

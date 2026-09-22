@@ -10,6 +10,7 @@ import MessageListSkeleton from './Messages/components/MessageListSkeleton';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { tryParseEntityId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
+import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { clearConversationAttention } from '@/renderer/utils/attention';
 
 const ChatConversationIndex: React.FC = () => {
@@ -27,6 +28,10 @@ const ChatConversationIndex: React.FC = () => {
   const { data, isLoading, mutate } = useSWR(conversationId ? `conversation/${conversationId}` : null, () => {
     return getConversationOrNull(conversationId!);
   });
+
+  useEffect(() => {
+    trackFunnelEvent('home_viewed', { feature: 'conversation', source: 'conversation' });
+  }, []);
 
   useEffect(() => {
     if (!conversationId || isLoading || !data) return;

@@ -233,7 +233,9 @@ export function CanvasTopBar({
                             style={{ color: theme.node.text }}
                             title={canvasT("videoCanvas.chrome.credits", "查看积分明细")}
                             onClick={() => {
-                                void openOfficialWebsiteCredits();
+                                void openOfficialWebsiteCredits(undefined, undefined, {
+                                    source: 'canvas_credits',
+                                });
                             }}
                         >
                             {refreshing && availableMicrocredits === null ? <LoaderCircle className="size-3.5 animate-spin opacity-60" /> : <Coins className="size-3.5" />}

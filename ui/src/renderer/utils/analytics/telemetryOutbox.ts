@@ -25,6 +25,7 @@ const MAX_QUEUE_SIZE = 500;
 const BATCH_SIZE = 50;
 const ALLOWED_PROPERTIES = new Set([
   'accept_ms',
+  'balance',
   'already_ready',
   'amount',
   'average_bps',
@@ -69,6 +70,7 @@ const ALLOWED_PROPERTIES = new Set([
   'status',
   'status_ms',
   'stream_ms',
+  'threshold',
   'to_version',
   'total_ms',
   'ttft_ms',
@@ -117,6 +119,7 @@ const PLATFORM_EVENT_NAMES = new Set([
 
 const COMMERCE_EVENT_NAMES = new Set([
   'billing_catalog_viewed',
+  'billing_catalog_open_failed',
   'billing_checkout_started',
   'billing_pay_started',
   'billing_pay_succeeded',

@@ -4,6 +4,18 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { openExternalUrl } from '@renderer/utils/platform';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 
+export type CreditsCatalogSource =
+  | 'sider'
+  | 'conversation_error_card'
+  | 'video_failure_card'
+  | 'video_launch'
+  | 'canvas_credits';
+
+export type OfficialWebsiteCreditsContext = {
+  source?: CreditsCatalogSource;
+  balance?: number | null;
+};
+
 export type OfficialWebsiteCreditsOpener = {
   getWebsiteEntry: (params: {
     language?: string;
@@ -31,10 +43,13 @@ let inFlight = false;
  */
 export async function openOfficialWebsiteCredits(
   language = i18n.language,
-  opener: OfficialWebsiteCreditsOpener = defaultOpener
+  opener: OfficialWebsiteCreditsOpener = defaultOpener,
+  context: OfficialWebsiteCreditsContext = {}
 ): Promise<void> {
   if (inFlight) return;
   inFlight = true;
+  const source = context.source ?? null;
+  const balance = context.balance ?? null;
   try {
     const { url } = await opener.getWebsiteEntry({
       language,
@@ -42,12 +57,22 @@ export async function openOfficialWebsiteCredits(
     });
     const nextUrl = url?.trim();
     if (!nextUrl) {
+      trackFunnelEvent('billing_catalog_open_failed', {
+        source,
+        balance,
+        error_code: 'empty_url',
+      });
       opener.showError(opener.translate('billing.openFailed'));
       return;
     }
     await opener.openExternalUrl(nextUrl);
-    trackFunnelEvent('billing_catalog_viewed', { source: 'credits_website' });
+    trackFunnelEvent('billing_catalog_viewed', { source, balance });
   } catch {
+    trackFunnelEvent('billing_catalog_open_failed', {
+      source,
+      balance,
+      error_code: 'website_entry_failed',
+    });
     opener.showError(opener.translate('billing.openFailed'));
   } finally {
     inFlight = false;

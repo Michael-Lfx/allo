@@ -11,6 +11,7 @@ export type ProductEventProperty = string | number | boolean | null;
 const ALLOWED_PROPERTIES = new Set([
   'accept_ms',
   'amount',
+  'balance',
   'already_ready',
   'average_bps',
   'blocker',
@@ -58,6 +59,7 @@ const ALLOWED_PROPERTIES = new Set([
   'status',
   'status_ms',
   'stream_ms',
+  'threshold',
   'to_version',
   'total_ms',
   'ttft_ms',

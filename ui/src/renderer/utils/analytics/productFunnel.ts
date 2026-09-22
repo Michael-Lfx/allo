@@ -32,6 +32,7 @@ export type FunnelEventName =
   | 'kb_created'
   | 'kb_grounded'
   | 'billing_catalog_viewed'
+  | 'billing_catalog_open_failed'
   | 'billing_checkout_started'
   | 'billing_pay_started'
   | 'billing_pay_succeeded'
@@ -288,11 +289,17 @@ export function maybeTrackExperimentExposure(): FunnelEvent | null {
   });
 }
 
-/** Once per UTC day. Checkout still happens on the official site, so this is the in-app balance signal. */
-export function trackLowCreditBalance(source: string): FunnelEvent | null {
+/** Once per UTC day and surface. Checkout still happens on the official site. */
+export function trackLowCreditBalance(props: {
+  source: string;
+  balance?: number | null;
+  threshold?: number | null;
+}): FunnelEvent | null {
   const day = new Date().toISOString().slice(0, 10);
-  return trackFunnelEventOnce('low_credit_balance', `credits:low:${day}`, {
-    source,
+  return trackFunnelEventOnce('low_credit_balance', `credits:low:${day}:${props.source}`, {
+    source: props.source,
+    balance: props.balance ?? null,
+    threshold: props.threshold ?? null,
     error_code: 'insufficient_credits',
   });
 }
@@ -449,6 +456,7 @@ export function markTurnIdle(requestKey: string, outcome: 'completed' | 'failed'
     total_ms: totalMs,
     finalization_gap_ms: finalizationGapMs,
     outcome,
+    feature: 'conversation',
     conversation_type: session.props.conversation_type ?? null,
     cold_start: session.props.cold_start ?? null,
     error_code: session.props.error_code ?? null,

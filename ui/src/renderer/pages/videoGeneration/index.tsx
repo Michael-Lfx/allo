@@ -35,6 +35,7 @@ import {
 } from './api';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
+import { useCredits } from '@renderer/hooks/context/CreditsContext';
 import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
 import { prefetchCanvasWorkspace } from './prefetch';
@@ -112,6 +113,7 @@ const VideoGenerationListPage: React.FC = () => {
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
   const { logout } = useCloudAuth();
+  const { balance } = useCredits();
 
   const workMode: VideoHomeMode = parseVideoHomeMode(searchParams.get('mode'));
 
@@ -386,7 +388,9 @@ const VideoGenerationListPage: React.FC = () => {
                 })
               : `${failedLabel}: ${raw}`
           );
-          if (isInsufficientCreditsError(raw)) trackLowCreditBalance('video_launch');
+          if (isInsufficientCreditsError(raw)) {
+            trackLowCreditBalance({ source: 'video_launch', balance });
+          }
           navigate(`/video-generation/${created.id}`, {
             state: { launchDraft: draft, launchError: true },
           });
@@ -415,7 +419,7 @@ const VideoGenerationListPage: React.FC = () => {
         setCreating(false);
       }
     },
-    [creating, logout, navigate, message, t]
+    [creating, logout, navigate, message, t, balance]
   );
 
   const handleModeChange = useCallback(

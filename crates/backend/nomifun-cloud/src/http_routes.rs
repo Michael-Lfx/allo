@@ -75,6 +75,7 @@ const TELEMETRY_EVENT_NAMES: &[&str] = &[
     "kb_created",
     "kb_grounded",
     "billing_catalog_viewed",
+    "billing_catalog_open_failed",
     "billing_checkout_started",
     "billing_pay_started",
     "billing_pay_succeeded",
@@ -250,6 +251,7 @@ fn expected_growth_module(name: &str, feature: Option<&str>) -> &'static str {
     if matches!(
         name,
         "billing_catalog_viewed"
+            | "billing_catalog_open_failed"
             | "billing_checkout_started"
             | "billing_pay_started"
             | "billing_pay_succeeded"
@@ -536,6 +538,7 @@ mod growth_tests {
     fn accepts_commerce_conversation_and_knowledge_modules() {
         for (name, module) in [
             ("billing_pay_succeeded", "commerce"),
+            ("billing_catalog_open_failed", "commerce"),
             ("low_credit_balance", "commerce"),
             ("first_token", "conversation"),
             ("llm_call_failed", "conversation"),

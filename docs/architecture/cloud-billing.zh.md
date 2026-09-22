@@ -81,9 +81,10 @@ PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使�
 - **启动体验**：`app_launch_auth_ready` → `app_launch_config_ready` → `app_launch_interactive` / `app_launch_completed`（`total_ms` / `cold_start`）；失败走 `app_launch_failed`。启动热路径只记内存时间戳，funnel/outbox/HTTP 经 `scheduleDeferred`（≥2.5s + idle）再落盘上报
 - **WAVU**：安装内首次 `first_value_confirmed`（用户确认，不是首 token）。视频会话另按 `session_id` 记 `value_confirmed`
 - **回合体验**：`message_submitted` → `message_accepted`（`accept_ms`）→ `first_token`（`ttft_ms`）→ `turn_idle`（`total_ms` / `outcome`）。中断看 `abandoned_before_first_token`，失败看 `turn_idle.outcome=failed` 与 `llm_call_failed`
-- **计费漏斗**：应用内只观测到打开官网积分页（`billing_catalog_viewed`）和余额不足（`low_credit_balance`，按 UTC 日去重）。`billing_pay_*` 名称已放行，支付发生在官网，客户端不伪造支付成功
+- **计费漏斗**：应用内观测余额触底（`low_credit_balance`，按 UTC 日和 `source` 去重，带 `balance`）和打开官网积分页（`billing_catalog_viewed` 的 `source` + `balance`）。`website-entry` 失败记 `billing_catalog_open_failed`，用来和「没点入口」分开。`billing_pay_*` 名称已放行，支付发生在官网，客户端不伪造支付成功
 - **留存**：客户端不发 `d1_retained` / `d7_retained`（名称已放行，避免再造伪标记）。D1/D7/D30 按首次 `device_activated` 或首次 `app_opened` 在仓内回看。`film_d7_rate` 仍是窗口内成功，不是该回看
 - **实验**：`experiment_exposed` 每个安装对 launchpad 变体只发一次；`launchpad_variant` 同时留在后续事件属性里
+- **功能采用**：当天新增的到达率看 `home_viewed.feature`（`guid` / `video_generation` / `knowledge` / `conversation` / `canvas` / `scheduled` / `model_hub`）。做成率用已有终态：对话 `turn_idle` 且 `feature=conversation`、`outcome=completed`；视频 `film_succeeded`；知识库 `kb_created` 或 `kb_grounded`。按这两个率排序，不按点击次数。
 
 FlowyClaw `POST /telemetry/events/batch` 若仍只收旧闭集，本机校验通过后上游会 400，整批（含视频事件）会停在 outbox 重试。云端 ingest 必须同步事件名与 `commerce` / `conversation` / `knowledge` 模块。
 
