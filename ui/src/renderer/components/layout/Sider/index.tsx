@@ -178,7 +178,17 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   }, [hash, pathname, search]);
 
   const getRecentConversationPath = useCallback(() => {
-    // 1. If user visited a specific conversation/terminal in this session and it still exists
+    // 1. Prioritize globally most recently active / latest replied conversation
+    if (conversations && conversations.length > 0) {
+      const sorted = [...conversations].sort(
+        (a, b) => (b.modified_at ?? b.created_at ?? 0) - (a.modified_at ?? a.created_at ?? 0)
+      );
+      if (sorted[0]?.id) {
+        return `/conversation/${encodeURIComponent(sorted[0].id)}`;
+      }
+    }
+
+    // 2. Fallback if conversation history is still loading or empty
     if (lastActiveConversationPathRef.current) {
       const purePath = lastActiveConversationPathRef.current.split(/[?#]/)[0];
       const route = parseSessionRoute(purePath);
@@ -190,14 +200,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       } else {
         return lastActiveConversationPathRef.current;
       }
-    }
-
-    // 2. Otherwise find the latest conversation from history
-    if (conversations && conversations.length > 0) {
-      const sorted = [...conversations].sort(
-        (a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0)
-      );
-      return `/conversation/${encodeURIComponent(sorted[0].id)}`;
     }
 
     // 3. Fallback to new chat page

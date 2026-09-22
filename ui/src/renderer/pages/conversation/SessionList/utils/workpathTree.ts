@@ -110,6 +110,7 @@ export function buildWorkpathTree(
   const byGroupOrder = (a: SessionEntry, b: SessionEntry) =>
     Number(b.pinned) - Number(a.pinned) ||
     (a.pinned ? b.pinnedAt - a.pinnedAt : 0) ||
+    b.activityAt - a.activityAt ||
     b.createdAt - a.createdAt;
 
   // 置顶 key 入口处归一化，调用方传原始路径（带尾斜杠等）也不会静默失配
