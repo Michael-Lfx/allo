@@ -1,6 +1,6 @@
 mod common;
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,6 +31,33 @@ use common::{MockLlmProvider, MockTool, test_config};
 // ---------------------------------------------------------------------------
 fn silent_output() -> Arc<dyn OutputSink> {
     Arc::new(TerminalSink::new(true))
+}
+
+/// Build an engine with plan mode enabled, exactly as `AgentBootstrap` does:
+/// the plan feature is registered first, and the engine's `set_features` call
+/// contributes its tools.
+///
+/// Plan state lives in the feature now, so a test that drives `EnterPlanMode`
+/// must register it — the engine no longer keeps plan state of its own.
+fn plan_enabled_engine(
+    provider: Arc<dyn LlmProvider>,
+    registry: ToolRegistry,
+    output: Arc<dyn OutputSink>,
+) -> (AgentEngine, Arc<nomi_agent::features::plan::PlanService>) {
+    let feature = Arc::new(nomi_agent::features::PlanFeature::new());
+    let service = Arc::clone(feature.service());
+    let mut features = nomi_agent::features::FeatureRegistry::new();
+    features.register(feature);
+
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        registry,
+        output,
+        std::env::temp_dir(),
+    );
+    engine.set_features(features);
+    (engine, service)
 }
 
 #[derive(Default)]
@@ -294,38 +321,33 @@ async fn plan_mode_refuses_write_tool_without_executing() {
         ],
     ]));
     let calls = Arc::new(AtomicUsize::new(0));
-    let plan_active = Arc::new(AtomicBool::new(false));
     let output = Arc::new(RecordingOutputSink::default());
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(
-        nomi_agent::plan::tools::EnterPlanModeTool::new(Arc::clone(&plan_active)),
-    ));
-    let search = nomi_tools::tool_search::ToolSearchTool::new(registry.deferred_state());
+    registry.register(Box::new(FilteredCountingTool {
+        name: "hidden_write",
+        category: ToolCategory::Edit,
+        calls: Arc::clone(&calls),
+    }));
+    // `set_features` contributes the plan tools, so the deferred-activation
+    // handle must be taken from the engine's registry *after* that.
+    let (mut engine, plan) = plan_enabled_engine(provider, registry, output.clone());
+    let search = nomi_tools::tool_search::ToolSearchTool::new(engine.registry_mut().deferred_state());
     assert!(
         !search
             .execute(json!({"query": "EnterPlanMode"}))
             .await
             .is_error
     );
-    registry.register(Box::new(FilteredCountingTool {
-        name: "hidden_write",
-        category: ToolCategory::Edit,
-        calls: Arc::clone(&calls),
-    }));
-    let mut engine = AgentEngine::new_with_provider(
-        provider,
-        test_config(),
-        registry,
-        output.clone(),
-        std::env::temp_dir(),
-    );
-    engine.set_plan_active_flag(plan_active);
 
     let result = engine.execute_turn("plan first", "plan-hidden-write").await;
 
     assert!(
         result.is_ok(),
         "plan-mode write refuse is a tool error result, not a protocol abort: {result:?}"
+    );
+    assert!(
+        plan.is_active(),
+        "the plan feature observed the Enter transition"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     let results = output.tool_results.lock().unwrap();
@@ -354,20 +376,8 @@ async fn normal_mode_exit_plan_mode_returns_error_without_aborting() {
             done(StopReason::EndTurn),
         ],
     ]));
-    let plan_active = Arc::new(AtomicBool::new(false));
     let output = Arc::new(RecordingOutputSink::default());
-    let mut registry = ToolRegistry::new();
-    registry.register(Box::new(
-        nomi_agent::plan::tools::ExitPlanModeTool::new(Arc::clone(&plan_active)),
-    ));
-    let mut engine = AgentEngine::new_with_provider(
-        provider,
-        test_config(),
-        registry,
-        output.clone(),
-        std::env::temp_dir(),
-    );
-    engine.set_plan_active_flag(plan_active.clone());
+    let (mut engine, plan) = plan_enabled_engine(provider, ToolRegistry::new(), output.clone());
 
     let result = engine
         .execute_turn("stay in normal mode", "normal-hidden-exit")
@@ -377,7 +387,7 @@ async fn normal_mode_exit_plan_mode_returns_error_without_aborting() {
         result.is_ok(),
         "ExitPlanMode stays advertised; not-in-plan-mode is a tool error, got {result:?}"
     );
-    assert!(!plan_active.load(Ordering::SeqCst));
+    assert!(!plan.is_active(), "plan mode was never entered");
     let results = output.tool_results.lock().unwrap();
     assert!(
         results.iter().any(|(id, name, is_error)| {
@@ -1663,7 +1673,7 @@ async fn contributor_context_rides_turn_tail_not_system_prompt() {
 }
 
 #[tokio::test]
-async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
+async fn plan_mode_instructions_ride_the_system_reminder_channel() {
     let provider = Arc::new(FullRequestRecordingProvider::new(vec![
         vec![
             LlmEvent::ToolUse {
@@ -1681,13 +1691,9 @@ async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
     ]));
     let requests = provider.requests();
 
-    let plan_active = Arc::new(AtomicBool::new(false));
-    let mut registry = ToolRegistry::new();
-    registry.register(Box::new(
-        nomi_agent::plan::tools::EnterPlanModeTool::new(Arc::clone(&plan_active)),
-    ));
+    let (mut engine, plan) = plan_enabled_engine(provider, ToolRegistry::new(), silent_output());
     // EnterPlanMode is deferred — activate it via tool search first.
-    let search = nomi_tools::tool_search::ToolSearchTool::new(registry.deferred_state());
+    let search = nomi_tools::tool_search::ToolSearchTool::new(engine.registry_mut().deferred_state());
     assert!(
         !search
             .execute(json!({"query": "EnterPlanMode"}))
@@ -1695,21 +1701,12 @@ async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
             .is_error
     );
 
-    let mut engine = AgentEngine::new_with_provider(
-        provider,
-        test_config(),
-        registry,
-        silent_output(),
-        std::env::temp_dir(),
-    );
-    engine.set_plan_active_flag(plan_active.clone());
-
     engine
         .execute_turn("enter plan mode", "")
         .await
         .expect("engine should succeed");
     assert!(
-        plan_active.load(Ordering::SeqCst),
+        plan.is_active(),
         "plan mode should be active after EnterPlanMode"
     );
 
@@ -1739,17 +1736,61 @@ async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
         "plan mode instructions must NOT be appended to the system prompt"
     );
 
-    // Plan instructions ride the turn tail (prepended onto the last user
-    // message — including pure tool-result turns).
+    // Plan instructions ride the `<system-reminder>` channel, never the turn
+    // tail `[Context]` block and never the system prompt.
+    //
+    // Request 0 is the pass that *dispatches* EnterPlanMode, so plan mode is
+    // not active yet and carries no reminder. Request 1 is the pass after the
+    // transition: the plan block must be a `Role::User` message wrapped in
+    // `<system-reminder>`, with no `[Context]` label anywhere.
+    let plan_messages = |request: &LlmRequest| -> Vec<String> {
+        request
+            .messages
+            .iter()
+            .filter(|message| message_text(message).contains("# Plan Mode"))
+            .map(message_text)
+            .collect()
+    };
+    assert!(
+        plan_messages(&requests[0]).is_empty(),
+        "plan mode is not active on the pass that enters it"
+    );
+
+    let injected = plan_messages(&requests[1]);
+    assert_eq!(
+        injected.len(),
+        1,
+        "the plan block is injected once, not re-pasted on every pass"
+    );
+    assert!(
+        injected[0].starts_with("<system-reminder>"),
+        "the plan block rides the system-reminder envelope, got: {}",
+        injected[0]
+    );
+    assert!(
+        injected[0].contains("</system-reminder>"),
+        "the envelope must be closed"
+    );
+    assert!(
+        !injected[0].contains("[Context]"),
+        "the plan block must not ride the turn tail, got: {}",
+        injected[0]
+    );
+    assert!(
+        injected[0].contains("not a new instruction from the user"),
+        "the envelope must say this is state, not an instruction"
+    );
+
+    // The reminder is a user message, and it is *appended* rather than prepended
+    // into the turn-tail block, so no sent message was rewritten.
     let last = requests[1]
         .messages
         .last()
         .expect("messages should not be empty");
     assert_eq!(last.role, Role::User);
-    let text = message_text(last);
     assert!(
-        text.contains("# Plan Mode"),
-        "plan mode instructions must ride the turn tail, got: {text}"
+        message_text(last).contains("# Plan Mode"),
+        "the reminder is the newest message on the wire"
     );
 }
 

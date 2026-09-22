@@ -58,21 +58,79 @@ pub struct PlanStatus {
     pub awaiting_approval: bool,
 }
 
-/// Read-only facts a feature may consult while a turn is running.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FacadeCtx {
-    pub plan_status: PlanStatus,
+/// Cross-feature facts for one request.
+///
+/// Features publish *and* read `plan_status` here, so the engine never names
+/// plan mode: it resets the slot, folds the hooks, and reads whatever the
+/// features agreed on. The first feature to publish wins, which makes the
+/// outcome independent of registration order.
+#[derive(Debug, Default)]
+pub struct HookCtx {
+    plan_status: std::cell::RefCell<PlanStatus>,
+    plan_status_set: std::cell::Cell<bool>,
+    allow_list_override: std::cell::RefCell<Option<Vec<String>>>,
 }
 
-/// One provider pass's worth of request parameters a gate may adjust.
+impl HookCtx {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// What the features have published so far (inactive when nobody did).
+    pub fn plan_status(&self) -> PlanStatus {
+        *self.plan_status.borrow()
+    }
+
+    /// Whether any feature published a plan status for this request.
+    pub fn has_plan_status(&self) -> bool {
+        self.plan_status_set.get()
+    }
+
+    /// Publish plan-mode status. The first publisher wins.
+    pub fn publish_plan_status(&self, status: PlanStatus) {
+        if !self.plan_status_set.get() {
+            *self.plan_status.borrow_mut() = status;
+            self.plan_status_set.set(true);
+        }
+    }
+
+    /// Ask the engine to replace the session allow-list. The engine applies
+    /// whatever it finds here; it never asks which feature wanted it.
+    pub fn replace_allow_list(&self, allow_list: Vec<String>) {
+        *self.allow_list_override.borrow_mut() = Some(allow_list);
+    }
+
+    /// Take the requested allow-list replacement, if any.
+    pub fn take_allow_list(&self) -> Option<Vec<String>> {
+        self.allow_list_override.borrow_mut().take()
+    }
+
+    /// Clear before each fold so one request's facts cannot leak into the next.
+    pub fn reset(&self) {
+        *self.plan_status.borrow_mut() = PlanStatus::default();
+        self.plan_status_set.set(false);
+        *self.allow_list_override.borrow_mut() = None;
+    }
+}
+
+/// One provider pass's worth of request parameters, with the policy inputs the
+/// engine's per-pass downgrade is derived from.
+///
+/// The engine computes the candidate (`thinking`, `reasoning_effort`) from
+/// these and folds the gates; a gate that objects to the downgrade restores the
+/// un-downgraded values, which is what plan mode does.
 #[derive(Debug, Clone, Default)]
 pub struct RequestParams {
     /// `LlmRequest.thinking`, or `None` when the session has no thinking config.
     pub thinking: Option<nomi_types::llm::ThinkingConfig>,
     /// `LlmRequest.reasoning_effort`, or `None` when unset.
     pub reasoning_effort: Option<String>,
+    /// Session thinking config, before any per-pass downgrade.
+    pub base_thinking: Option<nomi_types::llm::ThinkingConfig>,
+    /// Session reasoning effort, before any per-pass downgrade.
+    pub base_reasoning_effort: Option<String>,
     /// Whether a previous pass in this turn already produced tool results.
-    /// Engine housekeeping a downgrade gate may consult.
+    /// Engine housekeeping that a downgrade gate may consult.
     pub continuation_after_tools: bool,
 }
 
@@ -181,11 +239,11 @@ impl NaturalEndDecision {
 // ---------------------------------------------------------------------------
 
 /// A new root user request is about to start.
-pub type UserRequestFn = Arc<dyn Fn(FacadeCtx) + Send + Sync + 'static>;
+pub type UserRequestFn = Arc<dyn Fn(&HookCtx) + Send + Sync + 'static>;
 
 /// May refuse one tool call before dispatch.
 pub type GateFn =
-    Arc<dyn Fn(&DispatchCtx, FacadeCtx) -> Option<ToolDenial> + Send + Sync + 'static>;
+    Arc<dyn Fn(&DispatchCtx, &HookCtx) -> Option<ToolDenial> + Send + Sync + 'static>;
 
 /// Migrate one tool-produced [`ContextModifier`] into feature state.
 pub type ModifierFn =
@@ -193,17 +251,17 @@ pub type ModifierFn =
 
 /// Adjust this provider pass's request parameters.
 pub type RequestGateFn =
-    Arc<dyn Fn(RequestParams, FacadeCtx) -> RequestParams + Send + Sync + 'static>;
+    Arc<dyn Fn(RequestParams, &HookCtx) -> RequestParams + Send + Sync + 'static>;
 
 /// Observe one finished tool turn. Awaited: a feature may need the provider.
 pub type ToolTurnFn = Arc<
-    dyn Fn(ToolTurn, FacadeCtx) -> futures::future::BoxFuture<'static, ()> + Send + Sync + 'static,
+    dyn Fn(ToolTurn, PlanStatus) -> futures::future::BoxFuture<'static, ()> + Send + Sync + 'static,
 >;
 
 /// Evaluate whether this turn should continue after a natural stop. Awaited:
 /// the goal feature calls an external judge here.
 pub type NaturalEndFn = Arc<
-    dyn Fn(NaturalEndCtx, FacadeCtx) -> futures::future::BoxFuture<'static, NaturalEndDecision>
+    dyn Fn(NaturalEndCtx, PlanStatus) -> futures::future::BoxFuture<'static, NaturalEndDecision>
         + Send
         + Sync
         + 'static,
@@ -264,7 +322,7 @@ impl ReminderSpec {
 }
 
 /// One self-registering agent mode.
-pub trait Feature: Send + Sync {
+pub trait Feature: Send + Sync + 'static {
     /// Stable name, used for registration diagnostics.
     fn name(&self) -> &'static str;
 
@@ -290,6 +348,10 @@ pub trait Feature: Send + Sync {
 pub struct FeatureEntry {
     pub name: &'static str,
     pub feature: Arc<dyn Feature>,
+    /// The same allocation as `feature`, re-typed so
+    /// [`FeatureRegistry::service`] can recover the concrete type with
+    /// `Arc::downcast` instead of an unsafe pointer cast.
+    any: Arc<dyn std::any::Any + Send + Sync>,
     pub hooks: FeatureHooks,
 }
 
@@ -318,14 +380,21 @@ impl FeatureRegistry {
 
     /// Register a feature and capture its hooks.
     ///
+    /// Takes the concrete `Arc` so the registry can keep a typed alias of the
+    /// same allocation; [`Self::service`] then recovers it with the standard
+    /// library's `Arc::downcast`, with no `unsafe` pointer work.
+    ///
     /// Idempotent per feature name: re-registering a name replaces the earlier
     /// entry in place, so a bootstrap that runs twice cannot double-invoke a
     /// hook or double-register a tool.
-    pub fn register(&mut self, feature: Arc<dyn Feature>) {
+    pub fn register<T: Feature + 'static>(&mut self, feature: Arc<T>) {
+        let erased: Arc<dyn Feature> = feature.clone();
+        let any: Arc<dyn std::any::Any + Send + Sync> = feature;
         let entry = FeatureEntry {
-            name: feature.name(),
-            hooks: feature.hooks(),
-            feature,
+            name: erased.name(),
+            hooks: erased.hooks(),
+            any,
+            feature: erased,
         };
         match self.entries.iter_mut().find(|e| e.name == entry.name) {
             Some(slot) => *slot = entry,
@@ -343,6 +412,16 @@ impl FeatureRegistry {
             .iter()
             .find(|entry| entry.name == name)
             .map(|entry| &entry.feature)
+    }
+
+    /// The registered feature downcast to its concrete type.
+    ///
+    /// The engine façade needs the concrete handle — `set_plan_active_flag`
+    /// must reach the plan service, and `goal_runtime_handle` must return the
+    /// goal runtime — while the turn loop keeps seeing only `dyn Feature`.
+    pub fn service<T: Feature + 'static>(&self, name: &str) -> Option<Arc<T>> {
+        let entry = self.entries.iter().find(|e| e.name == name)?;
+        Arc::clone(&entry.any).downcast::<T>().ok()
     }
 
     /// Register each feature's tools, in registration order.
@@ -366,19 +445,32 @@ impl FeatureRegistry {
     // the only code that knows the hook shape: a call site never inspects which
     // feature it is driving.
 
-    pub fn run_user_request(&self, facade: FacadeCtx) {
+    /// Fold a fresh hook context through `hooks`, returning the facts the
+    /// features published.
+    fn fold_hooks(&self, hooks: impl Fn(&FeatureEntry, &HookCtx)) -> HookCtx {
+        let ctx = HookCtx::new();
         for entry in &self.entries {
-            for hook in &entry.hooks.on_user_request {
-                hook(facade);
-            }
+            hooks(entry, &ctx);
         }
+        ctx
     }
 
-    /// First denial in registration order wins; `None` means every gate allowed.
-    pub fn first_denial(&self, dispatch: &DispatchCtx, facade: FacadeCtx) -> Option<ToolDenial> {
+    /// A new root user request. Features may publish plan status and ask for an
+    /// allow-list replacement here. Returns the context they filled in.
+    pub fn run_user_request(&self) -> HookCtx {
+        self.fold_hooks(|entry, ctx| {
+            for hook in &entry.hooks.on_user_request {
+                hook(ctx);
+            }
+        })
+    }
+
+    /// The first denial in registration order, or `None` when every gate
+    /// allows this call.
+    pub fn first_denial(&self, dispatch: &DispatchCtx, ctx: &HookCtx) -> Option<ToolDenial> {
         for entry in &self.entries {
             for gate in &entry.hooks.dispatch_gate {
-                if let Some(denial) = gate(dispatch, facade) {
+                if let Some(denial) = gate(dispatch, ctx) {
                     return Some(denial);
                 }
             }
@@ -404,19 +496,20 @@ impl FeatureRegistry {
     }
 
     /// Fold request parameters in registration order.
-    pub fn apply_request_gates(&self, mut params: RequestParams, facade: FacadeCtx) -> RequestParams {
+    pub fn apply_request_gates(&self, params: RequestParams, hooks: &HookCtx) -> RequestParams {
+        let mut params = params;
         for entry in &self.entries {
             for gate in &entry.hooks.request_gates {
-                params = gate(params, facade);
+                params = gate(params, hooks);
             }
         }
         params
     }
 
-    pub async fn observe_tool_turn(&self, turn: ToolTurn, facade: FacadeCtx) {
+    pub async fn observe_tool_turn(&self, turn: ToolTurn, plan_status: PlanStatus) {
         for entry in &self.entries {
             for hook in &entry.hooks.on_tool_turn {
-                hook(turn.clone(), facade).await;
+                hook(turn.clone(), plan_status).await;
             }
         }
     }
@@ -430,12 +523,12 @@ impl FeatureRegistry {
     pub async fn resolve_natural_end(
         &self,
         ctx: &NaturalEndCtx,
-        facade: FacadeCtx,
+        plan_status: PlanStatus,
     ) -> NaturalEndDecision {
         let mut combined = NaturalEndDecision::default();
         for entry in &self.entries {
             for hook in &entry.hooks.on_natural_end {
-                let decision = hook(ctx.clone(), facade).await;
+                let decision = hook(ctx.clone(), plan_status).await;
                 combined.record_continuation |= decision.record_continuation;
                 if combined.continuation.is_none() {
                     combined.continuation = decision.continuation;
@@ -453,6 +546,57 @@ impl std::fmt::Debug for FeatureRegistry {
                 "features",
                 &self.entries.iter().map(|e| e.name).collect::<Vec<_>>(),
             )
+            .finish()
+    }
+}
+
+/// The dispatch gate, frozen for one provider request.
+///
+/// Built from the registry at request time and handed to tool execution, which
+/// has no engine access. It carries the plan-status snapshot of that moment,
+/// exactly like the other per-request authority fields: a later state change
+/// must not retroactively change what the request that produced these calls was
+/// allowed to do.
+#[derive(Clone, Default)]
+pub struct DispatchGate {
+    entries: Vec<FeatureEntry>,
+    plan_status: PlanStatus,
+}
+
+impl DispatchGate {
+    pub fn from_registry(registry: &FeatureRegistry, plan_status: PlanStatus) -> Self {
+        Self {
+            entries: registry.entries().to_vec(),
+            plan_status,
+        }
+    }
+
+    fn facade(&self) -> HookCtx {
+        let ctx = HookCtx::new();
+        ctx.publish_plan_status(self.plan_status);
+        ctx
+    }
+
+    /// The first denial in registration order, or `None` when every gate
+    /// allows this call.
+    pub fn denial(&self, dispatch: &DispatchCtx) -> Option<ToolDenial> {
+        let facade = self.facade();
+        for entry in &self.entries {
+            for gate in &entry.hooks.dispatch_gate {
+                if let Some(denial) = gate(dispatch, &facade) {
+                    return Some(denial);
+                }
+            }
+        }
+        None
+    }
+}
+
+impl std::fmt::Debug for DispatchGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DispatchGate")
+            .field("gates", &self.entries.len())
+            .field("plan_status", &self.plan_status)
             .finish()
     }
 }

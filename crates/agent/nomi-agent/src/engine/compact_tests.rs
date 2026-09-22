@@ -125,8 +125,6 @@ fn make_compact_engine_with_output(
         file_cache: None,
         compact_config,
         compact_state,
-        plan_state: Default::default(),
-        plan_active_flag: None,
         cache_detector: super::CacheBreakDetector::new(),
         compaction_level: nomi_compact::CompactionLevel::default(),
         toon_enabled: false,
@@ -150,8 +148,8 @@ fn make_compact_engine_with_output(
         observation: None,
         features: Default::default(),
         reminders: Default::default(),
+        provider_passes_in_turn: 0,
         horizon: Default::default(),
-        plan_exit_latch: None,
     }
 }
 

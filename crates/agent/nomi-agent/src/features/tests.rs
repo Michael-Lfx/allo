@@ -63,12 +63,12 @@ impl Feature for ProbeFeature {
         let deny = self.deny.clone();
         let allow = self.allow.clone();
 
-        let on_user_request: UserRequestFn = Arc::new(move |_| {
+        let on_user_request: UserRequestFn = Arc::new(move |_ctx: &HookCtx| {
             log.lock().unwrap().push(format!("{name}:user_request"));
         });
 
         let log_gate = Arc::clone(&self.log);
-        let dispatch_gate: GateFn = Arc::new(move |dispatch: &DispatchCtx, _| {
+        let dispatch_gate: GateFn = Arc::new(move |dispatch: &DispatchCtx, _ctx: &HookCtx| {
             log_gate
                 .lock()
                 .unwrap()
@@ -94,7 +94,7 @@ impl Feature for ProbeFeature {
         });
 
         let log_request = Arc::clone(&self.log);
-        let request_gates: RequestGateFn = Arc::new(move |mut params, _| {
+        let request_gates: RequestGateFn = Arc::new(move |mut params, _ctx: &HookCtx| {
             log_request
                 .lock()
                 .unwrap()
@@ -110,7 +110,7 @@ impl Feature for ProbeFeature {
         });
 
         let log_tool_turn = Arc::clone(&self.log);
-        let on_tool_turn: ToolTurnFn = Arc::new(move |turn, _| {
+        let on_tool_turn: ToolTurnFn = Arc::new(move |turn, _plan: PlanStatus| {
             let name = name;
             let log = Arc::clone(&log_tool_turn);
             Box::pin(async move {
@@ -121,7 +121,7 @@ impl Feature for ProbeFeature {
         });
 
         let log_natural = Arc::clone(&self.log);
-        let on_natural_end: NaturalEndFn = Arc::new(move |_ctx, _| {
+        let on_natural_end: NaturalEndFn = Arc::new(move |_ctx, _plan: PlanStatus| {
             let name = name;
             let log = Arc::clone(&log_natural);
             Box::pin(async move {
@@ -163,9 +163,13 @@ fn an_empty_registry_folds_to_its_input() {
             budget_tokens: 4096,
         }),
         reasoning_effort: Some("high".into()),
+        base_thinking: Some(nomi_types::llm::ThinkingConfig::Enabled {
+            budget_tokens: 4096,
+        }),
+        base_reasoning_effort: Some("high".into()),
         continuation_after_tools: true,
     };
-    let out = registry.apply_request_gates(params, FacadeCtx::default());
+    let out = registry.apply_request_gates(params, &HookCtx::new());
     // `ThinkingConfig` is not `PartialEq`; compare the budget directly.
     match out.thinking {
         Some(nomi_types::llm::ThinkingConfig::Enabled { budget_tokens }) => {
@@ -180,7 +184,7 @@ fn an_empty_registry_folds_to_its_input() {
     assert!(ctx.allow_list.is_empty());
 
     let dispatch = DispatchCtx::new("Bash", ToolCategory::Exec);
-    assert!(registry.first_denial(&dispatch, FacadeCtx::default()).is_none());
+    assert!(registry.first_denial(&dispatch, &HookCtx::new()).is_none());
 }
 
 #[test]
@@ -192,7 +196,7 @@ fn registration_order_is_the_fold_order() {
 
     assert_eq!(names(&registry), vec!["first", "second"]);
 
-    registry.run_user_request(FacadeCtx::default());
+    registry.run_user_request();
     assert_eq!(
         *log.lock().unwrap(),
         vec!["first:user_request", "second:user_request"]
@@ -209,7 +213,7 @@ fn re_registering_a_name_replaces_instead_of_duplicating() {
     assert_eq!(registry.len(), 1, "a name is registered at most once");
     assert_eq!(names(&registry), vec!["plan"]);
 
-    registry.run_user_request(FacadeCtx::default());
+    registry.run_user_request();
     assert_eq!(
         log.lock().unwrap().len(),
         1,
@@ -230,7 +234,7 @@ fn the_first_denial_wins_and_later_gates_are_not_consulted() {
 
     let write = DispatchCtx::new("Write", ToolCategory::Edit);
     let denial = registry
-        .first_denial(&write, FacadeCtx::default())
+        .first_denial(&write, &HookCtx::new())
         .expect("the first gate refuses");
     assert_eq!(denial.message, "first refused Write");
     assert_eq!(
@@ -251,7 +255,7 @@ fn an_allowing_gate_lets_the_next_one_decide() {
 
     let write = DispatchCtx::new("Write", ToolCategory::Edit);
     let denial = registry
-        .first_denial(&write, FacadeCtx::default())
+        .first_denial(&write, &HookCtx::new())
         .expect("the second gate refuses");
     assert_eq!(denial.message, "second refused Write");
     assert_eq!(
@@ -293,7 +297,7 @@ fn request_gates_chain_in_registration_order() {
         }),
         ..Default::default()
     };
-    let out = registry.apply_request_gates(params, FacadeCtx::default());
+    let out = registry.apply_request_gates(params, &HookCtx::new());
 
     // Two halvings: 8192 -> 4096 -> 2048.
     match out.thinking {
@@ -329,7 +333,7 @@ async fn tool_turn_observation_visits_every_feature() {
             },
         ],
     };
-    registry.observe_tool_turn(turn, FacadeCtx::default()).await;
+    registry.observe_tool_turn(turn, PlanStatus::default()).await;
 
     assert_eq!(
         *log.lock().unwrap(),
@@ -349,7 +353,7 @@ async fn every_natural_end_hook_runs_but_the_first_continuation_wins() {
         input_tokens: 10,
         output_tokens: 2,
     };
-    let decision = registry.resolve_natural_end(&ctx, FacadeCtx::default()).await;
+    let decision = registry.resolve_natural_end(&ctx, PlanStatus::default()).await;
 
     assert_eq!(decision.continuation.as_deref(), Some("keep going"));
     assert!(
@@ -370,7 +374,7 @@ async fn natural_end_without_a_continuation_stops() {
     registry.register(Arc::new(ProbeFeature::new("second", Arc::clone(&log))));
 
     let decision = registry
-        .resolve_natural_end(&NaturalEndCtx::default(), FacadeCtx::default())
+        .resolve_natural_end(&NaturalEndCtx::default(), PlanStatus::default())
         .await;
     assert!(decision.continuation.is_none());
     assert!(!decision.record_continuation);
@@ -390,8 +394,37 @@ fn register_tools_visits_every_feature_in_order() {
 }
 
 #[test]
-fn shared_flag_is_visible_across_clones() {
-    let flag = SharedFlag::new(false);
+fn service_downcast_returns_the_same_feature_not_a_copy() {
+    // The engine façade reaches concrete feature state through this downcast,
+    // so it must hand back the registered instance: state written through the
+    // returned handle has to be visible through the registry's own clone.
+    let log = log();
+    let mut registry = FeatureRegistry::new();
+    registry.register(Arc::new(ProbeFeature::new("plan", Arc::clone(&log))));
+
+    let recovered = registry
+        .service::<ProbeFeature>("plan")
+        .expect("the registered type downcasts");
+
+    recovered.record("via_service");
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec!["plan:via_service"],
+        "the downcast shares the state of the registered instance"
+    );
+
+    // And the registry still owns its strong reference after the downcast.
+    assert!(registry.feature("plan").is_some());
+}
+
+#[test]
+fn service_downcast_refuses_a_name_that_is_not_registered() {
+    let registry = FeatureRegistry::new();
+    assert!(registry.service::<ProbeFeature>("plan").is_none());
+}
+
+#[test]
+fn shared_flag_is_visible_across_clones() {    let flag = SharedFlag::new(false);
     let clone = flag.clone();
     flag.set(true);
     assert!(clone.get());

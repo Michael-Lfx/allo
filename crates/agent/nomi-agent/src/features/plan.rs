@@ -12,10 +12,11 @@ use std::sync::Arc;
 
 use nomi_protocol::events::ToolCategory;
 use nomi_tools::registry::ToolRegistry;
+use nomi_types::skill_types::{ContextModifier, PlanModeTransition};
 
 use super::{
-    DispatchCtx, FacadeCtx, Feature, FeatureHooks, GateFn, ModifierFn, PlanStatus, RequestGateFn,
-    Shared, SharedFlag, ToolDenial, UserRequestFn,
+    DispatchCtx, Feature, FeatureHooks, GateFn, HookCtx, ModifierFn, PlanStatus, ReminderCtx,
+    ReminderSpec, RequestGateFn, RequestParams, Shared, SharedFlag, ToolDenial, UserRequestFn,
 };
 
 pub mod file;
@@ -165,6 +166,20 @@ impl PlanService {
     }
 }
 
+/// Reminder variant name for the plan-mode block.
+pub const PLAN_INJECTION_VARIANT: &str = "plan_mode";
+
+/// Re-state the plan-mode block after this many provider passes in one turn.
+///
+/// The plan block is long, so it is delivered once when plan mode is entered
+/// rather than on every pass (the turn tail used to re-paste it on each one).
+/// A long tool loop can still make that single copy stale, so it is refreshed
+/// at a cadence — the reference implementation counts assistant turns and
+/// switches to a shorter "sparse" wording at 2 and back to full at 5; nomi has
+/// no separate sparse wording yet, so it re-states the same text at the
+/// horizon's office-plan soft threshold instead of inventing a second number.
+pub const PLAN_REFRESH_AFTER_PASSES: usize = crate::horizon::OFFICE_PLAN_SOFT;
+
 /// Plan mode as an engine feature.
 pub struct PlanFeature {
     service: Arc<PlanService>,
@@ -200,16 +215,34 @@ impl Feature for PlanFeature {
         tools::register_plan_tools(registry, &self.service);
     }
 
+    fn reminders(&self) -> Vec<ReminderSpec> {
+        let service = Arc::clone(&self.service);
+        vec![ReminderSpec::new(PLAN_INJECTION_VARIANT, move |_ctx: &ReminderCtx| {
+            if !service.is_active() {
+                return None;
+            }
+            Some(prompt::plan_mode_instructions().to_string())
+        })
+        .refreshing_every(PLAN_REFRESH_AFTER_PASSES)]
+    }
+
     fn hooks(&self) -> FeatureHooks {
         let service = Arc::clone(&self.service);
 
-        // The next root user message approves a latched plan.
-        let on_user_request: UserRequestFn = Arc::new(move |_facade| {
-            let _ = &service;
+        // #1 User entry: publish status, and treat the next user message as
+        // approval of a latched plan (Cursor-style Build).
+        let service_for_entry = Arc::clone(&service);
+        let on_user_request: UserRequestFn = Arc::new(move |ctx: &HookCtx| {
+            ctx.publish_plan_status(service_for_entry.status());
+            if let Some(restored) = service_for_entry.approve_pending() {
+                ctx.replace_allow_list(restored);
+            }
         });
 
-        let dispatch_gate: GateFn = Arc::new(|dispatch: &DispatchCtx, facade: FacadeCtx| {
-            if !facade.plan_status.active {
+        // #3 Dispatch gate: read-only while plan mode is active. The engine
+        // freezes this verdict into the request's tool authority.
+        let dispatch_gate: GateFn = Arc::new(|dispatch: &DispatchCtx, ctx: &HookCtx| {
+            if !ctx.plan_status().active {
                 return None;
             }
             if dispatch.category == ToolCategory::Info {
@@ -218,13 +251,39 @@ impl Feature for PlanFeature {
             Some(ToolDenial::new(read_only_denial(&dispatch.tool_name)))
         });
 
-        // Placeholder until the extraction phase moves the allow-list snapshot
-        // and restore into this feature.
-        let apply_modifier: ModifierFn = Arc::new(|_modifier, ctx| ctx);
+        // #4 Tool-produced modifier: Enter snapshots the allow-list, Exit
+        // latches the plan. The engine routes every modifier here and applies
+        // only the resulting allow-list.
+        let service_for_modifier = Arc::clone(&service);
+        let apply_modifier: ModifierFn = Arc::new(move |modifier: &ContextModifier, ctx| {
+            let Some(transition) = modifier.plan_mode_transition.as_ref() else {
+                return ctx;
+            };
+            match transition {
+                PlanModeTransition::Enter => {
+                    service_for_modifier.enter(ctx.allow_list.clone());
+                }
+                PlanModeTransition::Exit { plan_content } => {
+                    service_for_modifier.latch_exit(plan_content.clone());
+                }
+            }
+            ctx
+        });
 
-        // Placeholder until the extraction phase moves the "plan mode blocks a
-        // thinking/effort downgrade" rule here.
-        let request_gates: RequestGateFn = Arc::new(|params, _facade| params);
+        // #2 Request gate: plan mode suspends the post-tool downgrade, so the
+        // planner keeps its full thinking budget and reasoning effort. The
+        // engine folds this gate after computing a downgrade candidate; putting
+        // the session's own values back is the veto.
+        let request_gates: RequestGateFn = Arc::new(|candidate: RequestParams, ctx: &HookCtx| {
+            if !ctx.plan_status().active {
+                return candidate;
+            }
+            RequestParams {
+                thinking: candidate.base_thinking.clone(),
+                reasoning_effort: candidate.base_reasoning_effort.clone(),
+                ..candidate
+            }
+        });
 
         FeatureHooks {
             on_user_request: vec![on_user_request],
@@ -353,25 +412,24 @@ mod tests {
         let gate = &hooks.dispatch_gate[0];
 
         let write = DispatchCtx::new("Write", ToolCategory::Edit);
-        let inactive = FacadeCtx::default();
+        let inactive = HookCtx::new();
         assert!(
-            gate(&write, inactive).is_none(),
+            gate(&write, &inactive).is_none(),
             "outside plan mode nothing is refused"
         );
 
-        let active = FacadeCtx {
-            plan_status: PlanStatus {
-                active: true,
-                awaiting_approval: false,
-            },
-        };
-        let denial = gate(&write, active).expect("a writer is refused in plan mode");
+        let active = HookCtx::new();
+        active.publish_plan_status(PlanStatus {
+            active: true,
+            awaiting_approval: false,
+        });
+        let denial = gate(&write, &active).expect("a writer is refused in plan mode");
         assert!(denial.message.contains("Plan mode is read-only"));
         assert!(denial.message.contains("ExitPlanMode"));
 
         let read = DispatchCtx::new("Read", ToolCategory::Info);
         assert!(
-            gate(&read, active).is_none(),
+            gate(&read, &active).is_none(),
             "read-only tools still dispatch in plan mode"
         );
     }

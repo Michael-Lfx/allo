@@ -150,13 +150,17 @@ pub struct ToolCallOutcome {
 
 /// Immutable execution authority captured from the exact tool definitions in
 /// one provider request. It cannot be reconstructed from the live registry:
-/// plan mode, deferred activation, and later dynamic registration can all make
-/// registry membership broader than what that request was allowed to call.
+/// deferred activation and later dynamic registration can both make registry
+/// membership broader than what that request was allowed to call.
+///
+/// The dispatch gate rides along too, frozen with the same request snapshot, so
+/// a feature's refusal is evaluated against the state that produced these calls
+/// rather than the state at dispatch time.
 #[derive(Debug, Clone)]
 pub struct ProviderToolAuthority {
     advertised: BTreeSet<String>,
     deferred: BTreeSet<String>,
-    pub(crate) plan_mode_read_only: bool,
+    dispatch_gate: crate::features::DispatchGate,
 }
 
 impl ProviderToolAuthority {
@@ -168,8 +172,24 @@ impl ProviderToolAuthority {
                 .filter(|tool| tool.deferred)
                 .map(|tool| tool.name.clone())
                 .collect(),
-            plan_mode_read_only: false,
+            dispatch_gate: crate::features::DispatchGate::default(),
         }
+    }
+
+    /// Install the feature dispatch gate for this request.
+    pub(crate) fn set_dispatch_gate(&mut self, gate: crate::features::DispatchGate) {
+        self.dispatch_gate = gate;
+    }
+
+    /// The feature refusal for this call, if any. Resolution happens at dispatch
+    /// so a gate can depend on the call's category (which depends on its input).
+    pub(crate) fn dispatch_denial(
+        &self,
+        call_name: &str,
+        category: ToolCategory,
+    ) -> Option<crate::features::ToolDenial> {
+        self.dispatch_gate
+            .denial(&crate::features::DispatchCtx::new(call_name, category))
     }
 
     pub(crate) fn advertises(&self, name: &str) -> bool {
@@ -489,7 +509,10 @@ fn invocation_gate_result(
             images: Vec::new(),
         });
     }
-    if authority.plan_mode_read_only {
+    // Feature dispatch gates (plan mode's read-only rule lives here). The
+    // category is resolved first because a tool may be category-dependent, and
+    // the gate must see the same category the call would execute as.
+    {
         let ContentBlock::ToolUse { input, .. } = call else {
             unreachable!("tool-use shape checked above")
         };
@@ -503,12 +526,10 @@ fn invocation_gate_result(
                 }
             })
             .unwrap_or(ToolCategory::Info);
-        if category != ToolCategory::Info {
+        if let Some(denial) = authority.dispatch_denial(name, category) {
             return Some(ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
-                content: format!(
-                    "Plan mode is read-only. Tool '{name}' was not executed. Use ExitPlanMode when the plan is ready."
-                ),
+                content: denial.message,
                 is_error: true,
                 images: Vec::new(),
             });
@@ -2340,11 +2361,46 @@ mod tests {
         make_registry_with_deferred_safety(true)
     }
 
+    /// Stands in for plan mode's read-only rule: a feature whose dispatch gate
+    /// refuses every non-`Info` tool. The old test set a
+    /// `plan_mode_read_only` bool on the authority; plan mode is a feature now,
+    /// so the same rule arrives through the gate.
+    struct ReadOnlyGateFeature;
+
+    impl crate::features::Feature for ReadOnlyGateFeature {
+        fn name(&self) -> &'static str {
+            "plan"
+        }
+
+        fn hooks(&self) -> crate::features::FeatureHooks {
+            crate::features::FeatureHooks {
+                dispatch_gate: vec![std::sync::Arc::new(
+                    |dispatch: &crate::features::DispatchCtx, _ctx: &crate::features::HookCtx| {
+                        if dispatch.category == ToolCategory::Info {
+                            return None;
+                        }
+                        Some(crate::features::ToolDenial::new(format!(
+                            "Plan mode is read-only. Tool '{}' was not executed. Use ExitPlanMode when the plan is ready.",
+                            dispatch.tool_name
+                        )))
+                    },
+                )],
+                ..Default::default()
+            }
+        }
+    }
+
+    fn read_only_gate() -> crate::features::DispatchGate {
+        let mut features = crate::features::FeatureRegistry::new();
+        features.register(std::sync::Arc::new(ReadOnlyGateFeature));
+        crate::features::DispatchGate::from_registry(&features, Default::default())
+    }
+
     #[tokio::test]
     async fn plan_mode_read_only_refuses_write_without_execute() {
         let (registry, calls) = make_registry_with_deferred();
         let mut authority = ProviderToolAuthority::from_request_tools(&registry.to_tool_defs());
-        authority.plan_mode_read_only = true;
+        authority.set_dispatch_gate(read_only_gate());
         let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
 
         let outcome = execute_tool_calls_scoped(

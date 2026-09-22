@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{
     ContentBlock, Message, Role, StopReason, TokenUsage, clear_provider_round_ids,
 };
-use nomi_types::skill_types::{ContextModifier, PlanModeTransition, effort_to_string};
+use nomi_types::skill_types::{ContextModifier, effort_to_string};
 use serde_json::Value;
 use tracing::Instrument;
 
@@ -31,8 +31,6 @@ use crate::tool_execution::{
 use crate::output::{
     ContextUsageSnapshot, OutputSink, ToolCallExecutionContext, ToolCallRetryContext,
 };
-use crate::plan::prompt as plan_prompt;
-use crate::plan::state::{PlanPhase, PlanState};
 use crate::round;
 use crate::session::{EditableTurnCheckpoint, Session, SessionManager};
 
@@ -45,6 +43,20 @@ use crate::session::{EditableTurnCheckpoint, Session, SessionManager};
 /// expiry during the idle gap between turns (e.g. between AutoWork tasks).
 /// Emitting it as an error previously made the AutoWork runner treat a
 /// perfectly good turn as failed (re-pend, and eventually a tag pause).
+/// The quadratic-free continuation downgrade: a follow-up pass in a tool loop
+/// gets a quarter of the session's thinking budget, floored at 1k tokens.
+///
+/// Applied to build the per-pass request candidate before the features'
+/// `request_gates` fold, which is where a feature (plan mode) vetoes it.
+fn halve_thinking_budget(cfg: ThinkingConfig) -> ThinkingConfig {
+    match cfg {
+        ThinkingConfig::Enabled { budget_tokens } => ThinkingConfig::Enabled {
+            budget_tokens: (budget_tokens / 4).max(1024),
+        },
+        ThinkingConfig::Disabled => ThinkingConfig::Disabled,
+    }
+}
+
 fn cache_diagnostic_message(diag: &CacheDiagnostic, diagnostics_enabled: bool) -> Option<String> {
     if !diagnostics_enabled {
         return None;
@@ -606,14 +618,6 @@ pub struct AgentEngine {
     compact_config: CompactConfig,
     /// Runtime compaction state (circuit breaker, last input tokens)
     compact_state: CompactState,
-    /// Runtime plan mode state (active flag, pre-plan allow-list, approval latch)
-    plan_state: PlanState,
-    /// Shared flag read by EnterPlanMode/ExitPlanMode tools to validate transitions.
-    /// Updated by the engine when processing PlanModeTransition modifiers.
-    plan_active_flag: Option<Arc<AtomicBool>>,
-    /// Shared with ExitPlanMode: true once a verifiable plan is waiting for
-    /// the next user message. Prevents a second Exit from restoring writes.
-    plan_exit_latch: Option<Arc<AtomicBool>>,
     /// Unique owner of Goal auto-continue and office Plan overlay.
     horizon: crate::horizon::HorizonController,
     /// Prompt cache break detector for diagnostics.
@@ -690,7 +694,11 @@ pub struct AgentEngine {
     /// (tests, low-level embeddings) behaves exactly as it did before the seam:
     /// every fold iterates nothing and returns its input.
     features: FeatureRegistry,
-    /// `<system-reminder>` notification channel, built from the registered
+    /// Provider passes completed in the current root user request. Drives the
+    /// reminder trigger's 	urn_start/pass_in_turn and is reset with the
+    /// reminder service at each turn.
+    provider_passes_in_turn: usize,
+    /// <system-reminder> notification channel, built from the registered
     /// features' reminder specs. Empty when no feature declares one, in which
     /// case no message is ever appended.
     reminders: crate::features::reminder::ReminderService,
@@ -760,9 +768,6 @@ impl AgentEngine {
             file_cache: None,
             compact_config,
             compact_state: CompactState::new(),
-            plan_state: PlanState::default(),
-            plan_active_flag: None,
-            plan_exit_latch: None,
             horizon: crate::horizon::HorizonController::default(),
             cache_detector: CacheBreakDetector::new(),
             compaction_level: config.compact.compaction,
@@ -787,6 +792,7 @@ impl AgentEngine {
             observation: None,
             features: FeatureRegistry::new(),
             reminders: crate::features::reminder::ReminderService::new(),
+            provider_passes_in_turn: 0,
         }
     }
 
@@ -857,9 +863,6 @@ impl AgentEngine {
             file_cache: None,
             compact_config,
             compact_state,
-            plan_state: PlanState::default(),
-            plan_active_flag: None,
-            plan_exit_latch: None,
             horizon: crate::horizon::HorizonController::default(),
             cache_detector: CacheBreakDetector::new(),
             compaction_level: config.compact.compaction,
@@ -884,6 +887,7 @@ impl AgentEngine {
             observation: None,
             features: FeatureRegistry::new(),
             reminders: crate::features::reminder::ReminderService::new(),
+            provider_passes_in_turn: 0,
         }
     }
 
@@ -1332,26 +1336,51 @@ impl AgentEngine {
         }
     }
 
-    fn thinking_for_request(&self) -> Option<ThinkingConfig> {
-        let Some(cfg) = self.thinking.clone() else {
-            return None;
+    /// This provider pass's request parameters.
+    ///
+    /// The engine computes the per-pass candidates — a follow-up pass in a tool
+    /// loop gets a smaller thinking budget and a lower effort — and folds the
+    /// features' request gates over them. A feature that objects to the
+    /// downgrade (plan mode does) puts the session's own values back; the engine
+    /// never asks which feature decided.
+    fn request_params(&self) -> crate::features::RequestParams {
+        let base_thinking = self.thinking.clone();
+        let base_reasoning_effort = self.current_reasoning_effort.clone();
+        let continuation_after_tools = self.harness_runtime.continuation_after_tools;
+        // Outside a tool loop there is no downgrade at all, and
+        // `reasoning_effort` keeps its session value rather than collapsing to
+        // `low`. The pre-gate candidate must reproduce exactly that.
+        let downgrade = continuation_after_tools;
+
+        let thinking = if downgrade {
+            base_thinking.clone().map(halve_thinking_budget)
+        } else {
+            base_thinking.clone()
         };
-        if self.plan_state.is_active || !self.harness_runtime.continuation_after_tools {
-            return Some(cfg);
-        }
-        match cfg {
-            ThinkingConfig::Enabled { budget_tokens } => Some(ThinkingConfig::Enabled {
-                budget_tokens: (budget_tokens / 4).max(1024),
-            }),
-            ThinkingConfig::Disabled => Some(ThinkingConfig::Disabled),
-        }
+        let reasoning_effort = if downgrade {
+            Some("low".into())
+        } else {
+            base_reasoning_effort.clone()
+        };
+
+        let params = crate::features::RequestParams {
+            thinking,
+            reasoning_effort,
+            base_thinking,
+            base_reasoning_effort,
+            continuation_after_tools,
+        };
+        let hooks = crate::features::HookCtx::new();
+        hooks.publish_plan_status(self.plan_status());
+        self.features.apply_request_gates(params, &hooks)
+    }
+
+    fn thinking_for_request(&self) -> Option<ThinkingConfig> {
+        self.request_params().thinking
     }
 
     fn reasoning_effort_for_request(&self) -> Option<String> {
-        if self.plan_state.is_active || !self.harness_runtime.continuation_after_tools {
-            return self.current_reasoning_effort.clone();
-        }
-        Some("low".into())
+        self.request_params().reasoning_effort
     }
 
     fn apply_coding_compact_overrides(&mut self, overrides: nomi_coding::CompactPolicyOverrides) {
@@ -1420,32 +1449,80 @@ impl AgentEngine {
     /// Set the shared plan-mode active flag.
     ///
     /// This flag is shared with EnterPlanMode/ExitPlanMode tools so they can
-    /// validate transitions (e.g. reject double-entry).  The engine updates
+    /// validate transitions (e.g. reject double-entry). The engine updates
     /// the flag when processing `PlanModeTransition` context modifiers.
     pub fn set_plan_active_flag(&mut self, flag: Arc<AtomicBool>) {
-        self.plan_active_flag = Some(flag);
+        if let Some(service) = self.plan_service() {
+            service.adopt_active_flag(flag.into());
+        }
     }
 
     pub fn set_plan_exit_latch(&mut self, flag: Arc<AtomicBool>) {
-        self.plan_exit_latch = Some(flag);
+        if let Some(service) = self.plan_service() {
+            service.adopt_exit_latch(flag.into());
+        }
     }
 
-    /// Cursor-style Build: the next user message after a latched plan restores
-    /// write tools. No-op unless a plan is waiting for approval.
-    fn approve_pending_plan(&mut self) {
-        if !self.plan_state.awaiting_approval() {
+    /// The plan service, when the session registered the plan feature.
+    ///
+    /// Only the façade reads this: the turn loop talks to features through
+    /// hooks. `set_plan_active_flag`/`set_plan_exit_latch` must reach the one
+    /// service whose flags the plan tools also read, and the goal's continuation
+    /// decision needs the same status the plan hook publishes.
+    fn plan_service(&self) -> Option<Arc<crate::features::plan::PlanService>> {        self.features
+            .service::<crate::features::PlanFeature>("plan")
+            .map(|feature| Arc::clone(feature.service()))
+    }
+
+    /// Read-only plan-mode status, for handing the fact to *every* feature
+    /// without the engine naming one of them.
+    fn plan_status(&self) -> crate::features::PlanStatus {
+        self.plan_service()
+            .map(|service| service.status())
+            .unwrap_or_default()
+    }
+
+    /// Append this pass's `<system-reminder>` messages, if any feature has
+    /// something to say.
+    ///
+    /// A reminder is a persistent `Role::User` message, never an edit of an
+    /// already-sent one, so the provider prefix only grows. The text is derived
+    /// from feature state and carries no bookkeeping marker, which is what makes
+    /// it regenerable: a compaction that drops the message is repaired at the
+    /// next trigger.
+    fn push_feature_reminders(&mut self) {
+        if self.reminders.is_empty() {
             return;
         }
-        self.plan_state.phase = PlanPhase::Idle;
-        self.plan_state.pending_plan = None;
-        self.plan_state.is_active = false;
-        self.allow_list = self.plan_state.pre_plan_allow_list.clone();
-        if let Some(ref flag) = self.plan_active_flag {
-            flag.store(false, Ordering::Release);
+        let new_user_message = self.messages.last().is_some_and(|message| {
+            message.role == Role::User
+                && message.content.iter().any(|block| match block {
+                    ContentBlock::Text { text } => {
+                        !crate::context_contributor::is_turn_tail_context_text(text)
+                    }
+                    _ => false,
+                })
+        });
+        let trigger = crate::features::ReminderCtx {
+            turn_start: self.provider_passes_in_turn == 0,
+            new_user_message,
+            urgent: false,
+            pass_in_turn: self.provider_passes_in_turn,
+        };
+        for reminder in self.reminders.collect(&trigger) {
+            let text = crate::features::reminder::wrap_system_reminder(&reminder.body);
+            self.messages.push(Message::now(
+                Role::User,
+                vec![ContentBlock::Text { text }],
+            ));
+            tracing::debug!(
+                target: "nomi_agent",
+                variant = reminder.variant,
+                pass_in_turn = self.provider_passes_in_turn,
+                "appended a system reminder"
+            );
         }
-        if let Some(ref latch) = self.plan_exit_latch {
-            latch.store(false, Ordering::Release);
-        }
+        self.provider_passes_in_turn = self.provider_passes_in_turn.saturating_add(1);
     }
 
     fn horizon_observe_tools(&mut self, tool_calls: &[ContentBlock], results: &[ContentBlock]) {
@@ -1801,8 +1878,16 @@ impl AgentEngine {
         // instruction starts with a clean progress window.
         self.stagnation_guard.reset();
         self.harness_runtime.reset_for_user_request();
+        self.reminders.begin_turn();
+        self.provider_passes_in_turn = 0;
+        // #1 User entry. One generic fold: a feature that treats this message as
+        // an approval publishes the resulting allow-list, and the engine applies
+        // it without knowing which feature asked.
         self.horizon.on_user_request();
-        self.approve_pending_plan();
+        let entry_hooks = self.features.run_user_request();
+        if let Some(allow_list) = entry_hooks.take_allow_list() {
+            self.allow_list = allow_list;
+        }
         if let Some(harness) = self.coding_harness.as_mut() {
             harness.reset_for_user_request();
         }
@@ -1863,12 +1948,18 @@ impl AgentEngine {
             // provider with the current conversation.
             self.prune_old_tool_images();
 
+            // Plan-mode facts for this pass, captured once. The engine hands
+            // them to whichever feature needs them (the office plan nudge, the
+            // coding harness, the goal's continuation decision) without any of
+            // those call sites naming the plan feature.
+            let plan_status = self.plan_status();
+
             // Advertise the same harness-allowed table every request so the
             // tools JSON stays prefix-cache stable. Plan mode refuses writes
             // at dispatch instead of swapping the table. Forced finalize still
             // advertises nothing for that request (accepted one-time miss).
             let mut tools = self.provider_tools_for_request();
-            let mut tool_authority = self.bind_tool_authority(&tools);
+            let mut tool_authority = self.bind_tool_authority(&tools, plan_status);
 
             // Cache-first design: the system prompt is the cache-stable
             // prefix. It must stay byte-stable across turns so the provider's
@@ -1896,22 +1987,20 @@ impl AgentEngine {
                 "Current date: {}",
                 chrono::Local::now().format("%Y-%m-%d")
             ));
-            // Plan mode instructions ride the turn tail instead of the system
-            // prompt so toggling plan mode doesn't break the prefix cache.
-            if self.plan_state.is_active {
-                turn_tail_extras.push(plan_prompt::plan_mode_instructions().to_string());
-            }
+            // Plan mode instructions no longer ride the turn tail: the plan
+            // feature delivers them through the `<system-reminder>` channel, so
+            // the model reads them once per turn instead of once per pass.
             if self.coding_harness.is_none() {
                 if let Some(text) = self
                     .horizon
-                    .observe_office_plan_turn(self.plan_state.is_active)
+                    .observe_office_plan_turn(plan_status.active)
                     .text()
                 {
                     turn_tail_extras.push(text.to_string());
                 }
             }
             if let Some(harness) = self.coding_harness.as_mut() {
-                if let Some(plan_nudge) = harness.before_provider_turn(self.plan_state.is_active) {
+                if let Some(plan_nudge) = harness.before_provider_turn(plan_status.active) {
                     turn_tail_extras.push(plan_nudge);
                 }
                 if let Some(reason) = harness.abort_before_provider() {
@@ -1976,7 +2065,7 @@ impl AgentEngine {
             // dispatch, so this flag stays false there — a turn that could not
             // produce a state-changing effect is never judged for failing to.
             let tools_advertised = !tools.is_empty();
-            state_changing_tools_advertised |= !self.plan_state.is_active
+            state_changing_tools_advertised |= !plan_status.active
                 && tools.iter().any(|def| {
                     self.tools
                         .get(&def.name)
@@ -2015,6 +2104,19 @@ impl AgentEngine {
                 turn_tail.clone(),
                 self.sent_prefix_len,
             );
+            // #3b Reminder channel. Appended *after* the turn-tail compose so a
+            // reminder message never gets a `[Context]` block glued onto it (the
+            // truncation-restart predicates key on that prefix), and appended as
+            // a persistent user message so the already-sent prefix only grows.
+            //
+            // One generic fold: a feature decides whether it has something to
+            // say, the service suppresses repeats within the turn and refreshes
+            // at each variant's cadence, and the engine just appends.
+            //
+            // The push lands in `self.messages`, which is the same `Vec` the
+            // provider request takes below, so the reminder is on the wire
+            // without a separate transcript copy.
+            self.push_feature_reminders();
 
             // Record prompt state for cache diagnostics
             self.cache_detector.record_request(&system, &tools);
@@ -2027,7 +2129,7 @@ impl AgentEngine {
                     system_prompt_sections: &self.system_prompt_sections,
                     tools: &tools,
                     messages: &self.messages,
-                    plan_mode_active: self.plan_state.is_active,
+                    plan_mode_active: plan_status.active,
                     turn_tail_extras: &[],
                 },
             );
@@ -2996,8 +3098,8 @@ impl AgentEngine {
                         snap.contract.as_ref(),
                         snap.auto_continuations,
                     );
-                    let awaiting = self.plan_state.awaiting_approval();
-                    let decision = self.horizon.decide(self.plan_state.is_active, awaiting);
+                    let awaiting = plan_status.awaiting_approval;
+                    let decision = self.horizon.decide(plan_status.active, awaiting);
                     self.emit_horizon_decision(&decision);
                     let delta = self.horizon.continuation_delta(
                         &snap.objective,
@@ -3725,10 +3827,17 @@ impl AgentEngine {
     fn bind_tool_authority(
         &self,
         tools: &[nomi_types::tool::ToolDef],
+        plan_status: crate::features::PlanStatus,
     ) -> ProviderToolAuthority {
         let mut authority = ProviderToolAuthority::from_request_tools(tools);
         authority.overlay_live_activation(&self.tools);
-        authority.plan_mode_read_only = self.plan_state.is_active;
+        // Freeze the feature dispatch gates for this request. Tool execution has
+        // no engine access, so the verdict must ride the request's authority
+        // snapshot exactly like the advertised-name set does.
+        authority.set_dispatch_gate(crate::features::DispatchGate::from_registry(
+            &self.features,
+            plan_status,
+        ));
         authority
     }
 
@@ -3942,8 +4051,19 @@ impl AgentEngine {
         }
     }
 
-    /// Apply context modifiers collected from skill tool executions.
+    /// Apply context modifiers collected from skill and tool executions.
+    ///
+    /// The engine owns the model/effort/allow-list slots because they are
+    /// session-wide, engine-level state; everything the modifier *means* beyond
+    /// that is routed to the features through `apply_modifier`, which is where
+    /// plan mode's Enter/Exit state migration lives.
     fn apply_context_modifiers(&mut self, modifiers: &[Option<ContextModifier>]) {
+        let ctx = crate::features::ModifierCtx {
+            allow_list: std::mem::take(&mut self.allow_list),
+        };
+        let ctx = self.features.apply_modifiers(modifiers, ctx);
+        self.allow_list = ctx.allow_list;
+
         for modifier in modifiers.iter().flatten() {
             if let Some(ref model) = modifier.model {
                 self.model = model.clone();
@@ -3956,33 +4076,6 @@ impl AgentEngine {
                     self.allow_list.push(tool_name.clone());
                 }
                 self.confirmer.lock().unwrap().add_to_allow_list(tool_name);
-            }
-
-            // Handle plan mode transitions
-            if let Some(ref transition) = modifier.plan_mode_transition {
-                match transition {
-                    PlanModeTransition::Enter => {
-                        self.plan_state.pre_plan_allow_list = self.allow_list.clone();
-                        self.plan_state.is_active = true;
-                        self.plan_state.phase = PlanPhase::Exploring;
-                        self.plan_state.pending_plan = None;
-                        if let Some(ref flag) = self.plan_active_flag {
-                            flag.store(true, Ordering::Release);
-                        }
-                        if let Some(ref latch) = self.plan_exit_latch {
-                            latch.store(false, Ordering::Release);
-                        }
-                    }
-                    PlanModeTransition::Exit { plan_content } => {
-                        // Valid Exit latches for user approval; write tools stay locked.
-                        self.plan_state.phase = PlanPhase::AwaitingApproval;
-                        self.plan_state.pending_plan = plan_content.clone();
-                        self.plan_state.is_active = true;
-                        if let Some(ref latch) = self.plan_exit_latch {
-                            latch.store(true, Ordering::Release);
-                        }
-                    }
-                }
             }
         }
     }

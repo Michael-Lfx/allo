@@ -975,8 +975,6 @@ fn make_engine(model: &str) -> super::AgentEngine {
         current_reasoning_effort: None,
         compact_config: nomi_config::compact::CompactConfig::default(),
         compact_state: super::CompactState::new(),
-        plan_state: Default::default(),
-        plan_active_flag: None,
         cache_detector: super::CacheBreakDetector::new(),
         compaction_level: nomi_compact::CompactionLevel::default(),
         toon_enabled: false,
@@ -1002,8 +1000,8 @@ fn make_engine(model: &str) -> super::AgentEngine {
         observation: None,
         features: Default::default(),
         reminders: Default::default(),
+        provider_passes_in_turn: 0,
         horizon: Default::default(),
-        plan_exit_latch: None,
     }
 }
 
