@@ -50,12 +50,19 @@ body,
   }
 }
 
+.collapsed-hidden {
+  transition: opacity 160ms cubic-bezier(0.25, 1, 0.5, 1);
+  white-space: nowrap;
+}
+
 .collapsed {
   .collapsed-hidden {
     display: none;
+    opacity: 0;
   }
   .\!collapsed-hidden {
     display: none !important;
+    opacity: 0;
   }
 }
 

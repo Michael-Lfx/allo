@@ -173,9 +173,9 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
 
   const sortableStyle: React.CSSProperties = {
     transform: CSS.Translate.toString(transform ? { ...transform, x: 0 } : null),
-    transition,
-    opacity: isDragging ? 0.75 : 1,
-    zIndex: isDragging ? 30 : undefined,
+    transition: transition || 'transform 200ms cubic-bezier(0.25, 1, 0.5, 1), opacity 180ms ease',
+    opacity: isDragging ? 0.88 : 1,
+    zIndex: isDragging ? 40 : undefined,
   };
 
   // Workpath-level capability: knowledge base. P2 临时点亮规则（组内任一成员
@@ -217,7 +217,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
       size={16}
       fill='currentColor'
       className={classNames(
-        'line-height-0 shrink-0 transition-colors',
+        'line-height-0 shrink-0 transition-colors duration-200',
         expanded ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
       )}
     />
@@ -226,14 +226,14 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
       theme='two-tone'
       size={16}
       fill={['currentColor', 'currentColor']}
-      className='line-height-0 text-primary-6 shrink-0 transition-colors'
+      className='line-height-0 text-primary-6 shrink-0 transition-all duration-200'
     />
   ) : (
     <FolderClose
       theme='outline'
       size={16}
       fill='currentColor'
-      className='line-height-0 text-t-tertiary group-hover:text-t-primary shrink-0 transition-colors'
+      className='line-height-0 text-t-tertiary group-hover:text-t-primary shrink-0 transition-all duration-200'
     />
   );
 
@@ -310,10 +310,10 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
         data-active={isActiveWorkpath ? 'true' : 'false'}
         data-dragging={isDragging ? 'true' : 'false'}
         className={classNames(
-          'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group',
+          'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group transition-all duration-200',
           twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px',
           isActiveWorkpath && 'flowy-workpath-drawer-header-active !bg-[rgba(var(--primary-6),0.08)] border-l-2px border-l-solid border-primary-6',
-          isDragging ? 'shadow-md cursor-grabbing select-none' : 'cursor-pointer'
+          isDragging ? 'shadow-lg border border-solid border-primary-6/40 !bg-[rgba(var(--primary-6),0.06)] cursor-grabbing select-none' : 'cursor-pointer'
         )}
         {...attributes}
         {...listeners}
@@ -369,7 +369,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             <span
               data-testid='workpath-disclosure-caret'
               className={classNames(
-                'w-10px h-14px flex items-center justify-center shrink-0 transition-transform duration-150 -ml-2px -mr-2px',
+                'w-10px h-14px flex items-center justify-center shrink-0 transition-transform duration-220 ease-[cubic-bezier(0.25,1,0.5,1)] -ml-2px -mr-2px',
                 expanded ? 'rotate-90 text-primary-6' : 'text-t-tertiary group-hover:text-t-secondary'
               )}
             >
@@ -538,7 +538,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
         )}
       >
         {drawerMotion.shouldRender && (
-          <>
+          <div className='flowy-disclosure-content-inner min-h-0 min-w-0 flex flex-col gap-2px'>
             {baseInteractiveEntries.map((entry) => renderEntry(entry))}
             {overflowInteractiveEntries.length > 0 && (
               <div
@@ -548,7 +548,9 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
                 data-disclosure-phase={overflowMotion.phase}
                 className='flowy-disclosure-content flex flex-col'
               >
-                {overflowMotion.shouldRender && overflowInteractiveEntries.map((entry) => renderEntry(entry))}
+                <div className='flowy-disclosure-content-inner min-h-0 min-w-0 flex flex-col gap-2px'>
+                  {overflowMotion.shouldRender && overflowInteractiveEntries.map((entry) => renderEntry(entry))}
+                </div>
               </div>
             )}
             {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
@@ -578,7 +580,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
                 }}
               />
             )}
-          </>
+          </div>
         )}
       </div>
     </div>

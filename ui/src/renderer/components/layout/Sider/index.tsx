@@ -660,8 +660,21 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 <div
                   role='tablist'
                   aria-label={t('common.titlebar.sections.workspaces', { defaultValue: '工作区' })}
-                  className='flex items-center p-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
+                  className='relative flex items-center p-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
                 >
+                  <span
+                    aria-hidden='true'
+                    className='absolute h-26px rd-6px bg-fill-3 text-t-primary shadow-sm transition-transform duration-220 ease-[cubic-bezier(0.25,1,0.5,1)] pointer-events-none'
+                    style={{
+                      width: 'calc((100% - 4px) / 3)',
+                      left: '2px',
+                      top: '2px',
+                      transform: `translateX(${
+                        effectiveBar2Module === 'video' ? '100%' : effectiveBar2Module === 'companions' ? '200%' : '0%'
+                      })`,
+                      opacity: effectiveBar2Module ? 1 : 0,
+                    }}
+                  />
                   <button
                     type='button'
                     role='tab'
@@ -669,10 +682,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     aria-selected={effectiveBar2Module === 'workspaces'}
                     onClick={() => handleTabClick('workspaces')}
                     className={classNames(
-                      'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
                       effectiveBar2Module === 'workspaces'
-                        ? 'bg-fill-3 text-t-primary shadow-sm'
-                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                        ? 'text-t-primary'
+                        : 'text-t-tertiary hover:text-t-primary'
                     )}
                   >
                     <MessageOne
@@ -697,10 +710,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={() => handleTabClick('video')}
                     onPointerEnter={() => prefetchVideoGenerationHome()}
                     className={classNames(
-                      'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
                       effectiveBar2Module === 'video'
-                        ? 'bg-fill-3 text-t-primary shadow-sm'
-                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                        ? 'text-t-primary'
+                        : 'text-t-tertiary hover:text-t-primary'
                     )}
                   >
                     <VideoOne
@@ -725,10 +738,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={() => handleTabClick('companions')}
                     onPointerEnter={() => prefetchNomiPage()}
                     className={classNames(
-                      'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
                       effectiveBar2Module === 'companions'
-                        ? 'bg-fill-3 text-t-primary shadow-sm'
-                        : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
+                        ? 'text-t-primary'
+                        : 'text-t-tertiary hover:text-t-primary'
                     )}
                   >
                     <Ghost
