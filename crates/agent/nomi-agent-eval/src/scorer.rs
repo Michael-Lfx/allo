@@ -253,6 +253,103 @@ pub fn score_one(spec: &ScorerSpec, transcript: &TurnTranscript) -> ScorerResult
                 },
             }
         }
+        ScorerSpec::XlsxSheets { path, names } => match read_xlsx_bytes_from(transcript, path) {
+            Ok(bytes) => match crate::xlsx_office::xlsx_sheet_names(&bytes) {
+                Ok(actual) => {
+                    let missing: Vec<_> = names
+                        .iter()
+                        .filter(|want| {
+                            !actual
+                                .iter()
+                                .any(|have| have.eq_ignore_ascii_case(want.trim()))
+                        })
+                        .cloned()
+                        .collect();
+                    ScorerResult {
+                        scorer_type: "xlsx_sheets".into(),
+                        passed: missing.is_empty(),
+                        detail: Some(format!(
+                            "path={path} have={} missing={}",
+                            actual.join("|"),
+                            missing.join("|")
+                        )),
+                    }
+                }
+                Err(detail) => ScorerResult {
+                    scorer_type: "xlsx_sheets".into(),
+                    passed: false,
+                    detail: Some(detail),
+                },
+            },
+            Err(detail) => ScorerResult {
+                scorer_type: "xlsx_sheets".into(),
+                passed: false,
+                detail: Some(detail),
+            },
+        },
+        ScorerSpec::XlsxHeaders {
+            path,
+            headers,
+            sheet,
+        } => match read_xlsx_bytes_from(transcript, path) {
+            Ok(bytes) => match crate::xlsx_office::xlsx_header_row(&bytes, sheet.as_deref()) {
+                Ok(actual) => {
+                    let missing: Vec<_> = headers
+                        .iter()
+                        .filter(|want| {
+                            !actual.iter().any(|have| have.trim().eq_ignore_ascii_case(want.trim()))
+                        })
+                        .cloned()
+                        .collect();
+                    ScorerResult {
+                        scorer_type: "xlsx_headers".into(),
+                        passed: missing.is_empty(),
+                        detail: Some(format!(
+                            "path={path} have={} missing={}",
+                            actual.join("|"),
+                            missing.join("|")
+                        )),
+                    }
+                }
+                Err(detail) => ScorerResult {
+                    scorer_type: "xlsx_headers".into(),
+                    passed: false,
+                    detail: Some(detail),
+                },
+            },
+            Err(detail) => ScorerResult {
+                scorer_type: "xlsx_headers".into(),
+                passed: false,
+                detail: Some(detail),
+            },
+        },
+        ScorerSpec::XlsxTotalsClose {
+            source,
+            output,
+            tolerance,
+        } => match (
+            read_xlsx_bytes_from(transcript, source),
+            read_xlsx_bytes_from(transcript, output),
+        ) {
+            (Ok(src), Ok(out)) => match crate::xlsx_office::xlsx_totals_within(&src, &out, *tolerance)
+            {
+                Ok((passed, detail)) => ScorerResult {
+                    scorer_type: "xlsx_totals_close".into(),
+                    passed,
+                    detail: Some(format!("source={source} output={output} {detail}")),
+                },
+                Err(detail) => ScorerResult {
+                    scorer_type: "xlsx_totals_close".into(),
+                    passed: false,
+                    detail: Some(detail),
+                },
+            },
+            (Err(detail), _) | (_, Err(detail)) => ScorerResult {
+                scorer_type: "xlsx_totals_close".into(),
+                passed: false,
+                detail: Some(detail),
+            },
+        },
     }
 }
 
@@ -422,6 +519,11 @@ fn workspace_file(transcript: &TurnTranscript, relative: &str) -> Result<PathBuf
 fn read_workspace_file(transcript: &TurnTranscript, relative: &str) -> Result<String, String> {
     let path = workspace_file(transcript, relative)?;
     fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
+}
+
+fn read_xlsx_bytes_from(transcript: &TurnTranscript, relative: &str) -> Result<Vec<u8>, String> {
+    let path = workspace_file(transcript, relative)?;
+    crate::xlsx_office::read_xlsx_bytes(&path)
 }
 
 fn run_in_workspace(workspace: Option<&Path>, command: &str) -> Result<(i32, String), String> {
@@ -771,6 +873,87 @@ mod tests {
                 &ScorerSpec::FileNotContains {
                     path: "draft.md".into(),
                     marker: "lol".into(),
+                },
+                &t
+            )
+            .passed
+        );
+    }
+
+    #[test]
+    fn xlsx_sheet_and_header_oracles() {
+        let dir = tempdir().unwrap();
+        let bytes = crate::xlsx_office::pack_test_xlsx(
+            "Region Summary",
+            &["Priority", "Action Item", "Owner"],
+        );
+        fs::write(dir.path().join("Action_Items.xlsx"), bytes).unwrap();
+        let t = TurnTranscript {
+            workspace: Some(dir.path().to_path_buf()),
+            ..TurnTranscript::default()
+        };
+        assert!(
+            score_one(
+                &ScorerSpec::XlsxSheets {
+                    path: "Action_Items.xlsx".into(),
+                    names: vec!["Region Summary".into()],
+                },
+                &t
+            )
+            .passed
+        );
+        assert!(
+            score_one(
+                &ScorerSpec::XlsxHeaders {
+                    path: "Action_Items.xlsx".into(),
+                    headers: vec!["Priority".into(), "Owner".into()],
+                    sheet: Some("Region Summary".into()),
+                },
+                &t
+            )
+            .passed
+        );
+        assert!(
+            !score_one(
+                &ScorerSpec::XlsxSheets {
+                    path: "Action_Items.xlsx".into(),
+                    names: vec!["Missing Sheet".into()],
+                },
+                &t
+            )
+            .passed
+        );
+    }
+
+    #[test]
+    fn xlsx_totals_close_is_advisory_tolerant() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("Input")).unwrap();
+        let source = crate::xlsx_office::pack_test_xlsx_rows(
+            "Sales",
+            &["Region", "Month", "Revenue"],
+            &[
+                &["East", "2024-01", "10"],
+                &["West", "2024-02", "90"],
+            ],
+        );
+        let output = crate::xlsx_office::pack_test_xlsx_rows(
+            "Region Summary",
+            &["Region", "Revenue"],
+            &[&["West", "90.5"]],
+        );
+        fs::write(dir.path().join("Input/Sales_Result.xlsx"), source).unwrap();
+        fs::write(dir.path().join("Management_Summary.xlsx"), output).unwrap();
+        let t = TurnTranscript {
+            workspace: Some(dir.path().to_path_buf()),
+            ..TurnTranscript::default()
+        };
+        assert!(
+            score_one(
+                &ScorerSpec::XlsxTotalsClose {
+                    source: "Input/Sales_Result.xlsx".into(),
+                    output: "Management_Summary.xlsx".into(),
+                    tolerance: 0.01,
                 },
                 &t
             )

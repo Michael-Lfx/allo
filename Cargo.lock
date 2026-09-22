@@ -6780,6 +6780,7 @@ version = "1.4.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "flate2",
  "glob",
  "indexmap 2.14.0",
  "jsonschema",

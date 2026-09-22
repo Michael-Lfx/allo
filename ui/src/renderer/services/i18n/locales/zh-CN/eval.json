@@ -5,7 +5,7 @@
     "navTooltip": "Agent 评测实验室（开发者模式）"
   },
   "subtitle": "用真实 harness / runtime 打分。每条 case 绑定一个 eval session，复用 Session Observation 观测链路。",
-  "isolationNote": "Live 评测跑生产 AgentEngine。隔离按套件 overlay：smoke / office / coding 关闭 MCP 与浏览器；browser_smoke 只开浏览器并注入本地 HTML fixture；mcp_fixture 注入 stdio 假 CRM。办公 KPI 用 office_core（默认 3 trials），编码 KPI 用 coding_local。Aider / ClassEval 在 Advanced。Harbor 需要沙箱，本机不可跑。同时只允许一轮。",
+  "isolationNote": "现场评测跑的就是生产 Agent。默认套件关闭 MCP、浏览器和公网搜索；导入的商务包会打开搜索、拷贝 Input 夹具、单题最多 45–60 分钟，产物只写评测工作区而不会写到桌面。办公 KPI 用 office_core，编码 KPI 用 coding_local。同时只允许一轮。",
   "developerModeRequired": "请在 设置 → 系统 中打开开发者模式后再使用评测。",
   "workspace": "工作区",
   "model": "模型",
@@ -16,6 +16,11 @@
   "diff": "对比两轮",
   "diffDelta": "pass@1 差值 {{delta}}，翻转 {{flips}} 题",
   "syncPrivate": "同步私有题库",
+  "importPack": "导入评测包",
+  "importHint": "选择含 T01 / T02 / T03 Prompt 的文件夹。导入只创建套件，不会自动开跑。",
+  "importSuccess": "已导入 {{title}}（{{count}} 题）。确认云端模型后点「开始评测」。",
+  "importNotes": "打开公网搜索、拷贝 Input 二进制夹具、单题超时 45–60 分钟、固定 1 次试验。产物只写评测工作区，不会写到桌面。",
+  "trialsLocked": "商务长任务固定 1 次试验，不刷 pass@k。",
   "sandboxDisabled": "此套件需要沙箱 runner，本机无法开始评测。",
   "reportTurn": "上报此回合",
   "reportConfirm": "将失败摘要上报云端（不含完整 JSONL / 原文）。确认？",
@@ -97,7 +102,28 @@
   "tier": {
     "smoke": "冒烟",
     "capability": "能力",
+    "imported": "导入",
     "advanced": "进阶",
     "sandbox": "沙箱"
+  },
+  "report": {
+    "title": "商务评测报告",
+    "goal": "目标达成",
+    "efficiency": "Agent 循环效率",
+    "export": "导出报告",
+    "exportFilter": "HTML 报告",
+    "exportFilterCsv": "CSV 表格",
+    "exportOk": "已保存 {{path}}",
+    "exportFailed": "导出报告失败",
+    "check": "检查项",
+    "metric": "指标",
+    "modelNote": "本次云端模型：{{model}}（仅记录，不是对照列）",
+    "empty": "T01–T03 跑完后会生成三列表。",
+    "running": "评测进行中，三列报告会在全部题目结束后出现。",
+    "footnote": "参考项（advisory）不计入本题 success。T03 算术允许约 1% 误差。",
+    "stopGuide": "「结束原因」只说明 Agent 为什么停下来，不等于本题对错。正常结束＝模型主动收尾；输出被截断 / 轮次用尽＝被上限打断，产物可能不完整；出错＝评测进程失败。",
+    "t01": "T01 联网调研",
+    "t02": "T02 项目汇总",
+    "t03": "T03 销售分析"
   }
 }

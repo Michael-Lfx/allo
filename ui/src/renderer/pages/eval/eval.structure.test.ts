@@ -15,6 +15,14 @@ describe('agent eval lab', () => {
     expect(page.includes('useDeveloperModeGate')).toBe(true);
     expect(page.includes("Navigate to='/guid'")).toBe(true);
     expect(page.includes('/api/debug/agent-evals')).toBe(false);
+    expect(page.includes('evalApi.importPack')).toBe(true);
+    expect(page.includes('getRunReport')).toBe(true);
+    expect(page.includes('BusinessReportPanel')).toBe(true);
+    expect(page.includes('exportBusinessReport')).toBe(true);
+    expect(page.includes('eval.report.stopGuide')).toBe(true);
+    expect(page.includes('downloadBusinessReportCsv')).toBe(false);
+    expect(page.includes('eval.importNotes')).toBe(true);
+    expect(page.includes('eval.trialsLocked')).toBe(true);
     expect(page.includes("useState('office_core')")).toBe(true);
     expect(page.includes('evalApi.startRun')).toBe(true);
     expect(page.includes('evalApi.cancelRun')).toBe(true);
@@ -50,8 +58,19 @@ describe('agent eval lab', () => {
     expect(api.includes('/diff/')).toBe(true);
     expect(api.includes('report-case')).toBe(true);
     expect(api.includes('private/sync')).toBe(true);
+    expect(api.includes('/packs/import')).toBe(true);
+    expect(api.includes('/report')).toBe(true);
     expect(api.includes('/observation')).toBe(true);
     expect(api.includes('getCaseTrace')).toBe(true);
     expect(api.includes('getCaseObservation')).toBe(true);
+  });
+
+  test('saves the business report through the desktop file APIs', () => {
+    const csv = readSource(new URL('./businessReportExport.ts', import.meta.url));
+    expect(csv.includes('ipcBridge.dialog.showSave')).toBe(true);
+    expect(csv.includes('ipcBridge.fs.writeFile')).toBe(true);
+    expect(csv.includes('buildBusinessReportHtml')).toBe(true);
+    expect(csv.includes('createObjectURL')).toBe(false);
+    expect(csv.includes('anchor.click()')).toBe(false);
   });
 });

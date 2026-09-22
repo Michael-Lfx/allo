@@ -14,20 +14,36 @@ pub mod corpus;
 pub mod datasets;
 pub mod fixtures;
 pub mod harness;
+pub mod pack;
 pub mod runner;
 pub mod scorer;
 pub mod types;
 pub mod workspace;
+pub mod xlsx_office;
 
 pub use corpus::{
     load_bundled_manifest, load_manifest, run_corpus_gate, validate_manifest, CorpusError,
 };
 pub use datasets::{
-    cache_dir, canonical_suite_id, default_trials_for_suite, is_download_cached, list_suites,
-    load_suite_manifest, private_corpus_dir, suite_descriptor, DatasetError, SuiteDescriptor,
-    SUITE_AGENT_WORKFLOWS, SUITE_AIDER_POLYGLOT, SUITE_BROWSER_SMOKE, SUITE_CLASSEVAL,
-    SUITE_CODING_LOCAL, SUITE_HARBOR, SUITE_HARNESS_CONTROL, SUITE_HARNESS_SMOKE, SUITE_MCP_FIXTURE,
-    SUITE_OFFICE_CORE, SUITE_OFFICE_TASKS, SUITE_PRIVATE_BADCASES, SUITE_SESSION_DIALOGUE,
+    cache_dir, canonical_suite_id, default_trials_for_suite, imported_pack_descriptor,
+    is_download_cached, list_suites, load_suite_manifest, load_suite_manifest_with_packs,
+    private_corpus_dir, suite_descriptor, DatasetError, SuiteDescriptor, SUITE_AGENT_WORKFLOWS,
+    SUITE_AIDER_POLYGLOT, SUITE_BROWSER_SMOKE, SUITE_CLASSEVAL, SUITE_CODING_LOCAL, SUITE_HARBOR,
+    SUITE_HARNESS_CONTROL, SUITE_HARNESS_SMOKE, SUITE_MCP_FIXTURE, SUITE_OFFICE_CORE,
+    SUITE_OFFICE_TASKS, SUITE_PRIVATE_BADCASES, SUITE_SESSION_DIALOGUE,
+};
+pub use pack::{
+    copy_imported_case_files, import_business_pack, list_imported_pack_suites, load_pack_manifest,
+    packs_dir, ImportedPack,
+};
+pub use types::{
+    is_imported_suite, Case, CaseBudgets, CategorySummary, EvalArtifactMeta, EvalCaseTrace,
+    EvalResult, EvalTrajectoryEvent, IsolationKind, Manifest, RunProgress, RunProgressPhase,
+    ScorerResult, ScorerSpec, Summary, TurnTranscript, SCORING_VERSION, SCHEMA_VERSION,
+};
+pub use workspace::{
+    collect_workspace_artifacts, copy_dir_contents, list_relative_files, materialize_files,
+    safe_join,
 };
 pub use harness::{ConversationEvalHarness, HarnessError, OfflineDemoHarness};
 pub use runner::{
@@ -35,12 +51,6 @@ pub use runner::{
     sanitize_prompt, summarize, RunConfig, RunReport, RunnerError,
 };
 pub use scorer::{find_python, score_all, score_one};
-pub use types::{
-    Case, CaseBudgets, CategorySummary, EvalArtifactMeta, EvalCaseTrace, EvalResult,
-    EvalTrajectoryEvent, IsolationKind, Manifest, RunProgress, RunProgressPhase, ScorerResult,
-    ScorerSpec, Summary, TurnTranscript, SCORING_VERSION, SCHEMA_VERSION,
-};
-pub use workspace::{collect_workspace_artifacts, materialize_files, safe_join};
 
 /// On-disk agent-trace schema version (for live harness / evidence alignment).
 pub const TRACE_SCHEMA_VERSION: u32 = nomi_agent_trace::SCHEMA_VERSION;

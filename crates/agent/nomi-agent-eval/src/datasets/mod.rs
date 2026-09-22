@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::corpus::{load_bundled_manifest, CorpusError};
-use crate::types::Manifest;
+use crate::types::{is_imported_suite, Manifest};
 
 pub use aider::{aider_zip_to_manifest, SUITE_AIDER_POLYGLOT};
 pub use classeval::{classeval_json_to_manifest, SUITE_CLASSEVAL};
@@ -93,6 +93,9 @@ pub fn canonical_suite_id(id: &str) -> &str {
 }
 
 pub fn default_trials_for_suite(id: &str) -> u32 {
+    if is_imported_suite(id) {
+        return 1;
+    }
     suite_descriptor(id)
         .map(|s| s.default_trials)
         .unwrap_or(1)
@@ -295,6 +298,24 @@ pub fn is_download_cached(suite_id: &str, cache_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+pub fn imported_pack_descriptor(suite: &str, title: String, cases: usize) -> SuiteDescriptor {
+    let count = cases.max(1);
+    desc(
+        suite,
+        &title,
+        "imported",
+        "office",
+        None,
+        count,
+        count,
+        "Imported business pack: web search on, binary fixtures copied, 45–60 min timeout, one trial. Outputs stay in the eval workspace — not the user desktop.",
+        false,
+        "imported",
+        1,
+        false,
+    )
+}
+
 /// Load a suite, downloading and caching remote datasets when needed.
 pub async fn load_suite_manifest(
     suite: &str,
@@ -318,6 +339,24 @@ pub async fn load_suite_manifest(
         SUITE_CLASSEVAL => classeval::load_classeval(cache_dir, limit).await,
         other => Err(DatasetError::UnknownSuite(other.to_owned())),
     }
+}
+
+/// Same as [`load_suite_manifest`], plus imported business packs under `packs_root`.
+pub async fn load_suite_manifest_with_packs(
+    suite: &str,
+    cache_dir: &Path,
+    packs_root: &Path,
+    limit: Option<usize>,
+) -> Result<Manifest, DatasetError> {
+    if is_imported_suite(suite) {
+        let mut manifest = crate::pack::load_pack_manifest(packs_root, suite)?;
+        apply_limit(&mut manifest, limit);
+        if manifest.cases.is_empty() {
+            return Err(DatasetError::EmptySuite(suite.to_owned()));
+        }
+        return Ok(manifest);
+    }
+    load_suite_manifest(suite, cache_dir, limit).await
 }
 
 fn load_private_manifest(cache_dir: &Path, limit: Option<usize>) -> Result<Manifest, DatasetError> {
