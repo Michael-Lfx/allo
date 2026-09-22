@@ -565,7 +565,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     aria-selected={activeBar2Module === 'workspaces'}
                     onClick={() => handleTabClick('workspaces')}
                     className={classNames(
-                      'group flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
                       activeBar2Module === 'workspaces'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
@@ -573,7 +573,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                   >
                     <MessageOne
                       theme='outline'
-                      size={12}
+                      size={15}
                       fill='currentColor'
                       className={classNames(
                         'block leading-none shrink-0 transition-colors duration-180',
@@ -592,7 +592,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     aria-selected={activeBar2Module === 'video'}
                     onClick={() => handleTabClick('video')}
                     className={classNames(
-                      'group flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
                       activeBar2Module === 'video'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
@@ -600,7 +600,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                   >
                     <VideoOne
                       theme='outline'
-                      size={12}
+                      size={15}
                       fill='currentColor'
                       className={classNames(
                         'block leading-none shrink-0 transition-colors duration-180',
@@ -619,7 +619,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     aria-selected={activeBar2Module === 'companions'}
                     onClick={() => handleTabClick('companions')}
                     className={classNames(
-                      'group flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
                       activeBar2Module === 'companions'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
@@ -627,7 +627,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                   >
                     <Robot
                       theme='outline'
-                      size={12}
+                      size={15}
                       fill='currentColor'
                       className={classNames(
                         'block leading-none shrink-0 transition-colors duration-180',
