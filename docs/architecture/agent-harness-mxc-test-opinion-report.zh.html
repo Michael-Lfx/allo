@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MXC 沙箱能力测试意见报告</title>
+<style>
+:root{
+  --ink:#14181B; --ink2:#4C5459; --ink3:#848C91;
+  --paper:#F1F2EF; --card:#FBFAF7;
+  --line:#D9DBD5; --line2:#E7E9E3;
+  --accent:#0B4F6C; --accent-soft:#E4EDF1;
+  --ok:#2F7A56; --warn:#96690F; --bad:#A33A2C; --bad-soft:#F6E9E6;
+  --mono:"Cascadia Code","JetBrains Mono",Consolas,"DejaVu Sans Mono",monospace;
+  --sans:"Source Han Sans SC","Noto Sans SC","PingFang SC","Microsoft YaHei","Hiragino Sans GB",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --r:3px;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:#0B0D0F; color:var(--ink);
+  font-family:var(--sans); overflow:hidden;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+
+/* ---------- stage ---------- */
+#stage{
+  position:fixed; left:50%; top:50%; width:1280px; height:720px;
+  margin:-360px 0 0 -640px; transform-origin:center center;
+  box-shadow:0 40px 120px rgba(0,0,0,.6);
+  counter-reset:sl;
+}
+.slide{
+  position:absolute; inset:0; overflow:hidden;
+  background:var(--paper);
+  padding:56px 72px 62px;
+  display:flex; flex-direction:column;
+  opacity:0; visibility:hidden; transform:translateY(10px);
+  transition:opacity .32s ease, transform .32s ease;
+  counter-increment:sl;
+}
+.slide.on{opacity:1; visibility:visible; transform:none}
+.slide::before{
+  content:counter(sl,decimal-leading-zero);
+  position:absolute; top:56px; right:72px;
+  font:700 12px/1 var(--mono); letter-spacing:.14em; color:var(--ink3);
+}
+.slide::after{
+  content:attr(data-foot);
+  position:absolute; left:72px; right:72px; bottom:18px;
+  padding-top:11px; border-top:1px solid var(--line2);
+  font:500 11px/1.3 var(--mono); letter-spacing:.06em; color:var(--ink3);
+}
+.slide.cover::before,.slide.cover::after{display:none}
+.slide.close{justify-content:center}
+
+/* ---------- motion ---------- */
+.rise{opacity:0; transform:translateY(10px)}
+.slide.on .rise{animation:rise .5s cubic-bezier(.22,.72,.28,1) forwards; animation-delay:calc(var(--d,0) * 62ms)}
+@keyframes rise{to{opacity:1; transform:none}}
+@media (prefers-reduced-motion:reduce){
+  .slide{transition:none}
+  .rise{opacity:1; transform:none}
+  .slide.on .rise{animation:none}
+}
+
+/* ---------- typography ---------- */
+.eyebrow{
+  font:700 11.5px/1 var(--mono); letter-spacing:.2em; text-transform:uppercase;
+  color:var(--accent); margin:0 0 16px;
+}
+h1,h2,h3,p{margin:0}
+.h2{
+  font-size:37px; line-height:1.24; font-weight:800; letter-spacing:-.014em;
+  margin:0 0 22px; max-width:1080px;
+}
+.h2.sm{font-size:32px}
+.lead{font-size:18.5px; line-height:1.6; color:var(--ink2); max-width:1080px; margin:0 0 18px}
+.lead strong{color:var(--ink); font-weight:700}
+.foot-src{font-size:13px; line-height:1.6; color:var(--ink3); margin:auto 0 0; padding-top:13px; border-top:1px solid var(--line2)}
+
+/* ---------- blocks ---------- */
+.verdict{background:var(--ink); color:#F2F3F0; padding:26px 30px; border-radius:var(--r); margin:0 0 20px}
+.verdict .big{font-size:30px; font-weight:800; line-height:1.3; letter-spacing:-.012em}
+.verdict .sub{margin-top:13px; font-size:16.5px; line-height:1.6; color:#AFB7BC}
+.verdict .sub b{color:#F2F3F0}
+
+.cards{display:grid; gap:14px}
+.c2{grid-template-columns:1fr 1fr}
+.c3{grid-template-columns:repeat(3,1fr)}
+.card{background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:17px 19px}
+.card h3{font-size:16.5px; font-weight:750; margin:0 0 8px; line-height:1.4; display:flex; gap:10px; align-items:flex-start}
+.card p{font-size:14.5px; line-height:1.6; color:var(--ink2)}
+.card p b,.card p strong{color:var(--ink); font-weight:700}
+
+.stat{background:var(--card); border:1px solid var(--line); border-left:3px solid var(--ok); border-radius:var(--r); padding:17px 19px}
+.stat .t{font-size:15px; font-weight:750; margin:0 0 10px; display:flex; gap:9px; align-items:center}
+.stat .n{font:800 30px/1 var(--mono); letter-spacing:-.02em; color:var(--ink)}
+.stat .l{font-size:13.5px; line-height:1.5; color:var(--ink2); margin-top:9px}
+
+.callout{
+  border-left:3px solid var(--accent); background:var(--accent-soft);
+  padding:15px 19px; border-radius:0 var(--r) var(--r) 0;
+  font-size:16.5px; line-height:1.58; color:var(--ink); margin:18px 0 0;
+}
+.callout.bad{border-color:var(--bad); background:var(--bad-soft)}
+.callout.warn{border-color:var(--warn); background:#F7F1E3}
+.callout b{font-weight:750}
+.callout .q{display:block; margin-top:9px; font:600 14px/1.6 var(--mono); color:var(--ink2); word-break:break-word}
+
+/* ---------- tables ---------- */
+table.t{width:100%; border-collapse:collapse; font-size:15.5px}
+table.t th{
+  text-align:left; font:700 11px/1 var(--mono); letter-spacing:.13em; text-transform:uppercase;
+  color:var(--ink3); padding:0 14px 10px; border-bottom:1px solid var(--line);
+}
+table.t td{
+  padding:12px 14px; border-bottom:1px solid var(--line2);
+  vertical-align:top; line-height:1.52; color:var(--ink2);
+}
+table.t tr:last-child td{border-bottom:none}
+table.t td.k{color:var(--ink); font-weight:700}
+table.t.sm{font-size:14.5px}
+table.t.sm td{padding:11px 14px}
+
+/* ---------- marks ---------- */
+.bdg{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:18px; height:18px; border-radius:50%;
+  font:700 11px/1 var(--mono); color:#fff; flex:0 0 auto; margin-top:1px;
+}
+.bdg.ok{background:var(--ok)} .bdg.warn{background:var(--warn)} .bdg.bad{background:var(--bad)}
+.cell{display:flex; gap:9px; align-items:flex-start}
+.cell.oneline{align-items:center}
+
+/* ---------- code ---------- */
+.code{
+  font:600 19px/1.5 var(--mono); color:#EFE3DF; background:#20262A;
+  padding:15px 19px; border-radius:var(--r); margin:0; white-space:pre-wrap; word-break:break-word;
+}
+.code.sm{font-size:14px; line-height:1.6}
+
+/* ---------- misc ---------- */
+.duo{display:grid; grid-template-columns:1fr 1fr; gap:26px}
+.stack{display:flex; flex-direction:column; gap:12px}
+.mini-cap{font:700 11px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--ink3); margin:0 0 10px}
+.chain{display:flex; align-items:stretch; gap:0}
+.chain .step{
+  flex:1; background:var(--card); border:1px solid var(--line); border-right:none;
+  padding:14px 15px; font-size:14px; line-height:1.5; color:var(--ink2);
+}
+.chain .step:first-child{border-radius:var(--r) 0 0 var(--r)}
+.chain .step:last-child{border-right:1px solid var(--line); border-radius:0 var(--r) var(--r) 0}
+.chain .step b{display:block; color:var(--ink); font-weight:750; margin-bottom:5px; font-size:13px}
+
+/* ---------- cover ---------- */
+.cover{background:var(--ink); padding:0; justify-content:center}
+.cover .rail{position:absolute; left:0; top:0; bottom:0; width:6px; background:var(--accent)}
+.cover .inner{padding:0 96px}
+.cover .eyebrow{color:#7FA8BC; margin-bottom:24px}
+.cover h1{font-size:64px; line-height:1.08; font-weight:800; letter-spacing:-.028em; color:#F4F5F2}
+.cover .sub{margin-top:22px; font-size:20px; line-height:1.55; color:#A8B1B7; max-width:800px}
+.cover .meta{
+  margin-top:44px; padding-top:22px; border-top:1px solid #2B3238;
+  display:flex; gap:36px; flex-wrap:wrap;
+  font:500 12.5px/1.5 var(--mono); color:#7C868D;
+}
+.cover .hint{
+  position:absolute; right:96px; bottom:56px; text-align:right;
+  font:500 11.5px/1.7 var(--mono); color:#5D666C;
+}
+
+/* ---------- HUD ---------- */
+#bar{position:fixed; left:0; top:0; height:2px; width:0; background:var(--accent); z-index:60; transition:width .3s ease}
+#hud{
+  position:fixed; left:0; right:0; bottom:10px; height:34px; z-index:55;
+  display:flex; align-items:center; justify-content:center; gap:16px;
+  font:500 12px/1 var(--mono); color:#6E767C;
+}
+#hud .grp{display:flex; align-items:center; gap:6px}
+#hud button{
+  font:600 12px/1 var(--mono); color:#9AA2A8; background:#191D21;
+  border:1px solid #2A3036; border-radius:var(--r); padding:6px 10px; cursor:pointer;
+}
+#hud button:hover{color:#E6E9EA; border-color:#3C444B}
+#hud button:active{transform:translateY(1px)}
+#counter{color:#B9C0C5; letter-spacing:.08em}
+#hud .tip{color:#565E64}
+
+/* ---------- outline ---------- */
+#outline{
+  position:fixed; inset:0; z-index:70; display:none;
+  background:rgba(9,11,13,.965); padding:48px 60px; overflow:auto;
+}
+#outline.on{display:block}
+#outline h4{
+  margin:0 0 22px; font:700 12px/1 var(--mono); letter-spacing:.2em;
+  text-transform:uppercase; color:var(--accent);
+}
+#outline .list{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; max-width:1500px}
+#outline button{
+  display:flex; gap:12px; align-items:baseline; text-align:left;
+  background:#14181C; border:1px solid #242A30; border-radius:var(--r);
+  padding:12px 14px; cursor:pointer; color:#A9B1B7;
+  font:500 14px/1.4 var(--sans);
+}
+#outline button:hover{border-color:var(--accent); color:#EDEFF0}
+#outline button.cur{border-color:var(--accent); background:#0F2A35; color:#EDEFF0}
+#outline button i{font:700 11px/1.4 var(--mono); color:#5F686E; font-style:normal; flex:0 0 auto}
+
+/* ---------- print ---------- */
+@media print{
+  @page{size:338.7mm 190.5mm; margin:0}
+  html,body{background:#fff; overflow:visible; height:auto}
+  #hud,#bar,#outline{display:none !important}
+  #stage{position:static; margin:0; width:auto; height:auto; transform:none !important; box-shadow:none}
+  .slide{
+    position:relative; inset:auto; opacity:1 !important; visibility:visible !important;
+    transform:none !important; break-after:page; page-break-after:always;
+    width:1280px; height:720px;
+  }
+  .slide:last-child{break-after:auto; page-break-after:auto}
+  .rise{opacity:1 !important; transform:none !important; animation:none !important}
+  *{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+
+<div id="bar"></div>
+<div id="stage">
+
+<!-- 01 -->
+<section class="slide cover" data-title="封面">
+  <div class="rail"></div>
+  <div class="inner">
+    <p class="eyebrow rise" style="--d:0">Microsoft eXecution Container · 可行性评估</p>
+    <h1 class="rise" style="--d:1">MXC 沙箱<br>能力测试意见报告</h1>
+    <p class="sub rise" style="--d:2">能否为 Agent 建立 Windows 上的「安全执行边界」</p>
+    <div class="meta rise" style="--d:3">
+      <span>2026 年 9 月 21 日</span>
+      <span>测试环境：Windows 11 Insider 29671 · MXC 0.8.0</span>
+      <span>报告性质：测试意见，供决策参考</span>
+    </div>
+  </div>
+  <div class="hint">← → / 空格 翻页<br>O 打开目录 · P 打印为 PDF</div>
+</section>
+
+<!-- 02 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 结论" data-title="结论">
+  <p class="eyebrow rise" style="--d:0">结论</p>
+  <div class="verdict rise" style="--d:1; padding:30px 34px">
+    <div class="big">技术上可行，但当前不适合作为生产环境的安全边界</div>
+    <div class="sub" style="font-size:18px">建议：<b>先小范围试点，不整体切换</b>。先做零风险的观察性接入（3 至 5 天），同时并行解决代理问题。</div>
+  </div>
+  <div class="cards c2">
+    <div class="card rise" style="--d:2">
+      <h3><span class="bdg ok">✓</span>能跑通</h3>
+      <p>真实的编译、代码拉取、类型检查，<b>全程断网全部成功</b>。</p>
+    </div>
+    <div class="card rise" style="--d:3">
+      <h3><span class="bdg bad">✕</span>有一个必须解决的问题</h3>
+      <p>拦截动作时给出<b>误导性提示</b>，Agent 会判断错方向。</p>
+    </div>
+    <div class="card rise" style="--d:4">
+      <h3><span class="bdg bad">✕</span>联网下载依赖走不通</h3>
+      <p>用户机器上装了本地代理时，<b>下载依赖直接失败，Agent 任务失败</b>。</p>
+    </div>
+    <div class="card rise" style="--d:5">
+      <h3><span class="bdg bad">✕</span>覆盖不了老用户</h3>
+      <p>基础功能要求 Windows 11 24H2 及以上，<b>Windows 10 与 23H2 及更早完全用不了</b>。</p>
+    </div>
+  </div>
+  <p class="foot-src rise" style="--d:6">补充：微软官方亦明确写着「现阶段不应把任何 MXC 配置当作安全边界」。</p>
+</section>
+
+<!-- 03 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 系统版本要求" data-title="系统版本：硬门槛">
+  <p class="eyebrow rise" style="--d:0">前置条件 · 系统版本</p>
+  <h2 class="h2 rise" style="--d:1">系统版本是硬门槛，不是配置问题</h2>
+  <table class="t rise" style="--d:2">
+    <thead><tr><th>能力</th><th>最低系统版本</th></tr></thead>
+    <tbody>
+      <tr><td class="k">基础隔离（本次测试所用）</td><td>Windows 11 24H2（内部版本 26100）</td></tr>
+      <tr><td class="k">完整虚拟机隔离</td><td>同上，且需额外启用系统组件并重启</td></tr>
+      <tr><td class="k">独立用户隔离（最严格）</td><td>版本 26340.9212 的 Insider 预览版，普通正式版没有</td></tr>
+    </tbody>
+  </table>
+  <div class="callout bad rise" style="margin-top:20px; --d:3">
+    <b>MXC 无法覆盖 Windows 10 用户，也无法覆盖 Windows 11 的 23H2 及更早版本。</b>
+    这部分用户的机器不具备使用前提，且无法通过调整配置绕过。
+  </div>
+  <p class="foot-src rise" style="--d:4">需留意：我们跑在 Insider 29671（比官方验证的 25H2 更新），官方自己也为各版本 Windows 提供了「能强制哪些策略」的对照表，说明不能假设同一个 MXC 在所有 Windows 上表现一致。</p>
+</section>
+
+<!-- 04 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 能跑通" data-title="结论一：能跑通">
+  <p class="eyebrow rise" style="--d:0">结论一</p>
+  <h2 class="h2 rise" style="--d:1">真实开发任务在沙箱里跑通了，而且全程断网</h2>
+  <p class="lead rise" style="--d:2">让沙箱运行我们仓库的真实命令，编译、拉代码、类型检查全部成功，<strong>速度与不用沙箱几乎一致</strong>。</p>
+  <div class="cards c3">
+    <div class="stat rise" style="--d:3">
+      <div class="t"><span class="bdg ok">✓</span>编译 Rust 代码</div>
+      <div class="n">16 MB</div>
+      <div class="l">cargo build 成功，产物真实落盘</div>
+    </div>
+    <div class="stat rise" style="--d:4">
+      <div class="t"><span class="bdg ok">✓</span>读取代码仓库</div>
+      <div class="n">4555</div>
+      <div class="l">git 成功读到的提交记录条数</div>
+    </div>
+    <div class="stat rise" style="--d:5">
+      <div class="t"><span class="bdg ok">✓</span>前端类型检查</div>
+      <div class="n">72.0 s</div>
+      <div class="l">bun 完整跑完，宿主上为 71.5 s</div>
+    </div>
+  </div>
+  <div class="callout rise" style="margin-top:22px; --d:6">
+    <b>这意味着：</b>日常开发中「编译 + 测试 + 检查」这一整类工作，<b>可以在完全断网的沙箱里正常完成</b>。
+    隔离收益是真实可拿到的。
+  </div>
+  <p class="foot-src rise" style="--d:7">这也是本次测试最有价值的结果：它证明 MXC 的隔离强度足以支撑真实开发，而不是只能跑玩具示例。</p>
+</section>
+
+<!-- 05 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 核心问题" data-title="结论二：错误信息会误导 Agent">
+  <p class="eyebrow rise" style="--d:0">结论二 · 唯一必须在接入前解决的问题</p>
+  <h2 class="h2 rise" style="--d:1">「拒绝访问」四个字，盖住了三种完全不同的原因</h2>
+  <p class="code rise" style="--d:2">拒绝访问。(os error 5)</p>
+  <table class="t rise" style="margin-top:18px; --d:3">
+    <thead><tr><th>实际情况</th><th>Agent 看到的</th><th>Agent 会怎么做</th></tr></thead>
+    <tbody>
+      <tr><td class="k">文件目录没权限</td><td>拒绝访问</td><td>换个路径</td></tr>
+      <tr><td class="k">网络被沙箱禁止</td><td>拒绝访问</td><td>也去查文件权限</td></tr>
+      <tr><td class="k">依赖没下载（因为断网）</td><td>拒绝访问</td><td>也去查文件权限</td></tr>
+    </tbody>
+  </table>
+  <div class="callout bad rise" style="--d:4">
+    <b>后果：</b>Agent 会反复去查文件权限、换路径，而问题根本不在那儿；试几次失败后，有的会谎报任务完成，有的会试图绕过限制。
+    实测影响是<b>消耗额外对话轮次，然后失败</b>。
+  </div>
+  <p class="foot-src rise" style="--d:5">这一条必须由我们自己在接入层补上：MXC 现有的「记录被拒操作」功能只覆盖权限类拒绝，不覆盖文件与网络类拒绝，短期不会修好。</p>
+</section>
+
+<!-- 06 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 两个取舍" data-title="结论三：两个需要知悉的取舍">
+  <p class="eyebrow rise" style="--d:0">结论三</p>
+  <h2 class="h2 rise" style="--d:1">两个取舍，接入前需要明确知悉</h2>
+  <div class="cards c2">
+    <div class="card rise" style="--d:2">
+      <h3>取舍一：能编译，但读不到我的密钥</h3>
+      <p>Windows 上的 MXC <b>不支持「细粒度拒绝」</b>，实测的策略需要开放「整盘可读」。<br>
+      好在<b>网络隔离是有效的</b>：Agent 能读到密钥文件，但发不出去。</p>
+    </div>
+    <div class="card rise" style="--d:3">
+      <h3>取舍二：能编译，不等于能跑测试</h3>
+      <p>沙箱内<b>不能杀进程</b>（taskkill 失败）；<b>并发派生进程异常</b>（12 个进程只有 8 个存活）。<br>
+      我们有约 <b>15,900 个测试</b>，影响范围尚未查清。</p>
+    </div>
+  </div>
+  <div class="callout warn rise" style="margin-top:22px; --d:4">
+    <b>需要拍板的第一件事就是取舍一：</b>是否接受「整盘可读」这个折扣，以换取工具链可用。这决定了安全模型的形态。
+  </div>
+  <div class="callout rise" style="--d:5">
+    <b>由此得出的关键判断：</b>我们的安全最终只建立在「网络隔离」这一个支点上，<b>不是多层防御</b>。这一点必须明确知悉。
+  </div>
+</section>
+
+<!-- 07 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 联网阻断" data-title="结论四：用户装了代理就会失败">
+  <p class="eyebrow rise" style="--d:0">结论四 · 影响用户，不是影响我们</p>
+  <h2 class="h2 rise" style="--d:1">用户机器上装了本地代理，沙箱内下载依赖会直接失败</h2>
+  <div class="chain rise" style="--d:2">
+    <div class="step"><b>用户机器</b>装了代理软件（Clash / v2ray / 公司代理），这是国内开发者的普遍配置</div>
+    <div class="step"><b>代理监听</b>在宿主的本机端口，例如 127.0.0.1:7890</div>
+    <div class="step"><b>某些工具</b>读取了代理设置，例如 git http.proxy</div>
+    <div class="step"><b>命令被派往代理</b>，即去连宿主的本机端口，而沙箱看不到它</div>
+    <div class="step"><b>结果</b>该命令失败，Agent 任务失败</div>
+  </div>
+  <div class="callout rise" style="margin-top:22px; --d:3">
+    <b>与联网权限无关。</b>出网权限<b>已经开着而且有效</b>；缺的是「宿主回环」这一档权限，而<b>本机系统不支持这一档，无法打开</b>。
+    沙箱有它自己的 127.0.0.1，所以它能连自己起的服务，但看不到宿主上的服务。
+  </div>
+  <div class="callout warn rise" style="--d:4">
+    <b>是「部分工具失败」，不是全部失败。</b>同一次运行里：gh api 成功（不经过代理），cargo 与 bun install 失败（被代理接管）。
+    用户会看到「有时能用有时不能用」，<b>难以归因，报错里也没有「代理」两个字</b>。
+  </div>
+</section>
+
+<!-- 08 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 根因" data-title="根因：Windows 回环隔离">
+  <p class="eyebrow rise" style="--d:0">根因</p>
+  <h2 class="h2 rise" style="--d:1">是 Windows 的回环隔离，不是 MXC 的缺陷</h2>
+  <p class="lead rise" style="--d:2">
+    Windows 有一项专门的安全设计：AppContainer 类型的沙箱进程<strong>默认不能访问 127.0.0.1</strong>。
+    设计初衷是安全：如果允许沙箱随便访问本机端口，它就可能利用本机开放服务的漏洞，反过来攻击宿主机、逃出沙箱。
+  </p>
+  <p class="mini-cap rise" style="margin-top:6px; --d:3">仅有的两条正统豁免路径，实测都不通</p>
+  <table class="t rise" style="--d:4">
+    <thead><tr><th style="width:400px">路径</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="k">Windows 官方豁免：CheckNetIsolation</td>
+        <td><div class="cell"><span class="bdg bad">✕</span><span>命令返回「完成」、列表里也出现了条目，<b>但沙箱仍然连不上宿主</b>。该工具面向<b>打包应用</b>，对 MXC 的「进程安全环境」身份不适用（列表里显示「未找到」）。</span></div></td>
+      </tr>
+      <tr>
+        <td class="k">MXC 自己的等价开关：hostLoopback</td>
+        <td><div class="cell"><span class="bdg bad">✕</span><span>系统直接拒绝：该选项需要更高版本的系统安全环境支持（当前不支持）。</span></div></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout bad rise" style="margin-top:20px; --d:5">
+    <b>结论：这不是「暂时没找到办法」，而是 Windows 的隔离设计所致。</b>
+    要改的是「两张网卡之间通不通」，<b>不存在靠改配置绕过的路径</b>。
+  </div>
+</section>
+
+<!-- 09 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 应对" data-title="应对：五条路径，四条已排除">
+  <p class="eyebrow rise" style="--d:0">应对</p>
+  <h2 class="h2 rise" style="--d:1">五条路里，四条已实测排除，只剩我们自己检测提示</h2>
+  <table class="t sm rise" style="--d:2">
+    <thead><tr><th style="width:200px">路径</th><th>做法</th><th style="width:230px">结论</th></tr></thead>
+    <tbody>
+      <tr><td class="k">① 我们主动做</td><td>沙箱启动前检测本机代理配置，命中时给出明确提示，而不是让 Agent 撞上去</td><td><div class="cell oneline"><span class="bdg ok">✓</span><span><b>唯一可行</b></span></div></td></tr>
+      <tr><td class="k">② 让用户改代理</td><td>把代理软件改成监听局域网地址（不用 127.0.0.1）</td><td><div class="cell oneline"><span class="bdg bad">✕</span><span>实测排除：连局域网地址同样超时</span></div></td></tr>
+      <tr><td class="k">③ Windows 官方豁免</td><td>用 CheckNetIsolation 给 MXC 加回环豁免</td><td><div class="cell oneline"><span class="bdg bad">✕</span><span>实测排除：该工具对 MXC 身份不适用</span></div></td></tr>
+      <tr><td class="k">④ MXC 自己的开关</td><td>打开 hostLoopback（宿主回环）</td><td><div class="cell oneline"><span class="bdg bad">✕</span><span>本机系统不支持该能力位</span></div></td></tr>
+      <tr><td class="k">⑤ 等上游支持</td><td>等 MXC / 系统支持「宿主回环」这一档</td><td><div class="cell oneline"><span class="bdg warn">!</span><span>时序不可控</span></div></td></tr>
+    </tbody>
+  </table>
+  <div class="callout rise" style="margin-top:20px; --d:3">
+    <b>由此得出一个产品形态结论：</b>在用户存在本机代理配置的场景下，
+    <b>沙箱只负责「编译与测试」，依赖安装留在沙箱外完成</b>。这样既拿到隔离收益，又避开本机代理的坑。
+  </div>
+</section>
+
+<!-- 10 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 建议" data-title="建议：分三步走">
+  <p class="eyebrow rise" style="--d:0">建议</p>
+  <h2 class="h2 rise" style="--d:1">分三步走，三步之后再决定是否扩大</h2>
+  <table class="t rise" style="--d:2">
+    <thead><tr><th style="width:230px">阶段</th><th>做什么</th><th style="width:140px">工作量</th><th style="width:150px">风险</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="k">第一步（建议立即做）</td>
+        <td>接入 MXC 的「记录」功能，只观察不拦截，摸清真实任务需要哪些权限</td>
+        <td>约 3 至 5 天</td>
+        <td><div class="cell oneline"><span class="bdg ok">✓</span><span><b>零风险</b></span></div></td>
+      </tr>
+      <tr>
+        <td class="k">第二步</td>
+        <td>补齐「错误原因识别」，让 Agent 能分清「没权限 / 没联网 / 缺依赖」</td>
+        <td>约 1 至 2 周</td>
+        <td><div class="cell oneline"><span class="bdg ok">✓</span><span>低</span></div></td>
+      </tr>
+      <tr>
+        <td class="k">第三步</td>
+        <td>在<b>非交互、离线</b>场景试点（编译、测试、类型检查）</td>
+        <td>约 1 周</td>
+        <td><div class="cell oneline"><span class="bdg ok">✓</span><span>低，可随时回退</span></div></td>
+      </tr>
+      <tr>
+        <td class="k">并行推进</td>
+        <td>解决代理问题（换局域网可达的代理，或验证「预热依赖后断网构建」）</td>
+        <td>取决于网络方案</td>
+        <td><div class="cell oneline"><span class="bdg warn">!</span><span>待定</span></div></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout rise" style="margin-top:20px; --d:3">
+    <b>注意：</b>即使代理问题解决了，「错误原因识别」这一项<b>仍然必须做</b>。它是让 Agent 不跑偏的基础，与网络无关。
+  </div>
+</section>
+
+<!-- 11 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 边界与决策" data-title="不建议什么 + 需要拍板什么">
+  <p class="eyebrow rise" style="--d:0">边界与决策</p>
+  <h2 class="h2 rise" style="--d:1">明确不建议的四件事，以及需要拍板的三件事</h2>
+  <div class="duo">
+    <div class="rise" style="--d:2">
+      <p class="mini-cap">明确不建议</p>
+      <div class="stack">
+        <div class="card" style="padding:13px 16px"><p><b>现在就集成进产品。</b>微软自己说它不是安全边界。</p></div>
+        <div class="card" style="padding:13px 16px"><p><b>承诺「沙箱内能装依赖」。</b>实测已证明：用户装了本地代理时做不到。</p></div>
+        <div class="card" style="padding:13px 16px"><p><b>跳过第二步直接试点。</b>错误信息误导会直接影响 Agent 成功率。</p></div>
+        <div class="card" style="padding:13px 16px"><p><b>把它当成多层次防御。</b>安全最终只靠「网络隔离」一个支点。</p></div>
+      </div>
+    </div>
+    <div class="rise" style="--d:3">
+      <p class="mini-cap">需要拍板</p>
+      <div class="stack">
+        <div class="card" style="padding:13px 16px"><p><b>1. 是否接受「整盘可读」这个折扣</b>，以换取工具链可用。这决定了安全模型的形态。</p></div>
+        <div class="card" style="padding:13px 16px"><p><b>2. 是否授权启用 Windows 沙箱组件并重启机器</b>，以验证「长驻沙箱」这条替代路线。详见下页。</p></div>
+        <div class="card" style="padding:13px 16px"><p><b>3. 沙箱内无法使用 Python</b>（发行版打包方式导致，无解）。需产品侧确认可接受。</p></div>
+      </div>
+    </div>
+  </div>
+  <p class="foot-src rise" style="--d:4">另外建议知悉：用户机器上装了本地代理时，Agent 在沙箱内的联网命令会失败，影响的是用户而不是我们的开发流程，因此需要产品侧决定如何应对。</p>
+</section>
+
+<!-- 12 -->
+<section class="slide close" data-foot="MXC 沙箱能力测试意见报告 · 一句话总结" data-title="一句话总结">
+  <p class="eyebrow rise" style="--d:0">一句话总结</p>
+  <div class="verdict rise" style="--d:1; padding:34px 36px">
+    <div class="big" style="font-size:28px">
+      MXC 让我们第一次有可能在 Windows 上给 Agent 加上执行隔离，实测证明日常的编译与测试可以安全地关在沙箱里跑。
+    </div>
+    <div class="sub" style="margin-top:20px; font-size:18px">
+      但它现在还不是一道可靠的安全边界：<b>有一个会误导 Agent 的缺陷必须由我们自己补上</b>；
+      而且<b>用户机器上装了本地代理时，「联网下载依赖」会直接导致 Agent 失败</b>。
+    </div>
+    <div class="sub" style="margin-top:20px; font-size:18px; color:#DCE2E5">
+      建议先花 <b>3 至 5 天</b>做零风险的观察性接入，同时解决代理问题，再决定是否继续投入。
+    </div>
+  </div>
+</section>
+
+<!-- 13 -->
+<section class="slide" data-foot="MXC 沙箱能力测试意见报告 · 待决事项" data-title="待决：是否启用 Windows 沙箱组件">
+  <p class="eyebrow rise" style="--d:0">待决事项</p>
+  <h2 class="h2 rise" style="--d:1">是否启用 Windows 沙箱组件，以验证第二条技术路线</h2>
+  <p class="lead rise" style="--d:2">
+    MXC 有两条技术路线。我们测的是路线一（受限进程）；路线二用完整虚拟机，<strong>天然绕开我们测出的所有进程管理问题</strong>，
+    但需要启用一个 Windows 组件并重启机器。<strong>我没有擅自操作。</strong>
+  </p>
+  <table class="t rise" style="--d:3">
+    <thead><tr><th style="width:210px"></th><th>路线一（已测）</th><th>路线二（需启用组件）</th></tr></thead>
+    <tbody>
+      <tr><td class="k">隔离方式</td><td>同一个 Windows 内的受限进程</td><td>完整的 Windows 虚拟机</td></tr>
+      <tr><td class="k">我们测出的进程管理问题</td><td><div class="cell oneline"><span class="bdg bad">✕</span><span>存在（杀不掉进程、并发异常）</span></div></td><td><div class="cell oneline"><span class="bdg ok">✓</span><span><b>天然绕开</b></span></div></td></tr>
+      <tr><td class="k">当前状态</td><td>已实测可行</td><td><b>未启用</b>，硬件条件已满足（内存 31.4 GB、16 核）</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn rise" style="margin-top:20px; --d:4">
+    <b>启用方式：</b>管理员身份执行 <span style="font-family:var(--mono);font-size:14.5px">Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM</span>，
+    必须重启才生效。<b>可能还需要改 BIOS</b>，不一定一次重启就能搞定，建议预留额外时间。
+  </div>
+  <p class="foot-src rise" style="--d:5">它不是必需项：路线一本身已能工作，也不阻塞推荐方案的前两步。它只影响「有没有一条更省事的技术路线」。</p>
+</section>
+
+</div>
+
+<div id="outline">
+  <h4>目录 · 点击跳转 · 按 Esc 返回</h4>
+  <div class="list" id="olist"></div>
+</div>
+
+<div id="hud">
+  <div class="grp">
+    <button id="prev" title="上一页">←</button>
+    <span id="counter">01 / 13</span>
+    <button id="next" title="下一页">→</button>
+  </div>
+  <div class="grp">
+    <button id="toc" title="目录 (O)">目录</button>
+    <button id="prt" title="打印 / 导出 PDF (P)">打印 / PDF</button>
+  </div>
+  <span class="tip">← → 翻页 · 左键前进 / 右键后退 · O 目录 · F 全屏 · P 导出</span>
+</div>
+
+<script>
+(function(){
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var stage  = document.getElementById('stage');
+  var cur    = document.getElementById('counter');
+  var bar    = document.getElementById('bar');
+  var outline= document.getElementById('outline');
+  var olist  = document.getElementById('olist');
+  var pad    = function(n){ return (n < 10 ? '0' : '') + n; };
+  var i = -1;
+
+  slides.forEach(function(s, k){
+    var b = document.createElement('button');
+    b.innerHTML = '<i>' + pad(k + 1) + '</i><span>' + (s.dataset.title || '') + '</span>';
+    b.addEventListener('click', function(){ go(k); outline.classList.remove('on'); });
+    olist.appendChild(b);
+  });
+  var obtns = Array.prototype.slice.call(olist.children);
+
+  function go(n){
+    n = Math.max(0, Math.min(slides.length - 1, n));
+    if (n === i) return;
+    i = n;
+    slides.forEach(function(s, k){ s.classList.toggle('on', k === i); });
+    obtns.forEach(function(b, k){ b.classList.toggle('cur', k === i); });
+    cur.textContent = pad(i + 1) + ' / ' + pad(slides.length);
+    bar.style.width = ((i + 1) / slides.length * 100) + '%';
+    document.title = (i + 1) + '/' + slides.length + ' · MXC 沙箱能力测试意见报告';
+  }
+
+  function fit(){
+    var s = Math.min((window.innerWidth - 40) / 1280, (window.innerHeight - 76) / 720);
+    stage.style.transform = 'translateY(-22px) scale(' + s + ')';
+  }
+  window.addEventListener('resize', fit);
+
+  document.addEventListener('keydown', function(e){
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === ' ' || k === 'PageDown' || k === 'Enter') { e.preventDefault(); go(i + 1); }
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp') { e.preventDefault(); go(i - 1); }
+    else if (k === 'Home') { go(0); }
+    else if (k === 'End') { go(slides.length - 1); }
+    else if (k === 'o' || k === 'O') { outline.classList.toggle('on'); }
+    else if (k === 'Escape') { outline.classList.remove('on'); }
+    else if (k === 'f' || k === 'F') {
+      if (document.fullscreenElement) { document.exitFullscreen(); }
+      else if (document.documentElement.requestFullscreen) { document.documentElement.requestFullscreen(); }
+    }
+    else if (k === 'p' || k === 'P') { window.print(); }
+  });
+
+  document.getElementById('prev').addEventListener('click', function(e){ e.stopPropagation(); go(i - 1); });
+  document.getElementById('next').addEventListener('click', function(e){ e.stopPropagation(); go(i + 1); });
+  document.getElementById('toc').addEventListener('click', function(e){ e.stopPropagation(); outline.classList.toggle('on'); });
+  document.getElementById('prt').addEventListener('click', function(e){ e.stopPropagation(); window.print(); });
+
+  document.addEventListener('click', function(e){
+    if (outline.classList.contains('on')) return;
+    if (e.target.closest('#hud')) return;
+    go(i + 1);
+  });
+  document.addEventListener('contextmenu', function(e){
+    if (outline.classList.contains('on')) return;
+    e.preventDefault();
+    go(i - 1);
+  });
+
+  var x0 = null;
+  window.addEventListener('touchstart', function(e){ x0 = e.touches[0].clientX; }, {passive: true});
+  window.addEventListener('touchend', function(e){
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 50) { go(dx < 0 ? i + 1 : i - 1); }
+    x0 = null;
+  }, {passive: true});
+
+  fit();
+  go(0);
+})();
+</script>
+</body>
+</html>
