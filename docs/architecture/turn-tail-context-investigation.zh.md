@@ -1,6 +1,6 @@
 # Turn-tail `[Context]` 注入：现状记录与待验证项
 
-> 状态：**部分处置已完成**（2026-09-22 记录；plan/goal 注入已迁出，见 §7）。
+> 状态：**部分处置已完成**（2026-09-22 记录；plan/goal 注入已迁出，见 §7；剩余项复核见 §8）。
 > 这不是一份方案，是一份**现状与证据的登记**——
 > 机制已读准，P2 已消除，其余处置仍未定，且**本机仍未采集到生产基线**。
 > 前置：`docs/architecture/agent-engine.zh.md`、`docs/agent-store/20-tool-injection-policy.zh.md`。
@@ -122,7 +122,9 @@ message should stay a single message」。谁按名字去「修」实现，就�
 - **P4 不受影响。** `Current date` 仍无条件注入 turn tail，`build_turn_tail_context`
   仍恒返回 `Some`。
 - **P1 的机制面减少但未消失。** 最高显著位置上不再出现「长指令块」，但
-  `Current date` 依旧落在那里——§5-A/B 对 date/ledger/contributor 的处置**仍待各自排期**。
+  `Current date` 依旧落在那里——§7 记录了基线缺失，§8 对 turn-tail 剩余注入项做了
+  逐项复核：九项里只有 `Current date` 需要改（降频），其余八项建议原样保留，
+  **均已识别、未排期**。
 
 ### 基线采集状态：**未采集**
 
@@ -140,3 +142,54 @@ message should stay a single message」。谁按名字去「修」实现，就�
 块恰好一次、走信封、不含 `[Context]`、goal-less 会话零注入」。
 
 **补采义务：** 若后续环境能起整栈，应按 §4 补采一次并回填本节。
+
+---
+
+## 8. 已识别、未排期：turn-tail 剩余注入项的复核
+
+plan/goal 迁出后，turn-tail 每 pass 仍注入的内容按「是否值得每 pass 发」过了一遍。
+结论：**九项里只有 `Current date` 一项需要改，其余八项建议原样保留。**
+
+| 注入项 | 触发 | 判定 |
+|---|---|---|
+| system resource notices | 有宿主通知时 | 真数据（宿主事件），删则丢信息 |
+| **`Current date`** | **无条件** | **内容一天内逐字不变，却每 pass 重占最高显著位置 → 应降频** |
+| office plan nudge / hard stop | 办公模式 + 计划滞留阈值到 | 已一次性（阈值触发，非每 pass） |
+| coding plan nudge | coding harness 判定 | 已一次性 |
+| `forced_finalize_instruction` | 强制收尾时 | 已一次性 |
+| harness `turn_tail` | coding harness 判定 | 已一次性 |
+| `ContextContributor` 块 | 注册了贡献者时 | 真数据（RAG/memory），通道属其设计接缝 |
+| office working set 索引 | 办公模式且非空 | 真数据（文件工作集），压缩后回注用 |
+| round ledger section | 重启后 | 已一次性（`take_section` 取走） |
+
+### `Current date`：建议降频，不建议删除
+
+**它不是冗余信息。** 查证结论：
+
+- `context.rs` 明确禁止日期进 system prompt（`:211` 注释、`:346` 注释，以及
+  `prefix_stability_no_date_in_system_prompt` 与 `:1553` 两个断言）；
+- 全工程只有 `engine/mod.rs:1970` 一处把当前日期送给 provider。
+
+即：删掉它，模型就真的不知道今天几号。问题在**频率**（一天不变、每 pass 重发），
+不在**必要性**。
+
+两条候选路（均需改动 turn-tail，故未实施）：
+
+1. **迁入 `<system-reminder>` 通道**（倾向）：现有 reminder 机制天然覆盖这个需求——
+   文本由状态派生、同回合内相同文本不重发、**跨天文本变了自然重发**，不需要额外的
+   「日期变了才发」逻辑。它同时从「数据」变成「状态告知」，更贴合信封定位。
+2. **仅回合边界注入 turn-tail**：保留在 `[Context]`，每回合组装一次、本回合后续 pass
+   复用。改动更小，但下一回合仍会重贴，P3 只缓解不消除。
+
+**为什么现在不做：**
+
+- 方案 §1.3 明确把「turn-tail 其余内容（date/ledger/`ContextContributor`）的去留」
+  列入不做的范围；
+- 本文件 §3 因「先量再改」明确保留不动 turn-tail 的决定，而 §7 记录的**基线缺失**
+  使该约束至今未解除；
+- 影响面覆盖**所有会话**（不像 plan/goal 只影响对应模式），且改动会同时改变
+  「缓存是否还热」与「模型看到什么」两件事——正是当初不改 turn-tail 的理由。
+
+**排期建议：** 单独一个 PR，先按 §4 采一次基线（含跨天边界），再决定走上表哪条路。
+届时 §5 的 A/B 应一并重新评估——A（措辞）已由 plan/goal 的 reminder 信封部分吸收，
+B（`Current date` 降频）就是本节这一项。
