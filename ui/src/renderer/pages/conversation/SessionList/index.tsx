@@ -188,9 +188,11 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     setActiveWorkpathDragKey(null);
   }, []);
 
-  // 脱手与异常释放防护：窗口失焦、系统取消时安全复位，防止卡在拖拽状态
+  // 脱手与异常释放防护：窗口失焦、系统取消时安全复位，防止卡在拖拽状态；拖拽中切换全局光标
   useEffect(() => {
     if (!activeWorkpathDragKey) return;
+
+    document.body.style.cursor = 'grabbing';
 
     const handleEscapeOrBlur = () => {
       document.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }));
@@ -200,6 +202,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     window.addEventListener('blur', handleEscapeOrBlur);
     window.addEventListener('pointercancel', handleEscapeOrBlur);
     return () => {
+      document.body.style.cursor = '';
       window.removeEventListener('blur', handleEscapeOrBlur);
       window.removeEventListener('pointercancel', handleEscapeOrBlur);
     };

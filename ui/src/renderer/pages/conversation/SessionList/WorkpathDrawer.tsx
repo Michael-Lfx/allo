@@ -8,7 +8,6 @@ import {
   DeleteOne,
   FolderClose,
   FolderOpen,
-  Home,
   MessageOne,
   MoreOne,
   Plus,
@@ -210,12 +209,20 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     setShowAllConversations((value) => !value);
   };
 
-  const headerIcon = isDefault ? (
-    <Home theme='outline' size={16} fill='currentColor' className='line-height-0' />
-  ) : expanded ? (
-    <FolderOpen theme='outline' size={16} fill='currentColor' className='line-height-0' />
+  const headerIcon = expanded ? (
+    <FolderOpen
+      theme='two-tone'
+      size={16}
+      fill={['currentColor', 'currentColor']}
+      className='line-height-0 text-primary-6 shrink-0 transition-colors'
+    />
   ) : (
-    <FolderClose theme='outline' size={16} fill='currentColor' className='line-height-0' />
+    <FolderClose
+      theme='outline'
+      size={16}
+      fill='currentColor'
+      className='line-height-0 text-t-tertiary group-hover:text-t-primary shrink-0 transition-colors'
+    />
   );
 
   const nameSpan = (
@@ -294,7 +301,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
           'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group',
           twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px',
           isActiveWorkpath && 'flowy-workpath-drawer-header-active !bg-[rgba(var(--primary-6),0.08)] border-l-2px border-l-solid border-primary-6',
-          isDragging && 'shadow-md cursor-grabbing select-none'
+          isDragging ? 'shadow-md cursor-grabbing select-none' : 'cursor-pointer'
         )}
         {...attributes}
         {...listeners}
