@@ -382,7 +382,7 @@ const NomiWorkspacePage: React.FC = () => {
       </span>
       <span className='max-w-360px text-13px leading-20px text-t-tertiary'>
         {t('nomi.companions.emptyHint', {
-          defaultValue: '创建一个伙伴，给它一个名字和形象，然后配置模型就可以开始对话了。',
+          defaultValue: '创建伙伴并配置模型，即可开启对话。',
         })}
       </span>
       <div
