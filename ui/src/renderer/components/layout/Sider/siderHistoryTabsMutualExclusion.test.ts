@@ -4,7 +4,7 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('sider history tabs mutual exclusion and empty states', () => {
-  test('history tab pills follow the selected list tab without a two-phase route wait', () => {
+  test('history tab pills follow activeBar2Module and mutually exclude Dock rail routes', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
     expect(siderSource.includes("pathname.startsWith('/knowledge')")).toBe(true);
@@ -18,10 +18,16 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes('bg-fill-3 text-t-primary shadow-sm')).toBe(true);
     expect(siderSource.includes('font-semibold')).toBe(false);
 
-    // Each history tab renders its distinctive module icon
+    // Active Bar 2 module drives tab selection rather than unconditionally glowing
+    expect(siderSource.includes('activeBar2Module')).toBe(true);
+    expect(siderSource.includes("aria-selected={activeBar2Module === 'workspaces'}")).toBe(true);
+    expect(siderSource.includes("aria-selected={activeBar2Module === 'video'}")).toBe(true);
+    expect(siderSource.includes("aria-selected={activeBar2Module === 'companions'}")).toBe(true);
+
+    // Module icons on workspaces and video, clean text on companion without emoji
     expect(siderSource.includes('<MessageOne')).toBe(true);
     expect(siderSource.includes('<VideoOne')).toBe(true);
-    expect(siderSource.includes('🐱')).toBe(true);
+    expect(siderSource.includes('🐱')).toBe(false);
   });
 
   test('synchronizes routes one-way and navigates module on tab click when not already on route', () => {
