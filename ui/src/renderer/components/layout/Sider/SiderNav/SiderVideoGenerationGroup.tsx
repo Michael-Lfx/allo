@@ -186,7 +186,10 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
       activeBriefingId === pendingItemId;
     if (isMatchingRoute) {
       setPendingItemId(null);
+      return;
     }
+    const timer = window.setTimeout(() => setPendingItemId(null), 8000);
+    return () => window.clearTimeout(timer);
   }, [pendingItemId, activeSessionId, activeClipTaskId, activeCanvasProjectId, activeBriefingId]);
 
   useEffect(() => {

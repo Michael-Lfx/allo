@@ -41,6 +41,12 @@ const MeetingPage: React.FC = () => {
     [navigate]
   );
 
+  useEffect(() => {
+    if (!openingSessionId) return;
+    const timer = window.setTimeout(() => setOpeningSessionId(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [openingSessionId]);
+
   const createAndOpen = useCallback(
     async (title: string, start: boolean) => {
       setCreating(true);

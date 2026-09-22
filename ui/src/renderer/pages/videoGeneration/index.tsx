@@ -846,6 +846,17 @@ const VideoGenerationListPage: React.FC = () => {
     [navigate]
   );
 
+  useEffect(() => {
+    if (!openingSessionId && !openingTaskId && !openingBriefingId && !openingCanvasId) return;
+    const timer = window.setTimeout(() => {
+      setOpeningSessionId(null);
+      setOpeningTaskId(null);
+      setOpeningBriefingId(null);
+      setOpeningCanvasId(null);
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [openingSessionId, openingTaskId, openingBriefingId, openingCanvasId]);
+
   const handleDelete = useCallback(
     async (s: SessionSummary) => {
       if (deletingId) return;
