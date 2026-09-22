@@ -66,7 +66,7 @@ impl LlmProvider for CapturingProvider {
 }
 
 #[tokio::test]
-async fn bootstrap_builds_engine_with_model_in_prompt() {
+async fn bootstrap_builds_engine() {
     let config = minimal_config();
     let result = AgentBootstrap::new(config, "/tmp/test-workspace", null_output())
         .build()
@@ -499,7 +499,7 @@ async fn memory_switch_controls_the_prompt_section() {
         "the MEMORY.md index must not be injected when disabled, got:\n{system}"
     );
     assert!(
-        system.contains("gpt-test-model"),
+        system.contains("You are an AI assistant that can use tools to help with tasks."),
         "the rest of the system prompt must still be built"
     );
 }

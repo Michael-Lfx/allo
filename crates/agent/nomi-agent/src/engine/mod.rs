@@ -687,6 +687,20 @@ pub struct AgentEngine {
     observation: Option<Arc<crate::observation::ObservationSession>>,
 }
 
+/// Moves the transcript into the provider request and puts the same `Vec`
+/// back on drop, including cancellation. `LlmProvider::stream` only borrows
+/// the request, so this is a pointer swap rather than a deep copy of history.
+struct ParkedTranscript<'a> {
+    slot: &'a mut Vec<Message>,
+    request: LlmRequest,
+}
+
+impl Drop for ParkedTranscript<'_> {
+    fn drop(&mut self) {
+        std::mem::swap(self.slot, &mut self.request.messages);
+    }
+}
+
 impl AgentEngine {
     /// Create an engine with an externally provided provider for delegated Agents.
     pub fn new_with_provider(
@@ -1966,7 +1980,6 @@ impl AgentEngine {
                 turn_tail.clone(),
                 self.sent_prefix_len,
             );
-            let messages = self.messages.clone();
 
             // Record prompt state for cache diagnostics
             self.cache_detector.record_request(&system, &tools);
@@ -2027,29 +2040,41 @@ impl AgentEngine {
                 continue 'provider_attempt;
             }
 
-            let request = LlmRequest {
-                model: self.model.clone(),
-                system: system.clone(),
-                messages,
-                tools: tools.clone(),
-                max_tokens: self.output_max_tokens,
-                thinking: self.thinking_for_request(),
-                reasoning_effort: self.reasoning_effort_for_request(),
-                temperature: None,
-                retain_provider_round: self.compat.chain_rounds(),
+            let model = self.model.clone();
+            let system_for_request = system.clone();
+            let tools_for_request = tools.clone();
+            let max_tokens = self.output_max_tokens;
+            let thinking = self.thinking_for_request();
+            let reasoning_effort = self.reasoning_effort_for_request();
+            let retain_provider_round = self.compat.chain_rounds();
+            let messages = std::mem::take(&mut self.messages);
+            let parked = ParkedTranscript {
+                request: LlmRequest {
+                    model,
+                    system: system_for_request,
+                    messages,
+                    tools: tools_for_request,
+                    max_tokens,
+                    thinking,
+                    reasoning_effort,
+                    temperature: None,
+                    retain_provider_round,
+                },
+                slot: &mut self.messages,
             };
 
             efficiency.observe_model_turn_attempt();
             let stream_start = std::time::Instant::now();
-            let mut rx = match crate::observation::stream_llm(
+            let stream_result = crate::observation::stream_llm(
                 self.provider.as_ref(),
-                &request,
+                &parked.request,
                 self.observation.clone(),
                 "agent_turn",
                 nomi_agent_trace::ObservationScope::SessionWorkflow,
             )
-            .await
-            {
+            .await;
+            drop(parked);
+            let mut rx = match stream_result {
                 Ok(rx) => {
                     // The request that just started streaming is the new frozen
                     // prefix. Compact-before-turn `continue` never reaches here.
@@ -2416,7 +2441,7 @@ impl AgentEngine {
                         thinking_signature = Some(signature);
                     }
                     LlmEvent::ProviderRoundId(round_id) => {
-                        if !request.retain_provider_round {
+                        if !retain_provider_round {
                             efficiency.observe_calls(&self.tools, &tool_calls);
                             return Err(AgentError::ApiError(
                                 "provider stream protocol violation: provider round id was emitted for a non-retainable request"

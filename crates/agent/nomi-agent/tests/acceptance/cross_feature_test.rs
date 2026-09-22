@@ -35,7 +35,6 @@ async fn tc_ax_01_multi_feature_collaboration() {
         &mut SystemPromptCache::new(),
         None,
         "/tmp",
-        "test-model",
         &[],
         None,
         Some(&mem_dir),

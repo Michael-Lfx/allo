@@ -16,7 +16,6 @@ fn system_prompt_contains_tool_guidance() {
         &mut SystemPromptCache::new(),
         None,
         "/tmp",
-        "test-model",
         &[],
         None,
         None,
