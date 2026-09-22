@@ -17,9 +17,14 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes('bg-fill-2 text-t-secondary font-medium hover:text-t-primary')).toBe(false);
     expect(siderSource.includes('bg-fill-3 text-t-primary shadow-sm')).toBe(true);
     expect(siderSource.includes('font-semibold')).toBe(false);
+
+    // Each history tab renders its distinctive module icon
+    expect(siderSource.includes('<MessageOne')).toBe(true);
+    expect(siderSource.includes('<VideoOne')).toBe(true);
+    expect(siderSource.includes('🐱')).toBe(true);
   });
 
-  test('synchronizes routes one-way without trampling companion conversations or navigating on tab click', () => {
+  test('synchronizes routes one-way and navigates module on tab click when not already on route', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
     expect(siderSource.includes('historyTabAfterPathChange')).toBe(true);
@@ -28,11 +33,11 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     // Search entry selection switches drawer tab to workspaces
     expect(siderSource.includes("handleSelectHistoryTab('workspaces');\n    if (onSessionClick)")).toBe(true);
 
-    // History tabs only switch the list; they must not navigate the main outlet
-    expect(siderSource.includes('if (!isSessionRoute)')).toBe(false);
-    expect(siderSource.includes('if (!isVideoRoute)')).toBe(false);
-    expect(siderSource.includes('handleNewChat();')).toBe(false);
-    expect(siderSource.includes('handleVideoGenerationHome();')).toBe(false);
+    // History tabs route to the module homepage when not already active
+    expect(siderSource.includes('if (!isSessionRoute)')).toBe(true);
+    expect(siderSource.includes('if (!isVideoRoute)')).toBe(true);
+    expect(siderSource.includes('handleNewChat();')).toBe(true);
+    expect(siderSource.includes('handleVideoGenerationHome();')).toBe(true);
   });
 
   test('adds narrow rail text truncation, titles, and color-only motion to history tabs', () => {

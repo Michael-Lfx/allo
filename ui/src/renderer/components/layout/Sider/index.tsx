@@ -2,6 +2,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { MessageOne, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -217,6 +218,37 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleVideoGenerationHome = useCallback(() => {
     navTo('/video-generation');
   }, [navTo]);
+
+  const isVideoRoute = pathname.startsWith('/video-generation');
+  const isCompanionRoute = pathname.startsWith('/nomi');
+
+  const handleTabClick = useCallback(
+    (tab: SiderHistoryTab) => {
+      handleSelectHistoryTab(tab);
+      if (tab === 'workspaces') {
+        if (!isSessionRoute) {
+          handleNewChat();
+        }
+      } else if (tab === 'video') {
+        if (!isVideoRoute) {
+          handleVideoGenerationHome();
+        }
+      } else if (tab === 'companions') {
+        if (!isCompanionRoute) {
+          navTo('/nomi?tab=overview');
+        }
+      }
+    },
+    [
+      handleNewChat,
+      handleSelectHistoryTab,
+      handleVideoGenerationHome,
+      isCompanionRoute,
+      isSessionRoute,
+      isVideoRoute,
+      navTo,
+    ]
+  );
 
   const activeVideoGenerationSessionId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
@@ -512,7 +544,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 hidden
               />
 
-              {/* 三段式会话分类切换器：区分项目、视频创作、桌宠（与功能 Dock 栏等宽满铺） */}
+              {/* 三段式会话分类切换器：区分项目、视频创作、桌宠 */}
               <div className='w-full my-2px shrink-0'>
                 <div
                   role='tablist'
@@ -524,14 +556,26 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     role='tab'
                     title={t('sessionList.projectsTab', { defaultValue: '项目' })}
                     aria-selected={activeHistoryTab === 'workspaces'}
-                    onClick={() => handleSelectHistoryTab('workspaces')}
+                    onClick={() => handleTabClick('workspaces')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'group flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
                       activeHistoryTab === 'workspaces'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
+                    <MessageOne
+                      theme='outline'
+                      size={12}
+                      fill='currentColor'
+                      className={classNames(
+                        'block leading-none shrink-0 transition-colors duration-180',
+                        activeHistoryTab === 'workspaces'
+                          ? 'text-primary-6'
+                          : 'text-t-tertiary group-hover:text-t-primary'
+                      )}
+                      style={{ lineHeight: 0 }}
+                    />
                     <span className='truncate'>{t('sessionList.projectsTab', { defaultValue: '项目' })}</span>
                   </button>
                   <button
@@ -539,14 +583,26 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     role='tab'
                     title={t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}
                     aria-selected={activeHistoryTab === 'video'}
-                    onClick={() => handleSelectHistoryTab('video')}
+                    onClick={() => handleTabClick('video')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'group flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
                       activeHistoryTab === 'video'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
+                    <VideoOne
+                      theme='outline'
+                      size={12}
+                      fill='currentColor'
+                      className={classNames(
+                        'block leading-none shrink-0 transition-colors duration-180',
+                        activeHistoryTab === 'video'
+                          ? 'text-primary-6'
+                          : 'text-t-tertiary group-hover:text-t-primary'
+                      )}
+                      style={{ lineHeight: 0 }}
+                    />
                     <span className='truncate'>{t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}</span>
                   </button>
                   <button
@@ -554,14 +610,24 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     role='tab'
                     title={t('nomi.shortTitle', { defaultValue: '桌宠' })}
                     aria-selected={activeHistoryTab === 'companions'}
-                    onClick={() => handleSelectHistoryTab('companions')}
+                    onClick={() => handleTabClick('companions')}
                     className={classNames(
-                      'flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
+                      'group flex-1 h-24px px-4px text-11px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
                       activeHistoryTab === 'companions'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
+                    <span
+                      className={classNames(
+                        'shrink-0 text-11px leading-none transition-opacity duration-180',
+                        activeHistoryTab === 'companions'
+                          ? 'opacity-100'
+                          : 'opacity-70 group-hover:opacity-100'
+                      )}
+                    >
+                      🐱
+                    </span>
                     <span className='truncate'>{t('nomi.shortTitle', { defaultValue: '桌宠' })}</span>
                   </button>
                 </div>
