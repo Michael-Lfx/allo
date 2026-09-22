@@ -48,6 +48,7 @@ describe('product funnel', () => {
   test('does not treat first token as first value', () => {
     resetFunnelForTests();
     resetTurnTimingForTests();
+    resetTelemetryOutboxForTests();
     beginTurnTiming('req-1', { conversation_type: 'nomi', cold_start: true });
     expect(markTurnAccepted('req-1')).not.toBeNull();
     expect(markTurnFirstToken('req-1')).not.toBeNull();
@@ -60,6 +61,13 @@ describe('product funnel', () => {
     expect(confirmFirstValue({ source: 'follow_up' })).not.toBeNull();
     expect(hasFunnelEvent('first_value_confirmed')).toBe(true);
     expect(hasFunnelEvent('value_confirmed')).toBe(true);
+    const queued = listQueuedTelemetryEventsForTests();
+    expect(queued.find((event) => event.name === 'first_token')?.module).toBe('conversation');
+    expect(queued.find((event) => event.name === 'first_token')?.properties.ttft_ms).toEqual(expect.any(Number));
+    expect(queued.find((event) => event.name === 'first_token')?.properties.request_key).toBe('req-1');
+    expect(queued.find((event) => event.name === 'turn_idle')?.properties.outcome).toBe('completed');
+    expect(queued.find((event) => event.name === 'first_value_confirmed')?.module).toBe('conversation');
+    expect(queued.find((event) => event.name === 'value_confirmed')?.module).toBe('conversation');
   });
 
   test('emits app_opened once per session instead of fake d1/d7 flags', () => {
@@ -99,6 +107,11 @@ describe('product funnel', () => {
         (event) => event.name === 'value_confirmed'
       )
     ).toHaveLength(2);
+    expect(
+      listQueuedTelemetryEventsForTests().filter(
+        (event) => event.name === 'first_value_confirmed' && event.module === 'video_generation'
+      )
+    ).toHaveLength(1);
   });
 
   test('queues only allow-listed video metadata', () => {
@@ -189,6 +202,31 @@ describe('product funnel', () => {
       ['home_viewed', 'platform'],
       ['home_viewed', 'video_generation'],
     ]);
+  });
+
+  test('queues conversation, commerce, and knowledge events that are not video', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    trackFunnelEvent('task_accepted', { source: 'guid' });
+    trackFunnelEvent('kb_grounded', { feature: 'knowledge', hit_count: 3, kind: 'doc' });
+    trackFunnelEvent('billing_pay_succeeded', {
+      amount: 1200,
+      currency: 'CNY',
+      plan_id: 'pro',
+      order_no: 'o-1',
+      payment_channel: 'airwallex',
+      prompt: 'must not upload',
+    });
+    const queued = listQueuedTelemetryEventsForTests();
+    expect(queued.map((event) => [event.name, event.module])).toEqual([
+      ['task_accepted', 'conversation'],
+      ['kb_grounded', 'knowledge'],
+      ['billing_pay_succeeded', 'commerce'],
+    ]);
+    expect(queued[1]?.properties.hit_count).toBe(3);
+    expect(queued[2]?.properties.amount).toBe(1200);
+    expect(queued[2]?.properties.order_no).toBe('o-1');
+    expect('prompt' in (queued[2]?.properties ?? {})).toBe(false);
   });
 
   test('trackFunnelEventOnce dedupes by stable id', () => {

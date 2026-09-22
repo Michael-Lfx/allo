@@ -1,6 +1,6 @@
 # 云服务与计费域（Flowy Cloud）
 
-> **最后维护：** 2026-09-21 · 核对基准：源码（nomifun-cloud 遥测出站 + FlowyClaw ingest）
+> **最后维护：** 2026-09-22 · 核对基准：源码（nomifun-cloud 遥测出站 + FlowyClaw ingest）
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) 是"远程 LLM 服务器客户端"：
@@ -65,7 +65,9 @@ PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使�
 | Flowy 云 | `POST {base}/claw/telemetry/events/batch` → Gin `/api/v1/telemetry/events/batch`；JWT `user_id` 强制覆盖 |
 | ViMax 终态 | `nomi-vimax` 仅在 **Render** 终态（成功/失败/取消）与关机 **Rendering** 中断时回调；`nomifun-vimax` spawn 上传，不阻塞管线。未登录云则跳过。Rust 侧目前**不读** UI opt-out |
 
-事件名闭集含：视频漏斗 `home_viewed` … `film_succeeded` / `film_failed` / `film_cancelled`，资讯播报终态 `briefing_succeeded` / `briefing_failed` / `briefing_cancelled`，平台 `app_opened` / `auth_completed` / `home_interactive`、启动性能 `app_launch_*`、以及 OTA `update_*`。非视频的 `home_viewed`（如 guid/knowledge）记 `module=platform`；视频 `home_viewed` 仍为 `video_generation`。**资讯播报禁止发 `film_succeeded`。**
+事件名闭集含：视频漏斗 `home_viewed` … `film_succeeded` / `film_failed` / `film_cancelled`，资讯播报终态 `briefing_succeeded` / `briefing_failed` / `briefing_cancelled`，平台 `app_opened` / `auth_completed` / `home_interactive`、启动性能 `app_launch_*`、OTA `update_*`，以及商业化 `billing_*` / `low_credit_balance`（`module=commerce`）、回合时延 `message_submitted` … `turn_idle` / `llm_call_failed`（`module=conversation`）、知识库 `kb_created` / `kb_grounded`（`module=knowledge`）。`task_*` / `value_confirmed` / `first_value_confirmed` / `prerequisite_resolved` 按 `feature` 归模块：`video_generation`、`knowledge`，其余为 `conversation`。非视频的 `home_viewed`（如 guid/knowledge）仍记 `module=platform`。**资讯播报禁止发 `film_succeeded`。**
+
+属性按事件条数上限 24、键长 64、字符串值长 256 校验；键名白名单在渲染进程 outbox，不在本机 axum。时延与金额字段（`ttft_ms` / `accept_ms` / `stream_ms` / `finalization_gap_ms` / `request_key` / `amount` / `currency` / `plan_id` / `order_no` / `payment_channel` / `coupon` 等）过白名单后才会进第一方仓。
 
 **冻结口径（WAFC 分母）**
 
@@ -77,13 +79,20 @@ PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使�
 - **publish_rate**：成片成功用户中已导出或 TV 发布
 - **DAU**：来自 `app_opened` 集市 `platform_dau`，不是 VG KPI 卡
 - **启动体验**：`app_launch_auth_ready` → `app_launch_config_ready` → `app_launch_interactive` / `app_launch_completed`（`total_ms` / `cold_start`）；失败走 `app_launch_failed`。启动热路径只记内存时间戳，funnel/outbox/HTTP 经 `scheduleDeferred`（≥2.5s + idle）再落盘上报
+- **WAVU**：安装内首次 `first_value_confirmed`（用户确认，不是首 token）。视频会话另按 `session_id` 记 `value_confirmed`
+- **回合体验**：`message_submitted` → `message_accepted`（`accept_ms`）→ `first_token`（`ttft_ms`）→ `turn_idle`（`total_ms` / `outcome`）。中断看 `abandoned_before_first_token`，失败看 `turn_idle.outcome=failed` 与 `llm_call_failed`
+- **计费漏斗**：应用内只观测到打开官网积分页（`billing_catalog_viewed`）和余额不足（`low_credit_balance`，按 UTC 日去重）。`billing_pay_*` 名称已放行，支付发生在官网，客户端不伪造支付成功
+- **留存**：客户端不发 `d1_retained` / `d7_retained`（名称已放行，避免再造伪标记）。D1/D7/D30 按首次 `device_activated` 或首次 `app_opened` 在仓内回看。`film_d7_rate` 仍是窗口内成功，不是该回看
+- **实验**：`experiment_exposed` 每个安装对 launchpad 变体只发一次；`launchpad_variant` 同时留在后续事件属性里
+
+FlowyClaw `POST /telemetry/events/batch` 若仍只收旧闭集，本机校验通过后上游会 400，整批（含视频事件）会停在 outbox 重试。云端 ingest 必须同步事件名与 `commerce` / `conversation` / `knowledge` 模块。
 
 **资讯播报另立口径（不并入 WAFC）**
 
 - **WAFC-Briefing**：窗口内有 `briefing_succeeded` 的 distinct 用户
 - **TTF Briefing p50**：首次带 `mode=briefing` 的 `home_viewed` 或 `task_accepted` → 首次 `briefing_succeeded`
 - 属性白名单含 `briefing_id` / `research_depth` / `beat_count` / `citation_count`；服务端 `event_id = briefing:{name}:{briefing_id}`
-- FlowyClaw ingest 已同步闭集 18 与白名单；资讯播报写入 `tb_vg_session_facts` 但不置 `film_at`，WAFC 仍只看成片
+- FlowyClaw ingest 须与本机闭集同步；资讯播报写入 `tb_vg_session_facts` 但不置 `film_at`，WAFC 仍只看成片
 
 ClickHouse 是后续双写出口，当前权威存储是 MySQL 事件表 + 会话事实 + 日/小时集市。
 

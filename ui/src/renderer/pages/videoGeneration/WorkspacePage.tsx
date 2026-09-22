@@ -29,6 +29,7 @@ import {
   confirmFirstValue,
   hasVideoSessionEvent,
   trackFunnelEvent,
+  trackLowCreditBalance,
   trackVideoSessionEvent,
 } from '@renderer/utils/analytics/productFunnel';
 import {
@@ -517,6 +518,7 @@ const WorkspacePage: React.FC = () => {
     const key = `${sessionId}:credits`;
     if (creditsFailToastKeyRef.current === key) return;
     creditsFailToastKeyRef.current = key;
+    trackLowCreditBalance('video_workspace');
     message.error(
       t('videoGeneration.workspace.failure.creditsToast', {
         defaultValue: '积分不足，请充值或缩短时长后从断点继续。',

@@ -36,6 +36,7 @@ export type FunnelEventName =
   | 'billing_pay_started'
   | 'billing_pay_succeeded'
   | 'billing_pay_failed'
+  | 'low_credit_balance'
   | 'message_submitted'
   | 'message_accepted'
   | 'first_status'
@@ -44,6 +45,10 @@ export type FunnelEventName =
   | 'turn_idle'
   | 'retry_succeeded'
   | 'abandoned_before_first_token'
+  | 'llm_call_failed'
+  | 'device_activated'
+  | 'experiment_exposed'
+  | 'provider_degraded'
   | 'expert_package_install_failed'
   | 'update_check_completed'
   | 'update_prompt_shown'
@@ -271,6 +276,59 @@ export function maybeTrackRetention(): FunnelEvent[] {
     return [];
   }
   return [trackFunnelEvent('app_opened')];
+}
+
+/** Once per install, when the launchpad assignment is first persisted. */
+export function maybeTrackExperimentExposure(): FunnelEvent | null {
+  const variant = getFunnelSegmentProps()?.launchpad_variant;
+  if (variant !== 'control' && variant !== 'launchpad') return null;
+  return trackFunnelEventOnce('experiment_exposed', `experiment:launchpad:${variant}`, {
+    source: 'launchpad',
+    launchpad_variant: variant,
+  });
+}
+
+/** Once per UTC day. Checkout still happens on the official site, so this is the in-app balance signal. */
+export function trackLowCreditBalance(source: string): FunnelEvent | null {
+  const day = new Date().toISOString().slice(0, 10);
+  return trackFunnelEventOnce('low_credit_balance', `credits:low:${day}`, {
+    source,
+    error_code: 'insufficient_credits',
+  });
+}
+
+export function trackLlmCallFailed(props: {
+  conversation_type?: string;
+  error_code?: string;
+  http_status?: number | null;
+  llm_model?: string | null;
+}): FunnelEvent {
+  return trackFunnelEvent('llm_call_failed', {
+    conversation_type: props.conversation_type ?? null,
+    error_code: props.error_code ?? null,
+    http_status: props.http_status ?? null,
+    llm_model: props.llm_model ?? null,
+  });
+}
+
+export function trackProviderDegraded(props: {
+  source: string;
+  error_code: string;
+  http_status?: number | null;
+}): FunnelEvent {
+  return trackFunnelEvent('provider_degraded', {
+    source: props.source,
+    error_code: props.error_code,
+    http_status: props.http_status ?? null,
+  });
+}
+
+/** Once per app version after the device status endpoint reports activation. */
+export function trackDeviceActivated(appVersion: string | undefined): FunnelEvent | null {
+  const version = appVersion?.trim() || 'unknown';
+  return trackFunnelEventOnce('device_activated', `device:activated:${version}`, {
+    source: 'device_status',
+  });
 }
 
 /**

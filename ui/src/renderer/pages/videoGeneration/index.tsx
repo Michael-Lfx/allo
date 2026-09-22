@@ -23,7 +23,7 @@ import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
-import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
+import { trackFunnelEvent, trackLowCreditBalance } from '@renderer/utils/analytics/productFunnel';
 import {
   createSession,
   deleteSession,
@@ -386,6 +386,7 @@ const VideoGenerationListPage: React.FC = () => {
                 })
               : `${failedLabel}: ${raw}`
           );
+          if (isInsufficientCreditsError(raw)) trackLowCreditBalance('video_launch');
           navigate(`/video-generation/${created.id}`, {
             state: { launchDraft: draft, launchError: true },
           });

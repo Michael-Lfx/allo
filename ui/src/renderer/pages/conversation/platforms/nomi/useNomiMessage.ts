@@ -39,6 +39,7 @@ import {
   markTurnFirstToken,
   markTurnIdle,
   markTurnStreamFinished,
+  trackLlmCallFailed,
 } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 import { processLocalCronResponse } from './localCronCommands';
@@ -54,6 +55,13 @@ import {
   turnPresentationReducer,
   type TurnPresentationEvent,
 } from '../turnPresentationState';
+
+function httpStatusFromDetail(detail: string | undefined): number | null {
+  if (!detail) return null;
+  const match = detail.match(/\b([45]\d{2})\b/);
+  const code = match ? Number(match[1]) : NaN;
+  return code >= 400 && code <= 599 ? code : null;
+}
 
 type NomiToolGroupRuntimeTool = {
   status: ReturnType<typeof normalizeToolGroupStatus>;
@@ -332,6 +340,11 @@ export const useNomiMessage = (
       if (timingKey) {
         markTurnAbandonedBeforeFirstToken(timingKey);
         markTurnIdle(timingKey, 'failed');
+        trackLlmCallFailed({
+          conversation_type: 'nomi',
+          error_code: 'turn_failed',
+          http_status: httpStatusFromDetail(detail),
+        });
         timingRequestKeyRef.current = null;
       }
       setActiveTurnId(undefined);

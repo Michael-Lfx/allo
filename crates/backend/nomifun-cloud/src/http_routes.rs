@@ -41,7 +41,7 @@ const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const MAX_GROWTH_EVENTS_PER_BATCH: usize = 50;
 const MAX_GROWTH_PROPERTIES: usize = 24;
-const TELEMETRY_EVENT_NAMES: [&str; 35] = [
+const TELEMETRY_EVENT_NAMES: &[&str] = &[
     "app_opened",
     "app_launch_auth_ready",
     "app_launch_config_ready",
@@ -52,6 +52,7 @@ const TELEMETRY_EVENT_NAMES: [&str; 35] = [
     "home_interactive",
     "home_viewed",
     "task_drafted",
+    "prerequisite_resolved",
     "task_accepted",
     "first_task_started",
     "first_artifact_visible",
@@ -63,10 +64,34 @@ const TELEMETRY_EVENT_NAMES: [&str; 35] = [
     "briefing_failed",
     "briefing_cancelled",
     "value_confirmed",
+    "first_value_confirmed",
     "project_exported",
     "tv_published",
     "resume_started",
     "resume_succeeded",
+    "answer_completed",
+    "d1_retained",
+    "d7_retained",
+    "kb_created",
+    "kb_grounded",
+    "billing_catalog_viewed",
+    "billing_checkout_started",
+    "billing_pay_started",
+    "billing_pay_succeeded",
+    "billing_pay_failed",
+    "low_credit_balance",
+    "message_submitted",
+    "message_accepted",
+    "first_status",
+    "first_token",
+    "stream_finished",
+    "turn_idle",
+    "retry_succeeded",
+    "abandoned_before_first_token",
+    "llm_call_failed",
+    "device_activated",
+    "experiment_exposed",
+    "provider_degraded",
     "expert_package_install_failed",
     "update_check_completed",
     "update_prompt_shown",
@@ -193,16 +218,10 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
         .merge(screenshot_upload_routes)
 }
 
-fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError> {
-    if event.event_id.is_empty() || event.event_id.len() > 128 {
-        return Err(AppError::BadRequest("growth event id is invalid".into()));
-    }
-    if !TELEMETRY_EVENT_NAMES.contains(&event.name.as_str()) {
-        return Err(AppError::BadRequest("growth event name is invalid".into()));
-    }
-    if let Some(module) = event.module.as_deref() {
-        let expected = match event.name.as_str() {
-            "app_opened"
+fn expected_growth_module(name: &str, feature: Option<&str>) -> &'static str {
+    if matches!(
+        name,
+        "app_opened"
             | "app_launch_auth_ready"
             | "app_launch_config_ready"
             | "app_launch_interactive"
@@ -211,6 +230,11 @@ fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError>
             | "auth_completed"
             | "home_interactive"
             | "expert_package_install_failed"
+            | "d1_retained"
+            | "d7_retained"
+            | "device_activated"
+            | "experiment_exposed"
+            | "provider_degraded"
             | "update_check_completed"
             | "update_prompt_shown"
             | "update_download_started"
@@ -219,22 +243,78 @@ fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError>
             | "update_install_started"
             | "update_install_failed"
             | "update_install_blocked"
-            | "update_applied" => "platform",
-            "home_viewed" => {
-                // Video home stays video_generation; guid/knowledge/etc. are platform UX.
-                let feature = event
-                    .properties
-                    .get("feature")
-                    .and_then(|value| value.as_str());
-                if feature == Some("video_generation") {
-                    "video_generation"
-                } else {
-                    "platform"
-                }
-            }
-            _ => "video_generation",
+            | "update_applied"
+    ) {
+        return "platform";
+    }
+    if matches!(
+        name,
+        "billing_catalog_viewed"
+            | "billing_checkout_started"
+            | "billing_pay_started"
+            | "billing_pay_succeeded"
+            | "billing_pay_failed"
+            | "low_credit_balance"
+    ) {
+        return "commerce";
+    }
+    if matches!(name, "kb_created" | "kb_grounded") {
+        return "knowledge";
+    }
+    if matches!(
+        name,
+        "message_submitted"
+            | "message_accepted"
+            | "first_status"
+            | "first_token"
+            | "stream_finished"
+            | "turn_idle"
+            | "retry_succeeded"
+            | "abandoned_before_first_token"
+            | "answer_completed"
+            | "llm_call_failed"
+    ) {
+        return "conversation";
+    }
+    if name == "home_viewed" {
+        return if feature == Some("video_generation") {
+            "video_generation"
+        } else {
+            "platform"
         };
-        if module != expected {
+    }
+    if matches!(
+        name,
+        "task_drafted"
+            | "task_accepted"
+            | "first_task_started"
+            | "first_artifact_visible"
+            | "prerequisite_resolved"
+            | "value_confirmed"
+            | "first_value_confirmed"
+    ) {
+        return match feature {
+            Some("video_generation") => "video_generation",
+            Some("knowledge") => "knowledge",
+            _ => "conversation",
+        };
+    }
+    "video_generation"
+}
+
+fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError> {
+    if event.event_id.is_empty() || event.event_id.len() > 128 {
+        return Err(AppError::BadRequest("growth event id is invalid".into()));
+    }
+    if !TELEMETRY_EVENT_NAMES.contains(&event.name.as_str()) {
+        return Err(AppError::BadRequest("growth event name is invalid".into()));
+    }
+    if let Some(module) = event.module.as_deref() {
+        let feature = event
+            .properties
+            .get("feature")
+            .and_then(|value| value.as_str());
+        if module != expected_growth_module(event.name.as_str(), feature) {
             return Err(AppError::BadRequest("growth event module is invalid".into()));
         }
     }
@@ -450,6 +530,49 @@ mod growth_tests {
             event.module = Some("video_generation".into());
             assert!(validate_video_growth_event(&event).is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn accepts_commerce_conversation_and_knowledge_modules() {
+        for (name, module) in [
+            ("billing_pay_succeeded", "commerce"),
+            ("low_credit_balance", "commerce"),
+            ("first_token", "conversation"),
+            ("llm_call_failed", "conversation"),
+            ("first_value_confirmed", "conversation"),
+            ("kb_grounded", "knowledge"),
+            ("device_activated", "platform"),
+            ("experiment_exposed", "platform"),
+            ("provider_degraded", "platform"),
+            ("d1_retained", "platform"),
+        ] {
+            let mut event = event(name);
+            event.module = Some(module.into());
+            assert!(validate_video_growth_event(&event).is_ok(), "{name}");
+            event.module = Some("video_generation".into());
+            assert!(validate_video_growth_event(&event).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn feature_scoped_events_follow_feature() {
+        let mut event = event("task_accepted");
+        event.module = Some("conversation".into());
+        assert!(validate_video_growth_event(&event).is_ok());
+
+        event
+            .properties
+            .insert("feature".into(), serde_json::json!("video_generation"));
+        event.module = Some("video_generation".into());
+        assert!(validate_video_growth_event(&event).is_ok());
+        event.module = Some("conversation".into());
+        assert!(validate_video_growth_event(&event).is_err());
+
+        event
+            .properties
+            .insert("feature".into(), serde_json::json!("knowledge"));
+        event.module = Some("knowledge".into());
+        assert!(validate_video_growth_event(&event).is_ok());
     }
 
     #[test]

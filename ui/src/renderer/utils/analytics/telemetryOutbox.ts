@@ -8,7 +8,7 @@ export type FirstPartyTelemetryEvent = {
   eventId: string;
   name: string;
   occurredAt: string;
-  module: 'video_generation' | 'platform';
+  module: 'video_generation' | 'platform' | 'commerce' | 'conversation' | 'knowledge';
   properties: Record<string, TelemetryProperty>;
   cohort?: 'A' | 'B';
 };
@@ -24,38 +24,54 @@ const LEGACY_QUEUE_KEY = 'flowy.growth.video.events.v1';
 const MAX_QUEUE_SIZE = 500;
 const BATCH_SIZE = 50;
 const ALLOWED_PROPERTIES = new Set([
+  'accept_ms',
   'already_ready',
+  'amount',
   'average_bps',
   'blocker',
   'bytes_total',
   'bytes_transferred',
   'cdn_host',
   'cold_start',
+  'conversation_type',
+  'coupon',
   'credits_consumed',
+  'currency',
   'duration_ms',
   'duration_secs',
   'error_code',
   'error_message',
   'failure_channel',
   'feature',
+  'finalization_gap_ms',
   'from_version',
   'has_references',
+  'hit_count',
   'image_model',
+  'kind',
+  'launchpad_variant',
   'llm_model',
   'locale',
   'mode',
   'network_class',
+  'order_no',
   'outcome',
+  'payment_channel',
   'peak_bps',
   'phase',
+  'plan_id',
   'playbook_id',
   'project_id',
+  'request_key',
   'runtime',
   'session_id',
   'source',
   'status',
+  'status_ms',
+  'stream_ms',
   'to_version',
   'total_ms',
+  'ttft_ms',
   'tz_offset_min',
   'video_model',
   'viewport',
@@ -83,6 +99,11 @@ const PLATFORM_EVENT_NAMES = new Set([
   'auth_completed',
   'home_interactive',
   'expert_package_install_failed',
+  'd1_retained',
+  'd7_retained',
+  'device_activated',
+  'experiment_exposed',
+  'provider_degraded',
   'update_check_completed',
   'update_prompt_shown',
   'update_download_started',
@@ -92,6 +113,54 @@ const PLATFORM_EVENT_NAMES = new Set([
   'update_install_failed',
   'update_install_blocked',
   'update_applied',
+]);
+
+const COMMERCE_EVENT_NAMES = new Set([
+  'billing_catalog_viewed',
+  'billing_checkout_started',
+  'billing_pay_started',
+  'billing_pay_succeeded',
+  'billing_pay_failed',
+  'low_credit_balance',
+]);
+
+const CONVERSATION_EVENT_NAMES = new Set([
+  'message_submitted',
+  'message_accepted',
+  'first_status',
+  'first_token',
+  'stream_finished',
+  'turn_idle',
+  'retry_succeeded',
+  'abandoned_before_first_token',
+  'answer_completed',
+  'llm_call_failed',
+]);
+
+const KNOWLEDGE_EVENT_NAMES = new Set(['kb_created', 'kb_grounded']);
+
+const FEATURE_SCOPED_EVENT_NAMES = new Set([
+  'task_drafted',
+  'task_accepted',
+  'first_task_started',
+  'first_artifact_visible',
+  'prerequisite_resolved',
+  'value_confirmed',
+  'first_value_confirmed',
+]);
+
+const VIDEO_EVENT_NAMES = new Set([
+  'render_started',
+  'film_succeeded',
+  'film_failed',
+  'film_cancelled',
+  'briefing_succeeded',
+  'briefing_failed',
+  'briefing_cancelled',
+  'project_exported',
+  'tv_published',
+  'resume_started',
+  'resume_succeeded',
 ]);
 
 let memoryQueue: FirstPartyTelemetryEvent[] = [];
@@ -152,14 +221,23 @@ function writeQueue(events: FirstPartyTelemetryEvent[]): void {
   }
 }
 
+function moduleForFeature(feature: unknown): FirstPartyTelemetryEvent['module'] {
+  if (feature === 'video_generation') return 'video_generation';
+  if (feature === 'knowledge') return 'knowledge';
+  return 'conversation';
+}
+
 function firstPartyModule(event: FunnelEvent): FirstPartyTelemetryEvent['module'] | null {
   if (PLATFORM_EVENT_NAMES.has(event.name)) return 'platform';
+  if (COMMERCE_EVENT_NAMES.has(event.name)) return 'commerce';
+  if (KNOWLEDGE_EVENT_NAMES.has(event.name)) return 'knowledge';
+  if (CONVERSATION_EVENT_NAMES.has(event.name)) return 'conversation';
   if (event.name === 'home_viewed') {
     return event.props?.feature === 'video_generation' ? 'video_generation' : 'platform';
   }
-  if (event.props?.feature !== 'video_generation') return null;
-  if (event.name === 'first_value_confirmed') return null;
-  return 'video_generation';
+  if (FEATURE_SCOPED_EVENT_NAMES.has(event.name)) return moduleForFeature(event.props?.feature);
+  if (VIDEO_EVENT_NAMES.has(event.name)) return 'video_generation';
+  return null;
 }
 
 function sanitizeProperties(

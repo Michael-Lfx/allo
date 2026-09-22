@@ -2,6 +2,7 @@ import { ipcBridge } from '@/common';
 import i18n from 'i18next';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { openExternalUrl } from '@renderer/utils/platform';
+import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 
 export type OfficialWebsiteCreditsOpener = {
   getWebsiteEntry: (params: {
@@ -45,6 +46,7 @@ export async function openOfficialWebsiteCredits(
       return;
     }
     await opener.openExternalUrl(nextUrl);
+    trackFunnelEvent('billing_catalog_viewed', { source: 'credits_website' });
   } catch {
     opener.showError(opener.translate('billing.openFailed'));
   } finally {

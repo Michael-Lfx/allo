@@ -2,6 +2,7 @@ import { ipcBridge } from '@/common';
 import type { IProvider } from '@/common/config/storage';
 import { NOMIFUN_FREE_MODEL_PLATFORM } from '@/common/types/provider/managedModelService';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
+import { trackProviderDegraded } from '@renderer/utils/analytics/productFunnel';
 import { useCallback, useEffect, useMemo } from 'react';
 import useSWR, { mutate, type SWRConfiguration } from 'swr';
 import { useManagedFreeModelsEnabled } from './useManagedFreeModelsEnabled';
@@ -124,6 +125,7 @@ export async function refreshProvidersCatalog(
   } catch (error) {
     syncError = error instanceof Error ? error : new Error(String(error));
     console.warn('[providers] Failed to sync chat model catalog:', syncError);
+    trackProviderDegraded({ source: 'sync_models', error_code: 'sync_models_failed' });
   }
   const providers = await fetchProviders();
   if (

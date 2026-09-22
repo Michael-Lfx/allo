@@ -67,7 +67,7 @@ import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJo
 
 // Components and utilities
 import AppLoader from './components/layout/AppLoader';
-import { maybeTrackRetention } from './utils/analytics/productFunnel';
+import { maybeTrackExperimentExposure, maybeTrackRetention, trackDeviceActivated } from './utils/analytics/productFunnel';
 import {
   markLaunchAuthReady,
   markLaunchBootStarted,
@@ -468,10 +468,12 @@ const Main = () => {
       try {
         const device = await ipcBridgeModule.cloud.deviceStatus.invoke();
         if (device?.clientId) syncBackendClientId(device.clientId);
+        if (device?.activatedForVersion) trackDeviceActivated(device.appVersion);
       } catch {
         // Local identity is enough until the device endpoint is reachable.
       }
       maybeTrackRetention();
+      maybeTrackExperimentExposure();
       void maybeTrackUpdateApplied();
     });
   }, [ready, status]);
