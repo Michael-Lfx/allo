@@ -14,6 +14,7 @@ pub mod cron_tools;
 pub mod meeting_tools;
 pub mod memory_tools;
 pub mod engine;
+pub mod features;
 pub mod goal;
 pub mod horizon;
 pub mod host_delegate_tool;

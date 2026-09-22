@@ -23,6 +23,7 @@ use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
 use crate::compact::state::CompactState;
 use crate::compact::{auto, emergency, estimate, micro, snip, CompactReason};
 use crate::confirm::ToolConfirmer;
+use crate::features::FeatureRegistry;
 use crate::tool_execution::{
     ExecutionControl, ProviderToolAuthority, SKIPPED_AFTER_PRIOR_ERROR,
     execute_tool_calls_scoped, execute_tool_calls_with_approval,
@@ -685,6 +686,10 @@ pub struct AgentEngine {
     editable_turn: Option<EditableTurnCheckpoint>,
     /// Optional session observation (explicit, no thread-local).
     observation: Option<Arc<crate::observation::ObservationSession>>,
+    /// Registered features. Empty by default, so a directly constructed engine
+    /// (tests, low-level embeddings) behaves exactly as it did before the seam:
+    /// every fold iterates nothing and returns its input.
+    features: FeatureRegistry,
 }
 
 /// Moves the transcript into the provider request and puts the same `Vec`
@@ -776,6 +781,7 @@ impl AgentEngine {
             process_supervisor: None,
             editable_turn: None,
             observation: None,
+            features: FeatureRegistry::new(),
         }
     }
 
@@ -871,6 +877,7 @@ impl AgentEngine {
             process_supervisor: None,
             editable_turn,
             observation: None,
+            features: FeatureRegistry::new(),
         }
     }
 
@@ -934,6 +941,22 @@ impl AgentEngine {
 
     pub fn registry_mut(&mut self) -> &mut ToolRegistry {
         &mut self.tools
+    }
+
+    /// The registered feature seam.
+    ///
+    /// Bootstrap installs the session's features through [`Self::set_features`];
+    /// the engine only ever folds this registry, never inspects its contents.
+    pub fn features(&self) -> &FeatureRegistry {
+        &self.features
+    }
+
+    /// Install the session's features. Registration also contributes each
+    /// feature's tools, so a caller must install features before the first
+    /// provider request (which is what `AgentBootstrap::build` does).
+    pub fn set_features(&mut self, features: FeatureRegistry) {
+        features.register_tools(&mut self.tools);
+        self.features = features;
     }
 
     /// Grant per-tool approval bypass after engine construction (host-injected

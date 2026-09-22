@@ -1011,17 +1011,33 @@ impl AgentBootstrap {
             isolated_permits,
         )));
 
+        // Feature seam (docs/architecture/plan-goal-feature-seam.zh.md §3.2).
+        // Features contribute tools, reminders and lifecycle hooks; the engine
+        // only folds the registry, so it carries no plan/goal-specific branch.
+        //
+        // The plan flags are created here and *adopted* by the plan service, so
+        // the service, the plan tools and the engine façade all end up on one
+        // `Arc<AtomicBool>` each.
         let plan_active_flag = Arc::new(AtomicBool::new(false));
         let plan_exit_latch = Arc::new(AtomicBool::new(false));
+        let plan_feature = crate::features::PlanFeature::new();
+        plan_feature
+            .service()
+            .adopt_active_flag(Arc::clone(&plan_active_flag).into());
+        plan_feature
+            .service()
+            .adopt_exit_latch(Arc::clone(&plan_exit_latch).into());
+        let plan_feature = Arc::new(plan_feature);
+
+        let mut features = crate::features::FeatureRegistry::new();
         if self.config.plan.enabled {
-            registry.register(Box::new(crate::plan::tools::EnterPlanModeTool::new(
-                Arc::clone(&plan_active_flag),
-            )));
-            registry.register(Box::new(crate::plan::tools::ExitPlanModeTool::with_latch(
-                Arc::clone(&plan_active_flag),
-                Arc::clone(&plan_exit_latch),
-            )));
+            features.register(plan_feature.clone());
         }
+        features.register_tools(&mut registry);
+        // Goal continuation is registered unconditionally: whether a goal is
+        // active is the host's decision (`AgentBootstrap::goal`), so a
+        // goal-less session contributes a no-op hook set.
+        features.register(Arc::new(crate::features::GoalFeature::new()));
 
         #[cfg(feature = "computer-use")]
         if self.config.tools.computer.enabled {
@@ -1255,6 +1271,7 @@ impl AgentBootstrap {
         };
         engine.set_plan_active_flag(plan_active_flag);
         engine.set_plan_exit_latch(plan_exit_latch);
+        engine.set_features(features);
         engine.set_process_supervisor(Arc::clone(&process_supervisor));
         engine.set_system_prompt_sections(prompt_cache.sections);
         engine.set_file_cache(file_cache);

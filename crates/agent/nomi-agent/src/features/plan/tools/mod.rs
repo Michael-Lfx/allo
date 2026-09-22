@@ -1,3 +1,9 @@
+//! Plan mode tools: `EnterPlanMode` and `ExitPlanMode`.
+//!
+//! Both tools read the plan service's shared flags to validate a transition,
+//! and both report the transition to the engine as a `ContextModifier` — the
+//! engine never inspects the tool name.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -6,8 +12,11 @@ use serde_json::{Value, json};
 
 use nomi_protocol::events::ToolCategory;
 use nomi_tools::Tool;
+use nomi_tools::registry::ToolRegistry;
 use nomi_types::skill_types::{ContextModifier, PlanModeTransition};
 use nomi_types::tool::{JsonSchema, ToolResult};
+
+use super::PlanService;
 
 // ---------------------------------------------------------------------------
 // EnterPlanModeTool
@@ -261,6 +270,41 @@ impl Tool for ExitPlanModeTool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+pub const PLAN_TOOL_ENTER: &str = "EnterPlanMode";
+pub const PLAN_TOOL_EXIT: &str = "ExitPlanMode";
+
+/// Register both plan tools against `service`'s shared flags.
+///
+/// Returns whether tools were registered. A registry that already holds either
+/// name is left untouched: two registrations would mean two flag pairs, and the
+/// tools would then disagree about whether plan mode is active.
+pub fn register_plan_tools(registry: &mut ToolRegistry, service: &PlanService) -> bool {
+    if registry.get(PLAN_TOOL_ENTER).is_some() || registry.get(PLAN_TOOL_EXIT).is_some() {
+        return false;
+    }
+    registry.register(Box::new(EnterPlanModeTool::new(service.active_flag().as_arc())));
+    registry.register(Box::new(ExitPlanModeTool::with_latch(
+        service.active_flag().as_arc(),
+        service.exit_latch().as_arc(),
+    )));
+    true
+}
+
+/// Convenience for callers that only need the two boxes.
+pub fn plan_tools(service: &PlanService) -> (Box<EnterPlanModeTool>, Box<ExitPlanModeTool>) {
+    (
+        Box::new(EnterPlanModeTool::new(service.active_flag().as_arc())),
+        Box::new(ExitPlanModeTool::with_latch(
+            service.active_flag().as_arc(),
+            service.exit_latch().as_arc(),
+        )),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,8 +497,8 @@ mod tests {
     #[tokio::test]
     async fn shared_flag_reflects_state_changes() {
         let flag = make_shared_flag(false);
-        let enter_tool = EnterPlanModeTool::new(Arc::clone(&flag));
-        let exit_tool = ExitPlanModeTool::new(Arc::clone(&flag));
+        let enter_tool = EnterPlanModeTool::new(flag.clone());
+        let exit_tool = ExitPlanModeTool::new(flag.clone());
 
         // Initially not active — enter succeeds, exit fails
         let r = enter_tool.execute(json!({})).await;
@@ -470,5 +514,29 @@ mod tests {
         assert!(r.is_error);
         let r = exit_tool.execute(valid_plan()).await;
         assert!(!r.is_error);
+    }
+
+    // --- Registration ---
+
+    #[test]
+    fn registration_hands_the_tools_the_service_flags() {
+        let service = PlanService::new();
+        let mut registry = ToolRegistry::new();
+        assert!(register_plan_tools(&mut registry, &service));
+        assert!(registry.get(PLAN_TOOL_ENTER).is_some());
+        assert!(registry.get(PLAN_TOOL_EXIT).is_some());
+        assert_eq!(service.active_flag().get(), false);
+        assert_eq!(service.exit_latch().get(), false);
+    }
+
+    #[test]
+    fn registration_is_refused_when_a_plan_tool_already_exists() {
+        let service = PlanService::new();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EnterPlanModeTool::new(Arc::new(AtomicBool::new(false)))));
+        assert!(
+            !register_plan_tools(&mut registry, &service),
+            "a second registration would create a second flag pair"
+        );
     }
 }

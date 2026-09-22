@@ -1,7 +1,8 @@
-/// Runtime state for Plan Mode.
-///
-/// Tracks whether the agent is currently in plan mode and the tool allow-list
-/// that was active before plan mode was entered (for restoration on approval).
+//! Runtime state for Plan Mode.
+//!
+//! Tracks whether the agent is currently in plan mode and the tool allow-list
+//! that was active before plan mode was entered (for restoration on approval).
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlanPhase {
     /// Not planning.

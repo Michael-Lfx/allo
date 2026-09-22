@@ -148,6 +148,7 @@ fn make_compact_engine_with_output(
         process_supervisor: None,
         editable_turn: None,
         observation: None,
+        features: Default::default(),
         horizon: Default::default(),
         plan_exit_latch: None,
     }
