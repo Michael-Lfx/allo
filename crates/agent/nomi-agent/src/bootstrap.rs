@@ -401,7 +401,7 @@ pub struct BootstrapResult {
 /// Encapsulates the complete initialization pipeline so all consumers
 /// (CLI, backend, delegated Agents) get consistent behavior:
 ///
-/// - System prompt always includes model identity, working directory, date
+/// - System prompt includes the stable intro and working directory; the date rides the turn tail
 /// - Unrestricted sessions inject tool usage guidance; allowlisted sessions omit it
 /// - AGENTS.md is loaded from the workspace hierarchy
 /// - Skills, MCP, and plan mode are enabled from `Config`
@@ -938,7 +938,6 @@ impl AgentBootstrap {
             &mut prompt_cache,
             self.config.system_prompt.as_deref(),
             cwd,
-            &self.config.model,
             &skills,
             Some(self.config.compact.context_window),
             memory_dir.as_deref(),

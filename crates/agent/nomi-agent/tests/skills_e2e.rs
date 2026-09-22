@@ -223,7 +223,6 @@ async fn e7_system_prompt_injection() {
         &mut SystemPromptCache::new(),
         None,
         &cwd,
-        "test-model",
         &skills,
         None,
         None,

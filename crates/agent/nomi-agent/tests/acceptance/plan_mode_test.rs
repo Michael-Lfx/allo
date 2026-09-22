@@ -170,7 +170,6 @@ fn tc_a3_02_plan_mode_not_in_system_prompt() {
         &mut SystemPromptCache::new(),
         None,
         "/tmp",
-        "test-model",
         &[],
         None,
         None,
