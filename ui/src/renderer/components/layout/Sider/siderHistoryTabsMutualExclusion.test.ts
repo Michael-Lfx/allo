@@ -18,17 +18,32 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes('bg-fill-3 text-t-primary shadow-sm')).toBe(true);
     expect(siderSource.includes('font-semibold')).toBe(false);
 
-    // Active Bar 2 module drives tab selection rather than unconditionally glowing
+    // Active and optimistic Bar 2 module drives tab selection rather than unconditionally glowing
     expect(siderSource.includes('activeBar2Module')).toBe(true);
-    expect(siderSource.includes("aria-selected={activeBar2Module === 'workspaces'}")).toBe(true);
-    expect(siderSource.includes("aria-selected={activeBar2Module === 'video'}")).toBe(true);
-    expect(siderSource.includes("aria-selected={activeBar2Module === 'companions'}")).toBe(true);
+    expect(siderSource.includes('effectiveBar2Module')).toBe(true);
+    expect(siderSource.includes('optimisticBar2Module')).toBe(true);
+    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'workspaces'}")).toBe(true);
+    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'video'}")).toBe(true);
+    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'companions'}")).toBe(true);
 
     // Module icons on workspaces, video, and companion (<Ghost />), without emoji
     expect(siderSource.includes('<MessageOne')).toBe(true);
     expect(siderSource.includes('<VideoOne')).toBe(true);
     expect(siderSource.includes('<Ghost')).toBe(true);
     expect(siderSource.includes('🐱')).toBe(false);
+  });
+
+  test('warms companion and video home on hover and app idle', () => {
+    const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+
+    expect(siderSource.includes("import { prefetchNomiPage } from '@renderer/pages/nomi/prefetch'")).toBe(true);
+    expect(
+      siderSource.includes("import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch'")
+    ).toBe(true);
+    expect(siderSource.includes('prefetchNomiPage()')).toBe(true);
+    expect(siderSource.includes('prefetchVideoGenerationHome()')).toBe(true);
+    expect(siderSource.includes('onPointerEnter={() => prefetchNomiPage()}')).toBe(true);
+    expect(siderSource.includes('onPointerEnter={() => prefetchVideoGenerationHome()}')).toBe(true);
   });
 
   test('synchronizes routes one-way and navigates module on tab click when not already on route', () => {

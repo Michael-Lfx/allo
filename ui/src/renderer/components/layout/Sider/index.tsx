@@ -41,6 +41,8 @@ import { historyTabAfterPathChange, type SiderHistoryTab } from './historyTab';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
+import { prefetchNomiPage } from '@renderer/pages/nomi/prefetch';
+import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -271,8 +273,40 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     return null;
   }, [isCompanionRoute, isSessionRoute, isVideoRoute]);
 
+  const [optimisticBar2Module, setOptimisticBar2Module] = useState<SiderHistoryTab | null>(null);
+  const lastPathnameRef = useRef(pathname);
+
+  // Clear optimistic override once route catch-up happens
+  useEffect(() => {
+    if (optimisticBar2Module && activeBar2Module === optimisticBar2Module) {
+      setOptimisticBar2Module(null);
+    }
+  }, [activeBar2Module, optimisticBar2Module]);
+
+  // If the route changed to something else, clear optimistic override
+  useEffect(() => {
+    if (lastPathnameRef.current !== pathname) {
+      lastPathnameRef.current = pathname;
+      if (optimisticBar2Module && activeBar2Module !== optimisticBar2Module) {
+        setOptimisticBar2Module(null);
+      }
+    }
+  }, [pathname, optimisticBar2Module, activeBar2Module]);
+
+  // Safety fallback: reset optimistic override if navigation takes unexpectedly long
+  useEffect(() => {
+    if (!optimisticBar2Module) return;
+    const timer = window.setTimeout(() => {
+      setOptimisticBar2Module(null);
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [optimisticBar2Module]);
+
+  const effectiveBar2Module: SiderHistoryTab | null = optimisticBar2Module ?? activeBar2Module;
+
   const handleTabClick = useCallback(
     (tab: SiderHistoryTab) => {
+      setOptimisticBar2Module(tab);
       handleSelectHistoryTab(tab);
       if (tab === 'workspaces') {
         const recentPath = getRecentConversationPath();
@@ -353,11 +387,27 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     },
     [navTo]
   );
-  const handleScheduledClick = () => navTo('/scheduled');
-  const handleMeetingClick = () => navTo('/meeting');
-  const handleKnowledgeClick = () => navTo('/knowledge');
-  const handleNomiClick = () => navTo('/nomi');
-  const handleLearningClick = () => navTo('/learn');
+  const handleScheduledClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/scheduled');
+  };
+  const handleMeetingClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/meeting');
+  };
+  const handleKnowledgeClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/knowledge');
+  };
+  const handleNomiClick = () => {
+    setOptimisticBar2Module('companions');
+    handleSelectHistoryTab('companions');
+    navTo('/nomi');
+  };
+  const handleLearningClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/learn');
+  };
 
   useEffect(() => {
     if (isSettings) return;
@@ -365,23 +415,32 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
       cancelIdleCallback?: (handle: number) => void;
     };
+    const warmIdleRoutes = () => {
+      prefetchLearningPage();
+      prefetchNomiPage();
+      prefetchVideoGenerationHome();
+    };
     if (typeof idleWindow.requestIdleCallback === 'function') {
-      const idleId = idleWindow.requestIdleCallback(() => prefetchLearningPage(), {
+      const idleId = idleWindow.requestIdleCallback(warmIdleRoutes, {
         timeout: 1800,
       });
       return () => idleWindow.cancelIdleCallback?.(idleId);
     }
-    const timer = window.setTimeout(() => prefetchLearningPage(), 250);
+    const timer = window.setTimeout(warmIdleRoutes, 250);
     return () => window.clearTimeout(timer);
   }, [isSettings]);
 
-  const handleEvalClick = () => navTo('/eval');
+  const handleEvalClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/eval');
+  };
   const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
   
   const handleSettingsClick = () => {
+    setOptimisticBar2Module(null);
     cleanupSiderTooltips();
     blurActiveElement();
     const target = resolveSettingsTogglePath(pathname, lastNonSettingsPathRef.current);
@@ -532,7 +591,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
               <SiderKnowledgeEntry
                 isMobile={isMobile}
-                isActive={pathname.startsWith('/knowledge')}
+                isActive={!effectiveBar2Module && pathname.startsWith('/knowledge')}
                 collapsed={collapsed}
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
@@ -540,7 +599,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
               <SiderLearningEntry
                 isMobile={isMobile}
-                isActive={pathname.startsWith('/learn')}
+                isActive={!effectiveBar2Module && pathname.startsWith('/learn')}
                 collapsed={collapsed}
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
@@ -555,7 +614,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
               <SiderScheduledEntry
                 isMobile={isMobile}
-                isActive={pathname === '/scheduled'}
+                isActive={!effectiveBar2Module && pathname === '/scheduled'}
                 collapsed={collapsed}
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
@@ -563,7 +622,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
               <SiderMeetingEntry
                 isMobile={isMobile}
-                isActive={pathname.startsWith('/meeting')}
+                isActive={!effectiveBar2Module && pathname.startsWith('/meeting')}
                 collapsed={collapsed}
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
@@ -572,7 +631,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               {developerMode === true && (
                 <SiderEvalEntry
                   isMobile={isMobile}
-                  isActive={pathname.startsWith('/eval')}
+                  isActive={!effectiveBar2Module && pathname.startsWith('/eval')}
                   collapsed={collapsed}
                   dock={!collapsed}
                   siderTooltipProps={siderTooltipProps}
@@ -607,11 +666,11 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     type='button'
                     role='tab'
                     title={t('sessionList.projectsTab', { defaultValue: '项目' })}
-                    aria-selected={activeBar2Module === 'workspaces'}
+                    aria-selected={effectiveBar2Module === 'workspaces'}
                     onClick={() => handleTabClick('workspaces')}
                     className={classNames(
                       'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      activeBar2Module === 'workspaces'
+                      effectiveBar2Module === 'workspaces'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
@@ -622,7 +681,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       fill='currentColor'
                       className={classNames(
                         'block leading-none shrink-0 transition-colors duration-180',
-                        activeBar2Module === 'workspaces'
+                        effectiveBar2Module === 'workspaces'
                           ? 'text-primary-6'
                           : 'text-t-tertiary group-hover:text-t-primary'
                       )}
@@ -634,11 +693,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     type='button'
                     role='tab'
                     title={t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}
-                    aria-selected={activeBar2Module === 'video'}
+                    aria-selected={effectiveBar2Module === 'video'}
                     onClick={() => handleTabClick('video')}
+                    onPointerEnter={() => prefetchVideoGenerationHome()}
                     className={classNames(
                       'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      activeBar2Module === 'video'
+                      effectiveBar2Module === 'video'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
@@ -649,7 +709,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       fill='currentColor'
                       className={classNames(
                         'block leading-none shrink-0 transition-colors duration-180',
-                        activeBar2Module === 'video'
+                        effectiveBar2Module === 'video'
                           ? 'text-primary-6'
                           : 'text-t-tertiary group-hover:text-t-primary'
                       )}
@@ -661,11 +721,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     type='button'
                     role='tab'
                     title={t('nomi.shortTitle', { defaultValue: '桌宠' })}
-                    aria-selected={activeBar2Module === 'companions'}
+                    aria-selected={effectiveBar2Module === 'companions'}
                     onClick={() => handleTabClick('companions')}
+                    onPointerEnter={() => prefetchNomiPage()}
                     className={classNames(
                       'group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis',
-                      activeBar2Module === 'companions'
+                      effectiveBar2Module === 'companions'
                         ? 'bg-fill-3 text-t-primary shadow-sm'
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
@@ -676,7 +737,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       fill='currentColor'
                       className={classNames(
                         'block leading-none shrink-0 transition-colors duration-180',
-                        activeBar2Module === 'companions'
+                        effectiveBar2Module === 'companions'
                           ? 'text-primary-6'
                           : 'text-t-tertiary group-hover:text-t-primary'
                       )}
