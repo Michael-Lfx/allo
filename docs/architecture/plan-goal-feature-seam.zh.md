@@ -348,6 +348,21 @@ reminders.register("goal",       |trigger: TriggerCtx| -> Option<String> { … }
 （`badcase_regression_test::a_round_that_keeps_truncating_stops_at_three_passes`，
 截断清理误删带 `[Context]` 的 resumable hint），本分支不修，已单列于 PR。
 
+### 实际达成情况（2026-09-22 复核）
+
+| # | 结论 | 说明 |
+|---|---|---|
+| 1 | **部分达成** | 专属字段已全部清空（`plan_state`/`goal`/`horizon` 等不再存在于 engine）；但 turn loop 仍残留 3 处 `self.goal_service()` 专名调用——用户入口直连（约 `:1867`，压在通用折叠上一行）、office plan nudge 取文案（约 `:1981`）、续作记账 `record_continuation`（约 `:3074`）。façade 委托（`set_goal`/`goal_state` 等）属 §3.3 允许范围，不计入。 |
+| 2 | **plan 达成 / goal 未达成** | `src/plan/` 已删、内容入 `features/plan/`；goal 的状态/运行时/判官/模板仍在顶层 `src/goal/`，`features/goal.rs` 只是接线文件，两侧不对称。 |
+| 3 | 达成 | `git grep` 确认 turn-tail 不再含 plan/goal 内容。 |
+| 4 | 达成 | 契约 crate 零 diff。 |
+| 5 | 达成（按上述修订口径） | 与 origin/main 基线失败集逐项 diff 为零。 |
+| 6 | **未达成** | Phase 0 基线因本地 session store 早于 turn-tail 落地而无法采集；如实记录于 turn-tail 调查文档 §7，补采义务移交后续。 |
+
+第 1、2 条的收尾工作曾启动（"Phase 5b"：钩点全量化 + `git mv src/goal → features/goal/`），
+经权衡**决定取消**：属整洁性而非正确性问题，硬指标（3、4、5）已全部达标；中途 WIP
+已丢弃，分支保持 6 个 commit。对应偏离见 §10 第 7 条。
+
 ---
 
 ## 10. 实施记录
@@ -396,6 +411,12 @@ reminders.register("goal",       |trigger: TriggerCtx| -> Option<String> { … }
    推导」；实施下来一个冻结的 gate 快照比一个布尔位更贴合「per-request 授权快照」的
    语义（gate 需要知道本次调用的 category，而 category 依赖调用入参）。该字段
    **零调用方**（`git grep plan_mode_read_only` 只剩测试名与注释），因此删除无 API 损失。
+7. **§9 第 1、2 条未完全达成（"Phase 5b" 收尾取消）。** 引擎 turn loop 残留 3 处
+   `self.goal_service()` 专名调用（用户入口 / office nudge / 续作记账），goal 模块
+   仍在 `src/goal/` 未并入 `features/goal/`。曾启动针对性清理（钩点全量化 +
+   `git mv` + 公开路径再导出），经确认属整洁性问题、决定不作为本 PR 范围，
+   WIP 已丢弃。若后续要补，入口即这 3 个调用点与一次目录搬迁，契约面不受影响。
+   §9 实际达成状态见该节末尾的复核表。
 
 ### 实施期发现的方案与代码现实冲突
 
