@@ -164,12 +164,14 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes("className='flowy-workpath-session-overflow'")).toBe(true);
   });
 
-  test('supports drag reorder and active workpath highlight', () => {
+  test('supports drag reorder via hold and active workpath highlight without dedicated drag handle', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
 
-    expect(source.includes("data-testid='workpath-drag-handle'")).toBe(true);
-    expect(source.includes("aria-label={t('sessionList.reorderWorkpath', { defaultValue: '拖动调整顺序' })}")).toBe(true);
+    expect(source.includes("data-testid='workpath-drag-handle'")).toBe(false);
     expect(source.includes('useSortable')).toBe(true);
+    expect(source.includes('{...attributes}')).toBe(true);
+    expect(source.includes('{...listeners}')).toBe(true);
+    expect(source.includes('transform ? { ...transform, x: 0 } : null')).toBe(true);
     expect(source.includes('flowy-workpath-drawer-header-active')).toBe(true);
     expect(source.includes("data-testid='workpath-active-badge'")).toBe(true);
     expect(source.includes("t('sessionList.activeWorkpathBadge'")).toBe(true);

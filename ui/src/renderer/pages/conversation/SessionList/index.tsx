@@ -23,6 +23,8 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
+  type Modifier,
 } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import classNames from 'classnames';
@@ -30,6 +32,40 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
+
+class SmartPointerSensor extends PointerSensor {
+  static activators = [
+    {
+      eventName: 'onPointerDown' as const,
+      handler: (
+        { nativeEvent: event }: { nativeEvent: PointerEvent },
+        { onActivation }: { onActivation?: (opts: { event: PointerEvent }) => void }
+      ) => {
+        if (!event.isPrimary || event.button !== 0) {
+          return false;
+        }
+
+        const target = event.target as HTMLElement | null;
+        if (target) {
+          const isInteractive = target.closest(
+            '.sider-action-btn, .workpath-action-btn, .arco-checkbox, .session-batch-selection-checkbox, .arco-dropdown, [role="menuitem"], input, textarea, a'
+          );
+          if (isInteractive) {
+            return false;
+          }
+        }
+
+        onActivation?.({ event });
+        return true;
+      },
+    },
+  ];
+}
+
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
 
 import ConversationRow from './ConversationRow';
 import CompanionSessionGroup from './CompanionSessionGroup';
@@ -122,17 +158,52 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     [conversations, ui.pinnedKeys, emptyProjectWorkpaths, ui.customOrderKeys]
   );
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const sensors = useSensors(
+    useSensor(SmartPointerSensor, {
+      activationConstraint: {
+        delay: 250,
+        tolerance: 5,
+      },
+    })
+  );
   const workpathKeys = useMemo(() => tree.map((node) => node.key), [tree]);
+
+  const [activeWorkpathDragKey, setActiveWorkpathDragKey] = useState<string | null>(null);
+
+  const handleWorkpathDragStart = useCallback((event: DragStartEvent) => {
+    setActiveWorkpathDragKey(String(event.active.id));
+  }, []);
 
   const handleWorkpathDragEnd = useCallback(
     (event: DragEndEvent) => {
+      setActiveWorkpathDragKey(null);
       const { active, over } = event;
       if (!over || active.id === over.id) return;
       ui.reorderWorkpaths(String(active.id), String(over.id), workpathKeys);
     },
     [ui, workpathKeys]
   );
+
+  const handleWorkpathDragCancel = useCallback(() => {
+    setActiveWorkpathDragKey(null);
+  }, []);
+
+  // 脱手与异常释放防护：窗口失焦、系统取消时安全复位，防止卡在拖拽状态
+  useEffect(() => {
+    if (!activeWorkpathDragKey) return;
+
+    const handleEscapeOrBlur = () => {
+      document.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }));
+      setActiveWorkpathDragKey(null);
+    };
+
+    window.addEventListener('blur', handleEscapeOrBlur);
+    window.addEventListener('pointercancel', handleEscapeOrBlur);
+    return () => {
+      window.removeEventListener('blur', handleEscapeOrBlur);
+      window.removeEventListener('pointercancel', handleEscapeOrBlur);
+    };
+  }, [activeWorkpathDragKey]);
 
   const projectWorkpathKeys = useMemo(() => new Set(emptyProjectWorkpaths), [emptyProjectWorkpaths]);
 
@@ -750,7 +821,14 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
 
         <div id='flowy-workpath-tree' aria-hidden={!expanded}>
           {expanded && (
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleWorkpathDragEnd}>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToVerticalAxis]}
+              onDragStart={handleWorkpathDragStart}
+              onDragEnd={handleWorkpathDragEnd}
+              onDragCancel={handleWorkpathDragCancel}
+            >
               <SortableContext items={workpathKeys} strategy={verticalListSortingStrategy}>
                 {tree.map((node) => (
                   <WorkpathDrawer

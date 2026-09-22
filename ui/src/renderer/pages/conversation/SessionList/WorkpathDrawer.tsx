@@ -6,7 +6,6 @@ import {
   BranchOne,
   Copy,
   DeleteOne,
-  Drag,
   FolderClose,
   FolderOpen,
   Home,
@@ -21,7 +20,6 @@ import classNames from 'classnames';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import SiderEmptyPlaceholder from '@renderer/components/layout/Sider/SiderEmptyPlaceholder';
-import InstantHoverTooltip from '@/renderer/components/base/InstantHoverTooltip';
 
 import CapabilityIcon, { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
 import { AppMessage as Message } from '@/renderer/components/notifications';
@@ -173,9 +171,10 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   );
 
   const sortableStyle: React.CSSProperties = {
-    transform: CSS.Translate.toString(transform),
+    transform: CSS.Translate.toString(transform ? { ...transform, x: 0 } : null),
     transition,
-    opacity: isDragging ? 0.6 : 1,
+    opacity: isDragging ? 0.75 : 1,
+    zIndex: isDragging ? 30 : undefined,
   };
 
   // Workpath-level capability: knowledge base. P2 临时点亮规则（组内任一成员
@@ -290,11 +289,15 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
       <div
         data-testid='workpath-toggle-row'
         data-active={isActiveWorkpath ? 'true' : 'false'}
+        data-dragging={isDragging ? 'true' : 'false'}
         className={classNames(
           'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group',
           twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px',
-          isActiveWorkpath && 'flowy-workpath-drawer-header-active !bg-[rgba(var(--primary-6),0.08)] border-l-2px border-l-solid border-primary-6'
+          isActiveWorkpath && 'flowy-workpath-drawer-header-active !bg-[rgba(var(--primary-6),0.08)] border-l-2px border-l-solid border-primary-6',
+          isDragging && 'shadow-md cursor-grabbing select-none'
         )}
+        {...attributes}
+        {...listeners}
       >
         {batchMode && (
           <span
@@ -400,24 +403,6 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             className='absolute right-8px top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-4px leading-[0] opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
             onClick={(e) => e.stopPropagation()}
           >
-            <InstantHoverTooltip content={t('sessionList.reorderWorkpath', { defaultValue: '拖动调整顺序' })}>
-              <div
-                data-testid='workpath-drag-handle'
-                aria-label={t('sessionList.reorderWorkpath', { defaultValue: '拖动调整顺序' })}
-                onClick={(e) => e.stopPropagation()}
-                className='flex-center cursor-grab active:cursor-grabbing text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
-                {...attributes}
-                {...listeners}
-              >
-                <Drag
-                  theme='outline'
-                  size='14'
-                  fill='currentColor'
-                  className='block leading-none shrink-0'
-                  style={{ lineHeight: 0 }}
-                />
-              </div>
-            </InstantHoverTooltip>
             <button
               type='button'
               data-testid='workpath-create-interactive-btn'
