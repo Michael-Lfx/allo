@@ -18,6 +18,8 @@ pub mod process_store;
 #[cfg(test)]
 pub mod pty;
 mod docx_text;
+mod pdf_text;
+mod xlsx_text;
 pub mod read;
 pub mod registry;
 pub mod tool_search;

@@ -61,9 +61,11 @@ mod websocket;
 
 pub use agent_eval::{
     AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
-    EvalArtifactView, EvalCaseFlip, EvalCaseTraceView, EvalCaseView, EvalCategoryView,
-    EvalRunDiffView, EvalRunListItem, EvalRunView, EvalScorerView, EvalSuiteDescriptor,
-    EvalSummaryView, EvalTrajectoryEventView, PullEvalDatasetResponse, StartEvalRunRequest,
+    EvalArtifactView, EvalBusinessMatrixRow, EvalBusinessReport, EvalBusinessTaskReport,
+    EvalCaseFlip, EvalCaseTraceView, EvalCaseView, EvalCategoryView, EvalRunDiffView,
+    EvalRunListItem, EvalRunView, EvalScorerView, EvalSuiteDescriptor, EvalSummaryView,
+    EvalTrajectoryEventView, ImportEvalPackRequest, ImportEvalPackResponse,
+    PullEvalDatasetResponse, StartEvalRunRequest,
 };
 pub use acp::{
     AcpHealthCheckRequest, AcpHealthCheckResponse, AgentModeResponse,

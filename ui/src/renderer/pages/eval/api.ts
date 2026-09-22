@@ -72,6 +72,7 @@ export type EvalCaseView = {
   artifact_count?: number;
   has_trace?: boolean;
   conversation_id?: string | null;
+  tool_names?: string[];
 };
 
 export type EvalCategoryView = {
@@ -140,6 +141,53 @@ export type StartEvalRunRequest = {
   limit?: number;
   task_profile?: string;
   n_trials?: number;
+};
+
+export type ImportEvalPackResponse = {
+  suite: string;
+  title: string;
+  cases: number;
+  pack_path: string;
+};
+
+export type EvalBusinessMatrixRow = {
+  label: string;
+  t01: string;
+  t02: string;
+  t03: string;
+  hint?: string | null;
+};
+
+export type EvalBusinessTaskReport = {
+  case_id: string;
+  title: string;
+  category: string;
+  success: boolean;
+  elapsed_ms: number;
+  turns: number;
+  tool_call_count: number;
+  tool_error_count: number;
+  tool_names: string[];
+  input_tokens: number;
+  output_tokens: number;
+  stop_reason?: string | null;
+  error?: string | null;
+  gate: EvalScorerView[];
+  advisory: EvalScorerView[];
+};
+
+export type EvalBusinessReport = {
+  run_id: string;
+  suite: string;
+  model?: string | null;
+  provider_id?: string | null;
+  status: string;
+  passed_cases: number;
+  failed_cases: number;
+  unique_cases: number;
+  tasks: EvalBusinessTaskReport[];
+  goal_rows: EvalBusinessMatrixRow[];
+  efficiency_rows: EvalBusinessMatrixRow[];
 };
 
 export const evalApi = {
@@ -213,4 +261,13 @@ export const evalApi = {
     scorer_json: string;
   }) => httpRequest<unknown>('POST', `${BASE}/report-case`, body),
   syncPrivate: () => httpRequest<number>('POST', `${BASE}/private/sync`),
+  importPack: (rootPath: string) =>
+    httpRequest<ImportEvalPackResponse>('POST', `${BASE}/packs/import`, { root_path: rootPath }),
+  getRunReport: (runId: string) =>
+    httpRequest<EvalBusinessReport>(
+      'GET',
+      `${BASE}/runs/${encodeURIComponent(runId)}/report`,
+      undefined,
+      { silentStatuses: [403, 404] }
+    ),
 };

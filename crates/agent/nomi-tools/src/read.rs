@@ -12,6 +12,8 @@ use nomi_types::tool::{JsonSchema, ToolImage, ToolResult};
 
 use crate::Tool;
 use crate::docx_text::{extract_docx_text, is_docx_path};
+use crate::pdf_text::{extract_pdf_text, is_pdf_path};
+use crate::xlsx_text::{extract_xlsx_text, is_xlsx_path};
 use crate::file_cache::{FileStateCache, file_mtime_ms};
 use crate::output_truncation::{TruncationBudget, truncate_middle};
 
@@ -243,8 +245,7 @@ impl ReadTool {
             };
         }
 
-        // `.docx` is a ZIP (NUL bytes in the first 8KiB), so extract body text
-        // before the generic binary stub. Plain-text reads still use the path below.
+        // Office binaries are ZIP/PDF; extract text before the generic stub.
         let owned_text;
         let text = if is_docx_path(file_path) {
             match extract_docx_text(&content) {
@@ -256,6 +257,40 @@ impl ReadTool {
                     return ToolResult {
                         content: format!(
                             "(docx file, {} bytes; text extraction failed: {error})",
+                            content.len()
+                        ),
+                        is_error: false,
+                        images: Vec::new(),
+                    };
+                }
+            }
+        } else if is_xlsx_path(file_path) {
+            match extract_xlsx_text(&content) {
+                Ok(extracted) => {
+                    owned_text = extracted;
+                    owned_text.as_str()
+                }
+                Err(error) => {
+                    return ToolResult {
+                        content: format!(
+                            "(xlsx file, {} bytes; text extraction failed: {error})",
+                            content.len()
+                        ),
+                        is_error: false,
+                        images: Vec::new(),
+                    };
+                }
+            }
+        } else if is_pdf_path(file_path) {
+            match extract_pdf_text(&content) {
+                Ok(extracted) => {
+                    owned_text = extracted;
+                    owned_text.as_str()
+                }
+                Err(error) => {
+                    return ToolResult {
+                        content: format!(
+                            "(pdf file, {} bytes; text extraction failed: {error})",
                             content.len()
                         ),
                         is_error: false,

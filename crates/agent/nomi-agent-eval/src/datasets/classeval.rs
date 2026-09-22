@@ -100,6 +100,7 @@ files. Do not rename the class.\n\n\
             notes: Some(row.class_name),
             task_profile: Some("coding".into()),
             workspace_files,
+            workspace_blobs: Vec::new(),
             timeout_secs: Some(300),
             advisory_scorers: vec![],
             isolation: None,

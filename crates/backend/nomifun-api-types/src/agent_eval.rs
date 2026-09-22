@@ -90,6 +90,8 @@ pub struct EvalCaseView {
     #[serde(default)]
     pub has_trace: bool,
     pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_names: Vec<String>,
 }
 
 fn default_trial() -> u32 {
@@ -224,6 +226,68 @@ pub struct EvalRunDiffView {
     pub b: String,
     pub flipped: Vec<EvalCaseFlip>,
     pub pass_at_1_delta: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImportEvalPackRequest {
+    pub root_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImportEvalPackResponse {
+    pub suite: String,
+    pub title: String,
+    pub cases: usize,
+    pub pack_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvalBusinessMatrixRow {
+    pub label: String,
+    pub t01: String,
+    pub t02: String,
+    pub t03: String,
+    /// One-line explanation of what the metric means. Shown in the UI and export.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvalBusinessTaskReport {
+    pub case_id: String,
+    pub title: String,
+    pub category: String,
+    pub success: bool,
+    pub elapsed_ms: u128,
+    pub turns: u32,
+    pub tool_call_count: u32,
+    pub tool_error_count: u32,
+    pub tool_names: Vec<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub gate: Vec<EvalScorerView>,
+    pub advisory: Vec<EvalScorerView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvalBusinessReport {
+    pub run_id: String,
+    pub suite: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    pub status: String,
+    pub passed_cases: usize,
+    pub failed_cases: usize,
+    pub unique_cases: usize,
+    pub tasks: Vec<EvalBusinessTaskReport>,
+    pub goal_rows: Vec<EvalBusinessMatrixRow>,
+    pub efficiency_rows: Vec<EvalBusinessMatrixRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

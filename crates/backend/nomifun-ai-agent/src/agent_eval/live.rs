@@ -32,8 +32,6 @@ use super::session_bridge::{
     EvalCaseTurnUsage, EvalSessionBridge, OpenEvalCaseSession, RecordEvalCaseTurn,
 };
 
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
-
 #[derive(Clone)]
 pub struct LiveEvalTrace {
     pub case_id: String,
@@ -96,6 +94,15 @@ impl LiveNomiHarness {
             .map_err(|e| AppError::Internal(format!("eval materialize: {e}")))?;
 
         let isolation = IsolationKind::resolve(case.isolation.as_deref(), &self.suite);
+        if isolation == IsolationKind::Business {
+            nomi_agent_eval::copy_imported_case_files(
+                nomi_agent_eval::packs_dir(&self.data_dir),
+                &self.suite,
+                &case.id,
+                &workspace,
+            )
+            .map_err(|e| AppError::Internal(format!("eval pack copy: {e}")))?;
+        }
         let mut fixture_server = None;
         if isolation == IsolationKind::Browser || case.prompt.contains("{{FIXTURE_URL}}") {
             std::fs::write(workspace.join("fixture.html"), BROWSER_FORM_HTML)
@@ -195,11 +202,14 @@ impl LiveNomiHarness {
             Some(case.prompt.as_str()),
         );
 
-        let bootstrap = AgentBootstrap::new(config, workspace.to_string_lossy().into_owned(), output)
-            .install_embedded_agent_execution(false)
-            .disable_web_search()
-            .coding_boundary(coding)
-            .observation(Arc::clone(&observation));
+        let mut bootstrap =
+            AgentBootstrap::new(config, workspace.to_string_lossy().into_owned(), output)
+                .install_embedded_agent_execution(false)
+                .coding_boundary(coding)
+                .observation(Arc::clone(&observation));
+        if isolation != IsolationKind::Business {
+            bootstrap = bootstrap.disable_web_search();
+        }
         let mut built = bootstrap
             .build()
             .await
@@ -217,7 +227,11 @@ impl LiveNomiHarness {
             built.engine.set_task_profile(TaskProfile::Office);
         }
 
-        let timeout = Duration::from_secs(case.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, 600));
+        let timeout = Duration::from_secs(
+            case.timeout_secs
+                .unwrap_or(isolation.default_timeout_secs())
+                .clamp(1, isolation.max_timeout_secs()),
+        );
         let started = Instant::now();
         let exec = tokio::time::timeout(
             timeout,
@@ -388,7 +402,7 @@ pub(crate) fn isolate_eval_config(
     config.tools.auto_approve = true;
     config.tools.browser.enabled = isolation == IsolationKind::Browser;
     config.tools.computer.enabled = false;
-    config.tools.web.enabled = false;
+    config.tools.web.enabled = isolation == IsolationKind::Business;
     config.tools.write_root = workspace.to_string_lossy().into_owned();
     config.tools.builtin_allowlist.clear();
     config.memory.distill_enabled = false;
@@ -574,6 +588,25 @@ mod tests {
         );
         assert!(config.mcp.servers.contains_key("eval_crm"));
         assert!(!config.mcp.servers["eval_crm"].deferred.unwrap_or(true));
+        isolate_eval_config(
+            &mut config,
+            dir.path(),
+            Some(48),
+            IsolationKind::Business,
+            None,
+        );
+        assert!(config.tools.web.enabled);
+        assert!(!config.tools.browser.enabled);
+        assert!(config.mcp.servers.is_empty());
+        isolate_eval_config(
+            &mut config,
+            dir.path(),
+            Some(6),
+            IsolationKind::Office,
+            None,
+        );
+        assert!(!config.tools.web.enabled);
+        assert!(!config.tools.browser.enabled);
     }
 
     #[test]

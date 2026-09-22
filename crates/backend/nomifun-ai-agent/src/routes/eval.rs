@@ -5,8 +5,9 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 
 use nomifun_api_types::{
-    ApiResponse, EvalCaseTraceView, EvalRunDiffView, EvalRunListItem, EvalRunView,
-    EvalSuiteDescriptor, PullEvalDatasetResponse, SessionObservationListDto, StartEvalRunRequest,
+    ApiResponse, EvalBusinessReport, EvalCaseTraceView, EvalRunDiffView, EvalRunListItem,
+    EvalRunView, EvalSuiteDescriptor, ImportEvalPackRequest, ImportEvalPackResponse,
+    PullEvalDatasetResponse, SessionObservationListDto, StartEvalRunRequest,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -58,6 +59,14 @@ pub fn eval_routes(state: AgentRouterState) -> Router {
         )
         .route("/api/debug/agent-evals/report-case", post(report_case))
         .route("/api/debug/agent-evals/private/sync", post(sync_private))
+        .route(
+            "/api/debug/agent-evals/packs/import",
+            post(import_pack),
+        )
+        .route(
+            "/api/debug/agent-evals/runs/{run_id}/report",
+            get(get_report),
+        )
         .with_state(state)
 }
 
@@ -177,5 +186,26 @@ async fn sync_private(
 ) -> Result<Json<ApiResponse<usize>>, AppError> {
     Ok(Json(ApiResponse::ok(
         state.eval_lab.sync_private_corpus().await?,
+    )))
+}
+
+async fn import_pack(
+    State(state): State<AgentRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<ImportEvalPackRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<ImportEvalPackResponse>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::ok(
+        state.eval_lab.import_pack(&req.root_path).await?,
+    )))
+}
+
+async fn get_report(
+    State(state): State<AgentRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(run_id): Path<String>,
+) -> Result<Json<ApiResponse<EvalBusinessReport>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.eval_lab.business_report(&run_id).await?,
     )))
 }

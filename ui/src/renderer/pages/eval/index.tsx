@@ -11,18 +11,24 @@ import {
   Alert,
   Button,
   InputNumber,
+  Message,
   Modal,
   Progress,
   Select,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from '@arco-design/web-react';
+import { FolderOpen } from '@icon-park/react';
+import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import EvalModelSelector, { useEvalAutogenModel } from './EvalModelSelector';
 import {
   evalApi,
+  type EvalBusinessMatrixRow,
+  type EvalBusinessReport,
   type EvalCaseTraceView,
   type EvalCaseView,
   type EvalRunDiffView,
@@ -30,11 +36,12 @@ import {
   type EvalRunView,
   type EvalSuiteDescriptor,
 } from './api';
+import { exportBusinessReport } from './businessReportExport';
 
 const { Title, Text } = Typography;
 
 const IN_FLIGHT = new Set(['loading', 'queued', 'running', 'cancelling']);
-const TIER_ORDER = ['smoke', 'capability', 'advanced', 'sandbox'] as const;
+const TIER_ORDER = ['smoke', 'capability', 'imported', 'advanced', 'sandbox'] as const;
 
 function formatRate(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
@@ -60,18 +67,39 @@ function statusColor(status: string): string {
 
 function tierLabel(
   tier: (typeof TIER_ORDER)[number],
-  t: (key: 'eval.tier.smoke' | 'eval.tier.capability' | 'eval.tier.advanced' | 'eval.tier.sandbox') => string
+  t: (
+    key:
+      | 'eval.tier.smoke'
+      | 'eval.tier.capability'
+      | 'eval.tier.imported'
+      | 'eval.tier.advanced'
+      | 'eval.tier.sandbox'
+  ) => string
 ): string {
   switch (tier) {
     case 'smoke':
       return t('eval.tier.smoke');
     case 'capability':
       return t('eval.tier.capability');
+    case 'imported':
+      return t('eval.tier.imported');
     case 'advanced':
       return t('eval.tier.advanced');
     case 'sandbox':
       return t('eval.tier.sandbox');
   }
+}
+
+function isImportedSuiteId(id: string | undefined | null): boolean {
+  return Boolean(id?.startsWith('imported-'));
+}
+
+function isBusinessRun(run: EvalRunView | null): boolean {
+  if (!run) return false;
+  return (
+    isImportedSuiteId(run.suite) ||
+    run.cases.some((row) => row.case_id === 't01' || row.case_id === 't02' || row.case_id === 't03')
+  );
 }
 
 const EvalPage: React.FC = () => {
@@ -83,17 +111,22 @@ const EvalPage: React.FC = () => {
   const [limit, setLimit] = useState<number | undefined>(7);
   const [nTrials, setNTrials] = useState(3);
   const [run, setRun] = useState<EvalRunView | null>(null);
+  const [report, setReport] = useState<EvalBusinessReport | null>(null);
   const [history, setHistory] = useState<EvalRunListItem[]>([]);
   const [diffA, setDiffA] = useState<string | undefined>();
   const [diffB, setDiffB] = useState<string | undefined>();
   const [diff, setDiff] = useState<EvalRunDiffView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'load' | 'pull' | 'run' | 'cancel' | 'sync' | 'diff' | null>(null);
+  const [busy, setBusy] = useState<'load' | 'pull' | 'run' | 'cancel' | 'sync' | 'diff' | 'import' | null>(
+    null
+  );
 
   const selectedSuite = useMemo(
     () => suites.find((suite) => suite.id === suiteId) ?? null,
     [suites, suiteId]
   );
+  const importedSuite =
+    selectedSuite?.kind === 'imported' || isImportedSuiteId(suiteId);
   const inFlight = run != null && IN_FLIGHT.has(run.status);
 
   const load = useCallback(async () => {
@@ -135,6 +168,25 @@ const EvalPage: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [inFlight, run?.run_id]);
 
+  useEffect(() => {
+    if (!run?.run_id || inFlight || !isBusinessRun(run)) {
+      setReport(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void evalApi
+      .getRunReport(run.run_id)
+      .then((next) => {
+        if (!cancelled) setReport(next);
+      })
+      .catch(() => {
+        if (!cancelled) setReport(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inFlight, run]);
+
   const onSuiteChange = (nextId: string) => {
     setSuiteId(nextId);
     const next = suites.find((suite) => suite.id === nextId);
@@ -164,7 +216,7 @@ const EvalPage: React.FC = () => {
       const next = await evalApi.startRun({
         suite: suiteId,
         limit,
-        n_trials: nTrials,
+        n_trials: importedSuite ? 1 : nTrials,
         task_profile: selectedSuite?.default_task_profile,
         ...(evalModel.choice
           ? { provider_id: evalModel.choice.provider_id, model: evalModel.choice.model }
@@ -197,6 +249,30 @@ const EvalPage: React.FC = () => {
     try {
       await evalApi.syncPrivate();
       await load();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const importPack = async () => {
+    setBusy('import');
+    setError(null);
+    try {
+      const picked = await ipcBridge.dialog.showOpen.invoke({ properties: ['openDirectory'] });
+      const rootPath = picked?.[0];
+      if (!rootPath) return;
+      const imported = await evalApi.importPack(rootPath);
+      const nextSuites = await evalApi.listSuites();
+      setSuites(nextSuites);
+      setSuiteId(imported.suite);
+      const selected = nextSuites.find((suite) => suite.id === imported.suite);
+      setLimit(selected?.default_limit ?? imported.cases);
+      setNTrials(selected?.default_trials ?? 1);
+      Message.success(
+        t('eval.importSuccess', { title: imported.title, count: imported.cases })
+      );
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : String(actionError));
     } finally {
@@ -294,20 +370,38 @@ const EvalPage: React.FC = () => {
             <Text type='secondary' className='block mb-4px'>
               {t('eval.trials')}
             </Text>
-            <InputNumber
-              value={nTrials}
-              min={1}
-              max={5}
-              disabled={inFlight}
-              onChange={(value) => setNTrials(typeof value === 'number' ? value : 1)}
-              style={{ width: 120 }}
-            />
+            {importedSuite ? (
+              <Tooltip content={t('eval.trialsLocked')}>
+                <span>
+                  <InputNumber value={1} min={1} max={1} disabled style={{ width: 120 }} />
+                </span>
+              </Tooltip>
+            ) : (
+              <InputNumber
+                value={nTrials}
+                min={1}
+                max={5}
+                disabled={inFlight}
+                onChange={(value) => setNTrials(typeof value === 'number' ? value : 1)}
+                style={{ width: 120 }}
+              />
+            )}
           </div>
           {selectedSuite?.requires_download && (
             <Button onClick={() => void pull()} loading={busy === 'pull'} disabled={inFlight}>
               {t('eval.pull')}
             </Button>
           )}
+          <Tooltip content={t('eval.importHint')}>
+            <Button
+              onClick={() => void importPack()}
+              loading={busy === 'import'}
+              disabled={inFlight}
+              icon={<FolderOpen theme='outline' size={14} />}
+            >
+              {t('eval.importPack')}
+            </Button>
+          </Tooltip>
           <Button onClick={() => void syncPrivate()} loading={busy === 'sync'} disabled={inFlight}>
             {t('eval.syncPrivate')}
           </Button>
@@ -332,10 +426,11 @@ const EvalPage: React.FC = () => {
 
         {selectedSuite && (
           <Text type='secondary'>
-            {selectedSuite.notes}
+            {importedSuite ? t('eval.importNotes') : selectedSuite.notes}
             {selectedSuite.requires_download
               ? ` · ${selectedSuite.cached ? t('eval.cached') : t('eval.needsDownload')}`
               : ''}
+            {importedSuite ? ` · ${t('eval.importHint')}` : ''}
           </Text>
         )}
 
@@ -363,14 +458,18 @@ const EvalPage: React.FC = () => {
                 label={t('eval.metric.successRate')}
                 value={summary ? formatRate(summary.success_rate) : '—'}
               />
-              <Metric
-                label={t('eval.metric.passAt1')}
-                value={summary ? formatRate(summary.pass_at_1 ?? 0) : '—'}
-              />
-              <Metric
-                label={t('eval.metric.passHatK')}
-                value={summary ? formatRate(summary.pass_hat_k ?? 0) : '—'}
-              />
+              {!isBusinessRun(run) && (
+                <>
+                  <Metric
+                    label={t('eval.metric.passAt1')}
+                    value={summary ? formatRate(summary.pass_at_1 ?? 0) : '—'}
+                  />
+                  <Metric
+                    label={t('eval.metric.passHatK')}
+                    value={summary ? formatRate(summary.pass_hat_k ?? 0) : '—'}
+                  />
+                </>
+              )}
               <Metric
                 label={t('eval.metric.avgTurns')}
                 value={summary ? formatAvg(summary.avg_turns) : '—'}
@@ -402,6 +501,8 @@ const EvalPage: React.FC = () => {
                 <TraceView trace={run.current_trace} />
               </div>
             )}
+
+            {isBusinessRun(run) && <BusinessReportPanel report={report} inFlight={inFlight} />}
 
             {summary && summary.by_category.length > 0 && (
               <Table
@@ -553,6 +654,193 @@ const EvalPage: React.FC = () => {
     </div>
   );
 };
+
+function reportCellTone(value: string): 'success' | 'error' | 'warning' | 'secondary' | undefined {
+  const hasFail =
+    value.includes('✗') ||
+    value.startsWith('未通过') ||
+    value.startsWith('未评分') ||
+    value.startsWith('出错');
+  const hasPass = value.includes('✓') || value.startsWith('Gate 全过');
+  const truncated = value.includes('截断') || value.includes('掐断') || value.includes('停在工具');
+  if (hasFail && hasPass) return 'warning';
+  if (hasFail) return 'error';
+  if (truncated) return 'warning';
+  if (hasPass) return 'success';
+  if (value === '未跑' || value === '—') return 'secondary';
+  return undefined;
+}
+
+function ReportCell({ value }: { value: string }) {
+  const tone = reportCellTone(value);
+  return (
+    <Text type={tone} className='whitespace-pre-wrap'>
+      {value}
+    </Text>
+  );
+}
+
+function ReportMetricCell({ label, hint }: { label: string; hint?: string | null }) {
+  return (
+    <div className='py-2px'>
+      <Text className='font-500'>{label}</Text>
+      {hint ? (
+        <Text type='secondary' className='mt-4px block text-12px leading-18px'>
+          {hint}
+        </Text>
+      ) : null}
+    </div>
+  );
+}
+
+function BusinessReportPanel({
+  report,
+  inFlight,
+}: {
+  report: EvalBusinessReport | null;
+  inFlight: boolean;
+}) {
+  const { t } = useTranslation();
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async () => {
+    if (!report || exporting) return;
+    setExporting(true);
+    try {
+      const result = await exportBusinessReport(report, {
+        htmlFilterName: t('eval.report.exportFilter'),
+        csvFilterName: t('eval.report.exportFilterCsv'),
+      });
+      if (result.status === 'saved') {
+        Message.success(t('eval.report.exportOk', { path: result.path }));
+      }
+    } catch (error) {
+      const detail =
+        isBackendHttpError(error) && error.backendMessage.trim()
+          ? error.backendMessage
+          : '';
+      Message.error(detail ? `${t('eval.report.exportFailed')}: ${detail}` : t('eval.report.exportFailed'));
+    } finally {
+      setExporting(false);
+    }
+  };
+  const goalColumns = [
+    {
+      title: t('eval.report.check'),
+      dataIndex: 'label',
+      width: 260,
+      render: (_value: string, row: EvalBusinessMatrixRow) => (
+        <ReportMetricCell label={row.label} hint={row.hint} />
+      ),
+    },
+    {
+      title: t('eval.report.t01'),
+      dataIndex: 't01',
+      render: (value: string) => <ReportCell value={value} />,
+    },
+    {
+      title: t('eval.report.t02'),
+      dataIndex: 't02',
+      render: (value: string) => <ReportCell value={value} />,
+    },
+    {
+      title: t('eval.report.t03'),
+      dataIndex: 't03',
+      render: (value: string) => <ReportCell value={value} />,
+    },
+  ];
+  const efficiencyColumns = [
+    {
+      title: t('eval.report.metric'),
+      dataIndex: 'label',
+      width: 260,
+      render: (_value: string, row: EvalBusinessMatrixRow) => (
+        <ReportMetricCell label={row.label} hint={row.hint} />
+      ),
+    },
+    {
+      title: t('eval.report.t01'),
+      dataIndex: 't01',
+      render: (value: string) => <ReportCell value={value} />,
+    },
+    {
+      title: t('eval.report.t02'),
+      dataIndex: 't02',
+      render: (value: string) => <ReportCell value={value} />,
+    },
+    {
+      title: t('eval.report.t03'),
+      dataIndex: 't03',
+      render: (value: string) => <ReportCell value={value} />,
+    },
+  ];
+  const suiteLabel = report
+    ? `${report.passed_cases}/${report.unique_cases}`
+    : null;
+
+  return (
+    <div className='flex flex-col gap-12px rounded-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
+      <div className='flex flex-wrap items-start justify-between gap-12px'>
+        <div>
+          <Title heading={5} className='!m-0'>
+            {t('eval.report.title')}
+            {suiteLabel ? (
+              <Tag
+                className='ml-8px'
+                color={
+                  report && report.unique_cases > 0 && report.passed_cases === report.unique_cases
+                    ? 'green'
+                    : 'orangered'
+                }
+              >
+                {suiteLabel}
+              </Tag>
+            ) : null}
+          </Title>
+          <Text type='secondary'>
+            {t('eval.report.modelNote', { model: report?.model || '—' })}
+          </Text>
+        </div>
+        <Button
+          size='small'
+          loading={exporting}
+          onClick={() => void handleExport()}
+          disabled={!report || inFlight || exporting}
+        >
+          {t('eval.report.export')}
+        </Button>
+      </div>
+      {!report || inFlight ? (
+        <Text type='secondary'>
+          {inFlight ? t('eval.report.running') : t('eval.report.empty')}
+        </Text>
+      ) : (
+        <>
+          <Text className='font-500'>{t('eval.report.goal')}</Text>
+          <Table
+            rowKey='label'
+            pagination={false}
+            size='small'
+            data={report.goal_rows}
+            columns={goalColumns}
+            scroll={{ x: true }}
+          />
+          <Text className='font-500'>{t('eval.report.efficiency')}</Text>
+          <Table
+            rowKey='label'
+            pagination={false}
+            size='small'
+            data={report.efficiency_rows}
+            columns={efficiencyColumns}
+            scroll={{ x: true }}
+          />
+          <Text type='secondary'>{t('eval.report.footnote')}</Text>
+          <Text type='secondary'>{t('eval.report.stopGuide')}</Text>
+        </>
+      )}
+    </div>
+  );
+}
 
 function statusLabel(
   status: string,

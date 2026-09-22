@@ -6,7 +6,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::types::{Case, Manifest, ScorerSpec, SCHEMA_VERSION};
+use crate::types::{Case, IsolationKind, Manifest, ScorerSpec, SCHEMA_VERSION};
 use crate::workspace::safe_join;
 
 #[derive(Debug, Error)]
@@ -171,9 +171,12 @@ fn validate_case(case: &Case) -> Result<(), CorpusError> {
         }
     }
     if let Some(timeout) = case.timeout_secs {
-        if timeout == 0 || timeout > 600 {
+        let isolation = IsolationKind::parse_label(case.isolation.as_deref().unwrap_or(""))
+            .unwrap_or(IsolationKind::Smoke);
+        let max = isolation.max_timeout_secs();
+        if timeout == 0 || timeout > max {
             return Err(CorpusError::Invalid(format!(
-                "case {} timeout_secs must be 1..=600",
+                "case {} timeout_secs must be 1..={max}",
                 case.id
             )));
         }
@@ -184,10 +187,15 @@ fn validate_case(case: &Case) -> Result<(), CorpusError> {
             CorpusError::Invalid(format!("case {} workspace file: {e}", case.id))
         })?;
     }
+    for relative in &case.workspace_blobs {
+        safe_join(root, relative).map_err(|e| {
+            CorpusError::Invalid(format!("case {} workspace blob: {e}", case.id))
+        })?;
+    }
     if let Some(isolation) = case.isolation.as_deref() {
         if crate::types::IsolationKind::parse_label(isolation).is_none() {
             return Err(CorpusError::Invalid(format!(
-                "case {} isolation must be smoke|office|coding|browser|mcp",
+                "case {} isolation must be smoke|office|coding|browser|mcp|business",
                 case.id
             )));
         }
@@ -370,6 +378,57 @@ fn validate_scorer(case_id: &str, scorer: &ScorerSpec) -> Result<(), CorpusError
                 })?;
             }
         }
+        ScorerSpec::XlsxSheets { path, names } => {
+            if path.trim().is_empty() || names.is_empty() || names.iter().any(|n| n.trim().is_empty())
+            {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} xlsx_sheets needs a path and non-empty sheet names"
+                )));
+            }
+            safe_join(std::path::Path::new("."), path).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} xlsx_sheets: {e}"))
+            })?;
+        }
+        ScorerSpec::XlsxHeaders { path, headers, sheet } => {
+            if path.trim().is_empty()
+                || headers.is_empty()
+                || headers.iter().any(|h| h.trim().is_empty())
+            {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} xlsx_headers needs a path and non-empty headers"
+                )));
+            }
+            if sheet.as_ref().is_some_and(|s| s.trim().is_empty()) {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} xlsx_headers sheet must not be empty when set"
+                )));
+            }
+            safe_join(std::path::Path::new("."), path).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} xlsx_headers: {e}"))
+            })?;
+        }
+        ScorerSpec::XlsxTotalsClose {
+            source,
+            output,
+            tolerance,
+        } => {
+            if source.trim().is_empty() || output.trim().is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} xlsx_totals_close needs source and output paths"
+                )));
+            }
+            if !tolerance.is_finite() || *tolerance < 0.0 || *tolerance > 1.0 {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} xlsx_totals_close tolerance must be 0..=1"
+                )));
+            }
+            safe_join(std::path::Path::new("."), source).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} xlsx_totals_close source: {e}"))
+            })?;
+            safe_join(std::path::Path::new("."), output).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} xlsx_totals_close output: {e}"))
+            })?;
+        }
     }
     Ok(())
 }
@@ -396,6 +455,7 @@ mod tests {
             notes: None,
             task_profile: None,
             workspace_files: std::collections::BTreeMap::new(),
+            workspace_blobs: Vec::new(),
             timeout_secs: None,
             advisory_scorers: vec![],
             isolation: None,

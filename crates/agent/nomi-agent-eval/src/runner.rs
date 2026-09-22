@@ -246,6 +246,7 @@ async fn run_manifest(
                     trajectory_event_count: transcript.trajectory.len() as u32,
                     artifact_count: transcript.artifacts.len() as u32,
                     conversation_id: transcript.conversation_id.clone(),
+                    tool_names: transcript.tool_names.clone(),
                     trial,
                 }
             }
@@ -279,6 +280,7 @@ async fn run_manifest(
                 trajectory_event_count: 0,
                 artifact_count: 0,
                 conversation_id: None,
+                tool_names: Vec::new(),
                 trial,
             },
         };
@@ -563,6 +565,7 @@ mod tests {
             notes: None,
             task_profile: None,
             workspace_files: Default::default(),
+            workspace_blobs: Vec::new(),
             timeout_secs: None,
             advisory_scorers: vec![],
             isolation: None,

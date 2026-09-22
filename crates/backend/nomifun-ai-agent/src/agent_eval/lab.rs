@@ -7,15 +7,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nomi_agent_eval::{
-    cache_dir, default_trials_for_suite, list_suites, load_suite_manifest, private_corpus_dir,
-    run_loaded_manifest, summarize, Case, EvalCaseTrace, EvalResult, Manifest, RunConfig,
-    RunProgress, RunProgressPhase, ScorerResult, ScorerSpec, SuiteDescriptor, Summary,
+    cache_dir, default_trials_for_suite, import_business_pack, is_imported_suite,
+    list_imported_pack_suites, list_suites, load_suite_manifest_with_packs, packs_dir,
+    private_corpus_dir, run_loaded_manifest, summarize, Case, EvalCaseTrace, EvalResult, Manifest,
+    RunConfig, RunProgress, RunProgressPhase, ScorerResult, ScorerSpec, SuiteDescriptor, Summary,
     SCHEMA_VERSION,
 };
 use nomifun_api_types::{
-    EvalArtifactView, EvalCaseFlip, EvalCaseTraceView, EvalCaseView, EvalCategoryView,
-    EvalRunDiffView, EvalRunListItem, EvalRunView, EvalScorerView, EvalSuiteDescriptor,
-    EvalSummaryView, EvalTrajectoryEventView, PullEvalDatasetResponse, StartEvalRunRequest,
+    EvalArtifactView, EvalBusinessReport, EvalCaseFlip, EvalCaseTraceView, EvalCaseView,
+    EvalCategoryView, EvalRunDiffView, EvalRunListItem, EvalRunView, EvalScorerView,
+    EvalSuiteDescriptor, EvalSummaryView, EvalTrajectoryEventView, ImportEvalPackResponse,
+    PullEvalDatasetResponse, StartEvalRunRequest,
 };
 use nomifun_common::AppError;
 use nomifun_db::{IClientPreferenceRepository, IProviderModelRepository, IProviderRepository};
@@ -26,6 +28,7 @@ use crate::agent_eval::live::{
     sanitize_case_dir, trace_file_name, LiveEvalTrace, LiveNomiHarness,
 };
 use crate::agent_eval::quality::{EvalQualityCase, EvalQualityReport, EvalQualitySink};
+use crate::agent_eval::report::build_business_report;
 use crate::agent_eval::session_bridge::{eval_run_workspace_label, EvalSessionBridge};
 use crate::agent_trace::developer_mode_enabled;
 use crate::{AgentTraceHub, SessionObservationList};
@@ -115,10 +118,43 @@ impl EvalLab {
     pub async fn list_suites(&self) -> Result<Vec<EvalSuiteDescriptor>, AppError> {
         self.require_developer_mode().await?;
         let cache = cache_dir(&self.data_dir);
-        Ok(list_suites()
+        let mut suites: Vec<_> = list_suites()
             .into_iter()
             .map(|suite| descriptor_view(suite, &cache))
-            .collect())
+            .collect();
+        for suite in list_imported_pack_suites(packs_dir(&self.data_dir)) {
+            let mut view = descriptor_view(suite, &cache);
+            view.cached = true;
+            suites.push(view);
+        }
+        Ok(suites)
+    }
+
+    pub async fn import_pack(&self, root_path: &str) -> Result<ImportEvalPackResponse, AppError> {
+        self.require_developer_mode().await?;
+        let trimmed = root_path.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::BadRequest("root_path is required".into()));
+        }
+        let root = PathBuf::from(trimmed);
+        if !root.is_dir() {
+            return Err(AppError::BadRequest(format!(
+                "root_path is not a directory: {trimmed}"
+            )));
+        }
+        let imported = import_business_pack(&root, packs_dir(&self.data_dir))
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        Ok(ImportEvalPackResponse {
+            suite: imported.suite,
+            title: imported.title,
+            cases: imported.cases,
+            pack_path: imported.pack_path,
+        })
+    }
+
+    pub async fn business_report(&self, run_id: &str) -> Result<EvalBusinessReport, AppError> {
+        let view = self.current_or_get(run_id).await?;
+        Ok(build_business_report(&view))
     }
 
     pub async fn pull_dataset(
@@ -128,7 +164,8 @@ impl EvalLab {
     ) -> Result<PullEvalDatasetResponse, AppError> {
         self.require_developer_mode().await?;
         let cache = cache_dir(&self.data_dir);
-        let manifest = load_suite_manifest(suite, &cache, limit)
+        let packs = packs_dir(&self.data_dir);
+        let manifest = load_suite_manifest_with_packs(suite, &cache, &packs, limit)
             .await
             .map_err(dataset_error)?;
         Ok(PullEvalDatasetResponse {
@@ -215,10 +252,14 @@ impl EvalLab {
         let summary_path_for_fail = summary_path.clone();
         let limit = request.limit;
         let task_profile = request.task_profile.clone();
-        let n_trials = request
-            .n_trials
-            .filter(|n| *n >= 1)
-            .unwrap_or_else(|| default_trials_for_suite(&suite));
+        let n_trials = if is_imported_suite(&suite) {
+            1
+        } else {
+            request
+                .n_trials
+                .filter(|n| *n >= 1)
+                .unwrap_or_else(|| default_trials_for_suite(&suite))
+        };
         let quality_sink = self
             .quality_sink
             .lock()
@@ -619,7 +660,8 @@ struct RunEvalJob {
 
 async fn run_eval_job(job: RunEvalJob) -> Result<(), AppError> {
     let cache = cache_dir(&job.data_dir);
-    let manifest = load_suite_manifest(&job.suite, &cache, job.limit)
+    let packs = packs_dir(&job.data_dir);
+    let manifest = load_suite_manifest_with_packs(&job.suite, &cache, &packs, job.limit)
         .await
         .map_err(dataset_error)?;
     {
@@ -774,6 +816,7 @@ fn load_case_views(path: &Path, traces_dir: &Path) -> Result<Vec<EvalCaseView>, 
             artifact_count: row.artifact_count,
             has_trace,
             conversation_id: row.conversation_id,
+            tool_names: row.tool_names,
         });
     }
     Ok(cases)
@@ -939,6 +982,7 @@ fn promoted_to_case(item: EvalQualityCase) -> Option<Case> {
         notes: Some("promoted from agent_quality".into()),
         task_profile: Some("office".into()),
         workspace_files: Default::default(),
+        workspace_blobs: Vec::new(),
         timeout_secs: None,
     })
 }
@@ -1026,6 +1070,7 @@ fn dataset_error(error: nomi_agent_eval::DatasetError) -> AppError {
         nomi_agent_eval::DatasetError::EmptySuite(suite) => {
             AppError::BadRequest(format!("suite {suite} has no cases"))
         }
+        nomi_agent_eval::DatasetError::Corpus(error) => AppError::BadRequest(error.to_string()),
         other => AppError::Internal(other.to_string()),
     }
 }

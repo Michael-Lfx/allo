@@ -9,6 +9,7 @@ mod capture;
 mod lab;
 mod live;
 mod quality;
+mod report;
 mod session_bridge;
 
 pub use lab::EvalLab;

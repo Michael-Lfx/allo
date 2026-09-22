@@ -128,6 +128,71 @@ fn is_text_artifact(relative: &str) -> bool {
     )
 }
 
+/// Recursively copy `src` contents into `dest` (creating `dest`).
+pub fn copy_dir_contents(src: &Path, dest: &Path) -> Result<(), CorpusError> {
+    fs::create_dir_all(dest)?;
+    copy_dir_contents_inner(src, dest, dest)
+}
+
+fn copy_dir_contents_inner(src: &Path, dest: &Path, dest_root: &Path) -> Result<(), CorpusError> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let name = entry.file_name();
+        let to = dest.join(&name);
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            fs::create_dir_all(&to)?;
+            copy_dir_contents_inner(&from, &to, dest_root)?;
+        } else if file_type.is_file() {
+            if let Ok(rel) = to.strip_prefix(dest_root) {
+                let relative = rel.to_string_lossy().replace('\\', "/");
+                safe_join(dest_root, &relative)?;
+            }
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Relative file paths under `root`, using `/` separators.
+pub fn list_relative_files(root: &Path) -> Result<Vec<String>, CorpusError> {
+    let mut out = Vec::new();
+    list_relative_files_inner(root, root, 0, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn list_relative_files_inner(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<String>,
+) -> Result<(), CorpusError> {
+    if depth > 8 {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir)?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            list_relative_files_inner(root, &path, depth + 1, out)?;
+        } else if file_type.is_file() {
+            if let Ok(rel) = path.strip_prefix(root) {
+                let relative = rel.to_string_lossy().replace('\\', "/");
+                safe_join(root, &relative)?;
+                out.push(relative);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn truncate_preview(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_owned()
@@ -181,5 +246,20 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("MEMO_OK"));
+    }
+
+    #[test]
+    fn copies_nested_binary_files() {
+        let src = tempdir().unwrap();
+        let dest = tempdir().unwrap();
+        fs::create_dir_all(src.path().join("Input")).unwrap();
+        fs::write(src.path().join("Input/notes.docx"), b"PK\x03\x04fake").unwrap();
+        copy_dir_contents(src.path(), dest.path()).unwrap();
+        let files = list_relative_files(dest.path()).unwrap();
+        assert!(files.iter().any(|p| p == "Input/notes.docx"));
+        assert_eq!(
+            fs::read(dest.path().join("Input/notes.docx")).unwrap(),
+            b"PK\x03\x04fake"
+        );
     }
 }

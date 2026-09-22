@@ -106,10 +106,33 @@ pub enum ScorerSpec {
         #[serde(default = "default_minimum_hits")]
         minimum: usize,
     },
+    /// All listed sheet names must exist in an `.xlsx` workbook.
+    XlsxSheets {
+        path: String,
+        names: Vec<String>,
+    },
+    /// First-row headers of an `.xlsx` sheet must include every listed name.
+    XlsxHeaders {
+        path: String,
+        headers: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sheet: Option<String>,
+    },
+    /// Advisory: output workbook numbers should match source aggregates within `tolerance`.
+    XlsxTotalsClose {
+        source: String,
+        output: String,
+        #[serde(default = "default_xlsx_tolerance")]
+        tolerance: f64,
+    },
 }
 
 fn default_minimum_hits() -> usize {
     1
+}
+
+fn default_xlsx_tolerance() -> f64 {
+    0.01
 }
 
 /// One evaluation case in a conversation corpus.
@@ -127,7 +150,7 @@ pub struct Case {
     /// Recorded but excluded from pass/fail until a rubric is calibrated.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisory_scorers: Vec<ScorerSpec>,
-    /// Isolation overlay: `smoke` | `office` | `coding` | `browser` | `mcp`.
+    /// Isolation overlay: `smoke` | `office` | `coding` | `browser` | `mcp` | `business`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
     /// 1-based trial index filled by the runner; not part of corpus JSON.
@@ -141,6 +164,9 @@ pub struct Case {
     /// Relative files materialized into the isolated workspace before the turn.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub workspace_files: BTreeMap<String, String>,
+    /// Relative files copied from an imported pack case directory (binaries).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_blobs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }
@@ -157,6 +183,7 @@ pub enum IsolationKind {
     Coding,
     Browser,
     Mcp,
+    Business,
 }
 
 impl IsolationKind {
@@ -167,6 +194,7 @@ impl IsolationKind {
             Some("smoke") => Self::Smoke,
             Some("office") => Self::Office,
             Some("coding") => Self::Coding,
+            Some("business") => Self::Business,
             _ => match suite.trim() {
                 "browser_smoke" => Self::Browser,
                 "mcp_fixture" => Self::Mcp,
@@ -176,6 +204,7 @@ impl IsolationKind {
                 | "aider_polyglot"
                 | "classeval"
                 | "harbor_terminal_bench" => Self::Coding,
+                other if is_imported_suite(other) => Self::Business,
                 _ => Self::Smoke,
             },
         }
@@ -188,9 +217,29 @@ impl IsolationKind {
             "coding" => Some(Self::Coding),
             "browser" => Some(Self::Browser),
             "mcp" => Some(Self::Mcp),
+            "business" => Some(Self::Business),
             _ => None,
         }
     }
+
+    pub fn max_timeout_secs(self) -> u64 {
+        match self {
+            Self::Business => 3600,
+            _ => 600,
+        }
+    }
+
+    pub fn default_timeout_secs(self) -> u64 {
+        match self {
+            Self::Business => 2700,
+            _ => 120,
+        }
+    }
+}
+
+/// Imported business-pack suites (`imported-…`) use the business isolation overlay.
+pub fn is_imported_suite(id: &str) -> bool {
+    id.trim().starts_with("imported-")
 }
 
 /// Top-level corpus manifest.
@@ -329,6 +378,8 @@ pub struct EvalResult {
     /// Session Observation / conversation shell id for this case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_names: Vec<String>,
     #[serde(default = "default_trial")]
     pub trial: u32,
 }
@@ -400,4 +451,25 @@ pub enum RunProgressPhase {
     Started,
     Scored,
     Cancelled,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imported_suite_resolves_to_business() {
+        assert_eq!(
+            IsolationKind::resolve(None, "imported-ai-agent-business-test-package"),
+            IsolationKind::Business
+        );
+        assert_eq!(
+            IsolationKind::resolve(Some("office"), "office_core"),
+            IsolationKind::Office
+        );
+        assert_eq!(IsolationKind::Business.max_timeout_secs(), 3600);
+        assert_eq!(IsolationKind::Office.max_timeout_secs(), 600);
+        assert!(is_imported_suite("imported-demo"));
+        assert!(!is_imported_suite("office_core"));
+    }
 }
