@@ -162,17 +162,67 @@ impl FlowyVideo {
         }))
     }
 
-    fn emit_video_credits(&self, record: &VideoTaskRecord) {
+    fn emit_video_credits(&self, record: &VideoTaskRecord, out_path: &Path) {
         if record.credits_consumed <= 0 {
             return;
+        }
+        let mut meta = serde_json::json!({
+            "task_id": record.id,
+            "credits_consumed": record.credits_consumed,
+        });
+        if let Some(obj) = meta.as_object_mut() {
+            if let Some(shot_idx) = shot_idx_from_video_out_path(out_path) {
+                obj.insert("shot_idx".into(), serde_json::json!(shot_idx));
+            }
+            if let Some(scene_idx) = scene_idx_from_video_out_path(out_path) {
+                obj.insert("scene_idx".into(), serde_json::json!(scene_idx));
+            }
         }
         self.emit_progress(
             "video_credits",
             &format!("credits {}", record.credits_consumed),
-            Some(serde_json::json!({
-                "task_id": record.id,
-                "credits_consumed": record.credits_consumed,
-            })),
+            Some(meta),
+        );
+    }
+}
+
+/// `…/shots/{idx}/video.mp4` → the storyboard shot index.
+fn shot_idx_from_video_out_path(path: &Path) -> Option<i32> {
+    let shot_dir = path.parent()?;
+    let shots_dir = shot_dir.parent()?;
+    let shots_name = shots_dir.file_name()?.to_str()?;
+    if !shots_name.eq_ignore_ascii_case("shots") {
+        return None;
+    }
+    shot_dir.file_name()?.to_str()?.parse().ok()
+}
+
+/// `…/scene_{n}/shots/{idx}/video.mp4` → the pipeline scene index.
+fn scene_idx_from_video_out_path(path: &Path) -> Option<i32> {
+    let scene_dir = path.parent()?.parent()?.parent()?;
+    let name = scene_dir.file_name()?.to_str()?;
+    name.strip_prefix("scene_")?.parse().ok()
+}
+
+/// Persist the Flowy bill beside the clip so the storyboard can show it after
+/// the status event log has rotated.
+async fn persist_clip_credits(video_path: &Path, credits: i64, task_id: i64) {
+    if credits <= 0 {
+        return;
+    }
+    let Some(dir) = video_path.parent() else {
+        return;
+    };
+    let path = dir.join("video_credits.json");
+    let body = serde_json::json!({
+        "credits_consumed": credits,
+        "task_id": task_id,
+    });
+    if let Err(e) = crate::session::write_json_artifact(&path, &body).await {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "failed to persist clip credits sidecar"
         );
     }
 }
@@ -759,7 +809,8 @@ impl VimaxVideo for FlowyVideo {
 
         self.emit_progress("video_download", "downloading video", None);
         download_video(&url, out_path).await?;
-        self.emit_video_credits(&record);
+        self.emit_video_credits(&record, out_path);
+        persist_clip_credits(out_path, record.credits_consumed, record.id).await;
 
         if let Some(lf_out) = last_frame_out {
             if let Some(lf_url) = record.last_frame_url() {
@@ -1213,5 +1264,48 @@ reference_audio cannot be the only reference input. Request id: abc)"
     async fn dead_last_frame_url_is_not_live() {
         assert!(!remote_still_url_is_live("http://127.0.0.1:1/missing.png").await);
         assert!(!remote_still_url_is_live("not-a-url").await);
+    }
+
+    #[test]
+    fn shot_idx_is_read_from_the_shots_directory() {
+        assert_eq!(
+            shot_idx_from_video_out_path(Path::new("script2video/shots/3/video.mp4")),
+            Some(3)
+        );
+        assert_eq!(
+            shot_idx_from_video_out_path(Path::new("idea2video/scene_1/shots/0/video.mp4")),
+            Some(0)
+        );
+        assert_eq!(
+            shot_idx_from_video_out_path(Path::new("final_video.mp4")),
+            None
+        );
+    }
+
+    #[test]
+    fn scene_idx_is_read_from_scene_directories() {
+        assert_eq!(
+            scene_idx_from_video_out_path(Path::new("idea2video/scene_1/shots/0/video.mp4")),
+            Some(1)
+        );
+        assert_eq!(
+            scene_idx_from_video_out_path(Path::new("script2video/shots/2/video.mp4")),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn clip_credits_sidecar_lands_next_to_the_video() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("shots").join("4");
+        tokio::fs::create_dir_all(&shot).await.unwrap();
+        let video = shot.join("video.mp4");
+        persist_clip_credits(&video, 3200, 99).await;
+        let raw = tokio::fs::read_to_string(shot.join("video_credits.json"))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["credits_consumed"], 3200);
+        assert_eq!(parsed["task_id"], 99);
     }
 }

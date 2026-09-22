@@ -36,6 +36,158 @@ const STAGE_LABEL: Record<StudioStageKey, { key: string; fallback: string }> = {
   generate: { key: 'videoGeneration.studio.stages.generate', fallback: '生成' },
 };
 
+function StudioSessionScrollRail({
+  scrollerRef,
+  contentRef,
+  revision,
+  label,
+}: {
+  scrollerRef: React.RefObject<HTMLDivElement | null>;
+  contentRef: React.RefObject<HTMLDivElement | null>;
+  revision: string;
+  label: string;
+}) {
+  const [metrics, setMetrics] = useState({
+    overflow: false,
+    thumbTop: 0,
+    thumbHeight: 0,
+    value: 0,
+  });
+  const dragRef = useRef<{
+    pointerId: number;
+    railTop: number;
+    railHeight: number;
+    thumbPx: number;
+    maxScroll: number;
+  } | null>(null);
+
+  const update = useCallback(() => {
+    const node = scrollerRef.current;
+    if (!node) return;
+    const maxScroll = node.scrollHeight - node.clientHeight;
+    if (maxScroll <= 2) {
+      setMetrics((prev) =>
+        prev.overflow ? { overflow: false, thumbTop: 0, thumbHeight: 0, value: 0 } : prev
+      );
+      return;
+    }
+    const thumbHeight = Math.min(92, Math.max(18, (node.clientHeight / node.scrollHeight) * 100));
+    const thumbTop = (node.scrollTop / maxScroll) * (100 - thumbHeight);
+    const value = Math.round((node.scrollTop / maxScroll) * 100);
+    setMetrics({ overflow: true, thumbTop, thumbHeight, value });
+  }, [scrollerRef]);
+
+  useEffect(() => {
+    const node = scrollerRef.current;
+    const content = contentRef.current;
+    if (!node) return;
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    if (content) observer.observe(content);
+    node.addEventListener('scroll', update, { passive: true });
+    return () => {
+      observer.disconnect();
+      node.removeEventListener('scroll', update);
+    };
+  }, [contentRef, revision, scrollerRef, update]);
+
+  const jumpTo = (
+    clientY: number,
+    rail: { top: number; height: number },
+    thumbPx: number,
+    maxScroll: number
+  ) => {
+    const node = scrollerRef.current;
+    if (!node) return;
+    const usable = Math.max(1, rail.height - thumbPx);
+    const y = clientY - rail.top - thumbPx / 2;
+    node.scrollTop = (Math.min(usable, Math.max(0, y)) / usable) * maxScroll;
+  };
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const node = scrollerRef.current;
+    if (!node || !metrics.overflow) return;
+    event.preventDefault();
+    const rail = event.currentTarget.getBoundingClientRect();
+    const maxScroll = node.scrollHeight - node.clientHeight;
+    const thumbPx = (metrics.thumbHeight / 100) * rail.height;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      railTop: rail.top,
+      railHeight: rail.height,
+      thumbPx,
+      maxScroll,
+    };
+    jumpTo(event.clientY, rail, thumbPx, maxScroll);
+  };
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    jumpTo(event.clientY, {
+      top: drag.railTop,
+      height: drag.railHeight,
+    }, drag.thumbPx, drag.maxScroll);
+  };
+
+  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      dragRef.current = null;
+    }
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const node = scrollerRef.current;
+    if (!node || !metrics.overflow) return;
+    const page = Math.max(48, node.clientHeight * 0.85);
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      node.scrollTop += 48;
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      node.scrollTop -= 48;
+    } else if (event.key === 'PageDown') {
+      event.preventDefault();
+      node.scrollTop += page;
+    } else if (event.key === 'PageUp') {
+      event.preventDefault();
+      node.scrollTop -= page;
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      node.scrollTop = 0;
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      node.scrollTop = node.scrollHeight;
+    }
+  };
+
+  return (
+    <div
+      className={`${styles.scrollRail} ${metrics.overflow ? '' : styles.scrollRailIdle}`}
+      role='scrollbar'
+      aria-controls='studio-agent-session-messages'
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={metrics.value}
+      aria-label={label}
+      tabIndex={metrics.overflow ? 0 : -1}
+      data-testid='studio-session-scroll-rail'
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onKeyDown={onKeyDown}
+    >
+      <div
+        className={styles.scrollThumb}
+        style={{ top: `${metrics.thumbTop}%`, height: `${metrics.thumbHeight}%` }}
+      />
+    </div>
+  );
+}
+
 export interface StudioAgentSessionProps {
   sessionId: string;
   artifacts: ArtifactNode[];
@@ -105,6 +257,7 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
   const runStatus = useRunStatusFull();
   const hidden = useDocumentHidden();
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const messagesInnerRef = useRef<HTMLDivElement>(null);
   const columnRef = useRef<HTMLDivElement>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [cameos, setCameos] = useState<CameoPhoto[]>([]);
@@ -473,23 +626,33 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
         </div>
       ) : null}
       {staleHint ? <div className={styles.staleHint}>{staleHint}</div> : null}
-      <div ref={scrollerRef} className={styles.messages}>
-        {messages.map((item) => {
-          const copy = copyFor(item);
-          return (
-            <StudioSessionMessageView
-              key={item.id}
-              sessionId={sessionId}
-              item={item}
-              title={copy.title}
-              body={copy.body}
-              meta={copy.meta}
-              detail={copy.detail}
-              issueKind={copy.issueKind}
-              onOpenMedia={handleOpenMedia}
-            />
-          );
-        })}
+      <div className={styles.messagesShell}>
+        <div ref={scrollerRef} className={styles.messages} id='studio-agent-session-messages'>
+          <div ref={messagesInnerRef} className={styles.messagesInner}>
+            {messages.map((item) => {
+              const copy = copyFor(item);
+              return (
+                <StudioSessionMessageView
+                  key={item.id}
+                  sessionId={sessionId}
+                  item={item}
+                  title={copy.title}
+                  body={copy.body}
+                  meta={copy.meta}
+                  detail={copy.detail}
+                  issueKind={copy.issueKind}
+                  onOpenMedia={handleOpenMedia}
+                />
+              );
+            })}
+          </div>
+        </div>
+        <StudioSessionScrollRail
+          scrollerRef={scrollerRef}
+          contentRef={messagesInnerRef}
+          revision={`${messages.length}:${runStatus?.stage ?? ''}:${runStatus?.progress ?? 0}`}
+          label={t('videoGeneration.agentSession.scroll', { defaultValue: '会话滚动' })}
+        />
       </div>
       <StudioSessionComposer
         action={action}

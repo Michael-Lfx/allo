@@ -9526,6 +9526,7 @@ export type I18nKey =
   | 'videoGeneration.agentSession.preview.open'
   | 'videoGeneration.agentSession.preview.prev'
   | 'videoGeneration.agentSession.resize'
+  | 'videoGeneration.agentSession.scroll'
   | 'videoGeneration.agentSession.send.continue'
   | 'videoGeneration.agentSession.send.plan'
   | 'videoGeneration.agentSession.send.render'
