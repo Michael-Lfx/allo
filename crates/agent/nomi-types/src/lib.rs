@@ -1,5 +1,5 @@
-// Pure, provider-neutral data types shared across all Nomi crates.
-// No dependencies on other nomi-* crates.
+// Pure, provider-neutral data types shared across all crates.
+// No dependencies on other crates.
 
 pub mod agent_tool;
 pub mod compact;
