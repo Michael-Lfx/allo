@@ -178,7 +178,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const getRecentConversationPath = useCallback(() => {
     // 1. If user visited a specific conversation/terminal in this session and it still exists
     if (lastActiveConversationPathRef.current) {
-      const route = parseSessionRoute(lastActiveConversationPathRef.current);
+      const purePath = lastActiveConversationPathRef.current.split(/[?#]/)[0];
+      const route = parseSessionRoute(purePath);
       if (route?.kind === 'conversation') {
         const exists = !conversations || conversations.some((c) => c.id === route.id);
         if (exists) {
@@ -487,6 +488,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
             {/* 业务功能横向 Dock 栏（展开态下高度仅 34px，容纳 5 个无历史纯功能模块；收起态下恢复纵向一列） */}
             <div
+              role={collapsed ? undefined : 'toolbar'}
+              aria-label={t('common.titlebar.sections.work', { defaultValue: '功能导航' })}
               className={classNames(
                 collapsed
                   ? 'flex flex-col gap-2px'

@@ -43,13 +43,21 @@ const SiderKnowledgeEntry: React.FC<SiderKnowledgeEntryProps> = ({
     return (
       <InstantHoverTooltip content={label} position='bottom' className='flex-1 min-w-0'>
         <div
+          role='button'
+          tabIndex={0}
           className={classNames(
-            'group w-full h-26px flex items-center justify-center cursor-pointer transition-colors rd-6px',
+            'group w-full h-26px flex items-center justify-center cursor-pointer transition-colors rd-6px outline-none focus-visible:ring-1 focus-visible:ring-primary-6',
             isActive
               ? 'bg-fill-3 text-primary-6 shadow-sm'
               : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
           )}
           onClick={onClick}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onClick?.();
+            }
+          }}
           aria-label={label}
           aria-current={isActive ? 'page' : undefined}
         >
