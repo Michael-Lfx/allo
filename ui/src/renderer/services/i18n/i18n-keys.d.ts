@@ -5099,6 +5099,7 @@ export type I18nKey =
   | 'sessionList.displayPresetDetailed'
   | 'sessionList.displaySettings'
   | 'sessionList.displaySettingsTitle'
+  | 'sessionList.drawerEmpty'
   | 'sessionList.empty'
   | 'sessionList.exitBatchSelect'
   | 'sessionList.expandDisplay'

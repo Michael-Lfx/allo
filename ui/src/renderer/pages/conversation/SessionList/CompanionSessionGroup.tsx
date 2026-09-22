@@ -22,6 +22,7 @@ import {
   COMPANION_COLLAPSED_LIST_LIMIT,
   getVisibleCompanionEntries,
 } from './utils/companionVisibleEntries';
+import SiderEmptyPlaceholder from '@renderer/components/layout/Sider/SiderEmptyPlaceholder';
 import { useConversationListSync } from './hooks/useConversationListSync';
 import { useDisclosureMotion } from './hooks/useDisclosureMotion';
 import SessionOverflowButton from './SessionOverflowButton';
@@ -206,26 +207,17 @@ const CompanionSessionGroup: React.FC<Props> = ({
     }
     if (hideHeader) {
       return (
-        <div className='flex flex-col items-center justify-center p-16px text-center gap-10px rd-10px bg-fill-1 border border-dashed border-[var(--color-border-2)] my-8px'>
-          <div className='text-24px leading-none'>🐱</div>
-          <div className='flex flex-col gap-4px'>
-            <span className='text-12px font-medium text-t-primary'>
-              {t('nomi.companions.emptyTitle', { defaultValue: '还没有桌面伙伴' })}
-            </span>
-            <span className='text-11px text-t-tertiary leading-normal'>
-              {t('nomi.companions.emptyHint', {
-                defaultValue: '创建一个伙伴，给它一个名字和形象，然后配置模型就可以开始对话了。',
-              })}
-            </span>
-          </div>
-          <button
-            type='button'
-            onClick={() => void navigate('/nomi?tab=overview')}
-            className='mt-4px px-12px py-5px text-11px font-medium rd-6px bg-primary-6 text-white hover:bg-primary-5 active:bg-primary-7 border-none cursor-pointer transition-colors flex items-center gap-4px shadow-sm'
-          >
-            <span>{t('nomi.companions.createTitle', { defaultValue: '新建伙伴' })}</span>
-          </button>
-        </div>
+        <SiderEmptyPlaceholder
+          icon={<span className='text-20px leading-none select-none'>🐱</span>}
+          title={t('nomi.companions.emptyTitle', { defaultValue: '还没有桌面伙伴' })}
+          hint={t('nomi.companions.emptyHint', {
+            defaultValue: '创建伙伴并配置模型，即可开启对话。',
+          })}
+          action={{
+            label: t('nomi.companions.createTitle', { defaultValue: '新建伙伴' }),
+            onClick: () => void navigate('/nomi?tab=overview'),
+          }}
+        />
       );
     }
     return null;

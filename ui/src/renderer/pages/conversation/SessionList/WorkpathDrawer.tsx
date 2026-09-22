@@ -9,6 +9,7 @@ import {
   FolderClose,
   FolderOpen,
   Home,
+  MessageOne,
   MoreOne,
   Plus,
   Pushpin,
@@ -16,6 +17,7 @@ import {
 import classNames from 'classnames';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import SiderEmptyPlaceholder from '@renderer/components/layout/Sider/SiderEmptyPlaceholder';
 
 import CapabilityIcon, { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
 import { AppMessage as Message } from '@/renderer/components/notifications';
@@ -483,6 +485,24 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
                 controlsId={overflowControlsId}
                 onToggle={toggleOverflow}
                 className='flowy-workpath-session-overflow'
+              />
+            )}
+            {!hasInteractiveContent && !batchMode && (
+              <SiderEmptyPlaceholder
+                icon={
+                  <MessageOne
+                    theme='outline'
+                    size={18}
+                    fill='currentColor'
+                    className='block leading-none text-t-tertiary'
+                    style={{ lineHeight: 0 }}
+                  />
+                }
+                title={t('sessionList.drawerEmpty', { defaultValue: '暂无会话' })}
+                action={{
+                  label: `+ ${t('sessionList.newInteractive', { defaultValue: '发起对话' })}`,
+                  onClick: () => onCreateInteractive(node),
+                }}
               />
             )}
           </>

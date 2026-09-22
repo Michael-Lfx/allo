@@ -82,4 +82,32 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(companionGroupSource.includes('if (loading)')).toBe(true);
     expect(companionGroupSource.includes('cursor-pointer transition-all box-border')).toBe(false);
   });
+
+  test('unifies empty state rendering across workspaces, video, and companion tabs', () => {
+    const placeholderSource = readSource(new URL('./SiderEmptyPlaceholder.tsx', import.meta.url));
+    const videoGroupSource = readSource(new URL('./SiderNav/SiderVideoGenerationGroup.tsx', import.meta.url));
+    const companionGroupSource = readSource(
+      new URL('../../../pages/conversation/SessionList/CompanionSessionGroup.tsx', import.meta.url)
+    );
+    const workpathDrawerSource = readSource(
+      new URL('../../../pages/conversation/SessionList/WorkpathDrawer.tsx', import.meta.url)
+    );
+
+    // All three tabs render the unified placeholder
+    expect(videoGroupSource.includes('<SiderEmptyPlaceholder')).toBe(true);
+    expect(companionGroupSource.includes('<SiderEmptyPlaceholder')).toBe(true);
+    expect(workpathDrawerSource.includes('<SiderEmptyPlaceholder')).toBe(true);
+
+    // SiderEmptyPlaceholder enforces the design spec: 28px height, 8px radius, theme tokens
+    expect(placeholderSource.includes('h-28px px-12px rd-8px')).toBe(true);
+    expect(placeholderSource.includes('bg-fill-2 hover:bg-fill-3 active:bg-fill-4')).toBe(true);
+    expect(placeholderSource.includes('border-[var(--color-border-2)]')).toBe(true);
+
+    // Companion tab preserves the distinctive cat emoji
+    expect(companionGroupSource.includes('🐱')).toBe(true);
+
+    // Workpath drawer renders localized empty text and initiates conversation
+    expect(workpathDrawerSource.includes("t('sessionList.drawerEmpty'")).toBe(true);
+    expect(workpathDrawerSource.includes("onCreateInteractive(node)")).toBe(true);
+  });
 });

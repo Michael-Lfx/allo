@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
 import { FolderClose, FolderOpen, Loading, VideoOne } from '@icon-park/react';
 import classNames from 'classnames';
+import SiderEmptyPlaceholder from '@renderer/components/layout/Sider/SiderEmptyPlaceholder';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { isActiveStatus, listSessions } from '@renderer/pages/videoGeneration/api';
 import VideoGenerationHoverCard from '@renderer/pages/videoGeneration/components/VideoGenerationHoverCard';
@@ -294,19 +295,23 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
         </div>
 
         {items.length === 0 ? (
-          <div className='flex flex-col items-center justify-center py-24px px-8px text-center gap-8px'>
-            <span className='text-12px text-t-tertiary'>
-              {t('videoGeneration.nav.recentEmpty', { defaultValue: '暂无创作记录' })}
-            </span>
-            <button
-              type='button'
-              onClick={onEnterHome}
-              onPointerEnter={() => prefetchVideoGenerationHome()}
-              className='h-26px px-10px rd-6px text-11px font-[500] bg-fill-2 hover:bg-fill-3 active:bg-fill-4 text-t-primary border border-solid border-[var(--color-border-2)] cursor-pointer transition-colors select-none'
-            >
-              + {t('videoGeneration.nav.newProject', { defaultValue: '新建视频工程' })}
-            </button>
-          </div>
+          <SiderEmptyPlaceholder
+            icon={
+              <VideoOne
+                theme='outline'
+                size={18}
+                fill='currentColor'
+                className='block leading-none text-t-tertiary'
+                style={{ lineHeight: 0 }}
+              />
+            }
+            title={t('videoGeneration.nav.recentEmpty', { defaultValue: '暂无创作记录' })}
+            action={{
+              label: `+ ${t('videoGeneration.nav.newProject', { defaultValue: '新建视频工程' })}`,
+              onClick: onEnterHome,
+              onPointerEnter: () => prefetchVideoGenerationHome(),
+            }}
+          />
         ) : (
           <div
             className='flex flex-col gap-2px'

@@ -53,5 +53,6 @@
   "removeWorkpathWithSessionsConfirm": "从已创建项目列表移除「{{path}}」？本地文件和 {{count}} 个会话不会被删除，该路径仍会因为已有会话显示在侧边栏。",
   "removeWorkpathSuccess": "工作路径已移除",
 
-  "empty": "暂无会话，点击上方「新建会话」或「创建项目」开始"
+  "empty": "暂无会话，点击上方「新建会话」或「创建项目」开始",
+  "drawerEmpty": "暂无会话"
 }
