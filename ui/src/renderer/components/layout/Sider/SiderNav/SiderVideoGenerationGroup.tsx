@@ -32,7 +32,11 @@ import {
 } from '@renderer/pages/videoGeneration/recentCreations';
 import { listBriefingSessions } from '@renderer/pages/videoGeneration/briefing/api';
 import { listCanvasProjects, listGenerationTasks } from '@renderer/pages/videoCanvas/api';
-import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch';
+import {
+  prefetchRecentCreationItem,
+  prefetchVideoGenerationHome,
+  prefetchVideoWorkspace,
+} from '@renderer/pages/videoGeneration/prefetch';
 
 const NAV_EXPANDED_KEY = 'flowy.videoGeneration.navExpanded';
 /** Refresh frequency while any recent project is actively planning/rendering. */
@@ -111,7 +115,13 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
 }) => {
   const { t } = useTranslation();
   const label = t('videoGeneration.nav.entry', { defaultValue: '视频生成' });
-  const [items, setItems] = useState<RecentNavItem[]>([]);
+  const [items, setItems] = useState<RecentNavItem[]>(() => {
+    const localSessions = readRecentVideoGenerationSessions();
+    const localTasks = readRecentVideoGenerationTasks();
+    return fallbackNavItems(localSessions, localTasks, RECENT_VIDEO_GENERATION_VISIBLE);
+  });
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [pendingItemId, setPendingItemId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(() => readNavExpandedDefault(true));
   const syncedActiveRouteRef = useRef<string | null>(null);
 
@@ -153,6 +163,8 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
       }
     } catch {
       setItems(fallbackNavItems(localSessions, localTasks, RECENT_VIDEO_GENERATION_VISIBLE));
+    } finally {
+      setInitialLoading(false);
     }
   }, []);
 
@@ -166,17 +178,33 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
   }, [refresh, activeSessionId, activeClipTaskId, activeCanvasProjectId, activeBriefingId]);
 
   useEffect(() => {
+    if (!pendingItemId) return;
+    const isMatchingRoute =
+      activeSessionId === pendingItemId ||
+      activeClipTaskId === pendingItemId ||
+      activeCanvasProjectId === pendingItemId ||
+      activeBriefingId === pendingItemId;
+    if (isMatchingRoute) {
+      setPendingItemId(null);
+    }
+  }, [pendingItemId, activeSessionId, activeClipTaskId, activeCanvasProjectId, activeBriefingId]);
+
+  useEffect(() => {
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
       cancelIdleCallback?: (handle: number) => void;
     };
+    const warm = () => {
+      prefetchVideoGenerationHome();
+      prefetchVideoWorkspace();
+    };
     if (typeof idleWindow.requestIdleCallback === 'function') {
-      const idleId = idleWindow.requestIdleCallback(() => prefetchVideoGenerationHome(), {
+      const idleId = idleWindow.requestIdleCallback(warm, {
         timeout: 1800,
       });
       return () => idleWindow.cancelIdleCallback?.(idleId);
     }
-    const timer = window.setTimeout(() => prefetchVideoGenerationHome(), 250);
+    const timer = window.setTimeout(warm, 250);
     return () => window.clearTimeout(timer);
   }, []);
 
@@ -295,23 +323,30 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
         </div>
 
         {items.length === 0 ? (
-          <SiderEmptyPlaceholder
-            icon={
-              <VideoOne
-                theme='outline'
-                size={18}
-                fill='currentColor'
-                className='block leading-none text-t-tertiary'
-                style={{ lineHeight: 0 }}
-              />
-            }
-            title={t('videoGeneration.nav.recentEmpty', { defaultValue: '暂无创作记录' })}
-            action={{
-              label: `+ ${t('videoGeneration.nav.newProject', { defaultValue: '新建视频工程' })}`,
-              onClick: onEnterHome,
-              onPointerEnter: () => prefetchVideoGenerationHome(),
-            }}
-          />
+          initialLoading ? (
+            <div className='flex flex-col gap-6px px-8px py-4px'>
+              <div className='h-24px bg-fill-2 rd-6px animate-pulse' />
+              <div className='h-24px bg-fill-2 rd-6px animate-pulse w-3/4' />
+            </div>
+          ) : (
+            <SiderEmptyPlaceholder
+              icon={
+                <VideoOne
+                  theme='outline'
+                  size={18}
+                  fill='currentColor'
+                  className='block leading-none text-t-tertiary'
+                  style={{ lineHeight: 0 }}
+                />
+              }
+              title={t('videoGeneration.nav.recentEmpty', { defaultValue: '暂无创作记录' })}
+              action={{
+                label: `+ ${t('videoGeneration.nav.newProject', { defaultValue: '新建视频工程' })}`,
+                onClick: onEnterHome,
+                onPointerEnter: () => prefetchVideoGenerationHome(),
+              }}
+            />
+          )
         ) : (
           <div
             className='flex flex-col gap-2px'
@@ -322,7 +357,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                 item.title.trim() ||
                 t('videoGeneration.list.untitled', { defaultValue: '未命名任务' });
               const short = truncateTitle(fullTitle, 16);
-              const active =
+              const routeActive =
                 item.source === 'task'
                   ? activeClipTaskId === item.id
                   : item.source === 'canvas'
@@ -330,6 +365,8 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                     : item.source === 'briefing'
                       ? activeBriefingId === item.id
                       : activeSessionId === item.id;
+              const isPending = pendingItemId === item.id && !routeActive;
+              const active = routeActive || pendingItemId === item.id;
               const busy = isActiveStatus(item.status);
               const busyHint =
                 item.status === 'planning'
@@ -347,6 +384,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                           ? t('videoGeneration.briefing.runningTitle', { defaultValue: '生成中' })
                           : '';
               const openItem = () => {
+                setPendingItemId(item.id);
                 if (item.source === 'task') {
                   rememberVideoGenerationTask(item.id, fullTitle);
                   onOpenClipTask(item.id);
@@ -366,7 +404,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                   role='button'
                   tabIndex={0}
                   data-testid={`sider-video-generation-recent-${item.id}`}
-                  data-busy={busy ? 'true' : 'false'}
+                  data-busy={busy || isPending ? 'true' : 'false'}
                   data-source={item.source}
                   className={classNames(
                     'chat-history__item conversation-item h-34px rd-8px flex items-center group cursor-pointer relative overflow-hidden shrink-0 min-w-0 transition-colors justify-start gap-8px px-8px',
@@ -376,6 +414,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                       'session-list-active-row !text-t-primary !bg-fill-3 font-semibold': active,
                     }
                   )}
+                  onPointerEnter={() => prefetchRecentCreationItem(item.source)}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -416,6 +455,14 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                       />
                       <span>{busyHint || t('videoGeneration.status.rendering', { defaultValue: '生成中' })}</span>
                     </span>
+                  ) : isPending ? (
+                    <Loading
+                      theme='outline'
+                      size={12}
+                      fill='currentColor'
+                      className='block shrink-0 animate-spin text-primary-6'
+                      style={{ lineHeight: 0 }}
+                    />
                   ) : null}
                 </div>
               );
@@ -443,7 +490,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
     );
   }
 
-  const showChildren = expanded && items.length > 0;
+  const showChildren = expanded && (items.length > 0 || initialLoading);
 
   return (
     <div className='workpath-drawer min-w-0' data-testid='sider-video-generation-group'>
@@ -496,60 +543,69 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
       </div>
 
       {showChildren ? (
-        <div
-          className='workpath-drawer-content flex flex-col pt-2px'
-          data-testid='sider-video-generation-recents'
-        >
-          {items.map((item) => {
-            const fullTitle =
-              item.title.trim() ||
-              t('videoGeneration.list.untitled', { defaultValue: '未命名任务' });
-            const short = truncateTitle(fullTitle);
-            const active =
-              item.source === 'task'
-                ? activeClipTaskId === item.id
-                : item.source === 'canvas'
-                  ? activeCanvasProjectId === item.id
-                  : item.source === 'briefing'
-                    ? activeBriefingId === item.id
-                    : activeSessionId === item.id;
-            const busy = isActiveStatus(item.status);
-            const busyHint =
-              item.status === 'planning'
-                ? t('videoGeneration.status.planning', { defaultValue: '规划中' })
-                : item.status === 'rendering'
-                  ? t('videoGeneration.status.rendering', { defaultValue: '生成中' })
-                  : item.status === 'queued'
-                    ? t('videoGeneration.clip.status.queued', { defaultValue: '排队中' })
-                    : item.status === 'running'
-                      ? t('videoGeneration.clip.status.running', { defaultValue: '生成中' })
-                      : item.status === 'researching' ||
-                          item.status === 'scripting' ||
-                          item.status === 'aligning' ||
-                          item.status === 'composing'
-                        ? t('videoGeneration.briefing.runningTitle', { defaultValue: '生成中' })
-                        : '';
-            const openItem = () => {
-              if (item.source === 'task') {
-                rememberVideoGenerationTask(item.id, fullTitle);
-                onOpenClipTask(item.id);
-              } else if (item.source === 'canvas') {
-                rememberVideoGenerationCanvas(item.id, fullTitle);
-                onOpenCanvasProject(item.id);
-              } else if (item.source === 'briefing') {
-                rememberVideoGenerationBriefing(item.id, fullTitle);
-                onOpenBriefing(item.id);
-              } else {
-                rememberVideoGenerationSession(item.id, fullTitle);
-                onOpenProject(item.id);
-              }
-            };
-            const row = (
+        items.length === 0 ? (
+          <div className='workpath-drawer-content flex flex-col pt-2px gap-6px pl-42px pr-16px py-4px'>
+            <div className='h-20px bg-fill-2 rd-6px animate-pulse' />
+            <div className='h-20px bg-fill-2 rd-6px animate-pulse w-3/4' />
+          </div>
+        ) : (
+          <div
+            className='workpath-drawer-content flex flex-col pt-2px'
+            data-testid='sider-video-generation-recents'
+          >
+            {items.map((item) => {
+              const fullTitle =
+                item.title.trim() ||
+                t('videoGeneration.list.untitled', { defaultValue: '未命名任务' });
+              const short = truncateTitle(fullTitle);
+              const routeActive =
+                item.source === 'task'
+                  ? activeClipTaskId === item.id
+                  : item.source === 'canvas'
+                    ? activeCanvasProjectId === item.id
+                    : item.source === 'briefing'
+                      ? activeBriefingId === item.id
+                      : activeSessionId === item.id;
+              const isPending = pendingItemId === item.id && !routeActive;
+              const active = routeActive || pendingItemId === item.id;
+              const busy = isActiveStatus(item.status);
+              const busyHint =
+                item.status === 'planning'
+                  ? t('videoGeneration.status.planning', { defaultValue: '规划中' })
+                  : item.status === 'rendering'
+                    ? t('videoGeneration.status.rendering', { defaultValue: '生成中' })
+                    : item.status === 'queued'
+                      ? t('videoGeneration.clip.status.queued', { defaultValue: '排队中' })
+                      : item.status === 'running'
+                        ? t('videoGeneration.clip.status.running', { defaultValue: '生成中' })
+                        : item.status === 'researching' ||
+                            item.status === 'scripting' ||
+                            item.status === 'aligning' ||
+                            item.status === 'composing'
+                          ? t('videoGeneration.briefing.runningTitle', { defaultValue: '生成中' })
+                          : '';
+              const openItem = () => {
+                setPendingItemId(item.id);
+                if (item.source === 'task') {
+                  rememberVideoGenerationTask(item.id, fullTitle);
+                  onOpenClipTask(item.id);
+                } else if (item.source === 'canvas') {
+                  rememberVideoGenerationCanvas(item.id, fullTitle);
+                  onOpenCanvasProject(item.id);
+                } else if (item.source === 'briefing') {
+                  rememberVideoGenerationBriefing(item.id, fullTitle);
+                  onOpenBriefing(item.id);
+                } else {
+                  rememberVideoGenerationSession(item.id, fullTitle);
+                  onOpenProject(item.id);
+                }
+              };
+              const row = (
                 <div
                   role='button'
                   tabIndex={0}
                   data-testid={`sider-video-generation-recent-${item.id}`}
-                  data-busy={busy ? 'true' : 'false'}
+                  data-busy={busy || isPending ? 'true' : 'false'}
                   data-source={item.source}
                   className={classNames(
                     // Match ConversationRow (dimIcon) — use div, not <button>, to avoid UA black borders.
@@ -561,6 +617,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                       'session-list-active-row !text-t-primary': active,
                     }
                   )}
+                  onPointerEnter={() => prefetchRecentCreationItem(item.source)}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -572,21 +629,21 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                     openItem();
                   }}
                 >
-                  {busy ? (
+                  {busy || isPending ? (
                     <Loading
                       theme='outline'
                       size={14}
                       fill='currentColor'
                       className='block shrink-0 animate-spin text-primary-6'
                       style={{ lineHeight: 0 }}
-                      aria-label={busyHint}
+                      aria-label={busy ? busyHint : undefined}
                     />
                   ) : null}
                   <span className='chat-history__item-name min-w-0 flex-1 truncate text-14px font-[500] leading-24px text-t-primary'>
                     {short}
                   </span>
                 </div>
-            );
+              );
             return (
               <Popover
                 key={item.id}
@@ -605,7 +662,8 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
               </Popover>
             );
           })}
-        </div>
+          </div>
+        )
       ) : null}
     </div>
   );

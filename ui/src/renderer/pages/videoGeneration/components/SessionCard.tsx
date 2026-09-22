@@ -2,11 +2,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Popconfirm, Tag } from '@arco-design/web-react';
+import { Popconfirm, Spin, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne } from '@icon-park/react';
 import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
 import { isCanvasTvShow, isCanvasWorkflow, normalizeWorkflow } from '../workflowKind';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
+import { prefetchVideoWorkspace } from '../prefetch';
 import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
 
@@ -92,9 +93,18 @@ interface SessionCardProps {
   onOpen: (s: SessionSummary) => void;
   onDelete?: (s: SessionSummary) => void;
   deleting?: boolean;
+  opening?: boolean;
+  disabled?: boolean;
 }
 
-const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, deleting }) => {
+const SessionCard: React.FC<SessionCardProps> = ({
+  session,
+  onOpen,
+  onDelete,
+  deleting,
+  opening,
+  disabled,
+}) => {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [hovering, setHovering] = useState(false);
@@ -138,6 +148,7 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
   }, []);
 
   const handleEnter = () => {
+    prefetchVideoWorkspace();
     setHovering(true);
     setLoadVideo(true);
     const el = videoRef.current;
@@ -176,10 +187,17 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
       className={[
         styles.projectCard,
         'group relative flex flex-col overflow-hidden box-border cursor-pointer',
-      ].join(' ')}
-      onClick={() => onOpen(session)}
+        disabled && 'opacity-60 pointer-events-none',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      onClick={() => {
+        if (disabled || opening || deleting) return;
+        onOpen(session);
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
+          if (disabled || opening || deleting) return;
           e.preventDefault();
           onOpen(session);
         }
@@ -188,6 +206,11 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
       onMouseLeave={handleLeave}
       onFocus={() => setLoadVideo(true)}
     >
+      {opening ? (
+        <div className='absolute inset-0 bg-[var(--color-bg-1)]/60 backdrop-blur-xs flex items-center justify-center z-10'>
+          <Spin size={20} />
+        </div>
+      ) : null}
       <div className={`${styles.projectCover} relative overflow-hidden`}>
         {coverUrl ? (
           <img

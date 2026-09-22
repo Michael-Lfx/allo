@@ -38,7 +38,12 @@ import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCredits } from '@renderer/hooks/context/CreditsContext';
 import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
-import { prefetchCanvasWorkspace } from './prefetch';
+import {
+  prefetchCanvasWorkspace,
+  prefetchVideoBriefing,
+  prefetchVideoClipResult,
+  prefetchVideoWorkspace,
+} from './prefetch';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 import { videoCanvasProjectPath } from '../videoCanvas/routes';
 import {
@@ -129,6 +134,9 @@ const VideoGenerationListPage: React.FC = () => {
   const [importing, setImporting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [openingCanvasId, setOpeningCanvasId] = useState<string | null>(null);
+  const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
+  const [openingTaskId, setOpeningTaskId] = useState<string | null>(null);
+  const [openingBriefingId, setOpeningBriefingId] = useState<string | null>(null);
   const pageScrollRef = useRef<HTMLDivElement>(null);
   const savedPageScrollTopRef = useRef(0);
   const initialWorkModeRef = useRef(workMode);
@@ -804,8 +812,36 @@ const VideoGenerationListPage: React.FC = () => {
 
   const openSession = useCallback(
     (s: SessionSummary) => {
+      setOpeningSessionId(s.id);
+      prefetchVideoWorkspace();
       rememberVideoGenerationSession(s.id, s.title);
       navigate(`/video-generation/${s.id}`);
+    },
+    [navigate]
+  );
+
+  const openTask = useCallback(
+    (task: GenerationTaskView) => {
+      setOpeningTaskId(task.task_id);
+      prefetchVideoClipResult();
+      rememberVideoGenerationTask(task.task_id, task.prompt);
+      navigate(`/video-generation/clip/${encodeURIComponent(task.task_id)}`, {
+        state: {
+          title: task.prompt?.slice(0, 48) || t('videoGeneration.clip.defaultTitle'),
+          prompt: task.prompt,
+          taskId: task.task_id,
+        },
+      });
+    },
+    [navigate, t]
+  );
+
+  const openBriefing = useCallback(
+    (b: BriefingSessionSummary) => {
+      setOpeningBriefingId(b.id);
+      prefetchVideoBriefing();
+      rememberVideoGenerationBriefing(b.id, b.title);
+      navigate(briefingWorkspacePath(b.id));
     },
     [navigate]
   );
@@ -1142,6 +1178,12 @@ const VideoGenerationListPage: React.FC = () => {
                       }}
                     >
                       {displayedRecent.map((row) => {
+                        const anyOpening = Boolean(
+                          openingSessionId ||
+                            openingCanvasId ||
+                            openingTaskId ||
+                            openingBriefingId
+                        );
                         if (row.kind === 'session') {
                           return (
                             <SessionCard
@@ -1150,6 +1192,8 @@ const VideoGenerationListPage: React.FC = () => {
                               onOpen={openSession}
                               onDelete={onDeleteSession}
                               deleting={deletingId === row.id}
+                              opening={openingSessionId === row.id}
+                              disabled={anyOpening && openingSessionId !== row.id}
                             />
                           );
                         }
@@ -1158,8 +1202,11 @@ const VideoGenerationListPage: React.FC = () => {
                             <GenerationTaskCard
                               key={`task:${row.id}`}
                               task={row.task}
+                              onOpen={openTask}
                               onDelete={onDeleteTask}
                               deleting={deletingId === row.id}
+                              opening={openingTaskId === row.id}
+                              disabled={anyOpening && openingTaskId !== row.id}
                             />
                           );
                         }
@@ -1172,7 +1219,7 @@ const VideoGenerationListPage: React.FC = () => {
                                 defaultValue: '未命名画布',
                               })}
                               opening={openingCanvasId === row.id}
-                              disabled={Boolean(openingCanvasId) && openingCanvasId !== row.id}
+                              disabled={anyOpening && openingCanvasId !== row.id}
                               deleting={deletingId === row.id}
                               onOpen={openCanvasProject}
                               onDelete={(project) => void handleDeleteCanvas(project)}
@@ -1183,12 +1230,16 @@ const VideoGenerationListPage: React.FC = () => {
                           <button
                             key={`briefing:${row.id}`}
                             type='button'
-                            className='flex flex-col gap-8px rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-16px text-left'
-                            onClick={() => {
-                              rememberVideoGenerationBriefing(row.briefing.id, row.briefing.title);
-                              navigate(briefingWorkspacePath(row.briefing.id));
-                            }}
+                            className='flex flex-col gap-8px rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-16px text-left relative overflow-hidden transition-colors hover:border-[var(--color-primary-light-3)] cursor-pointer'
+                            disabled={anyOpening && openingBriefingId !== row.id}
+                            onPointerEnter={() => prefetchVideoBriefing()}
+                            onClick={() => openBriefing(row.briefing)}
                           >
+                            {openingBriefingId === row.id ? (
+                              <div className='absolute inset-0 bg-[var(--color-bg-1)]/60 backdrop-blur-xs flex items-center justify-center z-10'>
+                                <Spin size={18} />
+                              </div>
+                            ) : null}
                             <strong className='text-14px text-[var(--color-text-1)]'>
                               {row.briefing.title ||
                                 t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}

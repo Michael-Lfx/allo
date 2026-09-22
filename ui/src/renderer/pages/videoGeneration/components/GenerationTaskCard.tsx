@@ -6,9 +6,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Popconfirm, Tag } from '@arco-design/web-react';
+import { Popconfirm, Spin, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne, LoadingOne } from '@icon-park/react';
 import { canvasMediaUrl, type GenerationTaskView } from '../../videoCanvas/api';
+import { prefetchVideoClipResult } from '../prefetch';
 import styles from '../index.module.css';
 
 function formatRelativeTime(ms: number, t: ReturnType<typeof useTranslation>['t']): string {
@@ -46,11 +47,21 @@ function statusLabel(status: string, t: ReturnType<typeof useTranslation>['t']):
 
 interface GenerationTaskCardProps {
   task: GenerationTaskView;
+  onOpen?: (task: GenerationTaskView) => void;
   onDelete?: (task: GenerationTaskView) => void;
   deleting?: boolean;
+  opening?: boolean;
+  disabled?: boolean;
 }
 
-const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete, deleting }) => {
+const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({
+  task,
+  onOpen,
+  onDelete,
+  deleting,
+  opening,
+  disabled,
+}) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -118,6 +129,12 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete,
   }, [videoUrl, inView]);
 
   const handleOpen = useCallback(() => {
+    if (disabled || opening || deleting) return;
+    if (onOpen) {
+      onOpen(task);
+      return;
+    }
+    prefetchVideoClipResult();
     navigate(`/video-generation/clip/${encodeURIComponent(task.task_id)}`, {
       state: {
         title: task.prompt?.slice(0, 48) || t('videoGeneration.clip.defaultTitle'),
@@ -125,7 +142,7 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete,
         taskId: task.task_id,
       },
     });
-  }, [navigate, task.task_id, task.prompt, t]);
+  }, [disabled, opening, deleting, onOpen, navigate, task, t]);
 
   return (
     <div
@@ -135,7 +152,10 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete,
       className={[
         styles.projectCard,
         'group relative flex flex-col overflow-hidden box-border cursor-pointer',
-      ].join(' ')}
+        disabled && 'opacity-60 pointer-events-none',
+      ]
+        .filter(Boolean)
+        .join(' ')}
       onClick={handleOpen}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -143,7 +163,13 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete,
           handleOpen();
         }
       }}
+      onPointerEnter={() => prefetchVideoClipResult()}
     >
+      {opening ? (
+        <div className='absolute inset-0 bg-[var(--color-bg-1)]/60 backdrop-blur-xs flex items-center justify-center z-10'>
+          <Spin size={20} />
+        </div>
+      ) : null}
       <div className={`${styles.projectCover} relative overflow-hidden`}>
         {videoUrl ? (
           <video
