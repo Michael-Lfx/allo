@@ -161,6 +161,10 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   } = useSortable({
     id: node.key,
     disabled: batchMode,
+    attributes: {
+      role: 'region',
+      tabIndex: -1,
+    },
   });
 
   const handleRef = useCallback(

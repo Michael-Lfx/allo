@@ -88,7 +88,7 @@ export function buildWorkpathTree(
       name: c.name,
       pinned: c.pinned === true,
       pinnedAt: c.pinned_at ?? 0,
-      activityAt: c.modified_at ?? 0,
+      activityAt: c.modified_at ?? c.created_at ?? 0,
       createdAt: c.created_at ?? 0,
       conversation: c,
     });
@@ -101,7 +101,7 @@ export function buildWorkpathTree(
       name: t.name,
       pinned: !!t.pinned,
       pinnedAt: t.pinned_at ?? 0,
-      activityAt: t.updated_at ?? 0,
+      activityAt: t.updated_at ?? t.created_at ?? 0,
       createdAt: t.created_at ?? 0,
       terminal: t,
     });
