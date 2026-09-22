@@ -6,6 +6,7 @@ import { Ghost, MessageOne, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
+import { useOptionalConversationHistoryContext } from '@renderer/hooks/context/ConversationHistoryContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
@@ -163,6 +164,43 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     [measureElement]
   );
 
+  const conversationHistory = useOptionalConversationHistoryContext();
+  const conversations = conversationHistory?.conversations;
+
+  const lastActiveConversationPathRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (pathname.startsWith('/conversation') || pathname.startsWith('/terminal')) {
+      lastActiveConversationPathRef.current = `${pathname}${search}${hash}`;
+    }
+  }, [hash, pathname, search]);
+
+  const getRecentConversationPath = useCallback(() => {
+    // 1. If user visited a specific conversation/terminal in this session and it still exists
+    if (lastActiveConversationPathRef.current) {
+      const route = parseSessionRoute(lastActiveConversationPathRef.current);
+      if (route?.kind === 'conversation') {
+        const exists = !conversations || conversations.some((c) => c.id === route.id);
+        if (exists) {
+          return lastActiveConversationPathRef.current;
+        }
+      } else {
+        return lastActiveConversationPathRef.current;
+      }
+    }
+
+    // 2. Otherwise find the latest conversation from history
+    if (conversations && conversations.length > 0) {
+      const sorted = [...conversations].sort(
+        (a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0)
+      );
+      return `/conversation/${encodeURIComponent(sorted[0].id)}`;
+    }
+
+    // 3. Fallback to new chat page
+    return '/guid';
+  }, [conversations]);
+
   useEffect(() => {
     if (!pathname.startsWith('/settings')) {
       lastNonSettingsPathRef.current = `${pathname}${search}${hash}`;
@@ -183,7 +221,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     [navigate, onSessionClick]
   );
 
-  const handleConversationClick = () => navTo('/guid');
+  const handleConversationClick = useCallback(() => {
+    navTo(getRecentConversationPath());
+  }, [getRecentConversationPath, navTo]);
+
   const handleNewChat = useCallback(() => {
     cleanupSiderTooltips();
     blurActiveElement();
@@ -233,8 +274,9 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     (tab: SiderHistoryTab) => {
       handleSelectHistoryTab(tab);
       if (tab === 'workspaces') {
-        if (!isSessionRoute) {
-          handleNewChat();
+        const recentPath = getRecentConversationPath();
+        if (pathname !== recentPath) {
+          navTo(recentPath);
         }
       } else if (tab === 'video') {
         if (!isVideoRoute) {
@@ -247,13 +289,13 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       }
     },
     [
-      handleNewChat,
+      getRecentConversationPath,
       handleSelectHistoryTab,
       handleVideoGenerationHome,
       isCompanionRoute,
-      isSessionRoute,
       isVideoRoute,
       navTo,
+      pathname,
     ]
   );
 

@@ -24,3 +24,7 @@ export const useConversationHistoryContext = (): ConversationHistoryContextValue
 
   return context;
 };
+
+export const useOptionalConversationHistoryContext = (): ConversationHistoryContextValue | null => {
+  return useContext(ConversationHistoryContext);
+};

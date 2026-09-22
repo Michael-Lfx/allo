@@ -40,10 +40,14 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     // Search entry selection switches drawer tab to workspaces
     expect(siderSource.includes("handleSelectHistoryTab('workspaces');\n    if (onSessionClick)")).toBe(true);
 
-    // History tabs route to the module homepage when not already active
-    expect(siderSource.includes('if (!isSessionRoute)')).toBe(true);
+    // Collapsed rail restores recent active conversation while top + starts a new chat
+    expect(siderSource.includes('getRecentConversationPath')).toBe(true);
+    expect(siderSource.includes('lastActiveConversationPathRef')).toBe(true);
+    expect(siderSource.includes('handleConversationClick')).toBe(true);
+
+    // Expanded workspaces tab navigates to recent conversation; video routes home
+    expect(siderSource.includes("if (tab === 'workspaces')")).toBe(true);
     expect(siderSource.includes('if (!isVideoRoute)')).toBe(true);
-    expect(siderSource.includes('handleNewChat();')).toBe(true);
     expect(siderSource.includes('handleVideoGenerationHome();')).toBe(true);
   });
 
