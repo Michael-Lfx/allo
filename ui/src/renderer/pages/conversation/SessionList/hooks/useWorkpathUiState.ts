@@ -16,6 +16,7 @@ import type { SessionKind } from '../utils/workpathTree';
  * - `nomifun:ssh-group-expanded`           boolean; the SSH 会话 group defaults to EXPANDED
  */
 export const WORKPATH_PINNED_STORAGE_KEY = 'nomifun:workpath-pinned';
+export const WORKPATH_CUSTOM_ORDER_STORAGE_KEY = 'nomifun:workpath-custom-order';
 export const WORKPATH_EXPANSION_STORAGE_KEY = 'nomifun:workpath-expansion';
 export const WORKPATH_SUBGROUP_STORAGE_KEY = 'nomifun:workpath-subgroup-expansion';
 export const COMPANION_GROUP_STORAGE_KEY = 'nomifun:companion-group-expanded';
@@ -55,6 +56,11 @@ const readPinned = (): string[] => {
   return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
 };
 
+const readCustomOrder = (): string[] => {
+  const parsed = readJson<unknown>(WORKPATH_CUSTOM_ORDER_STORAGE_KEY, []);
+  return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+};
+
 const readExpansion = (): Record<string, boolean> => readJson<Record<string, boolean>>(WORKPATH_EXPANSION_STORAGE_KEY, {});
 
 const readSubgroup = (): Record<string, boolean> => readJson<Record<string, boolean>>(WORKPATH_SUBGROUP_STORAGE_KEY, {});
@@ -83,6 +89,10 @@ export type WorkpathUiState = {
   /** Pinned workpath keys; array order = manual pin order (most recently pinned first). */
   pinnedKeys: string[];
   togglePinned: (workpathKey: string) => void;
+  /** Custom manual reordering for unpinned workpaths. */
+  customOrderKeys: string[];
+  /** Reorder workpaths from drag & drop, supporting pinned, unpinned, and cross-section drag. */
+  reorderWorkpaths: (activeKey: string, overKey: string, allKeys: string[]) => void;
   /** First-level drawer expansion. Default: collapsed. */
   isExpanded: (workpathKey: string) => boolean;
   toggleExpanded: (workpathKey: string) => void;
@@ -103,6 +113,7 @@ export type WorkpathUiState = {
 
 export const useWorkpathUiState = (): WorkpathUiState => {
   const [pinnedKeys, setPinnedKeys] = useState<string[]>(() => readPinned());
+  const [customOrderKeys, setCustomOrderKeys] = useState<string[]>(() => readCustomOrder());
   const [expansion, setExpansion] = useState<Record<string, boolean>>(() => readExpansion());
   const [subgroup, setSubgroup] = useState<Record<string, boolean>>(() => readSubgroup());
   const [companionGroupExpanded, setCompanionGroupExpanded] = useState<boolean>(() => readCompanionExpanded());
@@ -112,6 +123,7 @@ export const useWorkpathUiState = (): WorkpathUiState => {
   useEffect(() => {
     const reload = (storageKey: string | null) => {
       if (!storageKey || storageKey === WORKPATH_PINNED_STORAGE_KEY) setPinnedKeys(readPinned());
+      if (!storageKey || storageKey === WORKPATH_CUSTOM_ORDER_STORAGE_KEY) setCustomOrderKeys(readCustomOrder());
       if (!storageKey || storageKey === WORKPATH_EXPANSION_STORAGE_KEY) setExpansion(readExpansion());
       if (!storageKey || storageKey === WORKPATH_SUBGROUP_STORAGE_KEY) setSubgroup(readSubgroup());
       if (!storageKey || storageKey === COMPANION_GROUP_STORAGE_KEY) setCompanionGroupExpanded(readCompanionExpanded());
@@ -123,6 +135,7 @@ export const useWorkpathUiState = (): WorkpathUiState => {
     const handleStorage = (event: StorageEvent) => {
       if (
         event.key === WORKPATH_PINNED_STORAGE_KEY ||
+        event.key === WORKPATH_CUSTOM_ORDER_STORAGE_KEY ||
         event.key === WORKPATH_EXPANSION_STORAGE_KEY ||
         event.key === WORKPATH_SUBGROUP_STORAGE_KEY ||
         event.key === COMPANION_GROUP_STORAGE_KEY ||
@@ -202,9 +215,85 @@ export const useWorkpathUiState = (): WorkpathUiState => {
     setSshGroupExpanded(next);
   }, []);
 
+  const reorderWorkpaths = useCallback(
+    (activeKey: string, overKey: string, allKeys: string[]) => {
+      if (activeKey === overKey) return;
+      const currentPinned = readPinned();
+      const currentCustomOrder = readCustomOrder();
+      const isPinned = (k: string) => currentPinned.includes(k);
+
+      const activeIsPinned = isPinned(activeKey);
+      const overIsPinned = isPinned(overKey);
+
+      if (activeIsPinned && overIsPinned) {
+        // Both are pinned: reorder within pinnedKeys
+        const fromIdx = currentPinned.indexOf(activeKey);
+        const toIdx = currentPinned.indexOf(overKey);
+        if (fromIdx !== -1 && toIdx !== -1) {
+          const nextPinned = currentPinned.slice();
+          nextPinned.splice(toIdx, 0, nextPinned.splice(fromIdx, 1)[0]);
+          writeJson(WORKPATH_PINNED_STORAGE_KEY, nextPinned);
+          setPinnedKeys(nextPinned);
+        }
+        return;
+      }
+
+      if (!activeIsPinned && !overIsPinned) {
+        // Both are unpinned: reorder within unpinned list
+        const unpinnedKeys = allKeys.filter((k) => !isPinned(k));
+        const fromIdx = unpinnedKeys.indexOf(activeKey);
+        const toIdx = unpinnedKeys.indexOf(overKey);
+        if (fromIdx !== -1 && toIdx !== -1) {
+          const nextUnpinned = unpinnedKeys.slice();
+          nextUnpinned.splice(toIdx, 0, nextUnpinned.splice(fromIdx, 1)[0]);
+          writeJson(WORKPATH_CUSTOM_ORDER_STORAGE_KEY, nextUnpinned);
+          setCustomOrderKeys(nextUnpinned);
+        }
+        return;
+      }
+
+      if (!activeIsPinned && overIsPinned) {
+        // Dragging unpinned item into pinned section -> pin it at overKey's position
+        const toIdx = currentPinned.indexOf(overKey);
+        const nextPinned = currentPinned.slice();
+        if (toIdx !== -1) {
+          nextPinned.splice(toIdx, 0, activeKey);
+        } else {
+          nextPinned.push(activeKey);
+        }
+        const nextCustomOrder = currentCustomOrder.filter((k) => k !== activeKey);
+        writeJson(WORKPATH_PINNED_STORAGE_KEY, nextPinned);
+        writeJson(WORKPATH_CUSTOM_ORDER_STORAGE_KEY, nextCustomOrder);
+        setPinnedKeys(nextPinned);
+        setCustomOrderKeys(nextCustomOrder);
+        return;
+      }
+
+      if (activeIsPinned && !overIsPinned) {
+        // Dragging pinned item into unpinned section -> unpin it and place at overKey's position
+        const nextPinned = currentPinned.filter((k) => k !== activeKey);
+        const unpinnedKeys = allKeys.filter((k) => !isPinned(k));
+        const toIdx = unpinnedKeys.indexOf(overKey);
+        const nextCustomOrder = unpinnedKeys.slice();
+        if (toIdx !== -1) {
+          nextCustomOrder.splice(toIdx, 0, activeKey);
+        } else {
+          nextCustomOrder.push(activeKey);
+        }
+        writeJson(WORKPATH_PINNED_STORAGE_KEY, nextPinned);
+        writeJson(WORKPATH_CUSTOM_ORDER_STORAGE_KEY, nextCustomOrder);
+        setPinnedKeys(nextPinned);
+        setCustomOrderKeys(nextCustomOrder);
+      }
+    },
+    []
+  );
+
   return {
     pinnedKeys,
     togglePinned,
+    customOrderKeys,
+    reorderWorkpaths,
     isExpanded,
     toggleExpanded,
     expand,

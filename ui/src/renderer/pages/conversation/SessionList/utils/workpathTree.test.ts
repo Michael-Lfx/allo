@@ -155,4 +155,18 @@ describe('buildWorkpathTree', () => {
     expect(node.interactive.map((s) => s.id)).toEqual([colPinnedId, plainId]);
     expect(node.interactive[0].pinnedAt).toBe(500);
   });
+  test('支持 customOrderKeys 对非置顶节点进行拖拽排序', () => {
+    const tree = buildWorkpathTree(
+      [
+        conv({ id: conversationId(50), modified_at: 10, extra: { workspace: '/p1', custom_workspace: true } }),
+        conv({ id: conversationId(51), modified_at: 99, extra: { workspace: '/p2', custom_workspace: true } }),
+        conv({ id: conversationId(52), modified_at: 50, extra: { workspace: '/p3', custom_workspace: true } }),
+      ],
+      [],
+      [],
+      [],
+      ['/p1', '/p3', '/p2']
+    );
+    expect(tree.map((n) => n.key)).toEqual(['/p1', '/p3', '/p2', DEFAULT_WORKPATH_KEY]);
+  });
 });

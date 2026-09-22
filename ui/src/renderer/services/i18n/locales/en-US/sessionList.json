@@ -52,6 +52,9 @@
   "removeWorkpathConfirm": "Remove \"{{path}}\" from the sidebar? Local files and existing sessions will not be deleted.",
   "removeWorkpathWithSessionsConfirm": "Remove \"{{path}}\" from created projects? Local files and {{count}} sessions will not be deleted, and this path will still appear while those sessions use it.",
   "removeWorkpathSuccess": "Workspace removed",
+  "reorderWorkpath": "Drag to reorder",
+  "activeWorkpathBadge": "Current",
+  "currentActiveWorkpath": "Current active workspace",
 
   "empty": "No sessions yet — click \"New Conversation\" or \"Create project\" above to start",
   "drawerEmpty": "No conversations yet"

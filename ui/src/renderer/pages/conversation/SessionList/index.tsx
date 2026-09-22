@@ -16,6 +16,15 @@ import { cleanupSiderTooltips } from '@/renderer/utils/ui/siderTooltip';
 import { Input, Modal } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { FolderOpen } from '@icon-park/react';
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -109,8 +118,20 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   }, []);
 
   const tree = useMemo(
-    () => buildWorkpathTree(conversations, [], ui.pinnedKeys, emptyProjectWorkpaths),
-    [conversations, ui.pinnedKeys, emptyProjectWorkpaths]
+    () => buildWorkpathTree(conversations, [], ui.pinnedKeys, emptyProjectWorkpaths, ui.customOrderKeys),
+    [conversations, ui.pinnedKeys, emptyProjectWorkpaths, ui.customOrderKeys]
+  );
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const workpathKeys = useMemo(() => tree.map((node) => node.key), [tree]);
+
+  const handleWorkpathDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      ui.reorderWorkpaths(String(active.id), String(over.id), workpathKeys);
+    },
+    [ui, workpathKeys]
   );
 
   const projectWorkpathKeys = useMemo(() => new Set(emptyProjectWorkpaths), [emptyProjectWorkpaths]);
@@ -291,6 +312,14 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     expandWorkpathDrawer(node.key);
     scrollSidebarItemIntoView('c-' + pending);
   }, [tree, revealTick, expandWorkpathDrawer]);
+
+  useEffect(() => {
+    if (!activeConversationId) return;
+    const owningNode = tree.find((candidate) => candidate.interactive.some((entry) => entry.id === activeConversationId));
+    if (owningNode && !ui.isExpanded(owningNode.key)) {
+      expandWorkpathDrawer(owningNode.key);
+    }
+  }, [activeConversationId, tree, expandWorkpathDrawer, ui]);
 
   /* ------------------------- workspace dropdown UI ------------------------- */
 
@@ -720,22 +749,28 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
         )}
 
         <div id='flowy-workpath-tree' aria-hidden={!expanded}>
-          {expanded && tree.map((node) => (
-            <WorkpathDrawer
-              key={node.key}
-              node={node}
-              ui={ui}
-              activeConversationId={activeConversationId}
-              onCreateInteractive={handleCreateInteractive}
-              onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
-              isProjectWorkpath={projectWorkpathKeys.has(node.key)}
-              batchMode={batchMode}
-              batchSelectionState={batchSelectionState}
-              onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
-              renderEntry={renderEntry}
-              displayPreferences={displayPreferences}
-            />
-          ))}
+          {expanded && (
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleWorkpathDragEnd}>
+              <SortableContext items={workpathKeys} strategy={verticalListSortingStrategy}>
+                {tree.map((node) => (
+                  <WorkpathDrawer
+                    key={node.key}
+                    node={node}
+                    ui={ui}
+                    activeConversationId={activeConversationId}
+                    onCreateInteractive={handleCreateInteractive}
+                    onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
+                    isProjectWorkpath={projectWorkpathKeys.has(node.key)}
+                    batchMode={batchMode}
+                    batchSelectionState={batchSelectionState}
+                    onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
+                    renderEntry={renderEntry}
+                    displayPreferences={displayPreferences}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+          )}
         </div>
 
         {/* 空态提示已移除（导航精简） */}

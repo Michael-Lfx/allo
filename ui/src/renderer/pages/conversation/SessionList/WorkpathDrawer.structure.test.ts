@@ -130,7 +130,7 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes('baseInteractiveEntries.map((entry) => renderEntry(entry))')).toBe(true);
     expect(source.includes('SessionKindGroup')).toBe(false);
     expect(source.includes('visibleEntries.terminal')).toBe(false);
-    expect(sessionListSource.includes('buildWorkpathTree(conversations, [], ui.pinnedKeys, emptyProjectWorkpaths)')).toBe(true);
+    expect(sessionListSource.includes('buildWorkpathTree(conversations, [], ui.pinnedKeys, emptyProjectWorkpaths, ui.customOrderKeys)')).toBe(true);
     expect(sessionListSource.includes('onCreateTerminal={handleCreateTerminal}')).toBe(false);
   });
 
@@ -162,5 +162,16 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes('flowy-workpath-header-two-line')).toBe(true);
     expect(source.includes('flowy-workpath-secondary')).toBe(true);
     expect(source.includes("className='flowy-workpath-session-overflow'")).toBe(true);
+  });
+
+  test('supports drag reorder and active workpath highlight', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
+
+    expect(source.includes("data-testid='workpath-drag-handle'")).toBe(true);
+    expect(source.includes("aria-label={t('sessionList.reorderWorkpath', { defaultValue: '拖动调整顺序' })}")).toBe(true);
+    expect(source.includes('useSortable')).toBe(true);
+    expect(source.includes('flowy-workpath-drawer-header-active')).toBe(true);
+    expect(source.includes("data-testid='workpath-active-badge'")).toBe(true);
+    expect(source.includes("t('sessionList.activeWorkpathBadge'")).toBe(true);
   });
 });

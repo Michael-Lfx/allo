@@ -147,6 +147,14 @@
   background: var(--flowy-sider-sticky-hover-surface);
 }
 
+.scrollArea :global(.flowy-workpath-drawer-header.flowy-workpath-drawer-header-active) {
+  background: var(--flowy-interactive-selected, rgba(var(--primary-6), 0.08));
+}
+
+.scrollArea :global(.flowy-workpath-drawer-header.flowy-workpath-drawer-header-active .size-22px) {
+  color: rgb(var(--primary-6));
+}
+
 @container flowy-sider (max-width: 200px) {
   :global(.session-age-meta) {
     display: none;
