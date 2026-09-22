@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use async_trait::async_trait;
-use nomi_agent::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
+use nomi_agent::features::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
 use nomi_protocol::events::ToolCategory;
 use nomi_tools::Tool;
 use nomi_tools::registry::ToolRegistry;
@@ -201,7 +201,7 @@ fn tc_3_5_07_to_tool_defs_filtered_mixed_categories() {
 
 #[test]
 fn tc_3_5_08_system_prompt_includes_plan_mode_when_active() {
-    use nomi_agent::plan::prompt::plan_mode_instructions;
+    use nomi_agent::features::plan::prompt::plan_mode_instructions;
 
     let base_prompt = "You are an AI assistant.";
     let instructions = plan_mode_instructions();

@@ -294,16 +294,6 @@ pub fn register_plan_tools(registry: &mut ToolRegistry, service: &PlanService) -
     true
 }
 
-/// Convenience for callers that only need the two boxes.
-pub fn plan_tools(service: &PlanService) -> (Box<EnterPlanModeTool>, Box<ExitPlanModeTool>) {
-    (
-        Box::new(EnterPlanModeTool::new(service.active_flag().as_arc())),
-        Box::new(ExitPlanModeTool::with_latch(
-            service.active_flag().as_arc(),
-            service.exit_latch().as_arc(),
-        )),
-    )
-}
 
 #[cfg(test)]
 mod tests {

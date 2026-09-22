@@ -6,8 +6,8 @@ use std::fs;
 use std::path::Path;
 
 use nomi_agent::context::{SystemPromptCache, build_system_prompt};
-use nomi_agent::plan::file::{plan_file_path, read_plan, write_plan};
-use nomi_agent::plan::prompt::plan_mode_instructions;
+use nomi_agent::features::plan::file::{plan_file_path, read_plan, write_plan};
+use nomi_agent::features::plan::prompt::plan_mode_instructions;
 
 // ---------------------------------------------------------------------------
 // TC-3.4-01  plan_mode_instructions content
@@ -93,7 +93,7 @@ fn tc_3_4_03_plan_mode_not_in_system_prompt() {
     );
 
     // Verify plan mode instructions still exist for turn-tail injection
-    let plan_instructions = nomi_agent::plan::prompt::plan_mode_instructions();
+    let plan_instructions = nomi_agent::features::plan::prompt::plan_mode_instructions();
     assert!(plan_instructions.contains("Plan Mode"));
     assert!(plan_instructions.contains("ExitPlanMode"));
 }

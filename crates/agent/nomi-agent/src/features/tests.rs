@@ -184,7 +184,11 @@ fn an_empty_registry_folds_to_its_input() {
     assert!(ctx.allow_list.is_empty());
 
     let dispatch = DispatchCtx::new("Bash", ToolCategory::Exec);
-    assert!(registry.first_denial(&dispatch, &HookCtx::new()).is_none());
+    assert!(
+        crate::features::DispatchGate::from_registry(&registry, PlanStatus::default())
+            .denial(&dispatch)
+            .is_none()
+    );
 }
 
 #[test]
@@ -233,8 +237,8 @@ fn the_first_denial_wins_and_later_gates_are_not_consulted() {
     ));
 
     let write = DispatchCtx::new("Write", ToolCategory::Edit);
-    let denial = registry
-        .first_denial(&write, &HookCtx::new())
+    let denial = crate::features::DispatchGate::from_registry(&registry, PlanStatus::default())
+        .denial(&write)
         .expect("the first gate refuses");
     assert_eq!(denial.message, "first refused Write");
     assert_eq!(
@@ -254,8 +258,8 @@ fn an_allowing_gate_lets_the_next_one_decide() {
     ));
 
     let write = DispatchCtx::new("Write", ToolCategory::Edit);
-    let denial = registry
-        .first_denial(&write, &HookCtx::new())
+    let denial = crate::features::DispatchGate::from_registry(&registry, PlanStatus::default())
+        .denial(&write)
         .expect("the second gate refuses");
     assert_eq!(denial.message, "second refused Write");
     assert_eq!(
@@ -416,7 +420,7 @@ fn service_downcast_returns_the_same_feature_not_a_copy() {
     );
 
     // And the registry still owns its strong reference after the downcast.
-    assert!(registry.feature("plan").is_some());
+    assert!(registry.service::<ProbeFeature>("plan").is_some());
 }
 
 #[test]

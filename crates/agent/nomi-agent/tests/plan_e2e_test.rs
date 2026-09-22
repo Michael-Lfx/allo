@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use nomi_agent::plan::prompt::plan_mode_instructions;
-use nomi_agent::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
+use nomi_agent::features::plan::prompt::plan_mode_instructions;
+use nomi_agent::features::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
 use nomi_protocol::events::ToolCategory;
 use nomi_tools::Tool;
 use nomi_tools::registry::ToolRegistry;
@@ -189,7 +189,7 @@ async fn tc_3_6_e2e_01_full_plan_mode_lifecycle() {
 #[test]
 fn tc_3_6_e2e_02_plan_mode_and_compaction_independent() {
     use nomi_agent::compact::micro::microcompact;
-    use nomi_agent::plan::state::PlanState;
+    use nomi_agent::features::plan::state::PlanState;
     use nomi_config::compact::CompactConfig;
     use nomi_types::message::{ContentBlock, Message, Role};
 
@@ -289,7 +289,7 @@ fn tc_3_6_e2e_03_skill_tool_available_in_plan_mode() {
 
 #[test]
 fn tc_3_6_e2e_04_plan_state_not_persisted_across_sessions() {
-    use nomi_agent::plan::state::PlanState;
+    use nomi_agent::features::plan::state::PlanState;
 
     // Simulate a "previous session" where plan mode was active
     let active_state = PlanState {

@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicBool;
 
 use async_trait::async_trait;
 use nomi_agent::context::{SystemPromptCache, build_system_prompt};
-use nomi_agent::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
+use nomi_agent::features::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
 use nomi_protocol::events::ToolCategory;
 use nomi_tools::Tool;
 use nomi_tools::registry::ToolRegistry;
@@ -197,7 +197,7 @@ fn tc_a3_02_plan_mode_not_in_system_prompt() {
 
     // The plan mode instructions still exist — just in plan::prompt, not the
     // system prompt. Verify they're accessible for turn-tail injection.
-    let plan_instructions = nomi_agent::plan::prompt::plan_mode_instructions();
+    let plan_instructions = nomi_agent::features::plan::prompt::plan_mode_instructions();
     assert!(plan_instructions.contains("# Plan Mode"));
     assert!(plan_instructions.contains("ExitPlanMode"));
 }

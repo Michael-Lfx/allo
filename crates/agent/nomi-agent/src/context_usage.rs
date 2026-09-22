@@ -14,7 +14,7 @@ use crate::compact::auto::{extract_compact_metadata, is_compaction_artifact};
 use crate::compact::estimate::{
     estimate_tokens_from_message, estimate_tokens_from_text, estimate_tokens_from_tool_def,
 };
-use crate::plan::prompt::plan_mode_instructions;
+use crate::features::plan::prompt::plan_mode_instructions;
 
 const SYSTEM_PROMPT_SECTIONS: &[&str] = &[
     "intro",

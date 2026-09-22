@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::json;
 
-use nomi_agent::plan::state::PlanState;
-use nomi_agent::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
+use nomi_agent::features::plan::state::PlanState;
+use nomi_agent::features::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
 use nomi_protocol::events::ToolCategory;
 use nomi_tools::Tool;
 use nomi_types::skill_types::PlanModeTransition;

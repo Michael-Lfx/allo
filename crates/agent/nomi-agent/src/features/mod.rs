@@ -426,14 +426,6 @@ impl FeatureRegistry {
         &self.entries
     }
 
-    /// The registered feature with this name.
-    pub fn feature(&self, name: &str) -> Option<&Arc<dyn Feature>> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .map(|entry| &entry.feature)
-    }
-
     /// The registered feature downcast to its concrete type.
     ///
     /// The engine façade needs the concrete handle — `set_plan_active_flag`
@@ -443,7 +435,6 @@ impl FeatureRegistry {
         let entry = self.entries.iter().find(|e| e.name == name)?;
         Arc::clone(&entry.any).downcast::<T>().ok()
     }
-
     /// Register each feature's tools, in registration order.
     pub fn register_tools(&self, registry: &mut ToolRegistry) {
         for entry in &self.entries {
@@ -483,19 +474,6 @@ impl FeatureRegistry {
                 hook(ctx);
             }
         })
-    }
-
-    /// The first denial in registration order, or `None` when every gate
-    /// allows this call.
-    pub fn first_denial(&self, dispatch: &DispatchCtx, ctx: &HookCtx) -> Option<ToolDenial> {
-        for entry in &self.entries {
-            for gate in &entry.hooks.dispatch_gate {
-                if let Some(denial) = gate(dispatch, ctx) {
-                    return Some(denial);
-                }
-            }
-        }
-        None
     }
 
     /// Fold modifiers in registration order. Each feature sees the previous
