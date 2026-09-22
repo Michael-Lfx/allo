@@ -355,7 +355,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             type='button'
             aria-expanded={batchMode ? undefined : expanded}
             aria-controls={batchMode ? undefined : controlsId}
-            className='flex min-w-0 flex-1 items-center gap-4px appearance-none border-none bg-transparent p-0 text-left cursor-pointer'
+            className='flex min-w-0 flex-1 items-center gap-2px appearance-none border-none bg-transparent p-0 text-left cursor-pointer'
             onClick={() => {
               if (batchMode && !workpathSelectionState.disabled) {
                 onToggleBatchSelectionScope?.(workpathSelectionScope);
@@ -369,11 +369,11 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             <span
               data-testid='workpath-disclosure-caret'
               className={classNames(
-                'size-14px flex items-center justify-center shrink-0 transition-transform duration-150',
+                'w-10px h-14px flex items-center justify-center shrink-0 transition-transform duration-150 -ml-2px -mr-2px',
                 expanded ? 'rotate-90 text-primary-6' : 'text-t-tertiary group-hover:text-t-secondary'
               )}
             >
-              <Right theme='outline' size={10} fill='currentColor' />
+              <Right theme='outline' size={9} fill='currentColor' />
             </span>
             <span
               className='relative size-22px flex items-center justify-center shrink-0 text-t-primary'
