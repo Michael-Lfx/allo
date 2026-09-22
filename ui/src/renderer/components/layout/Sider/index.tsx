@@ -2,7 +2,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { MessageOne, Robot, VideoOne } from '@icon-park/react';
+import { Ghost, MessageOne, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -625,7 +625,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                         : 'bg-transparent text-t-tertiary hover:text-t-primary hover:bg-fill-2'
                     )}
                   >
-                    <Robot
+                    <Ghost
                       theme='outline'
                       size={15}
                       fill='currentColor'

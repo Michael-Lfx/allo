@@ -24,10 +24,10 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes("aria-selected={activeBar2Module === 'video'}")).toBe(true);
     expect(siderSource.includes("aria-selected={activeBar2Module === 'companions'}")).toBe(true);
 
-    // Module icons on workspaces, video, and companion (<Robot />), without emoji
+    // Module icons on workspaces, video, and companion (<Ghost />), without emoji
     expect(siderSource.includes('<MessageOne')).toBe(true);
     expect(siderSource.includes('<VideoOne')).toBe(true);
-    expect(siderSource.includes('<Robot')).toBe(true);
+    expect(siderSource.includes('<Ghost')).toBe(true);
     expect(siderSource.includes('🐱')).toBe(false);
   });
 
