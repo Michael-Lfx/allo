@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   buildStoryboardScenes,
   buildStoryboardScenesFromStoryboards,
+  findShotCreditPaths,
   findShotDescriptionPaths,
   findShotVideoPaths,
   findStoryboardPath,
@@ -467,6 +468,16 @@ describe('video artifact presentation', () => {
       'script2video/shots/0/shot_description.json',
     ]);
     expect(findShotVideoPaths(tree)).toEqual(['script2video/shots/0/video.mp4']);
+    expect(findShotCreditPaths(tree)).toEqual([]);
+    expect(
+      findShotCreditPaths([
+        {
+          name: 'video_credits.json',
+          path: 'script2video/shots/0/video_credits.json',
+          is_dir: false,
+        },
+      ])
+    ).toEqual(['script2video/shots/0/video_credits.json']);
   });
 
   test('does not collapse same shot index from different scenes', () => {

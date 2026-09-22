@@ -14,7 +14,7 @@ export interface ActiveVideoGenerationTarget {
   sceneIndex: number | null;
 }
 
-function metaNumber(metadata: unknown, key: string): number | null {
+export function statusMetaNumber(metadata: unknown, key: string): number | null {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
   const value = (metadata as Record<string, unknown>)[key];
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -25,7 +25,7 @@ function metaNumber(metadata: unknown, key: string): number | null {
   return null;
 }
 
-function parseShotFromMessage(message: string | null | undefined): number | null {
+export function parseShotFromMessage(message: string | null | undefined): number | null {
   const text = message?.trim() ?? '';
   if (!text) return null;
   const patterns = [
@@ -41,7 +41,7 @@ function parseShotFromMessage(message: string | null | undefined): number | null
   return null;
 }
 
-function parseSceneFromMessage(message: string | null | undefined): number | null {
+export function parseSceneFromMessage(message: string | null | undefined): number | null {
   const text = message?.trim() ?? '';
   if (!text) return null;
   // "正在渲染场景（1/2）" / "Scene 1/2" — 1-based in copy → convert to 0-based.
@@ -56,7 +56,7 @@ function parseSceneFromMessage(message: string | null | undefined): number | nul
   return null;
 }
 
-function sceneIndexFromRoot(sceneRoot: string | undefined): number | null {
+export function sceneIndexFromRoot(sceneRoot: string | undefined): number | null {
   if (!sceneRoot) return null;
   const normalized = sceneRoot.replace(/\\/g, '/');
   const match = normalized.match(/scene_(\d+)/i);
@@ -76,7 +76,7 @@ export function activeVideoGenerationTarget(
   const events = [...(status.events ?? [])].reverse();
 
   let sceneIndex: number | null =
-    metaNumber(
+    statusMetaNumber(
       events.find((ev) =>
         ['render_scene', 'render_scene_skip', 'render_scene_done', 'render_scene_failed'].includes(
           ev.stage
@@ -99,7 +99,7 @@ export function activeVideoGenerationTarget(
     let shotIndex: number | null = null;
     for (const ev of events) {
       if (ev.stage === 'video_clip_done' || ev.stage === 'video_clip_exists') {
-        const fromMeta = metaNumber(ev.metadata, 'shot_idx');
+        const fromMeta = statusMetaNumber(ev.metadata, 'shot_idx');
         const fromMsg = parseShotFromMessage(ev.message);
         if (fromMeta != null || fromMsg != null) {
           shotIndex = fromMeta ?? fromMsg ?? null;
@@ -130,7 +130,7 @@ export function activeVideoGenerationTarget(
 
   for (const ev of events) {
     if (!generatingStages.has(ev.stage) && ev.stage !== 'video_clip_done') continue;
-    const fromMeta = metaNumber(ev.metadata, 'shot_idx');
+    const fromMeta = statusMetaNumber(ev.metadata, 'shot_idx');
     const fromMsg = parseShotFromMessage(ev.message);
     if (fromMeta != null || fromMsg != null) {
       // Prefer structured metadata from the newest generating event.

@@ -7,17 +7,24 @@ import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import {
   buildStoryboardScenesFromStoryboards,
+  findShotCreditPaths,
   findStoryboardPaths,
   mergeStoryboardsWithoutGrowth,
   parseStoryboard,
+  shotLocationFromPath,
   storyboardRefreshSignature,
   type StoryboardScene,
   type StoryboardShot,
 } from '../artifactPresentation';
-import type { ShotCopySaveResult } from '../storyboardShotCopy';
 import StoryboardShotEditorModal, {
   type StoryboardShotEditorFocus,
 } from './StoryboardShotEditorModal';
+import {
+  creditsByShotFromSessionEvents,
+  parseShotCreditsFile,
+  resolveShotCreditsConsumed,
+  shotCreditKey,
+} from '../shotCredits';
 import {
   activeVideoGenerationTarget,
   resolveStoryboardVideoStatus,
@@ -208,6 +215,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   >([]);
   const [activeSceneId, setActiveSceneId] = useState<string>();
   const [editorFocus, setEditorFocus] = useState<StoryboardShotEditorFocus | null>(null);
+  const [sidecarCredits, setSidecarCredits] = useState<Map<string, number>>(() => new Map());
 
   const generatingTarget = useMemo(
     () => activeVideoGenerationTarget(runStatus),
@@ -271,15 +279,58 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     [onFocusScene]
   );
 
-  const applySavedCopy = useCallback((result: ShotCopySaveResult) => {
-    setStoryboardEntries((previous) =>
-      previous.map((entry) =>
-        entry.path === result.storyboardPath
-          ? { path: entry.path, shots: parseStoryboard(result.patchedText) }
-          : entry
-      )
-    );
-  }, []);
+  const creditPathKey = useMemo(() => findShotCreditPaths(artifacts).join('|'), [artifacts]);
+
+  useEffect(() => {
+    const paths = creditPathKey ? creditPathKey.split('|') : [];
+    if (paths.length === 0) {
+      setSidecarCredits(new Map());
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      paths.map(async (path) => {
+        try {
+          const content = await getArtifact(sessionId, path);
+          return { path, credits: parseShotCreditsFile(content.text) };
+        } catch {
+          return { path, credits: 0 };
+        }
+      })
+    ).then((rows) => {
+      if (cancelled) return;
+      const next = new Map<string, number>();
+      for (const row of rows) {
+        if (row.credits <= 0) continue;
+        const location = shotLocationFromPath(row.path);
+        if (!location) continue;
+        const key = shotCreditKey(location.sceneRoot, location.shotIndex);
+        if (!key) continue;
+        next.set(key, Math.max(next.get(key) ?? 0, row.credits));
+      }
+      setSidecarCredits(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [creditPathKey, sessionId]);
+
+  const eventCredits = useMemo(
+    () => creditsByShotFromSessionEvents(runStatus?.events),
+    [runStatus?.events]
+  );
+
+  const creditsForScene = useCallback(
+    (scene: StoryboardScene): number =>
+      resolveShotCreditsConsumed({
+        sceneRoot: scene.sceneRoot,
+        shotIndex: scene.shotIndex,
+        hasVideo: Boolean(scene.videoPath),
+        eventCredits,
+        sidecarCredits,
+      }),
+    [eventCredits, sidecarCredits]
+  );
 
   const activeScene =
     scenes.find((scene) => scene.id === activeSceneId) ??
@@ -385,8 +436,9 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const sceneNumber = activeScene.index + 1;
   const activeSceneIndex = scenes.findIndex((scene) => scene.id === activeScene.id);
   const expandLabel = t('videoGeneration.studio.storyboard.expand', {
-    defaultValue: '展开编辑',
+    defaultValue: '展开查看',
   });
+  const activeShotCredits = creditsForScene(activeScene);
 
   return (
     <div className={styles.storyboardLayout}>
@@ -416,6 +468,17 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                 })}`
               : ''}
           </span>
+          {activeShotCredits > 0 ? (
+            <span
+              data-testid='shot-video-credits'
+              className={styles.shotCreditsBadge}
+            >
+              {t('videoGeneration.studio.creditsConsumed', {
+                credits: activeShotCredits,
+                defaultValue: '消耗 {{credits}} 积分',
+              })}
+            </span>
+          ) : null}
         </div>
         <aside className={styles.storyInspector}>
           <div
@@ -442,14 +505,6 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                 className={styles.storyInspectorExpand}
               />
             </div>
-            {activeScene.beatCount != null ? (
-              <p className='m-0 text-12px leading-18px text-white/55'>
-                {t('videoGeneration.studio.storyboard.packedBeatsHint', {
-                  count: activeScene.beatCount,
-                  defaultValue: '相邻短镜头已合并进这一条成片，生成时只出一条视频。',
-                })}
-              </p>
-            ) : null}
             <div className={styles.storyInspectorScroll}>
               <p className={`${styles.storyInspectorBody} text-14px leading-23px text-white/90`}>
                 {activeScene.visualDescription ||
@@ -552,6 +607,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
             const number = scene.index + 1;
             const active = scene.id === activeScene.id;
             const status = videoStatusFor(scene);
+            const shotCredits = creditsForScene(scene);
             // Compact thumbs prefer the last-frame still so a ready shot never
             // downloads its whole clip just to render a thumbnail.
             const thumbPath = scene.imagePath ?? scene.videoPath;
@@ -585,6 +641,20 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                     {t('videoGeneration.studio.storyboard.packedBeatsShort', {
                       count: scene.beatCount,
                       defaultValue: '{{count}} 切',
+                    })}
+                  </span>
+                ) : null}
+                {shotCredits > 0 ? (
+                  <span
+                    className={styles.shotCardCredits}
+                    title={t('videoGeneration.studio.creditsConsumed', {
+                      credits: shotCredits,
+                      defaultValue: '消耗 {{credits}} 积分',
+                    })}
+                  >
+                    {t('videoGeneration.studio.creditsConsumed', {
+                      credits: shotCredits,
+                      defaultValue: '消耗 {{credits}} 积分',
                     })}
                   </span>
                 ) : null}
@@ -636,7 +706,6 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
       )}
       {editorFocus ? (
         <StoryboardShotEditorModal
-          sessionId={sessionId}
           scene={activeScene}
           sceneNumber={sceneNumber}
           total={scenes.length}
@@ -653,7 +722,6 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
             const next = scenes[activeSceneIndex + 1];
             if (next) selectScene(next.id);
           }}
-          onSaved={applySavedCopy}
         />
       ) : null}
     </div>

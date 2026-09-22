@@ -60,7 +60,7 @@ export interface StoryboardScene {
 }
 
 /** Location of a shot under a pipeline scene workspace. */
-interface ShotLocation {
+export interface ShotLocation {
   /** Directory that owns `shots/` and usually `storyboard.json`. */
   sceneRoot: string;
   shotIndex: number;
@@ -300,6 +300,14 @@ export function findShotVideoPaths(nodes: ArtifactNode[]): string[] {
   return [...new Set(paths)].sort(compareSceneAwarePaths);
 }
 
+/** Per-clip Flowy credit sidecars written next to `video.mp4`. */
+export function findShotCreditPaths(nodes: ArtifactNode[]): string[] {
+  const paths = flattenArtifacts(nodes)
+    .map((file) => file.path.replace(/\\/g, '/'))
+    .filter((path) => /\/shots\/\d+\/video_credits\.json$/i.test(path));
+  return [...new Set(paths)].sort(compareSceneAwarePaths);
+}
+
 /**
  * Patch `visual_desc` / `audio_desc` (and common aliases) for a shot inside a
  * storyboard / shot_description JSON document. Returns pretty-printed JSON.
@@ -482,7 +490,7 @@ function sceneRootFromStoryboardPath(path: string): string {
   return idx >= 0 ? normalized.slice(0, idx) : '';
 }
 
-function shotLocationFromPath(path: string): ShotLocation | null {
+export function shotLocationFromPath(path: string): ShotLocation | null {
   const normalized = path.replace(/\\/g, '/');
   const match = normalized.match(/^(.*)\/shots\/(\d+)\//i);
   if (!match) return null;
