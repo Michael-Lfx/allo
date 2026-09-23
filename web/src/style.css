@@ -921,6 +921,16 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
    readable, never offered for install. */
 .market-tag.is-blocked { background: var(--destructive-soft); color: var(--destructive); }
 
+/* Skill-origin badges: one hue per read-only family so 「市场安装」/「内置」/
+   「共享」 separate at a glance (user keeps the neutral default). Soft tokens
+   are theme-paired already; the text colors reuse the existing strong tokens
+   (--link for marketplace, --green-deep/--amber as elsewhere in this file). */
+.market-tag.is-origin-marketplace { background: var(--link-border); color: var(--link); }
+.market-tag.is-origin-builtin { background: var(--green-soft); color: var(--green-deep); }
+.market-tag.is-origin-shared { background: var(--amber-soft); color: var(--amber); }
+.market-tag.is-origin-companion { background: var(--surface-raised); color: var(--muted); }
+.market-tag.is-origin-draft { background: var(--surface-raised); color: var(--muted-light); }
+
 /* status dot (small, non-decorative) */
 .status-dot { width: 8px; height: 8px; flex: 0 0 auto; margin-top: 4px; border-radius: 50%; background: var(--muted-faint); }
 .status-dot.is-success { background: var(--green); }

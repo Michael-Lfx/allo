@@ -49,6 +49,7 @@ import {
   SkillWriteDialogs,
   SkillWriteToolbarView,
   originLabelI18nKey,
+  skillOriginClass,
   type SkillWriteMode,
 } from "./skills/SkillWriteSurface";
 import type {
@@ -990,8 +991,9 @@ export function CatalogView() {
                     </div>
                     {/* The origin badge is the host's own classification, so a
                         user skill and a marketplace product never look alike
-                        (both are `source: custom`). */}
-                    <span className="market-tag">{t(originLabelI18nKey(skill.origin))}</span>
+                        (both are `source: custom`). Colored per origin so the
+                        three read-only families separate at a glance. */}
+                    <span className={`market-tag ${skillOriginClass(skill.origin)}`}>{t(originLabelI18nKey(skill.origin))}</span>
                   </div>
                   <Tags tags={[...(skill.required_connectors ?? [])]} />
                   <SkillWriteActionsView
