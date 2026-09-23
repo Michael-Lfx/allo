@@ -862,6 +862,12 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
    narrower than the page was: two columns instead of three. */
 .market-sources-panel .market-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
+/* `is-wide` dialogs zero their own padding and leave it to the body wrapper
+   (`.dir-body` pads itself for the directory picker). The import panel is the
+   other wide-dialog body: without its own padding its form and cards sat flush
+   against the dialog edge. */
+.settings-dialog > .market-imports { padding: 18px 26px 26px; }
+
 /* alert */
 .market-alert { display: flex; align-items: center; gap: 8px; margin: 10px 18px 0; padding: 9px 12px; border: 1px solid var(--destructive-border); border-radius: 8px; background: var(--destructive-soft); color: var(--destructive); font-size: 13px; }
 .market-alert button { border: 0; background: transparent; color: inherit; font-size: 13px; margin-left: auto; }
@@ -921,6 +927,16 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
    readable, never offered for install. */
 .market-tag.is-blocked { background: var(--destructive-soft); color: var(--destructive); }
 
+/* Skill-origin badges: one hue per read-only family so 「市场安装」/「内置」/
+   「共享」 separate at a glance (user keeps the neutral default). Soft tokens
+   are theme-paired already; the text colors reuse the existing strong tokens
+   (--link for marketplace, --green-deep/--amber as elsewhere in this file). */
+.market-tag.is-origin-marketplace { background: var(--link-border); color: var(--link); }
+.market-tag.is-origin-builtin { background: var(--green-soft); color: var(--green-deep); }
+.market-tag.is-origin-shared { background: var(--amber-soft); color: var(--amber); }
+.market-tag.is-origin-companion { background: var(--surface-raised); color: var(--muted); }
+.market-tag.is-origin-draft { background: var(--surface-raised); color: var(--muted-light); }
+
 /* status dot (small, non-decorative) */
 .status-dot { width: 8px; height: 8px; flex: 0 0 auto; margin-top: 4px; border-radius: 50%; background: var(--muted-faint); }
 .status-dot.is-success { background: var(--green); }
@@ -948,6 +964,20 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .market-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 1180px) { .market-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 720px) { .market-list { grid-template-columns: minmax(0, 1fr); } }
+/* The import-history grid lives inside a dialog, not on the page: the page's
+   three columns squeeze into ~170px per card there, which truncated every name
+   to 「senior-···」 and its subtitle to 「codebuddy plugin · ···」. Two columns
+   on the dialog's 860px width give each card ~400px; one below that. */
+.market-imports > .market-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 860px) { .market-imports > .market-list { grid-template-columns: minmax(0, 1fr); } }
+/* An import-history card: the name is the row's identity, so it wraps like the
+   marketplace entry cards instead of ellipsizing; the timestamp is metadata. */
+.market-import-card { min-height: 0; padding: 12px 14px; }
+.market-import-card .market-card-title { white-space: normal; overflow-wrap: anywhere; }
+.market-import-when { color: var(--muted-light); font-size: 11.5px; }
+/* The status chip carries the color; the dot beside it would be the same
+   fact twice, so it stays but the chip is the authoritative read. */
+.market-import-card > .market-tags { margin-top: 0; }
 .market-empty { margin: 30px 0; color: var(--muted-light); font-size: 13px; text-align: center; }
 .market-empty-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 30px 0; }
 .market-empty-wrap .market-empty { margin: 0; }

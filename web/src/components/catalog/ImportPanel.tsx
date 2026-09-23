@@ -42,6 +42,7 @@ import {
   MetaList,
   MetaRow,
   Tags,
+  importKindLabel,
   importStatusClass,
   importStatusLabel,
   installStateClass,
@@ -242,7 +243,7 @@ export function ImportPanel({ initialKind = "codebuddy-plugin" }: { initialKind?
             <div className="market-card-main">
               <span className="market-card-title">{importResult.name} <small>v{importResult.version}</small></span>
               <span className="market-card-sub">
-                {importResult.source_kind} · {t("catalog.importComponents", { count: importResult.component_count })}
+                {importKindLabel(t, importResult.source_kind)} · {t("catalog.importComponents", { count: importResult.component_count })}
               </span>
             </div>
             <span className={`status-dot ${importStatusClass(importResult.status)}`} aria-hidden="true" />
@@ -262,17 +263,7 @@ export function ImportPanel({ initialKind = "codebuddy-plugin" }: { initialKind?
           <p className="market-empty">{t("catalog.noImports")}</p>
         )}
         {(imports ?? []).map((item) => (
-          <button className="market-card" type="button" key={item.snapshot_id} onClick={() => void openImport(item.snapshot_id)}>
-            <div className="market-card-top">
-              <InitialBadge name={item.name} />
-              <div className="market-card-main">
-                <span className="market-card-title">{item.name} <small>v{item.version}</small></span>
-                <span className="market-card-sub">{item.source_kind} · {t("catalog.importComponents", { count: item.component_count })}</span>
-              </div>
-              <span className={`status-dot ${importStatusClass(item.status)}`} aria-hidden="true" />
-            </div>
-            <Tags tags={[importStatusLabel(t, item.status)]} />
-          </button>
+          <ImportHistoryCard key={item.snapshot_id} item={item} onOpen={() => void openImport(item.snapshot_id)} />
         ))}
       </div>
 
@@ -294,6 +285,37 @@ export function ImportPanel({ initialKind = "codebuddy-plugin" }: { initialKind?
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One import-history card, prop-driven so a server render can assert exactly
+ * what the dialog shows (`ImportPanel` itself is the wired half — its history
+ * loads in an effect, which `renderToStaticMarkup` never runs).
+ */
+export function ImportHistoryCard({
+  item,
+  onOpen,
+}: {
+  item: ImportSummary;
+  onOpen: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button className="market-card market-import-card" type="button" onClick={onOpen}>
+      <div className="market-card-top">
+        <InitialBadge name={item.name} />
+        <div className="market-card-main">
+          <span className="market-card-title">{item.name} <small>v{item.version}</small></span>
+          <span className="market-card-sub">
+            {importKindLabel(t, item.source_kind)} · {t("catalog.importComponents", { count: item.component_count })}
+          </span>
+          <span className="market-import-when">{new Date(item.imported_at).toLocaleString()}</span>
+        </div>
+        <span className={`status-dot ${importStatusClass(item.status)}`} aria-hidden="true" />
+      </div>
+      <span className={`market-tag is-status ${importStatusClass(item.status)}`}>{importStatusLabel(t, item.status)}</span>
+    </button>
   );
 }
 
@@ -326,7 +348,7 @@ function ImportDrawer({
           <h2>{detail.name} <small>v{detail.version}</small></h2>
           <div className="drawer-chips">
             <span className={`market-tag is-status ${importStatusClass(detail.status)}`}>{statusText}</span>
-            <span className="market-tag">{detail.source_kind}</span>
+            <span className="market-tag">{importKindLabel(t, detail.source_kind)}</span>
           </div>
         </div>
       </div>

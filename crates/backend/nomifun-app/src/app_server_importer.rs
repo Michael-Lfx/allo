@@ -252,12 +252,26 @@ impl AppServerAgentCatalog {
             .await
             .map_err(AppError::from)
     }
+
+    /// One component row per installed expert, plus every still-installed
+    /// component of it. A snapshot keeps its rows after `install/uninstall`
+    /// (by design — the definition stays re-importable), so the raw projection
+    /// lists uninstalled definitions forever; the surface this serves is
+    /// 「我的专家」, which must shrink when an expert is released.
+    async fn installed_rows(&self) -> Result<Vec<PluginSnapshotComponentRow>, AppError> {
+        Ok(self
+            .rows()
+            .await?
+            .into_iter()
+            .filter(|row| installed_row(row))
+            .collect())
+    }
 }
 
 #[async_trait]
 impl AgentCatalogProvider for AppServerAgentCatalog {
     async fn list(&self) -> Result<Vec<AppServerAgentSummary>, AppError> {
-        Ok(self.rows().await?.iter().map(agent_summary).collect())
+        Ok(self.installed_rows().await?.iter().map(agent_summary).collect())
     }
 
     async fn get(&self, id: &str) -> Result<AppServerAgentDetail, AppError> {
@@ -269,6 +283,19 @@ impl AgentCatalogProvider for AppServerAgentCatalog {
             .ok_or_else(|| AppError::NotFound(format!("agent {id} not found")))?;
         Ok(agent_detail(&row))
     }
+}
+
+/// Whether one snapshot-component row is currently part of the user's
+/// inventory: installed, or installed-but-disabled (`install/disable` keeps the
+/// runtime artifacts, so a disabled expert is still *owned* — it must stay
+/// listed, which is exactly what the disabled state exists to express).
+///
+/// Deliberately a free function shared by the agent and team catalogs: the two
+/// surfaces must never disagree about what "mine" means. The dependency
+/// catalog (`import.rs`) and the expert-export face read the same rows but
+/// resolve *definitions*, not ownership — they keep the unfiltered projection.
+fn installed_row(row: &PluginSnapshotComponentRow) -> bool {
+    row.installed == 1
 }
 
 fn agent_summary(row: &PluginSnapshotComponentRow) -> AppServerAgentSummary {
@@ -353,12 +380,24 @@ impl AppServerTeamCatalog {
     async fn rows(&self) -> Result<Vec<PluginSnapshotComponentRow>, AppError> {
         self.repo.list_components_by_kind("team").await.map_err(AppError::from)
     }
+
+    /// Installed teams only — same reasoning as the agent catalog's
+    /// `installed_rows`: the raw projection is a re-importable archive, this
+    /// surface is the user's inventory.
+    async fn installed_rows(&self) -> Result<Vec<PluginSnapshotComponentRow>, AppError> {
+        Ok(self
+            .rows()
+            .await?
+            .into_iter()
+            .filter(|row| installed_row(row))
+            .collect())
+    }
 }
 
 #[async_trait]
 impl TeamCatalogProvider for AppServerTeamCatalog {
     async fn list(&self) -> Result<Vec<AppServerTeamSummary>, AppError> {
-        Ok(self.rows().await?.iter().map(team_summary).collect())
+        Ok(self.installed_rows().await?.iter().map(team_summary).collect())
     }
 
     async fn get(&self, id: &str) -> Result<AppServerTeamDetail, AppError> {
@@ -448,5 +487,44 @@ fn team_detail(row: &PluginSnapshotComponentRow, connectors: Vec<String>) -> App
             .unwrap_or_else(|| serde_json::json!({})),
         team_runtime_capabilities: string_array(&value, "team_runtime_capabilities"),
         connectors,
+    }
+}
+
+#[cfg(test)]
+mod installed_row_tests {
+    use super::*;
+
+    /// `installed_row` is the definition of "mine" for both catalogs; the two
+    /// states that must stay listed are installed and installed-but-disabled
+    /// (disable keeps the runtime artifacts, so a disabled expert is still
+    /// owned). Released rows drop out — that is the whole fix.
+    #[test]
+    fn installed_or_disabled_is_owned_released_is_not() {
+        let base = PluginSnapshotComponentRow {
+            id: 1,
+            snapshot_id: "snap-1".into(),
+            component_id: "wb-demo-expert".into(),
+            kind: "agent".into(),
+            name: "expert".into(),
+            relative_path: None,
+            compatibility_json: "{}".into(),
+            payload_json: "{}".into(),
+            installed: 1,
+            disabled: 0,
+            installed_at: Some(0),
+            preset_id: None,
+            runtime_ref: None,
+        };
+
+        let mut installed = base.clone();
+        assert!(installed_row(&installed), "installed is owned");
+
+        installed.disabled = 1;
+        assert!(installed_row(&installed), "disabled-but-installed is still owned");
+
+        let mut released = base;
+        released.installed = 0;
+        released.disabled = 0;
+        assert!(!installed_row(&released), "released drops out of the inventory");
     }
 }

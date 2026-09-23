@@ -72,6 +72,32 @@ export function originLabelI18nKey(origin: SkillOrigin | undefined): string {
   }
 }
 
+/**
+ * Origin → badge color class (`market-tag` modifier).
+ *
+ * One hue per read-only family, so 「市场安装」 / 「内置」 / 「共享」 never
+ * render as the same grey pill; a user skill keeps the neutral default and an
+ * unknown origin stays uncolored rather than borrowing a color it has not
+ * earned. Kept beside {@link originLabelI18nKey} because both are the same
+ * switch over the same enum — split them and one will drift.
+ */
+export function skillOriginClass(origin: SkillOrigin | undefined): string {
+  switch (origin) {
+    case "marketplace":
+      return "is-origin-marketplace";
+    case "builtin":
+      return "is-origin-builtin";
+    case "shared":
+      return "is-origin-shared";
+    case "companion":
+      return "is-origin-companion";
+    case "draft":
+      return "is-origin-draft";
+    default:
+      return "";
+  }
+}
+
 export interface SkillWriteActionsViewProps {
   skill: Pick<SkillSummary, "id" | "writable" | "origin">;
   /** A write is in flight for this skill (or for the whole panel). */

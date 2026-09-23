@@ -49,6 +49,7 @@ import {
   SkillWriteDialogs,
   SkillWriteToolbarView,
   originLabelI18nKey,
+  skillOriginClass,
   type SkillWriteMode,
 } from "./skills/SkillWriteSurface";
 import type {
@@ -86,8 +87,10 @@ import {
   importStatusLabel,
   installStateClass,
   installStateLabel,
+  marketKindLabel,
   semanticLabel,
   stateLabel,
+  storeKindLabel,
   type InstallToggleKind,
 } from "./catalog/shared";
 
@@ -515,7 +518,14 @@ export function CatalogView() {
       const result = await client.installStoreEntry(item.marketplace_id, item.entry_name);
       if (!activeRef.current) return;
       setStoreInstallResult(result);
-      // Refresh the aggregated store so the installed state flips.
+      // Refresh the aggregated store so the installed state flips. `reload()`
+      // also re-lists the installed surfaces (`agent/list` / `skill/list` /
+      // `connector/list`), which is where 「我的专家」 reads from — refreshing
+      // only `store/list` here left the installed lists stale, so an entry the
+      // card just marked installed stayed invisible on the installed tab until
+      // a manual page reload. (The dedicated store-refresh line below is kept:
+      // it is what keeps the open drawer's item in sync without a full spin.)
+      reload();
       const list = await client.listStore();
       if (!activeRef.current) return;
       setStoreItems(list.items);
@@ -539,7 +549,47 @@ export function CatalogView() {
     } finally {
       if (activeRef.current) setStoreInstallBusy(null);
     }
-  }, [client, pushToast]);
+  }, [client, pushToast, reload]);
+
+  /** The store item whose uninstall is awaiting confirmation. */
+  const [uninstallFor, setUninstallFor] = useState<StoreItem | null>(null);
+  const [storeUninstallBusy, setStoreUninstallBusy] = useState<string | null>(null);
+
+  /**
+   * Uninstall one store entry: release every installed component of its
+   * snapshot, then re-read both projections the page renders (the install
+   * badge on the store list AND the installed surfaces). Mirrors
+   * `runStoreInstall`'s refresh contract — the same two stale-list bugs, one
+   * fix shape.
+   */
+  const runStoreUninstall = useCallback(async (item: StoreItem) => {
+    if (!client) return;
+    setStoreUninstallBusy(item.id);
+    setError(null);
+    try {
+      const outcome = await client.store.uninstall(item);
+      if (!activeRef.current) return;
+      if (!outcome.ok) {
+        setError(t("catalog.storeUninstallFailed"));
+      }
+      reload();
+      const list = await client.listStore();
+      if (!activeRef.current) return;
+      setStoreItems(list.items);
+      setStoreDrawerItem((current) => {
+        if (!current) return current;
+        const refreshed = list.items.find((candidate) => candidate.id === current.id);
+        return refreshed ?? { ...current, installed: false, snapshot_id: null, installed_version: null };
+      });
+      pushToast("success", "catalog.storeUninstallDone", { name: item.name });
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setStoreUninstallBusy(null);
+      setUninstallFor(null);
+    }
+  }, [client, pushToast, reload, t]);
 
   const closeDrawer = useCallback(() => {
     setDrawer(null);
@@ -868,9 +918,11 @@ export function CatalogView() {
                 Deviation from the reference, stated rather than faked: a store
                 team carries no member list (`members` rides in the market
                 manifest and is dropped by the projection) and no cover image, so
-                the card shows the marketplace it comes from plus its own
-                description on the existing gradient — not a photo, and not a
-                member collage we cannot fill. */}
+                the card shows its own description on the existing gradient —
+                not a photo, and not a member collage we cannot fill. The
+                marketplace name is also dropped here: it read as a stray
+                "experts" badge on every card, and which market a card came
+                from is already the 传输 row in its drawer. */}
             {noun === "experts" && expertKind === "experts" && visibleStoreTeams.length > 0 && (
               <>
                 <h2 className="market-section">{t("catalog.featuredScenes")}</h2>
@@ -879,7 +931,6 @@ export function CatalogView() {
                     <button className="market-scene" type="button" role="listitem" key={item.id} onClick={() => openStoreItem(item)}>
                       <div className="market-scene-head">
                         <span className="market-scene-title">{pickLocalized(item.display_name, lang) || item.name}</span>
-                        <span className="market-scene-count">{item.marketplace_name}</span>
                       </div>
                       <div className="market-scene-body">
                         {pickLocalized(item.display_description, lang) || item.description || t("catalog.noDescription")}
@@ -905,15 +956,7 @@ export function CatalogView() {
               <div className="market-card market-store-card" key={item.id}>
                 <div
                   className="market-store-main"
-                  role="button"
-                  tabIndex={0}
                   onClick={() => openStoreItem(item)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      openStoreItem(item);
-                    }
-                  }}
                 >
                   <div className="market-card-top">
                     <StoreBadge item={item} rootUrl={client?.serverRootUrl} />
@@ -973,20 +1016,12 @@ export function CatalogView() {
               }
               items={visibleSkills}
               renderItem={(skill) => (
-                // `div role="button"` rather than `<button>`: the row carries its
-                // own write actions (W12), and nesting buttons is invalid HTML.
+                // A plain div, not a `<button>`: the row carries its own write
+                // actions (W12), and nesting buttons is invalid HTML.
                 <div
                   className="market-card"
-                  role="button"
-                  tabIndex={0}
                   key={skill.id}
                   onClick={() => void openSkill(skill.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      void openSkill(skill.id);
-                    }
-                  }}
                 >
                   <div className="market-card-top">
                     <AvatarBadge name={skill.name} avatarUrl={skill.avatar_url} rootUrl={client?.serverRootUrl} />
@@ -996,8 +1031,9 @@ export function CatalogView() {
                     </div>
                     {/* The origin badge is the host's own classification, so a
                         user skill and a marketplace product never look alike
-                        (both are `source: custom`). */}
-                    <span className="market-tag">{t(originLabelI18nKey(skill.origin))}</span>
+                        (both are `source: custom`). Colored per origin so the
+                        three read-only families separate at a glance. */}
+                    <span className={`market-tag ${skillOriginClass(skill.origin)}`}>{t(originLabelI18nKey(skill.origin))}</span>
                   </div>
                   <Tags tags={[...(skill.required_connectors ?? [])]} />
                   <SkillWriteActionsView
@@ -1128,6 +1164,7 @@ export function CatalogView() {
           onClose={() => setImportFor(null)}
           labelledBy="import-title"
           titleId="import-title"
+          width="wide"
           title={importFor === "workbuddy-skill-market"
             ? t("catalog.addSkill")
             : t("catalog.customConnector")}
@@ -1156,6 +1193,8 @@ export function CatalogView() {
                 busy={storeInstallBusy === storeDrawerItem.id}
                 result={storeInstallResult}
                 onInstall={() => void runStoreInstall(storeDrawerItem)}
+                uninstallBusy={storeUninstallBusy === storeDrawerItem.id}
+                onUninstall={() => setUninstallFor(storeDrawerItem)}
                 rootUrl={client?.serverRootUrl}
               />
             )}
@@ -1178,6 +1217,36 @@ export function CatalogView() {
             )}
           </aside>
         </div>
+      )}
+
+      {/* Uninstall confirmation. Same shape as the marketplace-remove dialog:
+          name the fact, list nothing clever, one destructive button. The
+          snapshot stays (only the install record and runtime artifacts go), so
+          reinstalling is one click away. */}
+      {uninstallFor && (
+        <DialogShell
+          onClose={() => setUninstallFor(null)}
+          labelledBy="store-uninstall-title"
+          titleId="store-uninstall-title"
+          title={t("catalog.storeUninstallTitle")}
+        >
+          <p className="dialog-intro">
+            {t("catalog.storeUninstallBody", { name: pickLocalized(uninstallFor.display_name, lang) || uninstallFor.name })}
+          </p>
+          <div className="dialog-actions">
+            <button className="quiet-button" type="button" onClick={() => setUninstallFor(null)}>
+              {t("common.cancel")}
+            </button>
+            <button
+              className="danger-button"
+              type="button"
+              disabled={storeUninstallBusy !== null}
+              onClick={() => void runStoreUninstall(uninstallFor)}
+            >
+              {storeUninstallBusy ? t("catalog.storeUninstalling") : t("catalog.storeUninstall")}
+            </button>
+          </div>
+        </DialogShell>
       )}
     </section>
   );
@@ -1228,12 +1297,16 @@ function StoreDrawer({
   busy,
   result,
   onInstall,
+  onUninstall,
+  uninstallBusy,
   rootUrl,
 }: {
   item: StoreItem;
   busy: boolean;
   result: StoreInstallResult | null;
   onInstall: () => void;
+  onUninstall: () => void;
+  uninstallBusy: boolean;
   rootUrl?: string;
 }) {
   const { t } = useTranslation();
@@ -1251,8 +1324,7 @@ function StoreDrawer({
           <h2>{name}</h2>
           {profession && <div className="drawer-subtitle">{profession}</div>}
           <div className="drawer-chips">
-            <span className="market-tag">{t("catalog.storeFromMarket", { market: item.marketplace_name })}</span>
-            <span className="market-tag">{item.kind}</span>
+            <span className="market-tag">{storeKindLabel(t, item.kind)}</span>
             <span className="market-tag">v{item.version}</span>
           </div>
         </div>
@@ -1273,8 +1345,8 @@ function StoreDrawer({
       )}
       <dl className="market-meta">
         <MetaRow label={t("catalog.fieldVersion")} value={item.version} />
-        <MetaRow label={t("catalog.fieldType")} value={item.kind} />
-        <MetaRow label={t("catalog.fieldTransport")} value={`${item.source_kind} · ${item.marketplace_name}`} />
+        <MetaRow label={t("catalog.fieldType")} value={storeKindLabel(t, item.kind)} />
+        <MetaRow label={t("catalog.fieldTransport")} value={`${marketKindLabel(t, item.source_kind)} · ${item.marketplace_name}`} />
         <MetaList label={t("catalog.fieldSkills")} values={tags} />
       </dl>
       <div className="drawer-actions">
@@ -1285,7 +1357,21 @@ function StoreDrawer({
             {t("catalog.storeBlocked")}
           </span>
         ) : item.installed ? (
-          <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>
+          <>
+            <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>
+            {/* The one uninstall entry point on this surface: `store/install-entry`
+                is idempotent, so releasing the runtime artifacts is the only way
+                back. SDK-side this is `StoreClient.uninstall` — the same wire
+                (`install/uninstall`), all of the snapshot's installed components. */}
+            <button
+              className="quiet-button is-destructive"
+              type="button"
+              disabled={uninstallBusy}
+              onClick={onUninstall}
+            >
+              {uninstallBusy ? t("catalog.storeUninstalling") : t("catalog.storeUninstall")}
+            </button>
+          </>
         ) : (
           <button className="primary-button" type="button" disabled={busy} onClick={onInstall}>
             {busy ? t("catalog.storeInstalling") : t("catalog.storeInstall")}
