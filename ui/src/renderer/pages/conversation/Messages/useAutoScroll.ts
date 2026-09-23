@@ -569,19 +569,20 @@ export function useAutoScroll({
       lastScrollTopRef.current = targetScrollTop;
 
       const virtuoso = virtuosoRefLatest.current?.current;
+      const items = displayItemsRef.current as Array<{ id?: string; message?: { id?: string }; sourceMessageIds?: string[] } | undefined> | undefined;
+      let targetRowIndex = -1;
+      const targetMessageId = saved.targetMessageId;
+      if (items && targetMessageId) {
+        targetRowIndex = items.findIndex((item) => {
+          if (!item) return false;
+          if (item.id === targetMessageId) return true;
+          if (item.message?.id === targetMessageId) return true;
+          if (Array.isArray(item.sourceMessageIds) && item.sourceMessageIds.includes(targetMessageId)) return true;
+          return false;
+        });
+      }
+
       if (virtuoso) {
-        const items = displayItemsRef.current as Array<{ id?: string; message?: { id?: string }; sourceMessageIds?: string[] } | undefined> | undefined;
-        let targetRowIndex = -1;
-        const targetMessageId = saved.targetMessageId;
-        if (items && targetMessageId) {
-          targetRowIndex = items.findIndex((item) => {
-            if (!item) return false;
-            if (item.id === targetMessageId) return true;
-            if (item.message?.id === targetMessageId) return true;
-            if (Array.isArray(item.sourceMessageIds) && item.sourceMessageIds.includes(targetMessageId)) return true;
-            return false;
-          });
-        }
         if (targetRowIndex >= 0) {
           virtuoso.scrollToIndex({
             index: targetRowIndex,
@@ -605,11 +606,19 @@ export function useAutoScroll({
       // have settled and cannot clamp the restored position or falsely trip auto-follow.
       const applyRestoration = () => {
         if (!scrollerEl) return;
-        const currentTarget = targetRestoringScrollTopRef.current ?? targetScrollTop;
-        scrollerEl.scrollTop = currentTarget;
-        lastScrollTopRef.current = currentTarget;
-        if (virtuoso) {
-          virtuoso.scrollTo({ top: currentTarget, behavior: 'auto' });
+        if (targetRowIndex >= 0 && virtuoso) {
+          virtuoso.scrollToIndex({
+            index: targetRowIndex,
+            align: 'start',
+            behavior: 'auto',
+          });
+        } else {
+          const currentTarget = targetRestoringScrollTopRef.current ?? targetScrollTop;
+          scrollerEl.scrollTop = currentTarget;
+          lastScrollTopRef.current = currentTarget;
+          if (virtuoso) {
+            virtuoso.scrollTo({ top: currentTarget, behavior: 'auto' });
+          }
         }
       };
 
@@ -624,11 +633,9 @@ export function useAutoScroll({
             restoreTimerRef.current = null;
             if (targetRestoringScrollTopRef.current !== null) {
               applyRestoration();
-              if (scrollerEl && getMaxScrollTop(scrollerEl) >= (targetRestoringScrollTopRef.current ?? 0)) {
+              if (scrollerEl) {
                 targetRestoringScrollTopRef.current = null;
                 isRestoringScrollRef.current = false;
-              }
-              if (scrollerEl) {
                 updateBottomState(scrollerEl);
               }
             }
