@@ -14,6 +14,7 @@ at a high level rather than a complete commit log.
 - The conversation task queue sits in the composer layout instead of covering messages, with a quieter Reminders-style checklist.
 - Lesson practice sections present questions one at a time with instant grading feedback ("Next question" after each submit); the stepper is gated per practice section and unlocks past it only once its questions are answered. Answered questions stay reviewable with your own response and the grader's feedback.
 - Wan 3.0 video create requests now send DashScope `input`/`parameters` (not Seedance `content[]`), with 2–30s clips and `480P`/`720P`/`1080P` resolution tokens.
+- Connector OAuth authorization that fails before the browser opens now reports the real reason instead of claiming a browser window was opened.
 
 
 ## v1.3.2 - 2026-09-11
