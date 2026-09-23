@@ -1385,6 +1385,7 @@ button.turn-process-trace__row:focus-visible {
   bottom: 22px;
   left: 50%;
   z-index: 100;
+  width: 36px;
   min-width: 36px;
   height: 36px;
   align-items: center;
@@ -1437,77 +1438,75 @@ button.turn-process-trace__row:focus-visible {
     visibility 0s;
 }
 
-/* Default circular button state (reading history) */
-.message-list-scroll-button[data-has-new='false'] {
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border-radius: 50%;
+/* Radar pulse wave for generating/streaming output */
+.message-list-scroll-button__radar {
+  position: absolute;
+  inset: -1px;
+  border-radius: 999px;
+  pointer-events: none;
+  opacity: 0;
 }
 
-/* Expanded iOS Capsule state (streaming/generating new content below) */
-.message-list-scroll-button[data-has-new='true'] {
-  height: 36px;
-  padding: 0 14px 0 11px;
-  gap: 7px;
-  border-radius: 999px;
-  border-color: color-mix(in srgb, var(--color-primary, #165dff) 24%, var(--border-base));
-  background: color-mix(in srgb, var(--bg-elevated, #ffffff) 88%, var(--color-primary, #165dff) 6%);
+.message-list-scroll-button[data-status='generating'] .message-list-scroll-button__radar {
+  border: 1.5px solid var(--color-primary, #165dff);
+  animation: message-scroll-radar-ring 2.2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }
 
 .message-list-scroll-button__icon {
   display: inline-flex;
+  position: relative;
+  z-index: 2;
   align-items: center;
   justify-content: center;
   color: var(--color-text-2, var(--text-secondary));
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__icon {
-  animation: message-scroll-icon-peek 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+.message-list-scroll-button[data-status='generating'] .message-list-scroll-button__icon {
+  animation: message-scroll-generating-bob 1.8s ease-in-out infinite;
 }
 
-.message-list-scroll-button__dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
+/* Unread badge dot on top-right of button */
+.message-list-scroll-button__badge {
+  display: block;
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  z-index: 3;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
+  box-sizing: content-box;
   background-color: var(--color-primary, #165dff);
+  border: 1.5px solid var(--bg-elevated, #ffffff);
   box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary, #165dff) 60%, transparent);
+}
+
+.message-list-scroll-button[data-status='generating'] .message-list-scroll-button__badge {
   animation: message-scroll-dot-pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  flex-shrink: 0;
 }
 
-.message-list-scroll-button__label {
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  line-height: 1;
-  color: var(--color-text-1, var(--text-primary));
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  animation: message-scroll-pill-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@keyframes message-scroll-pill-enter {
-  from {
-    opacity: 0;
-    transform: translateX(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes message-scroll-icon-peek {
+@keyframes message-scroll-radar-ring {
   0% {
-    transform: translateY(0);
+    transform: scale(1);
+    opacity: 0.8;
   }
-  40% {
-    transform: translateY(2px);
+  50% {
+    transform: scale(1.4);
+    opacity: 0.3;
   }
   100% {
+    transform: scale(1.68);
+    opacity: 0;
+  }
+}
+
+@keyframes message-scroll-generating-bob {
+  0%, 100% {
     transform: translateY(0);
+  }
+  50% {
+    transform: translateY(1.5px);
   }
 }
 
@@ -1527,7 +1526,7 @@ button.turn-process-trace__row:focus-visible {
 .message-list-scroll-button[data-visible='true']:hover {
   background: color-mix(in srgb, var(--bg-elevated, #ffffff) 94%, transparent);
   border-color: color-mix(in srgb, var(--border-base) 80%, rgba(255, 255, 255, 0.7));
-  transform: translate(-50%, -1px) scale(1.03);
+  transform: translate(-50%, -1px) scale(1.05);
   box-shadow:
     0 4px 14px -1px rgba(0, 0, 0, 0.12),
     0 12px 28px -4px rgba(0, 0, 0, 0.16),
@@ -1535,8 +1534,8 @@ button.turn-process-trace__row:focus-visible {
 }
 
 .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover {
-  background: color-mix(in srgb, var(--bg-elevated, #ffffff) 84%, var(--color-primary, #165dff) 10%);
-  border-color: color-mix(in srgb, var(--color-primary, #165dff) 40%, var(--border-base));
+  background: color-mix(in srgb, var(--bg-elevated, #ffffff) 88%, var(--color-primary, #165dff) 8%);
+  border-color: color-mix(in srgb, var(--color-primary, #165dff) 36%, var(--border-base));
   box-shadow:
     0 4px 14px -1px rgba(0, 0, 0, 0.12),
     0 12px 28px -4px color-mix(in srgb, var(--color-primary, #165dff) 20%, transparent),
@@ -1545,7 +1544,7 @@ button.turn-process-trace__row:focus-visible {
 
 /* Feedback lands on press, not on release (Apple spring feedback). */
 .message-list-scroll-button[data-visible='true']:active {
-  transform: translate(-50%, 1px) scale(0.96);
+  transform: translate(-50%, 1px) scale(0.95);
   transition-duration: 0.1s;
 }
 
@@ -1572,20 +1571,9 @@ body[arco-theme='dark'] .message-list-scroll-button {
   color: rgba(255, 255, 255, 0.92);
 }
 
-[data-theme='dark'] .message-list-scroll-button[data-has-new='true'],
-body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'] {
-  background: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 84%, var(--color-primary, #165dff) 10%);
-  border-color: color-mix(in srgb, var(--color-primary, #165dff) 32%, rgba(255, 255, 255, 0.16));
-  color: rgba(255, 255, 255, 0.95);
-}
-
-[data-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__icon,
-body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__icon {
-  color: rgba(255, 255, 255, 0.85);
-}
-
-[data-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__dot,
-body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__dot {
+[data-theme='dark'] .message-list-scroll-button__badge,
+body[arco-theme='dark'] .message-list-scroll-button__badge {
+  border-color: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 90%, #000000);
   background-color: var(--color-primary, #3888ff);
   box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary, #3888ff) 75%, transparent);
 }
@@ -1602,7 +1590,7 @@ body[arco-theme='dark'] .message-list-scroll-button[data-visible='true']:hover {
 
 [data-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover,
 body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover {
-  background: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 80%, var(--color-primary, #165dff) 16%);
+  background: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 82%, var(--color-primary, #165dff) 14%);
   border-color: color-mix(in srgb, var(--color-primary, #165dff) 45%, rgba(255, 255, 255, 0.25));
   box-shadow:
     0 6px 20px -2px rgba(0, 0, 0, 0.6),

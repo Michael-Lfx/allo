@@ -1624,9 +1624,19 @@ const MessageList: React.FC<{
     };
   }, [conversationContext?.conversation_id, displayList, pauseAutoFollow, scrollElementIntoView]);
 
-  const scrollButtonLabel = hasNewContentBelow
-    ? t('messages.newContentBelow', { defaultValue: 'View latest content' })
-    : t('messages.scrollToBottom');
+  const isGeneratingBelow = conversationContext?.isProcessing === true && hasNewContentBelow;
+  const isUnreadBelow = !isGeneratingBelow && hasNewContentBelow;
+  const scrollButtonStatus: 'generating' | 'unread' | 'idle' = isGeneratingBelow
+    ? 'generating'
+    : isUnreadBelow
+      ? 'unread'
+      : 'idle';
+
+  const scrollButtonLabel = isGeneratingBelow
+    ? t('messages.generatingBelow', { defaultValue: 'Generating content below...' })
+    : isUnreadBelow
+      ? t('messages.newContentBelow', { defaultValue: 'View latest content' })
+      : t('messages.scrollToBottom', { defaultValue: 'Scroll to bottom' });
 
   // Click scroll button
   const handleScrollButtonClick = () => {
@@ -1895,6 +1905,7 @@ const MessageList: React.FC<{
         type='button'
         className='message-list-scroll-button'
         data-button-shape='circle'
+        data-status={scrollButtonStatus}
         data-has-new={hasNewContentBelow ? 'true' : 'false'}
         data-visible={showScrollButton ? 'true' : 'false'}
         onClick={handleScrollButtonClick}
@@ -1903,16 +1914,12 @@ const MessageList: React.FC<{
         aria-hidden={!showScrollButton}
         tabIndex={showScrollButton ? 0 : -1}
       >
+        <span className='message-list-scroll-button__radar' aria-hidden='true' />
         <span className='message-list-scroll-button__icon'>
-          <Down theme='filled' size='14' fill='currentColor' />
+          <Down theme='filled' size='15' fill='currentColor' />
         </span>
         {hasNewContentBelow && (
-          <>
-            <span className='message-list-scroll-button__dot' aria-hidden='true' />
-            <span className='message-list-scroll-button__label'>
-              {t('messages.newContentBelow', { defaultValue: 'View latest content' })}
-            </span>
-          </>
+          <span className='message-list-scroll-button__badge' aria-hidden='true' />
         )}
       </button>
 

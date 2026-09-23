@@ -157,7 +157,7 @@ export function useAutoScroll({
     const pinnedToBottom = bottomGap <= FOLLOW_BOTTOM_THRESHOLD_PX;
     const leftTheBottom = userScrolledRef.current || userIntentPausedRef.current;
     const nextShowButton = leftTheBottom && !withinButtonThreshold;
-    const nextHasNew = isProcessing === true && userScrolledRef.current && !withinButtonThreshold;
+    const nextHasNew = (hasNewContentBelowRef.current || isProcessing === true) && userScrolledRef.current && !withinButtonThreshold;
 
     if (nextShowButton !== showScrollButtonRef.current) {
       showScrollButtonRef.current = nextShowButton;
@@ -197,7 +197,7 @@ export function useAutoScroll({
     if (!scrollerEl || getBottomGap(scrollerEl) <= SCROLL_BUTTON_THRESHOLD_PX) {
       return;
     }
-    const nextHasNew = isProcessing === true;
+    const nextHasNew = hasNewContentBelowRef.current || isProcessing === true;
     showScrollButtonRef.current = true;
     hasNewContentBelowRef.current = nextHasNew;
     setShowScrollButton(true);
