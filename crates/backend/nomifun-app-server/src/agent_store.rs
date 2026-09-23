@@ -825,6 +825,51 @@ impl AgentStoreConfig {
         Ok(document.to_string())
     }
 
+    /// Minimal-change rewrite of one `[credentials]` entry (`34` §6.1).
+    ///
+    /// `key` is the **stored** key, which is what makes the caller decide whose
+    /// credential this is: a bare `NAME` is the host-level entry (the installation
+    /// owner's), `<principal>:NAME` is one principal's own (`34` §7). The file is
+    /// rewritten through `toml_edit`, so the operator's comments and formatting
+    /// around every other key survive — this file is hand-edited by design.
+    ///
+    /// Nothing here reads or logs the value; the caller persists the result.
+    pub fn with_credential(source: &str, key: &str, value: &str) -> Result<String, String> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Err("a credential key must not be empty".to_owned());
+        }
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+        {
+            let table = ensure_table(&mut document, "credentials", "[credentials]")?;
+            set_item_preserving_decor(table, key, toml_edit::value(value));
+        }
+        Ok(document.to_string())
+    }
+
+    /// Remove one `[credentials]` entry, leaving the rest of the file byte-identical.
+    ///
+    /// Removing a key that is not there is success, not an error: `credential/clear`
+    /// is idempotent, and a client retrying it must not see a failure.
+    pub fn without_credential(source: &str, key: &str) -> Result<String, String> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Err("a credential key must not be empty".to_owned());
+        }
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+        if let Some(table) = document
+            .get_mut("credentials")
+            .and_then(toml_edit::Item::as_table_mut)
+        {
+            table.remove(key);
+        }
+        Ok(document.to_string())
+    }
+
     /// Minimal-change rewrite of one `[tools.domains]` boolean switch.
     pub fn with_tool_domain(source: &str, key: &str, value: bool) -> Result<String, String> {
         if !TOOL_DOMAIN_KEYS.contains(&key) {
@@ -2186,6 +2231,63 @@ type = "openai"
             reparsed.default_selection(),
             Some(("opencode".to_owned(), "mimo-v2.5-free".to_owned()))
         );
+    }
+
+    #[test]
+    fn a_credential_edit_preserves_every_other_key_and_its_comments() {
+        // This file is hand-edited by design (D5=C): writing a credential must not
+        // reformat or re-comment the rest of it.
+        let source = "# my host\n[memory]\ndistill_enabled = false\n\n[credentials]\n# the old demo token\nDEMO_TOKEN = \"old\"\n";
+        let edited = AgentStoreConfig::with_credential(source, "DEMO_TOKEN", "new")
+            .expect("edit must succeed");
+
+        assert!(edited.contains("# my host"), "{edited}");
+        assert!(edited.contains("# the old demo token"), "{edited}");
+        assert!(edited.contains("distill_enabled = false"), "{edited}");
+        let reparsed = AgentStoreConfig::load_from_str(&edited);
+        assert!(reparsed.credentials.get("DEMO_TOKEN").is_some_and(|v| v == "new"));
+        assert!(!reparsed.memory.as_ref().and_then(|m| m.distill_enabled).unwrap_or(true));
+    }
+
+    #[test]
+    fn a_per_principal_credential_round_trips_through_a_quoted_key() {
+        // `alice:TOKEN` is not a bare TOML key, so it must come back quoted — and
+        // parse back to the same map entry (34 §7).
+        let edited = AgentStoreConfig::with_credential("", "alice:TOKEN", "a")
+            .expect("edit must succeed");
+        let reparsed = AgentStoreConfig::load_from_str(&edited);
+        assert_eq!(
+            reparsed.credentials.get("alice:TOKEN").map(String::as_str),
+            Some("a")
+        );
+        // The host-level key and the per-principal key coexist.
+        let edited = AgentStoreConfig::with_credential(&edited, "TOKEN", "host")
+            .expect("edit must succeed");
+        let reparsed = AgentStoreConfig::load_from_str(&edited);
+        assert_eq!(reparsed.credentials.len(), 2);
+        assert_eq!(reparsed.credentials.get("TOKEN").map(String::as_str), Some("host"));
+    }
+
+    #[test]
+    fn clearing_a_credential_is_idempotent_and_leaves_the_rest_alone() {
+        let source = "[credentials]\nA = \"1\"\nB = \"2\"\n\n[tools]\nlsp = false\n";
+        let edited = AgentStoreConfig::without_credential(source, "A").expect("edit");
+        let reparsed = AgentStoreConfig::load_from_str(&edited);
+        assert!(!reparsed.credentials.contains_key("A"));
+        assert_eq!(reparsed.credentials.get("B").map(String::as_str), Some("2"));
+        assert!(!reparsed.tool_policy().lsp);
+
+        // Clearing again — or a key that was never there — is success.
+        let again = AgentStoreConfig::without_credential(&edited, "A").expect("edit");
+        assert_eq!(AgentStoreConfig::load_from_str(&again).credentials.len(), 1);
+        assert!(AgentStoreConfig::without_credential("", "NEVER_SET").is_ok());
+    }
+
+    #[test]
+    fn a_credential_key_must_not_be_empty() {
+        assert!(AgentStoreConfig::with_credential("", "", "v").is_err());
+        assert!(AgentStoreConfig::with_credential("", "   ", "v").is_err());
+        assert!(AgentStoreConfig::without_credential("", "").is_err());
     }
 
     #[test]
