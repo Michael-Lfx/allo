@@ -332,6 +332,7 @@ export function useAutoScroll({
         (userInputActiveRef.current || timeSinceGuard >= PROGRAMMATIC_SCROLL_GUARD_MS)
       ) {
         userScrolledRef.current = true;
+        userIntentPausedRef.current = true;
       }
 
       if (pinnedToBottom) {
@@ -366,6 +367,11 @@ export function useAutoScroll({
       userInputActiveRef.current = true;
       targetRestoringScrollTopRef.current = null;
       isRestoringScrollRef.current = false;
+      if (e.deltaY < 0) {
+        // User wheeled up to view history
+        userScrolledRef.current = true;
+        userIntentPausedRef.current = true;
+      }
     }
   }, []);
 
@@ -602,6 +608,39 @@ export function useAutoScroll({
       });
     });
   }, [conversationId, messages, scrollerEl, scrollToBottom]);
+
+  // Handle stream lifecycle: when output finishes, cleanly settle to the bottom ONLY
+  // if the user did not scroll away; if the user is viewing history, strictly preserve
+  // their reading position and highlight unread content below.
+  const previousIsProcessingRef = useRef(isProcessing);
+  useEffect(() => {
+    const wasProcessing = previousIsProcessingRef.current;
+    previousIsProcessingRef.current = isProcessing;
+
+    if (!initialScrollDoneRef.current || swapBaselinePendingRef.current) return;
+
+    if (!wasProcessing && isProcessing) {
+      if (userScrolledRef.current || userIntentPausedRef.current) {
+        showScrollButtonRef.current = true;
+        hasNewContentBelowRef.current = true;
+        setShowScrollButton(true);
+        setHasNewContentBelow(true);
+      }
+    } else if (wasProcessing && !isProcessing) {
+      if (!userScrolledRef.current && !userIntentPausedRef.current) {
+        // User stayed at bottom: settle to show full response and actions
+        requestAnimationFrame(() => {
+          scrollToBottom('auto');
+        });
+      } else {
+        // User is viewing history: strictly protect position and show unread badge
+        showScrollButtonRef.current = true;
+        hasNewContentBelowRef.current = true;
+        setShowScrollButton(true);
+        setHasNewContentBelow(true);
+      }
+    }
+  }, [isProcessing, scrollToBottom]);
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;

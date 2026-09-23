@@ -236,4 +236,17 @@ describe('useAutoScroll scroll ownership', () => {
     expect(updateBottom.includes('nextShowButton')).toBe(true);
     expect(source.includes('FOLLOW_BOTTOM_THRESHOLD_PX = 12')).toBe(true);
   });
+
+  test('settles to bottom on stream completion only when user did not scroll away', () => {
+    const finishEffect = sliceBetween(
+      '// Handle stream lifecycle: when output finishes',
+      'const hideScrollButton = useCallback'
+    );
+
+    expect(finishEffect.includes('wasProcessing && !isProcessing')).toBe(true);
+    expect(finishEffect.includes('if (!userScrolledRef.current && !userIntentPausedRef.current)')).toBe(true);
+    expect(finishEffect.includes("scrollToBottom('auto')")).toBe(true);
+    expect(finishEffect.includes('setHasNewContentBelow(true)')).toBe(true);
+    expect(finishEffect.includes('setShowScrollButton(true)')).toBe(true);
+  });
 });
