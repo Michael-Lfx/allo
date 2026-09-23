@@ -185,6 +185,21 @@ pub trait ConnectorCallProvider: Send + Sync {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<AppServerConnectorCallResult, ConnectorCallError>;
+
+    /// The same proxy, resolving credentials for one principal (`34` §7).
+    ///
+    /// Defaults to [`Self::call`] — a provider that has no per-principal
+    /// credentials to offer behaves exactly as before, which is what the
+    /// protocol's fakes and single-user hosts want.
+    async fn call_for(
+        &self,
+        connector_id: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorCallResult, ConnectorCallError> {
+        self.call(connector_id, tool, arguments).await
+    }
 }
 
 /// Import pipeline seam (`import/run`, `import/list`, `import/get`). The

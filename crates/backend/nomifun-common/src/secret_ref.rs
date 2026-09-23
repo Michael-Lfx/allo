@@ -453,6 +453,41 @@ pub fn resolve_env_with(
     resolved
 }
 
+/// Resolve an env map for one principal (`34` §7).
+///
+/// Per-variable, like [`resolve_env`]: a stdio child is still useful with the
+/// variables that *did* resolve, so an unresolvable reference omits just that
+/// variable (and reports its name) rather than dropping the whole server.
+pub fn resolve_env_for(principal: Option<&str>, env: &HashMap<String, String>) -> ResolvedEnv {
+    let operator = operator_principal();
+    resolve_env_for_with(principal, env, &credentials(), operator.as_deref())
+}
+
+/// [`resolve_env_for`] against explicit state (pure; for tests).
+pub fn resolve_env_for_with(
+    principal: Option<&str>,
+    env: &HashMap<String, String>,
+    credentials: &HashMap<String, String>,
+    operator: Option<&str>,
+) -> ResolvedEnv {
+    // A stdio server has no plain-value layer of its own: a `${NAME}` in its env
+    // is not a setting it could look up, so it counts as a missing reference
+    // rather than reaching the child as literal text.
+    let empty = HashMap::new();
+    let scope = TransportScope::for_principal(credentials, &empty, principal, operator);
+    let mut resolved = ResolvedEnv::default();
+    for (key, value) in env {
+        match resolve_request_string(value, &scope).value {
+            Some(actual) => {
+                resolved.env.insert(key.clone(), actual);
+            }
+            None => resolved.missing.push(key.clone()),
+        }
+    }
+    resolved.missing.sort();
+    resolved
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
