@@ -18,7 +18,8 @@ pub use agent_store::{
 };
 pub use catalog::{
     AgentCatalogProvider, ConnectorAuthProvider, ConnectorCallError, ConnectorCallProvider,
-    ConnectorCatalogProvider, ExpertPackError, ExpertPackProvider, ImportProvider,
+    ConnectorCatalogProvider, ConnectorCredentialProvider, ExpertPackError, ExpertPackProvider,
+    ImportProvider,
     InstallProvider, MarketplaceProvider, ModelCatalogProvider, MAX_CONNECTOR_CALL_RESULT_BYTES,
     MAX_CONNECTOR_TOOLS_BYTES,
     MAX_EXPERT_PACK_BYTES,
@@ -76,6 +77,7 @@ use nomifun_api_types::{
     AppServerConfigMcpServerView, AppServerConfigMcpView, AppServerConfigMemoryView,
     AppServerConfigProviderView, AppServerConfigView, AppServerMcpSourceView,
     AppServerConnectorCallResult,
+    AppServerConnectorCredential,
     AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerExpertPack,
@@ -1158,6 +1160,11 @@ pub struct AppServerRouterState {
     pub connector_calls: Option<Arc<dyn ConnectorCallProvider>>,
     /// Connector OAuth pass-through. `None` keeps the `oauth` capability off.
     pub connector_auth: Option<Arc<dyn ConnectorAuthProvider>>,
+    /// The connector **credential** face (`connector/credential/*`, `34` §6.1).
+    /// `None` keeps the capability off and the methods answering
+    /// `unsupported_operation`; a read-only host still describes credentials
+    /// through the catalog's `credential` block.
+    pub connector_credentials: Option<Arc<dyn ConnectorCredentialProvider>>,
     /// Agent Store Importer/PluginSnapshot provider. `None` keeps the
     /// `imports` capability off.
     pub imports: Option<Arc<dyn ImportProvider>>,
@@ -1224,6 +1231,7 @@ impl Default for AppServerRouterState {
             connectors: None,
             connector_calls: None,
             connector_auth: None,
+            connector_credentials: None,
             imports: None,
             installs: None,
             markets: None,
@@ -1295,6 +1303,15 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route(
             "/api/app-server/connectors/{connector_id}/call",
             post(connector_call_route),
+        )
+        // Connector credentials (34 §6.1): the user-supplied key/token form.
+        .route(
+            "/api/app-server/connectors/{connector_id}/credential",
+            get(connector_credential_get_route).put(connector_credential_set_route),
+        )
+        .route(
+            "/api/app-server/connectors/{connector_id}/credential/clear",
+            post(connector_credential_clear_route),
         )
         .route(
             "/api/app-server/connectors/{connector_id}/auth-start",
@@ -1962,6 +1979,55 @@ async fn connector_status_impl(
 ) -> Result<AppServerConnectorStatusView, AppServerError> {
     connector_catalog_provider(state)?
         .status(connector_id, principal)
+        .await
+        .map_err(AppServerError::from)
+}
+
+/// `connector/credential/*`: the only face that **writes** a credential (`34` §6.1).
+fn connector_credential_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn ConnectorCredentialProvider>, AppServerError> {
+    state.connector_credentials.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "connector credentials are not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+async fn connector_credential_get_impl(
+    state: &AppServerRouterState,
+    connector_id: &str,
+    principal: Option<&str>,
+) -> Result<AppServerConnectorCredential, AppServerError> {
+    connector_credential_provider(state)?
+        .get(connector_id, principal)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn connector_credential_set_impl(
+    state: &AppServerRouterState,
+    connector_id: &str,
+    values: std::collections::HashMap<String, String>,
+    principal: Option<&str>,
+) -> Result<AppServerConnectorCredential, AppServerError> {
+    connector_credential_provider(state)?
+        .set(connector_id, values, principal)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn connector_credential_clear_impl(
+    state: &AppServerRouterState,
+    connector_id: &str,
+    keys: Option<Vec<String>>,
+    principal: Option<&str>,
+) -> Result<AppServerConnectorCredential, AppServerError> {
+    connector_credential_provider(state)?
+        .clear(connector_id, keys, principal)
         .await
         .map_err(AppServerError::from)
 }
@@ -3096,6 +3162,66 @@ async fn connector_test_route(
     // (34 §7).
     Ok(Json(
         connector_test_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectorCredentialSetBody {
+    /// `KEY -> value`. Only keys the connector's own declaration names.
+    values: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectorCredentialClearBody {
+    /// Absent = every secret field of this connector.
+    #[serde(default)]
+    keys: Option<Vec<String>>,
+}
+
+async fn connector_credential_get_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(connector_id): Path<String>,
+) -> Result<Json<AppServerConnectorCredential>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(
+        connector_credential_get_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
+}
+
+async fn connector_credential_set_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(connector_id): Path<String>,
+    Json(body): Json<ConnectorCredentialSetBody>,
+) -> Result<Json<AppServerConnectorCredential>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(
+        connector_credential_set_impl(
+            &state,
+            &connector_id,
+            body.values,
+            Some(user.id.as_str()),
+        )
+        .await?,
+    ))
+}
+
+async fn connector_credential_clear_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(connector_id): Path<String>,
+    body: Option<Json<ConnectorCredentialClearBody>>,
+) -> Result<Json<AppServerConnectorCredential>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let keys = body.and_then(|Json(body)| body.keys);
+    Ok(Json(
+        connector_credential_clear_impl(&state, &connector_id, keys, Some(user.id.as_str())).await?,
     ))
 }
 
@@ -7231,6 +7357,45 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode connector probe: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // ---------------- Agent Store Connector credentials (34 §6.1) --------
+        "connector/credential/get" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorQuery>(params)?;
+            let credential =
+                connector_credential_get_impl(state, &params.connector_id, Some(user.id.as_str()))
+                    .await?;
+            Ok(ws_response(request_id, serde_json::to_value(credential).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode credential: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "connector/credential/set" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorCredentialSet>(params)?;
+            let credential = connector_credential_set_impl(
+                state,
+                &params.connector_id,
+                params.values,
+                Some(user.id.as_str()),
+            )
+            .await?;
+            Ok(ws_response(request_id, serde_json::to_value(credential).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode credential: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "connector/credential/clear" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorCredentialClear>(params)?;
+            let credential = connector_credential_clear_impl(
+                state,
+                &params.connector_id,
+                params.keys,
+                Some(user.id.as_str()),
+            )
+            .await?;
+            Ok(ws_response(request_id, serde_json::to_value(credential).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode credential: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         // ---------------- Agent Store Connector OAuth ----------------
         "connector/auth/status" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
@@ -7647,6 +7812,23 @@ struct WsStoreEntry {
 #[serde(deny_unknown_fields)]
 struct WsConnectorQuery {
     connector_id: String,
+}
+
+/// `connector/credential/set` (`34` §6.1).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConnectorCredentialSet {
+    connector_id: String,
+    values: std::collections::HashMap<String, String>,
+}
+
+/// `connector/credential/clear`; `keys` absent = every secret field.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConnectorCredentialClear {
+    connector_id: String,
+    #[serde(default)]
+    keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

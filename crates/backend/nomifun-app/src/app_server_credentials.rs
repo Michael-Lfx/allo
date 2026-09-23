@@ -21,7 +21,7 @@ use nomifun_api_types::{
     AppServerCredentialStatus, AppServerLocalizedString,
 };
 use nomifun_common::secret_ref;
-use nomifun_common::McpServerStatus;
+use nomifun_common::{AppError, McpServerStatus};
 use nomifun_api_types::McpTransport;
 use nomifun_db::IPluginSnapshotRepository;
 use serde_json::Value;
@@ -239,11 +239,31 @@ pub fn credential_block(
 #[derive(Clone)]
 pub struct AppServerConnectorCredentials {
     snapshots: Arc<dyn IPluginSnapshotRepository>,
+    /// Present when the host can also *write*: the MCP config service (plain
+    /// values) and the `config.toml` path (credentials). Absent in read-only
+    /// wirings, where only the declaration reader is needed.
+    writer: Option<ConnectorCredentialWriter>,
+}
+
+#[derive(Clone)]
+struct ConnectorCredentialWriter {
+    config: nomifun_mcp::McpConfigService,
+    config_path: std::path::PathBuf,
 }
 
 impl AppServerConnectorCredentials {
     pub fn new(snapshots: Arc<dyn IPluginSnapshotRepository>) -> Self {
-        Self { snapshots }
+        Self { snapshots, writer: None }
+    }
+
+    /// Make the credential **write** face available (`connector/credential/set|clear`).
+    pub fn with_writer(
+        mut self,
+        config: nomifun_mcp::McpConfigService,
+        config_path: std::path::PathBuf,
+    ) -> Self {
+        self.writer = Some(ConnectorCredentialWriter { config, config_path });
+        self
     }
 
     /// The declaration for one registered connector, or `None` when it was not
@@ -279,39 +299,338 @@ impl AppServerConnectorCredentials {
             .filter_map(|component| declaration_from_payload(&component.payload_json))
             .find(|declaration| declaration.connector_id == connector_id)
     }
+
+    /// The `credential` block for one connector, as `principal` sees it.
+    pub async fn describe(
+        &self,
+        mcp_server_id: &str,
+        transport: &McpTransport,
+        last_test_status: McpServerStatus,
+        principal: Option<&str>,
+    ) -> Option<AppServerConnectorCredential> {
+        let declaration = self.declaration_for(mcp_server_id).await;
+        let mode = credential_mode(declaration.as_ref(), transport);
+        if declaration.is_none() && mode == AppServerCredentialMode::None {
+            return None;
+        }
+        let values = transport_values(transport);
+        let installed = secret_ref::credentials();
+        let operator = secret_ref::operator_principal();
+        Some(credential_block(
+            mcp_server_id,
+            declaration.as_ref(),
+            mode,
+            transport,
+            &values,
+            &installed,
+            operator.as_deref(),
+            principal,
+            last_test_status,
+        ))
+    }
+
+    /// Store what the user typed (`34` §6.1).
+    ///
+    /// Secrets go to the credential store under **this caller's** namespace;
+    /// plain settings go into the connector's own transport values. Either way the
+    /// frozen `credential` block comes back, so the client never has to guess the
+    /// new state.
+    pub async fn set(
+        &self,
+        mcp_server_id: &str,
+        values: HashMap<String, String>,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError> {
+        let writer = self.writer.as_ref().ok_or_else(|| {
+            AppError::BadRequest("this host cannot store connector credentials".into())
+        })?;
+        let server = writer
+            .config
+            .get_server(&parse_server_id(mcp_server_id)?)
+            .await
+            .map_err(AppError::from)?;
+        let declaration = self.declaration_for(mcp_server_id).await.ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "connector {mcp_server_id} declares no credential form to fill"
+            ))
+        })?;
+        let (secrets, plains) = route_values(&declaration, &values).map_err(AppError::BadRequest)?;
+
+        if !secrets.is_empty() {
+            write_secrets(writer, principal, &secrets).await?;
+        }
+        if !plains.is_empty() {
+            write_plain_values(writer, &server, &plains).await?;
+        }
+        self.reloaded_describe(mcp_server_id, principal).await
+    }
+
+    /// Forget what this caller stored (`34` §6.1). Idempotent.
+    pub async fn clear(
+        &self,
+        mcp_server_id: &str,
+        keys: Option<Vec<String>>,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError> {
+        let writer = self.writer.as_ref().ok_or_else(|| {
+            AppError::BadRequest("this host cannot store connector credentials".into())
+        })?;
+        let declaration = self.declaration_for(mcp_server_id).await;
+        let all_keys: Vec<String> = match (&declaration, &keys) {
+            (Some(declaration), None) => declaration
+                .fields
+                .iter()
+                .filter(|field| field.is_secret())
+                .map(|field| field.key.clone())
+                .collect(),
+            (_, Some(keys)) => keys.clone(),
+            (None, None) => Vec::new(),
+        };
+        let secret_keys: Vec<String> = all_keys
+            .into_iter()
+            .filter(|key| {
+                declaration
+                    .as_ref()
+                    .map(|d| {
+                        d.fields
+                            .iter()
+                            .any(|field| &field.key == key && field.is_secret())
+                    })
+                    .unwrap_or(true)
+            })
+            .collect();
+        if !secret_keys.is_empty() {
+            forget_secrets(writer, principal, &secret_keys).await?;
+        }
+        self.reloaded_describe(mcp_server_id, principal).await
+    }
+
+    async fn reloaded_describe(
+        &self,
+        mcp_server_id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError> {
+        let writer = self.writer.as_ref().expect("checked by the caller");
+        let server = writer
+            .config
+            .get_server(&parse_server_id(mcp_server_id)?)
+            .await
+            .map_err(AppError::from)?;
+        self.describe(
+            mcp_server_id,
+            &server.transport,
+            server.last_test_status,
+            principal,
+        )
+        .await
+        .ok_or_else(|| AppError::BadRequest("connector declares no credential form".into()))
+    }
 }
 
-/// The `credential` block for one connector, ready to attach to a summary.
-///
-/// Returns `None` when the connector has no declaration **and** the transport
-/// needs no credentials — there is nothing to render, so the field stays off the
-/// wire rather than describing an empty form.
-pub async fn describe(
-    credentials: &AppServerConnectorCredentials,
-    mcp_server_id: &str,
-    transport: &McpTransport,
-    values: &HashMap<String, String>,
-    installed: &HashMap<String, String>,
-    operator: Option<&str>,
-    principal: Option<&str>,
-    last_test_status: McpServerStatus,
-) -> Option<AppServerConnectorCredential> {
-    let declaration = credentials.declaration_for(mcp_server_id).await;
-    let mode = credential_mode(declaration.as_ref(), transport);
-    if declaration.is_none() && mode == AppServerCredentialMode::None {
-        return None;
+#[async_trait::async_trait]
+impl nomifun_app_server::ConnectorCredentialProvider for AppServerConnectorCredentials {
+    async fn get(
+        &self,
+        connector_id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError> {
+        let writer = self.writer.as_ref().ok_or_else(|| {
+            AppError::BadRequest("this host cannot read connector credentials".into())
+        })?;
+        let server = writer
+            .config
+            .get_server(&parse_server_id(connector_id)?)
+            .await
+            .map_err(AppError::from)?;
+        self.describe(
+            connector_id,
+            &server.transport,
+            server.last_test_status,
+            principal,
+        )
+        .await
+        .ok_or_else(|| AppError::BadRequest("connector declares no credential form".into()))
     }
-    Some(credential_block(
-        mcp_server_id,
-        declaration.as_ref(),
-        mode,
-        transport,
-        values,
-        installed,
-        operator,
-        principal,
-        last_test_status,
-    ))
+
+    async fn set(
+        &self,
+        connector_id: &str,
+        values: HashMap<String, String>,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError> {
+        AppServerConnectorCredentials::set(self, connector_id, values, principal).await
+    }
+
+    async fn clear(
+        &self,
+        connector_id: &str,
+        keys: Option<Vec<String>>,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError> {
+        AppServerConnectorCredentials::clear(self, connector_id, keys, principal).await
+    }
+}
+
+fn parse_server_id(id: &str) -> Result<nomifun_api_types::McpServerId, AppError> {    nomifun_api_types::McpServerId::parse(id)
+        .map_err(|error| AppError::BadRequest(format!("connector {id} is not a valid id: {error}")))
+}
+
+/// A remote transport's plain values (a stdio server has none, `34` §5.3).
+pub fn transport_values(transport: &McpTransport) -> HashMap<String, String> {
+    match transport {
+        McpTransport::Http { values, .. } | McpTransport::Sse { values, .. } => values.clone(),
+        McpTransport::Stdio { .. } => HashMap::new(),
+    }
+}
+
+/// Split a `credential/set` body by where each field belongs (`34` §5.3).
+///
+/// A key the declaration does not name is **refused**: the write face must not
+/// grow beyond the form it published, or a client could seed arbitrary keys into
+/// the host's credential file.
+pub fn route_values(
+    declaration: &ConnectorDeclaration,
+    values: &HashMap<String, String>,
+) -> Result<(Vec<(String, String)>, Vec<(String, String)>), String> {
+    let mut secrets = Vec::new();
+    let mut plains = Vec::new();
+    for (key, value) in values {
+        let Some(field) = declaration.fields.iter().find(|field| &field.key == key) else {
+            return Err(format!("{key} is not a field of this connector's credential form"));
+        };
+        if field.is_secret() {
+            secrets.push((key.clone(), value.clone()));
+        } else {
+            plains.push((key.clone(), value.clone()));
+        }
+    }
+    Ok((secrets, plains))
+}
+
+/// Write this principal's secrets into the host config, then refresh the process
+/// map so the next probe uses them without a restart (`34` §5.3).
+async fn write_secrets(
+    writer: &ConnectorCredentialWriter,
+    principal: Option<&str>,
+    secrets: &[(String, String)],
+) -> Result<(), AppError> {
+    let path = writer.config_path.clone();
+    let scoped: Vec<(String, String)> = secrets
+        .iter()
+        .map(|(key, value)| (secret_ref::credential_key_for(principal, key), value.clone()))
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        let source = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut document = source;
+        for (key, value) in &scoped {
+            document = nomifun_app_server::agent_store::AgentStoreConfig::with_credential(
+                &document, key, value,
+            )
+            .map_err(|error| AppError::BadRequest(error))?;
+        }
+        write_private(&path, &document)
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("credential write task failed: {error}")))??;
+    reload_credentials(&writer.config_path);
+    Ok(())
+}
+
+/// Remove this principal's secrets. Removing a key that is not there is fine.
+async fn forget_secrets(
+    writer: &ConnectorCredentialWriter,
+    principal: Option<&str>,
+    keys: &[String],
+) -> Result<(), AppError> {
+    let path = writer.config_path.clone();
+    let scoped: Vec<String> = keys
+        .iter()
+        .map(|key| secret_ref::credential_key_for(principal, key))
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        let source = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut document = source;
+        for key in &scoped {
+            document = nomifun_app_server::agent_store::AgentStoreConfig::without_credential(
+                &document, key,
+            )
+            .map_err(|error| AppError::BadRequest(error))?;
+        }
+        write_private(&path, &document)
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("credential write task failed: {error}")))??;
+    reload_credentials(&writer.config_path);
+    Ok(())
+}
+
+/// A connector's plain settings live in its own transport row, so the runtime
+/// resolves them from where it already reads the URL and headers (`34` §5.3).
+async fn write_plain_values(
+    writer: &ConnectorCredentialWriter,
+    server: &nomifun_api_types::McpServerResponse,
+    plains: &[(String, String)],
+) -> Result<(), AppError> {
+    let mut transport = server.transport.clone();
+    match &mut transport {
+        McpTransport::Http { values, .. } | McpTransport::Sse { values, .. } => {
+            for (key, value) in plains {
+                values.insert(key.clone(), value.clone());
+            }
+        }
+        McpTransport::Stdio { .. } => {
+            return Err(AppError::BadRequest(
+                "this connector has no plain settings to store".into(),
+            ));
+        }
+    }
+    writer
+        .config
+        .edit_server(
+            &server.mcp_server_id,
+            nomifun_api_types::UpdateMcpServerRequest {
+                name: None,
+                description: None,
+                transport: Some(transport),
+                original_json: None,
+                builtin: None,
+            },
+        )
+        .await
+        .map_err(AppError::from)?;
+    Ok(())
+}
+
+/// Replace the config file atomically, owner-only.
+///
+/// The write goes to a sibling temp file first: a crash mid-write must not leave
+/// the operator's hand-edited config truncated.
+fn write_private(path: &std::path::Path, document: &str) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| AppError::Internal(format!("create config dir: {error}")))?;
+    }
+    let temp = path.with_extension("toml.tmp");
+    std::fs::write(&temp, document)
+        .map_err(|error| AppError::Internal(format!("write config: {error}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&temp, path)
+        .map_err(|error| AppError::Internal(format!("replace config: {error}")))?;
+    Ok(())
+}
+
+/// Reinstall the process-wide credential map from the file just written.
+///
+/// Without this the write would only take effect after a restart, and the next
+/// probe would answer from the stale map (`34` §5.3).
+fn reload_credentials(path: &std::path::Path) {
+    if let Some(config) = nomifun_app_server::agent_store::AgentStoreConfig::load_ok(path) {
+        secret_ref::set_credentials(config.credentials);
+    }
 }
 
 #[cfg(test)]
@@ -512,8 +831,57 @@ mod tests {
     }
 
     #[test]
-    fn a_connector_with_nothing_to_fill_is_not_required() {
-        let block = credential_block(
+    fn a_set_body_is_routed_by_field_kind_and_unknown_keys_are_refused() {
+        let declaration = declaration_from_payload(&declaration_payload()).unwrap();
+        let values = HashMap::from([
+            ("TDENGINE_API_KEY".to_owned(), "s3cr3t".to_owned()),
+            ("TDENGINE_API_HOST".to_owned(), "db.internal".to_owned()),
+        ]);
+        let (secrets, plains) = route_values(&declaration, &values).expect("both keys are declared");
+        assert_eq!(secrets, vec![("TDENGINE_API_KEY".to_owned(), "s3cr3t".to_owned())]);
+        assert_eq!(plains, vec![("TDENGINE_API_HOST".to_owned(), "db.internal".to_owned())]);
+
+        // The write face must not grow beyond the form it published: an
+        // undeclared key would otherwise seed arbitrary entries into the host's
+        // credential file.
+        let error = route_values(
+            &declaration,
+            &HashMap::from([("ANYTHING".to_owned(), "x".to_owned())]),
+        )
+        .expect_err("undeclared key");
+        assert!(error.contains("ANYTHING"), "{error}");
+    }
+
+    #[test]
+    fn an_atomic_write_replaces_the_file_and_leaves_no_temp_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[memory]\ndistill_enabled = false\n").unwrap();
+
+        let document = nomifun_app_server::agent_store::AgentStoreConfig::with_credential(
+            &std::fs::read_to_string(&path).unwrap(),
+            "alice:TOKEN",
+            "v",
+        )
+        .unwrap();
+        write_private(&path, &document).expect("write");
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("distill_enabled = false"), "{written}");
+        let parsed = nomifun_app_server::agent_store::AgentStoreConfig::from_source(&written)
+            .expect("the written file parses");
+        assert_eq!(
+            parsed.credentials.get("alice:TOKEN").map(String::as_str),
+            Some("v")
+        );
+        assert!(
+            !path.with_extension("toml.tmp").exists(),
+            "the temp file must be renamed away, not left next to the config"
+        );
+    }
+
+    #[test]
+    fn a_connector_with_nothing_to_fill_is_not_required() {        let block = credential_block(
             "conn-1",
             None,
             AppServerCredentialMode::None,

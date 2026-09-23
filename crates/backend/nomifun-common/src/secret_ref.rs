@@ -247,6 +247,18 @@ pub fn scoped_key(principal: &str, name: &str) -> String {
     format!("{principal}:{name}")
 }
 
+/// The **stored** key a write for `principal` should use (`34` §7).
+///
+/// A caller with an identity gets its own namespaced entry; a host-internal
+/// caller (`None`) writes the host-level one — the form the installation owner's
+/// hand-edited config has always used.
+pub fn credential_key_for(principal: Option<&str>, name: &str) -> String {
+    match principal {
+        Some(principal) => scoped_key(principal, name),
+        None => name.to_owned(),
+    }
+}
+
 /// Parse a `<principal>:NAME` key back into its parts.
 ///
 /// Returns `None` for a bare `NAME` — the host-level, pre-`34` form.

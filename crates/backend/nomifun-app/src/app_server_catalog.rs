@@ -299,25 +299,14 @@ impl AppServerConnectorCatalog {
         principal: Option<&str>,
     ) -> Option<nomifun_api_types::AppServerConnectorCredential> {
         let reader = self.credentials.as_ref()?;
-        // A remote transport's `values` are its own settings; a stdio server has
-        // none (`34` §5.3).
-        let values = match &server.transport {
-            McpTransport::Http { values, .. } | McpTransport::Sse { values, .. } => values.clone(),
-            McpTransport::Stdio { .. } => Default::default(),
-        };
-        let installed = nomifun_common::secret_ref::credentials();
-        let operator = nomifun_common::secret_ref::operator_principal();
-        crate::app_server_credentials::describe(
-            reader,
-            mcp_server_id,
-            &server.transport,
-            &values,
-            &installed,
-            operator.as_deref(),
-            principal,
-            server.last_test_status,
-        )
-        .await
+        reader
+            .describe(
+                mcp_server_id,
+                &server.transport,
+                server.last_test_status,
+                principal,
+            )
+            .await
     }
 
     /// Wire marketplace icon resolution (composition root).
