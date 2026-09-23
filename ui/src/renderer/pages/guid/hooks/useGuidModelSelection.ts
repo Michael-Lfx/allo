@@ -8,7 +8,11 @@ import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import type { ConfigKeyMap } from '@/common/config/configKeys';
 import { configService } from '@/common/config/configService';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
-import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
+import {
+  allChatModelOptions,
+  buildChatModelPickerViewModel,
+  type ChatModelPickerViewModel,
+} from '@/renderer/utils/model/chatModelPicker';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -194,11 +198,24 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
           : undefined;
 
       if (!exactMatch || !resolvedUseModel) {
-        // A missing/invalid preference is a user decision boundary. Do not
-        // silently replace it with the first provider: that can send a new
-        // conversation to an unintended account and also rewrite the user's
-        // persisted choice. Explicit selection remains the only path that
-        // updates nomi.defaultModel.
+        // Fall back to the first available model: Auto model -> Cloud model -> first available model in catalog
+        const fallbackOption =
+          modelPicker.autoModels[0] ??
+          modelPicker.cloudModels[0] ??
+          allChatModelOptions(modelPicker)[0];
+
+        if (fallbackOption) {
+          setDefaultModelUnavailable(false);
+          await setCurrentModel(
+            {
+              ...fallbackOption.provider,
+              use_model: fallbackOption.model,
+            },
+            false,
+          );
+          return;
+        }
+
         selectedModelKeyRef.current = null;
         _setCurrentModel(undefined);
         setDefaultModelUnavailable(rawSavedModel !== undefined);
@@ -218,9 +235,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
     setDefaultModel().catch((error) => {
       console.error('Failed to set default model:', error);
     });
-    // availableModelsFor / isModelKeyAvailable derive from the same catalog
-    // groups as modelList, so modelList is the single change signal.
-  }, [modelList, storageKey]);
+  }, [availableModelsFor, isModelKeyAvailable, modelList, modelPicker, setCurrentModel, storageKey]);
 
   return {
     modelList,
