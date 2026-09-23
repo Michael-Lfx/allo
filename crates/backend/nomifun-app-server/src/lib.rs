@@ -164,7 +164,16 @@ use tokio::sync::mpsc;
 /// (`frontmatter.rs:114`, `app_server.rs:435`); see doc 32. Both methods are
 /// WebSocket-only, like the rest of the agent/team family, so the documented
 /// route split moves to `48 / 73` (mapped unchanged, two new unmapped).
-pub const PROTOCOL_VERSION: &str = "fp-8";
+/// **`fp-9` adds connector user credentials** (doc 34): a connector that needs a
+/// key or token the *user* supplies now has a form — `connector/credential/get`,
+/// `set` and `clear`, plus a `credential` block on the connector summary
+/// (`mode` / `status` / `missing` / `fields`). Secret values never cross this
+/// wire in either direction; `missing` and the block's field list carry key names
+/// and marketplace text only. Credentials are written per principal
+/// (`<principal>:NAME`), so a shared host no longer resolves one user's token for
+/// another. The three methods are mapped, not WebSocket-only, so the documented
+/// split moves to `51 / 73`.
+pub const PROTOCOL_VERSION: &str = "fp-9";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1305,9 +1314,11 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
             post(connector_call_route),
         )
         // Connector credentials (34 §6.1): the user-supplied key/token form.
+        // Both writes are POST — this protocol's write verbs are POST
+        // throughout, so the client's route table has one verb per method.
         .route(
             "/api/app-server/connectors/{connector_id}/credential",
-            get(connector_credential_get_route).put(connector_credential_set_route),
+            get(connector_credential_get_route).post(connector_credential_set_route),
         )
         .route(
             "/api/app-server/connectors/{connector_id}/credential/clear",

@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "fp-8";
+const PROTOCOL_VERSION = "fp-9";
 
 type Verb = "GET" | "POST" | "DELETE";
 
@@ -227,6 +227,23 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
     verb: "POST",
     path: "/connectors/:connector_id/auth-logout",
     source: "connector_auth_logout_route() -> connector_auth_logout_impl",
+  },
+  // The credential form (34 §6.1). `clear` is a POST with an optional body
+  // rather than a DELETE so the caller can name the keys to forget.
+  "connector/credential/get": {
+    verb: "GET",
+    path: "/connectors/:connector_id/credential",
+    source: "connector_credential_get_route() -> connector_credential_get_impl",
+  },
+  "connector/credential/set": {
+    verb: "POST",
+    path: "/connectors/:connector_id/credential",
+    source: "connector_credential_set_route() -> connector_credential_set_impl",
+  },
+  "connector/credential/clear": {
+    verb: "POST",
+    path: "/connectors/:connector_id/credential/clear",
+    source: "connector_credential_clear_route() -> connector_credential_clear_impl",
   },
 
   // -- importer / installer -------------------------------------------------

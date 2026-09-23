@@ -254,7 +254,7 @@ describe("HttpTransport · route table count guard", () => {
    * Mapping a new method (or dropping one) fails the assertions below — update
    * the guide in the same change.
    */
-  const DOCUMENTED_ROUTE_SPLIT = { mapped: 48, unmapped: 25 } as const;
+  const DOCUMENTED_ROUTE_SPLIT = { mapped: 51, unmapped: 25 } as const;
 
   const DOCUMENTED_UNMAPPED = [
     "initialize",

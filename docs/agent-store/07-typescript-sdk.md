@@ -205,6 +205,11 @@ interface ConnectorClient {
   authStatus(id: ConnectorId): Promise<OAuthStatus>;
   authStart(id: ConnectorId): Promise<OAuthStartResult>;
   logout(id: ConnectorId): Promise<void>;
+  // fp-9：用户自己填 key / token 的表单与状态。响应**永不含 secret 的值**
+  // （`fields[].value` 只对 plain 字段出现），写入按调用者命名空间落库。
+  credentials(id: ConnectorId): Promise<ConnectorCredential>;
+  setCredentials(id: ConnectorId, values: Record<string, string>): Promise<ConnectorCredential>;
+  clearCredentials(id: ConnectorId, keys?: string[]): Promise<ConnectorCredential>;
 }
 
 interface ArtifactClient {

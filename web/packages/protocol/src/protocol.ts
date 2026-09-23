@@ -63,7 +63,7 @@
  * faces deliberately never do; both methods are WebSocket-only, so the
  * documented route split becomes `48 / 73` (doc `32`).
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-8";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-9";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -924,6 +924,55 @@ export interface ConnectorSummary {
    * Absent for builtin hosts and for markets that ship no icon for the entry.
    */
   avatar_url?: string | null;
+  /**
+   * What the connector needs the user to fill in, when the host can describe it
+   * (doc `34` §6.1). Absent for a connector with no declaration and nothing to
+   * ask for.
+   *
+   * **Never carries a secret value**: `fields[].value` exists only for `plain`
+   * fields, which are the connector's own settings (`HOST`, `PORT`), and
+   * `missing` holds key names.
+   */
+  credential?: ConnectorCredential | null;
+}
+
+/** Both languages, already resolved by the host (doc `34` §5.2). */
+export interface LocalizedString {
+  zh: string;
+  en: string;
+}
+
+/** How a connector authenticates. */
+export type CredentialMode = "none" | "oauth" | "token";
+
+/** What the caller has to do about it. */
+export type CredentialStatus = "not_required" | "requires_input" | "configured" | "error";
+
+/** One row of the credential form. */
+export interface CredentialField {
+  key: string;
+  /** `secret` (the host's credential store) or `plain` (the connector's own value). */
+  kind: "secret" | "plain";
+  required: boolean;
+  label: LocalizedString;
+  placeholder: LocalizedString;
+  description: LocalizedString;
+  /** Only for `plain`: the value in effect. A secret's value never crosses the wire. */
+  value?: string | null;
+  doc_url: LocalizedString;
+  doc_label: LocalizedString;
+}
+
+/** The credential form and its state, as this caller sees them (doc `34` §6.1). */
+export interface ConnectorCredential {
+  connector_id: string;
+  mode: CredentialMode;
+  status: CredentialStatus;
+  /** Key names still missing for this caller — never values. */
+  missing: string[];
+  fields: CredentialField[];
+  title?: LocalizedString | null;
+  description?: LocalizedString | null;
 }
 
 export interface ConnectorTool {
