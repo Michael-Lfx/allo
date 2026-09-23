@@ -658,9 +658,9 @@ stdio → env：连接器 transport 的 env 原样透传（stdio 无 URL，OAuth
 |---|---|
 | RFC 9728 Protected Resource Metadata 发现（GitHub 等现代服务器） | `nomifun-mcp/src/oauth_service.rs::discover_endpoints` / `discover_protected_resource_metadata` |
 | RFC 7591 动态客户端注册 | `register_client`（无注册端点/失败时回退内置 public client） |
-| 预注册 client 通道 | `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` / `MCP_OAUTH_REDIRECT_URI`（env，参考 `mcp-client-oauth` 模式） |
+| 预注册 client 通道 | `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` / `MCP_OAUTH_REDIRECT_URI`（env，参考 `mcp-client-oauth` 模式）。默认 callback 固定为 `http://127.0.0.1:41873/callback`（§7.1），因此预注册 client 只把该 URI 登记到服务方即可，无需再设 `MCP_OAUTH_REDIRECT_URI` |
 | 测试接缝 | `McpOAuthService::new_with_browser_hook`（替代系统浏览器，驱动回调） |
-| 可观测性 | `nomifun-app/src/app_server_catalog.rs::auth_start` 记录登录结果日志 |
+| 可观测性 | `app_server_catalog.rs::auth_start` 记录每次**请求**与结果（限流类故障要靠尝试次数才读得出来）；`oauth_service` 在 info 级记录 discovery 命中位置与探测次数、client identity（新建/复用 + registration id + redirect URI）、token 存入与刷新——「这次是复用还是重新注册」直接从日志读 |
 
 ### 2. 自动化端到端证据（核心闭环）
 
@@ -839,7 +839,7 @@ nomifun-ai-agent
 
 - 入站 Agent Store 身份认证与出站 Connector OAuth 凭据完全隔离。
 - 真实 token、client secret、registration access token 仅存安全凭据存储；不进入普通配置、日志、事件、Renderer 或公共 API 响应。
-- 动态注册 client identity 的复用范围由 `mcp_server_url + resource + issuer + redirect_uri` 共同确定。
+- 动态注册 client identity 的复用范围由 `mcp_server_url + resource + issuer + redirect_uri` 共同确定。**`redirect_uri` 因此必须跨登录稳定**：默认 callback 端口固定（§7.1），随机端口会把每次登录变成一个新 identity。
 - 预注册 client 显式优先于动态注册；缺少两者之一时授权必须失败，不构造虚假的默认 client identity。
 - 登录后 `connected` 必须由实际初始化/工具发现 probe 得出，`authenticated` 仅表示 OAuth token 已保存。
 - 401 刷新最多一次并只重试原请求一次，避免循环。
@@ -1011,13 +1011,17 @@ pre_registered_client_required
 
 #### 7.1 Callback
 
-默认使用 loopback listener：
+默认使用**固定**的 loopback listener：
 
 ```text
-http://127.0.0.1:<ephemeral-port>/callback
+http://127.0.0.1:41873/callback
 ```
 
-支持固定 loopback callback，例如：
+固定而非随机端口是 identity key 的要求（§3 / §14.3）：`redirect_uri` 参与客户端身份的复用键，随机端口会让每次登录都成为一个**新的 identity** —— 持久化的 RFC 7591 registration 永远无法复用，每次尝试都要重新注册 + 重新授权 + 重新换 token；在按次限流的授权服务器上，这正是 `slow_down: too many OAuth requests` 的来源。同一时刻只有一个 flow 持有 listener（登录门闩），所以这一个端口服务于所有 connector；它取在 Windows 动态端口段（49152–65535）以下，避免被系统分给别的进程。
+
+端口被占用时（同机第二个实例、或其它软件）**回退到 ephemeral 端口并记一条 WARN**：那一次会重新注册，WARN 里同时给出两个端口号；该端口会被本进程记住，后续登录继续复用同一身份（进程重启后回到默认端口，最多再注册一次）。日志因此能直接解释「为什么这次没有复用」。
+
+支持固定 loopback callback（覆盖上述默认值），例如：
 
 ```text
 MCP_OAUTH_REDIRECT_URI=http://127.0.0.1:8989/oauth/callback
@@ -1040,6 +1044,7 @@ MCP_OAUTH_REDIRECT_URI=http://127.0.0.1:8989/oauth/callback
 - token 过期前按现有安全窗口刷新。
 - refresh token 无效、client 被撤销或 secret 到期时，清除失效 token 并返回 `reauthorization_required`；保留 registration 是否可复用由服务端错误和期限决定。
 - MCP transport 收到 401 时，调用后端 refresher、更新 Bearer header、重试一次；第二次 401 或 refresh 失败即结束请求。
+- **`slow_down` 是限流信号，不是普通失败**：token endpoint 回 `slow_down`（RFC 8628 的「问得太频繁」，网关常用它做按次限流）时，host 记一段冷却（60s 起、每次连续节流翻倍、上限 15 分钟；一次成功登录清空），冷却期内的 `connector/auth/start` **在任何请求之前**就被拒，错误里给出还要等多久。重试必须是「等一下再试」，不能是「立刻再试」——否则每次重试都在打同一个已经热掉的计数器（`connector/auth/status` 的 `error` 会同时带出这条原因，UI 因此能显示等待时间）。
 
 ### 8. API 与状态机
 

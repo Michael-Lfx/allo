@@ -3,7 +3,7 @@
  * transport: catalog, status, probe and OAuth pass-through.
  *
  * Tokens never cross this module — the OAuth browser flow is owned by the
- * trusted host; clients only start it and poll `authStatus`.
+ * trusted host; clients only start it and wait on `waitForAuth`.
  */
 
 import type { Transport } from "./transport";
@@ -16,6 +16,34 @@ import type {
   OAuthStartResult,
   OAuthStatusView,
 } from "@flowy-agent-store/protocol";
+
+/**
+ * How long {@link ConnectorClient.waitForAuth} waits by default: the host's own
+ * callback window is 120s, so a shorter client budget would give up on flows the
+ * host is still willing to finish.
+ */
+const DEFAULT_AUTH_TIMEOUT_MS = 120_000;
+const DEFAULT_AUTH_POLL_MS = 500;
+
+export interface WaitForAuthOptions {
+  /** Overall budget in ms; defaults to `DEFAULT_AUTH_TIMEOUT_MS` (120s). */
+  timeoutMs?: number;
+  /** Poll interval in ms; defaults to 500. The read is a local DB projection. */
+  pollMs?: number;
+}
+
+/**
+ * How a completed wait ended.
+ *
+ * `error` carries the host's own sentence. It is the shape of every failure that
+ * happens *after* `authStart` acknowledged the browser step — the state stays
+ * `not_authenticated` (there is no "failed" state on the wire), so the reason is
+ * the only signal there is.
+ */
+export type WaitForAuthOutcome =
+  | { state: "authenticated" }
+  | { state: "error"; error: string }
+  | { state: "timeout" };
 
 export class ConnectorClient {
   constructor(private readonly transport: Transport) {}
@@ -58,7 +86,13 @@ export class ConnectorClient {
     });
   }
 
-  /** Check the current OAuth state for a connector. */
+  /**
+   * Check the current OAuth state for a connector.
+   *
+   * Read `error` too: a flow that failed after the browser step is reported as
+   * `state: "not_authenticated"` **plus** `error`, because the wire has no
+   * failing state to flip to. {@link waitForAuth} is the loop that does this.
+   */
   authStatus(connectorId: string): Promise<OAuthStatusView> {
     return this.transport.request<OAuthStatusView>("connector/auth/status", {
       connector_id: connectorId,
@@ -67,12 +101,50 @@ export class ConnectorClient {
 
   /**
    * Kick off the OAuth browser flow on the trusted host. Returns the start
-   * acknowledgement immediately; poll `authStatus` until `authenticated`.
+   * acknowledgement immediately; follow it with {@link waitForAuth}.
+   *
+   * `state: "error"` here is a failure that happened **before** the browser was
+   * opened (endpoint discovery, client identity, binding the callback, launching
+   * the browser): nothing was shown to the user, so `error` is the whole story
+   * and there is nothing to wait for.
    */
   authStart(connectorId: string): Promise<OAuthStartResult> {
     return this.transport.request<OAuthStartResult>("connector/auth/start", {
       connector_id: connectorId,
     });
+  }
+
+  /**
+   * Wait for an authorization that was started (in the browser, or by a
+   * previous `authStart`) to finish — and **report why** when it does not.
+   *
+   * A hand-rolled `while (state !== "authenticated") poll()` loop ends in "it
+   * never became authenticated", with the reason sitting unread in the status it
+   * already fetched: a token exchange the authorization server refused (a
+   * throttling gateway answers `slow_down`), a callback timeout, a CSRF/path
+   * mismatch. Those land in `authStatus().error` *only*, and the state stays
+   * `not_authenticated` — there is no failing state on the wire.
+   *
+   * Resolves for every domain outcome (`authenticated` / `error` / `timeout`);
+   * rejects only when the status read itself fails (transport or protocol), the
+   * same rule as `connector/call`. The wait is bounded by `timeoutMs`; a caller
+   * that needs to stop earlier can race the returned promise.
+   */
+  async waitForAuth(
+    connectorId: string,
+    options: WaitForAuthOptions = {},
+  ): Promise<WaitForAuthOutcome> {
+    const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS);
+    const pollMs = options.pollMs ?? DEFAULT_AUTH_POLL_MS;
+    for (;;) {
+      // Read before sleeping: the flow may already be over (the browser can
+      // redirect before this call even starts).
+      const status = await this.authStatus(connectorId);
+      if (status.state === "authenticated") return { state: "authenticated" };
+      if (status.error) return { state: "error", error: status.error };
+      if (Date.now() >= deadline) return { state: "timeout" };
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
   }
 
   /** Revoke the OAuth token for a connector. */

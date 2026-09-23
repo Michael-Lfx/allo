@@ -1049,6 +1049,10 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .drawer-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .drawer-desc { margin: 0; color: var(--ink-strong); font-size: 13.5px; line-height: 1.55; }
 .drawer-hint { margin: 0; color: var(--muted-light); font-size: 12.5px; }
+/* A flow that failed after the browser step is only ever reported through
+   `auth_status.error`; it can name a long authorization-server URL, so it wraps
+   instead of stretching the drawer. */
+.drawer-hint.is-error { color: var(--destructive-text); overflow-wrap: anywhere; }
 .drawer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0; }
 
 /* Label column hugs its text: at the old 1:2 split the values started half way

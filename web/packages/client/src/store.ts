@@ -90,6 +90,20 @@ export interface StoreClientOptions {
   /** First readiness poll interval in ms; doubles up to `readyPollMaxMs`. */
   readyPollMs?: number;
   readyPollMaxMs?: number;
+  /**
+   * Minimum gap between two *real probes* of the same connector while waiting
+   * for readiness, in ms. Defaults to `DEFAULT_READY_PROBE_MS`.
+   *
+   * A connector's readiness cannot be read: the status is derived from the last
+   * probe, so someone has to run one — but a probe is a real connection
+   * (`initialize` + `tools/list`) that also resolves the stored token, which
+   * means a refresh request when that token is near expiry, plus one more on a
+   * 401. Probing once per poll (the poll starts at `readyPollMs` = 400ms) turned
+   * a 30s readiness budget into ~10 connections and up to ~20 token requests
+   * against the connector's authorization server — with nobody having asked for
+   * anything. Between probes the loop reads the (free, local) status instead.
+   */
+  readyProbeMs?: number;
 }
 
 export interface StoreOperationOutcome {
@@ -140,6 +154,7 @@ export interface StoreHost {
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_READY_POLL_MS = 400;
 const DEFAULT_READY_POLL_MAX_MS = 4_000;
+const DEFAULT_READY_PROBE_MS = 5_000;
 
 /** Every string a `LocalizedText` carries, for haystack building. */
 function localizedValues(text: unknown): string[] {
@@ -194,6 +209,7 @@ export class StoreClient {
   private readonly readyTimeoutMs: number;
   private readonly readyPollMs: number;
   private readonly readyPollMaxMs: number;
+  private readonly readyProbeMs: number;
 
   constructor(
     private readonly host: StoreHost,
@@ -202,6 +218,7 @@ export class StoreClient {
     this.readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     this.readyPollMs = options.readyPollMs ?? DEFAULT_READY_POLL_MS;
     this.readyPollMaxMs = options.readyPollMaxMs ?? DEFAULT_READY_POLL_MAX_MS;
+    this.readyProbeMs = options.readyProbeMs ?? DEFAULT_READY_PROBE_MS;
   }
 
   /** Every item across enabled marketplaces, with install state. */
@@ -387,14 +404,20 @@ export class StoreClient {
 
     const deadline = Date.now() + (options.timeoutMs ?? this.readyTimeoutMs);
     let interval = this.readyPollMs;
+    // The first round always probes (nothing is known yet); after that a
+    // connector is re-probed at most once per `readyProbeMs`.
+    let nextProbeAt = 0;
     let last: InstallComponent[] = status.components;
     for (;;) {
+      const now = Date.now();
+      const allowProbe = now >= nextProbeAt;
+      if (allowProbe) nextProbeAt = now + this.readyProbeMs;
       const verdicts = await Promise.all(
         last
           .filter((component) => component.state !== "not-installed")
           .map(async (component) => ({
             component,
-            verdict: await this.readiness(component),
+            verdict: await this.readiness(component, allowProbe),
           })),
       );
       const blocked = verdicts.find((entry) => !entry.verdict.ready);
@@ -430,8 +453,12 @@ export class StoreClient {
    * unknown kind is reported ready rather than blocking: this layer cannot judge
    * a component it does not understand, and a false timeout on a future kind
    * would be worse than passing it through.
+   *
+   * `allowProbe` gates the one kind whose readiness needs a real connection (a
+   * connector); the other kinds answer from local reads, so the cadence does not
+   * apply to them.
    */
-  private async readiness(component: InstallComponent): Promise<ReadinessVerdict> {
+  private async readiness(component: InstallComponent, allowProbe: boolean): Promise<ReadinessVerdict> {
     try {
       switch (component.kind) {
         case "skill": {
@@ -449,13 +476,19 @@ export class StoreClient {
           return { ready: true };
         }
         case "connector": {
-          // Polling the status alone can never reach `connected`: enabling a
-          // connector only flips its stored flag, and the status derives from
-          // the *last probe*. Someone has to run the probe, and for a caller
-          // waiting on readiness that someone is us.
-          const probe = await this.host.connectors.test(component.id);
-          if (probe.success) return { ready: true };
+          // Polling the status alone can never *move* a connector: enabling one
+          // only flips its stored flag, and the status derives from the *last
+          // probe*. Someone has to run a probe, and for a caller waiting on
+          // readiness that someone is us — but only every `readyProbeMs`
+          // (`allowProbe`): a probe connects for real and resolves the stored
+          // token, so probing per poll hammers both the connector and its
+          // authorization server. Between probes the status read decides, since
+          // it is a local projection of the last probe's outcome.
+          if (allowProbe && (await this.host.connectors.test(component.id)).success) {
+            return { ready: true };
+          }
           const status = await this.host.connectors.status(component.id);
+          if (status.status === "connected") return { ready: true };
           if (
             status.status === "authorization_required" ||
             status.status === "reauthorization_required"

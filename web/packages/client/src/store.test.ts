@@ -360,6 +360,36 @@ describe("StoreClient · waitForReady", () => {
     );
   });
 
+  it("probes a connector on a slower cadence than it reads its status", async () => {
+    const { host, calls } = fakeHost({
+      statuses: [status([{ id: "conn-1", kind: "connector", name: "Mail", state: "installed" }])],
+      // Never succeeds and never says "authorization required": the only shape
+      // that keeps the readiness loop going.
+      probe: [{ connector_id: "conn-1", success: false, tools_truncated: false }],
+      connectorStatus: [{ connector_id: "conn-1", status: "error" }],
+    });
+    const client = new StoreClient(host, {
+      readyPollMs: 1,
+      readyPollMaxMs: 4,
+      readyProbeMs: 60,
+      readyTimeoutMs: 220,
+    });
+
+    const result = await client.install(item());
+
+    expect(result.ready).toBe(false);
+    expect(result.readyIssue).toBe("ready_timeout");
+
+    const probes = calls.filter((call) => call.startsWith("connectors.test")).length;
+    const statusReads = calls.filter((call) => call.startsWith("connectors.status")).length;
+    // A probe connects for real and reads the connector's token (with a refresh
+    // when it is near expiry, and another on a 401); the status read is a local
+    // projection. The poll must therefore be dominated by the cheap read.
+    expect(statusReads).toBeGreaterThan(probes);
+    // ~220ms budget at a 60ms probe cadence: the first round plus at most three.
+    expect(probes).toBeLessThanOrEqual(4);
+  });
+
   it("honours an abort signal", async () => {
     const { host } = fakeHost({
       statuses: [status([{ id: "comp-1", kind: "skill", name: "Nowhere", state: "installed" }])],

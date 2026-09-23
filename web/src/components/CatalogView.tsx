@@ -58,6 +58,7 @@ import type {
   ConnectorDetail,
   ConnectorSummary,
   ImportSourceKind,
+  OAuthStatusView,
   SkillDetail,
   SkillSummary,
   StoreInstallResult,
@@ -236,9 +237,23 @@ export function CatalogView() {
   const [storeDrawerItem, setStoreDrawerItem] = useState<StoreItem | null>(null);
   const [storeInstallResult, setStoreInstallResult] = useState<StoreInstallResult | null>(null);
 
-  // connector auth state map (id -> oauth state)
-  const [authMap, setAuthMap] = useState<Map<string, string>>(new Map());
+  // connector auth state map (id -> oauth state + last failure reason)
+  const [authMap, setAuthMap] = useState<Map<string, OAuthStatusView>>(new Map());
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * The single writer for a connector's OAuth state.
+   *
+   * `auth_status.error` is the **only** channel through which a flow that
+   * failed *after* the browser step (token exchange, callback timeout, a
+   * throttling gateway) reaches a client — `auth_start` has already
+   * acknowledged `started` by then. Storing just `state` here is what made
+   * every such failure look like nothing happened.
+   */
+  const setAuthStatus = useCallback((connectorId: string, auth?: OAuthStatusView | null) => {
+    if (!auth?.state) return;
+    setAuthMap((map) => new Map(map).set(connectorId, auth));
+  }, []);
 
   const [reloadTick, setReloadTick] = useState(0);
   const activeRef = useRef(true);
@@ -347,16 +362,14 @@ export function CatalogView() {
       ]);
       if (!activeRef.current) return;
       setConnectorDetail(detail);
-      if (status.auth_status?.state) {
-        setAuthMap((map) => new Map(map).set(connectorId, status.auth_status?.state ?? "not_authenticated"));
-      }
+      setAuthStatus(connectorId, status.auth_status);
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     } finally {
       if (activeRef.current) setDetailBusy(null);
     }
-  }, [client]);
+  }, [client, setAuthStatus]);
 
   const probeConnector = useCallback(async (connectorId: string) => {
     if (!client) return;
@@ -371,28 +384,26 @@ export function CatalogView() {
       ]);
       if (!activeRef.current) return;
       setConnectorDetail(detail);
-      if (status.auth_status?.state) {
-        setAuthMap((map) => new Map(map).set(connectorId, status.auth_status?.state ?? "not_authenticated"));
-      }
+      setAuthStatus(connectorId, status.auth_status);
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     } finally {
       if (activeRef.current) setDetailBusy(null);
     }
-  }, [client, t]);
+  }, [client, setAuthStatus, t]);
 
   const refreshAuth = useCallback(async (connectorId: string) => {
     if (!client) return;
     try {
       const status = await client.connectors.authStatus(connectorId);
       if (!activeRef.current) return;
-      setAuthMap((map) => new Map(map).set(connectorId, status.state));
+      setAuthStatus(connectorId, status);
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     }
-  }, [client]);
+  }, [client, setAuthStatus]);
 
   const startAuth = useCallback(async (connectorId: string) => {
     if (!client) return;
@@ -420,14 +431,16 @@ export function CatalogView() {
     try {
       await client.connectors.logout(connectorId);
       if (!activeRef.current) return;
-      setAuthMap((map) => new Map(map).set(connectorId, "not_authenticated"));
+      // Revoked: no credential and, deliberately, no old failure reason left
+      // hanging over the row.
+      setAuthStatus(connectorId, { state: "not_authenticated", error: null });
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     } finally {
       if (activeRef.current) setDetailBusy(null);
     }
-  }, [client]);
+  }, [client, setAuthStatus]);
 
   /**
    * Flip one connector's host-level `enabled` (doc `28` §4.5).
@@ -1201,7 +1214,7 @@ export function CatalogView() {
             {drawer === "connector" && connectorDetail && (
               <ConnectorDrawer
                 detail={connectorDetail}
-                authState={connectorDetailAuth}
+                auth={connectorDetailAuth}
                 busy={detailBusy === connectorDetail.id}
                 onProbe={() => void probeConnector(connectorDetail.id)}
                 onAuthStart={() => void startAuth(connectorDetail.id)}
@@ -1431,9 +1444,14 @@ function SkillDrawer({ detail }: { detail: SkillDetail }) {
   );
 }
 
-function ConnectorDrawer({
+/**
+ * Exported for the render test: `renderToStaticMarkup` never runs effects, so
+ * the prop-driven half — not the wired `CatalogView` — is what a render test
+ * can pin (same seam as `ImportHistoryCard`).
+ */
+export function ConnectorDrawer({
   detail,
-  authState,
+  auth,
   busy,
   onProbe,
   onAuthStart,
@@ -1442,7 +1460,7 @@ function ConnectorDrawer({
   onToggleEnabled,
 }: {
   detail: ConnectorDetail;
-  authState?: string;
+  auth?: OAuthStatusView;
   busy: boolean;
   onProbe: () => void;
   onAuthStart: () => void;
@@ -1451,7 +1469,7 @@ function ConnectorDrawer({
   onToggleEnabled: () => void;
 }) {
   const { t } = useTranslation();
-  const authenticated = authState === "authenticated";
+  const authenticated = auth?.state === "authenticated";
   return (
     <div className="drawer-body">
       <div className="drawer-head">
@@ -1491,7 +1509,7 @@ function ConnectorDrawer({
         {detail.auth_mode === "oauth" ? (
           <>
             <span className={`market-tag is-status ${authenticated ? "is-success" : "is-warn"}`}>
-              {stateLabel(t, AUTH_STATE_KEYS, authState ?? "not_authenticated")}
+              {stateLabel(t, AUTH_STATE_KEYS, auth?.state ?? "not_authenticated")}
             </span>
             {!authenticated ? (
               <button className="quiet-button" type="button" onClick={onAuthStart} disabled={busy}>{t("catalog.authAuthorize")}</button>
@@ -1504,6 +1522,11 @@ function ConnectorDrawer({
         <button className="primary-button" type="button" onClick={onProbe} disabled={busy}>{t("catalog.authTest")}</button>
       </div>
       {busy && <p className="drawer-hint">{t("common.processing")}</p>}
+      {/* Why the last attempt did not finish (token exchange failure, callback
+          timeout, a throttling gateway). Carried by `auth_status.error` — and
+          only rendered while the flow is still unauthenticated, which is
+          exactly when it is true. */}
+      {auth?.error && <p className="drawer-hint is-error">{t("catalog.authFailed", { error: auth.error })}</p>}
       <details className="drawer-details" open={(detail.tools?.length ?? 0) > 0}>
         <summary>{t("catalog.tools", { count: detail.tools?.length ?? 0 })}</summary>
         {(detail.tools ?? []).length === 0 ? (

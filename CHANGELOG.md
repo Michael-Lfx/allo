@@ -15,6 +15,11 @@ at a high level rather than a complete commit log.
 - Lesson practice sections present questions one at a time with instant grading feedback ("Next question" after each submit); the stepper is gated per practice section and unlocks past it only once its questions are answered. Answered questions stay reviewable with your own response and the grader's feedback.
 - Wan 3.0 video create requests now send DashScope `input`/`parameters` (not Seedance `content[]`), with 2–30s clips and `480P`/`720P`/`1080P` resolution tokens.
 - Connector OAuth authorization that fails before the browser opens now reports the real reason instead of claiming a browser window was opened.
+- Connector OAuth logins reuse the stored client registration instead of registering a new one with the authorization server on every attempt, so repeated attempts stop reading as "too many OAuth requests" to a throttling gateway.
+- The Agent Store host accepts `--log-level` / `NOMI_LOG_LEVEL` (for example `info,nomifun_mcp::oauth_service=debug`), and every backend log opens with its log directory and effective level.
+- The connector detail drawer shows why an authorization did not finish (token exchange failure, callback timeout, a throttling gateway) instead of only "not authorized".
+- A connector authorization that an authorization server throttles (`slow_down`) now waits instead of retrying at once: the next attempt is refused with the remaining wait, and repeated throttles back off up to 15 minutes.
+- Installing a connector no longer probes it on every readiness poll (one real connection per 5s instead of one per 400ms — up to ~10 connections and ~20 token requests per install before), and the SDK's `connectors.waitForAuth` reports why an authorization did not finish.
 
 
 ## v1.3.2 - 2026-09-11

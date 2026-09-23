@@ -17,7 +17,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, OwnedMutexGuard};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::McpError;
 
@@ -36,6 +36,38 @@ pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Token expiry safety margin (refresh 5 minutes before expiration).
 const EXPIRY_MARGIN_MS: i64 = 5 * 60 * 1000;
+
+/// Loopback callback port used when `MCP_OAUTH_REDIRECT_URI` is unset.
+///
+/// Deliberately **fixed**, not ephemeral: the redirect URI is part of the
+/// client-registration identity key (`mcp_server_url + resource + issuer +
+/// redirect_uri`, migration `058`), so an ephemeral port made every login a
+/// *different* identity. The persisted RFC 7591 registration could never be
+/// reused and each attempt registered a new client with the authorization
+/// server — one registration plus one authorize plus one token exchange per
+/// retry, which a throttling gateway answers with
+/// `slow_down: too many OAuth requests`. A fixed port keeps that key stable
+/// across logins **and** restarts, so the stored registration is reused.
+///
+/// One callback listener exists at a time (`login_gate`), so a single
+/// well-known port serves every connector. It sits below the Windows
+/// ephemeral range (49152–65535) so the OS does not hand it to an unrelated
+/// process; when it is taken anyway the flow falls back to an ephemeral port
+/// and warns — the fallback costs a fresh registration, which is exactly why
+/// it is logged.
+const DEFAULT_CALLBACK_PORT: u16 = 41873;
+
+/// First cool-down after the token endpoint answers `slow_down`, and the
+/// ceiling its doubling reaches.
+///
+/// RFC 8628 defines `slow_down` as "you are asking too often — increase the
+/// interval"; a gateway throttle is a time window, so consecutive throttles
+/// double the wait (60s → 120s → … → 15min) and a login that gets through
+/// clears it. The point is that a retry must not be the *cheap* reaction: an
+/// immediate second attempt spends another register + authorize + token round
+/// against a counter that is already hot.
+const SLOW_DOWN_COOLDOWN_MS: i64 = 60_000;
+const SLOW_DOWN_MAX_COOLDOWN_MS: i64 = 15 * 60_000;
 
 // ---------------------------------------------------------------------------
 // Discovery response
@@ -130,6 +162,28 @@ struct PendingLogin {
     registration_id: Option<i64>,
 }
 
+/// Cool-down recorded when the token endpoint answered `slow_down`.
+struct Cooldown {
+    /// Earliest moment (ms since epoch) at which a new login may be started.
+    until_ms: i64,
+    /// Consecutive throttles for this server; sets the wait length.
+    streak: u32,
+}
+
+/// The cool-down for the `streak`-th consecutive `slow_down`.
+///
+/// Kept as a free function so the backoff shape is testable without a server
+/// that has to throttle on a schedule.
+fn slow_down_cooldown_ms(streak: u32) -> i64 {
+    let doublings = streak.saturating_sub(1).min(8);
+    (SLOW_DOWN_COOLDOWN_MS << doublings).min(SLOW_DOWN_MAX_COOLDOWN_MS)
+}
+
+/// Milliseconds → whole seconds to quote in a user-facing message.
+fn seconds_from_ms(ms: i64) -> i64 {
+    (ms.max(0) + 999) / 1000
+}
+
 // ---------------------------------------------------------------------------
 // McpOAuthService
 // ---------------------------------------------------------------------------
@@ -149,6 +203,15 @@ pub struct McpOAuthService {
     http_client: HttpClientFactory,
     /// Mutex protecting the pending login state (only one login at a time).
     pending: Arc<Mutex<Option<PendingLogin>>>,
+    /// The loopback callback port this process bound last, once known.
+    ///
+    /// Preferred value is [`DEFAULT_CALLBACK_PORT`]; remembering whatever
+    /// worked — including an ephemeral fallback — keeps the redirect URI, and
+    /// with it the client-registration identity key, stable across the logins
+    /// of *this* process. Without it a second host on the same machine (or a
+    /// squatted port) would present a new identity and re-register on every
+    /// attempt.
+    callback_port: Arc<Mutex<Option<u16>>>,
     /// Serializes `login` so only one PKCE flow owns the shared `pending` slot
     /// at a time. `auth_start` spawns logins in background tasks; without a
     /// gate two concurrent flows overwrite each other's pending state and the
@@ -165,6 +228,10 @@ pub struct McpOAuthService {
     /// reach a client: `check_oauth_status` can only ever say
     /// "not authenticated". Cleared when a flow succeeds or the user logs out.
     last_login_error: Arc<Mutex<HashMap<String, String>>>,
+    /// `slow_down` cool-down per server URL ([`Cooldown`]): a throttled
+    /// authorization server must not be asked again immediately, and saying so
+    /// is the server's own instruction, not a client-side heuristic.
+    cooldowns: Arc<Mutex<HashMap<String, Cooldown>>>,
 }
 
 /// Browser-open hook signature (`Fn(&str) + Send + Sync`).
@@ -265,9 +332,11 @@ impl McpOAuthService {
             registration_repo: Arc::new(InMemoryOAuthClientRegistrationRepository::default()),
             http_client: Arc::new(move || http_client.clone()),
             pending: Arc::new(Mutex::new(None)),
+            callback_port: Arc::new(Mutex::new(None)),
             login_gate: Arc::new(tokio::sync::Mutex::new(())),
             browser_hook: hook,
             last_login_error: Arc::new(Mutex::new(HashMap::new())),
+            cooldowns: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -333,6 +402,45 @@ impl McpOAuthService {
         self.last_login_error.lock().await.remove(server_url);
     }
 
+    /// Milliseconds left in this server's `slow_down` cool-down, if any.
+    async fn slow_down_remaining(&self, server_url: &str) -> Option<i64> {
+        let cooldowns = self.cooldowns.lock().await;
+        let cooldown = cooldowns.get(server_url)?;
+        let remaining = cooldown.until_ms - now_ms();
+        (remaining > 0).then_some(remaining)
+    }
+
+    /// Arm (or extend) the cool-down after a `slow_down`; returns its length.
+    ///
+    /// Consecutive throttles double the wait ([`slow_down_cooldown_ms`]): a
+    /// server that is still refusing after 60s gets 120s, not another 60s round
+    /// trip. "Consecutive" means within the cap window of the previous one —
+    /// knocking the next day starts over at 60s, and a login that gets through
+    /// clears it outright.
+    async fn note_slow_down(&self, server_url: &str) -> i64 {
+        let now = now_ms();
+        let mut cooldowns = self.cooldowns.lock().await;
+        let streak = match cooldowns.get(server_url) {
+            Some(cooldown) if now - cooldown.until_ms < SLOW_DOWN_MAX_COOLDOWN_MS => cooldown.streak + 1,
+            _ => 1,
+        };
+        let cooldown_ms = slow_down_cooldown_ms(streak);
+        cooldowns.insert(
+            server_url.to_owned(),
+            Cooldown {
+                until_ms: now + cooldown_ms,
+                streak,
+            },
+        );
+        warn!(server_url, cooldown_ms, streak, "authorization server asked for a slower retry");
+        cooldown_ms
+    }
+
+    /// Drop the cool-down after a login that got through.
+    async fn clear_slow_down(&self, server_url: &str) {
+        self.cooldowns.lock().await.remove(server_url);
+    }
+
     /// Start the OAuth PKCE login flow for the given MCP server URL and drive
     /// it to completion.
     ///
@@ -364,6 +472,20 @@ impl McpOAuthService {
     /// was never opened is what leaves a client waiting on nothing. Await
     /// [`OAuthLoginStarted::complete`] for steps 5-6.
     pub async fn begin_login(&self, server_url: &str) -> Result<OAuthLoginStarted, McpError> {
+        // A throttled authorization server stays throttled for a window, and
+        // starting another flow spends a registration + authorize + token round
+        // against a counter that is already hot. Refuse before any request —
+        // and record the reason, so `auth_status` shows *when* to retry instead
+        // of the client simply trying again.
+        if let Some(remaining_ms) = self.slow_down_remaining(server_url).await {
+            let error = McpError::OAuth(format!(
+                "authorization server is throttling OAuth requests; retry in {}s",
+                seconds_from_ms(remaining_ms)
+            ));
+            self.remember_login_error(server_url, &error).await;
+            return Err(error);
+        }
+
         // Serialize PKCE flows: the shared `pending` slot holds one login at a
         // time (concurrent `auth_start` background tasks would otherwise
         // overwrite each other → CSRF mismatch on the first callback). The
@@ -523,7 +645,7 @@ impl McpOAuthService {
         // Fixed redirect URIs must be loopback with an explicit port; the
         // listener binds that host:port and the callback handler enforces the
         // exact request path (design doc §7.1).
-        let (listener, redirect_url_str) = Self::bind_callback_listener().await?;
+        let (listener, redirect_url_str) = self.bind_callback_listener().await?;
         let redirect = RedirectUrl::new(redirect_url_str.clone())
             .map_err(|e| McpError::OAuth(format!("Invalid redirect URL: {e}")))?;
 
@@ -573,17 +695,14 @@ impl McpOAuthService {
     ///
     /// With `MCP_OAUTH_REDIRECT_URI` set, the URI must be
     /// `http://127.0.0.1:<port>/<path>` (or `http://localhost:…`); the
-    /// listener binds that host and port (design doc §7.1).
-    async fn bind_callback_listener() -> Result<(TcpListener, String), McpError> {
+    /// listener binds that host and port (design doc §7.1) and a bind failure
+    /// is reported to the caller — the operator asked for that exact URI.
+    /// Otherwise the remembered port (or [`DEFAULT_CALLBACK_PORT`] the first
+    /// time) is preferred.
+    async fn bind_callback_listener(&self) -> Result<(TcpListener, String), McpError> {
         let Some(redirect_uri) = Self::env_redirect_uri() else {
-            let listener = TcpListener::bind("127.0.0.1:0")
-                .await
-                .map_err(|e| McpError::OAuth(format!("Failed to bind callback server: {e}")))?;
-            let callback_port = listener
-                .local_addr()
-                .map_err(|e| McpError::OAuth(format!("Failed to get callback port: {e}")))?
-                .port();
-            return Ok((listener, format!("http://127.0.0.1:{callback_port}/callback")));
+            let preferred = self.preferred_callback_port().await;
+            return self.bind_default_callback_listener(preferred).await;
         };
 
         let remainder = redirect_uri
@@ -621,6 +740,45 @@ impl McpOAuthService {
         Ok((listener, redirect_uri))
     }
 
+    /// Bind the preferred callback port, falling back to an ephemeral one.
+    ///
+    /// The fallback is not just a port change: the redirect URI is part of the
+    /// client-registration identity key, so an ephemeral port means a fresh
+    /// RFC 7591 registration for that flow. Warn with both ports — that is the
+    /// one line a reader needs to explain "why did this login register a new
+    /// client instead of reusing the stored one" — and remember whichever port
+    /// was bound, so the *next* login of this process presents the same URI.
+    async fn bind_default_callback_listener(&self, preferred: u16) -> Result<(TcpListener, String), McpError> {
+        let (listener, port) = match TcpListener::bind(("127.0.0.1", preferred)).await {
+            Ok(listener) => (listener, preferred),
+            Err(error) => {
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .map_err(|e| McpError::OAuth(format!("Failed to bind callback server: {e}")))?;
+                let port = listener
+                    .local_addr()
+                    .map_err(|e| McpError::OAuth(format!("Failed to get callback port: {e}")))?
+                    .port();
+                warn!(
+                    preferred_port = preferred,
+                    port,
+                    %error,
+                    "OAuth callback port is taken; using an ephemeral port for this flow \
+                     (the redirect URI changes, so the stored client registration cannot be reused)"
+                );
+                (listener, port)
+            }
+        };
+        *self.callback_port.lock().await = Some(port);
+        Ok((listener, format!("http://127.0.0.1:{port}/callback")))
+    }
+
+    /// Port a default-path login should try first: whatever this process bound
+    /// last, else [`DEFAULT_CALLBACK_PORT`].
+    async fn preferred_callback_port(&self) -> u16 {
+        self.callback_port.lock().await.unwrap_or(DEFAULT_CALLBACK_PORT)
+    }
+
     /// Discover the OAuth authorization server for an MCP resource (design doc
     /// §5.1).
     ///
@@ -644,14 +802,26 @@ impl McpOAuthService {
         let base = server_url.trim_end_matches('/');
         let origin = origin_of(base);
 
-        for well_known in [
+        for (probe, well_known) in [
             format!("{base}/.well-known/oauth-authorization-server"),
             format!("{base}/.well-known/openid-configuration"),
             format!("{origin}/.well-known/oauth-authorization-server"),
             format!("{origin}/.well-known/openid-configuration"),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             if let Ok(metadata) = self.fetch_metadata(&well_known).await {
-                debug!(server_url, "Discovered OAuth metadata via RFC 8414 well-known: {well_known}");
+                // INFO, not debug: which well-known location answered (and how
+                // many probes it took to get there) is the first thing a
+                // connector-OAuth report needs, and an OAuth login is a
+                // user-visible, once-per-connector event.
+                info!(
+                    server_url,
+                    well_known = %well_known,
+                    probes = probe + 1,
+                    "OAuth metadata discovered (RFC 8414)"
+                );
                 return Ok(ResolvedOAuthServer {
                     resource_identifier: String::new(),
                     authorization_server_issuer: metadata
@@ -686,15 +856,26 @@ impl McpOAuthService {
                 .filter(|issuer| !issuer.trim().is_empty())
                 .map(|issuer| issuer.trim_end_matches('/').to_owned())
             {
-                debug!(
+                info!(
                     server_url,
-                    "Discovered OAuth authorization server via RFC 9728: {auth_server} (resource={resource_identifier})"
+                    auth_server = %auth_server,
+                    resource = %resource_identifier,
+                    "OAuth authorization server discovered (RFC 9728 protected-resource metadata)"
                 );
-                for well_known in [
+                for (probe, well_known) in [
                     format!("{auth_server}/.well-known/oauth-authorization-server"),
                     format!("{auth_server}/.well-known/openid-configuration"),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
                     if let Ok(metadata) = self.fetch_metadata(&well_known).await {
+                        info!(
+                            server_url,
+                            well_known = %well_known,
+                            probes = probe + 1,
+                            "OAuth metadata discovered (RFC 8414 at the advertised authorization server)"
+                        );
                         return Ok(ResolvedOAuthServer {
                             resource_identifier,
                             authorization_server_issuer: metadata
@@ -872,6 +1053,12 @@ impl McpOAuthService {
     /// `(mcp_server_url, resource, issuer, redirect_uri)` so the exchange,
     /// any refresh, and later application restarts reuse the SAME client
     /// identity. A generic default client id is never fabricated.
+    ///
+    /// `redirect_uri` is the load-bearing part of that key: it must stay
+    /// stable for the reuse to happen at all, which is why the default
+    /// callback port is fixed ([`DEFAULT_CALLBACK_PORT`]) instead of ephemeral
+    /// — a new port on every login silently turns every attempt into a fresh
+    /// registration.
     async fn resolve_client_identity(
         &self,
         server_url: &str,
@@ -913,9 +1100,11 @@ impl McpOAuthService {
                     .map_err(McpError::Database)?
                     .id,
             };
-            debug!(
+            info!(
                 server_url,
+                %redirect_uri,
                 %registration_id,
+                client_id = %registered.client_id,
                 "OAuth client identity: pre-registered via environment"
             );
             return Ok(ClientIdentity {
@@ -937,9 +1126,11 @@ impl McpOAuthService {
             .await
             .map_err(McpError::Database)?
         {
-            debug!(
+            info!(
                 server_url,
+                %redirect_uri,
                 id = row.id,
+                client_id = %row.client_id,
                 "OAuth client identity: reusing persisted registration (RFC 7591)"
             );
             return Ok(ClientIdentity::from_row(&row));
@@ -950,7 +1141,13 @@ impl McpOAuthService {
             let registered = self
                 .register_client(server_url, endpoint, redirect_uri, resolved)
                 .await?;
-            debug!(server_url, "OAuth client identity: dynamically registered (RFC 7591)");
+            info!(
+                server_url,
+                %redirect_uri,
+                registration_id = ?registered.registration_id,
+                client_id = %registered.client_id,
+                "OAuth client identity: dynamically registered (RFC 7591)"
+            );
             return Ok(registered);
         }
 
@@ -1060,18 +1257,20 @@ impl McpOAuthService {
     }
 
     /// Wait for the OAuth callback redirect on the given listener.
+    ///
+    /// Awaited in place rather than in a detached accept task, so a timeout
+    /// drops the listener together with the future. A parked `accept()` kept
+    /// the port bound for the rest of the process's life, which turns the next
+    /// flow into the fallback path: an ephemeral port, i.e. a fresh client
+    /// registration for a user who merely left a browser window open.
     async fn wait_for_callback(&self, listener: TcpListener) -> Result<String, McpError> {
-        let (code_tx, code_rx) = tokio::sync::oneshot::channel::<Result<String, McpError>>();
-        let pending = self.pending.clone();
-
-        tokio::spawn(async move {
-            let result = Self::handle_callback_connection(listener, pending).await;
-            let _ = code_tx.send(result);
-        });
-
-        match tokio::time::timeout(CALLBACK_TIMEOUT, code_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(McpError::OAuth("Callback channel closed unexpectedly".to_string())),
+        match tokio::time::timeout(
+            CALLBACK_TIMEOUT,
+            Self::handle_callback_connection(listener, self.pending.clone()),
+        )
+        .await
+        {
+            Ok(result) => result,
             Err(_) => Err(McpError::OAuth(
                 "OAuth callback timed out — no redirect received within 120s".to_string(),
             )),
@@ -1081,9 +1280,10 @@ impl McpOAuthService {
     /// Handle a single HTTP connection on the callback server.
     ///
     /// Enforces the exact redirect path registered with the authorization
-    /// server (`MCP_OAUTH_REDIRECT_URI` or the ephemeral `/callback`), and
-    /// validates the CSRF state before returning the code (design doc §7.1).
-    /// Failed path/state checks do NOT consume the pending login state.
+    /// server (`MCP_OAUTH_REDIRECT_URI`, or `/callback` on the default
+    /// callback port), and validates the CSRF state before returning the code
+    /// (design doc §7.1). Failed path/state checks do NOT consume the pending
+    /// login state.
     async fn handle_callback_connection(
         listener: TcpListener,
         pending: Arc<Mutex<Option<PendingLogin>>>,
@@ -1197,16 +1397,39 @@ impl McpOAuthService {
 
         let http_client = Self::build_no_redirect_client()?;
 
-        let token_result = client
+        let token_result = match client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
             .request_async(&http_client)
             .await
-            .map_err(|e| McpError::OAuth(format!("Token exchange failed: {e}")))?;
+        {
+            Ok(result) => result,
+            Err(error) => {
+                // `slow_down` is RFC 8628's "you are asking too often" — the
+                // authorization server refusing to answer *now*. Arm the
+                // cool-down so the next attempt is not an immediate round trip
+                // against a counter that is already hot, and tell the client
+                // when it may try again (the alternative is a retry loop the
+                // UI invites and the server keeps rejecting).
+                if let oauth2::RequestTokenError::ServerResponse(response) = &error
+                    && response.error().as_ref() == "slow_down"
+                {
+                    let cooldown_ms = self.note_slow_down(server_url).await;
+                    return Err(McpError::OAuth(format!(
+                        "Token exchange failed: {error} — the authorization server is \
+                         throttling OAuth requests; retry in {}s",
+                        seconds_from_ms(cooldown_ms)
+                    )));
+                }
+                return Err(McpError::OAuth(format!("Token exchange failed: {error}")));
+            }
+        };
 
         self.persist_token(server_url, &token_result, registration_id)
             .await?;
-        debug!(server_url, "OAuth tokens stored successfully");
+        // A token that came through means the throttle window is over.
+        self.clear_slow_down(server_url).await;
+        info!(server_url, "OAuth tokens stored");
         Ok(())
     }
 
@@ -1290,7 +1513,7 @@ impl McpOAuthService {
             })
             .await?;
 
-        debug!(server_url, "OAuth token refreshed successfully");
+        info!(server_url, "OAuth token refreshed");
         Ok(new_access_token)
     }
 
@@ -1921,6 +2144,58 @@ mod tests {
             .await
             .expect_err("expired token without refresh must fail closed");
         assert!(matches!(error, McpError::ReauthorizationRequired));
+    }
+
+    // -- Loopback callback listener ------------------------------------------
+
+    /// The default callback port must be *stable*: it is part of the
+    /// client-registration identity key, so an ephemeral port on every login is
+    /// what turned each attempt into a fresh RFC 7591 registration.
+    #[tokio::test]
+    async fn preferred_callback_port_is_used_and_a_taken_one_is_remembered() {
+        let svc = McpOAuthService::new(Arc::new(MockTokenRepo), reqwest::Client::new());
+        assert_eq!(
+            svc.preferred_callback_port().await,
+            DEFAULT_CALLBACK_PORT,
+            "the first login prefers the default port"
+        );
+
+        // A free port is used verbatim.
+        let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let free = probe.local_addr().unwrap().port();
+        drop(probe);
+        let (listener, redirect) = svc.bind_default_callback_listener(free).await.unwrap();
+        assert_eq!(listener.local_addr().unwrap().port(), free);
+        assert_eq!(redirect, format!("http://127.0.0.1:{free}/callback"));
+        assert_eq!(svc.preferred_callback_port().await, free);
+        drop(listener);
+
+        // A taken port degrades to an ephemeral one — and is remembered, so the
+        // next login of this process presents the same redirect URI instead of
+        // minting yet another client identity.
+        let held = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let busy = held.local_addr().unwrap().port();
+        let (listener, redirect) = svc.bind_default_callback_listener(busy).await.unwrap();
+        let ephemeral = listener.local_addr().unwrap().port();
+        assert_ne!(ephemeral, busy, "a taken port must not be reported as bound");
+        assert_eq!(redirect, format!("http://127.0.0.1:{ephemeral}/callback"));
+        assert_eq!(svc.preferred_callback_port().await, ephemeral);
+    }
+
+    // -- `slow_down` cool-down -----------------------------------------------
+
+    /// A retry must never be the cheap reaction: the wait grows with each
+    /// consecutive throttle and stops growing at the cap.
+    #[test]
+    fn slow_down_cooldown_doubles_and_is_capped() {
+        assert_eq!(slow_down_cooldown_ms(0), SLOW_DOWN_COOLDOWN_MS, "first attempt");
+        assert_eq!(slow_down_cooldown_ms(1), SLOW_DOWN_COOLDOWN_MS);
+        assert_eq!(slow_down_cooldown_ms(2), SLOW_DOWN_COOLDOWN_MS * 2);
+        assert_eq!(slow_down_cooldown_ms(4), SLOW_DOWN_COOLDOWN_MS * 8);
+        assert_eq!(slow_down_cooldown_ms(5), SLOW_DOWN_MAX_COOLDOWN_MS, "capped");
+        assert_eq!(slow_down_cooldown_ms(99), SLOW_DOWN_MAX_COOLDOWN_MS);
+        assert_eq!(seconds_from_ms(SLOW_DOWN_COOLDOWN_MS), 60);
+        assert_eq!(seconds_from_ms(1), 1, "a sub-second wait still reads as a second");
     }
 
     // -- RFC 9728 discovery & pre-registered client --------------------------

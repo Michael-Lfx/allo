@@ -197,6 +197,20 @@ NomiFun 自身不做 TLS 终止——请在前面放一个负责 TLS 终止的�
 不存在另一套 `RUST_LOG` 通路——`--log-level`（或宿主中等价的环境驱动
 开关）是唯一的总开关。
 
+Agent Store 宿主（`agent-store`）同样接受 `--log-level` 或
+`NOMI_LOG_LEVEL`。对于**拉起它、又无法传后端命令行参数**的调用方，这是
+打开复现所需 debug 日志的通道：
+
+```ts
+const harness = await launchHarness({
+  client: { name: "my-app", version: "1.0.0" },
+  env: { NOMI_LOG_LEVEL: "info,nomifun_mcp::oauth_service=debug" },
+});
+```
+
+每次后端启动还会把**日志目录与生效级别**写成日志文件的第一行，因此抓到
+的日志本身就能说明这次运行记录到了什么。
+
 ## 另见
 
 - [Web 服务部署](../guides/web-server-deployment.md) —— 用 Docker、

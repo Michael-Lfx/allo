@@ -136,6 +136,14 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
     }
     let log_guard = init_tracing(&log_dir, cli.log_level.as_deref());
 
+    // First line the subscriber can carry, and the first thing a bug report
+    // needs: where the logs land and what this run was able to record.
+    info!(
+        log_dir = %log_dir.display(),
+        log_level = cli.log_level.as_deref().unwrap_or("info"),
+        "startup: logging initialized"
+    );
+
     // Notes recorded before tracing existed (e.g. the desktop shell's data-dir
     // relocation, which runs before this backend is even spawned): surface
     // them into the persistent log now — the earliest recordable point.
