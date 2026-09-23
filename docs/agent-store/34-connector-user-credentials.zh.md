@@ -1,6 +1,7 @@
 # 连接器用户凭据（key / token 类）· 技术方案
 
-> 状态：**设计定稿，未实施**（2026-09-23）。决策 D1–D6 见 §4，均有取值与代价。
+> 状态：**设计定稿；第 1–3 步已实施**（2026-09-23）。决策 D1–D6 见 §4，均有取值与代价。
+> §9 的进度栏记录每步的实施状态与仍未接通的部分。
 > 前置：`02-codebuddy-workbuddy-import-spec.md`（§5/§10 `userConfig → CredentialSchema`、值不入库）、
 > `05-flowy-agent-store-app-server-protocol.md`（协议正文）、`06-connector-oauth-security.md`（并行的 OAuth 通道）、
 > `20-tool-injection-policy.zh.md`、`21-open-decisions.zh.md`（D5=C 及 §116 落地记录）、
@@ -470,6 +471,17 @@ credential: {
 第 1、2 步都不含协议变更，可以先落。第 3 步的键控之所以提前到写入路径诞生时，是因为第 4 步
 一旦开放写入，第 6 步之前落盘的每一个键都要再迁移一次——把最小步（命名空间化）提前，第 6 步
 就只剩终态查询面与旧数据搬迁。
+
+### 9.2 实施进度（2026-09-23）
+
+| 步 | 状态 | 落地内容与遗留 |
+|---|---|---|
+| 1 | ✅ 完成 | 导入期保留 `headers`/`staticHeaders` 并按拼写表归一（`sse` 不再被压平）；`secret_ref` 增加 `${secret:NAME}` 模板形式；探针 / 调用 / DB 行 / 会话快照 / ACP 五条路径共用解析入口并 fail-closed，缺凭据返回新增的 `MCP_MISSING_CREDENTIAL`（422） |
+| 2 | ✅ 完成 | `token-schema.json` 归一为 `credential` 组件（字段 + i18n 双语言 + 取密钥入口）；`${NAME}` 按 §5.4 升级引用；secret 默认值丢弃并告警；`looks_sensitive_key` 补 `key`/`pat`，字段判定另用更紧谓词；`auth_mode` 取自市场索引 |
+| 3 | ⏳ 部分 | **已完成**：`values` 层（四处类型：`McpTransport` / `McpServerTransport` / `SessionMcpTransport` / 网关 `McpTransportParam`）；`TransportScope` + `resolve_request_string` 两类命名空间分流；`<principal>:NAME` 键控与安装所有者可见性规则；探针路径接通调用者身份。**未完成**：`connector/call` 的工具调用路径、DB 行与会话快照装配（需 conversation → owner 查询）、ACP 构建——这些目前按宿主（安装所有者）解析，与今天行为一致、不会串号，但多 principal 下不是调用者自己的凭据 |
+| 4–6 | ⬜ 未开始 | — |
+
+第 3 步的 raw 计数：`nomifun-common` +6 单测、`nomifun-importer` +2、`nomifun-mcp` +4。
 
 ### 9.1 端到端验收（活体）
 
