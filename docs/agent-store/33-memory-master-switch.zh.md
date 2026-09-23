@@ -1,8 +1,8 @@
 # 33 · 内置记忆总开关 `[memory] enabled` · 实现方案
 
 > 状态：✅ **已实现**（2026-09-20）。代码落地 + 测试锁定，读数见 §9；**未提交**（工作树变更）。
-> 触发：用户提问「如果想将 nomi agent-store 目前的内置记忆改为由 config 驱动应该如何实现，
-> config 如果配置了 false 就关闭内置记忆系统」。三处口径由用户拍板：**全关四面**（注入 + `remember`
+> 需求背景：内置记忆需要一个**由配置驱动的总开关**——`~/.agent-store/config.toml` 配了 `false`
+> 即关闭内置记忆系统。三处口径已拍板：**全关四面**（注入 + `remember`
 > + 蒸馏 + 引用回写）、**只做 `~/.agent-store/config.toml` 一个来源**、**宿主启动时读一次**
 > （与同表 `distill_enabled`、`[tools]` 一致）。
 > 关联：`20-tool-injection-policy.zh.md`（**姊妹篇**：同一份文件的 `[tools]` 表，本文的采纳/失效
@@ -10,8 +10,8 @@
 > `21-open-decisions.zh.md`（D-STREAM-2 与 `[memory] distill_enabled` 的由来）、
 > `16-sdk-webui-site-priority-plan.zh.md`（R16 `agent` 分区）、
 > `19-webui-codex-alignment.zh.md`、`31-sdk-entry-shape.zh.md`（同一时期的入口改名，无交集）。
-> 用途：回答「为什么内置记忆需要一个比 `distill_enabled` 更宽的开关、这个开关挂在哪份文件、
-> 谁采纳它、关掉之后究竟停了哪四件事」，以及**开工前必须先排除的那个命名陷阱**（§2）。
+> 用途：说明为什么内置记忆需要一个比 `distill_enabled` 更宽的开关、这个开关挂在哪份文件、
+> 谁采纳它、关掉之后究竟停了哪四件事，以及**开工前必须先排除的那个命名陷阱**（§2）。
 
 ---
 
