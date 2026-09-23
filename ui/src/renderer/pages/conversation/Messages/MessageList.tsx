@@ -1676,6 +1676,7 @@ const MessageList: React.FC<{
           onDismiss={() => setOutcomeDismissed(true)}
         />
       </div>
+    ) : null;
   const listEndSpacer = (
     <div
       className='message-list-end-spacer'
@@ -1830,6 +1831,7 @@ const MessageList: React.FC<{
     return <div className='relative flex-1 h-full flex items-center justify-center'>{emptySlot}</div>;
   }
 
+  return (
     <div
       className='message-list-root relative flex-1 h-full'
       data-is-processing={conversationContext?.isProcessing === true ? 'true' : 'false'}
