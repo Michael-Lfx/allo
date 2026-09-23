@@ -99,7 +99,7 @@ plan/goal 的逻辑目前散落在 `engine/mod.rs`（4356 行）中：
 - **Phase 0** 先按其 §4 步骤采集基线（思考段数 / tail 注入位置 / 文本稳定性）；
 - 注入通道切换（Phase 3/4）后复测对比；
 - reminder 迁移与 Feature 化**分 commit**，可独立 revert；
-- `Current date`、RAG/memory、round ledger 等其余 tail 内容**不在本次范围**，仍留 turn-tail，其去留归该调查文档处置。
+- `Current date`、RAG/memory、round ledger 等其余 tail 内容**不在本次范围**，仍留 turn-tail，其去留归该调查文档处置。（**2026-09-23 追记：`Current date` 已在该调查文档 §9 的独立提交中迁入 `<system-reminder>` 通道；本方案的 Phase 1–6 范围与结论不变。**）
 
 ---
 

@@ -481,6 +481,15 @@ async fn a_round_that_keeps_truncating_stops_at_three_passes() {
     // is removed — earlier hints stay in the conversation, so pass N carries
     // exactly N hints after the requirement (documented current behavior; this
     // regression guards against a *requirement* stack growing instead).
+    //
+    // `+ 2` rather than `+ 1`: the engine also appends one persistent
+    // `<system-reminder>` date message per turn, and it is replayed on every
+    // pass, so it is present in all three conversations.
+    //
+    // The per-message assertions stay exact rather than tolerant: exactly one of
+    // the non-requirement messages is the date reminder, and every other one
+    // must still be a resumable-round hint. A spurious extra message therefore
+    // fails here even though the count alone would move in step with `pass`.
     let bodies = responder.bodies.lock().unwrap();
     for (pass, body) in bodies.iter().enumerate() {
         let conversation = restarted_messages(body)
@@ -489,13 +498,27 @@ async fn a_round_that_keeps_truncating_stops_at_three_passes() {
             .collect::<Vec<_>>();
         assert_eq!(
             conversation.len(),
-            pass + 1,
-            "pass {pass} carries the requirement plus one resumable hint per restart: \
-             {conversation:?}"
+            pass + 2,
+            "pass {pass} carries the requirement, the date reminder, and one resumable \
+             hint per restart: {conversation:?}"
         );
         assert_eq!(conversation[0]["role"], "user");
+        let date_reminders = conversation
+            .iter()
+            .skip(1)
+            .filter(|m| {
+                m["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("<system-reminder>")
+            })
+            .count();
+        assert_eq!(date_reminders, 1, "exactly one date reminder per pass: {conversation:?}");
         for message in conversation.iter().skip(1) {
             let hint = message["content"].as_str().unwrap_or("");
+            if hint.contains("<system-reminder>") {
+                continue;
+            }
             assert!(hint.contains("[resumable round"), "restart appends hint: {hint}");
         }
     }

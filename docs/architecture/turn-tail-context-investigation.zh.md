@@ -1,11 +1,13 @@
 # Turn-tail `[Context]` 注入：现状记录与待验证项
 
-> 状态：**部分处置已完成**（2026-09-22 记录；plan/goal 注入已迁出，见 §7；剩余项复核见 §8）。
+> 状态：**P2 已消除、P4 已消除**（2026-09-23 更新；plan/goal 注入与 `Current date` 均已迁出
+> `[Context]`，见 §7、§9；剩余项复核见 §8）。
 > 这不是一份方案，是一份**现状与证据的登记**——
-> 机制已读准，P2 已消除，其余处置仍未定，且**本机仍未采集到生产基线**。
+> 机制已读准，P2/P4 已处置，其余处置仍未定，且**本机仍未采集到生产基线**。
 > 前置：`docs/architecture/agent-engine.zh.md`、`docs/agent-store/20-tool-injection-policy.zh.md`。
 > 用途：回答「turn-tail `[Context]` 目前是什么问题」。**改动前请先读 §4**：现在的判断仍是
-> 假设，先量再改。
+> 假设，先量再改。**§1 的机制表已按实测修正（见 §9），行号适用于 `34cb35987` 之前，
+> 引用前请重新定位。**
 
 ---
 
@@ -13,14 +15,19 @@
 
 | 事实 | 位置 |
 |---|---|
-| `turn_tail_extras` **每回合**组装一次（外层 `loop {` 在 `:1525`，`let mut turn = 0` 在 `:1522`） | `crates/agent/nomi-agent/src/engine/mod.rs:1604-1678` |
-| 第一条**无条件**是 `Current date: %Y-%m-%d` | 同上 `:1605-1608` |
-| 其余依次是：plan 模式指令（`:1611-1613`）、coding harness 的 plan nudge / `forced_finalize_instruction` / `turn_tail`（`:1614-1640`）、注册的 `ContextContributor`（RAG/memory，`:1644-1648`）、goal 的 `turn_context()`（`:1649-1651`）、round ledger section（`:1676-1678`） | 同上 |
-| 用空行拼成**一个**字符串，前缀 `[Context]\n` | `context_contributor.rs:56-73`（拼）、`:103-105`（标签） |
-| **在 `'provider_attempt: loop`（`:1696`）里注入**，即**每个 provider pass 一次**（`turn_tail` 是每回合建、每 pass `clone`） | `engine/mod.rs:1697-1700` |
-| 注入方式：最后一条消息是 `Role::User` → 在**位置 0** 插一个 `Text` 块（**包括纯 tool-result 的 user 消息**）；否则追加一条新 `Role::User` | `context_contributor.rs:107-115` |
-| 注入结果**不写回** `self.messages`（局部变量），所以历史里不累积副本 | `engine/mod.rs:1697-1700` |
+| `turn_tail_extras` **每回合**组装一次（外层 `loop {` 在 `:1910`，`turn_tail` 在 `:2066-2067`） | `crates/agent/nomi-agent/src/engine/mod.rs` |
+| ~~第一条**无条件**是 `Current date: %Y-%m-%d`~~ **已于 2026-09-23 移出，改走 `<system-reminder>`**（见 §9） | 原 `:1969-1972`，现无 |
+| 其余依次是：system resource notices、office plan nudge（`:1981`）、coding harness 的 plan nudge / `forced_finalize_instruction` / `turn_tail`、注册的 `ContextContributor`、round ledger section | 同上 |
+| 用空行拼成**一个**字符串，前缀 `[Context]\n` | `context_contributor.rs:94`（标签）、`turn_tail_text_block` |
+| **在 `'provider_attempt: loop`（`:2087`）里注入**，即**每个 provider pass 一次**（`turn_tail` 是每回合建、每 pass 复用） | `engine/mod.rs:2088-2092` |
+| 注入方式：最后一条消息是 `Role::User` → 在**位置 0** 插一个 `Text` 块（**包括纯 tool-result 的 user 消息**）；否则追加一条新 `Role::User` | `context_contributor.rs:174-196` |
+| **注入结果写回 `self.messages`**（`persist_turn_tail_context`），因此**历史里会累积副本**：已发送的消息不可改写，于是每 pass 追加一条 `[Context]`-only user 消息 | `engine/mod.rs:2088-2092`；分支 A2 `context_contributor.rs:181-184` |
 | 设计目的：动态内容不进 system prompt，让 system prompt 逐字节稳定，保 DeepSeek 前缀缓存 | `context_contributor.rs:1-14` |
+
+> **2026-09-23 实测修正。** 上表第 7 行曾写「注入结果**不写回** `self.messages`（局部变量），
+> 所以历史里不累积副本」——**该结论是错的**，与当时引用的行号一起漂移。实测（§9）显示
+> 注入会落盘，且在一个 2-pass 的回合里产生 **2 条** `[Context]` 消息。这条错误结论曾是
+> §8「`Current date` 只是每 pass 重贴、历史不累积」判断的基础，故一并更正。
 
 ---
 
@@ -120,7 +127,7 @@ message should stay a single message」。谁按名字去「修」实现，就�
 - **P3 部分缓解。** reminder 同一回合内去重（相同文本只发一次），plan 每 8 个
   provider pass 刷新一次、goal 每 12 个刷新一次；不再每个 pass 重贴。
 - **P4 不受影响。** `Current date` 仍无条件注入 turn tail，`build_turn_tail_context`
-  仍恒返回 `Some`。
+  仍恒返回 `Some`。（**2026-09-23 更正：P4 随后被消除，见 §9。**）
 - **P1 的机制面减少但未消失。** 最高显著位置上不再出现「长指令块」，但
   `Current date` 依旧落在那里——§7 记录了基线缺失，§8 对 turn-tail 剩余注入项做了
   逐项复核：九项里只有 `Current date` 需要改（降频），其余八项建议原样保留，
@@ -181,15 +188,112 @@ plan/goal 迁出后，turn-tail 每 pass 仍注入的内容按「是否值得每
 2. **仅回合边界注入 turn-tail**：保留在 `[Context]`，每回合组装一次、本回合后续 pass
    复用。改动更小，但下一回合仍会重贴，P3 只缓解不消除。
 
-**为什么现在不做：**
+**决定：走候选 1（已实施，见 §9）。** 用户于 2026-09-23 拍板，理由是日期是这一项里
+唯一的「一天内逐字不变」者，迁走它既降频又不丢信息。原先三条「为什么现在不做」的理由，
+逐条现状：
 
-- 方案 §1.3 明确把「turn-tail 其余内容（date/ledger/`ContextContributor`）的去留」
-  列入不做的范围；
-- 本文件 §3 因「先量再改」明确保留不动 turn-tail 的决定，而 §7 记录的**基线缺失**
-  使该约束至今未解除；
-- 影响面覆盖**所有会话**（不像 plan/goal 只影响对应模式），且改动会同时改变
-  「缓存是否还热」与「模型看到什么」两件事——正是当初不改 turn-tail 的理由。
+- 方案 §1.3 曾把「turn-tail 其余内容（date/ledger/`ContextContributor`）的去留」列入不做
+  范围——那是 plan/goal 重构 PR 的范围，本次改动**另立提交**，不回溯改写该方案；
+- §3「先量再改」的约束针对**基线缺失**。本次改动不依赖生产基线：它的安全性由可复现测试
+  覆盖（信封归属、每回合恰好一次、前缀回放），而启动它的动机是**实测到的重复**
+  （§9 的 2-pass → 2 条），不是对复述行为的猜测；
+- 影响面确实覆盖**所有会话**，因此配套改了 4 处断言并复核了 prefix 与消息计数契约
+  （见 §9 的验证表）。
 
-**排期建议：** 单独一个 PR，先按 §4 采一次基线（含跨天边界），再决定走上表哪条路。
-届时 §5 的 A/B 应一并重新评估——A（措辞）已由 plan/goal 的 reminder 信封部分吸收，
-B（`Current date` 降频）就是本节这一项。
+**排期：** 已随本分支提交，未按「单独 PR」执行（用户指定并入当前分支）。
+
+---
+
+## 9. 已完成的处置：`Current date` 迁出 `[Context]`（2026-09-23）
+
+### 9.1 实测到的机制（这是启动本次改动的依据）
+
+用临时诊断测试驱动一个 2-pass 的 plan 模式回合，dump 引擎的持久消息历史：
+
+```
+[user] [Context]\nCurrent date: 2026-09-23     ← pass 1：prepend 到未发送的用户消息
+[user] enter plan mode
+[tool EnterPlanMode] {}
+[user] [Context]\nCurrent date: 2026-09-23     ← pass 2：最后一条是 tool-result → 追加新消息
+[tool result] Entered plan mode. …
+[user] <system-reminder> …Plan Mode…
+[assistant] planning
+```
+
+结论（修正 §1 的旧表述）：
+
+- `persist_turn_tail_context` **会写回** `self.messages`，因而**历史里确实累积副本**；
+- 累积规律：**每个「以工具调用结束的 provider pass」各产出一条 `[Context]` 消息**，
+  即一个 N 轮工具循环的回合约产生 **N 条**，而**不是**「每回合一条」；
+- 原因：分支 A1（相同文本 no-op）只比较**紧邻的最后一条**，中间隔着 assistant/tool
+  消息即失效；已发送的消息又不可改写（前缀缓存不变量），只能追加（分支 A2/B）。
+  工具结果被建模为 `Role::User`，所以工具轮走分支 A4（插进 tool-result 消息首位）；
+- 这些 `[Context]` user 消息**不进 microcompact 的靶子**（`compact/micro.rs:85-97` 只按
+  `compactable_tools` 收集 **tool result**），因此只能被全量 autocompact 摘要掉。
+
+### 9.2 改动
+
+- `engine/mod.rs`：`turn_tail_extras` 不再 push `Current date`；
+- 新增宿主拥有的 reminder 变体 `DATE_INJECTION_VARIANT = "current_date"`
+  （`engine/mod.rs`），在 `build_reminders()` 里注册，**不设刷新周期**
+  （`refresh_after_passes = None`）；
+- `build_reminders()` 同时服务三个入口（`new_with_provider`、`resume_with_provider`、
+  `set_features`），因此「装上 feature 注册表」不会丢掉宿主 reminder；
+- 日期**没有** `Feature` 属主（它是宿主环境数据），故由引擎直接注册，不塞进
+  `FeatureRegistry`。
+
+**频率语义**（`ReminderService::collect` 的既有契约，未改）：同一变体在本回合内文本不变
+→ 不重发；`begin_turn()` 每回合清空去重状态 → 每回合发一次；跨天文本变化 → 自然重发。
+这正是需求「只有日期变才发」所需的全部逻辑，**无需新增机制**。
+
+### 9.3 实测结果
+
+同一诊断（2-pass plan 回合，改动后）：
+
+| 指标 | 改动前 | 改动后 |
+|---|---|---|
+| 历史中 `Current date:` 出现次数 | **2** | **1** |
+| 历史中 `[Context]` 出现次数 | 2 | **0** |
+| `<system-reminder>` 出现次数 | 1（plan） | 2（plan + date） |
+
+### 9.4 验证
+
+| 门 | 结果 |
+|---|---|
+| `cargo test -p nomi-agent` | **1138 passed / 0 failed** |
+| `cargo test -p nomi-types` | 76 passed / 0 failed（与基线同） |
+| `cargo test -p nomifun-ai-agent` | 1067 passed / **32 failed**，与基线失败集**逐项相同**（无新增） |
+| `cargo check --workspace` | 通过（仅既有 warning） |
+| `cargo fmt -p nomi-agent -- --check` | 通过 |
+| `system prompt 不含日期` | `context.rs:1551-1554` 与 `engine_test.rs` 断言**未改**，仍通过——午夜前缀缓存不变量保持 |
+
+**改动的断言（4 处，均为语义跟进而非放宽）：**
+
+1. `engine_test.rs` `contributor_context_rides_turn_tail_not_system_prompt`：tail 消息改为
+   按 `[Context]` 标记定位（它不再是最后一条），并新增「日期**恰好一次**且**不在** tail 里」
+   两条断言；
+2. `engine_test.rs` `persisted_turn_tail_is_replayed_as_the_next_request_prefix`：改为断言
+   message 0 逐字节回放（此会话无 contributor，`[Context]` 块为空）、并显式断言**日期
+   reminder 本身也按前缀回放**；回合增量 2 → 3（assistant + 新 user + 该回合的日期 reminder）；
+3. `engine_test.rs` `test_engine_message_accumulation`：4 → 6（每回合多一条日期 reminder）；
+4. `engine_test.rs` `a_goal_less_session_gets_no_goal_reminder`：原断言「无任何 reminder」
+   已不成立（日期无条件发送），改为**逐块断言没有任何 goal 块**——仍是原契约的更强形式。
+
+**`badcase_regression_test::a_round_that_keeps_truncating_stops_at_three_passes`（此前被接受为
+已知基线失败）现在通过**，但这不是修复：日期 reminder 是持久的 user 消息，每个 pass 都在，
+故该用例的 `pass + 1` 计数需改为 `pass + 2`。已核实**原断言在新引擎下仍然失败**（2 vs 1），
+因此这是断言跟进，不是行为修复；同时把 per-message 断言写得比原来更严（恰好一条 reminder，
+其余仍必须是 `[resumable round` 提示），以免计数放宽掩盖真实回归。
+
+### 9.5 未做（已识别，待排期）：降低 `[Context]` 的 persist 频率
+
+日期迁走后，`[Context]` 里剩下的（working set / ledger / resource notices / contributor）
+**都可能在回合内变化**，因此「每 pass 重贴」不再是纯浪费。若仍要收紧，正确做法是让
+`persist_turn_tail_context` 只在**内容确有变化**或**tail 块已被压缩丢弃**时追加，而**不能**
+用「这是本回合第几个 pass」判断：内层有 4 条 `continue 'provider_attempt` 会先跑
+`run_compaction` 再重试（`:2127` idle / `:2139` turn-start / `:2160` emergency / `:2196` overflow），
+而压缩会改写消息列表——若在压缩后跳过 persist，模型将**看不到** working set / ledger。
+已核实的内层事实：5 条 `continue 'provider_attempt`（`:2127/:2139/:2160/:2196/:2623`）；
+`sent_prefix_len` 只在 `stream_llm` 返回 `Ok` 时推进（`:2189`），故前 4 条属于「未发送即重来」，
+而 `:2623`（流中途 overflow）是在**已发送**之后，会落进分支 A2 追加重复块——且当
+`run_compaction` 为 no-op（如 compaction 关闭）时该重复可达。

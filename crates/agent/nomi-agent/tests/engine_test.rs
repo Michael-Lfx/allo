@@ -1266,7 +1266,8 @@ async fn test_engine_max_tokens_handling() {
 // engine.messages is private.
 //
 // After two independent `run` calls the persisted session must contain
-// exactly 4 messages: [user, assistant, user, assistant].
+// exactly 6 messages: [user, date-reminder, assistant] x2. The date reminder is
+// a persistent `Role::User` message per turn (one per root user request).
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn test_engine_message_accumulation() {
@@ -1337,11 +1338,11 @@ async fn test_engine_message_accumulation() {
         .load("latest")
         .expect("session should be loadable");
 
-    // Expected layout: user, assistant, user, assistant
+    // Expected layout, per run: user, date reminder, assistant
     assert_eq!(
         session.messages.len(),
-        4,
-        "expected 4 messages (user+assistant for each run), got {}",
+        6,
+        "expected 6 messages (user + date reminder + assistant per run), got {}",
         session.messages.len()
     );
 }
@@ -1658,18 +1659,35 @@ async fn contributor_context_rides_turn_tail_not_system_prompt() {
     );
 
     // Dynamic content rides the turn tail (prepended to the last user message).
-    let last = request
+    // The tail is no longer the last wire message: the date reminder is appended
+    // as its own message afterwards, so the tail message is located by its
+    // `[Context]` marker instead of by position.
+    let context_message = request
         .messages
-        .last()
-        .expect("messages should not be empty");
-    assert_eq!(last.role, Role::User);
-    let text = message_text(last);
-    assert!(
-        text.contains("[Context]") && text.contains("RAG_MEMORY_SNAPSHOT"),
-        "contributor content must ride the turn tail, got: {text}"
-    );
-    assert!(text.contains("Current date:"), "date must ride the turn tail");
+        .iter()
+        .find(|message| message_text(message).contains("[Context]"))
+        .expect("the contributor block should ride a [Context] turn-tail message");
+    assert_eq!(context_message.role, Role::User);
+    let text = message_text(context_message);
+    assert!(text.contains("RAG_MEMORY_SNAPSHOT"), "contributor content must ride the turn tail, got: {text}");
     assert!(text.contains("hello"), "user text must survive the prepend");
+    assert!(
+        !text.contains("Current date:"),
+        "the date must no longer ride the turn tail, got: {text}"
+    );
+
+    // The date is stated once per turn through the `<system-reminder>` channel,
+    // as its own user message — and because its text is byte-identical for a
+    // whole day, `ReminderService` suppresses a second copy within the turn.
+    let date_reminders = request
+        .messages
+        .iter()
+        .filter(|message| {
+            let body = message_text(message);
+            body.contains("Current date:") && body.contains("<system-reminder>")
+        })
+        .count();
+    assert_eq!(date_reminders, 1, "the date must be stated exactly once per turn");
 }
 
 #[tokio::test]
@@ -1893,10 +1911,24 @@ async fn a_goal_less_session_gets_no_goal_reminder() {
         !transcript.contains("standing goal"),
         "a goal-less session must carry no goal block"
     );
+    // The date reminder is now the one unconditional reminder, so this asserts
+    // the actual contract: registering the goal feature without setting a goal
+    // puts no *goal* block on the wire. The date rides its own message.
+    let reminder_blocks: Vec<&str> = transcript
+        .match_indices("</system-reminder>")
+        .filter_map(|(end, _)| transcript[..end].rfind("<system-reminder>"))
+        .map(|start| &transcript[start..])
+        .collect();
     assert!(
-        !transcript.contains("<system-reminder>"),
-        "no reminder of any kind without a goal or plan"
+        !reminder_blocks.is_empty(),
+        "the date reminder should have been injected"
     );
+    for block in &reminder_blocks {
+        assert!(
+            !block.contains("standing goal") && !block.contains("Goal"),
+            "a goal-less session must carry no goal block, got: {block}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1937,20 +1969,38 @@ async fn persisted_turn_tail_is_replayed_as_the_next_request_prefix() {
         "system prompt must stay byte-stable across turns"
     );
 
+    // Two prefix invariants. First, message 0 is replayed byte-identically: the
+    // `[Context]` block carries no persistent extras in this session (no
+    // contributor, no plan, no ledger), so it is empty here and only the user's
+    // own text survives.
     let first_turn_user = message_text(&requests[0].messages[0]);
     let replayed_user = message_text(&requests[1].messages[0]);
     assert_eq!(
         replayed_user, first_turn_user,
         "next request must replay the persisted turn-tail user as prefix, got {replayed_user:?} vs {first_turn_user:?}"
     );
-    assert!(
-        first_turn_user.contains("[Context]") && first_turn_user.contains("first"),
-        "first turn user must keep the persisted tail and the original text, got: {first_turn_user}"
+    assert_eq!(first_turn_user, "first", "the user's own text must survive the prepend");
+
+    // Second, the date reminder is the one message this turn appended, and it too
+    // must be replayed as a byte-identical prefix rather than rewritten.
+    let date_index = requests[0]
+        .messages
+        .iter()
+        .position(|message| message_text(message).contains("Current date:"))
+        .expect("the date reminder must be injected on the first request");
+    assert_eq!(
+        message_text(&requests[1].messages[date_index]),
+        message_text(&requests[0].messages[date_index]),
+        "the date reminder must be replayed as the next request's prefix"
     );
+
+    // The turn grows by three: the assistant reply, the next turn's user
+    // message, and that turn's one date reminder. Each turn appends exactly one
+    // date reminder, and it is a persistent user message like any other.
     assert_eq!(
         requests[1].messages.len(),
-        requests[0].messages.len() + 2,
-        "second request should append assistant + new user onto the first request's messages"
+        requests[0].messages.len() + 3,
+        "second request appends the assistant reply plus the next turn's user + date reminder"
     );
 }
 

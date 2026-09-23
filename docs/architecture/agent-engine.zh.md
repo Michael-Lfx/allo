@@ -208,6 +208,17 @@ plan/goal 的指令与状态**不再走 turn-tail `[Context]`**，改为追加�
   `Blocked` 用 nomi 自身语义的简短状态块（为何暂停/阻塞、如何恢复），且只在
   带新用户消息的回合边界渲染；`Complete`/`Cleared` 静默。
 
+**宿主 reminder：`Current date`。** 日期与 plan/goal 走同一封信，但**不由任何 feature
+声明**——它是宿主环境数据，因此由引擎在 `build_reminders()` 里以变体
+`DATE_INJECTION_VARIANT = "current_date"` 直接注册（该函数同时服务 `new_with_provider`
+/ `resume_with_provider` / `set_features` 三个入口，装上 feature 注册表不会丢掉它）。
+它**不设 `refresh_after_passes`**：文本一天内逐字不变，`collect` 的默认去重即「没变就
+不发」，于是每回合一次、跨天自然重发，不需要额外的「日期变了才发」逻辑。日期仍然
+**禁止进 system prompt**（`context.rs` 的 `prefix_stability_no_date_in_system_prompt`
+断言），以保午夜的前缀缓存稳定；迁出 `[Context]` 的原因是它曾是 tail 里唯一
+「一天内逐字不变却每个 pass 重占一份」的项。细节见
+`turn-tail-context-investigation.zh.md` §9。
+
 安全边界不变：注入通道只承担**告知与引导**，强制力仍来自 `dispatch_gate` 与
 `on_user_request`。即使模型忽略 reminder，只读门禁照样拒绝。
 

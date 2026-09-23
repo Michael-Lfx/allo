@@ -555,6 +555,39 @@ This request wrote files or used Browser/Computer. Before finishing, run a \
 verification command that exits 0, or explain why no test applies. Do not \
 claim success from the write or click alone.";
 
+/// Reminder variant carrying the session's local date.
+///
+/// The date is **host environment data with no feature owner**, so the engine
+/// registers it directly instead of routing it through `FeatureRegistry`.
+///
+/// It is deliberately registered **without** a refresh cadence: the text is
+/// byte-identical for a whole day, and `ReminderService::collect` skips an
+/// unchanged body unless a refresh is due. So it is stated once per turn, and
+/// re-stated inside a turn only when the date actually changes (midnight),
+/// because then the rendered body differs.
+pub const DATE_INJECTION_VARIANT: &str = "current_date";
+
+fn render_current_date() -> String {
+    format!(
+        "Current date: {}",
+        chrono::Local::now().format("%Y-%m-%d")
+    )
+}
+
+/// Build the engine's reminder channel: host reminders the engine owns, then
+/// every feature's declared variants.
+///
+/// One constructor per engine path (`new_*`, `resume_*`, `set_features`) so the
+/// host reminders cannot be dropped by installing a feature registry.
+fn build_reminders(features: &crate::features::FeatureRegistry) -> crate::features::reminder::ReminderService {
+    let mut reminders = crate::features::reminder::ReminderService::new();
+    reminders.register(DATE_INJECTION_VARIANT, |_ctx| Some(render_current_date()), None);
+    for spec in features.reminders() {
+        reminders.register(spec.variant, move |ctx| (spec.render)(ctx), spec.refresh_after_passes);
+    }
+    reminders
+}
+
 #[derive(Debug, Default)]
 struct HarnessRuntime {
     kpi: nomi_coding::HarnessKpi,
@@ -780,7 +813,7 @@ impl AgentEngine {
             editable_turn: None,
             observation: None,
             features: FeatureRegistry::new(),
-            reminders: crate::features::reminder::ReminderService::new(),
+            reminders: build_reminders(&FeatureRegistry::new()),
             provider_passes_in_turn: 0,
         }
     }
@@ -872,7 +905,7 @@ impl AgentEngine {
             editable_turn,
             observation: None,
             features: FeatureRegistry::new(),
-            reminders: crate::features::reminder::ReminderService::new(),
+            reminders: build_reminders(&FeatureRegistry::new()),
             provider_passes_in_turn: 0,
         }
     }
@@ -953,11 +986,7 @@ impl AgentEngine {
     /// `AgentBootstrap::build` does).
     pub fn set_features(&mut self, features: FeatureRegistry) {
         features.register_tools(&mut self.tools);
-        let mut reminders = crate::features::reminder::ReminderService::new();
-        for spec in features.reminders() {
-            reminders.register(spec.variant, move |ctx| (spec.render)(ctx), spec.refresh_after_passes);
-        }
-        self.reminders = reminders;
+        self.reminders = build_reminders(&features);
         self.features = features;
     }
 
@@ -1980,10 +2009,11 @@ impl AgentEngine {
             {
                 turn_tail_extras.push(block);
             }
-            turn_tail_extras.push(format!(
-                "Current date: {}",
-                chrono::Local::now().format("%Y-%m-%d")
-            ));
+            // The date no longer rides the turn tail either: it is injected as a
+            // `<system-reminder>` (see `DATE_INJECTION_VARIANT`). It was the one
+            // turn-tail item that is byte-identical for a whole day, so the
+            // tail's per-pass persistence used to append a fresh copy of the
+            // same line on every pass of a tool loop.
             // Plan mode instructions no longer ride the turn tail: the plan
             // feature delivers them through the `<system-reminder>` channel, so
             // the model reads them once per turn instead of once per pass.
