@@ -180,8 +180,24 @@ impl McpConnectionTestService {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
+        self.call_tool_for(transport, tool, arguments, None).await
+    }
+
+    /// The same call, resolving credentials for one principal (`34` §7).
+    pub async fn call_tool_for(
+        &self,
+        transport: &McpServerTransport,
+        tool: &str,
+        arguments: serde_json::Value,
+        principal: Option<&str>,
+    ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let budget = self.timeout;
-        match tokio::time::timeout(budget, self.call_tool_inner(transport, tool, arguments)).await {
+        match tokio::time::timeout(
+            budget,
+            self.call_tool_inner(transport, tool, arguments, principal),
+        )
+        .await
+        {
             Ok(outcome) => outcome,
             Err(_) => Err(McpToolCallError::Timeout(budget)),
         }
@@ -192,18 +208,19 @@ impl McpConnectionTestService {
         transport: &McpServerTransport,
         tool: &str,
         arguments: serde_json::Value,
+        principal: Option<&str>,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         match transport {
             McpServerTransport::Stdio { command, args, env } => {
-                self.call_stdio(command, args, env, tool, arguments).await
+                self.call_stdio(command, args, env, tool, arguments, principal).await
             }
             McpServerTransport::Http { url, headers, values } => {
-                self.call_http(url, headers, values, tool, arguments).await
+                self.call_http(url, headers, values, tool, arguments, principal).await
             }
             // The legacy `sse` transport: handshake over a streamed GET plus
             // POSTed JSON-RPC, exactly as the probe does it.
             McpServerTransport::Sse { url, headers, values } => {
-                self.call_sse(url, headers, values, tool, arguments).await
+                self.call_sse(url, headers, values, tool, arguments, principal).await
             }
         }
     }
@@ -215,13 +232,13 @@ impl McpConnectionTestService {
         values: &HashMap<String, String>,
         tool: &str,
         arguments: serde_json::Value,
+        principal: Option<&str>,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let client = self.http_client();
-        // A tool call has no caller identity threaded through it yet, so it
-        // resolves as the host (the installation owner's entries). The probe does
-        // take one (34 §7); this path follows when its callers pass a principal.
         let (resolved_url, mut req_headers, oauth_managed) =
-            self.request_headers(url, headers, values, None).await.map_err(call_failure)?;
+            self.request_headers(url, headers, values, principal)
+                .await
+                .map_err(call_failure)?;
 
         // 1. Open the stream, with the same one-shot 401 refresh the probe uses.
         let mut refreshed = false;
@@ -383,8 +400,9 @@ impl McpConnectionTestService {
         env: &HashMap<String, String>,
         tool: &str,
         arguments: serde_json::Value,
+        principal: Option<&str>,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
-        let identity = StdioIdentity::new(command, args, env);
+        let identity = StdioIdentity::new(command, args, env, principal);
         let mut session = StdioToolSession::connect(identity)
             .await
             .map_err(McpToolCallError::Failed)?;
@@ -404,12 +422,13 @@ impl McpConnectionTestService {
         values: &HashMap<String, String>,
         tool: &str,
         arguments: serde_json::Value,
+        principal: Option<&str>,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let client = self.http_client();
-        // See `call_sse`: the tool-call path has no caller identity threaded
-        // through it yet, so it resolves as the host.
         let (resolved_url, mut req_headers, oauth_managed) =
-            self.request_headers(url, headers, values, None).await.map_err(call_failure)?;
+            self.request_headers(url, headers, values, principal)
+                .await
+                .map_err(call_failure)?;
         req_headers.insert(
             reqwest::header::CONTENT_TYPE,
             "application/json".parse().expect("valid header"),

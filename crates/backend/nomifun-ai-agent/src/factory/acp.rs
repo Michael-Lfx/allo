@@ -462,6 +462,10 @@ fn row_to_sdk_mcp_server(row: &McpServerRow) -> Result<McpServer, String> {
 /// the host's credentials, `${NAME}` from the connector's own plain values. A
 /// reference that cannot be resolved **drops the server** — handing `${HOST}` or a
 /// literal `secret:NAME` to another runtime is the failure this removes.
+///
+/// The ACP build reaches this with the installation owner's session (a
+/// `ModelOnly` principal receives no tools at all), so host-level entries are the
+/// right ones to read; there is no per-caller principal to thread yet (`34` §7).
 fn resolve_remote_request(
     server_name: &str,
     url: &str,

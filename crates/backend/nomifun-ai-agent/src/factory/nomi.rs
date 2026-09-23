@@ -421,6 +421,11 @@ pub(super) async fn build(
     // the ceiling above established: an App Server chat with no bound Connector
     // carries `Some(vec![])`, so this selects nothing. Session-scoped servers
     // (a desktop-request concept) stay owner-only and are cleared by the ceiling.
+    //
+    // Being owner-only is what makes the credential scope correct without a
+    // principal parameter: the caller here *is* the installation owner
+    // (`is_instance_owner`), whose hand-edited host-level `[credentials]` entries
+    // are exactly the ones to resolve (34 §7).
     if is_instance_owner && let Some(repo) = deps.mcp_server_repo.as_ref() {
         for (name, config) in load_user_mcp_servers(
             repo.as_ref(),
@@ -2269,6 +2274,10 @@ fn should_load_user_mcp_row(row: &McpServerRow, selected_ids: Option<&[McpServer
 /// reference cannot be papered over. The server is skipped instead of being
 /// called with `${secret:…}` in its query string — which is a real shape in the
 /// marketplace (10 connectors put their token in the URL).
+///
+/// Callers here are installation-owner-only paths (`is_instance_owner`), so
+/// `principal: None` — "acts for the operator" — is the accurate scope, not a
+/// placeholder (`34` §7).
 ///
 /// The error names the missing credentials, never the URL (which contains them).
 fn resolve_url_secrets(

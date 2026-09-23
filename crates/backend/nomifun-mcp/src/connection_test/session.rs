@@ -42,11 +42,18 @@ pub(super) struct StdioIdentity {
 }
 
 impl StdioIdentity {
-    pub(super) fn new(command: &str, args: &[String], env: &HashMap<String, String>) -> Self {
+    pub(super) fn new(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        principal: Option<&str>,
+    ) -> Self {
         // Same `secret:NAME` contract as the probe: a reference with no
         // credential is dropped and named, and the literal reference string is
-        // never handed to the child (`17` §6 / `21` D5=C).
-        let resolved = nomifun_common::secret_ref::resolve_env(env);
+        // never handed to the child (`17` §6 / `21` D5=C). Resolution is per
+        // principal, so the resolved env below — which is what the pool compares —
+        // differs whenever the caller's credentials do (34 §7).
+        let resolved = nomifun_common::secret_ref::resolve_env_for(principal, env);
         if !resolved.missing.is_empty() {
             warn!(
                 command = %command,

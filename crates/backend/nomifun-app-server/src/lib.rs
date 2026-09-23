@@ -1939,9 +1939,10 @@ async fn connector_call_impl(
     connector_id: &str,
     tool: &str,
     arguments: serde_json::Value,
+    principal: Option<&str>,
 ) -> Result<AppServerConnectorCallResult, AppServerError> {
     connector_call_provider(state)?
-        .call(connector_id, tool, arguments)
+        .call_for(connector_id, tool, arguments, principal)
         .await
         .map_err(connector_call_error)
 }
@@ -3046,8 +3047,17 @@ async fn connector_call_route(
     Json(body): Json<WsConnectorCallBody>,
 ) -> Result<Json<AppServerConnectorCallResult>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    // Called *as this caller*: credentials are per-principal, and a pooled stdio
+    // session is bound to whoever's env spawned it (34 §7).
     Ok(Json(
-        connector_call_impl(&state, &connector_id, &body.tool, body.arguments).await?,
+        connector_call_impl(
+            &state,
+            &connector_id,
+            &body.tool,
+            body.arguments,
+            Some(user.id.as_str()),
+        )
+        .await?,
     ))
 }
 
@@ -7100,7 +7110,14 @@ async fn dispatch_connection_request(
         "connector/call" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorCall>(params)?;
-            let result = connector_call_impl(state, &params.connector_id, &params.tool, params.arguments).await?;
+            let result = connector_call_impl(
+                state,
+                &params.connector_id,
+                &params.tool,
+                params.arguments,
+                Some(user.id.as_str()),
+            )
+            .await?;
             Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode call result: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
@@ -12098,7 +12115,7 @@ model = "mimo-v2.5-free"
     async fn connector_call_face_is_closed_without_a_provider() {
         let bare = AppServerRouterState::default();
         assert!(connector_call_provider(&bare).is_err());
-        let error = connector_call_impl(&bare, "conn-1", "echo", serde_json::json!({}))
+        let error = connector_call_impl(&bare, "conn-1", "echo", serde_json::json!({}), None)
             .await
             .unwrap_err();
         assert_eq!(error.code, "unsupported_operation");
@@ -12123,7 +12140,7 @@ model = "mimo-v2.5-free"
                 connector_calls: Some(Arc::new(FakeConnectorCalls::failing(error))),
                 ..Default::default()
             };
-            let wire = connector_call_impl(&state, "conn-1", "echo", serde_json::json!({}))
+            let wire = connector_call_impl(&state, "conn-1", "echo", serde_json::json!({}), None)
                 .await
                 .unwrap_err();
             assert_eq!(wire.code, expected, "wrong wire code for {expected}");
@@ -12141,6 +12158,7 @@ model = "mimo-v2.5-free"
             "conn-1",
             "create_issue",
             serde_json::json!({ "title": "t" }),
+            None,
         )
         .await
         .unwrap();

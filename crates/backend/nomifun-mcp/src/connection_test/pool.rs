@@ -100,16 +100,36 @@ impl McpToolCallPool {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
+        self.call_for(connector_id, transport, tool, arguments, None).await
+    }
+
+    /// The same call on behalf of one principal (`34` §7).
+    ///
+    /// The principal reaches the session **through its env**: a pooled stdio
+    /// session was spawned with somebody's resolved credentials, and the pool
+    /// compares that resolved env, so two principals never share a session unless
+    /// their credentials genuinely resolve to the same values.
+    pub async fn call_for(
+        &self,
+        connector_id: &str,
+        transport: &McpServerTransport,
+        tool: &str,
+        arguments: serde_json::Value,
+        principal: Option<&str>,
+    ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let McpServerTransport::Stdio { command, args, env } = transport else {
             // Remote transports are the server's to expire; see the module doc.
-            return self.service.call_tool(transport, tool, arguments).await;
+            return self
+                .service
+                .call_tool_for(transport, tool, arguments, principal)
+                .await;
         };
-        let identity = StdioIdentity::new(command, args, env);
+        let identity = StdioIdentity::new(command, args, env, principal);
         let budget = self.service.timeout;
 
         match tokio::time::timeout(
             budget,
-            self.call_stdio(connector_id, transport, &identity, tool, arguments),
+            self.call_stdio(connector_id, transport, &identity, tool, arguments, principal),
         )
         .await
         {
@@ -132,13 +152,17 @@ impl McpToolCallPool {
         identity: &StdioIdentity,
         tool: &str,
         arguments: serde_json::Value,
+        principal: Option<&str>,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let session = match self.acquire(connector_id, identity).await {
             Acquired::Session(session) => session,
             // At capacity with every session busy: a one-shot call still
             // answers the caller, it just pays the start-up again.
             Acquired::AtCapacity => {
-                return self.service.call_tool(transport, tool, arguments).await;
+                return self
+                    .service
+                    .call_tool_for(transport, tool, arguments, principal)
+                    .await;
             }
             Acquired::Failed(message) => return Err(McpToolCallError::Failed(message)),
         };

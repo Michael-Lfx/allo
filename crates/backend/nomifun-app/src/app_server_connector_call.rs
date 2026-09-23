@@ -68,6 +68,16 @@ impl ConnectorCallProvider for AppServerConnectorCall {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<AppServerConnectorCallResult, ConnectorCallError> {
+        self.call_for(connector_id, tool, arguments, None).await
+    }
+
+    async fn call_for(
+        &self,
+        connector_id: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCallResult, ConnectorCallError> {
         if tool.trim().is_empty() {
             return Err(ConnectorCallError::InvalidRequest("tool must not be empty".to_owned()));
         }
@@ -123,7 +133,7 @@ impl ConnectorCallProvider for AppServerConnectorCall {
         // the session its predecessor left behind.
         let outcome = self
             .calls
-            .call(connector_id, &transport, tool, arguments)
+            .call_for(connector_id, &transport, tool, arguments, principal)
             .await;
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
