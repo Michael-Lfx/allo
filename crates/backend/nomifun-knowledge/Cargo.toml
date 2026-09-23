@@ -43,7 +43,7 @@ xattr = "1.6"
 # NTFS junctions mount knowledge bases into workspaces without requiring
 # the SeCreateSymbolicLink privilege (same rationale as nomifun-extension).
 junction = "1"
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",

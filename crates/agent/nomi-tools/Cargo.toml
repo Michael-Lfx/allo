@@ -45,4 +45,4 @@ flate2.workspace      = true
 portable-pty.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+windows-sys = { workspace = true, features = ["Win32_System_Console"] }

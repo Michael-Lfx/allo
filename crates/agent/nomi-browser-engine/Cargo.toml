@@ -79,7 +79,7 @@ windows = { version = "0.61", features = [
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 # macOS: CGDisplay::active_display_count()（CGGetActiveDisplayList 的安全封装）。
 # 0.25 与 nomi-a11y 对齐。

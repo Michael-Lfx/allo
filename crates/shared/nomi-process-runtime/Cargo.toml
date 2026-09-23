@@ -27,7 +27,7 @@ portable-pty.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 base64.workspace = true
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Security",

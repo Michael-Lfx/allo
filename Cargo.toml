@@ -292,6 +292,7 @@ nostr = { version = "0.37", default-features = false, features = ["std", "nip04"
 # HTML → Markdown (URL knowledge-source snapshots)
 htmd = "0.5"
 libc = "0.2"
+windows-sys = "0.61.2"
 lru = "0.18"
 url = "2"
 unicode-width = "0.2.2"
