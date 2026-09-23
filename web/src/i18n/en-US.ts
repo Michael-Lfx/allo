@@ -302,6 +302,7 @@ const enUS: Resources = {
     selectConnector: "Select a connector to view its status and tools.",
     probeFailed: "Probe failed: {{error}}",
     authStartFailed: "Authorization start failed: {{error}}",
+    authFailed: "Authorization did not complete: {{error}}",
     authStarted: "Authorization started on the trusted host. Complete it in the browser window that opened.",
     stateInstalled: "Installed",
     stateConfigured: "Configured",

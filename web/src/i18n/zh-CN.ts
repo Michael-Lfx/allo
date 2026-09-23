@@ -302,6 +302,7 @@ const zhCN = {
     selectConnector: "选择一个连接器查看状态与工具。",
     probeFailed: "探测失败：{{error}}",
     authStartFailed: "授权启动失败：{{error}}",
+    authFailed: "授权未完成：{{error}}",
     authStarted: "授权已在可信主机上启动，请在弹出的浏览器窗口中完成授权。",
     stateInstalled: "已安装",
     stateConfigured: "已配置",
