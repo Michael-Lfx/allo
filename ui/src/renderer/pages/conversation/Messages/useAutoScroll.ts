@@ -160,7 +160,7 @@ export function useAutoScroll({
   }, []);
 
   const updateBottomState = useCallback((element: HTMLDivElement) => {
-    if (isRestoringScrollRef.current) {
+    if (isRestoringScrollRef.current || targetRestoringScrollTopRef.current !== null) {
       return false;
     }
     const bottomGap = getBottomGap(element);
@@ -180,16 +180,14 @@ export function useAutoScroll({
     }
 
     if (pinnedToBottom && Date.now() >= resizeAutoFollowBlockedUntilRef.current) {
-      if (userInputActiveRef.current || !userScrolledRef.current) {
-        userScrolledRef.current = false;
-        userIntentPausedRef.current = false;
-        userInputActiveRef.current = false;
-        if (hasNewContentBelowRef.current) {
-          hasNewContentBelowRef.current = false;
-          setHasNewContentBelow(false);
-        }
-        lastProgrammaticScrollTimeRef.current = Date.now() - (PROGRAMMATIC_SCROLL_GUARD_MS - 50);
+      userScrolledRef.current = false;
+      userIntentPausedRef.current = false;
+      userInputActiveRef.current = false;
+      if (hasNewContentBelowRef.current) {
+        hasNewContentBelowRef.current = false;
+        setHasNewContentBelow(false);
       }
+      lastProgrammaticScrollTimeRef.current = Date.now() - (PROGRAMMATIC_SCROLL_GUARD_MS - 50);
     }
 
     return pinnedToBottom;
@@ -273,6 +271,9 @@ export function useAutoScroll({
             top: getMaxScrollTop(scrollerEl),
             behavior,
           });
+          requestAnimationFrame(() => {
+            followContentGrowth();
+          });
         });
         return;
       }
@@ -283,7 +284,7 @@ export function useAutoScroll({
         behavior,
       });
     },
-    [conversationId, itemCount, loadedConversationId, markProgrammaticScroll, scrollerEl]
+    [conversationId, followContentGrowth, itemCount, loadedConversationId, markProgrammaticScroll, scrollerEl]
   );
 
   const resolveFollowOutput = useCallback((_isAtBottom: boolean): FollowOutputMode => {
@@ -320,7 +321,7 @@ export function useAutoScroll({
       const target = e.currentTarget;
       const currentScrollTop = target.scrollTop;
 
-      if (isRestoringScrollRef.current) {
+      if (isRestoringScrollRef.current || targetRestoringScrollTopRef.current !== null) {
         lastScrollTopRef.current = currentScrollTop;
         return;
       }
@@ -334,13 +335,14 @@ export function useAutoScroll({
       const bottomGap = getBottomGap(target);
       const pinnedToBottom = bottomGap <= FOLLOW_BOTTOM_THRESHOLD_PX;
 
-      // Only an upward move counts as leaving the tail. Follow/content-growth
-      // scrolls down; treating those as user intent is why streaming sometimes
-      // stops pinning (especially after a click, which sets userInputActive).
+      // Only an upward move with active user input counts as leaving the tail.
+      // Programmatic scroll and internal Virtuoso measurement reflows must never
+      // be mistaken for user intent.
       if (
         !pinnedToBottom &&
         delta < -2 &&
-        (userInputActiveRef.current || timeSinceGuard >= PROGRAMMATIC_SCROLL_GUARD_MS)
+        userInputActiveRef.current &&
+        timeSinceGuard >= PROGRAMMATIC_SCROLL_GUARD_MS
       ) {
         userScrolledRef.current = true;
         userIntentPausedRef.current = true;
@@ -613,6 +615,10 @@ export function useAutoScroll({
     userScrolledRef.current = false;
     userIntentPausedRef.current = false;
     userInputActiveRef.current = false;
+    showScrollButtonRef.current = false;
+    hasNewContentBelowRef.current = false;
+    setShowScrollButton(false);
+    setHasNewContentBelow(false);
 
     if (conversationId) {
       sessionScrollRegistry.save(conversationId, {
@@ -624,9 +630,12 @@ export function useAutoScroll({
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         scrollToBottom('auto');
+        requestAnimationFrame(() => {
+          followContentGrowth();
+        });
       });
     });
-  }, [conversationId, messages, scrollerEl, scrollToBottom]);
+  }, [conversationId, followContentGrowth, messages, scrollerEl, scrollToBottom]);
 
   // Handle stream lifecycle: when output finishes, cleanly settle to the bottom ONLY
   // if the user did not scroll away; if the user is viewing history, strictly preserve
@@ -648,8 +657,17 @@ export function useAutoScroll({
     } else if (wasProcessing && !isProcessing) {
       if (!userScrolledRef.current && !userIntentPausedRef.current) {
         // User stayed at bottom: settle to show full response and actions
+        userScrolledRef.current = false;
+        userIntentPausedRef.current = false;
+        showScrollButtonRef.current = false;
+        hasNewContentBelowRef.current = false;
+        setShowScrollButton(false);
+        setHasNewContentBelow(false);
         requestAnimationFrame(() => {
           scrollToBottom('auto');
+          requestAnimationFrame(() => {
+            followContentGrowth();
+          });
         });
       } else {
         // User is viewing history: strictly protect position and show unread badge
@@ -659,7 +677,7 @@ export function useAutoScroll({
         setHasNewContentBelow(true);
       }
     }
-  }, [isProcessing, scrollToBottom]);
+  }, [followContentGrowth, isProcessing, scrollToBottom]);
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;
