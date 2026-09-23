@@ -110,6 +110,15 @@ struct Args {
     /// If omitted, the first WebUI visitor creates the admin via first-run setup.
     #[arg(long, env = "NOMIFUN_ADMIN_PASSWORD")]
     admin_password: Option<String>,
+    /// Log level filter for the backend: `info` (default), `debug`, or tracing
+    /// `EnvFilter` directives such as `info,nomifun_mcp::oauth_service=debug`.
+    ///
+    /// Without this the host was stuck at `info` — exactly the level at which
+    /// connector-OAuth troubleshooting has nothing to read (the SDK-spawned
+    /// host cannot pass backend CLI flags, so `NOMI_LOG_LEVEL` in the parent
+    /// environment is the practical channel). Same name as the desktop host.
+    #[arg(long, env = "NOMI_LOG_LEVEL")]
+    log_level: Option<String>,
 }
 
 /// Subcommands beyond the default serve mode.
@@ -261,6 +270,8 @@ fn main() -> Result<ExitCode> {
     cli.port = args.port;
     cli.data_dir =
         nomifun_app::bootstrap::resolve_startup_data_root(args.data_dir.clone());
+    // Cloned, not moved: `args` is still handed to `serve` below.
+    cli.log_level = args.log_level.clone();
     cli.local = !auth;
     // The agent-store config file enables default marketplace auto-registration
     // (with builtin fallback when the file is missing) — always point at the

@@ -148,6 +148,17 @@ See [`guides/web-server-deployment.md`](../guides/web-server-deployment.md) for 
 
 There is no separate `RUST_LOG` plumbing — `--log-level` (or its env-driven equivalent in the running host) is the single switch.
 
+The Agent Store host (`agent-store`) takes the same value as `--log-level` or `NOMI_LOG_LEVEL`. That is how a caller that spawns it (and therefore cannot pass backend flags) turns on debug logging for a reproduction:
+
+```ts
+const harness = await launchHarness({
+  client: { name: "my-app", version: "1.0.0" },
+  env: { NOMI_LOG_LEVEL: "info,nomifun_mcp::oauth_service=debug" },
+});
+```
+
+Every backend run also logs its log directory and effective level as the first line of the file, so a captured log states what it was able to record.
+
 ## See also
 
 - [Web Server Deployment](../guides/web-server-deployment.md) — running `nomifun-web` with Docker, systemd, Caddy.
