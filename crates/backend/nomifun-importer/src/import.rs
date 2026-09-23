@@ -1162,6 +1162,18 @@ fn build_mcp_connector_components(
         builder.error("mcp.json: missing mcpServers object".into());
         return;
     };
+
+    // `token-schema.json` is the declaration of *what the user must fill*, and it
+    // is the only place that says which of the `${…}` placeholders in `mcp.json`
+    // are secrets and which are plain settings (34 §5.2/§5.4). Read it once, per
+    // connector directory.
+    let declaration = read_credential_declaration(source, builder);
+    if let Some(declaration) = declaration.as_ref() {
+        builder.push(credential_component(declaration, directory_name, meta));
+    }
+    let bindings = Bindings::from_declaration(declaration.as_ref());
+    let auth_mode = market_credential_mode(source, directory_name, &pre_auth);
+
     for (name, config) in servers {
         let url = config
             .get("url")
@@ -1194,7 +1206,11 @@ fn build_mcp_connector_components(
         // spawn path resolves in memory from `~/.agent-store/config.toml
         // [credentials]`. Rewriting here (not at registration) is what keeps the
         // plaintext out of every stored artefact.
-        let env = rewrite_secret_env(config.get("env").and_then(|value| value.as_object()), builder);
+        let env = rewrite_secret_env(
+            config.get("env").and_then(|value| value.as_object()),
+            &bindings,
+            builder,
+        );
         let transport = match (&url, &command) {
             (Some(url), _) => {
                 // The auth-bearing half of a remote connector lives in `headers`
@@ -1204,7 +1220,12 @@ fn build_mcp_connector_components(
                 // separate key in the stored transport: that JSON is validated
                 // against `McpTransport`, which denies unknown fields, so a second
                 // map would fail registration outright.
-                let headers = merged_headers(config);
+                let mut headers = merged_headers(config);
+                for (_name, value) in headers.iter_mut() {
+                    if let Some(text) = value.as_str() {
+                        *value = serde_json::Value::String(bindings.rewrite(text, builder));
+                    }
+                }
                 if config
                     .get("env")
                     .and_then(|value| value.as_object())
@@ -1216,7 +1237,7 @@ fn build_mcp_connector_components(
                 }
                 json!({
                     "type": declared_url_transport_type(config),
-                    "url": url,
+                    "url": bindings.rewrite(url, builder),
                     "headers": headers,
                 })
             }
@@ -1243,11 +1264,7 @@ fn build_mcp_connector_components(
                 "kind": kind,
                 "transport": transport,
                 "transport_summary": transport_summary,
-                "auth_mode": if pre_auth.is_empty() {
-                    "oauth".to_owned()
-                } else {
-                    pre_auth.clone()
-                },
+                "auth_mode": auth_mode,
                 "tool_filter": format!("connector__{name}__<tool>"),
             }),
         ));
@@ -1342,9 +1359,361 @@ fn build_connector_components(
 /// Does this **key name** read as a credential? (`17` §6). The same predicate
 /// classifies `userConfig` fields and `mcp.json` env keys, so a value is either
 /// redacted in both places or neither — no second, divergent heuristic.
+///
+/// `key` and `pat` were added for `17` §6's blind spot: a package that ships an
+/// app key or a personal access token under a name with neither `api` nor `token`
+/// in it (`DCS_PAT`, `SCRM_APP_KEY`) had its literal value imported verbatim.
+///
+/// Deliberately **not** used to classify a `token-schema.json` field — it matches
+/// the bare substring `api`, which would make `TDENGINE_API_HOST` a secret. See
+/// [`credential_shaped_name`] for that decision.
 fn looks_sensitive_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
-    ["api", "token", "secret", "password", "apikey"].iter().any(|part| lower.contains(part))
+    ["api", "token", "secret", "password", "apikey", "key", "pat"]
+        .iter()
+        .any(|part| lower.contains(part))
+}
+
+/// The credential declaration a marketplace connector ships in
+/// `token-schema.json`, normalized once at import (34 §5.2).
+///
+/// Raw marketplace text never reaches a client: both languages are resolved here
+/// so the WebUI and the SDK cannot disagree about the fallback.
+struct CredentialDeclaration {
+    title: LocalizedPair,
+    description: LocalizedPair,
+    doc_url: LocalizedPair,
+    doc_label: LocalizedPair,
+    fields: Vec<CredentialField>,
+}
+
+struct CredentialField {
+    key: String,
+    /// `secret` (goes to the credential store) or `plain` (goes to the connector's
+    /// transport values). See [`credential_field_kind`].
+    kind: &'static str,
+    required: bool,
+    label: LocalizedPair,
+    placeholder: LocalizedPair,
+    description: LocalizedPair,
+    /// Only ever carried for a `plain` field. A **secret** field's default is
+    /// dropped and warned about (34 §5.3): `cisp-mcp` ships its API key that way,
+    /// and the value must not enter any artefact of ours.
+    default_value: Option<String>,
+}
+
+/// A `{zh, en}` pair with the fallback already applied, so neither client has to
+/// reimplement it (34 §5.2 / D3).
+struct LocalizedPair {
+    zh: String,
+    en: String,
+}
+
+impl LocalizedPair {
+    /// `zh → en → fallback`, and `en → zh → fallback` for the English slot. A
+    /// one-language marketplace must not render a raw key in the other language.
+    fn from(zh: Option<&str>, en: Option<&str>, fallback: &str) -> Self {
+        let zh_value = zh.or(en).unwrap_or(fallback);
+        let en_value = en.or(zh).unwrap_or(fallback);
+        Self { zh: zh_value.to_owned(), en: en_value.to_owned() }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        json!({ "zh": self.zh, "en": self.en })
+    }
+}
+
+/// Read and normalize `token-schema.json` from a connector directory.
+///
+/// Missing or unreadable is not an error: 222 of the market's 283 connectors have
+/// no declaration at all, which is exactly what "no credentials needed" looks
+/// like. A malformed one *is* worth a warning, because the connector would then
+/// silently render no form.
+fn read_credential_declaration(
+    source: &Path,
+    builder: &mut ComponentBuilder,
+) -> Option<CredentialDeclaration> {
+    let path = source.join("token-schema.json");
+    if !path.is_file() {
+        return None;
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            builder.warn(format!("token-schema.json 读取失败，凭据表单将不可用：{error}"));
+            return None;
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            builder.warn(format!("token-schema.json 解析失败，凭据表单将不可用：{error}"));
+            return None;
+        }
+    };
+    let raw_fields = value.get("fields").and_then(|fields| fields.as_array());
+    let Some(raw_fields) = raw_fields else {
+        builder.warn("token-schema.json 没有 fields 数组，凭据表单将不可用".into());
+        return None;
+    };
+
+    let mut fields = Vec::new();
+    for field in raw_fields {
+        let Some(key) = field.get("key").and_then(|key| key.as_str()) else {
+            builder.warn("token-schema.json 有字段缺少 key，已跳过".into());
+            continue;
+        };
+        let declared_type = field.get("type").and_then(|value| value.as_str()).unwrap_or("text");
+        let kind = credential_field_kind(key, declared_type);
+        let default_value = field.get("defaultValue").and_then(|value| value.as_str());
+        if let Some(default_value) = default_value {
+            if kind == "secret" {
+                builder.warn(format!(
+                    "token-schema.json 的 {key} 带默认值（{len} 字符），已丢弃：[REDACTED]；\
+                     密钥只能由用户提供（02 §10）",
+                    len = default_value.chars().count(),
+                ));
+            }
+        }
+        fields.push(CredentialField {
+            key: key.to_owned(),
+            kind,
+            required: field.get("required").and_then(|value| value.as_bool()).unwrap_or(false),
+            label: LocalizedPair::from(
+                field.get("label").and_then(|value| value.as_str()),
+                field.get("label_en").and_then(|value| value.as_str()),
+                key,
+            ),
+            placeholder: LocalizedPair::from(
+                field.get("placeholder").and_then(|value| value.as_str()),
+                field.get("placeholder_en").and_then(|value| value.as_str()),
+                "",
+            ),
+            description: LocalizedPair::from(
+                field.get("description").and_then(|value| value.as_str()),
+                field.get("description_en").and_then(|value| value.as_str()),
+                "",
+            ),
+            default_value: (kind == "plain")
+                .then(|| default_value.map(str::to_owned))
+                .flatten(),
+        });
+    }
+    if fields.is_empty() {
+        builder.warn("token-schema.json 的 fields 为空，凭据表单将不可用".into());
+        return None;
+    }
+
+    let title_fallback = value
+        .get("title")
+        .and_then(|title| title.as_str())
+        .unwrap_or("credentials");
+    Some(CredentialDeclaration {
+        title: LocalizedPair::from(
+            value.get("title").and_then(|value| value.as_str()),
+            value.get("title_en").and_then(|value| value.as_str()),
+            title_fallback,
+        ),
+        description: LocalizedPair::from(
+            value.get("description").and_then(|value| value.as_str()),
+            value.get("description_en").and_then(|value| value.as_str()),
+            "",
+        ),
+        // `docUrl_en` is a one-off variant in the market; per-language lookup so
+        // the English reader gets the English page when it exists.
+        doc_url: LocalizedPair::from(
+            value.get("docUrl").and_then(|value| value.as_str()),
+            value
+                .get("docUrl_en")
+                .and_then(|value| value.as_str())
+                .or_else(|| value.get("docUrl").and_then(|value| value.as_str())),
+            "",
+        ),
+        doc_label: LocalizedPair::from(
+            value.get("docLabel").and_then(|value| value.as_str()),
+            value.get("docLabel_en").and_then(|value| value.as_str()),
+            "",
+        ),
+        fields,
+    })
+}
+
+/// The credential component a connector's declaration becomes (`34` §5.2).
+///
+/// `connector_id` is the directory name, which is what the connector components
+/// carry too — the link between "this form" and "the servers it fills".
+fn credential_component(
+    declaration: &CredentialDeclaration,
+    directory_name: &str,
+    meta: &crate::models::SnapshotMeta,
+) -> Component {
+    let id = component_id(&meta.plugin_id, &format!("credentials-{}", sanitize_slug(directory_name)));
+    let fields: Vec<serde_json::Value> = declaration
+        .fields
+        .iter()
+        .map(|field| {
+            let mut value = json!({
+                "key": field.key,
+                "kind": field.kind,
+                "required": field.required,
+                "label": field.label.to_json(),
+                "placeholder": field.placeholder.to_json(),
+                "description": field.description.to_json(),
+            });
+            if let Some(default_value) = field.default_value.as_ref() {
+                value["default_value"] = json!(default_value);
+            }
+            value
+        })
+        .collect();
+    Component::new(
+        crate::models::KIND_CREDENTIAL,
+        id.clone(),
+        declaration.title.zh.clone(),
+        Some("token-schema.json".to_owned()),
+        compat::credential(),
+        json!({
+            "id": id,
+            "version": "1",
+            "name": declaration.title.zh,
+            "connector_id": directory_name,
+            "title": declaration.title.to_json(),
+            "description": declaration.description.to_json(),
+            "doc_url": declaration.doc_url.to_json(),
+            "doc_label": declaration.doc_label.to_json(),
+            "fields": fields,
+        }),
+    )
+}
+
+/// Is a declared field a secret or a plain setting? (`34` §5.2)
+///
+/// `type: password` is the marketplace's own, authoritative signal. For
+/// `type: text` the name decides — and the predicate has to be **tighter** than
+/// [`looks_sensitive_key`], which matches the bare substring `api`: that would
+/// classify `TDENGINE_API_SCHEMA` / `_HOST` / `_PORT` — three plain selectors
+/// whose defaults are `http` / `localhost` / `6042` — as secrets, hide them from
+/// the form's plain half, and push them into the credential store.
+fn credential_field_kind(key: &str, declared_type: &str) -> &'static str {
+    if declared_type.eq_ignore_ascii_case("password") || credential_shaped_name(key) {
+        "secret"
+    } else {
+        "plain"
+    }
+}
+
+/// Does a `type: text` field name read as a credential?
+///
+/// Matches whole credential words rather than the loose `api` substring, so
+/// `TENCENT_MAP_KEY` and `ZFS_LOGIN_KEY` are secrets while `TDENGINE_API_HOST` is
+/// not. Measured over the market's 61 declarations this splits 63 `password` +
+/// 2 `text` = 65 secret against 9 plain.
+fn credential_shaped_name(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    ["token", "secret", "password", "apikey", "api_key", "_key", "_pat", "credential"]
+        .iter()
+        .any(|part| lower.contains(part))
+}
+
+/// The `${…}` placeholders a declaration binds, and how (`34` §5.4).
+struct Bindings {
+    secret: std::collections::HashSet<String>,
+    plain: std::collections::HashSet<String>,
+}
+
+impl Bindings {
+    fn from_declaration(declaration: Option<&CredentialDeclaration>) -> Self {
+        let mut secret = std::collections::HashSet::new();
+        let mut plain = std::collections::HashSet::new();
+        for field in declaration.map(|d| d.fields.as_slice()).unwrap_or_default() {
+            if field.kind == "secret" {
+                secret.insert(field.key.clone());
+            } else {
+                plain.insert(field.key.clone());
+            }
+        }
+        Self { secret, plain }
+    }
+
+    /// Rewrite the marketplace's `${NAME}` placeholders into the reference form
+    /// the host resolves.
+    ///
+    /// A declared **secret** field becomes `${secret:NAME}`. A declared **plain**
+    /// field is left as `${NAME}` — it is not a credential, and step 3 resolves it
+    /// from the transport's own values. A placeholder nobody declared is treated
+    /// as a secret *and* warned about: silently leaving it would send the literal
+    /// `${NAME}` to the server, which is the failure this whole path exists to
+    /// remove.
+    fn rewrite(&self, text: &str, builder: &mut ComponentBuilder) -> String {
+        if !text.contains("${") {
+            return text.to_owned();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find("${") {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 2..];
+            let Some(end) = after.find('}') else {
+                out.push_str(&rest[start..]);
+                return out;
+            };
+            let name = &after[..end];
+            if self.secret.contains(name) {
+                out.push_str("${secret:");
+                out.push_str(name);
+                out.push('}');
+            } else if self.plain.contains(name) {
+                out.push_str(&rest[start..start + 2 + end + 1]);
+            } else {
+                builder.warn(format!(
+                    "mcp.json 的占位符 ${{{name}}} 在 token-schema.json 里没有同名字段；\
+                     按密钥处理（需用户填写）"
+                ));
+                out.push_str("${secret:");
+                out.push_str(name);
+                out.push('}');
+            }
+            rest = &after[end + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+}
+
+/// The marketplace's `auth_mode` for one connector, mapped to the three values
+/// the host's `credential.mode` uses (`34` §6.1).
+///
+/// The entry directory is `<market root>/connectors/<id>` and the declaration
+/// lives in `<market root>/.codebuddy-connector/connectors.json` — the same file
+/// and the same layout the marketplace scanner reads, so climbing two levels is
+/// not a guess. A hand-made connector directory has no index: the `mcp.json`
+/// `preAuth` field is then the only declaration, as before.
+fn market_credential_mode(source: &Path, directory_name: &str, pre_auth: &str) -> String {
+    let declared = market_auth_mode(source, directory_name)
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or_else(|| pre_auth.to_owned());
+    match declared.as_str() {
+        "token" => "token".to_owned(),
+        "oauth" => "oauth".to_owned(),
+        // Empty (`none`), `server-side`, `mcp`, `oneid-token`: nothing the client
+        // can be asked to fill, so no auth affordance (34 §6.1).
+        _ => "none".to_owned(),
+    }
+}
+
+fn market_auth_mode(source: &Path, directory_name: &str) -> Option<String> {
+    let root = source.parent()?.parent()?;
+    let text = std::fs::read_to_string(root.join(".codebuddy-connector/connectors.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let entries = value.get("connectors")?.as_array()?;
+    entries
+        .iter()
+        .find(|entry| {
+            entry.get("id").and_then(|value| value.as_str()) == Some(directory_name)
+                || entry.get("source").and_then(|value| value.as_str()) == Some(directory_name)
+        })
+        .and_then(|entry| entry.get("auth_mode").and_then(|value| value.as_str()))
+        .map(str::to_owned)
 }
 
 /// The transport type of a URL-shaped connector, normalized to the two spellings
@@ -1410,8 +1779,17 @@ fn is_sensitive_field(key: &str, schema_type: &str, schema: &serde_json::Value) 
 /// env such as `NODE_ENV`, non-string values, and a value that is already a
 /// `secret:` reference — passes through unchanged, so an ordinary connector
 /// keeps working without the user filling anything in.
+///
+/// Three shapes are rewritten, in this order:
+/// 1. a declared **secret** field carried as an env key — including the empty
+///    string a package uses to mean "the user fills this" (`weisheng-scrm`'s
+///    `SCRM_APP_KEY: ""`), which would otherwise reach the child as an empty
+///    value and fail with no local signal;
+/// 2. an embedded `${…}` placeholder (`34` §5.4);
+/// 3. the pre-existing heuristic: a *literal* value under a credential-shaped key.
 fn rewrite_secret_env(
     env: Option<&serde_json::Map<String, serde_json::Value>>,
+    bindings: &Bindings,
     builder: &mut ComponentBuilder,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut out = serde_json::Map::new();
@@ -1420,21 +1798,47 @@ fn rewrite_secret_env(
     };
     for (key, value) in env {
         let rewritten = match value.as_str() {
-            Some(text)
-                if nomifun_common::secret_ref::parse_secret_ref(text).is_none()
-                    && looks_sensitive_key(key) =>
-            {
-                builder.warn(format!(
-                    "mcp.json env[{key}] 的值未导入（改为 {prefix}{key} 引用），\
-                     由用户经安全存储提供（17 §6）",
-                    prefix = nomifun_common::secret_ref::SECRET_PREFIX,
-                ));
-                serde_json::Value::String(format!(
-                    "{}{key}",
-                    nomifun_common::secret_ref::SECRET_PREFIX
-                ))
+            Some(text) => {
+                let reference = format!("{}{key}", nomifun_common::secret_ref::SECRET_PREFIX);
+                let is_reference = nomifun_common::secret_ref::parse_secret_ref(text).is_some();
+                if is_reference {
+                    value.clone()
+                } else if bindings.plain.contains(key) {
+                    // The declaration is authoritative: a field the marketplace
+                    // declares plain is not a credential, whatever its name looks
+                    // like. `API_HOST` would otherwise be caught by the `api`
+                    // substring and its `localhost` hidden in the vault.
+                    serde_json::Value::String(bindings.rewrite(text, builder))
+                } else if bindings.secret.contains(key) {
+                    if text.trim().is_empty() {
+                        builder.warn(format!(
+                            "mcp.json env[{key}] 未提供值（空字符串），改为 {reference} 引用，\
+                             由用户填写（34 §5.4）"
+                        ));
+                    } else if !text.contains("${") {
+                        builder.warn(format!(
+                            "mcp.json env[{key}] 的值未导入（改为 {reference} 引用），\
+                             由用户经安全存储提供（17 §6）"
+                        ));
+                    }
+                    serde_json::Value::String(if text.contains("${") {
+                        bindings.rewrite(text, builder)
+                    } else {
+                        reference
+                    })
+                } else if text.contains("${") {
+                    serde_json::Value::String(bindings.rewrite(text, builder))
+                } else if looks_sensitive_key(key) && !text.trim().is_empty() {
+                    builder.warn(format!(
+                        "mcp.json env[{key}] 的值未导入（改为 {reference} 引用），\
+                         由用户经安全存储提供（17 §6）"
+                    ));
+                    serde_json::Value::String(reference)
+                } else {
+                    value.clone()
+                }
             }
-            _ => value.clone(),
+            None => value.clone(),
         };
         out.insert(key.clone(), rewritten);
     }
