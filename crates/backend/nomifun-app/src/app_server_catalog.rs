@@ -519,6 +519,10 @@ impl ConnectorAuthProvider for AppServerConnectorAuth {
 
     async fn auth_start(&self, id: &str) -> Result<AppServerOAuthStartResult, AppError> {
         let url = self.remote_url(id).await?;
+        // One INFO per *requested* login: the attempt count is what makes a
+        // server-side throttle readable from a log ("too many OAuth requests"
+        // cannot be diagnosed from completions alone).
+        tracing::info!(connector_id = id, url = %url, "connector OAuth login requested");
         // Start only the synchronous half first (endpoint discovery, client
         // identity, loopback callback, browser launch). A failure there means
         // nothing was shown to the user, so acknowledging `started` would send
