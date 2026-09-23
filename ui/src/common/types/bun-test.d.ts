@@ -21,6 +21,8 @@ declare module 'bun:test' {
     toBeGreaterThanOrEqual(expected: number): void;
     toBeLessThan(expected: number): void;
     toBeLessThanOrEqual(expected: number): void;
+    toBeTypeOf(expected: string): void;
+    toThrow(expected?: string | RegExp | Error): void;
   }
 
   interface Test {
@@ -31,8 +33,14 @@ declare module 'bun:test' {
     ): (name: string, fn: (...caseValues: T) => void | Promise<void>) => void;
   }
 
+  interface Expect {
+    (actual: unknown): Matchers;
+    any(constructor: unknown): unknown;
+  }
+
   export function describe(name: string, fn: TestFn): void;
+  export function beforeEach(fn: TestFn): void;
   export function afterEach(fn: TestFn): void;
   export const test: Test;
-  export function expect(actual: unknown): Matchers;
+  export const expect: Expect;
 }

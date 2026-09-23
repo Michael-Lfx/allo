@@ -17,30 +17,93 @@ import { useCloudAuth } from './CloudAuthContext';
 // local midnight. The server independently resolves the real day boundary from
 // the posted `timeZone`, so the authoritative day key comes back in the
 // response and is what we persist.
-function getTodayKey(): number {
-  const d = new Date();
+export function getTodayKey(date: Date = new Date()): number {
   return Number(
-    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(
-      d.getDate()
+    `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(
+      date.getDate()
     ).padStart(2, '0')}`
   );
 }
 
+export function getMsUntilNextMidnight(now: Date = new Date()): number {
+  const nextMidnight = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 1,
+    0,
+    0,
+    1,
+    0
+  );
+  return Math.max(1000, nextMidnight.getTime() - now.getTime());
+}
+
 // --- Persistence for lastCheckInDayKey ---------------------------------------
-// No state library here (unlike FlowyClaw's zustand-persist); a plain key under
-// the `nomifun` root prefix mirrors existing plain-key prefs. Deliberately NOT
-// generation-scoped: the day key is a per-account fact, not per backend dataset.
-const DAYKEY_STORAGE = 'nomifun:credits:lastCheckInDayKey';
-function loadDayKey(): number {
+// Deliberately scoped by account ID so switching accounts on the same device
+// does not prevent other accounts from performing their daily check-in.
+// The unscoped global key is LEGACY-ONLY: it exists so installs from before
+// account-scoping migrate their stored day once. Never write it for a known
+// account — a global value always belongs to "some other account" and the
+// migration fallback in loadDayKey() would let it suppress that account's
+// first check-in of the day.
+const GLOBAL_DAYKEY_STORAGE = 'nomifun:credits:lastCheckInDayKey';
+
+/**
+ * Safely resolves the active `localStorage` instance across browser runtime
+ * and headless/unit test environments where window may be undefined.
+ */
+function getStorage(): Storage | null {
   try {
-    return Number(localStorage.getItem(DAYKEY_STORAGE)) || 0;
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage;
+    }
+    if (typeof globalThis !== 'undefined' && (globalThis as { localStorage?: Storage }).localStorage) {
+      return (globalThis as { localStorage: Storage }).localStorage;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function getDayKeyStorageKey(accountId?: string): string {
+  return accountId
+    ? `nomifun:credits:lastCheckInDayKey:${accountId}`
+    : GLOBAL_DAYKEY_STORAGE;
+}
+
+export function loadDayKey(accountId?: string): number {
+  try {
+    const storage = getStorage();
+    if (!storage) return 0;
+    const key = getDayKeyStorageKey(accountId);
+    const val = storage.getItem(key);
+    if (val) {
+      return Number(val) || 0;
+    }
+    // Fallback migration: if accountId has no dedicated key yet, try global key
+    if (accountId) {
+      const globalVal = storage.getItem(GLOBAL_DAYKEY_STORAGE);
+      if (globalVal) {
+        return Number(globalVal) || 0;
+      }
+    }
+    return 0;
   } catch {
     return 0;
   }
 }
-function saveDayKey(key: number): void {
+
+export function saveDayKey(key: number, accountId?: string): void {
   try {
-    localStorage.setItem(DAYKEY_STORAGE, String(key));
+    const storage = getStorage();
+    if (!storage) return;
+    storage.setItem(getDayKeyStorageKey(accountId), String(key));
+    if (accountId) {
+      // Migration complete for this device: drop the legacy global key so the
+      // loadDayKey() fallback can't leak this account's day to other accounts.
+      storage.removeItem(GLOBAL_DAYKEY_STORAGE);
+    }
   } catch {
     // ignore storage failures (private mode, quota, etc.)
   }
@@ -48,10 +111,13 @@ function saveDayKey(key: number): void {
 
 // --- Auto-refresh scene throttle ---------------------------------------------
 // Shared across the runtime so multiple consumers can't fan out duplicate
-// requests. `mount` has no throttle; `focus`/`polling` are rate-limited.
-export type RefreshScene = 'mount' | 'focus' | 'polling';
+// requests. `mount` and `midnight` have no throttle; `focus`/`online`/`polling`
+// are rate-limited.
+export type RefreshScene = 'mount' | 'focus' | 'polling' | 'online' | 'midnight';
 const SCENE_INTERVAL_MS: Record<RefreshScene, number> = {
   mount: 0,
+  midnight: 0,
+  online: 5_000,
   focus: 15_000,
   polling: 10 * 60_000,
 };
@@ -60,6 +126,8 @@ const MANUAL_COOLDOWN_MS = 5_000;
 
 let globalLastTriggerByScene: Record<RefreshScene, number> = {
   mount: 0,
+  midnight: 0,
+  online: 0,
   focus: 0,
   polling: 0,
 };
@@ -82,12 +150,17 @@ interface CreditsContextValue {
 const CreditsContext = createContext<CreditsContextValue | undefined>(undefined);
 
 export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const { status, whoami } = useCloudAuth();
+  const { status, whoami, authState } = useCloudAuth();
   const isAuthenticated = status === 'authenticated' && !!whoami?.authenticated;
+  const currentAccountId =
+    whoami?.userId ||
+    whoami?.email ||
+    whoami?.username ||
+    (authState.phase === 'authenticated' ? authState.accountId : undefined);
 
   const [balance, setBalance] = useState(0);
   const [authenticated, setAuthenticated] = useState(false);
-  const [lastCheckInDayKey, setLastCheckInDayKey] = useState<number>(() => loadDayKey());
+  const [lastCheckInDayKey, setLastCheckInDayKey] = useState<number>(() => loadDayKey(currentAccountId));
   const [isFetchingBalance, setIsFetchingBalance] = useState(false);
   const [isCheckingIn, setIsCheckingIn] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState(0);
@@ -100,9 +173,15 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
   const isCheckingInRef = useRef(false);
   const pendingBalanceRefreshRef = useRef(false);
   const lastCheckInDayKeyRef = useRef(lastCheckInDayKey);
+  const currentAccountIdRef = useRef(currentAccountId);
+
   useEffect(() => {
     lastCheckInDayKeyRef.current = lastCheckInDayKey;
   }, [lastCheckInDayKey]);
+
+  useEffect(() => {
+    currentAccountIdRef.current = currentAccountId;
+  }, [currentAccountId]);
 
   const fetchBalance = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -137,12 +216,12 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
   // any successful call so we never re-hit the endpoint same-day.
   const checkIn = useCallback(async (): Promise<boolean> => {
     if (!isAuthenticated || isCheckingInRef.current) return false;
-    // Local dedup: once per local day. (The server dedups too.) This assumes
-    // the server returns dayKey as a YYYYMMDD integer matching getTodayKey();
-    // if the formats ever diverge, local dedup silently no-ops and the
-    // server-side dedup remains the safety net.
+    // Local dedup: once per local day per account. (The server dedups too.)
     const todayKey = getTodayKey();
     if (todayKey <= lastCheckInDayKeyRef.current) return false;
+    // Snapshot the account now: if the user logs out and into another account
+    // while this request is in flight, the grant still belongs to this one.
+    const accountId = currentAccountIdRef.current;
     isCheckingInRef.current = true;
     setIsCheckingIn(true);
     try {
@@ -153,7 +232,8 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
       const dayKey =
         typeof result.dayKey === 'number' && result.dayKey > 0 ? result.dayKey : todayKey;
       setLastCheckInDayKey(dayKey);
-      saveDayKey(dayKey);
+      lastCheckInDayKeyRef.current = dayKey;
+      saveDayKey(dayKey, accountId);
       // Only a fresh grant carries a trustworthy balance. When the server says
       // alreadyCheckedIn (signed in elsewhere today while our local dayKey was
       // stale), the balance field may be omitted (serde defaults to 0) — don't
@@ -177,7 +257,7 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
   const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const manualRefresh = useCallback(() => {
-    if (!isAuthenticated || isFetchingBalanceRef.current || cooldownSeconds > 0) return;
+    if (!isAuthenticated || isFetchingBalanceRef.current || isCheckingInRef.current || cooldownSeconds > 0) return;
     setCooldownSeconds(Math.ceil(MANUAL_COOLDOWN_MS / 1000));
     const startedAt = Date.now();
     if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
@@ -190,8 +270,16 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
         setCooldownSeconds(0);
       }
     }, 1000);
-    void fetchBalance();
-  }, [isAuthenticated, cooldownSeconds, fetchBalance]);
+
+    const todayKey = getTodayKey();
+    if (todayKey > lastCheckInDayKeyRef.current) {
+      void checkIn().then((authoritative) => {
+        if (!authoritative) void fetchBalance();
+      });
+    } else {
+      void fetchBalance();
+    }
+  }, [isAuthenticated, cooldownSeconds, fetchBalance, checkIn]);
 
   // Clear the cooldown timer on unmount.
   useEffect(() => {
@@ -202,24 +290,28 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
 
   const canRefresh = isAuthenticated && !isFetchingBalance && cooldownSeconds === 0;
 
-  // --- Reset on logout -------------------------------------------------------
+  // --- Account switch & Reset on logout ---------------------------------------
   useEffect(() => {
     if (!isAuthenticated) {
       setBalance(0);
       setAuthenticated(false);
       setLastRefreshAt(0);
+      setLastCheckInDayKey(0);
+      lastCheckInDayKeyRef.current = 0;
       if (cooldownTimerRef.current) {
         clearInterval(cooldownTimerRef.current);
         cooldownTimerRef.current = null;
       }
       setCooldownSeconds(0);
-      globalLastTriggerByScene = { mount: 0, focus: 0, polling: 0 };
+      globalLastTriggerByScene = { mount: 0, midnight: 0, online: 0, focus: 0, polling: 0 };
+    } else {
+      const storedKey = loadDayKey(currentAccountId);
+      setLastCheckInDayKey(storedKey);
+      lastCheckInDayKeyRef.current = storedKey;
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, currentAccountId]);
 
-  // --- Auto-refresh: mount + window focus + 10min polling --------------------
-  // The provider is the single always-mounted consumer, so this is the only
-  // place the auto-refresh listeners live.
+  // --- Auto-refresh: mount + focus + polling + online + midnight -------------
   const triggerBalance = useCallback(
     (scene: RefreshScene) => {
       if (!isAuthenticated || isFetchingBalanceRef.current || isCheckingInRef.current) return;
@@ -248,35 +340,62 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
 
     triggerBalance('mount');
 
-    const onFocus = () => triggerBalance('focus');
-    window.addEventListener('focus', onFocus);
+    const onFocusOrVisible = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      triggerBalance('focus');
+    };
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
 
-    // Skip polling while the window is hidden (backgrounded) to avoid wasteful
-    // requests — visibility is re-acquired via the focus listener. Mirrors the
-    // agent-refresh visibility gate in main.tsx.
+    const onOnline = () => {
+      triggerBalance('online');
+    };
+    window.addEventListener('online', onOnline);
+
     const intervalId = window.setInterval(() => {
-      if (document.hidden) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
       triggerBalance('polling');
     }, POLLING_INTERVAL_MS);
+
+    let midnightTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleMidnight = () => {
+      if (midnightTimer) clearTimeout(midnightTimer);
+      const delay = getMsUntilNextMidnight();
+      midnightTimer = setTimeout(() => {
+        triggerBalance('midnight');
+        scheduleMidnight();
+      }, delay);
+    };
+    scheduleMidnight();
 
     let consumptionTimer: ReturnType<typeof setTimeout> | undefined;
     const onConsumption = () => {
       if (consumptionTimer) clearTimeout(consumptionTimer);
       consumptionTimer = setTimeout(() => {
-        void fetchBalance();
+        const todayKey = getTodayKey();
+        if (todayKey > lastCheckInDayKeyRef.current) {
+          void checkIn().then((authoritative) => {
+            if (!authoritative) void fetchBalance();
+          });
+        } else {
+          void fetchBalance();
+        }
       }, 800);
     };
     emitter.on('nomi.credits.balance.refresh', onConsumption);
     emitter.on('nomi.turn_credits.updated', onConsumption);
 
     return () => {
-      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+      window.removeEventListener('online', onOnline);
       window.clearInterval(intervalId);
+      if (midnightTimer) clearTimeout(midnightTimer);
       if (consumptionTimer) clearTimeout(consumptionTimer);
       emitter.off('nomi.credits.balance.refresh', onConsumption);
       emitter.off('nomi.turn_credits.updated', onConsumption);
     };
-  }, [isAuthenticated, triggerBalance, fetchBalance]);
+  }, [isAuthenticated, currentAccountId, triggerBalance, fetchBalance, checkIn]);
 
   const value = useMemo<CreditsContextValue>(
     () => ({
@@ -317,3 +436,4 @@ export function useCredits(): CreditsContextValue {
   }
   return context;
 }
+
