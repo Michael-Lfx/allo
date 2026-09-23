@@ -7,11 +7,12 @@
 //! wire codes (`not_found`, `connector_unavailable`, ...).
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 
 use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityTriple,
-    AppServerConnectorCallResult, AppServerConnectorDetail, AppServerConnectorProbeResult,
-    AppServerConnectorStatusView,
+    AppServerConnectorCallResult, AppServerConnectorCredential, AppServerConnectorDetail,
+    AppServerConnectorProbeResult, AppServerConnectorStatusView,
     AppServerConnectorSummary, AppServerExpertPack, AppServerImportDetail, AppServerImportRequest,
     AppServerImportResult, AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
@@ -206,6 +207,39 @@ pub trait ConnectorCallProvider: Send + Sync {
     ) -> Result<AppServerConnectorCallResult, ConnectorCallError> {
         self.call(connector_id, tool, arguments).await
     }
+}
+
+/// The connector **credential** face (`connector/credential/get|set|clear`, `34` §6.1).
+///
+/// Deliberately separate from [`ConnectorCatalogProvider`]: that one describes
+/// connectors, this one is the only seam that *writes* — to the host's
+/// `[credentials]` table and to a connector's own plain values. Everything it
+/// touches is either a key name, a value the caller just supplied, or a value the
+/// connector itself owns; a secret value is never read back out.
+#[async_trait]
+pub trait ConnectorCredentialProvider: Send + Sync {
+    /// The form and state, as `principal` sees it.
+    async fn get(
+        &self,
+        connector_id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError>;
+
+    /// Store what the user typed; returns the new state.
+    async fn set(
+        &self,
+        connector_id: &str,
+        values: HashMap<String, String>,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError>;
+
+    /// Forget this caller's entries (`keys: None` = every secret field). Idempotent.
+    async fn clear(
+        &self,
+        connector_id: &str,
+        keys: Option<Vec<String>>,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError>;
 }
 
 /// Import pipeline seam (`import/run`, `import/list`, `import/get`). The
