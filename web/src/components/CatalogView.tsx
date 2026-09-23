@@ -877,9 +877,11 @@ export function CatalogView() {
                 Deviation from the reference, stated rather than faked: a store
                 team carries no member list (`members` rides in the market
                 manifest and is dropped by the projection) and no cover image, so
-                the card shows the marketplace it comes from plus its own
-                description on the existing gradient — not a photo, and not a
-                member collage we cannot fill. */}
+                the card shows its own description on the existing gradient —
+                not a photo, and not a member collage we cannot fill. The
+                marketplace name is also dropped here: it read as a stray
+                "experts" badge on every card, and which market a card came
+                from is already the 传输 row in its drawer. */}
             {noun === "experts" && expertKind === "experts" && visibleStoreTeams.length > 0 && (
               <>
                 <h2 className="market-section">{t("catalog.featuredScenes")}</h2>
@@ -888,7 +890,6 @@ export function CatalogView() {
                     <button className="market-scene" type="button" role="listitem" key={item.id} onClick={() => openStoreItem(item)}>
                       <div className="market-scene-head">
                         <span className="market-scene-title">{pickLocalized(item.display_name, lang) || item.name}</span>
-                        <span className="market-scene-count">{item.marketplace_name}</span>
                       </div>
                       <div className="market-scene-body">
                         {pickLocalized(item.display_description, lang) || item.description || t("catalog.noDescription")}
@@ -1260,7 +1261,6 @@ function StoreDrawer({
           <h2>{name}</h2>
           {profession && <div className="drawer-subtitle">{profession}</div>}
           <div className="drawer-chips">
-            <span className="market-tag">{t("catalog.storeFromMarket", { market: item.marketplace_name })}</span>
             <span className="market-tag">{storeKindLabel(t, item.kind)}</span>
             <span className="market-tag">v{item.version}</span>
           </div>
