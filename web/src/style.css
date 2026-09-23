@@ -862,6 +862,12 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
    narrower than the page was: two columns instead of three. */
 .market-sources-panel .market-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
+/* `is-wide` dialogs zero their own padding and leave it to the body wrapper
+   (`.dir-body` pads itself for the directory picker). The import panel is the
+   other wide-dialog body: without its own padding its form and cards sat flush
+   against the dialog edge. */
+.settings-dialog > .market-imports { padding: 18px 26px 26px; }
+
 /* alert */
 .market-alert { display: flex; align-items: center; gap: 8px; margin: 10px 18px 0; padding: 9px 12px; border: 1px solid var(--destructive-border); border-radius: 8px; background: var(--destructive-soft); color: var(--destructive); font-size: 13px; }
 .market-alert button { border: 0; background: transparent; color: inherit; font-size: 13px; margin-left: auto; }
