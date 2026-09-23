@@ -20,6 +20,8 @@ describe('sessionScrollRegistry', () => {
       userScrolled: true,
       lastReadMessageId: 'msg-42',
       unreadCount: 3,
+      targetMessageId: 'msg-turn-4',
+      turnIndex: 4,
     });
 
     const snapshot = sessionScrollRegistry.get('conv-1');
@@ -28,6 +30,8 @@ describe('sessionScrollRegistry', () => {
     expect(snapshot?.userScrolled).toBe(true);
     expect(snapshot?.lastReadMessageId).toBe('msg-42');
     expect(snapshot?.unreadCount).toBe(3);
+    expect(snapshot?.targetMessageId).toBe('msg-turn-4');
+    expect(snapshot?.turnIndex).toBe(4);
     expect(snapshot?.updatedAt).toBeGreaterThan(0);
   });
 

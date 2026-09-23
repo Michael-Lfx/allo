@@ -8,6 +8,7 @@ import type { ConversationId } from '@/common/types/ids';
 import React from 'react';
 import { useMessageList } from '@renderer/pages/conversation/Messages/hooks';
 import { dispatchChatMessageJump } from '@/renderer/utils/chat/chatMinimapEvents';
+import { sessionScrollRegistry } from '@/renderer/pages/conversation/Messages/sessionScrollRegistry';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from './ConversationQuestionLocator.module.css';
@@ -158,8 +159,20 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
     const nextIndex = pickActiveQuestionIndex(questionTopOffsets, anchorY);
     if (nextIndex >= 0) {
       setActiveIndex((current) => (current === nextIndex ? current : nextIndex));
+      if (conversation_id) {
+        const currentSnapshot = sessionScrollRegistry.get(conversation_id);
+        if (currentSnapshot && currentSnapshot.userScrolled) {
+          const activeTurnItem = turns[nextIndex];
+          const targetMsgId = activeTurnItem?.messageId ?? activeTurnItem?.msgId;
+          sessionScrollRegistry.save(conversation_id, {
+            ...currentSnapshot,
+            turnIndex: nextIndex,
+            targetMessageId: targetMsgId,
+          });
+        }
+      }
     }
-  }, [getScroller, rangeRef, resolveDisplayIndexRef, turns]);
+  }, [conversation_id, getScroller, rangeRef, resolveDisplayIndexRef, turns]);
 
   const scheduleActiveQuestionSync = useCallback(() => {
     if (rafRef.current !== null) return;
@@ -204,7 +217,12 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
   }, [activeQuestionIdentity, syncActiveDotVisibility]);
 
   useLayoutEffect(() => {
-    setActiveIndex(0);
+    const saved = conversation_id ? sessionScrollRegistry.get(conversation_id) : undefined;
+    if (saved?.userScrolled && typeof saved.turnIndex === 'number' && saved.turnIndex >= 0) {
+      setActiveIndex(saved.turnIndex);
+    } else {
+      setActiveIndex(0);
+    }
     setHoverIndex(null);
   }, [conversation_id]);
 

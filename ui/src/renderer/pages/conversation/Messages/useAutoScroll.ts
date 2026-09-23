@@ -226,11 +226,14 @@ export function useAutoScroll({
     }
     const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;
     if (conversationId && scrollerEl && ownsVisibleList) {
+      const existing = sessionScrollRegistry.get(conversationId);
       sessionScrollRegistry.save(conversationId, {
         scrollTop: scrollerEl.scrollTop,
         userScrolled: true,
         lastReadMessageId: lastReadMessageIdRef.current,
         unreadCount: unreadCount,
+        targetMessageId: existing?.targetMessageId,
+        turnIndex: existing?.turnIndex,
       });
     }
     if (!scrollerEl || getBottomGap(scrollerEl) <= SCROLL_BUTTON_THRESHOLD_PX) {
@@ -405,11 +408,14 @@ export function useAutoScroll({
         if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
         scrollSaveTimerRef.current = setTimeout(() => {
           scrollSaveTimerRef.current = null;
+          const existing = sessionScrollRegistry.get(conversationId);
           sessionScrollRegistry.save(conversationId, {
             scrollTop: lastScrollTopRef.current,
             userScrolled: userScrolledRef.current,
             lastReadMessageId: lastReadMessageIdRef.current,
             unreadCount: unreadCount,
+            targetMessageId: existing?.targetMessageId,
+            turnIndex: existing?.turnIndex,
           });
         }, SCROLL_SAVE_DEBOUNCE_MS);
       }
@@ -510,11 +516,14 @@ export function useAutoScroll({
       const prevId = previousConversationIdRef.current;
       // Skip sessions that were never displayed (a rapid A→B→C hop): their
       if (prevId && initialScrollDoneRef.current) {
+        const existing = sessionScrollRegistry.get(prevId);
         sessionScrollRegistry.save(prevId, {
           scrollTop: lastScrollTopRef.current,
           userScrolled: userScrolledRef.current,
           lastReadMessageId: lastReadMessageIdRef.current,
           unreadCount: unreadCount,
+          targetMessageId: existing?.targetMessageId,
+          turnIndex: existing?.turnIndex,
         });
       }
       if (scrollSaveTimerRef.current) {
@@ -561,7 +570,27 @@ export function useAutoScroll({
 
       const virtuoso = virtuosoRefLatest.current?.current;
       if (virtuoso) {
-        virtuoso.scrollTo({ top: targetScrollTop, behavior: 'auto' });
+        const items = displayItemsRef.current as Array<{ id?: string; message?: { id?: string }; sourceMessageIds?: string[] } | undefined> | undefined;
+        let targetRowIndex = -1;
+        const targetMessageId = saved.targetMessageId;
+        if (items && targetMessageId) {
+          targetRowIndex = items.findIndex((item) => {
+            if (!item) return false;
+            if (item.id === targetMessageId) return true;
+            if (item.message?.id === targetMessageId) return true;
+            if (Array.isArray(item.sourceMessageIds) && item.sourceMessageIds.includes(targetMessageId)) return true;
+            return false;
+          });
+        }
+        if (targetRowIndex >= 0) {
+          virtuoso.scrollToIndex({
+            index: targetRowIndex,
+            align: 'start',
+            behavior: 'auto',
+          });
+        } else {
+          virtuoso.scrollTo({ top: targetScrollTop, behavior: 'auto' });
+        }
       }
 
       showScrollButtonRef.current = true;
@@ -642,11 +671,14 @@ export function useAutoScroll({
         // lastScrollTopRef, not scrollerEl.scrollTop: passive cleanups run
         // after the element detaches, where scrollTop reads back as 0. The
         // initialScrollDone guard skips sessions that were never displayed.
+        const existing = sessionScrollRegistry.get(currentId);
         sessionScrollRegistry.save(currentId, {
           scrollTop: lastScrollTopRef.current,
           userScrolled: userScrolledRef.current,
           lastReadMessageId: lastReadMessageIdRef.current,
           unreadCount: unreadCount,
+          targetMessageId: existing?.targetMessageId,
+          turnIndex: existing?.turnIndex,
         });
       }
     };
