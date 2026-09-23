@@ -6,6 +6,7 @@
 mod config;
 pub mod app_server_catalog;
 pub mod app_server_connector_call;
+pub mod app_server_credentials;
 pub mod app_server_delegate;
 pub mod app_server_entry_assets;
 pub mod app_server_expert_export;

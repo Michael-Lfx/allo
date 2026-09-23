@@ -1865,8 +1865,12 @@ async fn execute_skill_delete(
 
 async fn list_connectors_impl(
     state: &AppServerRouterState,
+    principal: Option<&str>,
 ) -> Result<Vec<AppServerConnectorSummary>, AppServerError> {
-    connector_catalog_provider(state)?.list().await.map_err(AppServerError::from)
+    connector_catalog_provider(state)?
+        .list(principal)
+        .await
+        .map_err(AppServerError::from)
 }
 
 async fn list_models_impl(
@@ -1878,8 +1882,12 @@ async fn list_models_impl(
 async fn get_connector_impl(
     state: &AppServerRouterState,
     connector_id: &str,
+    principal: Option<&str>,
 ) -> Result<AppServerConnectorDetail, AppServerError> {
-    connector_catalog_provider(state)?.get(connector_id).await.map_err(AppServerError::from)
+    connector_catalog_provider(state)?
+        .get(connector_id, principal)
+        .await
+        .map_err(AppServerError::from)
 }
 
 /// `connector/call`: the call-proxy seam (doc 24 §5).
@@ -1950,9 +1958,10 @@ async fn connector_call_impl(
 async fn connector_status_impl(
     state: &AppServerRouterState,
     connector_id: &str,
+    principal: Option<&str>,
 ) -> Result<AppServerConnectorStatusView, AppServerError> {
     connector_catalog_provider(state)?
-        .status(connector_id)
+        .status(connector_id, principal)
         .await
         .map_err(AppServerError::from)
 }
@@ -3002,7 +3011,7 @@ async fn list_connectors_route(
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<Vec<AppServerConnectorSummary>>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
-    Ok(Json(list_connectors_impl(&state).await?))
+    Ok(Json(list_connectors_impl(&state, Some(user.id.as_str())).await?))
 }
 
 async fn list_models_route(
@@ -3021,7 +3030,9 @@ async fn get_connector_route(
     Path(connector_id): Path<String>,
 ) -> Result<Json<AppServerConnectorDetail>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
-    Ok(Json(get_connector_impl(&state, &connector_id).await?))
+    Ok(Json(
+        get_connector_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
 }
 
 async fn connector_status_route(
@@ -3031,7 +3042,9 @@ async fn connector_status_route(
     Path(connector_id): Path<String>,
 ) -> Result<Json<AppServerConnectorStatusView>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
-    Ok(Json(connector_status_impl(&state, &connector_id).await?))
+    Ok(Json(
+        connector_status_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
 }
 
 /// `POST /api/app-server/connectors/{connector_id}/call`
@@ -3356,7 +3369,7 @@ async fn execute_agent_run(
     if !snapshot.mcp_server_ids.is_empty() {
         let connectors = connector_catalog_provider(state)?;
         for mcp_server_id in &snapshot.mcp_server_ids {
-            let detail = connectors.get(mcp_server_id).await.map_err(AppServerError::from)?;
+            let detail = connectors.get(mcp_server_id, None).await.map_err(AppServerError::from)?;
             if !detail.summary.enabled {
                 return Err(AppServerError::new(
                     "connector_unavailable",
@@ -4147,7 +4160,7 @@ async fn definition_connector_fence(
             )
         })?;
         let detail = connectors
-            .get(id.as_str())
+            .get(id.as_str(), None)
             .await
             .map_err(AppServerError::from)?;
         if !detail.summary.enabled {
@@ -7124,7 +7137,7 @@ async fn dispatch_connection_request(
         }
         "connector/list" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
-            let connectors = list_connectors_impl(state).await?;
+            let connectors = list_connectors_impl(state, Some(user.id.as_str())).await?;
             Ok(ws_response(request_id, serde_json::to_value(connectors).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connectors: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
@@ -7197,7 +7210,7 @@ async fn dispatch_connection_request(
         "connector/get" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorQuery>(params)?;
-            let connector = get_connector_impl(state, &params.connector_id).await?;
+            let connector = get_connector_impl(state, &params.connector_id, Some(user.id.as_str())).await?;
             Ok(ws_response(request_id, serde_json::to_value(connector).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connector: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
@@ -7205,7 +7218,7 @@ async fn dispatch_connection_request(
         "connector/status" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorQuery>(params)?;
-            let status = connector_status_impl(state, &params.connector_id).await?;
+            let status = connector_status_impl(state, &params.connector_id, Some(user.id.as_str())).await?;
             Ok(ws_response(request_id, serde_json::to_value(status).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connector status: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))

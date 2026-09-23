@@ -89,11 +89,17 @@ pub trait SkillFileProvider: Send + Sync {
 }
 
 /// Read-side Connector catalog + status/probe (`connector/list|get|status|test`).
+///
+/// Every method takes the caller's `principal` (`34` §7): a connector's credential
+/// state — which fields are still missing, whether it is configured at all — is a
+/// statement **about that caller**, not about the host. `None` is a host-internal
+/// caller, which acts for the installation owner.
 #[async_trait]
 pub trait ConnectorCatalogProvider: Send + Sync {
-    async fn list(&self) -> Result<Vec<AppServerConnectorSummary>, AppError>;
-    async fn get(&self, id: &str) -> Result<AppServerConnectorDetail, AppError>;
-    async fn status(&self, id: &str) -> Result<AppServerConnectorStatusView, AppError>;
+    async fn list(&self, principal: Option<&str>) -> Result<Vec<AppServerConnectorSummary>, AppError>;
+    async fn get(&self, id: &str, principal: Option<&str>) -> Result<AppServerConnectorDetail, AppError>;
+    async fn status(&self, id: &str, principal: Option<&str>)
+    -> Result<AppServerConnectorStatusView, AppError>;
     async fn test(&self, id: &str) -> Result<AppServerConnectorProbeResult, AppError>;
     /// The same probe, resolving credentials **for one principal** (`34` §7): a
     /// connector's `secret:NAME` references are per-principal, so a probe on behalf
@@ -490,11 +496,15 @@ impl FakeConnectorCatalog {
 
 #[async_trait]
 impl ConnectorCatalogProvider for FakeConnectorCatalog {
-    async fn list(&self) -> Result<Vec<AppServerConnectorSummary>, AppError> {
+    async fn list(&self, _principal: Option<&str>) -> Result<Vec<AppServerConnectorSummary>, AppError> {
         Ok(self.connectors.clone())
     }
 
-    async fn get(&self, id: &str) -> Result<AppServerConnectorDetail, AppError> {
+    async fn get(
+        &self,
+        id: &str,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError> {
         let summary = self.find(id)?;
         Ok(AppServerConnectorDetail {
             summary,
@@ -507,7 +517,11 @@ impl ConnectorCatalogProvider for FakeConnectorCatalog {
         })
     }
 
-    async fn status(&self, id: &str) -> Result<AppServerConnectorStatusView, AppError> {
+    async fn status(
+        &self,
+        id: &str,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorStatusView, AppError> {
         let summary = self.find(id)?;
         let connector_id = summary.id.clone();
         let authenticated = !self.auth_required_ids.contains(&connector_id);
@@ -1160,7 +1174,7 @@ mod tests {
             auth_required_ids: vec![],
             probe_fail_ids: vec!["0190f5fe-7c00-7a00-8000-000000000001".into()],
         };
-        let status = catalog.status("playwright").await.unwrap();
+        let status = catalog.status("playwright", None).await.unwrap();
         assert_eq!(status.status.as_str(), "error");
         assert_ne!(status.status.as_str(), "connected");
     }
@@ -1172,7 +1186,7 @@ mod tests {
             auth_required_ids: vec!["0190f5fe-7c00-7a00-8000-000000000001".into()],
             probe_fail_ids: vec![],
         };
-        let status = catalog.status("playwright").await.unwrap();
+        let status = catalog.status("playwright", None).await.unwrap();
         assert_eq!(status.status.as_str(), "authorization_required");
     }
 
