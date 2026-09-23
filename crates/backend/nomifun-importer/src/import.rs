@@ -1239,6 +1239,10 @@ fn build_mcp_connector_components(
                     "type": declared_url_transport_type(config),
                     "url": bindings.rewrite(url, builder),
                     "headers": headers,
+                    // A declared plain field's default is not a credential: it is the
+                    // connector's own setting, and it lives here so the URL/header
+                    // template above can stay a template (`34` §5.3).
+                    "values": bindings.plain_values(declaration.as_ref()),
                 })
             }
             (None, Some(command)) => json!({
@@ -1633,6 +1637,25 @@ impl Bindings {
             }
         }
         Self { secret, plain }
+    }
+
+    /// The starting values for a connector's plain `${NAME}` placeholders: the
+    /// defaults the declaration carries. Fields without one stay absent, which the
+    /// runtime reads as "the user still has to fill this" (`34` §5.3/§5.4).
+    fn plain_values(
+        &self,
+        declaration: Option<&CredentialDeclaration>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut values = serde_json::Map::new();
+        for field in declaration.map(|d| d.fields.as_slice()).unwrap_or_default() {
+            if field.kind != "plain" {
+                continue;
+            }
+            if let Some(default_value) = field.default_value.as_ref() {
+                values.insert(field.key.clone(), json!(default_value));
+            }
+        }
+        values
     }
 
     /// Rewrite the marketplace's `${NAME}` placeholders into the reference form

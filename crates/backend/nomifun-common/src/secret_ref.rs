@@ -169,6 +169,85 @@ pub fn resolve_template(value: &str) -> TemplateResolution {
     resolve_template_with(value, &credentials())
 }
 
+/// What a request string may refer to: secrets, and the connector's own plain
+/// values.
+pub struct TransportScope<'a> {
+    pub credentials: &'a HashMap<String, String>,
+    /// A connector's non-secret settings (`HOST`, `PORT`, `ENV`), which the
+    /// marketplace writes as `${NAME}` placeholders too. They travel in the
+    /// connector's own transport config, never in the credential store.
+    pub values: &'a HashMap<String, String>,
+}
+
+impl<'a> TransportScope<'a> {
+    pub fn new(credentials: &'a HashMap<String, String>, values: &'a HashMap<String, String>) -> Self {
+        Self { credentials, values }
+    }
+}
+
+/// Resolve one request string against both namespaces (`34` §5.1).
+///
+/// - `secret:NAME` / `${secret:NAME}` → the credential store;
+/// - `${NAME}` → the connector's plain values;
+/// - anything else is returned unchanged.
+///
+/// Fail-closed for both: one unresolvable reference discards the whole string, so
+/// a half-substituted URL or `Authorization` header can never be sent. A missing
+/// plain value counts as a missing reference for the same reason — a connector
+/// whose URL still says `${HOST}` is not usable either.
+pub fn resolve_request_string(value: &str, scope: &TransportScope<'_>) -> TemplateResolution {
+    if let Some(name) = parse_secret_ref(value) {
+        return match lookup_with(name, scope.credentials) {
+            Some(actual) => TemplateResolution { value: Some(actual), missing: Vec::new() },
+            None => TemplateResolution { value: None, missing: vec![name.to_owned()] },
+        };
+    }
+    if !value.contains("${") {
+        return TemplateResolution { value: Some(value.to_owned()), missing: Vec::new() };
+    }
+
+    let mut out = String::with_capacity(value.len());
+    let mut missing = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            // Unterminated: the rest is literal text.
+            out.push_str(&rest[start..]);
+            return TemplateResolution { value: Some(out), missing };
+        };
+        let raw_name = &after[..end];
+        let (secret, name) = match raw_name.strip_prefix("secret:") {
+            Some(name) => (true, name),
+            None => (false, raw_name),
+        };
+        if name.is_empty() {
+            out.push_str(&rest[start..start + 2 + end + 1]);
+        } else {
+            let resolved = if secret {
+                lookup_with(name, scope.credentials)
+            } else {
+                scope.values.get(name).cloned()
+            };
+            match resolved {
+                Some(actual) => out.push_str(&actual),
+                None => missing.push(name.to_owned()),
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+
+    missing.sort();
+    missing.dedup();
+    if missing.is_empty() {
+        TemplateResolution { value: Some(out), missing }
+    } else {
+        TemplateResolution { value: None, missing }
+    }
+}
+
 /// Resolve every value in a map, treating each as a template ([`resolve_template`]).
 ///
 /// Keys whose value cannot be resolved are omitted, and the **key names** are
@@ -398,6 +477,37 @@ mod tests {
         assert_eq!(got.env.get("C").map(String::as_str), Some("plain"));
         assert!(!got.env.contains_key("D"));
         assert_eq!(got.missing, vec!["D".to_owned()], "the map key is what gets reported");
+    }
+
+    #[test]
+    fn a_request_string_resolves_both_namespaces() {
+        let creds = creds(&[("TOKEN", "t")]);
+        let values = HashMap::from([
+            ("HOST".to_owned(), "localhost".to_owned()),
+            ("PORT".to_owned(), "6042".to_owned()),
+        ]);
+        let scope = TransportScope::new(&creds, &values);
+
+        // The tdengine shape: plain settings in the URL, a secret in a header.
+        assert_eq!(
+            resolve_request_string("${HOST}:${PORT}/api", &scope).value.as_deref(),
+            Some("localhost:6042/api"),
+        );
+        assert_eq!(
+            resolve_request_string("Bearer ${secret:TOKEN}", &scope).value.as_deref(),
+            Some("Bearer t"),
+        );
+
+        // A missing plain value is a missing reference: the connector is not
+        // usable, and saying so is better than sending `${HOST}`.
+        let missing = resolve_request_string("${HOST}:${SCHEME}", &scope);
+        assert_eq!(missing.value, None);
+        assert_eq!(missing.missing, vec!["SCHEME".to_owned()]);
+
+        // Namespaces do not leak into each other: a plain name is never looked up
+        // in the credential store, and vice versa.
+        assert_eq!(resolve_request_string("${TOKEN}", &scope).value, None);
+        assert_eq!(resolve_request_string("${secret:HOST}", &scope).value, None);
     }
 
     #[test]

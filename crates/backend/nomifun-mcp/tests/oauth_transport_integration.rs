@@ -126,8 +126,7 @@ async fn http_probe_injects_oauth_and_retries_once_after_401() {
                 "oauth-server",
                 &McpServerTransport::Http {
                     url: server_url.clone(),
-                    headers: HashMap::new(),
-                },
+                    headers: HashMap::new(), values: HashMap::new()},
             )
             .await
     }

@@ -137,8 +137,8 @@ impl McpConnectionTestService {
         debug!(name, ?transport, "starting MCP connection test");
         match transport {
             McpServerTransport::Stdio { command, args, env } => self.test_stdio(command, args, env).await,
-            McpServerTransport::Http { url, headers } => self.test_http(url, headers).await,
-            McpServerTransport::Sse { url, headers } => self.test_sse(url, headers).await,
+            McpServerTransport::Http { url, headers, values } => self.test_http(url, headers, values).await,
+            McpServerTransport::Sse { url, headers, values } => self.test_sse(url, headers, values).await,
         }
     }
 
@@ -180,13 +180,13 @@ impl McpConnectionTestService {
             McpServerTransport::Stdio { command, args, env } => {
                 self.call_stdio(command, args, env, tool, arguments).await
             }
-            McpServerTransport::Http { url, headers } => {
-                self.call_http(url, headers, tool, arguments).await
+            McpServerTransport::Http { url, headers, values } => {
+                self.call_http(url, headers, values, tool, arguments).await
             }
             // The legacy `sse` transport: handshake over a streamed GET plus
             // POSTed JSON-RPC, exactly as the probe does it.
-            McpServerTransport::Sse { url, headers } => {
-                self.call_sse(url, headers, tool, arguments).await
+            McpServerTransport::Sse { url, headers, values } => {
+                self.call_sse(url, headers, values, tool, arguments).await
             }
         }
     }
@@ -195,12 +195,13 @@ impl McpConnectionTestService {
         &self,
         url: &str,
         headers: &HashMap<String, String>,
+        values: &HashMap<String, String>,
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let client = self.http_client();
         let (resolved_url, mut req_headers, oauth_managed) =
-            self.request_headers(url, headers).await.map_err(call_failure)?;
+            self.request_headers(url, headers, values).await.map_err(call_failure)?;
 
         // 1. Open the stream, with the same one-shot 401 refresh the probe uses.
         let mut refreshed = false;
@@ -380,12 +381,13 @@ impl McpConnectionTestService {
         &self,
         url: &str,
         headers: &HashMap<String, String>,
+        values: &HashMap<String, String>,
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let client = self.http_client();
         let (resolved_url, mut req_headers, oauth_managed) =
-            self.request_headers(url, headers).await.map_err(call_failure)?;
+            self.request_headers(url, headers, values).await.map_err(call_failure)?;
         req_headers.insert(
             reqwest::header::CONTENT_TYPE,
             "application/json".parse().expect("valid header"),
@@ -499,16 +501,26 @@ impl McpConnectionTestService {
 
     // -- HTTP (Streamable HTTP) transport ---------------------------------
 
-    async fn test_http(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
-        match tokio::time::timeout(self.timeout, self.test_http_inner(url, headers)).await {
+    async fn test_http(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        values: &HashMap<String, String>,
+    ) -> McpConnectionTestResult {
+        match tokio::time::timeout(self.timeout, self.test_http_inner(url, headers, values)).await {
             Ok(r) => r,
             Err(_) => timeout_result(self.timeout),
         }
     }
 
-    async fn test_http_inner(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
+    async fn test_http_inner(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        values: &HashMap<String, String>,
+    ) -> McpConnectionTestResult {
         let client = self.http_client();
-        let (resolved_url, mut req_headers, oauth_managed) = match self.request_headers(url, headers).await {
+        let (resolved_url, mut req_headers, oauth_managed) = match self.request_headers(url, headers, values).await {
             Ok(value) => value,
             Err(result) => return result,
         };
@@ -638,8 +650,9 @@ impl McpConnectionTestService {
         &self,
         url: &str,
         headers: &HashMap<String, String>,
+        values: &HashMap<String, String>,
     ) -> Result<(String, reqwest::header::HeaderMap, bool), McpConnectionTestResult> {
-        let (resolved_url, resolved_headers) = resolve_remote_auth(url, headers)?;
+        let (resolved_url, resolved_headers) = resolve_remote_auth(url, headers, values)?;
         let mut request_headers = build_http_headers(&resolved_headers);
         if request_headers.contains_key(reqwest::header::AUTHORIZATION) {
             return Ok((resolved_url, request_headers, false));
@@ -710,16 +723,26 @@ impl McpConnectionTestService {
 
     // -- SSE transport ----------------------------------------------------
 
-    async fn test_sse(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
-        match tokio::time::timeout(self.timeout, self.test_sse_inner(url, headers)).await {
+    async fn test_sse(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        values: &HashMap<String, String>,
+    ) -> McpConnectionTestResult {
+        match tokio::time::timeout(self.timeout, self.test_sse_inner(url, headers, values)).await {
             Ok(r) => r,
             Err(_) => timeout_result(self.timeout),
         }
     }
 
-    async fn test_sse_inner(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
+    async fn test_sse_inner(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        values: &HashMap<String, String>,
+    ) -> McpConnectionTestResult {
         let client = self.http_client();
-        let (resolved_url, mut req_headers, oauth_managed) = match self.request_headers(url, headers).await {
+        let (resolved_url, mut req_headers, oauth_managed) = match self.request_headers(url, headers, values).await {
             Ok(value) => value,
             Err(result) => return result,
         };
@@ -999,20 +1022,23 @@ fn call_failure(result: McpConnectionTestResult) -> McpToolCallError {
 fn resolve_remote_auth(
     url: &str,
     headers: &HashMap<String, String>,
+    values: &HashMap<String, String>,
 ) -> Result<(String, HashMap<String, String>), McpConnectionTestResult> {
-    resolve_remote_auth_with(url, headers, &nomifun_common::secret_ref::credentials())
+    resolve_remote_auth_with(url, headers, values, &nomifun_common::secret_ref::credentials())
 }
 
 /// [`resolve_remote_auth`] against an explicit credential map (pure; for tests).
 fn resolve_remote_auth_with(
     url: &str,
     headers: &HashMap<String, String>,
+    values: &HashMap<String, String>,
     credentials: &HashMap<String, String>,
 ) -> Result<(String, HashMap<String, String>), McpConnectionTestResult> {
+    let scope = nomifun_common::secret_ref::TransportScope::new(credentials, values);
     let mut missing: Vec<String> = Vec::new();
     let mut resolved_headers = HashMap::with_capacity(headers.len());
     for (key, value) in headers {
-        let resolution = nomifun_common::secret_ref::resolve_template_with(value, credentials);
+        let resolution = nomifun_common::secret_ref::resolve_request_string(value, &scope);
         match resolution.value {
             Some(value) => {
                 resolved_headers.insert(key.clone(), value);
@@ -1020,7 +1046,7 @@ fn resolve_remote_auth_with(
             None => missing.extend(resolution.missing),
         }
     }
-    let resolved_url = nomifun_common::secret_ref::resolve_template_with(url, credentials);
+    let resolved_url = nomifun_common::secret_ref::resolve_request_string(url, &scope);
     missing.extend(resolved_url.missing.iter().cloned());
 
     if !missing.is_empty() {
@@ -1089,7 +1115,7 @@ mod tests {
         ]);
         let url = "https://h/mcp?token=${secret:MISSING_B}";
 
-        let error = resolve_remote_auth_with(url, &headers, &credentials)
+        let error = resolve_remote_auth_with(url, &headers, &HashMap::new(), &credentials)
             .expect_err("an unresolvable reference must stop the request");
 
         assert_eq!(
@@ -1110,6 +1136,7 @@ mod tests {
         let (url, resolved) = resolve_remote_auth_with(
             "https://h/mcp",
             &headers,
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("no references, nothing to resolve");
@@ -1241,7 +1268,7 @@ mod tests {
     }
 
     fn http_transport(url: &str) -> McpServerTransport {
-        McpServerTransport::Http { url: url.to_owned(), headers: HashMap::new() }
+        McpServerTransport::Http { url: url.to_owned(), headers: HashMap::new() , values: HashMap::new()}
     }
 
     #[tokio::test]
@@ -1312,6 +1339,7 @@ mod tests {
                 &McpServerTransport::Sse {
                     url: "http://127.0.0.1:1/sse".to_owned(),
                     headers: HashMap::new(),
+                    values: HashMap::new(),
                 },
                 "echo",
                 serde_json::json!({}),

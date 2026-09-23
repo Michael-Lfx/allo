@@ -76,11 +76,16 @@ enum McpTransportParam {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
+        /// Non-secret `${NAME}` values for this connector's URL/headers (34 §5.3).
+        #[serde(default)]
+        values: HashMap<String, String>,
     },
     Http {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
+        #[serde(default)]
+        values: HashMap<String, String>,
     },
 }
 
@@ -92,8 +97,8 @@ impl From<McpTransportParam> for nomifun_api_types::McpTransport {
                 args,
                 env,
             },
-            McpTransportParam::Sse { url, headers } => Self::Sse { url, headers },
-            McpTransportParam::Http { url, headers } => Self::Http { url, headers },
+            McpTransportParam::Sse { url, headers, values } => Self::Sse { url, headers, values },
+            McpTransportParam::Http { url, headers, values } => Self::Http { url, headers, values },
         }
     }
 }

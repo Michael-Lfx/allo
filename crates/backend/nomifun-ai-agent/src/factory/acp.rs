@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::runtime_handle::AgentRuntimeHandle;
@@ -430,17 +431,72 @@ fn row_to_sdk_mcp_server(row: &McpServerRow) -> Result<McpServer, String> {
                 .get("url")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "http: missing url".to_owned())?;
-            Ok(build_http_server(&row.name, url, json_string_entries(value.get("headers"))))
+            let (url, headers) = resolve_remote_request(
+                &row.name,
+                url,
+                &json_string_entries(value.get("headers")),
+                &json_string_entries(value.get("values")).into_iter().collect(),
+            )?;
+            Ok(build_http_server(&row.name, &url, headers))
         }
         "sse" => {
             let url = value
                 .get("url")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "sse: missing url".to_owned())?;
-            Ok(build_sse_server(&row.name, url, json_string_entries(value.get("headers"))))
+            let (url, headers) = resolve_remote_request(
+                &row.name,
+                url,
+                &json_string_entries(value.get("headers")),
+                &json_string_entries(value.get("values")).into_iter().collect(),
+            )?;
+            Ok(build_sse_server(&row.name, &url, headers))
         }
         other => Err(format!("unknown transport type: {other}")),
     }
+}
+
+/// Resolve a remote server's `${…}` references before an external agent gets it.
+///
+/// Both namespaces resolve here (`34` §5.1): `secret:NAME` / `${secret:NAME}` from
+/// the host's credentials, `${NAME}` from the connector's own plain values. A
+/// reference that cannot be resolved **drops the server** — handing `${HOST}` or a
+/// literal `secret:NAME` to another runtime is the failure this removes.
+fn resolve_remote_request(
+    server_name: &str,
+    url: &str,
+    headers: &[(String, String)],
+    values: &HashMap<String, String>,
+) -> Result<(String, Vec<(String, String)>), String> {
+    let credentials = nomifun_common::secret_ref::credentials();
+    let scope = nomifun_common::secret_ref::TransportScope::new(&credentials, values);
+    let resolved_url = nomifun_common::secret_ref::resolve_request_string(url, &scope);
+    let mut resolved_headers = Vec::with_capacity(headers.len());
+    let mut missing = resolved_url.missing.clone();
+    for (key, value) in headers {
+        let resolution = nomifun_common::secret_ref::resolve_request_string(value, &scope);
+        match resolution.value {
+            Some(value) => resolved_headers.push((key.clone(), value)),
+            None => missing.extend(resolution.missing),
+        }
+    }
+    if !missing.is_empty() {
+        missing.sort();
+        missing.dedup();
+        warn!(
+            server_name = %server_name,
+            missing = ?missing,
+            "user_mcp: unresolved references in the server URL or headers; skipping the server"
+        );
+        return Err(format!(
+            "url/headers: missing reference(s): {}",
+            missing.join(", ")
+        ));
+    }
+    Ok((
+        resolved_url.value.unwrap_or_else(|| url.to_owned()),
+        resolved_headers,
+    ))
 }
 
 fn session_server_to_sdk_mcp_server(server: &SessionMcpServer) -> Result<McpServer, String> {
@@ -460,20 +516,36 @@ fn session_server_to_sdk_mcp_server(server: &SessionMcpServer) -> Result<McpServ
             }
             Ok(build_stdio_server(&server.name, command, args.clone(), env))
         }
-        SessionMcpTransport::Http { url, headers }
-        | SessionMcpTransport::StreamableHttp { url, headers } => {
+        SessionMcpTransport::Http { url, headers, values }
+        | SessionMcpTransport::StreamableHttp { url, headers, values } => {
             if url.is_empty() {
                 return Err("http: missing url".to_owned());
             }
-            let headers = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            Ok(build_http_server(&server.name, url, headers))
+            let (url, headers) = resolve_remote_request(
+                &server.name,
+                url,
+                &headers
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>(),
+                values,
+            )?;
+            Ok(build_http_server(&server.name, &url, headers))
         }
-        SessionMcpTransport::Sse { url, headers } => {
+        SessionMcpTransport::Sse { url, headers, values } => {
             if url.is_empty() {
                 return Err("sse: missing url".to_owned());
             }
-            let headers = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            Ok(build_sse_server(&server.name, url, headers))
+            let (url, headers) = resolve_remote_request(
+                &server.name,
+                url,
+                &headers
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>(),
+                values,
+            )?;
+            Ok(build_sse_server(&server.name, &url, headers))
         }
     }
 }

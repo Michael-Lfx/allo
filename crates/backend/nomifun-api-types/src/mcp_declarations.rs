@@ -317,6 +317,10 @@ fn resolve_entry(name: &str, value: serde_json::Value) -> Result<ResolvedNomiMcp
             McpTransport::Http {
                 url,
                 headers: to_map(headers),
+                // Declared servers carry no `${NAME}` settings: a declaration is
+                // written by hand or by the importer, and the importer fills this
+                // from the connector's own declaration (34 §5.3).
+                values: HashMap::new(),
             }
         }
         (None, Some(url), Some("sse")) => {
@@ -324,6 +328,7 @@ fn resolve_entry(name: &str, value: serde_json::Value) -> Result<ResolvedNomiMcp
             McpTransport::Sse {
                 url,
                 headers: to_map(headers),
+                values: HashMap::new(),
             }
         }
         (None, Some(_), Some(other)) => {

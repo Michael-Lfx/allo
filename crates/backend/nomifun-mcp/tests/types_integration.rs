@@ -92,7 +92,7 @@ fn http_server_with_headers() {
     let server = McpServer::from_row(r).unwrap();
 
     match &server.transport {
-        McpServerTransport::Http { url, headers } => {
+        McpServerTransport::Http { url, headers, .. } => {
             assert_eq!(url, "https://mcp.example.com/v1");
             assert_eq!(headers.len(), 2);
             assert_eq!(headers["Authorization"], "Bearer secret123");
@@ -113,7 +113,7 @@ fn sse_server_minimal() {
 
     assert_eq!(server.last_test_status, McpServerStatus::Testing);
     match &server.transport {
-        McpServerTransport::Sse { url, headers } => {
+        McpServerTransport::Sse { url, headers, .. } => {
             assert_eq!(url, "https://sse.example.com/events");
             assert!(headers.is_empty());
         }
@@ -141,12 +141,10 @@ fn transport_db_roundtrip_preserves_all_fields() {
             headers: HashMap::from([
                 ("Authorization".into(), "Bearer tok".into()),
                 ("Accept".into(), "text/event-stream".into()),
-            ]),
-        },
+            ]), values: HashMap::new()},
         McpServerTransport::Http {
             url: "https://http.example.com/mcp".into(),
-            headers: HashMap::new(),
-        },
+            headers: HashMap::new(), values: HashMap::new()},
     ];
 
     for original in transports {
