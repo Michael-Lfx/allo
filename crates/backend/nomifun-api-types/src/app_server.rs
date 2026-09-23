@@ -287,12 +287,20 @@ pub struct AppServerConnectorCallResult {
 pub struct AppServerOAuthStatusView {
     /// `authenticated` | `not_authenticated` | `reauthorization_required`.
     pub state: String,
+    /// Last sanitized browser-flow failure: why an authorization this client
+    /// started never finished. Set when the flow failed after the browser was
+    /// opened (the pre-browser failures come back on `auth/start` instead), and
+    /// cleared once a flow succeeds or the credential is forgotten. Never
+    /// contains tokens, authorization codes or the full authorization URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-/// `connector/auth/start` result. The browser flow is owned by the trusted
-/// host; clients only learn that the flow was started (and poll auth/status).
+/// `connector/auth/start` result. The browser flow is owned by the trusted host:
+/// `started` means the authorization URL reached the browser and the callback is
+/// being awaited; `error` means the flow failed *before* that, so nothing is
+/// worth waiting for. A failure after the browser opens surfaces through
+/// `auth/status` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerOAuthStartResult {
     pub connector_id: String,

@@ -336,10 +336,19 @@ try {
 
   // ============================ TC-OAUTH-004 错误边界 ========================
   // --- Issuer/Resource 不匹配：PRM 指向不发布 RFC 8414 元数据的 AS ---
-  await harness.connectors.authStart(ids.mismatch);
+  // 这个失败发生在「把 URL 交给浏览器」之前，所以 auth/start 必须当场回 error：
+  // 回一个 started 就等于让前端去等一个永远不会出现的浏览器窗口（GitHub
+  // Copilot connector 正是这个形状）。
+  const mmStart = await harness.connectors.authStart(ids.mismatch);
+  check(
+    "OA-004-mismatch.auth-start-reports-error",
+    mmStart.state === "error" && Boolean(mmStart.error),
+    mmStart,
+  );
   await sleep(2500);
   const mmStatus = await harness.connectors.authStatus(ids.mismatch);
   check("OA-004-mismatch.never-authenticated", mmStatus.state === "not_authenticated", mmStatus);
+  check("OA-004-mismatch.status-carries-the-reason", Boolean(mmStatus.error), mmStatus);
   check(
     "OA-004-mismatch.no-token-request",
     counters.mismatch.tokenAuthCode === 0 && counters.mismatch.tokenRefresh === 0,
@@ -374,6 +383,9 @@ try {
   await sleep(125_000);
   const toStatus = await harness.connectors.authStatus(ids.timeout);
   check("OA-004-timeout.not-authenticated", toStatus.state === "not_authenticated", toStatus);
+  // 这个失败发生在浏览器打开**之后**（回调超时），此时 auth/start 早已回过
+  // started：唯一能把它带到前端的通道就是 auth/status 的 error。
+  check("OA-004-timeout.status-carries-the-reason", Boolean(toStatus.error), toStatus);
   check(
     "OA-004-timeout.no-token-request",
     counters.timeout.tokenAuthCode === 0 && counters.timeout.tokenRefresh === 0,

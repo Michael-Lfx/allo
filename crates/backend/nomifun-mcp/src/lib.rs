@@ -21,7 +21,7 @@ pub use connection_test::{
     McpConnectionTestService, McpToolCallError, McpToolCallOutcome, McpToolCallPool,
 };
 pub use error::McpError;
-pub use oauth_service::{MCP_PROTOCOL_VERSION, McpOAuthService};
+pub use oauth_service::{MCP_PROTOCOL_VERSION, McpOAuthService, sanitize_oauth_error};
 pub use routes::{McpRouterState, mcp_routes};
 pub use service::McpConfigService;
 pub use session_injection::{AcpMcpCapabilities, parse_acp_mcp_capabilities};

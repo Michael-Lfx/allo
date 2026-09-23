@@ -1065,6 +1065,15 @@ connected     = 使用该凭据完成 initialize / tools/list probe
 
 Connector OAuth API 不向 Renderer 返回 client secret、registration access token、access token、refresh token、code verifier、authorization code 或完整回调 URL。授权 URL 仅经受控的系统浏览器打开机制传递。
 
+**失败可见性的分工**（2026-09-23 起）——「浏览器没打开」与「浏览器打开了但流程没走完」是两种不同的失败，走两条不同的通道：
+
+| 失败时机 | 通道 | 说明 |
+|---|---|---|
+| **交给浏览器之前**（discovery、client identity、回调监听绑定、`open::that` 本身） | `connector/auth/start` 当场返回 `state: "error"` + `error` | 此时浏览器**从未被调用**。回一个 `started` 会让客户端去等一个不存在的窗口——这正是 GitHub Copilot connector 的现场：`github.com` 不发布 `registration_endpoint`，未配 `MCP_OAUTH_CLIENT_ID` 时流程在弹浏览器前就中止，而 UI 仍然显示「授权已在可信主机上启动」。 |
+| **浏览器打开之后**（回调超时、CSRF/路径校验失败、token exchange 失败） | `connector/auth/status` 的 `error` | `auth/start` 早已回过 `started`，这是唯一能到达客户端的通道；成功后或 `logout` 后清除。 |
+
+两条通道的文案都经 `sanitize_oauth_error` 生成，不含 token、code 或完整授权 URL。
+
 ### 9. 实现位置
 
 | 模块 | 变更 |

@@ -541,6 +541,133 @@ async fn no_registration_endpoint_without_pre_registered_client_fails_loudly() {
     assert_eq!(log.lock().unwrap().authorize_hits, 0);
 }
 
+/// Wait for the browser hook to capture the authorization URL (these tests are
+/// the "browser": they drive the callback themselves).
+async fn wait_for_authorize_url(capture: &Arc<Mutex<Option<String>>>) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(url) = capture.lock().unwrap().clone() {
+            return url;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "authorize URL was not captured"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A pre-browser failure must reach whoever *started* the flow.
+///
+/// This is the shape a real GitHub Copilot connector hits: the protected
+/// resource points at an authorization server that publishes no RFC 7591
+/// registration endpoint and no pre-registered client is configured. The flow
+/// dies before the browser step, so `connector/auth/start` used to acknowledge
+/// `started` anyway — the client then waited for a window nobody ever opened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn begin_login_reports_a_pre_browser_failure_instead_of_acking_it() {
+    let _env_guard = env_lock().lock().await;
+    let log: SharedLog = Arc::new(Mutex::new(MockLog::default()));
+    let mcp_url = serve_platform(
+        MockConfig {
+            registration_endpoint: false,
+            ..Default::default()
+        },
+        log.clone(),
+    )
+    .await;
+
+    let (token_repo, registration_repo) = make_repos().await;
+    let capture = Arc::new(Mutex::new(None));
+    let oauth = service_with_hook(token_repo, registration_repo, capture.clone());
+
+    let error = match oauth.begin_login(&mcp_url).await {
+        Ok(_) => panic!("a flow with no client identity must fail before the browser opens"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.oauth_error_code(),
+        Some("pre_registered_client_required")
+    );
+
+    // The two proofs that nothing was opened for the user: the browser hook
+    // never fired, and the authorization server never saw an authorize request.
+    assert!(
+        capture.lock().unwrap().is_none(),
+        "the browser must not be handed a URL for a flow that cannot finish"
+    );
+    assert_eq!(log.lock().unwrap().authorize_hits, 0);
+
+    // ...and the reason survives for a client that can only poll.
+    let remembered = oauth
+        .last_login_error(&mcp_url)
+        .await
+        .expect("the failure must stay readable through auth_status");
+    assert!(
+        remembered.contains("pre_registered_client_required"),
+        "unexpected message: {remembered}"
+    );
+}
+
+/// A failure *after* the browser step has no other channel: the client already
+/// received its `started` acknowledgement. `last_login_error` carries it to
+/// `auth_status`, and the next successful flow clears it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_post_browser_failure_stays_visible_until_the_next_success() {
+    let _env_guard = env_lock().lock().await;
+    let log: SharedLog = Arc::new(Mutex::new(MockLog::default()));
+    let mcp_url = serve_platform(MockConfig::default(), log.clone()).await;
+
+    let (token_repo, registration_repo) = make_repos().await;
+    let capture = Arc::new(Mutex::new(None));
+    let oauth = service_with_hook(token_repo, registration_repo, capture.clone());
+
+    // Phase 1 — the browser step happens, then the callback arrives with a state
+    // that is not the pending CSRF token. (The callback server rejects it and
+    // closes without a body, hence the short client timeout.)
+    let service = oauth.clone();
+    let url = mcp_url.clone();
+    let flow = tokio::spawn(async move {
+        service
+            .begin_login(&url)
+            .await
+            .expect("the prepared half must succeed")
+            .complete()
+            .await
+    });
+    let authorize_url = wait_for_authorize_url(&capture).await;
+    assert!(
+        authorize_url.contains("code_challenge="),
+        "the captured URL must be a PKCE authorize URL: {authorize_url}"
+    );
+    let callback = callback_base_from_authorize(&capture);
+    let _ = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .expect("short-timeout client")
+        .get(format!("{callback}?code=stolen&state=not-the-csrf-token"))
+        .send()
+        .await;
+
+    let failed = flow.await.expect("flow task panicked");
+    assert!(!failed.success, "a CSRF mismatch must not authenticate");
+    let remembered = oauth
+        .last_login_error(&mcp_url)
+        .await
+        .expect("a post-browser failure must stay readable through auth_status");
+    assert!(remembered.contains("CSRF"), "unexpected message: {remembered}");
+
+    // Phase 2 — the same server URL, this time completing properly.
+    *capture.lock().unwrap() = None;
+    let success = run_login(&oauth, &capture, &mcp_url).await;
+    assert!(success.success, "the retry must succeed: {:?}", success.error);
+    assert!(
+        oauth.last_login_error(&mcp_url).await.is_none(),
+        "a successful flow must clear the remembered failure"
+    );
+}
+
 /// §10 #2 — RFC 7591 payload; client id persisted; exchange uses the
 /// registered id with a PKCE verifier.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

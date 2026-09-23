@@ -25,7 +25,7 @@ use nomifun_common::{AppError, McpServerStatus};
 use nomifun_extension::skill_service::{
     self, SkillListItem, SkillOrigin, SkillPaths, SkillSource,
 };
-use nomifun_mcp::{McpConfigService, McpConnectionTestService, McpOAuthService};
+use nomifun_mcp::{McpConfigService, McpConnectionTestService, McpOAuthService, sanitize_oauth_error};
 
 // ---------------------------------------------------------------------------
 // Skill catalog
@@ -469,8 +469,11 @@ fn probe_result(connector_id: String, result: McpConnectionTestResult) -> AppSer
 // Connector OAuth pass-through
 // ---------------------------------------------------------------------------
 
-/// OAuth pass-through: the trusted host owns the browser flow; clients only
-/// see a start acknowledgement and poll `auth_status`.
+/// OAuth pass-through: the trusted host owns the browser flow. `auth_start`
+/// reports a failure that happens *before* the browser opens — nothing was
+/// shown to the user, so there is nothing to wait for — and acknowledges the
+/// rest, which clients follow by polling `auth_status`, whose `error` carries a
+/// flow that failed after the browser step.
 #[derive(Clone)]
 pub struct AppServerConnectorAuth {
     config: McpConfigService,
@@ -499,36 +502,59 @@ impl ConnectorAuthProvider for AppServerConnectorAuth {
     async fn auth_status(&self, id: &str) -> Result<AppServerOAuthStatusView, AppError> {
         let url = self.remote_url(id).await?;
         let status = self.oauth.check_oauth_status(&url).await.map_err(AppError::from)?;
+        if status.authenticated {
+            return Ok(AppServerOAuthStatusView {
+                state: "authenticated".into(),
+                error: None,
+            });
+        }
         Ok(AppServerOAuthStatusView {
-            state: if status.authenticated { "authenticated".into() } else { "not_authenticated".into() },
-            error: None,
+            state: "not_authenticated".into(),
+            // The flow outlives the request that starts it, so for anything
+            // that fails after the browser step this is the only channel that
+            // can carry the reason to the client.
+            error: self.oauth.last_login_error(&url).await,
         })
     }
 
     async fn auth_start(&self, id: &str) -> Result<AppServerOAuthStartResult, AppError> {
         let url = self.remote_url(id).await?;
-        // The PKCE browser flow runs on the trusted host (server-side
-        // callback + encrypted token storage). Spawn it so a single
-        // connection never blocks on the callback window; clients poll
-        // `auth_status` until `authenticated`.
+        // Start only the synchronous half first (endpoint discovery, client
+        // identity, loopback callback, browser launch). A failure there means
+        // nothing was shown to the user, so acknowledging `started` would send
+        // the client off to wait for a browser window that never opened.
         let oauth = self.oauth.clone();
+        let started = match oauth.begin_login(&url).await {
+            Ok(started) => started,
+            Err(error) => {
+                let message = sanitize_oauth_error(&error);
+                tracing::warn!(url = %url, error = %message, "MCP OAuth login failed");
+                return Ok(AppServerOAuthStartResult {
+                    connector_id: id.to_owned(),
+                    state: "error".into(),
+                    error: Some(message),
+                });
+            }
+        };
+
+        // The browser is open; the callback wait and the token exchange run on
+        // the trusted host's PKCE callback (server-side callback + encrypted
+        // token storage) and can take minutes, so a single connection must not
+        // block on them. Clients poll `auth_status` — whose `error` carries
+        // whatever this task ends up reporting.
         tokio::spawn(async move {
-            match oauth.login(&url).await {
-                Ok(result) if result.success => {
-                    tracing::info!(url = %url, "MCP OAuth login completed");
-                }
-                Ok(result) => {
-                    tracing::warn!(
-                        url = %url,
-                        error = result.error.as_deref().unwrap_or("unknown"),
-                        "MCP OAuth login failed"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(url = %url, %error, "MCP OAuth login task failed");
-                }
+            let result = started.complete().await;
+            if result.success {
+                tracing::info!(url = %url, "MCP OAuth login completed");
+            } else {
+                tracing::warn!(
+                    url = %url,
+                    error = result.error.as_deref().unwrap_or("unknown"),
+                    "MCP OAuth login failed"
+                );
             }
         });
+
         Ok(AppServerOAuthStartResult {
             connector_id: id.to_owned(),
             state: "started".into(),
