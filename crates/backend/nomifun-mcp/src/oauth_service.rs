@@ -17,7 +17,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, OwnedMutexGuard};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::McpError;
 
@@ -36,6 +36,26 @@ pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Token expiry safety margin (refresh 5 minutes before expiration).
 const EXPIRY_MARGIN_MS: i64 = 5 * 60 * 1000;
+
+/// Loopback callback port used when `MCP_OAUTH_REDIRECT_URI` is unset.
+///
+/// Deliberately **fixed**, not ephemeral: the redirect URI is part of the
+/// client-registration identity key (`mcp_server_url + resource + issuer +
+/// redirect_uri`, migration `058`), so an ephemeral port made every login a
+/// *different* identity. The persisted RFC 7591 registration could never be
+/// reused and each attempt registered a new client with the authorization
+/// server — one registration plus one authorize plus one token exchange per
+/// retry, which a throttling gateway answers with
+/// `slow_down: too many OAuth requests`. A fixed port keeps that key stable
+/// across logins **and** restarts, so the stored registration is reused.
+///
+/// One callback listener exists at a time (`login_gate`), so a single
+/// well-known port serves every connector. It sits below the Windows
+/// ephemeral range (49152–65535) so the OS does not hand it to an unrelated
+/// process; when it is taken anyway the flow falls back to an ephemeral port
+/// and warns — the fallback costs a fresh registration, which is exactly why
+/// it is logged.
+const DEFAULT_CALLBACK_PORT: u16 = 41873;
 
 // ---------------------------------------------------------------------------
 // Discovery response
@@ -149,6 +169,15 @@ pub struct McpOAuthService {
     http_client: HttpClientFactory,
     /// Mutex protecting the pending login state (only one login at a time).
     pending: Arc<Mutex<Option<PendingLogin>>>,
+    /// The loopback callback port this process bound last, once known.
+    ///
+    /// Preferred value is [`DEFAULT_CALLBACK_PORT`]; remembering whatever
+    /// worked — including an ephemeral fallback — keeps the redirect URI, and
+    /// with it the client-registration identity key, stable across the logins
+    /// of *this* process. Without it a second host on the same machine (or a
+    /// squatted port) would present a new identity and re-register on every
+    /// attempt.
+    callback_port: Arc<Mutex<Option<u16>>>,
     /// Serializes `login` so only one PKCE flow owns the shared `pending` slot
     /// at a time. `auth_start` spawns logins in background tasks; without a
     /// gate two concurrent flows overwrite each other's pending state and the
@@ -265,6 +294,7 @@ impl McpOAuthService {
             registration_repo: Arc::new(InMemoryOAuthClientRegistrationRepository::default()),
             http_client: Arc::new(move || http_client.clone()),
             pending: Arc::new(Mutex::new(None)),
+            callback_port: Arc::new(Mutex::new(None)),
             login_gate: Arc::new(tokio::sync::Mutex::new(())),
             browser_hook: hook,
             last_login_error: Arc::new(Mutex::new(HashMap::new())),
@@ -523,7 +553,7 @@ impl McpOAuthService {
         // Fixed redirect URIs must be loopback with an explicit port; the
         // listener binds that host:port and the callback handler enforces the
         // exact request path (design doc §7.1).
-        let (listener, redirect_url_str) = Self::bind_callback_listener().await?;
+        let (listener, redirect_url_str) = self.bind_callback_listener().await?;
         let redirect = RedirectUrl::new(redirect_url_str.clone())
             .map_err(|e| McpError::OAuth(format!("Invalid redirect URL: {e}")))?;
 
@@ -573,17 +603,14 @@ impl McpOAuthService {
     ///
     /// With `MCP_OAUTH_REDIRECT_URI` set, the URI must be
     /// `http://127.0.0.1:<port>/<path>` (or `http://localhost:…`); the
-    /// listener binds that host and port (design doc §7.1).
-    async fn bind_callback_listener() -> Result<(TcpListener, String), McpError> {
+    /// listener binds that host and port (design doc §7.1) and a bind failure
+    /// is reported to the caller — the operator asked for that exact URI.
+    /// Otherwise the remembered port (or [`DEFAULT_CALLBACK_PORT`] the first
+    /// time) is preferred.
+    async fn bind_callback_listener(&self) -> Result<(TcpListener, String), McpError> {
         let Some(redirect_uri) = Self::env_redirect_uri() else {
-            let listener = TcpListener::bind("127.0.0.1:0")
-                .await
-                .map_err(|e| McpError::OAuth(format!("Failed to bind callback server: {e}")))?;
-            let callback_port = listener
-                .local_addr()
-                .map_err(|e| McpError::OAuth(format!("Failed to get callback port: {e}")))?
-                .port();
-            return Ok((listener, format!("http://127.0.0.1:{callback_port}/callback")));
+            let preferred = self.preferred_callback_port().await;
+            return self.bind_default_callback_listener(preferred).await;
         };
 
         let remainder = redirect_uri
@@ -621,6 +648,45 @@ impl McpOAuthService {
         Ok((listener, redirect_uri))
     }
 
+    /// Bind the preferred callback port, falling back to an ephemeral one.
+    ///
+    /// The fallback is not just a port change: the redirect URI is part of the
+    /// client-registration identity key, so an ephemeral port means a fresh
+    /// RFC 7591 registration for that flow. Warn with both ports — that is the
+    /// one line a reader needs to explain "why did this login register a new
+    /// client instead of reusing the stored one" — and remember whichever port
+    /// was bound, so the *next* login of this process presents the same URI.
+    async fn bind_default_callback_listener(&self, preferred: u16) -> Result<(TcpListener, String), McpError> {
+        let (listener, port) = match TcpListener::bind(("127.0.0.1", preferred)).await {
+            Ok(listener) => (listener, preferred),
+            Err(error) => {
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .map_err(|e| McpError::OAuth(format!("Failed to bind callback server: {e}")))?;
+                let port = listener
+                    .local_addr()
+                    .map_err(|e| McpError::OAuth(format!("Failed to get callback port: {e}")))?
+                    .port();
+                warn!(
+                    preferred_port = preferred,
+                    port,
+                    %error,
+                    "OAuth callback port is taken; using an ephemeral port for this flow \
+                     (the redirect URI changes, so the stored client registration cannot be reused)"
+                );
+                (listener, port)
+            }
+        };
+        *self.callback_port.lock().await = Some(port);
+        Ok((listener, format!("http://127.0.0.1:{port}/callback")))
+    }
+
+    /// Port a default-path login should try first: whatever this process bound
+    /// last, else [`DEFAULT_CALLBACK_PORT`].
+    async fn preferred_callback_port(&self) -> u16 {
+        self.callback_port.lock().await.unwrap_or(DEFAULT_CALLBACK_PORT)
+    }
+
     /// Discover the OAuth authorization server for an MCP resource (design doc
     /// §5.1).
     ///
@@ -644,14 +710,26 @@ impl McpOAuthService {
         let base = server_url.trim_end_matches('/');
         let origin = origin_of(base);
 
-        for well_known in [
+        for (probe, well_known) in [
             format!("{base}/.well-known/oauth-authorization-server"),
             format!("{base}/.well-known/openid-configuration"),
             format!("{origin}/.well-known/oauth-authorization-server"),
             format!("{origin}/.well-known/openid-configuration"),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             if let Ok(metadata) = self.fetch_metadata(&well_known).await {
-                debug!(server_url, "Discovered OAuth metadata via RFC 8414 well-known: {well_known}");
+                // INFO, not debug: which well-known location answered (and how
+                // many probes it took to get there) is the first thing a
+                // connector-OAuth report needs, and an OAuth login is a
+                // user-visible, once-per-connector event.
+                info!(
+                    server_url,
+                    well_known = %well_known,
+                    probes = probe + 1,
+                    "OAuth metadata discovered (RFC 8414)"
+                );
                 return Ok(ResolvedOAuthServer {
                     resource_identifier: String::new(),
                     authorization_server_issuer: metadata
@@ -686,15 +764,26 @@ impl McpOAuthService {
                 .filter(|issuer| !issuer.trim().is_empty())
                 .map(|issuer| issuer.trim_end_matches('/').to_owned())
             {
-                debug!(
+                info!(
                     server_url,
-                    "Discovered OAuth authorization server via RFC 9728: {auth_server} (resource={resource_identifier})"
+                    auth_server = %auth_server,
+                    resource = %resource_identifier,
+                    "OAuth authorization server discovered (RFC 9728 protected-resource metadata)"
                 );
-                for well_known in [
+                for (probe, well_known) in [
                     format!("{auth_server}/.well-known/oauth-authorization-server"),
                     format!("{auth_server}/.well-known/openid-configuration"),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
                     if let Ok(metadata) = self.fetch_metadata(&well_known).await {
+                        info!(
+                            server_url,
+                            well_known = %well_known,
+                            probes = probe + 1,
+                            "OAuth metadata discovered (RFC 8414 at the advertised authorization server)"
+                        );
                         return Ok(ResolvedOAuthServer {
                             resource_identifier,
                             authorization_server_issuer: metadata
@@ -872,6 +961,12 @@ impl McpOAuthService {
     /// `(mcp_server_url, resource, issuer, redirect_uri)` so the exchange,
     /// any refresh, and later application restarts reuse the SAME client
     /// identity. A generic default client id is never fabricated.
+    ///
+    /// `redirect_uri` is the load-bearing part of that key: it must stay
+    /// stable for the reuse to happen at all, which is why the default
+    /// callback port is fixed ([`DEFAULT_CALLBACK_PORT`]) instead of ephemeral
+    /// — a new port on every login silently turns every attempt into a fresh
+    /// registration.
     async fn resolve_client_identity(
         &self,
         server_url: &str,
@@ -913,9 +1008,11 @@ impl McpOAuthService {
                     .map_err(McpError::Database)?
                     .id,
             };
-            debug!(
+            info!(
                 server_url,
+                %redirect_uri,
                 %registration_id,
+                client_id = %registered.client_id,
                 "OAuth client identity: pre-registered via environment"
             );
             return Ok(ClientIdentity {
@@ -937,9 +1034,11 @@ impl McpOAuthService {
             .await
             .map_err(McpError::Database)?
         {
-            debug!(
+            info!(
                 server_url,
+                %redirect_uri,
                 id = row.id,
+                client_id = %row.client_id,
                 "OAuth client identity: reusing persisted registration (RFC 7591)"
             );
             return Ok(ClientIdentity::from_row(&row));
@@ -950,7 +1049,13 @@ impl McpOAuthService {
             let registered = self
                 .register_client(server_url, endpoint, redirect_uri, resolved)
                 .await?;
-            debug!(server_url, "OAuth client identity: dynamically registered (RFC 7591)");
+            info!(
+                server_url,
+                %redirect_uri,
+                registration_id = ?registered.registration_id,
+                client_id = %registered.client_id,
+                "OAuth client identity: dynamically registered (RFC 7591)"
+            );
             return Ok(registered);
         }
 
@@ -1060,18 +1165,20 @@ impl McpOAuthService {
     }
 
     /// Wait for the OAuth callback redirect on the given listener.
+    ///
+    /// Awaited in place rather than in a detached accept task, so a timeout
+    /// drops the listener together with the future. A parked `accept()` kept
+    /// the port bound for the rest of the process's life, which turns the next
+    /// flow into the fallback path: an ephemeral port, i.e. a fresh client
+    /// registration for a user who merely left a browser window open.
     async fn wait_for_callback(&self, listener: TcpListener) -> Result<String, McpError> {
-        let (code_tx, code_rx) = tokio::sync::oneshot::channel::<Result<String, McpError>>();
-        let pending = self.pending.clone();
-
-        tokio::spawn(async move {
-            let result = Self::handle_callback_connection(listener, pending).await;
-            let _ = code_tx.send(result);
-        });
-
-        match tokio::time::timeout(CALLBACK_TIMEOUT, code_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(McpError::OAuth("Callback channel closed unexpectedly".to_string())),
+        match tokio::time::timeout(
+            CALLBACK_TIMEOUT,
+            Self::handle_callback_connection(listener, self.pending.clone()),
+        )
+        .await
+        {
+            Ok(result) => result,
             Err(_) => Err(McpError::OAuth(
                 "OAuth callback timed out — no redirect received within 120s".to_string(),
             )),
@@ -1081,9 +1188,10 @@ impl McpOAuthService {
     /// Handle a single HTTP connection on the callback server.
     ///
     /// Enforces the exact redirect path registered with the authorization
-    /// server (`MCP_OAUTH_REDIRECT_URI` or the ephemeral `/callback`), and
-    /// validates the CSRF state before returning the code (design doc §7.1).
-    /// Failed path/state checks do NOT consume the pending login state.
+    /// server (`MCP_OAUTH_REDIRECT_URI`, or `/callback` on the default
+    /// callback port), and validates the CSRF state before returning the code
+    /// (design doc §7.1). Failed path/state checks do NOT consume the pending
+    /// login state.
     async fn handle_callback_connection(
         listener: TcpListener,
         pending: Arc<Mutex<Option<PendingLogin>>>,
@@ -1206,7 +1314,7 @@ impl McpOAuthService {
 
         self.persist_token(server_url, &token_result, registration_id)
             .await?;
-        debug!(server_url, "OAuth tokens stored successfully");
+        info!(server_url, "OAuth tokens stored");
         Ok(())
     }
 
@@ -1290,7 +1398,7 @@ impl McpOAuthService {
             })
             .await?;
 
-        debug!(server_url, "OAuth token refreshed successfully");
+        info!(server_url, "OAuth token refreshed");
         Ok(new_access_token)
     }
 
@@ -1921,6 +2029,42 @@ mod tests {
             .await
             .expect_err("expired token without refresh must fail closed");
         assert!(matches!(error, McpError::ReauthorizationRequired));
+    }
+
+    // -- Loopback callback listener ------------------------------------------
+
+    /// The default callback port must be *stable*: it is part of the
+    /// client-registration identity key, so an ephemeral port on every login is
+    /// what turned each attempt into a fresh RFC 7591 registration.
+    #[tokio::test]
+    async fn preferred_callback_port_is_used_and_a_taken_one_is_remembered() {
+        let svc = McpOAuthService::new(Arc::new(MockTokenRepo), reqwest::Client::new());
+        assert_eq!(
+            svc.preferred_callback_port().await,
+            DEFAULT_CALLBACK_PORT,
+            "the first login prefers the default port"
+        );
+
+        // A free port is used verbatim.
+        let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let free = probe.local_addr().unwrap().port();
+        drop(probe);
+        let (listener, redirect) = svc.bind_default_callback_listener(free).await.unwrap();
+        assert_eq!(listener.local_addr().unwrap().port(), free);
+        assert_eq!(redirect, format!("http://127.0.0.1:{free}/callback"));
+        assert_eq!(svc.preferred_callback_port().await, free);
+        drop(listener);
+
+        // A taken port degrades to an ephemeral one — and is remembered, so the
+        // next login of this process presents the same redirect URI instead of
+        // minting yet another client identity.
+        let held = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let busy = held.local_addr().unwrap().port();
+        let (listener, redirect) = svc.bind_default_callback_listener(busy).await.unwrap();
+        let ephemeral = listener.local_addr().unwrap().port();
+        assert_ne!(ephemeral, busy, "a taken port must not be reported as bound");
+        assert_eq!(redirect, format!("http://127.0.0.1:{ephemeral}/callback"));
+        assert_eq!(svc.preferred_callback_port().await, ephemeral);
     }
 
     // -- RFC 9728 discovery & pre-registered client --------------------------

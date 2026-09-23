@@ -15,7 +15,10 @@
 //!   6. GET 405 + unauthenticated initialize POST 401 with resource_metadata
 //!      → RFC 9728 discovery succeeds;
 //!   7. callback path/state validation;
-//!   9. login error surfaces never carry codes/verifiers/authorization URLs.
+//!   9. login error surfaces never carry codes/verifiers/authorization URLs;
+//!  10. a second login reuses the persisted registration (registration count
+//!      stays 1) — the identity key only holds still while the redirect URI
+//!      does.
 //!
 //! Acceptance #8 (401 → refresh once → retry once) is covered end-to-end by
 //! `nomifun-ai-agent/tests/mcp_oauth_e2e.rs` over the runtime transport.
@@ -828,6 +831,71 @@ async fn rebuilt_service_reuses_registration_for_refresh() {
         .expect("registration lookup")
         .expect("registration exists");
     assert_eq!(registration.client_id, "dyn-client-1");
+}
+
+/// A **second login** — not a refresh — must reuse the persisted RFC 7591
+/// registration instead of registering again.
+///
+/// The identity key includes the redirect URI, so reuse only holds while that
+/// URI is stable. With an ephemeral callback port it never was: every login
+/// was a new identity, so every retry sent the authorization server a fresh
+/// registration + authorize + token exchange — which a throttling gateway
+/// answers with `slow_down: too many OAuth requests`. Pinned through the
+/// env-redirect channel rather than the default port, because
+/// `DEFAULT_CALLBACK_PORT` is host-global and this suite runs its cases in
+/// parallel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_login_reuses_the_persisted_registration() {
+    let _env_guard = env_lock().lock().await;
+    let log: SharedLog = Arc::new(Mutex::new(MockLog::default()));
+    let mcp_url = serve_platform(MockConfig::default(), log.clone()).await;
+
+    // A stable free loopback port, so both logins carry the same redirect URI.
+    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let redirect = format!("http://127.0.0.1:{port}/callback");
+    unsafe {
+        std::env::set_var("MCP_OAUTH_REDIRECT_URI", &redirect);
+    }
+
+    let result = async {
+        let (token_repo, registration_repo) = make_repos().await;
+        let capture: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let oauth = service_with_hook(token_repo, registration_repo.clone(), capture.clone());
+
+        let first = run_login(&oauth, &capture, &mcp_url).await;
+        assert!(first.success, "first login failed: {:?}", first.error);
+
+        // The hook still holds the first authorize URL; clear it so the second
+        // run waits for its own browser step.
+        *capture.lock().unwrap() = None;
+        let second = run_login(&oauth, &capture, &mcp_url).await;
+        assert!(second.success, "second login failed: {:?}", second.error);
+
+        let guard = log.lock().unwrap();
+        assert_eq!(
+            guard.register_bodies.len(),
+            1,
+            "the second login must reuse the stored registration, not register again"
+        );
+        assert_eq!(guard.authorize_hits, 2, "both logins reach the browser step");
+        assert_eq!(guard.token_bodies.len(), 2, "each login exchanges its own code");
+        drop(guard);
+
+        let rows = registration_repo
+            .list_by_server_url(&mcp_url)
+            .await
+            .expect("list registrations");
+        assert_eq!(rows.len(), 1, "one identity, one row");
+        assert_eq!(rows[0].redirect_uri, redirect);
+    }
+    .await;
+
+    unsafe {
+        std::env::remove_var("MCP_OAUTH_REDIRECT_URI");
+    }
+    result
 }
 
 /// §10 #4 — a pre-registered env client wins: no registration request, its
