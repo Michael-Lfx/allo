@@ -27,14 +27,24 @@
 }
 
 /* Trailing room under the latest reply so follow-to-bottom doesn't glue
-   streaming tokens to the composer. `overflow-anchor: auto` keeps this
-   spacer pinned while the streaming row grows, so a wrap does not paint
-   one frame shoved into the live step and the next frame restored. */
+   streaming tokens to the composer. In processing mode, expands to fill the
+   viewport so the new turn pins directly to the top edge (Codex/Antigravity style).
+   When output finishes, smoothly retracts to 140px clearance. */
 .message-list-end-spacer {
   height: 140px;
+  min-height: 140px;
   flex-shrink: 0;
   pointer-events: none;
   overflow-anchor: auto;
+  transition:
+    height 0.35s cubic-bezier(0.32, 0.72, 0, 1),
+    min-height 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.message-list-root[data-is-processing='true'] .message-list-end-spacer,
+.message-list-end-spacer[data-is-processing='true'] {
+  height: calc(100vh - 220px);
+  min-height: calc(100vh - 220px);
 }
 
 /* Virtuoso items hardcode overflow-anchor: none. Keep the item list from
@@ -1660,10 +1670,12 @@ body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-vi
   .turn-process-trace__row--running .turn-process-trace__row-icon,
   .message-bubble-enter,
   .message-copy-toast,
-  .message-list-scroll-button__dot,
-  .message-list-scroll-button__label,
+  .message-list-scroll-button__radar,
+  .message-list-scroll-button__spin,
+  .message-list-scroll-button__badge,
   .message-list-scroll-button__icon,
-  .message-list-loading-older {
+  .message-list-loading-older,
+  .message-list-end-spacer {
     transition: none;
     animation: none;
   }

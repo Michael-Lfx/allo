@@ -1676,8 +1676,13 @@ const MessageList: React.FC<{
           onDismiss={() => setOutcomeDismissed(true)}
         />
       </div>
-    ) : null;
-  const listEndSpacer = <div className='message-list-end-spacer' aria-hidden='true' />;
+  const listEndSpacer = (
+    <div
+      className='message-list-end-spacer'
+      data-is-processing={conversationContext?.isProcessing === true ? 'true' : 'false'}
+      aria-hidden='true'
+    />
+  );
 
   const renderItem = (_index: number, item: (typeof displayList)[0]) => {
     const highlighted = matchesTargetMessage(item, highlightedMessageId);
@@ -1825,8 +1830,10 @@ const MessageList: React.FC<{
     return <div className='relative flex-1 h-full flex items-center justify-center'>{emptySlot}</div>;
   }
 
-  return (
-    <div className='message-list-root relative flex-1 h-full'>
+    <div
+      className='message-list-root relative flex-1 h-full'
+      data-is-processing={conversationContext?.isProcessing === true ? 'true' : 'false'}
+    >
       <div className='sr-only' role='status' aria-live='polite' aria-atomic='true'>
         {liveStepAnnouncement}
       </div>
