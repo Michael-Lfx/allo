@@ -373,6 +373,15 @@ async fn serve(
         return Err(services.cleanup_after_startup_failure(error).await);
     }
 
+    // Hand-edited `[credentials]` entries (`DEMO_TOKEN = "…"`) belong to the
+    // installation owner. Declaring that owner here is what stops a second
+    // principal on a shared host from resolving them: after this point a bare
+    // entry is visible only to this identity, and per-principal entries
+    // (`<principal>:NAME`) are what everyone else uses (34 §7).
+    nomifun_common::secret_ref::set_operator_principal(Some(
+        services.authoritative_user_id.to_string(),
+    ));
+
     // First-run admin provisioning (no-op in local mode and once an admin
     // exists). Returns whether the install still awaits interactive setup.
     if !cli.local {
