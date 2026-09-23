@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Ghost, MessageOne, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
-import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useOptionalConversationHistoryContext } from '@renderer/hooks/context/ConversationHistoryContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
@@ -73,7 +72,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { pathname, search, hash } = location;
   const navigate = useNavigate();
   const { navigateWithSettingsTransition } = useSettingsNavigationTransition();
-  const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
   const [batchMode, setBatchMode] = useState(false);
   const [workspaceActionsTarget, setWorkspaceActionsTarget] = useState<HTMLElement | null>(null);
@@ -81,24 +79,14 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { preferences: displayPreferences } = useSidebarDisplayPreferences();
   const isSettings = pathname.startsWith('/settings');
   const lastNonSettingsPathRef = useRef('/guid');
-  const isDesktop = isDesktopShell();
-  // WebUI: local admin session logout. Desktop: cloud account logout (local auth is always on).
-  const showLocalLogout = !isDesktop && localStatus === 'authenticated';
-  const showCloudLogout = isDesktop && cloudStatus === 'authenticated';
-  const showLogout = showLocalLogout || showCloudLogout;
+  const showLogout = cloudStatus === 'authenticated';
   const userLabel = useMemo(() => {
-    if (showCloudLogout) {
-      return formatSiderAccountLabel({
-        nickname: whoami?.nickname,
-        username: whoami?.username,
-        email: whoami?.email,
-      });
-    }
     return formatSiderAccountLabel({
-      username: localUser?.username ?? whoami?.username,
+      nickname: whoami?.nickname,
+      username: whoami?.username,
       email: whoami?.email,
     });
-  }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.nickname, whoami?.username]);
+  }, [whoami?.email, whoami?.nickname, whoami?.username]);
   const planLabel = whoami?.plan ?? '';
 
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
@@ -474,11 +462,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     cleanupSiderTooltips();
     blurActiveElement();
     try {
-      if (showCloudLogout) {
-        await cloudLogout();
-      } else {
-        await localLogout();
-      }
+      await cloudLogout();
     } catch (error) {
       console.error('Logout failed:', error);
       return; // logout 失败时不执行后续操作
@@ -486,7 +470,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     if (onSessionClick) {
       onSessionClick();
     }
-  }, [cloudLogout, localLogout, onSessionClick, showCloudLogout]);
+  }, [cloudLogout, onSessionClick]);
 
   useEffect(() => {
     if (!showLogout) return;
@@ -852,7 +836,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           userLabel={userLabel}
           planLabel={planLabel}
           showLogout={showLogout}
-          showEditNickname={showCloudLogout}
+          showEditNickname={showLogout}
           onLogout={handleLogout}
           onOpenCompanion={handleNomiClick}
           onSettingsClick={handleSettingsClick}

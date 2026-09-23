@@ -20,7 +20,6 @@ import {
   classifyCloudModelEnvironment,
   type CloudModelEnvironmentClassification,
 } from './cloudModelEnvironment';
-import { useAuth } from './AuthContext';
 
 export type CloudAuthState =
   | { phase: 'unknown' }
@@ -93,7 +92,6 @@ const offlineReasonForError = (error: unknown): 'network' | 'server_error' => {
 };
 
 export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const { status: localStatus, ready: localReady } = useAuth();
   const [authState, setAuthState] = useState<CloudAuthState>({ phase: 'unknown' });
   const [whoami, setWhoami] = useState<ICloudWhoami | null>(null);
   const [ready, setReady] = useState(false);
@@ -246,18 +244,6 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
       const { runId, controller } = beginRun();
       const forceModelSync = options.forceModelSync === true;
       const waitForModels = options.waitForModels !== false;
-      if (!localReady || localStatus !== 'authenticated') {
-        await clearAvailableModelsCache();
-        if (!isCurrentRun(runId, controller)) return 'stale';
-        setAuthState({ phase: 'unauthenticated' });
-        setWhoami(null);
-        accountIdRef.current = undefined;
-        setModelStatus('idle');
-        setModelEnvironment({ phase: 'degraded', reason: 'empty_catalog', usableModelCount: 0, canRetry: false });
-        setModelError(null);
-        setReady(localReady);
-        return 'unauthenticated';
-      }
 
       if (!isCurrentRun(runId, controller)) return 'stale';
       setAuthState({ phase: 'unknown' });
@@ -327,7 +313,7 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
         if (isCurrentRun(runId, controller)) setReady(true);
       }
     },
-    [beginRun, isCurrentRun, localReady, localStatus, restoreModelEnvironmentForRun]
+    [beginRun, isCurrentRun, restoreModelEnvironmentForRun]
   );
 
   React.useEffect(() => {
@@ -346,8 +332,8 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
     closeExpiredModal();
     try {
       if (typeof window === 'undefined') return;
-      if (window.location.hash.includes('/cloud-login')) return;
-      window.location.hash = '/cloud-login';
+      if (window.location.hash.includes('/login') || window.location.hash.includes('/cloud-login')) return;
+      window.location.hash = '/login';
     } catch {
       // Hash navigation is best-effort; the logout still cleared the session.
     }

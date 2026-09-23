@@ -17,6 +17,10 @@ export interface SessionScrollSnapshot {
   lastReadMessageId?: string;
   /** Unread assistant messages count below viewport. */
   unreadCount?: number;
+  /** The message ID of the anchor question/turn currently in the viewing viewport. */
+  targetMessageId?: string;
+  /** The 0-based turn index corresponding to the left dot indicator. */
+  turnIndex?: number;
 }
 
 const MAX_SESSION_SCROLL_SNAPSHOTS = 200;
@@ -50,6 +54,8 @@ class SessionScrollRegistry {
       updatedAt: snapshot.updatedAt ?? Date.now(),
       lastReadMessageId: snapshot.lastReadMessageId,
       unreadCount: snapshot.unreadCount,
+      targetMessageId: snapshot.targetMessageId,
+      turnIndex: snapshot.turnIndex,
     });
   }
 
