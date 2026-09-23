@@ -164,6 +164,100 @@ pub fn resolve_template_with(value: &str, credentials: &HashMap<String, String>)
     }
 }
 
+/// The installation owner's principal id.
+///
+/// Hand-edited, host-level `[credentials]` entries belong to the machine's
+/// operator. Once the host declares who that is, a bare `NAME` entry stops being
+/// visible to every other principal — which is what makes a shared host safe
+/// (34 §7). A host that declares no owner keeps the single-user behaviour it has
+/// always had, so nothing existing changes meaning on upgrade.
+static OPERATOR: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+
+fn operator_cell() -> &'static RwLock<Option<String>> {
+    OPERATOR.get_or_init(|| RwLock::new(None))
+}
+
+/// Declare which principal the host-level `[credentials]` entries belong to.
+pub fn set_operator_principal(principal: Option<String>) {
+    let mut guard = operator_cell()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = principal;
+}
+
+/// The declared installation owner, if any.
+pub fn operator_principal() -> Option<String> {
+    operator_cell()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Are the bare (host-level) entries visible to this caller?
+///
+/// - no owner declared → yes: the legacy single-user host;
+/// - an unnamed caller (`None`) → yes: a host-internal path acts for the operator;
+/// - otherwise → only the operator itself.
+fn host_entries_visible_to(principal: Option<&str>, operator: Option<&str>) -> bool {
+    match operator {
+        None => true,
+        Some(operator) => match principal {
+            None => true,
+            Some(principal) => principal == operator,
+        },
+    }
+}
+
+/// Look up a credential **for one principal** (`34` §7).
+///
+/// `<principal>:NAME` wins; a bare `NAME` is the host-level fallback and is
+/// visible only per [`host_entries_visible_to`]. A caller's own entry never falls
+/// back to another principal's — cross-principal substitution is the one thing
+/// this must not do.
+pub fn lookup_for(principal: Option<&str>, name: &str) -> Option<String> {
+    let operator = operator_principal();
+    lookup_for_with(principal, name, &credentials(), operator.as_deref())
+}
+
+/// [`lookup_for`] against an explicit credential map and owner (pure; for tests).
+pub fn lookup_for_with(
+    principal: Option<&str>,
+    name: &str,
+    credentials: &HashMap<String, String>,
+    operator: Option<&str>,
+) -> Option<String> {
+    if let Some(principal) = principal
+        && let Some(value) = credentials.get(&scoped_key(principal, name))
+    {
+        return Some(value.clone());
+    }
+    if !host_entries_visible_to(principal, operator) {
+        return None;
+    }
+    // The same ladder as before: an explicit config entry, then the ambient
+    // environment (which is also the operator's).
+    credentials
+        .get(name)
+        .cloned()
+        .or_else(|| std::env::var(name).ok())
+}
+
+/// The per-principal form of a credential key: `<principal>:NAME`.
+pub fn scoped_key(principal: &str, name: &str) -> String {
+    format!("{principal}:{name}")
+}
+
+/// Parse a `<principal>:NAME` key back into its parts.
+///
+/// Returns `None` for a bare `NAME` — the host-level, pre-`34` form.
+pub fn parse_scoped_key(key: &str) -> Option<(&str, &str)> {
+    let (principal, name) = key.split_once(':')?;
+    if principal.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((principal, name))
+}
+
 /// [`resolve_template_with`] against the installed credentials.
 pub fn resolve_template(value: &str) -> TemplateResolution {
     resolve_template_with(value, &credentials())
@@ -177,11 +271,28 @@ pub struct TransportScope<'a> {
     /// marketplace writes as `${NAME}` placeholders too. They travel in the
     /// connector's own transport config, never in the credential store.
     pub values: &'a HashMap<String, String>,
+    /// Whose credentials this request may use (`34` §7). `None` is a host-internal
+    /// caller, which acts for the installation owner.
+    pub principal: Option<&'a str>,
+    /// The declared installation owner, for the host-level fallback rule.
+    pub operator: Option<&'a str>,
 }
 
 impl<'a> TransportScope<'a> {
+    /// A scope with no principal: the pre-`34` behaviour, for callers that have no
+    /// identity to offer yet.
     pub fn new(credentials: &'a HashMap<String, String>, values: &'a HashMap<String, String>) -> Self {
-        Self { credentials, values }
+        Self { credentials, values, principal: None, operator: None }
+    }
+
+    /// A scope for one principal, with the host's declared owner.
+    pub fn for_principal(
+        credentials: &'a HashMap<String, String>,
+        values: &'a HashMap<String, String>,
+        principal: Option<&'a str>,
+        operator: Option<&'a str>,
+    ) -> Self {
+        Self { credentials, values, principal, operator }
     }
 }
 
@@ -197,7 +308,7 @@ impl<'a> TransportScope<'a> {
 /// whose URL still says `${HOST}` is not usable either.
 pub fn resolve_request_string(value: &str, scope: &TransportScope<'_>) -> TemplateResolution {
     if let Some(name) = parse_secret_ref(value) {
-        return match lookup_with(name, scope.credentials) {
+        return match lookup_for_with(scope.principal, name, scope.credentials, scope.operator) {
             Some(actual) => TemplateResolution { value: Some(actual), missing: Vec::new() },
             None => TemplateResolution { value: None, missing: vec![name.to_owned()] },
         };
@@ -226,7 +337,7 @@ pub fn resolve_request_string(value: &str, scope: &TransportScope<'_>) -> Templa
             out.push_str(&rest[start..start + 2 + end + 1]);
         } else {
             let resolved = if secret {
-                lookup_with(name, scope.credentials)
+                lookup_for_with(scope.principal, name, scope.credentials, scope.operator)
             } else {
                 scope.values.get(name).cloned()
             };
@@ -508,6 +619,94 @@ mod tests {
         // in the credential store, and vice versa.
         assert_eq!(resolve_request_string("${TOKEN}", &scope).value, None);
         assert_eq!(resolve_request_string("${secret:HOST}", &scope).value, None);
+    }
+
+    #[test]
+    fn a_principal_reads_its_own_entry_before_the_host_level_one() {
+        let credentials = HashMap::from([
+            ("TOKEN".to_owned(), "host".to_owned()),
+            (scoped_key("alice", "TOKEN"), "alice-token".to_owned()),
+            (scoped_key("bob", "TOKEN"), "bob-token".to_owned()),
+        ]);
+        // Two principals, one name, two values: this is the whole point of D1.
+        assert_eq!(
+            lookup_for_with(Some("alice"), "TOKEN", &credentials, Some("alice")).as_deref(),
+            Some("alice-token")
+        );
+        assert_eq!(
+            lookup_for_with(Some("bob"), "TOKEN", &credentials, Some("alice")).as_deref(),
+            Some("bob-token")
+        );
+    }
+
+    #[test]
+    fn a_host_level_entry_belongs_to_the_operator_only() {
+        let credentials = HashMap::from([("TOKEN".to_owned(), "host".to_owned())]);
+
+        // No owner declared: the legacy single-user host, unchanged behaviour.
+        assert_eq!(
+            lookup_for_with(Some("alice"), "TOKEN", &credentials, None).as_deref(),
+            Some("host")
+        );
+
+        // Owner declared: only that principal sees the bare entry. A different
+        // principal gets nothing — not the operator's value, and no error that
+        // would tell it one exists.
+        assert_eq!(
+            lookup_for_with(Some("alice"), "TOKEN", &credentials, Some("alice")).as_deref(),
+            Some("host")
+        );
+        assert_eq!(
+            lookup_for_with(Some("bob"), "TOKEN", &credentials, Some("alice")),
+            None
+        );
+        // A host-internal caller with no identity acts for the operator.
+        assert_eq!(
+            lookup_for_with(None, "TOKEN", &credentials, Some("alice")).as_deref(),
+            Some("host")
+        );
+    }
+
+    #[test]
+    fn a_principal_never_substitutes_another_principals_entry() {
+        // Bob has an entry, Alice does not: Alice resolves nothing rather than
+        // borrowing Bob's token, even on a host with no declared owner.
+        let credentials = HashMap::from([(scoped_key("bob", "TOKEN"), "bob-token".to_owned())]);
+        assert_eq!(lookup_for_with(Some("alice"), "TOKEN", &credentials, None), None);
+        assert_eq!(
+            lookup_for_with(Some("bob"), "TOKEN", &credentials, None).as_deref(),
+            Some("bob-token")
+        );
+    }
+
+    #[test]
+    fn scoped_keys_round_trip_and_bare_keys_are_not_scoped() {
+        assert_eq!(scoped_key("alice", "TOKEN"), "alice:TOKEN");
+        assert_eq!(parse_scoped_key("alice:TOKEN"), Some(("alice", "TOKEN")));
+        assert_eq!(parse_scoped_key("TOKEN"), None, "a bare key is host-level");
+        assert_eq!(parse_scoped_key(":TOKEN"), None);
+        assert_eq!(parse_scoped_key("alice:"), None);
+    }
+
+    #[test]
+    fn a_scoped_request_string_resolves_for_the_caller() {
+        let credentials = HashMap::from([
+            (scoped_key("alice", "TOKEN"), "alice-token".to_owned()),
+            ("HOST".to_owned(), "host".to_owned()),
+        ]);
+        let values = HashMap::from([("ENV".to_owned(), "prod".to_owned())]);
+        let alice = TransportScope::for_principal(&credentials, &values, Some("alice"), Some("alice"));
+        let bob = TransportScope::for_principal(&credentials, &values, Some("bob"), Some("alice"));
+
+        assert_eq!(
+            resolve_request_string("Bearer ${secret:TOKEN}", &alice).value.as_deref(),
+            Some("Bearer alice-token")
+        );
+        // Bob has no TOKEN of his own and is not the operator, so his request must
+        // not go out with somebody else's credential.
+        let missing = resolve_request_string("Bearer ${secret:TOKEN}", &bob);
+        assert_eq!(missing.value, None);
+        assert_eq!(missing.missing, vec!["TOKEN".to_owned()]);
     }
 
     #[test]
