@@ -478,10 +478,11 @@ credential: {
 |---|---|---|
 | 1 | ✅ 完成 | 导入期保留 `headers`/`staticHeaders` 并按拼写表归一（`sse` 不再被压平）；`secret_ref` 增加 `${secret:NAME}` 模板形式；探针 / 调用 / DB 行 / 会话快照 / ACP 五条路径共用解析入口并 fail-closed，缺凭据返回新增的 `MCP_MISSING_CREDENTIAL`（422） |
 | 2 | ✅ 完成 | `token-schema.json` 归一为 `credential` 组件（字段 + i18n 双语言 + 取密钥入口）；`${NAME}` 按 §5.4 升级引用；secret 默认值丢弃并告警；`looks_sensitive_key` 补 `key`/`pat`，字段判定另用更紧谓词；`auth_mode` 取自市场索引 |
-| 3 | ⏳ 部分 | **已完成**：`values` 层（四处类型：`McpTransport` / `McpServerTransport` / `SessionMcpTransport` / 网关 `McpTransportParam`）；`TransportScope` + `resolve_request_string` 两类命名空间分流；`<principal>:NAME` 键控与安装所有者可见性规则；探针路径接通调用者身份。**未完成**：`connector/call` 的工具调用路径、DB 行与会话快照装配（需 conversation → owner 查询）、ACP 构建——这些目前按宿主（安装所有者）解析，与今天行为一致、不会串号，但多 principal 下不是调用者自己的凭据 |
+| 3 | ✅ 完成 | **已完成**：`values` 层（四处类型：`McpTransport` / `McpServerTransport` / `SessionMcpTransport` / 网关 `McpTransportParam`）；`TransportScope` + `resolve_request_string` 两类命名空间分流；`<principal>:NAME` 键控与安装所有者可见性规则；探针与工具调用两条路径都接通调用者身份，stdio 会话池按"解析后的 env"复用（凭据不同即不复用）。**装配路径无需再改**：`load_user_mcp_servers`、host 声明合并与 ACP 构建都在 `is_instance_owner = authority.controls_host()` 之后，只有安装所有者本人的会话会注入 MCP，因此按宿主解析就是准确语义（实施时原以为这是遗留，核对门禁后确认不是） |
 | 4–6 | ⬜ 未开始 | — |
 
-第 3 步的 raw 计数：`nomifun-common` +6 单测、`nomifun-importer` +2、`nomifun-mcp` +4。
+第 3 步的 raw 计数：`nomifun-common` +6 单测、`nomifun-importer` +2、`nomifun-mcp` +5、
+`nomifun-app-server` +0（既有 173 条回归通过）。
 
 ### 9.1 端到端验收（活体）
 
