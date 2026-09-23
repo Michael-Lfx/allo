@@ -29,10 +29,10 @@
 /* Trailing room under the latest reply so follow-to-bottom doesn't glue
    streaming tokens to the composer. In processing mode, expands to fill the
    viewport so the new turn pins directly to the top edge (Codex/Antigravity style).
-   When output finishes, smoothly retracts to 140px clearance. */
+   When output finishes, smoothly retracts to a clean 24px clearance. */
 .message-list-end-spacer {
-  height: 140px;
-  min-height: 140px;
+  height: 24px;
+  min-height: 24px;
   flex-shrink: 0;
   pointer-events: none;
   overflow-anchor: auto;

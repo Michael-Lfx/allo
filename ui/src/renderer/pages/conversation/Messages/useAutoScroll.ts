@@ -221,8 +221,10 @@ export function useAutoScroll({
     if (spacer instanceof HTMLElement) {
       const paddingBottom = Number.parseFloat(getComputedStyle(scrollerEl).paddingBottom) || 0;
       const pinLine = scrollerEl.getBoundingClientRect().bottom - paddingBottom;
-      const delta = spacer.getBoundingClientRect().bottom - pinLine;
-      if (Math.abs(delta) < 1) return;
+      // The top of the spacer is the bottom edge of actual message content.
+      // Only scroll when message content grows beyond the visible viewport bottom.
+      const delta = spacer.getBoundingClientRect().top - pinLine;
+      if (delta <= 1) return;
       markProgrammaticScroll();
       scrollerEl.scrollTop += delta;
       return;
@@ -629,7 +631,17 @@ export function useAutoScroll({
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        scrollToBottom('auto');
+        const userIndex = messages.findLastIndex((m) => m.position === 'right');
+        const virtuoso = virtuosoRefLatest.current?.current;
+        if (virtuoso && userIndex >= 0) {
+          virtuoso.scrollToIndex({
+            index: userIndex,
+            align: 'start',
+            behavior: 'auto',
+          });
+        } else {
+          scrollToBottom('auto');
+        }
         requestAnimationFrame(() => {
           followContentGrowth();
         });
