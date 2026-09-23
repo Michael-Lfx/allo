@@ -131,6 +131,7 @@ export function useAutoScroll({
   const lastProgrammaticScrollTimeRef = useRef(0);
   const initialScrollDoneRef = useRef(false);
   const isRestoringScrollRef = useRef(false);
+  const targetRestoringScrollTopRef = useRef<number | null>(null);
   const userInputActiveRef = useRef(false);
   const resizeAutoFollowBlockedUntilRef = useRef(0);
   const previousLastUserIdRef = useRef<string | undefined>(findLastUserMessageId(messages));
@@ -168,14 +169,16 @@ export function useAutoScroll({
     }
 
     if (pinnedToBottom && Date.now() >= resizeAutoFollowBlockedUntilRef.current) {
-      userScrolledRef.current = false;
-      userIntentPausedRef.current = false;
-      userInputActiveRef.current = false;
-      if (hasNewContentBelowRef.current) {
-        hasNewContentBelowRef.current = false;
-        setHasNewContentBelow(false);
+      if (userInputActiveRef.current || !userScrolledRef.current) {
+        userScrolledRef.current = false;
+        userIntentPausedRef.current = false;
+        userInputActiveRef.current = false;
+        if (hasNewContentBelowRef.current) {
+          hasNewContentBelowRef.current = false;
+          setHasNewContentBelow(false);
+        }
+        lastProgrammaticScrollTimeRef.current = Date.now() - (PROGRAMMATIC_SCROLL_GUARD_MS - 50);
       }
-      lastProgrammaticScrollTimeRef.current = Date.now() - (PROGRAMMATIC_SCROLL_GUARD_MS - 50);
     }
 
     return pinnedToBottom;
@@ -226,6 +229,8 @@ export function useAutoScroll({
     (behavior: ScrollBehavior = 'smooth') => {
       if (itemCount <= 0) return;
 
+      targetRestoringScrollTopRef.current = null;
+      isRestoringScrollRef.current = false;
       markProgrammaticScroll();
       userScrolledRef.current = false;
       userIntentPausedRef.current = false;
@@ -286,6 +291,8 @@ export function useAutoScroll({
     (element: HTMLElement | null, options?: ScrollElementIntoViewOptions) => {
       if (!element) return;
 
+      targetRestoringScrollTopRef.current = null;
+      isRestoringScrollRef.current = false;
       pauseAutoFollow();
       markProgrammaticScroll();
       element.scrollIntoView({
@@ -305,6 +312,10 @@ export function useAutoScroll({
       if (isRestoringScrollRef.current) {
         lastScrollTopRef.current = currentScrollTop;
         return;
+      }
+
+      if (userInputActiveRef.current) {
+        targetRestoringScrollTopRef.current = null;
       }
 
       const timeSinceGuard = Date.now() - lastProgrammaticScrollTimeRef.current;
@@ -353,12 +364,16 @@ export function useAutoScroll({
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
     if (Math.abs(e.deltaY) > 0 || Math.abs(e.deltaX) > 0) {
       userInputActiveRef.current = true;
+      targetRestoringScrollTopRef.current = null;
+      isRestoringScrollRef.current = false;
     }
   }, []);
 
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       userInputActiveRef.current = true;
+      targetRestoringScrollTopRef.current = null;
+      isRestoringScrollRef.current = false;
       const target = event.target;
       if (target instanceof Element && target.closest('[aria-expanded]')) {
         if (!target.closest('[data-live-window="true"]')) {
@@ -383,6 +398,20 @@ export function useAutoScroll({
     const flushResizeWork = () => {
       frameId = null;
       if (disposed) return;
+
+      if (targetRestoringScrollTopRef.current !== null && scrollerEl) {
+        const target = targetRestoringScrollTopRef.current;
+        scrollerEl.scrollTop = target;
+        lastScrollTopRef.current = target;
+        const virtuoso = virtuosoRefLatest.current?.current;
+        if (virtuoso) {
+          virtuoso.scrollTo({ top: target, behavior: 'auto' });
+        }
+        if (getMaxScrollTop(scrollerEl) >= target) {
+          targetRestoringScrollTopRef.current = null;
+          isRestoringScrollRef.current = false;
+        }
+      }
 
       if (Date.now() < resizeAutoFollowBlockedUntilRef.current) {
         updateBottomState(scrollerEl);
@@ -433,6 +462,7 @@ export function useAutoScroll({
       previousConversationIdRef.current = conversationId;
       initialScrollDoneRef.current = false;
       swapBaselinePendingRef.current = true;
+      targetRestoringScrollTopRef.current = null;
     }
 
     if (!scrollerEl || initialScrollDoneRef.current || itemCount === 0) return;
@@ -457,6 +487,7 @@ export function useAutoScroll({
       markProgrammaticScroll();
 
       const targetScrollTop = saved.scrollTop;
+      targetRestoringScrollTopRef.current = targetScrollTop;
       scrollerEl.scrollTop = targetScrollTop;
       lastScrollTopRef.current = targetScrollTop;
 
@@ -465,21 +496,40 @@ export function useAutoScroll({
         virtuoso.scrollTo({ top: targetScrollTop, behavior: 'auto' });
       }
 
+      showScrollButtonRef.current = true;
+      setShowScrollButton(true);
+      const nextHasNew = isProcessing === true;
+      hasNewContentBelowRef.current = nextHasNew;
+      setHasNewContentBelow(nextHasNew);
+
       // Re-apply and verify post-layout to ensure Virtuoso virtualization measurements
       // have settled and cannot clamp the restored position or falsely trip auto-follow.
-      requestAnimationFrame(() => {
-        if (scrollerEl) {
-          scrollerEl.scrollTop = targetScrollTop;
-          lastScrollTopRef.current = targetScrollTop;
-        }
+      const applyRestoration = () => {
+        if (!scrollerEl) return;
+        const currentTarget = targetRestoringScrollTopRef.current ?? targetScrollTop;
+        scrollerEl.scrollTop = currentTarget;
+        lastScrollTopRef.current = currentTarget;
         if (virtuoso) {
-          virtuoso.scrollTo({ top: targetScrollTop, behavior: 'auto' });
+          virtuoso.scrollTo({ top: currentTarget, behavior: 'auto' });
         }
+      };
+
+      requestAnimationFrame(() => {
+        applyRestoration();
         requestAnimationFrame(() => {
-          isRestoringScrollRef.current = false;
-          if (scrollerEl) {
-            updateBottomState(scrollerEl);
-          }
+          applyRestoration();
+          setTimeout(() => {
+            if (targetRestoringScrollTopRef.current !== null) {
+              applyRestoration();
+              if (scrollerEl && getMaxScrollTop(scrollerEl) >= (targetRestoringScrollTopRef.current ?? 0)) {
+                targetRestoringScrollTopRef.current = null;
+                isRestoringScrollRef.current = false;
+              }
+              if (scrollerEl) {
+                updateBottomState(scrollerEl);
+              }
+            }
+          }, 150);
         });
       });
       return;
@@ -498,7 +548,7 @@ export function useAutoScroll({
       scrollToBottom('auto');
       lastScrollTopRef.current = scrollerEl.scrollTop;
     });
-  }, [conversationId, itemCount, loadedConversationId, markProgrammaticScroll, messages, scrollerEl, scrollToBottom, updateBottomState]);
+  }, [conversationId, isProcessing, itemCount, loadedConversationId, markProgrammaticScroll, messages, scrollerEl, scrollToBottom, updateBottomState]);
 
   // Save on unmount
   useEffect(() => {
