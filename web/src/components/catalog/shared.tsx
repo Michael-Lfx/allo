@@ -179,6 +179,24 @@ export function installStateClass(state: InstallState): string {
   }
 }
 
+/**
+ * Import `source_kind` → the localized noun the source-kind dropdown already
+ * uses (`importKindPlugin` etc.). The history cards printed the raw enum, so a
+ * zh-CN reader saw 「codebuddy-plugin」 next to a dropdown saying 「CodeBuddy
+ * 插件」 — the same fact in two vocabularies on one screen.
+ */
+const IMPORT_KIND_KEYS: Record<string, string> = {
+  "codebuddy-plugin": "catalog.importKindPlugin",
+  "workbuddy-skill-market": "catalog.importKindSkills",
+  "workbuddy-connector-market": "catalog.importKindConnectors",
+  "workbuddy-cli-connector": "catalog.importKindCliConnector",
+};
+
+export function importKindLabel(t: Translate, kind: string): string {
+  const key = IMPORT_KIND_KEYS[kind];
+  return key ? t(key) : kind;
+}
+
 // ---------------------------------------------------------------------------
 // badges
 // ---------------------------------------------------------------------------

@@ -1124,6 +1124,7 @@ export function CatalogView() {
           onClose={() => setImportFor(null)}
           labelledBy="import-title"
           titleId="import-title"
+          width="wide"
           title={importFor === "workbuddy-skill-market"
             ? t("catalog.addSkill")
             : t("catalog.customConnector")}
