@@ -147,7 +147,7 @@ interface CreditsContextValue {
   manualRefresh: () => void;
 }
 
-const CreditsContext = createContext<CreditsContextValue | undefined>(undefined);
+export const CreditsContext = createContext<CreditsContextValue | undefined>(undefined);
 
 export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { status, whoami, authState } = useCloudAuth();

@@ -34,9 +34,11 @@ export const createContext = <T extends any>(value: T): [() => T, FN<{ value: T 
     const [value, setValue] = useState(props.value || JSON.parse(JSON.stringify(DefaultValue)));
     const isFirst = useRef(true);
     useEffect(() => {
-      if (isFirst.current) return;
+      if (isFirst.current) {
+        isFirst.current = false;
+        return;
+      }
       setValue(props.value);
-      isFirst.current = false;
     }, [props.value]);
     return <Context.Provider value={{ value, setValue }}>{props.children}</Context.Provider>;
   };

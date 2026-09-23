@@ -1623,7 +1623,11 @@ button.turn-process-trace__row:focus-visible {
   .turn-process-disclosure--running .turn-process-disclosure__label,
   .turn-process-trace__row--running .turn-process-trace__row-icon,
   .message-bubble-enter,
-  .message-copy-toast {
+  .message-copy-toast,
+  .message-list-scroll-button__dot,
+  .message-list-scroll-button__label,
+  .message-list-scroll-button__icon,
+  .message-list-loading-older {
     transition: none;
     animation: none;
   }
