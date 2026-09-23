@@ -92,7 +92,6 @@ import {
   shouldScheduleAgentRefreshAfterHashChange,
   shouldScheduleAgentRefreshForHash,
 } from './hooks/agent/agentDetectionRefresh';
-import { useAuth } from './hooks/context/AuthContext';
 import { useCloudAuth } from './hooks/context/CloudAuthContext';
 import { ConversationHistoryProvider } from './hooks/context/ConversationHistoryContext';
 import HOC from './utils/ui/HOC';
@@ -187,7 +186,6 @@ const StartupRecoveryPanel: React.FC<{
 };
 
 const Main = () => {
-  const { ready, status, user } = useAuth();
   const {
     ready: cloudReady,
     refresh: refreshCloudAuth,
@@ -195,18 +193,15 @@ const Main = () => {
     status: cloudStatus,
     whoami,
   } = useCloudAuth();
-  const { logout: localLogout } = useAuth();
   const [configReady, setConfigReady] = useState(false);
   const [configError, setConfigError] = useState<Error | null>(null);
   const [startupRetryToken, setStartupRetryToken] = useState(0);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [startupDiagnostics, setStartupDiagnostics] = useState<string | null>(null);
   const previousSessionRef = useRef<{
-    local: boolean;
     cloud: boolean;
-    localId?: string;
     cloudId?: string;
-  }>({ local: false, cloud: false });
+  }>({ cloud: false });
 
   // Startup failed with "backend unreachable": probe both sides so the report
   // names the faulting layer instead of the symptom. The host-process probe
@@ -241,16 +236,12 @@ const Main = () => {
 
   useEffect(() => {
     const previous = previousSessionRef.current;
-    const localAuthenticated = status === 'authenticated';
     const cloudAuthenticated = cloudStatus === 'authenticated';
-    const localId = localAuthenticated && user ? String(user.id) : undefined;
     const cloudId = cloudAuthenticated && whoami
       ? String(whoami.userId || whoami.email || whoami.username || '') || undefined
       : undefined;
     const sessionEnded =
-      (previous.local && !localAuthenticated) ||
       (previous.cloud && !cloudAuthenticated) ||
-      (previous.localId !== undefined && localId !== undefined && previous.localId !== localId) ||
       (previous.cloudId !== undefined && cloudId !== undefined && previous.cloudId !== cloudId);
 
     if (sessionEnded) {
@@ -261,23 +252,15 @@ const Main = () => {
     }
 
     previousSessionRef.current = {
-      local: localAuthenticated,
       cloud: cloudAuthenticated,
-      localId,
       cloudId,
     };
-  }, [cloudStatus, status, user, whoami]);
+  }, [cloudStatus, whoami]);
 
   useEffect(() => {
-    // Browser sessions must pass the auth probe before any protected startup
-    // request runs. In particular, `/api/system/info` returns 403 for an
-    // expired session; starting it while unauthenticated would turn the normal
-    // login transition into an application-level render failure.
-    //
-    // Cloud whoami is intentionally not a config barrier: desktop cloud-login
-    // is enforced by ProtectedLayout, and waiting here serializes an extra
-    // round-trip before the first authenticated paint.
-    if (!ready || status !== 'authenticated') {
+    // Authenticated sessions must pass the auth probe before any protected
+    // startup request runs.
+    if (!cloudReady || cloudStatus !== 'authenticated') {
       setConfigReady(false);
       setConfigError(null);
       return;
@@ -319,7 +302,7 @@ const Main = () => {
       })
       .catch((error: unknown) => {
         // httpBridge already cleared the expired browser session and notified
-        // AuthProvider. Let the auth state render `/login`; never latch this
+        // CloudAuthProvider. Let the auth state render `/login`; never latch this
         // expected transition into the root error boundary.
         if (!active || isHandledAuthExpiredHttpError(error)) return;
         setConfigError(error instanceof Error ? error : new Error(String(error)));
@@ -328,7 +311,7 @@ const Main = () => {
     return () => {
       active = false;
     };
-  }, [ready, status, refreshCloudAuth, startupRetryToken]);
+  }, [cloudReady, cloudStatus, refreshCloudAuth, startupRetryToken]);
 
   const retryStartup = useCallback(() => {
     setConfigError(null);
@@ -358,19 +341,14 @@ const Main = () => {
       if (cloudStatus === 'authenticated') {
         await cloudLogout();
       }
-      // Desktop local auth is always-on (local-trust); AuthContext.logout is a
-      // no-op that keeps status=authenticated, so the recovery panel never
-      // leaves. Restart the shell instead — also the right recovery when the
-      // backend was unreachable because of proxy/PNA.
       if (isDesktopShell()) {
         await tauriRelaunch();
         return;
       }
-      await localLogout();
     } catch (error) {
       setLogsError(error instanceof Error ? error.message : String(error));
     }
-  }, [cloudLogout, cloudStatus, localLogout]);
+  }, [cloudLogout, cloudStatus]);
 
   useEffect(() => {
     if (!configReady || !shouldScheduleAgentRefreshForHash(window.location.hash)) return;
@@ -431,19 +409,19 @@ const Main = () => {
   }, [configReady]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!cloudReady) return;
     markLaunchAuthReady({
-      status: status === 'authenticated' ? 'authenticated' : 'unauthenticated',
+      status: cloudStatus === 'authenticated' ? 'authenticated' : 'unauthenticated',
     });
     // Login is itself the first interactive surface; authenticated sessions still
     // wait for configReady before the shell is usable.
-    if (status !== 'authenticated') {
+    if (cloudStatus !== 'authenticated') {
       markLaunchInteractive({ source: 'login' });
     }
-  }, [ready, status]);
+  }, [cloudReady, cloudStatus]);
 
   useEffect(() => {
-    if (!configReady || status !== 'authenticated') return;
+    if (!configReady || cloudStatus !== 'authenticated') return;
     markLaunchConfigReady();
     // Defer one frame so AppLoader → router swap is painted before TTI.
     let raf = 0;
@@ -451,7 +429,7 @@ const Main = () => {
       markLaunchInteractive({ source: 'shell' });
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [configReady, status]);
+  }, [configReady, cloudStatus]);
 
   useEffect(() => {
     if (!configError) return;
@@ -463,7 +441,7 @@ const Main = () => {
   }, [configError]);
 
   useEffect(() => {
-    if (!ready || status !== 'authenticated') return;
+    if (!cloudReady || cloudStatus !== 'authenticated') return;
     void startProductTelemetry().then(async () => {
       try {
         const device = await ipcBridgeModule.cloud.deviceStatus.invoke();
@@ -476,13 +454,12 @@ const Main = () => {
       maybeTrackExperimentExposure();
       void maybeTrackUpdateApplied();
     });
-  }, [ready, status]);
+  }, [cloudReady, cloudStatus]);
 
   useEffect(() => {
-    if (!ready || status !== 'authenticated') return;
-    if (!cloudReady) return;
+    if (!cloudReady || cloudStatus !== 'authenticated') return;
     void repairAllCronJobTimeZonesOnce();
-  }, [ready, cloudReady, status]);
+  }, [cloudReady, cloudStatus]);
 
   const router = (
     <Router
@@ -494,13 +471,13 @@ const Main = () => {
     />
   );
 
-  if (!ready) {
+  if (!cloudReady) {
     return <AppLoader />;
   }
 
   // The login route is intentionally independent from authenticated startup
   // data. This also makes an in-flight session expiry recover immediately.
-  if (status !== 'authenticated') {
+  if (cloudStatus !== 'authenticated') {
     return router;
   }
 

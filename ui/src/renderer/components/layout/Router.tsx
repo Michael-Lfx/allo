@@ -192,15 +192,9 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
     return <Navigate to='/login' replace />;
   }
 
-  // Keep chrome mounted while auth resolves; only the outlet region shows a shell-safe loader.
+  // Keep loader mounted while auth resolves.
   if (authChecking) {
-    return (
-      <>
-        {React.cloneElement(layout as React.ReactElement<{ children?: React.ReactNode }>, {
-          children: <AppLoader fill />,
-        })}
-      </>
-    );
+    return <AppLoader fill />;
   }
 
   return (
