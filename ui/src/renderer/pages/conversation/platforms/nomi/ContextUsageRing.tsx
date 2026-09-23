@@ -79,7 +79,9 @@ function segmentLabel(
   }
 }
 
-function hasSummarizedProps(props?: SummarizedConversationProperties | null): boolean {
+function hasSummarizedProps(
+  props?: SummarizedConversationPropertiesView | SummarizedConversationProperties | null
+): boolean {
   if (!props) return false;
   return (
     props.trigger != null ||

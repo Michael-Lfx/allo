@@ -136,11 +136,10 @@ export function useAutoScroll({
   const previousLastUserIdRef = useRef<string | undefined>(findLastUserMessageId(messages));
   const previousConversationIdRef = useRef<string | undefined>(conversationId);
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Set on session switch, consumed by the send-effect: the first list change
-  // after a switch is the A→B swap (stale list replaced by the fetch), not a
-  // newly sent user message — treating it as one would overwrite the restored
-  // session's snapshot and yank the view to the bottom.
-  const swapBaselinePendingRef = useRef(false);
+  // Set on session switch or initial mount, consumed by the send-effect: list
+  // changes before initial scroll restoration completes are initial fetch or A→B
+  // swap — not a newly sent user message.
+  const swapBaselinePendingRef = useRef(true);
   const virtuosoRefLatest = useRef(virtuosoRef);
   virtuosoRefLatest.current = virtuosoRef;
 
@@ -528,10 +527,11 @@ export function useAutoScroll({
 
     // Jump on a new user send. Load-older prepends older rows but leaves the
     // newest user message id unchanged, so it must not yank the viewport.
-    // While a session swap is pending, list changes are the A→B swap or
+    // While a session swap is pending or initial scroll restoration hasn't
+    // completed, list changes are the initial load, A→B swap, or
     // stale-session streaming — never a send. The restore branch consumes the
     // flag when it seeds the baseline above.
-    if (swapBaselinePendingRef.current) return;
+    if (!initialScrollDoneRef.current || swapBaselinePendingRef.current) return;
     const sentNewUserMessage = lastUserId !== undefined && lastUserId !== previousLastUserId;
     if (!sentNewUserMessage) return;
 

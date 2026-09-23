@@ -133,7 +133,7 @@ let globalLastTriggerByScene: Record<RefreshScene, number> = {
 };
 
 // --- Context value -----------------------------------------------------------
-interface CreditsContextValue {
+export interface CreditsContextValue {
   balance: number;
   authenticated: boolean;
   lastCheckInDayKey: number;

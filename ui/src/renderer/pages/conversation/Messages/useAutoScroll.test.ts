@@ -119,7 +119,11 @@ describe('useAutoScroll session reading position persistence', () => {
       'const lastUserId = findLastUserMessageId',
       'requestAnimationFrame(() => {\n      requestAnimationFrame(() => {'
     );
-    expect(sendEffect.includes('if (swapBaselinePendingRef.current) return;')).toBe(true);
+    expect(
+      sendEffect.includes(
+        'if (!initialScrollDoneRef.current || swapBaselinePendingRef.current) return;'
+      )
+    ).toBe(true);
   });
 
   test('gates all registry write paths on visible list ownership', () => {

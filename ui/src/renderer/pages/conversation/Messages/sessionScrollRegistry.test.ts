@@ -5,6 +5,7 @@
  */
 
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { parseConversationId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
 import { sessionScrollRegistry } from './sessionScrollRegistry';
 
@@ -97,10 +98,11 @@ describe('sessionScrollRegistry', () => {
   });
 
   test('clears session scroll snapshot when conversation.deleted event is emitted', () => {
-    sessionScrollRegistry.save('conv-to-delete', { scrollTop: 300, userScrolled: true });
-    expect(sessionScrollRegistry.get('conv-to-delete')).toBeDefined();
+    const testId = '019b0000-0000-7000-8000-000000000999';
+    sessionScrollRegistry.save(testId, { scrollTop: 300, userScrolled: true });
+    expect(sessionScrollRegistry.get(testId)).toBeDefined();
 
-    emitter.emit('conversation.deleted', 'conv-to-delete');
-    expect(sessionScrollRegistry.get('conv-to-delete')).toBeUndefined();
+    emitter.emit('conversation.deleted', parseConversationId(testId));
+    expect(sessionScrollRegistry.get(testId)).toBeUndefined();
   });
 });

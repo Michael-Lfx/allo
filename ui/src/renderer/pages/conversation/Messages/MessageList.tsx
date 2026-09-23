@@ -1232,7 +1232,7 @@ const MessageList: React.FC<{
     for (const entry of modelInput) {
       if (entry.role === 'user' && entry.turnId) turnsWithUserAnchor.add(entry.turnId);
     }
-    const incompleteTurnIds: string[] = [];
+    const incompleteTurnIds: MessageId[] = [];
     for (const turnId of deliverablesByTurn.keys()) {
       if (
         !shouldPresentTurnDeliverables({
