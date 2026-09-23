@@ -240,7 +240,7 @@ Return ONLY one JSON object:
 Rules:
 - include_cast=true only when a person/character on the poster clearly helps sell the story.
 - include_cast=false for mood pieces, landscapes, object-driven stories, or when faces would distract.
-- title_text: a short theme-bearing title / wordmark (1–8 words or a few Chinese characters) that captures the film's meaning. Match the user's story language (Chinese story → 简体中文 title). Prefer evocative poster titles over literal long sentences. Empty only when lettering would hurt the image.
+- title_text: a short theme-bearing title / wordmark (1–8 words or a few Chinese characters) that captures the film's meaning. Match the user's story language (Chinese → 简体中文; English → English). Prefer evocative poster titles over literal long sentences. Empty only when lettering would hurt the image.
 - prompt: detailed image-model instructions for one poster still. Prefer English for visual directions, but quote title_text exactly as given so the model can render those glyphs.
 - The poster MUST feel like authored key art: literary, culturally specific to the story's world (period, region, ritual, craft, costume, architecture, motif), not a generic Hollywood action one-sheet and not a UI screenshot.
 - Ground the composition in the story's central image — one relationship, object, place, or gesture — rather than a collage of every asset.

@@ -283,7 +283,11 @@ impl Idea2VideoPipeline {
                 43.0,
             );
             match film
-                .ensure_character_voice_references(&characters, &progress)
+                .ensure_character_voice_references(
+                    &characters,
+                    crate::planning::resolve_output_language(&[idea]),
+                    &progress,
+                )
                 .await
             {
                 Ok(()) => Ok(()),

@@ -29,7 +29,27 @@ pub struct IngestedMedia {
 /// Map from media `rel_path` → ingested canvas media after materialize.
 pub type MediaIdMap = HashMap<String, IngestedMedia>;
 
+fn film_output_language(film: &CreativeFilm) -> crate::planning::OutputLanguage {
+    let script = film
+        .scenes
+        .iter()
+        .map(|scene| scene.script.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut fallback: Vec<&str> = vec![film.title.as_str()];
+    for scene in &film.scenes {
+        fallback.push(scene.title.as_str());
+        for shot in &scene.shot_descriptions {
+            if let Some(audio) = shot.audio_desc.as_deref() {
+                fallback.push(audio);
+            }
+        }
+    }
+    crate::planning::output_language_prefer_script(&script, &fallback)
+}
+
 pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Value {
+    let voice_language = film_output_language(film).canvas_voice_code();
     let mut nodes: Vec<Value> = Vec::new();
     let mut connections: Vec<Value> = Vec::new();
 
@@ -105,7 +125,7 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
             meta["characterVoiceProfile"] = json!({
                 "name": ch.identifier_in_scene,
                 "provider": "vimax",
-                "language": "zh",
+                "language": voice_language,
                 "timbre": vp.timbre,
             });
             meta["characterVoiceInstructions"] = json!(voice_clause);

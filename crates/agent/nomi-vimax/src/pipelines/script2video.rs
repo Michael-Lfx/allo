@@ -200,7 +200,11 @@ impl Script2VideoPipeline {
                     24.0,
                 );
                 match self
-                    .ensure_character_voice_references(&characters, &progress)
+                    .ensure_character_voice_references(
+                        &characters,
+                        crate::planning::resolve_output_language(&[script]),
+                        &progress,
+                    )
                     .await
                 {
                     Ok(()) => Ok(()),
@@ -464,8 +468,12 @@ impl Script2VideoPipeline {
             .generate_character_portraits(&plan.characters, &style, script, &progress)
             .await?;
 
-        self.ensure_character_voice_references(&plan.characters, &progress)
-            .await?;
+        self.ensure_character_voice_references(
+            &plan.characters,
+            crate::planning::resolve_output_language(&[script]),
+            &progress,
+        )
+        .await?;
         // Refresh registry after voice refs may have been added.
         let film_root = resolve_film_root(&self.working_dir);
         let registry_path = film_root.join("character_portraits_registry.json");
@@ -818,6 +826,7 @@ impl Script2VideoPipeline {
     pub(crate) async fn ensure_character_voice_references(
         &self,
         characters: &[CharacterInScene],
+        film_language: crate::planning::OutputLanguage,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
         let Some(flowy) = self.backends.flowy.clone() else {
@@ -835,7 +844,7 @@ impl Script2VideoPipeline {
             };
         let voice_gen = VoiceReferenceGenerator::new(flowy);
         let n = voice_gen
-            .ensure_voice_references(characters, &portraits_dir, &mut registry)
+            .ensure_voice_references(characters, &portraits_dir, &mut registry, film_language)
             .await?;
         write_json_artifact(&registry_path, &registry).await?;
         if film_root != self.working_dir {

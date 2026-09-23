@@ -1,6 +1,6 @@
 # 媒体与创作域（Workshop / 视频生成 / 模型调用层）
 
-> **最后维护：** 2026-09-08 · 核对基准：源码（nomi-vimax 分镜 packing / Skill director）
+> **最后维护：** 2026-09-23 · 核对基准：源码（nomi-vimax 分镜 packing / Skill director / 成片语言锁）
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 本域覆盖 Flowy 的所有"生成媒体"能力：创意工坊画布、ViMax 视频管线、视频生成
@@ -79,6 +79,7 @@ P1 多模态重构的产物（设计稿：
   **纯文件存储**（`{data_dir}/vimax/.vimax/sessions.json` +
   `.working_dir/<id>/`，无 SQL）；垂直技能包与 skill-hub；creative IR +
   `build_canvas_document` 供画布物化。
+- **成片语言（中/英）**：只从用户创意文本（idea / script / novel / requirement）判定一次并打上 `[OUTPUT_LANGUAGE]` 锁；垂直技能手册、英文 pacing 模板不参与检测。后续规划、TTS 参考音、画布 `characterVoiceProfile.language` 都跟这条锁走，不因角色名（如「李薇」）或 Skill 中文 playbook 翻成另一种语言。未判定时 TTS/画布回落到中文（与云端 TTS 默认一致）。
 - **分镜契约**：一张胶片卡 = 一次视频任务。规划把相邻微镜 pack 进成片行；超时长默认把尾巴**折进**最后一场/最后一镜（`over-budget: fold`），不截断反转。Skill YAML `director.pack-policy` / `over-budget` 写入工作目录 `director_spec.json` 并进入 packing。缺 turn/payoff 时补成片行。规划中胶片可变长；渲染中禁止 phantom 增长。
 - HTTP 面 [`nomifun-vimax`](../../crates/backend/nomifun-vimax/)：
   sessions CRUD/import/plan/revise/render/status/cancel/export、artifacts、cameos、

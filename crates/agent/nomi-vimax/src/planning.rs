@@ -966,6 +966,27 @@ pub enum OutputLanguage {
     Unspecified,
 }
 
+impl OutputLanguage {
+    /// Flowy TTS `language_type` (`Chinese` / `English`).
+    pub fn tts_language_type(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::Chinese | Self::Unspecified => "Chinese",
+        }
+    }
+
+    /// Canvas / IR BCP-47-ish voice code.
+    pub fn canvas_voice_code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Chinese | Self::Unspecified => "zh",
+        }
+    }
+}
+
+const OUTPUT_LANGUAGE_MARKER: &str = "[OUTPUT_LANGUAGE";
+const VERTICAL_SKILLS_MARKER: &str = "[VERTICAL_SKILLS]";
+
 /// Detect output language from user creative text (idea / script / novel / requirement).
 ///
 /// Prefers Chinese when there is a meaningful amount of CJK, even if English style
@@ -991,6 +1012,60 @@ pub fn detect_output_language(samples: &[&str]) -> OutputLanguage {
     } else {
         OutputLanguage::English
     }
+}
+
+/// Honor an existing lock; otherwise detect from creative prose only.
+///
+/// Skill playbooks and English pacing templates must not flip the user's language.
+pub fn resolve_output_language(samples: &[&str]) -> OutputLanguage {
+    for sample in samples {
+        if let Some(lang) = parse_output_language_lock(sample) {
+            return lang;
+        }
+    }
+    let stripped: Vec<String> = samples
+        .iter()
+        .map(|sample| creative_text_for_language_detect(sample))
+        .collect();
+    let refs: Vec<&str> = stripped
+        .iter()
+        .map(String::as_str)
+        .filter(|sample| !sample.trim().is_empty())
+        .collect();
+    detect_output_language(&refs)
+}
+
+/// Script / dialogue is the film language. Names like 李薇 are not a signal.
+pub fn output_language_prefer_script(script: &str, fallback: &[&str]) -> OutputLanguage {
+    let from_script = detect_output_language(&[script]);
+    if from_script != OutputLanguage::Unspecified {
+        from_script
+    } else {
+        detect_output_language(fallback)
+    }
+}
+
+fn parse_output_language_lock(text: &str) -> Option<OutputLanguage> {
+    let rest = text.split_once(OUTPUT_LANGUAGE_MARKER)?.1;
+    let window: String = rest.chars().take(480).collect();
+    let lower = window.to_ascii_lowercase();
+    if window.contains("简体中文") || lower.contains("predominantly chinese") {
+        Some(OutputLanguage::Chinese)
+    } else if lower.contains("predominantly english") {
+        Some(OutputLanguage::English)
+    } else if lower.contains("match the language") {
+        Some(OutputLanguage::Unspecified)
+    } else {
+        None
+    }
+}
+
+fn creative_text_for_language_detect(text: &str) -> String {
+    let before_skills = match text.find(VERTICAL_SKILLS_MARKER) {
+        Some(idx) => &text[..idx],
+        None => text,
+    };
+    strip_duration_constraint_blocks(before_skills)
 }
 
 /// Hard language lock for planning LLM system/user prompts.
@@ -1019,7 +1094,7 @@ JSON keys and enum tokens stay as the schema requires. Do not translate the user
 
 /// Detect language from samples and return the lock block.
 pub fn language_lock_for_sources(samples: &[&str]) -> String {
-    language_lock_clause(detect_output_language(samples))
+    language_lock_clause(resolve_output_language(samples))
 }
 
 /// Detect language from a single planning user message (may include XML tags).
@@ -1033,7 +1108,7 @@ pub fn with_language_lock(base: &str, sources: &[&str]) -> String {
     let base = base.trim();
     if base.is_empty() {
         lock
-    } else if base.contains("[OUTPUT_LANGUAGE") {
+    } else if base.contains(OUTPUT_LANGUAGE_MARKER) {
         base.to_string()
     } else {
         format!("{lock}\n\n{base}")
@@ -2035,6 +2110,63 @@ mod tests {
         );
         assert!(language_lock_for_sources(&["你好世界"]).contains("简体中文"));
         assert!(language_lock_for_sources(&["hello world story"]).contains("English"));
+    }
+
+    #[test]
+    fn resolve_output_language_ignores_skill_playbooks() {
+        let idea = "A programmer discovers his shadow is alive";
+        let overlay = format!(
+            "{idea}\n\n[VERTICAL_SKILLS]\n短剧工坊导演手册：每个镜头必须有对白，\
+人物关系要用中文交代清楚，分镜说明写口语化中文。"
+        );
+        assert_eq!(
+            detect_output_language(&[&overlay]),
+            OutputLanguage::Chinese,
+            "raw detect is contaminated by the Chinese playbook"
+        );
+        assert_eq!(
+            resolve_output_language(&[&overlay]),
+            OutputLanguage::English
+        );
+        assert!(language_lock_for_sources(&[&overlay]).contains("predominantly English"));
+        assert!(!language_lock_for_sources(&[&overlay]).contains("简体中文"));
+    }
+
+    #[test]
+    fn stamped_language_lock_survives_scene_enrich() {
+        let idea = "A reunion in a rainy cafe that must stay in English";
+        let locked = with_language_lock(idea, &[idea]);
+        let mixed = format!(
+            "{locked}\n\n[VERTICAL_SKILLS]\n短剧工坊导演手册：每个镜头必须有对白，\
+人物关系要用中文交代清楚，分镜说明写口语化中文。"
+        );
+        let enriched = enrich_requirement_for_scene_model_decides(SEEDANCE, &mixed, 0, 1);
+        assert!(
+            enriched.contains("predominantly English"),
+            "scene enrich must keep the stamped English lock: {enriched}"
+        );
+        assert!(
+            !enriched.contains("predominantly Chinese"),
+            "Chinese playbook must not stamp a second lock: {enriched}"
+        );
+    }
+
+    #[test]
+    fn output_language_prefer_script_ignores_cjk_names() {
+        assert_eq!(
+            output_language_prefer_script(
+                "Li Wei: Don't wait up. Let's talk this through.",
+                &["李薇", "成年女性"]
+            ),
+            OutputLanguage::English
+        );
+        assert_eq!(
+            output_language_prefer_script(
+                "李薇：「今晚别等我。我们把话说开。」",
+                &["cinematic film look"]
+            ),
+            OutputLanguage::Chinese
+        );
     }
 
     #[test]
