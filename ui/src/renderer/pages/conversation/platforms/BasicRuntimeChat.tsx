@@ -9,6 +9,7 @@ import { ConversationProvider } from '@/renderer/hooks/context/ConversationConte
 import FlexFullContainer from '@renderer/components/layout/FlexFullContainer';
 import MessageList from '@renderer/pages/conversation/Messages/MessageList';
 import {
+  MessageListLoadedIdProvider,
   MessageListLoadingProvider,
   MessageListProvider,
   useMessageLstCache,
@@ -106,5 +107,5 @@ export function createBasicRuntimeChat(
     );
   };
   BasicRuntimeChat.displayName = `BasicRuntimeChat(${type})`;
-  return HOC.Wrapper(MessageListProvider, MessageListLoadingProvider, LocalImageView.Provider)(BasicRuntimeChat);
+  return HOC.Wrapper(MessageListProvider, MessageListLoadingProvider, MessageListLoadedIdProvider, LocalImageView.Provider)(BasicRuntimeChat);
 }

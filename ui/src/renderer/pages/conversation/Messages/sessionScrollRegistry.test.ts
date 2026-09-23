@@ -17,14 +17,12 @@ describe('sessionScrollRegistry', () => {
     sessionScrollRegistry.save('conv-1', {
       scrollTop: 450,
       userScrolled: true,
-      anchorMessageId: 'msg-10',
     });
 
     const snapshot = sessionScrollRegistry.get('conv-1');
     expect(snapshot).toBeDefined();
     expect(snapshot?.scrollTop).toBe(450);
     expect(snapshot?.userScrolled).toBe(true);
-    expect(snapshot?.anchorMessageId).toBe('msg-10');
     expect(snapshot?.updatedAt).toBeGreaterThan(0);
   });
 

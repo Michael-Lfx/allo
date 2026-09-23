@@ -30,7 +30,7 @@ import { useLatestRef } from '@renderer/hooks/ui/useLatestRef';
 import { prefersReducedMotion } from '@renderer/utils/motion/flowyMotion';
 import type { FileChangeInfo } from './MessageFileChanges';
 import { useConversationArtifacts } from './artifacts';
-import { useKnowledgeWritebackEvents, useMessageList, useMessageListLoading } from './hooks';
+import { useKnowledgeWritebackEvents, useMessageList, useMessageListLoadedId, useMessageListLoading } from './hooks';
 import MessageAgentStatus from './components/MessageAgentStatus';
 import MessageTips from './components/MessageTips';
 import MessageToolCall from './components/MessageToolCall';
@@ -882,6 +882,7 @@ const MessageList: React.FC<{
 }> = ({ emptySlot, onLoadOlder, hasMoreOlder, loadingOlder }) => {
   const list = useMessageList();
   const isMessageListLoading = useMessageListLoading();
+  const loadedConversationId = useMessageListLoadedId();
   const artifacts = useConversationArtifacts();
   const conversationContext = useConversationContextSafe();
   const { isFirstWin } = useFirstWinMode();
@@ -1432,6 +1433,7 @@ const MessageList: React.FC<{
     resolveFollowOutput,
   } = useAutoScroll({
     conversationId: conversationContext?.conversation_id,
+    loadedConversationId,
     messages: list,
     itemCount: displayList.length,
     virtuosoRef,

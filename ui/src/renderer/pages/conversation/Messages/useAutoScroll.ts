@@ -32,6 +32,10 @@ import { sessionScrollRegistry } from './sessionScrollRegistry';
 
 const PROGRAMMATIC_SCROLL_GUARD_MS = 150;
 const USER_LAYOUT_CHANGE_GUARD_MS = 600;
+// Scroll events fire per-frame (user scroll + streaming follow pins). The
+// registry only needs the settled position; switch/unmount paths save
+// synchronously from lastScrollTopRef, so per-event writes buy nothing.
+const SCROLL_SAVE_DEBOUNCE_MS = 200;
 // Must absorb sub-pixel scroll rounding on HiDPI/fractional-DPR displays, where
 // scrollTop can settle ~1-3px off an integer "bottom"; too small a threshold
 // (was 4) makes auto-follow intermittently think the user scrolled away and
@@ -43,6 +47,14 @@ export const SCROLL_BUTTON_THRESHOLD_PX = 12;
 interface UseAutoScrollOptions {
   /** Optional conversation/session ID to track and restore per-session reading positions. */
   conversationId?: string;
+  /**
+   * Id of the conversation the current `messages` list was applied for.
+   * Restoration waits for this to match `conversationId`: the id flips one
+   * commit before the async fetch swaps the list, and restoring against the
+   * previous session's DOM loses the offset to clamping (whose scroll events
+   * would then save garbage into the new session's snapshot).
+   */
+  loadedConversationId?: string | null;
   messages: TMessage[];
   itemCount: number;
   /** When set, jump-to-bottom uses Virtuoso so off-screen tail rows still mount. */
@@ -96,6 +108,7 @@ const findLastUserMessageId = (messages: TMessage[]): string | undefined => {
 
 export function useAutoScroll({
   conversationId,
+  loadedConversationId,
   messages,
   itemCount,
   virtuosoRef,
@@ -118,6 +131,12 @@ export function useAutoScroll({
   const resizeAutoFollowBlockedUntilRef = useRef(0);
   const previousLastUserIdRef = useRef<string | undefined>(findLastUserMessageId(messages));
   const previousConversationIdRef = useRef<string | undefined>(conversationId);
+  const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set on session switch, consumed by the send-effect: the first list change
+  // after a switch is the A→B swap (stale list replaced by the fetch), not a
+  // newly sent user message — treating it as one would overwrite the restored
+  // session's snapshot and yank the view to the bottom.
+  const swapBaselinePendingRef = useRef(false);
   const virtuosoRefLatest = useRef(virtuosoRef);
   virtuosoRefLatest.current = virtuosoRef;
 
@@ -299,10 +318,17 @@ export function useAutoScroll({
       updateBottomState(target);
 
       if (conversationId) {
-        sessionScrollRegistry.save(conversationId, {
-          scrollTop: currentScrollTop,
-          userScrolled: userScrolledRef.current,
-        });
+        // Debounced: per-frame events (incl. streaming follow pins) would
+        // otherwise churn the registry. The timer is cleared on switch and
+        // unmount, where lastScrollTopRef is saved synchronously instead.
+        if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
+        scrollSaveTimerRef.current = setTimeout(() => {
+          scrollSaveTimerRef.current = null;
+          sessionScrollRegistry.save(conversationId, {
+            scrollTop: lastScrollTopRef.current,
+            userScrolled: userScrolledRef.current,
+          });
+        }, SCROLL_SAVE_DEBOUNCE_MS);
       }
     },
     [conversationId, updateBottomState]
@@ -370,25 +396,42 @@ export function useAutoScroll({
 
   // Handle session switch, initial scroll, and reading position restoration before paint
   useLayoutEffect(() => {
-    if (!scrollerEl) return;
-
-    // Detect session switch and save previous session state synchronously
+    // Switch bookkeeping touches no DOM: the previous session's offset comes
+    // from lastScrollTopRef (tracked live in handleScroll). Reading scrollerEl
+    // here would race the switch — the element may already be detached (the
+    // skeleton/empty early-return unmounts it) or belong to the next session.
     if (conversationId !== previousConversationIdRef.current) {
       const prevId = previousConversationIdRef.current;
-      if (prevId) {
+      // Skip sessions that were never displayed (a rapid A→B→C hop): their
+      // ref still holds the previous session's position.
+      if (prevId && initialScrollDoneRef.current) {
         sessionScrollRegistry.save(prevId, {
-          scrollTop: scrollerEl.scrollTop,
+          scrollTop: lastScrollTopRef.current,
           userScrolled: userScrolledRef.current,
         });
       }
+      if (scrollSaveTimerRef.current) {
+        clearTimeout(scrollSaveTimerRef.current);
+        scrollSaveTimerRef.current = null;
+      }
       previousConversationIdRef.current = conversationId;
       initialScrollDoneRef.current = false;
-      previousLastUserIdRef.current = findLastUserMessageId(messages);
+      swapBaselinePendingRef.current = true;
     }
 
-    if (initialScrollDoneRef.current || itemCount === 0) return;
+    if (!scrollerEl || initialScrollDoneRef.current || itemCount === 0) return;
+    // The provider's list can still belong to the previous session in this
+    // commit (the fetch resolves async). Restore only once the store confirms
+    // the list was applied for THIS conversation. Consumers without a
+    // conversationId keep the legacy ungated behavior.
+    if (conversationId && loadedConversationId !== conversationId) return;
 
     initialScrollDoneRef.current = true;
+    // The list belongs to this conversation now: seed the send-effect baseline
+    // so the A→B list swap is not misread as a newly sent user message (which
+    // would yank a restored view back to the bottom).
+    previousLastUserIdRef.current = findLastUserMessageId(messages);
+    swapBaselinePendingRef.current = false;
     const saved = conversationId ? sessionScrollRegistry.get(conversationId) : undefined;
 
     if (saved && saved.userScrolled) {
@@ -414,20 +457,27 @@ export function useAutoScroll({
       scrollToBottom('auto');
       lastScrollTopRef.current = scrollerEl.scrollTop;
     });
-  }, [conversationId, itemCount, markProgrammaticScroll, messages, scrollerEl, scrollToBottom, updateBottomState]);
+  }, [conversationId, itemCount, loadedConversationId, markProgrammaticScroll, messages, scrollerEl, scrollToBottom, updateBottomState]);
 
   // Save on unmount
   useEffect(() => {
     return () => {
+      if (scrollSaveTimerRef.current) {
+        clearTimeout(scrollSaveTimerRef.current);
+        scrollSaveTimerRef.current = null;
+      }
       const currentId = previousConversationIdRef.current;
-      if (currentId && scrollerEl) {
+      if (currentId && initialScrollDoneRef.current) {
+        // lastScrollTopRef, not scrollerEl.scrollTop: passive cleanups run
+        // after the element detaches, where scrollTop reads back as 0. The
+        // initialScrollDone guard skips sessions that were never displayed.
         sessionScrollRegistry.save(currentId, {
-          scrollTop: scrollerEl.scrollTop,
+          scrollTop: lastScrollTopRef.current,
           userScrolled: userScrolledRef.current,
         });
       }
     };
-  }, [scrollerEl]);
+  }, []);
 
   useEffect(() => {
     const lastUserId = findLastUserMessageId(messages);
@@ -436,6 +486,10 @@ export function useAutoScroll({
 
     // Jump on a new user send. Load-older prepends older rows but leaves the
     // newest user message id unchanged, so it must not yank the viewport.
+    // While a session swap is pending, list changes are the A→B swap or
+    // stale-session streaming — never a send. The restore branch consumes the
+    // flag when it seeds the baseline above.
+    if (swapBaselinePendingRef.current) return;
     const sentNewUserMessage = lastUserId !== undefined && lastUserId !== previousLastUserId;
     if (!sentNewUserMessage) return;
 

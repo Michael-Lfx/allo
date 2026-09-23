@@ -11,8 +11,6 @@ export interface SessionScrollSnapshot {
   scrollTop: number;
   /** True if the user intentionally scrolled away from the bottom to read history. */
   userScrolled: boolean;
-  /** Optional topmost visible message id for secondary alignment if layout shifted. */
-  anchorMessageId?: string;
   /** Timestamp when the snapshot was recorded. */
   updatedAt: number;
 }
@@ -45,7 +43,6 @@ class SessionScrollRegistry {
     this.snapshots.set(conversationId, {
       scrollTop: Math.max(0, snapshot.scrollTop),
       userScrolled: snapshot.userScrolled,
-      anchorMessageId: snapshot.anchorMessageId,
       updatedAt: snapshot.updatedAt ?? Date.now(),
     });
   }

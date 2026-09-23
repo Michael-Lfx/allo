@@ -93,6 +93,34 @@ describe('useAutoScroll session reading position persistence', () => {
     expect(source.includes('sessionScrollRegistry.save(currentId, {')).toBe(true);
   });
 
+  test('guards switch-time saves and restoration against stale timing', () => {
+    const restoreEffect = sliceBetween(
+      '// Handle session switch, initial scroll, and reading position restoration before paint',
+      '// Save on unmount'
+    );
+    expect(source.includes('loadedConversationId?: string | null')).toBe(true);
+    // Switch-time save uses the ref-tracked offset, not the (possibly
+    // detached or next-session) DOM element.
+    expect(restoreEffect.includes('scrollTop: lastScrollTopRef.current')).toBe(true);
+    expect(restoreEffect.includes('scrollTop: scrollerEl.scrollTop')).toBe(false);
+    // Restoration waits for the store to confirm list ownership.
+    expect(restoreEffect.includes('loadedConversationId !== conversationId')).toBe(true);
+    // The send-effect baseline is seeded when the new session's list arrives.
+    expect(restoreEffect.includes('previousLastUserIdRef.current = findLastUserMessageId(messages)')).toBe(true);
+    expect(restoreEffect.includes('swapBaselinePendingRef.current = false')).toBe(true);
+    // Sessions never displayed (rapid A→B→C hops) are not snapshotted.
+    expect(restoreEffect.includes('prevId && initialScrollDoneRef.current')).toBe(true);
+  });
+
+  test('debounces per-event registry writes and suppresses swap-triggered send jumps', () => {
+    expect(source.includes('SCROLL_SAVE_DEBOUNCE_MS')).toBe(true);
+    const sendEffect = sliceBetween(
+      'const lastUserId = findLastUserMessageId',
+      'requestAnimationFrame(() => {\n      requestAnimationFrame(() => {'
+    );
+    expect(sendEffect.includes('if (swapBaselinePendingRef.current) return;')).toBe(true);
+  });
+
   test('resets reading position to bottom when user sends a new message', () => {
     const sendEffect = sliceBetween(
       'const sentNewUserMessage = lastUserId !== undefined && lastUserId !== previousLastUserId;',
