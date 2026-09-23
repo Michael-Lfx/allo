@@ -14,7 +14,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { CHAT_MESSAGE_JUMP_EVENT, type ChatMessageJumpDetail } from '@/renderer/utils/chat/chatMinimapEvents';
 import { CHAT_MESSAGE_ROW_METRICS_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { Image } from '@arco-design/web-react';
-import { Down } from '@icon-park/react';
+import { Down, LoadingFour } from '@icon-park/react';
 import MessageAcpPermission from '@renderer/pages/conversation/Messages/acp/MessageAcpPermission';
 import MessagePermission from './components/MessagePermission';
 import MessageAcpToolCall from '@renderer/pages/conversation/Messages/acp/MessageAcpToolCall';
@@ -1914,11 +1914,22 @@ const MessageList: React.FC<{
         aria-hidden={!showScrollButton}
         tabIndex={showScrollButton ? 0 : -1}
       >
-        <span className='message-list-scroll-button__radar' aria-hidden='true' />
+        {scrollButtonStatus === 'generating' && (
+          <span className='message-list-scroll-button__radar' aria-hidden='true' />
+        )}
         <span className='message-list-scroll-button__icon'>
-          <Down theme='filled' size='15' fill='currentColor' />
+          {scrollButtonStatus === 'generating' ? (
+            <LoadingFour
+              theme='outline'
+              size='15'
+              fill='currentColor'
+              className='message-list-scroll-button__spin'
+            />
+          ) : (
+            <Down theme='filled' size='15' fill='currentColor' />
+          )}
         </span>
-        {hasNewContentBelow && (
+        {scrollButtonStatus === 'unread' && (
           <span className='message-list-scroll-button__badge' aria-hidden='true' />
         )}
       </button>

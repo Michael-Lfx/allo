@@ -108,6 +108,16 @@ const findLastUserMessageId = (messages: TMessage[]): string | undefined => {
   return undefined;
 };
 
+const getUserMessagesCount = (messages: TMessage[]): number => {
+  let count = 0;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index]?.position === 'right') {
+      count += 1;
+    }
+  }
+  return count;
+};
+
 export function useAutoScroll({
   conversationId,
   loadedConversationId,
@@ -135,6 +145,7 @@ export function useAutoScroll({
   const userInputActiveRef = useRef(false);
   const resizeAutoFollowBlockedUntilRef = useRef(0);
   const previousLastUserIdRef = useRef<string | undefined>(findLastUserMessageId(messages));
+  const previousUserMessageCountRef = useRef<number>(getUserMessagesCount(messages));
   const previousConversationIdRef = useRef<string | undefined>(conversationId);
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Set on session switch or initial mount, consumed by the send-effect: list
@@ -207,6 +218,7 @@ export function useAutoScroll({
   const followContentGrowth = useCallback(() => {
     if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current || isRestoringScrollRef.current) return;
     if (Date.now() < resizeAutoFollowBlockedUntilRef.current) return;
+    if (getBottomGap(scrollerEl) > FOLLOW_BOTTOM_THRESHOLD_PX + 24) return;
 
     const spacer = scrollerEl.querySelector('.message-list-end-spacer');
     if (spacer instanceof HTMLElement) {
@@ -483,6 +495,7 @@ export function useAutoScroll({
     // so the A→B list swap is not misread as a newly sent user message (which
     // would yank a restored view back to the bottom).
     previousLastUserIdRef.current = findLastUserMessageId(messages);
+    previousUserMessageCountRef.current = getUserMessagesCount(messages);
     swapBaselinePendingRef.current = false;
     const saved = conversationId ? sessionScrollRegistry.get(conversationId) : undefined;
 
@@ -581,6 +594,10 @@ export function useAutoScroll({
     const previousLastUserId = previousLastUserIdRef.current;
     previousLastUserIdRef.current = lastUserId;
 
+    const currentUserMessageCount = getUserMessagesCount(messages);
+    const previousUserMessageCount = previousUserMessageCountRef.current;
+    previousUserMessageCountRef.current = currentUserMessageCount;
+
     // Jump on a new user send. Load-older prepends older rows but leaves the
     // newest user message id unchanged, so it must not yank the viewport.
     // While a session swap is pending or initial scroll restoration hasn't
@@ -588,7 +605,10 @@ export function useAutoScroll({
     // stale-session streaming — never a send. The restore branch consumes the
     // flag when it seeds the baseline above.
     if (!initialScrollDoneRef.current || swapBaselinePendingRef.current) return;
-    const sentNewUserMessage = lastUserId !== undefined && lastUserId !== previousLastUserId;
+    const sentNewUserMessage =
+      currentUserMessageCount > previousUserMessageCount &&
+      lastUserId !== undefined &&
+      lastUserId !== previousLastUserId;
     if (!sentNewUserMessage) return;
 
     userScrolledRef.current = false;
@@ -627,20 +647,25 @@ export function useAutoScroll({
         setHasNewContentBelow(true);
       }
     } else if (wasProcessing && !isProcessing) {
-      if (!userScrolledRef.current && !userIntentPausedRef.current) {
+      const isAtBottom = scrollerEl ? getBottomGap(scrollerEl) <= FOLLOW_BOTTOM_THRESHOLD_PX : false;
+      const userAwayFromBottom = userScrolledRef.current || userIntentPausedRef.current || !isAtBottom;
+
+      if (!userScrolledRef.current && !userIntentPausedRef.current && !userAwayFromBottom) {
         // User stayed at bottom: settle to show full response and actions
         requestAnimationFrame(() => {
           scrollToBottom('auto');
         });
       } else {
         // User is viewing history: strictly protect position and show unread badge
+        userScrolledRef.current = true;
+        userIntentPausedRef.current = true;
         showScrollButtonRef.current = true;
         hasNewContentBelowRef.current = true;
         setShowScrollButton(true);
         setHasNewContentBelow(true);
       }
     }
-  }, [isProcessing, scrollToBottom]);
+  }, [isProcessing, scrollerEl, scrollToBottom]);
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;

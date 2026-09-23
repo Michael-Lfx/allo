@@ -1462,8 +1462,12 @@ button.turn-process-trace__row:focus-visible {
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.message-list-scroll-button[data-status='generating'] .message-list-scroll-button__icon {
-  animation: message-scroll-generating-bob 1.8s ease-in-out infinite;
+.message-list-scroll-button__spin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: message-scroll-spin 1.2s linear infinite;
+  color: var(--color-primary, #165dff);
 }
 
 /* Unread badge dot on top-right of button */
@@ -1477,13 +1481,18 @@ button.turn-process-trace__row:focus-visible {
   height: 7px;
   border-radius: 50%;
   box-sizing: content-box;
-  background-color: var(--color-primary, #165dff);
+  background-color: var(--color-danger, #f53f3f);
   border: 1.5px solid var(--bg-elevated, #ffffff);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary, #165dff) 60%, transparent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-danger, #f53f3f) 60%, transparent);
 }
 
-.message-list-scroll-button[data-status='generating'] .message-list-scroll-button__badge {
-  animation: message-scroll-dot-pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+@keyframes message-scroll-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes message-scroll-radar-ring {
@@ -1514,12 +1523,12 @@ button.turn-process-trace__row:focus-visible {
   0%, 100% {
     opacity: 1;
     transform: scale(1);
-    box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary, #165dff) 60%, transparent);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--color-danger, #f53f3f) 60%, transparent);
   }
   50% {
     opacity: 0.5;
     transform: scale(0.85);
-    box-shadow: 0 0 2px color-mix(in srgb, var(--color-primary, #165dff) 20%, transparent);
+    box-shadow: 0 0 2px color-mix(in srgb, var(--color-danger, #f53f3f) 20%, transparent);
   }
 }
 
@@ -1574,8 +1583,8 @@ body[arco-theme='dark'] .message-list-scroll-button {
 [data-theme='dark'] .message-list-scroll-button__badge,
 body[arco-theme='dark'] .message-list-scroll-button__badge {
   border-color: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 90%, #000000);
-  background-color: var(--color-primary, #3888ff);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary, #3888ff) 75%, transparent);
+  background-color: var(--color-danger, #f53f3f);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-danger, #f53f3f) 75%, transparent);
 }
 
 [data-theme='dark'] .message-list-scroll-button[data-visible='true']:hover,

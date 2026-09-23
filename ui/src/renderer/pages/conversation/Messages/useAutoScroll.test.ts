@@ -146,7 +146,7 @@ describe('useAutoScroll session reading position persistence', () => {
 
   test('resets reading position to bottom when user sends a new message', () => {
     const sendEffect = sliceBetween(
-      'const sentNewUserMessage = lastUserId !== undefined && lastUserId !== previousLastUserId;',
+      'const sentNewUserMessage =',
       'requestAnimationFrame(() => {\n      requestAnimationFrame(() => {'
     );
     expect(sendEffect.includes('sessionScrollRegistry.save(conversationId')).toBe(true);
@@ -244,7 +244,7 @@ describe('useAutoScroll scroll ownership', () => {
     );
 
     expect(finishEffect.includes('wasProcessing && !isProcessing')).toBe(true);
-    expect(finishEffect.includes('if (!userScrolledRef.current && !userIntentPausedRef.current)')).toBe(true);
+    expect(finishEffect.includes('!userAwayFromBottom')).toBe(true);
     expect(finishEffect.includes("scrollToBottom('auto')")).toBe(true);
     expect(finishEffect.includes('setHasNewContentBelow(true)')).toBe(true);
     expect(finishEffect.includes('setShowScrollButton(true)')).toBe(true);
