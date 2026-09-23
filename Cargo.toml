@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/desktop", "apps/web"]
 
 [workspace.package]
-version = "1.4.7"
+version = "1.4.8"
 edition = "2024"
 license = "Apache-2.0"
 repository = "local/nomifun-tauri"
