@@ -1480,20 +1480,51 @@ button.turn-process-trace__row:focus-visible {
   color: var(--color-primary, #165dff);
 }
 
-/* Unread badge dot on top-right of button */
+/* Unread badge on top-right of button */
 .message-list-scroll-button__badge {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   position: absolute;
-  top: 1px;
-  right: 1px;
+  top: -3px;
+  right: -3px;
   z-index: 3;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  box-sizing: content-box;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  box-sizing: border-box;
   background-color: var(--color-danger, #f53f3f);
   border: 1.5px solid var(--bg-elevated, #ffffff);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--color-danger, #f53f3f) 60%, transparent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+  pointer-events: none;
+  animation: message-scroll-badge-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.message-list-scroll-button__badge:empty {
+  min-width: 7px;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  top: 1px;
+  right: 1px;
+  border-radius: 50%;
+}
+
+@keyframes message-scroll-badge-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @keyframes message-scroll-spin {

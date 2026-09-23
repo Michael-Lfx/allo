@@ -120,6 +120,8 @@
   "imageLoadFailed": "Failed to load image",
   "scrollToBottom": "Scroll to bottom",
   "newContentBelow": "View latest content",
+  "generatingBelow": "Generating content below...",
+  "unreadCountBelow": "{{count}} new messages below",
   "availableCommands": "{{count}} Available Commands",
   "atFile.hint": "Type to search for files",
   "atFile.menuLabel": "File mentions",

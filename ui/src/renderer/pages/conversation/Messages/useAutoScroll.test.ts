@@ -151,6 +151,14 @@ describe('useAutoScroll session reading position persistence', () => {
     );
     expect(sendEffect.includes('sessionScrollRegistry.save(conversationId')).toBe(true);
     expect(sendEffect.includes('userScrolled: false')).toBe(true);
+    expect(sendEffect.includes('unreadCount: 0')).toBe(true);
+  });
+
+  test('tracks unreadCount and exports it in UseAutoScrollReturn', () => {
+    expect(source.includes('unreadCount: number;')).toBe(true);
+    expect(source.includes('countAssistantMessagesAfter')).toBe(true);
+    expect(source.includes('const [unreadCount, setUnreadCount] = useState(0);')).toBe(true);
+    expect(source.includes('lastReadMessageIdRef')).toBe(true);
   });
 });
 

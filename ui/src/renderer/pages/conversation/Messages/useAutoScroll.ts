@@ -84,6 +84,8 @@ interface UseAutoScrollReturn {
   showScrollButton: boolean;
   /** True when the user intentionally left the bottom (shows "new content" label). */
   hasNewContentBelow: boolean;
+  /** Number of unread messages/turns below the viewport when viewing history. */
+  unreadCount: number;
   scrollToBottom: (behavior?: ScrollBehavior) => void;
   scrollElementIntoView: (element: HTMLElement | null, options?: ScrollElementIntoViewOptions) => void;
   pauseAutoFollow: () => void;
@@ -119,6 +121,19 @@ const getUserMessagesCount = (messages: TMessage[]): number => {
   return count;
 };
 
+const countAssistantMessagesAfter = (messages: TMessage[], lastReadId?: string): number => {
+  if (!lastReadId) return 0;
+  const targetIndex = messages.findIndex((m) => m.id === lastReadId);
+  if (targetIndex < 0) return 0;
+  let count = 0;
+  for (let i = targetIndex + 1; i < messages.length; i += 1) {
+    if (messages[i]?.position !== 'right') {
+      count += 1;
+    }
+  }
+  return count;
+};
+
 export function useAutoScroll({
   conversationId,
   loadedConversationId,
@@ -134,6 +149,8 @@ export function useAutoScroll({
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [hasNewContentBelow, setHasNewContentBelow] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const lastReadMessageIdRef = useRef<string | undefined>(messages[messages.length - 1]?.id);
 
   const displayItemsRef = useRef(displayItems);
   displayItemsRef.current = displayItems;
@@ -189,6 +206,8 @@ export function useAutoScroll({
       userScrolledRef.current = false;
       userIntentPausedRef.current = false;
       userInputActiveRef.current = false;
+      lastReadMessageIdRef.current = messages[messages.length - 1]?.id;
+      setUnreadCount(0);
       if (hasNewContentBelowRef.current) {
         hasNewContentBelowRef.current = false;
         setHasNewContentBelow(false);
@@ -197,16 +216,21 @@ export function useAutoScroll({
     }
 
     return pinnedToBottom;
-  }, [isProcessing]);
+  }, [isProcessing, messages]);
 
   const pauseAutoFollow = useCallback(() => {
     userIntentPausedRef.current = true;
     userScrolledRef.current = true;
+    if (!lastReadMessageIdRef.current) {
+      lastReadMessageIdRef.current = messages[messages.length - 1]?.id;
+    }
     const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;
     if (conversationId && scrollerEl && ownsVisibleList) {
       sessionScrollRegistry.save(conversationId, {
         scrollTop: scrollerEl.scrollTop,
         userScrolled: true,
+        lastReadMessageId: lastReadMessageIdRef.current,
+        unreadCount: unreadCount,
       });
     }
     if (!scrollerEl || getBottomGap(scrollerEl) <= SCROLL_BUTTON_THRESHOLD_PX) {
@@ -217,7 +241,9 @@ export function useAutoScroll({
     hasNewContentBelowRef.current = nextHasNew;
     setShowScrollButton(true);
     setHasNewContentBelow(nextHasNew);
-  }, [conversationId, isProcessing, loadedConversationId, scrollerEl]);
+    const newCount = countAssistantMessagesAfter(messages, lastReadMessageIdRef.current);
+    setUnreadCount(nextHasNew ? Math.max(1, newCount) : newCount);
+  }, [conversationId, isProcessing, loadedConversationId, messages, scrollerEl, unreadCount]);
 
   const followContentGrowth = useCallback(() => {
     if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current || isRestoringScrollRef.current) return;
@@ -256,12 +282,16 @@ export function useAutoScroll({
       hasNewContentBelowRef.current = false;
       setShowScrollButton(false);
       setHasNewContentBelow(false);
+      lastReadMessageIdRef.current = messages[messages.length - 1]?.id;
+      setUnreadCount(0);
 
       const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;
       if (conversationId && ownsVisibleList) {
         sessionScrollRegistry.save(conversationId, {
           scrollTop: scrollerEl ? getMaxScrollTop(scrollerEl) : 0,
           userScrolled: false,
+          lastReadMessageId: messages[messages.length - 1]?.id,
+          unreadCount: 0,
         });
       }
 
@@ -376,6 +406,8 @@ export function useAutoScroll({
           sessionScrollRegistry.save(conversationId, {
             scrollTop: lastScrollTopRef.current,
             userScrolled: userScrolledRef.current,
+            lastReadMessageId: lastReadMessageIdRef.current,
+            unreadCount: unreadCount,
           });
         }, SCROLL_SAVE_DEBOUNCE_MS);
       }
@@ -475,11 +507,12 @@ export function useAutoScroll({
     if (conversationId !== previousConversationIdRef.current) {
       const prevId = previousConversationIdRef.current;
       // Skip sessions that were never displayed (a rapid A→B→C hop): their
-      // ref still holds the previous session's position.
       if (prevId && initialScrollDoneRef.current) {
         sessionScrollRegistry.save(prevId, {
           scrollTop: lastScrollTopRef.current,
           userScrolled: userScrolledRef.current,
+          lastReadMessageId: lastReadMessageIdRef.current,
+          unreadCount: unreadCount,
         });
       }
       if (scrollSaveTimerRef.current) {
@@ -518,6 +551,7 @@ export function useAutoScroll({
       isRestoringScrollRef.current = true;
       markProgrammaticScroll();
 
+      lastReadMessageIdRef.current = saved.lastReadMessageId ?? messages[messages.length - 1]?.id;
       const targetScrollTop = saved.scrollTop;
       targetRestoringScrollTopRef.current = targetScrollTop;
       scrollerEl.scrollTop = targetScrollTop;
@@ -530,9 +564,11 @@ export function useAutoScroll({
 
       showScrollButtonRef.current = true;
       setShowScrollButton(true);
-      const nextHasNew = isProcessing === true;
+      const nextHasNew = isProcessing === true || (saved.unreadCount ?? 0) > 0;
       hasNewContentBelowRef.current = nextHasNew;
       setHasNewContentBelow(nextHasNew);
+      const restoredUnread = countAssistantMessagesAfter(messages, saved.lastReadMessageId);
+      setUnreadCount(nextHasNew ? Math.max(1, saved.unreadCount ?? restoredUnread) : restoredUnread);
 
       // Re-apply and verify post-layout to ensure Virtuoso virtualization measurements
       // have settled and cannot clamp the restored position or falsely trip auto-follow.
@@ -579,6 +615,8 @@ export function useAutoScroll({
     hasNewContentBelowRef.current = false;
     setShowScrollButton(false);
     setHasNewContentBelow(false);
+    lastReadMessageIdRef.current = messages[messages.length - 1]?.id;
+    setUnreadCount(0);
 
     requestAnimationFrame(() => {
       scrollToBottom('auto');
@@ -605,6 +643,8 @@ export function useAutoScroll({
         sessionScrollRegistry.save(currentId, {
           scrollTop: lastScrollTopRef.current,
           userScrolled: userScrolledRef.current,
+          lastReadMessageId: lastReadMessageIdRef.current,
+          unreadCount: unreadCount,
         });
       }
     };
@@ -639,11 +679,15 @@ export function useAutoScroll({
     hasNewContentBelowRef.current = false;
     setShowScrollButton(false);
     setHasNewContentBelow(false);
+    lastReadMessageIdRef.current = messages[messages.length - 1]?.id;
+    setUnreadCount(0);
 
     if (conversationId) {
       sessionScrollRegistry.save(conversationId, {
         scrollTop: scrollerEl ? getMaxScrollTop(scrollerEl) : 0,
         userScrolled: false,
+        lastReadMessageId: messages[messages.length - 1]?.id,
+        unreadCount: 0,
       });
     }
 
@@ -685,6 +729,12 @@ export function useAutoScroll({
 
     if (!initialScrollDoneRef.current || swapBaselinePendingRef.current) return;
 
+    if (userScrolledRef.current || userIntentPausedRef.current) {
+      const newCount = countAssistantMessagesAfter(messages, lastReadMessageIdRef.current);
+      const effectiveCount = (hasNewContentBelowRef.current || isProcessing) ? Math.max(1, newCount) : newCount;
+      setUnreadCount(effectiveCount);
+    }
+
     if (!wasProcessing && isProcessing) {
       if (userScrolledRef.current || userIntentPausedRef.current) {
         showScrollButtonRef.current = true;
@@ -701,6 +751,8 @@ export function useAutoScroll({
         hasNewContentBelowRef.current = false;
         setShowScrollButton(false);
         setHasNewContentBelow(false);
+        lastReadMessageIdRef.current = messages[messages.length - 1]?.id;
+        setUnreadCount(0);
         requestAnimationFrame(() => {
           scrollToBottom('auto');
           requestAnimationFrame(() => {
@@ -713,9 +765,11 @@ export function useAutoScroll({
         hasNewContentBelowRef.current = true;
         setShowScrollButton(true);
         setHasNewContentBelow(true);
+        const newCount = countAssistantMessagesAfter(messages, lastReadMessageIdRef.current);
+        setUnreadCount(Math.max(1, newCount));
       }
     }
-  }, [followContentGrowth, isProcessing, scrollToBottom]);
+  }, [followContentGrowth, isProcessing, messages, scrollToBottom]);
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;
@@ -724,15 +778,19 @@ export function useAutoScroll({
     hasNewContentBelowRef.current = false;
     setShowScrollButton(false);
     setHasNewContentBelow(false);
+    lastReadMessageIdRef.current = messages[messages.length - 1]?.id;
+    setUnreadCount(0);
 
     const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;
     if (conversationId && scrollerEl && ownsVisibleList) {
       sessionScrollRegistry.save(conversationId, {
         scrollTop: scrollerEl.scrollTop,
         userScrolled: false,
+        lastReadMessageId: messages[messages.length - 1]?.id,
+        unreadCount: 0,
       });
     }
-  }, [conversationId, loadedConversationId, scrollerEl]);
+  }, [conversationId, loadedConversationId, messages, scrollerEl]);
 
   return {
     handleScrollerRef,
@@ -742,6 +800,7 @@ export function useAutoScroll({
     handlePointerDown,
     showScrollButton,
     hasNewContentBelow,
+    unreadCount,
     scrollToBottom,
     scrollElementIntoView,
     pauseAutoFollow,

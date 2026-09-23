@@ -1427,6 +1427,7 @@ const MessageList: React.FC<{
     handlePointerDown,
     showScrollButton,
     hasNewContentBelow,
+    unreadCount,
     scrollToBottom,
     scrollElementIntoView,
     pauseAutoFollow,
@@ -1636,7 +1637,12 @@ const MessageList: React.FC<{
   const scrollButtonLabel = isGeneratingBelow
     ? t('messages.generatingBelow', { defaultValue: 'Generating content below...' })
     : isUnreadBelow
-      ? t('messages.newContentBelow', { defaultValue: 'View latest content' })
+      ? unreadCount > 0
+        ? t('messages.unreadCountBelow', {
+            defaultValue: '{{count}} new messages below',
+            count: unreadCount,
+          })
+        : t('messages.newContentBelow', { defaultValue: 'View latest content' })
       : t('messages.scrollToBottom', { defaultValue: 'Scroll to bottom' });
 
   // Click scroll button
@@ -1996,7 +2002,9 @@ const MessageList: React.FC<{
           )}
         </span>
         {scrollButtonStatus === 'unread' && (
-          <span className='message-list-scroll-button__badge' aria-hidden='true' />
+          <span className='message-list-scroll-button__badge' aria-hidden='true'>
+            {unreadCount > 99 ? '99+' : unreadCount > 0 ? unreadCount : ''}
+          </span>
         )}
       </button>
 

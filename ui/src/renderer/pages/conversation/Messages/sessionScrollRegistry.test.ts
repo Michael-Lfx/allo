@@ -18,12 +18,16 @@ describe('sessionScrollRegistry', () => {
     sessionScrollRegistry.save('conv-1', {
       scrollTop: 450,
       userScrolled: true,
+      lastReadMessageId: 'msg-42',
+      unreadCount: 3,
     });
 
     const snapshot = sessionScrollRegistry.get('conv-1');
     expect(snapshot).toBeDefined();
     expect(snapshot?.scrollTop).toBe(450);
     expect(snapshot?.userScrolled).toBe(true);
+    expect(snapshot?.lastReadMessageId).toBe('msg-42');
+    expect(snapshot?.unreadCount).toBe(3);
     expect(snapshot?.updatedAt).toBeGreaterThan(0);
   });
 

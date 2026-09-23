@@ -13,6 +13,10 @@ export interface SessionScrollSnapshot {
   userScrolled: boolean;
   /** Timestamp when the snapshot was recorded. */
   updatedAt: number;
+  /** The message ID of the bottom-most message when the user scrolled away. */
+  lastReadMessageId?: string;
+  /** Unread assistant messages count below viewport. */
+  unreadCount?: number;
 }
 
 const MAX_SESSION_SCROLL_SNAPSHOTS = 200;
@@ -44,6 +48,8 @@ class SessionScrollRegistry {
       scrollTop: Math.max(0, snapshot.scrollTop),
       userScrolled: snapshot.userScrolled,
       updatedAt: snapshot.updatedAt ?? Date.now(),
+      lastReadMessageId: snapshot.lastReadMessageId,
+      unreadCount: snapshot.unreadCount,
     });
   }
 
