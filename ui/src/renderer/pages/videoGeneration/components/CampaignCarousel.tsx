@@ -9,6 +9,7 @@ import {
   inAppNavigatePath,
   isHttpUrl,
   isInAppCampaignPath,
+  pickCampaignLocalizedText,
 } from '../campaign';
 import type { CampaignCarouselItem } from '../types';
 import styles from '../campaign.module.css';
@@ -16,7 +17,7 @@ import styles from '../campaign.module.css';
 const ROTATE_MS = 4500;
 
 const CampaignCarousel: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const [items, setItems] = useState<CampaignCarouselItem[]>([]);
@@ -117,6 +118,7 @@ const CampaignCarousel: React.FC = () => {
         >
           {items.map((item, i) => {
             const clickable = campaignCarouselAction(item) !== 'none';
+            const title = pickCampaignLocalizedText(item.title, item.titleEn, i18n.language);
             return (
               <button
                 key={item.id}
@@ -125,7 +127,7 @@ const CampaignCarousel: React.FC = () => {
                   clickable ? styles.carouselSlideClickable : ''
                 }`}
                 disabled={!clickable}
-                aria-label={item.title}
+                aria-label={title}
                 onClick={() => openItem(item)}
               >
                 {item.mediaType === 'video' ? (
@@ -150,7 +152,7 @@ const CampaignCarousel: React.FC = () => {
                   />
                 )}
                 <div className={styles.carouselGradient} />
-                {item.title ? <div className={styles.carouselTitle}>{item.title}</div> : null}
+                {title ? <div className={styles.carouselTitle}>{title}</div> : null}
               </button>
             );
           })}

@@ -26,7 +26,11 @@ pub struct CampaignSummary {
     pub id: i64,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_en: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_en: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_url: Option<String>,
     #[serde(default)]
@@ -53,6 +57,8 @@ pub struct CampaignSummary {
 pub struct CampaignCarouselItem {
     pub id: i64,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_en: Option<String>,
     pub media_type: String,
     pub media_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,4 +105,6 @@ pub struct CampaignDetail {
     pub summary: CampaignSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_en: Option<String>,
 }

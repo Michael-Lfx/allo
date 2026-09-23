@@ -136,6 +136,7 @@ export type CampaignPhase = 'upcoming' | 'ongoing' | 'ended' | string;
 export interface CampaignCarouselItem {
   id: number;
   title: string;
+  titleEn?: string | null;
   mediaType: 'image' | 'video' | string;
   mediaUrl: string;
   posterUrl?: string | null;
@@ -155,7 +156,9 @@ export interface CampaignCarouselResult {
 export interface CampaignSummary {
   id: number;
   title: string;
+  titleEn?: string | null;
   summary?: string | null;
+  summaryEn?: string | null;
   coverUrl?: string | null;
   showInCarousel?: boolean;
   showInList?: boolean;
@@ -177,6 +180,7 @@ export interface CampaignListResult {
 
 export interface CampaignDetail extends CampaignSummary {
   content?: string | null;
+  contentEn?: string | null;
 }
 
 /** Flowy cloud Skill Hub status. */

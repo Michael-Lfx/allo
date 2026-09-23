@@ -127,6 +127,22 @@ export function formatCampaignRange(
   return `${fmt.format(start)} – ${fmt.format(end)}`;
 }
 
+/**
+ * Pick campaign copy for the current UI language.
+ * Chinese locales use the unsuffixed field; others prefer `*En` and fall back to Chinese.
+ */
+export function pickCampaignLocalizedText(
+  zh: string | null | undefined,
+  en: string | null | undefined,
+  language: string | undefined
+): string {
+  const zhText = (zh ?? '').trim();
+  const enText = (en ?? '').trim();
+  const preferZh = (language || 'zh').toLowerCase().startsWith('zh');
+  if (preferZh) return zhText || enText;
+  return enText || zhText;
+}
+
 export function campaignCountdownMs(startAt: string, now = Date.now()): number {
   const start = Date.parse(startAt);
   if (Number.isNaN(start)) return 0;
