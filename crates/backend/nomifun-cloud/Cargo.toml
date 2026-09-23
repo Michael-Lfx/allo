@@ -42,6 +42,20 @@ http3-experimental = ["reqwest/http3"]
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_System_SystemInformation",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+io-kit-sys = "0.4"
 
 [dev-dependencies]
 clap = { workspace = true }

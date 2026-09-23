@@ -1,7 +1,16 @@
 //! Device fingerprint collection for activation reporting.
 
-#[cfg(not(target_os = "windows"))]
-use std::process::Command;
+#[cfg(target_os = "windows")]
+#[path = "fingerprint_windows.rs"]
+mod fingerprint_windows;
+
+#[cfg(target_os = "macos")]
+#[path = "fingerprint_macos.rs"]
+mod fingerprint_macos;
+
+#[cfg(target_os = "linux")]
+#[path = "fingerprint_linux.rs"]
+mod fingerprint_linux;
 
 use sha2::{Digest, Sha256};
 use tracing::warn;
@@ -21,8 +30,7 @@ pub struct DeviceFingerprint {
 }
 
 /// Fingerprint values already persisted on this device. Empty strings mean
-/// "never collected" and trigger a fresh read (concurrent on Windows, where
-/// each source spawns a separate PowerShell process).
+/// "never collected" and trigger a fresh platform read.
 #[derive(Debug, Clone, Default)]
 pub struct PersistedFingerprint {
     pub mac: String,
@@ -44,14 +52,14 @@ pub fn collect_fingerprint(
         (None, None, None, None)
     };
 
-    let mac = if persisted.mac.is_empty() {
+    let mac = normalize_mac(&if persisted.mac.is_empty() {
         new_mac.unwrap_or_else(|| {
             warn!("could not read MAC address; using generated placeholder");
             "00:00:00:00:00:01".to_string()
         })
     } else {
-        normalize_mac(&persisted.mac)
-    };
+        persisted.mac.clone()
+    });
     let sn = if persisted.sn.is_empty() {
         new_sn.unwrap_or_else(generate_serial_number)
     } else {
@@ -81,31 +89,13 @@ pub fn collect_fingerprint(
     })
 }
 
-/// Reads raw fingerprint sources. On Windows each read spawns a PowerShell
-/// process, so they run concurrently and are joined here.
 fn collect_unpersisted() -> (Option<String>, Option<String>, Option<String>, Option<String>) {
-    #[cfg(target_os = "windows")]
-    {
-        let mac = std::thread::spawn(read_mac_address);
-        let sn = std::thread::spawn(read_serial_number);
-        let cpu = std::thread::spawn(read_cpu_chip_id);
-        let xpu = std::thread::spawn(read_xpu_brand);
-        (
-            mac.join().ok().flatten(),
-            sn.join().ok().flatten(),
-            cpu.join().ok().flatten(),
-            xpu.join().ok().flatten(),
-        )
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        (
-            read_mac_address(),
-            read_serial_number(),
-            read_cpu_chip_id(),
-            read_xpu_brand(),
-        )
-    }
+    (
+        read_mac_address(),
+        read_serial_number(),
+        read_cpu_chip_id(),
+        read_xpu_brand(),
+    )
 }
 
 pub fn build_activate_request(
@@ -219,172 +209,86 @@ fn hash_cpu_fallback(model: &str) -> String {
     format!("CPU{}", hex::encode(&digest[..8]).to_ascii_uppercase())
 }
 
+#[cfg(target_os = "windows")]
 fn read_mac_address() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        run_powershell(
-            "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.MacAddress -ne $null } | Select-Object -First 1 -ExpandProperty MacAddress",
-        )
-    }
-    #[cfg(target_os = "linux")]
-    {
-        read_file_trim("/sys/class/net/eth0/address")
-            .or_else(|| read_file_trim("/sys/class/net/en0/address"))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let out = Command::new("ifconfig").arg("en0").output().ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            if let Some(rest) = line.trim().strip_prefix("ether ") {
-                return Some(rest.split_whitespace().next()?.to_string());
-            }
-        }
-        None
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    {
-        None
-    }
-}
-
-fn read_serial_number() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        run_powershell("(Get-CimInstance Win32_BIOS).SerialNumber")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        read_file_trim("/sys/class/dmi/id/product_serial")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let out = Command::new("system_profiler")
-            .args(["SPHardwareDataType"])
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            if line.contains("Serial Number") {
-                return line.split(':').nth(1).map(|s| s.trim().to_string());
-            }
-        }
-        None
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    {
-        None
-    }
-}
-
-fn read_cpu_chip_id() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        run_powershell("(Get-CimInstance Win32_Processor | Select-Object -First 1).ProcessorId")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let model = std::fs::read_to_string("/proc/cpuinfo")
-            .ok()
-            .and_then(|text| {
-                text.lines()
-                    .find(|l| l.starts_with("model name"))
-                    .and_then(|l| l.split(':').nth(1))
-                    .map(|s| s.trim().to_string())
-            })?;
-        return Some(hash_cpu_fallback(&model));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let out = Command::new("sysctl")
-            .args(["-n", "machdep.cpu.brand_string"])
-            .output()
-            .ok()?;
-        let model = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if model.is_empty() {
-            None
-        } else {
-            Some(hash_cpu_fallback(&model))
-        }
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    {
-        None
-    }
-}
-
-fn read_xpu_brand() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        run_powershell(
-            "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic|Remote Desktop|Virtual' } | Select-Object -First 1 -ExpandProperty Name",
-        )
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let out = Command::new("system_profiler")
-            .args(["SPDisplaysDataType", "-detailLevel", "mini"])
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            let trimmed = line.trim();
-            for prefix in ["Chipset Model:", "Chipset Model："] {
-                if let Some(rest) = trimmed.strip_prefix(prefix) {
-                    let value = rest.trim();
-                    if !value.is_empty() {
-                        return Some(value.to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let out = Command::new("lspci").output().ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        text.lines()
-            .find(|line| {
-                let lower = line.to_ascii_lowercase();
-                lower.contains("vga compatible") || lower.contains("3d controller")
-            })
-            .and_then(|line| line.split(": ").nth(1))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    {
-        None
-    }
+    fingerprint_windows::read_mac_address()
 }
 
 #[cfg(target_os = "windows")]
-fn run_powershell(script: &str) -> Option<String> {
-    let out = nomi_process_runtime::hidden_std_command("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
+fn read_serial_number() -> Option<String> {
+    fingerprint_windows::read_serial_number()
 }
 
-#[cfg(not(target_os = "windows"))]
-fn run_powershell(_script: &str) -> Option<String> {
-    None
+#[cfg(target_os = "windows")]
+fn read_cpu_chip_id() -> Option<String> {
+    fingerprint_windows::read_cpu_chip_id()
+}
+
+#[cfg(target_os = "windows")]
+fn read_xpu_brand() -> Option<String> {
+    fingerprint_windows::read_xpu_brand()
 }
 
 #[cfg(target_os = "linux")]
-fn read_file_trim(path: &str) -> Option<String> {
-    let value = std::fs::read_to_string(path).ok()?.trim().to_string();
-    if value.is_empty() || value.eq_ignore_ascii_case("none") {
-        None
-    } else {
-        Some(value)
-    }
+fn read_mac_address() -> Option<String> {
+    fingerprint_linux::read_mac_address()
+}
+
+#[cfg(target_os = "linux")]
+fn read_serial_number() -> Option<String> {
+    fingerprint_linux::read_serial_number()
+}
+
+#[cfg(target_os = "linux")]
+fn read_cpu_chip_id() -> Option<String> {
+    let model = fingerprint_linux::read_cpu_brand()?;
+    Some(hash_cpu_fallback(&model))
+}
+
+#[cfg(target_os = "linux")]
+fn read_xpu_brand() -> Option<String> {
+    fingerprint_linux::read_xpu_brand()
+}
+
+#[cfg(target_os = "macos")]
+fn read_mac_address() -> Option<String> {
+    fingerprint_macos::read_mac_address()
+}
+
+#[cfg(target_os = "macos")]
+fn read_serial_number() -> Option<String> {
+    fingerprint_macos::read_serial_number()
+}
+
+#[cfg(target_os = "macos")]
+fn read_cpu_chip_id() -> Option<String> {
+    let model = fingerprint_macos::read_cpu_brand()?;
+    Some(hash_cpu_fallback(&model))
+}
+
+#[cfg(target_os = "macos")]
+fn read_xpu_brand() -> Option<String> {
+    fingerprint_macos::read_xpu_brand()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn read_mac_address() -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn read_serial_number() -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn read_cpu_chip_id() -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn read_xpu_brand() -> Option<String> {
+    None
 }
 
 #[cfg(test)]
@@ -394,6 +298,28 @@ mod tests {
     #[test]
     fn normalize_mac_replaces_dashes() {
         assert_eq!(normalize_mac("aa-bb-cc-dd-ee-ff"), "AA:BB:CC:DD:EE:FF");
+    }
+
+    #[test]
+    fn normalize_mac_is_idempotent_on_colon_form() {
+        assert_eq!(normalize_mac("AA:BB:CC:DD:EE:FF"), "AA:BB:CC:DD:EE:FF");
+        assert_eq!(normalize_mac("aa:bb:cc:dd:ee:ff"), "AA:BB:CC:DD:EE:FF");
+        assert_eq!(normalize_mac("FC-34-97-A5-3C-71"), "FC:34:97:A5:3C:71");
+    }
+
+    #[test]
+    fn collect_fingerprint_fresh_mac_branch_always_normalizes() {
+        let source = include_str!("fingerprint.rs");
+        let start = source.find("pub fn collect_fingerprint").expect("fn");
+        let end = source[start..]
+            .find("fn collect_unpersisted")
+            .map(|offset| start + offset)
+            .expect("collect_unpersisted follows collect_fingerprint");
+        let body = &source[start..end];
+        assert!(
+            body.contains("normalize_mac(&if persisted.mac.is_empty()"),
+            "fresh and persisted MAC paths must both go through normalize_mac"
+        );
     }
 
     #[test]
@@ -461,19 +387,45 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_collection_runs_readers_concurrently() {
-        let source = include_str!("fingerprint.rs");
-        let start = source.find("fn collect_unpersisted").expect("helper fn");
-        let end = source[start..]
-            .find("pub fn build_activate_request")
-            .map(|offset| start + offset)
-            .expect("build_activate_request follows collect_unpersisted");
-        let body = &source[start..end];
-        assert!(body.contains("std::thread::spawn(read_mac_address)"));
-        assert!(body.contains("std::thread::spawn(read_serial_number)"));
-        assert!(body.contains("std::thread::spawn(read_cpu_chip_id)"));
-        assert!(body.contains("std::thread::spawn(read_xpu_brand)"));
-        assert!(body.contains(".join().ok().flatten()"));
+    fn windows_fingerprint_avoids_powershell() {
+        let windows_source = include_str!("fingerprint_windows.rs");
+        assert!(windows_source.contains("GetAdaptersAddresses"));
+        assert!(windows_source.contains("GetSystemFirmwareTable"));
+        assert!(windows_source.contains("CreateDXGIFactory1"));
+        assert!(windows_source.contains("__cpuid"));
+        assert!(!windows_source.contains("hidden_std_command"));
+        assert!(!windows_source.contains("Command::new"));
+    }
+
+    #[test]
+    fn macos_fingerprint_module_avoids_subprocess() {
+        let macos_source = include_str!("fingerprint_macos.rs");
+        let code = macos_source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("prod code");
+        assert!(code.contains("getifaddrs"));
+        assert!(code.contains("sysctlbyname"));
+        assert!(code.contains("IOPlatformSerialNumber"));
+        assert!(code.contains("IOAccelerator"));
+        assert!(!code.contains("std::process"));
+        assert!(!code.contains("Command::"));
+    }
+
+    #[test]
+    fn linux_fingerprint_module_avoids_subprocess() {
+        let linux_source = include_str!("fingerprint_linux.rs");
+        let code = linux_source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("prod code");
+        assert!(code.contains("/sys/class/net"));
+        assert!(code.contains("/sys/class/dmi"));
+        assert!(code.contains("/proc/cpuinfo"));
+        assert!(code.contains("/sys/class/drm"));
+        assert!(!code.contains("std::process"));
+        assert!(!code.contains("Command::"));
+        assert!(!code.contains("\"lspci\""));
     }
 
     #[test]

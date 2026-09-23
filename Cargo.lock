@@ -5137,6 +5137,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-kit-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617ee6cf8e3f66f3b4ea67a4058564628cde41901316e19f559e14c7c72c5e7b"
+dependencies = [
+ "core-foundation-sys",
+ "mach2",
+]
+
+[[package]]
 name = "ioctl-rs"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7277,11 +7287,15 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
  "dashmap",
  "futures",
  "getrandom 0.2.17",
  "hex",
  "image",
+ "io-kit-sys",
+ "libc",
  "nomi-config",
  "nomi-process-runtime",
  "nomi-providers",
@@ -7304,6 +7318,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "windows 0.61.3",
  "winreg 0.55.0",
  "wiremock",
 ]
