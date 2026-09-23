@@ -136,6 +136,10 @@ export interface SessionScrollSnapshot {
 - **问题**：会话 id 翻转比 store 异步拉取并替换列表早一个 commit。若在 id 已翻转、列表仍是旧会话的 commit 中执行恢复，会对着旧会话 DOM 设置偏移：被高度钳制吞掉恢复值，钳制引发的 scroll 事件又会把旧会话末尾位置写进新会话快照，造成双向污染。
 - **优化**：`useMessageLstCache.loadMessages` 在 `mergeIntoList` 同一批次内调用 `setLoadedId(key)`，经新增的 `MessageListLoadedIdProvider` 下发；恢复分支仅在 `loadedConversationId === conversationId` 后才执行，并在执行时播种发消息基线（`previousLastUserIdRef`）+ 消费 `swapBaselinePendingRef`。无 `conversationId` 的消费方保持旧有非门控行为（`if (conversationId && loadedConversationId !== conversationId) return;`）。
 
+### 7. 注册表写侧归属门控（`ownsVisibleList` 全写点保护）
+- **问题**：在 A→B 的 pending 窗口（id 已变为 B，但列表仍为 A）内，若发生滚动、暂停跟随、置底或隐藏按钮操作，回调中若直接使用 `conversationId` 写注册表，会把会话 A 的视口状态盖写进会话 B 的快照。
+- **优化**：在四个写侧路径（`handleScroll`、`pauseAutoFollow`、`scrollToBottom`、`hideScrollButton`）前置统一并入 `const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;` 判定。仅在当前组件确认持有可见列表归属时才调度或写入快照，杜绝 pending 窗口内的写侧交叉污染。
+
 ---
 
 ## 五、验证与测试矩阵
@@ -150,9 +154,9 @@ export interface SessionScrollSnapshot {
            src/renderer/pages/conversation/Messages/useAutoScroll.structure.test.ts \
            src/renderer/pages/conversation/Messages/MessageList.scrollButton.structure.test.ts
   ```
-- **测试结果**：**34 项测试全部通过，163 个断言（expect calls）100% 达标**。
-  - `sessionScrollRegistry.test.ts` (7/7 pass): 覆盖增删查改、清空、负数保护、LRU 200 容量上限淘汰与命中刷新、`conversation.deleted` 联动清理。
-  - `useAutoScroll.test.ts` (20/20 pass): 覆盖会话切换同步保存、历史视口精确恢复、发消息强制置底、悬浮按钮状态即时清理；新增结构性断言锁定时序防护（`lastScrollTopRef` 无 DOM 保存、`loadedConversationId` 门控、`swapBaselinePendingRef` 交换抑制、`SCROLL_SAVE_DEBOUNCE_MS` 防抖）。
+- **测试结果**：**35 项测试全部通过，179 个断言（expect calls）100% 达标**。
+  - `sessionScrollRegistry.test.ts` (8/8 pass): 覆盖增删查改、清空、负数保护、LRU 200 容量上限淘汰与命中刷新、`conversation.deleted` 联动清理。
+  - `useAutoScroll.test.ts` (20/20 pass): 覆盖会话切换同步保存、历史视口精确恢复、发消息强制置底、悬浮按钮状态即时清理；结构性断言锁定时序与写侧防护（`lastScrollTopRef` 无 DOM 保存、`loadedConversationId` 读写双向门控、`swapBaselinePendingRef` 交换抑制、`SCROLL_SAVE_DEBOUNCE_MS` 防抖、`ownsVisibleList` 四处写点门控）。
   - `useAutoScroll.structure.test.ts` (2/2 pass): 覆盖用户交互与折叠面板布局变动防护。
   - `MessageList.scrollButton.structure.test.ts` (5/5 pass): 覆盖流式跟随与视口锚点结构。
 

@@ -1179,6 +1179,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       if (!snapshot.purge) return messages;
       return (await waitForReconciliationCommit(appliedEpoch)) ? messages : null;
     }
+    setLoadedId(key);
     return [];
   }, [key, mergeIntoList, waitForReconciliationCommit, windowed]);
 

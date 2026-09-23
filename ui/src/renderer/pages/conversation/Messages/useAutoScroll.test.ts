@@ -121,6 +121,24 @@ describe('useAutoScroll session reading position persistence', () => {
     expect(sendEffect.includes('if (swapBaselinePendingRef.current) return;')).toBe(true);
   });
 
+  test('gates all registry write paths on visible list ownership', () => {
+    const pauseBlock = sliceBetween('const pauseAutoFollow = useCallback', 'const followContentGrowth');
+    expect(pauseBlock.includes('const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;')).toBe(true);
+    expect(pauseBlock.includes('if (conversationId && scrollerEl && ownsVisibleList)')).toBe(true);
+
+    const scrollBlock = sliceBetween('const handleScroll = useCallback', 'const handleWheel');
+    expect(scrollBlock.includes('const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;')).toBe(true);
+    expect(scrollBlock.includes('if (conversationId && ownsVisibleList)')).toBe(true);
+
+    const bottomBlock = sliceBetween('const scrollToBottom = useCallback', 'const resolveFollowOutput');
+    expect(bottomBlock.includes('const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;')).toBe(true);
+    expect(bottomBlock.includes('if (conversationId && ownsVisibleList)')).toBe(true);
+
+    const hideBlock = sliceBetween('const hideScrollButton = useCallback', 'return {');
+    expect(hideBlock.includes('const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;')).toBe(true);
+    expect(hideBlock.includes('if (conversationId && scrollerEl && ownsVisibleList)')).toBe(true);
+  });
+
   test('resets reading position to bottom when user sends a new message', () => {
     const sendEffect = sliceBetween(
       'const sentNewUserMessage = lastUserId !== undefined && lastUserId !== previousLastUserId;',

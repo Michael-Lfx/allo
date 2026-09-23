@@ -178,7 +178,8 @@ export function useAutoScroll({
   const pauseAutoFollow = useCallback(() => {
     userIntentPausedRef.current = true;
     userScrolledRef.current = true;
-    if (conversationId && scrollerEl) {
+    const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;
+    if (conversationId && scrollerEl && ownsVisibleList) {
       sessionScrollRegistry.save(conversationId, {
         scrollTop: scrollerEl.scrollTop,
         userScrolled: true,
@@ -191,7 +192,7 @@ export function useAutoScroll({
     hasNewContentBelowRef.current = true;
     setShowScrollButton(true);
     setHasNewContentBelow(true);
-  }, [conversationId, scrollerEl]);
+  }, [conversationId, loadedConversationId, scrollerEl]);
 
   const followContentGrowth = useCallback(() => {
     if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
@@ -227,7 +228,8 @@ export function useAutoScroll({
       setShowScrollButton(false);
       setHasNewContentBelow(false);
 
-      if (conversationId) {
+      const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;
+      if (conversationId && ownsVisibleList) {
         sessionScrollRegistry.save(conversationId, {
           scrollTop: scrollerEl ? getMaxScrollTop(scrollerEl) : 0,
           userScrolled: false,
@@ -258,7 +260,7 @@ export function useAutoScroll({
         behavior,
       });
     },
-    [conversationId, itemCount, markProgrammaticScroll, scrollerEl]
+    [conversationId, itemCount, loadedConversationId, markProgrammaticScroll, scrollerEl]
   );
 
   const resolveFollowOutput = useCallback((_isAtBottom: boolean): FollowOutputMode => {
@@ -317,7 +319,8 @@ export function useAutoScroll({
       lastScrollTopRef.current = currentScrollTop;
       updateBottomState(target);
 
-      if (conversationId) {
+      const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;
+      if (conversationId && ownsVisibleList) {
         // Debounced: per-frame events (incl. streaming follow pins) would
         // otherwise churn the registry. The timer is cleared on switch and
         // unmount, where lastScrollTopRef is saved synchronously instead.
@@ -331,7 +334,7 @@ export function useAutoScroll({
         }, SCROLL_SAVE_DEBOUNCE_MS);
       }
     },
-    [conversationId, updateBottomState]
+    [conversationId, loadedConversationId, updateBottomState]
   );
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
@@ -519,13 +522,14 @@ export function useAutoScroll({
     setShowScrollButton(false);
     setHasNewContentBelow(false);
 
-    if (conversationId && scrollerEl) {
+    const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;
+    if (conversationId && scrollerEl && ownsVisibleList) {
       sessionScrollRegistry.save(conversationId, {
         scrollTop: scrollerEl.scrollTop,
         userScrolled: false,
       });
     }
-  }, [conversationId, scrollerEl]);
+  }, [conversationId, loadedConversationId, scrollerEl]);
 
   return {
     handleScrollerRef,
