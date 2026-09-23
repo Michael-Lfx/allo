@@ -20,6 +20,7 @@ at a high level rather than a complete commit log.
 - The connector detail drawer shows why an authorization did not finish (token exchange failure, callback timeout, a throttling gateway) instead of only "not authorized".
 - A connector authorization that an authorization server throttles (`slow_down`) now waits instead of retrying at once: the next attempt is refused with the remaining wait, and repeated throttles back off up to 15 minutes.
 - Installing a connector no longer probes it on every readiness poll (one real connection per 5s instead of one per 400ms — up to ~10 connections and ~20 token requests per install before), and the SDK's `connectors.waitForAuth` reports why an authorization did not finish.
+- Connectors that need a key or token keep the auth headers their marketplace declares (and their `sse` transport), and a credential the URL carries is substituted before the request; a probe that finds a credential missing says which key to fill instead of sending the literal `secret:NAME`.
 
 
 ## v1.3.2 - 2026-09-11
