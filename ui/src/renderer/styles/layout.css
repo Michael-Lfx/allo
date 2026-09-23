@@ -204,6 +204,7 @@
 .flowy-disclosure-content {
   display: grid !important;
   grid-template-rows: 0fr;
+  will-change: grid-template-rows;
   transition: grid-template-rows 220ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 
