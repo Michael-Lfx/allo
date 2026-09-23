@@ -36,9 +36,6 @@
   flex-shrink: 0;
   pointer-events: none;
   overflow-anchor: auto;
-  transition:
-    height 0.35s cubic-bezier(0.32, 0.72, 0, 1),
-    min-height 0.35s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 .message-list-root[data-is-processing='true'] .message-list-end-spacer,

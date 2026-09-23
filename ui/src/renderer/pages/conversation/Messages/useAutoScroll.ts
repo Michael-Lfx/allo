@@ -262,11 +262,13 @@ export function useAutoScroll({
       return;
     }
 
-    const maxTop = getMaxScrollTop(scrollerEl);
-    if (Math.abs(scrollerEl.scrollTop - maxTop) < 1) return;
-    markProgrammaticScroll();
-    scrollerEl.scrollTop = maxTop;
-  }, [markProgrammaticScroll, scrollerEl]);
+    if (!isProcessing) {
+      const maxTop = getMaxScrollTop(scrollerEl);
+      if (Math.abs(scrollerEl.scrollTop - maxTop) < 1) return;
+      markProgrammaticScroll();
+      scrollerEl.scrollTop = maxTop;
+    }
+  }, [isProcessing, markProgrammaticScroll, scrollerEl]);
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = 'smooth') => {
@@ -650,6 +652,34 @@ export function useAutoScroll({
     };
   }, []);
 
+  const dockToLatestUserMessage = useCallback(() => {
+    const lastUserId = findLastUserMessageId(messages);
+    if (!lastUserId) return;
+
+    const items = (displayItemsRef.current as Array<{ position?: string; id?: string; sourceMessageIds?: string[] } | undefined>) ?? messages;
+    const targetIndex = items.findLastIndex((item) => {
+      if (item && typeof item === 'object') {
+        if ('position' in item && item.position === 'right') return true;
+        if ('id' in item && item.id === lastUserId) return true;
+        if ('sourceMessageIds' in item && Array.isArray(item.sourceMessageIds) && item.sourceMessageIds.includes(lastUserId)) return true;
+      }
+      return false;
+    });
+
+    const virtuoso = virtuosoRefLatest.current?.current;
+    if (virtuoso && targetIndex >= 0) {
+      markProgrammaticScroll();
+      resizeAutoFollowBlockedUntilRef.current = Date.now() + 400;
+      virtuoso.scrollToIndex({
+        index: targetIndex,
+        align: 'start',
+        behavior: 'auto',
+      });
+    } else {
+      scrollToBottom('auto');
+    }
+  }, [markProgrammaticScroll, messages, scrollToBottom]);
+
   useEffect(() => {
     const lastUserId = findLastUserMessageId(messages);
     const previousLastUserId = previousLastUserIdRef.current;
@@ -691,33 +721,14 @@ export function useAutoScroll({
       });
     }
 
-    resizeAutoFollowBlockedUntilRef.current = Date.now() + 150;
+    resizeAutoFollowBlockedUntilRef.current = Date.now() + 400;
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const items = (displayItemsRef.current as Array<{ position?: string; id?: string; sourceMessageIds?: string[] } | undefined>) ?? messages;
-        const targetIndex = items.findLastIndex((item) => {
-          if (item && typeof item === 'object') {
-            if ('position' in item && item.position === 'right') return true;
-            if ('id' in item && item.id === lastUserId) return true;
-            if ('sourceMessageIds' in item && Array.isArray(item.sourceMessageIds) && item.sourceMessageIds.includes(lastUserId)) return true;
-          }
-          return false;
-        });
-
-        const virtuoso = virtuosoRefLatest.current?.current;
-        if (virtuoso && targetIndex >= 0) {
-          virtuoso.scrollToIndex({
-            index: targetIndex,
-            align: 'start',
-            behavior: 'auto',
-          });
-        } else {
-          scrollToBottom('auto');
-        }
+        dockToLatestUserMessage();
       });
     });
-  }, [conversationId, messages, scrollerEl, scrollToBottom]);
+  }, [conversationId, dockToLatestUserMessage, messages, scrollerEl]);
 
   // Handle stream lifecycle: when output finishes, cleanly settle to the bottom ONLY
   // if the user did not scroll away; if the user is viewing history, strictly preserve
@@ -741,6 +752,11 @@ export function useAutoScroll({
         hasNewContentBelowRef.current = true;
         setShowScrollButton(true);
         setHasNewContentBelow(true);
+      } else {
+        resizeAutoFollowBlockedUntilRef.current = Date.now() + 400;
+        requestAnimationFrame(() => {
+          dockToLatestUserMessage();
+        });
       }
     } else if (wasProcessing && !isProcessing) {
       if (!userScrolledRef.current && !userIntentPausedRef.current) {
@@ -769,7 +785,7 @@ export function useAutoScroll({
         setUnreadCount(Math.max(1, newCount));
       }
     }
-  }, [followContentGrowth, isProcessing, messages, scrollToBottom]);
+  }, [dockToLatestUserMessage, followContentGrowth, isProcessing, messages, scrollToBottom]);
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;

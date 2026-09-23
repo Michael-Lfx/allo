@@ -1685,9 +1685,11 @@ const MessageList: React.FC<{
       </div>
     ) : null;
   const [dynamicSpacerHeight, setDynamicSpacerHeight] = useState<number | null>(null);
+  const isNewUserTurn = list.length > 0 && list[list.length - 1]?.position === 'right';
+  const isProcessingOrNewTurn = conversationContext?.isProcessing === true || isNewUserTurn;
 
   useLayoutEffect(() => {
-    if (!conversationContext?.isProcessing || !scrollerElRef.current) {
+    if (!isProcessingOrNewTurn || !scrollerElRef.current) {
       setDynamicSpacerHeight((prev) => (prev !== null ? null : prev));
       return;
     }
@@ -1713,10 +1715,16 @@ const MessageList: React.FC<{
         const spacerTop = spacerEl.getBoundingClientRect().top;
         const currentTurnHeight = Math.max(0, spacerTop - userTop);
         const neededSpacer = Math.max(24, Math.ceil(viewportHeight - currentTurnHeight));
-        setDynamicSpacerHeight((prev) => (prev !== neededSpacer ? neededSpacer : prev));
+        setDynamicSpacerHeight((prev) => {
+          if (prev !== null && Math.abs(prev - neededSpacer) <= 2) return prev;
+          return neededSpacer;
+        });
       } else {
         const fallback = Math.max(24, viewportHeight - 120);
-        setDynamicSpacerHeight((prev) => (prev !== fallback ? fallback : prev));
+        setDynamicSpacerHeight((prev) => {
+          if (prev !== null && Math.abs(prev - fallback) <= 2) return prev;
+          return fallback;
+        });
       }
     };
 
@@ -1733,17 +1741,17 @@ const MessageList: React.FC<{
       window.removeEventListener('resize', updateSpacer);
       resizeObserver?.disconnect();
     };
-  }, [conversationContext?.isProcessing, displayList, list]);
+  }, [displayList, isProcessingOrNewTurn, list]);
 
   const listEndSpacer = (
     <div
       className='message-list-end-spacer'
       style={
-        conversationContext?.isProcessing && dynamicSpacerHeight !== null
+        isProcessingOrNewTurn && dynamicSpacerHeight !== null
           ? { height: `${dynamicSpacerHeight}px`, minHeight: `${dynamicSpacerHeight}px` }
           : undefined
       }
-      data-is-processing={conversationContext?.isProcessing === true ? 'true' : 'false'}
+      data-is-processing={isProcessingOrNewTurn ? 'true' : 'false'}
       aria-hidden='true'
     />
   );
