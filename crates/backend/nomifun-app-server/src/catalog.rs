@@ -95,6 +95,14 @@ pub trait ConnectorCatalogProvider: Send + Sync {
     async fn get(&self, id: &str) -> Result<AppServerConnectorDetail, AppError>;
     async fn status(&self, id: &str) -> Result<AppServerConnectorStatusView, AppError>;
     async fn test(&self, id: &str) -> Result<AppServerConnectorProbeResult, AppError>;
+    /// The same probe, resolving credentials **for one principal** (`34` §7): a
+    /// connector's `secret:NAME` references are per-principal, so a probe on behalf
+    /// of user A must not authenticate with user B's token.
+    async fn test_for(
+        &self,
+        id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorProbeResult, AppError>;
 }
 
 /// Connector OAuth pass-through. Only states and public errors cross this
@@ -512,6 +520,14 @@ impl ConnectorCatalogProvider for FakeConnectorCatalog {
     }
 
     async fn test(&self, id: &str) -> Result<AppServerConnectorProbeResult, AppError> {
+        self.test_for(id, None).await
+    }
+
+    async fn test_for(
+        &self,
+        id: &str,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorProbeResult, AppError> {
         let summary = self.find(id)?;
         let connector_id = summary.id.clone();
         let failed = self.probe_fail_ids.contains(&connector_id);

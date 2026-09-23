@@ -1959,9 +1959,10 @@ async fn connector_status_impl(
 async fn connector_test_impl(
     state: &AppServerRouterState,
     connector_id: &str,
+    principal: Option<&str>,
 ) -> Result<AppServerConnectorProbeResult, AppServerError> {
     connector_catalog_provider(state)?
-        .test(connector_id)
+        .test_for(connector_id, principal)
         .await
         .map_err(AppServerError::from)
 }
@@ -3067,7 +3068,12 @@ async fn connector_test_route(
     Path(connector_id): Path<String>,
 ) -> Result<Json<AppServerConnectorProbeResult>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
-    Ok(Json(connector_test_impl(&state, &connector_id).await?))
+    // The probe is made *as this caller*: a connector's credential references are
+    // per-principal, so user A's probe must not authenticate with user B's token
+    // (34 §7).
+    Ok(Json(
+        connector_test_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
 }
 
 async fn connector_auth_start_route(
@@ -7190,7 +7196,7 @@ async fn dispatch_connection_request(
         "connector/test" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorQuery>(params)?;
-            let result = connector_test_impl(state, &params.connector_id).await?;
+            let result = connector_test_impl(state, &params.connector_id, Some(user.id.as_str())).await?;
             Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connector probe: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))

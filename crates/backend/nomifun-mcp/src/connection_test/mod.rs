@@ -134,11 +134,28 @@ impl McpConnectionTestService {
     /// Dispatches to the appropriate transport handler.  Always returns
     /// a result (never errors) -- failures are encoded in the struct.
     pub async fn test_connection(&self, name: &str, transport: &McpServerTransport) -> McpConnectionTestResult {
+        self.test_connection_for(name, transport, None).await
+    }
+
+    /// The same probe, resolving credentials for one principal (`34` §7).
+    ///
+    /// `None` is a host-internal caller: it may use the installation owner's own
+    /// (host-level) entries, which is what every pre-`34` caller means.
+    pub async fn test_connection_for(
+        &self,
+        name: &str,
+        transport: &McpServerTransport,
+        principal: Option<&str>,
+    ) -> McpConnectionTestResult {
         debug!(name, ?transport, "starting MCP connection test");
         match transport {
             McpServerTransport::Stdio { command, args, env } => self.test_stdio(command, args, env).await,
-            McpServerTransport::Http { url, headers, values } => self.test_http(url, headers, values).await,
-            McpServerTransport::Sse { url, headers, values } => self.test_sse(url, headers, values).await,
+            McpServerTransport::Http { url, headers, values } => {
+                self.test_http(url, headers, values, principal).await
+            }
+            McpServerTransport::Sse { url, headers, values } => {
+                self.test_sse(url, headers, values, principal).await
+            }
         }
     }
 
@@ -200,8 +217,11 @@ impl McpConnectionTestService {
         arguments: serde_json::Value,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let client = self.http_client();
+        // A tool call has no caller identity threaded through it yet, so it
+        // resolves as the host (the installation owner's entries). The probe does
+        // take one (34 §7); this path follows when its callers pass a principal.
         let (resolved_url, mut req_headers, oauth_managed) =
-            self.request_headers(url, headers, values).await.map_err(call_failure)?;
+            self.request_headers(url, headers, values, None).await.map_err(call_failure)?;
 
         // 1. Open the stream, with the same one-shot 401 refresh the probe uses.
         let mut refreshed = false;
@@ -386,8 +406,10 @@ impl McpConnectionTestService {
         arguments: serde_json::Value,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let client = self.http_client();
+        // See `call_sse`: the tool-call path has no caller identity threaded
+        // through it yet, so it resolves as the host.
         let (resolved_url, mut req_headers, oauth_managed) =
-            self.request_headers(url, headers, values).await.map_err(call_failure)?;
+            self.request_headers(url, headers, values, None).await.map_err(call_failure)?;
         req_headers.insert(
             reqwest::header::CONTENT_TYPE,
             "application/json".parse().expect("valid header"),
@@ -506,8 +528,9 @@ impl McpConnectionTestService {
         url: &str,
         headers: &HashMap<String, String>,
         values: &HashMap<String, String>,
+        principal: Option<&str>,
     ) -> McpConnectionTestResult {
-        match tokio::time::timeout(self.timeout, self.test_http_inner(url, headers, values)).await {
+        match tokio::time::timeout(self.timeout, self.test_http_inner(url, headers, values, principal)).await {
             Ok(r) => r,
             Err(_) => timeout_result(self.timeout),
         }
@@ -518,12 +541,14 @@ impl McpConnectionTestService {
         url: &str,
         headers: &HashMap<String, String>,
         values: &HashMap<String, String>,
+        principal: Option<&str>,
     ) -> McpConnectionTestResult {
         let client = self.http_client();
-        let (resolved_url, mut req_headers, oauth_managed) = match self.request_headers(url, headers, values).await {
-            Ok(value) => value,
-            Err(result) => return result,
-        };
+        let (resolved_url, mut req_headers, oauth_managed) =
+            match self.request_headers(url, headers, values, principal).await {
+                Ok(value) => value,
+                Err(result) => return result,
+            };
         req_headers.insert(
             reqwest::header::CONTENT_TYPE,
             "application/json".parse().expect("valid header"),
@@ -651,8 +676,9 @@ impl McpConnectionTestService {
         url: &str,
         headers: &HashMap<String, String>,
         values: &HashMap<String, String>,
+        principal: Option<&str>,
     ) -> Result<(String, reqwest::header::HeaderMap, bool), McpConnectionTestResult> {
-        let (resolved_url, resolved_headers) = resolve_remote_auth(url, headers, values)?;
+        let (resolved_url, resolved_headers) = resolve_remote_auth(url, headers, values, principal)?;
         let mut request_headers = build_http_headers(&resolved_headers);
         if request_headers.contains_key(reqwest::header::AUTHORIZATION) {
             return Ok((resolved_url, request_headers, false));
@@ -728,8 +754,9 @@ impl McpConnectionTestService {
         url: &str,
         headers: &HashMap<String, String>,
         values: &HashMap<String, String>,
+        principal: Option<&str>,
     ) -> McpConnectionTestResult {
-        match tokio::time::timeout(self.timeout, self.test_sse_inner(url, headers, values)).await {
+        match tokio::time::timeout(self.timeout, self.test_sse_inner(url, headers, values, principal)).await {
             Ok(r) => r,
             Err(_) => timeout_result(self.timeout),
         }
@@ -740,12 +767,14 @@ impl McpConnectionTestService {
         url: &str,
         headers: &HashMap<String, String>,
         values: &HashMap<String, String>,
+        principal: Option<&str>,
     ) -> McpConnectionTestResult {
         let client = self.http_client();
-        let (resolved_url, mut req_headers, oauth_managed) = match self.request_headers(url, headers, values).await {
-            Ok(value) => value,
-            Err(result) => return result,
-        };
+        let (resolved_url, mut req_headers, oauth_managed) =
+            match self.request_headers(url, headers, values, principal).await {
+                Ok(value) => value,
+                Err(result) => return result,
+            };
 
         // 1. Open SSE connection
         let mut refreshed = false;
@@ -1023,8 +1052,17 @@ fn resolve_remote_auth(
     url: &str,
     headers: &HashMap<String, String>,
     values: &HashMap<String, String>,
+    principal: Option<&str>,
 ) -> Result<(String, HashMap<String, String>), McpConnectionTestResult> {
-    resolve_remote_auth_with(url, headers, values, &nomifun_common::secret_ref::credentials())
+    let operator = nomifun_common::secret_ref::operator_principal();
+    resolve_remote_auth_with(
+        url,
+        headers,
+        values,
+        &nomifun_common::secret_ref::credentials(),
+        principal,
+        operator.as_deref(),
+    )
 }
 
 /// [`resolve_remote_auth`] against an explicit credential map (pure; for tests).
@@ -1033,8 +1071,15 @@ fn resolve_remote_auth_with(
     headers: &HashMap<String, String>,
     values: &HashMap<String, String>,
     credentials: &HashMap<String, String>,
+    principal: Option<&str>,
+    operator: Option<&str>,
 ) -> Result<(String, HashMap<String, String>), McpConnectionTestResult> {
-    let scope = nomifun_common::secret_ref::TransportScope::new(credentials, values);
+    let scope = nomifun_common::secret_ref::TransportScope::for_principal(
+        credentials,
+        values,
+        principal,
+        operator,
+    );
     let mut missing: Vec<String> = Vec::new();
     let mut resolved_headers = HashMap::with_capacity(headers.len());
     for (key, value) in headers {
@@ -1115,8 +1160,9 @@ mod tests {
         ]);
         let url = "https://h/mcp?token=${secret:MISSING_B}";
 
-        let error = resolve_remote_auth_with(url, &headers, &HashMap::new(), &credentials)
-            .expect_err("an unresolvable reference must stop the request");
+        let error =
+            resolve_remote_auth_with(url, &headers, &HashMap::new(), &credentials, None, None)
+                .expect_err("an unresolvable reference must stop the request");
 
         assert_eq!(
             error.code,
@@ -1138,10 +1184,75 @@ mod tests {
             &headers,
             &HashMap::new(),
             &HashMap::new(),
+            None,
+            None,
         )
         .expect("no references, nothing to resolve");
         assert_eq!(url, "https://h/mcp");
         assert_eq!(resolved.get("x-static").map(String::as_str), Some("WorkBuddy"));
+    }
+
+    /// The probe resolves per principal: user A's token is not user B's, and a
+    /// caller with no entry of its own gets a missing-credential error rather than
+    /// somebody else's value (34 §7).
+    #[test]
+    fn a_probe_resolves_credentials_for_its_own_principal() {
+        let credentials = HashMap::from([
+            (
+                nomifun_common::secret_ref::scoped_key("alice", "TOKEN"),
+                "alice-token".to_owned(),
+            ),
+            (
+                nomifun_common::secret_ref::scoped_key("bob", "TOKEN"),
+                "bob-token".to_owned(),
+            ),
+        ]);
+        let headers = HashMap::from([(
+            "Authorization".to_owned(),
+            "Bearer ${secret:TOKEN}".to_owned(),
+        )]);
+
+        let (_, alice) = resolve_remote_auth_with(
+            "https://h/mcp",
+            &headers,
+            &HashMap::new(),
+            &credentials,
+            Some("alice"),
+            Some("alice"),
+        )
+        .expect("alice has a token");
+        assert_eq!(
+            alice.get("Authorization").map(String::as_str),
+            Some("Bearer alice-token")
+        );
+
+        let (_, bob) = resolve_remote_auth_with(
+            "https://h/mcp",
+            &headers,
+            &HashMap::new(),
+            &credentials,
+            Some("bob"),
+            Some("alice"),
+        )
+        .expect("bob has a token");
+        assert_eq!(
+            bob.get("Authorization").map(String::as_str),
+            Some("Bearer bob-token")
+        );
+
+        let error = resolve_remote_auth_with(
+            "https://h/mcp",
+            &headers,
+            &HashMap::new(),
+            &credentials,
+            Some("carol"),
+            Some("alice"),
+        )
+        .expect_err("carol has no token of her own");
+        assert_eq!(
+            error.code,
+            Some(McpConnectionTestErrorCode::MissingCredential)
+        );
     }
 
     // ---- Tool calling ----------------------------------------------------

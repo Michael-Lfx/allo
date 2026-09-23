@@ -398,10 +398,21 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
     }
 
     async fn test(&self, id: &str) -> Result<AppServerConnectorProbeResult, AppError> {
+        self.test_for(id, None).await
+    }
+
+    async fn test_for(
+        &self,
+        id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorProbeResult, AppError> {
         let server = self.get_server(id).await?;
         let connector_id = server.mcp_server_id.as_str().to_owned();
         let transport = nomifun_mcp::McpServerTransport::from(server.transport);
-        let result = self.connection_test.test_connection(&server.name, &transport).await;
+        let result = self
+            .connection_test
+            .test_connection_for(&server.name, &transport, principal)
+            .await;
         self.config
             .persist_test_result(&server.mcp_server_id, &result)
             .await
