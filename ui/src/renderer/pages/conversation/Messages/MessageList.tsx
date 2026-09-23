@@ -1439,6 +1439,7 @@ const MessageList: React.FC<{
     virtuosoRef,
     virtuosoMode: scrollParent != null,
     layoutPinKey: list,
+    isProcessing: conversationContext?.isProcessing === true,
   });
 
   // ── Windowed history: load older messages on scroll-up with a scroll-anchor ──
@@ -1903,7 +1904,7 @@ const MessageList: React.FC<{
         tabIndex={showScrollButton ? 0 : -1}
       >
         <span className='message-list-scroll-button__icon'>
-          <Down theme='filled' size='18' fill='currentColor' />
+          <Down theme='filled' size='14' fill='currentColor' />
         </span>
         {hasNewContentBelow && (
           <>

@@ -63,6 +63,8 @@ interface UseAutoScrollOptions {
   virtuosoMode?: boolean;
   /** Identity that changes when streaming content grows; pins scroll before paint. */
   layoutPinKey?: unknown;
+  /** True when conversation is actively streaming/processing output. */
+  isProcessing?: boolean;
 }
 
 interface ScrollElementIntoViewOptions {
@@ -114,6 +116,7 @@ export function useAutoScroll({
   virtuosoRef,
   virtuosoMode: _virtuosoMode = false,
   layoutPinKey,
+  isProcessing = false,
 }: UseAutoScrollOptions): UseAutoScrollReturn {
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
@@ -127,6 +130,7 @@ export function useAutoScroll({
   const lastScrollTopRef = useRef(0);
   const lastProgrammaticScrollTimeRef = useRef(0);
   const initialScrollDoneRef = useRef(false);
+  const isRestoringScrollRef = useRef(false);
   const userInputActiveRef = useRef(false);
   const resizeAutoFollowBlockedUntilRef = useRef(0);
   const previousLastUserIdRef = useRef<string | undefined>(findLastUserMessageId(messages));
@@ -145,12 +149,15 @@ export function useAutoScroll({
   }, []);
 
   const updateBottomState = useCallback((element: HTMLDivElement) => {
+    if (isRestoringScrollRef.current) {
+      return false;
+    }
     const bottomGap = getBottomGap(element);
     const withinButtonThreshold = bottomGap <= SCROLL_BUTTON_THRESHOLD_PX;
     const pinnedToBottom = bottomGap <= FOLLOW_BOTTOM_THRESHOLD_PX;
     const leftTheBottom = userScrolledRef.current || userIntentPausedRef.current;
     const nextShowButton = leftTheBottom && !withinButtonThreshold;
-    const nextHasNew = userScrolledRef.current && !withinButtonThreshold;
+    const nextHasNew = isProcessing === true && userScrolledRef.current && !withinButtonThreshold;
 
     if (nextShowButton !== showScrollButtonRef.current) {
       showScrollButtonRef.current = nextShowButton;
@@ -173,7 +180,7 @@ export function useAutoScroll({
     }
 
     return pinnedToBottom;
-  }, []);
+  }, [isProcessing]);
 
   const pauseAutoFollow = useCallback(() => {
     userIntentPausedRef.current = true;
@@ -188,14 +195,15 @@ export function useAutoScroll({
     if (!scrollerEl || getBottomGap(scrollerEl) <= SCROLL_BUTTON_THRESHOLD_PX) {
       return;
     }
+    const nextHasNew = isProcessing === true;
     showScrollButtonRef.current = true;
-    hasNewContentBelowRef.current = true;
+    hasNewContentBelowRef.current = nextHasNew;
     setShowScrollButton(true);
-    setHasNewContentBelow(true);
-  }, [conversationId, loadedConversationId, scrollerEl]);
+    setHasNewContentBelow(nextHasNew);
+  }, [conversationId, isProcessing, loadedConversationId, scrollerEl]);
 
   const followContentGrowth = useCallback(() => {
-    if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
+    if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current || isRestoringScrollRef.current) return;
     if (Date.now() < resizeAutoFollowBlockedUntilRef.current) return;
 
     const spacer = scrollerEl.querySelector('.message-list-end-spacer');
@@ -294,6 +302,12 @@ export function useAutoScroll({
     (e: React.UIEvent<HTMLDivElement>) => {
       const target = e.currentTarget;
       const currentScrollTop = target.scrollTop;
+
+      if (isRestoringScrollRef.current) {
+        lastScrollTopRef.current = currentScrollTop;
+        return;
+      }
+
       const timeSinceGuard = Date.now() - lastProgrammaticScrollTimeRef.current;
       const delta = currentScrollTop - lastScrollTopRef.current;
       const bottomGap = getBottomGap(target);
@@ -440,10 +454,35 @@ export function useAutoScroll({
     if (saved && saved.userScrolled) {
       userScrolledRef.current = true;
       userIntentPausedRef.current = true;
+      isRestoringScrollRef.current = true;
       markProgrammaticScroll();
-      scrollerEl.scrollTop = saved.scrollTop;
-      lastScrollTopRef.current = saved.scrollTop;
-      updateBottomState(scrollerEl);
+
+      const targetScrollTop = saved.scrollTop;
+      scrollerEl.scrollTop = targetScrollTop;
+      lastScrollTopRef.current = targetScrollTop;
+
+      const virtuoso = virtuosoRefLatest.current?.current;
+      if (virtuoso) {
+        virtuoso.scrollTo({ top: targetScrollTop, behavior: 'auto' });
+      }
+
+      // Re-apply and verify post-layout to ensure Virtuoso virtualization measurements
+      // have settled and cannot clamp the restored position or falsely trip auto-follow.
+      requestAnimationFrame(() => {
+        if (scrollerEl) {
+          scrollerEl.scrollTop = targetScrollTop;
+          lastScrollTopRef.current = targetScrollTop;
+        }
+        if (virtuoso) {
+          virtuoso.scrollTo({ top: targetScrollTop, behavior: 'auto' });
+        }
+        requestAnimationFrame(() => {
+          isRestoringScrollRef.current = false;
+          if (scrollerEl) {
+            updateBottomState(scrollerEl);
+          }
+        });
+      });
       return;
     }
 

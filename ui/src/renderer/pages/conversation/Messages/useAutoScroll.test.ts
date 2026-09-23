@@ -80,7 +80,8 @@ describe('useAutoScroll session reading position persistence', () => {
     );
     expect(restoreEffect.includes('sessionScrollRegistry.get(conversationId)')).toBe(true);
     expect(restoreEffect.includes('if (saved && saved.userScrolled)')).toBe(true);
-    expect(restoreEffect.includes('scrollerEl.scrollTop = saved.scrollTop')).toBe(true);
+    expect(restoreEffect.includes('scrollerEl.scrollTop = targetScrollTop')).toBe(true);
+    expect(restoreEffect.includes('isRestoringScrollRef.current = true')).toBe(true);
     expect(restoreEffect.includes('userScrolledRef.current = true')).toBe(true);
     expect(restoreEffect.includes('userIntentPausedRef.current = true')).toBe(true);
     expect(restoreEffect.includes('setShowScrollButton(false)')).toBe(true);
@@ -205,7 +206,7 @@ describe('useAutoScroll scroll ownership', () => {
   test('does not pull the viewport back after the user scrolls up', () => {
     const growth = sliceBetween('const followContentGrowth', 'const scrollToBottom');
 
-    expect(growth.includes('if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;')).toBe(
+    expect(growth.includes('if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current || isRestoringScrollRef.current) return;')).toBe(
       true
     );
     expect(source.includes('delta < -2')).toBe(true);

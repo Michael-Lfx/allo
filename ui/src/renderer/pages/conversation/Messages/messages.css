@@ -1377,8 +1377,7 @@ button.turn-process-trace__row:focus-visible {
 
 /* ── Floating chrome over the transcript ── */
 
-/* Translucent so the transcript stays visible underneath instead of being
-   punched out by an opaque disc. */
+/* Floating scroll-to-bottom & new content affordance */
 .message-list-scroll-button {
   box-sizing: border-box;
   display: inline-flex;
@@ -1386,19 +1385,19 @@ button.turn-process-trace__row:focus-visible {
   bottom: 20px;
   left: 50%;
   z-index: 100;
-  min-width: 40px;
-  height: 40px;
+  min-width: 36px;
+  height: 36px;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-base);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-base) 75%, transparent);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  backdrop-filter: blur(20px) saturate(180%);
+  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #ffffff)) 85%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(180%);
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.06),
-    0 8px 24px rgba(15, 23, 42, 0.12);
-  color: var(--text-secondary);
+    0 2px 6px rgba(0, 0, 0, 0.04),
+    0 6px 18px rgba(0, 0, 0, 0.08);
+  color: var(--color-text-2, var(--text-secondary));
   cursor: pointer;
   line-height: 1;
   padding: 0;
@@ -1412,12 +1411,12 @@ button.turn-process-trace__row:focus-visible {
   pointer-events: none;
   transition:
     opacity 0.22s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
-    transform 0.3s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
+    transform 0.26s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
     background-color 0.16s var(--conversation-ease-press, cubic-bezier(0.25, 1, 0.5, 1)),
     border-color 0.2s ease,
     color 0.2s ease,
     box-shadow 0.2s ease,
-    visibility 0s linear 0.3s;
+    visibility 0s linear 0.26s;
 }
 
 /* Enter and exit run the same path, so grabbing it mid-transition reverses
@@ -1429,7 +1428,7 @@ button.turn-process-trace__row:focus-visible {
   pointer-events: auto;
   transition:
     opacity 0.22s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
-    transform 0.3s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
+    transform 0.26s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
     background-color 0.16s var(--conversation-ease-press, cubic-bezier(0.25, 1, 0.5, 1)),
     border-color 0.2s ease,
     color 0.2s ease,
@@ -1437,20 +1436,21 @@ button.turn-process-trace__row:focus-visible {
     visibility 0s;
 }
 
-/* Default circular state when viewing history without new content */
+/* Default circular state when viewing history without new streaming output */
 .message-list-scroll-button[data-has-new='false'] {
-  width: 40px;
+  width: 36px;
+  height: 36px;
   padding: 0;
 }
 
-/* Expanded pill state with text tips when new content arrives below */
+/* Expanded pill state with text tips ONLY when streaming/generating new content below */
 .message-list-scroll-button[data-has-new='true'] {
-  height: 38px;
-  padding: 0 14px 0 10px;
+  height: 34px;
+  padding: 0 12px 0 10px;
   gap: 6px;
-  color: var(--color-primary-6, #165dff);
-  border-color: color-mix(in srgb, var(--color-primary-6, #165dff) 26%, var(--border-base));
-  background: color-mix(in srgb, var(--bg-base) 86%, var(--color-primary-light-1, #e8f3ff));
+  color: var(--color-primary, var(--color-text-1));
+  border-color: color-mix(in srgb, var(--color-primary, #165dff) 28%, var(--border-base));
+  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #ffffff)) 82%, var(--color-primary, #165dff) 10%);
 }
 
 .message-list-scroll-button__icon {
@@ -1466,27 +1466,27 @@ button.turn-process-trace__row:focus-visible {
 
 .message-list-scroll-button__dot {
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 999px;
-  background-color: var(--color-primary-6, #165dff);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary-6, #165dff) 25%, transparent);
-  animation: message-scroll-dot-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  background-color: var(--color-primary, currentColor);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary, currentColor) 25%, transparent);
+  animation: message-scroll-dot-pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   flex-shrink: 0;
 }
 
 .message-list-scroll-button__label {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.01em;
   line-height: 1;
-  animation: message-scroll-pill-enter 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: message-scroll-pill-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes message-scroll-pill-enter {
   from {
     opacity: 0;
-    transform: translateX(-4px);
+    transform: translateX(-3px);
   }
   to {
     opacity: 1;
@@ -1512,22 +1512,24 @@ button.turn-process-trace__row:focus-visible {
     transform: scale(1);
   }
   50% {
-    opacity: 0.55;
-    transform: scale(0.8);
+    opacity: 0.45;
+    transform: scale(0.85);
   }
 }
 
 .message-list-scroll-button[data-visible='true']:hover {
-  background: color-mix(in srgb, var(--bg-base) 92%, transparent);
-  transform: translate(-50%, 0) scale(1.03);
+  background: color-mix(in srgb, var(--bg-hover, var(--bg-2)) 92%, transparent);
+  color: var(--color-text-1, var(--text-primary));
+  border-color: color-mix(in srgb, var(--border-base) 80%, var(--color-text-3, #86909c));
+  transform: translate(-50%, 0) scale(1.04);
 }
 
 .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover {
-  background: color-mix(in srgb, var(--bg-base) 80%, var(--color-primary-light-1, #e8f3ff));
-  border-color: var(--color-primary-6, #165dff);
+  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #ffffff)) 76%, var(--color-primary, #165dff) 16%);
+  border-color: color-mix(in srgb, var(--color-primary, #165dff) 45%, var(--border-base));
   box-shadow:
-    0 2px 6px rgba(15, 23, 42, 0.08),
-    0 10px 26px rgba(22, 93, 255, 0.16);
+    0 2px 8px rgba(0, 0, 0, 0.06),
+    0 8px 22px color-mix(in srgb, var(--color-primary, #165dff) 16%, transparent);
 }
 
 /* Feedback lands on press, not on release. */
@@ -1538,8 +1540,8 @@ button.turn-process-trace__row:focus-visible {
 
 .message-list-scroll-button:focus-visible {
   box-shadow:
-    0 0 0 3px var(--color-primary-6, #165dff),
-    0 8px 24px rgba(15, 23, 42, 0.12);
+    0 0 0 2px var(--color-primary-6, var(--primary, #165dff)),
+    0 6px 18px rgba(0, 0, 0, 0.12);
   outline: none;
 }
 
@@ -1547,28 +1549,34 @@ button.turn-process-trace__row:focus-visible {
   display: block;
 }
 
-[data-theme='dark'] .message-list-scroll-button {
+[data-theme='dark'] .message-list-scroll-button,
+body[arco-theme='dark'] .message-list-scroll-button {
+  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #262626)) 85%, transparent);
+  border-color: var(--border-base);
   box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.4),
-    0 10px 28px rgba(0, 0, 0, 0.5);
+    0 2px 8px rgba(0, 0, 0, 0.35),
+    0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
-[data-theme='dark'] .message-list-scroll-button[data-has-new='true'] {
-  background: color-mix(in srgb, var(--bg-base) 82%, var(--color-primary-6, #165dff) 18%);
-  border-color: color-mix(in srgb, var(--color-primary-6, #165dff) 36%, var(--border-base));
-  color: var(--color-primary-light-2, #68a5ff);
+[data-theme='dark'] .message-list-scroll-button[data-has-new='true'],
+body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'] {
+  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #262626)) 80%, var(--color-primary, #165dff) 16%);
+  border-color: color-mix(in srgb, var(--color-primary, #165dff) 36%, var(--border-base));
+  color: color-mix(in srgb, var(--color-primary, #165dff) 88%, #ffffff);
 }
 
-[data-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__dot {
-  background-color: var(--color-primary-light-2, #68a5ff);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary-light-2, #68a5ff) 30%, transparent);
+[data-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__dot,
+body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__dot {
+  background-color: color-mix(in srgb, var(--color-primary, #165dff) 88%, #ffffff);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary, #165dff) 30%, transparent);
 }
 
-[data-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover {
-  background: color-mix(in srgb, var(--bg-base) 75%, var(--color-primary-6, #165dff) 25%);
+[data-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover,
+body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover {
+  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #262626)) 72%, var(--color-primary, #165dff) 24%);
   box-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.6),
-    0 12px 30px rgba(0, 0, 0, 0.7);
+    0 4px 12px rgba(0, 0, 0, 0.45),
+    0 10px 28px color-mix(in srgb, var(--color-primary, #165dff) 25%, transparent);
 }
 
 .message-list-loading-older {
