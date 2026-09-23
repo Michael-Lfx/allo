@@ -424,20 +424,16 @@ async function runCatalogPath(client: AppServerClient, real: boolean): Promise<v
   } else {
     fail("connector/auth/start", JSON.stringify(started));
   }
-  const deadline = Date.now() + 3000;
-  let authenticated = false;
-  while (Date.now() < deadline) {
-    const status = await client.connectors.authStatus(githubId);
-    if (status.state === "authenticated") {
-      authenticated = true;
-      break;
-    }
-    await Bun.sleep(150);
-  }
-  if (authenticated) {
+  const auth = await client.connectors.waitForAuth(githubId, { timeoutMs: 3_000, pollMs: 150 });
+  if (auth.state === "authenticated") {
     ok("connector/auth/status flips to authenticated after start");
   } else {
-    fail("connector/auth/status poll", "did not become authenticated within 3s");
+    // The reason matters: a flow that failed after the browser step reports it
+    // in `authStatus.error` and nowhere else.
+    fail(
+      "connector/auth/status poll",
+      auth.state === "error" ? auth.error : "did not become authenticated within 3s",
+    );
   }
   await client.connectors.logout(githubId);
   const after = await client.connectors.authStatus(githubId);
