@@ -5,12 +5,10 @@ import RouteContentFallback from '@renderer/components/layout/RouteContentFallba
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
 import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
 import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
-import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
-import { requiresCloudAuthGate, resolvePostLocalAuthPath } from '@renderer/utils/auth/authGate';
 import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
 import { loadVideoCanvasProjectPage } from '@renderer/pages/videoCanvas/loadProjectPage';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
@@ -70,7 +68,6 @@ const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSet
 const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/CloudLoginSettings'));
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
-const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
 const ColorLabPage = React.lazy(() => import('@renderer/pages/colorLab'));
@@ -188,19 +185,11 @@ const getHashRouteRedirectUrl = () => {
 };
 
 const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
-  const { status: localStatus } = useAuth();
   const { authState: cloudAuthState, ready: cloudReady } = useCloudAuth();
-  const cloudGate = requiresCloudAuthGate();
-  const authChecking =
-    localStatus === 'checking' || (cloudGate && (!cloudReady || cloudAuthState.phase === 'unknown'));
+  const authChecking = !cloudReady || cloudAuthState.phase === 'unknown';
 
-  if (!authChecking && localStatus !== 'authenticated') {
+  if (!authChecking && cloudAuthState.phase === 'unauthenticated') {
     return <Navigate to='/login' replace />;
-  }
-
-  // Desktop: Flowy account is the product key. WebUI: local instance admin is enough.
-  if (cloudGate && !authChecking && cloudAuthState.phase === 'unauthenticated') {
-    return <Navigate to='/cloud-login' replace />;
   }
 
   // Keep chrome mounted while auth resolves; only the outlet region shows a shell-safe loader.
@@ -305,7 +294,6 @@ const MeetingOpenListener: React.FC = () => {
 };
 
 const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
-  const { status: localStatus } = useAuth();
   const { status: cloudStatus } = useCloudAuth();
   const hashRouteRedirectUrl = getHashRouteRedirectUrl();
 
@@ -320,11 +308,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
         <Route
           path='/login'
           element={
-            localStatus === 'authenticated' ? (
-              <Navigate
-                to={resolvePostLocalAuthPath(cloudStatus === 'authenticated')}
-                replace
-              />
+            cloudStatus === 'authenticated' ? (
+              <Navigate to='/guid' replace />
             ) : (
               withRouteFallback(LoginPage, { fullscreen: true })
             )
@@ -332,13 +317,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
         />
         <Route
           path='/cloud-login'
-          element={
-            localStatus !== 'authenticated' ? (
-              <Navigate to='/login' replace />
-            ) : (
-              withRouteFallback(CloudLoginPage, { fullscreen: true })
-            )
-          }
+          element={<Navigate to='/login' replace />}
         />
         {/* The desktop-companion window route: fullscreen transparent, no app layout/sidebar. */}
         <Route path='/companion' element={withRouteFallback(CompanionPage, { fullscreen: true })} />

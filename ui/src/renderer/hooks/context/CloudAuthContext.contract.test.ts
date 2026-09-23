@@ -42,7 +42,7 @@ describe('cloud authentication model-environment contract', () => {
     const text = source();
     expect(text.includes('CLOUD_AUTH_EXPIRED_EVENT')).toBe(true);
     expect(text.includes('CloudSessionExpiredModal')).toBe(true);
-    expect(text.includes("window.location.hash = '/cloud-login'")).toBe(true);
+    expect(text.includes("window.location.hash = '/login'")).toBe(true);
   });
 
   test('applies nickname whoami without a full auth refresh', () => {
