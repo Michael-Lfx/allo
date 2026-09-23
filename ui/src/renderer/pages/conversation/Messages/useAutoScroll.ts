@@ -44,7 +44,7 @@ export const FOLLOW_BOTTOM_THRESHOLD_PX = 12;
 /** Show the scroll-to-bottom affordance as soon as auto-follow would stop. */
 export const SCROLL_BUTTON_THRESHOLD_PX = 12;
 
-interface UseAutoScrollOptions {
+interface UseAutoScrollOptions<T = unknown> {
   /** Optional conversation/session ID to track and restore per-session reading positions. */
   conversationId?: string;
   /**
@@ -56,12 +56,13 @@ interface UseAutoScrollOptions {
    */
   loadedConversationId?: string | null;
   messages: TMessage[];
+  /** Processed renderable items (as rendered by Virtuoso), used to find row indices accurately. */
+  displayItems?: T[];
   itemCount: number;
   /** When set, jump-to-bottom uses Virtuoso so off-screen tail rows still mount. */
   virtuosoRef?: RefObject<VirtuosoHandle | null>;
   /** True while Virtuoso is mounted and owns streaming tail follow. */
   virtuosoMode?: boolean;
-  /** Identity that changes when streaming content grows; pins scroll before paint. */
   layoutPinKey?: unknown;
   /** True when conversation is actively streaming/processing output. */
   isProcessing?: boolean;
@@ -122,6 +123,7 @@ export function useAutoScroll({
   conversationId,
   loadedConversationId,
   messages,
+  displayItems,
   itemCount,
   virtuosoRef,
   virtuosoMode: _virtuosoMode = false,
@@ -132,6 +134,9 @@ export function useAutoScroll({
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [hasNewContentBelow, setHasNewContentBelow] = useState(false);
+
+  const displayItemsRef = useRef(displayItems);
+  displayItemsRef.current = displayItems;
 
   const userScrolledRef = useRef(false);
   const userIntentPausedRef = useRef(false);
@@ -629,25 +634,33 @@ export function useAutoScroll({
       });
     }
 
+    resizeAutoFollowBlockedUntilRef.current = Date.now() + 150;
+
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const userIndex = messages.findLastIndex((m) => m.position === 'right');
+        const items = (displayItemsRef.current as Array<{ position?: string; id?: string; sourceMessageIds?: string[] } | undefined>) ?? messages;
+        const targetIndex = items.findLastIndex((item) => {
+          if (item && typeof item === 'object') {
+            if ('position' in item && item.position === 'right') return true;
+            if ('id' in item && item.id === lastUserId) return true;
+            if ('sourceMessageIds' in item && Array.isArray(item.sourceMessageIds) && item.sourceMessageIds.includes(lastUserId)) return true;
+          }
+          return false;
+        });
+
         const virtuoso = virtuosoRefLatest.current?.current;
-        if (virtuoso && userIndex >= 0) {
+        if (virtuoso && targetIndex >= 0) {
           virtuoso.scrollToIndex({
-            index: userIndex,
+            index: targetIndex,
             align: 'start',
             behavior: 'auto',
           });
         } else {
           scrollToBottom('auto');
         }
-        requestAnimationFrame(() => {
-          followContentGrowth();
-        });
       });
     });
-  }, [conversationId, followContentGrowth, messages, scrollerEl, scrollToBottom]);
+  }, [conversationId, messages, scrollerEl, scrollToBottom]);
 
   // Handle stream lifecycle: when output finishes, cleanly settle to the bottom ONLY
   // if the user did not scroll away; if the user is viewing history, strictly preserve

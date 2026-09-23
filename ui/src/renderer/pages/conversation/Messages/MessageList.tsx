@@ -1435,6 +1435,7 @@ const MessageList: React.FC<{
     conversationId: conversationContext?.conversation_id,
     loadedConversationId,
     messages: list,
+    displayItems: displayList,
     itemCount: displayList.length,
     virtuosoRef,
     virtuosoMode: scrollParent != null,
@@ -1677,9 +1678,48 @@ const MessageList: React.FC<{
         />
       </div>
     ) : null;
+  const [dynamicSpacerHeight, setDynamicSpacerHeight] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    if (!conversationContext?.isProcessing || !scrollerElRef.current) {
+      setDynamicSpacerHeight(null);
+      return;
+    }
+    const scroller = scrollerElRef.current;
+    const viewportHeight = scroller.clientHeight;
+    if (viewportHeight <= 0) return;
+
+    const lastUserIndex = displayList.findLastIndex(
+      (item) => 'position' in item && item.position === 'right'
+    );
+    if (lastUserIndex < 0) {
+      setDynamicSpacerHeight(null);
+      return;
+    }
+
+    const lastUserAnchorId = getProcessedItemAnchorId(displayList[lastUserIndex]);
+    const lastUserEl = document.getElementById(`message-${lastUserAnchorId}`);
+    const spacerEl = scroller.querySelector<HTMLElement>('.message-list-end-spacer');
+
+    if (lastUserEl && spacerEl) {
+      const userTop = lastUserEl.getBoundingClientRect().top;
+      const spacerTop = spacerEl.getBoundingClientRect().top;
+      const currentTurnHeight = Math.max(0, spacerTop - userTop);
+      const neededSpacer = Math.max(24, Math.ceil(viewportHeight - currentTurnHeight));
+      setDynamicSpacerHeight(neededSpacer);
+    } else {
+      setDynamicSpacerHeight(Math.max(24, viewportHeight - 120));
+    }
+  }, [conversationContext?.isProcessing, displayList, list]);
+
   const listEndSpacer = (
     <div
       className='message-list-end-spacer'
+      style={
+        conversationContext?.isProcessing && dynamicSpacerHeight !== null
+          ? { height: `${dynamicSpacerHeight}px`, minHeight: `${dynamicSpacerHeight}px` }
+          : undefined
+      }
       data-is-processing={conversationContext?.isProcessing === true ? 'true' : 'false'}
       aria-hidden='true'
     />
