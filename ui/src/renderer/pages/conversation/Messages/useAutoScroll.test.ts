@@ -47,7 +47,7 @@ describe('useAutoScroll thresholds and pause semantics', () => {
   test('jumps to the last item when a new user message is sent even if follow was paused', () => {
     const sendEffect = sliceBetween(
       'const lastUserId = findLastUserMessageId',
-      '}, [messages, scrollToBottom]'
+      'requestAnimationFrame(() => {\n      requestAnimationFrame(() => {'
     );
     const scrollToBottom = scrollToBottomBody();
 
@@ -55,12 +55,110 @@ describe('useAutoScroll thresholds and pause semantics', () => {
     expect(scrollToBottom.includes("align: 'end'")).toBe(true);
     expect(sendEffect.includes('lastUserId !== previousLastUserId')).toBe(true);
     expect(sendEffect.includes('if (userIntentPausedRef.current || userScrolledRef.current) return;')).toBe(false);
-    expect(sendEffect.includes("scrollToBottom('auto')")).toBe(true);
   });
 
   test('keeps follow pinned through tail growth and only drops it on an upward scroll', () => {
     expect(source.includes('if (!isAtBottom || userIntentPausedRef.current || userScrolledRef.current)')).toBe(false);
     expect(source.includes('delta < -2')).toBe(true);
+  });
+});
+
+describe('useAutoScroll session reading position persistence', () => {
+  test('accepts optional conversationId in UseAutoScrollOptions', () => {
+    expect(source.includes('conversationId?: string')).toBe(true);
+  });
+
+  test('records scroll position in sessionScrollRegistry on handleScroll and pauseAutoFollow', () => {
+    expect(source.includes('sessionScrollRegistry.save(conversationId, {')).toBe(true);
+    expect(source.includes('sessionScrollRegistry')).toBe(true);
+  });
+
+  test('restores saved reading position in useLayoutEffect when user was reading history', () => {
+    const restoreEffect = sliceBetween(
+      '// Handle session switch, initial scroll, and reading position restoration before paint',
+      '// Save on unmount'
+    );
+    expect(restoreEffect.includes('sessionScrollRegistry.get(conversationId)')).toBe(true);
+    expect(restoreEffect.includes('if (saved && saved.userScrolled)')).toBe(true);
+    expect(restoreEffect.includes('scrollerEl.scrollTop = targetScrollTop')).toBe(true);
+    expect(restoreEffect.includes('isRestoringScrollRef.current = true')).toBe(true);
+    expect(restoreEffect.includes('userScrolledRef.current = true')).toBe(true);
+    expect(restoreEffect.includes('userIntentPausedRef.current = true')).toBe(true);
+    expect(restoreEffect.includes('setShowScrollButton(false)')).toBe(true);
+  });
+
+  test('saves scroll state when switching conversation or unmounting', () => {
+    expect(source.includes('previousConversationIdRef')).toBe(true);
+    expect(source.includes('conversationId !== previousConversationIdRef.current')).toBe(true);
+    expect(source.includes('sessionScrollRegistry.save(prevId, {')).toBe(true);
+    expect(source.includes('sessionScrollRegistry.save(currentId, {')).toBe(true);
+  });
+
+  test('guards switch-time saves and restoration against stale timing', () => {
+    const restoreEffect = sliceBetween(
+      '// Handle session switch, initial scroll, and reading position restoration before paint',
+      '// Save on unmount'
+    );
+    expect(source.includes('loadedConversationId?: string | null')).toBe(true);
+    // Switch-time save uses the ref-tracked offset, not the (possibly
+    // detached or next-session) DOM element.
+    expect(restoreEffect.includes('scrollTop: lastScrollTopRef.current')).toBe(true);
+    expect(restoreEffect.includes('scrollTop: scrollerEl.scrollTop')).toBe(false);
+    // Restoration waits for the store to confirm list ownership.
+    expect(restoreEffect.includes('loadedConversationId !== conversationId')).toBe(true);
+    // The send-effect baseline is seeded when the new session's list arrives.
+    expect(restoreEffect.includes('previousLastUserIdRef.current = findLastUserMessageId(messages)')).toBe(true);
+    expect(restoreEffect.includes('swapBaselinePendingRef.current = false')).toBe(true);
+    // Sessions never displayed (rapid A→B→C hops) are not snapshotted.
+    expect(restoreEffect.includes('prevId && initialScrollDoneRef.current')).toBe(true);
+  });
+
+  test('debounces per-event registry writes and suppresses swap-triggered send jumps', () => {
+    expect(source.includes('SCROLL_SAVE_DEBOUNCE_MS')).toBe(true);
+    const sendEffect = sliceBetween(
+      'const lastUserId = findLastUserMessageId',
+      'requestAnimationFrame(() => {\n      requestAnimationFrame(() => {'
+    );
+    expect(
+      sendEffect.includes(
+        'if (!initialScrollDoneRef.current || swapBaselinePendingRef.current) return;'
+      )
+    ).toBe(true);
+  });
+
+  test('gates all registry write paths on visible list ownership', () => {
+    const pauseBlock = sliceBetween('const pauseAutoFollow = useCallback', 'const followContentGrowth');
+    expect(pauseBlock.includes('const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;')).toBe(true);
+    expect(pauseBlock.includes('if (conversationId && scrollerEl && ownsVisibleList)')).toBe(true);
+
+    const scrollBlock = sliceBetween('const handleScroll = useCallback', 'const handleWheel');
+    expect(scrollBlock.includes('const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;')).toBe(true);
+    expect(scrollBlock.includes('if (conversationId && ownsVisibleList)')).toBe(true);
+
+    const bottomBlock = sliceBetween('const scrollToBottom = useCallback', 'const resolveFollowOutput');
+    expect(bottomBlock.includes('const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;')).toBe(true);
+    expect(bottomBlock.includes('if (conversationId && ownsVisibleList)')).toBe(true);
+
+    const hideBlock = sliceBetween('const hideScrollButton = useCallback', 'return {');
+    expect(hideBlock.includes('const ownsVisibleList = !conversationId || !loadedConversationId || loadedConversationId === conversationId;')).toBe(true);
+    expect(hideBlock.includes('if (conversationId && scrollerEl && ownsVisibleList)')).toBe(true);
+  });
+
+  test('resets reading position to bottom when user sends a new message', () => {
+    const sendEffect = sliceBetween(
+      'const sentNewUserMessage =',
+      'requestAnimationFrame(() => {\n      requestAnimationFrame(() => {'
+    );
+    expect(sendEffect.includes('sessionScrollRegistry.save(conversationId')).toBe(true);
+    expect(sendEffect.includes('userScrolled: false')).toBe(true);
+    expect(sendEffect.includes('unreadCount: 0')).toBe(true);
+  });
+
+  test('tracks unreadCount and exports it in UseAutoScrollReturn', () => {
+    expect(source.includes('unreadCount: number;')).toBe(true);
+    expect(source.includes('countAssistantMessagesAfter')).toBe(true);
+    expect(source.includes('const [unreadCount, setUnreadCount] = useState(0);')).toBe(true);
+    expect(source.includes('lastReadMessageIdRef')).toBe(true);
   });
 });
 
@@ -120,7 +218,7 @@ describe('useAutoScroll scroll ownership', () => {
   test('does not pull the viewport back after the user scrolls up', () => {
     const growth = sliceBetween('const followContentGrowth', 'const scrollToBottom');
 
-    expect(growth.includes('if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;')).toBe(
+    expect(growth.includes('if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current || isRestoringScrollRef.current) return;')).toBe(
       true
     );
     expect(source.includes('delta < -2')).toBe(true);
@@ -145,5 +243,18 @@ describe('useAutoScroll scroll ownership', () => {
     expect(updateBottom.includes('withinButtonThreshold')).toBe(true);
     expect(updateBottom.includes('nextShowButton')).toBe(true);
     expect(source.includes('FOLLOW_BOTTOM_THRESHOLD_PX = 12')).toBe(true);
+  });
+
+  test('settles to bottom on stream completion only when user did not scroll away', () => {
+    const finishEffect = sliceBetween(
+      '// Handle stream lifecycle: when output finishes',
+      'const hideScrollButton = useCallback'
+    );
+
+    expect(finishEffect.includes('wasProcessing && !isProcessing')).toBe(true);
+    expect(finishEffect.includes('if (!userScrolledRef.current && !userIntentPausedRef.current)')).toBe(true);
+    expect(finishEffect.includes("scrollToBottom('auto')")).toBe(true);
+    expect(finishEffect.includes('setHasNewContentBelow(true)')).toBe(true);
+    expect(finishEffect.includes('setShowScrollButton(true)')).toBe(true);
   });
 });

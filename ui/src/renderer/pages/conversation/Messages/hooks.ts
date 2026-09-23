@@ -49,6 +49,12 @@ import { createRefreshRetryController } from './refreshRetry';
 
 const [useMessageList, MessageListProvider, useUpdateMessageList] = createContext([] as TMessage[]);
 const [useMessageListLoading, MessageListLoadingProvider, useUpdateMessageListLoading] = createContext(false);
+// The conversation id the current list was applied for. useAutoScroll gates
+// reading-position restoration on this: conversationId flips one commit before
+// the async fetch swaps the list, so without it a restore would land on the
+// previous session's DOM and be lost to clamping.
+const [useMessageListLoadedId, MessageListLoadedIdProvider, useUpdateMessageListLoadedId] =
+  createContext<ConversationId | null>(null);
 
 const beforeUpdateMessageListStack: Array<(list: TMessage[]) => TMessage[]> = [];
 
@@ -1076,6 +1082,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   const windowed = opts?.windowed ?? false;
   const update = useUpdateMessageList();
   const setLoading = useUpdateMessageListLoading();
+  const setLoadedId = useUpdateMessageListLoadedId();
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   // Oldest message currently loaded (drives the next "load older" cursor); ref
@@ -1166,9 +1173,13 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       const snapshot = captureReconciliationSnapshot(key);
       const appliedEpoch = getEpoch(key);
       mergeIntoList(messages, snapshot);
+      // Same batch as the list swap: consumers keying restores off list
+      // ownership see the id flip in the same commit as the new messages.
+      setLoadedId(key);
       if (!snapshot.purge) return messages;
       return (await waitForReconciliationCommit(appliedEpoch)) ? messages : null;
     }
+    setLoadedId(key);
     return [];
   }, [key, mergeIntoList, waitForReconciliationCommit, windowed]);
 
@@ -1352,9 +1363,11 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
 };
 
 export {
+  MessageListLoadedIdProvider,
   MessageListLoadingProvider,
   MessageListProvider,
   useMessageList,
+  useMessageListLoadedId,
   useMessageListLoading,
   useUpdateMessageList,
 };

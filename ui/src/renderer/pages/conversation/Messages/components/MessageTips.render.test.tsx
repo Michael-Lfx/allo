@@ -11,6 +11,7 @@ import { ConversationProvider } from '@/renderer/hooks/context/ConversationConte
 import common from '@/renderer/services/i18n/locales/zh-CN/common.json';
 import conversation from '@/renderer/services/i18n/locales/zh-CN/conversation.json';
 import settings from '@/renderer/services/i18n/locales/zh-CN/settings.json';
+import { CreditsContext, type CreditsContextValue } from '@/renderer/hooks/context/CreditsContext';
 import { MessageListProvider } from '../hooks';
 import MessageTips from './MessageTips';
 
@@ -27,6 +28,20 @@ await testI18n.use(initReactI18next).init({
 const conversationId = parseConversationId('019b0000-0000-7000-8000-000000000911');
 const userMessageId = parseMessageId('019b0000-0000-7000-8000-000000000912');
 const errorMessageId = parseMessageId('019b0000-0000-7000-8000-000000000913');
+
+const mockCreditsContext: CreditsContextValue = {
+  balance: 100,
+  authenticated: true,
+  lastCheckInDayKey: 0,
+  isFetchingBalance: false,
+  isCheckingIn: false,
+  lastRefreshAt: 0,
+  cooldownSeconds: 0,
+  canRefresh: true,
+  fetchBalance: async () => {},
+  checkIn: async () => true,
+  manualRefresh: () => {},
+};
 
 const renderMessage = (error?: IMessageTips['content']['error']): string => {
   const userMessage: IMessageText = {
@@ -58,7 +73,9 @@ const renderMessage = (error?: IMessageTips['content']['error']): string => {
       <MemoryRouter>
         <ConversationProvider value={{ conversation_id: conversationId, type: 'nomi', readOnly: false }}>
           <MessageListProvider value={messages}>
-            <MessageTips message={errorMessage} />
+            <CreditsContext.Provider value={mockCreditsContext}>
+              <MessageTips message={errorMessage} />
+            </CreditsContext.Provider>
           </MessageListProvider>
         </ConversationProvider>
       </MemoryRouter>

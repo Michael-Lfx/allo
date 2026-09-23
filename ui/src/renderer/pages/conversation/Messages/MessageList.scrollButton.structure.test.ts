@@ -17,6 +17,15 @@ describe('message list scroll button', () => {
     expect(messageStyles.includes('.message-list-scroll-button {')).toBe(true);
     expect(messageStyles.includes('border-radius: 999px;')).toBe(true);
   });
+
+  test('renders generating radar / spinner and unread count badge on the scroll button', () => {
+    expect(messageListSource.includes("data-status={scrollButtonStatus}")).toBe(true);
+    expect(messageListSource.includes("className='message-list-scroll-button__badge'")).toBe(true);
+    expect(messageListSource.includes("unreadCount > 99 ? '99+' : unreadCount > 0 ? unreadCount : ''")).toBe(true);
+    expect(messageStyles.includes('.message-list-scroll-button__badge')).toBe(true);
+    expect(messageStyles.includes('.message-list-scroll-button__radar')).toBe(true);
+    expect(messageStyles.includes('.message-list-scroll-button__spin')).toBe(true);
+  });
 });
 
 describe('message list end spacer', () => {
@@ -24,7 +33,7 @@ describe('message list end spacer', () => {
     expect(messageListSource.includes("className='message-list-end-spacer'")).toBe(true);
     expect(messageListSource.includes("data-streaming=")).toBe(false);
     expect(messageStyles.includes('.message-list-end-spacer {')).toBe(true);
-    expect(messageStyles.includes('height: 64px;')).toBe(true);
+    expect(messageStyles.includes('height: 24px;')).toBe(true);
     expect(messageStyles.includes('height: 30vh;')).toBe(false);
   });
 });

@@ -13,6 +13,7 @@ import GoalStatusNotice from '@/renderer/components/chat/GoalStatusNotice';
 import { ConversationArtifactProvider } from '@renderer/pages/conversation/Messages/artifacts';
 import { CHAT_CONTENT_COLUMN_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import {
+  MessageListLoadedIdProvider,
   MessageListLoadingProvider,
   MessageListProvider,
   useMessageLstCache,
@@ -162,4 +163,4 @@ const NomiChat: React.FC<{
   );
 };
 
-export default HOC.Wrapper(MessageListProvider, MessageListLoadingProvider, LocalImageView.Provider)(NomiChat);
+export default HOC.Wrapper(MessageListProvider, MessageListLoadingProvider, MessageListLoadedIdProvider, LocalImageView.Provider)(NomiChat);

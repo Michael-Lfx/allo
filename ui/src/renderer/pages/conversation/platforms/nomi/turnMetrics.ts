@@ -140,7 +140,7 @@ export const CONTEXT_USAGE_CATEGORY_COLORS: Record<ContextUsageCategory, string>
 export type ContextBreakdownCategoryTokens = Partial<Record<ContextUsageCategory, number>>;
 
 export type SummarizedConversationPropertiesView = {
-  trigger?: 'auto' | 'manual' | null;
+  trigger?: string | null;
   pre_compact_tokens?: number | null;
   messages_summarized?: number | null;
 };

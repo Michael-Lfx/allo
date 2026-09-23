@@ -14,7 +14,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { CHAT_MESSAGE_JUMP_EVENT, type ChatMessageJumpDetail } from '@/renderer/utils/chat/chatMinimapEvents';
 import { CHAT_MESSAGE_ROW_METRICS_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { Image } from '@arco-design/web-react';
-import { Down } from '@icon-park/react';
+import { Down, LoadingFour } from '@icon-park/react';
 import MessageAcpPermission from '@renderer/pages/conversation/Messages/acp/MessageAcpPermission';
 import MessagePermission from './components/MessagePermission';
 import MessageAcpToolCall from '@renderer/pages/conversation/Messages/acp/MessageAcpToolCall';
@@ -30,7 +30,7 @@ import { useLatestRef } from '@renderer/hooks/ui/useLatestRef';
 import { prefersReducedMotion } from '@renderer/utils/motion/flowyMotion';
 import type { FileChangeInfo } from './MessageFileChanges';
 import { useConversationArtifacts } from './artifacts';
-import { useKnowledgeWritebackEvents, useMessageList, useMessageListLoading } from './hooks';
+import { useKnowledgeWritebackEvents, useMessageList, useMessageListLoadedId, useMessageListLoading } from './hooks';
 import MessageAgentStatus from './components/MessageAgentStatus';
 import MessageTips from './components/MessageTips';
 import MessageToolCall from './components/MessageToolCall';
@@ -882,6 +882,7 @@ const MessageList: React.FC<{
 }> = ({ emptySlot, onLoadOlder, hasMoreOlder, loadingOlder }) => {
   const list = useMessageList();
   const isMessageListLoading = useMessageListLoading();
+  const loadedConversationId = useMessageListLoadedId();
   const artifacts = useConversationArtifacts();
   const conversationContext = useConversationContextSafe();
   const { isFirstWin } = useFirstWinMode();
@@ -1231,7 +1232,7 @@ const MessageList: React.FC<{
     for (const entry of modelInput) {
       if (entry.role === 'user' && entry.turnId) turnsWithUserAnchor.add(entry.turnId);
     }
-    const incompleteTurnIds: string[] = [];
+    const incompleteTurnIds: MessageId[] = [];
     for (const turnId of deliverablesByTurn.keys()) {
       if (
         !shouldPresentTurnDeliverables({
@@ -1426,16 +1427,21 @@ const MessageList: React.FC<{
     handlePointerDown,
     showScrollButton,
     hasNewContentBelow,
+    unreadCount,
     scrollToBottom,
     scrollElementIntoView,
     pauseAutoFollow,
     resolveFollowOutput,
   } = useAutoScroll({
+    conversationId: conversationContext?.conversation_id,
+    loadedConversationId,
     messages: list,
+    displayItems: displayList,
     itemCount: displayList.length,
     virtuosoRef,
     virtuosoMode: scrollParent != null,
     layoutPinKey: list,
+    isProcessing: conversationContext?.isProcessing === true,
   });
 
   // ── Windowed history: load older messages on scroll-up with a scroll-anchor ──
@@ -1620,9 +1626,24 @@ const MessageList: React.FC<{
     };
   }, [conversationContext?.conversation_id, displayList, pauseAutoFollow, scrollElementIntoView]);
 
-  const scrollButtonLabel = hasNewContentBelow
-    ? t('messages.newContentBelow', { defaultValue: 'View latest content' })
-    : t('messages.scrollToBottom');
+  const isGeneratingBelow = conversationContext?.isProcessing === true && hasNewContentBelow;
+  const isUnreadBelow = !isGeneratingBelow && hasNewContentBelow;
+  const scrollButtonStatus: 'generating' | 'unread' | 'idle' = isGeneratingBelow
+    ? 'generating'
+    : isUnreadBelow
+      ? 'unread'
+      : 'idle';
+
+  const scrollButtonLabel = isGeneratingBelow
+    ? t('messages.generatingBelow', { defaultValue: 'Generating content below...' })
+    : isUnreadBelow
+      ? unreadCount > 0
+        ? t('messages.unreadCountBelow', {
+            defaultValue: '{{count}} new messages below',
+            count: unreadCount,
+          })
+        : t('messages.newContentBelow', { defaultValue: 'View latest content' })
+      : t('messages.scrollToBottom', { defaultValue: 'Scroll to bottom' });
 
   // Click scroll button
   const handleScrollButtonClick = () => {
@@ -1663,7 +1684,77 @@ const MessageList: React.FC<{
         />
       </div>
     ) : null;
-  const listEndSpacer = <div className='message-list-end-spacer' aria-hidden='true' />;
+  const [dynamicSpacerHeight, setDynamicSpacerHeight] = useState<number | null>(null);
+  const isNewUserTurn = list.length > 0 && list[list.length - 1]?.position === 'right';
+  const isProcessingOrNewTurn = conversationContext?.isProcessing === true || isNewUserTurn;
+
+  useLayoutEffect(() => {
+    if (!isProcessingOrNewTurn || !scrollerElRef.current) {
+      setDynamicSpacerHeight((prev) => (prev !== null ? null : prev));
+      return;
+    }
+    const scroller = scrollerElRef.current;
+    const updateSpacer = () => {
+      const viewportHeight = scroller.clientHeight;
+      if (viewportHeight <= 0) return;
+
+      const lastUserIndex = displayList.findLastIndex(
+        (item) => 'position' in item && item.position === 'right'
+      );
+      if (lastUserIndex < 0) {
+        setDynamicSpacerHeight((prev) => (prev !== null ? null : prev));
+        return;
+      }
+
+      const lastUserAnchorId = getProcessedItemAnchorId(displayList[lastUserIndex]);
+      const lastUserEl = document.getElementById(`message-${lastUserAnchorId}`);
+      const spacerEl = scroller.querySelector<HTMLElement>('.message-list-end-spacer');
+
+      if (lastUserEl && spacerEl) {
+        const userTop = lastUserEl.getBoundingClientRect().top;
+        const spacerTop = spacerEl.getBoundingClientRect().top;
+        const currentTurnHeight = Math.max(0, spacerTop - userTop);
+        const neededSpacer = Math.max(24, Math.ceil(viewportHeight - currentTurnHeight));
+        setDynamicSpacerHeight((prev) => {
+          if (prev !== null && Math.abs(prev - neededSpacer) <= 2) return prev;
+          return neededSpacer;
+        });
+      } else {
+        const fallback = Math.max(24, viewportHeight - 120);
+        setDynamicSpacerHeight((prev) => {
+          if (prev !== null && Math.abs(prev - fallback) <= 2) return prev;
+          return fallback;
+        });
+      }
+    };
+
+    updateSpacer();
+    window.addEventListener('resize', updateSpacer, { passive: true });
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        updateSpacer();
+      });
+      resizeObserver.observe(scroller);
+    }
+    return () => {
+      window.removeEventListener('resize', updateSpacer);
+      resizeObserver?.disconnect();
+    };
+  }, [displayList, isProcessingOrNewTurn, list]);
+
+  const listEndSpacer = (
+    <div
+      className='message-list-end-spacer'
+      style={
+        isProcessingOrNewTurn && dynamicSpacerHeight !== null
+          ? { height: `${dynamicSpacerHeight}px`, minHeight: `${dynamicSpacerHeight}px` }
+          : undefined
+      }
+      data-is-processing={isProcessingOrNewTurn ? 'true' : 'false'}
+      aria-hidden='true'
+    />
+  );
 
   const renderItem = (_index: number, item: (typeof displayList)[0]) => {
     const highlighted = matchesTargetMessage(item, highlightedMessageId);
@@ -1812,7 +1903,10 @@ const MessageList: React.FC<{
   }
 
   return (
-    <div className='message-list-root relative flex-1 h-full'>
+    <div
+      className='message-list-root relative flex-1 h-full'
+      data-is-processing={conversationContext?.isProcessing === true ? 'true' : 'false'}
+    >
       <div className='sr-only' role='status' aria-live='polite' aria-atomic='true'>
         {liveStepAnnouncement}
       </div>
@@ -1891,6 +1985,8 @@ const MessageList: React.FC<{
         type='button'
         className='message-list-scroll-button'
         data-button-shape='circle'
+        data-status={scrollButtonStatus}
+        data-has-new={hasNewContentBelow ? 'true' : 'false'}
         data-visible={showScrollButton ? 'true' : 'false'}
         onClick={handleScrollButtonClick}
         title={scrollButtonLabel}
@@ -1898,7 +1994,26 @@ const MessageList: React.FC<{
         aria-hidden={!showScrollButton}
         tabIndex={showScrollButton ? 0 : -1}
       >
-        <Down theme='filled' size='20' fill='currentColor' />
+        {scrollButtonStatus === 'generating' && (
+          <span className='message-list-scroll-button__radar' aria-hidden='true' />
+        )}
+        <span className='message-list-scroll-button__icon'>
+          {scrollButtonStatus === 'generating' ? (
+            <LoadingFour
+              theme='outline'
+              size='15'
+              fill='currentColor'
+              className='message-list-scroll-button__spin'
+            />
+          ) : (
+            <Down theme='filled' size='15' fill='currentColor' />
+          )}
+        </span>
+        {scrollButtonStatus === 'unread' && (
+          <span className='message-list-scroll-button__badge' aria-hidden='true'>
+            {unreadCount > 99 ? '99+' : unreadCount > 0 ? unreadCount : ''}
+          </span>
+        )}
       </button>
 
       <SelectionReplyButton messages={list} />

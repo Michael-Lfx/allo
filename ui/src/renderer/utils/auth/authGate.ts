@@ -1,19 +1,15 @@
 
 
-import { isDesktopShell } from '@renderer/utils/platform';
-
 /**
- * Desktop shell uses a transparent local trust token and must prove Flowy
- * account ownership before the main product. WebUI only gates on the local
- * instance admin session; cloud account linking is deferred to settings /
- * subscription surfaces.
+ * Both desktop shell and WebUI require proving Flowy cloud account ownership
+ * via Email OTP before entering the main workspace.
  */
 export function requiresCloudAuthGate(): boolean {
-  return isDesktopShell();
+  return true;
 }
 
 export function resolvePostLocalAuthPath(cloudAuthenticated: boolean): '/guid' | '/cloud-login' {
-  if (requiresCloudAuthGate() && !cloudAuthenticated) {
+  if (!cloudAuthenticated) {
     return '/cloud-login';
   }
   return '/guid';

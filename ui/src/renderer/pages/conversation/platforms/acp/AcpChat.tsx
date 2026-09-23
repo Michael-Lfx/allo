@@ -7,6 +7,7 @@ import FlexFullContainer from '@renderer/components/layout/FlexFullContainer';
 import MessageList from '@renderer/pages/conversation/Messages/MessageList';
 import { ConversationArtifactProvider } from '@renderer/pages/conversation/Messages/artifacts';
 import {
+  MessageListLoadedIdProvider,
   MessageListLoadingProvider,
   MessageListProvider,
   useAddOrUpdateMessage,
@@ -121,4 +122,4 @@ const AcpChat: React.FC<{
   );
 };
 
-export default HOC.Wrapper(MessageListProvider, MessageListLoadingProvider, LocalImageView.Provider)(AcpChat);
+export default HOC.Wrapper(MessageListProvider, MessageListLoadingProvider, MessageListLoadedIdProvider, LocalImageView.Provider)(AcpChat);
