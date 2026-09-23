@@ -36,11 +36,17 @@ const MAX_YIELD_MS: u64 = 30_000;
 const TERMINAL_SETTLE_MS: u64 = 25;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const SCRIPT_OUTPUT_MAX_BYTES: usize = 48_000;
-const PYTHON_PROBE_MAX: Duration = Duration::from_secs(2);
+// PYTHON_PROBE_CLEANUP_BUDGET must stay equal to interrupt+terminate+reap
+// (debug-asserted in the probe loop). Keep PYTHON_PROBE_MAX large enough that
+// every candidate still gets a usable execution slice: the worst case is 3
+// candidates on Windows (py/python3/python), so 3s/3 - 575ms ≈ 425ms each.
+// A 2s cap with these graces left only ~91ms per candidate — cold interpreter
+// starts exceeded it and probing failed closed to python_unavailable.
+const PYTHON_PROBE_MAX: Duration = Duration::from_secs(3);
 const PYTHON_PROBE_INTERRUPT_GRACE: Duration = Duration::from_millis(25);
-const PYTHON_PROBE_TERMINATE_GRACE: Duration = Duration::from_millis(25);
-const PYTHON_PROBE_REAP_GRACE: Duration = Duration::from_millis(100);
-const PYTHON_PROBE_CLEANUP_BUDGET: Duration = Duration::from_millis(150);
+const PYTHON_PROBE_TERMINATE_GRACE: Duration = Duration::from_millis(50);
+const PYTHON_PROBE_REAP_GRACE: Duration = Duration::from_millis(500);
+const PYTHON_PROBE_CLEANUP_BUDGET: Duration = Duration::from_millis(575);
 const SCRIPT_TIMEOUT_GUIDANCE: &str = "The script was stopped before completion. Do not assume its side effects finished. Inspect the partial state before retrying or running dependent steps.";
 
 struct PreparedInvocation {
@@ -522,13 +528,13 @@ impl Tool for ExecCommandTool {
          is POSIX sh. Separate Windows consoles and GUI launches are rejected; use the dedicated launch tool.\n\n\
          Script mode requires script, language (shell or python), and a hard timeout in milliseconds. \
          It is for deterministic, homogeneous local batches that need no intermediate model decision \
-         or approval. On Windows, shell commands always use an isolated PTY; on macOS/Linux script mode \
-         uses pipe transport. Script mode never returns a live session and does not download \
+         or approval. On Windows, both modes always use a hidden pipe transport (no console window); \
+         on macOS/Linux script mode uses pipe transport. Script mode never returns a live session and does not download \
          Python when the host has no Python 3 interpreter. Validate preconditions, fail non-zero on a \
          dependent-operation failure, bound output, and print a concise final summary. Do not use scripts \
          to bypass dedicated file, browser, UI, MCP, or approval-aware tools.\n\n\
          On macOS/Linux, use tty=true for REPLs, TUIs, and interactive installers.\n\n\
-         - On Windows, shell commands always use an isolated PTY with a merged terminal stream.\n\
+         - On Windows, shell commands always use a hidden pipe transport; the tty flag is ignored there.\n\
          - On macOS/Linux, tty=false uses separate stdout/stderr pipe streams.\n\
          - On macOS/Linux, tty=true uses a merged PTY stream for interactive programs.\n\
          - If the process exits within yield_time_ms, the result reports its exit_code and no \
@@ -563,7 +569,7 @@ impl Tool for ExecCommandTool {
                 },
                 "tty": {
                     "type": "boolean",
-                    "description": "Use PTY transport on macOS/Linux. Defaults to false (pipe) there; Windows always uses an isolated PTY."
+                    "description": "Use PTY transport on macOS/Linux. Defaults to false (pipe) there; ignored on Windows, where commands always use a hidden pipe transport."
                 },
                 "yield_time_ms": {
                     "type": "number",
@@ -1315,6 +1321,9 @@ mod tests {
         assert_marker_stream(&result.content, "pipe_stderr_marker", "STDERR:\n");
     }
 
+    // unix-only: Windows agent shells always downgrade to Pipe transport
+    // (windows_shell::shell_transport), so `tty: true` can never report pty here.
+    #[cfg(unix)]
     #[tokio::test]
     async fn tty_true_reports_pty_transport() {
         let (tool, _) = tool(std::env::current_dir().unwrap());
@@ -1451,7 +1460,7 @@ mod tests {
         assert!(properties["tty"]["description"]
             .as_str()
             .unwrap()
-            .contains("Windows always uses an isolated PTY"));
+            .contains("ignored on Windows, where commands always use a hidden pipe transport"));
     }
 
     #[tokio::test]
@@ -1828,7 +1837,7 @@ mod tests {
         assert!(description.contains("Get-ChildItem"));
         assert!(description.contains("$env:NAME"));
         assert!(description.contains("cmd /C"));
-        assert!(description.contains("On Windows, shell commands always use an isolated PTY"));
+        assert!(description.contains("On Windows, shell commands always use a hidden pipe transport"));
         assert!(description.contains("tty=false uses separate stdout/stderr pipe streams"));
         assert!(description.contains("Separate Windows consoles and GUI launches are rejected"));
         assert!(description.contains("\"\\r\") as its own write_stdin call"));

@@ -874,6 +874,52 @@ async fn windows_powershell_preserves_final_native_and_pipeline_status() {
 
 #[cfg(windows)]
 #[tokio::test]
+async fn windows_powershell_pipe_transport_captures_stdout_and_cmdlet_output() {
+    // Each case pins the exit code and every expected marker IN ORDER, so
+    // multi-line output can't drop or reorder lines unnoticed. The last case
+    // covers the failure path: the wrapper's inline `exit $LASTEXITCODE`
+    // terminates the process before the trailing Flush calls run, so partial
+    // output must already have been streamed through Out-Default.
+    for (script, expected_code, expected_markers) in [
+        ("Write-Output 'flowy-powershell-output-token'", 0, &["flowy-powershell-output-token"][..]),
+        ("cmd /c echo flowy-native-output-token", 0, &["flowy-native-output-token"][..]),
+        (
+            "Write-Output 'first-line'; Write-Output 'second-line'",
+            0,
+            &["first-line", "second-line"][..],
+        ),
+        ("Write-Output 'flowy-中文测试-unicode-token'", 0, &["flowy-中文测试-unicode-token"][..]),
+        ("Write-Output 'partial-output-token'; cmd /c exit 7", 7, &["partial-output-token"][..]),
+    ] {
+        let mut process = request(helper_binary(), Vec::<OsString>::new());
+        process.command = CommandSpec::Shell {
+            shell: ShellKind::PowerShell,
+            script: script.into(),
+        };
+        process.transport = Transport::Pipe;
+        let supervisor = ProcessSupervisor::new(SupervisorConfig::default());
+        let handle = supervisor
+            .start(process)
+            .await
+            .unwrap_or_else(|error| panic!("PowerShell script failed to start: {script}: {error}"));
+        let outcome = wait_for_terminal(&supervisor, &handle).await;
+        let ProcessOutcome::Exited { code, output, .. } = outcome else {
+            panic!("PowerShell script should exit: {script}: {outcome:?}");
+        };
+        assert_eq!(code, Some(expected_code), "PowerShell script exit code: {script}");
+        let text = output.text();
+        let mut rest = text.as_str();
+        for marker in expected_markers {
+            let Some(index) = rest.find(marker) else {
+                panic!("Piped output of {script} must contain '{marker}' in order, got: {text:?}");
+            };
+            rest = &rest[index + marker.len()..];
+        }
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
 async fn windows_powershell_parser_errors_are_returned_on_pty() {
     let script = r#"Write-Output "$_ exists=$(-not [string]::IsNullOrEmpty((Test-Path $_))""#;
     let mut process = request(helper_binary(), Vec::<OsString>::new());

@@ -2621,8 +2621,9 @@ if ($null -ne $nomifunLastExitCode -and -not $nomifunSucceeded) {{ exit $nomifun
 if (-not $nomifunSucceeded) {{ exit 1 }}\n\
 '@\n\
          $nomifunBlock = [scriptblock]::Create($nomifunScript)\n\
-         & $nomifunBlock\n\
-         exit 0\n\
+         & $nomifunBlock | Out-Default\n\
+         [Console]::Out.Flush()\n\
+         [Console]::Error.Flush()\n\
          }} catch {{\n\
          $nomifunMessage = $_.Exception.Message\n\
          if ($null -ne $_.Exception.ErrorRecord -and $_.Exception.ErrorRecord.InvocationInfo.PositionMessage) {{\n\
@@ -2633,6 +2634,8 @@ if (-not $nomifunSucceeded) {{ exit 1 }}\n\
          $nomifunLine = 'PowerShell error: ' + $nomifunMessage\n\
          [Console]::Out.WriteLine($nomifunLine)\n\
          [Console]::Error.WriteLine($nomifunLine)\n\
+         [Console]::Out.Flush()\n\
+         [Console]::Error.Flush()\n\
          exit 1\n\
          }}"
     )
