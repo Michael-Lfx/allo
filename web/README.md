@@ -54,7 +54,7 @@ cargo run -p nomifun-web -- --port 8787 --api-only --insecure-no-auth --data-dir
 侧栏的「技能与连接器」入口（仅在服务端 `initialize` 能力协商开启 `skills`/`connectors` 时显示）打开 Agent Store 目录视图（`src/components/CatalogView.tsx`）：
 
 - **技能**：`skill/list` / `skill/get` 展示公共摘要（名称/版本/来源/兼容性/所需连接器/指令摘要）；原始 `SKILL.md` 正体和内部路由规则不返回。
-- **连接器**：`connector/list` / `get` / `status` / `test` 展示类型、传输摘要、命名空间化工具、授权状态与合并后的状态徽标（`connected` 仅当授权就绪且最近探测成功——TC-CONN-002）；OAuth 连接器支持「授权」（`connector/auth/start`，浏览器回调由可信主机处理，UI 轮询 `connector/auth/status`）、「取消授权」与「测试连接」。
+- **连接器**：`connector/list` / `get` / `status` / `test` 展示类型、传输摘要、命名空间化工具、授权状态与合并后的状态徽标（`connected` 仅当授权就绪且最近探测成功——TC-CONN-002）；OAuth 连接器支持「授权」（`connector/auth/start`，浏览器回调由可信主机处理：**交给浏览器之前的失败当场以 `state:"error"` 返回**，之后的失败经 `connector/auth/status` 的 `error` 读出，UI 轮询该接口）、「取消授权」与「测试连接」。
 
 目录数据只来自 App Server WebSocket 协议；UI 不接触真实 Token。
 
