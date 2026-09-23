@@ -31,7 +31,7 @@
    spacer pinned while the streaming row grows, so a wrap does not paint
    one frame shoved into the live step and the next frame restored. */
 .message-list-end-spacer {
-  height: 64px;
+  height: 140px;
   flex-shrink: 0;
   pointer-events: none;
   overflow-anchor: auto;

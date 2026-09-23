@@ -24,7 +24,7 @@ describe('message list end spacer', () => {
     expect(messageListSource.includes("className='message-list-end-spacer'")).toBe(true);
     expect(messageListSource.includes("data-streaming=")).toBe(false);
     expect(messageStyles.includes('.message-list-end-spacer {')).toBe(true);
-    expect(messageStyles.includes('height: 64px;')).toBe(true);
+    expect(messageStyles.includes('height: 140px;')).toBe(true);
     expect(messageStyles.includes('height: 30vh;')).toBe(false);
   });
 });
