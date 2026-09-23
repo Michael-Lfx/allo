@@ -349,4 +349,4 @@ const TerminalRow: React.FC<TerminalRowProps> = ({
   );
 };
 
-export default TerminalRow;
+export default React.memo(TerminalRow);

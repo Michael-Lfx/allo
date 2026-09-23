@@ -39,8 +39,6 @@ function normalizeVersion(version?: string | null): string | null {
   return trimmed.startsWith('v') ? trimmed.slice(1) : trimmed;
 }
 
-import { getUpdateCdnHost } from '@/common/update/cdnHost';
-
 /** Below this sustained rate, mark download/check as slow for growth dashboards. */
 export const SLOW_DOWNLOAD_BPS = 256_000; // 250 KiB/s
 export const FAST_DOWNLOAD_BPS = 1_500_000; // ~1.5 MiB/s

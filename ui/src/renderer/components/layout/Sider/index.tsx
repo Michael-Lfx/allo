@@ -129,6 +129,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     pathname === '/terminal-new' ||
     pathname.startsWith('/terminal/');
 
+  const isExistingSessionRoute =
+    pathname.startsWith('/conversation/') ||
+    pathname.startsWith('/terminal/');
+
   // Pathname-only: a tab click must not be overwritten just because the current
   // route still belongs to another domain (that was the snap-back flicker).
   useEffect(() => {
@@ -227,8 +231,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   );
 
   const handleConversationClick = useCallback(() => {
-    navTo(getRecentConversationPath());
-  }, [getRecentConversationPath, navTo]);
+    if (!isExistingSessionRoute) {
+      navTo(getRecentConversationPath());
+    }
+  }, [getRecentConversationPath, isExistingSessionRoute, navTo]);
 
   const handleNewChat = useCallback(() => {
     cleanupSiderTooltips();
@@ -311,9 +317,11 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       setOptimisticBar2Module(tab);
       handleSelectHistoryTab(tab);
       if (tab === 'workspaces') {
-        const recentPath = getRecentConversationPath();
-        if (pathname !== recentPath) {
-          navTo(recentPath);
+        if (!isExistingSessionRoute) {
+          const recentPath = getRecentConversationPath();
+          if (pathname !== recentPath) {
+            navTo(recentPath);
+          }
         }
       } else if (tab === 'video') {
         if (!isVideoRoute) {
@@ -330,6 +338,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       handleSelectHistoryTab,
       handleVideoGenerationHome,
       isCompanionRoute,
+      isExistingSessionRoute,
       isVideoRoute,
       navTo,
       pathname,
