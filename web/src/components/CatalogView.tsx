@@ -86,8 +86,10 @@ import {
   importStatusLabel,
   installStateClass,
   installStateLabel,
+  marketKindLabel,
   semanticLabel,
   stateLabel,
+  storeKindLabel,
   type InstallToggleKind,
 } from "./catalog/shared";
 
@@ -1259,7 +1261,7 @@ function StoreDrawer({
           {profession && <div className="drawer-subtitle">{profession}</div>}
           <div className="drawer-chips">
             <span className="market-tag">{t("catalog.storeFromMarket", { market: item.marketplace_name })}</span>
-            <span className="market-tag">{item.kind}</span>
+            <span className="market-tag">{storeKindLabel(t, item.kind)}</span>
             <span className="market-tag">v{item.version}</span>
           </div>
         </div>
@@ -1280,8 +1282,8 @@ function StoreDrawer({
       )}
       <dl className="market-meta">
         <MetaRow label={t("catalog.fieldVersion")} value={item.version} />
-        <MetaRow label={t("catalog.fieldType")} value={item.kind} />
-        <MetaRow label={t("catalog.fieldTransport")} value={`${item.source_kind} · ${item.marketplace_name}`} />
+        <MetaRow label={t("catalog.fieldType")} value={storeKindLabel(t, item.kind)} />
+        <MetaRow label={t("catalog.fieldTransport")} value={`${marketKindLabel(t, item.source_kind)} · ${item.marketplace_name}`} />
         <MetaList label={t("catalog.fieldSkills")} values={tags} />
       </dl>
       <div className="drawer-actions">

@@ -65,6 +65,21 @@ export const MARKET_KIND_KEYS: Record<string, string> = {
   zip: "catalog.marketKindZip",
 };
 
+/** `StoreItem.kind` is a wire enum (`agent` / `team` / `skill` / `connector`),
+ *  not a label — the store drawer printed it raw next to the localized
+ *  「专家团」 chip on the very same tab. */
+export const STORE_KIND_KEYS: Record<string, string> = {
+  agent: "catalog.kindAgent",
+  team: "catalog.kindTeam",
+  skill: "catalog.tabSkills",
+  connector: "catalog.tabConnectors",
+};
+
+export function storeKindLabel(t: Translate, kind: string): string {
+  const key = STORE_KIND_KEYS[kind];
+  return key ? t(key) : kind;
+}
+
 type Translate = (key: string, opts?: Record<string, unknown>) => string;
 
 export function stateLabel(t: Translate, keys: Record<string, string>, value: string): string {
