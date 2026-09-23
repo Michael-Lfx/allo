@@ -1382,22 +1382,23 @@ button.turn-process-trace__row:focus-visible {
   box-sizing: border-box;
   display: inline-flex;
   position: absolute;
-  bottom: 20px;
+  bottom: 22px;
   left: 50%;
   z-index: 100;
   min-width: 36px;
   height: 36px;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border-base);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #ffffff)) 85%, transparent);
-  -webkit-backdrop-filter: blur(16px) saturate(180%);
-  backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid color-mix(in srgb, var(--border-base) 60%, rgba(255, 255, 255, 0.4));
+  background: color-mix(in srgb, var(--bg-elevated, #ffffff) 82%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+  backdrop-filter: blur(20px) saturate(190%);
   box-shadow:
-    0 2px 6px rgba(0, 0, 0, 0.04),
-    0 6px 18px rgba(0, 0, 0, 0.08);
-  color: var(--color-text-2, var(--text-secondary));
+    0 2px 8px -1px rgba(0, 0, 0, 0.08),
+    0 8px 24px -4px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  color: var(--color-text-1, var(--text-primary));
   cursor: pointer;
   line-height: 1;
   padding: 0;
@@ -1405,14 +1406,14 @@ button.turn-process-trace__row:focus-visible {
   white-space: nowrap;
 
   opacity: 0;
-  transform: translate(-50%, 8px) scale(0.86);
+  transform: translate(-50%, 10px) scale(0.88);
   transform-origin: 50% 100%;
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity 0.22s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
-    transform 0.26s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
-    background-color 0.16s var(--conversation-ease-press, cubic-bezier(0.25, 1, 0.5, 1)),
+    opacity 0.22s cubic-bezier(0.32, 0.72, 0, 1),
+    transform 0.26s cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 0.18s cubic-bezier(0.25, 1, 0.5, 1),
     border-color 0.2s ease,
     color 0.2s ease,
     box-shadow 0.2s ease,
@@ -1427,36 +1428,38 @@ button.turn-process-trace__row:focus-visible {
   visibility: visible;
   pointer-events: auto;
   transition:
-    opacity 0.22s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
-    transform 0.26s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
-    background-color 0.16s var(--conversation-ease-press, cubic-bezier(0.25, 1, 0.5, 1)),
+    opacity 0.22s cubic-bezier(0.32, 0.72, 0, 1),
+    transform 0.26s cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 0.18s cubic-bezier(0.25, 1, 0.5, 1),
     border-color 0.2s ease,
     color 0.2s ease,
     box-shadow 0.2s ease,
     visibility 0s;
 }
 
-/* Default circular state when viewing history without new streaming output */
+/* Default circular button state (reading history) */
 .message-list-scroll-button[data-has-new='false'] {
   width: 36px;
   height: 36px;
   padding: 0;
+  border-radius: 50%;
 }
 
-/* Expanded pill state with text tips ONLY when streaming/generating new content below */
+/* Expanded iOS Capsule state (streaming/generating new content below) */
 .message-list-scroll-button[data-has-new='true'] {
-  height: 34px;
-  padding: 0 12px 0 10px;
-  gap: 6px;
-  color: var(--color-primary, var(--color-text-1));
-  border-color: color-mix(in srgb, var(--color-primary, #165dff) 28%, var(--border-base));
-  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #ffffff)) 82%, var(--color-primary, #165dff) 10%);
+  height: 36px;
+  padding: 0 14px 0 11px;
+  gap: 7px;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--color-primary, #165dff) 24%, var(--border-base));
+  background: color-mix(in srgb, var(--bg-elevated, #ffffff) 88%, var(--color-primary, #165dff) 6%);
 }
 
 .message-list-scroll-button__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  color: var(--color-text-2, var(--text-secondary));
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -1466,27 +1469,29 @@ button.turn-process-trace__row:focus-visible {
 
 .message-list-scroll-button__dot {
   display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background-color: var(--color-primary, currentColor);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary, currentColor) 25%, transparent);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-primary, #165dff);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary, #165dff) 60%, transparent);
   animation: message-scroll-dot-pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   flex-shrink: 0;
 }
 
 .message-list-scroll-button__label {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.01em;
   line-height: 1;
+  color: var(--color-text-1, var(--text-primary));
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   animation: message-scroll-pill-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes message-scroll-pill-enter {
   from {
     opacity: 0;
-    transform: translateX(-3px);
+    transform: translateX(-4px);
   }
   to {
     opacity: 1;
@@ -1510,31 +1515,37 @@ button.turn-process-trace__row:focus-visible {
   0%, 100% {
     opacity: 1;
     transform: scale(1);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary, #165dff) 60%, transparent);
   }
   50% {
-    opacity: 0.45;
+    opacity: 0.5;
     transform: scale(0.85);
+    box-shadow: 0 0 2px color-mix(in srgb, var(--color-primary, #165dff) 20%, transparent);
   }
 }
 
 .message-list-scroll-button[data-visible='true']:hover {
-  background: color-mix(in srgb, var(--bg-hover, var(--bg-2)) 92%, transparent);
-  color: var(--color-text-1, var(--text-primary));
-  border-color: color-mix(in srgb, var(--border-base) 80%, var(--color-text-3, #86909c));
-  transform: translate(-50%, 0) scale(1.04);
+  background: color-mix(in srgb, var(--bg-elevated, #ffffff) 94%, transparent);
+  border-color: color-mix(in srgb, var(--border-base) 80%, rgba(255, 255, 255, 0.7));
+  transform: translate(-50%, -1px) scale(1.03);
+  box-shadow:
+    0 4px 14px -1px rgba(0, 0, 0, 0.12),
+    0 12px 28px -4px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
 }
 
 .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover {
-  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #ffffff)) 76%, var(--color-primary, #165dff) 16%);
-  border-color: color-mix(in srgb, var(--color-primary, #165dff) 45%, var(--border-base));
+  background: color-mix(in srgb, var(--bg-elevated, #ffffff) 84%, var(--color-primary, #165dff) 10%);
+  border-color: color-mix(in srgb, var(--color-primary, #165dff) 40%, var(--border-base));
   box-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.06),
-    0 8px 22px color-mix(in srgb, var(--color-primary, #165dff) 16%, transparent);
+    0 4px 14px -1px rgba(0, 0, 0, 0.12),
+    0 12px 28px -4px color-mix(in srgb, var(--color-primary, #165dff) 20%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
 }
 
-/* Feedback lands on press, not on release. */
+/* Feedback lands on press, not on release (Apple spring feedback). */
 .message-list-scroll-button[data-visible='true']:active {
-  transform: translate(-50%, 0) scale(0.95);
+  transform: translate(-50%, 1px) scale(0.96);
   transition-duration: 0.1s;
 }
 
@@ -1549,34 +1560,54 @@ button.turn-process-trace__row:focus-visible {
   display: block;
 }
 
+/* ── Dark Mode / macOS dark frosted glass ── */
 [data-theme='dark'] .message-list-scroll-button,
 body[arco-theme='dark'] .message-list-scroll-button {
-  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #262626)) 85%, transparent);
-  border-color: var(--border-base);
+  background: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 82%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.13);
   box-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.35),
-    0 8px 24px rgba(0, 0, 0, 0.45);
+    0 4px 16px -2px rgba(0, 0, 0, 0.5),
+    0 12px 32px -4px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.92);
 }
 
 [data-theme='dark'] .message-list-scroll-button[data-has-new='true'],
 body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'] {
-  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #262626)) 80%, var(--color-primary, #165dff) 16%);
-  border-color: color-mix(in srgb, var(--color-primary, #165dff) 36%, var(--border-base));
-  color: color-mix(in srgb, var(--color-primary, #165dff) 88%, #ffffff);
+  background: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 84%, var(--color-primary, #165dff) 10%);
+  border-color: color-mix(in srgb, var(--color-primary, #165dff) 32%, rgba(255, 255, 255, 0.16));
+  color: rgba(255, 255, 255, 0.95);
+}
+
+[data-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__icon,
+body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__icon {
+  color: rgba(255, 255, 255, 0.85);
 }
 
 [data-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__dot,
 body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'] .message-list-scroll-button__dot {
-  background-color: color-mix(in srgb, var(--color-primary, #165dff) 88%, #ffffff);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary, #165dff) 30%, transparent);
+  background-color: var(--color-primary, #3888ff);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary, #3888ff) 75%, transparent);
+}
+
+[data-theme='dark'] .message-list-scroll-button[data-visible='true']:hover,
+body[arco-theme='dark'] .message-list-scroll-button[data-visible='true']:hover {
+  background: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 90%, rgba(255, 255, 255, 0.08));
+  border-color: rgba(255, 255, 255, 0.24);
+  box-shadow:
+    0 6px 20px -2px rgba(0, 0, 0, 0.6),
+    0 16px 36px -4px rgba(0, 0, 0, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 [data-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover,
 body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-visible='true']:hover {
-  background: color-mix(in srgb, var(--bg-elevated, var(--bg-2, #262626)) 72%, var(--color-primary, #165dff) 24%);
+  background: color-mix(in srgb, var(--bg-elevated, #1c1c1e) 80%, var(--color-primary, #165dff) 16%);
+  border-color: color-mix(in srgb, var(--color-primary, #165dff) 45%, rgba(255, 255, 255, 0.25));
   box-shadow:
-    0 4px 12px rgba(0, 0, 0, 0.45),
-    0 10px 28px color-mix(in srgb, var(--color-primary, #165dff) 25%, transparent);
+    0 6px 20px -2px rgba(0, 0, 0, 0.6),
+    0 16px 36px -4px color-mix(in srgb, var(--color-primary, #165dff) 35%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .message-list-loading-older {
