@@ -915,15 +915,7 @@ export function CatalogView() {
               <div className="market-card market-store-card" key={item.id}>
                 <div
                   className="market-store-main"
-                  role="button"
-                  tabIndex={0}
                   onClick={() => openStoreItem(item)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      openStoreItem(item);
-                    }
-                  }}
                 >
                   <div className="market-card-top">
                     <StoreBadge item={item} rootUrl={client?.serverRootUrl} />
@@ -983,20 +975,12 @@ export function CatalogView() {
               }
               items={visibleSkills}
               renderItem={(skill) => (
-                // `div role="button"` rather than `<button>`: the row carries its
-                // own write actions (W12), and nesting buttons is invalid HTML.
+                // A plain div, not a `<button>`: the row carries its own write
+                // actions (W12), and nesting buttons is invalid HTML.
                 <div
                   className="market-card"
-                  role="button"
-                  tabIndex={0}
                   key={skill.id}
                   onClick={() => void openSkill(skill.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      void openSkill(skill.id);
-                    }
-                  }}
                 >
                   <div className="market-card-top">
                     <AvatarBadge name={skill.name} avatarUrl={skill.avatar_url} rootUrl={client?.serverRootUrl} />
