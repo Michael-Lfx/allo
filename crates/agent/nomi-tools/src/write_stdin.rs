@@ -641,6 +641,9 @@ mod tests {
         assert!(!store.contains(id));
     }
 
+    // unix-only: Windows agent shells always use Pipe transport (CREATE_NO_WINDOW),
+    // which has no console interrupt contract — Ctrl-C needs a real PTY.
+    #[cfg(unix)]
     #[tokio::test]
     async fn ctrl_c_uses_supervisor_interrupt() {
         let (exec, writer, store) = tools();
