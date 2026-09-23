@@ -1486,19 +1486,22 @@ button.turn-process-trace__row:focus-visible {
   align-items: center;
   justify-content: center;
   position: absolute;
-  top: -3px;
-  right: -3px;
+  top: -4px;
+  right: -4px;
   z-index: 3;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4.5px;
   border-radius: 999px;
   box-sizing: border-box;
   background-color: var(--color-danger, #f53f3f);
   border: 1.5px solid var(--bg-elevated, #ffffff);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22);
   color: #ffffff;
-  font-size: 10px;
+  font-family: var(--font-family-base, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
   text-align: center;
@@ -1507,9 +1510,9 @@ button.turn-process-trace__row:focus-visible {
 }
 
 .message-list-scroll-button__badge:empty {
-  min-width: 7px;
-  width: 7px;
-  height: 7px;
+  min-width: 8px;
+  width: 8px;
+  height: 8px;
   padding: 0;
   top: 1px;
   right: 1px;
