@@ -335,8 +335,6 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           element={
             localStatus !== 'authenticated' ? (
               <Navigate to='/login' replace />
-            ) : !requiresCloudAuthGate() ? (
-              <Navigate to='/guid' replace />
             ) : (
               withRouteFallback(CloudLoginPage, { fullscreen: true })
             )
