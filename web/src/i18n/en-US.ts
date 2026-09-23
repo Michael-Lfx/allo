@@ -280,6 +280,12 @@ const enUS: Resources = {
     storeInstalling: "Installing…",
     storeInstalled: "Installed",
     storeBlocked: "Not installable",
+    storeUninstall: "Uninstall",
+    storeUninstalling: "Uninstalling…",
+    storeUninstallTitle: "Confirm uninstall",
+    storeUninstallBody: "Uninstalling “{{name}}” releases every component it installed (skills/connectors/presets); the snapshot is kept, so you can install it again later. Uninstall?",
+    storeUninstallDone: "Uninstalled “{{name}}”",
+    storeUninstallFailed: "Uninstall did not fully succeed: some components could not be released — see the error at the top of the page.",
     storeUpdate: "Update available",
     storeUpdateNote:
       "This version does not support in-place updates: uninstall and install again to get the version the marketplace offers.",

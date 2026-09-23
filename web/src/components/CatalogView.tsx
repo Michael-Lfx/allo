@@ -551,6 +551,46 @@ export function CatalogView() {
     }
   }, [client, pushToast, reload]);
 
+  /** The store item whose uninstall is awaiting confirmation. */
+  const [uninstallFor, setUninstallFor] = useState<StoreItem | null>(null);
+  const [storeUninstallBusy, setStoreUninstallBusy] = useState<string | null>(null);
+
+  /**
+   * Uninstall one store entry: release every installed component of its
+   * snapshot, then re-read both projections the page renders (the install
+   * badge on the store list AND the installed surfaces). Mirrors
+   * `runStoreInstall`'s refresh contract — the same two stale-list bugs, one
+   * fix shape.
+   */
+  const runStoreUninstall = useCallback(async (item: StoreItem) => {
+    if (!client) return;
+    setStoreUninstallBusy(item.id);
+    setError(null);
+    try {
+      const outcome = await client.store.uninstall(item);
+      if (!activeRef.current) return;
+      if (!outcome.ok) {
+        setError(t("catalog.storeUninstallFailed"));
+      }
+      reload();
+      const list = await client.listStore();
+      if (!activeRef.current) return;
+      setStoreItems(list.items);
+      setStoreDrawerItem((current) => {
+        if (!current) return current;
+        const refreshed = list.items.find((candidate) => candidate.id === current.id);
+        return refreshed ?? { ...current, installed: false, snapshot_id: null, installed_version: null };
+      });
+      pushToast("success", "catalog.storeUninstallDone", { name: item.name });
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setStoreUninstallBusy(null);
+      setUninstallFor(null);
+    }
+  }, [client, pushToast, reload, t]);
+
   const closeDrawer = useCallback(() => {
     setDrawer(null);
     setStoreDrawerItem(null);
@@ -1153,6 +1193,8 @@ export function CatalogView() {
                 busy={storeInstallBusy === storeDrawerItem.id}
                 result={storeInstallResult}
                 onInstall={() => void runStoreInstall(storeDrawerItem)}
+                uninstallBusy={storeUninstallBusy === storeDrawerItem.id}
+                onUninstall={() => setUninstallFor(storeDrawerItem)}
                 rootUrl={client?.serverRootUrl}
               />
             )}
@@ -1175,6 +1217,36 @@ export function CatalogView() {
             )}
           </aside>
         </div>
+      )}
+
+      {/* Uninstall confirmation. Same shape as the marketplace-remove dialog:
+          name the fact, list nothing clever, one destructive button. The
+          snapshot stays (only the install record and runtime artifacts go), so
+          reinstalling is one click away. */}
+      {uninstallFor && (
+        <DialogShell
+          onClose={() => setUninstallFor(null)}
+          labelledBy="store-uninstall-title"
+          titleId="store-uninstall-title"
+          title={t("catalog.storeUninstallTitle")}
+        >
+          <p className="dialog-intro">
+            {t("catalog.storeUninstallBody", { name: pickLocalized(uninstallFor.display_name, lang) || uninstallFor.name })}
+          </p>
+          <div className="dialog-actions">
+            <button className="quiet-button" type="button" onClick={() => setUninstallFor(null)}>
+              {t("common.cancel")}
+            </button>
+            <button
+              className="danger-button"
+              type="button"
+              disabled={storeUninstallBusy !== null}
+              onClick={() => void runStoreUninstall(uninstallFor)}
+            >
+              {storeUninstallBusy ? t("catalog.storeUninstalling") : t("catalog.storeUninstall")}
+            </button>
+          </div>
+        </DialogShell>
       )}
     </section>
   );
@@ -1225,12 +1297,16 @@ function StoreDrawer({
   busy,
   result,
   onInstall,
+  onUninstall,
+  uninstallBusy,
   rootUrl,
 }: {
   item: StoreItem;
   busy: boolean;
   result: StoreInstallResult | null;
   onInstall: () => void;
+  onUninstall: () => void;
+  uninstallBusy: boolean;
   rootUrl?: string;
 }) {
   const { t } = useTranslation();
@@ -1281,7 +1357,21 @@ function StoreDrawer({
             {t("catalog.storeBlocked")}
           </span>
         ) : item.installed ? (
-          <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>
+          <>
+            <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>
+            {/* The one uninstall entry point on this surface: `store/install-entry`
+                is idempotent, so releasing the runtime artifacts is the only way
+                back. SDK-side this is `StoreClient.uninstall` — the same wire
+                (`install/uninstall`), all of the snapshot's installed components. */}
+            <button
+              className="quiet-button is-destructive"
+              type="button"
+              disabled={uninstallBusy}
+              onClick={onUninstall}
+            >
+              {uninstallBusy ? t("catalog.storeUninstalling") : t("catalog.storeUninstall")}
+            </button>
+          </>
         ) : (
           <button className="primary-button" type="button" disabled={busy} onClick={onInstall}>
             {busy ? t("catalog.storeInstalling") : t("catalog.storeInstall")}
