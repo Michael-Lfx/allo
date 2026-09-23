@@ -515,7 +515,14 @@ export function CatalogView() {
       const result = await client.installStoreEntry(item.marketplace_id, item.entry_name);
       if (!activeRef.current) return;
       setStoreInstallResult(result);
-      // Refresh the aggregated store so the installed state flips.
+      // Refresh the aggregated store so the installed state flips. `reload()`
+      // also re-lists the installed surfaces (`agent/list` / `skill/list` /
+      // `connector/list`), which is where 「我的专家」 reads from — refreshing
+      // only `store/list` here left the installed lists stale, so an entry the
+      // card just marked installed stayed invisible on the installed tab until
+      // a manual page reload. (The dedicated store-refresh line below is kept:
+      // it is what keeps the open drawer's item in sync without a full spin.)
+      reload();
       const list = await client.listStore();
       if (!activeRef.current) return;
       setStoreItems(list.items);
@@ -539,7 +546,7 @@ export function CatalogView() {
     } finally {
       if (activeRef.current) setStoreInstallBusy(null);
     }
-  }, [client, pushToast]);
+  }, [client, pushToast, reload]);
 
   const closeDrawer = useCallback(() => {
     setDrawer(null);
