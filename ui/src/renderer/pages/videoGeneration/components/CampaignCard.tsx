@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Tag } from '@arco-design/web-react';
 import { Trophy } from '@icon-park/react';
 import type { CampaignPhase, CampaignSummary } from '../types';
-import { formatCampaignRange } from '../campaign';
+import { formatCampaignRange, pickCampaignLocalizedText } from '../campaign';
 import styles from '../index.module.css';
 import campaignStyles from '../campaign.module.css';
 
@@ -28,6 +28,8 @@ interface CampaignCardProps {
 
 const CampaignCard: React.FC<CampaignCardProps> = ({ campaign, onOpen }) => {
   const { t, i18n } = useTranslation();
+  const title = pickCampaignLocalizedText(campaign.title, campaign.titleEn, i18n.language);
+  const summary = pickCampaignLocalizedText(campaign.summary, campaign.summaryEn, i18n.language);
   const range = useMemo(
     () => formatCampaignRange(campaign.startAt, campaign.endAt, i18n.language),
     [campaign.endAt, campaign.startAt, i18n.language]
@@ -84,10 +86,10 @@ const CampaignCard: React.FC<CampaignCardProps> = ({ campaign, onOpen }) => {
       </div>
       <div className='flex flex-col gap-6px p-14px'>
         <div className='truncate text-15px font-600 leading-[1.3] text-[var(--color-text-1)]'>
-          {campaign.title}
+          {title}
         </div>
-        {campaign.summary ? (
-          <div className={campaignStyles.cardSummary}>{campaign.summary}</div>
+        {summary ? (
+          <div className={campaignStyles.cardSummary}>{summary}</div>
         ) : null}
         <div className='flex items-center justify-between gap-8px'>
           <div className='truncate text-11px text-[var(--color-text-4)]'>{range}</div>

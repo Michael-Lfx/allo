@@ -24,6 +24,7 @@ import {
   formatCountdown,
   tvShowSortParam,
   uniqueVideosById,
+  pickCampaignLocalizedText,
   type TvShowListSort,
 } from './campaign';
 import type { CampaignDetail } from './types';
@@ -309,6 +310,9 @@ const CampaignDetailPage: React.FC = () => {
             ? '已结束'
             : detail.phase,
   });
+  const title = pickCampaignLocalizedText(detail.title, detail.titleEn, i18n.language);
+  const summary = pickCampaignLocalizedText(detail.summary, detail.summaryEn, i18n.language);
+  const content = pickCampaignLocalizedText(detail.content, detail.contentEn, i18n.language);
 
   return (
     <div
@@ -341,10 +345,10 @@ const CampaignDetailPage: React.FC = () => {
             ) : null}
           </div>
           <h1 className='m-0 text-22px font-700 leading-[1.25] text-[var(--color-text-1)] tracking-[-0.03em]'>
-            {detail.title}
+            {title}
           </h1>
-          {detail.summary ? (
-            <p className='m-0 text-13px leading-[1.65] text-[var(--color-text-3)]'>{detail.summary}</p>
+          {summary ? (
+            <p className='m-0 text-13px leading-[1.65] text-[var(--color-text-3)]'>{summary}</p>
           ) : null}
           <div className='text-12px text-[var(--color-text-4)]'>
             {range}
@@ -388,7 +392,7 @@ const CampaignDetailPage: React.FC = () => {
           ) : null}
         </div>
 
-        {detail.content ? <CampaignHtmlBody html={detail.content} /> : null}
+        {content ? <CampaignHtmlBody html={content} /> : null}
 
         {winners.length > 0 ? (
           <section ref={winnersRef} className='flex flex-col gap-12px'>

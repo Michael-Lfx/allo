@@ -21,6 +21,8 @@
 
 **正式活动**：`showInList=true`，可配轮播，可开放投稿。用户投稿后进入 TV Show 待审；运营通过后出现在该活动作品流，并可评奖。
 
+**封面/轮播媒体中英共用。** 标题、列表摘要、活动正文一次返回中文（无后缀）和英文（`titleEn` / `summaryEn` / `contentEn`）。客户端按界面语言选字段，英文为空时回退中文。服务端不按 `Accept-Language` 改写这些字段。部署需执行 `sql/0075/schema.sql`。
+
 ```
 运营创建活动（草稿）
         │
@@ -71,6 +73,7 @@
     {
       "id": 1001,
       "title": "夏日短剧挑战",
+      "titleEn": "Summer Short Drama Challenge",
       "mediaType": "video",
       "mediaUrl": "https://cdn.example.com/.../banner.mp4",
       "posterUrl": "https://cdn.example.com/.../poster.jpg",
@@ -123,7 +126,9 @@
     {
       "id": 1001,
       "title": "夏日短剧挑战",
+      "titleEn": "Summer Short Drama Challenge",
       "summary": "用 30 秒讲一个夏天的故事",
+      "summaryEn": "Tell a summer story in 30 seconds",
       "coverUrl": "https://cdn.example.com/.../cover.png",
       "showInCarousel": true,
       "showInList": true,
@@ -154,7 +159,8 @@
 
 | 字段 | 说明 |
 |------|------|
-| `content` | 富媒体正文，**HTML**。用 WebView / 富文本组件渲染，图片与 `<video>` 需自适应宽度 |
+| `content` | 中文富媒体正文，**HTML**。用 WebView / 富文本组件渲染，图片与 `<video>` 需自适应宽度 |
+| `contentEn` | 英文正文 HTML；空则回退 `content` |
 | `canSubmit` | 当前是否允许该用户投稿（综合上架、列表展示、投稿开关、时间窗） |
 
 `upcoming`：展示倒计时，投稿按钮禁用。  
@@ -263,7 +269,7 @@ POST /api/v1/vimax/tv-show/publish
 
 ### 6.4 活动详情
 
-- `content` 用 WebView 渲染 HTML；注入样式让 `img, video { max-width: 100%; }`。
+- `content` / `contentEn` 用 WebView 渲染 HTML；注入样式让 `img, video { max-width: 100%; }`。界面非中文时优先 `contentEn`，否则用 `content`。
 - 主按钮文案：
   - `canSubmit`：立即参与
   - `phase=upcoming`：活动未开始（禁用）
@@ -311,5 +317,5 @@ POST /api/v1/vimax/tv-show/publish
 
 ---
 
-文档版本：2026-08-29  
-状态：服务端与运营平台已实现；客户端按本文档对接。
+文档版本：2026-09-23  
+状态：服务端与运营平台已实现中英字段；客户端按当前语言选择展示。

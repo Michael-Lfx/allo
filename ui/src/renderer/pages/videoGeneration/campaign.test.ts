@@ -15,6 +15,7 @@ import {
   uniqueVideosById,
   writeTvShowScope,
   writeTvShowTab,
+  pickCampaignLocalizedText,
 } from './campaign';
 import type { TvShowVideo } from './types';
 
@@ -130,5 +131,20 @@ describe('campaign html sanitise', () => {
     expect(out.includes('<script')).toBe(false);
     expect(out.toLowerCase().includes('onclick')).toBe(false);
     expect(out.includes('<img src="a.png">')).toBe(true);
+  });
+});
+
+describe('campaign localized copy', () => {
+  test('Chinese UI uses zh and falls back to en', () => {
+    expect(pickCampaignLocalizedText('夏日挑战', 'Summer Challenge', 'zh-CN')).toBe('夏日挑战');
+    expect(pickCampaignLocalizedText('  ', 'Summer Challenge', 'zh')).toBe('Summer Challenge');
+  });
+
+  test('non-Chinese UI prefers en and falls back to zh', () => {
+    expect(pickCampaignLocalizedText('夏日挑战', 'Summer Challenge', 'en-US')).toBe(
+      'Summer Challenge'
+    );
+    expect(pickCampaignLocalizedText('夏日挑战', '  ', 'en')).toBe('夏日挑战');
+    expect(pickCampaignLocalizedText('夏日挑战', null, 'ja-JP')).toBe('夏日挑战');
   });
 });
