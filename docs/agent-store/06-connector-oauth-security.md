@@ -1044,6 +1044,7 @@ MCP_OAUTH_REDIRECT_URI=http://127.0.0.1:8989/oauth/callback
 - token 过期前按现有安全窗口刷新。
 - refresh token 无效、client 被撤销或 secret 到期时，清除失效 token 并返回 `reauthorization_required`；保留 registration 是否可复用由服务端错误和期限决定。
 - MCP transport 收到 401 时，调用后端 refresher、更新 Bearer header、重试一次；第二次 401 或 refresh 失败即结束请求。
+- **`slow_down` 是限流信号，不是普通失败**：token endpoint 回 `slow_down`（RFC 8628 的「问得太频繁」，网关常用它做按次限流）时，host 记一段冷却（60s 起、每次连续节流翻倍、上限 15 分钟；一次成功登录清空），冷却期内的 `connector/auth/start` **在任何请求之前**就被拒，错误里给出还要等多久。重试必须是「等一下再试」，不能是「立刻再试」——否则每次重试都在打同一个已经热掉的计数器（`connector/auth/status` 的 `error` 会同时带出这条原因，UI 因此能显示等待时间）。
 
 ### 8. API 与状态机
 
