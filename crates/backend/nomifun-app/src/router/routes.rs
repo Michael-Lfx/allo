@@ -1090,7 +1090,18 @@ pub fn create_router_with_all_state(
                     states.mcp.connection_test_service.clone(),
                     states.mcp.oauth_service.clone(),
                 )
-                .with_assets(app_server_entry_assets.clone()),
+                .with_assets(app_server_entry_assets.clone())
+                // The declaration an imported connector shipped lives in its
+                // snapshot (`34` §5.2); this is what lets `connector/get` describe
+                // the form and the mode instead of guessing `oauth` from the
+                // transport.
+                .with_credentials(
+                    crate::app_server_credentials::AppServerConnectorCredentials::new(Arc::new(
+                        nomifun_db::SqlitePluginSnapshotRepository::new(
+                            services.database.pool().clone(),
+                        ),
+                    )),
+                ),
             )),
             connector_auth: Some(Arc::new(
                 crate::app_server_catalog::AppServerConnectorAuth::new(
