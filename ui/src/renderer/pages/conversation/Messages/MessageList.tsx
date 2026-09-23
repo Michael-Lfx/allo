@@ -1682,34 +1682,43 @@ const MessageList: React.FC<{
 
   useLayoutEffect(() => {
     if (!conversationContext?.isProcessing || !scrollerElRef.current) {
-      setDynamicSpacerHeight(null);
+      setDynamicSpacerHeight((prev) => (prev !== null ? null : prev));
       return;
     }
     const scroller = scrollerElRef.current;
-    const viewportHeight = scroller.clientHeight;
-    if (viewportHeight <= 0) return;
+    const updateSpacer = () => {
+      const viewportHeight = scroller.clientHeight;
+      if (viewportHeight <= 0) return;
 
-    const lastUserIndex = displayList.findLastIndex(
-      (item) => 'position' in item && item.position === 'right'
-    );
-    if (lastUserIndex < 0) {
-      setDynamicSpacerHeight(null);
-      return;
-    }
+      const lastUserIndex = displayList.findLastIndex(
+        (item) => 'position' in item && item.position === 'right'
+      );
+      if (lastUserIndex < 0) {
+        setDynamicSpacerHeight((prev) => (prev !== null ? null : prev));
+        return;
+      }
 
-    const lastUserAnchorId = getProcessedItemAnchorId(displayList[lastUserIndex]);
-    const lastUserEl = document.getElementById(`message-${lastUserAnchorId}`);
-    const spacerEl = scroller.querySelector<HTMLElement>('.message-list-end-spacer');
+      const lastUserAnchorId = getProcessedItemAnchorId(displayList[lastUserIndex]);
+      const lastUserEl = document.getElementById(`message-${lastUserAnchorId}`);
+      const spacerEl = scroller.querySelector<HTMLElement>('.message-list-end-spacer');
 
-    if (lastUserEl && spacerEl) {
-      const userTop = lastUserEl.getBoundingClientRect().top;
-      const spacerTop = spacerEl.getBoundingClientRect().top;
-      const currentTurnHeight = Math.max(0, spacerTop - userTop);
-      const neededSpacer = Math.max(24, Math.ceil(viewportHeight - currentTurnHeight));
-      setDynamicSpacerHeight(neededSpacer);
-    } else {
-      setDynamicSpacerHeight(Math.max(24, viewportHeight - 120));
-    }
+      if (lastUserEl && spacerEl) {
+        const userTop = lastUserEl.getBoundingClientRect().top;
+        const spacerTop = spacerEl.getBoundingClientRect().top;
+        const currentTurnHeight = Math.max(0, spacerTop - userTop);
+        const neededSpacer = Math.max(24, Math.ceil(viewportHeight - currentTurnHeight));
+        setDynamicSpacerHeight((prev) => (prev !== neededSpacer ? neededSpacer : prev));
+      } else {
+        const fallback = Math.max(24, viewportHeight - 120);
+        setDynamicSpacerHeight((prev) => (prev !== fallback ? fallback : prev));
+      }
+    };
+
+    updateSpacer();
+    window.addEventListener('resize', updateSpacer, { passive: true });
+    return () => {
+      window.removeEventListener('resize', updateSpacer);
+    };
   }, [conversationContext?.isProcessing, displayList, list]);
 
   const listEndSpacer = (
