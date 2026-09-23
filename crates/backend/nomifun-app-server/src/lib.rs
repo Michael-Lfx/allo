@@ -8534,6 +8534,7 @@ mod tests {
                 nomifun_api_types::AppServerConnectorStatus::Installed
             },
             avatar_url: None,
+            credential: None,
         };
         let mut state = AppServerRouterState::default();
         state.connectors = Some(Arc::new(crate::catalog::FakeConnectorCatalog {
@@ -11102,6 +11103,7 @@ model = "mimo-v2.5-free"
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
+            credential: None,
         }
     }
 

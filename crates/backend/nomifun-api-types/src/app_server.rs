@@ -185,6 +185,80 @@ pub struct AppServerConnectorTool {
     pub input_schema: Option<serde_json::Value>,
 }
 
+/// One localized string, both languages already resolved by the host.
+///
+/// The marketplace ships `title` / `title_en` (and friends) with holes in every
+/// combination; the host applies the fallback once (`zh → en → key`,
+/// `en → zh → key`) so the WebUI and the SDK cannot disagree about it (34 §5.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerLocalizedString {
+    pub zh: String,
+    pub en: String,
+}
+
+/// A connector's request to have the user fill something in (`34` §6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppServerCredentialMode {
+    /// Nothing to fill.
+    None,
+    /// The OAuth flow (`connector/auth/*`).
+    Oauth,
+    /// A key / token the user supplies.
+    Token,
+}
+
+/// What the caller has to do about a connector's credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppServerCredentialStatus {
+    NotRequired,
+    /// At least one required field has no value.
+    RequiresInput,
+    Configured,
+    /// Configured, and the server rejected it (401/403 on the last probe).
+    Error,
+}
+
+/// One field of a connector's credential form.
+///
+/// **Never carries a secret**: `value` is present only for a `plain` field, whose
+/// value belongs to the connector (a `HOST`, a `PORT`) rather than to the vault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerCredentialField {
+    pub key: String,
+    /// `secret` (the credential store) or `plain` (the connector's own values).
+    pub kind: String,
+    pub required: bool,
+    pub label: AppServerLocalizedString,
+    pub placeholder: AppServerLocalizedString,
+    pub description: AppServerLocalizedString,
+    /// Only for `plain`: the value in effect (declared default, or what the user
+    /// set). Never a secret's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    pub doc_url: AppServerLocalizedString,
+    pub doc_label: AppServerLocalizedString,
+}
+
+/// Everything a client needs to render one connector's credential form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerConnectorCredential {
+    pub connector_id: String,
+    pub mode: AppServerCredentialMode,
+    pub status: AppServerCredentialStatus,
+    /// **Key names only** — what is still missing, never a value.
+    #[serde(default)]
+    pub missing: Vec<String>,
+    #[serde(default)]
+    pub fields: Vec<AppServerCredentialField>,
+    /// Form-level text from the marketplace declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<AppServerLocalizedString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<AppServerLocalizedString>,
+}
+
 /// Public Connector summary (`01-domain-model.md` §7).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerConnectorSummary {
@@ -205,6 +279,12 @@ pub struct AppServerConnectorSummary {
     /// `None` for builtin hosts or markets that ship no icon for this entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    /// The credential state, when the host can describe one (`34` §6.1).
+    ///
+    /// Optional so an older provider — and every projection that has no
+    /// declaration to read — stays valid on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<AppServerConnectorCredential>,
 }
 
 /// Public Connector detail: summary fields plus tools and auth state.
