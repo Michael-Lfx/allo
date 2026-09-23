@@ -57,6 +57,18 @@ const EXPIRY_MARGIN_MS: i64 = 5 * 60 * 1000;
 /// it is logged.
 const DEFAULT_CALLBACK_PORT: u16 = 41873;
 
+/// First cool-down after the token endpoint answers `slow_down`, and the
+/// ceiling its doubling reaches.
+///
+/// RFC 8628 defines `slow_down` as "you are asking too often — increase the
+/// interval"; a gateway throttle is a time window, so consecutive throttles
+/// double the wait (60s → 120s → … → 15min) and a login that gets through
+/// clears it. The point is that a retry must not be the *cheap* reaction: an
+/// immediate second attempt spends another register + authorize + token round
+/// against a counter that is already hot.
+const SLOW_DOWN_COOLDOWN_MS: i64 = 60_000;
+const SLOW_DOWN_MAX_COOLDOWN_MS: i64 = 15 * 60_000;
+
 // ---------------------------------------------------------------------------
 // Discovery response
 // ---------------------------------------------------------------------------
@@ -150,6 +162,28 @@ struct PendingLogin {
     registration_id: Option<i64>,
 }
 
+/// Cool-down recorded when the token endpoint answered `slow_down`.
+struct Cooldown {
+    /// Earliest moment (ms since epoch) at which a new login may be started.
+    until_ms: i64,
+    /// Consecutive throttles for this server; sets the wait length.
+    streak: u32,
+}
+
+/// The cool-down for the `streak`-th consecutive `slow_down`.
+///
+/// Kept as a free function so the backoff shape is testable without a server
+/// that has to throttle on a schedule.
+fn slow_down_cooldown_ms(streak: u32) -> i64 {
+    let doublings = streak.saturating_sub(1).min(8);
+    (SLOW_DOWN_COOLDOWN_MS << doublings).min(SLOW_DOWN_MAX_COOLDOWN_MS)
+}
+
+/// Milliseconds → whole seconds to quote in a user-facing message.
+fn seconds_from_ms(ms: i64) -> i64 {
+    (ms.max(0) + 999) / 1000
+}
+
 // ---------------------------------------------------------------------------
 // McpOAuthService
 // ---------------------------------------------------------------------------
@@ -194,6 +228,10 @@ pub struct McpOAuthService {
     /// reach a client: `check_oauth_status` can only ever say
     /// "not authenticated". Cleared when a flow succeeds or the user logs out.
     last_login_error: Arc<Mutex<HashMap<String, String>>>,
+    /// `slow_down` cool-down per server URL ([`Cooldown`]): a throttled
+    /// authorization server must not be asked again immediately, and saying so
+    /// is the server's own instruction, not a client-side heuristic.
+    cooldowns: Arc<Mutex<HashMap<String, Cooldown>>>,
 }
 
 /// Browser-open hook signature (`Fn(&str) + Send + Sync`).
@@ -298,6 +336,7 @@ impl McpOAuthService {
             login_gate: Arc::new(tokio::sync::Mutex::new(())),
             browser_hook: hook,
             last_login_error: Arc::new(Mutex::new(HashMap::new())),
+            cooldowns: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -363,6 +402,45 @@ impl McpOAuthService {
         self.last_login_error.lock().await.remove(server_url);
     }
 
+    /// Milliseconds left in this server's `slow_down` cool-down, if any.
+    async fn slow_down_remaining(&self, server_url: &str) -> Option<i64> {
+        let cooldowns = self.cooldowns.lock().await;
+        let cooldown = cooldowns.get(server_url)?;
+        let remaining = cooldown.until_ms - now_ms();
+        (remaining > 0).then_some(remaining)
+    }
+
+    /// Arm (or extend) the cool-down after a `slow_down`; returns its length.
+    ///
+    /// Consecutive throttles double the wait ([`slow_down_cooldown_ms`]): a
+    /// server that is still refusing after 60s gets 120s, not another 60s round
+    /// trip. "Consecutive" means within the cap window of the previous one —
+    /// knocking the next day starts over at 60s, and a login that gets through
+    /// clears it outright.
+    async fn note_slow_down(&self, server_url: &str) -> i64 {
+        let now = now_ms();
+        let mut cooldowns = self.cooldowns.lock().await;
+        let streak = match cooldowns.get(server_url) {
+            Some(cooldown) if now - cooldown.until_ms < SLOW_DOWN_MAX_COOLDOWN_MS => cooldown.streak + 1,
+            _ => 1,
+        };
+        let cooldown_ms = slow_down_cooldown_ms(streak);
+        cooldowns.insert(
+            server_url.to_owned(),
+            Cooldown {
+                until_ms: now + cooldown_ms,
+                streak,
+            },
+        );
+        warn!(server_url, cooldown_ms, streak, "authorization server asked for a slower retry");
+        cooldown_ms
+    }
+
+    /// Drop the cool-down after a login that got through.
+    async fn clear_slow_down(&self, server_url: &str) {
+        self.cooldowns.lock().await.remove(server_url);
+    }
+
     /// Start the OAuth PKCE login flow for the given MCP server URL and drive
     /// it to completion.
     ///
@@ -394,6 +472,20 @@ impl McpOAuthService {
     /// was never opened is what leaves a client waiting on nothing. Await
     /// [`OAuthLoginStarted::complete`] for steps 5-6.
     pub async fn begin_login(&self, server_url: &str) -> Result<OAuthLoginStarted, McpError> {
+        // A throttled authorization server stays throttled for a window, and
+        // starting another flow spends a registration + authorize + token round
+        // against a counter that is already hot. Refuse before any request —
+        // and record the reason, so `auth_status` shows *when* to retry instead
+        // of the client simply trying again.
+        if let Some(remaining_ms) = self.slow_down_remaining(server_url).await {
+            let error = McpError::OAuth(format!(
+                "authorization server is throttling OAuth requests; retry in {}s",
+                seconds_from_ms(remaining_ms)
+            ));
+            self.remember_login_error(server_url, &error).await;
+            return Err(error);
+        }
+
         // Serialize PKCE flows: the shared `pending` slot holds one login at a
         // time (concurrent `auth_start` background tasks would otherwise
         // overwrite each other → CSRF mismatch on the first callback). The
@@ -1305,15 +1397,38 @@ impl McpOAuthService {
 
         let http_client = Self::build_no_redirect_client()?;
 
-        let token_result = client
+        let token_result = match client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
             .request_async(&http_client)
             .await
-            .map_err(|e| McpError::OAuth(format!("Token exchange failed: {e}")))?;
+        {
+            Ok(result) => result,
+            Err(error) => {
+                // `slow_down` is RFC 8628's "you are asking too often" — the
+                // authorization server refusing to answer *now*. Arm the
+                // cool-down so the next attempt is not an immediate round trip
+                // against a counter that is already hot, and tell the client
+                // when it may try again (the alternative is a retry loop the
+                // UI invites and the server keeps rejecting).
+                if let oauth2::RequestTokenError::ServerResponse(response) = &error
+                    && response.error().as_ref() == "slow_down"
+                {
+                    let cooldown_ms = self.note_slow_down(server_url).await;
+                    return Err(McpError::OAuth(format!(
+                        "Token exchange failed: {error} — the authorization server is \
+                         throttling OAuth requests; retry in {}s",
+                        seconds_from_ms(cooldown_ms)
+                    )));
+                }
+                return Err(McpError::OAuth(format!("Token exchange failed: {error}")));
+            }
+        };
 
         self.persist_token(server_url, &token_result, registration_id)
             .await?;
+        // A token that came through means the throttle window is over.
+        self.clear_slow_down(server_url).await;
         info!(server_url, "OAuth tokens stored");
         Ok(())
     }
@@ -2065,6 +2180,22 @@ mod tests {
         assert_ne!(ephemeral, busy, "a taken port must not be reported as bound");
         assert_eq!(redirect, format!("http://127.0.0.1:{ephemeral}/callback"));
         assert_eq!(svc.preferred_callback_port().await, ephemeral);
+    }
+
+    // -- `slow_down` cool-down -----------------------------------------------
+
+    /// A retry must never be the cheap reaction: the wait grows with each
+    /// consecutive throttle and stops growing at the cap.
+    #[test]
+    fn slow_down_cooldown_doubles_and_is_capped() {
+        assert_eq!(slow_down_cooldown_ms(0), SLOW_DOWN_COOLDOWN_MS, "first attempt");
+        assert_eq!(slow_down_cooldown_ms(1), SLOW_DOWN_COOLDOWN_MS);
+        assert_eq!(slow_down_cooldown_ms(2), SLOW_DOWN_COOLDOWN_MS * 2);
+        assert_eq!(slow_down_cooldown_ms(4), SLOW_DOWN_COOLDOWN_MS * 8);
+        assert_eq!(slow_down_cooldown_ms(5), SLOW_DOWN_MAX_COOLDOWN_MS, "capped");
+        assert_eq!(slow_down_cooldown_ms(99), SLOW_DOWN_MAX_COOLDOWN_MS);
+        assert_eq!(seconds_from_ms(SLOW_DOWN_COOLDOWN_MS), 60);
+        assert_eq!(seconds_from_ms(1), 1, "a sub-second wait still reads as a second");
     }
 
     // -- RFC 9728 discovery & pre-registered client --------------------------

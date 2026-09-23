@@ -18,7 +18,9 @@
 //!   9. login error surfaces never carry codes/verifiers/authorization URLs;
 //!  10. a second login reuses the persisted registration (registration count
 //!      stays 1) — the identity key only holds still while the redirect URI
-//!      does.
+//!      does;
+//!  11. a throttled exchange (`slow_down`) blocks the next attempt locally,
+//!      without sending discovery/registration/authorize/token again.
 //!
 //! Acceptance #8 (401 → refresh once → retry once) is covered end-to-end by
 //! `nomifun-ai-agent/tests/mcp_oauth_e2e.rs` over the runtime transport.
@@ -98,6 +100,9 @@ struct MockConfig {
     registration_endpoint: bool,
     /// `/oauth/register` rejects with a redirect_uri error.
     reject_redirect_uri: bool,
+    /// `/oauth/token` answers RFC 8628's `slow_down` instead of a token — the
+    /// shape a throttling gateway (小鹅通's MCP endpoint, for one) returns.
+    token_slow_down: bool,
 }
 
 impl Default for MockConfig {
@@ -107,6 +112,7 @@ impl Default for MockConfig {
             get_challenge: true,
             registration_endpoint: true,
             reject_redirect_uri: false,
+            token_slow_down: false,
         }
     }
 }
@@ -303,6 +309,7 @@ async fn serve_platform(config: MockConfig, log: SharedLog) -> String {
             "/oauth/token",
             post({
                 let log = log.clone();
+                let token_slow_down = config.token_slow_down;
                 move |req: Request<axum::body::Body>| {
                     let log = log.clone();
                     async move {
@@ -319,6 +326,18 @@ async fn serve_platform(config: MockConfig, log: SharedLog) -> String {
                         guard.token_bodies.push(body.clone());
                         guard.token_auth_headers.push(auth);
                         drop(guard);
+                        if token_slow_down {
+                            // A real throttler counts the request it refuses,
+                            // so the body above is recorded first.
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({
+                                    "error": "slow_down",
+                                    "error_description": "too many OAuth requests"
+                                })),
+                            )
+                                .into_response();
+                        }
                         let refreshed = body.contains("refresh_token");
                         Json(serde_json::json!({
                             "access_token": if refreshed { "refreshed-token" } else { "access-token-1" },
@@ -326,6 +345,7 @@ async fn serve_platform(config: MockConfig, log: SharedLog) -> String {
                             "expires_in": 3600,
                             "refresh_token": "refresh-token-1"
                         }))
+                        .into_response()
                     }
                 }
             }),
@@ -889,6 +909,71 @@ async fn a_second_login_reuses_the_persisted_registration() {
             .expect("list registrations");
         assert_eq!(rows.len(), 1, "one identity, one row");
         assert_eq!(rows[0].redirect_uri, redirect);
+    }
+    .await;
+
+    unsafe {
+        std::env::remove_var("MCP_OAUTH_REDIRECT_URI");
+    }
+    result
+}
+
+/// A throttled exchange (`slow_down`, RFC 8628's "you are asking too often")
+/// must make the *next* attempt cheap to refuse and expensive to perform: the
+/// follow-up `auth_start` is answered from the cool-down, without spending a
+/// discovery probe, a registration, a browser window or another token request
+/// on a counter that is already hot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_throttled_login_blocks_the_next_attempt_before_any_request() {
+    let _env_guard = env_lock().lock().await;
+    let log: SharedLog = Arc::new(Mutex::new(MockLog::default()));
+    let mcp_url = serve_platform(
+        MockConfig {
+            token_slow_down: true,
+            ..Default::default()
+        },
+        log.clone(),
+    )
+    .await;
+
+    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    unsafe {
+        std::env::set_var("MCP_OAUTH_REDIRECT_URI", format!("http://127.0.0.1:{port}/callback"));
+    }
+
+    let result = async {
+        let (token_repo, registration_repo) = make_repos().await;
+        let capture: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let oauth = service_with_hook(token_repo, registration_repo, capture.clone());
+
+        let first = run_login(&oauth, &capture, &mcp_url).await;
+        assert!(!first.success, "a slow_down must fail the login");
+        let throttled = first.error.clone().unwrap_or_default();
+        assert!(throttled.contains("slow_down"), "reason must reach the client: {throttled}");
+        assert!(throttled.contains("retry in"), "the wait must be stated: {throttled}");
+
+        let (registers, authorizes, tokens) = {
+            let guard = log.lock().unwrap();
+            (
+                guard.register_bodies.len(),
+                guard.authorize_hits,
+                guard.token_bodies.len(),
+            )
+        };
+
+        // The immediate retry a UI would invite: refused locally.
+        let second = run_failing_login(&oauth, &mcp_url).await;
+        assert!(!second.success);
+        let blocked = second.error.clone().unwrap_or_default();
+        assert!(blocked.contains("throttling"), "the cool-down must say why: {blocked}");
+        assert!(blocked.contains("retry in"), "…and for how long: {blocked}");
+
+        let guard = log.lock().unwrap();
+        assert_eq!(guard.register_bodies.len(), registers, "no new registration");
+        assert_eq!(guard.authorize_hits, authorizes, "the browser must not be opened again");
+        assert_eq!(guard.token_bodies.len(), tokens, "no new token request");
     }
     .await;
 
