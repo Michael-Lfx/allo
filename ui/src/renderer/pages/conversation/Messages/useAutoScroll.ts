@@ -1,3 +1,8 @@
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 /**
  * useAutoScroll - Auto-scroll hook for a plain scroll container
@@ -13,12 +18,17 @@
  *   Tool chips grow the outer disclosure; followOutput would notice the
  *   taller list while the spacer keeps it off the true bottom, then jump the
  *   last two lines back into place.
+ * - Session reading position persistence:
+ *   Record per-session scroll positions in `sessionScrollRegistry`.
+ *   When returning to a session where the user was previously reading history,
+ *   restore the exact scroll offset instead of blindly scrolling to bottom.
  * - Sending a user message always jumps to the tail, even if follow was paused.
  * - Use DOM-native scrollIntoView for explicit message jumps.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { VirtuosoHandle } from 'react-virtuoso';
 import type { TMessage } from '@/common/chat/chatLib';
+import { sessionScrollRegistry } from './sessionScrollRegistry';
 
 const PROGRAMMATIC_SCROLL_GUARD_MS = 150;
 const USER_LAYOUT_CHANGE_GUARD_MS = 600;
@@ -31,6 +41,8 @@ export const FOLLOW_BOTTOM_THRESHOLD_PX = 12;
 export const SCROLL_BUTTON_THRESHOLD_PX = 12;
 
 interface UseAutoScrollOptions {
+  /** Optional conversation/session ID to track and restore per-session reading positions. */
+  conversationId?: string;
   messages: TMessage[];
   itemCount: number;
   /** When set, jump-to-bottom uses Virtuoso so off-screen tail rows still mount. */
@@ -83,6 +95,7 @@ const findLastUserMessageId = (messages: TMessage[]): string | undefined => {
 };
 
 export function useAutoScroll({
+  conversationId,
   messages,
   itemCount,
   virtuosoRef,
@@ -104,6 +117,7 @@ export function useAutoScroll({
   const userInputActiveRef = useRef(false);
   const resizeAutoFollowBlockedUntilRef = useRef(0);
   const previousLastUserIdRef = useRef<string | undefined>(findLastUserMessageId(messages));
+  const previousConversationIdRef = useRef<string | undefined>(conversationId);
   const virtuosoRefLatest = useRef(virtuosoRef);
   virtuosoRefLatest.current = virtuosoRef;
 
@@ -145,6 +159,12 @@ export function useAutoScroll({
   const pauseAutoFollow = useCallback(() => {
     userIntentPausedRef.current = true;
     userScrolledRef.current = true;
+    if (conversationId && scrollerEl) {
+      sessionScrollRegistry.save(conversationId, {
+        scrollTop: scrollerEl.scrollTop,
+        userScrolled: true,
+      });
+    }
     if (!scrollerEl || getBottomGap(scrollerEl) <= SCROLL_BUTTON_THRESHOLD_PX) {
       return;
     }
@@ -152,7 +172,7 @@ export function useAutoScroll({
     hasNewContentBelowRef.current = true;
     setShowScrollButton(true);
     setHasNewContentBelow(true);
-  }, [scrollerEl]);
+  }, [conversationId, scrollerEl]);
 
   const followContentGrowth = useCallback(() => {
     if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
@@ -188,6 +208,13 @@ export function useAutoScroll({
       setShowScrollButton(false);
       setHasNewContentBelow(false);
 
+      if (conversationId) {
+        sessionScrollRegistry.save(conversationId, {
+          scrollTop: scrollerEl ? getMaxScrollTop(scrollerEl) : 0,
+          userScrolled: false,
+        });
+      }
+
       const lastIndex = itemCount - 1;
       const virtuoso = virtuosoRefLatest.current?.current;
       if (virtuoso && lastIndex >= 0) {
@@ -212,7 +239,7 @@ export function useAutoScroll({
         behavior,
       });
     },
-    [itemCount, markProgrammaticScroll, scrollerEl]
+    [conversationId, itemCount, markProgrammaticScroll, scrollerEl]
   );
 
   const resolveFollowOutput = useCallback((_isAtBottom: boolean): FollowOutputMode => {
@@ -270,8 +297,15 @@ export function useAutoScroll({
 
       lastScrollTopRef.current = currentScrollTop;
       updateBottomState(target);
+
+      if (conversationId) {
+        sessionScrollRegistry.save(conversationId, {
+          scrollTop: currentScrollTop,
+          userScrolled: userScrolledRef.current,
+        });
+      }
     },
-    [updateBottomState]
+    [conversationId, updateBottomState]
   );
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
@@ -334,15 +368,66 @@ export function useAutoScroll({
     };
   }, [contentEl, followContentGrowth, scrollerEl, updateBottomState]);
 
-  useEffect(() => {
-    if (!scrollerEl || initialScrollDoneRef.current || itemCount === 0) return;
+  // Handle session switch, initial scroll, and reading position restoration before paint
+  useLayoutEffect(() => {
+    if (!scrollerEl) return;
+
+    // Detect session switch and save previous session state synchronously
+    if (conversationId !== previousConversationIdRef.current) {
+      const prevId = previousConversationIdRef.current;
+      if (prevId) {
+        sessionScrollRegistry.save(prevId, {
+          scrollTop: scrollerEl.scrollTop,
+          userScrolled: userScrolledRef.current,
+        });
+      }
+      previousConversationIdRef.current = conversationId;
+      initialScrollDoneRef.current = false;
+      previousLastUserIdRef.current = findLastUserMessageId(messages);
+    }
+
+    if (initialScrollDoneRef.current || itemCount === 0) return;
 
     initialScrollDoneRef.current = true;
+    const saved = conversationId ? sessionScrollRegistry.get(conversationId) : undefined;
+
+    if (saved && saved.userScrolled) {
+      userScrolledRef.current = true;
+      userIntentPausedRef.current = true;
+      markProgrammaticScroll();
+      scrollerEl.scrollTop = saved.scrollTop;
+      lastScrollTopRef.current = saved.scrollTop;
+      updateBottomState(scrollerEl);
+      return;
+    }
+
+    // Reset button and state flags when session is at bottom
+    userScrolledRef.current = false;
+    userIntentPausedRef.current = false;
+    userInputActiveRef.current = false;
+    showScrollButtonRef.current = false;
+    hasNewContentBelowRef.current = false;
+    setShowScrollButton(false);
+    setHasNewContentBelow(false);
+
     requestAnimationFrame(() => {
       scrollToBottom('auto');
       lastScrollTopRef.current = scrollerEl.scrollTop;
     });
-  }, [itemCount, scrollerEl, scrollToBottom]);
+  }, [conversationId, itemCount, markProgrammaticScroll, messages, scrollerEl, scrollToBottom, updateBottomState]);
+
+  // Save on unmount
+  useEffect(() => {
+    return () => {
+      const currentId = previousConversationIdRef.current;
+      if (currentId && scrollerEl) {
+        sessionScrollRegistry.save(currentId, {
+          scrollTop: scrollerEl.scrollTop,
+          userScrolled: userScrolledRef.current,
+        });
+      }
+    };
+  }, [scrollerEl]);
 
   useEffect(() => {
     const lastUserId = findLastUserMessageId(messages);
@@ -358,12 +443,19 @@ export function useAutoScroll({
     userIntentPausedRef.current = false;
     userInputActiveRef.current = false;
 
+    if (conversationId) {
+      sessionScrollRegistry.save(conversationId, {
+        scrollTop: scrollerEl ? getMaxScrollTop(scrollerEl) : 0,
+        userScrolled: false,
+      });
+    }
+
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         scrollToBottom('auto');
       });
     });
-  }, [messages, scrollToBottom]);
+  }, [conversationId, messages, scrollerEl, scrollToBottom]);
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;
@@ -372,7 +464,14 @@ export function useAutoScroll({
     hasNewContentBelowRef.current = false;
     setShowScrollButton(false);
     setHasNewContentBelow(false);
-  }, []);
+
+    if (conversationId && scrollerEl) {
+      sessionScrollRegistry.save(conversationId, {
+        scrollTop: scrollerEl.scrollTop,
+        userScrolled: false,
+      });
+    }
+  }, [conversationId, scrollerEl]);
 
   return {
     handleScrollerRef,

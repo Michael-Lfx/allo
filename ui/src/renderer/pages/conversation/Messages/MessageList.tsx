@@ -1431,6 +1431,7 @@ const MessageList: React.FC<{
     pauseAutoFollow,
     resolveFollowOutput,
   } = useAutoScroll({
+    conversationId: conversationContext?.conversation_id,
     messages: list,
     itemCount: displayList.length,
     virtuosoRef,
@@ -1891,6 +1892,7 @@ const MessageList: React.FC<{
         type='button'
         className='message-list-scroll-button'
         data-button-shape='circle'
+        data-has-new={hasNewContentBelow ? 'true' : 'false'}
         data-visible={showScrollButton ? 'true' : 'false'}
         onClick={handleScrollButtonClick}
         title={scrollButtonLabel}
@@ -1898,7 +1900,17 @@ const MessageList: React.FC<{
         aria-hidden={!showScrollButton}
         tabIndex={showScrollButton ? 0 : -1}
       >
-        <Down theme='filled' size='20' fill='currentColor' />
+        <span className='message-list-scroll-button__icon'>
+          <Down theme='filled' size='18' fill='currentColor' />
+        </span>
+        {hasNewContentBelow && (
+          <>
+            <span className='message-list-scroll-button__dot' aria-hidden='true' />
+            <span className='message-list-scroll-button__label'>
+              {t('messages.newContentBelow', { defaultValue: 'View latest content' })}
+            </span>
+          </>
+        )}
       </button>
 
       <SelectionReplyButton messages={list} />

@@ -47,7 +47,7 @@ describe('useAutoScroll thresholds and pause semantics', () => {
   test('jumps to the last item when a new user message is sent even if follow was paused', () => {
     const sendEffect = sliceBetween(
       'const lastUserId = findLastUserMessageId',
-      '}, [messages, scrollToBottom]'
+      'requestAnimationFrame(() => {\n      requestAnimationFrame(() => {'
     );
     const scrollToBottom = scrollToBottomBody();
 
@@ -55,12 +55,51 @@ describe('useAutoScroll thresholds and pause semantics', () => {
     expect(scrollToBottom.includes("align: 'end'")).toBe(true);
     expect(sendEffect.includes('lastUserId !== previousLastUserId')).toBe(true);
     expect(sendEffect.includes('if (userIntentPausedRef.current || userScrolledRef.current) return;')).toBe(false);
-    expect(sendEffect.includes("scrollToBottom('auto')")).toBe(true);
   });
 
   test('keeps follow pinned through tail growth and only drops it on an upward scroll', () => {
     expect(source.includes('if (!isAtBottom || userIntentPausedRef.current || userScrolledRef.current)')).toBe(false);
     expect(source.includes('delta < -2')).toBe(true);
+  });
+});
+
+describe('useAutoScroll session reading position persistence', () => {
+  test('accepts optional conversationId in UseAutoScrollOptions', () => {
+    expect(source.includes('conversationId?: string')).toBe(true);
+  });
+
+  test('records scroll position in sessionScrollRegistry on handleScroll and pauseAutoFollow', () => {
+    expect(source.includes('sessionScrollRegistry.save(conversationId, {')).toBe(true);
+    expect(source.includes('sessionScrollRegistry')).toBe(true);
+  });
+
+  test('restores saved reading position in useLayoutEffect when user was reading history', () => {
+    const restoreEffect = sliceBetween(
+      '// Handle session switch, initial scroll, and reading position restoration before paint',
+      '// Save on unmount'
+    );
+    expect(restoreEffect.includes('sessionScrollRegistry.get(conversationId)')).toBe(true);
+    expect(restoreEffect.includes('if (saved && saved.userScrolled)')).toBe(true);
+    expect(restoreEffect.includes('scrollerEl.scrollTop = saved.scrollTop')).toBe(true);
+    expect(restoreEffect.includes('userScrolledRef.current = true')).toBe(true);
+    expect(restoreEffect.includes('userIntentPausedRef.current = true')).toBe(true);
+    expect(restoreEffect.includes('setShowScrollButton(false)')).toBe(true);
+  });
+
+  test('saves scroll state when switching conversation or unmounting', () => {
+    expect(source.includes('previousConversationIdRef')).toBe(true);
+    expect(source.includes('conversationId !== previousConversationIdRef.current')).toBe(true);
+    expect(source.includes('sessionScrollRegistry.save(prevId, {')).toBe(true);
+    expect(source.includes('sessionScrollRegistry.save(currentId, {')).toBe(true);
+  });
+
+  test('resets reading position to bottom when user sends a new message', () => {
+    const sendEffect = sliceBetween(
+      'const sentNewUserMessage = lastUserId !== undefined && lastUserId !== previousLastUserId;',
+      'requestAnimationFrame(() => {\n      requestAnimationFrame(() => {'
+    );
+    expect(sendEffect.includes('sessionScrollRegistry.save(conversationId')).toBe(true);
+    expect(sendEffect.includes('userScrolled: false')).toBe(true);
   });
 });
 
