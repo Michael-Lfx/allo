@@ -1716,8 +1716,16 @@ const MessageList: React.FC<{
 
     updateSpacer();
     window.addEventListener('resize', updateSpacer, { passive: true });
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        updateSpacer();
+      });
+      resizeObserver.observe(scroller);
+    }
     return () => {
       window.removeEventListener('resize', updateSpacer);
+      resizeObserver?.disconnect();
     };
   }, [conversationContext?.isProcessing, displayList, list]);
 

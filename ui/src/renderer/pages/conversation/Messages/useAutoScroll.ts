@@ -153,6 +153,7 @@ export function useAutoScroll({
   const previousUserMessageCountRef = useRef<number>(getUserMessagesCount(messages));
   const previousConversationIdRef = useRef<string | undefined>(conversationId);
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Set on session switch or initial mount, consumed by the send-effect: list
   // changes before initial scroll restoration completes are initial fetch or A→B
   // swap — not a newly sent user message.
@@ -485,6 +486,10 @@ export function useAutoScroll({
         clearTimeout(scrollSaveTimerRef.current);
         scrollSaveTimerRef.current = null;
       }
+      if (restoreTimerRef.current) {
+        clearTimeout(restoreTimerRef.current);
+        restoreTimerRef.current = null;
+      }
       previousConversationIdRef.current = conversationId;
       initialScrollDoneRef.current = false;
       swapBaselinePendingRef.current = true;
@@ -545,7 +550,11 @@ export function useAutoScroll({
         applyRestoration();
         requestAnimationFrame(() => {
           applyRestoration();
-          setTimeout(() => {
+          if (restoreTimerRef.current) {
+            clearTimeout(restoreTimerRef.current);
+          }
+          restoreTimerRef.current = setTimeout(() => {
+            restoreTimerRef.current = null;
             if (targetRestoringScrollTopRef.current !== null) {
               applyRestoration();
               if (scrollerEl && getMaxScrollTop(scrollerEl) >= (targetRestoringScrollTopRef.current ?? 0)) {
@@ -583,6 +592,10 @@ export function useAutoScroll({
       if (scrollSaveTimerRef.current) {
         clearTimeout(scrollSaveTimerRef.current);
         scrollSaveTimerRef.current = null;
+      }
+      if (restoreTimerRef.current) {
+        clearTimeout(restoreTimerRef.current);
+        restoreTimerRef.current = null;
       }
       const currentId = previousConversationIdRef.current;
       if (currentId && initialScrollDoneRef.current) {
