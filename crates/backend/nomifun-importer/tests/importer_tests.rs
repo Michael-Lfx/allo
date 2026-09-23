@@ -499,15 +499,19 @@ async fn mcp_connector_import_keeps_the_remote_auth_template() {
 
     // 1. Streamable HTTP: spelling normalized, templates preserved, staticHeaders
     //    merged (and the templated map winning on a collision).
+    //
+    //    This fixture declares no `token-schema.json`, so its placeholders have no
+    //    field to consult and are treated as secrets — the documented fallback
+    //    (34 §5.4): a literal `${DEMO_API_KEY}` must never be sent to a server.
     let remote = &by_name["demo-remote"];
     assert_eq!(remote["transport"]["type"], "http");
     assert_eq!(
         remote["transport"]["url"],
-        "https://mcp.example.com/api/v1/mcp/stream?token=${DEMO_API_KEY}"
+        "https://mcp.example.com/api/v1/mcp/stream?token=${secret:DEMO_API_KEY}"
     );
     assert_eq!(
         remote["transport"]["headers"]["Authorization"],
-        "Bearer ${DEMO_API_KEY}"
+        "Bearer ${secret:DEMO_API_KEY}"
     );
     assert_eq!(remote["transport"]["headers"]["client"], "WorkBuddy");
     assert_eq!(
@@ -523,7 +527,7 @@ async fn mcp_connector_import_keeps_the_remote_auth_template() {
     //    the spelling the old hard-coded \"http\" got wrong.
     let sse = &by_name["demo-sse"];
     assert_eq!(sse["transport"]["type"], "sse");
-    assert_eq!(sse["transport"]["headers"]["x-api-key"], "${DEMO_API_KEY}");
+    assert_eq!(sse["transport"]["headers"]["x-api-key"], "${secret:DEMO_API_KEY}");
 
     // 3. No `type` at all: the URL decides, as it always has.
     let untyped = &by_name["demo-untyped"];
@@ -542,6 +546,152 @@ async fn mcp_connector_import_keeps_the_remote_auth_template() {
             nomifun_api_types::McpTransport::Stdio { .. } => panic!("{name}: expected a remote transport"),
         }
     }
+}
+
+#[tokio::test]
+async fn a_declared_token_schema_becomes_the_credential_form() {
+    // `token-schema.json` is the only place that says which `${…}` placeholder is
+    // a secret and which is a plain setting, so the import has to turn it into one
+    // normalized declaration — and upgrade the placeholders with it.
+    let (service, _temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: fixtures()
+                .join("connector-declared-market")
+                .join("connectors")
+                .join("demo-declared"),
+            source_kind: SourceKind::WorkBuddyMcpConnector,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    let credential = components
+        .iter()
+        .find(|component| component.kind == "credential")
+        .expect("a credential component");
+    let payload: serde_json::Value = serde_json::from_str(&credential.payload_json).unwrap();
+
+    assert_eq!(payload["connector_id"], "demo-declared");
+    // D3: both languages resolved at import, `en → zh → key` and `zh → en → key`.
+    assert_eq!(payload["title"]["zh"], "声明式示例配置");
+    assert_eq!(payload["title"]["en"], "Declared demo configuration");
+    assert_eq!(payload["doc_url"]["zh"], "https://docs.example.com/declare");
+    assert_eq!(
+        payload["doc_url"]["en"], "https://docs.example.com/declare",
+        "`docUrl_en` is absent, so the English slot falls back to the declared URL"
+    );
+    assert_eq!(
+        payload["doc_label"]["en"], "如何获取密钥？",
+        "no `docLabel_en`: fall back to the Chinese label, never to a raw key"
+    );
+
+    let fields: Vec<&serde_json::Value> = payload["fields"].as_array().unwrap().iter().collect();
+    let by_key = |key: &str| {
+        fields
+            .iter()
+            .find(|field| field["key"] == key)
+            .unwrap_or_else(|| panic!("field {key}"))
+            .clone()
+    };
+
+    // `type: password` is authoritative; a `*_KEY` text field is a secret; the
+    // `*_API_*` settings are not — that is the trap `looks_sensitive_key` falls
+    // into, because it matches the bare substring `api`.
+    assert_eq!(by_key("API_PASSWORD")["kind"], "secret");
+    assert_eq!(by_key("MAP_KEY")["kind"], "secret", "`*_KEY` text field");
+    assert_eq!(by_key("API_HOST")["kind"], "plain", "`*_API_*` is a setting, not a secret");
+    assert_eq!(by_key("SITE_ID")["kind"], "plain");
+
+    // Only a plain field carries a default; the secret's is dropped.
+    assert_eq!(by_key("API_HOST")["default_value"], "localhost");
+    assert!(
+        by_key("API_PASSWORD").get("default_value").is_none(),
+        "a secret default must not survive: {}",
+        by_key("API_PASSWORD")
+    );
+    assert!(
+        !credential.payload_json.contains("sk-live-must-never-be-persisted"),
+        "the packaged secret must not appear in the stored declaration: {}",
+        credential.payload_json
+    );
+    for component in &components {
+        assert!(
+            !component.payload_json.contains("sk-live-must-never-be-persisted"),
+            "the packaged secret must not appear in any stored component ({})",
+            component.component_id
+        );
+    }
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("API_PASSWORD") && warning.contains("[REDACTED]")),
+        "dropping a packaged secret is a warning, not a silent edit: {:?}",
+        result.warnings
+    );
+
+    // Label fallbacks: `label_en` only → both slots; no label at all → the key.
+    assert_eq!(by_key("SITE_ID")["label"]["zh"], "Site id");
+    assert_eq!(by_key("SITE_ID")["label"]["en"], "Site id");
+    assert_eq!(by_key("REGION")["label"]["zh"], "REGION");
+    assert_eq!(by_key("REGION")["label"]["en"], "REGION");
+
+    // The connector component's own declaration of *how* to authenticate comes
+    // from the market index (`auth_mode: token`), not from the transport.
+    let connector = components
+        .iter()
+        .find(|component| component.name == "demo-remote")
+        .expect("demo-remote connector");
+    let connector_payload: serde_json::Value =
+        serde_json::from_str(&connector.payload_json).unwrap();
+    assert_eq!(connector_payload["auth_mode"], "token");
+
+    // Placeholders upgraded according to the declaration: secrets become
+    // references, plain settings stay templates for the runtime to fill.
+    assert_eq!(
+        connector_payload["transport"]["headers"]["Authorization"],
+        "Bearer ${secret:API_PASSWORD}"
+    );
+    assert_eq!(
+        connector_payload["transport"]["headers"]["x-map-key"],
+        "${secret:MAP_KEY}"
+    );
+    assert_eq!(
+        connector_payload["transport"]["url"],
+        "https://${API_HOST}/api/v1/mcp/stream?site=${SITE_ID}",
+        "a declared plain field is not a credential and keeps its plain template"
+    );
+    // An undeclared placeholder cannot be silently forwarded as literal text.
+    assert_eq!(
+        connector_payload["transport"]["headers"]["x-undeclared"],
+        "${secret:UNDECLARED_KEY}"
+    );
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("UNDECLARED_KEY")),
+        "an undeclared placeholder is worth a warning: {:?}",
+        result.warnings
+    );
+
+    // The `weisheng-scrm` shape: a declared secret carried as an **empty** env
+    // value means "the user fills this", and an empty value reaching the child
+    // would fail with nothing to explain it.
+    let stdio = components
+        .iter()
+        .find(|component| component.name == "demo-stdio")
+        .expect("demo-stdio connector");
+    let stdio_payload: serde_json::Value = serde_json::from_str(&stdio.payload_json).unwrap();
+    assert_eq!(stdio_payload["transport"]["env"]["API_PASSWORD"], "secret:API_PASSWORD");
+    assert_eq!(
+        stdio_payload["transport"]["env"]["API_HOST"], "localhost",
+        "a non-empty literal on a plain field keeps working without the user filling anything"
+    );
 }
 
 #[tokio::test]

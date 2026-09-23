@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "demo-remote": {
+      "type": "streamableHttp",
+      "url": "https://${API_HOST}/api/v1/mcp/stream?site=${SITE_ID}",
+      "headers": {
+        "Authorization": "Bearer ${API_PASSWORD}",
+        "x-map-key": "${MAP_KEY}",
+        "x-undeclared": "${UNDECLARED_KEY}"
+      },
+      "staticHeaders": {
+        "client": "WorkBuddy"
+      }
+    },
+    "demo-stdio": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@demo/declared-mcp"],
+      "env": {
+        "API_PASSWORD": "",
+        "API_HOST": "localhost"
+      }
+    }
+  }
+}

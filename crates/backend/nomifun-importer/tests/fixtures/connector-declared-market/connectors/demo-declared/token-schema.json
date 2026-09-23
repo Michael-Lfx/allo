@@ -1,0 +1,48 @@
+{
+  "title": "声明式示例配置",
+  "title_en": "Declared demo configuration",
+  "description": "填入密钥后即可连接。密钥仅存本机。",
+  "description_en": "Fill in the key to connect. The key is stored locally only.",
+  "docUrl": "https://docs.example.com/declare",
+  "docLabel": "如何获取密钥？",
+  "fields": [
+    {
+      "key": "API_PASSWORD",
+      "label": "接口密码",
+      "label_en": "API password",
+      "type": "password",
+      "required": true,
+      "placeholder": "请输入接口密码",
+      "placeholder_en": "Enter the API password",
+      "description": "用于调用接口。",
+      "description_en": "Used to call the API.",
+      "defaultValue": "sk-live-must-never-be-persisted"
+    },
+    {
+      "key": "MAP_KEY",
+      "label": "地图密钥",
+      "label_en": "Map key",
+      "type": "text",
+      "required": true
+    },
+    {
+      "key": "API_HOST",
+      "label": "接口主机",
+      "label_en": "API host",
+      "type": "text",
+      "required": false,
+      "defaultValue": "localhost"
+    },
+    {
+      "key": "SITE_ID",
+      "label_en": "Site id",
+      "type": "text",
+      "required": false
+    },
+    {
+      "key": "REGION",
+      "type": "text",
+      "required": false
+    }
+  ]
+}

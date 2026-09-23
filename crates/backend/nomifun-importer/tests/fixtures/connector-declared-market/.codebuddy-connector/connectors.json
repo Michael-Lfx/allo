@@ -1,0 +1,16 @@
+{
+  "name": "connector-declared-market",
+  "description": "Fixture market used by the importer tests.",
+  "connectors": [
+    {
+      "id": "demo-declared",
+      "name": "声明式示例",
+      "name_en": "Declared demo",
+      "description": "A connector that declares a token-schema.json.",
+      "source": "demo-declared",
+      "type": "mcp",
+      "auth_mode": "token",
+      "visible_in": ["selfhosted", "cloudhosted"]
+    }
+  ]
+}
