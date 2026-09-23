@@ -448,11 +448,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           path='*'
           element={
             <Navigate
-              to={
-                localStatus !== 'authenticated'
-                  ? '/login'
-                  : resolvePostLocalAuthPath(cloudStatus === 'authenticated')
-              }
+              to={cloudStatus === 'authenticated' ? '/guid' : '/login'}
               replace
             />
           }
