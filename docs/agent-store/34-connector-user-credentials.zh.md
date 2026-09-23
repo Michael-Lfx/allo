@@ -218,17 +218,24 @@ url 10 = `streamableHttp` 8 + `sse` 2；env 5 = `stdio` 3 + 无 `type`（command
 | 连接器 | `title{zh,en}`、`description{zh,en}`、`doc_url{zh,en}`、`doc_label{zh,en}` | 市场 `token-schema.json` 的顶层键；`doc_url` 有 `docUrl_en` 变体（1 例），按语言分别取 |
 | 字段 | `key`、`kind: secret\|plain`、`required`、`label{zh,en}`、`placeholder{zh,en}`、`description{zh,en}`、`default_value?` | `default_value` 是**导入期输入**：`secret` 字段的丢弃（§5.3），`plain` 字段的落进 `values`（§5.3）；协议面不下发它 |
 
-**`kind` 的判定必须复用既有谓词**，不得新写一套（`import.rs:1319-1321` 的注释就是这条约束）：
+**`kind` 的判定：`type: password` 权威，`type: text` 用一条更紧的命名谓词。**
 
-- `type: password` → `secret`（63 个字段）。
-- `type: text` → 按 `looks_sensitive_key` 判定（11 个字段）。
-  **该谓词需就地扩展**，把 `key`、`pat` 加进去——现有五个词漏掉 `TENCENT_MAP_KEY`、`ZFS_LOGIN_KEY`
-  这类明显的密钥名。扩展后实测：**secret 65 / plain 9**，且 9 个 plain 的判定不变
-  （`DDB_USERNAME`、`ORG_CODE`、`LOGIN_NAME`、`MAGIC_AGENT_BIZ_ID`、`QINGHU_ENV`、
-  `TDENGINE_API_SCHEMA/HOST/PORT`、`SITE_ID`）。
-- 扩展谓词会同时影响 `userConfig` 路径，方向是"多遮蔽"，不需要单独迁移；但需在 `02` §10 记一笔。
+- `type: password` → `secret`（63 个字段），这是市场自己的明确信号。
+- `type: text` → 按 `credential_shaped_name` 判定（11 个字段）：名字含 `token` / `secret` /
+  `password` / `apikey` / `api_key` / `_key` / `_pat` / `credential` 才算密钥。
+  **不能复用 `looks_sensitive_key`**——它匹配的是裸子串 `api`，会把 tdengine 的
+  `TDENGINE_API_SCHEMA` / `_HOST` / `_PORT` 判成密钥；而这三项正是带默认值
+  （`http` / `localhost` / `6042`）的**普通设置**，判错会让它们从表单的普通一半消失、被塞进
+  凭据库，并废掉 §5.3 为它们设计的 `values`。
+  实测 74 个字段：本条谓词 **secret 65 / plain 9**；复用旧谓词（补 `key`/`pat` 后）
+  得到 **68 / 6**，分歧恰好是那三项。
+- `looks_sensitive_key` **仍然**就地补 `key` / `pat` 两个词，但它服务的是另一条路径：
+  `mcp.json` 里**字面量**敏感值的遮蔽（§3.4 附表）——`DCS_PAT`、`SCRM_APP_KEY` 这类既不含
+  `api` 也不含 `token` 的名字，此前会把包里的明文原样导入。
+- 扩展 `looks_sensitive_key` 会同时影响 `userConfig` 路径，方向是"多遮蔽"，不需要单独迁移；
+  但需在 `02` §10 记一笔。
 
-i18n 回退链（host 侧实现一次）：`*_en → 中文 → key`。缺口规模：`label_en` 缺 12、`placeholder_en` 缺 16、
+i18n 回退链（host 侧实现一次，两个方向都要）：`zh → en → key`、`en → zh → key`。缺口规模：`label_en` 缺 12、`placeholder_en` 缺 16、
 `description_en` 缺 14（共 74 个字段）；`title_en` 缺 1、`description_en` 缺 2（共 61 个 schema）；
 `docUrl` 有 55 个，其中 `docLabel_en` 缺 **9**（另有 6 个 schema 完全没有 `docUrl`）。
 
@@ -252,8 +259,7 @@ i18n 回退链（host 侧实现一次）：`*_en → 中文 → key`。缺口规
 | `secret` 字段的 `defaultValue` | **丢弃 + 告警** | 依据 §3.3 第一条 |
 
 **模板保留、连接时解析**（D2 的落点就此定死）：`transport_config` 保存的是**模板原文**，
-不在 `credential/set` 时替换。`plain` 值单列一层，`from_db` 是手写取值、未知键直接忽略
-（`nomifun-mcp/src/types.rs:64-105`），因此新增 `values` 不破坏任何既有行：
+不在 `credential/set` 时替换：
 
 ```jsonc
 // mcp_servers.transport_config —— 以 tdengine 为例
@@ -265,9 +271,17 @@ i18n 回退链（host 侧实现一次）：`*_en → 中文 → key`。缺口规
 }
 ```
 
+**`values` 的前提（实施期发现，必须先做）**：`mcp_servers.transport_config` 不是自由 JSON，
+它是 `McpTransport` 的序列化结果，且该枚举带 `deny_unknown_fields`
+（`nomifun-api-types/src/mcp.rs:16`）。注册路径会先把导入产物的 transport JSON 反序列化成它
+（`nomifun-app/src/app_server_installer.rs:106-114`），因此**多一个键就是注册直接失败**，
+而不是被忽略。加 `values` 必须同时改：`McpTransport` 三个变体、`from_db` / `to_config_json`
+（`nomifun-mcp/src/types.rs`）、会话快照侧的同名类型，以及 SDK 侧的 DTO。原文里
+"`from_db` 未知键直接忽略、因此不破坏既有行"只对**读取**成立，对**注册**不成立。
+
 选择这条的理由：`default_value` 预填在一次再编辑后仍然成立；包升级重新导入时模板与声明一起刷新；
-值完全不进传输摘要。4 个 plain 默认值（`qinghu-ai.QINGHU_ENV="prod"`、tdengine 三项）在导入期直接
-落进 `values`。
+值完全不进传输摘要。4 个 plain 默认值（`qinghu-ai.QINGHU_ENV="prod"`、tdengine 三项）由导入期
+写进声明，运行时据此落进 `values`。
 
 写入路径要求：原子写、文件权限 600（与 GitHub 官方 token 处理口径一致）；`[credentials]`
 仍不进 `config/get`。**写入后必须同步更新进程内快照**，否则出现"写成功但用不上"
@@ -287,6 +301,11 @@ i18n 回退链（host 侧实现一次）：`*_en → 中文 → key`。缺口规
 4. `${NAME}` 但 schema 里没有同名字段：按隐式 `secret` 处理（`required: true`，`label` 回退为 `key`）
    并告警，绝不静默丢弃。**当前 0 处**，规则是防御性的。
 5. `Bearer` 之类的固定前缀一律来自模板原文，**不得按 header 名自动补**（§3.2 约束 2）。
+6. **声明优先于名字启发式**（实施期发现）：一个被声明为 `plain` 的字段，即使名字长得像密钥
+   （`API_HOST` 含 `api`、`API_PASSWORD` 以外的 `*_API_*`），也必须按 `plain` 处理——否则
+   `API_HOST: "localhost"` 这种包里本来就带好的普通值会被遮蔽成引用，把一个本可开箱可用的
+   连接器变成"要用户填"。同一个道理反向也成立：声明为 `secret` 且包里带字面量值的字段，
+   一律遮蔽并告警。
 
 ---
 
@@ -441,8 +460,8 @@ credential: {
 | 步 | 内容 | 验收 |
 |---|---|---|
 | 1 | 修 §3.4 第一、二、三条：导入期完整写入模板（headers / staticHeaders / env / url）+ 按拼写表归一传输；`request_headers()` 接入解析入口；url 解析 | 导入测试：url 形态条目带 `headers`，10 个 `sse` 保持 `sse`；`nomifun-mcp` 单测：含引用的 headers / url 发出解析后的真值。零协议变更，可独立合入 |
-| 2 | 导入层：读 `token-schema.json` + 市场 `auth_mode` → 归一为 `CredentialSchema`（§5.2）；`${NAME}` 按 §5.4 绑定规则转成 `${secret:NAME}` / `values`；`secret` 字段的 `defaultValue` 丢弃并告警；扩展 `looks_sensitive_key`（加 `key`/`pat`） | 导入测试：字段与 i18n 回退齐全；`kind` 实测 65 secret / 9 plain；`weisheng-scrm` 的空值形态被识别为待填；以 §3.3 第一条为夹具，断言 `[REDACTED]`、值不进快照与 DB |
-| 3 | 运行时：模板解析 + 显式 principal（§6.2）+ typed `missing credential`；**per-principal 键控随第一次写入一起落地**（D1 的最小步，不留到第 6 步） | 集成测试：内嵌模板被正确替换；缺凭据时不发起请求且错误只含键名；日志无值；两个 principal 各自 `set` 同名 KEY，探针/调用各取各的 |
+| 2 | 导入层：读 `token-schema.json` + 市场 `auth_mode` → 归一为 `CredentialSchema`（§5.2）；`${NAME}` 按 §5.4 绑定规则把**声明的 secret 字段**转成 `${secret:NAME}`；`secret` 字段的 `defaultValue` 丢弃并告警；`looks_sensitive_key` 补 `key`/`pat`，字段判定另用 §5.2 的更紧谓词 | 导入测试：字段与 i18n 回退齐全；`kind` 实测 65 secret / 9 plain；`weisheng-scrm` 的空值形态被识别为待填；未声明的占位符告警而非静默转发；以 §3.3 第一条为夹具，断言 `[REDACTED]`、值不进快照与 DB |
+| 3 | 运行时：模板解析（含 plain 的 `values`，需先按 §5.3 扩展 `McpTransport`）+ 显式 principal（§6.2）+ typed `missing credential`；**per-principal 键控随第一次写入一起落地**（D1 的最小步，不留到第 6 步） | 集成测试：内嵌模板被正确替换；plain 字段取到默认值/用户值；缺凭据时不发起请求且错误只含键名；日志无值；两个 principal 各自 `set` 同名 KEY，探针/调用各取各的 |
 | 4 | 协议 + SDK：三方法 + `credential` 块 + `mode` 映射表 + 四态词表 + `fp-9` + 站点同步 | `cargo test -p nomifun-app-server`；`check:fingerprint` 十处落点一致；`check:release-sync` 计数一致；站点 `check:docs-sync` 0 drift |
 | 5 | WebUI：schema 驱动表单 + 四态徽标 | 组件测试（i18n 回退、`secret` 不预填）；`cd web && bun run typecheck && bun run test`；手测双字段表单与混合表单 |
 | 6 | 存储终态（D1）：per-principal 查询面 + 旧键迁移 | 无前缀旧键只对 owner principal 可见；迁移测试；两个 principal 互不可见 |
