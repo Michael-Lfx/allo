@@ -361,7 +361,12 @@ impl ScriptFilmPipeline {
             let portraits_dir = self.working_dir.join("character_portraits");
             let voice_gen = VoiceReferenceGenerator::new(flowy);
             if let Ok(n) = voice_gen
-                .ensure_voice_references(&characters, &portraits_dir, &mut registry)
+                .ensure_voice_references(
+                    &characters,
+                    &portraits_dir,
+                    &mut registry,
+                    crate::planning::resolve_output_language(&[script]),
+                )
                 .await
             {
                 let _ = write_json_artifact(&registry_path, &registry).await;

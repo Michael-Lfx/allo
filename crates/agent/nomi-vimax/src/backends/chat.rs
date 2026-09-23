@@ -165,8 +165,8 @@ impl FlowyChat {
 impl VimaxChat for FlowyChat {
     async fn complete_text(&self, system: &str, user: &str) -> VimaxResult<String> {
         self.services.require_token().await?;
-        // Planning prompts are English-templated; re-assert language from the user payload
-        // so Chinese ideas don't get translated into English storyboards/scripts.
+        // Planning prompts are English-templated. Honor a stamped lock; otherwise
+        // detect from creative prose only (Skill playbooks must not flip language).
         let system = format!(
             "{system}\n\n{}",
             crate::planning::language_lock_for_text(user)

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::backends::FlowyVimaxServices;
 use crate::domain::{CharacterInScene, VoiceProfile};
 use crate::error::{VimaxError, VimaxResult};
+use crate::planning::{output_language_prefer_script, OutputLanguage};
 use crate::session::write_text_artifact;
 use super::voice_profile_generator::canonical_tts_voice;
 
@@ -14,7 +15,7 @@ const DEFAULT_TTS_VOICE: &str = "Cherry";
 /// Cache suffix for phonetic samples long enough for Seedance 2.0's 1.8s
 /// R2V floor. Duration caps (Wan sum ≤ 15s, Seedance per-clip ≥ 1.8s) are
 /// applied at video submit on sidecar copies, not by rewriting these wavs.
-const VOICE_REF_CACHE_VER: &str = "_s5";
+const VOICE_REF_CACHE_VER: &str = "_s6";
 
 pub struct VoiceReferenceGenerator {
     services: FlowyVimaxServices,
@@ -32,6 +33,7 @@ impl VoiceReferenceGenerator {
         characters: &[CharacterInScene],
         portraits_dir: &Path,
         registry: &mut HashMap<String, HashMap<String, HashMap<String, String>>>,
+        film_language: OutputLanguage,
     ) -> VimaxResult<usize> {
         self.services.require_token().await?;
         let model = self.resolve_tts_model().await?;
@@ -54,18 +56,23 @@ impl VoiceReferenceGenerator {
             let tts_voice = resolve_tts_voice(vp);
             let instruct = voice_design_instruct(ch);
             let cache_tag = instruct_cache_tag(&instruct);
-            // Cache key includes TTS id + instruct hash so a new bible does not
-            // reuse a Cherry wav baked under the old unversioned name.
+            let spoken = spoken_language_for_character(ch, film_language);
+            let lang_tag = match spoken {
+                OutputLanguage::English => "_en",
+                OutputLanguage::Chinese | OutputLanguage::Unspecified => "_zh",
+            };
+            // Cache key includes TTS id + instruct hash + spoken language so a
+            // new bible or language lock does not reuse the wrong wav.
             let wav_path = char_dir.join(format!(
-                "{id_safe}_voice_ref_{tts_voice}{cache_tag}{VOICE_REF_CACHE_VER}.wav"
+                "{id_safe}_voice_ref_{tts_voice}{cache_tag}{lang_tag}{VOICE_REF_CACHE_VER}.wav"
             ));
             if crate::media_local::is_usable_audio_file(&wav_path) {
                 register_voice_ref(registry, ch, &wav_path);
                 continue;
             }
             tokio::fs::create_dir_all(&char_dir).await?;
-            let sample_text = voice_reference_sample_line(ch);
-            let language = infer_tts_language(&sample_text, ch);
+            let sample_text = voice_reference_sample_line(ch, spoken);
+            let language = spoken.tts_language_type();
             let (bytes, _mime) = match self
                 .services
                 .api
@@ -121,7 +128,7 @@ impl VoiceReferenceGenerator {
             crate::media_local::write_audio_bytes_atomic(&wav_path, &bytes).await?;
             let _ = write_text_artifact(
                 &char_dir.join(format!(
-                    "{id_safe}_voice_ref_{tts_voice}{cache_tag}{VOICE_REF_CACHE_VER}_sample.txt"
+                    "{id_safe}_voice_ref_{tts_voice}{cache_tag}{lang_tag}{VOICE_REF_CACHE_VER}_sample.txt"
                 )),
                 &sample_text,
             )
@@ -129,7 +136,7 @@ impl VoiceReferenceGenerator {
             if let Some(instruct) = instruct.as_deref() {
                 let _ = write_text_artifact(
                     &char_dir.join(format!(
-                        "{id_safe}_voice_ref_{tts_voice}{cache_tag}{VOICE_REF_CACHE_VER}_instruct.txt"
+                        "{id_safe}_voice_ref_{tts_voice}{cache_tag}{lang_tag}{VOICE_REF_CACHE_VER}_instruct.txt"
                     )),
                     instruct,
                 )
@@ -296,7 +303,24 @@ fn tts_rejected_instructions(err: &nomifun_cloud::ServerClientError) -> bool {
             && s.contains("instruct"))
 }
 
-fn voice_reference_sample_line(ch: &CharacterInScene) -> String {
+fn spoken_language_for_character(
+    ch: &CharacterInScene,
+    film_language: OutputLanguage,
+) -> OutputLanguage {
+    if film_language != OutputLanguage::Unspecified {
+        return film_language;
+    }
+    output_language_prefer_script(
+        "",
+        &[
+            ch.identifier_in_scene.as_str(),
+            ch.static_features.as_str(),
+            ch.dynamic_features.as_deref().unwrap_or(""),
+        ],
+    )
+}
+
+fn voice_reference_sample_line(ch: &CharacterInScene, spoken: OutputLanguage) -> String {
     // Phonetic coverage only. Never paste speaking_style / director notes —
     // Qwen3-TTS will read those instructions aloud and every character will
     // recite the same bible ("跨镜头音色锁定").
@@ -304,45 +328,22 @@ fn voice_reference_sample_line(ch: &CharacterInScene) -> String {
         &ch.identifier_in_scene,
         &ch.static_features,
     );
-    let cjk = text_looks_cjk(&ch.identifier_in_scene)
-        || ch.static_features.chars().any(is_cjk_char)
-        || ch
-            .dynamic_features
-            .as_deref()
-            .is_some_and(|s| s.chars().any(is_cjk_char));
-    if cjk {
-        if child {
-            "妈妈，我们回家吧。天黑了，我想吃饭。".into()
-        } else {
-            "今晚别等我。我们把话说开，这件事不能再拖了。".into()
+    match spoken {
+        OutputLanguage::English => {
+            if child {
+                "Mom, let's go home. It's getting dark and I want dinner.".into()
+            } else {
+                "Don't wait up tonight. Let's talk this through before it gets worse.".into()
+            }
         }
-    } else if child {
-        "Mom, let's go home. It's getting dark and I want dinner.".into()
-    } else {
-        "Don't wait up tonight. Let's talk this through before it gets worse.".into()
+        OutputLanguage::Chinese | OutputLanguage::Unspecified => {
+            if child {
+                "妈妈，我们回家吧。天黑了，我想吃饭。".into()
+            } else {
+                "今晚别等我。我们把话说开，这件事不能再拖了。".into()
+            }
+        }
     }
-}
-
-fn infer_tts_language(sample: &str, ch: &CharacterInScene) -> &'static str {
-    if text_looks_cjk(sample)
-        || ch.static_features.chars().any(is_cjk_char)
-        || ch
-            .dynamic_features
-            .as_deref()
-            .is_some_and(|s| s.chars().any(is_cjk_char))
-    {
-        "Chinese"
-    } else {
-        "English"
-    }
-}
-
-fn text_looks_cjk(s: &str) -> bool {
-    s.chars().any(is_cjk_char)
-}
-
-fn is_cjk_char(ch: char) -> bool {
-    matches!(ch as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
 }
 
 fn is_path_safe_ideograph(c: char) -> bool {
@@ -404,15 +405,44 @@ mod tests {
 
     #[test]
     fn sample_line_is_speech_not_director_notes() {
-        let line = voice_reference_sample_line(&ch(
-            "李薇",
-            "成年女性",
-            "语速平稳、跨镜头音色音量锁定",
-        ));
+        let line = voice_reference_sample_line(
+            &ch("李薇", "成年女性", "语速平稳、跨镜头音色音量锁定"),
+            OutputLanguage::Chinese,
+        );
         assert!(!line.contains("跨镜头"));
         assert!(!line.contains("语速平稳"));
         assert!(!line.contains("李薇"));
         assert!(line.contains("想清楚") || line.contains("话说"));
+    }
+
+    #[test]
+    fn english_film_uses_english_sample_even_if_cast_is_cjk() {
+        let ch = ch("李薇", "成年女性", "语速平稳");
+        assert_eq!(
+            spoken_language_for_character(&ch, OutputLanguage::English),
+            OutputLanguage::English
+        );
+        let line = voice_reference_sample_line(&ch, OutputLanguage::English);
+        assert!(line.contains("Don't wait") || line.contains("talk this through"));
+        assert!(!line.contains("今晚"));
+        assert_eq!(
+            spoken_language_for_character(&ch, OutputLanguage::English).tts_language_type(),
+            "English"
+        );
+    }
+
+    #[test]
+    fn unspecified_film_falls_back_to_character_features() {
+        let liwei = ch("李薇", "成年女性", "语速平稳");
+        assert_eq!(
+            spoken_language_for_character(&liwei, OutputLanguage::Unspecified),
+            OutputLanguage::Chinese
+        );
+        let alice = ch("Alice", "adult woman, short hair", "steady");
+        assert_eq!(
+            spoken_language_for_character(&alice, OutputLanguage::Unspecified),
+            OutputLanguage::English
+        );
     }
 
     #[test]

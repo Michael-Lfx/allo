@@ -164,6 +164,15 @@ fn canvas_doc_preserves_camera_tree_and_voice() {
     assert!(cam.as_array().unwrap().len() == 1);
 
     let nodes = doc.get("nodes").and_then(|v| v.as_array()).unwrap();
+    let char_node = nodes
+        .iter()
+        .find(|n| n.get("id").and_then(|t| t.as_str()) == Some("vimax-char-0"))
+        .expect("cast node");
+    assert_eq!(
+        char_node["metadata"]["characterVoiceProfile"]["language"].as_str(),
+        Some("en"),
+        "spoken language follows the English scene script, not Chinese audio leftovers"
+    );
     let script = nodes
         .iter()
         .find(|n| n.get("type").and_then(|t| t.as_str()) == Some("script"))
@@ -218,6 +227,34 @@ fn canvas_doc_preserves_camera_tree_and_voice() {
     assert!(has("vimax-char-0", "vimax-shot-main-0"), "cast→shot video");
     assert!(has("vimax-world-prop-木箱", "vimax-shot-main-0"), "prop→shot video");
     assert!(has("vimax-shot-main-0", "vimax-final"), "shot→final");
+}
+
+#[test]
+fn canvas_voice_language_follows_chinese_script() {
+    let mut film = sample_film();
+    film.scenes[0].script = "李薇走进雨夜咖啡馆，把话说开。".into();
+    let mut ids = HashMap::new();
+    for m in film.all_media_files() {
+        let index = ids.len();
+        ids.insert(
+            m.rel_path.clone(),
+            IngestedMedia {
+                media_id: format!("media-{index}"),
+                bytes: 4096 + index as u64,
+                mime: m.mime.clone(),
+            },
+        );
+    }
+    let doc = build_canvas_document(&film, &ids);
+    let nodes = doc.get("nodes").and_then(|v| v.as_array()).unwrap();
+    let char_node = nodes
+        .iter()
+        .find(|n| n.get("id").and_then(|t| t.as_str()) == Some("vimax-char-0"))
+        .expect("cast node");
+    assert_eq!(
+        char_node["metadata"]["characterVoiceProfile"]["language"].as_str(),
+        Some("zh")
+    );
 }
 
 #[test]
