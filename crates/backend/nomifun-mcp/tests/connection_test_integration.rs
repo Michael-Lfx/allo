@@ -96,8 +96,7 @@ async fn http_unreachable_url_returns_connection_error() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Http {
         url: "http://127.0.0.1:1/mcp-unreachable".into(),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("test-http", &transport).await;
 
@@ -114,8 +113,7 @@ async fn sse_unreachable_url_returns_connection_error() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: "http://127.0.0.1:1/sse-unreachable".into(),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("test-sse", &transport).await;
 
@@ -154,8 +152,7 @@ async fn http_401_returns_needs_auth() {
     let svc = make_service();
     let transport = McpServerTransport::Http {
         url: format!("http://{}/mcp", addr),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("auth-server", &transport).await;
 
@@ -191,8 +188,7 @@ async fn sse_401_returns_needs_auth() {
     let svc = make_service();
     let transport = McpServerTransport::Sse {
         url: format!("http://{}/sse", addr),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("sse-auth", &transport).await;
 
@@ -223,8 +219,7 @@ async fn sse_connection_test_uses_string_jsonrpc_ids() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: format!("http://{}/sse", addr),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("string-id-sse", &transport).await;
 
@@ -246,8 +241,7 @@ async fn sse_tool_call_returns_the_upstream_result() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: format!("http://{addr}/sse"),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let outcome = svc
         .call_tool(&transport, "echo", serde_json::json!({ "n": 1 }))
@@ -265,8 +259,7 @@ async fn sse_tool_level_failure_is_a_result_and_a_server_error_is_not() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: format!("http://{addr}/sse"),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     // A tool-level failure resolves, with `is_error` set.
     let failed = svc
@@ -285,8 +278,7 @@ async fn sse_unknown_tool_is_a_call_failure() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: format!("http://{addr}/sse"),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let error = svc
         .call_tool(&transport, "no-such-tool", serde_json::json!({}))
@@ -531,8 +523,7 @@ async fn http_500_returns_error_with_status() {
     let svc = make_service();
     let transport = McpServerTransport::Http {
         url: format!("http://{}/mcp", addr),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("error-server", &transport).await;
 
@@ -586,8 +577,7 @@ async fn http_custom_headers_are_sent() {
     headers.insert("X-Api-Key".into(), "secret".into());
     let transport = McpServerTransport::Http {
         url: format!("http://{}/mcp", addr),
-        headers,
-    };
+        headers, values: HashMap::new()};
 
     let result = svc.test_connection("header-server", &transport).await;
 
@@ -682,8 +672,7 @@ async fn an_unresolved_reference_sends_nothing_at_all() {
     headers.insert("x-api-key".into(), "${secret:__STEP1_UNSET__}".into());
     let transport = McpServerTransport::Http {
         url: format!("http://{}/mcp", addr),
-        headers,
-    };
+        headers, values: HashMap::new()};
 
     let result = svc.test_connection("unresolved-server", &transport).await;
 
@@ -727,7 +716,7 @@ async fn resolved_references_reach_the_wire_in_headers_and_url() {
     // Whole-value form, to prove both survive the same path.
     headers.insert("x-api-key".into(), "secret:__STEP1_TOKEN__".into());
     let url = format!("http://{}/mcp?token=${{secret:__STEP1_TOKEN__}}", addr);
-    let transport = McpServerTransport::Http { url, headers };
+    let transport = McpServerTransport::Http { url, headers, values: HashMap::new() };
 
     let result = svc.test_connection("resolved-server", &transport).await;
     assert!(result.success, "probe should succeed: {:?}", result.error);
@@ -748,6 +737,52 @@ async fn resolved_references_reach_the_wire_in_headers_and_url() {
 
     // Leave no credential behind for another test in this binary.
     nomifun_common::secret_ref::set_credentials(HashMap::new());
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn plain_values_resolve_from_the_transport_and_are_required() {
+    // A connector's own settings (`HOST`, `PORT`) are not credentials, but their
+    // `${NAME}` placeholders must resolve all the same — and a missing one has to
+    // stop the request rather than send `${HOST}` to the server.
+    let (addr, seen, server_handle) = spawn_recording_mcp_server().await;
+
+    let svc = make_service();
+    let values = HashMap::from([
+        ("HOST".to_owned(), "127.0.0.1".to_owned()),
+        ("PORT".to_owned(), addr.port().to_string()),
+    ]);
+    let transport = McpServerTransport::Http {
+        url: "http://${HOST}:${PORT}/mcp".to_owned(),
+        headers: HashMap::from([("X-Qinghu-Env".to_owned(), "${ENV}".to_owned())]),
+        values: values.clone(),
+    };
+    let result = svc.test_connection("plain-values", &transport).await;
+    assert!(!result.success, "`ENV` is not filled in");
+    assert_eq!(
+        result.code,
+        Some(nomifun_api_types::McpConnectionTestErrorCode::MissingCredential),
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "the URL could not be fully resolved, so nothing may be sent"
+    );
+
+    // Fill the missing piece: now the request goes out, to the resolved URL.
+    let transport = McpServerTransport::Http {
+        url: "http://${HOST}:${PORT}/mcp".to_owned(),
+        headers: HashMap::from([("X-Qinghu-Env".to_owned(), "${ENV}".to_owned())]),
+        values: values.into_iter().chain([("ENV".to_owned(), "prod".to_owned())]).collect(),
+    };
+    let result = svc.test_connection("plain-values", &transport).await;
+    assert!(result.success, "probe should succeed: {:?}", result.error);
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.first().and_then(|request| request.query.clone()),
+        None,
+        "the resolved URL has no query string",
+    );
+
     server_handle.abort();
 }
 

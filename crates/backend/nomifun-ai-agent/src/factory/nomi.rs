@@ -2034,8 +2034,8 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     disabled_tools,
                 }
             }
-            McpTransport::Sse { url, headers } => {
-                let Ok(url) = resolve_url_secrets(Some(conversation_id), &declared.name, url) else {
+            McpTransport::Sse { url, headers, values } => {
+                let Ok(url) = resolve_url_secrets(Some(conversation_id), &declared.name, url, values) else {
                     continue;
                 };
                 let headers = declared_remote_headers(
@@ -2043,6 +2043,7 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     &declared.name,
                     headers,
                     declared.bearer_token_env_var.as_deref(),
+                    values,
                 );
                 McpServerConfig {
                     transport: TransportType::Sse,
@@ -2059,8 +2060,8 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     disabled_tools,
                 }
             }
-            McpTransport::Http { url, headers } => {
-                let Ok(url) = resolve_url_secrets(Some(conversation_id), &declared.name, url) else {
+            McpTransport::Http { url, headers, values } => {
+                let Ok(url) = resolve_url_secrets(Some(conversation_id), &declared.name, url, values) else {
                     continue;
                 };
                 let headers = declared_remote_headers(
@@ -2068,6 +2069,7 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     &declared.name,
                     headers,
                     declared.bearer_token_env_var.as_deref(),
+                    values,
                 );
                 McpServerConfig {
                     transport: TransportType::StreamableHttp,
@@ -2097,8 +2099,9 @@ fn declared_remote_headers(
     server_name: &str,
     headers: &HashMap<String, String>,
     bearer_token_env_var: Option<&str>,
+    values: &HashMap<String, String>,
 ) -> HashMap<String, String> {
-    let mut headers = resolve_header_secrets(Some(conversation_id), server_name, headers);
+    let mut headers = resolve_header_secrets(Some(conversation_id), server_name, headers, values);
     if bearer_token_env_var.is_some() {
         // Cloned only when a bearer token was actually declared; the
         // `resolve_header_secrets` call above already clones the same map once.
@@ -2181,8 +2184,22 @@ fn resolve_header_secrets(
     conversation_id: Option<&str>,
     server_name: &str,
     headers: &HashMap<String, String>,
+    values: &HashMap<String, String>,
 ) -> HashMap<String, String> {
-    let resolved = nomifun_common::secret_ref::resolve_env(headers);
+    let credentials = nomifun_common::secret_ref::credentials();
+    let scope = nomifun_common::secret_ref::TransportScope::new(&credentials, values);
+    let mut resolved_env = HashMap::with_capacity(headers.len());
+    let mut missing: Vec<String> = Vec::new();
+    for (key, value) in headers {
+        match nomifun_common::secret_ref::resolve_request_string(value, &scope).value {
+            Some(value) => {
+                resolved_env.insert(key.clone(), value);
+            }
+            None => missing.push(key.clone()),
+        }
+    }
+    missing.sort();
+    let resolved = nomifun_common::secret_ref::ResolvedEnv { env: resolved_env, missing };
     if !resolved.missing.is_empty() {
         match conversation_id {
             Some(conversation_id) => {
@@ -2258,8 +2275,11 @@ fn resolve_url_secrets(
     conversation_id: Option<&str>,
     server_name: &str,
     url: &str,
+    values: &HashMap<String, String>,
 ) -> Result<String, String> {
-    let resolved = nomifun_common::secret_ref::resolve_template(url);
+    let credentials = nomifun_common::secret_ref::credentials();
+    let scope = nomifun_common::secret_ref::TransportScope::new(&credentials, values);
+    let resolved = nomifun_common::secret_ref::resolve_request_string(url, &scope);
     if resolved.missing.is_empty() {
         return Ok(resolved.value.unwrap_or_else(|| url.to_owned()));
     }
@@ -2283,6 +2303,17 @@ fn resolve_url_secrets(
 fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, String> {
     let value: serde_json::Value = serde_json::from_str(&row.transport_config)
         .map_err(|e| format!("invalid transport_config JSON: {e}"))?;
+    // The connector's own non-secret `${NAME}` values (34 §5.3); they travel in the
+    // transport config, never in the credential store.
+    let values: HashMap<String, String> = value
+        .get("values")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
 
     match row.transport_type.as_str() {
         "stdio" => {
@@ -2342,7 +2373,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 .get("url")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "http: missing url".to_owned())?;
-            let url = resolve_url_secrets(None, &row.name, url)?;
+            let url = resolve_url_secrets(None, &row.name, url, &values)?;
             let headers = value
                 .get("headers")
                 .and_then(|v| v.as_object())
@@ -2352,7 +2383,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
-            let headers = resolve_header_secrets(None, &row.name, &headers);
+            let headers = resolve_header_secrets(None, &row.name, &headers, &values);
 
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
@@ -2374,7 +2405,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 .get("url")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "sse: missing url".to_owned())?;
-            let url = resolve_url_secrets(None, &row.name, url)?;
+            let url = resolve_url_secrets(None, &row.name, url, &values)?;
             let headers = value
                 .get("headers")
                 .and_then(|v| v.as_object())
@@ -2384,7 +2415,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
-            let headers = resolve_header_secrets(None, &row.name, &headers);
+            let headers = resolve_header_secrets(None, &row.name, &headers, &values);
 
             Ok(McpServerConfig {
                 transport: TransportType::Sse,
@@ -2438,12 +2469,12 @@ fn session_server_to_mcp_server_config(
                 disabled_tools: None,
             })
         }
-        SessionMcpTransport::Http { url, headers } => {
+        SessionMcpTransport::Http { url, headers, values } => {
             if url.is_empty() {
                 return Err("http: missing url".to_owned());
             }
-            let url = resolve_url_secrets(None, &server.name, url)?;
-            let headers = resolve_header_secrets(None, &server.name, headers);
+            let url = resolve_url_secrets(None, &server.name, url, values)?;
+            let headers = resolve_header_secrets(None, &server.name, headers, values);
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
                 command: None,
@@ -2459,12 +2490,12 @@ fn session_server_to_mcp_server_config(
                 disabled_tools: None,
             })
         }
-        SessionMcpTransport::Sse { url, headers } => {
+        SessionMcpTransport::Sse { url, headers, values } => {
             if url.is_empty() {
                 return Err("sse: missing url".to_owned());
             }
-            let url = resolve_url_secrets(None, &server.name, url)?;
-            let headers = resolve_header_secrets(None, &server.name, headers);
+            let url = resolve_url_secrets(None, &server.name, url, values)?;
+            let headers = resolve_header_secrets(None, &server.name, headers, values);
             Ok(McpServerConfig {
                 transport: TransportType::Sse,
                 command: None,
@@ -2480,12 +2511,12 @@ fn session_server_to_mcp_server_config(
                 disabled_tools: None,
             })
         }
-        SessionMcpTransport::StreamableHttp { url, headers } => {
+        SessionMcpTransport::StreamableHttp { url, headers, values } => {
             if url.is_empty() {
                 return Err("streamable_http: missing url".to_owned());
             }
-            let url = resolve_url_secrets(None, &server.name, url)?;
-            let headers = resolve_header_secrets(None, &server.name, headers);
+            let url = resolve_url_secrets(None, &server.name, url, values)?;
+            let headers = resolve_header_secrets(None, &server.name, headers, values);
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
                 command: None,
@@ -3720,6 +3751,7 @@ mod tests {
                 "Authorization".to_owned(),
                 "secret:__NOMIFUN_DEFINITELY_UNSET__".to_owned(),
             )]),
+            &HashMap::new(),
         );
         assert!(resolved.is_empty(), "{resolved:?}");
 
@@ -3730,6 +3762,7 @@ mod tests {
             None,
             "linear",
             &HashMap::from([("Authorization".to_owned(), "Bearer secret:X".to_owned())]),
+            &HashMap::new(),
         );
         assert_eq!(
             resolved.get("Authorization").map(String::as_str),
@@ -3751,6 +3784,7 @@ mod tests {
                 "Authorization".to_owned(),
                 "Bearer ${secret:__STEP1_EMBEDDED__}".to_owned(),
             )]),
+            &HashMap::new(),
         );
         nomifun_common::secret_ref::set_credentials(previous);
         assert_eq!(

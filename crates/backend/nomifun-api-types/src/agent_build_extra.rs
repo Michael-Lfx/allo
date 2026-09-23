@@ -82,16 +82,23 @@ pub enum SessionMcpTransport {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
+        /// Non-secret `${NAME}` values for this connector's URL/headers (34 §5.3).
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        values: HashMap<String, String>,
     },
     Sse {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        values: HashMap<String, String>,
     },
     StreamableHttp {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        values: HashMap<String, String>,
     },
 }
 

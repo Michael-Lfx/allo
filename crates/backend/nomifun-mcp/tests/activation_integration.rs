@@ -91,7 +91,7 @@ impl McpConnectionTester for ConfigChangingTester {
         let servers = self.config.list_servers().await.unwrap();
         let server = servers.first().expect("server exists");
         let mut changed = transport.clone();
-        if let McpServerTransport::Http { url, headers } = &mut changed {
+        if let McpServerTransport::Http { url, headers, .. } = &mut changed {
             *url = format!("{url}-changed");
             headers.clear();
         }
@@ -123,8 +123,7 @@ async fn seed_http_server(config: &McpConfigService, name: &str) -> McpServerId 
             description: None,
             transport: McpTransport::Http {
                 url: "https://example.com/mcp".into(),
-                headers: HashMap::new(),
-            },
+                headers: HashMap::new(), values: HashMap::new()},
             original_json: None,
             builtin: false,
         })
@@ -383,8 +382,7 @@ impl nomifun_db::IMcpServerRepository for EditDuringRevisionRepo {
                         description: None,
                         transport: Some(nomifun_api_types::McpTransport::Http {
                             url: "https://example.com/mcp-edited".into(),
-                            headers: HashMap::new(),
-                        }),
+                            headers: HashMap::new(), values: HashMap::new()}),
                         original_json: None,
                         builtin: None,
                     },

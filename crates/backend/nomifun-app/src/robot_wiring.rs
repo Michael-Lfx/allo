@@ -366,6 +366,7 @@ impl AppRobotBackend {
                     .headers()
                     .into_iter()
                     .collect::<HashMap<String, String>>(),
+                values: HashMap::new(),
             },
         }])
     }

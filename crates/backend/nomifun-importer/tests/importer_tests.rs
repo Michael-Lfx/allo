@@ -665,6 +665,16 @@ async fn a_declared_token_schema_becomes_the_credential_form() {
         "https://${API_HOST}/api/v1/mcp/stream?site=${SITE_ID}",
         "a declared plain field is not a credential and keeps its plain template"
     );
+    // …and a plain default travels with the connector, not the credential store.
+    assert_eq!(
+        connector_payload["transport"]["values"]["API_HOST"], "localhost"
+    );
+    assert!(
+        connector_payload["transport"]["values"].get("SITE_ID").is_none(),
+        "a plain field without a default stays absent, which the runtime reads as \
+         'not filled yet': {}",
+        connector_payload["transport"]["values"]
+    );
     // An undeclared placeholder cannot be silently forwarded as literal text.
     assert_eq!(
         connector_payload["transport"]["headers"]["x-undeclared"],

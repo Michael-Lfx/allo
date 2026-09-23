@@ -194,12 +194,12 @@ fn parse_server_entry(name: &str, config: &serde_json::Value) -> Option<Detected
         "sse" => {
             let url = config.get("url")?.as_str()?.to_owned();
             let headers = parse_headers(config);
-            McpServerTransport::Sse { url, headers }
+            McpServerTransport::Sse { url, headers, values: HashMap::new() }
         }
         "http" | "streamable_http" => {
             let url = config.get("url")?.as_str()?.to_owned();
             let headers = parse_headers(config);
-            McpServerTransport::Http { url, headers }
+            McpServerTransport::Http { url, headers, values: HashMap::new() }
         }
         _ => return None,
     };
@@ -344,7 +344,7 @@ mod tests {
         let servers = parse_mcp_field(&root).unwrap();
         assert_eq!(servers.len(), 1);
         match &servers[0].transport {
-            McpServerTransport::Http { url, headers } => {
+            McpServerTransport::Http { url, headers, .. } => {
                 assert_eq!(url, "https://example.com/mcp");
                 assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
             }

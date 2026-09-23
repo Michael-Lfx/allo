@@ -178,10 +178,12 @@ fn parse_standard_list_line_rest(rest: &str) -> Option<DetectedServer> {
         "sse" => McpServerTransport::Sse {
             url: command_or_url.to_owned(),
             headers: HashMap::new(),
+            values: HashMap::new(),
         },
         "http" | "streamable_http" => McpServerTransport::Http {
             url: command_or_url.to_owned(),
             headers: HashMap::new(),
+            values: HashMap::new(),
         },
         _ => return None,
     };

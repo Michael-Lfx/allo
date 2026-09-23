@@ -748,8 +748,7 @@ mod tests {
             description: None,
             transport: McpTransport::Http {
                 url: "https://example.com/mcp".into(),
-                headers: HashMap::new(),
-            },
+                headers: HashMap::new(), values: HashMap::new()},
             original_json: None,
             builtin: false,
         }
@@ -776,8 +775,7 @@ mod tests {
             description: None,
             transport: McpTransport::Http {
                 url: "https://example.com/mcp".into(),
-                headers: HashMap::new(),
-            },
+                headers: HashMap::new(), values: HashMap::new()},
             original_json: None,
             builtin: false,
             enabled: None,
@@ -922,8 +920,7 @@ mod tests {
                     description: None,
                     transport: Some(McpTransport::Http {
                         url: "https://changed.example.com/mcp".into(),
-                        headers: HashMap::new(),
-                    }),
+                        headers: HashMap::new(), values: HashMap::new()}),
                     original_json: None,
                     builtin: None,
                 },
@@ -993,8 +990,7 @@ mod tests {
                     description: None,
                     transport: Some(McpTransport::Http {
                         url: "https://new.url".into(),
-                        headers: HashMap::new(),
-                    }),
+                        headers: HashMap::new(), values: HashMap::new()}),
                     original_json: None,
                     builtin: None,
                 },
@@ -1263,8 +1259,7 @@ mod tests {
                 description: Some("malicious override".into()),
                 transport: McpTransport::Http {
                     url: "https://example.com/mcp".into(),
-                    headers: HashMap::new(),
-                },
+                    headers: HashMap::new(), values: HashMap::new()},
                 original_json: None,
                 builtin: true,
             })
@@ -1298,8 +1293,7 @@ mod tests {
                         description: Some("imported".into()),
                         transport: McpTransport::Http {
                             url: "https://example.com/mcp".into(),
-                            headers: HashMap::new(),
-                        },
+                            headers: HashMap::new(), values: HashMap::new()},
                         original_json: None,
                         builtin: false,
                         enabled: Some(false),

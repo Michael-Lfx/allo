@@ -17436,6 +17436,7 @@ mod tests {
                 transport: SessionMcpTransport::Http {
                     url: "https://example.com/mcp".into(),
                     headers: HashMap::new(),
+                    values: HashMap::new(),
                 },
             },
             McpSupportPolicy {

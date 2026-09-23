@@ -117,6 +117,7 @@ fn parse_codex_entry(entry: &serde_json::Value) -> Option<DetectedServer> {
             McpServerTransport::Http {
                 url,
                 headers: HashMap::new(),
+                values: HashMap::new(),
             }
         }
         "sse" => {
@@ -128,6 +129,7 @@ fn parse_codex_entry(entry: &serde_json::Value) -> Option<DetectedServer> {
             McpServerTransport::Sse {
                 url,
                 headers: HashMap::new(),
+                values: HashMap::new(),
             }
         }
         _ => return None,
