@@ -244,7 +244,7 @@ describe('useAutoScroll scroll ownership', () => {
     );
 
     expect(finishEffect.includes('wasProcessing && !isProcessing')).toBe(true);
-    expect(finishEffect.includes('!userAwayFromBottom')).toBe(true);
+    expect(finishEffect.includes('if (!userScrolledRef.current && !userIntentPausedRef.current)')).toBe(true);
     expect(finishEffect.includes("scrollToBottom('auto')")).toBe(true);
     expect(finishEffect.includes('setHasNewContentBelow(true)')).toBe(true);
     expect(finishEffect.includes('setShowScrollButton(true)')).toBe(true);

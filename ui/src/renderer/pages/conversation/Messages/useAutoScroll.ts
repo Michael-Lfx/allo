@@ -218,7 +218,6 @@ export function useAutoScroll({
   const followContentGrowth = useCallback(() => {
     if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current || isRestoringScrollRef.current) return;
     if (Date.now() < resizeAutoFollowBlockedUntilRef.current) return;
-    if (getBottomGap(scrollerEl) > FOLLOW_BOTTOM_THRESHOLD_PX + 24) return;
 
     const spacer = scrollerEl.querySelector('.message-list-end-spacer');
     if (spacer instanceof HTMLElement) {
@@ -647,25 +646,20 @@ export function useAutoScroll({
         setHasNewContentBelow(true);
       }
     } else if (wasProcessing && !isProcessing) {
-      const isAtBottom = scrollerEl ? getBottomGap(scrollerEl) <= FOLLOW_BOTTOM_THRESHOLD_PX : false;
-      const userAwayFromBottom = userScrolledRef.current || userIntentPausedRef.current || !isAtBottom;
-
-      if (!userScrolledRef.current && !userIntentPausedRef.current && !userAwayFromBottom) {
+      if (!userScrolledRef.current && !userIntentPausedRef.current) {
         // User stayed at bottom: settle to show full response and actions
         requestAnimationFrame(() => {
           scrollToBottom('auto');
         });
       } else {
         // User is viewing history: strictly protect position and show unread badge
-        userScrolledRef.current = true;
-        userIntentPausedRef.current = true;
         showScrollButtonRef.current = true;
         hasNewContentBelowRef.current = true;
         setShowScrollButton(true);
         setHasNewContentBelow(true);
       }
     }
-  }, [isProcessing, scrollerEl, scrollToBottom]);
+  }, [isProcessing, scrollToBottom]);
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;
