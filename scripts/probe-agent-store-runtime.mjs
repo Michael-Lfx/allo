@@ -14,7 +14,7 @@ const wsUrl = process.argv[2] || "ws://127.0.0.1:8787/api/app-server/ws";
 // landing point `check-protocol-fingerprint.mjs` could not see (it was still on
 // `2026-09-14` two shapes later); it is listed in the guard's `MIRRORS` now, so
 // a future bump fails loudly here instead of leaving a probe that cannot connect.
-const PROTOCOL_VERSION = process.argv[3] || "fp-8";
+const PROTOCOL_VERSION = process.argv[3] || "fp-9";
 
 function connect(url) {
   return new Promise((resolve, reject) => {

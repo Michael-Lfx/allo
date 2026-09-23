@@ -1,7 +1,14 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-8`** —— 2026-09-24 起承载**专家 / 专家团定义导出**：新增两个 **WebSocket-only** 方法
+> 指纹：**`fp-9`** —— 2026-09-24 起承载**连接器用户凭据**：连接器摘要多一个 `credential` 块
+> （`mode` / `status` / `missing` / `fields`），并新增三个**有 HTTP 路由**的方法
+> `connector/credential/get` · `set` · `clear`。这是本文第一次让**用户自己填的 key / token**
+> 有正式位置：密钥值两个方向都不过线，`missing` 与字段清单只含键名与市场文案；写入按 principal
+> 命名空间（`<principal>:NAME`），共享宿主不再用一个用户的 token 解析另一个用户的请求。规格见
+> §4.3.4；方案与证据见 `34-connector-user-credentials.zh.md`。三个方法都有 HTTP 绑定，
+> 故方法计数 `48 / 73` → **`51 / 76`**（映射 48 → 51，未映射仍 25）。
+> 上一值 **`fp-8`**（2026-09-24）承载**专家 / 专家团定义导出**：新增两个 **WebSocket-only** 方法
 > `agent/export` 与 `team/export`，回一份可移植的 `AppServerExpertPack`——persona 正文、模型提示、
 > **按引用**的技能清单、以及（团的）固定名单加逐成员展开。这是本文**第一次把 Agent Markdown 正文
 > 放上协议面**：目录面（`agent/list` / `agent/get`）**刻意永远不带**它（`frontmatter.rs:114`、
@@ -549,6 +556,57 @@ ConnectorProbeResult.tools_truncated   # fp-2 新增
   早已在这个面上，schema 是同一能力的更高分辨率，**不是新面**；加门反而会弄坏既有 catalog UI。
 - **新鲜度**：`connector/get` 的 tools 来自**上次探针落库**的结果，可能很旧、也可能是空数组
   （首次探针成功前恒为空）。要新鲜就先调 `connector/test`——零额外机制。
+
+#### 4.3.4 连接器用户凭据（`credential` 块 + 三个方法，`fp-9` 加入）
+
+需要**用户自己填** key / token 的连接器此前没有输入口：市场的声明在导入期被丢弃，UI 只能把
+"http/sse 传输"一律当成 OAuth。`fp-9` 补上这条链路。
+
+```text
+ConnectorSummary.credential?          # 新字段，可空
+
+ConnectorCredential {
+  connector_id,
+  mode,        # none | oauth | token
+  status,      # not_required | requires_input | configured | error
+  missing,     # 仍是**键名**，永不含值
+  fields[],    # 见下；只含元数据
+  title?,      # 两语言已在 host 归一，客户端不再各自实现回退链
+  description?,
+}
+CredentialField {
+  key, kind,   # secret（宿主的凭据库）| plain（连接器自己的设置）
+  required,
+  label / placeholder / description / doc_url / doc_label,   # 均是 {zh, en}
+  value?,      # **只在 plain 上出现**：当前生效值（声明默认或用户所填）
+}
+```
+
+| 方法 | 参数 | 返回 |
+|---|---|---|
+| `connector/credential/get` | `connector_id` | `ConnectorCredential` |
+| `connector/credential/set` | `connector_id`、`values` | 同上（新状态） |
+| `connector/credential/clear` | `connector_id`、`keys?` | 同上 |
+
+规则：
+
+- **值两个方向都不过线**：请求能带值（那是用户刚输入的），响应永不含 secret 的值——`fields[].value`
+  只对 `plain` 出现，`missing` 只有键名。这一点有测试逐字断言序列化结果。
+- **写入面 = 表格本身**：`set` 只接受该连接器声明里出现过的键，未声明的键直接拒绝——否则客户端
+  能把任意键塞进宿主的凭据文件。
+- **按 principal 键控**：secret 写入 `<principal>:NAME`；宿主级裸键属于**安装所有者**，声明
+  所有者之后其他 principal 读不到。`missing` / `status` 都是**关于调用者**的陈述：同一个连接器
+  对 A 是 `configured`、对 B 可能是 `requires_input`。
+- **`mode` 由存储的声明决定**：市场 `auth_mode` 映射为 `token` / `oauth` / `none`（空、
+  `server-side`、`mcp`、`oneid-token` 都归 `none`）。**只有没有声明的连接器**才退回 transport
+  推导（http/sse → `oauth`）——手工注册的远端 server 因此仍显示 OAuth 入口，而 61 个 `token` 类
+  与 204 个 `auth_mode` 为空的连接器不再显示。这是**有意的行为变更**。
+- **`error` 只有一个产生者**：`connector/test`。缺凭据（`requires_input`）优先于 `error`——
+  让用户去填比复述一次探测失败更有用。
+- **`plain` 值写进连接器自己的 transport**，因此改 plain 值与改传输同规则：config 变化会把
+  连接器置回未启用，需要重测。secret 写入不进 transport，不触发该规则。
+- **门面**：`connector/credential/*` 走独立的 `ConnectorCredentialProvider`，`None` 时能力关闭、
+  返回 `unsupported_operation`。宿主没有 config 文件时不接线，而不是编一个没地方写的位置。
 
 ### 4.4 Import 与 PluginSnapshot（roadmap Phase 1）
 

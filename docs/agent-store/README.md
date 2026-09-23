@@ -100,7 +100,39 @@
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
-## 本轮（2026-09-20 发布 `0.1.0-beta.7`）
+## 本轮（2026-09-23 实施，**未发版**）
+
+按 `34-connector-user-credentials.zh.md` 的 §9 顺序实施"连接器用户凭据（key / token 类）"，
+第 1–3 步完成、第 4 步进行中。**指纹已 bump 到 `fp-9`**（方法计数 `48 / 73` → `51 / 76`），
+两仓已同步，但**尚未走发版链**——`25` 的清单只在真正发版时执行。
+
+1. **第 1 步（导入 + 解析）**：导入期保留 `headers` / `staticHeaders` 并按拼写表归一传输
+   （`sse` 不再被压平成 `http`）；`secret_ref` 增加 `${secret:NAME}` 模板形式；探针 / 调用 /
+   DB 行 / 会话快照 / ACP 五条路径共用解析入口并 fail-closed，缺凭据返回新增的
+   `MCP_MISSING_CREDENTIAL`（422）。**零协议变更**。
+2. **第 2 步（声明归一）**：`token-schema.json` 归一为 `credential` 组件（字段 + 双语言 +
+   取密钥入口 + `doc_url`）；`${NAME}` 按 §5.4 升级引用；secret 默认值丢弃并告警；
+   `auth_mode` 取自市场索引。**实施期发现原文两处会误导实现并已改文档**：`kind` 判定不能复用
+   `looks_sensitive_key`（它匹配裸 `api`，会把 tdengine 三个普通设置判成密钥；实测 65/9 vs
+   68/6），`values` 的前提是四处带 `deny_unknown_fields` 的类型都要加字段。
+3. **第 3 步（运行时 + 键控）**：`values` 层（`McpTransport` / `McpServerTransport` /
+   `SessionMcpTransport` / 网关 DTO）；`TransportScope` + `resolve_request_string` 两类命名空间
+   分流；`<principal>:NAME` 键控与安装所有者可见性规则；探针与工具调用两条路径接通调用者身份，
+   stdio 会话池按"解析后的 env"复用。**装配路径经核对无需改**：`is_instance_owner` 门禁之后
+   只有安装所有者的会话会注入 MCP。
+4. **第 4 步（协议面）**：`credential` 块（`mode` / `status` / `missing` / `fields`）按**调用者**
+   投影到连接器目录；`[credentials]` 的写入面（`toml_edit` 最小改动，注释与排版保留）；
+   `connector/credential/get|set|clear` 三方法 + HTTP/WS 路由 + SDK 三个方法与协议类型；
+   值两个方向都不过线（`fields[].value` 只对 `plain` 出现，有逐字断言）。
+5. **自检读数**：`check:fingerprint`（`fp-9`，本仓 7 文件 10 处 + 站点 2 文件）/ `check:release-sync`
+   （`51 / 76` 两站点指南同值）/ `web typecheck` + `web test`（521 passed, 1 skipped）/
+   `cargo test -p nomifun-app-server`（177）/ `nomifun-common` 244 / `nomifun-mcp` 265 lib + 39 集成 /
+   `nomifun-importer` 23 / 站点 `check:docs-sync` 0 drift + `test:docs-sync` 16 —— **全绿**。
+   站点仓改动**尚未提交**（工作树）。
+6. **仍未做**：第 4 步的收尾（本轮已完成）；**第 5 步 WebUI 表单与四态徽标**、**第 6 步存储终态与
+   旧键迁移**未开始。上一轮（`0.1.0-beta.7`）的发布记录见下节。
+
+## 上一轮（2026-09-20 发布 `0.1.0-beta.7`）
 
 **第四次走完整发布链**，也是**第一次发布带真实 wire 变更的版本**（前三版都只动 TS 侧或纯加法）：
 
