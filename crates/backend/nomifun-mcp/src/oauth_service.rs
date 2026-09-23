@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ use oauth2::{
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{debug, warn};
 
 use crate::error::McpError;
@@ -158,12 +159,79 @@ pub struct McpOAuthService {
     /// the authorize step; used by tests to capture the authorization URL and
     /// drive the redirect without a real browser. `None` → `open::that`.
     browser_hook: Option<BrowserHook>,
+    /// Last browser-flow failure per server URL, sanitized for the UI (design
+    /// doc §6.2). `connector/auth/start` runs the flow in the background, so a
+    /// failure that happens after the acknowledgement has no other way to
+    /// reach a client: `check_oauth_status` can only ever say
+    /// "not authenticated". Cleared when a flow succeeds or the user logs out.
+    last_login_error: Arc<Mutex<HashMap<String, String>>>,
 }
 
 /// Browser-open hook signature (`Fn(&str) + Send + Sync`).
 type BrowserHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 type HttpClientFactory = Arc<dyn Fn() -> reqwest::Client + Send + Sync>;
+
+/// A PKCE login whose synchronous half is done: endpoints discovered, a client
+/// identity resolved, the loopback callback bound, and the authorization URL
+/// handed to the browser (or to the test hook).
+///
+/// Await [`OAuthLoginStarted::complete`] for the callback and the token
+/// exchange. Splitting the flow here is what lets `connector/auth/start` report
+/// a pre-browser failure instead of acknowledging a browser window that does
+/// not exist.
+pub struct OAuthLoginStarted {
+    /// The URL that was handed to the system browser.
+    pub authorize_url: String,
+    /// Clone of the originating service; shares the pending slot and the gate.
+    service: McpOAuthService,
+    server_url: String,
+    listener: TcpListener,
+    /// Held until the flow ends: the shared `pending` slot fits one login.
+    gate: OwnedMutexGuard<()>,
+}
+
+impl OAuthLoginStarted {
+    /// Steps 5-6: wait for the browser redirect, then exchange the
+    /// authorization code for tokens. Holds the login gate for the whole flow,
+    /// so a concurrent start queues behind it instead of stealing the shared
+    /// `pending` slot.
+    pub async fn complete(self) -> OAuthLoginResponse {
+        // `_gate` is bound (not `_`) so the guard lives until the end of the flow.
+        let Self {
+            service,
+            server_url,
+            listener,
+            gate: _gate,
+            ..
+        } = self;
+
+        let code = match service.wait_for_callback(listener).await {
+            Ok(code) => code,
+            Err(error) => {
+                service.clear_pending().await;
+                service.remember_login_error(&server_url, &error).await;
+                return McpOAuthService::failed_login(&error);
+            }
+        };
+
+        match service.exchange_code(&server_url, code).await {
+            Ok(()) => {
+                service.forget_login_error(&server_url).await;
+                OAuthLoginResponse {
+                    success: true,
+                    error: None,
+                    error_code: None,
+                }
+            }
+            Err(error) => {
+                service.clear_pending().await;
+                service.remember_login_error(&server_url, &error).await;
+                McpOAuthService::failed_login(&error)
+            }
+        }
+    }
+}
 
 impl McpOAuthService {
     pub fn new(token_repo: Arc<dyn IOAuthTokenRepository>, http_client: reqwest::Client) -> Self {
@@ -199,6 +267,7 @@ impl McpOAuthService {
             pending: Arc::new(Mutex::new(None)),
             login_gate: Arc::new(tokio::sync::Mutex::new(())),
             browser_hook: hook,
+            last_login_error: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -241,7 +310,31 @@ impl McpOAuthService {
         })
     }
 
-    /// Start the OAuth PKCE login flow for the given MCP server URL.
+    /// Last sanitized failure of the browser flow for `server_url`, if any.
+    ///
+    /// The flow runs detached from the request that starts it, so this is the
+    /// only channel through which a client can learn *why* an authorization it
+    /// began never finished. Never contains tokens, authorization codes or the
+    /// full authorization URL.
+    pub async fn last_login_error(&self, server_url: &str) -> Option<String> {
+        self.last_login_error.lock().await.get(server_url).cloned()
+    }
+
+    async fn remember_login_error(&self, server_url: &str, error: &McpError) {
+        let message = sanitize_oauth_error(error);
+        debug!(server_url, error = %message, "MCP OAuth login failed");
+        self.last_login_error
+            .lock()
+            .await
+            .insert(server_url.to_owned(), message);
+    }
+
+    async fn forget_login_error(&self, server_url: &str) {
+        self.last_login_error.lock().await.remove(server_url);
+    }
+
+    /// Start the OAuth PKCE login flow for the given MCP server URL and drive
+    /// it to completion.
     ///
     /// 1. Discover authorization/token endpoints
     /// 2. Generate PKCE challenge
@@ -249,23 +342,44 @@ impl McpOAuthService {
     /// 4. Build authorization URL and open it in the system browser
     /// 5. Wait for the redirect with the authorization code
     /// 6. Exchange code for tokens and persist them
+    ///
+    /// A caller that only *acknowledges* the start (`connector/auth/start`)
+    /// wants [`McpOAuthService::begin_login`] instead: steps 1-4 either work or
+    /// fail before the user is asked for anything, while steps 5-6 can take
+    /// minutes.
     pub async fn login(&self, server_url: &str) -> Result<OAuthLoginResponse, McpError> {
+        match self.begin_login(server_url).await {
+            Ok(started) => Ok(started.complete().await),
+            Err(error) => Ok(Self::failed_login(&error)),
+        }
+    }
+
+    /// Steps 1-4 of the flow: discover the endpoints, resolve the client
+    /// identity, bind the loopback callback, build the authorization URL and
+    /// hand it to the system browser.
+    ///
+    /// Every failure here is deterministic and happens **before** the user is
+    /// asked to do anything, so a caller that only acknowledges the start can
+    /// and must report it synchronously — acknowledging a browser window that
+    /// was never opened is what leaves a client waiting on nothing. Await
+    /// [`OAuthLoginStarted::complete`] for steps 5-6.
+    pub async fn begin_login(&self, server_url: &str) -> Result<OAuthLoginStarted, McpError> {
         // Serialize PKCE flows: the shared `pending` slot holds one login at a
         // time (concurrent `auth_start` background tasks would otherwise
-        // overwrite each other → CSRF mismatch on the first callback).
-        let _gate = self.login_gate.lock().await;
+        // overwrite each other → CSRF mismatch on the first callback). The
+        // guard is *owned* because it outlives this call: it moves into the
+        // background half, so the slot stays reserved until the flow ends.
+        let gate = self.login_gate.clone().lock_owned().await;
+
         let (authorize_url, listener) = match self.prepare_login_flow(server_url).await {
             Ok(value) => value,
             Err(error) => {
-                // Structured, UI-readable error without tokens, codes or the
-                // full authorization URL (design doc §6.2/§7.1).
-                return Ok(OAuthLoginResponse {
-                    success: false,
-                    error: Some(sanitize_oauth_error(&error)),
-                    error_code: error.oauth_error_code().map(str::to_owned),
-                });
+                self.remember_login_error(server_url, &error).await;
+                return Err(error);
             }
         };
+        // A new attempt supersedes whatever the previous one reported.
+        self.forget_login_error(server_url).await;
 
         // Open browser (or hand the URL to the configured hook — tests drive
         // the redirect themselves).
@@ -273,39 +387,32 @@ impl McpOAuthService {
         if let Some(hook) = self.browser_hook.as_ref() {
             hook(&authorize_url);
         } else if let Err(e) = open::that(&authorize_url) {
+            // Not a warning for the caller: without a browser the callback can
+            // never arrive, and the client has no way to open the URL itself.
+            // Fail while the reason is still explainable.
             warn!("Failed to open browser: {e}");
+            self.clear_pending().await;
+            let error = McpError::OAuth(format!("failed to open the system browser: {e}"));
+            self.remember_login_error(server_url, &error).await;
+            return Err(error);
         }
 
-        // Wait for callback.
-        let code = match self.wait_for_callback(listener).await {
-            Ok(code) => code,
-            Err(e) => {
-                let code = e.oauth_error_code().map(str::to_owned);
-                self.clear_pending().await;
-                return Ok(OAuthLoginResponse {
-                    success: false,
-                    error: Some(sanitize_oauth_error(&e)),
-                    error_code: code,
-                });
-            }
-        };
+        Ok(OAuthLoginStarted {
+            authorize_url,
+            service: self.clone(),
+            server_url: server_url.to_owned(),
+            listener,
+            gate,
+        })
+    }
 
-        // Exchange code for tokens.
-        match self.exchange_code(server_url, code).await {
-            Ok(()) => Ok(OAuthLoginResponse {
-                success: true,
-                error: None,
-                error_code: None,
-            }),
-            Err(e) => {
-                let code = e.oauth_error_code().map(str::to_owned);
-                self.clear_pending().await;
-                Ok(OAuthLoginResponse {
-                    success: false,
-                    error: Some(sanitize_oauth_error(&e)),
-                    error_code: code,
-                })
-            }
+    /// Structured, UI-readable failure response without tokens, codes or the
+    /// full authorization URL (design doc §6.2/§7.1).
+    fn failed_login(error: &McpError) -> OAuthLoginResponse {
+        OAuthLoginResponse {
+            success: false,
+            error: Some(sanitize_oauth_error(error)),
+            error_code: error.oauth_error_code().map(str::to_owned),
         }
     }
 
@@ -313,6 +420,8 @@ impl McpOAuthService {
     ///
     /// Idempotent: returns Ok even if no token was stored.
     pub async fn logout(&self, server_url: &str) -> Result<(), McpError> {
+        // A forgotten credential must not leave a stale flow failure behind.
+        self.forget_login_error(server_url).await;
         match self.token_repo.delete(server_url).await {
             Ok(()) => {
                 debug!(server_url, "OAuth token deleted");
@@ -1357,7 +1466,10 @@ fn redirect_path(redirect_url: &str) -> String {
 
 /// Make an OAuth error message safe for UIs and logs: no tokens, no codes,
 /// no full authorization URLs (design doc §6.2).
-fn sanitize_oauth_error(error: &McpError) -> String {
+///
+/// Public because callers outside this crate surface flow failures to clients
+/// (and they must not invent their own redaction).
+pub fn sanitize_oauth_error(error: &McpError) -> String {
     let message = error.to_string();
     // Authorization URLs carry `code`/`state` query parameters; keep only a
     // stable descriptor when one appears.
