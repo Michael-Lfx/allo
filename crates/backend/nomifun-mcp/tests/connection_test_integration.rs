@@ -607,6 +607,151 @@ async fn http_custom_headers_are_sent() {
 }
 
 // ---------------------------------------------------------------------------
+// Credential references: resolved, or not sent at all
+// ---------------------------------------------------------------------------
+
+/// What the mock MCP server observed, so the assertions are about the wire
+/// rather than about a helper's return value.
+#[derive(Default)]
+struct ObservedRequest {
+    authorization: Option<String>,
+    query: Option<String>,
+}
+
+/// A minimal Streamable-HTTP MCP server that records the auth-bearing parts of
+/// every request it receives.
+async fn spawn_recording_mcp_server() -> (
+    std::net::SocketAddr,
+    Arc<Mutex<Vec<ObservedRequest>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen: Arc<Mutex<Vec<ObservedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+
+    let handle = tokio::spawn(async move {
+        let app = axum::Router::new().route(
+            "/mcp",
+            axum::routing::post(
+                move |uri: axum::http::Uri, headers: axum::http::HeaderMap, body: axum::Json<serde_json::Value>| {
+                    let recorder = Arc::clone(&recorder);
+                    async move {
+                        recorder.lock().unwrap().push(ObservedRequest {
+                            authorization: headers
+                                .get(axum::http::header::AUTHORIZATION)
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::to_owned),
+                            query: uri.query().map(str::to_owned),
+                        });
+
+                        // Answer the handshake by method so the probe reaches
+                        // `tools/list` and can succeed.
+                        let id = body.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                        let result = match body.get("method").and_then(|m| m.as_str()) {
+                            Some("initialize") => serde_json::json!({
+                                "protocolVersion": "2024-11-05",
+                                "capabilities": {},
+                                "serverInfo": { "name": "recording", "version": "1.0" }
+                            }),
+                            Some("tools/list") => serde_json::json!({ "tools": [] }),
+                            _ => serde_json::json!({}),
+                        };
+                        axum::Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": result,
+                        }))
+                    }
+                },
+            ),
+        );
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (addr, seen, handle)
+}
+
+#[tokio::test]
+async fn an_unresolved_reference_sends_nothing_at_all() {
+    let (addr, seen, server_handle) = spawn_recording_mcp_server().await;
+
+    let svc = make_service();
+    let mut headers = HashMap::new();
+    // Namespaced so this test cannot collide with another test's credentials.
+    headers.insert("x-api-key".into(), "${secret:__STEP1_UNSET__}".into());
+    let transport = McpServerTransport::Http {
+        url: format!("http://{}/mcp", addr),
+        headers,
+    };
+
+    let result = svc.test_connection("unresolved-server", &transport).await;
+
+    assert!(!result.success, "an unresolvable reference must not probe successfully");
+    assert_eq!(
+        result.code,
+        Some(nomifun_api_types::McpConnectionTestErrorCode::MissingCredential),
+    );
+    let error = result.error.unwrap_or_default();
+    assert!(error.contains("__STEP1_UNSET__"), "the error names the credential: {error}");
+    assert!(
+        !error.contains("${secret:"),
+        "the error must not echo the unresolved template: {error}"
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "fail-closed means the request is never attempted"
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn resolved_references_reach_the_wire_in_headers_and_url() {
+    let (addr, seen, server_handle) = spawn_recording_mcp_server().await;
+
+    // The process-wide map is what the real hosts install at startup. The name is
+    // namespaced so a parallel test cannot observe it by accident.
+    nomifun_common::secret_ref::set_credentials(HashMap::from([(
+        "__STEP1_TOKEN__".to_owned(),
+        "resolved-token".to_owned(),
+    )]));
+
+    let svc = make_service();
+    let mut headers = HashMap::new();
+    // Embedded form, with the literal prefix the marketplace writes.
+    headers.insert(
+        "Authorization".into(),
+        "Bearer ${secret:__STEP1_TOKEN__}".into(),
+    );
+    // Whole-value form, to prove both survive the same path.
+    headers.insert("x-api-key".into(), "secret:__STEP1_TOKEN__".into());
+    let url = format!("http://{}/mcp?token=${{secret:__STEP1_TOKEN__}}", addr);
+    let transport = McpServerTransport::Http { url, headers };
+
+    let result = svc.test_connection("resolved-server", &transport).await;
+    assert!(result.success, "probe should succeed: {:?}", result.error);
+
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty(), "the request must have been sent");
+    let first = &seen[0];
+    assert_eq!(
+        first.authorization.as_deref(),
+        Some("Bearer resolved-token"),
+        "the `Bearer ` prefix comes from the template text, not from the header name"
+    );
+    assert_eq!(
+        first.query.as_deref(),
+        Some("token=resolved-token"),
+        "a credential in the URL query is resolved too"
+    );
+
+    // Leave no credential behind for another test in this binary.
+    nomifun_common::secret_ref::set_credentials(HashMap::new());
+    server_handle.abort();
+}
+
+// ---------------------------------------------------------------------------
 // Stdio with args and env
 // ---------------------------------------------------------------------------
 

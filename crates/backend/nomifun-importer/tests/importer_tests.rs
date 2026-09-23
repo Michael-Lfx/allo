@@ -2,6 +2,7 @@
 //! TC-IMP-001..009. Static fixtures live in `tests/fixtures/`; dynamic
 //! malicious trees (symlink escape) are built at runtime.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -459,6 +460,88 @@ async fn mcp_connector_import_preserves_stdio_args_and_env() {
         "the plaintext credential must not appear anywhere in the stored snapshot: {}",
         connector.payload_json
     );
+}
+
+#[tokio::test]
+async fn mcp_connector_import_keeps_the_remote_auth_template() {
+    // The auth-bearing half of a remote connector is `headers` (+ the package's
+    // `staticHeaders`). Dropping it produced a connector that installs cleanly and
+    // then fails authentication forever, with nothing in the snapshot to explain
+    // why — so the import must carry it, and must carry it in the one shape the
+    // typed transport accepts.
+    let (service, _temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("mcp-connector-remote"),
+            source_kind: SourceKind::WorkBuddyMcpConnector,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("demo-remote") && warning.contains("env")),
+        "an `env` block on a remote transport never takes effect and must be flagged \
+         against the server that declared it: {:?}",
+        result.warnings
+    );
+
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    let mut by_name = HashMap::new();
+    for component in components.iter().filter(|component| component.kind == "connector") {
+        let payload: serde_json::Value = serde_json::from_str(&component.payload_json).unwrap();
+        by_name.insert(component.name.clone(), payload);
+    }
+
+    // 1. Streamable HTTP: spelling normalized, templates preserved, staticHeaders
+    //    merged (and the templated map winning on a collision).
+    let remote = &by_name["demo-remote"];
+    assert_eq!(remote["transport"]["type"], "http");
+    assert_eq!(
+        remote["transport"]["url"],
+        "https://mcp.example.com/api/v1/mcp/stream?token=${DEMO_API_KEY}"
+    );
+    assert_eq!(
+        remote["transport"]["headers"]["Authorization"],
+        "Bearer ${DEMO_API_KEY}"
+    );
+    assert_eq!(remote["transport"]["headers"]["client"], "WorkBuddy");
+    assert_eq!(
+        remote["transport"]["headers"]["x-static"], "kept",
+        "`headers` owns the key it declares; `staticHeaders` only fills the rest"
+    );
+    assert!(
+        remote["transport"].get("env").is_none(),
+        "a remote transport must not carry env — nothing reads it"
+    );
+
+    // 2. `sse` is a different protocol and must not be flattened to http. This is
+    //    the spelling the old hard-coded \"http\" got wrong.
+    let sse = &by_name["demo-sse"];
+    assert_eq!(sse["transport"]["type"], "sse");
+    assert_eq!(sse["transport"]["headers"]["x-api-key"], "${DEMO_API_KEY}");
+
+    // 3. No `type` at all: the URL decides, as it always has.
+    let untyped = &by_name["demo-untyped"];
+    assert_eq!(untyped["transport"]["type"], "http");
+
+    // 4. The strongest assertion: whatever we write must deserialize as the
+    //    transport type registration uses. `McpTransport` denies unknown fields,
+    //    so a stray key here is a connector that cannot be installed at all.
+    for (name, payload) in &by_name {
+        let transport: nomifun_api_types::McpTransport =
+            serde_json::from_value(payload["transport"].clone())
+                .unwrap_or_else(|error| panic!("{name}: transport does not deserialize: {error}"));
+        match transport {
+            nomifun_api_types::McpTransport::Sse { url, .. } => assert!(url.contains("sse")),
+            nomifun_api_types::McpTransport::Http { url, .. } => assert!(url.starts_with("https://")),
+            nomifun_api_types::McpTransport::Stdio { .. } => panic!("{name}: expected a remote transport"),
+        }
+    }
 }
 
 #[tokio::test]

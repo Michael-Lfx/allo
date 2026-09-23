@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "demo-remote": {
+      "type": "streamableHttp",
+      "url": "https://mcp.example.com/api/v1/mcp/stream?token=${DEMO_API_KEY}",
+      "headers": {
+        "Authorization": "Bearer ${DEMO_API_KEY}",
+        "x-static": "kept"
+      },
+      "staticHeaders": {
+        "client": "WorkBuddy",
+        "x-static": "shadowed"
+      },
+      "env": {
+        "IGNORED_BY_HTTP": "never-read"
+      }
+    },
+    "demo-sse": {
+      "type": "sse",
+      "url": "https://mcp.example.com/sse",
+      "headers": {
+        "x-api-key": "${DEMO_API_KEY}"
+      }
+    },
+    "demo-untyped": {
+      "url": "https://mcp.example.com/untyped"
+    }
+  }
+}

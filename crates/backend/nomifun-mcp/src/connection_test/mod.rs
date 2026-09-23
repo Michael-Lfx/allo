@@ -199,14 +199,14 @@ impl McpConnectionTestService {
         arguments: serde_json::Value,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let client = self.http_client();
-        let (mut req_headers, oauth_managed) =
+        let (resolved_url, mut req_headers, oauth_managed) =
             self.request_headers(url, headers).await.map_err(call_failure)?;
 
         // 1. Open the stream, with the same one-shot 401 refresh the probe uses.
         let mut refreshed = false;
         let resp = loop {
             let response = client
-                .get(url)
+                .get(&resolved_url)
                 .headers(req_headers.clone())
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .send()
@@ -253,7 +253,15 @@ impl McpConnectionTestService {
         );
 
         let result = self
-            .run_sse_tool_call(&client, url, &mut req_headers, oauth_managed, &mut event_rx, tool, &arguments)
+            .run_sse_tool_call(
+                &client,
+                &resolved_url,
+                &mut req_headers,
+                oauth_managed,
+                &mut event_rx,
+                tool,
+                &arguments,
+            )
             .await;
         reader_handle.abort();
         result
@@ -376,7 +384,7 @@ impl McpConnectionTestService {
         arguments: serde_json::Value,
     ) -> Result<McpToolCallOutcome, McpToolCallError> {
         let client = self.http_client();
-        let (mut req_headers, oauth_managed) =
+        let (resolved_url, mut req_headers, oauth_managed) =
             self.request_headers(url, headers).await.map_err(call_failure)?;
         req_headers.insert(
             reqwest::header::CONTENT_TYPE,
@@ -388,7 +396,7 @@ impl McpConnectionTestService {
         );
 
         let init_resp = self
-            .http_post_mcp_with_auth(&client, url, &mut req_headers, oauth_managed, &build_initialize_request(1))
+            .http_post_mcp_with_auth(&client, &resolved_url, &mut req_headers, oauth_managed, &build_initialize_request(1))
             .await
             .map_err(call_failure)?;
         if let Some(error) = init_resp.rpc.error {
@@ -405,7 +413,7 @@ impl McpConnectionTestService {
 
         // Fire-and-forget, exactly as the probe does.
         let _ = client
-            .post(url)
+            .post(&resolved_url)
             .headers(req_headers.clone())
             .json(&build_initialized_notification())
             .send()
@@ -414,7 +422,7 @@ impl McpConnectionTestService {
         let call_resp = self
             .http_post_mcp_with_auth(
                 &client,
-                url,
+                &resolved_url,
                 &mut req_headers,
                 oauth_managed,
                 &build_tools_call_request(2, tool, &arguments),
@@ -500,7 +508,7 @@ impl McpConnectionTestService {
 
     async fn test_http_inner(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
         let client = self.http_client();
-        let (mut req_headers, oauth_managed) = match self.request_headers(url, headers).await {
+        let (resolved_url, mut req_headers, oauth_managed) = match self.request_headers(url, headers).await {
             Ok(value) => value,
             Err(result) => return result,
         };
@@ -517,7 +525,7 @@ impl McpConnectionTestService {
         let init_resp = match self
             .http_post_mcp_with_auth(
                 &client,
-                url,
+                &resolved_url,
                 &mut req_headers,
                 oauth_managed,
                 &build_initialize_request(1),
@@ -540,7 +548,7 @@ impl McpConnectionTestService {
 
         // 2. initialized notification (fire-and-forget)
         let _ = client
-            .post(url)
+            .post(&resolved_url)
             .headers(req_headers.clone())
             .json(&build_initialized_notification())
             .send()
@@ -550,7 +558,7 @@ impl McpConnectionTestService {
         let tools_resp = match self
             .http_post_mcp_with_auth(
                 &client,
-                url,
+                &resolved_url,
                 &mut req_headers,
                 oauth_managed,
                 &build_tools_list_request(2),
@@ -619,18 +627,29 @@ impl McpConnectionTestService {
         Ok(HttpMcpResponse { rpc, session_id })
     }
 
+    /// Resolve the credential references carried by a remote transport, then
+    /// build the request headers (an explicit `Authorization` header wins over
+    /// the stored OAuth token, as before).
+    ///
+    /// Returns the **resolved URL** alongside the headers: a marketplace
+    /// `mcp.json` may put the credential in the query string, and the reference
+    /// must never be sent as literal text.
     async fn request_headers(
         &self,
         url: &str,
         headers: &HashMap<String, String>,
-    ) -> Result<(reqwest::header::HeaderMap, bool), McpConnectionTestResult> {
-        let mut request_headers = build_http_headers(headers);
+    ) -> Result<(String, reqwest::header::HeaderMap, bool), McpConnectionTestResult> {
+        let (resolved_url, resolved_headers) = resolve_remote_auth(url, headers)?;
+        let mut request_headers = build_http_headers(&resolved_headers);
         if request_headers.contains_key(reqwest::header::AUTHORIZATION) {
-            return Ok((request_headers, false));
+            return Ok((resolved_url, request_headers, false));
         }
         let Some(oauth_service) = self.oauth_service.as_ref() else {
-            return Ok((request_headers, false));
+            return Ok((resolved_url, request_headers, false));
         };
+        // The OAuth token is keyed by the URL the connector was registered with,
+        // so look it up with the unresolved one — only the request itself goes to
+        // the resolved URL.
         let token = match oauth_service.get_token(url).await {
             Ok(token) => token,
             Err(McpError::ReauthorizationRequired) => {
@@ -641,14 +660,14 @@ impl McpConnectionTestService {
             }
         };
         let Some(token) = token else {
-            return Ok((request_headers, false));
+            return Ok((resolved_url, request_headers, false));
         };
         request_headers.insert(
             reqwest::header::AUTHORIZATION,
             reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
                 .expect("OAuth access token must be a valid header value"),
         );
-        Ok((request_headers, true))
+        Ok((resolved_url, request_headers, true))
     }
 
     async fn http_post_mcp_with_auth(
@@ -700,7 +719,7 @@ impl McpConnectionTestService {
 
     async fn test_sse_inner(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
         let client = self.http_client();
-        let (mut req_headers, oauth_managed) = match self.request_headers(url, headers).await {
+        let (resolved_url, mut req_headers, oauth_managed) = match self.request_headers(url, headers).await {
             Ok(value) => value,
             Err(result) => return result,
         };
@@ -709,7 +728,7 @@ impl McpConnectionTestService {
         let mut refreshed = false;
         let resp = loop {
             let response = match client
-                .get(url)
+                .get(&resolved_url)
                 .headers(req_headers.clone())
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .send()
@@ -964,6 +983,61 @@ fn call_failure(result: McpConnectionTestResult) -> McpToolCallError {
     )
 }
 
+/// Resolve the credential references a remote transport carries, in both forms.
+///
+/// The persisted row holds **references**, never values: the importer writes
+/// `secret:NAME` for a whole-value slot and `${secret:NAME}` inside a longer
+/// string, which is exactly how a marketplace `mcp.json` templates a header
+/// (`Authorization: Bearer ${...}`) or puts a token in the URL query. Both the
+/// probe and the tool-call path resolve here, so neither can send the literal
+/// reference — that shape fails at the server with no local signal.
+///
+/// Fail-closed: if **any** reference is unresolvable nothing is sent, and the
+/// error names the missing credential names. A partially substituted
+/// Authorization header is worse than no request at all, because it looks
+/// configured.
+fn resolve_remote_auth(
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Result<(String, HashMap<String, String>), McpConnectionTestResult> {
+    resolve_remote_auth_with(url, headers, &nomifun_common::secret_ref::credentials())
+}
+
+/// [`resolve_remote_auth`] against an explicit credential map (pure; for tests).
+fn resolve_remote_auth_with(
+    url: &str,
+    headers: &HashMap<String, String>,
+    credentials: &HashMap<String, String>,
+) -> Result<(String, HashMap<String, String>), McpConnectionTestResult> {
+    let mut missing: Vec<String> = Vec::new();
+    let mut resolved_headers = HashMap::with_capacity(headers.len());
+    for (key, value) in headers {
+        let resolution = nomifun_common::secret_ref::resolve_template_with(value, credentials);
+        match resolution.value {
+            Some(value) => {
+                resolved_headers.insert(key.clone(), value);
+            }
+            None => missing.extend(resolution.missing),
+        }
+    }
+    let resolved_url = nomifun_common::secret_ref::resolve_template_with(url, credentials);
+    missing.extend(resolved_url.missing.iter().cloned());
+
+    if !missing.is_empty() {
+        // Key names only — never the value, and never the URL.
+        warn!(
+            missing = ?missing,
+            "MCP remote transport has unresolved credential references; not sending the request"
+        );
+        return Err(protocol::missing_credential_result(&missing));
+    }
+
+    Ok((
+        resolved_url.value.unwrap_or_else(|| url.to_owned()),
+        resolved_headers,
+    ))
+}
+
 pub(super) fn resolve_stdio_command(command: &str) -> OsString {
     if !command.is_empty()
         && !command.contains('/')
@@ -1001,6 +1075,46 @@ mod tests {
     fn service_with_timeout() {
         let svc = McpConnectionTestService::new(reqwest::Client::new()).with_timeout(Duration::from_secs(5));
         assert_eq!(svc.timeout, Duration::from_secs(5));
+    }
+
+    // ---- Credential references in a remote transport ---------------------
+
+    #[test]
+    fn remote_auth_resolution_reports_every_missing_name_once() {
+        let credentials = HashMap::from([("PRESENT".to_owned(), "v".to_owned())]);
+        let headers = HashMap::from([
+            ("Authorization".to_owned(), "Bearer ${secret:MISSING_B}".to_owned()),
+            ("x-api-key".to_owned(), "${secret:MISSING_A}".to_owned()),
+            ("x-ok".to_owned(), "secret:PRESENT".to_owned()),
+        ]);
+        let url = "https://h/mcp?token=${secret:MISSING_B}";
+
+        let error = resolve_remote_auth_with(url, &headers, &credentials)
+            .expect_err("an unresolvable reference must stop the request");
+
+        assert_eq!(
+            error.code,
+            Some(McpConnectionTestErrorCode::MissingCredential),
+        );
+        let message = error.error.unwrap_or_default();
+        // Sorted, de-duplicated, names only: the same name appears in two places
+        // and is reported once.
+        assert!(message.contains("MISSING_A, MISSING_B"), "{message}");
+        assert!(!message.contains("PRESENT"), "a resolved name is not missing: {message}");
+        assert!(!message.contains("https://"), "the URL carries the credential: {message}");
+    }
+
+    #[test]
+    fn remote_auth_resolution_leaves_a_plain_transport_alone() {
+        let headers = HashMap::from([("x-static".to_owned(), "WorkBuddy".to_owned())]);
+        let (url, resolved) = resolve_remote_auth_with(
+            "https://h/mcp",
+            &headers,
+            &HashMap::new(),
+        )
+        .expect("no references, nothing to resolve");
+        assert_eq!(url, "https://h/mcp");
+        assert_eq!(resolved.get("x-static").map(String::as_str), Some("WorkBuddy"));
     }
 
     // ---- Tool calling ----------------------------------------------------

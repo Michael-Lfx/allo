@@ -613,6 +613,26 @@ pub(super) fn oauth_error_result(error: String) -> McpConnectionTestResult {
     )
 }
 
+/// A `secret:` reference had no value installed, so **no request was sent**.
+///
+/// Names only: the missing key names are what the user has to fill in, and they
+/// are not secrets. The values — and the URL, which may carry the credential in
+/// its query — never appear here or in the log.
+pub(super) fn missing_credential_result(missing: &[String]) -> McpConnectionTestResult {
+    let mut names = missing.to_vec();
+    names.sort();
+    names.dedup();
+    error_result(
+        McpConnectionTestErrorCode::MissingCredential,
+        format!(
+            "Missing credential reference{plural}: {names}",
+            plural = if names.len() == 1 { "" } else { "s" },
+            names = names.join(", "),
+        ),
+        Some(serde_json::json!({ "missing": names })),
+    )
+}
+
 fn detect_auth_method(www_authenticate: &str) -> McpAuthMethod {
     let lower = www_authenticate.to_lowercase();
     if lower.contains("bearer") || lower.contains("oauth") {

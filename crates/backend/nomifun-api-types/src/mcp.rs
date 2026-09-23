@@ -228,6 +228,10 @@ pub enum McpConnectionTestErrorCode {
     RpcError,
     ProtocolError,
     ReauthorizationRequired,
+    /// A `secret:NAME` / `${secret:NAME}` reference in the URL or headers has no
+    /// value installed, so the request was **not** sent. Configuration problem,
+    /// not a transport one — hence 422 rather than a gateway status.
+    MissingCredential,
 }
 
 impl McpConnectionTestErrorCode {
@@ -242,6 +246,7 @@ impl McpConnectionTestErrorCode {
             Self::RpcError => "MCP_RPC_ERROR",
             Self::ProtocolError => "MCP_PROTOCOL_ERROR",
             Self::ReauthorizationRequired => "MCP_REAUTHORIZATION_REQUIRED",
+            Self::MissingCredential => "MCP_MISSING_CREDENTIAL",
         }
     }
 }

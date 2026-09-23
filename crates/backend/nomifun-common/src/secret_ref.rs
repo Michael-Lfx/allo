@@ -5,10 +5,12 @@
 //! (`~/.agent-store/config.toml [credentials]`, with the process environment as
 //! a fallback) and reaches a child process **only** at spawn time, in memory.
 //!
-//! The carrier between those two points is a **reference**: an env value that is
-//! exactly `secret:NAME` names the credential to inject there. This module owns
-//! the reference syntax and the resolution, so the importer (which writes the
-//! reference) and every MCP spawn path (which resolves it) agree byte-for-byte.
+//! The carrier between those two points is a **reference**, in one of two forms:
+//! an env value that is exactly `secret:NAME`, or the embedded `${secret:NAME}`
+//! inside a longer string (a header carrying `Bearer ${secret:TOKEN}`, or a URL
+//! with the token in its query). This module owns the reference syntax and the
+//! resolution, so the importer (which writes the reference) and every MCP spawn
+//! path (which resolves it) agree byte-for-byte.
 //!
 //! Wiring: the host installs the credentials once at startup
 //! ([`set_credentials`]); spawn paths call [`resolve_env`] on the env map they
@@ -88,6 +90,112 @@ pub fn lookup_with(name: &str, credentials: &HashMap<String, String>) -> Option<
         .or_else(|| std::env::var(name).ok())
 }
 
+/// The outcome of resolving one templated string (see [`resolve_template_with`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TemplateResolution {
+    /// `Some(resolved)` when every reference resolved; `None` when at least one
+    /// did not. Callers must treat `None` as "do not use this string at all" —
+    /// the partial result is deliberately discarded rather than half-filled.
+    pub value: Option<String>,
+    /// Credential **names** that could not be resolved, sorted and de-duplicated.
+    /// A name is not a secret, so this is safe to log.
+    pub missing: Vec<String>,
+}
+
+/// Delimiter of the embedded reference form: `${secret:NAME}`.
+pub const TEMPLATE_PREFIX: &str = "${secret:";
+
+/// Resolve a string that may carry credential references, in either form.
+///
+/// - exactly `secret:NAME` — the original whole-value form, unchanged;
+/// - `${secret:NAME}`, possibly several and possibly embedded in surrounding
+///   text (`Authorization: Bearer ${secret:TOKEN}`, `…/mcp?token=${secret:K}`),
+///   replaced by their values;
+/// - anything else is returned unchanged, including the shapes that only *look*
+///   like a reference: `secret:` with no name, `${secret:}` with no name, and an
+///   unterminated `${secret:NAME`. Guessing at those would invent a credential
+///   name, so they stay literal (the same posture as [`parse_secret_ref`]).
+///
+/// Fail-closed at the string level: if any one reference is unresolvable the
+/// whole value comes back `None`, so a caller can never send a half-substituted
+/// Authorization header.
+pub fn resolve_template_with(value: &str, credentials: &HashMap<String, String>) -> TemplateResolution {
+    if let Some(name) = parse_secret_ref(value) {
+        return match lookup_with(name, credentials) {
+            Some(actual) => TemplateResolution { value: Some(actual), missing: Vec::new() },
+            None => TemplateResolution { value: None, missing: vec![name.to_owned()] },
+        };
+    }
+    if !value.contains(TEMPLATE_PREFIX) {
+        return TemplateResolution { value: Some(value.to_owned()), missing: Vec::new() };
+    }
+
+    let mut out = String::with_capacity(value.len());
+    let mut missing = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find(TEMPLATE_PREFIX) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + TEMPLATE_PREFIX.len()..];
+        let Some(end) = after.find('}') else {
+            // Unterminated: the rest is literal text.
+            out.push_str(&rest[start..]);
+            return TemplateResolution { value: Some(out), missing };
+        };
+        let name = &after[..end];
+        if name.is_empty() {
+            // `${secret:}` names nothing; keep the literal rather than inventing one.
+            out.push_str(&rest[start..start + TEMPLATE_PREFIX.len() + end + 1]);
+        } else {
+            match lookup_with(name, credentials) {
+                Some(actual) => out.push_str(&actual),
+                None => missing.push(name.to_owned()),
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+
+    missing.sort();
+    missing.dedup();
+    if missing.is_empty() {
+        TemplateResolution { value: Some(out), missing }
+    } else {
+        TemplateResolution { value: None, missing }
+    }
+}
+
+/// [`resolve_template_with`] against the installed credentials.
+pub fn resolve_template(value: &str) -> TemplateResolution {
+    resolve_template_with(value, &credentials())
+}
+
+/// Resolve every value in a map, treating each as a template ([`resolve_template`]).
+///
+/// Keys whose value cannot be resolved are omitted, and the **key names** are
+/// reported — never the values. Used for header maps, where a key that cannot be
+/// filled means the request must not be sent.
+pub fn resolve_map(values: &HashMap<String, String>) -> ResolvedEnv {
+    resolve_map_with(values, &credentials())
+}
+
+/// [`resolve_map`] against an explicit credential map (pure; for tests).
+pub fn resolve_map_with(
+    values: &HashMap<String, String>,
+    credentials: &HashMap<String, String>,
+) -> ResolvedEnv {
+    let mut resolved = ResolvedEnv::default();
+    for (key, value) in values {
+        match resolve_template_with(value, credentials).value {
+            Some(actual) => {
+                resolved.env.insert(key.clone(), actual);
+            }
+            None => resolved.missing.push(key.clone()),
+        }
+    }
+    resolved.missing.sort();
+    resolved
+}
+
 /// Resolve one env value against an explicit credential map plus the process
 /// environment — the pure, testable half of [`resolve_env`].
 ///
@@ -97,6 +205,11 @@ pub fn lookup_with(name: &str, credentials: &HashMap<String, String>) -> Option<
 ///
 /// The credential lookup order is deliberate: an explicit config entry wins
 /// over an ambient environment variable of the same name.
+///
+/// Whole-value references only: use [`resolve_template_with`] where a reference
+/// may be embedded in a larger string (headers, URLs). This function stays as
+/// the strict, single-slot form because `mcp.json`'s `bearerTokenEnvVar` and the
+/// edit paths rely on "the whole value is the reference".
 pub fn resolve_value_with(
     value: &str,
     credentials: &HashMap<String, String>,
@@ -121,10 +234,12 @@ pub struct ResolvedEnv {
 /// Resolve every `secret:NAME` reference in an env map against the installed
 /// credentials and the process environment.
 ///
-/// Non-reference values pass through, so a hand-registered server (whose env was
-/// never rewritten at import) behaves exactly as before. A reference with no
-/// matching credential is dropped and reported in [`ResolvedEnv::missing`] —
-/// the child simply does not get that variable, rather than getting the literal
+/// Both reference forms are honoured ([`resolve_template`]): the whole-value
+/// `secret:NAME`, and `${secret:NAME}` embedded in a longer value. Non-reference
+/// values pass through, so a hand-registered server (whose env was never
+/// rewritten at import) behaves exactly as before. A reference with no matching
+/// credential is dropped and reported in [`ResolvedEnv::missing`] — the child
+/// simply does not get that variable, rather than getting the literal
 /// `secret:NAME` string or a fabricated value.
 pub fn resolve_env(env: &HashMap<String, String>) -> ResolvedEnv {
     resolve_env_with(env, &credentials())
@@ -137,7 +252,7 @@ pub fn resolve_env_with(
 ) -> ResolvedEnv {
     let mut resolved = ResolvedEnv::default();
     for (key, value) in env {
-        match resolve_value_with(value, credentials) {
+        match resolve_template_with(value, credentials).value {
             Some(actual) => {
                 resolved.env.insert(key.clone(), actual);
             }
@@ -215,6 +330,74 @@ mod tests {
             resolve_value_with("secret:K", &creds(&[("K", "config")])),
             Some("config".to_owned())
         );
+    }
+
+    #[test]
+    fn embedded_template_resolves_inside_a_longer_string() {
+        // The market's shape: the prefix (`Bearer `) is part of the template text
+        // and must survive verbatim — nothing may be inferred from the key name.
+        let got = resolve_template_with("Bearer ${secret:TOKEN}", &creds(&[("TOKEN", "abc")]));
+        assert_eq!(got.value.as_deref(), Some("Bearer abc"));
+        assert!(got.missing.is_empty());
+
+        // Several references in one value, and non-reference text untouched.
+        let got = resolve_template_with(
+            "${secret:SCHEME}://h/?token=${secret:TOKEN}&x=1",
+            &creds(&[("SCHEME", "https"), ("TOKEN", "t")]),
+        );
+        assert_eq!(got.value.as_deref(), Some("https://h/?token=t&x=1"));
+    }
+
+    #[test]
+    fn one_unresolvable_reference_discards_the_whole_string() {
+        // Fail-closed at the string level: a half-substituted Authorization
+        // header is worse than no header, because it looks configured.
+        let got = resolve_template_with("Bearer ${secret:TOKEN}", &HashMap::new());
+        assert_eq!(got.value, None);
+        assert_eq!(got.missing, vec!["TOKEN".to_owned()]);
+    }
+
+    #[test]
+    fn missing_names_are_sorted_and_deduplicated() {
+        let got = resolve_template_with("${secret:B}${secret:A}${secret:B}", &HashMap::new());
+        assert_eq!(got.value, None);
+        assert_eq!(got.missing, vec!["A".to_owned(), "B".to_owned()]);
+    }
+
+    #[test]
+    fn shapes_that_only_look_like_templates_stay_literal() {
+        // Inventing a credential name from these would be guessing.
+        for literal in ["${secret:}", "${secret:NAME", "${secretNAME}", "$secret:NAME"] {
+            let got = resolve_template_with(literal, &creds(&[("NAME", "n")]));
+            assert_eq!(got.value.as_deref(), Some(literal), "{literal} must stay literal");
+            assert!(got.missing.is_empty(), "{literal} must not report a missing name");
+        }
+    }
+
+    #[test]
+    fn whole_value_reference_still_wins_over_template_scanning() {
+        // `secret:NAME` is not a template; it keeps the original behaviour
+        // (including resolving `secret:` with no name as literal text).
+        let got = resolve_template_with("secret:NAME", &creds(&[("NAME", "n")]));
+        assert_eq!(got.value.as_deref(), Some("n"));
+        let got = resolve_template_with("secret:", &HashMap::new());
+        assert_eq!(got.value.as_deref(), Some("secret:"));
+    }
+
+    #[test]
+    fn env_and_header_maps_resolve_both_forms() {
+        let env = HashMap::from([
+            ("A".to_owned(), "secret:TOKEN".to_owned()),
+            ("B".to_owned(), "prefix-${secret:TOKEN}".to_owned()),
+            ("C".to_owned(), "plain".to_owned()),
+            ("D".to_owned(), "${secret:UNSET}".to_owned()),
+        ]);
+        let got = resolve_env_with(&env, &creds(&[("TOKEN", "t")]));
+        assert_eq!(got.env.get("A").map(String::as_str), Some("t"));
+        assert_eq!(got.env.get("B").map(String::as_str), Some("prefix-t"));
+        assert_eq!(got.env.get("C").map(String::as_str), Some("plain"));
+        assert!(!got.env.contains_key("D"));
+        assert_eq!(got.missing, vec!["D".to_owned()], "the map key is what gets reported");
     }
 
     #[test]
