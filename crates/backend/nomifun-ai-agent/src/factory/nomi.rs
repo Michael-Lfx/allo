@@ -2036,6 +2036,9 @@ pub(crate) fn merge_host_declared_mcp_servers(
                 }
             }
             McpTransport::Sse { url, headers } => {
+                let Ok(url) = resolve_url_secrets(Some(conversation_id), &declared.name, url) else {
+                    continue;
+                };
                 let headers = declared_remote_headers(
                     conversation_id,
                     &declared.name,
@@ -2047,7 +2050,7 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     command: None,
                     args: None,
                     env: None,
-                    url: Some(url.clone()),
+                    url: Some(url),
                     headers: Some(headers),
                     deferred: Some(false),
                     request_timeout_secs: declared.request_timeout_secs,
@@ -2058,6 +2061,9 @@ pub(crate) fn merge_host_declared_mcp_servers(
                 }
             }
             McpTransport::Http { url, headers } => {
+                let Ok(url) = resolve_url_secrets(Some(conversation_id), &declared.name, url) else {
+                    continue;
+                };
                 let headers = declared_remote_headers(
                     conversation_id,
                     &declared.name,
@@ -2069,7 +2075,7 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     command: None,
                     args: None,
                     env: None,
-                    url: Some(url.clone()),
+                    url: Some(url),
                     headers: Some(headers),
                     deferred: Some(false),
                     request_timeout_secs: declared.request_timeout_secs,
@@ -2158,7 +2164,7 @@ fn apply_bearer_token(
     }
 }
 
-/// Resolve `secret:<NAME>` references in a header map exactly as the env map is
+/// Resolve credential references in a header map exactly as the env map is
 /// resolved, and report the shapes that *look* like a reference but are not one.
 ///
 /// The DB-row and session-snapshot paths used to hand headers to the engine
@@ -2167,10 +2173,11 @@ fn apply_bearer_token(
 /// literal text and authentication failed with no local signal. All three paths
 /// (DB row, session snapshot, `mcp.json` declaration) now go through here.
 ///
-/// A reference has to be the **whole** value (`secret_ref::parse_secret_ref`),
-/// so `Authorization: Bearer secret:TOKEN` is not one; that shape is the likeliest
-/// mistake and is therefore named in a warning. The header *name* is logged, never
-/// the value.
+/// Two forms resolve, matching what the marketplace writes: the whole value being
+/// `secret:NAME`, or `${secret:NAME}` embedded in a longer string
+/// (`Authorization: Bearer ${secret:TOKEN}`). What is still a mistake is
+/// `Bearer secret:TOKEN` — the bare word `secret:` is not a template — and that
+/// shape is named in a warning. The header *name* is logged, never the value.
 fn resolve_header_secrets(
     conversation_id: Option<&str>,
     server_name: &str,
@@ -2196,15 +2203,16 @@ fn resolve_header_secrets(
         }
     }
     for (name, value) in headers {
-        let is_a_reference =
-            nomifun_common::secret_ref::parse_secret_ref(value).is_some();
+        let is_a_reference = nomifun_common::secret_ref::parse_secret_ref(value).is_some()
+            || value.contains(nomifun_common::secret_ref::TEMPLATE_PREFIX);
         if !is_a_reference && value.contains(nomifun_common::secret_ref::SECRET_PREFIX) {
             warn!(
                 server_name,
                 header = %name,
-                "host_mcp: a header value contains `secret:` but is not exactly a \
-                 `secret:<NAME>` reference, so it is sent literally; use the whole value as the \
-                 reference, or `bearerTokenEnvVar` for an `Authorization: Bearer <token>` header"
+                "host_mcp: a header value contains `secret:` but is neither exactly \
+                 `secret:<NAME>` nor an embedded `${{secret:<NAME>}}`, so it is sent literally; \
+                 use one of those two forms, or `bearerTokenEnvVar` for an \
+                 `Authorization: Bearer <token>` header"
             );
         }
     }
@@ -2237,6 +2245,40 @@ fn should_load_user_mcp_row(row: &McpServerRow, selected_ids: Option<&[McpServer
         && selected_ids
             .map(|ids| ids.iter().any(|id| id.as_str() == row.mcp_server_id))
             .unwrap_or(true)
+}
+
+/// Resolve the credential references a remote server **URL** may carry.
+///
+/// A URL is not like a header map: there is nothing to omit, so an unresolvable
+/// reference cannot be papered over. The server is skipped instead of being
+/// called with `${secret:…}` in its query string — which is a real shape in the
+/// marketplace (10 connectors put their token in the URL).
+///
+/// The error names the missing credentials, never the URL (which contains them).
+fn resolve_url_secrets(
+    conversation_id: Option<&str>,
+    server_name: &str,
+    url: &str,
+) -> Result<String, String> {
+    let resolved = nomifun_common::secret_ref::resolve_template(url);
+    if resolved.missing.is_empty() {
+        return Ok(resolved.value.unwrap_or_else(|| url.to_owned()));
+    }
+    match conversation_id {
+        Some(conversation_id) => {
+            report_missing_credentials(conversation_id, server_name, "url", &resolved.missing)
+        }
+        None => warn!(
+            server_name,
+            field = "url",
+            missing = ?resolved.missing,
+            "host_mcp: unresolved credential references in the server URL; skipping the server"
+        ),
+    }
+    Err(format!(
+        "url: missing credential reference(s): {}",
+        resolved.missing.join(", ")
+    ))
 }
 
 fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, String> {
@@ -2301,6 +2343,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 .get("url")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "http: missing url".to_owned())?;
+            let url = resolve_url_secrets(None, &row.name, url)?;
             let headers = value
                 .get("headers")
                 .and_then(|v| v.as_object())
@@ -2317,7 +2360,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 command: None,
                 args: None,
                 env: None,
-                url: Some(url.to_owned()),
+                url: Some(url),
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
@@ -2332,6 +2375,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 .get("url")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "sse: missing url".to_owned())?;
+            let url = resolve_url_secrets(None, &row.name, url)?;
             let headers = value
                 .get("headers")
                 .and_then(|v| v.as_object())
@@ -2348,7 +2392,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 command: None,
                 args: None,
                 env: None,
-                url: Some(url.to_owned()),
+                url: Some(url),
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
@@ -2399,13 +2443,14 @@ fn session_server_to_mcp_server_config(
             if url.is_empty() {
                 return Err("http: missing url".to_owned());
             }
+            let url = resolve_url_secrets(None, &server.name, url)?;
             let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
                 command: None,
                 args: None,
                 env: None,
-                url: Some(url.clone()),
+                url: Some(url),
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
@@ -2419,13 +2464,14 @@ fn session_server_to_mcp_server_config(
             if url.is_empty() {
                 return Err("sse: missing url".to_owned());
             }
+            let url = resolve_url_secrets(None, &server.name, url)?;
             let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::Sse,
                 command: None,
                 args: None,
                 env: None,
-                url: Some(url.clone()),
+                url: Some(url),
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
@@ -2439,13 +2485,14 @@ fn session_server_to_mcp_server_config(
             if url.is_empty() {
                 return Err("streamable_http: missing url".to_owned());
             }
+            let url = resolve_url_secrets(None, &server.name, url)?;
             let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
                 command: None,
                 args: None,
                 env: None,
-                url: Some(url.clone()),
+                url: Some(url),
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
@@ -3677,9 +3724,9 @@ mod tests {
         );
         assert!(resolved.is_empty(), "{resolved:?}");
 
-        // `Bearer secret:X` is *not* a whole-value reference, so it is forwarded
-        // and only warned about — the shape a user is likeliest to write, and the
-        // reason that warning exists.
+        // `Bearer secret:X` is neither form, so it is forwarded and only warned
+        // about — the shape a user is likeliest to write, and the reason that
+        // warning exists.
         let resolved = resolve_header_secrets(
             None,
             "linear",
@@ -3688,6 +3735,28 @@ mod tests {
         assert_eq!(
             resolved.get("Authorization").map(String::as_str),
             Some("Bearer secret:X")
+        );
+
+        // The embedded `${{secret:X}}` form *does* resolve, prefix included: it is
+        // what the marketplace templates write, and the prefix must come from the
+        // template text rather than from the header name.
+        let previous = nomifun_common::secret_ref::credentials();
+        nomifun_common::secret_ref::set_credentials(HashMap::from([(
+            "__STEP1_EMBEDDED__".to_owned(),
+            "t".to_owned(),
+        )]));
+        let resolved = resolve_header_secrets(
+            None,
+            "linear",
+            &HashMap::from([(
+                "Authorization".to_owned(),
+                "Bearer ${secret:__STEP1_EMBEDDED__}".to_owned(),
+            )]),
+        );
+        nomifun_common::secret_ref::set_credentials(previous);
+        assert_eq!(
+            resolved.get("Authorization").map(String::as_str),
+            Some("Bearer t")
         );
     }
 
@@ -3726,6 +3795,57 @@ mod tests {
             "the row path resolves references instead of forwarding them: {headers:?}"
         );
         assert_eq!(headers.get("X-Tenant").map(String::as_str), Some("acme"));
+    }
+
+    /// A URL is the one place a reference cannot simply be *omitted*: the server
+    /// cannot be reached without it. Sending the template to the marketplace's
+    /// `?token=${secret:…}` would put the literal reference on the wire, so the
+    /// server has to be dropped instead.
+    #[test]
+    fn a_row_whose_url_reference_is_unset_is_dropped_not_called() {
+        let mut row = McpServerRow {
+            mcp_server_id: "0192f000-0000-7000-8000-000000000001".to_owned(),
+            name: "templated".to_owned(),
+            description: None,
+            enabled: true,
+            transport_type: "http".to_owned(),
+            transport_config: serde_json::json!({
+                "url": "https://x/mcp?token=${secret:__STEP1_UNSET__}",
+                "headers": { "X-Tenant": "acme" }
+            })
+            .to_string(),
+            tools: None,
+            last_test_status: "disconnected".to_owned(),
+            last_connected: None,
+            original_json: None,
+            builtin: false,
+            deleted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        let error = row_to_mcp_server_config(&row).expect_err("unresolved URL must drop the server");
+        assert!(error.contains("__STEP1_UNSET__"), "the message names the credential: {error}");
+
+        // Once the credential exists, the same row yields the resolved URL and the
+        // template prefix is preserved verbatim.
+        let previous = nomifun_common::secret_ref::credentials();
+        nomifun_common::secret_ref::set_credentials(HashMap::from([(
+            "__STEP1_UNSET__".to_owned(),
+            "t".to_owned(),
+        )]));
+        row.transport_config = serde_json::json!({
+            "url": "https://x/mcp?token=${secret:__STEP1_UNSET__}&scheme=https",
+            "headers": { "X-Tenant": "acme" }
+        })
+        .to_string();
+        let config = row_to_mcp_server_config(&row).expect("row must map once the value exists");
+        nomifun_common::secret_ref::set_credentials(previous);
+
+        assert_eq!(
+            config.url.as_deref(),
+            Some("https://x/mcp?token=t&scheme=https")
+        );
     }
 
     /// The declaration merge never clobbers a name that is already taken. In the

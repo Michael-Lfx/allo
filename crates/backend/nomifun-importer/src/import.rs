@@ -1196,7 +1196,30 @@ fn build_mcp_connector_components(
         // plaintext out of every stored artefact.
         let env = rewrite_secret_env(config.get("env").and_then(|value| value.as_object()), builder);
         let transport = match (&url, &command) {
-            (Some(url), _) => json!({ "type": "http", "url": url }),
+            (Some(url), _) => {
+                // The auth-bearing half of a remote connector lives in `headers`
+                // (the templated, user-facing map) and `staticHeaders` (the
+                // constants the package pins, e.g. `client: WorkBuddy`). Both are
+                // required for the request to authenticate, and neither can be a
+                // separate key in the stored transport: that JSON is validated
+                // against `McpTransport`, which denies unknown fields, so a second
+                // map would fail registration outright.
+                let headers = merged_headers(config);
+                if config
+                    .get("env")
+                    .and_then(|value| value.as_object())
+                    .is_some_and(|env| !env.is_empty())
+                {
+                    builder.warn(format!(
+                        "mcp.json 的 {name} 声明了 env，但远端传输不读 env —— 该声明不会生效"
+                    ));
+                }
+                json!({
+                    "type": declared_url_transport_type(config),
+                    "url": url,
+                    "headers": headers,
+                })
+            }
             (None, Some(command)) => json!({
                 "type": "stdio",
                 "command": command,
@@ -1322,6 +1345,48 @@ fn build_connector_components(
 fn looks_sensitive_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     ["api", "token", "secret", "password", "apikey"].iter().any(|part| lower.contains(part))
+}
+
+/// The transport type of a URL-shaped connector, normalized to the two spellings
+/// the host understands for remote servers.
+///
+/// The market writes `streamableHttp` (193 entries), `streamable-http` (7),
+/// `sse` (10), `http` (2), and leaves `type` out entirely on 16 — so the declared
+/// string cannot be passed through as-is. The MCP service's `from_db` accepts
+/// only `http` / `sse` / `stdio` and **registration fails** on anything else,
+/// which is why the collapse has to happen here rather than later.
+///
+/// `sse` is the one distinction that carries protocol meaning and is preserved;
+/// everything else URL-shaped is Streamable HTTP, which is what the previous
+/// hard-coded `"http"` meant (and wrongly applied to the 10 `sse` entries).
+fn declared_url_transport_type(config: &serde_json::Value) -> &'static str {
+    match config.get("type").and_then(|value| value.as_str()).map(str::trim) {
+        Some("sse") => "sse",
+        _ => "http",
+    }
+}
+
+/// Collect a connector's declared HTTP headers: `headers`, plus any key that only
+/// `staticHeaders` declares.
+///
+/// `headers` wins on a collision — it is the map the marketplace templates (and
+/// therefore the one the user's credential flows into), while `staticHeaders`
+/// carries only fixed values.
+fn merged_headers(config: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut merged = serde_json::Map::new();
+    for key in ["staticHeaders", "headers"] {
+        let Some(object) = config.get(key).and_then(|value| value.as_object()) else {
+            continue;
+        };
+        for (name, value) in object {
+            // Non-string values cannot survive the typed transport, and silently
+            // dropping them is better than failing the whole registration.
+            if value.is_string() {
+                merged.insert(name.clone(), value.clone());
+            }
+        }
+    }
+    merged
 }
 
 fn is_sensitive_field(key: &str, schema_type: &str, schema: &serde_json::Value) -> bool {

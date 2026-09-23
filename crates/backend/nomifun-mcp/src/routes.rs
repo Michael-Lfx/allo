@@ -253,7 +253,8 @@ fn connection_test_failure_status(code: McpConnectionTestErrorCode) -> StatusCod
     match code {
         McpConnectionTestErrorCode::CommandNotFound
         | McpConnectionTestErrorCode::CommandPermissionDenied
-        | McpConnectionTestErrorCode::CommandStartFailed => StatusCode::UNPROCESSABLE_ENTITY,
+        | McpConnectionTestErrorCode::CommandStartFailed
+        | McpConnectionTestErrorCode::MissingCredential => StatusCode::UNPROCESSABLE_ENTITY,
         McpConnectionTestErrorCode::Timeout => StatusCode::GATEWAY_TIMEOUT,
         McpConnectionTestErrorCode::ConnectionFailed
         | McpConnectionTestErrorCode::HttpError
