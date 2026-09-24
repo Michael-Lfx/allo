@@ -4,7 +4,7 @@ import { useFeedback } from '@/renderer/hooks/context/FeedbackContext';
 import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
 import { Comment } from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 type FeedbackButtonProps = {
@@ -21,7 +21,13 @@ type FeedbackButtonProps = {
  */
 const FeedbackButton: React.FC<FeedbackButtonProps> = ({ conversationErrorReport, className }) => {
   const { t } = useTranslation();
-  const { openFeedback } = useFeedback();
+  const { openFeedback, autoReportConversationError } = useFeedback();
+
+  useEffect(() => {
+    if (conversationErrorReport && autoReportConversationError) {
+      void autoReportConversationError(conversationErrorReport);
+    }
+  }, [autoReportConversationError, conversationErrorReport]);
 
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
