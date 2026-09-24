@@ -21,6 +21,11 @@ use crate::flowy::DeviceActivateRequest;
 use crate::platform;
 use crate::resources;
 
+/// Sentinel used only for the outbound activate payload when no NIC MAC is
+/// available. Never persist this — treat it like "unset" so the next attempt
+/// re-reads hardware.
+pub const MAC_PLACEHOLDER: &str = "00:00:00:00:00:01";
+
 #[derive(Debug, Clone)]
 pub struct DeviceFingerprint {
     pub mac: String,
@@ -42,7 +47,8 @@ pub struct PersistedFingerprint {
 pub fn collect_fingerprint(
     persisted: &PersistedFingerprint,
 ) -> Result<DeviceFingerprint, ServerClientError> {
-    let needs_hw = persisted.mac.is_empty()
+    let persisted_mac_ok = is_usable_mac(&persisted.mac);
+    let needs_hw = !persisted_mac_ok
         || persisted.sn.is_empty()
         || persisted.cpu_chip_id.is_empty()
         || persisted.xpu_brand.is_empty();
@@ -52,14 +58,17 @@ pub fn collect_fingerprint(
         (None, None, None, None)
     };
 
-    let mac = normalize_mac(&if persisted.mac.is_empty() {
-        new_mac.unwrap_or_else(|| {
-            warn!("could not read MAC address; using generated placeholder");
-            "00:00:00:00:00:01".to_string()
-        })
+    let mac = if persisted_mac_ok {
+        normalize_mac(&persisted.mac)
     } else {
-        persisted.mac.clone()
-    });
+        match new_mac.filter(|value| is_usable_mac(value)) {
+            Some(value) => normalize_mac(&value),
+            None => {
+                warn!("could not read MAC address; using generated placeholder");
+                MAC_PLACEHOLDER.to_string()
+            }
+        }
+    };
     let sn = if persisted.sn.is_empty() {
         new_sn.unwrap_or_else(generate_serial_number)
     } else {
@@ -87,6 +96,24 @@ pub fn collect_fingerprint(
         cpu_chip_id,
         xpu_brand,
     })
+}
+
+/// MAC value safe to write into local device state. Placeholders become empty
+/// so a later activation re-queries the platform.
+pub fn persistable_mac(mac: &str) -> String {
+    let normalized = normalize_mac(mac);
+    if is_usable_mac(&normalized) {
+        normalized
+    } else {
+        String::new()
+    }
+}
+
+fn is_usable_mac(raw: &str) -> bool {
+    let normalized = normalize_mac(raw);
+    !normalized.is_empty()
+        && !normalized.eq_ignore_ascii_case(MAC_PLACEHOLDER)
+        && !normalized.eq_ignore_ascii_case("00:00:00:00:00:00")
 }
 
 fn collect_unpersisted() -> (Option<String>, Option<String>, Option<String>, Option<String>) {
@@ -317,9 +344,40 @@ mod tests {
             .expect("collect_unpersisted follows collect_fingerprint");
         let body = &source[start..end];
         assert!(
-            body.contains("normalize_mac(&if persisted.mac.is_empty()"),
-            "fresh and persisted MAC paths must both go through normalize_mac"
+            body.contains("normalize_mac(&persisted.mac)")
+                || body.contains("normalize_mac(&value)"),
+            "MAC paths must go through normalize_mac"
         );
+        assert!(body.contains("is_usable_mac"));
+        assert!(body.contains("MAC_PLACEHOLDER"));
+    }
+
+    #[test]
+    fn persistable_mac_drops_placeholder() {
+        assert_eq!(persistable_mac("aa-bb-cc-dd-ee-ff"), "AA:BB:CC:DD:EE:FF");
+        assert_eq!(persistable_mac(MAC_PLACEHOLDER), "");
+        assert_eq!(persistable_mac("00:00:00:00:00:00"), "");
+        assert_eq!(persistable_mac(""), "");
+        assert!(!is_usable_mac(MAC_PLACEHOLDER));
+    }
+
+    #[test]
+    fn collect_fingerprint_retries_when_persisted_mac_is_placeholder() {
+        let persisted = PersistedFingerprint {
+            mac: MAC_PLACEHOLDER.into(),
+            sn: "SN123".into(),
+            cpu_chip_id: "CPUABC123".into(),
+            xpu_brand: "NVIDIA GeForce RTX 4090".into(),
+        };
+        let fp = collect_fingerprint(&persisted).expect("fingerprint");
+        // Placeholder is never a stable cached identity: either a real MAC was
+        // re-read, or we still emit the outbound sentinel (and would not persist it).
+        if is_usable_mac(&fp.mac) {
+            assert_ne!(fp.mac, MAC_PLACEHOLDER);
+        } else {
+            assert_eq!(fp.mac, MAC_PLACEHOLDER);
+            assert!(persistable_mac(&fp.mac).is_empty());
+        }
     }
 
     #[test]

@@ -14,7 +14,8 @@ use windows::Win32::System::SystemInformation::{
 };
 use windows::core::HRESULT;
 
-/// First Up adapter with a real 6-byte MAC (loopback excluded), lowest IfIndex.
+/// Prefer an Up adapter with a real 6-byte MAC; if none are Up, fall back to
+/// any non-loopback adapter that still exposes a physical MAC (lowest IfIndex).
 pub(super) fn read_mac_address() -> Option<String> {
     let mut size = 0u32;
     let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
@@ -44,29 +45,36 @@ pub(super) fn read_mac_address() -> Option<String> {
         return None;
     }
 
-    let mut best: Option<(u32, [u8; 6])> = None;
+    let mut best_up: Option<(u32, [u8; 6])> = None;
+    let mut best_any: Option<(u32, [u8; 6])> = None;
     // SAFETY: GetAdaptersAddresses initialized a linked list of IP_ADAPTER_ADDRESSES_LH.
     let mut current = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
     while !current.is_null() {
         // SAFETY: `current` walks the list filled by GetAdaptersAddresses; union
         // field `IfIndex` is valid for dual-stack LH adapters.
-        let (mac, if_index, next) = unsafe {
+        let (mac, if_index, is_up, next) = unsafe {
             let adapter = &*current;
             (
-                adapter_mac(adapter),
+                adapter_physical_mac(adapter),
                 adapter.Anonymous1.Anonymous.IfIndex,
+                adapter.OperStatus == IfOperStatusUp,
                 adapter.Next,
             )
         };
-        if let Some(mac) = mac
-            && (best.is_none() || best.is_some_and(|(idx, _)| if_index < idx))
-        {
-            best = Some((if_index, mac));
+        if let Some(mac) = mac {
+            if is_up
+                && (best_up.is_none() || best_up.is_some_and(|(idx, _)| if_index < idx))
+            {
+                best_up = Some((if_index, mac));
+            }
+            if best_any.is_none() || best_any.is_some_and(|(idx, _)| if_index < idx) {
+                best_any = Some((if_index, mac));
+            }
         }
         current = next;
     }
 
-    best.map(|(_, mac)| {
+    best_up.or(best_any).map(|(_, mac)| {
         format!(
             "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
@@ -74,10 +82,7 @@ pub(super) fn read_mac_address() -> Option<String> {
     })
 }
 
-fn adapter_mac(adapter: &IP_ADAPTER_ADDRESSES_LH) -> Option<[u8; 6]> {
-    if adapter.OperStatus != IfOperStatusUp {
-        return None;
-    }
+fn adapter_physical_mac(adapter: &IP_ADAPTER_ADDRESSES_LH) -> Option<[u8; 6]> {
     // IF_TYPE_SOFTWARE_LOOPBACK
     if adapter.IfType == 24 {
         return None;
@@ -276,19 +281,19 @@ mod tests {
     }
 
     #[test]
-    fn adapter_mac_rejects_loopback_and_down() {
+    fn adapter_physical_mac_rejects_loopback_keeps_down() {
         let mut adapter = unsafe { MaybeUninit::<IP_ADAPTER_ADDRESSES_LH>::zeroed().assume_init() };
         adapter.OperStatus = IfOperStatusUp;
         adapter.IfType = 24;
         adapter.PhysicalAddressLength = 6;
         adapter.PhysicalAddress[..6].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
-        assert_eq!(adapter_mac(&adapter), None);
+        assert_eq!(adapter_physical_mac(&adapter), None);
 
         adapter.IfType = 6;
         adapter.OperStatus = windows::Win32::NetworkManagement::Ndis::IfOperStatusDown;
-        assert_eq!(adapter_mac(&adapter), None);
+        assert_eq!(adapter_physical_mac(&adapter), Some([1, 2, 3, 4, 5, 6]));
 
         adapter.OperStatus = IfOperStatusUp;
-        assert_eq!(adapter_mac(&adapter), Some([1, 2, 3, 4, 5, 6]));
+        assert_eq!(adapter_physical_mac(&adapter), Some([1, 2, 3, 4, 5, 6]));
     }
 }

@@ -3,10 +3,11 @@
 use std::fs;
 use std::path::Path;
 
-/// Prefer `eth0`/`en0`, else first Up non-loopback iface with a real MAC.
+/// Prefer `eth0`/`en0` while Up; else any Up iface; else any non-loopback with a MAC.
 pub(super) fn read_mac_address() -> Option<String> {
-    let mut preferred: Option<String> = None;
-    let mut fallback: Option<String> = None;
+    let mut preferred_up: Option<String> = None;
+    let mut any_up: Option<String> = None;
+    let mut any_mac: Option<String> = None;
     let entries = fs::read_dir("/sys/class/net").ok()?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -14,22 +15,25 @@ pub(super) fn read_mac_address() -> Option<String> {
             continue;
         }
         let path = entry.path();
-        if read_trim(path.join("operstate")).as_deref() != Some("up") {
+        let Some(mac) = read_trim(path.join("address")) else {
             continue;
-        }
-        let mac = read_trim(path.join("address"))?;
+        };
         if mac == "00:00:00:00:00:00" {
             continue;
         }
-        if name == "eth0" || name == "en0" {
-            preferred = Some(mac);
+        let is_up = read_trim(path.join("operstate")).as_deref() == Some("up");
+        if is_up && (name == "eth0" || name == "en0") {
+            preferred_up = Some(mac);
             break;
         }
-        if fallback.is_none() {
-            fallback = Some(mac);
+        if is_up && any_up.is_none() {
+            any_up = Some(mac.clone());
+        }
+        if any_mac.is_none() {
+            any_mac = Some(mac);
         }
     }
-    preferred.or(fallback)
+    preferred_up.or(any_up).or(any_mac)
 }
 
 /// DMI product serial, then board serial.

@@ -16,31 +16,35 @@ use io_kit_sys::{
 };
 use libc::{AF_LINK, IFF_LOOPBACK, IFF_UP, freeifaddrs, getifaddrs, ifaddrs, sockaddr_dl, sysctlbyname};
 
-/// Prefer `en0` (matches the former `ifconfig en0` path), else first Up non-loopback AF_LINK MAC.
+/// Prefer `en0` while Up; else first Up AF_LINK MAC; else any non-loopback AF_LINK MAC.
 pub(super) fn read_mac_address() -> Option<String> {
     unsafe {
         let mut ifap: *mut ifaddrs = ptr::null_mut();
         if getifaddrs(&mut ifap) != 0 || ifap.is_null() {
             return None;
         }
-        let mut en0: Option<[u8; 6]> = None;
-        let mut fallback: Option<[u8; 6]> = None;
+        let mut en0_up: Option<[u8; 6]> = None;
+        let mut any_up: Option<[u8; 6]> = None;
+        let mut any_mac: Option<[u8; 6]> = None;
         let mut current = ifap;
         while !current.is_null() {
             let ifa = &*current;
-            if let Some((name, mac)) = link_mac(ifa) {
-                if name == "en0" {
-                    en0 = Some(mac);
+            if let Some((name, mac, is_up)) = link_mac(ifa) {
+                if is_up && name == "en0" {
+                    en0_up = Some(mac);
                     break;
                 }
-                if fallback.is_none() {
-                    fallback = Some(mac);
+                if is_up && any_up.is_none() {
+                    any_up = Some(mac);
+                }
+                if any_mac.is_none() {
+                    any_mac = Some(mac);
                 }
             }
             current = ifa.ifa_next;
         }
         freeifaddrs(ifap);
-        en0.or(fallback).map(|mac| {
+        en0_up.or(any_up).or(any_mac).map(|mac| {
             format!(
                 "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
@@ -49,12 +53,12 @@ pub(super) fn read_mac_address() -> Option<String> {
     }
 }
 
-unsafe fn link_mac(ifa: &ifaddrs) -> Option<(String, [u8; 6])> {
+unsafe fn link_mac(ifa: &ifaddrs) -> Option<(String, [u8; 6], bool)> {
     if ifa.ifa_addr.is_null() {
         return None;
     }
     let flags = ifa.ifa_flags as i32;
-    if flags & IFF_LOOPBACK != 0 || flags & IFF_UP == 0 {
+    if flags & IFF_LOOPBACK != 0 {
         return None;
     }
     let addr = unsafe { &*ifa.ifa_addr };
@@ -81,7 +85,8 @@ unsafe fn link_mac(ifa: &ifaddrs) -> Option<(String, [u8; 6])> {
     }
     let mut mac = [0u8; 6];
     mac.copy_from_slice(mac_slice);
-    Some((name, mac))
+    let is_up = flags & IFF_UP != 0;
+    Some((name, mac, is_up))
 }
 
 /// IOPlatformExpertDevice `IOPlatformSerialNumber` (same source as system_profiler Hardware).

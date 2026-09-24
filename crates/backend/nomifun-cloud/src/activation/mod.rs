@@ -12,6 +12,7 @@ use tracing::{debug, warn};
 
 pub use fingerprint::{
     DeviceFingerprint, PersistedFingerprint, build_activate_request, collect_fingerprint,
+    persistable_mac,
 };
 pub use geoip::{GeoIpInfo, resolve_geo_ip};
 
@@ -137,7 +138,7 @@ impl DeviceActivation {
             xpu_brand: state.xpu_brand.clone(),
         };
         let fingerprint = collect_fingerprint(&persisted)?;
-        state.mac = fingerprint.mac.clone();
+        state.mac = persistable_mac(&fingerprint.mac);
         state.sn = fingerprint.sn.clone();
         state.cpu_chip_id = fingerprint.cpu_chip_id.clone();
         state.xpu_brand = match &fingerprint.xpu_brand {
