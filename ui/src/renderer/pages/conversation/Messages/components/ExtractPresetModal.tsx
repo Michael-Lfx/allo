@@ -125,7 +125,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       footer={null}
       className='flowy-modal flowy-extract-preset-modal'
       style={{
-        maxWidth: 540,
+        maxWidth: 640,
         width: '92vw',
         borderRadius: 14,
         overflow: 'hidden',
@@ -135,7 +135,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
         {/* Modal Header */}
         <div className='flex items-center gap-14px'>
           <div
-            className='flex h-38px w-38px shrink-0 items-center justify-center rd-10px bg-primary-1 text-primary-6 [&>span]:flex [&>span]:items-center [&>span]:justify-center'
+            className='flex h-40px w-40px shrink-0 items-center justify-center rd-10px bg-primary-1 text-primary-6 [&>span]:flex [&>span]:items-center [&>span]:justify-center'
             style={{ lineHeight: 0 }}
           >
             <MagicWand theme='filled' size={20} fill='currentColor' />
@@ -175,7 +175,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
             </div>
 
             {/* Linear Animated Progress */}
-            <div className='h-3px w-220px bg-fill-3 rd-full overflow-hidden'>
+            <div className='h-3px w-240px bg-fill-3 rd-full overflow-hidden'>
               <div
                 className='h-full bg-primary-6 rd-full transition-all duration-500'
                 style={{ width: `${((extractingStep + 1) / stepLabels.length) * 100}%` }}
