@@ -56,10 +56,12 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
     setIsExtracting(true);
     try {
       // 1. Fetch available skills for intelligent binding recommendation
-      let availableSkills: Array<{ id: string; name?: string }> = [];
+      let availableSkills: Array<{ skill_id?: string; id?: string; name?: string; description?: string }> = [];
       try {
         const catalog = await ipcBridge.fs.listSkillCatalog.invoke();
-        availableSkills = catalog.skills;
+        if (Array.isArray(catalog?.skills)) {
+          availableSkills = catalog.skills;
+        }
       } catch (err) {
         console.warn('[ExtractPreset] Failed to fetch skill catalog:', err);
       }

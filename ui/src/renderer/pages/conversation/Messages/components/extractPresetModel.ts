@@ -12,12 +12,19 @@ export interface PresetDraftData {
   avatar: string;
 }
 
+export interface ExtractPresetSkillItem {
+  skill_id?: string;
+  id?: string;
+  name?: string;
+  description?: string;
+}
+
 export interface ExtractPresetInput {
   conversationTitle?: string;
-  messageText: string;
+  messageText?: string;
   userQuestion?: string;
   userGuidance?: string;
-  availableSkills?: Array<{ id: string; name?: string }>;
+  availableSkills?: ExtractPresetSkillItem[];
 }
 
 /**
@@ -76,52 +83,56 @@ export function buildPresetInstructions(input: ExtractPresetInput): string {
  * Recommends relevant skill IDs based on text content and available skills.
  */
 export function recommendSkillIds(
-  messageContent: string,
-  availableSkills: Array<{ id: string; name?: string }> = []
+  messageContent?: string,
+  availableSkills: ExtractPresetSkillItem[] = []
 ): string[] {
-  if (!availableSkills.length) return [];
-  const lower = messageContent.toLowerCase();
+  if (!Array.isArray(availableSkills) || availableSkills.length === 0) return [];
+  const lower = (messageContent || '').toLowerCase();
   const matched = new Set<string>();
 
   for (const skill of availableSkills) {
-    const skillName = (skill.name || skill.id).toLowerCase();
-    const id = skill.id.toLowerCase();
+    if (!skill) continue;
+    const rawId = skill.skill_id || skill.id || '';
+    if (!rawId) continue;
+    const skillName = (skill.name || rawId).toLowerCase();
+    const id = rawId.toLowerCase();
+    const desc = (skill.description || '').toLowerCase();
 
     if (
       (lower.includes('code') || lower.includes('代码') || lower.includes('重构')) &&
-      (id.includes('code') || id.includes('file') || skillName.includes('code'))
+      (id.includes('code') || id.includes('file') || skillName.includes('code') || desc.includes('code'))
     ) {
-      matched.add(skill.id);
+      matched.add(rawId);
     }
     if (
       (lower.includes('search') || lower.includes('搜索') || lower.includes('查一下')) &&
-      (id.includes('search') || skillName.includes('search'))
+      (id.includes('search') || skillName.includes('search') || desc.includes('search'))
     ) {
-      matched.add(skill.id);
+      matched.add(rawId);
     }
     if (
       (lower.includes('web') || lower.includes('网页') || lower.includes('浏览器')) &&
-      (id.includes('browser') || id.includes('web') || skillName.includes('browser'))
+      (id.includes('browser') || id.includes('web') || skillName.includes('browser') || desc.includes('web'))
     ) {
-      matched.add(skill.id);
+      matched.add(rawId);
     }
     if (
       (lower.includes('terminal') || lower.includes('bash') || lower.includes('命令行') || lower.includes('终端')) &&
-      (id.includes('bash') || id.includes('terminal') || skillName.includes('bash'))
+      (id.includes('bash') || id.includes('terminal') || skillName.includes('bash') || desc.includes('terminal'))
     ) {
-      matched.add(skill.id);
+      matched.add(rawId);
     }
     if (
       (lower.includes('pdf') || lower.includes('文档') || lower.includes('表格') || lower.includes('excel')) &&
-      (id.includes('pdf') || id.includes('office') || id.includes('doc') || skillName.includes('pdf'))
+      (id.includes('pdf') || id.includes('office') || id.includes('doc') || skillName.includes('pdf') || desc.includes('pdf'))
     ) {
-      matched.add(skill.id);
+      matched.add(rawId);
     }
     if (
       (lower.includes('git') || lower.includes('commit') || lower.includes('分支')) &&
-      (id.includes('git') || skillName.includes('git'))
+      (id.includes('git') || skillName.includes('git') || desc.includes('git'))
     ) {
-      matched.add(skill.id);
+      matched.add(rawId);
     }
   }
 
@@ -134,7 +145,7 @@ export function recommendSkillIds(
 export function buildPresetExtractionDraft(input: ExtractPresetInput): PresetDraftData {
   const name = derivePresetName(input);
   const instructions = buildPresetInstructions(input);
-  const combinedText = `${input.userQuestion || ''}\n${input.messageText}\n${input.userGuidance || ''}`;
+  const combinedText = `${input.userQuestion || ''}\n${input.messageText || ''}\n${input.userGuidance || ''}`;
   const skills = recommendSkillIds(combinedText, input.availableSkills);
 
   const description = input.userGuidance?.trim()

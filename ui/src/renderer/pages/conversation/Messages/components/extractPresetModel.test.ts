@@ -42,11 +42,11 @@ describe('extractPresetModel', () => {
     expect(promptWithGuidance).toContain('输出严格使用 TypeScript 并加上详尽注释');
   });
 
-  it('recommends relevant skill IDs based on content keywords', () => {
+  it('recommends relevant skill IDs based on content keywords and supports skill_id format', () => {
     const availableSkills = [
-      { id: 'builtin:code_edit', name: 'Code Editor' },
-      { id: 'builtin:web_search', name: 'Web Search' },
-      { id: 'builtin:browser', name: 'Browser Automation' },
+      { skill_id: 'builtin:code_edit', name: 'Code Editor' },
+      { skill_id: 'builtin:web_search', name: 'Web Search' },
+      { skill_id: 'builtin:browser', name: 'Browser Automation' },
     ];
 
     const codeSkills = recommendSkillIds('帮我写一个代码重构脚本', availableSkills);
