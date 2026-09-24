@@ -126,12 +126,9 @@ export function ConnectorCredentialForm({
           <span>{docLabel}</span>
         </a>
       )}
-      {credential.missing.length > 0 && (
-        <p className="credential-form-missing">
-          {t("catalog.credentialMissingCount", { count: credential.missing.length })}
-        </p>
-      )}
-
+      {/* No "N missing" line here: the drawer's own badge carries the count and
+          each row's chip says whether it is set, so a third statement of the same
+          fact, directly under the badge, was just noise. */}
       {credential.fields.map((field) => {
         const label = pickLocalized(field.label, lang) || field.key;
         const placeholder = pickLocalized(field.placeholder, lang);
