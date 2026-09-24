@@ -225,67 +225,168 @@ body[arco-theme='dark'] .credits-bubble-card--exhausted .sendbox-credits-bubble-
   border-bottom-color: rgba(239, 68, 68, 0.48);
 }
 
-/* Credits Top-up Button & Pill (Theme-adaptive gold/amber palette for Light & Dark) */
+/* Credits Top-up Button & Pill (Dynamic State: Normal / Low / Exhausted for Light & Dark) */
 .credits-topup-btn {
-  color: #b45309;
-  background-color: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(217, 119, 6, 0.22);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: all 140ms cubic-bezier(0, 0, 0.2, 1);
-}
-
-.credits-topup-btn:hover {
-  color: #92400e;
-  background-color: rgba(245, 158, 11, 0.22);
-  border-color: rgba(217, 119, 6, 0.45);
-  box-shadow: 0 0 6px rgba(245, 158, 11, 0.18);
+  user-select: none;
+  cursor: pointer;
 }
 
 .credits-topup-btn:active {
   transform: scale(0.96);
 }
 
-/* Compact Icon-only Button (for tight 14px sider line) */
-.credits-topup-icon-btn {
+/* Normal balance state (>= 1,000): Quiet, non-intrusive utility style */
+.credits-topup-btn--normal {
+  color: var(--color-text-2, #64748b);
+  background-color: var(--color-fill-2, rgba(0, 0, 0, 0.04));
+  border: 1px solid transparent;
+}
+
+.credits-topup-btn--normal:hover {
+  color: var(--color-text-1, #0f172a);
+  background-color: var(--color-fill-3, rgba(0, 0, 0, 0.08));
+  border-color: var(--color-border-2, rgba(0, 0, 0, 0.12));
+}
+
+/* Low balance state (< 1,000): Warm Amber attention cue */
+.credits-topup-btn--low {
   color: #b45309;
-  background-color: transparent;
-  transition: all 140ms cubic-bezier(0, 0, 0.2, 1);
+  background-color: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(217, 119, 6, 0.22);
 }
 
-.credits-topup-icon-btn:hover {
+.credits-topup-btn--low:hover {
   color: #92400e;
-  background-color: rgba(245, 158, 11, 0.18);
+  background-color: rgba(245, 158, 11, 0.22);
+  border-color: rgba(217, 119, 6, 0.45);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.18);
 }
 
-.credits-topup-icon-btn:active {
-  transform: scale(0.92);
+/* Exhausted balance state (<= 0): Crimson Danger attention cue */
+.credits-topup-btn--exhausted {
+  color: #b91c1c;
+  background-color: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(220, 38, 38, 0.25);
 }
 
-/* Dark mode & custom dark theme adaptation */
-[data-theme='dark'] .credits-topup-btn,
-body[arco-theme='dark'] .credits-topup-btn {
+.credits-topup-btn--exhausted:hover {
+  color: #991b1b;
+  background-color: rgba(239, 68, 68, 0.22);
+  border-color: rgba(220, 38, 38, 0.45);
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.18);
+}
+
+/* Dark mode theme adaptations */
+[data-theme='dark'] .credits-topup-btn--normal,
+body[arco-theme='dark'] .credits-topup-btn--normal {
+  color: var(--color-text-2, #94a3b8);
+  background-color: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+}
+
+[data-theme='dark'] .credits-topup-btn--normal:hover,
+body[arco-theme='dark'] .credits-topup-btn--normal:hover {
+  color: var(--color-text-1, #f8fafc);
+  background-color: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme='dark'] .credits-topup-btn--low,
+body[arco-theme='dark'] .credits-topup-btn--low {
   color: #fbbf24;
   background-color: rgba(245, 158, 11, 0.15);
   border: 1px solid rgba(251, 191, 36, 0.28);
 }
 
-[data-theme='dark'] .credits-topup-btn:hover,
-body[arco-theme='dark'] .credits-topup-btn:hover {
+[data-theme='dark'] .credits-topup-btn--low:hover,
+body[arco-theme='dark'] .credits-topup-btn--low:hover {
   color: #fde68a;
   background-color: rgba(245, 158, 11, 0.26);
   border-color: rgba(251, 191, 36, 0.52);
   box-shadow: 0 0 8px rgba(245, 158, 11, 0.24);
 }
 
-[data-theme='dark'] .credits-topup-icon-btn,
-body[arco-theme='dark'] .credits-topup-icon-btn {
-  color: #fbbf24;
-  background-color: transparent;
+[data-theme='dark'] .credits-topup-btn--exhausted,
+body[arco-theme='dark'] .credits-topup-btn--exhausted {
+  color: #f87171;
+  background-color: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(248, 113, 113, 0.32);
 }
 
-[data-theme='dark'] .credits-topup-icon-btn:hover,
-body[arco-theme='dark'] .credits-topup-icon-btn:hover {
+[data-theme='dark'] .credits-topup-btn--exhausted:hover,
+body[arco-theme='dark'] .credits-topup-btn--exhausted:hover {
+  color: #fca5a5;
+  background-color: rgba(239, 68, 68, 0.26);
+  border-color: rgba(248, 113, 113, 0.55);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.28);
+}
+
+/* Compact Icon-only Button (for tight 14px footer line) */
+.credits-topup-icon-btn {
+  background-color: transparent;
+  transition: all 140ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.credits-topup-icon-btn:active {
+  transform: scale(0.92);
+}
+
+.credits-topup-icon-btn--normal {
+  color: var(--color-text-3, #94a3b8);
+}
+.credits-topup-icon-btn--normal:hover {
+  color: var(--color-text-1, #0f172a);
+  background-color: var(--color-fill-2, rgba(0, 0, 0, 0.06));
+}
+
+.credits-topup-icon-btn--low {
+  color: #b45309;
+}
+.credits-topup-icon-btn--low:hover {
+  color: #92400e;
+  background-color: rgba(245, 158, 11, 0.18);
+}
+
+.credits-topup-icon-btn--exhausted {
+  color: #b91c1c;
+}
+.credits-topup-icon-btn--exhausted:hover {
+  color: #991b1b;
+  background-color: rgba(239, 68, 68, 0.18);
+}
+
+[data-theme='dark'] .credits-topup-icon-btn--normal {
+  color: var(--color-text-3, #64748b);
+}
+[data-theme='dark'] .credits-topup-icon-btn--normal:hover,
+body[arco-theme='dark'] .credits-topup-icon-btn--normal:hover {
+  color: var(--color-text-1, #f8fafc);
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='dark'] .credits-topup-icon-btn--low,
+body[arco-theme='dark'] .credits-topup-icon-btn--low {
+  color: #fbbf24;
+}
+[data-theme='dark'] .credits-topup-icon-btn--low:hover,
+body[arco-theme='dark'] .credits-topup-icon-btn--low:hover {
   color: #fde68a;
   background-color: rgba(245, 158, 11, 0.22);
 }
+
+[data-theme='dark'] .credits-topup-icon-btn--exhausted,
+body[arco-theme='dark'] .credits-topup-icon-btn--exhausted {
+  color: #f87171;
+}
+[data-theme='dark'] .credits-topup-icon-btn--exhausted:hover,
+body[arco-theme='dark'] .credits-topup-icon-btn--exhausted:hover {
+  color: #fca5a5;
+  background-color: rgba(239, 68, 68, 0.24);
+}
+
 
 

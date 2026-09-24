@@ -3,6 +3,7 @@ import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
+import { resolveCreditsBubbleState } from '@/renderer/utils/credits/creditsBubbleModel';
 import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 
 type CreditsWebsiteButtonProps = {
@@ -14,6 +15,7 @@ type CreditsWebsiteButtonProps = {
 
 /**
   * 积分余额旁的充值/购买按钮：打开官网积分增值 tab（带云 JWT 自动登录）。
+  * 视觉层级根据当前积分状态（正常、低额度预警、已耗尽）动态响应。
   */
 const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
   size = 'sm',
@@ -21,8 +23,11 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
   className,
 }) => {
   const { t } = useTranslation();
-  const { balance } = useCredits();
+  const credits = useCredits();
+  const { balance } = credits;
   const label = t('billing.openBilling');
+
+  const bubbleState = resolveCreditsBubbleState(credits);
 
   const openBilling = () => {
     void openOfficialWebsiteCredits(undefined, undefined, { source: 'sider', balance });
@@ -48,15 +53,16 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
         }}
         onKeyDown={handleKeyDown}
         className={classNames(
-          'credits-topup-btn inline-flex items-center gap-3px px-6px py-0 h-20px rd-full text-11px font-600 cursor-pointer select-none leading-none',
+          'credits-topup-btn inline-flex items-center gap-2.5px px-5px h-18px rd-full text-10.5px font-500 cursor-pointer select-none leading-none',
+          `credits-topup-btn--${bubbleState}`,
           'focus-visible:outline-none focus-visible:shadow-[0_0_0_2px_rgba(245,158,11,0.4)]',
           className
         )}
       >
         <ShoppingCart
           theme='outline'
-          size='11'
-          strokeWidth={3}
+          size='10'
+          strokeWidth={2.8}
           fill='currentColor'
           className='block leading-none shrink-0'
         />
@@ -81,16 +87,16 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
       className={classNames(
         'inline-flex items-center justify-center transition-all duration-150',
         isXs
-          ? 'credits-topup-icon-btn size-14px rd-3px'
-          : 'credits-topup-btn size-18px p-1px rd-5px',
+          ? classNames('credits-topup-icon-btn size-14px rd-3px', `credits-topup-icon-btn--${bubbleState}`)
+          : classNames('credits-topup-btn size-18px p-1px rd-5px', `credits-topup-btn--${bubbleState}`),
         'cursor-pointer focus-visible:outline-none focus-visible:shadow-[0_0_0_2px_rgba(245,158,11,0.4)]',
         className
       )}
     >
       <ShoppingCart
         theme='outline'
-        size={isXs ? '11' : '13'}
-        strokeWidth={isXs ? 3.2 : 3.5}
+        size={isXs ? '10.5' : '13'}
+        strokeWidth={isXs ? 3 : 3.5}
         fill='currentColor'
         className='block leading-none'
       />
@@ -99,4 +105,5 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
 };
 
 export default CreditsWebsiteButton;
+
 
