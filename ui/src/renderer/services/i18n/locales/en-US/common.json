@@ -249,5 +249,14 @@
     "title": "Session expired",
     "description": "Your cloud login expired. Sign in again to continue.",
     "relogin": "Sign in again"
+  },
+  "creditsBubble": {
+    "close": "Dismiss",
+    "exhaustedTitle": "Credits exhausted",
+    "exhaustedDesc": "Balance is 0. Please top up to continue messaging.",
+    "exhaustedAction": "Top up now",
+    "lowTitle": "Credits running low",
+    "lowDesc": "Balance is below 1,000 credits. Top up to ensure uninterrupted use.",
+    "lowAction": "Top up"
   }
 }

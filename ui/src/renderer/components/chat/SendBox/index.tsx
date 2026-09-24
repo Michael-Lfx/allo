@@ -52,6 +52,10 @@ import { useAbortUploadsOnConversationChange } from '@renderer/hooks/file/useAbo
 import UploadProgressBar from '@renderer/components/media/UploadProgressBar';
 import { allSupportedExts } from '@renderer/services/FileService';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
+import SendBoxCreditsBubble from '@/renderer/components/chat/SendBoxCreditsBubble';
+import { useCredits } from '@/renderer/hooks/context/CreditsContext';
+import { resolveCreditsBubbleState } from '@/renderer/utils/credits/creditsBubbleModel';
+import classNames from 'classnames';
 import ComposerSurface from '@/renderer/components/chat/ComposerSurface';
 import type { ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import ComposerSkillTokenInput, {
@@ -343,6 +347,9 @@ const SendBox: React.FC<{
   const effectiveDefaultMultiLine = defaultMultiLine && !isMobileCompact;
   const conversationContext = useConversationContextSafe();
   const { t, i18n } = useTranslation();
+  const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
+  const [blockedTriggerCount, setBlockedTriggerCount] = useState(0);
+  const [isShakingSend, setIsShakingSend] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const isStoppingRef = useRef(false);
@@ -1998,6 +2005,19 @@ const SendBox: React.FC<{
       return;
     }
 
+    const creditsState = resolveCreditsBubbleState({
+      balance,
+      authenticated,
+      isFetchingBalance,
+      lastRefreshAt,
+    });
+    if (creditsState === 'exhausted') {
+      setBlockedTriggerCount((c) => c + 1);
+      setIsShakingSend(true);
+      setTimeout(() => setIsShakingSend(false), 300);
+      return;
+    }
+
     if (!allowSendWhileLoading && (isLoading || loading)) {
       console.info('[sendbox]', {
         event: 'blocked-while-loading',
@@ -2144,24 +2164,32 @@ const SendBox: React.FC<{
     (!allowSendWhileLoading || compactActions || !hasDraftToSend || disabled || isUploading);
 
   const composerSubmitCluster = (
-    <ComposerSubmitCluster
-      hasDraft={hasDraftToSend}
-      loading={isProcessing}
-      disabled={disabled}
-      isUploading={isUploading}
-      speechLocale={speechLocale}
-      onSend={sendMessageHandler}
-      onSpeechTranscript={handleSpeechTranscript}
-      showStop={isProcessing}
-      onStop={stopHandler}
-      stopPending={isStopping}
-      showSteer={Boolean(onSteer) && allowSendWhileLoading && isProcessing && !showStopOnly}
-      steerAvailable={steerAvailable}
-      onSteer={steerMessageHandler}
-      speechHidden={isMobileCompact}
-      sendTestId='sendbox-send-btn'
-      stopTestId='sendbox-stop-btn'
-    />
+    <div className={classNames('relative flex items-center', isShakingSend && 'credits-shake')}>
+      <SendBoxCreditsBubble
+        isProcessing={isProcessing}
+        isFocused={isInputFocused}
+        hasDraft={hasDraftToSend}
+        blockedTriggerCount={blockedTriggerCount}
+      />
+      <ComposerSubmitCluster
+        hasDraft={hasDraftToSend}
+        loading={isProcessing}
+        disabled={disabled}
+        isUploading={isUploading}
+        speechLocale={speechLocale}
+        onSend={sendMessageHandler}
+        onSpeechTranscript={handleSpeechTranscript}
+        showStop={isProcessing}
+        onStop={stopHandler}
+        stopPending={isStopping}
+        showSteer={Boolean(onSteer) && allowSendWhileLoading && isProcessing && !showStopOnly}
+        steerAvailable={steerAvailable}
+        onSteer={steerMessageHandler}
+        speechHidden={isMobileCompact}
+        sendTestId='sendbox-send-btn'
+        stopTestId='sendbox-stop-btn'
+      />
+    </div>
   );
 
   const mobilePlusButton = isMobileCompact ? (

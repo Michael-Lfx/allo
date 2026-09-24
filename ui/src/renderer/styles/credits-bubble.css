@@ -1,0 +1,149 @@
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* Entry and Exit Animations */
+@keyframes creditsBubbleEnter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes creditsBubbleEnterSide {
+  from {
+    opacity: 0;
+    transform: translateX(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes creditsButtonShake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  20%, 60% {
+    transform: translateX(-4px);
+  }
+  40%, 80% {
+    transform: translateX(4px);
+  }
+}
+
+.credits-bubble-enter {
+  animation: creditsBubbleEnter 160ms cubic-bezier(0, 0, 0.2, 1) forwards;
+}
+
+.credits-bubble-enter-side {
+  animation: creditsBubbleEnterSide 160ms cubic-bezier(0, 0, 0.2, 1) forwards;
+}
+
+.credits-shake {
+  animation: creditsButtonShake 220ms ease-in-out;
+}
+
+/* Core Bubble Card */
+.credits-bubble-card {
+  position: absolute;
+  z-index: 90;
+  background: var(--dialog-fill-0);
+  border: 1px solid var(--border-base);
+  border-radius: 10px;
+  box-shadow:
+    0 12px 32px -4px rgba(15, 23, 42, 0.14),
+    0 2px 8px -2px rgba(15, 23, 42, 0.08);
+  color: var(--text-primary);
+  user-select: none;
+  pointer-events: auto;
+}
+
+body[arco-theme='dark'] .credits-bubble-card {
+  border-color: var(--color-border-2);
+  box-shadow:
+    0 14px 36px -4px rgba(0, 0, 0, 0.55),
+    0 3px 10px -2px rgba(0, 0, 0, 0.35);
+}
+
+/* Sider Bubble Layout */
+.sider-credits-bubble--expanded {
+  bottom: calc(100% + 10px);
+  left: 6px;
+  width: 204px;
+}
+
+.sider-credits-bubble--collapsed {
+  bottom: 0;
+  left: calc(100% + 12px);
+  width: 204px;
+}
+
+/* Downward Arrow for Expanded Sider */
+.sider-credits-bubble-arrow-down {
+  position: absolute;
+  bottom: -5px;
+  left: 36px;
+  width: 8px;
+  height: 8px;
+  background: var(--dialog-fill-0);
+  border-right: 1px solid var(--border-base);
+  border-bottom: 1px solid var(--border-base);
+  transform: rotate(45deg);
+}
+
+body[arco-theme='dark'] .sider-credits-bubble-arrow-down {
+  border-right-color: var(--color-border-2);
+  border-bottom-color: var(--color-border-2);
+}
+
+/* Leftward Arrow for Collapsed Sider */
+.sider-credits-bubble-arrow-left {
+  position: absolute;
+  top: 14px;
+  left: -5px;
+  width: 8px;
+  height: 8px;
+  background: var(--dialog-fill-0);
+  border-left: 1px solid var(--border-base);
+  border-bottom: 1px solid var(--border-base);
+  transform: rotate(45deg);
+}
+
+body[arco-theme='dark'] .sider-credits-bubble-arrow-left {
+  border-left-color: var(--color-border-2);
+  border-bottom-color: var(--color-border-2);
+}
+
+/* SendBox Bubble Layout */
+.sendbox-credits-bubble {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  max-width: calc(100vw - 32px);
+  z-index: 60;
+}
+
+.sendbox-credits-bubble-arrow-down {
+  position: absolute;
+  bottom: -5px;
+  right: 14px;
+  width: 8px;
+  height: 8px;
+  background: var(--dialog-fill-0);
+  border-right: 1px solid var(--border-base);
+  border-bottom: 1px solid var(--border-base);
+  transform: rotate(45deg);
+}
+
+body[arco-theme='dark'] .sendbox-credits-bubble-arrow-down {
+  border-right-color: var(--color-border-2);
+  border-bottom-color: var(--color-border-2);
+}

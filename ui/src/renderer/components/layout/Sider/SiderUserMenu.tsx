@@ -18,6 +18,7 @@ import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 import { changeLanguage, normalizeLanguageCode, supportedLanguages } from '@/renderer/services/i18n';
 import SiderThemePanel from './SiderThemePanel';
+import SiderCreditsBubble from './SiderCreditsBubble';
 
 const LANGUAGE_LABELS: Record<string, string> = {
   'zh-CN': '简体中文',
@@ -392,29 +393,30 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   );
 
   return (
-    <>
-    <Popover
-      className='sider-soft-popover sider-user-menu-popover'
-      trigger='click'
-      position={collapsed ? 'rt' : 'tr'}
-      popupVisible={menuVisible}
-      onVisibleChange={handleMenuVisibleChange}
-      getPopupContainer={() => document.body}
-      content={menuContent}
-      unmountOnExit={false}
-      {...({
-        popupAlign: collapsed ? { left: 10 } : { bottom: 8, left: -28 },
-      } as Record<string, unknown>)}
-    >
-      <Tooltip
-        {...siderTooltipProps}
-        content={planText ? `${displayName} · ${planText}` : displayName}
-        position='right'
-        disabled={creditsHovered}
+    <div className={classNames('relative min-w-0 flex items-center', collapsed ? 'w-full justify-center' : 'flex-1')}>
+      <SiderCreditsBubble collapsed={collapsed} isMobile={isMobile} />
+      <Popover
+        className='sider-soft-popover sider-user-menu-popover'
+        trigger='click'
+        position={collapsed ? 'rt' : 'tr'}
+        popupVisible={menuVisible}
+        onVisibleChange={handleMenuVisibleChange}
+        getPopupContainer={() => document.body}
+        content={menuContent}
+        unmountOnExit={false}
+        {...({
+          popupAlign: collapsed ? { left: 10 } : { bottom: 8, left: -28 },
+        } as Record<string, unknown>)}
       >
-        {trigger}
-      </Tooltip>
-    </Popover>
+        <Tooltip
+          {...siderTooltipProps}
+          content={planText ? `${displayName} · ${planText}` : displayName}
+          position='right'
+          disabled={creditsHovered}
+        >
+          {trigger}
+        </Tooltip>
+      </Popover>
     <Modal
       title={t('common.userMenu.editNickname', { defaultValue: '修改昵称' })}
       visible={nicknameModalVisible}
@@ -441,7 +443,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         {nicknameCharCount(nicknameDraft)}/{NICKNAME_MAX_CHARS}
       </div>
     </Modal>
-    </>
+    </div>
   );
 };
 

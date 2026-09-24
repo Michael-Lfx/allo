@@ -1167,5 +1167,9 @@
     "updated": "已切换工作模式",
     "nextTurn": "将在下一轮生效",
     "switchFailed": "更新工作模式失败"
+  },
+  "sendBox": {
+    "creditsExhaustedBlocked": "积分已耗尽，请充值后发送",
+    "creditsLowHint": "积分不足 1,000，建议及时充值"
   }
 }
