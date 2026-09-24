@@ -67,7 +67,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       }
 
       // 2. Small visual breathing delay for forging animation
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
 
       // 3. Build structured extraction draft
       const draft: PresetDraftData = buildPresetExtractionDraft({
@@ -125,23 +125,23 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       footer={null}
       className='flowy-modal flowy-extract-preset-modal'
       style={{
-        maxWidth: 520,
+        maxWidth: 540,
         width: '92vw',
         borderRadius: 14,
         overflow: 'hidden',
       }}
     >
-      <div className='flex flex-col gap-18px py-4px'>
+      <div className='flex flex-col gap-20px py-6px'>
         {/* Modal Header */}
-        <div className='flex items-center gap-12px'>
+        <div className='flex items-center gap-14px'>
           <div
-            className='flex h-36px w-36px shrink-0 items-center justify-center rd-10px bg-primary-1 text-primary-6 [&>span]:flex [&>span]:items-center [&>span]:justify-center'
+            className='flex h-38px w-38px shrink-0 items-center justify-center rd-10px bg-primary-1 text-primary-6 [&>span]:flex [&>span]:items-center [&>span]:justify-center'
             style={{ lineHeight: 0 }}
           >
             <MagicWand theme='filled' size={20} fill='currentColor' />
           </div>
           <div className='min-w-0 flex-1 pr-16px'>
-            <div className='flex items-center gap-6px'>
+            <div className='flex items-center gap-8px'>
               <h2 className='m-0 text-16px font-600 text-t-primary leading-tight'>
                 {t('conversation.extractPreset.title', { defaultValue: '提炼为专属设定' })}
               </h2>
@@ -149,7 +149,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                 AI Preset
               </span>
             </div>
-            <p className='m-0 mt-4px text-12px text-t-secondary leading-snug'>
+            <p className='m-0 mt-6px text-13px text-t-secondary leading-relaxed'>
               {t('conversation.extractPreset.subtitle', {
                 defaultValue: '从当前对话成果中智能提纯经验，生成包含提示词与技能绑定的独立设定。',
               })}
@@ -159,23 +159,23 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
 
         {/* Dynamic Body: Edit vs Extracting Motion State */}
         {isExtracting ? (
-          <div className='py-28px flex flex-col items-center justify-center text-center animate-fade-in'>
-            <div className='relative flex h-46px w-46px items-center justify-center mb-14px'>
+          <div className='py-32px flex flex-col items-center justify-center text-center animate-fade-in'>
+            <div className='relative flex h-48px w-48px items-center justify-center mb-16px'>
               <div className='absolute inset-0 rd-full animate-ping opacity-20 bg-primary-6' />
               <div
-                className='relative flex h-40px w-40px items-center justify-center rd-full bg-primary-1 text-primary-6 shadow-sm [&>span]:flex [&>span]:items-center [&>span]:justify-center'
+                className='relative flex h-42px w-42px items-center justify-center rd-full bg-primary-1 text-primary-6 shadow-sm [&>span]:flex [&>span]:items-center [&>span]:justify-center'
                 style={{ lineHeight: 0 }}
               >
-                <Lightning theme='filled' size={20} fill='currentColor' className='animate-pulse' />
+                <Lightning theme='filled' size={22} fill='currentColor' className='animate-pulse' />
               </div>
             </div>
 
-            <div className='text-13px font-500 text-t-primary transition-all duration-300 mb-12px'>
+            <div className='text-13px font-500 text-t-primary transition-all duration-300 mb-14px'>
               {stepLabels[extractingStep]}
             </div>
 
             {/* Linear Animated Progress */}
-            <div className='h-3px w-200px bg-fill-3 rd-full overflow-hidden'>
+            <div className='h-3px w-220px bg-fill-3 rd-full overflow-hidden'>
               <div
                 className='h-full bg-primary-6 rd-full transition-all duration-500'
                 style={{ width: `${((extractingStep + 1) / stepLabels.length) * 100}%` }}
@@ -185,9 +185,9 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
         ) : (
           <>
             {/* Workflow Process Cards */}
-            <div className='grid grid-cols-3 gap-10px'>
-              <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
-                <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
+            <div className='grid grid-cols-3 gap-12px'>
+              <div className='p-14px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+                <div className='flex items-center gap-6px text-13px font-600 text-t-primary mb-6px'>
                   <span
                     className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
                     style={{ lineHeight: 1 }}
@@ -196,15 +196,15 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                   </span>
                   <span>{t('conversation.extractPreset.flowStep1Title', { defaultValue: '角色定位归纳' })}</span>
                 </div>
-                <p className='m-0 text-11px text-t-secondary leading-snug'>
+                <p className='m-0 text-12px text-t-secondary leading-relaxed'>
                   {t('conversation.extractPreset.flowStep1Desc', {
                     defaultValue: '自动提炼角色名称与核心职责',
                   })}
                 </p>
               </div>
 
-              <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
-                <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
+              <div className='p-14px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+                <div className='flex items-center gap-6px text-13px font-600 text-t-primary mb-6px'>
                   <span
                     className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
                     style={{ lineHeight: 1 }}
@@ -213,15 +213,15 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                   </span>
                   <span>{t('conversation.extractPreset.flowStep2Title', { defaultValue: '工作流沉淀' })}</span>
                 </div>
-                <p className='m-0 text-11px text-t-secondary leading-snug'>
+                <p className='m-0 text-12px text-t-secondary leading-relaxed'>
                   {t('conversation.extractPreset.flowStep2Desc', {
                     defaultValue: '结构化生成 Prompt 与约束规范',
                   })}
                 </p>
               </div>
 
-              <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
-                <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
+              <div className='p-14px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+                <div className='flex items-center gap-6px text-13px font-600 text-t-primary mb-6px'>
                   <span
                     className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
                     style={{ lineHeight: 1 }}
@@ -230,7 +230,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                   </span>
                   <span>{t('conversation.extractPreset.flowStep3Title', { defaultValue: '适用技能装配' })}</span>
                 </div>
-                <p className='m-0 text-11px text-t-secondary leading-snug'>
+                <p className='m-0 text-12px text-t-secondary leading-relaxed'>
                   {t('conversation.extractPreset.flowStep3Desc', {
                     defaultValue: '智能嗅探并推荐绑定相关技能',
                   })}
@@ -240,7 +240,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
 
             {/* Customization Guidance */}
             <div>
-              <label className='block text-12px font-500 text-t-primary mb-6px'>
+              <label className='block text-13px font-500 text-t-primary mb-8px'>
                 {t('conversation.extractPreset.additionalGuidanceLabel', {
                   defaultValue: '补充定制要求（选填）',
                 })}
@@ -266,7 +266,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
 
         {/* Modal Footer */}
         {!isExtracting && (
-          <div className='flex items-center justify-end gap-10px pt-14px border-t border-t-solid border-arco-1'>
+          <div className='flex items-center justify-end gap-10px pt-16px mt-2px border-t border-t-solid border-arco-1'>
             <Button
               onClick={onCancel}
               className='rd-6px px-16px'
