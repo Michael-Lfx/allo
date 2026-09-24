@@ -125,7 +125,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       footer={null}
       className='flowy-modal flowy-extract-preset-modal'
       style={{
-        maxWidth: 640,
+        maxWidth: 680,
         width: '92vw',
         borderRadius: 14,
         overflow: 'hidden',
@@ -175,7 +175,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
             </div>
 
             {/* Linear Animated Progress */}
-            <div className='h-3px w-240px bg-fill-3 rd-full overflow-hidden'>
+            <div className='h-3px w-260px bg-fill-3 rd-full overflow-hidden'>
               <div
                 className='h-full bg-primary-6 rd-full transition-all duration-500'
                 style={{ width: `${((extractingStep + 1) / stepLabels.length) * 100}%` }}
@@ -185,8 +185,8 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
         ) : (
           <>
             {/* Workflow Process Cards */}
-            <div className='grid grid-cols-3 gap-12px'>
-              <div className='p-14px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+            <div className='grid grid-cols-3 gap-10px'>
+              <div className='p-12px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
                 <div className='flex items-center gap-6px text-13px font-600 text-t-primary mb-6px'>
                   <span
                     className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
@@ -196,14 +196,14 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                   </span>
                   <span>{t('conversation.extractPreset.flowStep1Title', { defaultValue: '角色定位归纳' })}</span>
                 </div>
-                <p className='m-0 text-12px text-t-secondary leading-relaxed'>
+                <p className='m-0 text-12px text-t-secondary leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis'>
                   {t('conversation.extractPreset.flowStep1Desc', {
                     defaultValue: '自动提炼角色名称与核心职责',
                   })}
                 </p>
               </div>
 
-              <div className='p-14px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+              <div className='p-12px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
                 <div className='flex items-center gap-6px text-13px font-600 text-t-primary mb-6px'>
                   <span
                     className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
@@ -213,14 +213,14 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                   </span>
                   <span>{t('conversation.extractPreset.flowStep2Title', { defaultValue: '工作流沉淀' })}</span>
                 </div>
-                <p className='m-0 text-12px text-t-secondary leading-relaxed'>
+                <p className='m-0 text-12px text-t-secondary leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis'>
                   {t('conversation.extractPreset.flowStep2Desc', {
                     defaultValue: '结构化生成 Prompt 与约束规范',
                   })}
                 </p>
               </div>
 
-              <div className='p-14px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+              <div className='p-12px rd-10px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
                 <div className='flex items-center gap-6px text-13px font-600 text-t-primary mb-6px'>
                   <span
                     className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
@@ -230,7 +230,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                   </span>
                   <span>{t('conversation.extractPreset.flowStep3Title', { defaultValue: '适用技能装配' })}</span>
                 </div>
-                <p className='m-0 text-12px text-t-secondary leading-relaxed'>
+                <p className='m-0 text-12px text-t-secondary leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis'>
                   {t('conversation.extractPreset.flowStep3Desc', {
                     defaultValue: '智能嗅探并推荐绑定相关技能',
                   })}
