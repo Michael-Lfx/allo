@@ -43,7 +43,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       setExtractingStep(0);
       timer = setInterval(() => {
         setExtractingStep((prev) => (prev < 2 ? prev + 1 : prev));
-      }, 550);
+      }, 500);
     } else {
       setExtractingStep(0);
     }
@@ -65,7 +65,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       }
 
       // 2. Small visual breathing delay for forging animation
-      await new Promise((resolve) => setTimeout(resolve, 1300));
+      await new Promise((resolve) => setTimeout(resolve, 1200));
 
       // 3. Build structured extraction draft
       const draft: PresetDraftData = buildPresetExtractionDraft({
@@ -123,40 +123,24 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       footer={null}
       className='flowy-modal flowy-extract-preset-modal'
       style={{
-        maxWidth: 480,
+        maxWidth: 440,
         width: '90vw',
-        borderRadius: 16,
+        borderRadius: 12,
         padding: 0,
         overflow: 'hidden',
       }}
     >
-      <div className='relative overflow-hidden p-24px'>
-        {/* Background Atmospheric Glow */}
-        <div
-          className='pointer-events-none absolute -top-80px left-1/2 -translate-x-1/2 h-160px w-320px rd-full opacity-25 blur-3xl'
-          style={{
-            background:
-              'radial-gradient(circle, var(--color-primary-5, #3c7eff) 0%, rgba(99, 102, 241, 0.3) 50%, transparent 80%)',
-          }}
-          aria-hidden='true'
-        />
-
+      <div className='p-16px pt-14px'>
         {/* Modal Header */}
-        <div className='relative flex items-start gap-12px mb-20px'>
-          <div
-            className='flex h-38px w-38px shrink-0 items-center justify-center rd-10px text-white shadow-sm mt-2px'
-            style={{
-              background:
-                'linear-gradient(135deg, var(--color-primary-6, #165dff) 0%, #7c3aed 100%)',
-            }}
-          >
-            <MagicWand theme='filled' size={20} fill='currentColor' />
+        <div className='flex items-start gap-10px mb-14px'>
+          <div className='flex h-32px w-32px shrink-0 items-center justify-center rd-8px bg-primary-1 text-primary-6 mt-1px'>
+            <MagicWand theme='filled' size={18} fill='currentColor' />
           </div>
-          <div className='min-w-0 flex-1 pr-16px'>
-            <h2 className='m-0 text-16px font-600 text-t-primary leading-snug'>
+          <div className='min-w-0 flex-1 pr-12px'>
+            <h2 className='m-0 text-15px font-600 text-t-primary leading-tight'>
               {t('conversation.extractPreset.title', { defaultValue: '提炼为专属设定' })}
             </h2>
-            <p className='m-0 mt-4px text-12px text-t-secondary leading-relaxed'>
+            <p className='m-0 mt-3px text-12px text-t-secondary leading-snug'>
               {t('conversation.extractPreset.subtitle', {
                 defaultValue: '从当前对话成果中智能提纯经验，生成包含提示词与技能绑定的独立设定。',
               })}
@@ -166,30 +150,22 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
 
         {/* Dynamic Body: Edit vs Extracting Motion State */}
         {isExtracting ? (
-          <div className='py-28px flex flex-col items-center justify-center text-center animate-fade-in'>
-            <div className='relative flex h-52px w-52px items-center justify-center mb-16px'>
-              {/* Outer Pulsing Glow Ring */}
+          <div className='py-20px flex flex-col items-center justify-center text-center animate-fade-in'>
+            <div className='relative flex h-40px w-40px items-center justify-center mb-12px'>
               <div
-                className='absolute inset-0 rd-full animate-ping opacity-25'
-                style={{ background: 'var(--color-primary-6, #165dff)' }}
+                className='absolute inset-0 rd-full animate-ping opacity-25 bg-primary-6'
               />
-              <div
-                className='relative flex h-44px w-44px items-center justify-center rd-full shadow-md text-white'
-                style={{
-                  background:
-                    'linear-gradient(135deg, var(--color-primary-6, #165dff) 0%, #7c3aed 100%)',
-                }}
-              >
-                <Lightning theme='filled' size={22} fill='currentColor' className='animate-pulse' />
+              <div className='relative flex h-36px w-36px items-center justify-center rd-full bg-primary-1 text-primary-6 shadow-sm'>
+                <Lightning theme='filled' size={18} fill='currentColor' className='animate-pulse' />
               </div>
             </div>
 
-            <div className='text-13px font-500 text-t-primary transition-all duration-300 mb-12px'>
+            <div className='text-13px font-500 text-t-primary transition-all duration-300 mb-10px'>
               {stepLabels[extractingStep]}
             </div>
 
             {/* Linear Animated Progress */}
-            <div className='h-3px w-200px bg-fill-3 rd-full overflow-hidden'>
+            <div className='h-3px w-180px bg-fill-3 rd-full overflow-hidden'>
               <div
                 className='h-full bg-primary-6 rd-full transition-all duration-500'
                 style={{ width: `${((extractingStep + 1) / stepLabels.length) * 100}%` }}
@@ -197,8 +173,8 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
             </div>
           </div>
         ) : (
-          <div className='mb-20px'>
-            <div className='mb-8px'>
+          <div className='mb-14px'>
+            <div className='mb-6px'>
               <label className='text-12px font-500 text-t-primary'>
                 {t('conversation.extractPreset.additionalGuidanceLabel', {
                   defaultValue: '补充定制要求（选填）',
@@ -212,12 +188,12 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                 defaultValue:
                   '可在此补充对设定角色的要求或偏好（例如：输出保持中文、遵循特定代码规范等），留空将自动智能提炼',
               })}
-              autoSize={{ minRows: 3, maxRows: 5 }}
+              autoSize={{ minRows: 4, maxRows: 6 }}
               maxLength={500}
               showWordLimit
               className='rd-8px !bg-fill-1 b-1 b-solid border-arco-2 focus:border-primary-5 transition-all text-13px leading-relaxed'
               style={{
-                boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.03)',
+                boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.02)',
               }}
             />
           </div>
@@ -225,10 +201,10 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
 
         {/* Modal Footer */}
         {!isExtracting && (
-          <div className='flex items-center justify-end gap-8px pt-14px border-t border-t-solid border-arco-1'>
+          <div className='flex items-center justify-end gap-8px pt-12px border-t border-t-solid border-arco-1'>
             <Button
               onClick={onCancel}
-              className='rd-6px px-16px font-medium'
+              className='rd-6px px-14px'
             >
               {t('conversation.extractPreset.cancel', { defaultValue: '取消' })}
             </Button>
@@ -236,12 +212,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
               type='primary'
               onClick={handleStartExtract}
               data-testid='btn-confirm-extract-preset'
-              className='rd-6px px-18px font-500 shadow-sm'
-              style={{
-                background:
-                  'linear-gradient(135deg, var(--color-primary-6, #165dff) 0%, #7c3aed 100%)',
-                border: 'none',
-              }}
+              className='rd-6px px-16px font-500'
             >
               {t('conversation.extractPreset.startExtract', { defaultValue: '开始智能提炼' })}
             </Button>
