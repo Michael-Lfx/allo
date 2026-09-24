@@ -195,12 +195,12 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
 
   const menuContent = (
     <div className='w-192px flex flex-col gap-1px p-4px'>
-      <div className='flex items-center justify-between gap-8px h-30px px-8px text-12px'>
+      <div className='flex items-center justify-between gap-8px h-32px px-8px text-12px rd-6px bg-fill-1'>
         <span className='text-t-secondary'>{t('common.userMenu.creditsBalance', { defaultValue: '积分余额' })}</span>
-        <span className='flex items-center gap-4px'>
+        <span className='flex items-center gap-6px'>
           <span className='font-600 text-t-primary tabular-nums'>{creditsText}</span>
           {authenticated && (
-            <CreditsWebsiteButton size='xs' />
+            <CreditsWebsiteButton variant='pill' />
           )}
         </span>
       </div>
@@ -368,7 +368,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           <span className='block h-16px truncate text-12px font-500 leading-16px text-t-primary'>{displayName}</span>
           <span
             className={classNames(
-              'flex items-center gap-10px h-14px min-w-0',
+              'flex items-center gap-6px h-14px min-w-0',
               !authenticated && 'invisible'
             )}
             aria-hidden={!authenticated}
@@ -377,13 +377,13 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
             <span className='truncate text-11px leading-14px text-t-tertiary tabular-nums'>{creditsText}</span>
             {authenticated ? (
               <span
-                className='inline-flex shrink-0'
+                className='inline-flex items-center shrink-0'
                 onClick={stopAccountTrigger}
                 onMouseDown={stopAccountTrigger}
                 onMouseEnter={() => setCreditsHovered(true)}
                 onMouseLeave={() => setCreditsHovered(false)}
               >
-                <CreditsWebsiteButton size='xs' className='!size-14px' />
+                <CreditsWebsiteButton size='xs' />
               </span>
             ) : null}
           </span>
