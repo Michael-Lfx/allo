@@ -78,7 +78,7 @@ HTTP 路由只输出 `nomifun-api-types` 中的 Session Observation DTO；Agent 
 - 会话壳：`{case_id} · {category}`，`extra.origin=eval` / `extra.eval=true`，幂等键 `eval:{run_id}:{case_id}`（trial>1 为 `eval:{run}:{case}:t{trial}`）；`extra.workspace` 绑定**父 run 工作区**；轨迹投影为 thinking / tool_call / text，并写入 `last_token_usage`；`execute_turn` 包在 `with_flowy_billing_turn_id` 下以便积分芯片
 - Agent 执行 cwd / `write_root` 仍为 case 子目录；`convert.rs` 对 `eval` 会话按 companion 同类规则不标 `is_temporary_workspace`
 - `auto_approve = true`，`write_root` = eval workspace
-- 隔离 overlay 按套件：`harness_smoke` / `office_core` / `coding_local` 关闭 MCP、browser、computer-use、web search；`browser_smoke` 只开 browser（本地 HTML fixture）；`mcp_fixture` 注入 stdio 假 CRM。仍关闭 memory distill / MoA / embedded AgentExecution
+- 隔离 overlay 按套件：`harness_smoke` / `office_core` / `coding_local` 关闭 MCP、browser、computer-use、web search；`omegause_officeval` 同办公工具面但超时 45 分钟（最长 60 分钟），拷贝 Hugging Face 输入文件；`browser_smoke` 只开 browser（本地 HTML fixture）；`mcp_fixture` 注入 stdio 假 CRM。仍关闭 memory distill / MoA / embedded AgentExecution
 - 证据 JSONL 不含 workspace 绝对路径；prompt 经 `nomi-redact` 脱敏
 - 完整 trajectory / artifact 不进 JSONL，落在 `{data_dir}/diagnostics/agent-evals/runs/{run_id}/traces/{case_id}.json`（trial>1 带 `__t{n}`）
 
@@ -90,6 +90,7 @@ HTTP 路由只输出 `nomifun-api-types` 中的 Session Observation DTO；Agent 
 | --- | --- | --- |
 | `harness_smoke` | 捆绑 Write/Edit 冒烟（应接近 100%） | 回归 |
 | `office_core` | 捆绑办公语料（结构 oracle；Office profile，**不是** CodingHarness） | 能力 |
+| `omegause_officeval` | [OmegaUse-OfficeVal](https://huggingface.co/datasets/baidu-frontier-research/OmegaUse-OfficeVal) 长程办公任务。本地 `office_deliverable` 门闩（写出/改过办公文件），**不是**官方 Python rubric 分数。别名 `officeval` | 能力 |
 | `coding_local` | 捆绑本地编码（修测 / CSV→JSON / 重构） | 能力 |
 | `browser_smoke` | 本地 HTML fixture + browser 工具 | 能力 |
 | `mcp_fixture` | stdio 假 CRM MCP | 能力 |

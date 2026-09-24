@@ -195,7 +195,7 @@ fn validate_case(case: &Case) -> Result<(), CorpusError> {
     if let Some(isolation) = case.isolation.as_deref() {
         if crate::types::IsolationKind::parse_label(isolation).is_none() {
             return Err(CorpusError::Invalid(format!(
-                "case {} isolation must be smoke|office|coding|browser|mcp|business",
+                "case {} isolation must be smoke|office|officeval|coding|browser|mcp|business",
                 case.id
             )));
         }
@@ -428,6 +428,16 @@ fn validate_scorer(case_id: &str, scorer: &ScorerSpec) -> Result<(), CorpusError
             safe_join(std::path::Path::new("."), output).map_err(|e| {
                 CorpusError::Invalid(format!("case {case_id} xlsx_totals_close output: {e}"))
             })?;
+        }
+        ScorerSpec::OfficeDeliverable { extensions } => {
+            if extensions
+                .iter()
+                .any(|ext| ext.trim().trim_start_matches('.').is_empty())
+            {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} office_deliverable extensions must not contain empty values"
+                )));
+            }
         }
     }
     Ok(())

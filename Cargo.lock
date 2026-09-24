@@ -7392,6 +7392,7 @@ dependencies = [
  "axum",
  "futures-util",
  "fuzzy-matcher",
+ "nomi-agent-eval",
  "nomi-redact",
  "nomifun-ai-agent",
  "nomifun-api-types",

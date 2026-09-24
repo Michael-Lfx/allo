@@ -2,6 +2,7 @@
 
 mod aider;
 mod classeval;
+mod officeval;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use crate::types::{is_imported_suite, Manifest};
 
 pub use aider::{aider_zip_to_manifest, SUITE_AIDER_POLYGLOT};
 pub use classeval::{classeval_json_to_manifest, SUITE_CLASSEVAL};
+pub use officeval::{copy_officeval_case_files, officeval_json_to_case, SUITE_OFFICEVAL};
 
 pub const SUITE_OFFICE_TASKS: &str = "office_tasks";
 pub const SUITE_OFFICE_CORE: &str = "office_core";
@@ -88,6 +90,7 @@ pub fn canonical_suite_id(id: &str) -> &str {
         SUITE_OFFICE_TASKS => SUITE_OFFICE_CORE,
         SUITE_HARNESS_CONTROL => SUITE_HARNESS_SMOKE,
         SUITE_AGENT_WORKFLOWS => SUITE_CODING_LOCAL,
+        "officeval" => SUITE_OFFICEVAL,
         other => other,
     }
 }
@@ -159,6 +162,20 @@ pub fn list_suites() -> Vec<SuiteDescriptor> {
             false,
             "capability",
             3,
+            false,
+        ),
+        desc(
+            SUITE_OFFICEVAL,
+            "OmegaUse-OfficeVal",
+            "agent",
+            "office",
+            Some(officeval::OFFICEVAL_DATASET_URL.into()),
+            4,
+            MAX_DOWNLOAD_LIMIT,
+            "Long-horizon office-suite tasks (Word / Excel / PowerPoint / PDF) from Hugging Face. Local gate = deliverable attempt, not an official OfficeVal rubric score. Official scoring needs the Python verifier ZIP. Default 4 cases, max 20. One trial. 45-minute timeout.",
+            true,
+            "capability",
+            1,
             false,
         ),
         desc(
@@ -283,6 +300,7 @@ pub fn is_download_cached(suite_id: &str, cache_dir: &Path) -> bool {
     let extras: &[&str] = match suite_id {
         SUITE_AIDER_POLYGLOT => &["aider-polyglot.zip"],
         SUITE_CLASSEVAL => &["classeval.json"],
+        SUITE_OFFICEVAL => &["omegause_officeval"],
         _ => &[],
     };
     cache_dir
@@ -337,6 +355,7 @@ pub async fn load_suite_manifest(
         SUITE_HARBOR => Err(DatasetError::RequiresSandbox(suite.to_owned())),
         SUITE_AIDER_POLYGLOT => aider::load_aider_polyglot(cache_dir, limit).await,
         SUITE_CLASSEVAL => classeval::load_classeval(cache_dir, limit).await,
+        SUITE_OFFICEVAL => officeval::load_officeval(cache_dir, limit).await,
         other => Err(DatasetError::UnknownSuite(other.to_owned())),
     }
 }
@@ -489,6 +508,7 @@ mod tests {
         let ids: Vec<_> = list_suites().into_iter().map(|s| s.id).collect();
         assert_eq!(ids[0], SUITE_HARNESS_SMOKE);
         assert!(ids.contains(&SUITE_OFFICE_CORE.to_string()));
+        assert!(ids.contains(&SUITE_OFFICEVAL.to_string()));
         assert!(ids.contains(&SUITE_CODING_LOCAL.to_string()));
         assert!(ids.contains(&SUITE_BROWSER_SMOKE.to_string()));
         assert!(ids.contains(&SUITE_MCP_FIXTURE.to_string()));
@@ -501,7 +521,7 @@ mod tests {
         load_bundled_manifest(SUITE_OFFICE_TASKS).unwrap();
         load_bundled_manifest(SUITE_AGENT_WORKFLOWS).unwrap();
         assert_eq!(canonical_suite_id(SUITE_OFFICE_TASKS), SUITE_OFFICE_CORE);
-        assert!(list_suites().iter().any(|s| s.id == SUITE_AIDER_POLYGLOT && s.tier == "advanced"));
+        assert!(list_suites().iter().any(|s| s.id == SUITE_OFFICEVAL && s.requires_download && s.tier == "capability"));
         assert!(list_suites().iter().any(|s| s.id == SUITE_HARBOR && s.requires_sandbox));
     }
 
@@ -512,5 +532,8 @@ mod tests {
         std::fs::write(dir.path().join("aider-polyglot.zip"), b"pk").unwrap();
         assert!(is_download_cached(SUITE_AIDER_POLYGLOT, dir.path()));
         assert!(is_download_cached(SUITE_OFFICE_CORE, dir.path()));
+        assert!(!is_download_cached(SUITE_OFFICEVAL, dir.path()));
+        std::fs::create_dir_all(dir.path().join("omegause_officeval")).unwrap();
+        assert!(is_download_cached(SUITE_OFFICEVAL, dir.path()));
     }
 }

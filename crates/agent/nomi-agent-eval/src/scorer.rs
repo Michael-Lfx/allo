@@ -350,6 +350,68 @@ pub fn score_one(spec: &ScorerSpec, transcript: &TurnTranscript) -> ScorerResult
                 detail: Some(detail),
             },
         },
+        ScorerSpec::OfficeDeliverable { extensions } => score_office_deliverable(transcript, extensions),
+    }
+}
+
+const DEFAULT_OFFICE_EXTENSIONS: &[&str] = &["docx", "doc", "xlsx", "xlsm", "pptx", "pdf"];
+
+fn score_office_deliverable(transcript: &TurnTranscript, extensions: &[String]) -> ScorerResult {
+    let allowed: Vec<String> = if extensions.iter().any(|e| !e.trim().is_empty()) {
+        extensions
+            .iter()
+            .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|e| !e.is_empty())
+            .collect()
+    } else {
+        DEFAULT_OFFICE_EXTENSIONS
+            .iter()
+            .map(|e| (*e).to_string())
+            .collect()
+    };
+    let Some(root) = transcript.workspace.as_deref() else {
+        return ScorerResult {
+            scorer_type: "office_deliverable".into(),
+            passed: false,
+            detail: Some("workspace missing".into()),
+        };
+    };
+    let files = crate::workspace::list_relative_files(root).unwrap_or_default();
+    let office_files: Vec<_> = files
+        .iter()
+        .filter(|path| {
+            let ext = Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            allowed.iter().any(|want| want == &ext)
+        })
+        .cloned()
+        .collect();
+    if office_files.is_empty() {
+        return ScorerResult {
+            scorer_type: "office_deliverable".into(),
+            passed: false,
+            detail: Some("no office artifact in workspace".into()),
+        };
+    }
+    let wrote_new = office_files.iter().any(|path| {
+        let normalized = path.replace('\\', "/");
+        !normalized.starts_with("Input/")
+    });
+    let edited = transcript
+        .tool_names
+        .iter()
+        .any(|name| matches!(name.as_str(), "Write" | "Edit" | "write" | "edit"));
+    let passed = wrote_new || edited;
+    ScorerResult {
+        scorer_type: "office_deliverable".into(),
+        passed,
+        detail: Some(format!(
+            "office_files={} wrote_new={wrote_new} edited={edited}",
+            office_files.len()
+        )),
     }
 }
 

@@ -7,75 +7,60 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   Alert,
   Button,
+  Empty,
   InputNumber,
   Message,
-  Modal,
   Progress,
+  Radio,
   Select,
   Table,
   Tag,
   Tooltip,
   Typography,
 } from '@arco-design/web-react';
-import { FolderOpen } from '@icon-park/react';
+import { Download, FolderOpen, Info, Refresh } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
+import SegmentedTabs from '@/renderer/components/base/SegmentedTabs';
+import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import EvalModelSelector, { useEvalAutogenModel } from './EvalModelSelector';
+import { BusinessReportPanel } from './EvalBusinessReportPanel';
+import { EvalCaseDetail } from './EvalCaseDetail';
+import { TraceView } from './EvalTrace';
 import {
   evalApi,
-  type EvalBusinessMatrixRow,
-  type EvalBusinessReport,
-  type EvalCaseTraceView,
   type EvalCaseView,
   type EvalRunDiffView,
   type EvalRunListItem,
   type EvalRunView,
   type EvalSuiteDescriptor,
 } from './api';
-import { exportBusinessReport } from './businessReportExport';
+import {
+  IN_FLIGHT,
+  TIER_ORDER,
+  caseRowKey,
+  formatAvg,
+  formatElapsed,
+  formatRate,
+  isImportedSuiteId,
+  isOfficeValSuiteId,
+  isTrialsLockedSuite,
+  normalizeTaskProfile,
+  preferredSuiteId,
+  shortId,
+  statusColor,
+  type EvalTaskProfile,
+  type EvalTier,
+} from './format';
 
 const { Title, Text } = Typography;
 
-const IN_FLIGHT = new Set(['loading', 'queued', 'running', 'cancelling']);
-const TIER_ORDER = ['smoke', 'capability', 'imported', 'advanced', 'sandbox'] as const;
-
-function formatRate(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
-}
-
-function formatAvg(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(1) : '0';
-}
-
-function statusColor(status: string): string {
-  switch (status) {
-    case 'completed':
-      return 'green';
-    case 'failed':
-      return 'red';
-    case 'cancelled':
-    case 'cancelling':
-      return 'gray';
-    default:
-      return 'arcoblue';
-  }
-}
-
-function tierLabel(
-  tier: (typeof TIER_ORDER)[number],
-  t: (
-    key:
-      | 'eval.tier.smoke'
-      | 'eval.tier.capability'
-      | 'eval.tier.imported'
-      | 'eval.tier.advanced'
-      | 'eval.tier.sandbox'
-  ) => string
-): string {
+function tierLabel(tier: EvalTier, t: TFunction): string {
   switch (tier) {
     case 'smoke':
       return t('eval.tier.smoke');
@@ -90,10 +75,6 @@ function tierLabel(
   }
 }
 
-function isImportedSuiteId(id: string | undefined | null): boolean {
-  return Boolean(id?.startsWith('imported-'));
-}
-
 function isBusinessRun(run: EvalRunView | null): boolean {
   if (!run) return false;
   return (
@@ -102,32 +83,65 @@ function isBusinessRun(run: EvalRunView | null): boolean {
   );
 }
 
+function statusLabel(status: string, t: TFunction): string {
+  switch (status) {
+    case 'loading':
+      return t('eval.status.loading');
+    case 'queued':
+      return t('eval.status.queued');
+    case 'running':
+      return t('eval.status.running');
+    case 'cancelling':
+      return t('eval.status.cancelling');
+    case 'cancelled':
+      return t('eval.status.cancelled');
+    case 'completed':
+      return t('eval.status.completed');
+    case 'failed':
+      return t('eval.status.failed');
+    default:
+      return status;
+  }
+}
+
 const EvalPage: React.FC = () => {
   const { t } = useTranslation();
+  const layout = useLayoutContext();
+  const isMobile = layout?.isMobile ?? false;
   const { active: developerMode } = useDeveloperModeGate();
   const evalModel = useEvalAutogenModel();
   const [suites, setSuites] = useState<EvalSuiteDescriptor[]>([]);
   const [suiteId, setSuiteId] = useState('office_core');
+  const [taskProfile, setTaskProfile] = useState<EvalTaskProfile>('office');
   const [limit, setLimit] = useState<number | undefined>(7);
   const [nTrials, setNTrials] = useState(3);
   const [run, setRun] = useState<EvalRunView | null>(null);
-  const [report, setReport] = useState<EvalBusinessReport | null>(null);
+  const [report, setReport] = useState<Awaited<ReturnType<typeof evalApi.getRunReport>> | null>(null);
   const [history, setHistory] = useState<EvalRunListItem[]>([]);
   const [diffA, setDiffA] = useState<string | undefined>();
   const [diffB, setDiffB] = useState<string | undefined>();
   const [diff, setDiff] = useState<EvalRunDiffView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<'load' | 'pull' | 'run' | 'cancel' | 'sync' | 'diff' | 'import' | null>(
-    null
+    'load'
   );
+  const [panel, setPanel] = useState<'run' | 'report' | 'history'>('run');
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [selectedCaseKey, setSelectedCaseKey] = useState<string | null>(null);
 
-  const selectedSuite = useMemo(
-    () => suites.find((suite) => suite.id === suiteId) ?? null,
-    [suites, suiteId]
+  const visibleSuites = useMemo(
+    () => suites.filter((suite) => normalizeTaskProfile(suite.default_task_profile) === taskProfile),
+    [suites, taskProfile]
   );
-  const importedSuite =
-    selectedSuite?.kind === 'imported' || isImportedSuiteId(suiteId);
+  const selectedSuite = useMemo(
+    () => visibleSuites.find((suite) => suite.id === suiteId) ?? suites.find((suite) => suite.id === suiteId) ?? null,
+    [visibleSuites, suites, suiteId]
+  );
+  const importedSuite = selectedSuite?.kind === 'imported' || isImportedSuiteId(suiteId);
+  const trialsLocked = isTrialsLockedSuite(suiteId);
   const inFlight = run != null && IN_FLIGHT.has(run.status);
+  const sandboxBlocked = selectedSuite?.requires_sandbox === true;
+  const showReportTab = isBusinessRun(run);
 
   const load = useCallback(async () => {
     setBusy((current) => current ?? 'load');
@@ -187,14 +201,57 @@ const EvalPage: React.FC = () => {
     };
   }, [inFlight, run]);
 
-  const onSuiteChange = (nextId: string) => {
-    setSuiteId(nextId);
-    const next = suites.find((suite) => suite.id === nextId);
-    if (next) {
-      setLimit(next.default_limit);
-      setNTrials(next.default_trials ?? 1);
+  useEffect(() => {
+    if (inFlight) setPanel('run');
+  }, [inFlight]);
+
+  useEffect(() => {
+    if (!run?.cases.length) {
+      setSelectedCaseKey(null);
+      return;
     }
+    setSelectedCaseKey((current) => {
+      if (current && run.cases.some((row) => caseRowKey(row.case_id, row.trial) === current)) {
+        return current;
+      }
+      const live = run.current_case_id
+        ? run.cases.find((row) => row.case_id === run.current_case_id)
+        : undefined;
+      const fallback = live ?? run.cases[run.cases.length - 1];
+      return fallback ? caseRowKey(fallback.case_id, fallback.trial) : null;
+    });
+  }, [run]);
+
+  const onSuiteChange = useCallback(
+    (nextId: string) => {
+      setSuiteId(nextId);
+      const next = suites.find((suite) => suite.id === nextId);
+      if (next) {
+        setLimit(next.default_limit);
+        setNTrials(next.default_trials ?? 1);
+        setTaskProfile(normalizeTaskProfile(next.default_task_profile));
+      }
+    },
+    [suites]
+  );
+
+  const onTaskProfileChange = (value: string) => {
+    const nextProfile = normalizeTaskProfile(value);
+    setTaskProfile(nextProfile);
+    const matching = suites.filter((suite) => normalizeTaskProfile(suite.default_task_profile) === nextProfile);
+    if (matching.some((suite) => suite.id === suiteId)) return;
+    const preferred = matching.find((suite) => suite.id === preferredSuiteId(nextProfile)) ?? matching[0];
+    if (preferred) onSuiteChange(preferred.id);
   };
+
+  useEffect(() => {
+    if (!suites.length) return;
+    const current = suites.find((suite) => suite.id === suiteId);
+    if (current && normalizeTaskProfile(current.default_task_profile) === taskProfile) return;
+    const matching = suites.filter((suite) => normalizeTaskProfile(suite.default_task_profile) === taskProfile);
+    const preferred = matching.find((suite) => suite.id === preferredSuiteId(taskProfile)) ?? matching[0];
+    if (preferred && preferred.id !== suiteId) onSuiteChange(preferred.id);
+  }, [suites, suiteId, taskProfile, onSuiteChange]);
 
   const pull = async () => {
     setBusy('pull');
@@ -212,12 +269,13 @@ const EvalPage: React.FC = () => {
   const start = async () => {
     setBusy('run');
     setError(null);
+    setPanel('run');
     try {
       const next = await evalApi.startRun({
         suite: suiteId,
         limit,
-        n_trials: importedSuite ? 1 : nTrials,
-        task_profile: selectedSuite?.default_task_profile,
+        n_trials: trialsLocked ? 1 : nTrials,
+        task_profile: taskProfile,
         ...(evalModel.choice
           ? { provider_id: evalModel.choice.provider_id, model: evalModel.choice.model }
           : {}),
@@ -270,9 +328,8 @@ const EvalPage: React.FC = () => {
       const selected = nextSuites.find((suite) => suite.id === imported.suite);
       setLimit(selected?.default_limit ?? imported.cases);
       setNTrials(selected?.default_trials ?? 1);
-      Message.success(
-        t('eval.importSuccess', { title: imported.title, count: imported.cases })
-      );
+      if (selected) setTaskProfile(normalizeTaskProfile(selected.default_task_profile));
+      Message.success(t('eval.importSuccess', { title: imported.title, count: imported.cases }));
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : String(actionError));
     } finally {
@@ -293,8 +350,6 @@ const EvalPage: React.FC = () => {
     }
   };
 
-  const sandboxBlocked = selectedSuite?.requires_sandbox === true;
-
   if (developerMode !== true) {
     return <Navigate to='/guid' replace />;
   }
@@ -302,855 +357,612 @@ const EvalPage: React.FC = () => {
   const summary = run?.summary;
   const progressPercent =
     run && run.planned > 0 ? Math.min(100, Math.round((run.completed / run.planned) * 100)) : 0;
+  const selectedCase = run?.cases.find((row) => caseRowKey(row.case_id, row.trial) === selectedCaseKey);
+  const suiteNotes = importedSuite ? t('eval.importNotes') : (selectedSuite?.notes ?? '');
+  const cacheNote = selectedSuite?.requires_download
+    ? selectedSuite.cached
+      ? t('eval.cached')
+      : t('eval.needsDownload')
+    : null;
+
+  const panelItems = [
+    { key: 'run', label: t('eval.panel.run') },
+    ...(showReportTab
+      ? [{ key: 'report', label: t('eval.panel.report'), dot: Boolean(report && !inFlight) }]
+      : []),
+    { key: 'history', label: t('eval.panel.history'), dot: history.length > 0 && panel !== 'history' },
+  ];
 
   return (
-    <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
-      <div className='mx-auto flex w-full md:max-w-1200px flex-col gap-20px'>
-        <div className='flex flex-wrap items-start justify-between gap-16px'>
-          <div>
-            <Title heading={3} className='!m-0'>
+    <div className='app-page-shell w-full min-h-0 flex-1 box-border overflow-hidden flex flex-col'>
+      <div className='mx-auto flex h-full min-h-0 w-full max-w-1280px flex-col gap-16px'>
+        <header className='flex shrink-0 flex-wrap items-start justify-between gap-12px'>
+          <div className='min-w-0'>
+            <Title heading={3} className='!m-0 text-wrap-balance'>
               {t('eval.title')}
             </Title>
-            <Text type='secondary'>{t('eval.subtitle')}</Text>
+            <Text type='secondary' className='mt-4px block'>
+              {t('eval.subtitle')}
+            </Text>
           </div>
           <div className='flex flex-wrap items-center gap-8px'>
-            <Text>{t('eval.model')}</Text>
+            <Text type='secondary'>{t('eval.model')}</Text>
             <EvalModelSelector
               choice={evalModel.choice}
               onChange={(choice) => void evalModel.setChoice(choice)}
               size='small'
               disabled={inFlight}
             />
+            <Button
+              size='small'
+              type='text'
+              className='flowy-icon-text-btn'
+              icon={<Info theme='outline' size={14} />}
+              onClick={() => setAboutOpen((open) => !open)}
+            >
+              {t('eval.lab.about')}
+            </Button>
           </div>
-        </div>
+        </header>
 
-        <Alert type='info' content={t('eval.isolationNote')} />
+        {aboutOpen && <Alert type='info' content={t('eval.isolationNote')} />}
         {error && <Alert type='error' content={error} />}
 
-        <div className='flex flex-wrap items-end gap-12px'>
-          <div>
-            <Text type='secondary' className='block mb-4px'>
-              {t('eval.suite')}
-            </Text>
-            <Select
-              value={suiteId}
-              onChange={onSuiteChange}
-              disabled={inFlight}
-              style={{ width: 320 }}
-            >
-              {TIER_ORDER.map((tier) => {
-                const group = suites.filter((suite) => (suite.tier || 'capability') === tier);
-                if (group.length === 0) return null;
-                return (
-                  <Select.OptGroup key={tier} label={tierLabel(tier, t)}>
-                    {group.map((suite) => (
-                      <Select.Option key={suite.id} value={suite.id}>
-                        {suite.title}
-                      </Select.Option>
-                    ))}
-                  </Select.OptGroup>
-                );
-              })}
-            </Select>
-          </div>
-          <div>
-            <Text type='secondary' className='block mb-4px'>
-              {t('eval.limit')}
-            </Text>
-            <InputNumber
-              value={limit}
-              min={1}
-              max={selectedSuite?.max_limit ?? 20}
-              disabled={inFlight}
-              onChange={(value) => setLimit(typeof value === 'number' ? value : undefined)}
-              style={{ width: 120 }}
-            />
-          </div>
-          <div>
-            <Text type='secondary' className='block mb-4px'>
-              {t('eval.trials')}
-            </Text>
-            {importedSuite ? (
-              <Tooltip content={t('eval.trialsLocked')}>
-                <span>
-                  <InputNumber value={1} min={1} max={1} disabled style={{ width: 120 }} />
-                </span>
-              </Tooltip>
-            ) : (
-              <InputNumber
-                value={nTrials}
-                min={1}
-                max={5}
+        <div className='min-h-0 flex-1 grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-16px'>
+          <aside className='min-h-0 flex flex-col gap-12px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-12px overflow-hidden'>
+            <div className='shrink-0 flex flex-col gap-8px'>
+              <Text className='font-500'>{t('conversation.taskProfile.label', { defaultValue: '工作模式' })}</Text>
+              <Radio.Group
+                type='button'
+                value={taskProfile}
                 disabled={inFlight}
-                onChange={(value) => setNTrials(typeof value === 'number' ? value : 1)}
-                style={{ width: 120 }}
-              />
-            )}
-          </div>
-          {selectedSuite?.requires_download && (
-            <Button onClick={() => void pull()} loading={busy === 'pull'} disabled={inFlight}>
-              {t('eval.pull')}
-            </Button>
-          )}
-          <Tooltip content={t('eval.importHint')}>
-            <Button
-              className='flowy-icon-text-btn'
-              onClick={() => void importPack()}
-              loading={busy === 'import'}
-              disabled={inFlight}
-              icon={<FolderOpen theme='outline' size={14} />}
-            >
-              {t('eval.importPack')}
-            </Button>
-          </Tooltip>
-          <Button onClick={() => void syncPrivate()} loading={busy === 'sync'} disabled={inFlight}>
-            {t('eval.syncPrivate')}
-          </Button>
-          {inFlight ? (
-            <Button status='danger' onClick={() => void cancel()} loading={busy === 'cancel'}>
-              {t('eval.cancel')}
-            </Button>
-          ) : (
-            <Button
-              type='primary'
-              onClick={() => void start()}
-              loading={busy === 'run'}
-              disabled={sandboxBlocked}
-            >
-              {t('eval.run')}
-            </Button>
-          )}
-        </div>
-        {sandboxBlocked && (
-          <Text type='secondary'>{t('eval.sandboxDisabled')}</Text>
-        )}
-
-        {selectedSuite && (
-          <Text type='secondary'>
-            {importedSuite ? t('eval.importNotes') : selectedSuite.notes}
-            {selectedSuite.requires_download
-              ? ` · ${selectedSuite.cached ? t('eval.cached') : t('eval.needsDownload')}`
-              : ''}
-            {importedSuite ? ` · ${t('eval.importHint')}` : ''}
-          </Text>
-        )}
-
-        {run && (
-          <>
-            <div className='flex flex-wrap items-center gap-12px'>
-              <Tag color={statusColor(run.status)}>{statusLabel(run.status, t)}</Tag>
-              <Text>
-                {t('eval.progressLabel', {
-                  completed: run.completed,
-                  planned: run.planned,
-                  current: run.current_case_id ?? '—',
-                })}
+                onChange={(value) => onTaskProfileChange(String(value))}
+                data-testid='eval-task-profile'
+                className='w-full [&_.arco-radio-button]:flex-1 [&_.arco-radio-button]:text-center'
+              >
+                <Radio value='office'>{t('conversation.taskProfile.office', { defaultValue: '日常办公' })}</Radio>
+                <Radio value='coding'>{t('conversation.taskProfile.coding', { defaultValue: '代码开发' })}</Radio>
+              </Radio.Group>
+              <Text type='secondary' className='text-12px leading-18px'>
+                {t('eval.taskProfile.hint')}
               </Text>
-              {run.workspace_label && (
-                <Text type='secondary' title={run.workspace_path ?? undefined}>
-                  {t('eval.workspace')}: {run.workspace_label}
-                </Text>
-              )}
             </div>
-            <Progress percent={progressPercent} />
-            <div className='flex flex-wrap gap-x-32px gap-y-12px'>
-              <Metric label={t('eval.metric.passed')} value={`${run.passed} / ${run.failed + run.passed}`} />
-              <Metric
-                label={t('eval.metric.successRate')}
-                value={summary ? formatRate(summary.success_rate) : '—'}
-              />
-              {!isBusinessRun(run) && (
-                <>
-                  <Metric
-                    label={t('eval.metric.passAt1')}
-                    value={summary ? formatRate(summary.pass_at_1 ?? 0) : '—'}
-                  />
-                  <Metric
-                    label={t('eval.metric.passHatK')}
-                    value={summary ? formatRate(summary.pass_hat_k ?? 0) : '—'}
-                  />
-                </>
-              )}
-              <Metric
-                label={t('eval.metric.avgTurns')}
-                value={summary ? formatAvg(summary.avg_turns) : '—'}
-              />
-              <Metric
-                label={t('eval.metric.avgElapsed')}
-                value={summary ? `${formatAvg(summary.avg_elapsed_ms)} ms` : '—'}
-              />
-              <Metric
-                label={t('eval.metric.avgTokens')}
-                value={
-                  summary
-                    ? `${formatAvg(summary.avg_input_tokens)} / ${formatAvg(summary.avg_output_tokens)}`
-                    : '—'
-                }
-              />
-              {run.model && <Metric label={t('eval.metric.model')} value={run.model} />}
-            </div>
-            {run.error && <Alert type='error' content={run.error} />}
-
-            {run.current_trace && (
-              <div className='flex flex-col gap-8px'>
-                <Title heading={5} className='!m-0'>
-                  {t('eval.liveTrace')}
-                  <Text type='secondary' className='ml-8px'>
-                    {run.current_trace.case_id}
-                  </Text>
-                </Title>
-                <TraceView trace={run.current_trace} />
+            <Text className='font-500 shrink-0'>{t('eval.setup.suites')}</Text>
+            {isMobile ? (
+              <Select value={suiteId} onChange={onSuiteChange} disabled={inFlight} className='w-full'>
+                {TIER_ORDER.map((tier) => {
+                  const group = visibleSuites.filter((suite) => (suite.tier || 'capability') === tier);
+                  if (group.length === 0) return null;
+                  return (
+                    <Select.OptGroup key={tier} label={tierLabel(tier, t)}>
+                      {group.map((suite) => (
+                        <Select.Option key={suite.id} value={suite.id}>
+                          {suite.title}
+                        </Select.Option>
+                      ))}
+                    </Select.OptGroup>
+                  );
+                })}
+              </Select>
+            ) : (
+              <div className='min-h-0 flex-1 overflow-y-auto flex flex-col gap-10px pr-4px'>
+                {TIER_ORDER.map((tier) => {
+                  const group = visibleSuites.filter((suite) => (suite.tier || 'capability') === tier);
+                  if (group.length === 0) return null;
+                  return (
+                    <div key={tier} className='flex flex-col gap-4px'>
+                      <Text type='secondary' className='text-12px'>
+                        {tierLabel(tier, t)}
+                      </Text>
+                      {group.map((suite) => {
+                        const active = suite.id === suiteId;
+                        return (
+                          <button
+                            key={suite.id}
+                            type='button'
+                            disabled={inFlight}
+                            onClick={() => onSuiteChange(suite.id)}
+                            aria-pressed={active}
+                            className={[
+                              'w-full min-w-0 text-left rounded-8px px-10px py-8px border border-solid cursor-pointer transition-colors',
+                              'outline-none focus-visible:ring-1 focus-visible:ring-[rgba(var(--primary-6),1)]',
+                              'disabled:opacity-60 disabled:cursor-not-allowed',
+                              active
+                                ? 'border-[rgb(var(--primary-6))] bg-[rgba(var(--primary-6),0.08)]'
+                                : 'border-transparent bg-transparent hover:bg-[var(--color-fill-2)]',
+                            ].join(' ')}
+                          >
+                            <span className='flex items-start justify-between gap-8px'>
+                              <span className='text-13px font-500 text-t-primary truncate'>
+                                {suite.title}
+                              </span>
+                              <span className='shrink-0 text-11px text-t-tertiary tabular-nums'>
+                                {suite.default_limit}
+                              </span>
+                            </span>
+                            {suite.requires_sandbox ? (
+                              <span className='mt-4px block text-11px text-t-tertiary'>
+                                {t('eval.sandboxShort')}
+                              </span>
+                            ) : suite.requires_download ? (
+                              <span className='mt-4px block text-11px text-t-tertiary'>
+                                {suite.cached ? t('eval.cachedShort') : t('eval.needsDownloadShort')}
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
               </div>
             )}
 
-            {isBusinessRun(run) && <BusinessReportPanel report={report} inFlight={inFlight} />}
-
-            {summary && summary.by_category.length > 0 && (
-              <Table
-                rowKey='category'
-                pagination={false}
-                data={summary.by_category}
-                columns={[
-                  { title: t('eval.col.category'), dataIndex: 'category' },
-                  { title: t('eval.col.total'), dataIndex: 'total', width: 90 },
-                  { title: t('eval.col.passed'), dataIndex: 'passed', width: 90 },
-                  {
-                    title: t('eval.col.successRate'),
-                    dataIndex: 'success_rate',
-                    width: 120,
-                    render: (value: number) => formatRate(value),
-                  },
-                ]}
-              />
-            )}
-
-            <Title heading={5} className='!m-0'>
-              {t('eval.cases')}
-            </Title>
-            <Table
-              rowKey={(row: EvalCaseView) => `${row.case_id}#${row.trial ?? 1}`}
-              pagination={false}
-              data={run.cases}
-              expandedRowRender={(row: EvalCaseView) => (
-                <CaseDetail
-                  runId={run.run_id}
-                  suite={run.suite}
-                  row={row}
-                  liveTrace={
-                    run.current_trace?.case_id === row.case_id ? run.current_trace : null
-                  }
-                />
-              )}
-              columns={[
-                { title: t('eval.col.case'), dataIndex: 'case_id' },
-                { title: t('eval.col.trial'), dataIndex: 'trial', width: 72 },
-                { title: t('eval.col.category'), dataIndex: 'category', width: 140 },
-                {
-                  title: t('eval.col.result'),
-                  dataIndex: 'success',
-                  width: 90,
-                  render: (success: boolean) => (
-                    <Tag color={success ? 'green' : 'red'}>
-                      {success ? t('eval.pass') : t('eval.fail')}
-                    </Tag>
-                  ),
-                },
-                { title: t('eval.col.turns'), dataIndex: 'turns', width: 80 },
-                { title: t('eval.col.tools'), dataIndex: 'tool_call_count', width: 80 },
-                {
-                  title: t('eval.col.tokens'),
-                  width: 120,
-                  render: (_: unknown, row: EvalCaseView) =>
-                    `${row.input_tokens} / ${row.output_tokens}`,
-                },
-                {
-                  title: t('eval.col.elapsed'),
-                  dataIndex: 'elapsed_ms',
-                  width: 110,
-                  render: (value: number) => `${value} ms`,
-                },
-                {
-                  title: t('eval.col.events'),
-                  width: 80,
-                  render: (_: unknown, row: EvalCaseView) =>
-                    row.trajectory_event_count ?? (row.has_trace ? '·' : '—'),
-                },
-                {
-                  title: t('eval.col.artifacts'),
-                  width: 80,
-                  render: (_: unknown, row: EvalCaseView) => row.artifact_count ?? '—',
-                },
-                {
-                  title: t('eval.col.session'),
-                  width: 120,
-                  render: (_: unknown, row: EvalCaseView) =>
-                    row.conversation_id ? (
-                      <Link to={`/conversation/${row.conversation_id}`}>{t('eval.openSession')}</Link>
-                    ) : (
-                      '—'
-                    ),
-                },
-              ]}
-            />
-          </>
-        )}
-
-        {history.length > 0 && (
-          <>
-            <Title heading={5} className='!m-0'>
-              {t('eval.history')}
-            </Title>
-            <Table
-              rowKey='run_id'
-              pagination={false}
-              data={history}
-              onRow={(row: EvalRunListItem) => ({
-                onClick: () => {
-                  void evalApi.getRun(row.run_id).then(setRun).catch(() => undefined);
-                },
-              })}
-              columns={[
-                { title: t('eval.col.run'), dataIndex: 'run_id' },
-                { title: t('eval.suite'), dataIndex: 'suite', width: 160 },
-                { title: t('eval.col.result'), dataIndex: 'status', width: 110 },
-                { title: t('eval.col.passed'), dataIndex: 'passed', width: 80 },
-                {
-                  title: t('eval.metric.passAt1'),
-                  dataIndex: 'pass_at_1',
-                  width: 100,
-                  render: (value: number) => formatRate(value),
-                },
-              ]}
-            />
-            <div className='flex flex-wrap items-end gap-12px'>
-              <Select
-                placeholder='A'
-                value={diffA}
-                onChange={setDiffA}
-                style={{ width: 240 }}
-                options={history.map((item) => ({ value: item.run_id, label: item.run_id.slice(0, 8) }))}
-              />
-              <Select
-                placeholder='B'
-                value={diffB}
-                onChange={setDiffB}
-                style={{ width: 240 }}
-                options={history.map((item) => ({ value: item.run_id, label: item.run_id.slice(0, 8) }))}
-              />
-              <Button onClick={() => void loadDiff()} loading={busy === 'diff'} disabled={!diffA || !diffB}>
-                {t('eval.diff')}
-              </Button>
-            </div>
-            {diff && (
-              <Text type='secondary'>
-                {t('eval.diffDelta', {
-                  delta: formatRate(diff.pass_at_1_delta),
-                  flips: diff.flipped.length,
-                })}
+            {selectedSuite && (
+              <Text type='secondary' className='text-12px leading-18px shrink-0'>
+                {isOfficeValSuiteId(suiteId) ? t('eval.officeval.note') : suiteNotes}
+                {cacheNote ? ` · ${cacheNote}` : ''}
+                {importedSuite ? ` · ${t('eval.importHint')}` : ''}
               </Text>
             )}
-          </>
-        )}
+
+            <div className='shrink-0 flex flex-col gap-8px pt-8px border-t border-t-solid border-[var(--color-border-2)]'>
+              <div className='grid grid-cols-2 gap-8px'>
+                <label className='flex flex-col gap-4px min-w-0'>
+                  <Text type='secondary' className='text-12px'>
+                    {t('eval.limit')}
+                  </Text>
+                  <InputNumber
+                    value={limit}
+                    min={1}
+                    max={selectedSuite?.max_limit ?? 20}
+                    disabled={inFlight}
+                    onChange={(value) => setLimit(typeof value === 'number' ? value : undefined)}
+                  />
+                </label>
+                <label className='flex flex-col gap-4px min-w-0'>
+                  <Text type='secondary' className='text-12px'>
+                    {t('eval.trials')}
+                  </Text>
+                  {trialsLocked ? (
+                    <Tooltip content={t('eval.trialsLocked')}>
+                      <span>
+                        <InputNumber value={1} min={1} max={1} disabled />
+                      </span>
+                    </Tooltip>
+                  ) : (
+                    <InputNumber
+                      value={nTrials}
+                      min={1}
+                      max={5}
+                      disabled={inFlight}
+                      onChange={(value) => setNTrials(typeof value === 'number' ? value : 1)}
+                    />
+                  )}
+                </label>
+              </div>
+              <div className='flex flex-wrap gap-8px'>
+                {selectedSuite?.requires_download && (
+                  <Button
+                    size='small'
+                    className='flowy-icon-text-btn'
+                    icon={<Download theme='outline' size={14} />}
+                    onClick={() => void pull()}
+                    loading={busy === 'pull'}
+                    disabled={inFlight}
+                  >
+                    {t('eval.pull')}
+                  </Button>
+                )}
+                <Tooltip content={t('eval.importHint')}>
+                  <Button
+                    size='small'
+                    className='flowy-icon-text-btn'
+                    onClick={() => void importPack()}
+                    loading={busy === 'import'}
+                    disabled={inFlight}
+                    icon={<FolderOpen theme='outline' size={14} />}
+                  >
+                    {t('eval.importPack')}
+                  </Button>
+                </Tooltip>
+                <Button
+                  size='small'
+                  className='flowy-icon-text-btn'
+                  icon={<Refresh theme='outline' size={14} />}
+                  onClick={() => void syncPrivate()}
+                  loading={busy === 'sync'}
+                  disabled={inFlight}
+                >
+                  {t('eval.syncPrivate')}
+                </Button>
+              </div>
+              {sandboxBlocked && (
+                <Text type='secondary' className='text-12px'>
+                  {t('eval.sandboxDisabled')}
+                </Text>
+              )}
+              {inFlight ? (
+                <Button status='danger' long onClick={() => void cancel()} loading={busy === 'cancel'}>
+                  {t('eval.cancel')}
+                </Button>
+              ) : (
+                <Button
+                  type='primary'
+                  long
+                  onClick={() => void start()}
+                  loading={busy === 'run'}
+                  disabled={sandboxBlocked}
+                >
+                  {t('eval.runWithProfile', {
+                    profile:
+                      taskProfile === 'coding'
+                        ? t('conversation.taskProfile.coding', { defaultValue: '代码开发' })
+                        : t('conversation.taskProfile.office', { defaultValue: '日常办公' }),
+                  })}
+                </Button>
+              )}
+            </div>
+          </aside>
+
+          <section className='min-h-0 min-w-0 flex flex-col gap-12px overflow-hidden'>
+            <SegmentedTabs
+              size='sm'
+              items={panelItems}
+              activeKey={showReportTab || panel !== 'report' ? panel : 'run'}
+              onChange={(key) => setPanel(key as 'run' | 'report' | 'history')}
+            />
+            <div className='min-h-0 flex-1 overflow-y-auto pr-4px'>
+              {(panel === 'run' || (panel === 'report' && !showReportTab)) && (
+                <RunPanel
+                  run={run}
+                  loading={busy === 'load' && !run}
+                  inFlight={inFlight}
+                  summary={summary}
+                  progressPercent={progressPercent}
+                  selectedCase={selectedCase ?? null}
+                  selectedCaseKey={selectedCaseKey}
+                  onSelectCase={setSelectedCaseKey}
+                />
+              )}
+              {panel === 'report' && showReportTab && (
+                <BusinessReportPanel report={report} inFlight={inFlight} />
+              )}
+              {panel === 'history' && (
+                <HistoryPanel
+                  history={history}
+                  activeRunId={run?.run_id}
+                  diffA={diffA}
+                  diffB={diffB}
+                  diff={diff}
+                  busy={busy === 'diff'}
+                  onDiffA={setDiffA}
+                  onDiffB={setDiffB}
+                  onLoadDiff={() => void loadDiff()}
+                  onOpenRun={(runId) => {
+                    void evalApi
+                      .getRun(runId)
+                      .then((next) => {
+                        setRun(next);
+                        setPanel('run');
+                      })
+                      .catch(() => undefined);
+                  }}
+                />
+              )}
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   );
 };
 
-function reportCellTone(value: string): 'success' | 'error' | 'warning' | 'secondary' | undefined {
-  const hasFail =
-    value.includes('✗') ||
-    value.startsWith('未通过') ||
-    value.startsWith('未评分') ||
-    value.startsWith('出错');
-  const hasPass = value.includes('✓') || value.startsWith('Gate 全过');
-  const truncated = value.includes('截断') || value.includes('掐断') || value.includes('停在工具');
-  if (hasFail && hasPass) return 'warning';
-  if (hasFail) return 'error';
-  if (truncated) return 'warning';
-  if (hasPass) return 'success';
-  if (value === '未跑' || value === '—') return 'secondary';
-  return undefined;
-}
-
-function ReportCell({ value }: { value: string }) {
-  const tone = reportCellTone(value);
-  return (
-    <Text type={tone} className='whitespace-pre-wrap'>
-      {value}
-    </Text>
-  );
-}
-
-function ReportMetricCell({ label, hint }: { label: string; hint?: string | null }) {
-  return (
-    <div className='py-2px'>
-      <Text className='font-500'>{label}</Text>
-      {hint ? (
-        <Text type='secondary' className='mt-4px block text-12px leading-18px'>
-          {hint}
-        </Text>
-      ) : null}
-    </div>
-  );
-}
-
-function BusinessReportPanel({
-  report,
-  inFlight,
-}: {
-  report: EvalBusinessReport | null;
-  inFlight: boolean;
-}) {
-  const { t } = useTranslation();
-  const [exporting, setExporting] = useState(false);
-
-  const handleExport = async () => {
-    if (!report || exporting) return;
-    setExporting(true);
-    try {
-      const result = await exportBusinessReport(report, {
-        htmlFilterName: t('eval.report.exportFilter'),
-        csvFilterName: t('eval.report.exportFilterCsv'),
-      });
-      if (result.status === 'saved') {
-        Message.success(t('eval.report.exportOk', { path: result.path }));
-      }
-    } catch (error) {
-      const detail =
-        isBackendHttpError(error) && error.backendMessage.trim()
-          ? error.backendMessage
-          : '';
-      Message.error(detail ? `${t('eval.report.exportFailed')}: ${detail}` : t('eval.report.exportFailed'));
-    } finally {
-      setExporting(false);
-    }
-  };
-  const goalColumns = [
-    {
-      title: t('eval.report.check'),
-      dataIndex: 'label',
-      width: 260,
-      render: (_value: string, row: EvalBusinessMatrixRow) => (
-        <ReportMetricCell label={row.label} hint={row.hint} />
-      ),
-    },
-    {
-      title: t('eval.report.t01'),
-      dataIndex: 't01',
-      render: (value: string) => <ReportCell value={value} />,
-    },
-    {
-      title: t('eval.report.t02'),
-      dataIndex: 't02',
-      render: (value: string) => <ReportCell value={value} />,
-    },
-    {
-      title: t('eval.report.t03'),
-      dataIndex: 't03',
-      render: (value: string) => <ReportCell value={value} />,
-    },
-  ];
-  const efficiencyColumns = [
-    {
-      title: t('eval.report.metric'),
-      dataIndex: 'label',
-      width: 260,
-      render: (_value: string, row: EvalBusinessMatrixRow) => (
-        <ReportMetricCell label={row.label} hint={row.hint} />
-      ),
-    },
-    {
-      title: t('eval.report.t01'),
-      dataIndex: 't01',
-      render: (value: string) => <ReportCell value={value} />,
-    },
-    {
-      title: t('eval.report.t02'),
-      dataIndex: 't02',
-      render: (value: string) => <ReportCell value={value} />,
-    },
-    {
-      title: t('eval.report.t03'),
-      dataIndex: 't03',
-      render: (value: string) => <ReportCell value={value} />,
-    },
-  ];
-  const suiteLabel = report
-    ? `${report.passed_cases}/${report.unique_cases}`
-    : null;
-
-  return (
-    <div className='flex flex-col gap-12px rounded-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
-      <div className='flex flex-wrap items-start justify-between gap-12px'>
-        <div>
-          <Title heading={5} className='!m-0'>
-            {t('eval.report.title')}
-            {suiteLabel ? (
-              <Tag
-                className='ml-8px'
-                color={
-                  report && report.unique_cases > 0 && report.passed_cases === report.unique_cases
-                    ? 'green'
-                    : 'orangered'
-                }
-              >
-                {suiteLabel}
-              </Tag>
-            ) : null}
-          </Title>
-          <Text type='secondary'>
-            {t('eval.report.modelNote', { model: report?.model || '—' })}
-          </Text>
-        </div>
-        <Button
-          size='small'
-          loading={exporting}
-          onClick={() => void handleExport()}
-          disabled={!report || inFlight || exporting}
-        >
-          {t('eval.report.export')}
-        </Button>
-      </div>
-      {!report || inFlight ? (
-        <Text type='secondary'>
-          {inFlight ? t('eval.report.running') : t('eval.report.empty')}
-        </Text>
-      ) : (
-        <>
-          <Text className='font-500'>{t('eval.report.goal')}</Text>
-          <Table
-            rowKey='label'
-            pagination={false}
-            size='small'
-            data={report.goal_rows}
-            columns={goalColumns}
-            scroll={{ x: true }}
-          />
-          <Text className='font-500'>{t('eval.report.efficiency')}</Text>
-          <Table
-            rowKey='label'
-            pagination={false}
-            size='small'
-            data={report.efficiency_rows}
-            columns={efficiencyColumns}
-            scroll={{ x: true }}
-          />
-          <Text type='secondary'>{t('eval.report.footnote')}</Text>
-          <Text type='secondary'>{t('eval.report.stopGuide')}</Text>
-        </>
-      )}
-    </div>
-  );
-}
-
-function statusLabel(
-  status: string,
-  t: (key:
-    | 'eval.status.loading'
-    | 'eval.status.queued'
-    | 'eval.status.running'
-    | 'eval.status.cancelling'
-    | 'eval.status.cancelled'
-    | 'eval.status.completed'
-    | 'eval.status.failed') => string
-): string {
-  switch (status) {
-    case 'loading':
-      return t('eval.status.loading');
-    case 'queued':
-      return t('eval.status.queued');
-    case 'running':
-      return t('eval.status.running');
-    case 'cancelling':
-      return t('eval.status.cancelling');
-    case 'cancelled':
-      return t('eval.status.cancelled');
-    case 'completed':
-      return t('eval.status.completed');
-    case 'failed':
-      return t('eval.status.failed');
-    default:
-      return status;
-  }
-}
-
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <Text type='secondary' className='block'>
+    <div className='min-w-0'>
+      <Text type='secondary' className='block text-12px'>
         {label}
       </Text>
-      <Text>{value}</Text>
+      <Text className='tabular-nums font-500'>{value}</Text>
     </div>
   );
 }
 
-function CaseDetail({
-  runId,
-  suite,
-  row,
-  liveTrace,
+function RunPanel({
+  run,
+  loading,
+  inFlight,
+  summary,
+  progressPercent,
+  selectedCase,
+  selectedCaseKey,
+  onSelectCase,
 }: {
-  runId: string;
-  suite: string;
-  row: EvalCaseView;
-  liveTrace: EvalCaseTraceView | null | undefined;
+  run: EvalRunView | null;
+  loading: boolean;
+  inFlight: boolean;
+  summary: EvalRunView['summary'];
+  progressPercent: number;
+  selectedCase: EvalCaseView | null;
+  selectedCaseKey: string | null;
+  onSelectCase: (key: string) => void;
 }) {
   const { t } = useTranslation();
-  const [trace, setTrace] = useState<EvalCaseTraceView | null>(liveTrace ?? null);
-  const [observationSummary, setObservationSummary] = useState<string | null>(null);
-  const [reporting, setReporting] = useState(false);
-  const conversationId = row.conversation_id ?? liveTrace?.conversation_id ?? null;
-
-  useEffect(() => {
-    if (liveTrace) {
-      setTrace(liveTrace);
-      return undefined;
-    }
-    let cancelled = false;
-    void evalApi.getCaseTrace(runId, row.case_id, row.trial)
-      .then((next) => {
-        if (!cancelled) setTrace(next);
-      })
-      .catch(() => {
-        if (!cancelled) setTrace(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, row.case_id, row.trial, liveTrace]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void evalApi
-      .getCaseObservation(runId, row.case_id, 20)
-      .then((page) => {
-        if (cancelled) return;
-        setObservationSummary(
-          `${page.summary.turn_count} turns · ${page.summary.model_call_count} model calls · ${page.summary.tool_count} tools · ${page.summary.integrity}`
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setObservationSummary(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, row.case_id, conversationId]);
+  if (!run) {
+    return (
+      <Empty
+        description={
+          <span className='text-t-secondary'>{loading ? t('eval.empty.loading') : t('eval.empty.run')}</span>
+        }
+      />
+    );
+  }
+  const showPassAtK = !isBusinessRun(run) && (summary?.n_trials ?? 1) > 1;
 
   return (
-    <div className='flex flex-col gap-12px py-8px'>
-      {conversationId && (
-        <div className='flex flex-wrap items-center gap-12px'>
-          <Text type='secondary'>{t('eval.sessionObservation')}</Text>
-          <Link to={`/conversation/${conversationId}`}>{t('eval.openSession')}</Link>
-          <Text type='secondary' className='font-mono text-12px'>
-            {conversationId}
+    <div className='flex flex-col gap-16px pb-16px'>
+      <div
+        className='rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-16px flex flex-col gap-12px'
+        aria-live='polite'
+      >
+        <div className='flex flex-wrap items-center gap-8px'>
+          <Tag color={statusColor(run.status)}>{statusLabel(run.status, t)}</Tag>
+          <Text>
+            {t('eval.progressLabel', {
+              completed: run.completed,
+              planned: run.planned,
+              current: run.current_case_id ?? '—',
+            })}
           </Text>
-          {observationSummary ? <Tag size='small'>{observationSummary}</Tag> : null}
+          {run.workspace_label && (
+            <Text type='secondary' className='truncate' title={run.workspace_path ?? undefined}>
+              {t('eval.workspace')}: {run.workspace_label}
+            </Text>
+          )}
+        </div>
+        <Progress percent={progressPercent} />
+        <div className='grid grid-cols-2 md:grid-cols-4 gap-x-24px gap-y-12px'>
+          <Metric label={t('eval.metric.passed')} value={`${run.passed} / ${run.failed + run.passed}`} />
+          <Metric
+            label={t('eval.metric.successRate')}
+            value={summary ? formatRate(summary.success_rate) : '—'}
+          />
+          {showPassAtK && (
+            <>
+              <Metric
+                label={t('eval.metric.passAt1')}
+                value={summary ? formatRate(summary.pass_at_1 ?? 0) : '—'}
+              />
+              <Metric
+                label={t('eval.metric.passHatK')}
+                value={summary ? formatRate(summary.pass_hat_k ?? 0) : '—'}
+              />
+            </>
+          )}
+          <Metric label={t('eval.metric.avgTurns')} value={summary ? formatAvg(summary.avg_turns) : '—'} />
+          <Metric
+            label={t('eval.metric.avgElapsed')}
+            value={summary ? formatElapsed(summary.avg_elapsed_ms) : '—'}
+          />
+          <Metric
+            label={t('eval.metric.avgTokens')}
+            value={
+              summary
+                ? `${formatAvg(summary.avg_input_tokens)} / ${formatAvg(summary.avg_output_tokens)}`
+                : '—'
+            }
+          />
+          {run.model && <Metric label={t('eval.metric.model')} value={run.model} />}
+        </div>
+        {run.error && <Alert type='error' content={run.error} />}
+      </div>
+
+      {inFlight && run.current_trace && (
+        <div className='rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-16px'>
+          <Title heading={5} className='!m-0 mb-8px'>
+            {t('eval.liveTrace')}
+            <Text type='secondary' className='ml-8px' translate='no'>
+              {run.current_trace.case_id}
+            </Text>
+          </Title>
+          <TraceView trace={run.current_trace} />
         </div>
       )}
-      {!conversationId && <Text type='secondary'>{t('eval.observationEmpty')}</Text>}
-      {row.prompt && (
-        <Text type='secondary' className='whitespace-pre-wrap'>
-          {row.prompt}
-        </Text>
-      )}
-      <Table
-        rowKey={(scorer) => `${scorer.scorer_type}:${scorer.detail ?? ''}:${scorer.passed}`}
-        pagination={false}
-        size='small'
-        data={row.scorer_results}
-        columns={[
-          { title: t('eval.col.scorer'), dataIndex: 'scorer_type' },
-          {
-            title: t('eval.col.result'),
-            dataIndex: 'passed',
-            width: 90,
-            render: (passed: boolean) => (
-              <Tag color={passed ? 'green' : 'red'}>
-                {passed ? t('eval.pass') : t('eval.fail')}
-              </Tag>
-            ),
-          },
-          { title: t('eval.col.detail'), dataIndex: 'detail' },
-        ]}
-      />
-      {row.error && <Text type='error'>{row.error}</Text>}
-      {!row.success && (
-        <Button
-          size='small'
-          loading={reporting}
-          onClick={() => {
-            Modal.confirm({
-              title: t('eval.reportConfirm'),
-              onOk: async () => {
-                setReporting(true);
-                try {
-                  await evalApi.reportCase({
-                    case_id: row.case_id,
-                    suite,
-                    category: row.category,
-                    error: row.error,
-                    prompt: (row.prompt ?? '').slice(0, 800),
-                    scorer_json: JSON.stringify(row.scorer_results),
-                  });
-                } finally {
-                  setReporting(false);
-                }
-              },
-            });
-          }}
-        >
-          {t('eval.reportTurn')}
-        </Button>
-      )}
-      {(row.advisory_results?.length ?? 0) > 0 && (
+
+      {summary && summary.by_category.length > 0 && (
         <Table
-          rowKey={(scorer) => `adv:${scorer.scorer_type}:${scorer.detail ?? ''}:${scorer.passed}`}
+          rowKey='category'
           pagination={false}
           size='small'
-          data={row.advisory_results}
+          data={summary.by_category}
           columns={[
-            { title: t('eval.col.advisory'), dataIndex: 'scorer_type' },
+            { title: t('eval.col.category'), dataIndex: 'category' },
+            { title: t('eval.col.total'), dataIndex: 'total', width: 90 },
+            { title: t('eval.col.passed'), dataIndex: 'passed', width: 90 },
             {
-              title: t('eval.col.result'),
-              dataIndex: 'passed',
-              width: 90,
-              render: (passed: boolean) => (
-                <Tag color={passed ? 'green' : 'gray'}>
-                  {passed ? t('eval.pass') : t('eval.fail')}
-                </Tag>
-              ),
+              title: t('eval.col.successRate'),
+              dataIndex: 'success_rate',
+              width: 120,
+              render: (value: number) => formatRate(value),
             },
-            { title: t('eval.col.detail'), dataIndex: 'detail' },
           ]}
         />
       )}
-      {trace ? (
-        <TraceView trace={trace} />
-      ) : (
-        <Text type='secondary'>{t('eval.trace.empty')}</Text>
-      )}
-    </div>
-  );
-}
 
-function TraceView({ trace }: { trace: EvalCaseTraceView }) {
-  const { t } = useTranslation();
-  return (
-    <div className='flex flex-col gap-12px'>
-      <Text>
-        {t('eval.trace.title')}
-        {trace.live ? ` · ${t('eval.trace.live')}` : ''}
-      </Text>
-      {trace.events.length === 0 && !trace.assistant_text ? (
-        <Text type='secondary'>{t('eval.trace.empty')}</Text>
-      ) : (
-        <ol className='m-0 flex list-none flex-col gap-8px p-0'>
-          {trace.events.map((event, index) => (
-            <li key={`${event.ts_ms}-${index}`} className='border-l-solid border-l-2px border-l-#d9d9d9 pl-12px'>
-              <div className='flex flex-wrap items-center gap-8px'>
-                <Tag size='small' color={eventKindColor(event.kind, event.is_error)}>
-                  {eventKindLabel(event.kind, t)}
-                </Tag>
-                {event.name && <Text>{event.name}</Text>}
-                {event.is_error ? <Tag size='small' color='red'>{t('eval.fail')}</Tag> : null}
-              </div>
-              {event.input && (
-                <pre className='m-0 mt-4px max-h-240px overflow-auto whitespace-pre-wrap text-12px'>
-                  {event.input}
-                </pre>
-              )}
-              {event.content && (
-                <pre className='m-0 mt-4px max-h-240px overflow-auto whitespace-pre-wrap text-12px'>
-                  {event.content}
-                </pre>
-              )}
-            </li>
-          ))}
-        </ol>
-      )}
-      {trace.assistant_text && (
-        <div>
-          <Text type='secondary'>{t('eval.trace.assistant')}</Text>
-          <pre className='m-0 mt-4px max-h-320px overflow-auto whitespace-pre-wrap text-12px'>
-            {trace.assistant_text}
-          </pre>
+      <div className='grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-12px items-start'>
+        <div className='min-w-0'>
+          <div className='mb-8px flex items-baseline justify-between gap-8px'>
+            <Title heading={5} className='!m-0'>
+              {t('eval.cases')}
+            </Title>
+            <Text type='secondary' className='text-12px'>
+              {t('eval.casesHint')}
+            </Text>
+          </div>
+          <Table
+            rowKey={(row: EvalCaseView) => caseRowKey(row.case_id, row.trial)}
+            pagination={false}
+            size='small'
+            data={run.cases}
+            rowClassName={(row: EvalCaseView) =>
+              caseRowKey(row.case_id, row.trial) === selectedCaseKey
+                ? 'bg-[rgba(var(--primary-6),0.08)]'
+                : ''
+            }
+            onRow={(row: EvalCaseView) => ({
+              onClick: () => onSelectCase(caseRowKey(row.case_id, row.trial)),
+              className: 'cursor-pointer',
+            })}
+            columns={[
+              { title: t('eval.col.case'), dataIndex: 'case_id', ellipsis: true },
+              { title: t('eval.col.trial'), dataIndex: 'trial', width: 64 },
+              { title: t('eval.col.category'), dataIndex: 'category', width: 120, ellipsis: true },
+              {
+                title: t('eval.col.result'),
+                dataIndex: 'success',
+                width: 88,
+                render: (success: boolean) => (
+                  <Tag color={success ? 'green' : 'red'}>{success ? t('eval.pass') : t('eval.fail')}</Tag>
+                ),
+              },
+              { title: t('eval.col.turns'), dataIndex: 'turns', width: 72 },
+              {
+                title: t('eval.col.elapsed'),
+                dataIndex: 'elapsed_ms',
+                width: 96,
+                render: (value: number) => formatElapsed(value),
+              },
+              {
+                title: t('eval.col.session'),
+                width: 88,
+                render: (_: unknown, row: EvalCaseView) =>
+                  row.conversation_id ? (
+                    <Link to={`/conversation/${row.conversation_id}`} onClick={(event) => event.stopPropagation()}>
+                      {t('eval.openSession')}
+                    </Link>
+                  ) : (
+                    '—'
+                  ),
+              },
+            ]}
+          />
         </div>
-      )}
-      <div>
-        <Text type='secondary'>{t('eval.trace.artifacts')}</Text>
-        {trace.artifacts.length === 0 ? (
-          <Text type='secondary' className='block'>
-            {t('eval.trace.noArtifacts')}
-          </Text>
-        ) : (
-          <ul className='m-0 mt-8px flex list-none flex-col gap-12px p-0'>
-            {trace.artifacts.map((artifact) => (
-              <li key={artifact.path}>
-                <Text>
-                  {artifact.path}
-                  <Text type='secondary' className='ml-8px'>
-                    {artifact.kind === 'binary'
-                      ? t('eval.trace.binary')
-                      : t('eval.trace.size', { bytes: artifact.size_bytes })}
-                  </Text>
-                </Text>
-                {artifact.preview && (
-                  <pre className='m-0 mt-4px max-h-240px overflow-auto whitespace-pre-wrap text-12px'>
-                    {artifact.preview}
-                  </pre>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className='min-w-0 rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-16px'>
+          {selectedCase ? (
+            <EvalCaseDetail
+              runId={run.run_id}
+              suite={run.suite}
+              row={selectedCase}
+              liveTrace={run.current_trace?.case_id === selectedCase.case_id ? run.current_trace : null}
+            />
+          ) : (
+            <Text type='secondary'>{t('eval.selectCase')}</Text>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function eventKindColor(kind: string, isError?: boolean | null): string {
-  if (isError || kind === 'error') return 'red';
-  switch (kind) {
-    case 'tool_call':
-      return 'arcoblue';
-    case 'tool_result':
-      return 'green';
-    case 'thinking':
-      return 'orangered';
-    default:
-      return 'gray';
+function HistoryPanel({
+  history,
+  activeRunId,
+  diffA,
+  diffB,
+  diff,
+  busy,
+  onDiffA,
+  onDiffB,
+  onLoadDiff,
+  onOpenRun,
+}: {
+  history: EvalRunListItem[];
+  activeRunId?: string;
+  diffA?: string;
+  diffB?: string;
+  diff: EvalRunDiffView | null;
+  busy: boolean;
+  onDiffA: (value: string) => void;
+  onDiffB: (value: string) => void;
+  onLoadDiff: () => void;
+  onOpenRun: (runId: string) => void;
+}) {
+  const { t } = useTranslation();
+  if (history.length === 0) {
+    return <Empty description={<span className='text-t-secondary'>{t('eval.empty.history')}</span>} />;
   }
-}
 
-function eventKindLabel(
-  kind: string,
-  t: (key:
-    | 'eval.trace.kind.text'
-    | 'eval.trace.kind.thinking'
-    | 'eval.trace.kind.tool_call'
-    | 'eval.trace.kind.tool_result'
-    | 'eval.trace.kind.error'
-    | 'eval.trace.kind.info') => string
-): string {
-  switch (kind) {
-    case 'text':
-      return t('eval.trace.kind.text');
-    case 'thinking':
-      return t('eval.trace.kind.thinking');
-    case 'tool_call':
-      return t('eval.trace.kind.tool_call');
-    case 'tool_result':
-      return t('eval.trace.kind.tool_result');
-    case 'error':
-      return t('eval.trace.kind.error');
-    case 'info':
-      return t('eval.trace.kind.info');
-    default:
-      return kind;
-  }
+  return (
+    <div className='flex flex-col gap-12px pb-16px'>
+      <Text type='secondary'>{t('eval.historyHint')}</Text>
+      <Table
+        rowKey='run_id'
+        pagination={false}
+        size='small'
+        data={history}
+        rowClassName={(row: EvalRunListItem) =>
+          row.run_id === activeRunId ? 'bg-[rgba(var(--primary-6),0.08)]' : ''
+        }
+        onRow={(row: EvalRunListItem) => ({
+          onClick: () => onOpenRun(row.run_id),
+          className: 'cursor-pointer',
+        })}
+        columns={[
+          {
+            title: t('eval.col.run'),
+            dataIndex: 'run_id',
+            render: (value: string) => (
+              <Text className='font-mono' translate='no'>
+                {shortId(value)}
+              </Text>
+            ),
+          },
+          { title: t('eval.suite'), dataIndex: 'suite', width: 180, ellipsis: true },
+          {
+            title: t('eval.col.result'),
+            dataIndex: 'status',
+            width: 110,
+            render: (status: string) => <Tag color={statusColor(status)}>{status}</Tag>,
+          },
+          { title: t('eval.col.passed'), dataIndex: 'passed', width: 80 },
+          {
+            title: t('eval.metric.passAt1'),
+            dataIndex: 'pass_at_1',
+            width: 100,
+            render: (value: number) => formatRate(value),
+          },
+        ]}
+      />
+      <div className='flex flex-wrap items-end gap-12px'>
+        <Select
+          placeholder={t('eval.diffA')}
+          value={diffA}
+          onChange={onDiffA}
+          style={{ width: 200 }}
+          options={history.map((item) => ({ value: item.run_id, label: shortId(item.run_id) }))}
+        />
+        <Select
+          placeholder={t('eval.diffB')}
+          value={diffB}
+          onChange={onDiffB}
+          style={{ width: 200 }}
+          options={history.map((item) => ({ value: item.run_id, label: shortId(item.run_id) }))}
+        />
+        <Button onClick={onLoadDiff} loading={busy} disabled={!diffA || !diffB}>
+          {t('eval.diff')}
+        </Button>
+      </div>
+      {diff && (
+        <Text type='secondary'>
+          {t('eval.diffDelta', {
+            delta: formatRate(diff.pass_at_1_delta),
+            flips: diff.flipped.length,
+          })}
+        </Text>
+      )}
+    </div>
+  );
 }
 
 export default EvalPage;

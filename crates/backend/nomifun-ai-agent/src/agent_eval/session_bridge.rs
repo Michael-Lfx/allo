@@ -74,6 +74,7 @@ pub fn suite_business_label(suite: &str) -> &'static str {
         "browser_smoke" => "浏览器冒烟",
         "mcp_fixture" => "MCP夹具",
         "private_badcases" => "私有Badcase",
+        "omegause_officeval" | "officeval" => "OfficeVal办公",
         "aider_polyglot" => "Aider编程",
         "classeval" => "ClassEval",
         "harbor_terminal_bench" => "Harbor沙箱",

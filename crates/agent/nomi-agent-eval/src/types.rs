@@ -125,6 +125,12 @@ pub enum ScorerSpec {
         #[serde(default = "default_xlsx_tolerance")]
         tolerance: f64,
     },
+    /// Local OmegaUse-OfficeVal gate: an office artifact changed or was written.
+    /// Not an official OfficeVal rubric score.
+    OfficeDeliverable {
+        #[serde(default)]
+        extensions: Vec<String>,
+    },
 }
 
 fn default_minimum_hits() -> usize {
@@ -150,7 +156,7 @@ pub struct Case {
     /// Recorded but excluded from pass/fail until a rubric is calibrated.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisory_scorers: Vec<ScorerSpec>,
-    /// Isolation overlay: `smoke` | `office` | `coding` | `browser` | `mcp` | `business`.
+    /// Isolation overlay: `smoke` | `office` | `officeval` | `coding` | `browser` | `mcp` | `business`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
     /// 1-based trial index filled by the runner; not part of corpus JSON.
@@ -180,6 +186,8 @@ fn default_enabled() -> bool {
 pub enum IsolationKind {
     Smoke,
     Office,
+    /// Office tools, business-length timeout. Used by OmegaUse-OfficeVal.
+    OfficeVal,
     Coding,
     Browser,
     Mcp,
@@ -193,12 +201,14 @@ impl IsolationKind {
             Some("mcp") => Self::Mcp,
             Some("smoke") => Self::Smoke,
             Some("office") => Self::Office,
+            Some("officeval") => Self::OfficeVal,
             Some("coding") => Self::Coding,
             Some("business") => Self::Business,
             _ => match suite.trim() {
                 "browser_smoke" => Self::Browser,
                 "mcp_fixture" => Self::Mcp,
                 "office_core" | "office_tasks" => Self::Office,
+                "omegause_officeval" | "officeval" => Self::OfficeVal,
                 "coding_local"
                 | "agent_workflows"
                 | "aider_polyglot"
@@ -214,6 +224,7 @@ impl IsolationKind {
         match label.trim() {
             "smoke" => Some(Self::Smoke),
             "office" => Some(Self::Office),
+            "officeval" => Some(Self::OfficeVal),
             "coding" => Some(Self::Coding),
             "browser" => Some(Self::Browser),
             "mcp" => Some(Self::Mcp),
@@ -224,14 +235,14 @@ impl IsolationKind {
 
     pub fn max_timeout_secs(self) -> u64 {
         match self {
-            Self::Business => 3600,
+            Self::Business | Self::OfficeVal => 3600,
             _ => 600,
         }
     }
 
     pub fn default_timeout_secs(self) -> u64 {
         match self {
-            Self::Business => 2700,
+            Self::Business | Self::OfficeVal => 2700,
             _ => 120,
         }
     }
@@ -469,6 +480,11 @@ mod tests {
         );
         assert_eq!(IsolationKind::Business.max_timeout_secs(), 3600);
         assert_eq!(IsolationKind::Office.max_timeout_secs(), 600);
+        assert_eq!(
+            IsolationKind::resolve(None, "omegause_officeval"),
+            IsolationKind::OfficeVal
+        );
+        assert_eq!(IsolationKind::OfficeVal.max_timeout_secs(), 3600);
         assert!(is_imported_suite("imported-demo"));
         assert!(!is_imported_suite("office_core"));
     }
