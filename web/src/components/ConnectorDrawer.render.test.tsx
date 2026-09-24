@@ -138,6 +138,8 @@ const TOKEN_DETAIL: ConnectorDetail = {
     missing: ["TDENGINE_API_KEY"],
     title: { zh: "TDengine 配置", en: "TDengine configuration" },
     description: { zh: "", en: "" },
+    doc_url: { zh: "https://docs.example.com/key", en: "https://docs.example.com/key" },
+    doc_label: { zh: "如何获取密钥？", en: "" },
     fields: [
       {
         key: "TDENGINE_API_KEY",
@@ -146,8 +148,6 @@ const TOKEN_DETAIL: ConnectorDetail = {
         label: { zh: "密钥", en: "Key" },
         placeholder: { zh: "粘贴密钥", en: "Paste the key" },
         description: { zh: "", en: "" },
-        doc_url: { zh: "https://docs.example.com/key", en: "https://docs.example.com/key" },
-        doc_label: { zh: "如何获取密钥？", en: "" },
       },
     ],
   } satisfies ConnectorCredential,

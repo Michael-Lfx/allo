@@ -1070,8 +1070,10 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .credential-input:focus { outline: none; border-color: var(--link); }
 .credential-input:disabled { cursor: wait; opacity: .7; }
 .credential-field-desc { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
-.credential-field-doc { display: inline-flex; align-items: center; gap: 4px; color: var(--link); font-size: 11.5px; text-decoration: none; }
-.credential-field-doc:hover { text-decoration: underline; }
+/* The form's own "where do I get a key" link — one per form, not one per field
+   (`34` §5.2): it is a column child, so it hugs its text instead of stretching. */
+.credential-form-doc { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; color: var(--link); font-size: 11.5px; text-decoration: none; }
+.credential-form-doc:hover { text-decoration: underline; }
 .credential-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* Label column hugs its text: at the old 1:2 split the values started half way

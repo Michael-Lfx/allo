@@ -80,6 +80,10 @@ export function ConnectorCredentialForm({
 
   const title = pickLocalized(credential.title, lang);
   const description = pickLocalized(credential.description, lang);
+  const docUrl = pickLocalized(credential.doc_url, lang);
+  // `doc_label` is missing on 9 of the market's 55 documented schemas (`34`
+  // §5.2), so the fallback chain ends at our own chrome rather than an empty link.
+  const docLabel = pickLocalized(credential.doc_label, lang) || t("catalog.credentialGetKey");
   const body = submittedValues(values);
 
   /**
@@ -112,6 +116,16 @@ export function ConnectorCredentialForm({
     <div className="credential-form">
       {title && <h3 className="credential-form-title">{title}</h3>}
       {description && <p className="credential-form-desc">{description}</p>}
+      {/* The marketplace's own "where do I get a key" page, once for the form
+          (`34` §5.2/§6.3). It belongs to the schema, not to a field: the same
+          link under 「端口」 is how this read before the projection stopped
+          copying it onto every row. */}
+      {docUrl && (
+        <a className="credential-form-doc" href={docUrl} target="_blank" rel="noreferrer">
+          <ExternalLink size={12} strokeWidth={1.8} />
+          <span>{docLabel}</span>
+        </a>
+      )}
       {credential.missing.length > 0 && (
         <p className="credential-form-missing">
           {t("catalog.credentialMissingCount", { count: credential.missing.length })}
@@ -122,8 +136,6 @@ export function ConnectorCredentialForm({
         const label = pickLocalized(field.label, lang) || field.key;
         const placeholder = pickLocalized(field.placeholder, lang);
         const hint = pickLocalized(field.description, lang);
-        const docUrl = pickLocalized(field.doc_url, lang);
-        const docLabel = pickLocalized(field.doc_label, lang) || t("catalog.credentialGetKey");
         const state = satisfied(field);
         return (
           <div className="credential-field" key={field.key}>
@@ -158,12 +170,6 @@ export function ConnectorCredentialForm({
               }
             />
             {hint && <p className="credential-field-desc">{hint}</p>}
-            {docUrl && (
-              <a className="credential-field-doc" href={docUrl} target="_blank" rel="noreferrer">
-                <ExternalLink size={12} strokeWidth={1.8} />
-                <span>{docLabel}</span>
-              </a>
-            )}
           </div>
         );
       })}

@@ -2713,7 +2713,15 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
     assert_eq!(fields[2]["value"], "6042", "{mixed}");
     assert_eq!(fields[3]["value"], serde_json::Value::Null, "{mixed}");
     assert_eq!(fields[3]["required"], true, "{mixed}");
-    assert_eq!(fields[3]["doc_url"]["en"], "https://docs.example.com/mixed", "{mixed}");
+    // The "where do I get a key" link is the **form's**, declared once by the
+    // schema (`34` §5.2) — the market ships no per-field documentation, and
+    // copying this onto every row is how 「如何获取密钥？」 ended up under `PORT`.
+    assert_eq!(credential["doc_url"]["en"], "https://docs.example.com/mixed", "{mixed}");
+    assert_eq!(credential["doc_label"]["zh"], "如何获取密钥？", "{mixed}");
+    for field in fields {
+        assert!(field.get("doc_url").is_none(), "{field}");
+        assert!(field.get("doc_label").is_none(), "{field}");
+    }
 
     // The 14 connectors whose market `auth_mode` is `server-side` / `mcp` /
     // `oneid-token` ship no `token-schema.json`: they must report `none` rather

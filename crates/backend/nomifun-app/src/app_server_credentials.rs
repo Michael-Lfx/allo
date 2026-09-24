@@ -36,8 +36,6 @@ pub struct DeclaredField {
     pub label: AppServerLocalizedString,
     pub placeholder: AppServerLocalizedString,
     pub description: AppServerLocalizedString,
-    pub doc_url: AppServerLocalizedString,
-    pub doc_label: AppServerLocalizedString,
 }
 
 impl DeclaredField {
@@ -47,6 +45,12 @@ impl DeclaredField {
 }
 
 /// What a connector's marketplace entry declared, as the host stored it.
+///
+/// The title, the description and the "where do I get a key" link belong to the
+/// **form**, not to a field: `token-schema.json` declares them once, at the top
+/// level (`34` §5.2). The market ships no per-field documentation, so spreading
+/// the form's link across its fields is an invention — and it rendered as
+/// 「如何获取密钥？」 under `PORT`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectorDeclaration {
     /// The marketplace directory name — the link between a connector row and its
@@ -54,6 +58,8 @@ pub struct ConnectorDeclaration {
     pub connector_id: String,
     pub title: Option<AppServerLocalizedString>,
     pub description: Option<AppServerLocalizedString>,
+    pub doc_url: Option<AppServerLocalizedString>,
+    pub doc_label: Option<AppServerLocalizedString>,
     pub fields: Vec<DeclaredField>,
 }
 
@@ -122,8 +128,6 @@ pub fn declaration_from_payload(payload: &str) -> Option<ConnectorDeclaration> {
                 label: localized(field.get("label"), &key),
                 placeholder: localized(field.get("placeholder"), ""),
                 description: localized(field.get("description"), ""),
-                doc_url: localized(value.get("doc_url"), ""),
-                doc_label: localized(value.get("doc_label"), ""),
             })
         })
         .collect();
@@ -134,6 +138,10 @@ pub fn declaration_from_payload(payload: &str) -> Option<ConnectorDeclaration> {
         connector_id,
         title: optional_localized(value.get("title")),
         description: optional_localized(value.get("description")),
+        // Form-level, read from the payload's own top level — never copied onto
+        // the fields below (`34` §5.2).
+        doc_url: optional_localized(value.get("doc_url")),
+        doc_label: optional_localized(value.get("doc_label")),
         fields,
     })
 }
@@ -205,8 +213,6 @@ pub fn credential_block(
             description: field.description.clone(),
             // Never a secret's value: only a plain field's own setting.
             value: (!field.is_secret()).then(|| resolved).flatten(),
-            doc_url: field.doc_url.clone(),
-            doc_label: field.doc_label.clone(),
         });
     }
     missing.sort();
@@ -245,6 +251,8 @@ pub fn credential_block(
         fields,
         title: declaration.and_then(|d| d.title.clone()),
         description: declaration.and_then(|d| d.description.clone()),
+        doc_url: declaration.and_then(|d| d.doc_url.clone()),
+        doc_label: declaration.and_then(|d| d.doc_label.clone()),
     }
 }
 
@@ -691,6 +699,8 @@ mod tests {
         serde_json::json!({
             "connector_id": "tdengine",
             "title": { "zh": "TDengine 配置", "en": "TDengine configuration" },
+            "doc_url": { "zh": "https://docs.example.com/tdengine", "en": "https://docs.example.com/tdengine/en" },
+            "doc_label": { "zh": "如何获取密钥？", "en": "" },
             "fields": [
                 { "key": "TDENGINE_API_KEY", "kind": "secret", "required": true,
                   "label": { "zh": "密钥", "en": "Key" } },
@@ -814,6 +824,52 @@ mod tests {
             credential_mode(Some(&source), &http_transport()),
             AppServerCredentialMode::None
         );
+    }
+
+    /// The "where do I get a key" link belongs to the **form**, not to a field
+    /// (`34` §5.2): the market declares one `docUrl` per `token-schema.json`.
+    ///
+    /// The projection used to read it out of the payload for *every* field, which
+    /// put 「如何获取密钥？」 under `PORT` and repeated the same link four times in
+    /// the live WebUI.
+    #[test]
+    fn the_documentation_link_is_form_level_and_not_repeated_per_field() {
+        let declaration = declaration_from_payload(&declaration_payload()).expect("declaration");
+        assert_eq!(
+            declaration.doc_url.as_ref().map(|url| url.zh.as_str()),
+            Some("https://docs.example.com/tdengine")
+        );
+        assert_eq!(
+            declaration.doc_url.as_ref().map(|url| url.en.as_str()),
+            Some("https://docs.example.com/tdengine/en")
+        );
+
+        let block = credential_block(
+            "conn-1",
+            Some(&declaration),
+            AppServerCredentialMode::Token,
+            &http_transport(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+            McpServerStatus::Disconnected,
+        );
+        assert_eq!(
+            block.doc_url.as_ref().map(|url| url.zh.as_str()),
+            Some("https://docs.example.com/tdengine")
+        );
+        assert_eq!(
+            block.doc_label.as_ref().map(|label| label.zh.as_str()),
+            Some("如何获取密钥？")
+        );
+        // The field shape has nowhere to put it — asserted on the wire form so a
+        // future re-addition has to argue with this test.
+        let json = serde_json::to_value(&block).expect("serializable");
+        for field in json["fields"].as_array().expect("fields") {
+            assert!(field.get("doc_url").is_none(), "{field}");
+            assert!(field.get("doc_label").is_none(), "{field}");
+        }
     }
 
     #[test]

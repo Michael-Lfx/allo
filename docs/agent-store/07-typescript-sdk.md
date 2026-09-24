@@ -207,6 +207,8 @@ interface ConnectorClient {
   logout(id: ConnectorId): Promise<void>;
   // fp-9：用户自己填 key / token 的表单与状态。响应**永不含 secret 的值**
   // （`fields[].value` 只对 plain 字段出现），写入按调用者命名空间落库。
+  // fp-10：表单自己的文案（`title` / `description` / `doc_url` / `doc_label`）挂在
+  // `ConnectorCredential` 上——市场一份 schema 只声明它一次，不逐字段重复。
   credentials(id: ConnectorId): Promise<ConnectorCredential>;
   setCredentials(id: ConnectorId, values: Record<string, string>): Promise<ConnectorCredential>;
   clearCredentials(id: ConnectorId, keys?: string[]): Promise<ConnectorCredential>;

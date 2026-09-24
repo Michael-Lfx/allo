@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "fp-9";
+const PROTOCOL_VERSION = "fp-10";
 
 type Verb = "GET" | "POST" | "DELETE";
 
