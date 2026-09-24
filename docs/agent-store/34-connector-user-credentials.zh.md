@@ -1,6 +1,6 @@
 # 连接器用户凭据（key / token 类）· 技术方案
 
-> 状态：**设计定稿；第 1–6 步已实施**（2026-09-24）。决策 D1–D6 见 §4，均有取值与代价。
+> 状态：**设计定稿；第 1–7 步已实施**（2026-09-24）。决策 D1–D6 见 §4，均有取值与代价。
 > §9 的进度栏记录每步的实施状态与仍未接通的部分。
 > 前置：`02-codebuddy-workbuddy-import-spec.md`（§5/§10 `userConfig → CredentialSchema`、值不入库）、
 > `05-flowy-agent-store-app-server-protocol.md`（协议正文）、`06-connector-oauth-security.md`（并行的 OAuth 通道）、
@@ -301,6 +301,12 @@ i18n 回退链（host 侧实现一次，两个方向都要）：`zh → en → k
    `weisheng-scrm` 命中第 1 条第 3 段）。
 4. `${NAME}` 但 schema 里没有同名字段：按隐式 `secret` 处理（`required: true`，`label` 回退为 `key`）
    并告警，绝不静默丢弃。**当前 0 处**，规则是防御性的。
+   **第 7 步实施期更正**：这条规则说的是**导入期**（市场来源）——那里的 plain 值来自声明的
+   `defaultValue`，没声明就没默认值，只能当密钥让用户填。**运行期**（第 7 步给宿主没导入过的
+   server 派生表单时）不能照搬：解析端按命名空间取值（`${secret:NAME}` 查凭据库、`${NAME}`
+   查连接器的 `values`），把 `${NAME}` 当隐式 secret 会派生出一个**永远填不进去**的字段——
+   写进去的值进凭据库，而解析时查的是 `values`，正是 §3.4 第二条那类静默失效。所以运行期
+   扫描**按解析端的命名空间归类**，见 §6.5。
 5. `Bearer` 之类的固定前缀一律来自模板原文，**不得按 header 名自动补**（§3.2 约束 2）。
 6. **声明优先于名字启发式**（实施期发现）：一个被声明为 `plain` 的字段，即使名字长得像密钥
    （`API_HOST` 含 `api`、`API_PASSWORD` 以外的 `*_API_*`），也必须按 `plain` 处理——否则
@@ -430,6 +436,52 @@ credential: {
   站点 `content/docs/{zh-CN,en-US}/typescript-sdk.md` 的计数与常量、`changelog`，并
   **bump `fp-8 → fp-9`** 后两仓同步（门禁：`check:fingerprint`、`check:release-sync`）。
 
+### 6.5 自带 MCP server（`connector/register`，第 7 步 / `fp-11`）
+
+**需求背景**：外部开发者有自己的 MCP server 和自己的 key。按 §6.1，`credential/set` 要求该
+连接器有一张**导入来的**表单，而宿主从未导入过他的 server；`AppServerClient` 又没有 MCP CRUD
+（`toggleMcpServerEnabled` 在 WebUI 自己的 client 里，走的是宿主 HTTP 路由，不在协议面上）。
+于是"自带 server + 自带 key"只能把 server 打成市场条目、还要写一份 `token-schema.json`——
+对"我手上就有一个 URL 和一个 key"的开发者，这是多余的一整套。
+
+**做法：模板即声明。** 新增一个方法，把 server 连同它的模板交进来；那张模板里出现的引用
+**就是**凭据表单：
+
+```jsonc
+// connector/register —— POST /api/app-server/connectors（与 connector/list 共用集合路由）
+{ "name": "acme-mcp",
+  "description": "…",                              // 可选
+  "transport": { "type": "http", "url": "https://mcp.acme.com/mcp",
+                 "headers": { "Authorization": "Bearer ${secret:ACME_KEY}" },
+                 "values": { } },                  // 连接器自己的非密钥设置
+}
+→ ConnectorDetail                                   // 与 connector/get 同形，含 credential 块
+```
+
+派生的字段规则（扫描顺序 url → headers / env 按键名排序，同名去重）：
+
+| 模板里的写法 | 派生成 | 说明 |
+|---|---|---|
+| `${secret:NAME}` / 整值 `secret:NAME` | `secret` 字段，`required: true` | `label` 回退为键名（没有作者可署名） |
+| `${NAME}` | `plain` 字段；`values` 里已有值则 `required: false` 且回传该值 | 与解析端一致：`${NAME}` 查的是 `values` |
+| 同名跨两个命名空间 | 按 `secret` 处理 | 否则一个本该进凭据库的值会落到可读可导出的 `values` |
+| stdio 的 `${NAME}` | **不派生** | 它的 spawn 路径按空 plain 表解析、plain 写入也被拒；派生只会掩盖模板本身的错 |
+
+**三条边界**（都有测试）：
+
+1. **密钥不进这个方法**——只有 `credential/set` 一条写入面，所以注册调用本身不含任何需要
+   脱敏的东西，日志与截图都不必小心；返回值里的 `credential.missing` 直接告诉调用方还差哪几个键。
+2. **注册不授予连接**——新行 disabled，启用仍要一次通过探测；同名再注册（配置按名字 upsert）
+   之后该调用者已交的凭据仍在。
+3. **方法在安装所有者专用面上**（`protect_instance_owner`）。能注册 = 能决定宿主去连哪里、
+   发什么 header，这与宿主自己的 MCP 管理器同级权限；把它放在 owner-only 面上，是让这条能力
+   等于"所有者管理自己的宿主"，而不是给任何连上来的人一个 SSRF/凭据外发入口。
+   同时它继承"未声明的键不许写"：注册一个 server 不等于把凭据库变成自由键值表。
+
+`mode` 的判据随之扩一条：**没有市场声明时先看模板**——有 `secret` 引用就是 `token`，否则才退回
+transport 推导（http/sse → `oauth`）。在此之前，一个自带 key 的 server 会显示成"要去 OAuth 授权"，
+而它根本没有 OAuth 面。
+
 ---
 
 ## 7. 兼容与迁移
@@ -491,11 +543,13 @@ credential: {
 | 4 | 协议 + SDK：三方法 + `credential` 块 + `mode` 映射表 + 四态词表 + `fp-9` + 站点同步 | `cargo test -p nomifun-app-server`；`check:fingerprint` 十处落点一致；`check:release-sync` 计数一致；站点 `check:docs-sync` 0 drift |
 | 5 | WebUI：schema 驱动表单 + 四态徽标 | 组件测试（i18n 回退、`secret` 不预填）；`cd web && bun run typecheck && bun run test`；手测双字段表单与混合表单 |
 | 6 | 存储终态（D1）：per-principal 查询面 + 旧键迁移 | 无前缀旧键只对 owner principal 可见；迁移测试；两个 principal 互不可见 |
-| 7 | D4 / D5 / D6 的登记项 | 各自立项 |
+| 7 | 自带 server（§6.5）：`connector/register` + 模板即声明 + `fp-11` + 站点同步 | 注册一个没有市场声明的 server，`credential` 块由模板派生（`mode: token`、字段为引用名、`missing` 为缺的键）；`set` 接受这些键、拒绝其它键；注册不启用；活体：register → set → 探针收到解析后的 header |
+| 8 | D4 / D5 / D6 的登记项 | 各自立项 |
 
 第 1、2 步都不含协议变更，可以先落。第 3 步的键控之所以提前到写入路径诞生时，是因为第 4 步
 一旦开放写入，第 6 步之前落盘的每一个键都要再迁移一次——把最小步（命名空间化）提前，第 6 步
-就只剩终态查询面与旧数据搬迁。
+就只剩终态查询面与旧数据搬迁。第 7 步是**外部开发者**那条线：前六步服务的都是"市场里有条目、
+用户在 UI 里填"的连接器，第 7 步才让"我自己有 server 和 key"的人不必先变成市场作者。
 
 ### 9.2 实施进度（2026-09-24）
 
@@ -507,6 +561,19 @@ credential: {
 | 4 | ✅ 完成 | 协议类型（`credential` 块 + 字段 + 双语言）；目录投影按**调用者**给出 `mode`/`status`/`missing`/`fields`；`[credentials]` 写入面（`toml_edit` 最小改动，注释与排版保留、原子落盘、写完重载进程内映射）；`connector/credential/get\|set\|clear` 三方法 + HTTP/WS 路由 + `ConnectorCredentialProvider` seam + 组合根接线；SDK 三个方法与协议类型；**`fp-8` → `fp-9`**、方法计数 `48 / 73` → `51 / 76`、两仓同步 |
 | 5 | ✅ 完成 | WebUI：`ConnectorCredentialForm`（schema 驱动，标题/说明/字段/取密钥入口全部由 host 下发且带回退；`secret` 掩码不预填不回显，`plain` 预填；空值不提交，保存按钮只在有变化时可点）；抽屉按 `credential.mode` 给入口（`token` → 「填入凭据」，`oauth` → 既有授权，`none` → 无），徽标统一为四态并带缺失项数量；token 模式的 `error` 复用既有 `drawer-hint is-error`（一个连接器一处错误展示）；写入后按探针同形刷新（`get` + `status` + `list`），不新写轮询 |
 | 6 | ✅ 完成 | 存储终态（D1）：`CredentialQuery` 把「这个调用者能解析到什么」收成一处（自己的 `<principal>:NAME` → 宿主级裸键 → 环境变量），并提供「还有哪些键是宿主级」的枚举；**无身份的调用者改为按安装所有者解析**（装配路径与 ACP 构建显式带上所有者）；`scope_credentials` 一次性把宿主级裸键改名到 `<owner>:NAME`（纯 TOML 变换，注释跟随键走；同值重复则删，异值冲突则保留并告警），宿主在声明所有者之后调用，幂等。**零 wire 变更，指纹不动** |
+| 7 | ✅ 完成 | 自带 server（§6.5）：`connector/register`（`POST /api/app-server/connectors`，与 `connector/list` 共用集合路由）+ `ConnectorCatalogProvider::register` + `AppServerConnectorRegistration` DTO；**模板即声明**——`effective_declaration()` 把市场声明与模板派生合并（声明优先，模板补它没覆盖的引用），`credential_mode()` 在无声明时先看模板里有没有 `secret` 引用；于是宿主从未导入过的 server 也有表单、也能 `credential/set`。SDK 加 `connectors.register()`；**`fp-10` → `fp-11`**、计数 `51 / 76` → `52 / 77`、两仓同步。**未做 `connector/unregister`**（§10） |
+
+**第 7 步的三条落地要点**：
+
+1. **派生字段按解析端的命名空间归类，不照搬 §5.4 规则 4。** 那条规则是导入期的（市场来源，
+   plain 值只能来自声明默认值），运行期若把 `${NAME}` 当隐式 secret，就会派生出一个永远填不进去
+   的字段：值进凭据库，解析查 `values`。所以扫描器与解析器共用一套命名空间划分，并有一条
+   测试钉住它。
+2. **同名跨命名空间按 secret 处理**：同一次扫描里 `X` 既写了 `${X}` 又写了 `${secret:X}` 时，
+   按 secret 收，否则一个本该进凭据库的值会落到可读可导出的 `values`。
+3. **stdio 的 `${NAME}` 不派生字段**：它的 spawn 路径按空的 plain 表解析、plain 写入也被拒绝
+   （`write_plain_values` 对 stdio 直接报错），派生只会造出一个按了没反应的输入框；那种模板
+   本身就写错了，探针报"缺这个引用"才是诚实的反馈。
 
 **第 6 步的两条设计要点**（都在实施时才看清）：
 
@@ -561,6 +628,8 @@ principal 各取各的"这件事当前不存在可测面——这也是它被登
 第 5 步新增：`web` 23（表单与四态词表，含渲染测试）、`nomifun-app` 2（投影的表单级断言 +
 上面那条 e2e）。第 6 步新增：`nomifun-common` 3（查询面的梯子与枚举）、`nomifun-app-server` 3
 （纯 TOML 迁移：改名 / 重复 / 冲突 / 无表不动）、`nomifun-app` 2（文件级迁移 + 无配置文件不建）。
+第 7 步新增：`nomifun-app` 6（模板扫描 / 派生字段 / 合并 / mode / stdio 与 plain 边界）、
+`nomifun-app` 1 条 e2e（注册 → 派生表单 → set → 拒未声明键 → 同名再注册）、活体脚本 +11 条断言。
 
 ### 9.1 端到端验收（活体）
 
@@ -589,14 +658,21 @@ principal 各取各的"这件事当前不存在可测面——这也是它被登
 
 **§9.1 上半段已自动化**：`web/scripts/verify-connector-credentials-live.ts`。它起一个记录请求的
 mock MCP server，再用宿主自己的客户端跑完整条链——`connector/test` → `credential/set` →
-`connector/test` → `credential/clear` → `connector/test`。对着刚起的宿主跑，31 条断言全绿：
+`connector/test` → `credential/clear` → `connector/test`。对着刚起的宿主跑，**42 条断言全绿**
+（第 7 步加了自带 server 那条路径，从 31 条长到 42 条）：
 
-- 凭据未填：两个连接器都报 `requires_input` + 缺失键名，探针回 `MCP_MISSING_CREDENTIAL`，
+- 凭据未填：三个连接器都报 `requires_input` + 缺失键名，探针回 `MCP_MISSING_CREDENTIAL`，
   错误里只有键名没有值，且 **mock 一个请求都没收到**（第 1 条）；
 - `set` 之后：探针成功、工具表回来、mock 收到的 `Authorization` 正是 `Bearer <key>`
   （模板前缀保留），且没有任何请求带过字面量 `${secret:`（第 2、3 条）；
 - `clear` 之后回到 `requires_input`，mock 再次一个请求都没收到（第 4 条）；
 - 宿主日志 128 行里，三个凭据值出现 **0** 次（第 3 条的日志一半，手工核对）。
+
+**自带 server 那条路径也在同一次跑里**：`register()` 交一个宿主从未导入过的 server（模板里写
+`Bearer ${secret:DEV_KEY}`）→ 返回值直接给 `mode: token` / 字段 `DEV_KEY` / `missing: ["DEV_KEY"]`，
+且 `enabled: false` → 未 `set` 时探针拒发、mock 无请求 → `setCredentials` → 探针成功、mock 收到的
+正是 `Bearer the-developers-own-key` → `clear` 回到 `requires_input`。这是"外部开发者自带 server
+与 key"这条需求的可执行证据。
 
 第 5 条的四种形态覆盖三种：混合表单（3 plain + 1 secret，url 与 header 都是模板，且两个条目
 分别用 `${secret:NAME}` 与 `${NAME}` 两种拼写，一次跑覆盖转换两端）、双字段（`CLIENT_ID` +
@@ -614,6 +690,10 @@ mock MCP server，再用宿主自己的客户端跑完整条链——`connector/
 覆盖掉了模板版，于是"探针按调用者解析凭据"那几条断言其实在测一个没有凭据引用的连接器
 （已修，见 §9.2）。
 
+**第 7 步的活体结论**：注册路径不需要新断言就能证明它接对了——同一条"未填 → 拒发 → set →
+收到解析后的真值 → clear"的链子在它身上原样成立，说明它与市场来的连接器走的是同一套投影、
+同一套写入面、同一套解析。唯一不同的一步是它没有市场声明，而表单照样出现。
+
 ---
 
 ## 10. 未做 / 登记
@@ -630,6 +710,15 @@ mock MCP server，再用宿主自己的客户端跑完整条链——`connector/
   正式写入"前者为后者的一种来源分支"，避免两套并存。
 - `examples_zh/_en`（283 条均有）是否进入连接器详情作为推荐提问。
 - `06` 的 OAuth scope 挑战（远程端点按需申请 scope）不在本方案内，另行登记。
+- **`connector/unregister` 没做**（第 7 步只加了注册）：SDK 能给宿主注册一个 server，却没有
+  对称方法把它移走——注册出来的行目前只能用宿主自己的 MCP 管理面删（`DELETE /api/mcp/servers/{id}`，
+  不在协议面上）。活体脚本因此要求宿主是可丢弃的。要不要补，取决于外部开发者是否会长期共用一个
+  已有宿主：如果只是"自己 spawn 一个宿主跑完就扔"，不补也可以；如果是连到别人的宿主上，就得补。
+- **第 7 步的活体脚本对宿主一次性有要求**：同一宿主上第二次跑会停在 `store/install`
+  （见下面那条与凭据无关的重装问题），而 `register()` 那条路径本身重复跑是幂等的（同名 upsert）。
+- **注册面没有单独的策略开关**：`connector/register` 与 `connector/test` 合起来 = 让宿主按调用方
+  给的 URL 与 header 出网。今天这在"安装所有者专用面"上，与宿主自己的 MCP 管理器同级；
+  一旦这个面对次级 principal 开放（见上一条），就需要一个像 `[connector_proxy]` 那样的门禁。
 - **次级 principal 的连接面**：`/api/app-server/*` 整体是安装所有者专用
   （`protect_instance_owner`，非所有者 403）。在出现"非所有者也能连上的连接面"之前，
   `credential` 块里"按调用者给出 `missing`/`status`"与"两个 principal 各取各的"没有可观测
