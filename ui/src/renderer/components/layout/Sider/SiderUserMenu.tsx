@@ -18,6 +18,7 @@ import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 import { changeLanguage, normalizeLanguageCode, supportedLanguages } from '@/renderer/services/i18n';
 import SiderThemePanel from './SiderThemePanel';
+import SiderCreditsBubble from './SiderCreditsBubble';
 
 const LANGUAGE_LABELS: Record<string, string> = {
   'zh-CN': '简体中文',
@@ -194,12 +195,12 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
 
   const menuContent = (
     <div className='w-192px flex flex-col gap-1px p-4px'>
-      <div className='flex items-center justify-between gap-8px h-30px px-8px text-12px'>
+      <div className='flex items-center justify-between gap-8px h-32px px-8px text-12px rd-6px bg-fill-1'>
         <span className='text-t-secondary'>{t('common.userMenu.creditsBalance', { defaultValue: '积分余额' })}</span>
-        <span className='flex items-center gap-4px'>
+        <span className='flex items-center gap-6px'>
           <span className='font-600 text-t-primary tabular-nums'>{creditsText}</span>
           {authenticated && (
-            <CreditsWebsiteButton size='xs' />
+            <CreditsWebsiteButton variant='pill' />
           )}
         </span>
       </div>
@@ -367,7 +368,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           <span className='block h-16px truncate text-12px font-500 leading-16px text-t-primary'>{displayName}</span>
           <span
             className={classNames(
-              'flex items-center gap-10px h-14px min-w-0',
+              'flex items-center gap-4px h-14px min-w-0',
               !authenticated && 'invisible'
             )}
             aria-hidden={!authenticated}
@@ -376,13 +377,13 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
             <span className='truncate text-11px leading-14px text-t-tertiary tabular-nums'>{creditsText}</span>
             {authenticated ? (
               <span
-                className='inline-flex shrink-0'
+                className='inline-flex items-center shrink-0'
                 onClick={stopAccountTrigger}
                 onMouseDown={stopAccountTrigger}
                 onMouseEnter={() => setCreditsHovered(true)}
                 onMouseLeave={() => setCreditsHovered(false)}
               >
-                <CreditsWebsiteButton size='xs' className='!size-14px' />
+                <CreditsWebsiteButton size='xs' />
               </span>
             ) : null}
           </span>
@@ -392,29 +393,30 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   );
 
   return (
-    <>
-    <Popover
-      className='sider-soft-popover sider-user-menu-popover'
-      trigger='click'
-      position={collapsed ? 'rt' : 'tr'}
-      popupVisible={menuVisible}
-      onVisibleChange={handleMenuVisibleChange}
-      getPopupContainer={() => document.body}
-      content={menuContent}
-      unmountOnExit={false}
-      {...({
-        popupAlign: collapsed ? { left: 10 } : { bottom: 8, left: -28 },
-      } as Record<string, unknown>)}
-    >
-      <Tooltip
-        {...siderTooltipProps}
-        content={planText ? `${displayName} · ${planText}` : displayName}
-        position='right'
-        disabled={creditsHovered}
+    <div className={classNames('relative min-w-0 flex items-center', collapsed ? 'w-full justify-center' : 'flex-1')}>
+      {!menuVisible && <SiderCreditsBubble collapsed={collapsed} isMobile={isMobile} />}
+      <Popover
+        className='sider-soft-popover sider-user-menu-popover'
+        trigger='click'
+        position={collapsed ? 'rt' : 'tr'}
+        popupVisible={menuVisible}
+        onVisibleChange={handleMenuVisibleChange}
+        getPopupContainer={() => document.body}
+        content={menuContent}
+        unmountOnExit={false}
+        {...({
+          popupAlign: collapsed ? { left: 10 } : { bottom: 8, left: -28 },
+        } as Record<string, unknown>)}
       >
-        {trigger}
-      </Tooltip>
-    </Popover>
+        <Tooltip
+          {...siderTooltipProps}
+          content={planText ? `${displayName} · ${planText}` : displayName}
+          position='right'
+          disabled={creditsHovered}
+        >
+          {trigger}
+        </Tooltip>
+      </Popover>
     <Modal
       title={t('common.userMenu.editNickname', { defaultValue: '修改昵称' })}
       visible={nicknameModalVisible}
@@ -441,7 +443,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         {nicknameCharCount(nicknameDraft)}/{NICKNAME_MAX_CHARS}
       </div>
     </Modal>
-    </>
+    </div>
   );
 };
 

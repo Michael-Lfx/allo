@@ -249,5 +249,14 @@
     "title": "登录已失效",
     "description": "云端登录已过期，请重新登录后继续。",
     "relogin": "重新登录"
+  },
+  "creditsBubble": {
+    "close": "关闭提示",
+    "exhaustedTitle": "积分已耗尽",
+    "exhaustedDesc": "当前积分余额为 0，无法继续发起对话，请先充值",
+    "exhaustedAction": "立即充值",
+    "lowTitle": "积分即将耗尽",
+    "lowDesc": "当前积分低于 1,000，建议及时补充以保障对话连续性",
+    "lowAction": "去充值"
   }
 }

@@ -387,7 +387,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     };
   }, []);
 
-  const { expand: expandWorkpathDrawer, isExpanded: isWorkpathExpanded } = ui;
+  const { expand: expandWorkpathDrawer } = ui;
   useEffect(() => {
     const pending = pendingRevealRef.current;
     if (!pending) return;
@@ -397,14 +397,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     expandWorkpathDrawer(node.key);
     scrollSidebarItemIntoView('c-' + pending);
   }, [tree, revealTick, expandWorkpathDrawer]);
-
-  useEffect(() => {
-    if (!activeConversationId) return;
-    const owningNode = tree.find((candidate) => candidate.interactive.some((entry) => entry.id === activeConversationId));
-    if (owningNode && !isWorkpathExpanded(owningNode.key)) {
-      expandWorkpathDrawer(owningNode.key);
-    }
-  }, [activeConversationId, tree, expandWorkpathDrawer, isWorkpathExpanded]);
 
   /* ------------------------- workspace dropdown UI ------------------------- */
 

@@ -9,5 +9,8 @@
 /* Motion tokens + lifecycle classes */
 @import '../flowy-motion.css';
 
+/* Credits bubble styles */
+@import '../credits-bubble.css';
+
 /* Color Schemes */
 @import './default-color-scheme.css';

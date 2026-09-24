@@ -18,4 +18,11 @@ describe('getRenderedExpansionState', () => {
       shouldSyncExpanded: false,
     });
   });
+
+  test('already expanded drawer preserves expanded state without redundant sync trigger', () => {
+    expect(getRenderedExpansionState({ active: true, persistedExpanded: true, activeRouteSynced: false })).toEqual({
+      expanded: true,
+      shouldSyncExpanded: false,
+    });
+  });
 });

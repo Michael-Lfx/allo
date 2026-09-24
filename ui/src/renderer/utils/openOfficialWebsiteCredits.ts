@@ -6,6 +6,7 @@ import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 
 export type CreditsCatalogSource =
   | 'sider'
+  | 'sendbox'
   | 'conversation_error_card'
   | 'video_failure_card'
   | 'video_launch'

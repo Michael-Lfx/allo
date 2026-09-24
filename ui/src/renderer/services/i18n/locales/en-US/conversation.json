@@ -1167,5 +1167,9 @@
     "updated": "Work mode updated",
     "nextTurn": "Applies on the next turn",
     "switchFailed": "Failed to update work mode"
+  },
+  "sendBox": {
+    "creditsExhaustedBlocked": "Credits exhausted. Please top up to send.",
+    "creditsLowHint": "Credits below 1,000. Consider topping up."
   }
 }

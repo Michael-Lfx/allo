@@ -1,0 +1,392 @@
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* Entry and Exit Animations */
+@keyframes creditsBubbleEnter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes creditsBubbleEnterSide {
+  from {
+    opacity: 0;
+    transform: translateX(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes creditsButtonShake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  20%, 60% {
+    transform: translateX(-4px);
+  }
+  40%, 80% {
+    transform: translateX(4px);
+  }
+}
+
+.credits-bubble-enter {
+  animation: creditsBubbleEnter 160ms cubic-bezier(0, 0, 0.2, 1) forwards;
+}
+
+.credits-bubble-enter-side {
+  animation: creditsBubbleEnterSide 160ms cubic-bezier(0, 0, 0.2, 1) forwards;
+}
+
+.credits-shake {
+  animation: creditsButtonShake 220ms ease-in-out;
+}
+
+/* Core Bubble Card with Glass Backdrop */
+.credits-bubble-card {
+  position: absolute;
+  z-index: 90;
+  border-radius: 10px;
+  color: var(--text-primary);
+  user-select: none;
+  pointer-events: auto;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+/* Low Credits Warning State (Amber Palette) */
+.credits-bubble-card--low {
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  box-shadow:
+    0 10px 25px -4px rgba(245, 158, 11, 0.16),
+    0 4px 12px -2px rgba(15, 23, 42, 0.08);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--low {
+  background: rgba(28, 25, 23, 0.96);
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  box-shadow:
+    0 12px 32px -4px rgba(0, 0, 0, 0.65),
+    0 0 16px -2px rgba(245, 158, 11, 0.22);
+}
+
+/* Exhausted Credits Danger State (Crimson Palette) */
+.credits-bubble-card--exhausted {
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  box-shadow:
+    0 10px 25px -4px rgba(239, 68, 68, 0.18),
+    0 4px 12px -2px rgba(15, 23, 42, 0.08);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--exhausted {
+  background: rgba(30, 20, 22, 0.96);
+  border: 1px solid rgba(239, 68, 68, 0.48);
+  box-shadow:
+    0 12px 32px -4px rgba(0, 0, 0, 0.7),
+    0 0 18px -2px rgba(239, 68, 68, 0.28);
+}
+
+/* Sider Bubble Layout */
+.sider-credits-bubble--expanded {
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 196px;
+}
+
+.sider-credits-bubble--collapsed {
+  bottom: 0;
+  left: calc(100% + 10px);
+  width: 196px;
+}
+
+/* Downward Arrow for Expanded Sider */
+.sider-credits-bubble-arrow-down {
+  position: absolute;
+  bottom: -5px;
+  left: 18px;
+  width: 8px;
+  height: 8px;
+  transform: rotate(45deg);
+}
+
+.credits-bubble-card--low .sider-credits-bubble-arrow-down {
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgba(245, 158, 11, 0.45);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--low .sider-credits-bubble-arrow-down {
+  background: rgba(28, 25, 23, 0.96);
+  border-right-color: rgba(245, 158, 11, 0.42);
+  border-bottom-color: rgba(245, 158, 11, 0.42);
+}
+
+.credits-bubble-card--exhausted .sider-credits-bubble-arrow-down {
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgba(239, 68, 68, 0.45);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--exhausted .sider-credits-bubble-arrow-down {
+  background: rgba(30, 20, 22, 0.96);
+  border-right-color: rgba(239, 68, 68, 0.48);
+  border-bottom-color: rgba(239, 68, 68, 0.48);
+}
+
+/* Leftward Arrow for Collapsed Sider */
+.sider-credits-bubble-arrow-left {
+  position: absolute;
+  top: 14px;
+  left: -5px;
+  width: 8px;
+  height: 8px;
+  transform: rotate(45deg);
+}
+
+.credits-bubble-card--low .sider-credits-bubble-arrow-left {
+  background: rgba(255, 255, 255, 0.98);
+  border-left: 1px solid rgba(245, 158, 11, 0.45);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--low .sider-credits-bubble-arrow-left {
+  background: rgba(28, 25, 23, 0.96);
+  border-left-color: rgba(245, 158, 11, 0.42);
+  border-bottom-color: rgba(245, 158, 11, 0.42);
+}
+
+.credits-bubble-card--exhausted .sider-credits-bubble-arrow-left {
+  background: rgba(255, 255, 255, 0.98);
+  border-left: 1px solid rgba(239, 68, 68, 0.45);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--exhausted .sider-credits-bubble-arrow-left {
+  background: rgba(30, 20, 22, 0.96);
+  border-left-color: rgba(239, 68, 68, 0.48);
+  border-bottom-color: rgba(239, 68, 68, 0.48);
+}
+
+/* SendBox Bubble Layout */
+.sendbox-credits-bubble {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  max-width: calc(100vw - 32px);
+  z-index: 60;
+}
+
+.sendbox-credits-bubble-arrow-down {
+  position: absolute;
+  bottom: -5px;
+  right: 14px;
+  width: 8px;
+  height: 8px;
+  transform: rotate(45deg);
+}
+
+.credits-bubble-card--low .sendbox-credits-bubble-arrow-down {
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgba(245, 158, 11, 0.45);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--low .sendbox-credits-bubble-arrow-down {
+  background: rgba(28, 25, 23, 0.96);
+  border-right-color: rgba(245, 158, 11, 0.42);
+  border-bottom-color: rgba(245, 158, 11, 0.42);
+}
+
+/* Downward Arrow for SendBox */
+.credits-bubble-card--exhausted .sendbox-credits-bubble-arrow-down {
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgba(239, 68, 68, 0.45);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--exhausted .sendbox-credits-bubble-arrow-down {
+  background: rgba(30, 20, 22, 0.96);
+  border-right-color: rgba(239, 68, 68, 0.48);
+  border-bottom-color: rgba(239, 68, 68, 0.48);
+}
+
+/* Credits Top-up Button & Pill (Dynamic State: Normal / Low / Exhausted for Light & Dark) */
+.credits-topup-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 140ms cubic-bezier(0, 0, 0.2, 1);
+  user-select: none;
+  cursor: pointer;
+}
+
+.credits-topup-btn:active {
+  transform: scale(0.96);
+}
+
+/* Normal balance state (>= 1,000): Quiet, non-intrusive utility style */
+.credits-topup-btn--normal {
+  color: var(--color-text-2, #64748b);
+  background-color: var(--color-fill-2, rgba(0, 0, 0, 0.04));
+  border: 1px solid transparent;
+}
+
+.credits-topup-btn--normal:hover {
+  color: var(--color-text-1, #0f172a);
+  background-color: var(--color-fill-3, rgba(0, 0, 0, 0.08));
+  border-color: var(--color-border-2, rgba(0, 0, 0, 0.12));
+}
+
+/* Low balance state (< 1,000): Warm Amber attention cue */
+.credits-topup-btn--low {
+  color: #b45309;
+  background-color: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(217, 119, 6, 0.22);
+}
+
+.credits-topup-btn--low:hover {
+  color: #92400e;
+  background-color: rgba(245, 158, 11, 0.22);
+  border-color: rgba(217, 119, 6, 0.45);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.18);
+}
+
+/* Exhausted balance state (<= 0): Crimson Danger attention cue */
+.credits-topup-btn--exhausted {
+  color: #b91c1c;
+  background-color: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(220, 38, 38, 0.25);
+}
+
+.credits-topup-btn--exhausted:hover {
+  color: #991b1b;
+  background-color: rgba(239, 68, 68, 0.22);
+  border-color: rgba(220, 38, 38, 0.45);
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.18);
+}
+
+/* Dark mode theme adaptations */
+[data-theme='dark'] .credits-topup-btn--normal,
+body[arco-theme='dark'] .credits-topup-btn--normal {
+  color: var(--color-text-2, #94a3b8);
+  background-color: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+}
+
+[data-theme='dark'] .credits-topup-btn--normal:hover,
+body[arco-theme='dark'] .credits-topup-btn--normal:hover {
+  color: var(--color-text-1, #f8fafc);
+  background-color: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme='dark'] .credits-topup-btn--low,
+body[arco-theme='dark'] .credits-topup-btn--low {
+  color: #fbbf24;
+  background-color: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+}
+
+[data-theme='dark'] .credits-topup-btn--low:hover,
+body[arco-theme='dark'] .credits-topup-btn--low:hover {
+  color: #fde68a;
+  background-color: rgba(245, 158, 11, 0.26);
+  border-color: rgba(251, 191, 36, 0.52);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.24);
+}
+
+[data-theme='dark'] .credits-topup-btn--exhausted,
+body[arco-theme='dark'] .credits-topup-btn--exhausted {
+  color: #f87171;
+  background-color: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(248, 113, 113, 0.32);
+}
+
+[data-theme='dark'] .credits-topup-btn--exhausted:hover,
+body[arco-theme='dark'] .credits-topup-btn--exhausted:hover {
+  color: #fca5a5;
+  background-color: rgba(239, 68, 68, 0.26);
+  border-color: rgba(248, 113, 113, 0.55);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.28);
+}
+
+/* Compact Icon-only Button (for tight 14px footer line) */
+.credits-topup-icon-btn {
+  background-color: transparent;
+  transition: all 140ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.credits-topup-icon-btn:active {
+  transform: scale(0.92);
+}
+
+.credits-topup-icon-btn--normal {
+  color: var(--color-text-3, #94a3b8);
+}
+.credits-topup-icon-btn--normal:hover {
+  color: var(--color-text-1, #0f172a);
+  background-color: var(--color-fill-2, rgba(0, 0, 0, 0.06));
+}
+
+.credits-topup-icon-btn--low {
+  color: #b45309;
+}
+.credits-topup-icon-btn--low:hover {
+  color: #92400e;
+  background-color: rgba(245, 158, 11, 0.18);
+}
+
+.credits-topup-icon-btn--exhausted {
+  color: #b91c1c;
+}
+.credits-topup-icon-btn--exhausted:hover {
+  color: #991b1b;
+  background-color: rgba(239, 68, 68, 0.18);
+}
+
+[data-theme='dark'] .credits-topup-icon-btn--normal {
+  color: var(--color-text-3, #64748b);
+}
+[data-theme='dark'] .credits-topup-icon-btn--normal:hover,
+body[arco-theme='dark'] .credits-topup-icon-btn--normal:hover {
+  color: var(--color-text-1, #f8fafc);
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='dark'] .credits-topup-icon-btn--low,
+body[arco-theme='dark'] .credits-topup-icon-btn--low {
+  color: #fbbf24;
+}
+[data-theme='dark'] .credits-topup-icon-btn--low:hover,
+body[arco-theme='dark'] .credits-topup-icon-btn--low:hover {
+  color: #fde68a;
+  background-color: rgba(245, 158, 11, 0.22);
+}
+
+[data-theme='dark'] .credits-topup-icon-btn--exhausted,
+body[arco-theme='dark'] .credits-topup-icon-btn--exhausted {
+  color: #f87171;
+}
+[data-theme='dark'] .credits-topup-icon-btn--exhausted:hover,
+body[arco-theme='dark'] .credits-topup-icon-btn--exhausted:hover {
+  color: #fca5a5;
+  background-color: rgba(239, 68, 68, 0.24);
+}
+
+
+
