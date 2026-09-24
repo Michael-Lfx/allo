@@ -4,8 +4,38 @@
     "tag": "dev",
     "navTooltip": "Agent eval lab (developer mode)"
   },
-  "subtitle": "Score the real harness/runtime. Each case binds one eval session and reuses Session Observation.",
-  "isolationNote": "Live eval runs the production agent. Default suites keep MCP, browser, and public web search off. Imported business packs turn search on, copy Input fixtures, allow 45–60 minutes per case, and write only to the eval workspace — never the user desktop. Use office_core for office KPIs and coding_local for coding KPIs. One run at a time.",
+  "subtitle": "Choose office or coding harness first, then pick a suite. Each case binds one eval session and reuses Session Observation.",
+  "isolationNote": "Live eval runs the production agent, one run at a time. Default suites keep MCP, browser, and public web search off. Imported business packs turn search on, copy Input fixtures, and allow 45–60 minutes per case. OmegaUse-OfficeVal copies office inputs, keeps search off, and allows 45 minutes per case; the local gate only checks whether a deliverable was written or edited — not an official rubric. Outputs stay in the eval workspace, never the desktop. Use office_core for office KPIs, OmegaUse-OfficeVal for long-horizon office tasks, and coding_local for coding KPIs.",
+  "lab": {
+    "about": "How this lab works"
+  },
+  "setup": {
+    "suites": "Suites"
+  },
+  "taskProfile": {
+    "hint": "Office and coding are independent harnesses with different tools and scoring. The suite list follows the mode you pick."
+  },
+  "panel": {
+    "run": "This run",
+    "report": "Report",
+    "history": "History"
+  },
+  "empty": {
+    "run": "No run yet. Pick a harness and suite on the left, confirm the model, then Run.",
+    "history": "No previous runs.",
+    "loading": "Loading the eval lab…"
+  },
+  "casesHint": "Select a row to inspect trajectory, scorers, and artifacts.",
+  "selectCase": "Select a case on the left to inspect it.",
+  "historyHint": "Select a row to open that run. Pick two runs when you need a diff.",
+  "sandboxShort": "needs sandbox",
+  "cachedShort": "cached",
+  "needsDownloadShort": "download",
+  "diffA": "Run A",
+  "diffB": "Run B",
+  "officeval": {
+    "note": "Local gate: pass if an office file was edited or written. This is not an official OfficeVal score; official scoring needs the Python verifiers."
+  },
   "developerModeRequired": "Turn on Developer Mode in Settings → System to use evals.",
   "workspace": "Workspace",
   "model": "Model",
@@ -20,12 +50,13 @@
   "importHint": "Pick the folder with T01 / T02 / T03 prompts. Import only creates the suite — it will not start a run.",
   "importSuccess": "Imported {{title}} ({{count}} cases). Confirm the cloud model, then Run.",
   "importNotes": "Web search on, Input binaries copied, 45–60 minute timeout, exactly one trial. Outputs stay in the eval workspace, not the desktop.",
-  "trialsLocked": "Business packs always use 1 trial — no pass@k retries.",
+  "trialsLocked": "Imported packs and OfficeVal always use 1 trial — no pass@k retries.",
   "sandboxDisabled": "This suite needs a sandbox runner and cannot be started locally.",
   "reportTurn": "Report this turn",
   "reportConfirm": "Upload a failure excerpt to the cloud (no full JSONL or raw prompt). Continue?",
   "pull": "Download dataset",
   "run": "Run",
+  "runWithProfile": "Run · {{profile}}",
   "cancel": "Cancel",
   "cached": "cached",
   "needsDownload": "not downloaded yet",
@@ -35,6 +66,7 @@
   "openSession": "Open session",
   "sessionObservation": "Session observation",
   "observationEmpty": "No session observation yet (case has no conversation_id)",
+  "observationSummary": "{{turns}} turns · {{calls}} model calls · {{tools}} tools · {{integrity}}",
   "pass": "pass",
   "fail": "fail",
   "form": {

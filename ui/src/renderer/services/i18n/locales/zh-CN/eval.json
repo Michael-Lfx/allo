@@ -4,8 +4,38 @@
     "tag": "dev",
     "navTooltip": "Agent 评测实验室（开发者模式）"
   },
-  "subtitle": "用真实 harness / runtime 打分。每条 case 绑定一个 eval session，复用 Session Observation 观测链路。",
-  "isolationNote": "现场评测跑的就是生产 Agent。默认套件关闭 MCP、浏览器和公网搜索；导入的商务包会打开搜索、拷贝 Input 夹具、单题最多 45–60 分钟，产物只写评测工作区而不会写到桌面。办公 KPI 用 office_core，编码 KPI 用 coding_local。同时只允许一轮。",
+  "subtitle": "先选工作模式（日常办公 / 代码开发），再选套件开跑。每条 case 绑定一个 eval session，复用 Session Observation。",
+  "isolationNote": "现场评测跑的就是生产 Agent，同时只允许一轮。默认套件关闭 MCP、浏览器和公网搜索。导入的商务包会打开搜索、拷贝 Input 夹具、单题最多 45–60 分钟。OmegaUse-OfficeVal 拷贝办公输入文件、关闭搜索、单题最多 45 分钟；本地只看是否写出或改过交付物，不是官方 rubric。产物只写评测工作区，不会写到桌面。办公 KPI 用 office_core；长程办公任务用 OmegaUse-OfficeVal；编码 KPI 用 coding_local。",
+  "lab": {
+    "about": "实验室说明"
+  },
+  "setup": {
+    "suites": "套件"
+  },
+  "taskProfile": {
+    "hint": "日常办公和代码开发是两套独立的 Agent harness，工具集与评分口径不混用。选模式后只显示对应套件。"
+  },
+  "panel": {
+    "run": "本轮",
+    "report": "报告",
+    "history": "历史"
+  },
+  "empty": {
+    "run": "还没有评测。在左侧选工作模式和套件，确认模型后点「开始评测」。",
+    "history": "还没有历史轮次。",
+    "loading": "正在加载评测实验室…"
+  },
+  "casesHint": "点一行查看轨迹、打分和产物。",
+  "selectCase": "点左侧用例查看详情。",
+  "historyHint": "点一行打开该轮。需要对照时再选两轮做 diff。",
+  "sandboxShort": "需沙箱",
+  "cachedShort": "已缓存",
+  "needsDownloadShort": "需下载",
+  "diffA": "对照 A",
+  "diffB": "对照 B",
+  "officeval": {
+    "note": "本地门闩：工作区里出现改过或新写的办公文件即算通过。不是官方 OfficeVal 分数；官方评分需要 Python verifier。"
+  },
   "developerModeRequired": "请在 设置 → 系统 中打开开发者模式后再使用评测。",
   "workspace": "工作区",
   "model": "模型",
@@ -20,12 +50,13 @@
   "importHint": "选择含 T01 / T02 / T03 Prompt 的文件夹。导入只创建套件，不会自动开跑。",
   "importSuccess": "已导入 {{title}}（{{count}} 题）。确认云端模型后点「开始评测」。",
   "importNotes": "打开公网搜索、拷贝 Input 二进制夹具、单题超时 45–60 分钟、固定 1 次试验。产物只写评测工作区，不会写到桌面。",
-  "trialsLocked": "商务长任务固定 1 次试验，不刷 pass@k。",
+  "trialsLocked": "导入包与 OfficeVal 固定 1 次试验，不刷 pass@k。",
   "sandboxDisabled": "此套件需要沙箱 runner，本机无法开始评测。",
   "reportTurn": "上报此回合",
   "reportConfirm": "将失败摘要上报云端（不含完整 JSONL / 原文）。确认？",
   "pull": "下载数据集",
   "run": "开始评测",
+  "runWithProfile": "开始评测 · {{profile}}",
   "cancel": "取消",
   "cached": "已缓存",
   "needsDownload": "尚未下载",
@@ -35,6 +66,7 @@
   "openSession": "打开会话",
   "sessionObservation": "会话观测",
   "observationEmpty": "暂无会话观测（case 尚未产生 conversation_id）",
+  "observationSummary": "{{turns}} 轮 · {{calls}} 次模型调用 · {{tools}} 个工具 · {{integrity}}",
   "pass": "通过",
   "fail": "失败",
   "form": {

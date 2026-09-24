@@ -10,6 +10,7 @@ nomifun-api-types.workspace = true
 nomifun-realtime.workspace = true
 nomifun-auth.workspace = true
 nomifun-ai-agent.workspace = true
+nomi-agent-eval.workspace = true
 nomifun-extension.workspace = true
 nomifun-file.workspace = true
 nomifun-knowledge.workspace = true

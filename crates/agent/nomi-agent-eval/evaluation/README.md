@@ -14,6 +14,7 @@ Marker-style Q&A and single-function unit floors are **not** harness KPIs. The l
 | --- | --- | --- |
 | `harness_smoke` | bundled [`corpus.harness_control.json`](./corpus.harness_control.json) | **Regression smoke.** Write/Edit + `write_root`. Alias: `harness_control`. Fail = runtime broken. |
 | `office_core` | bundled [`corpus.office.json`](./corpus.office.json) | **Primary office-agent suite.** Structural oracles (CSV/JSON/keywords), Office profile, not CodingHarness. Alias: `office_tasks`. |
+| `omegause_officeval` | [OmegaUse-OfficeVal](https://huggingface.co/datasets/baidu-frontier-research/OmegaUse-OfficeVal) | Long-horizon Word / Excel / PowerPoint / PDF tasks. Local `office_deliverable` gate only (file written or edited). **Not** an official OfficeVal score. Official scoring needs the Python verifier ZIP. Alias: `officeval`. Default 4 cases, max 20, one trial, 45-minute timeout. |
 | `coding_local` | bundled [`corpus.coding_local.json`](./corpus.coding_local.json) | Local coding (debug+pytest, CSV→JSON, refactor). Alias: `agent_workflows`. |
 | `browser_smoke` | bundled [`corpus.browser_smoke.json`](./corpus.browser_smoke.json) | Browser overlay + local HTML fixture. No public web. |
 | `mcp_fixture` | bundled [`corpus.mcp_fixture.json`](./corpus.mcp_fixture.json) | Injected stdio fake CRM. No third-party SaaS. |
@@ -49,7 +50,7 @@ Live runs are assembled in `nomifun-ai-agent` (`LiveNomiHarness` + `EvalLab`), n
 - Observation: `{data_dir}/diagnostics/observation/{conversation_id}/events.jsonl` (`session_kind=eval`)
 - Not registered in `AgentRuntimeRegistry`
 - `auto_approve = true`, `write_root` = eval workspace
-- Isolation overlay is per suite: smoke / office / coding keep MCP and browser off; `browser_smoke` enables browser with a local HTML fixture; `mcp_fixture` injects a stdio fake CRM
+- Isolation overlay is per suite: smoke / office / coding keep MCP and browser off; `omegause_officeval` uses office tools with a 45-minute timeout and copies Hugging Face input files; `browser_smoke` enables browser with a local HTML fixture; `mcp_fixture` injects a stdio fake CRM
 - One in-flight run at a time (HTTP 409)
 - Outcome scorers decide pass/fail; transcript scorers are constraints; rubric/advisory scorers do not flip the case
 - History keeps 50 local summaries; UI can diff two runs and report `pass@1` / `pass^k`
@@ -70,9 +71,11 @@ cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
   --tag local \
   --output /tmp/agent-eval-run.jsonl
 
-# Cache an agent dataset (Aider Polyglot / ClassEval)
+# Cache an agent dataset (Aider Polyglot / ClassEval / OmegaUse-OfficeVal)
 cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
   pull --suite aider_polyglot --cache-dir /tmp/agent-eval-cache --limit 8
+cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
+  pull --suite omegause_officeval --cache-dir /tmp/agent-eval-cache --limit 4
 
 # Aggregate JSONL → summary JSON
 cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \

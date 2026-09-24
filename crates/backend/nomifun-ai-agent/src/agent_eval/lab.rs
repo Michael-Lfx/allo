@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nomi_agent_eval::{
-    cache_dir, default_trials_for_suite, import_business_pack, is_imported_suite,
+    cache_dir, canonical_suite_id, default_trials_for_suite, import_business_pack, is_imported_suite,
     list_imported_pack_suites, list_suites, load_suite_manifest_with_packs, packs_dir,
     private_corpus_dir, run_loaded_manifest, summarize, Case, EvalCaseTrace, EvalResult, Manifest,
     RunConfig, RunProgress, RunProgressPhase, ScorerResult, ScorerSpec, SuiteDescriptor, Summary,
-    SCHEMA_VERSION,
+    SCHEMA_VERSION, SUITE_OFFICEVAL,
 };
 use nomifun_api_types::{
     EvalArtifactView, EvalBusinessReport, EvalCaseFlip, EvalCaseTraceView, EvalCaseView,
@@ -252,7 +252,7 @@ impl EvalLab {
         let summary_path_for_fail = summary_path.clone();
         let limit = request.limit;
         let task_profile = request.task_profile.clone();
-        let n_trials = if is_imported_suite(&suite) {
+        let n_trials = if is_imported_suite(&suite) || canonical_suite_id(&suite) == SUITE_OFFICEVAL {
             1
         } else {
             request
@@ -523,7 +523,12 @@ impl EvalLab {
         if let Some(live) = live {
             let copy = live.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(slot) = copy.filter(|trace| trace.case_id == case_id) {
-                return Ok(slot.conversation_id);
+                if let Some(conversation_id) = slot
+                    .conversation_id
+                    .filter(|id| !id.trim().is_empty())
+                {
+                    return Ok(conversation_id);
+                }
             }
         }
         let path = resolve_trace_path(
@@ -994,7 +999,7 @@ fn attach_live_trace(view: &mut EvalRunView, live: &Mutex<Option<LiveEvalTrace>>
         .clone();
     if let Some(trace) = copy {
         let case_id = trace.case_id.clone();
-        view.current_conversation_id = Some(trace.conversation_id.clone());
+        view.current_conversation_id = trace.conversation_id.clone();
         view.current_trace = Some(trace_view(trace.snapshot()));
         if view.current_case_id.is_none() {
             view.current_case_id = Some(case_id);

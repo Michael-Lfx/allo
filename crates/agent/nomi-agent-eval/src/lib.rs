@@ -30,12 +30,13 @@ pub use datasets::{
     private_corpus_dir, suite_descriptor, DatasetError, SuiteDescriptor, SUITE_AGENT_WORKFLOWS,
     SUITE_AIDER_POLYGLOT, SUITE_BROWSER_SMOKE, SUITE_CLASSEVAL, SUITE_CODING_LOCAL, SUITE_HARBOR,
     SUITE_HARNESS_CONTROL, SUITE_HARNESS_SMOKE, SUITE_MCP_FIXTURE, SUITE_OFFICE_CORE,
-    SUITE_OFFICE_TASKS, SUITE_PRIVATE_BADCASES, SUITE_SESSION_DIALOGUE,
+    SUITE_OFFICE_TASKS, SUITE_OFFICEVAL, SUITE_PRIVATE_BADCASES, SUITE_SESSION_DIALOGUE,
 };
 pub use pack::{
     copy_imported_case_files, import_business_pack, list_imported_pack_suites, load_pack_manifest,
     packs_dir, ImportedPack,
 };
+pub use datasets::copy_officeval_case_files;
 pub use types::{
     is_imported_suite, Case, CaseBudgets, CategorySummary, EvalArtifactMeta, EvalCaseTrace,
     EvalResult, EvalTrajectoryEvent, IsolationKind, Manifest, RunProgress, RunProgressPhase,

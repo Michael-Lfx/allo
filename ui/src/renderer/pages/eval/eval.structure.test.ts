@@ -1,7 +1,14 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'bun:test';
 
+const dir = dirname(fileURLToPath(import.meta.url));
 const readSource = (url: URL) => readFileSync(url, 'utf8');
+const labSources = readdirSync(dir)
+  .filter((name) => /\.(tsx|ts)$/.test(name) && !name.includes('.test.'))
+  .map((name) => readFileSync(join(dir, name), 'utf8'))
+  .join('\n');
 
 describe('agent eval lab', () => {
   test('gates the page and sider entry on developer mode', () => {
@@ -18,12 +25,17 @@ describe('agent eval lab', () => {
     expect(page.includes('evalApi.importPack')).toBe(true);
     expect(page.includes('getRunReport')).toBe(true);
     expect(page.includes('BusinessReportPanel')).toBe(true);
-    expect(page.includes('exportBusinessReport')).toBe(true);
-    expect(page.includes('eval.report.stopGuide')).toBe(true);
+    expect(labSources.includes('exportBusinessReport')).toBe(true);
+    expect(labSources.includes('eval.report.stopGuide')).toBe(true);
     expect(page.includes('downloadBusinessReportCsv')).toBe(false);
     expect(page.includes('eval.importNotes')).toBe(true);
     expect(page.includes('eval.trialsLocked')).toBe(true);
     expect(page.includes("useState('office_core')")).toBe(true);
+    expect(page.includes('eval-task-profile')).toBe(true);
+    expect(page.includes('eval.taskProfile.hint')).toBe(true);
+    expect(page.includes('eval.runWithProfile')).toBe(true);
+    expect(page.includes('conversation.taskProfile.office')).toBe(true);
+    expect(page.includes('conversation.taskProfile.coding')).toBe(true);
     expect(page.includes('evalApi.startRun')).toBe(true);
     expect(page.includes('evalApi.cancelRun')).toBe(true);
     expect(page.includes('evalApi.history')).toBe(true);
@@ -31,13 +43,18 @@ describe('agent eval lab', () => {
     expect(page.includes('n_trials')).toBe(true);
     expect(page.includes('pass_at_1')).toBe(true);
     expect(page.includes('requires_sandbox')).toBe(true);
-    expect(page.includes('reportTurn')).toBe(true);
-    expect(page.includes('getCaseTrace')).toBe(true);
-    expect(page.includes('getCaseObservation')).toBe(true);
+    expect(labSources.includes('reportTurn')).toBe(true);
+    expect(labSources.includes('getCaseTrace')).toBe(true);
+    expect(labSources.includes('getCaseObservation')).toBe(true);
     expect(page.includes('current_trace')).toBe(true);
     expect(page.includes('conversation_id')).toBe(true);
     expect(page.includes('workspace_label')).toBe(true);
     expect(page.includes('TraceView')).toBe(true);
+    expect(page.includes('SegmentedTabs')).toBe(true);
+    expect(page.includes('EvalCaseDetail')).toBe(true);
+    expect(page.includes('eval.panel.run')).toBe(true);
+    expect(page.includes('eval.officeval.note')).toBe(true);
+    expect(labSources.includes('omegause_officeval')).toBe(true);
     expect(sider.includes('SiderEvalEntry')).toBe(true);
     expect(sider.includes('useDeveloperModeGate')).toBe(true);
     expect(sider.includes('developerMode === true')).toBe(true);

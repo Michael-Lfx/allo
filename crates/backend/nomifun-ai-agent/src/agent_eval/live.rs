@@ -35,7 +35,7 @@ use super::session_bridge::{
 #[derive(Clone)]
 pub struct LiveEvalTrace {
     pub case_id: String,
-    pub conversation_id: String,
+    pub conversation_id: Option<String>,
     pub sink: Arc<EvalCaptureSink>,
     pub workspace: PathBuf,
 }
@@ -44,7 +44,7 @@ impl LiveEvalTrace {
     pub fn snapshot(&self) -> EvalCaseTrace {
         let mut trace = self.sink.snapshot_trace(&self.case_id, true);
         trace.artifacts = collect_workspace_artifacts(&self.workspace);
-        trace.conversation_id = Some(self.conversation_id.clone());
+        trace.conversation_id = self.conversation_id.clone();
         trace
     }
 }
@@ -103,6 +103,14 @@ impl LiveNomiHarness {
             )
             .map_err(|e| AppError::Internal(format!("eval pack copy: {e}")))?;
         }
+        if isolation == IsolationKind::OfficeVal {
+            nomi_agent_eval::copy_officeval_case_files(
+                &nomi_agent_eval::cache_dir(&self.data_dir),
+                &case.id,
+                &workspace,
+            )
+            .map_err(|e| AppError::Internal(format!("eval officeval copy: {e}")))?;
+        }
         let mut fixture_server = None;
         if isolation == IsolationKind::Browser || case.prompt.contains("{{FIXTURE_URL}}") {
             std::fs::write(workspace.join("fixture.html"), BROWSER_FORM_HTML)
@@ -144,18 +152,25 @@ impl LiveNomiHarness {
                 })
                 .await
             {
-                Ok(id) => id,
+                Ok(id) if !id.trim().is_empty() => Some(id),
+                Ok(_) => {
+                    tracing::error!(
+                        case_id = %case.id,
+                        "eval session shell create returned an empty conversation_id"
+                    );
+                    None
+                }
                 Err(error) => {
-                    tracing::warn!(
+                    tracing::error!(
                         case_id = %case.id,
                         error = %error,
-                        "eval session shell create failed; continuing with observation-only binding"
+                        "eval session shell create failed; case will not appear as a chat session"
                     );
-                    Uuid::now_v7().to_string()
+                    None
                 }
             }
         } else {
-            Uuid::now_v7().to_string()
+            None
         };
 
         let mut config = resolve_provider_config(
@@ -193,7 +208,7 @@ impl LiveNomiHarness {
         let observation = ObservationSession::new(ObservationRecorder::shared(&self.data_dir));
         observation.bind_ids_with_preview(
             ObservationIds {
-                conversation_id: Some(conversation_id.clone()),
+                conversation_id: conversation_id.clone(),
                 msg_id: Some(root_turn_id.clone()),
                 root_turn_id: Some(root_turn_id.clone()),
                 session_kind: Some("eval".into()),
@@ -306,44 +321,52 @@ impl LiveNomiHarness {
             Err(_) => {}
         }
         trace.artifacts = artifacts.clone();
-        trace.conversation_id = Some(conversation_id.clone());
+        trace.conversation_id = conversation_id.clone();
         persist_case_trace(&self.traces_dir, &case.id, trial, &trace)?;
         {
             let mut slot = self.live_trace.lock().unwrap_or_else(|e| e.into_inner());
             *slot = None;
         }
 
-        if let (Some(bridge), Some(user_id)) = (self.session_bridge.as_ref(), self.user_id.as_ref())
-        {
+        if let (Some(bridge), Some(user_id), Some(conversation_id)) = (
+            self.session_bridge.as_ref(),
+            self.user_id.as_ref(),
+            conversation_id.as_ref(),
+        ) {
             let (assistant_for_shell, turns, input_tokens, output_tokens, exec_ok) = match &outcome {
                 Ok((text, turns, _, input, output)) => {
                     (text.as_str(), *turns, *input, *output, true)
                 }
                 Err(_) => (trace.assistant_text.as_str(), 0, 0, 0, false),
             };
-            if let Err(error) = bridge
-                .record_case_turn(RecordEvalCaseTurn {
-                    user_id: user_id.clone(),
-                    conversation_id: conversation_id.clone(),
-                    root_turn_id: root_turn_id.clone(),
-                    user_prompt: case.prompt.clone(),
-                    assistant_text: assistant_for_shell.to_owned(),
-                    trajectory: trace.events.clone(),
-                    usage: EvalCaseTurnUsage {
-                        input_tokens,
-                        output_tokens,
-                        elapsed_ms,
-                        turns,
-                    },
-                    success: Some(exec_ok),
-                })
-                .await
-            {
+            let persist_req = RecordEvalCaseTurn {
+                user_id: user_id.clone(),
+                conversation_id: conversation_id.clone(),
+                root_turn_id: root_turn_id.clone(),
+                user_prompt: case.prompt.clone(),
+                assistant_text: assistant_for_shell.to_owned(),
+                trajectory: trace.events.clone(),
+                usage: EvalCaseTurnUsage {
+                    input_tokens,
+                    output_tokens,
+                    elapsed_ms,
+                    turns,
+                },
+                success: Some(exec_ok),
+            };
+            if let Err(error) = bridge.record_case_turn(persist_req.clone()).await {
                 tracing::warn!(
                     conversation_id = %conversation_id,
                     error = %error,
-                    "eval session turn persist failed"
+                    "eval session turn persist failed; retrying once"
                 );
+                if let Err(retry_error) = bridge.record_case_turn(persist_req).await {
+                    tracing::error!(
+                        conversation_id = %conversation_id,
+                        error = %retry_error,
+                        "eval session turn persist failed; opening this session will not show the process rail"
+                    );
+                }
             }
         }
 
@@ -359,7 +382,7 @@ impl LiveNomiHarness {
             workspace: Some(workspace),
             trajectory: trace.events,
             artifacts,
-            conversation_id: Some(conversation_id),
+            conversation_id,
         })
     }
 }
@@ -603,6 +626,15 @@ mod tests {
             dir.path(),
             Some(6),
             IsolationKind::Office,
+            None,
+        );
+        assert!(!config.tools.web.enabled);
+        assert!(!config.tools.browser.enabled);
+        isolate_eval_config(
+            &mut config,
+            dir.path(),
+            Some(48),
+            IsolationKind::OfficeVal,
             None,
         );
         assert!(!config.tools.web.enabled);
