@@ -6,18 +6,22 @@
 
 import React, { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
-import { Button, Dropdown, Menu } from '@arco-design/web-react';
-import { Brain, Down, Plus } from '@icon-park/react';
+import { Button, Dropdown } from '@arco-design/web-react';
+import { Brain, Down } from '@icon-park/react';
 import { configService } from '@/common/config/configService';
-import { modelHealthOf } from '@/common/utils/providerModels';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { iconColors } from '@/renderer/styles/colors';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
-import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
-import ModelCreditRateHint from '@/renderer/components/model/ModelCreditRateHint';
+import ChatModelPickerMenu from '@/renderer/components/model/ChatModelPickerMenu';
+import {
+  AUTO_TIER_LABEL_FALLBACK,
+  allChatModelOptions,
+  buildChatModelPickerViewModel,
+  findChatModelOption,
+  type AutoTier,
+} from '@/renderer/utils/model/chatModelPicker';
 
 export type EvalModelChoice = { provider_id: ProviderId; model: string } | null;
 
@@ -25,11 +29,29 @@ const STORAGE_KEY = 'eval.autogenModel';
 
 export function useEvalAutogenModel() {
   const [stored] = useConfig(STORAGE_KEY);
+  const { groups, isLoading, error, refresh } = useModelsForTask('chat');
+
+  const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
+
+  const fallbackChoice = useMemo<EvalModelChoice>(() => {
+    const fallbackOption =
+      modelPicker.autoModels.find((opt) => opt.autoTier === 'balance') ??
+      modelPicker.autoModels[0] ??
+      modelPicker.cloudModels[0] ??
+      allChatModelOptions(modelPicker)[0];
+    if (!fallbackOption) return null;
+    return {
+      provider_id: fallbackOption.provider.id,
+      model: fallbackOption.model,
+    };
+  }, [modelPicker]);
 
   const choice = useMemo<EvalModelChoice>(() => {
-    if (!stored?.provider_id || !stored.model) return null;
-    return { provider_id: stored.provider_id, model: stored.model };
-  }, [stored?.provider_id, stored?.model]);
+    if (stored?.provider_id && stored?.model) {
+      return { provider_id: stored.provider_id, model: stored.model };
+    }
+    return fallbackChoice;
+  }, [stored?.provider_id, stored?.model, fallbackChoice]);
 
   const setChoice = useCallback(async (next: EvalModelChoice) => {
     if (next) {
@@ -39,7 +61,7 @@ export function useEvalAutogenModel() {
     }
   }, []);
 
-  return { choice, setChoice };
+  return { choice, setChoice, isLoading, error, refresh };
 }
 
 type EvalModelSelectorProps = {
@@ -56,82 +78,56 @@ const EvalModelSelector: React.FC<EvalModelSelectorProps> = ({
   disabled,
 }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
-  const { groups, isLoading } = useModelsForTask('chat');
+  const { groups, isLoading, error: catalogError, refresh: refreshCatalog } = useModelsForTask('chat');
   const providerLabel = useModelSelectorProviderLabel();
+  const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
 
-  const defaultLabel = t('common.defaultModel');
-  const choiceAvailable =
-    !choice ||
-    groups.some(
-      (group) =>
-        group.provider.id === choice.provider_id && group.models.includes(choice.model)
-    );
+  const selectedOption = useMemo(() => {
+    if (!choice) return undefined;
+    return findChatModelOption(modelPicker, choice.provider_id, choice.model);
+  }, [choice, modelPicker]);
+
+  const choiceAvailable = !choice || Boolean(selectedOption);
   const choiceUnavailable = Boolean(choice && !isLoading && !choiceAvailable);
-  const selectedProvider = choice
-    ? groups.find((group) => group.provider.id === choice.provider_id)?.provider
-    : undefined;
-  const selectedLabel = choice
-    ? formatModelLabelForProvider(selectedProvider, choice.model)
-    : '';
+
+  const autoTierLabel = (tier?: AutoTier) =>
+    tier
+      ? t(`conversation.modelPicker.autoTier.${tier}`, {
+          defaultValue: AUTO_TIER_LABEL_FALLBACK[tier],
+        })
+      : t('conversation.modelPicker.autoTier.unknown', { defaultValue: 'Auto' });
+
+  const selectedLabel = selectedOption
+    ? selectedOption.family === 'auto'
+      ? `${t('conversation.modelPicker.auto', { defaultValue: 'Auto' })} · ${autoTierLabel(selectedOption.autoTier)}`
+      : selectedOption.label
+    : choice?.model || '';
+
   const buttonLabel = choice
     ? choiceUnavailable
       ? `${selectedLabel || choice.model} · ${t('eval.form.modelUnavailable')}`
       : selectedLabel
-    : defaultLabel;
-
-  const droplist = (
-    <Menu selectedKeys={choice ? [`${choice.provider_id}:${choice.model}`] : ['__default__']}>
-      <Menu.Item key='__default__' onClick={() => onChange(null)}>
-        {defaultLabel}
-      </Menu.Item>
-      {groups.length === 0
-        ? [
-            <Menu.Item
-              key='add-model'
-              className='text-12px text-t-secondary'
-              onClick={() => navigate('/models?section=models')}
-            >
-              <Plus theme='outline' size='12' />
-              {t('settings.addModel')}
-            </Menu.Item>,
-          ]
-        : groups.map(({ provider, models }) => (
-            <Menu.ItemGroup title={providerLabel(provider)} key={provider.id}>
-              {models.map((modelName) => {
-                const healthStatus = modelHealthOf(provider, modelName)?.status || 'unknown';
-                const healthColor =
-                  healthStatus === 'healthy'
-                    ? 'bg-green-500'
-                    : healthStatus === 'unhealthy'
-                      ? 'bg-red-500'
-                      : 'bg-gray-400';
-                return (
-                  <Menu.Item
-                    key={`${provider.id}:${modelName}`}
-                    onClick={() => onChange({ provider_id: provider.id, model: modelName })}
-                  >
-                    <div className='flex items-center justify-between gap-12px w-full min-w-0'>
-                      <div className='flex items-center gap-8px min-w-0'>
-                        {healthStatus !== 'unknown' && (
-                          <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />
-                        )}
-                        <span className='truncate min-w-0'>
-                          {formatModelLabelForProvider(provider, modelName)}
-                        </span>
-                      </div>
-                      <ModelCreditRateHint provider={provider} modelName={modelName} />
-                    </div>
-                  </Menu.Item>
-                );
-              })}
-            </Menu.ItemGroup>
-          ))}
-    </Menu>
-  );
+    : isLoading
+      ? t('common.loading')
+      : t('conversation.welcome.selectModel', { defaultValue: '选择模型' });
 
   return (
-    <Dropdown trigger='click' droplist={droplist} disabled={disabled}>
+    <Dropdown
+      trigger='click'
+      getPopupContainer={() => document.body}
+      droplist={
+        <ChatModelPickerMenu
+          viewModel={modelPicker}
+          selectedOption={selectedOption}
+          isLoading={isLoading}
+          catalogError={catalogError}
+          onSelect={(option) => onChange({ provider_id: option.provider.id, model: option.model })}
+          onRetry={refreshCatalog}
+          providerLabel={providerLabel}
+        />
+      }
+      disabled={disabled}
+    >
       <Button
         size={size}
         type='text'

@@ -6,23 +6,26 @@
 
 import React, { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Menu } from '@arco-design/web-react';
+import { Button, Dropdown } from '@arco-design/web-react';
 import { Brain, Down } from '@icon-park/react';
 import { configService } from '@/common/config/configService';
-import { modelHealthOf } from '@/common/utils/providerModels';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { iconColors } from '@/renderer/styles/colors';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
-import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
-import ModelCreditRateHint from '@/renderer/components/model/ModelCreditRateHint';
+import ChatModelPickerMenu from '@/renderer/components/model/ChatModelPickerMenu';
+import {
+  AUTO_TIER_LABEL_FALLBACK,
+  allChatModelOptions,
+  buildChatModelPickerViewModel,
+  findChatModelOption,
+  type AutoTier,
+} from '@/renderer/utils/model/chatModelPicker';
 
 /**
- * A picked provider+model pair for the knowledge AI generators, or `null` to
- * mean "let the backend fall back to its own default completer". The two fields
- * are always sent together (or neither) — the backend rejects a half-specified
- * pair with 400.
+ * A picked provider+model pair for the knowledge AI generators, or `null` if no
+ * model has been resolved yet (e.g. while catalog is loading).
  */
 export type KnowledgeModelChoice = { provider_id: ProviderId; model: string } | null;
 
@@ -30,22 +33,35 @@ const STORAGE_KEY = 'knowledge.autogenModel';
 
 /**
  * Persisted-default selection for the knowledge-base AI description/overview
- * generators. Reads/writes `knowledge.autogenModel`; only an absent setting
- * resolves to `null`. A now-unavailable stored pair stays visible until the
- * user explicitly picks another model/default, matching the backend's
- * fail-closed interpretation of an explicit model preference.
+ * generators. Reads/writes `knowledge.autogenModel`. When no stored choice exists,
+ * automatically resolves to the best available model (Auto model -> Cloud model ->
+ * first available catalog model) so that a concrete provider+model is always sent.
  */
 export function useKnowledgeAutogenModel() {
-  // Read reactively (useSyncExternalStore subscription), NOT a one-shot
-  // configService.get(): setChoice writes via set/remove, which notify
-  // subscribers — without subscribing, the selector kept showing the old label
-  // ("默认模型") until the modal remounted ("点击切换模型没有任何反应").
   const [stored] = useConfig(STORAGE_KEY);
+  const { groups, isLoading, error, refresh } = useModelsForTask('chat');
+
+  const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
+
+  const fallbackChoice = useMemo<KnowledgeModelChoice>(() => {
+    const fallbackOption =
+      modelPicker.autoModels.find((opt) => opt.autoTier === 'balance') ??
+      modelPicker.autoModels[0] ??
+      modelPicker.cloudModels[0] ??
+      allChatModelOptions(modelPicker)[0];
+    if (!fallbackOption) return null;
+    return {
+      provider_id: fallbackOption.provider.id,
+      model: fallbackOption.model,
+    };
+  }, [modelPicker]);
 
   const choice = useMemo<KnowledgeModelChoice>(() => {
-    if (!stored?.provider_id || !stored.model) return null;
-    return { provider_id: stored.provider_id, model: stored.model };
-  }, [stored?.provider_id, stored?.model]);
+    if (stored?.provider_id && stored?.model) {
+      return { provider_id: stored.provider_id, model: stored.model };
+    }
+    return fallbackChoice;
+  }, [stored?.provider_id, stored?.model, fallbackChoice]);
 
   const setChoice = useCallback(async (next: KnowledgeModelChoice) => {
     if (next) {
@@ -55,7 +71,7 @@ export function useKnowledgeAutogenModel() {
     }
   }, []);
 
-  return { choice, setChoice };
+  return { choice, setChoice, isLoading, error, refresh };
 }
 
 type KnowledgeModelSelectorProps = {
@@ -68,9 +84,7 @@ type KnowledgeModelSelectorProps = {
 
 /**
  * Compact provider+model dropdown sitting next to the knowledge AI buttons.
- * Selecting a model persists it as the default; "Default Model" clears the
- * override so the backend picks. Mirrors GuidModelSelector's look (Arco Button
- * trigger — never a raw <button>, which leaks a WebView2 black border here).
+ * Uses ChatModelPickerMenu and defaults to Auto Model or first catalog model.
  */
 const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
   choice,
@@ -79,76 +93,56 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
   disabled,
 }) => {
   const { t } = useTranslation();
-  // Chat-capable catalog (backend resolve; heuristics gone).
-  const { groups, isLoading } = useModelsForTask('chat');
+  const { groups, isLoading, error: catalogError, refresh: refreshCatalog } = useModelsForTask('chat');
   const providerLabel = useModelSelectorProviderLabel();
+  const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
 
-  const defaultLabel = t('common.defaultModel');
-  const choiceAvailable =
-    !choice ||
-    groups.some(
-      (group) =>
-        group.provider.id === choice.provider_id &&
-        group.models.includes(choice.model),
-    );
+  const selectedOption = useMemo(() => {
+    if (!choice) return undefined;
+    return findChatModelOption(modelPicker, choice.provider_id, choice.model);
+  }, [choice, modelPicker]);
+
+  const choiceAvailable = !choice || Boolean(selectedOption);
   const choiceUnavailable = Boolean(choice && !isLoading && !choiceAvailable);
-  const selectedProvider = choice
-    ? groups.find((group) => group.provider.id === choice.provider_id)?.provider
-    : undefined;
-  const selectedLabel = choice
-    ? formatModelLabelForProvider(selectedProvider, choice.model)
-    : '';
+
+  const autoTierLabel = (tier?: AutoTier) =>
+    tier
+      ? t(`conversation.modelPicker.autoTier.${tier}`, {
+          defaultValue: AUTO_TIER_LABEL_FALLBACK[tier],
+        })
+      : t('conversation.modelPicker.autoTier.unknown', { defaultValue: 'Auto' });
+
+  const selectedLabel = selectedOption
+    ? selectedOption.family === 'auto'
+      ? `${t('conversation.modelPicker.auto', { defaultValue: 'Auto' })} · ${autoTierLabel(selectedOption.autoTier)}`
+      : selectedOption.label
+    : choice?.model || '';
+
   const buttonLabel = choice
     ? choiceUnavailable
       ? `${selectedLabel || choice.model} · ${t('knowledge.form.modelUnavailable')}`
       : selectedLabel
-    : defaultLabel;
-
-  const droplist = (
-    <Menu selectedKeys={choice ? [`${choice.provider_id}:${choice.model}`] : ['__default__']}>
-      <Menu.Item key='__default__' onClick={() => onChange(null)}>
-        {defaultLabel}
-      </Menu.Item>
-      {groups.length === 0
-        ? null
-        : groups.map(({ provider, models }) => {
-            return (
-              <Menu.ItemGroup title={providerLabel(provider)} key={provider.id}>
-                {models.map((modelName) => {
-                  const healthStatus = modelHealthOf(provider, modelName)?.status || 'unknown';
-                  const healthColor =
-                    healthStatus === 'healthy'
-                      ? 'bg-green-500'
-                      : healthStatus === 'unhealthy'
-                        ? 'bg-red-500'
-                        : 'bg-gray-400';
-                  return (
-                    <Menu.Item
-                      key={`${provider.id}:${modelName}`}
-                      onClick={() => onChange({ provider_id: provider.id, model: modelName })}
-                    >
-                      <div className='flex items-center justify-between gap-12px w-full min-w-0'>
-                        <div className='flex items-center gap-8px min-w-0'>
-                          {healthStatus !== 'unknown' && (
-                            <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />
-                          )}
-                          <span className='truncate min-w-0'>
-                            {formatModelLabelForProvider(provider, modelName)}
-                          </span>
-                        </div>
-                        <ModelCreditRateHint provider={provider} modelName={modelName} />
-                      </div>
-                    </Menu.Item>
-                  );
-                })}
-              </Menu.ItemGroup>
-            );
-          })}
-    </Menu>
-  );
+    : isLoading
+      ? t('common.loading')
+      : t('conversation.welcome.selectModel', { defaultValue: '选择模型' });
 
   return (
-    <Dropdown trigger='click' droplist={droplist} disabled={disabled}>
+    <Dropdown
+      trigger='click'
+      getPopupContainer={() => document.body}
+      droplist={
+        <ChatModelPickerMenu
+          viewModel={modelPicker}
+          selectedOption={selectedOption}
+          isLoading={isLoading}
+          catalogError={catalogError}
+          onSelect={(option) => onChange({ provider_id: option.provider.id, model: option.model })}
+          onRetry={refreshCatalog}
+          providerLabel={providerLabel}
+        />
+      }
+      disabled={disabled}
+    >
       <Button
         size={size}
         type='text'
