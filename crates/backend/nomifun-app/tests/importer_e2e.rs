@@ -2874,3 +2874,167 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
 
     let _ = std::fs::remove_dir_all(&market_root);
 }
+
+/// A caller bringing its **own** MCP server, credential and all (`34` §6.5).
+///
+/// The external-developer case: no marketplace, no `token-schema.json`, nothing
+/// installed — the template handed to `connector/register` is the whole
+/// declaration, and the credential form has to appear from it. Before this, such a
+/// server was unreachable from a client: it projected as `oauth`, carried no
+/// fields, and `credential/set` refused it for having no form to fill.
+#[tokio::test]
+async fn importer_registering_a_hand_made_connector_declares_its_own_form() {
+    const OWN_KEY: &str = "the-developers-own-key";
+
+    let (mut app, services, config_path) = common::build_app_with_agent_store_config().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let register = |body: serde_json::Value| {
+        bearer_json(
+            "POST",
+            "/api/app-server/connectors",
+            body,
+            &token,
+            &csrf,
+            Some(&connection_id),
+        )
+    };
+
+    let created = app
+        .clone()
+        .oneshot(register(serde_json::json!({
+            "name": "hand-made-mcp",
+            "description": "The developer's own server",
+            "transport": {
+                "type": "http",
+                "url": "https://${SCHEME}://mcp.acme.example/mcp",
+                "headers": { "Authorization": "Bearer ${secret:ACME_KEY}" },
+                "values": { "SCHEME": "https" },
+            },
+        })))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK, "register must succeed");
+    let created = body_json(created).await;
+
+    // The template is the declaration: `mode: token` (not the transport-derived
+    // `oauth`), both references as fields — the URL's plain one already satisfied by
+    // `values`, the header's secret one still missing.
+    let credential = &created["credential"];
+    assert_eq!(credential["mode"], "token", "{created}");
+    assert_eq!(credential["status"], "requires_input", "{created}");
+    assert_eq!(credential["missing"], serde_json::json!(["ACME_KEY"]), "{created}");
+    let fields = credential["fields"].as_array().unwrap();
+    assert_eq!(fields.len(), 2, "{created}");
+    // URL first, then headers — the scan order, and the label falls back to the key
+    // because there is no author to name either one.
+    assert_eq!(fields[0]["key"], "SCHEME", "{created}");
+    assert_eq!(fields[0]["kind"], "plain", "{created}");
+    assert_eq!(fields[0]["required"], false, "`values` already answered it: {created}");
+    assert_eq!(fields[0]["value"], "https", "{created}");
+    assert_eq!(fields[1]["key"], "ACME_KEY", "{created}");
+    assert_eq!(fields[1]["kind"], "secret", "{created}");
+    assert_eq!(fields[1]["required"], true, "{created}");
+    assert_eq!(fields[1]["label"]["zh"], "ACME_KEY", "{created}");
+    assert_eq!(
+        fields[1]["value"], serde_json::Value::Null,
+        "a secret's value never crosses: {created}"
+    );
+    let connector_id = created["id"].as_str().unwrap().to_owned();
+
+    // It is a real catalog entry, so the whole read face works on it.
+    let listed = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/connectors", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    let listed = body_json(listed).await;
+    assert!(
+        listed.as_array().unwrap().iter().any(|server| server["name"] == "hand-made-mcp"),
+        "{listed}"
+    );
+
+    // Handing over the key is the same call as for a marketplace connector — one
+    // write surface, `<principal>:NAME` on disk, value never echoed back.
+    let configured = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/credential"),
+            serde_json::json!({ "values": { "ACME_KEY": OWN_KEY } }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(configured.status(), StatusCode::OK, "credential/set must accept it");
+    let configured = body_json(configured).await;
+    assert_eq!(configured["status"], "configured", "{configured}");
+    assert_eq!(configured["missing"], serde_json::json!([]), "{configured}");
+    assert!(
+        !serde_json::to_string(&configured).unwrap().contains(OWN_KEY),
+        "set never echoes the value: {configured}"
+    );
+    let stored = std::fs::read_to_string(&config_path).expect("the host config file");
+    assert!(stored.contains(OWN_KEY), "{stored}");
+    assert!(stored.contains(":ACME_KEY"), "{stored}");
+
+    // A key the template does not name is refused — registering a server does not
+    // turn the credential store into a free-form map.
+    let refused = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/credential"),
+            serde_json::json!({ "values": { "SOMETHING_ELSE": "v" } }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a key the template never names must be refused"
+    );
+
+    // Re-registering the same name updates that connector rather than adding a
+    // second one (the MCP configuration upserts by name).
+    let re_registered = app
+        .clone()
+        .oneshot(register(serde_json::json!({
+            "name": "hand-made-mcp",
+            "transport": {
+                "type": "http",
+                "url": "https://mcp2.acme.example/mcp",
+                "headers": { "Authorization": "Bearer ${secret:ACME_KEY}" },
+            },
+        })))
+        .await
+        .unwrap();
+    assert_eq!(re_registered.status(), StatusCode::OK);
+    let re_registered = body_json(re_registered).await;
+    assert_eq!(re_registered["id"], connector_id, "same name, same row");
+    assert!(
+        re_registered["transport_summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("mcp2.acme.example")),
+        "{re_registered}"
+    );
+    // …and the credential the caller had already handed over survives the update.
+    assert_eq!(re_registered["credential"]["status"], "configured", "{re_registered}");
+
+    // A nameless connector is a request error, not a row with an empty name.
+    let nameless = app
+        .clone()
+        .oneshot(register(serde_json::json!({
+            "name": "   ",
+            "transport": { "type": "http", "url": "https://x.example/mcp" },
+        })))
+        .await
+        .unwrap();
+    assert_eq!(nameless.status(), StatusCode::BAD_REQUEST, "a blank name is refused");
+}

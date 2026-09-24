@@ -466,6 +466,45 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
             .map_err(AppError::from)?;
         Ok(probe_result(connector_id, result))
     }
+
+    /// Register a connector the host never imported (`34` §6.5).
+    ///
+    /// The MCP configuration's own `add_server` is the whole write: it upserts by
+    /// name (so re-registering updates rather than duplicating), refuses a builtin
+    /// server's name, and persists the row **disabled** — the template is stored as
+    /// handed in, credentials and all, and nothing about it is resolved here.
+    ///
+    /// Returned as this caller's detail, which is the point: the caller immediately
+    /// sees the form its own template declared (`mode: token`, the `${secret:NAME}`
+    /// names as fields) and which of them are still missing.
+    async fn register(
+        &self,
+        registration: nomifun_api_types::AppServerConnectorRegistration,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError> {
+        let name = registration.name.trim();
+        if name.is_empty() {
+            return Err(AppError::BadRequest(
+                "a connector name must not be empty".to_owned(),
+            ));
+        }
+        let created = self
+            .config
+            .add_server(nomifun_api_types::CreateMcpServerRequest {
+                name: name.to_owned(),
+                description: registration
+                    .description
+                    .map(|description| description.trim().to_owned())
+                    .filter(|description| !description.is_empty()),
+                transport: registration.transport,
+                original_json: None,
+                builtin: false,
+            })
+            .await
+            .map_err(AppError::from)?;
+        let connector_id = created.mcp_server_id.as_str().to_owned();
+        self.get(&connector_id, principal).await
+    }
 }
 
 /// Project upstream tools onto the wire shape (doc `26` §5).

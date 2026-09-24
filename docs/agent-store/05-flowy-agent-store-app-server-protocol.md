@@ -1,7 +1,14 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-10`** —— 2026-09-24 把**凭据表单自己的文案**归位：`title` / `description` /
+> 指纹：**`fp-11`** —— 2026-09-24 让调用方**把自己的 MCP server 交进来**：新增
+> `connector/register`（`POST /api/app-server/connectors`，与 `connector/list` 共用集合路由、
+> 各占一个动词）。这是**自带 server 与 key 的外部开发者**的入口——此前他们只能把 server 打成
+> 市场条目（还要写 `token-schema.json`）才拿得到表单。规则是**模板即声明**：交进来的
+> `transport` 里 URL / headers / env 的 `${secret:NAME}` 就是那张凭据表单，`${NAME}` 归连接器
+> 自己的 `values`（`34` §5.4/§6.5）。密钥不进这个方法（只有 `credential/set` 一条写入面），
+> 注册出来的行是 disabled，方法在**安装所有者专用**面上。计数 `51 / 76` → **`52 / 77`**。
+> 上一值 **`fp-10`**（2026-09-24）把**凭据表单自己的文案**归位：`title` / `description` /
 > `doc_url` / `doc_label` 从 `fields[]` 移到 `ConnectorCredential` 块上。市场的一份
 > `token-schema.json` 只在顶层声明它们一次（`34` §5.2），此前逐字段复制的结果是
 > 「如何获取密钥？」出现在「端口」底下、同一个链接在表单里重复四遍。无方法增删，
@@ -607,15 +614,53 @@ CredentialField {
   所有者之后其他 principal 读不到。`missing` / `status` 都是**关于调用者**的陈述：同一个连接器
   对 A 是 `configured`、对 B 可能是 `requires_input`。
 - **`mode` 由存储的声明决定**：市场 `auth_mode` 映射为 `token` / `oauth` / `none`（空、
-  `server-side`、`mcp`、`oneid-token` 都归 `none`）。**只有没有声明的连接器**才退回 transport
-  推导（http/sse → `oauth`）——手工注册的远端 server 因此仍显示 OAuth 入口，而 61 个 `token` 类
-  与 204 个 `auth_mode` 为空的连接器不再显示。这是**有意的行为变更**。
+  `server-side`、`mcp`、`oneid-token` 都归 `none`）。**只有没有声明的连接器**才看别处：
+  若它自己的模板里有 `${secret:NAME}` / 整值 `secret:NAME`，就是 `token`（模板即声明，见 §4.3.5）；
+  两者都没有才退回 transport 推导（http/sse → `oauth`）——手工注册且没什么可填的远端 server
+  因此仍显示 OAuth 入口，而 61 个 `token` 类与 204 个 `auth_mode` 为空的连接器不再显示。
+  这是**有意的行为变更**。
 - **`error` 只有一个产生者**：`connector/test`。缺凭据（`requires_input`）优先于 `error`——
   让用户去填比复述一次探测失败更有用。
 - **`plain` 值写进连接器自己的 transport**，因此改 plain 值与改传输同规则：config 变化会把
   连接器置回未启用，需要重测。secret 写入不进 transport，不触发该规则。
 - **门面**：`connector/credential/*` 走独立的 `ConnectorCredentialProvider`，`None` 时能力关闭、
   返回 `unsupported_operation`。宿主没有 config 文件时不接线，而不是编一个没地方写的位置。
+
+#### 4.3.5 自带 MCP server（`connector/register`，`fp-11` 加入）
+
+外部开发者有自己的 MCP server 与自己的 key，此前**没有入口**：`credential/set` 要求连接器有一张
+导入来的表单，而宿主从未导入过他的 server；`AppServerClient` 又没有 MCP CRUD，于是"自带 server"
+只能打成市场条目。`connector/register` 补上这条路。
+
+```text
+POST /api/app-server/connectors       # connector/register（与 connector/list 共用集合路由）
+
+ConnectorRegistration {
+  name,                    # 宿主上的名字；同名再注册 = 更新（配置按名字 upsert），builtin 名拒绝
+  description?,
+  transport,               # 与宿主存储同形：{type:"http"|"sse",url,headers?,values?}
+}                          #            或 {type:"stdio",command,args?,env?}
+→ ConnectorDetail          # 与 connector/get 同形，含 credential 块
+```
+
+**模板即声明**：`transport` 里出现的引用就是这张凭据表单，不需要 `token-schema.json`：
+
+- `${secret:NAME}` / 整值 `secret:NAME` → `secret` 字段，`required: true`，label 回退为键名；
+- `${NAME}` → `plain` 字段，`values` 里已有值则 `required: false` 且回传该值，否则 `required: true`；
+- 扫描顺序 url → headers/env（按键名排序），同名去重，**同名跨两个命名空间时按 `secret` 处理**
+  （否则一个本该进凭据库的值会落到可读可导出的 `values` 里）；
+- stdio 的 `${NAME}` **不派生字段**：它的 spawn 路径按空的 plain 表解析、plain 写入也被拒绝，
+  派生一个永远填不进去的字段只会掩盖模板本身的错。
+
+三条边界（都在测试里）：
+
+- **密钥不进这个方法**：只有 `credential/set` 一条写入面，注册调用本身不含任何需要脱敏的东西；
+- **注册不授予连接**：新行 disabled，启用仍需一次通过探测；同名再注册后的 `credential` 状态保留；
+- **方法在安装所有者专用面上**（`protect_instance_owner`）：能注册 = 能决定宿主去连哪里，
+  与宿主自己的 MCP 管理器同级权限。它还继承了"未声明的键不许写"那条规则——注册一个 server
+  不等于把凭据库变成自由键值表。
+
+**未做**：没有 `connector/unregister`，注册出来的行只能用宿主自己的 MCP 管理面删除（登记在 `34` §10）。
 
 ### 4.4 Import 与 PluginSnapshot（roadmap Phase 1）
 
