@@ -15,9 +15,9 @@ pub fn forced_finalize_instruction(reason: &str) -> String {
 /// Same as [`forced_finalize_instruction`], plus remaining plan steps when the
 /// last accepted `update_plan` snapshot is still incomplete.
 ///
-/// Tools are cleared on this pass, so the model cannot close the checklist.
-/// Remaining steps are facts it already declared — omitting them is how a
-/// hard-stop reply claimed "done" while the UI still showed open todos.
+/// Used on the **reply** finalize pass (no tools). Remaining steps are facts
+/// the model already declared — omitting them is how a hard-stop reply claimed
+/// "done" while the UI still showed open todos.
 pub fn forced_finalize_instruction_for_plan(
     reason: &str,
     remaining: Option<&PlanSnapshot>,
@@ -29,8 +29,44 @@ pub fn forced_finalize_instruction_for_plan(
          markup, `<summary>` blocks, JSON tool envelopes, or internal policy \
          jargon — only what the user should read."
     );
+    append_remaining_plan(
+        &mut text,
+        remaining,
+        "Do not tell the user the task is finished. Report what actually completed, \
+         what is blocked, and the remaining steps. Do not invent completions.",
+    );
+    text
+}
+
+/// First forced-finalize pass: keep `update_plan` advertised so the model can
+/// close a checklist it no longer has other tools to work on.
+///
+/// The host must not invent completions. This pass is the last chance for the
+/// model to declare what actually happened (session
+/// `01a0d19b-c5e8-7381-a811-a7b715bf058a` finished the work, then lost the
+/// tool, and the UI kept four pending todos).
+pub fn forced_finalize_plan_sync_instruction(
+    reason: &str,
+    remaining: Option<&PlanSnapshot>,
+) -> String {
+    let mut text = format!(
+        "{reason}\n\n\
+         Call `update_plan` once with an honest full snapshot of what actually \
+         happened this turn. Mark a step completed only if you did that work; \
+         leave blocked work pending. Do not invent completions. Do not call any \
+         other tool. Do not write the user-facing reply yet."
+    );
+    append_remaining_plan(
+        &mut text,
+        remaining,
+        "Sync the checklist to this remaining work, then stop calling tools.",
+    );
+    text
+}
+
+fn append_remaining_plan(text: &mut String, remaining: Option<&PlanSnapshot>, closer: &str) {
     let Some(plan) = remaining.filter(|plan| !plan.is_empty() && !plan.all_completed()) else {
-        return text;
+        return;
     };
     let pending = plan.pending();
     let done = plan.steps.len() - pending.len();
@@ -43,11 +79,9 @@ pub fn forced_finalize_instruction_for_plan(
         .join("\n");
     text.push_str(&format!(
         "\n\nThe declared plan still has {} uncompleted step(s) ({done}/{total} done):\n{list}\n\n\
-         Do not tell the user the task is finished. Report what actually completed, \
-         what is blocked, and the remaining steps. Do not invent completions.",
+         {closer}",
         pending.len()
     ));
-    text
 }
 
 /// Friendly fallback when the finalize pass produces no usable prose.
@@ -223,5 +257,23 @@ mod tests {
         assert!(text.contains("Verify build"));
         assert!(text.contains("Do not tell the user the task is finished"));
         assert!(!text.contains("Inspect renderer"));
+    }
+
+    #[test]
+    fn plan_sync_instruction_asks_for_update_plan_not_a_reply() {
+        let remaining = PlanSnapshot {
+            steps: vec![crate::todo_continuation::PlanStepView {
+                content: "Start the backend".into(),
+                status: "in_progress".into(),
+            }],
+        };
+        let text = forced_finalize_plan_sync_instruction(
+            "Coding explore hard-stop",
+            Some(&remaining),
+        );
+        assert!(text.contains("update_plan"));
+        assert!(text.contains("Do not write the user-facing reply yet"));
+        assert!(text.contains("Start the backend"));
+        assert!(!text.contains("Write a concise final reply"));
     }
 }

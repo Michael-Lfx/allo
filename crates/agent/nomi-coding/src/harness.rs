@@ -224,6 +224,23 @@ pub struct CompactPolicyOverrides {
     pub exclude_compactable: Vec<&'static str>,
 }
 
+/// Policy stop after an explore/edit/plan-mode hard-stop.
+#[derive(Debug, Clone)]
+enum ForcedFinalize {
+    /// Last chance to declare plan progress. Only `update_plan` is advertised.
+    SyncPlan { reason: String },
+    /// No tools; write the user-facing reply.
+    Reply { reason: String },
+}
+
+impl ForcedFinalize {
+    fn reason(&self) -> &str {
+        match self {
+            Self::SyncPlan { reason } | Self::Reply { reason } => reason,
+        }
+    }
+}
+
 /// Decision at a natural `EndTurn` (no tool calls).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FinishDecision {
@@ -237,8 +254,9 @@ pub enum FinishDecision {
 pub struct ToolTurnNudge {
     pub texts: Vec<String>,
     /// When set, the engine must stop the tool loop after appending texts and
-    /// run one forced finalize provider turn (no tools) that ends as a normal
-    /// `EndTurn` — never as [`nomi_agent::AgentError::Stagnation`].
+    /// run forced finalize: `SyncPlan` (keep `update_plan`) then `Reply` (no
+    /// tools), ending as a normal `EndTurn` — never as
+    /// [`nomi_agent::AgentError::Stagnation`].
     pub hard_stop: Option<String>,
 }
 
@@ -271,8 +289,9 @@ pub struct CodingHarness {
     verify_fail_streak: usize,
     trivial_mutation: bool,
     constitution_sent_this_request: bool,
-    /// When set, the next provider turn advertises no tools and must EndTurn.
-    forced_finalize: Option<String>,
+    /// When set, the next provider turn is a policy stop. `SyncPlan` still
+    /// advertises `update_plan`; `Reply` advertises no tools.
+    forced_finalize: Option<ForcedFinalize>,
     /// Successful file mutations since the last accepted `update_plan`.
     mutations_since_plan: usize,
     /// One-shot latch so a stale checklist nudges once until the model snapshots again.
@@ -345,30 +364,68 @@ impl CodingHarness {
         self.trivial_mutation = false;
     }
 
-    /// Schedule a graceful finish: one more provider pass with no tools.
+    /// Schedule a graceful finish.
+    ///
+    /// If the last accepted plan is still incomplete, the first pass keeps
+    /// `update_plan` so the model can declare what actually happened. The
+    /// host never invents completions.
     pub fn begin_forced_finalize(&mut self, reason: String) {
-        if self.forced_finalize.is_none() {
-            self.forced_finalize = Some(reason);
+        if self.forced_finalize.is_some() {
+            return;
         }
+        self.forced_finalize = Some(if self.remaining_plan().is_some() {
+            ForcedFinalize::SyncPlan { reason }
+        } else {
+            ForcedFinalize::Reply { reason }
+        });
     }
 
     pub fn is_forced_finalize(&self) -> bool {
         self.forced_finalize.is_some()
     }
 
+    /// Whether this finalize pass still advertises `update_plan`.
+    pub fn allows_update_plan_on_finalize(&self) -> bool {
+        matches!(self.forced_finalize, Some(ForcedFinalize::SyncPlan { .. }))
+    }
+
+    /// Drop every tool name except `update_plan` during the plan-sync pass.
+    pub fn ignores_finalize_tool(&self, name: &str) -> bool {
+        match &self.forced_finalize {
+            None => false,
+            Some(ForcedFinalize::Reply { .. }) => true,
+            Some(ForcedFinalize::SyncPlan { .. }) => !name.eq_ignore_ascii_case("update_plan"),
+        }
+    }
+
+    /// Plan-sync pass is done (the model called `update_plan`, or it was not
+    /// advertised). Later provider turns advertise no tools.
+    pub fn advance_after_plan_sync(&mut self) {
+        if let Some(ForcedFinalize::SyncPlan { reason }) = self.forced_finalize.take() {
+            self.forced_finalize = Some(ForcedFinalize::Reply { reason });
+        }
+    }
+
     pub fn forced_finalize_reason(&self) -> Option<&str> {
-        self.forced_finalize.as_deref()
+        self.forced_finalize.as_ref().map(ForcedFinalize::reason)
     }
 
     pub fn take_forced_finalize(&mut self) -> Option<String> {
-        self.forced_finalize.take()
+        match self.forced_finalize.take() {
+            Some(ForcedFinalize::Reply { reason }) => Some(reason),
+            other => {
+                // SyncPlan must still execute `update_plan`; consuming it here
+                // would skip the snapshot and leave the UI checklist stale.
+                self.forced_finalize = other;
+                None
+            }
+        }
     }
 
     /// Last accepted plan snapshot if it still has uncompleted steps.
     ///
-    /// Forced finalize clears tools, including `update_plan`, so this is the
-    /// only remaining machine evidence of open work to inject into the closing
-    /// instruction.
+    /// Injected into the closing instruction. The SyncPlan pass still lets the
+    /// model declare progress; Reply must not invent completions.
     pub fn remaining_plan(&self) -> Option<PlanSnapshot> {
         let latest = self.todo.latest();
         if latest.is_empty() || latest.all_completed() {
@@ -768,8 +825,8 @@ impl CodingHarness {
         if matches!(name, "Edit" | "Write" | "ApplyPatch") {
             flags.file_mutation = true;
         }
-        // Bash/exec can change the workspace, but non-verify shell is recon
-        // for progress (ls/git status must not reset the tour budget).
+        // Bash/exec can change the world. Only recon-like shell (ls/git status)
+        // keeps the tour streak; install/run/probe reset it via is_recon_tool.
         if is_mutating_tool(name) && !matches!(name, "Bash" | "exec_command") {
             flags.mutating = true;
         }
@@ -785,8 +842,8 @@ impl CodingHarness {
     }
 }
 
-/// Parent-level recon accounting: ignore isolated subagents; Bash without a
-/// verify-like command counts as recon.
+/// Parent-level recon accounting: ignore isolated subagents; Bash/exec that
+/// is only information-gathering counts as recon.
 fn recon_turn_facts(outcomes: &[ToolCallOutcome]) -> (bool, usize) {
     let parent: Vec<&ToolCallOutcome> = outcomes
         .iter()
@@ -1182,15 +1239,96 @@ mod tests {
             r#"{"kind":"plan_update","entries":[{"content":"A","status":"in_progress"},{"content":"B","status":"pending"}]}"#,
         )]);
         h.begin_forced_finalize("Coding lifetime recon hard-stop".into());
+        assert!(
+            h.allows_update_plan_on_finalize(),
+            "an open plan must keep update_plan on the first finalize pass"
+        );
+        assert!(!h.ignores_finalize_tool("update_plan"));
+        assert!(h.ignores_finalize_tool("Read"));
+        assert!(
+            h.take_forced_finalize().is_none(),
+            "SyncPlan must not be consumed before the model can snapshot"
+        );
+        assert!(h.allows_update_plan_on_finalize());
         let remaining = h.remaining_plan().expect("open plan must survive hard-stop");
         assert_eq!(remaining.pending().len(), 2);
-        let text = crate::finalize::forced_finalize_instruction_for_plan(
+        let text = crate::finalize::forced_finalize_plan_sync_instruction(
             h.forced_finalize_reason().expect("finalize scheduled"),
             Some(&remaining),
         );
         assert!(text.contains("A"));
         assert!(text.contains("B"));
-        assert!(text.contains("Do not tell the user the task is finished"));
+        assert!(text.contains("update_plan"));
+        h.advance_after_plan_sync();
+        assert!(!h.allows_update_plan_on_finalize());
+        assert!(h.is_forced_finalize());
+        assert!(h.ignores_finalize_tool("update_plan"));
+        let reply = crate::finalize::forced_finalize_instruction_for_plan(
+            h.forced_finalize_reason().expect("reply pass"),
+            Some(&remaining),
+        );
+        assert!(reply.contains("Do not tell the user the task is finished"));
+    }
+
+    #[test]
+    fn forced_finalize_skips_plan_sync_when_checklist_is_already_closed() {
+        let mut h = CodingHarness::with_defaults(None);
+        let _ = h.after_tool_turn(&[plan_ok(
+            r#"{"kind":"plan_update","entries":[{"content":"A","status":"completed"}]}"#,
+        )]);
+        h.begin_forced_finalize("Coding explore hard-stop".into());
+        assert!(!h.allows_update_plan_on_finalize());
+        assert!(h.ignores_finalize_tool("update_plan"));
+        assert!(
+            h.take_forced_finalize().is_some(),
+            "Reply pass is consumable once the checklist is already closed"
+        );
+        assert!(!h.is_forced_finalize());
+    }
+
+    fn exec_go_run() -> ToolCallOutcome {
+        ToolCallOutcome {
+            name: "exec_command".into(),
+            success: true,
+            command: Some("go run ./cmd/server".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn starting_a_server_resets_the_explore_streak() {
+        let mut h = CodingHarness::new(
+            None,
+            CodingConfig {
+                explore_budget: 2,
+                explore_hard_stop: 4,
+                serial_recon_budget: 20,
+                serial_recon_hard_stop: 20,
+                recon_lifetime_budget: 20,
+                recon_lifetime_hard_stop: 20,
+                read_repeat_soft: 20,
+                read_repeat_hard: 20,
+                ..Default::default()
+            },
+        );
+        let read = || ToolCallOutcome {
+            name: "Read".into(),
+            success: true,
+            file_path: Some("README.md".into()),
+            result_content: Some("1:abcd→body".into()),
+            ..Default::default()
+        };
+        let _ = h.after_tool_turn(&[read()]);
+        let _ = h.after_tool_turn(&[read()]);
+        let _ = h.after_tool_turn(&[exec_go_run()]);
+        for _ in 0..3 {
+            let n = h.after_tool_turn(&[read()]);
+            assert!(
+                n.hard_stop.is_none(),
+                "go run is progress, not a file tour, got {:?}",
+                n.hard_stop
+            );
+        }
     }
 
     #[test]

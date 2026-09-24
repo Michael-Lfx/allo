@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 
-use crate::verify::looks_like_verification_command;
+use crate::verify::{looks_like_progress_command, looks_like_verification_command};
 
 /// Tools that count as exploration (not file mutation / verify).
 pub fn is_explore_tool(name: &str) -> bool {
@@ -29,12 +29,13 @@ pub fn is_explore_tool(name: &str) -> bool {
     )
 }
 
-/// Recon for progress accounting: explore tools, plus Bash/exec that is **not**
-/// a verification command. Isolated subagents are excluded (parent budget).
+/// Recon for progress accounting: explore tools, plus Bash/exec that is
+/// information-gathering only. Isolated subagents are excluded (parent budget).
 ///
 /// Successful `ls` / `git status` / `cat` is recon, not mutating progress.
-/// File Edit/Write and verify-like shell are the only things that clear a
-/// consecutive tour streak.
+/// Installs, process starts, HTTP probes, and verify-like shell reset the
+/// consecutive tour streak — otherwise "start this project" work looks like
+/// an exploration tour (session `01a0d19b-c5e8-7381-a811-a7b715bf058a`).
 pub fn is_recon_tool(name: &str, command: Option<&str>) -> bool {
     if crate::verify::is_isolated_subagent_tool(name) {
         return false;
@@ -43,7 +44,15 @@ pub fn is_recon_tool(name: &str, command: Option<&str>) -> bool {
         return true;
     }
     if matches!(name, "Bash" | "exec_command") {
-        return !command.is_some_and(looks_like_verification_command);
+        let Some(command) = command else {
+            // Missing text: cannot tell install from `ls`. Keep it recon so a
+            // silent exec_command cannot reset the tour by accident.
+            return true;
+        };
+        if looks_like_verification_command(command) || looks_like_progress_command(command) {
+            return false;
+        }
+        return true;
     }
     false
 }
@@ -635,6 +644,24 @@ mod tests {
         assert!(!is_recon_tool("Edit", None));
         assert!(is_recon_tool("Lsp", None));
         assert!(!is_recon_tool("explore_code", None));
+        // Missing exec_command text stays recon; the cmd body must be passed in.
+        assert!(is_recon_tool("exec_command", None));
+        assert!(!is_recon_tool(
+            "exec_command",
+            Some("Set-Location backend; go run ./cmd/server")
+        ));
+        assert!(!is_recon_tool(
+            "exec_command",
+            Some("pnpm --filter @aics/web dev --port 5175 --strictPort")
+        ));
+        assert!(!is_recon_tool(
+            "Bash",
+            Some("pnpm install --frozen-lockfile")
+        ));
+        assert!(!is_recon_tool(
+            "Bash",
+            Some("Invoke-WebRequest -Uri 'http://localhost:8080/healthz'")
+        ));
     }
 
     #[test]
