@@ -11,12 +11,13 @@ type OpenFeedbackOptions = {
 
 type FeedbackContextValue = {
   openFeedback: (options?: OpenFeedbackOptions) => Promise<void>;
+  autoReportConversationError: (context: ConversationErrorReportContext) => Promise<void>;
 };
 
 const FeedbackContext = createContext<FeedbackContextValue | null>(null);
 
 export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { reportConversationError } = useSupportChat();
+  const { reportConversationError, autoReportConversationError } = useSupportChat();
   const [visible, setVisible] = useState(false);
 
   const openFeedback = useCallback(
@@ -34,7 +35,10 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setVisible(false);
   }, []);
 
-  const value = useMemo(() => ({ openFeedback }), [openFeedback]);
+  const value = useMemo(
+    () => ({ openFeedback, autoReportConversationError }),
+    [autoReportConversationError, openFeedback]
+  );
 
   return (
     <FeedbackContext.Provider value={value}>
@@ -50,6 +54,9 @@ export const useFeedback = (): FeedbackContextValue => {
     // Fallback so consumers don't crash when the provider isn't mounted (e.g. web build).
     return {
       openFeedback: async () => {
+        /* no-op */
+      },
+      autoReportConversationError: async () => {
         /* no-op */
       },
     };

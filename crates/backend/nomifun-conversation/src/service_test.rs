@@ -12810,6 +12810,142 @@ async fn public_idempotent_send_has_one_execution_owner_across_independent_sqlit
 }
 
 #[tokio::test]
+async fn public_idempotent_send_absorbs_concurrent_running_turn_from_independent_service() {
+    const CLIENT_KEY: &str = "gateway-running-turn-absorption-test-v1";
+    const OTHER_KEY: &str = "gateway-different-turn-conflict-test-v1";
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let test_root = std::env::temp_dir().join(format!(
+        "nomifun-cross-service-running-absorption-{}-{nonce}",
+        std::process::id()
+    ));
+    let db_path = test_root.join("shared.sqlite3");
+    let database_a = nomifun_db::init_database(&db_path).await.unwrap();
+    let user_id = nomifun_db::installation_owner_id(database_a.pool())
+        .await
+        .unwrap();
+    let database_b = nomifun_db::init_database(&db_path).await.unwrap();
+    let repo_a = Arc::new(SqliteConversationRepository::new(
+        database_a.pool().clone(),
+    ));
+    let repo_b = Arc::new(SqliteConversationRepository::new(
+        database_b.pool().clone(),
+    ));
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let slow_registry = Arc::new(SlowAgentRuntimeRegistry::new(Duration::from_secs(2)));
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = slow_registry.clone();
+    let svc_a = ConversationService::new(
+        Arc::<str>::from(user_id.clone()),
+        test_root.clone(),
+        broadcaster.clone(),
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry.clone(),
+        repo_a.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let workspace = test_root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let request: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": {
+            "agent_id": TEST_ACP_AGENT_ID,
+            "workspace": workspace.to_string_lossy()
+        }
+    }))
+    .unwrap();
+    let conversation = svc_a.create(&user_id, request).await.unwrap();
+    let svc_b = ConversationService::new(
+        Arc::<str>::from(user_id.clone()),
+        test_root.clone(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry.clone(),
+        repo_b.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+
+    // Start a turn on svc_a; while it is slowly building/executing, the database
+    // row is durably Running with active_turn_operation_id set to CLIENT_KEY.
+    let svc_a_handle = {
+        let svc = svc_a.clone();
+        let runtime_registry = runtime_registry.clone();
+        let user_id = user_id.clone();
+        let conversation_id = conversation.conversation_id.clone();
+        tokio::spawn(async move {
+            svc.send_message_with_idempotency_key(
+                &user_id,
+                &conversation_id,
+                CLIENT_KEY,
+                make_send_req(),
+                &runtime_registry,
+            )
+            .await
+        })
+    };
+
+    // Wait until svc_a has committed the receipt and set the row to Running.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(Some(row)) = repo_b.get(&conversation.conversation_id).await {
+                if row.status.as_deref() == Some("running") {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("svc_a must transition the conversation to running");
+
+    // svc_b (independent service process) receives a request with the SAME idempotency key.
+    // It must absorb the running delivery rather than failing with unproven running generation error.
+    let replayed = svc_b
+        .send_message_with_idempotency_key(
+            &user_id,
+            &conversation.conversation_id,
+            CLIENT_KEY,
+            make_send_req(),
+            &runtime_registry,
+        )
+        .await
+        .expect("svc_b must absorb the in-flight running turn as an idempotent replay");
+    assert!(replayed.replayed);
+    assert!(!replayed.completed);
+
+    // Conversely, svc_b receiving a DIFFERENT idempotency key while running
+    // must fail closed with unproven running generation conflict.
+    let conflict = svc_b
+        .send_message_with_idempotency_key(
+            &user_id,
+            &conversation.conversation_id,
+            OTHER_KEY,
+            make_send_req(),
+            &runtime_registry,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(conflict, AppError::Conflict(_)));
+
+    let first_delivery = svc_a_handle.await.unwrap().unwrap();
+    assert_eq!(replayed.message_id, first_delivery.message_id);
+
+    drop(svc_a);
+    drop(svc_b);
+    drop(repo_a);
+    drop(repo_b);
+    database_a.close().await;
+    database_b.close().await;
+    let _ = std::fs::remove_dir_all(&test_root);
+}
+
+#[tokio::test]
 async fn public_idempotency_receipt_never_grants_execution_attempt_authority() {
     let repo = Arc::new(MockRepo::new());
     let broadcaster = Arc::new(MockBroadcaster::new());

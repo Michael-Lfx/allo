@@ -47,7 +47,10 @@ export function getConversationErrorReportContextKey(
   ]);
 }
 
-export function buildConversationErrorReportMetadata(context: ConversationErrorReportContext) {
+export function buildConversationErrorReportMetadata(
+  context: ConversationErrorReportContext,
+  options?: { source?: string }
+) {
   const { error } = context;
   const diagnostic = buildAgentErrorDiagnostic(error);
   const safeMessage = buildErrorDiagnostic({ message: error.message }).summary;
@@ -60,7 +63,7 @@ export function buildConversationErrorReportMetadata(context: ConversationErrorR
   return {
     schemaVersion: 1,
     reportType: 'conversation_error',
-    source: 'error_card_feedback',
+    source: options?.source ?? 'error_card_feedback',
     ...(diagnostic.incidentId ? { incidentId: diagnostic.incidentId } : {}),
     error: {
       message: safeMessage,

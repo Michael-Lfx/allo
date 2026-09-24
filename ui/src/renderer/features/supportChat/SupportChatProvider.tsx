@@ -28,11 +28,20 @@ import { supportChatApi } from './api/supportChatApi';
 import { collectSupportDeviceInfo } from './collectSupportDeviceInfo';
 import { collectSupportLogUserInfo } from './collectSupportLogUserInfo';
 import {
+  buildConversationErrorReportMetadata,
   getConversationErrorReportContextKey,
   type ConversationErrorReportDraft,
   type ConversationErrorReportContext,
   type ConversationErrorReportSubmitResult,
 } from './conversationErrorReport';
+import {
+  markAutoReportFailed,
+  markAutoReportInFlight,
+  markAutoReportSuccess,
+  recordUserSubmissionSuccess,
+  shouldDeduplicateUserSubmission,
+} from './conversationErrorReportTracking';
+import { buildSupportLogPayload } from './supportImageAttachments';
 import { submitConversationErrorReport as submitConversationErrorReportFlow } from './conversationErrorReportSubmission';
 import {
   MAX_SUPPORT_MESSAGE_CHARS,
@@ -78,6 +87,7 @@ type SupportChatContextValue = {
   unreadCount: number;
   sendMessage: (content: string, logPayload?: ICloudImAttachmentPayload) => Promise<boolean>;
   reportConversationError: (context: ConversationErrorReportContext) => void;
+  autoReportConversationError: (context: ConversationErrorReportContext) => Promise<void>;
   /** 图片秒上屏：同步挂 pending 气泡，上传/发送全部在后台进行。 */
   sendImages: (params: { content: string; images: SupportOutgoingImage[] }) => boolean;
   retryMessage: (clientMsgId: string) => Promise<void>;
@@ -134,6 +144,8 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const supportAccountIdRef = useRef<string | null>(null);
   // 串行发送队列：保证多条消息（含后台图片）按入队顺序发送，不丢弃。
   const sendQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // 串行自动上报队列：同一时刻最多运行 1 个后台打包任务，避免多错误并发争抢磁盘与 CPU。
+  const autoReportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const loadingOlderRef = useRef(false);
   // 会话快照缓存：关闭弹窗后保留，再次打开直接渲染，后台增量刷新。
   const snapshotRef = useRef<{
@@ -574,6 +586,83 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setConversationErrorReportContext(null);
   }, []);
 
+  const autoReportConversationError = useCallback(
+    async (context: ConversationErrorReportContext): Promise<void> => {
+      if (cloudStatusRef.current !== 'authenticated') return;
+      const contextKey = getConversationErrorReportContextKey(context);
+      if (!markAutoReportInFlight(contextKey, context.occurredAt)) {
+        return;
+      }
+
+      const operationAccountId = authAccountIdRef.current;
+      const isCurrentAutoOperation = () =>
+        cloudStatusRef.current === 'authenticated' &&
+        authAccountIdRef.current === operationAccountId;
+
+      const runReporting = async () => {
+        if (!isCurrentAutoOperation()) {
+          markAutoReportFailed(contextKey);
+          return;
+        }
+
+        try {
+          const [packed, device] = await Promise.all([
+            supportChatApi.packLogs({ turnId: context.turnId ?? context.messageId }),
+            collectSupportDeviceInfo(),
+          ]);
+
+          if (!isCurrentAutoOperation()) {
+            markAutoReportFailed(contextKey);
+            return;
+          }
+
+          const uploadedLog = await supportChatApi.uploadLogFromPath({
+            zipPath: packed.zipPath,
+            fileName: packed.fileName,
+          });
+
+          if (!isCurrentAutoOperation()) {
+            markAutoReportFailed(contextKey);
+            return;
+          }
+
+          const logPayload = buildSupportLogPayload(
+            uploadedLog,
+            {
+              fileName: packed.fileName,
+              contentType: 'application/zip',
+              byteSize: packed.byteSize,
+            },
+            {
+              account: collectSupportLogUserInfo(whoami),
+              device,
+              report: buildConversationErrorReportMetadata(context, { source: 'auto_error_monitoring' }),
+            }
+          );
+
+          const clientMsgId = crypto.randomUUID();
+          await supportChatApi.sendMessage({
+            clientMsgId,
+            content: t('settings.bugReportDefaultContent', {
+              defaultValue: '提交了一个对话问题，请协助排查',
+            }),
+            msgType: 'text',
+            logPayload,
+          });
+
+          markAutoReportSuccess(contextKey);
+        } catch (err) {
+          console.warn('[SupportChat] Auto error reporting failed:', err);
+          markAutoReportFailed(contextKey);
+        }
+      };
+
+      autoReportQueueRef.current = autoReportQueueRef.current.then(runReporting, runReporting);
+      await autoReportQueueRef.current;
+    },
+    [cloudStatus, t, whoami]
+  );
+
   const submitConversationErrorReport = useCallback(
     async (
       context: ConversationErrorReportContext,
@@ -865,6 +954,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       unreadCount,
       sendMessage,
       reportConversationError,
+      autoReportConversationError,
       sendImages,
       retryMessage,
       loadOlder,
@@ -878,6 +968,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       unreadCount,
       sendMessage,
       reportConversationError,
+      autoReportConversationError,
       sendImages,
       retryMessage,
       loadOlder,
@@ -896,7 +987,24 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
           if (!conversationErrorReportContext) {
             return Promise.resolve({ status: 'preparation-failed' as const });
           }
-          return submitConversationErrorReport(conversationErrorReportContext, draft);
+          const contextKey = getConversationErrorReportContextKey(conversationErrorReportContext);
+          if (
+            shouldDeduplicateUserSubmission(contextKey, {
+              description: draft.description,
+              screenshots: draft.screenshots,
+            })
+          ) {
+            return Promise.resolve({ status: 'success' as const });
+          }
+          return submitConversationErrorReport(conversationErrorReportContext, draft).then((result) => {
+            if (result.status === 'success') {
+              recordUserSubmissionSuccess(contextKey, {
+                description: draft.description,
+                screenshots: draft.screenshots,
+              });
+            }
+            return result;
+          });
         }}
         onOpenSupportChat={openSupportChat}
       />
