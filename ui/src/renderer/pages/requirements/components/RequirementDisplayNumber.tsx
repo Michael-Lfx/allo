@@ -62,7 +62,7 @@ const RequirementDisplayNumber: React.FC<RequirementDisplayNumberProps> = ({
             // theme's numeric colour keys — so it repainted the UA focus ring in --bg-2, the page
             // background, in both light and dark. `outline-2px` is the width spelling and
             // `outline-solid` supplies the style nothing else here sets.
-            'cursor-copy transition-colors hover:border-[var(--color-primary-light-4)] hover:bg-[var(--color-primary-light-1)] hover:text-[rgb(var(--primary-6))] focus-visible:outline-2px focus-visible:outline-solid focus-visible:outline-[rgb(var(--primary-6))] focus-visible:outline-offset-1px'
+            'cursor-copy transition-colors hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_40%,transparent)] hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_8%,transparent)] hover:text-primary-6 focus-visible:outline-2px focus-visible:outline-solid focus-visible:outline-[rgba(var(--primary-6),1)] focus-visible:outline-offset-1px'
           : '',
         className,
       ]

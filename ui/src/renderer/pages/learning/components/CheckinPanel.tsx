@@ -10,10 +10,10 @@ const { Text } = Typography;
 /** 复习数 → 单元格底色（四级色阶 + 零值灰） */
 function heatClass(reviewedCount: number): string {
   if (reviewedCount <= 0) return 'bg-[var(--color-fill-1)]';
-  if (reviewedCount <= 2) return 'bg-[var(--color-primary-light-1)]';
-  if (reviewedCount <= 5) return 'bg-[var(--color-primary-light-3)]';
-  if (reviewedCount <= 9) return 'bg-[var(--color-primary-light-4)]';
-  return 'bg-[var(--color-primary-6)]';
+  if (reviewedCount <= 2) return 'bg-[color-mix(in_srgb,rgb(var(--primary-6))_22%,transparent)]';
+  if (reviewedCount <= 5) return 'bg-[color-mix(in_srgb,rgb(var(--primary-6))_46%,transparent)]';
+  if (reviewedCount <= 9) return 'bg-[color-mix(in_srgb,rgb(var(--primary-6))_72%,transparent)]';
+  return 'bg-primary-6';
 }
 
 function isLeapYear(year: number): boolean {
@@ -235,7 +235,7 @@ export function CheckinPanel({
       <div
         className={`flex flex-col gap-8px rounded-12px border border-solid p-16px transition-colors ${
           celebrating
-            ? 'border-[var(--color-success-6)] bg-[var(--color-success-light-1)]'
+            ? 'border-[var(--color-success-6)] bg-[color-mix(in_srgb,rgb(var(--success-6))_12%,var(--color-bg-2))]'
             : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)]'
         }`}
       >
@@ -399,10 +399,10 @@ export function CheckinPanel({
               <span>
                 {t('learning.checkinLegendIntensity')}
                 <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[var(--color-fill-1)]' />
-                <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-light-1)]' />
-                <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-light-3)]' />
-                <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-light-4)]' />
-                <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-6)]' />
+                <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[color-mix(in_srgb,rgb(var(--primary-6))_22%,transparent)]' />
+                <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[color-mix(in_srgb,rgb(var(--primary-6))_46%,transparent)]' />
+                <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[color-mix(in_srgb,rgb(var(--primary-6))_72%,transparent)]' />
+                <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-primary-6' />
               </span>
               <span className='flex items-center gap-4px'>
                 <span className='inline-block h-12px w-12px rounded-full bg-[var(--color-fill-1)]' style={{ boxShadow: '0 0 0 1.5px rgb(var(--primary-6))' }} />
@@ -472,10 +472,10 @@ export function CheckinPanel({
             <div className='flex items-center gap-8px text-12px text-[var(--color-text-3)]'>
               <span>{t('learning.checkinLegendIntensity')}</span>
               <span className='inline-block h-10px w-10px rounded-2px bg-[var(--color-fill-1)]' />
-              <span className='inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-light-1)]' />
-              <span className='inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-light-3)]' />
-              <span className='inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-light-4)]' />
-              <span className='inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-6)]' />
+              <span className='inline-block h-10px w-10px rounded-2px bg-[color-mix(in_srgb,rgb(var(--primary-6))_22%,transparent)]' />
+              <span className='inline-block h-10px w-10px rounded-2px bg-[color-mix(in_srgb,rgb(var(--primary-6))_46%,transparent)]' />
+              <span className='inline-block h-10px w-10px rounded-2px bg-[color-mix(in_srgb,rgb(var(--primary-6))_72%,transparent)]' />
+              <span className='inline-block h-10px w-10px rounded-2px bg-primary-6' />
               <span className='ml-4px'>✓ {t('learning.checkinLegendCheckin')}</span>
             </div>
           </div>

@@ -82,24 +82,24 @@ const AnalyticsTab: React.FC = () => {
 
         {/* Skill status distribution */}
         <div style={{ marginTop: 16 }}>
-          <div style={{ marginBottom: 8, fontSize: 13, color: '#86909c' }}>{t('Status Distribution')}</div>
+          <div style={{ marginBottom: 8, fontSize: 13, color: 'var(--color-text-3)' }}>{t('Status Distribution')}</div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#00b42a', display: 'inline-block' }} />
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(var(--success-6))', display: 'inline-block' }} />
               <span>{t('Active')}: {analytics.skills.by_status.active}</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#ff7d00', display: 'inline-block' }} />
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(var(--warning-6))', display: 'inline-block' }} />
               <span>{t('Draft')}: {analytics.skills.by_status.draft}</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#86909c', display: 'inline-block' }} />
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-text-3)', display: 'inline-block' }} />
               <span>{t('Archived')}: {analytics.skills.by_status.archived}</span>
             </div>
           </div>
           <Progress
             percent={Math.round((analytics.skills.by_status.active / skillStatusTotal) * 100)}
-            color="#00b42a"
+            color="rgb(var(--success-6))"
           />
         </div>
 
@@ -113,7 +113,7 @@ const AnalyticsTab: React.FC = () => {
         {/* Top skills by usage */}
         {analytics.skills.top_by_usage.length > 0 && (
           <div style={{ marginTop: 16 }}>
-            <div style={{ marginBottom: 8, fontSize: 13, color: '#86909c' }}>{t('Top Skills by Usage')}</div>
+            <div style={{ marginBottom: 8, fontSize: 13, color: 'var(--color-text-3)' }}>{t('Top Skills by Usage')}</div>
             <Table
               size="small"
               pagination={false}
@@ -180,7 +180,7 @@ const AnalyticsTab: React.FC = () => {
         </Row>
       </Card>
 
-      <div style={{ textAlign: 'right', fontSize: 12, color: '#86909c' }}>
+      <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--color-text-3)' }}>
         {t('Generated at')}: {new Date(analytics.generated_at).toLocaleString()}
       </div>
     </div>

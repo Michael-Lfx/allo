@@ -2208,8 +2208,8 @@ const SendBox: React.FC<{
       panelStyle={{
         ...(isFileDragging
           ? {
-              backgroundColor: 'var(--color-primary-light-1)',
-              borderColor: 'rgb(var(--primary-3))',
+              backgroundColor: 'color-mix(in srgb, rgb(var(--primary-6)) 8%, var(--color-bg-2))',
+              borderColor: 'rgb(var(--primary-6))',
               borderWidth: '1px',
             }
           : {

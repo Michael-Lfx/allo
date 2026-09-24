@@ -144,14 +144,14 @@ const PreviewContextMenu: React.FC<PreviewContextMenuProps> = ({
       style={{
         left: `${contextMenu.x}px`,
         top: `${contextMenu.y}px`,
-        backgroundColor: currentTheme === 'dark' ? '#1d1d1f' : '#ffffff',
-        border: '1px solid var(--border-base, #e5e6eb)',
+        backgroundColor: 'var(--color-bg-popup, var(--color-bg-2))',
+        border: '1px solid var(--color-border-2, var(--border-base))',
         minWidth: '140px',
       }}
     >
       {/* 关闭左侧 / Close tabs to the left */}
       <div
-        className={`px-12px py-8px text-12px transition-colors ${hasLeftTabs ? 'cursor-pointer text-t-primary hover:bg-3' : 'opacity-50 cursor-not-allowed text-t-tertiary'}`}
+        className={`px-12px py-8px text-12px transition-colors ${hasLeftTabs ? 'cursor-pointer text-t-primary hover:bg-fill-2' : 'opacity-50 cursor-not-allowed text-t-tertiary'}`}
         onClick={() => hasLeftTabs && onCloseLeft(contextMenu.tabId!)}
       >
         {t('preview.closeLeft')}
@@ -159,7 +159,7 @@ const PreviewContextMenu: React.FC<PreviewContextMenuProps> = ({
 
       {/* 关闭右侧 / Close tabs to the right */}
       <div
-        className={`px-12px py-8px text-12px transition-colors ${hasRightTabs ? 'cursor-pointer text-t-primary hover:bg-3' : 'opacity-50 cursor-not-allowed text-t-tertiary'}`}
+        className={`px-12px py-8px text-12px transition-colors ${hasRightTabs ? 'cursor-pointer text-t-primary hover:bg-fill-2' : 'opacity-50 cursor-not-allowed text-t-tertiary'}`}
         onClick={() => hasRightTabs && onCloseRight(contextMenu.tabId!)}
       >
         {t('preview.closeRight')}
@@ -167,7 +167,7 @@ const PreviewContextMenu: React.FC<PreviewContextMenuProps> = ({
 
       {/* 关闭其他 / Close other tabs */}
       <div
-        className={`px-12px py-8px text-12px transition-colors ${hasOtherTabs ? 'cursor-pointer text-t-primary hover:bg-3' : 'opacity-50 cursor-not-allowed text-t-tertiary'}`}
+        className={`px-12px py-8px text-12px transition-colors ${hasOtherTabs ? 'cursor-pointer text-t-primary hover:bg-fill-2' : 'opacity-50 cursor-not-allowed text-t-tertiary'}`}
         onClick={() => hasOtherTabs && onCloseOthers(contextMenu.tabId!)}
       >
         {t('preview.closeOthers')}
@@ -182,7 +182,7 @@ const PreviewContextMenu: React.FC<PreviewContextMenuProps> = ({
 
       {/* 全部关闭 / Close all tabs */}
       <div
-        className='px-12px py-8px text-12px text-t-primary cursor-pointer hover:bg-3 transition-colors'
+        className='px-12px py-8px text-12px text-t-primary cursor-pointer hover:bg-fill-2 transition-colors'
         onClick={onCloseAll}
       >
         {t('preview.closeAll')}

@@ -598,7 +598,7 @@ const AssetLibraryPage: React.FC = () => {
                   className={[
                     'inline-flex items-center gap-4px rounded-full border border-solid px-10px py-3px text-12px cursor-pointer transition-colors',
                     active
-                      ? '!bg-primary-1 !text-primary-6 border-[var(--color-primary-light-3)] font-medium'
+                      ? '!bg-[rgba(var(--primary-6),0.12)] !text-primary-6 border-[rgba(var(--primary-6),0.4)] font-medium'
                       : 'bg-[var(--color-fill-2)] text-[var(--color-text-2)] border-[var(--color-border-2)] hover:border-[var(--color-border-3)] hover:text-[var(--color-text-1)]',
                   ].join(' ')}
                 >

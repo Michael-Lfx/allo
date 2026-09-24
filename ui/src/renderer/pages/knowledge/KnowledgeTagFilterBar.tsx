@@ -152,7 +152,7 @@ const SortControl: React.FC<{
               className={[
                 'px-12px py-6px text-12px cursor-pointer transition-colors',
                 opt === sort
-                  ? '!text-primary-6 bg-[var(--color-primary-light-1)]'
+                  ? '!text-primary-6 bg-[color-mix(in_srgb,rgb(var(--primary-6))_12%,transparent)]'
                   : 'text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)]',
               ].join(' ')}
             >
@@ -204,7 +204,7 @@ const KnowledgeTagFilterBar: React.FC<KnowledgeTagFilterBarProps> = ({
       {/* Row 1: Kind filter + sort */}
       <div className='flex items-center gap-9px flex-wrap py-9px'>
         <div className='flex items-center gap-7px flex-shrink-0'>
-          <span className='inline-block w-3px h-12px rounded-[2px] bg-[var(--color-primary-light-3)]' aria-hidden='true' />
+          <span className='inline-block w-3px h-12px rounded-[2px] bg-primary-6' aria-hidden='true' />
           <span className='text-11px font-semibold text-[var(--color-text-3)] whitespace-nowrap tracking-wide'>
             {t('knowledge.filter.kindLabel', { defaultValue: '类型' })}
           </span>
@@ -237,7 +237,7 @@ const KnowledgeTagFilterBar: React.FC<KnowledgeTagFilterBarProps> = ({
       {/* Row 2: Tag filter + manage */}
       <div className='flex items-center gap-9px flex-wrap py-9px'>
         <div className='flex items-center gap-7px flex-shrink-0'>
-          <span className='inline-block w-3px h-12px rounded-[2px] bg-[var(--color-primary-light-3)]' aria-hidden='true' />
+          <span className='inline-block w-3px h-12px rounded-[2px] bg-primary-6' aria-hidden='true' />
           <span className='text-11px font-semibold text-[var(--color-text-3)] whitespace-nowrap tracking-wide'>
             {t('knowledge.filter.tagLabel', { defaultValue: '标签' })}
           </span>
@@ -272,7 +272,7 @@ const KnowledgeTagFilterBar: React.FC<KnowledgeTagFilterBarProps> = ({
             'inline-flex items-center gap-5px select-none cursor-pointer rounded-full px-12px py-4px flex-shrink-0 ml-auto',
             'text-12px font-medium border border-dashed transition-all duration-150',
             'bg-transparent text-[var(--color-text-3)] border-[var(--color-border-3)]',
-            'hover:text-[rgb(var(--primary-6))] hover:border-[var(--color-primary-light-3)] hover:bg-[var(--color-primary-light-1)]',
+            'hover:text-primary-6 hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_40%,transparent)] hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_8%,transparent)]',
           ].join(' ')}
         >
           <SettingTwo theme='outline' size={13} strokeWidth={3} />

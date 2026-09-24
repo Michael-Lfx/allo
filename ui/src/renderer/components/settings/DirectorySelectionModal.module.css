@@ -1,5 +1,5 @@
 .modal {
-  background: #fff;
+  background: transparent;
 }
 
 .modal :global(.arco-modal-content) {
@@ -7,7 +7,7 @@
   padding: 0;
   border: 1px solid var(--color-border-2);
   border-radius: 14px;
-  background: #fff;
+  background: var(--color-bg-2);
   box-shadow: 0 24px 70px rgb(0 0 0 / 18%);
 }
 
@@ -15,7 +15,7 @@
   height: auto;
   padding: 14px 18px 12px;
   border-bottom: 1px solid var(--color-border-1);
-  background: #fff;
+  background: var(--color-bg-2);
 }
 
 .modal :global(.arco-modal-title) {
@@ -31,7 +31,7 @@
 .modal :global(.arco-modal-footer) {
   padding: 10px 16px;
   border-top: 1px solid var(--color-border-1);
-  background: #fff;
+  background: var(--color-bg-2);
 }
 
 .title {
@@ -60,7 +60,7 @@
   min-height: 300px;
   height: min(50vh, 430px);
   flex-direction: column;
-  background: #fff;
+  background: var(--color-bg-2);
 }
 
 .spin,
@@ -277,7 +277,7 @@
   gap: 7px;
   padding: 6px 14px;
   border-top: 1px solid var(--color-border-1);
-  background: #fff;
+  background: var(--color-bg-1);
   color: var(--color-text-3);
   font-size: 12px;
 }

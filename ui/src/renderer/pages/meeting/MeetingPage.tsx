@@ -103,7 +103,7 @@ const MeetingPage: React.FC = () => {
       <div className='mx-auto flex w-full max-w-896px flex-col gap-24px'>
         <div className='flex items-center justify-between gap-12px'>
           <h1 className='m-0 text-20px font-bold text-t-primary'>{t('meeting.title')}</h1>
-          <Button size='small' icon={<Plus theme='outline' size={14} />} loading={creating} onClick={handleNew}>
+          <Button size='small' className='flowy-icon-text-btn' icon={<Plus theme='outline' size={14} />} loading={creating} onClick={handleNew}>
             {t('meeting.newMeeting')}
           </Button>
         </div>

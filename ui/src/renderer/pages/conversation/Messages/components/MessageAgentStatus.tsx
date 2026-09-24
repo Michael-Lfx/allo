@@ -73,19 +73,19 @@ const MessageAgentStatus: React.FC<MessageAgentStatusProps> = ({ message }) => {
       className='agent-status-message flex items-center gap-3 p-3 rounded-lg border'
       style={{
         backgroundColor: isError
-          ? 'var(--color-danger-light-1)'
+          ? 'color-mix(in srgb, rgb(var(--danger-6)) 10%, var(--color-bg-2))'
           : isSuccess
-            ? 'var(--color-success-light-1)'
+            ? 'color-mix(in srgb, rgb(var(--success-6)) 10%, var(--color-bg-2))'
             : isPreparing
               ? 'transparent'
-            : 'var(--color-primary-light-1)',
+            : 'color-mix(in srgb, rgb(var(--primary-6)) 8%, var(--color-bg-2))',
         borderColor: isError
-          ? 'rgb(var(--danger-3))'
+          ? 'color-mix(in srgb, rgb(var(--danger-6)) 30%, transparent)'
           : isSuccess
-            ? 'rgb(var(--success-3))'
+            ? 'color-mix(in srgb, rgb(var(--success-6)) 30%, transparent)'
             : isPreparing
               ? 'transparent'
-              : 'rgb(var(--primary-3))',
+              : 'color-mix(in srgb, rgb(var(--primary-6)) 30%, transparent)',
         color: isError
           ? 'rgb(var(--danger-6))'
           : isSuccess

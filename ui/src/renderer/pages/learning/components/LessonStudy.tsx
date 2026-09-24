@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 课时学习面：节 stepper（练习节步进门禁）、逐题练习轮、单节重写入口、
  * 课时块与原文面板——普通课程与学习图课程共用。决策逻辑在 model.ts，
  * 本文件只做组合与展示；从 CourseWorkspace 拆出，工作区壳只管布局导航。
@@ -607,6 +607,7 @@ function SectionedLessonBody({
       )}
       <div className='flex items-center justify-between'>
         <Button
+          className='flowy-icon-text-btn'
           disabled={stepIndex === 0}
           icon={<IconLeft />}
           onClick={() => setCurrent(stepIndex - 1)}
@@ -617,6 +618,7 @@ function SectionedLessonBody({
           {stepIndex + 1} / {steps.length}
         </Text>
         <Button
+          className='flowy-icon-text-btn'
           disabled={stepIndex >= steps.length - 1 || !canGoTo(stepIndex + 1)}
           onClick={() => setCurrent(stepIndex + 1)}
         >

@@ -1241,7 +1241,7 @@ const VideoGenerationListPage: React.FC = () => {
                           <button
                             key={`briefing:${row.id}`}
                             type='button'
-                            className='flex flex-col gap-8px rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-16px text-left relative overflow-hidden transition-colors hover:border-[var(--color-primary-light-3)] cursor-pointer'
+                            className='flex flex-col gap-8px rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-16px text-left relative overflow-hidden transition-colors hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_40%,transparent)] cursor-pointer'
                             disabled={anyOpening && openingBriefingId !== row.id}
                             onPointerEnter={() => prefetchVideoBriefing()}
                             onClick={() => openBriefing(row.briefing)}

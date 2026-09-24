@@ -225,7 +225,7 @@ export function CourseWorkspace({
                         {isRecommended && !isSelected && (
                           <Tooltip content={t('learning.recommendedNext')}>
                             <span
-                              className='size-6px shrink-0 rd-full bg-[rgb(var(--primary-6))]'
+                              className='size-6px shrink-0 rd-full bg-primary-6'
                               aria-hidden='true'
                             />
                           </Tooltip>

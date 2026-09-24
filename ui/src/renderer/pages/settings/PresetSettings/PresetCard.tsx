@@ -73,7 +73,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
         'group relative flex flex-col rounded-12px border border-solid p-16px cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]',
         'transition-[background-color,border-color,box-shadow] duration-180',
         highlighted
-          ? 'border-primary-6 bg-[var(--color-primary-light-1)]'
+          ? 'border-primary-6 bg-[color-mix(in_srgb,rgb(var(--primary-6))_8%,var(--color-bg-2))]'
           : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-border-3)] hover:bg-[var(--color-fill-1)]',
       ].join(' ')}
     >

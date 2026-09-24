@@ -95,7 +95,7 @@ const TagChip: React.FC<{
             onKeyDown={(event) => {
               if (event.key === 'Enter') commit();
             }}
-            className='flex h-16px w-16px flex-shrink-0 cursor-pointer items-center justify-center rounded-full text-primary-6 transition-colors hover:bg-[var(--color-primary-light-1)]'
+            className='flex h-16px w-16px flex-shrink-0 cursor-pointer items-center justify-center rounded-full text-primary-6 transition-colors hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_12%,transparent)]'
           >
             <Check theme='outline' size={10} strokeWidth={3} />
           </div>
@@ -173,7 +173,7 @@ const TagColumn: React.FC<{
   return (
     <section className='flex min-w-0 flex-col gap-8px'>
       <div className='flex items-center gap-7px'>
-        <span className='inline-block h-13px w-3px rounded-[2px] bg-[var(--color-primary-light-3)]' aria-hidden='true' />
+        <span className='inline-block h-13px w-3px rounded-[2px] bg-primary-6' aria-hidden='true' />
         <span className='text-13px font-medium text-[var(--color-text-1)]'>{title}</span>
         <span className='text-11px text-[var(--color-text-3)]'>({tags.length})</span>
       </div>

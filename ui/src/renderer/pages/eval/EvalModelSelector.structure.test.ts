@@ -8,11 +8,11 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
 const source = readFileSync(
-  new URL('./KnowledgeModelSelector.tsx', import.meta.url),
+  new URL('./EvalModelSelector.tsx', import.meta.url),
   'utf8',
 );
 
-describe('knowledge explicit model preference', () => {
+describe('eval explicit model preference', () => {
   test('uses ChatModelPickerMenu and resolves fallback auto/cloud model when unset', () => {
     expect(source.includes('ChatModelPickerMenu')).toBe(true);
     expect(source.includes('buildChatModelPickerViewModel(groups)')).toBe(true);
@@ -27,8 +27,8 @@ describe('knowledge explicit model preference', () => {
   });
 
   test('marks unavailable stored choice when missing from catalog', () => {
-    expect(source.includes("t('knowledge.form.modelUnavailable')")).toBe(true);
+    expect(source.includes("t('eval.form.modelUnavailable')")).toBe(true);
     expect(source.includes("status={choiceUnavailable ? 'warning' : undefined}")).toBe(true);
-    expect(source.includes("t('knowledge.form.modelUnavailableHint')")).toBe(true);
+    expect(source.includes("t('eval.form.modelUnavailableHint')")).toBe(true);
   });
 });

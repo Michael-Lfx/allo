@@ -114,7 +114,7 @@ const RequirementBoardView: React.FC<RequirementBoardViewProps> = ({ items, onOp
             className={[
               'requirements-board-column flex min-w-260px max-h-full flex-1 flex-col gap-8px rounded-12px p-8px box-border transition-colors duration-180',
               isDropTarget
-                ? 'bg-[var(--color-fill-2)] border border-dashed border-[var(--color-primary-light-4)]'
+                ? 'bg-[var(--color-fill-2)] border border-dashed border-[color-mix(in_srgb,rgb(var(--primary-6))_45%,transparent)]'
                 : 'bg-[var(--color-fill-1)] border border-solid border-transparent',
             ].join(' ')}
           >

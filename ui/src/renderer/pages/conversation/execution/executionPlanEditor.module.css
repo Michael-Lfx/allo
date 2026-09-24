@@ -36,18 +36,13 @@
 /* Inner card — the rd-24 white card (mirrors `.guidInputInner`): bg-base +
  * 1px border-3, focus border/shadow driven by useInputFocusRing inline. */
 .composerInner {
-  background: var(--bg-base, #fff);
+  background: var(--color-bg-2, var(--bg-1));
   border: 1px solid var(--color-border-3);
   border-radius: 24px;
   box-sizing: border-box;
   transition:
     box-shadow 0.25s ease,
     border-color 0.25s ease;
-}
-
-:global([data-theme='dark']) .composerInner {
-  background: #262626;
-  border-color: #3a3a3a;
 }
 
 /* Small primary-tinted label strip at the top of the inner card (e.g. 「新建
@@ -117,18 +112,13 @@
   width: min(320px, calc(100vw - 32px));
   box-sizing: border-box;
   border-radius: 12px;
-  background: var(--bg-base, #fff);
+  background: var(--color-bg-popup, var(--color-bg-2));
   border: 1px solid var(--color-border-2);
   box-shadow:
     0 10px 32px rgba(0, 0, 0, 0.1),
     0 2px 6px rgba(0, 0, 0, 0.06);
   padding: 12px;
   overflow: hidden;
-}
-
-:global([data-theme='dark']) .composerPopover {
-  background: #262626;
-  border-color: #3a3a3a;
 }
 
 .composerPopoverTitle {

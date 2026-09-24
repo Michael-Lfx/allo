@@ -58,7 +58,7 @@
 
 .commercial-slice__preview-main {
   padding: var(--flowy-space-4, 16px);
-  background: var(--flowy-surface-1, #fff);
+  background: var(--flowy-surface-1, var(--color-bg-2));
 }
 
 .commercial-slice__badge {
@@ -126,8 +126,8 @@
 }
 
 .commercial-slice__chip.is-blocked {
-  color: #b45309;
-  border-color: color-mix(in srgb, #b45309 35%, transparent);
+  color: var(--warning, #b45309);
+  border-color: color-mix(in srgb, var(--warning, #b45309) 35%, transparent);
 }
 
 .commercial-slice__plan {

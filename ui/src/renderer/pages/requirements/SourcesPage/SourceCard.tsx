@@ -63,7 +63,7 @@ const SourceCard: React.FC<SourceCardProps> = ({ icon, name, description, status
         'transition-all duration-180',
         isActive
           ? ''
-          : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-primary-light-4)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)]',
+          : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_40%,transparent)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)]',
       ].join(' ')}
       style={
         isActive
@@ -137,7 +137,7 @@ const SourceCard: React.FC<SourceCardProps> = ({ icon, name, description, status
               'inline-flex h-28px items-center gap-6px rounded-8px px-10px',
               'bg-[var(--color-fill-2)] text-12px font-500 leading-none text-[var(--color-text-3)]',
               'cursor-pointer transition-colors duration-180',
-              'hover:bg-[var(--color-primary-light-1)] hover:text-[rgb(var(--primary-6))]',
+              'hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_8%,var(--color-bg-2))] hover:text-primary-6',
               // `outline-none` removes the native focus ring, so the `ring-*` classes are the only
               // focus affordance here. `ring-2` set just `--un-ring-color` (numeric suffixes resolve
               // against the theme's numeric colour keys), leaving the ring width at 0 and the focus
