@@ -150,11 +150,17 @@ pub fn map_turn_failure(
             }
         }
         RelayTerminal::ChannelClosed => Some((CHANNEL_CLOSED.to_owned(), true)),
-        RelayTerminal::Error { code, retryable } => Some((
-            code.map(agent_error_code_token)
-                .unwrap_or_else(|| UNKNOWN_UPSTREAM_ERROR.to_owned()),
-            retryable.unwrap_or(false),
-        )),
+        RelayTerminal::Error { code, retryable } => {
+            let token = code
+                .map(agent_error_code_token)
+                .unwrap_or_else(|| UNKNOWN_UPSTREAM_ERROR.to_owned());
+            // Resumable transport faults leave genuine completed work in place.
+            // The HTTP-layer retryable flag (or a legacy `None`) must not
+            // rewrite that into rewind-and-resubmit.
+            let retryable = nomifun_db::is_resumable_source_error_code(&token)
+                || retryable.unwrap_or(false);
+            Some((token, retryable))
+        }
     }
 }
 
@@ -310,6 +316,21 @@ mod tests {
         assert_eq!(
             map_turn_failure(&outcome, 0),
             Some(("unknown_upstream_error".into(), false))
+        );
+    }
+
+    #[test]
+    fn resumable_provider_timeout_is_retryable_even_when_the_event_omits_the_flag() {
+        let outcome = terminal(
+            RelayTerminal::Error {
+                code: Some(AgentErrorCode::UserLlmProviderTimeout),
+                retryable: None,
+            },
+            Some("partial output"),
+        );
+        assert_eq!(
+            map_turn_failure(&outcome, 0),
+            Some(("user_llm_provider_timeout".into(), true))
         );
     }
 

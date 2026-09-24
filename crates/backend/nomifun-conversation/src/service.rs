@@ -8449,12 +8449,9 @@ impl ConversationService {
                     "The selected turn is not an eligible truncated failure".to_owned(),
                 )
             })?;
-        if source.status != "completed"
-            || source.result_ok != Some(false)
-            || source.result_error_retryable != Some(true)
-        {
+        if source.status != "completed" || source.result_ok != Some(false) {
             return Err(AppError::Conflict(
-                "The selected turn is not a completed retryable failure".to_owned(),
+                "The selected turn is not a completed resumable failure".to_owned(),
             ));
         }
 
@@ -8554,23 +8551,106 @@ impl ConversationService {
             conversation_key,
             idempotency_key,
         );
-        self.send_message_idempotent_with_lease(
+        let delivery = self
+            .send_message_idempotent_with_lease(
+                user_id,
+                conversation_id,
+                &operation_id,
+                req,
+                runtime_registry,
+                MessageSendAuthority::OwnerInteractive,
+                None,
+                None,
+                runtime_build_lease,
+                true,
+                false,
+                Some(admission),
+                None,
+                None,
+            )
+            .await?;
+        self.hide_and_broadcast_interrupted_error_tips(
             user_id,
-            conversation_id,
-            &operation_id,
-            req,
-            runtime_registry,
-            MessageSendAuthority::OwnerInteractive,
-            None,
-            None,
-            runtime_build_lease,
-            true,
-            false,
-            Some(admission),
-            None,
-            None,
+            conversation_key,
+            source_message_id,
         )
-        .await
+        .await;
+        Ok(delivery)
+    }
+
+    /// Continue-from-progress replaces rewind-and-resubmit. The interrupted
+    /// error card is now stale: hide it durably and project the same change so
+    /// the live transcript does not keep a resolved failure in view.
+    async fn hide_and_broadcast_interrupted_error_tips(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        source_message_id: &str,
+    ) {
+        let hidden_at = now_ms();
+        let rows = match self
+            .conversation_repo
+            .hide_resumable_error_tips_for_source(
+                conversation_id,
+                source_message_id,
+                hidden_at,
+            )
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                warn!(
+                    conversation_id,
+                    source_message_id,
+                    error = %ErrorChain(&error),
+                    "Failed to hide interrupted-turn error tips after continue"
+                );
+                return;
+            }
+        };
+        if rows.is_empty() {
+            return;
+        }
+        let conversation = match self.conversation_repo.get(conversation_id).await {
+            Ok(Some(row)) if row.user_id == user_id => row,
+            Ok(_) => return,
+            Err(error) => {
+                warn!(
+                    conversation_id,
+                    error = %ErrorChain(&error),
+                    "Failed to load conversation while broadcasting hidden error tips"
+                );
+                return;
+            }
+        };
+        let (companion, companion_id, channel_platform) =
+            companion_context_from_extra(&conversation.extra).unwrap_or((false, None, None));
+        for row in rows {
+            let data = serde_json::from_str::<serde_json::Value>(&row.content)
+                .unwrap_or_else(|_| serde_json::json!({ "content": row.content }));
+            let stable_message_id = row
+                .msg_id
+                .clone()
+                .unwrap_or_else(|| row.message_id.clone());
+            self.user_events.send_to_user(
+                user_id,
+                WebSocketMessage::new(
+                    "message.stream",
+                    serde_json::json!({
+                        "conversation_id": row.conversation_id,
+                        "msg_id": stable_message_id,
+                        "type": "tips",
+                        "data": data,
+                        "status": row.status,
+                        "hidden": true,
+                        "created_at": row.created_at,
+                        "companion": companion,
+                        "companion_id": companion_id,
+                        "channel_platform": channel_platform,
+                    }),
+                ),
+            );
+        }
     }
 
     /// Strict first-turn auto-delivery boundary.

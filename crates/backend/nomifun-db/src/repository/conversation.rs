@@ -1210,6 +1210,24 @@ pub trait IConversationRepository: Send + Sync {
         updates: &MessageRowUpdate,
     ) -> Result<(), DbError>;
 
+    /// Hide visible error tips that belong to an interrupted turn after an
+    /// explicit continue-from-progress admission.
+    ///
+    /// Matching is by the durable recovery source, or — for legacy tips that
+    /// never received a recovery payload — by a later resumable error tip
+    /// created at or after the source user message and at or before `hidden_at`.
+    /// The timestamp cap keeps a later turn's own error card from being swept
+    /// if hide races the next provider fault. Returns the rows that were newly
+    /// hidden so callers can project the same visibility change live.
+    async fn hide_resumable_error_tips_for_source(
+        &self,
+        _conversation_id: &str,
+        _source_message_id: &str,
+        _hidden_at: TimestampMs,
+    ) -> Result<Vec<MessageRow>, DbError> {
+        Ok(Vec::new())
+    }
+
     /// Deletes all messages belonging to a conversation.
     async fn delete_messages_by_conversation(
         &self,

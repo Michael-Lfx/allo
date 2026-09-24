@@ -222,8 +222,17 @@ const TRUNCATED_TURN_FAILURE_CODES: readonly TruncatedTurnFailureCode[] = [
   'user_llm_provider_gateway_error',
 ];
 
-const isTruncatedTurnFailureCode = (value: unknown): value is TruncatedTurnFailureCode =>
+export const isTruncatedTurnFailureCode = (value: unknown): value is TruncatedTurnFailureCode =>
   typeof value === 'string' && TRUNCATED_TURN_FAILURE_CODES.includes(value as TruncatedTurnFailureCode);
+
+/** Map a UI/wire error code (`USER_LLM_PROVIDER_TIMEOUT`) onto the receipt token. */
+export const truncatedFailureCodeFromUiErrorCode = (
+  code: string | undefined
+): TruncatedTurnFailureCode | undefined => {
+  if (typeof code !== 'string' || code.length === 0) return undefined;
+  const failureCode = code.toLowerCase();
+  return isTruncatedTurnFailureCode(failureCode) ? failureCode : undefined;
+};
 
 export type TruncatedTurnRecovery = {
   kind: 'continue_truncated';
@@ -1418,6 +1427,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
           ...(structuredError ? { error: structuredError } : {}),
           ...(recovery ? { recovery } : {}),
         },
+        ...(message.hidden && { hidden: true }),
       };
     }
     case 'tips': {
@@ -1443,6 +1453,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
           ...(structuredError ? { error: structuredError } : {}),
           ...(recovery ? { recovery } : {}),
         },
+        ...(message.hidden && { hidden: true }),
       };
     }
     case 'text':

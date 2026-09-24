@@ -5021,6 +5021,135 @@ async fn update_message_fields() {
 }
 
 #[tokio::test]
+async fn hide_resumable_error_tips_matches_recovery_source_and_legacy_timeout_cards() {
+    let (repo, _db) = setup().await;
+    let mut conv = make_conversation("hide-error-tips");
+    conv.conversation_id = repo.create(&conv).await.unwrap();
+
+    let source = make_message(&conv.conversation_id, "please continue");
+    let source_created_at = source.created_at;
+    repo.insert_message(&source).await.unwrap();
+
+    let recovered_id = MessageId::new().into_string();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: recovered_id.clone(),
+        conversation_id: conv.conversation_id.clone(),
+        msg_id: Some(recovered_id.clone()),
+        r#type: "tips".to_owned(),
+        content: serde_json::json!({
+            "content": "Could not reach the model provider",
+            "type": "error",
+            "error": {
+                "message": "Could not reach the model provider",
+                "code": "USER_LLM_PROVIDER_NETWORK_ERROR",
+                "retryable": true
+            },
+            "recovery": {
+                "kind": "continue_truncated",
+                "source_message_id": source.message_id,
+                "failure_code": "user_llm_provider_network_error"
+            }
+        })
+        .to_string(),
+        position: Some("left".to_owned()),
+        status: Some("error".to_owned()),
+        hidden: false,
+        created_at: source_created_at + 10,
+    })
+    .await
+    .unwrap();
+
+    let legacy_timeout_id = MessageId::new().into_string();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: legacy_timeout_id.clone(),
+        conversation_id: conv.conversation_id.clone(),
+        msg_id: Some(legacy_timeout_id.clone()),
+        r#type: "tips".to_owned(),
+        content: serde_json::json!({
+            "content": "The model provider did not respond in time",
+            "type": "error",
+            "error": {
+                "message": "The model provider did not respond in time",
+                "code": "USER_LLM_PROVIDER_TIMEOUT"
+            }
+        })
+        .to_string(),
+        position: Some("left".to_owned()),
+        status: Some("error".to_owned()),
+        hidden: false,
+        created_at: source_created_at + 20,
+    })
+    .await
+    .unwrap();
+
+    let earlier_unrelated_id = MessageId::new().into_string();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: earlier_unrelated_id.clone(),
+        conversation_id: conv.conversation_id.clone(),
+        msg_id: Some(earlier_unrelated_id.clone()),
+        r#type: "tips".to_owned(),
+        content: serde_json::json!({
+            "content": "previous failure",
+            "type": "error",
+            "error": {
+                "message": "previous failure",
+                "code": "USER_LLM_PROVIDER_AUTH_FAILED",
+                "retryable": false
+            }
+        })
+        .to_string(),
+        position: Some("left".to_owned()),
+        status: Some("error".to_owned()),
+        hidden: false,
+        created_at: source_created_at - 50,
+    })
+    .await
+    .unwrap();
+
+    let hidden = repo
+        .hide_resumable_error_tips_for_source(
+            &conv.conversation_id,
+            &source.message_id,
+            source_created_at + 30,
+        )
+        .await
+        .unwrap();
+    let hidden_ids = hidden
+        .iter()
+        .map(|row| row.message_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(hidden_ids.contains(&recovered_id.as_str()));
+    assert!(hidden_ids.contains(&legacy_timeout_id.as_str()));
+    assert!(!hidden_ids.contains(&earlier_unrelated_id.as_str()));
+
+    assert!(
+        repo.get_message(&conv.conversation_id, &recovered_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .hidden
+    );
+    assert!(
+        repo.get_message(&conv.conversation_id, &legacy_timeout_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .hidden
+    );
+    assert!(
+        !repo
+            .get_message(&conv.conversation_id, &earlier_unrelated_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .hidden
+    );
+}
+
+#[tokio::test]
 async fn delete_messages_by_conversation_clears_all() {
     let (repo, _db) = setup().await;
     let mut conv = make_conversation("msg-delete");
