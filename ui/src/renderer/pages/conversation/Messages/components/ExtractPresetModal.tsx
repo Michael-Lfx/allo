@@ -198,7 +198,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                 </div>
                 <p className='m-0 text-12px text-t-secondary leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis'>
                   {t('conversation.extractPreset.flowStep1Desc', {
-                    defaultValue: '自动提炼角色名称与核心职责',
+                    defaultValue: '提炼角色定位与核心职责',
                   })}
                 </p>
               </div>
@@ -215,7 +215,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                 </div>
                 <p className='m-0 text-12px text-t-secondary leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis'>
                   {t('conversation.extractPreset.flowStep2Desc', {
-                    defaultValue: '结构化生成 Prompt 与约束规范',
+                    defaultValue: '沉淀系统提示词与交互规范',
                   })}
                 </p>
               </div>
@@ -232,7 +232,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                 </div>
                 <p className='m-0 text-12px text-t-secondary leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis'>
                   {t('conversation.extractPreset.flowStep3Desc', {
-                    defaultValue: '智能嗅探并推荐绑定相关技能',
+                    defaultValue: '智能匹配并装配适用技能',
                   })}
                 </p>
               </div>
@@ -250,9 +250,9 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
                 onChange={setGuidance}
                 placeholder={t('conversation.extractPreset.additionalGuidancePlaceholder', {
                   defaultValue:
-                    '可在此补充对设定角色的要求或偏好（例如：输出保持中文、遵循特定代码规范等），留空将自动智能提炼',
+                    '可在此补充角色偏好或输出约束（如保持中文、特定代码规范等），留空将全自动提炼',
                 })}
-                autoSize={{ minRows: 3, maxRows: 5 }}
+                autoSize={{ minRows: 3, maxRows: 4 }}
                 maxLength={500}
                 showWordLimit
                 className='rd-8px !bg-fill-1 b-1 b-solid border-arco-2 focus:border-primary-5 transition-all text-13px leading-relaxed'
