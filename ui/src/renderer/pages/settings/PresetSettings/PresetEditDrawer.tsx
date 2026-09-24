@@ -35,6 +35,7 @@ import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useKnowledgeBases } from '@/renderer/pages/knowledge/useKnowledge';
 import { Avatar, Button, Checkbox, Collapse, Drawer, Input, Modal, Select, Tag, Typography } from '@arco-design/web-react';
 import { Close, Delete, Info, Plus, Robot } from '@icon-park/react';
+import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -458,7 +459,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
             </Typography.Text>
             <div className='mt-10px flex items-center gap-12px'>
               {activePreset?.source === 'builtin' ? (
-                <Avatar shape='square' size={42} className='bg-bg-1 rounded-8px'>
+                <Avatar shape='square' size={42} className='bg-fill-2 rounded-8px'>
                   {editAvatarImage ? (
                     <img src={editAvatarImage} alt='' width={26} height={26} style={{ objectFit: 'contain' }} />
                   ) : editAvatar ? (
@@ -470,7 +471,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
               ) : (
                 <EmojiPicker value={editAvatar} onChange={(emoji) => setEditAvatar(emoji)} placement='br'>
                   <div className='cursor-pointer'>
-                    <Avatar shape='square' size={42} className='bg-bg-1 rounded-8px hover:bg-fill-2 transition-colors'>
+                    <Avatar shape='square' size={42} className='bg-fill-2 rounded-8px hover:bg-fill-3 transition-colors'>
                       {editAvatarImage ? (
                         <img src={editAvatarImage} alt='' width={26} height={26} style={{ objectFit: 'contain' }} />
                       ) : editAvatar ? (
@@ -488,7 +489,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 disabled={readOnly}
                 placeholder={t('settings.presetNamePlaceholder', { defaultValue: 'Enter a name for this preset' })}
                 data-testid='input-preset-name'
-                className='flex-1 rounded-8px bg-bg-1 h-40px text-14px font-medium'
+                className='flex-1 rounded-8px h-40px text-14px font-medium'
                 status={fieldErrors['identity.name'] ? 'error' : undefined}
                 aria-invalid={fieldErrors['identity.name'] ? 'true' : undefined}
               />
@@ -506,7 +507,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
               {t('settings.presetDescription', { defaultValue: 'Preset Description' })}
             </Typography.Text>
             <Input
-              className='mt-10px rounded-8px bg-bg-1 text-13px'
+              className='mt-10px rounded-8px text-13px'
               value={editDescription}
               onChange={(value) => setEditDescription(value)}
               disabled={readOnly}
@@ -522,7 +523,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
               {t('settings.presetRoutingDescription', { defaultValue: 'Agent-facing description' })}
             </Typography.Text>
             <Input.TextArea
-              className='mt-10px rounded-8px bg-bg-1 text-13px'
+              className='mt-10px rounded-8px text-13px'
               value={editRoutingDescription}
               onChange={setEditRoutingDescription}
               disabled={readOnly}
@@ -807,7 +808,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 <Typography.Text bold className='flex-shrink-0 text-14px text-t-primary'>
                   {t('settings.presetInstructions', { defaultValue: 'Agent instructions' })}
                 </Typography.Text>
-                <span className='px-6px py-1px rd-4px text-10px font-medium bg-fill-2 text-t-secondary leading-none'>
+                <span className='px-7px py-2px rd-full text-10px font-medium bg-fill-2 text-t-secondary leading-none'>
                   System Prompt
                 </span>
               </div>
@@ -824,21 +825,22 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
               </Button>
             </div>
             <div
-              className='mt-10px border border-solid border-arco-2 overflow-hidden rd-8px'
+              className='mt-10px border border-solid border-arco-2 overflow-hidden rd-12px shadow-sm bg-[var(--color-bg-2)]'
               style={{ height: rulesContainerHeight }}
             >
               {isRuleEditable && (
-                <div className='flex items-center justify-between px-10px py-6px bg-fill-2 border-b border-b-solid border-arco-2 flex-shrink-0'>
-                  <div className='inline-flex p-2px rd-6px bg-fill-3'>
+                <div className='flex items-center justify-between px-12px py-8px bg-fill-1 border-b border-b-solid border-arco-2 flex-shrink-0'>
+                  <div className='inline-flex p-2px rd-8px bg-fill-2 border border-solid border-arco-2'>
                     <button
                       type='button'
                       role='tab'
                       aria-selected={promptViewMode === 'edit'}
-                      className={`flex items-center px-12px py-3px rd-4px cursor-pointer text-12px font-medium transition-all duration-150 border-none ${
+                      className={classNames(
+                        'flex items-center px-12px py-4px rd-6px cursor-pointer text-12px font-medium transition-all duration-150 border-none outline-none',
                         promptViewMode === 'edit'
-                          ? 'bg-bg-1 text-t-primary shadow-sm font-600'
-                          : 'bg-transparent text-t-secondary hover:text-t-primary'
-                      }`}
+                          ? '!bg-[var(--color-bg-2)] !text-t-primary shadow-sm font-600 border border-solid border-arco-2'
+                          : 'bg-transparent text-t-secondary hover:text-t-primary hover:bg-fill-3'
+                      )}
                       onClick={() => setPromptViewMode('edit')}
                       onKeyDown={(event) => {
                         if (event.key === 'ArrowRight') setPromptViewMode('preview');
@@ -850,11 +852,12 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       type='button'
                       role='tab'
                       aria-selected={promptViewMode === 'preview'}
-                      className={`flex items-center px-12px py-3px rd-4px cursor-pointer text-12px font-medium transition-all duration-150 border-none ${
+                      className={classNames(
+                        'flex items-center px-12px py-4px rd-6px cursor-pointer text-12px font-medium transition-all duration-150 border-none outline-none',
                         promptViewMode === 'preview'
-                          ? 'bg-bg-1 text-t-primary shadow-sm font-600'
-                          : 'bg-transparent text-t-secondary hover:text-t-primary'
-                      }`}
+                          ? '!bg-[var(--color-bg-2)] !text-t-primary shadow-sm font-600 border border-solid border-arco-2'
+                          : 'bg-transparent text-t-secondary hover:text-t-primary hover:bg-fill-3'
+                      )}
                       onClick={() => setPromptViewMode('preview')}
                       onKeyDown={(event) => {
                         if (event.key === 'ArrowLeft') setPromptViewMode('edit');
@@ -867,9 +870,9 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 </div>
               )}
               <div
-                className='bg-fill-2'
+                className='bg-[var(--color-bg-2)]'
                 style={{
-                  height: isRuleEditable ? 'calc(100% - 37px)' : '100%',
+                  height: isRuleEditable ? 'calc(100% - 43px)' : '100%',
                   overflow: 'auto',
                 }}
               >
@@ -882,7 +885,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                         defaultValue: 'Describe the role, behavior, process and output expectations in Markdown...',
                       })}
                       autoSize={false}
-                      className='border-none rounded-none bg-transparent h-full resize-none font-mono text-13px leading-relaxed p-12px text-t-primary'
+                      className='border-none rounded-none bg-transparent h-full resize-none font-mono text-13px leading-relaxed p-14px text-t-primary'
                     />
                   </div>
                 ) : (
@@ -905,10 +908,17 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
           {/* Skills section */}
           {showSkills && (
             <div className='flex-shrink-0 mt-8px' data-testid='skills-section'>
-              <div className='flex items-center justify-between mb-12px'>
+              <div className='flex items-center justify-between mb-14px'>
                 <div className='flex items-center gap-8px'>
                   <Typography.Text bold className='text-14px text-t-primary'>{t('settings.presetSkills', { defaultValue: 'Skills' })}</Typography.Text>
-                  <span className='px-6px py-1px rd-4px text-11px font-medium bg-fill-2 text-t-secondary leading-none'>
+                  <span
+                    className={classNames(
+                      'px-8px py-2px rd-full text-11px font-600 leading-none transition-colors',
+                      totalActiveSkillsCount > 0
+                        ? 'bg-primary-1 text-primary-6 border border-solid border-[rgba(var(--primary-6),0.2)]'
+                        : 'bg-fill-2 text-t-secondary'
+                    )}
+                  >
                     {totalActiveSkillsCount}/{totalSkillsCount}
                   </span>
                 </div>
@@ -922,7 +932,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       type='outline'
                       icon={<Plus size={14} />}
                       onClick={() => navigate('/skills?view=installed')}
-                      className='flowy-icon-text-btn !h-30px !px-10px !rounded-8px !whitespace-nowrap !text-12px'
+                      className='flowy-icon-text-btn !h-30px !px-12px !rounded-8px !whitespace-nowrap !text-12px'
                       data-testid='btn-add-skills'
                     >
                       {t('settings.addSkills', { defaultValue: 'Add Skills' })}
@@ -932,7 +942,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       type='outline'
                       icon={<Plus size={14} />}
                       onClick={() => setAgentImportVisible(true)}
-                      className='flowy-icon-text-btn !h-30px !px-10px !rounded-8px !whitespace-nowrap !text-12px'
+                      className='flowy-icon-text-btn !h-30px !px-12px !rounded-8px !whitespace-nowrap !text-12px'
                       data-testid='btn-import-agent-skills-to-preset'
                     >
                       {t('settings.agentSkillImport.shortAction', { defaultValue: 'Import from Agent' })}
@@ -941,7 +951,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 )}
               </div>
 
-              <Collapse defaultActiveKey={defaultSkillCollapseKeys} data-testid='skills-collapse'>
+              <Collapse defaultActiveKey={defaultSkillCollapseKeys} bordered={false} className='!bg-transparent !border-none' data-testid='skills-collapse'>
                 {/* Custom Skills (Pending + Imported) */}
                 <Collapse.Item
                   header={
@@ -950,9 +960,16 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                     </span>
                   }
                   name='custom-skills'
-                  className='mb-8px'
+                  className='!rounded-10px !border !border-solid !border-arco-2 !bg-[var(--color-bg-2)] overflow-hidden mb-10px shadow-sm transition-all'
                   extra={
-                    <span className='px-6px py-1px rd-10px text-11px font-medium bg-fill-2 text-t-secondary'>
+                    <span
+                      className={classNames(
+                        'px-8px py-2px rd-full text-11px font-medium transition-colors',
+                        customActiveCount > 0
+                          ? 'bg-primary-1 text-primary-6 border border-solid border-[rgba(var(--primary-6),0.2)]'
+                          : 'bg-fill-2 text-t-secondary'
+                      )}
+                    >
                       {t('settings.presetSkillSelectionCount', {
                         selected: customActiveCount,
                         total: pendingSkills.length + customSkillItems.length,
@@ -1059,8 +1076,16 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                     </span>
                   }
                   name='builtin-skills'
+                  className='!rounded-10px !border !border-solid !border-arco-2 !bg-[var(--color-bg-2)] overflow-hidden mb-10px shadow-sm transition-all'
                   extra={
-                    <span className='px-6px py-1px rd-10px text-11px font-medium bg-fill-2 text-t-secondary'>
+                    <span
+                      className={classNames(
+                        'px-8px py-2px rd-full text-11px font-medium transition-colors',
+                        builtinActiveCount > 0
+                          ? 'bg-primary-1 text-primary-6 border border-solid border-[rgba(var(--primary-6),0.2)]'
+                          : 'bg-fill-2 text-t-secondary'
+                      )}
+                    >
                       {t('settings.presetSkillSelectionCount', {
                         selected: builtinActiveCount,
                         total: builtinSkillItems.length,
@@ -1104,14 +1129,22 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       </span>
                     }
                     name='extension-skills'
+                    className='!rounded-10px !border !border-solid !border-arco-2 !bg-[var(--color-bg-2)] overflow-hidden mb-10px shadow-sm transition-all'
                     extra={
-                    <span className='px-6px py-1px rd-10px text-11px font-medium bg-fill-2 text-t-secondary'>
-                      {t('settings.presetSkillSelectionCount', {
-                        selected: extensionActiveCount,
-                        total: extensionSkillItems.length,
-                        defaultValue: `已选 ${extensionActiveCount}/${extensionSkillItems.length}`,
-                      })}
-                    </span>
+                      <span
+                        className={classNames(
+                          'px-8px py-2px rd-full text-11px font-medium transition-colors',
+                          extensionActiveCount > 0
+                            ? 'bg-primary-1 text-primary-6 border border-solid border-[rgba(var(--primary-6),0.2)]'
+                            : 'bg-fill-2 text-t-secondary'
+                        )}
+                      >
+                        {t('settings.presetSkillSelectionCount', {
+                          selected: extensionActiveCount,
+                          total: extensionSkillItems.length,
+                          defaultValue: `已选 ${extensionActiveCount}/${extensionSkillItems.length}`,
+                        })}
+                      </span>
                     }
                   >
                     <div className='space-y-4px'>
@@ -1152,14 +1185,22 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       </span>
                     }
                     name='auto-injected-skills'
+                    className='!rounded-10px !border !border-solid !border-arco-2 !bg-[var(--color-bg-2)] overflow-hidden mb-10px shadow-sm transition-all'
                     extra={
-                    <span className='px-6px py-1px rd-10px text-11px font-medium bg-fill-2 text-t-secondary'>
-                      {t('settings.presetSkillSelectionCount', {
-                        selected: autoInjectedActiveCount,
-                        total: builtinAutoSkills.length,
-                        defaultValue: `已选 ${autoInjectedActiveCount}/${builtinAutoSkills.length}`,
-                      })}
-                    </span>
+                      <span
+                        className={classNames(
+                          'px-8px py-2px rd-full text-11px font-medium transition-colors',
+                          autoInjectedActiveCount > 0
+                            ? 'bg-primary-1 text-primary-6 border border-solid border-[rgba(var(--primary-6),0.2)]'
+                            : 'bg-fill-2 text-t-secondary'
+                        )}
+                      >
+                        {t('settings.presetSkillSelectionCount', {
+                          selected: autoInjectedActiveCount,
+                          total: builtinAutoSkills.length,
+                          defaultValue: `已选 ${autoInjectedActiveCount}/${builtinAutoSkills.length}`,
+                        })}
+                      </span>
                     }
                   >
                     <div className='space-y-4px'>
