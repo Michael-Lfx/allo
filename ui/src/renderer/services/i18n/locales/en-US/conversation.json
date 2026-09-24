@@ -21,17 +21,16 @@
     "skillsMarketDesc": "Search and activate community Skills on demand. Configure once, available for all agents.",
     "skillsMarketDetails": "View More >>"
   },
-  "firstWinOutcome": {
-    "aria": "First reviewable result",
-    "title": "First reviewable result",
-    "statusWithChanges": "Verified · reviewable file changes",
-    "statusAnswer": "Delivered · reviewable answer summary",
-    "noFilesHint": "No file changes yet · copy the summary or ask a follow-up to confirm value",
-    "continue": "Ask a follow-up",
-    "reviewFiles": "Review changes",
-    "saveFlow": "Save as flow",
-    "confirm": "This helped",
-    "followUpPrompt": "Continue from that result:"
+  "extractPreset": {
+    "action": "Extract as Preset",
+    "title": "Extract as Preset",
+    "description": "AI will analyze the conversation context and extract a dedicated persona, structured system instructions, and recommended skills.",
+    "additionalGuidanceLabel": "Additional Guidance (Optional)",
+    "additionalGuidancePlaceholder": "e.g. Keep responses concise in English, follow React 19 best practices...",
+    "cancel": "Cancel",
+    "startExtract": "Extract Preset",
+    "extracting": "Extracting...",
+    "success": "Preset extracted successfully. You can review and save it."
   },
   "history": {
     "noHistory": "No chat history",

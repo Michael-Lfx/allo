@@ -261,18 +261,24 @@ export const usePresetEditor = ({
   };
 
   // Create preset function
-  const handleCreate = async () => {
+  const handleCreate = async (initialDraft?: {
+    name?: string;
+    description?: string;
+    context?: string;
+    skills?: string[];
+    avatar?: string;
+  }) => {
     draftBaselineInitializedRef.current = false;
     setSavedDraftSignature(null);
     setFieldErrors({});
     setIsHydratingSkills(true);
     setIsCreating(true);
     setActivePresetId(null);
-    setEditName('');
-    setEditDescription('');
+    setEditName(initialDraft?.name || '');
+    setEditDescription(initialDraft?.description || '');
     setEditRoutingDescription('');
-    setEditContext('');
-    setEditAvatar('\u{1F916}');
+    setEditContext(initialDraft?.context || '');
+    setEditAvatar(initialDraft?.avatar || '\u{1F916}');
     setEditAgents([]);
     setEditModels([]);
     setEditTargets(['conversation']);
@@ -281,7 +287,7 @@ export const usePresetEditor = ({
     setKnowledgePolicy({ enabled: false, writeback: false, grounded: false });
     setKnowledgeBaseIds([]);
     setMcpServerIds([]);
-    setSelectedSkills([]);
+    setSelectedSkills(initialDraft?.skills || []);
     setPendingSkills([]);
     setDeletePendingSkillName(null);
     setDeleteCustomSkill(null);
@@ -299,6 +305,9 @@ export const usePresetEditor = ({
       ]);
       setAvailableSkills(skillsList);
       setBuiltinAutoSkills(autoSkills);
+      if (initialDraft?.skills?.length) {
+        setSelectedSkills(initialDraft.skills);
+      }
     } catch (error) {
       console.error('Failed to load skills:', error);
       setAvailableSkills([]);

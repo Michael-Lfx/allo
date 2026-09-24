@@ -21,17 +21,16 @@
     "skillsMarketDesc": "按需搜索并调用社区 Skills，一次配置，所有Agent通用。",
     "skillsMarketDetails": "详情 >>"
   },
-  "firstWinOutcome": {
-    "aria": "首个可检查成果",
-    "title": "首个可检查成果",
-    "statusWithChanges": "已验证 · 有可检查的文件变更",
-    "statusAnswer": "已交付 · 可检查的结果摘要",
-    "noFilesHint": "暂无文件变更 · 可复制摘要或继续追问确认价值",
-    "continue": "继续追问",
-    "reviewFiles": "查看变更",
-    "saveFlow": "保存为流程",
-    "confirm": "成果有用",
-    "followUpPrompt": "在刚才的结果上继续："
+  "extractPreset": {
+    "action": "提炼为设定",
+    "title": "提炼为设定",
+    "description": "AI 将根据当前对话上下文，自动提取并提炼出专属角色名称、系统提示词与推荐绑定的技能。",
+    "additionalGuidanceLabel": "补充要求（选填）",
+    "additionalGuidancePlaceholder": "例如：输出保持精炼中文、严格遵循 React 19 规范...",
+    "cancel": "取消",
+    "startExtract": "开始提炼",
+    "extracting": "正在提炼中...",
+    "success": "已成功提炼设定，您可继续调整并保存"
   },
   "history": {
     "noHistory": "暂无对话历史",

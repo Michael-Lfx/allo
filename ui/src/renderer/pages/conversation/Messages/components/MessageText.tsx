@@ -9,7 +9,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { iconColors } from '@/renderer/styles/colors';
 import { Alert, Button, Modal, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { CheckOne, CloseOne, Copy, Edit, Info, Loading, Undo } from '@icon-park/react';
+import { CheckOne, CloseOne, Copy, Edit, Info, Lightning, Loading, Undo } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -18,6 +18,7 @@ import { copyText } from '@/renderer/utils/ui/clipboard';
 import { emitter } from '@/renderer/utils/emitter';
 import { useMessageList } from '../hooks';
 import { useEditingMessage } from '../editingMessageStore';
+import ExtractPresetModal from './ExtractPresetModal';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import FilePreview from '@renderer/components/media/FilePreview';
 import HorizontalFileList from '@renderer/components/media/HorizontalFileList';
@@ -524,6 +525,44 @@ const MessageText: React.FC<{
       });
   };
 
+  const messageList = useMessageList();
+  const [showExtractModal, setShowExtractModal] = useState(false);
+
+  const userQuestion = useMemo(() => {
+    if (isUserMessage) return undefined;
+    const thisIndex = messageList.findIndex((m) => m.id === message.id || m.msg_id === message.msg_id);
+    if (thisIndex > 0) {
+      for (let i = thisIndex - 1; i >= 0; i--) {
+        const item = messageList[i];
+        if (item && item.position === 'right' && item.type === 'text') {
+          return typeof item.content?.content === 'string' ? item.content.content : undefined;
+        }
+      }
+    }
+    return undefined;
+  }, [isUserMessage, message.id, message.msg_id, messageList]);
+
+  const canExtractPreset =
+    !isUserMessage &&
+    !isStreaming &&
+    conversationContext?.isProcessing !== true &&
+    hasRenderableContent;
+
+  const extractPresetButton = canExtractPreset ? (
+    <Tooltip content={t('conversation.extractPreset.action', { defaultValue: '提炼为设定' })}>
+      <button
+        type='button'
+        data-testid='message-extract-preset-action'
+        className='flex h-24px w-24px shrink-0 items-center justify-center rd-6px cursor-pointer text-t-secondary hover:bg-3 border-0 bg-transparent'
+        onClick={() => setShowExtractModal(true)}
+        style={{ lineHeight: 0 }}
+        aria-label={t('conversation.extractPreset.action', { defaultValue: '提炼为设定' })}
+      >
+        <Lightning theme='outline' size='16' fill='currentColor' />
+      </button>
+    </Tooltip>
+  ) : null;
+
   const copyButton = (
     <Tooltip content={t('common.copy', { defaultValue: 'Copy' })}>
       <button
@@ -653,6 +692,7 @@ const MessageText: React.FC<{
       })}
     >
       {copyButton}
+      {extractPresetButton}
       {editButton}
       {codingRollbackButton}
       {message.created_at && (
@@ -698,11 +738,22 @@ const MessageText: React.FC<{
     />
   ) : null;
 
+  const extractModal = showExtractModal ? (
+    <ExtractPresetModal
+      visible={showExtractModal}
+      onCancel={() => setShowExtractModal(false)}
+      messageText={text}
+      userQuestion={userQuestion}
+      conversationTitle={conversation?.title}
+    />
+  ) : null;
+
   if (actionsOnly) {
     return (
       <>
         {actionsRow}
         {copyAlert}
+        {extractModal}
       </>
     );
   }
@@ -873,6 +924,7 @@ const MessageText: React.FC<{
         {actionsRow}
       </div>
       {copyAlert}
+      {extractModal}
     </>
   );
 };

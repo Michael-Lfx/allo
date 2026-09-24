@@ -5,19 +5,7 @@ import { COMMERCIAL_PATH_FRAMES, type CommercialPathState } from './commercialPa
 import { COMMERCIAL_SLICE_FLAG, isCommercialSliceEnabled } from '@renderer/utils/featureFlags/commercialSlice';
 import { confirmFirstValue, trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@renderer/utils/onboarding/firstWinMode';
-import FirstWinOutcomeCard from '@renderer/pages/conversation/Messages/components/FirstWinOutcomeCard';
-import type { FirstWinOutcomeSnapshot } from '@renderer/pages/conversation/Messages/components/firstWinOutcomeModel';
 import './commercialSlice.css';
-
-const PROTOTYPE_OUTCOME: FirstWinOutcomeSnapshot = {
-  status: 'with_changes',
-  summary: '根因是空指针守卫缺失。已补齐校验，相关测试已通过。',
-  files: [
-    { name: 'app.ts', path: 'src/app.ts', insertions: 12, deletions: 3 },
-    { name: 'app.test.ts', path: 'src/app.test.ts', insertions: 8, deletions: 0 },
-  ],
-  hasAssistantAnswer: true,
-};
 
 const CommercialSlicePage: React.FC = () => {
   const enabled = isCommercialSliceEnabled();
@@ -90,15 +78,20 @@ const CommercialSlicePage: React.FC = () => {
               ) : null}
               {frame.scene === 'execution' ? <div className='commercial-slice__progress' aria-hidden='true' /> : null}
               {frame.scene === 'result' && !outcomeDismissed ? (
-                <div className='commercial-slice__outcome'>
-                  <FirstWinOutcomeCard
-                    snapshot={PROTOTYPE_OUTCOME}
-                    onDismiss={() => {
+                <div className='commercial-slice__outcome p-12px rd-8px bg-fill-0 b-1 b-solid border-success-6 text-12px'>
+                  <div className='font-500 text-t-primary mb-4px'>已完成任务与交付</div>
+                  <div className='text-t-secondary'>根因是空指针守卫缺失。已补齐校验，相关测试已通过。</div>
+                  <button
+                    type='button'
+                    className='mt-8px px-8px py-4px rd-4px text-12px bg-primary text-white border-0 cursor-pointer'
+                    onClick={() => {
                       confirmFirstValue({ source: 'prototype' });
                       markFirstWinCompleted();
                       setOutcomeDismissed(true);
                     }}
-                  />
+                  >
+                    确认成果
+                  </button>
                 </div>
               ) : null}
             </div>
