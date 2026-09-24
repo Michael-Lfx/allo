@@ -108,7 +108,7 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
       aria-live='assertive'
       data-testid='sendbox-credits-bubble'
       className={classNames(
-        'credits-bubble-card sendbox-credits-bubble credits-bubble-enter px-12px py-7px flex items-center gap-8px',
+        'credits-bubble-card sendbox-credits-bubble credits-bubble-enter pl-12px pr-10px py-6px flex items-center gap-8px',
         isExhausted ? 'credits-bubble-card--exhausted' : 'credits-bubble-card--low'
       )}
       onClick={(e) => e.stopPropagation()}
@@ -120,11 +120,11 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
     >
       <span
         className={classNames(
-          'shrink-0 flex items-center justify-center size-15px rd-full',
+          'shrink-0 flex items-center justify-center size-14px rd-full',
           isExhausted ? 'text-[var(--danger)]' : 'text-[var(--flowy-attention)]'
         )}
       >
-        <Attention theme='filled' size='14' fill='currentColor' />
+        <Attention theme='filled' size='13' fill='currentColor' />
       </span>
 
       <span className='text-12px font-500 leading-16px text-t-primary whitespace-nowrap'>
@@ -134,7 +134,7 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
       <button
         type='button'
         className={classNames(
-          'shrink-0 px-10px py-2.5px rd-5px text-11px font-600 border-none cursor-pointer transition-opacity hover:opacity-90 active:opacity-80',
+          'shrink-0 px-9px py-2px rd-5px text-11px font-600 border-none cursor-pointer transition-opacity hover:opacity-90 active:opacity-80',
           isExhausted
             ? 'bg-[var(--danger)] text-white'
             : 'bg-[var(--primary-6)] text-white'
@@ -151,14 +151,14 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
       <button
         type='button'
         aria-label={t('common.creditsBubble.close', { defaultValue: '关闭提示' })}
-        className='shrink-0 flex items-center justify-center size-16px rd-4px text-t-tertiary hover:text-t-primary hover:bg-fill-2 transition-colors border-none bg-transparent cursor-pointer p-0'
+        className='shrink-0 flex items-center justify-center size-16px rd-4px text-t-tertiary hover:text-t-primary hover:bg-fill-2 transition-colors border-none bg-transparent cursor-pointer p-0 ml-2px'
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
         }}
         onClick={handleDismiss}
       >
-        <CloseSmall theme='outline' size='14' fill='currentColor' />
+        <CloseSmall theme='outline' size='13' fill='currentColor' />
       </button>
 
       <div className='sendbox-credits-bubble-arrow-down' aria-hidden='true' />

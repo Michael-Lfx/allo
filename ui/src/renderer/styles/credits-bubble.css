@@ -103,22 +103,22 @@ body[arco-theme='dark'] .credits-bubble-card--exhausted {
 
 /* Sider Bubble Layout */
 .sider-credits-bubble--expanded {
-  bottom: calc(100% + 10px);
-  left: 6px;
-  width: 216px;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 196px;
 }
 
 .sider-credits-bubble--collapsed {
   bottom: 0;
-  left: calc(100% + 12px);
-  width: 216px;
+  left: calc(100% + 10px);
+  width: 196px;
 }
 
 /* Downward Arrow for Expanded Sider */
 .sider-credits-bubble-arrow-down {
   position: absolute;
   bottom: -5px;
-  left: 36px;
+  left: 18px;
   width: 8px;
   height: 8px;
   transform: rotate(45deg);

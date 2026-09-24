@@ -93,7 +93,7 @@ const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMo
       aria-live='polite'
       data-testid='sider-credits-bubble'
       className={classNames(
-        'credits-bubble-card p-12px flex flex-col gap-8px',
+        'credits-bubble-card p-10px flex flex-col gap-6px',
         isExhausted ? 'credits-bubble-card--exhausted' : 'credits-bubble-card--low',
         collapsed ? 'sider-credits-bubble--collapsed credits-bubble-enter-side' : 'sider-credits-bubble--expanded credits-bubble-enter',
         isMobile && 'sider-credits-bubble--mobile'
@@ -101,17 +101,17 @@ const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMo
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <div className='flex items-center justify-between gap-6px'>
-        <div className='flex items-center gap-6px min-w-0'>
+      <div className='flex items-center justify-between gap-4px'>
+        <div className='flex items-center gap-5px min-w-0 flex-1'>
           <span
             className={classNames(
-              'shrink-0 flex items-center justify-center size-15px rd-full',
+              'shrink-0 flex items-center justify-center size-14px rd-full',
               isExhausted ? 'text-[var(--danger)]' : 'text-[var(--flowy-attention)]'
             )}
           >
-            <Attention theme='filled' size='14' fill='currentColor' />
+            <Attention theme='filled' size='13' fill='currentColor' />
           </span>
-          <span className='text-12px font-600 leading-16px text-t-primary truncate'>{title}</span>
+          <span className='text-12px font-600 leading-15px text-t-primary truncate'>{title}</span>
         </div>
         <button
           type='button'
@@ -119,17 +119,17 @@ const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMo
           className='shrink-0 flex items-center justify-center size-16px rd-4px text-t-tertiary hover:text-t-primary hover:bg-fill-2 transition-colors border-none bg-transparent cursor-pointer p-0'
           onClick={handleDismiss}
         >
-          <CloseSmall theme='outline' size='14' fill='currentColor' />
+          <CloseSmall theme='outline' size='13' fill='currentColor' />
         </button>
       </div>
 
-      <div className='text-12px leading-16px text-t-secondary'>{desc}</div>
+      <div className='text-11px leading-15px text-t-secondary break-words'>{desc}</div>
 
       <div className='flex items-center justify-end pt-4px border-t border-[var(--border-subtle,rgba(255,255,255,0.06))]'>
         <button
           type='button'
           className={classNames(
-            'px-12px py-3px rd-5px text-11px font-600 border-none cursor-pointer transition-opacity hover:opacity-90 active:opacity-80',
+            'px-10px py-2.5px rd-5px text-11px font-600 border-none cursor-pointer transition-opacity hover:opacity-90 active:opacity-80',
             isExhausted
               ? 'bg-[var(--danger)] text-white'
               : 'bg-[var(--primary-6)] text-white'
