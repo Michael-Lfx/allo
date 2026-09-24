@@ -350,6 +350,16 @@ const SendBox: React.FC<{
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
   const [blockedTriggerCount, setBlockedTriggerCount] = useState(0);
   const [isShakingSend, setIsShakingSend] = useState(false);
+  const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (shakeTimerRef.current) {
+        clearTimeout(shakeTimerRef.current);
+      }
+    };
+  }, []);
+
   const [isLoading, setIsLoading] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const isStoppingRef = useRef(false);
@@ -2014,7 +2024,13 @@ const SendBox: React.FC<{
     if (creditsState === 'exhausted') {
       setBlockedTriggerCount((c) => c + 1);
       setIsShakingSend(true);
-      setTimeout(() => setIsShakingSend(false), 300);
+      if (shakeTimerRef.current) {
+        clearTimeout(shakeTimerRef.current);
+      }
+      shakeTimerRef.current = setTimeout(() => {
+        setIsShakingSend(false);
+        shakeTimerRef.current = null;
+      }, 300);
       return;
     }
 
@@ -2164,7 +2180,10 @@ const SendBox: React.FC<{
     (!allowSendWhileLoading || compactActions || !hasDraftToSend || disabled || isUploading);
 
   const composerSubmitCluster = (
-    <div className={classNames('relative flex items-center', isShakingSend && 'credits-shake')}>
+    <div
+      className={classNames('relative flex items-center', isShakingSend && 'credits-shake')}
+      onAnimationEnd={() => setIsShakingSend(false)}
+    >
       <SendBoxCreditsBubble
         isProcessing={isProcessing}
         isFocused={isInputFocused}
