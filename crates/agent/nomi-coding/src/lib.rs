@@ -38,7 +38,8 @@ pub use edit_hints::{EditFailureKind, append_edit_recovery_hint, infer_edit_fail
 pub use env::{CodingEnvContext, format_env_context};
 pub use finalize::{
     FRIENDLY_FINALIZE_FALLBACK, finalize_reply_or_fallback, forced_finalize_instruction,
-    forced_finalize_instruction_for_plan, sanitize_user_facing_reply,
+    forced_finalize_instruction_for_plan, forced_finalize_plan_sync_instruction,
+    sanitize_user_facing_reply,
 };
 pub use harness::{
     CodingConfig, CodingHarness, CompactPolicyOverrides, FinishDecision, ToolCallOutcome,
@@ -70,5 +71,8 @@ pub use todo_continuation::{
     parse_plan_update_content,
 };
 pub use tools::advertise_tool;
-pub use verify::{is_isolated_subagent_tool, is_mutating_tool, is_side_effect_tool, looks_like_verification_command};
+pub use verify::{
+    is_isolated_subagent_tool, is_mutating_tool, is_side_effect_tool, looks_like_progress_command,
+    looks_like_verification_command, shell_command_from_input,
+};
 pub use working_set::{LineSpan, WorkingSet, WorkingSetEntry};

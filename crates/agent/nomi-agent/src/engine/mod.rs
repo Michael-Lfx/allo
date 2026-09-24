@@ -362,6 +362,32 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 /// Best-effort path for coding edit-converge / progress (engine-side JSON extract).
+fn is_update_plan_tool_use(block: &ContentBlock) -> bool {
+    matches!(
+        block,
+        ContentBlock::ToolUse { name, .. } if name.eq_ignore_ascii_case("update_plan")
+    )
+}
+
+fn is_update_plan_tool_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("update_plan")
+}
+
+/// Forced finalize tool table: `SyncPlan` keeps only `update_plan`; `Reply` is empty.
+///
+/// One-time prefix-cache miss is accepted. The host must not invent plan
+/// completions, so the first finalize pass still lets the model declare them.
+fn apply_coding_finalize_tool_table(
+    tools: &mut Vec<nomi_types::tool::ToolDef>,
+    harness: &nomi_coding::CodingHarness,
+) {
+    if harness.allows_update_plan_on_finalize() {
+        tools.retain(|t| is_update_plan_tool_name(&t.name));
+    } else if harness.is_forced_finalize() {
+        tools.clear();
+    }
+}
+
 fn coding_tool_file_path(name: &str, input: &serde_json::Value) -> Option<String> {
     let direct = input
         .get("file_path")
@@ -1427,10 +1453,7 @@ impl AgentEngine {
                 } if tool_use_id == id => !is_error,
                 _ => false,
             });
-            let command = input
-                .get("command")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
+            let command = nomi_coding::shell_command_from_input(input);
             observations.push(crate::horizon::ToolObservation {
                 name: name.clone(),
                 command,
@@ -1830,8 +1853,9 @@ impl AgentEngine {
 
             // Advertise the same harness-allowed table every request so the
             // tools JSON stays prefix-cache stable. Plan mode refuses writes
-            // at dispatch instead of swapping the table. Forced finalize still
-            // advertises nothing for that request (accepted one-time miss).
+            // at dispatch instead of swapping the table. Forced finalize is an
+            // accepted one-time miss: `SyncPlan` advertises only `update_plan`,
+            // `Reply` advertises nothing.
             let mut tools = self.provider_tools_for_request();
             let mut tool_authority = self.bind_tool_authority(&tools);
 
@@ -1883,21 +1907,28 @@ impl AgentEngine {
                     tracing::warn!(
                         target: "nomi_agent",
                         %reason,
-                        "coding harness: plan-mode hard-stop → forced finalize (no tools)"
+                        "coding harness: plan-mode hard-stop → forced finalize"
                     );
                     harness.begin_forced_finalize(reason.to_string());
                 }
                 if let Some(reason) = harness.forced_finalize_reason().map(str::to_owned) {
-                    // Empty tools JSON is an accepted one-time miss. Do not
-                    // freeze the empty list; the next non-finalize request
-                    // restores `frozen_provider_tools`.
-                    tools.clear();
+                    // Do not freeze this reduced table; the next non-finalize
+                    // request restores `frozen_provider_tools`.
+                    apply_coding_finalize_tool_table(&mut tools, harness);
                     tool_authority = ProviderToolAuthority::from_request_tools(&tools);
                     let remaining = harness.remaining_plan();
-                    turn_tail_extras.push(nomi_coding::forced_finalize_instruction_for_plan(
-                        &reason,
-                        remaining.as_ref(),
-                    ));
+                    let instruction = if harness.allows_update_plan_on_finalize() {
+                        nomi_coding::forced_finalize_plan_sync_instruction(
+                            &reason,
+                            remaining.as_ref(),
+                        )
+                    } else {
+                        nomi_coding::forced_finalize_instruction_for_plan(
+                            &reason,
+                            remaining.as_ref(),
+                        )
+                    };
+                    turn_tail_extras.push(instruction);
                 }
                 let last_user_has_text = self.messages.last().is_some_and(|m| {
                     m.role == Role::User
@@ -2207,7 +2238,7 @@ impl AgentEngine {
                         if self
                             .coding_harness
                             .as_ref()
-                            .is_some_and(|h| h.is_forced_finalize())
+                            .is_some_and(|h| h.ignores_finalize_tool(&name))
                         {
                             tracing::warn!(
                                 target: "nomi_agent",
@@ -2332,7 +2363,7 @@ impl AgentEngine {
                         if self
                             .coding_harness
                             .as_ref()
-                            .is_some_and(|h| h.is_forced_finalize())
+                            .is_some_and(|h| h.ignores_finalize_tool(&name))
                         {
                             continue;
                         }
@@ -2673,12 +2704,33 @@ impl AgentEngine {
                 });
             }
 
-            // Coding policy stop: drop any unexpected tool calls and finish as
-            // a normal EndTurn so the host never surfaces NOMIFUN_INTERNAL_ERROR.
-            let coding_finalize = self
+            // Coding policy stop. `SyncPlan` still executes `update_plan` so the
+            // model can declare what actually happened; `Reply` drops leftover
+            // tools and finishes as a normal EndTurn (never NOMIFUN_INTERNAL_ERROR).
+            let plan_sync_pass = self
                 .coding_harness
-                .as_mut()
-                .and_then(|h| h.take_forced_finalize());
+                .as_ref()
+                .is_some_and(|h| h.allows_update_plan_on_finalize());
+            if plan_sync_pass {
+                let before = tool_calls.len();
+                tool_calls.retain(is_update_plan_tool_use);
+                if before != tool_calls.len() {
+                    tracing::warn!(
+                        target: "nomi_agent",
+                        dropped = before.saturating_sub(tool_calls.len()),
+                        "coding harness: dropping non-update_plan tools on plan-sync finalize pass"
+                    );
+                }
+                // This pass is a snapshot, not the user-facing close.
+                assistant_text.clear();
+            }
+            let coding_finalize = if plan_sync_pass {
+                None
+            } else {
+                self.coding_harness
+                    .as_mut()
+                    .and_then(|h| h.take_forced_finalize())
+            };
             if let Some(_reason) = coding_finalize.as_ref() {
                 if !tool_calls.is_empty() {
                     tracing::warn!(
@@ -2712,6 +2764,26 @@ impl AgentEngine {
             // restart decision. Supersedes the previous pass's cutoff window;
             // totals stay monotonic.
             round.ledger.set_cutoff(std::mem::take(&mut truncated_calls));
+
+            if plan_sync_pass && tool_calls.is_empty() {
+                let restart = stop_reason == StopReason::MaxTokens
+                    && round.attempt < round::MAX_ROUND_ATTEMPTS
+                    && tools_advertised
+                    && !round.ledger.cutoff.is_empty();
+                if !restart {
+                    if let Some(harness) = self.coding_harness.as_mut() {
+                        harness.advance_after_plan_sync();
+                    }
+                    tracing::warn!(
+                        target: "nomi_agent",
+                        "coding harness: plan-sync pass produced no update_plan; continuing to reply pass"
+                    );
+                    *safe_messages = self.messages.clone();
+                    self.persist_session(false);
+                    turn += 1;
+                    continue;
+                }
+            }
 
             if tool_calls.is_empty() {
                 // Resumable round: the provider hit its output ceiling
@@ -3339,10 +3411,7 @@ impl AgentEngine {
                         Some((content, false)) => (None, Some(content.to_string())),
                         None => (None, None),
                     };
-                    let command = input
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned);
+                    let command = nomi_coding::shell_command_from_input(input);
                     let file_path = coding_tool_file_path(name, input);
                     let offset = input
                         .get("offset")
@@ -3367,6 +3436,9 @@ impl AgentEngine {
                     let nudge = harness.after_tool_turn(&outcomes);
                     coding_nudge_texts = nudge.texts;
                     coding_hard_stop = nudge.hard_stop;
+                    if harness.allows_update_plan_on_finalize() {
+                        harness.advance_after_plan_sync();
+                    }
                 }
             }
             self.harness_runtime.continuation_after_tools = true;
@@ -3466,7 +3538,7 @@ impl AgentEngine {
                 tracing::warn!(
                     target: "nomi_agent",
                     %reason,
-                    "coding harness: hard-stop → forced finalize (no tools)"
+                    "coding harness: hard-stop → forced finalize"
                 );
                 turn += 1;
                 continue;
@@ -3675,7 +3747,11 @@ impl AgentEngine {
             .as_ref()
             .is_some_and(|h| h.is_forced_finalize())
         {
-            return Vec::new();
+            let mut tools = self.live_advertised_tools();
+            if let Some(harness) = self.coding_harness.as_ref() {
+                apply_coding_finalize_tool_table(&mut tools, harness);
+            }
+            return tools;
         }
         if let Some(frozen) = &self.frozen_provider_tools {
             return frozen.clone();
@@ -3703,7 +3779,11 @@ impl AgentEngine {
             .as_ref()
             .is_some_and(|h| h.is_forced_finalize())
         {
-            return Vec::new();
+            let mut tools = self.live_advertised_tools();
+            if let Some(harness) = self.coding_harness.as_ref() {
+                apply_coding_finalize_tool_table(&mut tools, harness);
+            }
+            return tools;
         }
         if let Some(frozen) = &self.frozen_provider_tools {
             return frozen.clone();
@@ -4094,10 +4174,12 @@ impl AgentEngine {
             ) {
                 self.harness_runtime.office_side_effect = true;
             }
-            let command = input.get("command").and_then(|v| v.as_str());
+            let command = nomi_coding::shell_command_from_input(input);
             if name.eq_ignore_ascii_case("verify_change")
                 || (matches!(name.as_str(), "Bash" | "exec_command")
-                    && command.is_some_and(nomi_coding::looks_like_verification_command))
+                    && command
+                        .as_deref()
+                        .is_some_and(nomi_coding::looks_like_verification_command))
             {
                 self.harness_runtime.office_verified = true;
                 self.harness_runtime.kpi.verify_before_end = true;
