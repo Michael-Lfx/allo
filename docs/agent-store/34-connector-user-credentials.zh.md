@@ -1,6 +1,7 @@
 # 连接器用户凭据（key / token 类）· 技术方案
 
-> 状态：**设计定稿；第 1–5 步已实施**（2026-09-24）。决策 D1–D6 见 §4，均有取值与代价。> §9 的进度栏记录每步的实施状态与仍未接通的部分。
+> 状态：**设计定稿；第 1–6 步已实施**（2026-09-24）。决策 D1–D6 见 §4，均有取值与代价。
+> §9 的进度栏记录每步的实施状态与仍未接通的部分。
 > 前置：`02-codebuddy-workbuddy-import-spec.md`（§5/§10 `userConfig → CredentialSchema`、值不入库）、
 > `05-flowy-agent-store-app-server-protocol.md`（协议正文）、`06-connector-oauth-security.md`（并行的 OAuth 通道）、
 > `20-tool-injection-policy.zh.md`、`21-open-decisions.zh.md`（D5=C 及 §116 落地记录）、
@@ -427,8 +428,9 @@ credential: {
 |---|---|
 | 传输拼写与结构 | 导入期按 §3.2 的拼写表归一为 `http` / `sse` / `stdio`（`sse` 不再被压平成 `http`）；`from_db` 保持严格 |
 | 市场 `auth_mode` | 作为声明值导入，映射为 `credential.mode`（§6.1 全量表）；与 transport 推导值区分 |
-| `[credentials]` 键控（D1） | 新写入一律带 `<principal_id>:` 前缀；**无前缀旧键保留为"宿主级"并登记**，只对本地 owner principal 回退可见，不对其他 principal 可见 |
-| agent 装配路径缺身份 | conversation → owner principal 查询缺失时按 fail-closed 处理（§6.2），不静默降级到宿主级 |
+| `[credentials]` 键控（D1） | 新写入一律带 `<principal_id>:` 前缀；**无前缀旧键保留为"宿主级"**，只对本地 owner principal 回退可见，不对其他 principal 可见；宿主声明所有者之后**一次性改名**为 `<owner>:NAME`（幂等；同值重复删裸键，异值冲突原样保留并告警），使作用域成为数据的属性而非进程的属性 |
+| agent 装配路径的身份 | 无身份的调用者按**安装所有者**解析（`principal.or(owner)`）；有身份时按该 principal 解析，取不到即视为缺失，不静默降级到宿主级 |
+| 无身份的调用者（`None`） | `None` 语义为"代表操作者"，因此迁移后它读的是 `<owner>:NAME`，而不是（已不存在的）宿主级裸键——这是迁移不给既有宿主断供的前提 |
 | OAuth 连接器 | 行为不变；仅状态词表映射。`oauth_tokens` 的存储键控**不动**（§2） |
 | 新增 DTO 字段 | 均为可选字段，旧客户端忽略即可 |
 | 指纹 | 本方案实施时为 `fp-10`（第 4 步上到 `fp-9`，第 5 步把表单文案从 `fields[]` 归位到块上，故再 bump 一次；无方法增删，计数不变） |
@@ -450,8 +452,10 @@ credential: {
    导入期单独告警，不作为推荐形态。
 5. **`env` 上的无效落点**（`yingmi-mcp` 的 http + env 组合，§3.2）。导入期对"http/sse 条目上出现 `env`"
    告警——那是个永远不生效的声明。
-6. **共享宿主上的凭据互见**（D1 未完成前）。多用户场景下必须先完成 per-principal 键控；
-   实现期不得以"宿主级兜底"作为过渡手段，那会在过渡窗口里就发生串号。
+6. **共享宿主上的凭据互见**（D1）。per-principal 键控在第一笔写入时落地，宿主级旧键的
+   **可见性规则**随即可用，**改名**在第 6 步收口。实现期不得以"宿主级兜底"作为过渡手段——
+   那会在过渡窗口里就发生串号。收口后仍有一处需要记住的关联：让裸键重新暴露只需要
+   **撤掉所有者声明**，所以改名的价值正是让这种撤掉不再有东西可暴露。
 7. **包内可执行载荷**（§3.3 第二条）。导入永不执行；文档与 UI 明确这一点。
 8. **明文落库**：`oauth_tokens.access_token` 现为明文（实测 40 字符），全仓无 DB 层加解密 helper；
    本方案不新增该能力，但凭据表的最小化（D2）与不可读（§2）降低了暴露面。
@@ -485,7 +489,25 @@ credential: {
 | 3 | ✅ 完成 | **已完成**：`values` 层（四处类型：`McpTransport` / `McpServerTransport` / `SessionMcpTransport` / 网关 `McpTransportParam`）；`TransportScope` + `resolve_request_string` 两类命名空间分流；`<principal>:NAME` 键控与安装所有者可见性规则；探针与工具调用两条路径都接通调用者身份，stdio 会话池按"解析后的 env"复用（凭据不同即不复用）。**装配路径无需再改**：`load_user_mcp_servers`、host 声明合并与 ACP 构建都在 `is_instance_owner = authority.controls_host()` 之后，只有安装所有者本人的会话会注入 MCP，因此按宿主解析就是准确语义（实施时原以为这是遗留，核对门禁后确认不是） |
 | 4 | ✅ 完成 | 协议类型（`credential` 块 + 字段 + 双语言）；目录投影按**调用者**给出 `mode`/`status`/`missing`/`fields`；`[credentials]` 写入面（`toml_edit` 最小改动，注释与排版保留、原子落盘、写完重载进程内映射）；`connector/credential/get\|set\|clear` 三方法 + HTTP/WS 路由 + `ConnectorCredentialProvider` seam + 组合根接线；SDK 三个方法与协议类型；**`fp-8` → `fp-9`**、方法计数 `48 / 73` → `51 / 76`、两仓同步 |
 | 5 | ✅ 完成 | WebUI：`ConnectorCredentialForm`（schema 驱动，标题/说明/字段/取密钥入口全部由 host 下发且带回退；`secret` 掩码不预填不回显，`plain` 预填；空值不提交，保存按钮只在有变化时可点）；抽屉按 `credential.mode` 给入口（`token` → 「填入凭据」，`oauth` → 既有授权，`none` → 无），徽标统一为四态并带缺失项数量；token 模式的 `error` 复用既有 `drawer-hint is-error`（一个连接器一处错误展示）；写入后按探针同形刷新（`get` + `status` + `list`），不新写轮询 |
-| 6 | ⬜ 未开始 | 存储终态（D1）：per-principal 查询面 + 旧键迁移 |
+| 6 | ✅ 完成 | 存储终态（D1）：`CredentialQuery` 把「这个调用者能解析到什么」收成一处（自己的 `<principal>:NAME` → 宿主级裸键 → 环境变量），并提供「还有哪些键是宿主级」的枚举；**无身份的调用者改为按安装所有者解析**（装配路径与 ACP 构建显式带上所有者）；`scope_credentials` 一次性把宿主级裸键改名到 `<owner>:NAME`（纯 TOML 变换，注释跟随键走；同值重复则删，异值冲突则保留并告警），宿主在声明所有者之后调用，幂等。**零 wire 变更，指纹不动** |
+
+**第 6 步的两条设计要点**（都在实施时才看清）：
+
+1. **迁移的前提是「无身份 = 代表所有者」。** `None` 一直按这个语义写注释（`nomi.rs`），
+   但在迁移之前宿主级裸键是它唯一能读到的东西，两种读法无从区分；迁移把凭据挪到
+   `<owner>:NAME` 之后，仍按「宿主级」解析的内部路径会一条都读不到——所有会话静默缺凭据。
+   所以查询面把 `principal.or(owner)` 定为有效身份，装配路径与 ACP 构建带上宿主声明的所有者。
+2. **迁移让作用域属于数据，而不是属于进程。** 在迁移之前，所有者声明是唯一阻止裸键被
+   所有调用者读到的东西；声明一旦消失（宿主不再声明、配置文件被搬到身份不同的机器），
+   全部裸键立刻重新对所有人可见。改名之后没有裸键可暴露——这也是为什么值得动这个
+   手工维护的文件，而不是「保留宿主级并登记」放着不管。冲突键（裸键与 `<owner>:NAME`
+   不同值）保留原样并告警：挑一个等于毁掉另一个凭据，取舍是操作者的。
+
+§9 表里第 6 步的三条验收对应到测试：**无前缀旧键只对 owner principal 可见** 与 **两个
+principal 互不可见** 由 `secret_ref` 的 `a_host_level_entry_belongs_to_the_operator_only`、
+`a_principal_never_substitutes_another_principals_entry` 钉住，并在文件级迁移测试末段用第二个
+principal 再断言一次；**迁移测试** 是 `nomifun-app-server` 三条纯变换（改名 / 重复 / 冲突 / 无表
+不动）加 `nomifun-app` 两条文件级（迁移 + 幂等 + 无配置文件不建）。
 
 **第 5 步期间修掉的两处第 4 步缺口**（都是浏览器里跑起来才看见的）：
 
@@ -511,7 +533,8 @@ credential: {
 `nomifun-app-server` +0（既有 173 条回归通过）。第 4 步新增：`nomifun-app-server` 4（agent_store
 写入面）、`nomifun-app` 8（投影与写入面）、`web` 三个 SDK 方法（路由计数锁步校验）。
 第 5 步新增：`web` 23（表单与四态词表，含渲染测试）、`nomifun-app` 2（投影的表单级断言 +
-上面那条 e2e）。
+上面那条 e2e）。第 6 步新增：`nomifun-common` 3（查询面的梯子与枚举）、`nomifun-app-server` 3
+（纯 TOML 迁移：改名 / 重复 / 冲突 / 无表不动）、`nomifun-app` 2（文件级迁移 + 无配置文件不建）。
 
 ### 9.1 端到端验收（活体）
 
@@ -528,7 +551,17 @@ credential: {
 目录市场，装三个条目后在 WebUI 里逐个打开抽屉）：三张卡分别是「待填写 · 缺 1 项」「待填写 ·
 缺 2 项」「无徽标」（`server-side`），抽屉的「认证」行显示「密钥凭据」而非 transport 推导的
 `oauth`，`token` 模式只给「填入凭据」、没有授权入口，表单里三个 plain 预填、secret 空且掩码、
-「保存」在有改动前禁用。**第 2 条（填了之后探针真的带上解析后的 header）仍无自动化覆盖**：
+「保存」在有改动前禁用。
+
+第 6 步的迁移同样是活体验过的（同一形态：真宿主 + 手写的旧格式配置）：
+
+- 首启：`DEMO_API_KEY = "legacy-bare-value"` 被改名为 `"<owner-uuid>:DEMO_API_KEY"`，上方
+  `# the demo key, written by hand…` 注释跟着走，同文件里的 `"someone-else:THEIR_KEY"` 与
+  市场表逐字未动，日志一行 `moved=["DEMO_API_KEY"] dropped=[]`；
+- 迁移后解析仍然成立：装上同一连接器，抽屉徽标是「已配置」（迁移前它读的是裸键）；
+- 二启：文件 mtime 与 sha256 都不变，日志里不再出现那一行——幂等，且没有白写一次文件。
+
+**仍未自动化覆盖的是第 2 条**（填了之后探针真的带上解析后的 header）：
 第 5 步的 e2e 止于 `[credentials]` 与投影一致，未起一个真的 MCP server 去收 header。补法是把
 这条变成 live 脚本（mock server + 探针），或复用 `nomifun-mcp` 的连接测试夹具。
 
