@@ -311,13 +311,41 @@ impl McpConfigService {
         Ok(rows)
     }
 
+    /// Forget the last connection verdict without touching anything else.
+    ///
+    /// A verdict belongs to the configuration it was reached against. A **transport**
+    /// change already resets it (`edit_server`, when `configuration_changed`); a
+    /// **credential** write changes what a request will carry without changing the
+    /// transport, so it has to reset the same verdict explicitly (`34` §6.1).
+    /// Otherwise a connector the server rejected for a missing key keeps reporting
+    /// 「验证失败」 after the user has filled that key in — a verdict about the value
+    /// that is no longer in use.
+    ///
+    /// Deliberately does **not** touch `enabled` or the cached tool list: the enable
+    /// gate ("must pass a connection test before it can be enabled") was earned
+    /// against the old value, and silently disabling a working connector because a
+    /// credential was refreshed is a worse surprise than one that is merely
+    /// untested. The next probe re-earns the verdict.
+    pub async fn clear_test_verdict(&self, mcp_server_id: &McpServerId) -> Result<(), McpError> {
+        self.repo
+            .update(
+                mcp_server_id.as_str(),
+                UpdateMcpServerParams {
+                    last_test_status: Some("disconnected"),
+                    last_connected: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Persist the latest connection test result for an existing MCP server.
     pub async fn persist_test_result(
         &self,
         mcp_server_id: &McpServerId,
         result: &McpConnectionTestResult,
-    ) -> Result<(), McpError> {
-        // Revision before enabled-state read, matching the ordering contract
+    ) -> Result<(), McpError> {        // Revision before enabled-state read, matching the ordering contract
         // in `activation.rs`: an edit after the revision snapshot must
         // invalidate the conditional commit.
         let revision = self.repo.config_revision(mcp_server_id.as_str()).await?;
@@ -934,9 +962,35 @@ mod tests {
         assert!(edited.last_connected.is_none());
     }
 
+    /// A credential write is not a transport change, so nothing else would
+    /// invalidate the previous verdict (`34` §6.1).
     #[tokio::test]
-    async fn add_server_stdio_complete() {
+    async fn clearing_the_verdict_forgets_the_failure_without_disabling_the_server() {
         let svc = make_service();
+        let created = svc.add_server(stdio_create_req("clear-verdict")).await.unwrap();
+        svc.persist_test_result(&created.mcp_server_id, &successful_test_result())
+            .await
+            .unwrap();
+        let enabled = svc.toggle_server(&created.mcp_server_id).await.unwrap();
+        assert!(enabled.enabled);
+
+        svc.persist_test_result(&created.mcp_server_id, &failed_test_result())
+            .await
+            .unwrap();
+        let failed = svc.get_server(&created.mcp_server_id).await.unwrap();
+        assert_eq!(failed.last_test_status, McpServerStatus::Error);
+
+        svc.clear_test_verdict(&created.mcp_server_id).await.unwrap();
+        let cleared = svc.get_server(&created.mcp_server_id).await.unwrap();
+        assert_eq!(cleared.last_test_status, McpServerStatus::Disconnected);
+        assert!(cleared.last_connected.is_none());
+        // Untouched on purpose: the enable gate was earned against the old value,
+        // and a refreshed credential must not silently close a working connector.
+        assert!(cleared.enabled, "clearing a verdict must not disable the server");
+    }
+
+    #[tokio::test]
+    async fn add_server_stdio_complete() {        let svc = make_service();
         let resp = svc
             .add_server(CreateMcpServerRequest {
                 name: "stdio-full".into(),

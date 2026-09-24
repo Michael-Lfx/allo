@@ -2609,7 +2609,13 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
         ),
     )
     .unwrap();
-    for (id, server) in [("demo-mixed", "demo-mixed"), ("demo-none", "demo-none"), ("demo-oauth", "demo-oauth")] {
+    // The two connectors that need **no** form get a plain url; `demo-mixed`'s
+    // templated `mcp.json` is written *after* this loop, because this loop writes
+    // one for every entry and used to clobber it — which quietly turned the probe
+    // assertions below into assertions about a connector with no credential
+    // reference at all.
+    for (id, server) in [("demo-none", "demo-none"), ("demo-oauth", "demo-oauth")] {
+        std::fs::create_dir_all(market_root.join(format!("connectors/{id}/skills/demo"))).unwrap();
         std::fs::write(
             market_root.join(format!("connectors/{id}/skills/demo/SKILL.md")),
             "---\nname: demo\n---\n\nbody\n",
@@ -2623,6 +2629,12 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
         )
         .unwrap();
     }
+    std::fs::create_dir_all(market_root.join("connectors/demo-mixed/skills/demo")).unwrap();
+    std::fs::write(
+        market_root.join("connectors/demo-mixed/skills/demo/SKILL.md"),
+        "---\nname: demo\n---\n\nbody\n",
+    )
+    .unwrap();
 
     let add = app
         .clone()
@@ -2753,6 +2765,28 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
     assert_eq!(read.status(), StatusCode::OK, "credential/get must succeed");
     assert_eq!(body_json(read).await["missing"], serde_json::json!(["DEMO_API_KEY"]));
 
+    // A probe with the key missing refuses with a typed code — and **persists that
+    // verdict**, which is what makes the next assertion meaningful: filling the form
+    // in has to clear it (`34` §6.1), or the connector keeps reporting 「验证失败」
+    // about a value that is no longer in use. The demo-mixed URL points at a host
+    // that does not exist, so the probe can only fail before it is configured.
+    let probed = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/test"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(probed.status(), StatusCode::OK, "connector/test must report, not fail");
+    let probed = body_json(probed).await;
+    assert_eq!(probed["success"], false, "{probed}");
+    assert_eq!(probed["code"], "MCP_MISSING_CREDENTIAL", "{probed}");
+
     let written = app
         .clone()
         .oneshot(bearer_json(
@@ -2768,6 +2802,10 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
         .unwrap();
     assert_eq!(written.status(), StatusCode::OK, "credential/set must succeed");
     let written = body_json(written).await;
+    // `configured`, and **not** `error`: the failed probe above persisted a verdict
+    // about the value that is now replaced, and a successful set clears it. Getting
+    // this wrong is invisible in the mutations and glaring in the UI — the drawer
+    // would say 「验证失败」 next to rows that all read 「已保存」.
     assert_eq!(written["status"], "configured", "{written}");
     assert_eq!(written["missing"], serde_json::json!([]), "{written}");
     // The plain half went to the connector's own settings, so the form prefills
