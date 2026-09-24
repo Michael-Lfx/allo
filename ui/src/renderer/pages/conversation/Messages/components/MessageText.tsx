@@ -525,7 +525,6 @@ const MessageText: React.FC<{
       });
   };
 
-  const messageList = useMessageList();
   const [showExtractModal, setShowExtractModal] = useState(false);
 
   const userQuestion = useMemo(() => {
@@ -535,7 +534,10 @@ const MessageText: React.FC<{
       for (let i = thisIndex - 1; i >= 0; i--) {
         const item = messageList[i];
         if (item && item.position === 'right' && item.type === 'text') {
-          return typeof item.content?.content === 'string' ? item.content.content : undefined;
+          const raw = typeof item.content?.content === 'string' ? item.content.content.trim() : '';
+          if (raw.length > 0) {
+            return raw;
+          }
         }
       }
     }

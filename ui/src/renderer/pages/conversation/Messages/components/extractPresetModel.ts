@@ -105,9 +105,27 @@ export function recommendSkillIds(
     ) {
       matched.add(skill.id);
     }
+    if (
+      (lower.includes('terminal') || lower.includes('bash') || lower.includes('命令行') || lower.includes('终端')) &&
+      (id.includes('bash') || id.includes('terminal') || skillName.includes('bash'))
+    ) {
+      matched.add(skill.id);
+    }
+    if (
+      (lower.includes('pdf') || lower.includes('文档') || lower.includes('表格') || lower.includes('excel')) &&
+      (id.includes('pdf') || id.includes('office') || id.includes('doc') || skillName.includes('pdf'))
+    ) {
+      matched.add(skill.id);
+    }
+    if (
+      (lower.includes('git') || lower.includes('commit') || lower.includes('分支')) &&
+      (id.includes('git') || skillName.includes('git'))
+    ) {
+      matched.add(skill.id);
+    }
   }
 
-  return Array.from(matched).slice(0, 3);
+  return Array.from(matched).slice(0, 4);
 }
 
 /**
