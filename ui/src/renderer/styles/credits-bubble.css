@@ -51,39 +51,67 @@
   animation: creditsButtonShake 220ms ease-in-out;
 }
 
-/* Core Bubble Card */
+/* Core Bubble Card with Glass Backdrop */
 .credits-bubble-card {
   position: absolute;
   z-index: 90;
-  background: var(--dialog-fill-0);
-  border: 1px solid var(--border-base);
   border-radius: 10px;
-  box-shadow:
-    0 12px 32px -4px rgba(15, 23, 42, 0.14),
-    0 2px 8px -2px rgba(15, 23, 42, 0.08);
   color: var(--text-primary);
   user-select: none;
   pointer-events: auto;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
-body[arco-theme='dark'] .credits-bubble-card {
-  border-color: var(--color-border-2);
+/* Low Credits Warning State (Amber Palette) */
+.credits-bubble-card--low {
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(245, 158, 11, 0.45);
   box-shadow:
-    0 14px 36px -4px rgba(0, 0, 0, 0.55),
-    0 3px 10px -2px rgba(0, 0, 0, 0.35);
+    0 10px 25px -4px rgba(245, 158, 11, 0.16),
+    0 4px 12px -2px rgba(15, 23, 42, 0.08);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--low {
+  background: rgba(28, 25, 23, 0.96);
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  box-shadow:
+    0 12px 32px -4px rgba(0, 0, 0, 0.65),
+    0 0 16px -2px rgba(245, 158, 11, 0.22);
+}
+
+/* Exhausted Credits Danger State (Crimson Palette) */
+.credits-bubble-card--exhausted {
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  box-shadow:
+    0 10px 25px -4px rgba(239, 68, 68, 0.18),
+    0 4px 12px -2px rgba(15, 23, 42, 0.08);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--exhausted {
+  background: rgba(30, 20, 22, 0.96);
+  border: 1px solid rgba(239, 68, 68, 0.48);
+  box-shadow:
+    0 12px 32px -4px rgba(0, 0, 0, 0.7),
+    0 0 18px -2px rgba(239, 68, 68, 0.28);
 }
 
 /* Sider Bubble Layout */
 .sider-credits-bubble--expanded {
   bottom: calc(100% + 10px);
   left: 6px;
-  width: 204px;
+  width: 216px;
 }
 
 .sider-credits-bubble--collapsed {
   bottom: 0;
   left: calc(100% + 12px);
-  width: 204px;
+  width: 216px;
 }
 
 /* Downward Arrow for Expanded Sider */
@@ -93,15 +121,31 @@ body[arco-theme='dark'] .credits-bubble-card {
   left: 36px;
   width: 8px;
   height: 8px;
-  background: var(--dialog-fill-0);
-  border-right: 1px solid var(--border-base);
-  border-bottom: 1px solid var(--border-base);
   transform: rotate(45deg);
 }
 
-body[arco-theme='dark'] .sider-credits-bubble-arrow-down {
-  border-right-color: var(--color-border-2);
-  border-bottom-color: var(--color-border-2);
+.credits-bubble-card--low .sider-credits-bubble-arrow-down {
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgba(245, 158, 11, 0.45);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--low .sider-credits-bubble-arrow-down {
+  background: rgba(28, 25, 23, 0.96);
+  border-right-color: rgba(245, 158, 11, 0.42);
+  border-bottom-color: rgba(245, 158, 11, 0.42);
+}
+
+.credits-bubble-card--exhausted .sider-credits-bubble-arrow-down {
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgba(239, 68, 68, 0.45);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--exhausted .sider-credits-bubble-arrow-down {
+  background: rgba(30, 20, 22, 0.96);
+  border-right-color: rgba(239, 68, 68, 0.48);
+  border-bottom-color: rgba(239, 68, 68, 0.48);
 }
 
 /* Leftward Arrow for Collapsed Sider */
@@ -111,15 +155,31 @@ body[arco-theme='dark'] .sider-credits-bubble-arrow-down {
   left: -5px;
   width: 8px;
   height: 8px;
-  background: var(--dialog-fill-0);
-  border-left: 1px solid var(--border-base);
-  border-bottom: 1px solid var(--border-base);
   transform: rotate(45deg);
 }
 
-body[arco-theme='dark'] .sider-credits-bubble-arrow-left {
-  border-left-color: var(--color-border-2);
-  border-bottom-color: var(--color-border-2);
+.credits-bubble-card--low .sider-credits-bubble-arrow-left {
+  background: rgba(255, 255, 255, 0.98);
+  border-left: 1px solid rgba(245, 158, 11, 0.45);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--low .sider-credits-bubble-arrow-left {
+  background: rgba(28, 25, 23, 0.96);
+  border-left-color: rgba(245, 158, 11, 0.42);
+  border-bottom-color: rgba(245, 158, 11, 0.42);
+}
+
+.credits-bubble-card--exhausted .sider-credits-bubble-arrow-left {
+  background: rgba(255, 255, 255, 0.98);
+  border-left: 1px solid rgba(239, 68, 68, 0.45);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--exhausted .sider-credits-bubble-arrow-left {
+  background: rgba(30, 20, 22, 0.96);
+  border-left-color: rgba(239, 68, 68, 0.48);
+  border-bottom-color: rgba(239, 68, 68, 0.48);
 }
 
 /* SendBox Bubble Layout */
@@ -137,13 +197,29 @@ body[arco-theme='dark'] .sider-credits-bubble-arrow-left {
   right: 14px;
   width: 8px;
   height: 8px;
-  background: var(--dialog-fill-0);
-  border-right: 1px solid var(--border-base);
-  border-bottom: 1px solid var(--border-base);
   transform: rotate(45deg);
 }
 
-body[arco-theme='dark'] .sendbox-credits-bubble-arrow-down {
-  border-right-color: var(--color-border-2);
-  border-bottom-color: var(--color-border-2);
+.credits-bubble-card--low .sendbox-credits-bubble-arrow-down {
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgba(245, 158, 11, 0.45);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--low .sendbox-credits-bubble-arrow-down {
+  background: rgba(28, 25, 23, 0.96);
+  border-right-color: rgba(245, 158, 11, 0.42);
+  border-bottom-color: rgba(245, 158, 11, 0.42);
+}
+
+.credits-bubble-card--exhausted .sendbox-credits-bubble-arrow-down {
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgba(239, 68, 68, 0.45);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.45);
+}
+
+body[arco-theme='dark'] .credits-bubble-card--exhausted .sendbox-credits-bubble-arrow-down {
+  background: rgba(30, 20, 22, 0.96);
+  border-right-color: rgba(239, 68, 68, 0.48);
+  border-bottom-color: rgba(239, 68, 68, 0.48);
 }
