@@ -74,7 +74,11 @@ async fn app_server_handshake(
         ))
         .await
         .unwrap();
-    assert!(response.status().is_success(), "initialize must succeed");
+    assert!(
+        response.status().is_success(),
+        "initialize must succeed, got {}",
+        response.status()
+    );
     let connection_id = response
         .headers()
         .get("x-app-server-connection-id")
@@ -2550,8 +2554,8 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
     const SECRET_DEFAULT: &str = "sk-live-must-never-be-persisted";
     const FILLED_SECRET: &str = "supplied-by-the-user";
 
-    let (mut app, _services, config_path) = common::build_app_with_agent_store_config().await;
-    let (token, csrf) = setup_and_login(&mut app, &_services, "admin", "StrongP@ss1").await;
+    let (mut app, services, config_path) = common::build_app_with_agent_store_config().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
     let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
 
     let market_root = std::env::temp_dir().join(format!("as-cred-{}", nomifun_common::generate_id()));
@@ -2802,6 +2806,13 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
         "the list projection must agree with the write"
     );
 
+    // A second principal cannot be exercised here: the whole `/api/app-server/*`
+    // surface is wrapped in `protect_instance_owner` (`router/routes.rs:1233`), so
+    // a non-owner gets `403` on `initialize` — it never reaches a connector row.
+    // Per-principal isolation is therefore pinned where it is reachable today: the
+    // resolution ladder (`secret_ref`'s tests) and the storage migration
+    // (`app_server_credentials`'s file-level test). Doc `34` §6.2/§10 record it.
+
     // ---- clear ------------------------------------------------------------
     let cleared = app
         .clone()
@@ -2819,6 +2830,7 @@ async fn importer_connector_credential_form_is_declared_installed_and_filled() {
     let cleared = body_json(cleared).await;
     assert_eq!(cleared["status"], "requires_input", "{cleared}");
     assert_eq!(cleared["missing"], serde_json::json!(["DEMO_API_KEY"]), "{cleared}");
+    // Clearing as the owner forgets the owner's value.
     let stored = std::fs::read_to_string(&config_path).unwrap_or_default();
     assert!(!stored.contains(FILLED_SECRET), "clear must forget the value: {stored}");
 
