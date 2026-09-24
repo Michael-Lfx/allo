@@ -1,6 +1,6 @@
 {
   "name": "@flowy-agent-store/sdk",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.8",
   "description": "Node.js host for the Agent Store App Server: spawn the runtime binary and connect over loopback (docs/agent-store/12 P1-3)",
   "type": "module",
   "license": "Apache-2.0",

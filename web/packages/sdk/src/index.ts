@@ -21,6 +21,13 @@ import type {
   InitializeResult,
 } from "@flowy-agent-store/protocol";
 import { resolveAppServerBin } from "./bin";
+import {
+  exportAgent,
+  exportTeam,
+  materializePack,
+  type ExportDeps,
+  type ExportResult,
+} from "./export";
 import { parseReadinessLine, type ReadinessInfo } from "./readiness";
 import {
   assertProtocolCompatible,
@@ -38,6 +45,13 @@ export {
   type SpawnExitInfo,
   type SpawnOptions,
   type SpawnedServer,
+};
+export {
+  exportAgent,
+  exportTeam,
+  materializePack,
+  type ExportDeps,
+  type ExportResult,
 };
 
 export interface HarnessOptions extends SpawnOptions {

@@ -5,7 +5,7 @@
  * 读法读出来的东西是对的」。这个脚本要证明的是**端到端**那三件单测碰不到的事：
  *   ① persona 与夹具磁盘上 `agents/*.md` 的**正文逐字相等**（不是「看起来像」）；
  *   ② 技能是**引用**——包里的名字真能经 `skill/files` / `skill/file` 取回**逐字节相同**的内容；
- *   ③ §6.5 那段 11 行物化配方在真宿主上真的能跑出一个自洽目录。
+ *   ③ §6.5 那段 11 行「pack → 目录」配方在真宿主上真的能跑出一个自洽目录。
  *
  * 用法（二进制必须含本次改动）：
  *   AGENT_STORE_BIN=.../target/debug/agent-store.exe bun scripts/sdk-live-expert-export.ts
@@ -15,17 +15,19 @@
  *   EX-002 夹具 `file-paths` 装上；`agents.get` 拿不到正文，`agent/export` 拿到**逐字相同**的正文
  *   EX-003 同一专家连续导出两次**逐字节相同**（无时间戳、列表有序）
  *   EX-004 技能是引用：`skills.files('hello')` 能列、`readFile` 与夹具字节相同
- *   EX-005 §6.5 的物化配方跑通：目录自洽（pack JSON / persona.md / skills/hello/SKILL.md 三者都可核对）
+ *   EX-005 §6.5 的「pack → 目录」配方跑通：目录自洽（pack JSON / persona.md / skills/hello/SKILL.md 三者都可核对）
  *   EX-006 `file-paths` 的团：成员**团长在首位**，每个成员自带正文
  *   EX-007 `software-company` 的 5 人团：声明列表与展开列表都对
  *   EX-008 悬空引用**如实上报**（该夹具声明的 `planning` 在本机没有对应技能）——包报的是**声明**，
  *          能不能解析是宿主事实，消费方必须自己判
  *   EX-009 连接器按**安装态**：声明了但没启用 ⇒ 包为空；用第一方路由启用后 ⇒ 包里出现
+ *   EX-010 doc `35` 的 team 写目录：`exportTeam` 写出 `members/<id>/persona.md`（无顶层 persona.md）、
+ *          成员技能去重落盘、悬空声明进 `danglingSkills`
  */
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { launchHarness } from "@flowy-agent-store/sdk";
+import { exportAgent, exportTeam, launchHarness } from "@flowy-agent-store/sdk";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {
@@ -143,43 +145,29 @@ try {
   );
 
   // ---------------------------------------------------------------- §6.5 的配方
+  // doc `35` 把 §6.5 的 11 行配方提升成了 SDK 公开面 `exportAgent` —— EX-005
+  // 现在调的是新 API，判据不变：目录自洽（pack JSON / persona.md /
+  // skills/hello/SKILL.md 三者都可核对，且与线上 pack / 夹具字节相同）。
   workdir = await mkdtemp(path.join(tmpdir(), "expert-export-"));
   const materialized = path.join(workdir, pack.id);
-  const dangling: string[] = [];
-  await mkdir(materialized, { recursive: true });
-  await writeFile(
-    path.join(materialized, "expert-pack.json"),
-    JSON.stringify(pack, null, 2),
+  const exported = await exportAgent(harness, pack.id, materialized);
+  // The live fixture declares one resolvable skill; a dangling one is expected
+  // only in the big-team section (EX-008), so this section must stay clean.
+  check(
+    "EX-005a.export-agent-no-dangling",
+    exported.pack.id === pack.id && exported.danglingSkills.length === 0,
+    { packId: exported.pack.id, dangling: exported.danglingSkills },
   );
-  await writeFile(path.join(materialized, "persona.md"), pack.persona.instructions);
-  let skillsWritten = 0;
-  for (const skill of pack.skills) {
-    let files: { path: string }[];
-    try {
-      files = (await harness.skills.files(skill.id)).files;
-    } catch (caught) {
-      // The fixture declares skills that do not exist on this host (EX-008 shape).
-      // The recipe must decide what to do; reporting beats skipping in silence.
-      dangling.push(`${skill.name}: ${String(caught).slice(0, 80)}`);
-      continue;
-    }
-    for (const file of files) {
-      const target = path.join(materialized, "skills", skill.name, file.path);
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, await harness.skills.readFile(skill.id, file.path));
-      skillsWritten += 1;
-    }
-  }
   const packJsonOnDisk = await readFile(path.join(materialized, "expert-pack.json"), "utf8");
   const personaOnDisk = await readFile(path.join(materialized, "persona.md"), "utf8");
   const materializedSkill =
-    skillsWritten > 0 && skillName
+    skillName
       ? new Uint8Array(
           await readFile(path.join(materialized, "skills", skillName, "SKILL.md")),
         )
       : null;
   console.log(
-    `MATERIALIZE dir=${materialized} skillsWritten=${skillsWritten} dangling=${JSON.stringify(dangling)}`,
+    `MATERIALIZE dir=${materialized} skills=${JSON.stringify(exported.writtenSkills)} dangling=${JSON.stringify(exported.danglingSkills)}`,
   );
   check(
     "EX-005.materialize-recipe",
@@ -192,7 +180,7 @@ try {
     {
       packJsonBytes: packJsonOnDisk.length,
       personaChars: personaOnDisk.length,
-      skillsWritten,
+      writtenSkills: exported.writtenSkills.length,
       bytesEqual: materializedSkill?.length === onDisk?.length,
     },
   );
@@ -299,10 +287,47 @@ try {
         restored.join(",") === declaredConnectors.join(","),
       { declaredConnectors, packConnectors, whileDisabled, restored },
     );
+
+    // ------------------------------------------------- EX-010：team 写目录（doc `35` §8.2）
+    // `exportTeam` = `team/export` + 成员 persona + 成员技能（去重）落盘。
+    // 团没有自己的 persona ⇒ 目录里不得出现顶层 persona.md；本机技能目录里
+    // `hello` 存在（file-paths 装过），其余声明悬空 ⇒ dangling 必须如实上报。
+    const teamDir = path.join(workdir ?? ".", "ex010", big.id);
+    const teamExport = await exportTeam(harness, big.id, teamDir);
+    const teamFiles = await readdir(teamDir, { withFileTypes: true });
+    const topPersona = teamFiles.some((entry) => entry.name === "persona.md");
+    let memberPersonaFiles = 0;
+    if (teamFiles.some((entry) => entry.isDirectory() && entry.name === "members")) {
+      memberPersonaFiles = (await readdir(path.join(teamDir, "members"))).length;
+    }
+    const danglingIds = teamExport.danglingSkills.map((entry) => entry.id);
+    // 每个成员声明都恰好落在 written 或 dangling 一侧，不多不少。
+    const everyDeclaredAccounted =
+      new Set([...teamExport.writtenSkills, ...danglingIds]).size === new Set(declared).size;
+    console.log(
+      `TEAMMATERIALIZE dir=${teamDir} members=${memberPersonaFiles} written=${JSON.stringify(teamExport.writtenSkills)} dangling=${JSON.stringify(danglingIds)} topPersona=${topPersona}`,
+    );
+    check(
+      "EX-010.team-materialize",
+      teamExport.pack.id === big.id &&
+        !topPersona &&
+        memberPersonaFiles === members.length &&
+        teamExport.danglingSkills.length > 0 &&
+        danglingIds.every((id) => unresolvable.includes(id)) &&
+        everyDeclaredAccounted,
+      {
+        members: memberPersonaFiles,
+        expectedMembers: members.length,
+        written: teamExport.writtenSkills,
+        dangling: danglingIds,
+        unresolvable,
+      },
+    );
   } else {
     check("EX-007.big-roster", false, "software-company produced no multi-member team");
     check("EX-008.dangling-references-reported", false, "skipped: no big team");
     check("EX-009.connectors-follow-install-state", false, "skipped: no big team");
+    check("EX-010.team-materialize", false, "skipped: no big team");
   }
 } catch (error) {
   console.error("ERROR:", String(error).slice(0, 1200));

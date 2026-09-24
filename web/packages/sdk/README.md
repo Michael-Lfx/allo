@@ -39,6 +39,40 @@ if (!released.ok) console.warn(released.components.filter((c) => !c.ok));
 await harness.close();
 ```
 
+## 导出专家 / 专家团并写到目录（`exportAgent` / `exportTeam` / `materializePack`）
+
+`agents.export` / `teams.export` 只给**定义**（`ExpertPack`），技能是**引用**（`{name, id}`，没有字节）。
+下面三个函数把「定义 + 技能字节」一次**写成一个目录**（`docs/agent-store/35`；它把 doc `32` §6.5 的
+11 行配方提升成了 API）：
+
+```ts
+import { exportTeam } from "@flowy-agent-store/sdk";
+
+// 多 agent 的专家团：递归展开 + 整包失败（成员缺一即失败并点名），leader 在首位
+const result = await exportTeam(harness, teamId, "./frontend-backend-experts");
+// 单 agent 专家用 exportAgent(harness, agentId, dir)
+// 已有 pack（比如缓存/网络传来的）用 materializePack(harness, pack, dir) 只写目录
+
+result.pack;                 // ExpertPack —— 内存里也拿得到，不落盘也能用
+result.writtenSkills;        // 实际写入的技能名（去重后）
+result.danglingSkills;       // 声明了但本机取不到的技能：{ id, error }，如实上报，不静默跳过
+```
+
+写出的布局：
+
+```text
+<dir>/
+  expert-pack.json           # 线上 pack 逐字节
+  persona.md                 # 仅 agent 形态（团没有自己的 persona）
+  members/<id>/persona.md    # 仅 team 形态，每个成员一个
+  skills/<name>/…            # 成员声明去重后的技能字节
+```
+
+错误语义：wire 导出失败（`agent_not_installed` / `agent_disabled` / `policy_denied` /
+`version_mismatch` / `response_too_large`…）**先于任何写盘**，不留半成品目录；`skill/files`
+失败进 `danglingSkills` 并继续；`skill/file` 在列文件成功后失败则**抛出**——那是宿主 I/O 错误，
+吞掉会造出「列了文件却缺内容」的残目录。
+
 **`launchHarness` 解析出的对象就是那个 client**（`docs/agent-store/31` §5 方案 B）：`harness.store` / `harness.conversations` / `harness.models` 直接可用，没有 `.client` 一跳；子进程是 `harness.server`（`readiness` / `dataDir` / `exited`），握手响应是 `harness.handshake`。
 
 五个动词都在 SDK 里可用，但**它们不是 `@flowy-agent-store/sdk` 自己实现的**：本包只负责进程与传输，返回的对象就是一个 `@flowy-agent-store/client` 的 `AppServerClient`（sdk 另挂 `server` / `handshake` / `close()`），其中 `store` 子客户端把 `install` / `uninstall` / `setEnabled` 编排成一条状态机（`search → install → … → uninstall`）。这样分层是刻意的——见 `docs/agent-store/12-sdk-packaging.md` §2 的职责划分。
@@ -75,4 +109,8 @@ await harness.close();
 - 二进制定位：`bin` 参数 → `AGENT_STORE_BIN` → 平台 runtime 包的 `vendor/` → `PATH`；找不到直接报错（**不下载**，见 P2）。
 - 就绪行 `protocol_version` 与 SDK 不一致时杀掉子进程并报错（含两端版本）。该值是**契约指纹**，不是版本号：任何 wire 变更都会 bump。
 
-不在本包范围内（`07-typescript-sdk.md` §非目标）：`config/*` 与 `skill/*` 写面。它们的**类型**在 `@flowy-agent-store/protocol`（wire 上存在的方法就有形状），但**没有** typed 方法——因为这些面跟着宿主自己的设置文件与技能目录走，是最易变的部分。这是可发现性边界，不是权限边界：`harness.transport` 是公开的，服务端按磁盘归属判定可写性。要用就直连 `transport.request`，并自担变动。
+不在本包范围内（`07-typescript-sdk.md` §非目标）：`config/*` 与 `skill/*` **写**面。它们的**类型**在
+`@flowy-agent-store/protocol`（wire 上存在的方法就有形状），但**没有** typed 方法——因为这些面跟着
+宿主自己的设置文件与技能目录走，是最易变的部分。**技能的读面是例外**：`skill/files` / `skill/file`
+有 typed 方法（`harness.skills.*`），且被上面的导出函数消费。这是可发现性边界，不是权限边界：
+`harness.transport` 是公开的，服务端按磁盘归属判定可写性。要用就直连 `transport.request`，并自担变动。
