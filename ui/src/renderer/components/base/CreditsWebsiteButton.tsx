@@ -6,7 +6,7 @@ import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 
 type CreditsWebsiteButtonProps = {
-  /** xs = 侧栏底部（18px 紧凑图标）；sm = 弹层菜单（充值药丸/胶囊）；md = 设置页 */
+  /** xs = 侧栏底部（14px 紧凑内联图标）；sm = 18px 独立方块；md = 22px 设置页 */
   size?: 'xs' | 'sm';
   variant?: 'icon' | 'pill';
   className?: string;
@@ -48,22 +48,24 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
         }}
         onKeyDown={handleKeyDown}
         className={classNames(
-          'credits-topup-btn inline-flex items-center gap-4px px-8px py-2px rd-full text-11px font-600 cursor-pointer select-none leading-none',
+          'credits-topup-btn inline-flex items-center gap-3px px-6px py-0 h-20px rd-full text-11px font-600 cursor-pointer select-none leading-none',
           'focus-visible:outline-none focus-visible:shadow-[0_0_0_2px_rgba(245,158,11,0.4)]',
           className
         )}
       >
         <ShoppingCart
           theme='outline'
-          size='12'
-          strokeWidth={3.5}
+          size='11'
+          strokeWidth={3}
           fill='currentColor'
           className='block leading-none shrink-0'
         />
-        <span className='leading-none'>{t('common.creditsBubble.topUpAction', { defaultValue: '充值' })}</span>
+        <span className='leading-none tracking-tight'>{t('common.creditsBubble.topUpAction', { defaultValue: '充值' })}</span>
       </span>
     );
   }
+
+  const isXs = size === 'xs';
 
   return (
     <span
@@ -77,16 +79,18 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
       }}
       onKeyDown={handleKeyDown}
       className={classNames(
-        'credits-topup-btn inline-flex items-center justify-center rd-5px',
+        'inline-flex items-center justify-center transition-all duration-150',
+        isXs
+          ? 'credits-topup-icon-btn size-14px rd-3px'
+          : 'credits-topup-btn size-18px p-1px rd-5px',
         'cursor-pointer focus-visible:outline-none focus-visible:shadow-[0_0_0_2px_rgba(245,158,11,0.4)]',
-        size === 'xs' ? 'size-18px p-1px' : 'size-22px p-2px',
         className
       )}
     >
       <ShoppingCart
         theme='outline'
-        size={size === 'xs' ? '12' : '14'}
-        strokeWidth={3.5}
+        size={isXs ? '11' : '13'}
+        strokeWidth={isXs ? 3.2 : 3.5}
         fill='currentColor'
         className='block leading-none'
       />

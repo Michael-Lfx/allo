@@ -368,7 +368,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           <span className='block h-16px truncate text-12px font-500 leading-16px text-t-primary'>{displayName}</span>
           <span
             className={classNames(
-              'flex items-center gap-6px h-14px min-w-0',
+              'flex items-center gap-4px h-14px min-w-0',
               !authenticated && 'invisible'
             )}
             aria-hidden={!authenticated}

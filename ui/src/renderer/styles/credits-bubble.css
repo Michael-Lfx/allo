@@ -229,8 +229,8 @@ body[arco-theme='dark'] .credits-bubble-card--exhausted .sendbox-credits-bubble-
 .credits-topup-btn {
   color: #b45309;
   background-color: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(217, 119, 6, 0.24);
-  transition: all 150ms cubic-bezier(0, 0, 0.2, 1);
+  border: 1px solid rgba(217, 119, 6, 0.22);
+  transition: all 140ms cubic-bezier(0, 0, 0.2, 1);
 }
 
 .credits-topup-btn:hover {
@@ -241,22 +241,51 @@ body[arco-theme='dark'] .credits-bubble-card--exhausted .sendbox-credits-bubble-
 }
 
 .credits-topup-btn:active {
-  transform: scale(0.95);
+  transform: scale(0.96);
+}
+
+/* Compact Icon-only Button (for tight 14px sider line) */
+.credits-topup-icon-btn {
+  color: #b45309;
+  background-color: transparent;
+  transition: all 140ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.credits-topup-icon-btn:hover {
+  color: #92400e;
+  background-color: rgba(245, 158, 11, 0.18);
+}
+
+.credits-topup-icon-btn:active {
+  transform: scale(0.92);
 }
 
 /* Dark mode & custom dark theme adaptation */
 [data-theme='dark'] .credits-topup-btn,
 body[arco-theme='dark'] .credits-topup-btn {
   color: #fbbf24;
-  background-color: rgba(245, 158, 11, 0.16);
-  border: 1px solid rgba(251, 191, 36, 0.32);
+  background-color: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.28);
 }
 
 [data-theme='dark'] .credits-topup-btn:hover,
 body[arco-theme='dark'] .credits-topup-btn:hover {
   color: #fde68a;
-  background-color: rgba(245, 158, 11, 0.28);
-  border-color: rgba(251, 191, 36, 0.58);
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.28);
+  background-color: rgba(245, 158, 11, 0.26);
+  border-color: rgba(251, 191, 36, 0.52);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.24);
 }
+
+[data-theme='dark'] .credits-topup-icon-btn,
+body[arco-theme='dark'] .credits-topup-icon-btn {
+  color: #fbbf24;
+  background-color: transparent;
+}
+
+[data-theme='dark'] .credits-topup-icon-btn:hover,
+body[arco-theme='dark'] .credits-topup-icon-btn:hover {
+  color: #fde68a;
+  background-color: rgba(245, 158, 11, 0.22);
+}
+
 
