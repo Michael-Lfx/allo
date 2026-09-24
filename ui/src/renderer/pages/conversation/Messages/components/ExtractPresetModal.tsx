@@ -43,7 +43,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       setExtractingStep(0);
       timer = setInterval(() => {
         setExtractingStep((prev) => (prev < 2 ? prev + 1 : prev));
-      }, 500);
+      }, 450);
     } else {
       setExtractingStep(0);
     }
@@ -66,8 +66,8 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
         console.warn('[ExtractPreset] Failed to fetch skill catalog:', err);
       }
 
-      // 2. Small visual breathing delay for forging animation
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // 2. Visual breathing delay allowing all 3 forging steps to smoothly complete
+      await new Promise((resolve) => setTimeout(resolve, 1400));
 
       // 3. Build structured extraction draft
       const draft: PresetDraftData = buildPresetExtractionDraft({

@@ -545,12 +545,17 @@ const MessageText: React.FC<{
   }, [isUserMessage, message.id, message.msg_id, messageList]);
 
   const isLatestAssistantMessage = useMemo(() => {
-    if (isUserMessage) return false;
+    if (isUserMessage || !messageList || messageList.length === 0) return false;
     const currentId = message.message_id ?? message.msg_id ?? message.id;
     if (!currentId) return false;
-    const lastLeft = [...messageList].reverse().find((m) => m.position === 'left' && m.type === 'text');
-    const lastId = lastLeft?.message_id ?? lastLeft?.msg_id ?? lastLeft?.id;
-    return lastId === currentId;
+    for (let i = messageList.length - 1; i >= 0; i--) {
+      const m = messageList[i];
+      if (m.position === 'left' && m.type === 'text') {
+        const lastId = m.message_id ?? m.msg_id ?? m.id;
+        return lastId === currentId;
+      }
+    }
+    return false;
   }, [isUserMessage, message.id, message.message_id, message.msg_id, messageList]);
 
   const canExtractPreset =
