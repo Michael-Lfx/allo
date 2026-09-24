@@ -544,11 +544,21 @@ const MessageText: React.FC<{
     return undefined;
   }, [isUserMessage, message.id, message.msg_id, messageList]);
 
+  const isLatestAssistantMessage = useMemo(() => {
+    if (isUserMessage) return false;
+    const currentId = message.message_id ?? message.msg_id ?? message.id;
+    if (!currentId) return false;
+    const lastLeft = [...messageList].reverse().find((m) => m.position === 'left' && m.type === 'text');
+    const lastId = lastLeft?.message_id ?? lastLeft?.msg_id ?? lastLeft?.id;
+    return lastId === currentId;
+  }, [isUserMessage, message.id, message.message_id, message.msg_id, messageList]);
+
   const canExtractPreset =
     !isUserMessage &&
     !isStreaming &&
     conversationContext?.isProcessing !== true &&
-    hasRenderableContent;
+    hasRenderableContent &&
+    isLatestAssistantMessage;
 
   const extractPresetButton = canExtractPreset ? (
     <Tooltip content={t('conversation.extractPreset.action', { defaultValue: '提炼为设定' })}>
