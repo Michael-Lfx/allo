@@ -197,6 +197,8 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     if (drawerExpansion.shouldSyncExpanded) {
       syncedActiveDrawerRouteRef.current = activeRouteKey;
       ui.expand(node.key);
+    } else if (syncedActiveDrawerRouteRef.current !== activeRouteKey) {
+      syncedActiveDrawerRouteRef.current = activeRouteKey;
     }
   }, [
     activeRouteKey,
@@ -206,6 +208,9 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   ]);
 
   const toggleDrawer = () => {
+    if (activeRouteKey) {
+      syncedActiveDrawerRouteRef.current = activeRouteKey;
+    }
     setDrawerToggleKey((value) => value + 1);
     ui.toggleExpanded(node.key);
   };
