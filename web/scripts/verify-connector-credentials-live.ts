@@ -22,6 +22,13 @@
  * import verbatim; an empty `env` value becomes a reference), because they need a
  * mock with a different transport shape rather than a different assertion.
  *
+ * A third connector is **not** installed from anywhere: it is handed to
+ * `connector/register` (`34` §6.5), the external developer's route in — its own
+ * template is its credential declaration, and the same two calls (`setCredentials`
+ * then `test`) carry its key to the wire. That entry stays on the host afterwards:
+ * there is no unregister method yet (registered in `34` §10), which is why this
+ * script expects a disposable host.
+ *
  * `clear` is checked too: it must put the connector back to `requires_input`
  * *and* stop the traffic again.
  *
@@ -64,6 +71,7 @@ const wsUrl = valueOf("--ws") ?? "ws://127.0.0.1:8903/api/app-server/ws";
 const MIXED_KEY = "live-mixed-key-value";
 const PAIR_ID = "live-client-id-value";
 const PAIR_SECRET = "live-client-secret-value";
+const DEV_KEY = "the-developers-own-key";
 
 /** The market's own name, as `connectors.json` declares it. */
 const MARKET_NAME = "credential-live";
@@ -254,7 +262,8 @@ async function main(): Promise<void> {
 
   const marketRoot = mkdtempLowercase("as-credential-live-");
   const mock = startMockMcp();
-  buildMarket(marketRoot, `http://127.0.0.1:${mock.port}`);
+  const mockUrl = `http://127.0.0.1:${mock.port}`;
+  buildMarket(marketRoot, mockUrl);
 
   const client = new AppServerClient({
     wsUrl,
@@ -293,6 +302,42 @@ async function main(): Promise<void> {
       check(`store/install registers ${entry}`, installed.ok, JSON.stringify(installed));
     }
 
+    // ---- 0. the external developer's own server (34 §6.5) ------------------
+    // No marketplace, no `token-schema.json`, nothing installed: the template the
+    // caller hands over **is** the declaration, and the form has to appear from it.
+    // Registered before the catalog is read, so the list below is the one every
+    // other assertion works from.
+    const registered = await client.connectors.register({
+      name: "dev-owned-mcp",
+      description: "The developer's own server",
+      transport: {
+        type: "http",
+        url: `${mockUrl}/mcp`,
+        headers: { Authorization: "Bearer ${secret:DEV_KEY}" },
+      },
+    });
+    check(
+      "connector/register accepts a hand-made server",
+      registered.name === "dev-owned-mcp" && Boolean(registered.id),
+      JSON.stringify(registered).slice(0, 300),
+    );
+    check(
+      "…and its own template became the credential form",
+      registered.credential?.mode === "token" &&
+        registered.credential.fields.length === 1 &&
+        registered.credential.fields[0].key === "DEV_KEY" &&
+        registered.credential.fields[0].kind === "secret" &&
+        registered.credential.fields[0].required,
+      JSON.stringify(registered.credential),
+    );
+    // Registration grants no connection: the row comes up disabled, and the probe
+    // below is what decides whether it may be enabled.
+    check(
+      "…and it is not enabled by registering it",
+      registered.enabled === false,
+      JSON.stringify({ enabled: registered.enabled }),
+    );
+
     const listed = await client.connectors.list();
     const byName = (name: string) => {
       const found = listed.find((connector) => connector.name === name);
@@ -304,6 +349,7 @@ async function main(): Promise<void> {
     for (const [name, key, missing] of [
       ["demo-mixed", MIXED_KEY, "DEMO_API_KEY"],
       ["demo-pair", PAIR_ID, "CLIENT_ID"],
+      ["dev-owned-mcp", DEV_KEY, "DEV_KEY"],
     ] as const) {
       const connector = byName(name);
       check(
@@ -387,6 +433,31 @@ async function main(): Promise<void> {
             entry.authorization === `Bearer ${PAIR_SECRET}` && entry.clientId === PAIR_ID,
         ),
       JSON.stringify(mock.seen),
+    );
+
+    // The developer's own server, through the same two calls — which is the whole
+    // point of §6.5: no extra surface, no marketplace.
+    const dev = byName("dev-owned-mcp");
+    const devSet = await client.connectors.setCredentials(dev.id, { DEV_KEY });
+    check(
+      "dev-owned-mcp: set configures the registered server",
+      devSet.status === "configured" && devSet.missing.length === 0,
+      JSON.stringify(devSet),
+    );
+    mock.seen.length = 0;
+    const devProbe = await client.connectors.test(dev.id);
+    check("dev-owned-mcp: probe succeeds", devProbe.success, JSON.stringify(devProbe));
+    const devSeen = mock.seen.filter((entry) => entry.method === "tools/list");
+    check(
+      "dev-owned-mcp: the developer's key goes out as the resolved template",
+      devSeen.length > 0 && devSeen.every((entry) => entry.authorization === `Bearer ${DEV_KEY}`),
+      JSON.stringify(mock.seen),
+    );
+    const devCleared = await client.connectors.clearCredentials(dev.id);
+    check(
+      "dev-owned-mcp: clear returns it to requires_input",
+      devCleared.status === "requires_input" && devCleared.missing.includes("DEV_KEY"),
+      JSON.stringify(devCleared),
     );
 
     // ---- 3. clear puts it back to unconfigured, and back to silent --------
