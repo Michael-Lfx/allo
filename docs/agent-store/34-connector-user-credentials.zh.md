@@ -1,6 +1,6 @@
 # 连接器用户凭据（key / token 类）· 技术方案
 
-> 状态：**设计定稿；第 1–3 步已实施**（2026-09-23）。决策 D1–D6 见 §4，均有取值与代价。
+> 状态：**设计定稿；第 1–5 步已实施**（2026-09-24）。决策 D1–D6 见 §4，均有取值与代价。
 > §9 的进度栏记录每步的实施状态与仍未接通的部分。
 > 前置：`02-codebuddy-workbuddy-import-spec.md`（§5/§10 `userConfig → CredentialSchema`、值不入库）、
 > `05-flowy-agent-store-app-server-protocol.md`（协议正文）、`06-connector-oauth-security.md`（并行的 OAuth 通道）、
@@ -472,20 +472,31 @@ credential: {
 一旦开放写入，第 6 步之前落盘的每一个键都要再迁移一次——把最小步（命名空间化）提前，第 6 步
 就只剩终态查询面与旧数据搬迁。
 
-### 9.2 实施进度（2026-09-23）
+### 9.2 实施进度（2026-09-24）
 
 | 步 | 状态 | 落地内容与遗留 |
 |---|---|---|
 | 1 | ✅ 完成 | 导入期保留 `headers`/`staticHeaders` 并按拼写表归一（`sse` 不再被压平）；`secret_ref` 增加 `${secret:NAME}` 模板形式；探针 / 调用 / DB 行 / 会话快照 / ACP 五条路径共用解析入口并 fail-closed，缺凭据返回新增的 `MCP_MISSING_CREDENTIAL`（422） |
-| 2 | ✅ 完成 | `token-schema.json` 归一为 `credential` 组件（字段 + i18n 双语言 + 取密钥入口）；`${NAME}` 按 §5.4 升级引用；secret 默认值丢弃并告警；`looks_sensitive_key` 补 `key`/`pat`，字段判定另用更紧谓词；`auth_mode` 取自市场索引 |
+| 2 | ✅ 完成 | `token-schema.json` 归一为 `credential` 组件（字段 + i18n 双语言 + 取密钥入口）；`${NAME}` 按 §5.4 升级引用；secret 默认值丢弃并告警；`looks_sensitive_key` 补 `key`/`pat`，字段判定另用更紧谓词；`auth_mode` 取自市场索引（写进 `connector` 组件） |
 | 3 | ✅ 完成 | **已完成**：`values` 层（四处类型：`McpTransport` / `McpServerTransport` / `SessionMcpTransport` / 网关 `McpTransportParam`）；`TransportScope` + `resolve_request_string` 两类命名空间分流；`<principal>:NAME` 键控与安装所有者可见性规则；探针与工具调用两条路径都接通调用者身份，stdio 会话池按"解析后的 env"复用（凭据不同即不复用）。**装配路径无需再改**：`load_user_mcp_servers`、host 声明合并与 ACP 构建都在 `is_instance_owner = authority.controls_host()` 之后，只有安装所有者本人的会话会注入 MCP，因此按宿主解析就是准确语义（实施时原以为这是遗留，核对门禁后确认不是） |
-| 4 | ✅ 完成 | 协议类型（`credential` 块 + 字段 + 双语言）；目录投影按**调用者**给出 `mode`/`status`/`missing`/`fields`（`mode` 由存储的声明决定，只有无声明者退回 transport 推导）；`[credentials]` 写入面（`toml_edit` 最小改动，注释与排版保留、原子落盘、写完重载进程内映射）；`connector/credential/get\|set\|clear` 三方法 + HTTP/WS 路由 + `ConnectorCredentialProvider` seam + 组合根接线；SDK 三个方法与协议类型；**`fp-8` → `fp-9`**、方法计数 `48 / 73` → `51 / 76`、两仓同步 |
-| 5 | ⬜ 未开始 | WebUI：schema 驱动表单 + 四态徽标（复用既有 `auth_status.error` 出口） |
+| 4 | ✅ 完成 | 协议类型（`credential` 块 + 字段 + 双语言）；目录投影按**调用者**给出 `mode`/`status`/`missing`/`fields`；`[credentials]` 写入面（`toml_edit` 最小改动，注释与排版保留、原子落盘、写完重载进程内映射）；`connector/credential/get\|set\|clear` 三方法 + HTTP/WS 路由 + `ConnectorCredentialProvider` seam + 组合根接线；SDK 三个方法与协议类型；**`fp-8` → `fp-9`**、方法计数 `48 / 73` → `51 / 76`、两仓同步 |
+| 5 | ✅ 完成 | WebUI：`ConnectorCredentialForm`（schema 驱动，标题/说明/字段/取密钥入口全部由 host 下发且带回退；`secret` 掩码不预填不回显，`plain` 预填；空值不提交）；抽屉按 `credential.mode` 给入口（`token` → 「填入凭据」，`oauth` → 既有授权，`none` → 无），徽标统一为四态并带缺失项数量；token 模式的 `error` 复用既有 `drawer-hint is-error`（一个连接器一处错误展示）；写入后按探针同形刷新（`get` + `status` + `list`），不新写轮询 |
 | 6 | ⬜ 未开始 | 存储终态（D1）：per-principal 查询面 + 旧键迁移 |
+
+**第 5 步期间修掉的一处第 4 步接线缺口**：`credential.mode` 当初挂在凭据声明上，
+但导入期从不往 `credential` 组件写 `auth_mode`（归一值写在 `connector` 组件里），
+`declaration.auth_mode` 因而恒为 `none`——61 个 `token` 连接器一律投影成 `mode: none`
+（正是本方案要修的那个 bug 的镜像），而 14 个 `server-side` / `mcp` / `oneid-token`
+连接器没有 token-schema、也就没有声明，落到 transport 兜底又变回 `oauth`。现引入
+`ConnectorCredentialSource`：模式取自 `connector` 组件（每个市场连接器都有），表单取自
+`credential` 组件（只有 61 个有），transport 兜底只留给非市场来源的手工注册服务器。
+单元测试手写 payload 因而看不见这段接线，补了一条 e2e 走完整条链路：市场目录 → 安装 →
+`connectors` 投影 → `credential/get` → `set` → 磁盘上的 `[credentials]` → `clear`。
 
 第 3 步的 raw 计数：`nomifun-common` +6 单测、`nomifun-importer` +2、`nomifun-mcp` +5、
 `nomifun-app-server` +0（既有 173 条回归通过）。第 4 步新增：`nomifun-app-server` 4（agent_store
 写入面）、`nomifun-app` 8（投影与写入面）、`web` 三个 SDK 方法（路由计数锁步校验）。
+第 5 步新增：`web` 22（表单与四态词表，含渲染测试）、`nomifun-app` 1 条 e2e（上面那条链路）。
 
 ### 9.1 端到端验收（活体）
 
@@ -497,6 +508,10 @@ credential: {
 4. `credential/clear` 后回到 `requires_input`；
 5. 覆盖四种形态各一例：双字段（`CLIENT_ID` + `CLIENT_SECRET`）、混合表单（3 plain + 1 secret，含 url 模板）、
    `sse` 传输（确认未被压平）、空值待填（`SCRM_APP_KEY: ""`）。
+
+其中"填了凭据之后探针真的带上解析后的 header"这一段仍未有自动化覆盖：第 5 步的 e2e
+止于 `[credentials]` 与投影一致，未起一个真的 MCP server 去收 header。补法是把这条
+变成 §9.1 的 live 脚本（需要 mock server + 探针），或复用 `nomifun-mcp` 的连接测试夹具。
 
 ---
 
@@ -514,3 +529,12 @@ credential: {
   正式写入"前者为后者的一种来源分支"，避免两套并存。
 - `examples_zh/_en`（283 条均有）是否进入连接器详情作为推荐提问。
 - `06` 的 OAuth scope 挑战（远程端点按需申请 scope）不在本方案内，另行登记。
+- **`ConnectorStatus` 仍是 transport 推导的**：UI 已改为优先用 `credential` 四态（第 5 步），
+  但 `connector/list` / `connector/status` 的 `status` 字段对未探测过的 token 连接器仍是
+  `authorization_required`——直接读该字段的 SDK 使用者会得到「需要授权」。要根除得让
+  `summary_status` / `probe_status` 改看 `credential.mode`（含"缺凭据 → `installed`"），
+  那是协议语义变更，另行立项。
+- **既有快照的 `auth_mode` 是市场原值**：归一（空 / `server-side` / `mcp` / `oneid-token` → `none`）
+  只写进新导入的 `connector` 组件；本方案之前导入的 204 个连接器其 `auth_mode` 是
+  `preAuth` 为空时的字面量 `"oauth"`，因此仍会显示授权入口，需要重新导入该市场条目才会归一。
+  是否要做一次性快照搬迁，另行登记。
