@@ -20,11 +20,12 @@ describe('message error actions', () => {
     expect(tipsSource.includes("data-testid='message-error-continue-truncated'")).toBe(true);
     expect(tipsSource.includes('ipcBridge.conversation.continueTruncated.invoke')).toBe(true);
     expect(tipsSource.includes('idempotency_key: recovery.source_message_id')).toBe(true);
+    expect(tipsSource.includes('resolveTruncatedTurnRecovery')).toBe(true);
+    expect(tipsSource.includes('shouldOfferTruncatedContinuation')).toBe(true);
+    expect(tipsSource.includes('hideInterruptedErrorTips')).toBe(true);
     expect(tipsSource.includes('if (message.content.recovery) return null')).toBe(true);
-    expect(tipsSource.includes("message.content.type === 'error'")).toBe(true);
-    expect(tipsSource.includes('message.content.error?.retryable === true')).toBe(true);
-    expect(tipsSource.includes('recovery.failure_code.toUpperCase()')).toBe(true);
-    expect(tipsSource.includes('message.content.error.code === expectedUiErrorCode')).toBe(true);
+    expect(tipsSource.includes("message.content.type !== 'error'")).toBe(true);
+    expect(tipsSource.includes('if (continuationVisible) return null')).toBe(true);
   });
 
   test('keeps the recovery action disabled until the authoritative turn-processing fence opens', () => {

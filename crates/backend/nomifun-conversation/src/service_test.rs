@@ -8747,6 +8747,36 @@ async fn truncated_continuation_replays_once_and_preserves_files_across_a_second
         .unwrap()
     );
 
+    let error_tip_id = MessageId::new().into_string();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: error_tip_id.clone(),
+        conversation_id: conversation.conversation_id.clone(),
+        msg_id: Some(error_tip_id.clone()),
+        r#type: "tips".to_owned(),
+        content: json!({
+            "content": "The model provider did not respond in time",
+            "type": "error",
+            "error": {
+                "message": "The model provider did not respond in time",
+                "code": "USER_LLM_PROVIDER_TIMEOUT",
+                "retryable": true,
+            },
+            "recovery": {
+                "kind": "continue_truncated",
+                "source_message_id": source.receipt.message_id,
+                "failure_code": "output_truncated",
+            },
+        })
+        .to_string(),
+        position: Some("left".to_owned()),
+        status: Some("error".to_owned()),
+        hidden: false,
+        created_at: now_ms(),
+    })
+    .await
+    .unwrap();
+
     let scripted = Arc::new(ScriptedAgent::new(
         &conversation.conversation_id,
         vec![
@@ -8786,6 +8816,14 @@ async fn truncated_continuation_replays_once_and_preserves_files_across_a_second
         .await
         .unwrap();
     assert!(!first.replayed);
+    assert!(
+        repo.get_message(&conversation.conversation_id, &error_tip_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .hidden,
+        "continue-from-progress must hide the interrupted error card"
+    );
     let first_replay = service
         .continue_truncated_turn_with_idempotency_key(
             SQLITE_TEST_OWNER,

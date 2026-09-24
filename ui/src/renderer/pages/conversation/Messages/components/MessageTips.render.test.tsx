@@ -116,6 +116,46 @@ describe('MessageTips error render contract', () => {
     expect(feedbackIndex).toBeGreaterThan(copyIndex);
   });
 
+  test('offers continue-from-progress for a provider timeout instead of rewind retry', () => {
+    const html = renderMessage({
+      message: 'The model provider did not respond in time',
+      code: 'USER_LLM_PROVIDER_TIMEOUT',
+      ownership: 'user_llm_provider',
+      retryable: true,
+      resolution: { kind: 'retry' },
+    });
+
+    expect(html).toContain('data-testid="message-error-continue-truncated"');
+    expect(html).not.toContain('data-testid="message-error-edit"');
+    expect(html).not.toContain('>重试<');
+  });
+
+  test('offers continue-from-progress for a timeout even when retryable was omitted', () => {
+    const html = renderMessage({
+      message: 'The model provider did not respond in time',
+      code: 'USER_LLM_PROVIDER_TIMEOUT',
+      ownership: 'user_llm_provider',
+    });
+
+    expect(html).toContain('data-testid="message-error-continue-truncated"');
+    expect(html).not.toContain('data-testid="message-error-edit"');
+    expect(html).not.toContain('>重试<');
+  });
+
+  test('offers continue-from-progress for a live network error without waiting for recovery metadata', () => {
+    const html = renderMessage({
+      message: 'Could not reach the model provider',
+      code: 'USER_LLM_PROVIDER_NETWORK_ERROR',
+      ownership: 'user_llm_provider',
+      retryable: true,
+      resolution: { kind: 'retry' },
+    });
+
+    expect(html).toContain('data-testid="message-error-continue-truncated"');
+    expect(html).not.toContain('data-testid="message-error-edit"');
+    expect(html).not.toContain('>重试<');
+  });
+
   test('keeps legacy unstructured errors renderable with a safe fallback summary', () => {
     const html = renderMessage();
 

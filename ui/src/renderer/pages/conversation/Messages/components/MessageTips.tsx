@@ -17,9 +17,14 @@ import CopyIconButton from '@renderer/components/base/CopyIconButton';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import { emitter } from '@/renderer/utils/emitter';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { useMessageList } from '../hooks';
+import { useMessageList, useUpdateMessageList } from '../hooks';
 import { parseMessageFileMarker } from './messageFileMarker';
 import { resolveMessageErrorRecoveryAction } from './messageErrorRecovery';
+import {
+  hideInterruptedErrorTips,
+  resolveTruncatedTurnRecovery,
+  shouldOfferTruncatedContinuation,
+} from './messageTruncatedContinuation';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { useNavigate } from 'react-router-dom';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
@@ -75,11 +80,12 @@ const useFormatContent = (content: string) => {
  * truncates and reruns). Only offered on the nomi surface, for errors that
  * answer the latest user request, once the turn has settled.
  */
-const useErrorEdit = (message: IMessageTips): (() => void) | null => {
+const useErrorEdit = (message: IMessageTips, continuationVisible: boolean): (() => void) | null => {
   const conversationContext = useConversationContextSafe();
   const messageList = useMessageList();
   return useMemo(() => {
     if (message.content.type !== 'error') return null;
+    if (continuationVisible) return null;
     if (message.content.recovery) return null;
     if (message.content.error?.retryable === false) return null;
     if (conversationContext?.type !== 'nomi') return null;
@@ -95,7 +101,7 @@ const useErrorEdit = (message: IMessageTips): (() => void) | null => {
     const { text } = parseMessageFileMarker(rawContent, 'right');
     if (!text.trim()) return null;
     return () => emitter.emit('sendbox.edit', { msgId: retryMessageId, createdAt: retryCreatedAt, content: text });
-  }, [conversationContext, message.content, message.created_at, messageList]);
+  }, [continuationVisible, conversationContext, message.content, message.created_at, messageList]);
 };
 
 type ContinueState = 'idle' | 'pending' | 'accepted' | 'stale';
@@ -103,19 +109,31 @@ type ContinueState = 'idle' | 'pending' | 'accepted' | 'stale';
 const useTruncatedContinuation = (message: IMessageTips) => {
   const { t } = useTranslation();
   const conversationContext = useConversationContextSafe();
+  const messageList = useMessageList();
+  const updateMessageList = useUpdateMessageList();
   const [state, setState] = useState<ContinueState>('idle');
-  const recovery = message.content.recovery;
-  const expectedUiErrorCode = recovery ? recovery.failure_code.toUpperCase() : undefined;
-  const visible = Boolean(
-    message.content.type === 'error' &&
-      message.content.error?.retryable === true &&
-      recovery &&
-      message.content.error.code === expectedUiErrorCode &&
-      conversationContext?.type === 'nomi' &&
-      conversationContext.readOnly !== true
+  const recovery = useMemo(
+    () => resolveTruncatedTurnRecovery(message, messageList),
+    [message, messageList]
+  );
+  const visible = shouldOfferTruncatedContinuation(
+    message,
+    recovery,
+    conversationContext?.type === 'nomi',
+    conversationContext?.readOnly === true
   );
   const disabled =
     !visible || conversationContext?.isProcessing === true || state === 'pending' || state === 'accepted' || state === 'stale';
+
+  const dismissCard = useCallback(() => {
+    if (!recovery) return;
+    const sourceCreatedAt = messageList.find(
+      (entry) =>
+        (entry.msg_id === recovery.source_message_id || entry.message_id === recovery.source_message_id) &&
+        entry.type === 'text'
+    )?.created_at;
+    updateMessageList((list) => hideInterruptedErrorTips(list, recovery.source_message_id, sourceCreatedAt));
+  }, [messageList, recovery, updateMessageList]);
 
   const continueTurn = useCallback(async () => {
     if (!recovery || !conversationContext || disabled) return;
@@ -129,9 +147,11 @@ const useTruncatedContinuation = (message: IMessageTips) => {
         idempotency_key: recovery.source_message_id,
       });
       setState('accepted');
+      dismissCard();
     } catch (error) {
       if (isBackendHttpError(error) && error.status === 409) {
         setState('stale');
+        dismissCard();
         Message.warning(
           t('conversation.truncation.stale', {
             defaultValue: 'This interrupted turn has already been superseded.',
@@ -146,7 +166,7 @@ const useTruncatedContinuation = (message: IMessageTips) => {
         })
       );
     }
-  }, [conversationContext, disabled, recovery, t]);
+  }, [conversationContext, disabled, dismissCard, recovery, t]);
 
   const label =
     state === 'pending'
@@ -169,8 +189,8 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   const content = toDisplayText(message.content.content);
   const structuredError = type === 'error' ? message.content.error : undefined;
   const { json, data } = useFormatContent(content);
-  const edit = useErrorEdit(message);
   const continuation = useTruncatedContinuation(message);
+  const edit = useErrorEdit(message, continuation.visible);
   const editButton = edit ? (
     <button type='button' className='message-error-note__retry' data-testid='message-error-edit' onClick={edit}>
       {t('common.edit', { defaultValue: 'Edit' })}

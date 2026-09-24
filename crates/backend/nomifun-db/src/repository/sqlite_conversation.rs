@@ -2597,7 +2597,6 @@ impl IConversationRepository for SqliteConversationRepository {
             || source.status != "completed"
             || source.completed_at.is_none()
             || source.result_ok != Some(false)
-            || source.result_error_retryable != Some(true)
             || source.result_error_code.as_deref() != Some(source_error_code)
             || source.projected_conversation_id.as_deref() != Some(conversation_id)
             || source.projected_message_id.as_deref() != Some(source_message_id)
@@ -5500,6 +5499,53 @@ impl IConversationRepository for SqliteConversationRepository {
         }
 
         Ok(())
+    }
+
+    async fn hide_resumable_error_tips_for_source(
+        &self,
+        conversation_id: &str,
+        source_message_id: &str,
+        hidden_at: TimestampMs,
+    ) -> Result<Vec<MessageRow>, DbError> {
+        Ok(sqlx::query_as::<_, MessageRow>(
+            "UPDATE messages \
+             SET hidden = 1 \
+             WHERE conversation_id = ? \
+               AND type = 'tips' \
+               AND hidden = 0 \
+               AND json_extract(content, '$.type') = 'error' \
+               AND created_at <= ? \
+               AND ( \
+                 json_extract(content, '$.recovery.source_message_id') = ? \
+                 OR ( \
+                   created_at >= COALESCE(( \
+                     SELECT created_at FROM ( \
+                       SELECT created_at FROM messages \
+                       WHERE conversation_id = ? \
+                         AND (message_id = ? OR msg_id = ?) \
+                       LIMIT 1 \
+                     ) \
+                   ), 0) \
+                   AND lower(coalesce(json_extract(content, '$.error.code'), '')) IN ( \
+                     'output_truncated', \
+                     'turn_requests_exhausted', \
+                     'user_llm_provider_network_error', \
+                     'user_llm_provider_timeout', \
+                     'user_llm_provider_empty_response', \
+                     'user_llm_provider_gateway_error' \
+                   ) \
+                 ) \
+               ) \
+             RETURNING *",
+        )
+        .bind(conversation_id)
+        .bind(hidden_at)
+        .bind(source_message_id)
+        .bind(conversation_id)
+        .bind(source_message_id)
+        .bind(source_message_id)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn delete_messages_by_conversation(

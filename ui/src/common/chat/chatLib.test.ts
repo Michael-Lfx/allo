@@ -19,6 +19,7 @@ import {
   transformKnowledgeWritebackEvent,
   transformMessage,
   transformUserCreatedEvent,
+  truncatedFailureCodeFromUiErrorCode,
 } from './chatLib';
 
 describe('agent stream error normalization', () => {
@@ -464,6 +465,44 @@ describe('transformMessage runtime field normalization', () => {
     );
     if (malformed?.type !== 'tips') throw new Error('expected tips');
     expect(malformed.content.recovery).toBeUndefined();
+  });
+
+  test('maps UI error codes onto truncated-turn failure tokens', () => {
+    expect(truncatedFailureCodeFromUiErrorCode('USER_LLM_PROVIDER_TIMEOUT')).toBe('user_llm_provider_timeout');
+    expect(truncatedFailureCodeFromUiErrorCode('user_llm_provider_network_error')).toBe(
+      'user_llm_provider_network_error'
+    );
+    expect(truncatedFailureCodeFromUiErrorCode('USER_LLM_PROVIDER_AUTH_FAILED')).toBeUndefined();
+  });
+
+  test('preserves hidden on live error and tips so continue can dismiss the card', () => {
+    const hiddenError = transformMessage(
+      baseWire({
+        type: 'error',
+        hidden: true,
+        data: {
+          message: 'timed out',
+          code: 'USER_LLM_PROVIDER_TIMEOUT',
+          retryable: true,
+        },
+      })
+    );
+    expect(hiddenError?.type).toBe('tips');
+    expect(hiddenError?.hidden).toBe(true);
+
+    const hiddenTips = transformMessage(
+      baseWire({
+        type: 'tips',
+        hidden: true,
+        data: {
+          content: 'timed out',
+          type: 'error',
+          error: { message: 'timed out', code: 'USER_LLM_PROVIDER_TIMEOUT', retryable: true },
+        },
+      })
+    );
+    expect(hiddenTips?.type).toBe('tips');
+    expect(hiddenTips?.hidden).toBe(true);
   });
 
   test('generic tool failure is absorbing across a late completed artifact frame', () => {
