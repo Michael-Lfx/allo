@@ -412,6 +412,17 @@ impl AppServerConnectorCredentials {
         if !plains.is_empty() {
             write_plain_values(writer, &server, &plains).await?;
         }
+        // The last probe's verdict was reached against the **previous** value, and a
+        // secret write changes what a request carries without changing the
+        // transport — so nothing else would invalidate it (`34` §6.1: a successful
+        // set clears the `error` state). Without this, filling in the key a
+        // connector just rejected leaves the UI reporting 「验证失败」 for a value
+        // that is no longer in use.
+        writer
+            .config
+            .clear_test_verdict(&server.mcp_server_id)
+            .await
+            .map_err(AppError::from)?;
         self.reloaded_describe(mcp_server_id, principal).await
     }
 
