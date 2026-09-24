@@ -9,9 +9,9 @@ import { Button, Input, Modal } from '@arco-design/web-react';
 import {
   Brain,
   Lightning,
+  Magic,
   MagicWand,
   Plus,
-  Sparkles,
   TagOne,
 } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
@@ -235,7 +235,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
         <div className='mb-20px'>
           <div className='flex items-center justify-between mb-8px'>
             <label className='flex items-center gap-5px text-13px font-500 text-t-primary'>
-              <Sparkles theme='filled' size={14} className='text-primary-5' />
+              <Magic theme='filled' size={14} className='text-primary-5' />
               <span>
                 {t('conversation.extractPreset.additionalGuidanceLabel', {
                   defaultValue: '补充定制要求（选填）',
@@ -325,7 +325,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
         {/* Modal Footer Controls */}
         <div className='flex items-center justify-between pt-12px border-t border-t-solid border-arco-1'>
           <div className='text-11px text-t-tertiary flex items-center gap-4px hidden sm:flex'>
-            <Sparkles theme='outline' size={13} className='text-primary-5' />
+            <Magic theme='outline' size={13} className='text-primary-5' />
             <span>
               {t('conversation.extractPreset.footerNote', {
                 defaultValue: '提炼完成后将自动拉起设定抽屉，您可二次润色微调后保存入库',
