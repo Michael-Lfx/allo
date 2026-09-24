@@ -146,13 +146,181 @@ pub fn declaration_from_payload(payload: &str) -> Option<ConnectorDeclaration> {
     })
 }
 
+/// One name a connector's template asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateReference {
+    name: String,
+    /// `true` for `${secret:NAME}` / a whole-value `secret:NAME`, `false` for
+    /// `${NAME}` — the two namespaces the resolver distinguishes (`34` §5.1).
+    secret: bool,
+}
+
+/// Collect the references inside one string, the way the resolver reads it.
+///
+/// Mirrors [`secret_ref::resolve_request_string`]: a whole-value `secret:NAME`
+/// short-circuits (the rest of the string is not scanned), then `${…}` runs are
+/// walked. Kept in step with that function deliberately — a scan that looked at
+/// different syntax would invent fields nothing can fill.
+fn scan_references(value: &str, out: &mut Vec<TemplateReference>) {
+    if let Some(name) = secret_ref::parse_secret_ref(value) {
+        out.push(TemplateReference { name: name.to_owned(), secret: true });
+        return;
+    }
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            return;
+        };
+        let raw = &after[..end];
+        match raw.strip_prefix("secret:") {
+            Some(name) if !name.is_empty() => {
+                out.push(TemplateReference { name: name.to_owned(), secret: true });
+            }
+            // `${secret:}` names nothing; the resolver keeps it literal.
+            Some(_) => {}
+            None if !raw.is_empty() => {
+                out.push(TemplateReference { name: raw.to_owned(), secret: false });
+            }
+            None => {}
+        }
+        rest = &after[end + 1..];
+    }
+}
+
+/// Every reference a connector's **own transport template** asks for (`34` §5.4).
+///
+/// The runtime counterpart of the import-time normalization. A marketplace
+/// connector declares its form in a `token-schema.json`; a server registered
+/// through `connector/register` — or added by hand on the host — has no such file,
+/// but its transport still says exactly what has to be sent, and the namespace of
+/// each reference is the one the resolver looks in. So the scan **follows the
+/// resolver** instead of guessing from names.
+///
+/// Deterministic: url, then headers and env in key order. First mention wins, and a
+/// name that shows up in both namespaces counts as a **secret** — a value meant for
+/// the vault must never be routed to the connector's own settings, which are
+/// readable and exportable.
+///
+/// A stdio server's `${NAME}` is deliberately *not* collected: its spawn path
+/// resolves against an empty plain-value map (`resolve_env_for`), so nothing could
+/// ever fill such a field — reporting it as a missing credential is the honest
+/// outcome, and inventing a form for it would only hide the template bug.
+fn template_references(transport: &McpTransport) -> Vec<TemplateReference> {
+    let mut found: Vec<TemplateReference> = Vec::new();
+    match transport {
+        McpTransport::Http { url, headers, .. } | McpTransport::Sse { url, headers, .. } => {
+            scan_references(url, &mut found);
+            let mut names: Vec<&String> = headers.keys().collect();
+            names.sort();
+            for name in names {
+                if let Some(value) = headers.get(name) {
+                    scan_references(value, &mut found);
+                }
+            }
+        }
+        McpTransport::Stdio { env, .. } => {
+            let mut names: Vec<&String> = env.keys().collect();
+            names.sort();
+            for name in names {
+                if let Some(value) = env.get(name) {
+                    scan_references(value, &mut found);
+                }
+            }
+            // A stdio server has no plain-value store: its spawn path resolves
+            // `${NAME}` against an empty map (`resolve_env_for`), and a plain write
+            // to it is refused outright (`write_plain_values`). Offering a field for
+            // one would be a form entry that can never take effect, so the template
+            // scan keeps only the namespace that can actually be filled. A `${NAME}`
+            // left in a stdio `env` is a template bug, and the probe reporting it as
+            // a missing reference is the honest outcome.
+            found.retain(|reference| reference.secret);
+        }
+    }
+
+    let mut out: Vec<TemplateReference> = Vec::with_capacity(found.len());
+    for reference in found {
+        match out.iter_mut().find(|kept| kept.name == reference.name) {
+            // Secret wins: see the doc comment above.
+            Some(kept) => kept.secret |= reference.secret,
+            None => out.push(reference),
+        }
+    }
+    out
+}
+
+/// The form a connector's template implies, when no marketplace declaration
+/// describes one (`34` §5.4 规则 4 / §6.5).
+fn template_declaration(transport: &McpTransport) -> Option<ConnectorDeclaration> {
+    let values = transport_values(transport);
+    let fields: Vec<DeclaredField> = template_references(transport)
+        .into_iter()
+        .map(|reference| {
+            let label = AppServerLocalizedString {
+                zh: reference.name.clone(),
+                en: reference.name.clone(),
+            };
+            DeclaredField {
+                required: reference.secret || !values.contains_key(&reference.name),
+                kind: if reference.secret { "secret".to_owned() } else { "plain".to_owned() },
+                key: reference.name,
+                label,
+                placeholder: AppServerLocalizedString { zh: String::new(), en: String::new() },
+                description: AppServerLocalizedString { zh: String::new(), en: String::new() },
+            }
+        })
+        .collect();
+    (!fields.is_empty()).then(|| ConnectorDeclaration {
+        // No marketplace directory: this form was not imported from one.
+        connector_id: String::new(),
+        title: None,
+        description: None,
+        doc_url: None,
+        doc_label: None,
+        fields,
+    })
+}
+
+/// The form a connector has, from both places it can come from.
+///
+/// The marketplace declaration wins for any name it declares — it carries the
+/// author's own labels, placeholders and documentation. Every name the template
+/// asks for that no declaration covers is added from the template, which is what
+/// gives a hand-registered server a form at all, and what makes an undeclared
+/// placeholder reachable instead of unfillable (`34` §5.4 规则 4).
+pub fn effective_declaration(
+    declared: Option<ConnectorDeclaration>,
+    transport: &McpTransport,
+) -> Option<ConnectorDeclaration> {
+    let Some(from_template) = template_declaration(transport) else {
+        return declared;
+    };
+    let mut declaration = declared.unwrap_or(ConnectorDeclaration {
+        connector_id: String::new(),
+        title: None,
+        description: None,
+        doc_url: None,
+        doc_label: None,
+        fields: Vec::new(),
+    });
+    for field in from_template.fields {
+        if !declaration.fields.iter().any(|existing| existing.key == field.key) {
+            declaration.fields.push(field);
+        }
+    }
+    Some(declaration)
+}
+
 /// The `credential.mode` for a connector.
 ///
 /// A marketplace declaration decides it, through the normalized `auth_mode`
-/// [`ConnectorCredentialSource`] carries. A connector with **no** source keeps the
-/// transport-derived answer it has always had: a hand-registered remote server
-/// still shows the OAuth entry point, while the 61 `token` connectors and the 204
-/// with an empty `auth_mode` no longer do (`34` §6.1).
+/// [`ConnectorCredentialSource`] carries. A connector with **no** declaration still
+/// has one signal left: if its own template names a secret, it is asking for a key
+/// and is reported as `token` — the transport-derived `oauth` was a guess, and the
+/// template is a declaration (`34` §6.5). Otherwise the guess stands: a
+/// hand-registered remote server with nothing to fill keeps the OAuth entry point,
+/// a stdio one needs nothing, and the 61 `token` connectors and the 204 with an
+/// empty `auth_mode` no longer get either (`34` §6.1).
 pub fn credential_mode(
     source: Option<&ConnectorCredentialSource>,
     transport: &McpTransport,
@@ -163,6 +331,9 @@ pub fn credential_mode(
             "oauth" => AppServerCredentialMode::Oauth,
             _ => AppServerCredentialMode::None,
         },
+        None if template_references(transport).iter().any(|reference| reference.secret) => {
+            AppServerCredentialMode::Token
+        }
         None => match transport {
             McpTransport::Stdio { .. } => AppServerCredentialMode::None,
             McpTransport::Sse { .. } | McpTransport::Http { .. } => AppServerCredentialMode::Oauth,
@@ -356,7 +527,20 @@ impl AppServerConnectorCredentials {
     ) -> Option<AppServerConnectorCredential> {
         let source = self.source_for(mcp_server_id).await;
         let mode = credential_mode(source.as_ref(), transport);
-        if source.is_none() && mode == AppServerCredentialMode::None {
+        // The form from both places it can come from: the marketplace's declaration
+        // and the connector's own template (`34` §6.5).
+        let declaration = effective_declaration(
+            source.as_ref().and_then(|source| source.declaration.clone()),
+            transport,
+        );
+        // No block only when there is genuinely nothing to say: a connector the host
+        // did not import, whose template asks for nothing, and whose transport
+        // implies no auth either. A marketplace connector **always** gets one, even
+        // with no fields — `mode: none` / `not_required` is how the UI learns that
+        // this connector needs no authentication at all (`34` §6.1: 「其余显示无需认证」),
+        // and dropping it would leave 216 connectors indistinguishable from ones the
+        // host knows nothing about.
+        if source.is_none() && declaration.is_none() && mode == AppServerCredentialMode::None {
             return None;
         }
         let values = transport_values(transport);
@@ -364,7 +548,7 @@ impl AppServerConnectorCredentials {
         let operator = secret_ref::operator_principal();
         Some(credential_block(
             mcp_server_id,
-            source.as_ref().and_then(|source| source.declaration.as_ref()),
+            declaration.as_ref(),
             mode,
             transport,
             &values,
@@ -395,15 +579,17 @@ impl AppServerConnectorCredentials {
             .get_server(&parse_server_id(mcp_server_id)?)
             .await
             .map_err(AppError::from)?;
-        let declaration = self
-            .source_for(mcp_server_id)
-            .await
-            .and_then(|source| source.declaration)
-            .ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "connector {mcp_server_id} declares no credential form to fill"
-                ))
-            })?;
+        let declaration = effective_declaration(
+            self.source_for(mcp_server_id)
+                .await
+                .and_then(|source| source.declaration),
+            &server.transport,
+        )
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "connector {mcp_server_id} declares no credential form to fill"
+            ))
+        })?;
         let (secrets, plains) = route_values(&declaration, &values).map_err(AppError::BadRequest)?;
 
         if !secrets.is_empty() {
@@ -436,10 +622,17 @@ impl AppServerConnectorCredentials {
         let writer = self.writer.as_ref().ok_or_else(|| {
             AppError::BadRequest("this host cannot store connector credentials".into())
         })?;
-        let declaration = self
-            .source_for(mcp_server_id)
+        let server = writer
+            .config
+            .get_server(&parse_server_id(mcp_server_id)?)
             .await
-            .and_then(|source| source.declaration);
+            .map_err(AppError::from)?;
+        let declaration = effective_declaration(
+            self.source_for(mcp_server_id)
+                .await
+                .and_then(|source| source.declaration),
+            &server.transport,
+        );
         let all_keys: Vec<String> = match (&declaration, &keys) {
             (Some(declaration), None) => declaration
                 .fields
@@ -872,6 +1065,236 @@ mod tests {
         assert_eq!(
             credential_mode(Some(&source), &http_transport()),
             AppServerCredentialMode::None
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The form a connector declares by its own template (`34` §6.5)
+    // -----------------------------------------------------------------------
+
+    /// A hand-registered server: no snapshot, no `token-schema.json`, and a
+    /// transport that names what it needs.
+    fn registered_http(url: &str, headers: &[(&str, &str)], values: &[(&str, &str)]) -> McpTransport {
+        McpTransport::Http {
+            url: url.to_owned(),
+            headers: headers
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+            values: values
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        }
+    }
+
+    fn names(transport: &McpTransport) -> Vec<(String, bool)> {
+        template_references(transport)
+            .into_iter()
+            .map(|reference| (reference.name, reference.secret))
+            .collect()
+    }
+
+    #[test]
+    fn the_template_names_what_it_needs_in_the_resolvers_own_namespaces() {
+        // url first, then headers in key order; `${secret:…}` is a secret and
+        // `${…}` is one of the connector's own settings.
+        assert_eq!(
+            names(&registered_http(
+                "https://${SCHEMA}://${HOST}:${PORT}/mcp",
+                &[("Authorization", "Bearer ${secret:API_KEY}"), ("X-Tenant", "${TENANT}")],
+                &[],
+            )),
+            vec![
+                ("SCHEMA".to_owned(), false),
+                ("HOST".to_owned(), false),
+                ("PORT".to_owned(), false),
+                ("API_KEY".to_owned(), true),
+                ("TENANT".to_owned(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_whole_value_reference_counts_and_a_name_in_both_namespaces_is_a_secret() {
+        // The whole-value form is what the pre-`34` env maps used, and the resolver
+        // short-circuits on it — so the scan has to as well. The `${TENANT}` beside
+        // it yields no field: a stdio server has nowhere to store a plain value.
+        let stdio = McpTransport::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: HashMap::from([
+                ("TOKEN".to_owned(), "secret:API_KEY".to_owned()),
+                ("TENANT".to_owned(), "${TENANT}".to_owned()),
+            ]),
+        };
+        assert_eq!(names(&stdio), vec![("API_KEY".to_owned(), true)]);
+
+        // The same name in both namespaces — `${DUP}` in one header and
+        // `${secret:DUP}` in another. The vault reading wins, because the other one
+        // would write the value into the connector's own settings, which are readable
+        // and exportable.
+        assert_eq!(
+            names(&registered_http(
+                "https://x/mcp",
+                &[("A", "${DUP}"), ("B", "${secret:DUP}")],
+                &[],
+            )),
+            vec![("DUP".to_owned(), true)]
+        );
+    }
+
+    #[test]
+    fn a_registered_server_gets_a_form_and_reports_token() {
+        let transport = registered_http(
+            "https://mcp.acme.com/mcp",
+            &[("Authorization", "Bearer ${secret:ACME_KEY}")],
+            &[],
+        );
+
+        // No declaration, but the template is one.
+        assert_eq!(credential_mode(None, &transport), AppServerCredentialMode::Token);
+        let declaration = effective_declaration(None, &transport).expect("a form");
+        assert_eq!(declaration.fields.len(), 1);
+        assert_eq!(declaration.fields[0].key, "ACME_KEY");
+        assert!(declaration.fields[0].is_secret());
+        assert!(declaration.fields[0].required);
+        // The label falls back to the key: there is no author to name it.
+        assert_eq!(declaration.fields[0].label.zh, "ACME_KEY");
+
+        // …and the write face accepts exactly that key, which is what makes
+        // `credential/set` usable for a server the host never imported.
+        let plains = route_values(
+            &declaration,
+            &HashMap::from([("ACME_KEY".to_owned(), "v".to_owned())]),
+        )
+        .expect("the template's own key is writable");
+        assert_eq!(plains.0, vec![("ACME_KEY".to_owned(), "v".to_owned())]);
+        assert!(
+            route_values(
+                &declaration,
+                &HashMap::from([("SOMETHING_ELSE".to_owned(), "v".to_owned())])
+            )
+            .is_err(),
+            "a key the template never names must still be refused"
+        );
+
+        // The block then shows the form and the missing key, per caller.
+        let block = credential_block(
+            "conn-1",
+            Some(&declaration),
+            AppServerCredentialMode::Token,
+            &transport,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            Some("alice"),
+            McpServerStatus::Disconnected,
+        );
+        assert_eq!(block.status, AppServerCredentialStatus::RequiresInput);
+        assert_eq!(block.missing, vec!["ACME_KEY".to_owned()]);
+        assert_eq!(block.fields[0].value, None, "a secret's value never crosses");
+    }
+
+    #[test]
+    fn a_template_derived_field_joins_the_declared_ones_without_replacing_them() {
+        // The declaration keeps its author-written labels; the template only adds
+        // what nothing declared.
+        let declared = declaration_from_payload(&declaration_payload()).expect("declaration");
+        let transport = registered_http(
+            "https://${TDENGINE_API_HOST}/mcp",
+            &[
+                ("Authorization", "Bearer ${secret:TDENGINE_API_KEY}"),
+                ("X-Extra", "${secret:EXTRA_KEY}"),
+            ],
+            &[],
+        );
+        let merged = effective_declaration(Some(declared), &transport).expect("a form");
+        let keys: Vec<&str> = merged.fields.iter().map(|field| field.key.as_str()).collect();
+        assert_eq!(keys, vec!["TDENGINE_API_KEY", "TDENGINE_API_HOST", "EXTRA_KEY"]);
+        // The declared field is untouched — including the i18n the author wrote.
+        assert_eq!(merged.fields[0].label.zh, "密钥");
+        assert_eq!(merged.title.as_ref().map(|t| t.zh.as_str()), Some("TDengine 配置"));
+        // The added one is required and carries no copy.
+        assert!(merged.fields[2].required);
+        assert_eq!(merged.fields[2].label.zh, "EXTRA_KEY");
+    }
+
+    #[test]
+    fn a_plain_reference_with_a_value_is_a_prefilled_setting_not_a_missing_one() {
+        let transport = registered_http(
+            "https://${HOST}:${PORT}/mcp",
+            &[],
+            &[("HOST", "mcp.acme.com"), ("PORT", "443")],
+        );
+        let declaration = effective_declaration(None, &transport).expect("a form");
+        assert!(declaration.fields.iter().all(|field| !field.is_secret()));
+        assert!(
+            declaration.fields.iter().all(|field| !field.required),
+            "a value in `values` is already satisfied: {:?}",
+            declaration.fields
+        );
+        // A reference with nothing behind it *is* missing, and fillable.
+        let transport = registered_http("https://${HOST}:${PORT}/mcp", &[], &[("HOST", "h")]);
+        let declaration = effective_declaration(None, &transport).expect("a form");
+        let port = declaration
+            .fields
+            .iter()
+            .find(|field| field.key == "PORT")
+            .expect("PORT");
+        assert!(port.required);
+
+        let block = credential_block(
+            "conn-1",
+            Some(&declaration),
+            AppServerCredentialMode::Token,
+            &transport,
+            &HashMap::from([("HOST".to_owned(), "h".to_owned())]),
+            &HashMap::new(),
+            None,
+            Some("alice"),
+            McpServerStatus::Disconnected,
+        );
+        assert_eq!(block.missing, vec!["PORT".to_owned()]);
+        assert_eq!(
+            block.fields.iter().find(|f| f.key == "HOST").and_then(|f| f.value.clone()),
+            Some("h".to_owned()),
+            "a plain field carries the value in effect"
+        );
+    }
+
+    #[test]
+    fn a_template_with_nothing_to_fill_changes_nothing() {
+        // A URL with no references: no form, and the transport-derived answer stands
+        // (this is the hand-registered remote server the doc already covers).
+        let plain = registered_http("https://mcp.example.com/mcp", &[], &[]);
+        assert!(template_references(&plain).is_empty());
+        assert!(effective_declaration(None, &plain).is_none());
+        assert_eq!(credential_mode(None, &plain), AppServerCredentialMode::Oauth);
+
+        // …and a stdio server with no secret reference still needs nothing.
+        let stdio = McpTransport::Stdio {
+            command: "npx".into(),
+            args: vec!["-y".into(), "some-mcp".into()],
+            env: HashMap::from([("NO_PROXY".to_owned(), "*".to_owned())]),
+        };
+        assert!(effective_declaration(None, &stdio).is_none());
+        assert_eq!(credential_mode(None, &stdio), AppServerCredentialMode::None);
+
+        // A secret in a stdio server's env is the case that used to report nothing
+        // at all: no snapshot, no declaration, `mode: none`.
+        let with_secret = McpTransport::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: HashMap::from([("API_KEY".to_owned(), "secret:API_KEY".to_owned())]),
+        };
+        assert_eq!(credential_mode(None, &with_secret), AppServerCredentialMode::Token);
+        assert_eq!(
+            effective_declaration(None, &with_secret)
+                .expect("a form")
+                .fields
+                .len(),
+            1
         );
     }
 
