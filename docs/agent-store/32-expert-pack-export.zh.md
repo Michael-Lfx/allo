@@ -385,10 +385,20 @@ for (const skill of pack.skills) {
 > 一个新的写面——路径穿越、越权写、「谁拥有那个目录」三个问题一起进来，而收益只是省掉客户端一次
 > 写盘。同机场景下客户端本来就有写自己磁盘的全部权限，没有理由把这件事搬到服务端（§2 第 7 条）。
 
+> **⚠️ 二次推翻（doc `35`，SDK 目录写入助手回来了）**：上面「不做 SDK 公开面」的拍板在 doc `35`
+> （`35-sdk-expert-export.zh.md`）被**推翻**——`web/packages/sdk` 现在提供
+> `exportAgent` / `exportTeam` / `materializePack` 三个函数，把本节的 11 行配方提升成了带 semver
+> 的公开 API（`materializePack` = 把**内存里的 pack 对象连同它引用的技能字节写成一个真实目录**；
+> team 形态新增 `members/<id>/persona.md`，技能跨成员按 id 去重；dangling 语义不变）。
+> 推翻的触发与五条理由的逐条对账见 doc `35` §2.2；「第二个消费者出现了」正是本节预留的提升条件。
+> **本节的其余内容仍然成立**：不做服务端写盘、不把配方搬进 `web/packages/client`（归属仍是 sdk）、
+> 技能引用不内联；11 行配方降级为这三个函数的底层原理说明。
+
 > **一条留给将来的边界**：这段配方**不得**被搬进 `web/packages/client`。`client` 刻意保持环境无关
 > ——它的 base64 解码就明写「atob 优先、否则用 Buffer，以便在裸 Node 上也能跑」
 > （`packages/client/src/skills.ts:68-73`），引入 `node:fs` 会把这个性质毁掉。要提升为 API 时，
-> 归属是 `web/packages/sdk`（它已经拥有 `spawn.ts` 这类写盘能力）。
+> 归属是 `web/packages/sdk`（它已经拥有 `spawn.ts` 这类写盘能力）。**（2026-09-24 后记：这一条
+> 已按 doc `35` 兑现，归属就是 `web/packages/sdk`。）**
 
 ---
 
@@ -450,7 +460,8 @@ pack 里的 `instructions` 必须**完整**，且与该快照磁盘上的 `agent
 | 团 | 成员递归展开、leader 在首位；某个成员未安装 ⇒ **整包失败**且 `details` 指名该成员 |
 | 尺寸 | 包 > 1 MiB ⇒ `response_too_large`，不截断 |
 | **物化（live 脚本，不是 API）** | `web/scripts/sdk-live-expert-export.ts` 走完 §6.5 配方后：`expert-pack.json` 逐字节等于线上 pack；`persona.md` 等于 `persona.instructions`；每个技能目录**逐字节等于** `skill/file` 的返回；重复跑结果相同 |
-| 无新 SDK 公开面 | `web/packages/sdk/src/index.ts` 与 `web/packages/client/src/index.ts` 的导出集合**不含**物化相关符号；`client` 源码与产物**不含** `node:fs` / `node:path` |
+| 无新 SDK 公开面（历史口径，doc `32` 落地时） | `web/packages/sdk/src/index.ts` 与 `web/packages/client/src/index.ts` 的导出集合**不含**物化相关符号；`client` 源码与产物**不含** `node:fs` / `node:path` |
+| SDK 公开面（现行口径，doc `35` 推翻后） | `sdk` 导出集合**含且仅含** `exportAgent` / `exportTeam` / `materializePack`（+ 类型）这批新符号；`client` 导出集合**仍不含**目录写入符号、源码与产物**仍不含** `node:fs` / `node:path`（该约束从未松动） |
 | 指纹/跨仓 | `bun run check:fingerprint` 绿；本仓与站点方法计数一致；站点 `check:docs-sync` 0 drift |
 
 ### 9.1 落地记录
