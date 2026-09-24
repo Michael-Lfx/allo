@@ -458,6 +458,13 @@ credential: {
    导入后模板里仍在"（连同一个反向断言：10 个 `sse` 条目导入后 `transport_type` 仍是 `sse`）。
 3. **`secret:` 字面量外泄**（§3.4 第二条）。缓解：单一解析入口 + 集成断言（外发 header 必须是解析后的真值，
    日志不得出现值）。过渡期内，未解析的引用宁可导致"缺凭据"错误，也不得原样发出。
+   **实施期实测到的实际形态与预想不同**：出问题的不是"引用原样发出"，而是**引用被改成了另一种
+   永不解析的写法**——导入期把已经归一的 `${secret:NAME}` 又加了一层前缀变成
+   `${secret:secret:NAME}`。它同样不会泄露，但会让连接器**静默不可用**：表单照常可填、`missing`
+   照常变空，只有探针永远报缺凭据 (§9.1)。缓解是让归一**幂等**，并把幂等做成回归测试。
+3b. **探针判定比凭据活得久**：`last_test_status` 是**针对某个值**下的结论，而写凭据只动
+   `config.toml`，不会像传输变更那样自动作废它（`edit_server` 才会）。用户填完新值后，
+   徽标仍写「验证失败」——一个关于已经不在用的值的结论 (§6.1 要求 `set` 成功即清除)。
 4. **URL query 携带凭据**（市场 10 例）。凭据会进入代理日志、`Referer`、服务端访问日志；
    导入期单独告警，不作为推荐形态。
 5. **`env` 上的无效落点**（`yingmi-mcp` 的 http + env 组合，§3.2）。导入期对"http/sse 条目上出现 `env`"
@@ -521,6 +528,13 @@ principals_entry` 钉住，并在文件级迁移测试末段用第二个 princip
 在协议面上断言**：非所有者连 `initialize` 都是 403（§6.2 的实施期更正），所以协议面上"两个
 principal 各取各的"这件事当前不存在可测面——这也是它被登记进 §10 的原因。
 
+**第 6 步收尾时活体验收补齐了 §9.1 上半段，并又抓出两个 bug**（详见 §9.1）：导入期把归一
+形态二次加前缀（`${secret:secret:NAME}`，§8 第 3 条），以及 `set` 不清除上一次探测的判定
+（§8 第 3b 条）。两处都补了回归测试：前者是 `the_rewrite_is_idempotent` +
+`an_already_normalized_reference_is_not_prefixed_twice`，后者是 e2e 里"先探针失败 → set →
+断言 `configured` 而不是 `error`"。顺带修掉 e2e 夹具覆盖 `mcp.json` 的那个 bug（它让"探针按
+调用者解析凭据"的断言一直在测一个没有凭据引用的连接器）。
+
 **第 5 步期间修掉的两处第 4 步缺口**（都是浏览器里跑起来才看见的）：
 
 1. **模式读错了组件**。`credential.mode` 当初挂在凭据声明上，但导入期从不往
@@ -573,9 +587,32 @@ principal 各取各的"这件事当前不存在可测面——这也是它被登
 - 迁移后解析仍然成立：装上同一连接器，抽屉徽标是「已配置」（迁移前它读的是裸键）；
 - 二启：文件 mtime 与 sha256 都不变，日志里不再出现那一行——幂等，且没有白写一次文件。
 
-**仍未自动化覆盖的是第 2 条**（填了之后探针真的带上解析后的 header）：
-第 5 步的 e2e 止于 `[credentials]` 与投影一致，未起一个真的 MCP server 去收 header。补法是把
-这条变成 live 脚本（mock server + 探针），或复用 `nomifun-mcp` 的连接测试夹具。
+**§9.1 上半段已自动化**：`web/scripts/verify-connector-credentials-live.ts`。它起一个记录请求的
+mock MCP server，再用宿主自己的客户端跑完整条链——`connector/test` → `credential/set` →
+`connector/test` → `credential/clear` → `connector/test`。对着刚起的宿主跑，31 条断言全绿：
+
+- 凭据未填：两个连接器都报 `requires_input` + 缺失键名，探针回 `MCP_MISSING_CREDENTIAL`，
+  错误里只有键名没有值，且 **mock 一个请求都没收到**（第 1 条）；
+- `set` 之后：探针成功、工具表回来、mock 收到的 `Authorization` 正是 `Bearer <key>`
+  （模板前缀保留），且没有任何请求带过字面量 `${secret:`（第 2、3 条）；
+- `clear` 之后回到 `requires_input`，mock 再次一个请求都没收到（第 4 条）；
+- 宿主日志 128 行里，三个凭据值出现 **0** 次（第 3 条的日志一半，手工核对）。
+
+第 5 条的四种形态覆盖三种：混合表单（3 plain + 1 secret，url 与 header 都是模板，且两个条目
+分别用 `${secret:NAME}` 与 `${NAME}` 两种拼写，一次跑覆盖转换两端）、双字段（`CLIENT_ID` +
+`CLIENT_SECRET`）；`sse` 与"空值待填"仍由 Rust 层覆盖——它们要换的是传输形态，不是断言。
+
+**这条验收第一次跑就抓出两个真 bug**，都是只有把请求发出去才看得见的：
+
+1. **归一形态被二次加前缀**（已修）：`${secret:NAME}` 被导入期改成
+   `${secret:secret:NAME}`，永远解析不出来——表单照常渲染、"缺 1 项"也会消失，但探针
+   永远报缺凭据。§8 第 3 条风险的实际形态。
+2. **`set` 不清除上一次探测的判定**（已修）：`missing` 空了、`status` 还是 `error`，
+   抽屉里徽标写「验证失败」而每一行写「已保存」。§6.1 写着要做，实现里没做。
+
+同一次核对还发现 e2e 夹具自己的 bug：建夹具的循环给每个条目都写了一份 `mcp.json`，
+覆盖掉了模板版，于是"探针按调用者解析凭据"那几条断言其实在测一个没有凭据引用的连接器
+（已修，见 §9.2）。
 
 ---
 
@@ -599,6 +636,12 @@ principal 各取各的"这件事当前不存在可测面——这也是它被登
   场景，也就没有可测面。这不影响存储层的正确性（键控与迁移都已就位），但它决定了这条
   能力的**收益时间**：要么等次级连接面立项，要么承认今天的收益只有"共享文件不靠进程声明
   兜住"这一半。
+- **`install/uninstall` 之后重装同一份内容会装出空结果**（§9.1 跑第二遍时撞见，与凭据无关）：
+  对同一宿主连续跑两次 `verify-connector-credentials-live.ts`，第二次的 `store/install` 回
+  `ok: false, components: []`（有 `snapshotId`、`reused: false`），连接器不会重新注册；把每次
+  的市场内容改成不同版本也没能绕过，所以不是单纯的内容摘要复用。第一次装同一份内容时是好的。
+  这属于安装器的复用/记账语义（`install/uninstall` → `store/install-entry`），值得单独开一条，
+  本次不动它；活体脚本因此在头部写明"对着刚起的宿主跑"。
 - **`ConnectorStatus` 仍是 transport 推导的**：UI 已改为优先用 `credential` 四态（第 5 步），
   但 `connector/list` / `connector/status` 的 `status` 字段对未探测过的 token 连接器仍是
   `authorization_required`——直接读该字段的 SDK 使用者会得到「需要授权」。要根除得让
