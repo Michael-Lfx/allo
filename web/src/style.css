@@ -1055,6 +1055,25 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .drawer-hint.is-error { color: var(--destructive-text); overflow-wrap: anywhere; }
 .drawer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0; }
 
+/* Credential form (doc `34` §6.3). Its copy — title, labels, descriptions — is
+   the connector author's, so the boxes carry the marketplace's own words and this
+   sheet only supplies the frame. */
+.credential-form { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); }
+.credential-form-title { margin: 0; font-size: 13.5px; font-weight: 620; color: var(--ink); }
+.credential-form-desc { margin: 0; color: var(--ink-strong); font-size: 12.5px; line-height: 1.55; }
+.credential-form-missing { margin: 0; color: var(--amber); font-size: 12px; }
+.credential-field { display: grid; gap: 5px; }
+.credential-field-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.credential-field-label { color: var(--ink); font-size: 12.5px; font-weight: 580; }
+.credential-field-key { color: var(--muted-light); font-family: var(--font-mono); font-size: 11px; }
+.credential-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 13px; font-family: inherit; }
+.credential-input:focus { outline: none; border-color: var(--link); }
+.credential-input:disabled { cursor: wait; opacity: .7; }
+.credential-field-desc { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.credential-field-doc { display: inline-flex; align-items: center; gap: 4px; color: var(--link); font-size: 11.5px; text-decoration: none; }
+.credential-field-doc:hover { text-decoration: underline; }
+.credential-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
 /* Label column hugs its text: at the old 1:2 split the values started half way
    across the dialog, far from the labels they belong to. */
 .market-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 14px; margin: 0; padding: 12px 0; border-top: 1px solid var(--border); }
