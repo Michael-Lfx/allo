@@ -237,8 +237,6 @@ pub struct AppServerCredentialField {
     /// set). Never a secret's value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    pub doc_url: AppServerLocalizedString,
-    pub doc_label: AppServerLocalizedString,
 }
 
 /// Everything a client needs to render one connector's credential form.
@@ -252,11 +250,19 @@ pub struct AppServerConnectorCredential {
     pub missing: Vec<String>,
     #[serde(default)]
     pub fields: Vec<AppServerCredentialField>,
-    /// Form-level text from the marketplace declaration.
+    /// Form-level text from the marketplace declaration (`34` §5.2): a
+    /// `token-schema.json` declares its title, its description and its "where do
+    /// I get a key" link **once, for the form** — the market declares no
+    /// per-field links, and copying the form's onto every field would put "how to
+    /// get a key" under `PORT`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<AppServerLocalizedString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<AppServerLocalizedString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_url: Option<AppServerLocalizedString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_label: Option<AppServerLocalizedString>,
 }
 
 /// Public Connector summary (`01-domain-model.md` §7).

@@ -103,8 +103,9 @@
 ## 本轮（2026-09-23 实施，**未发版**）
 
 按 `34-connector-user-credentials.zh.md` 的 §9 顺序实施"连接器用户凭据（key / token 类）"，
-第 1–3 步完成、第 4 步进行中。**指纹已 bump 到 `fp-9`**（方法计数 `48 / 73` → `51 / 76`），
-两仓已同步，但**尚未走发版链**——`25` 的清单只在真正发版时执行。
+第 1–5 步完成、第 6 步未开始。**指纹已 bump 到 `fp-10`**（第 4 步上到 `fp-9`，方法计数
+`48 / 73` → `51 / 76`；第 5 步把表单文案归位到块上，计数不变），两仓已同步，但**尚未走发版链**
+——`25` 的清单只在真正发版时执行。
 
 1. **第 1 步（导入 + 解析）**：导入期保留 `headers` / `staticHeaders` 并按拼写表归一传输
    （`sse` 不再被压平成 `http`）；`secret_ref` 增加 `${secret:NAME}` 模板形式；探针 / 调用 /
@@ -124,13 +125,20 @@
    投影到连接器目录；`[credentials]` 的写入面（`toml_edit` 最小改动，注释与排版保留）；
    `connector/credential/get|set|clear` 三方法 + HTTP/WS 路由 + SDK 三个方法与协议类型；
    值两个方向都不过线（`fields[].value` 只对 `plain` 出现，有逐字断言）。
-5. **自检读数**：`check:fingerprint`（`fp-9`，本仓 7 文件 10 处 + 站点 2 文件）/ `check:release-sync`
-   （`51 / 76` 两站点指南同值）/ `web typecheck` + `web test`（521 passed, 1 skipped）/
-   `cargo test -p nomifun-app-server`（177）/ `nomifun-common` 244 / `nomifun-mcp` 265 lib + 39 集成 /
-   `nomifun-importer` 23 / 站点 `check:docs-sync` 0 drift + `test:docs-sync` 16 —— **全绿**。
+5. **第 5 步（WebUI + 归位）**：`ConnectorCredentialForm`（schema 驱动；`secret` 掩码不预填不回显，
+   `plain` 预填；空值不提交）；抽屉按 `credential.mode` 给入口、徽标统一为四态并带缺失项数量；
+   写入后按探针同形刷新。**这一步抓到并修掉第 4 步的两处接线问题**：`credential.mode` 挂在凭据
+   声明上而 `auth_mode` 实际写在 `connector` 组件里（61 个 `token` 连接器因此全是 `mode: none`，
+   14 个 `server-side` 类又落回 `oauth`）；表单文案被逐字段复制（`doc_url` 应属表单，
+   市场只在 schema 顶层声明一次）。后者是 wire 变更，指纹 `fp-9` → **`fp-10`**。
+6. **自检读数**：`check:fingerprint`（`fp-10`，本仓 7 文件 10 处 + 站点 2 文件）/ `check:release-sync`
+   （`51 / 76` 两站点指南同值）/ `web typecheck` + `web test`（544 passed, 1 skipped）/
+   `cargo test -p nomifun-app-server`（177）/ `nomifun-app` lib 365 + 连接器凭据 e2e 1 /
+   `nomifun-common` 244 / `nomifun-mcp` 265 lib + 39 集成 / `nomifun-importer` 23 /
+   站点 `check:docs-sync` 0 drift + `test:docs-sync` 16 —— **全绿**。
    站点仓改动**尚未提交**（工作树）。
-6. **仍未做**：第 4 步的收尾（本轮已完成）；**第 5 步 WebUI 表单与四态徽标**、**第 6 步存储终态与
-   旧键迁移**未开始。上一轮（`0.1.0-beta.7`）的发布记录见下节。
+7. **仍未做**：**第 6 步存储终态与旧键迁移**；活体端到端（真的 mock server 收 header）。
+   上一轮（`0.1.0-beta.7`）的发布记录见下节。
 
 ## 上一轮（2026-09-20 发布 `0.1.0-beta.7`）
 

@@ -51,6 +51,12 @@ const TDENGINE: ConnectorCredential = {
   missing: ["TDENGINE_API_KEY"],
   title: { zh: "TDengine 配置", en: "TDengine configuration" },
   description: { zh: "填入连接 TDengine 所需的参数。", en: "Parameters for connecting to TDengine." },
+  // The schema declares its "where do I get a key" page once, for the form
+  // (`34` §5.2) — never per field.
+  doc_url: { zh: "https://docs.example.com/tdengine", en: "https://docs.example.com/tdengine/en" },
+  // `docLabel_en` is missing on 9 of the market's 55 documented schemas, so the
+  // fallback chain has to end at our own chrome.
+  doc_label: { zh: "", en: "" },
   fields: [
     {
       key: "TDENGINE_API_SCHEMA",
@@ -60,8 +66,6 @@ const TDENGINE: ConnectorCredential = {
       placeholder: { zh: "", en: "" },
       description: { zh: "http 或 https", en: "" },
       value: "http",
-      doc_url: { zh: "", en: "" },
-      doc_label: { zh: "", en: "" },
     },
     {
       key: "TDENGINE_API_HOST",
@@ -71,8 +75,6 @@ const TDENGINE: ConnectorCredential = {
       placeholder: { zh: "", en: "" },
       description: { zh: "", en: "" },
       value: "localhost",
-      doc_url: { zh: "", en: "" },
-      doc_label: { zh: "", en: "" },
     },
     {
       key: "TDENGINE_API_PORT",
@@ -82,8 +84,6 @@ const TDENGINE: ConnectorCredential = {
       placeholder: { zh: "", en: "" },
       description: { zh: "", en: "" },
       value: "6042",
-      doc_url: { zh: "", en: "" },
-      doc_label: { zh: "", en: "" },
     },
     {
       key: "TDENGINE_API_KEY",
@@ -94,10 +94,6 @@ const TDENGINE: ConnectorCredential = {
       label: { zh: "密钥", en: "" },
       placeholder: { zh: "粘贴密钥", en: "" },
       description: { zh: "在控制台创建后复制。", en: "" },
-      doc_url: { zh: "https://docs.example.com/key", en: "https://docs.example.com/key" },
-      // `docLabel_en` is missing on 9 of the market's 55 documented schemas
-      // (`34` §5.2), so the fallback chain ends at our own chrome.
-      doc_label: { zh: "", en: "" },
     },
   ],
 };
@@ -148,10 +144,22 @@ describe("ConnectorCredentialForm", () => {
     expect(en).toContain("TDengine configuration");
     expect(en).toContain("Scheme");
     expect(en).toContain("How to get a key");
+    // The scheme slot is the one that differs per language.
+    expect(en).toContain("https://docs.example.com/tdengine/en");
     // The secret's label has no English slot: fall back, do not render nothing.
     expect(en).toContain("密钥");
 
     await i18n.changeLanguage("zh-CN");
+  });
+
+  it("puts the 'where do I get a key' link once, for the form", () => {
+    const html = render(TDENGINE);
+    // One link, not one per field: the market declares it on the schema, so a
+    // link under 「端口」 would be an invention (`34` §5.2).
+    expect(html.match(/class="credential-form-doc"/g) ?? []).toHaveLength(1);
+    expect(html).toContain("https://docs.example.com/tdengine");
+    // …and it sits with the form's own text, before the first field.
+    expect(html.indexOf("credential-form-doc")).toBeLessThan(html.indexOf("credential-field"));
   });
 
   it("marks which rows the host reports as settled and which are still missing", () => {

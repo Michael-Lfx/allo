@@ -173,7 +173,12 @@ use tokio::sync::mpsc;
 /// (`<principal>:NAME`), so a shared host no longer resolves one user's token for
 /// another. The three methods are mapped, not WebSocket-only, so the documented
 /// split moves to `51 / 73`.
-pub const PROTOCOL_VERSION: &str = "fp-9";
+/// **`fp-10` puts the credential form's own text where it belongs**: `title`,
+/// `description`, `doc_url` and `doc_label` are the *form's* — a marketplace
+/// `token-schema.json` declares them once (`34` §5.2) — so they moved off
+/// `credential.fields[]` and onto the `credential` block. Nothing else changed
+/// shape; the split stays `51 / 76`.
+pub const PROTOCOL_VERSION: &str = "fp-10";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,12 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-9`** —— 2026-09-24 起承载**连接器用户凭据**：连接器摘要多一个 `credential` 块
+> 指纹：**`fp-10`** —— 2026-09-24 把**凭据表单自己的文案**归位：`title` / `description` /
+> `doc_url` / `doc_label` 从 `fields[]` 移到 `ConnectorCredential` 块上。市场的一份
+> `token-schema.json` 只在顶层声明它们一次（`34` §5.2），此前逐字段复制的结果是
+> 「如何获取密钥？」出现在「端口」底下、同一个链接在表单里重复四遍。无方法增删，
+> 计数仍 **`51 / 76`**。
+> 上一值 **`fp-9`**（2026-09-24）承载**连接器用户凭据**：连接器摘要多一个 `credential` 块
 > （`mode` / `status` / `missing` / `fields`），并新增三个**有 HTTP 路由**的方法
 > `connector/credential/get` · `set` · `clear`。这是本文第一次让**用户自己填的 key / token**
 > 有正式位置：密钥值两个方向都不过线，`missing` 与字段清单只含键名与市场文案；写入按 principal
@@ -557,10 +562,12 @@ ConnectorProbeResult.tools_truncated   # fp-2 新增
 - **新鲜度**：`connector/get` 的 tools 来自**上次探针落库**的结果，可能很旧、也可能是空数组
   （首次探针成功前恒为空）。要新鲜就先调 `connector/test`——零额外机制。
 
-#### 4.3.4 连接器用户凭据（`credential` 块 + 三个方法，`fp-9` 加入）
+#### 4.3.4 连接器用户凭据（`credential` 块 + 三个方法，`fp-9` 加入；`fp-10` 归位表单文案）
 
 需要**用户自己填** key / token 的连接器此前没有输入口：市场的声明在导入期被丢弃，UI 只能把
-"http/sse 传输"一律当成 OAuth。`fp-9` 补上这条链路。
+"http/sse 传输"一律当成 OAuth。`fp-9` 补上这条链路；`fp-10` 把表单自己的文案（`title` /
+`description` / `doc_url` / `doc_label`）从 `fields[]` 挪到块上——市场的一份 `token-schema.json`
+只声明一次这些东西（`34` §5.2），此前逐字段复制会让「如何获取密钥？」出现在「端口」底下。
 
 ```text
 ConnectorSummary.credential?          # 新字段，可空
@@ -573,11 +580,13 @@ ConnectorCredential {
   fields[],    # 见下；只含元数据
   title?,      # 两语言已在 host 归一，客户端不再各自实现回退链
   description?,
+  doc_url?,    # 市场的"去哪里拿密钥"页，**表单级**（`fp-10` 起）
+  doc_label?,
 }
 CredentialField {
   key, kind,   # secret（宿主的凭据库）| plain（连接器自己的设置）
   required,
-  label / placeholder / description / doc_url / doc_label,   # 均是 {zh, en}
+  label / placeholder / description,   # 均是 {zh, en}
   value?,      # **只在 plain 上出现**：当前生效值（声明默认或用户所填）
 }
 ```

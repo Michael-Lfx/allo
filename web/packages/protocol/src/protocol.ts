@@ -63,7 +63,7 @@
  * faces deliberately never do; both methods are WebSocket-only, so the
  * documented route split becomes `48 / 73` (doc `32`).
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-9";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-10";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -959,8 +959,6 @@ export interface CredentialField {
   description: LocalizedString;
   /** Only for `plain`: the value in effect. A secret's value never crosses the wire. */
   value?: string | null;
-  doc_url: LocalizedString;
-  doc_label: LocalizedString;
 }
 
 /** The credential form and its state, as this caller sees them (doc `34` §6.1). */
@@ -971,8 +969,18 @@ export interface ConnectorCredential {
   /** Key names still missing for this caller — never values. */
   missing: string[];
   fields: CredentialField[];
+  /**
+   * Form-level text from the marketplace declaration (doc `34` §5.2).
+   *
+   * A `token-schema.json` declares its title, its description and its "where do I
+   * get a key" link **once, for the form** — the market ships no per-field links,
+   * and copying the form's onto every field reads as "how do I get a key" under
+   * `PORT`.
+   */
   title?: LocalizedString | null;
   description?: LocalizedString | null;
+  doc_url?: LocalizedString | null;
+  doc_label?: LocalizedString | null;
 }
 
 export interface ConnectorTool {
