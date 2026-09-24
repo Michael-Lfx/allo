@@ -165,7 +165,7 @@ const MeetingTranscriptPanel: React.FC<MeetingTranscriptPanelProps> = ({
                           isYou ? 'flex-row-reverse' : 'flex-row'
                         )}
                       >
-                        <span className={classNames('text-11px font-medium', isYou ? 'text-white/70' : 'text-[rgb(var(--success-5))]')}>
+                        <span className={classNames('text-11px font-medium', isYou ? 'text-white/70' : 'text-success-5')}>
                           {speakerLabel(segment)}
                         </span>
                         <span className='text-10px tabular-nums text-white/40'>{formatMs(segment.start_ms)}</span>

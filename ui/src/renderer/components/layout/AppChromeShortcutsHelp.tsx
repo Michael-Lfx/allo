@@ -57,7 +57,7 @@ const AppChromeShortcutsHelp: React.FC<AppChromeShortcutsHelpProps> = ({ onClose
       >
         <div className='flex items-center gap-9px border-b border-solid border-[var(--color-border-2)] border-l-0 border-r-0 border-t-0 px-18px py-14px'>
           <span
-            className='grid size-26px place-items-center rounded-8px leading-none text-[rgb(var(--primary-6))] [&_.i-icon]:block [&_.i-icon]:leading-none [&_svg]:block'
+            className='grid size-26px place-items-center rounded-8px leading-none text-primary-6 [&_.i-icon]:block [&_.i-icon]:leading-none [&_svg]:block'
             style={{ background: 'rgba(var(--primary-6),0.12)' }}
           >
             <Keyboard

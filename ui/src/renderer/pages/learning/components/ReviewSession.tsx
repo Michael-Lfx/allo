@@ -478,7 +478,7 @@ export function ReviewSessionModal({
       ) : (
         <div className='flex flex-col gap-12px'>
           <div className='flex items-center gap-12px'>
-            <span className='shrink-0 rounded-full bg-[var(--color-primary-light-1)] px-12px py-2px text-13px font-600 text-[var(--color-primary-6)]'>
+            <span className='shrink-0 rounded-full bg-[color-mix(in_srgb,rgb(var(--primary-6))_12%,transparent)] px-12px py-2px text-13px font-600 text-primary-6'>
               {Math.min(index + 1, queue.length)} / {queue.length}
             </span>
             <div className='flex-1'>

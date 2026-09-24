@@ -54,7 +54,7 @@ export function ReviewBanner({
         : t('learning.checkinBadgeNoGoal', { reviewed: checkin.reviewed_count })
     : '';
   return (
-    <div className='rounded-12px border border-solid border-[var(--color-primary-6)] bg-[var(--color-primary-light-1)]'>
+    <div className='rounded-12px border border-solid border-[color-mix(in_srgb,rgb(var(--primary-6))_35%,var(--color-border-2))] bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))]'>
       <div className='flex flex-wrap items-center justify-between gap-12px px-20px py-16px'>
         <div className='flex flex-wrap items-center gap-12px'>
           <div className='flex items-baseline gap-8px'>
@@ -74,7 +74,7 @@ export function ReviewBanner({
               className={`rounded-full border border-solid px-8px py-2px text-12px leading-18px ${
                 checkin.completed
                   ? 'border-[var(--color-success-6)] text-[var(--color-success-6)]'
-                  : 'border-[var(--color-primary-6)] text-[var(--color-primary-6)]'
+                  : 'border-primary-6 text-primary-6'
               }`}
             >
               {badgeText}
@@ -132,11 +132,11 @@ export function ReviewBanner({
         <button
           type='button'
           aria-expanded={expanded}
-          className='flex w-full cursor-pointer items-center justify-between gap-12px rounded-10px border border-solid border-[var(--color-primary-light-3)] bg-[var(--color-bg-2)] px-16px py-12px transition-colors hover:border-[var(--color-primary-6)] hover:bg-[var(--color-primary-light-1)]'
+          className='flex w-full cursor-pointer items-center justify-between gap-12px rounded-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-12px transition-colors hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_50%,var(--color-border-2))] hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))]'
           onClick={() => onExpandedChange(!expanded)}
         >
           <span className='flex min-w-0 flex-wrap items-center gap-8px'>
-            <IconCalendar className='shrink-0 text-16px text-[var(--color-primary-6)]' />
+            <IconCalendar className='shrink-0 text-16px text-primary-6' />
             <Text bold>{t('learning.checkinTitle')}</Text>
             {checkin?.completed && (
               <Text className='text-[var(--color-success-6)]'>
@@ -145,10 +145,10 @@ export function ReviewBanner({
             )}
           </span>
           <span className='flex shrink-0 items-center gap-8px'>
-            <Text className='text-12px text-[var(--color-primary-6)]'>
+            <Text className='text-12px text-primary-6'>
               {expanded ? t('learning.checkinCollapse') : t('learning.checkinExpand')}
             </Text>
-            <span className='flex h-22px w-22px items-center justify-center rounded-full bg-[var(--color-primary-6)]'>
+            <span className='flex h-22px w-22px items-center justify-center rounded-full bg-primary-6'>
               <IconDown
                 className={`text-12px text-white transition-transform ${expanded ? 'rotate-180' : ''}`}
               />
@@ -167,20 +167,20 @@ export function ReviewBanner({
         <button
           type='button'
           aria-expanded={memoryExpanded}
-          className='flex w-full cursor-pointer items-center justify-between gap-12px rounded-10px border border-solid border-[var(--color-primary-light-3)] bg-[var(--color-bg-2)] px-16px py-12px transition-colors hover:border-[var(--color-primary-6)] hover:bg-[var(--color-primary-light-1)]'
+          className='flex w-full cursor-pointer items-center justify-between gap-12px rounded-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-12px transition-colors hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_50%,var(--color-border-2))] hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))]'
           onClick={() => setMemoryExpanded(!memoryExpanded)}
         >
           <span className='flex min-w-0 flex-wrap items-center gap-8px'>
-            <IconThunderbolt className='shrink-0 text-16px text-[var(--color-primary-6)]' />
+            <IconThunderbolt className='shrink-0 text-16px text-primary-6' />
             <Text bold>{t('learning.memoryPanelTitle')}</Text>
           </span>
           <span className='flex shrink-0 items-center gap-8px'>
-            <Text className='text-12px text-[var(--color-primary-6)]'>
+            <Text className='text-12px text-primary-6'>
               {memoryExpanded
                 ? t('learning.memoryPanelCollapse')
                 : t('learning.memoryPanelExpand')}
             </Text>
-            <span className='flex h-22px w-22px items-center justify-center rounded-full bg-[var(--color-primary-6)]'>
+            <span className='flex h-22px w-22px items-center justify-center rounded-full bg-primary-6'>
               <IconDown
                 className={`text-12px text-white transition-transform ${memoryExpanded ? 'rotate-180' : ''}`}
               />

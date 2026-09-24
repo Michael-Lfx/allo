@@ -128,7 +128,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
         'group relative flex flex-col rounded-12px border border-solid p-16px pb-42px cursor-pointer outline-none',
         'transition-[background-color,border-color] duration-180',
         highlighted
-          ? 'border-[rgb(var(--primary-5))] bg-[var(--color-primary-light-1)]'
+          ? 'border-[rgb(var(--primary-5))] bg-[color-mix(in_srgb,rgb(var(--primary-6))_8%,var(--color-bg-2))]'
           : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-border-3)]',
       ].join(' ')}
     >

@@ -32,7 +32,7 @@ const FigureTile: React.FC<{
       <div className='figure-library-card w-184px h-234px group relative flex shrink-0 flex-col overflow-hidden rd-16px bg-fill-2 border border-solid border-[var(--color-border-2)] shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-200 hover:-translate-y-2px hover:shadow-[0_10px_28px_rgba(var(--primary-rgb),0.16)] hover:border-[var(--color-primary)]'>
         {/* "in use" badge — always visible so the blocked delete reads as intentional */}
         {inUse && (
-          <span className='absolute left-8px top-8px z-2 inline-flex items-center h-18px px-7px rd-full text-10px font-600 !bg-primary-1 !text-primary-6'>
+          <span className='absolute left-8px top-8px z-2 inline-flex items-center h-18px px-7px rd-full text-10px font-600 !bg-[rgba(var(--primary-6),0.12)] !text-primary-6'>
             {t('nomi.customFigure.inUse')}
           </span>
         )}
@@ -133,7 +133,7 @@ const FigureLibraryPage: React.FC = () => {
         </div>
       ) : isEmpty ? (
         <div className='flex flex-col items-center justify-center gap-14px py-56px rd-16px bg-fill-1 border border-dashed border-[var(--color-border-2)]'>
-          <div className='flex items-center justify-center w-72px h-72px rd-full bg-primary-1 text-32px text-primary-6'>
+          <div className='flex items-center justify-center w-72px h-72px rd-full bg-[rgba(var(--primary-6),0.12)] text-32px text-primary-6'>
             <IconPlus />
           </div>
           <div className='flex flex-col items-center gap-4px'>

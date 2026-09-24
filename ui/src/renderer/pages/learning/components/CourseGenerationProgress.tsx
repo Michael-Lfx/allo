@@ -149,7 +149,7 @@ export function CourseGenerationProgress({
                 {(event.top ?? []).map((finding, findingIndex) => (
                   <div key={findingIndex} className='break-all text-t-secondary'>
                     {danger > 0 ? (
-                      <span className='text-[rgb(var(--danger-6))]'>· {finding}</span>
+                      <span className='text-danger-6'>· {finding}</span>
                     ) : (
                       <span>· {finding}</span>
                     )}

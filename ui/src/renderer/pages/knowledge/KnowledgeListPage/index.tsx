@@ -406,7 +406,7 @@ const KnowledgeListPage: React.FC = () => {
                   'min-h-188px rounded-16px',
                   'border border-dashed border-[var(--color-border-3)] bg-transparent',
                   'text-[var(--color-text-3)]',
-                  'hover:border-[var(--color-primary-light-3)] hover:text-primary-6 hover:bg-[var(--color-primary-light-1)]',
+                  'hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_40%,transparent)] hover:text-primary-6 hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_8%,transparent)]',
                   // This card is in the tab order (focusable div), and nothing
                   // styles a bare focusable div, so without these the keyboard
                   // focus was invisible. Mirrors the hover treatment;

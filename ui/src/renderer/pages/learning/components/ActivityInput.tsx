@@ -35,7 +35,7 @@ function OrderingInput({
       {sequence.map((item, index) => (
         <div
           key={item}
-          className='flex items-center gap-6px rounded-6px border border-[var(--color-border-2)] px-8px py-4px'
+          className='flex items-center gap-6px rounded-6px border border-solid border-[var(--color-border-2)] px-8px py-4px'
         >
           <span className='text-12px text-t-tertiary'>{index + 1}.</span>
           <span className='flex-1'>{item}</span>

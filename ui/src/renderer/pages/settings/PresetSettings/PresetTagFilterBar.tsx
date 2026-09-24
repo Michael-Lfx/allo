@@ -152,7 +152,7 @@ const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
                     'order-first inline-flex items-center gap-5px select-none cursor-pointer rd-6px px-12px py-4px self-start sm:order-none sm:self-auto flex-shrink-0',
                     'text-12px font-medium border border-dashed transition-[background-color,border-color,color] duration-150',
                     'bg-transparent text-[var(--color-text-3)] border-[var(--color-border-3)]',
-                    'hover:text-[rgb(var(--primary-6))] hover:border-[var(--color-primary-light-3)] hover:bg-[var(--color-primary-light-1)]',
+                    'hover:text-[rgb(var(--primary-6))] hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_40%,transparent)] hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_8%,transparent)]',
                   ].join(' ')
             }
           >

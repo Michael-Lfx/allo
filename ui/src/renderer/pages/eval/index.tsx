@@ -394,6 +394,7 @@ const EvalPage: React.FC = () => {
           )}
           <Tooltip content={t('eval.importHint')}>
             <Button
+              className='flowy-icon-text-btn'
               onClick={() => void importPack()}
               loading={busy === 'import'}
               disabled={inFlight}

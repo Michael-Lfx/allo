@@ -144,15 +144,15 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
         marginRight: isMobile ? -14 : undefined,
         ...(isFileDragging
           ? {
-              backgroundColor: 'var(--color-primary-light-1)',
-              borderColor: 'rgb(var(--primary-3))',
+              backgroundColor: 'color-mix(in srgb, rgb(var(--primary-6)) 8%, var(--color-bg-2))',
+              borderColor: 'rgb(var(--primary-6))',
               borderWidth: '1px',
             }
           : undefined),
       }}
       panelClassName={`${styles.guidInputInner} p-12px bg-dialog-fill-0`}
       panelStyle={{
-        borderColor: isFileDragging ? 'rgb(var(--primary-3))' : borderColor,
+        borderColor: isFileDragging ? 'rgb(var(--primary-6))' : borderColor,
         boxShadow: 'none',
       }}
       beforePanel={

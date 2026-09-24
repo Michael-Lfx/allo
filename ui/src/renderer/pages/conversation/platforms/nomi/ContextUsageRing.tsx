@@ -80,7 +80,7 @@ function segmentLabel(
 }
 
 function hasSummarizedProps(
-  props?: SummarizedConversationProperties | null
+  props?: SummarizedConversationPropertiesView | SummarizedConversationProperties | null
 ): boolean {
   if (!props) return false;
   return (

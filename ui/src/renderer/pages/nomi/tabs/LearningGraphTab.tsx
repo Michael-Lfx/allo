@@ -165,7 +165,8 @@ const LearningGraphTab: React.FC<{ companionId: string }> = ({ companionId }) =>
         ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = '#333';
+        const textColor = getComputedStyle(canvas).getPropertyValue('--color-text-2').trim() || '#86909c';
+        ctx.fillStyle = textColor;
         ctx.font = '10px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(node.label.slice(0, 20), pos.x, pos.y - radius - 4);
@@ -201,7 +202,7 @@ const LearningGraphTab: React.FC<{ companionId: string }> = ({ companionId }) =>
         ref={canvasRef}
         width={800}
         height={500}
-        style={{ border: '1px solid #e5e6eb', borderRadius: 4, width: '100%' }}
+        style={{ border: '1px solid var(--color-border-2)', borderRadius: 4, width: '100%', background: 'var(--color-bg-2)' }}
       />
     </div>
   );
