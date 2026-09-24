@@ -166,11 +166,12 @@ describe("ConnectorCredentialForm", () => {
     const html = render(TDENGINE);
 
     // A plain field with a value in effect, and the one required secret the host
-    // says it does not hold.
+    // says it does not hold. The **count** lives on the drawer's badge, not here:
+    // a third statement of it, directly under that badge, is noise.
     expect(html).toContain("已保存");
     expect(html).toContain("待填写");
     expect(html).toContain("必填");
-    expect(html).toContain("缺 1 项");
+    expect(html).not.toContain("缺 1 项");
     // The wire key stays on screen: it is what the connector's template and the
     // host log name.
     expect(html).toContain("TDENGINE_API_KEY");

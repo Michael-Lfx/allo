@@ -1061,7 +1061,6 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .credential-form { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); }
 .credential-form-title { margin: 0; font-size: 13.5px; font-weight: 620; color: var(--ink); }
 .credential-form-desc { margin: 0; color: var(--ink-strong); font-size: 12.5px; line-height: 1.55; }
-.credential-form-missing { margin: 0; color: var(--amber); font-size: 12px; }
 .credential-field { display: grid; gap: 5px; }
 .credential-field-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .credential-field-label { color: var(--ink); font-size: 12.5px; font-weight: 580; }
