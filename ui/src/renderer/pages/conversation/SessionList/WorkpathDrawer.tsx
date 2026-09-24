@@ -316,9 +316,13 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
         className={classNames(
           'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group transition-all duration-200',
           twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px',
-          isActiveWorkpath && 'flowy-workpath-drawer-header-active !bg-[rgba(var(--primary-6),0.08)] border-l-2px border-l-solid border-primary-6',
+          isActiveWorkpath && 'flowy-workpath-drawer-header-active border-l-2px border-l-solid border-primary-6',
           isDragging ? 'shadow-lg border border-solid border-primary-6/40 !bg-[rgba(var(--primary-6),0.06)] cursor-grabbing select-none' : 'cursor-pointer'
         )}
+        onClick={(e) => {
+          if (batchMode) return;
+          toggleDrawer();
+        }}
         {...attributes}
         {...listeners}
       >
@@ -360,7 +364,8 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             aria-expanded={batchMode ? undefined : expanded}
             aria-controls={batchMode ? undefined : controlsId}
             className='flex min-w-0 flex-1 items-center gap-2px appearance-none border-none bg-transparent p-0 text-left cursor-pointer'
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               if (batchMode && !workpathSelectionState.disabled) {
                 onToggleBatchSelectionScope?.(workpathSelectionScope);
                 return;

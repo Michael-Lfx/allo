@@ -148,7 +148,19 @@
 }
 
 .scrollArea :global(.flowy-workpath-drawer-header.flowy-workpath-drawer-header-active) {
-  background: var(--flowy-interactive-selected, rgba(var(--primary-6), 0.08));
+  background: color-mix(
+    in srgb,
+    var(--flowy-sider-sticky-surface) 88%,
+    rgb(var(--primary-6)) 12%
+  ) !important;
+}
+
+.scrollArea :global(.flowy-workpath-drawer-header.flowy-workpath-drawer-header-active:hover) {
+  background: color-mix(
+    in srgb,
+    var(--flowy-sider-sticky-surface) 80%,
+    rgb(var(--primary-6)) 20%
+  ) !important;
 }
 
 .scrollArea :global(.flowy-workpath-drawer-header.flowy-workpath-drawer-header-active .size-22px) {
