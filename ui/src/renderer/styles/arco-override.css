@@ -280,27 +280,23 @@ div[data-focus-lock-disabled='false']:has(.nomifun-file-picker-modal) {
   color: var(--color-text-3) !important;
 }
 
-body[arco-theme='dark'] .arco-modal-content {
-  background-color: var(--dialog-fill-0) !important;
-  border: 1px solid var(--border-base) !important;
+body[arco-theme='dark'] .arco-modal {
+  background-color: var(--flowy-surface-1, var(--dialog-fill-0)) !important;
 }
 
-body[arco-theme='dark'] .arco-modal {
-  background-color: var(--dialog-fill-0) !important;
+body[arco-theme='dark'] .arco-modal-header,
+body[arco-theme='dark'] .arco-modal-body,
+body[arco-theme='dark'] .arco-modal-content,
+body[arco-theme='dark'] .arco-modal-footer {
+  background-color: transparent !important;
 }
 
 body[arco-theme='dark'] .arco-modal-header {
-  background-color: var(--dialog-fill-0) !important;
-  border-bottom-color: var(--border-base) !important;
-}
-
-body[arco-theme='dark'] .arco-modal-body,
-body[arco-theme='dark'] .arco-modal-footer {
-  background-color: var(--dialog-fill-0) !important;
+  border-bottom-color: var(--flowy-border, var(--border-base)) !important;
 }
 
 body[arco-theme='dark'] .arco-modal-footer {
-  border-top-color: var(--border-base) !important;
+  border-top-color: var(--flowy-border, var(--border-base)) !important;
 }
 
 body[arco-theme='dark'] .arco-modal-title {
@@ -308,9 +304,12 @@ body[arco-theme='dark'] .arco-modal-title {
 }
 
 body[arco-theme='dark'] .arco-modal-body,
-body[arco-theme='dark'] .arco-modal-confirm-title,
+body[arco-theme='dark'] .arco-modal-confirm-title {
+  color: var(--flowy-text-1, var(--text-primary)) !important;
+}
+
 body[arco-theme='dark'] .arco-modal-confirm-content {
-  color: var(--text-primary) !important;
+  color: var(--flowy-text-2, var(--text-secondary)) !important;
 }
 
 body[arco-theme='dark'] .arco-modal-close-icon {
@@ -323,7 +322,23 @@ body[arco-theme='dark'] .arco-modal-close-icon:hover {
 }
 
 body[arco-theme='dark'] .arco-modal-confirm-icon {
-  color: var(--warning) !important;
+  color: var(--warning, #f59e0b);
+}
+
+body[arco-theme='dark'] .arco-modal-confirm-icon .arco-icon-info-circle-fill {
+  color: var(--flowy-accent, var(--color-primary, #3b82f6)) !important;
+}
+
+body[arco-theme='dark'] .arco-modal-confirm-icon .arco-icon-check-circle-fill {
+  color: var(--success, #10b981) !important;
+}
+
+body[arco-theme='dark'] .arco-modal-confirm-icon .arco-icon-close-circle-fill {
+  color: var(--flowy-danger, var(--danger, #ef4444)) !important;
+}
+
+body[arco-theme='dark'] .arco-modal-confirm-icon .arco-icon-exclamation-circle-fill {
+  color: var(--warning, #f59e0b) !important;
 }
 
 /* Shared modal system: a restrained, product-focused shell for dialogs,
@@ -405,14 +420,32 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 /* Arco uses this compact variant for Modal.confirm, Modal.info, and related
    feedback dialogs. Keep the hierarchy direct and the actions easy to scan. */
+.arco-modal-wrapper:has(> .arco-modal-simple) {
+  z-index: 2001 !important;
+}
+
+.arco-modal-mask:has(+ .arco-modal-wrapper > .arco-modal-simple) {
+  z-index: 2000 !important;
+}
+
 .arco-modal-simple {
   width: min(440px, calc(100vw - 32px));
-  padding: 24px;
+  padding: 24px !important;
+}
+
+.arco-modal-simple,
+.arco-modal-simple .arco-modal-header,
+.arco-modal-simple .arco-modal-body,
+.arco-modal-simple .arco-modal-content,
+.arco-modal-simple .arco-modal-footer {
+  background: transparent !important;
+  border: none !important;
 }
 
 .arco-modal-simple .arco-modal-header {
-  height: auto;
-  margin-bottom: 16px;
+  height: auto !important;
+  margin-bottom: 12px !important;
+  padding: 0 !important;
 }
 
 .arco-modal-simple .arco-modal-title {
@@ -429,27 +462,50 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 .arco-modal-simple .arco-modal-title .arco-icon {
   flex: 0 0 auto;
   margin-right: 0;
+  font-size: 18px;
 }
 
 .arco-modal-simple .arco-modal-content {
-  color: var(--flowy-text-2, var(--text-secondary));
+  padding: 0 !important;
+  margin: 0 !important;
+  color: var(--flowy-text-2, var(--text-secondary)) !important;
   font-size: var(--flowy-text-body, 14px);
-  line-height: var(--flowy-leading-body, 1.5);
+  line-height: var(--flowy-leading-body, 1.55);
+}
+
+.arco-modal-simple .arco-modal-confirm-content {
+  color: var(--flowy-text-2, var(--text-secondary)) !important;
+  font-size: var(--flowy-text-body, 14px);
+  line-height: var(--flowy-leading-body, 1.55);
 }
 
 .arco-modal-simple .arco-modal-footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 24px;
+  gap: 10px;
+  margin-top: 24px !important;
+  padding: 0 !important;
 }
 
 .arco-modal-simple .arco-modal-footer > .arco-btn {
   min-width: 80px;
   height: 36px;
   margin-left: 0;
+  border-radius: var(--flowy-radius-md, 8px) !important;
   font-weight: var(--flowy-weight-medium, 500);
+}
+
+.arco-modal-simple .arco-modal-footer > .arco-btn:not(.arco-btn-primary) {
+  background: var(--flowy-surface-2, var(--color-fill-2)) !important;
+  border: 1px solid var(--flowy-border, var(--color-border-2)) !important;
+  color: var(--flowy-text-1, var(--color-text-1)) !important;
+}
+
+.arco-modal-simple .arco-modal-footer > .arco-btn:not(.arco-btn-primary):hover {
+  background: var(--flowy-surface-3, var(--color-fill-3)) !important;
+  border-color: var(--flowy-border-strong, var(--color-border-3)) !important;
+  color: var(--flowy-text-1, var(--color-text-1)) !important;
 }
 
 /* This confirmation is the only destructive-but-reversible directory action.
