@@ -346,6 +346,8 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
       okText: t('settings.presetDiscardChangesConfirm', { defaultValue: '放弃更改' }),
       cancelText: t('common.cancel', { defaultValue: '取消' }),
       okButtonProps: { status: 'danger' },
+      wrapStyle: { zIndex: 10000 },
+      maskStyle: { zIndex: 9999 },
       onOk: closeDrawer,
     });
   };
