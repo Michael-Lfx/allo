@@ -4,13 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Attention, CloseSmall } from '@icon-park/react';
+import { Attention } from '@icon-park/react';
 import classNames from 'classnames';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
-import { openOfficialWebsiteCredits } from '@/renderer/utils/openOfficialWebsiteCredits';
 import {
   resolveCreditsBubbleState,
   isCreditsBubbleDismissed,
@@ -36,6 +35,7 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
   const { whoami } = useCloudAuth();
   const [dismissedState, setDismissedState] = useState<CreditsBubbleState | null>(null);
   const [forceVisibleCount, setForceVisibleCount] = useState(blockedTriggerCount);
+  const bubbleRef = useRef<HTMLDivElement>(null);
 
   const bubbleState = resolveCreditsBubbleState({
     balance,
@@ -53,6 +53,23 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
       setDismissedState(null);
     }
   }, [blockedTriggerCount, forceVisibleCount]);
+
+  // Click outside listener: dismiss when clicking elsewhere on the page
+  useEffect(() => {
+    if (bubbleState === 'normal') return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (bubbleRef.current && !bubbleRef.current.contains(event.target as Node)) {
+        dismissCreditsBubble(userId, 'sendbox', bubbleState);
+        setDismissedState(bubbleState);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [bubbleState, userId]);
 
   if (bubbleState === 'normal' || isProcessing) {
     return null;
@@ -76,20 +93,6 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
     }
   }
 
-  const handleDismiss = (event: React.MouseEvent) => {
-    event.stopPropagation();
-    dismissCreditsBubble(userId, 'sendbox', bubbleState);
-    setDismissedState(bubbleState);
-  };
-
-  const handleTopUp = (event: React.MouseEvent) => {
-    event.stopPropagation();
-    void openOfficialWebsiteCredits(undefined, undefined, {
-      source: 'sendbox',
-      balance,
-    });
-  };
-
   const text = isExhausted
     ? t('conversation.sendBox.creditsExhaustedBlocked', {
         defaultValue: '积分已耗尽，请充值后发送',
@@ -98,22 +101,19 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
         defaultValue: '积分不足 1,000，建议及时充值',
       });
 
-  const actionText = isExhausted
-    ? t('common.creditsBubble.exhaustedAction', { defaultValue: '立即充值' })
-    : t('common.creditsBubble.lowAction', { defaultValue: '去充值' });
-
   return (
     <div
+      ref={bubbleRef}
       role='alert'
       aria-live='assertive'
       data-testid='sendbox-credits-bubble'
       className={classNames(
-        'credits-bubble-card sendbox-credits-bubble credits-bubble-enter pl-12px pr-10px py-6px flex items-center gap-8px',
+        'credits-bubble-card sendbox-credits-bubble credits-bubble-enter px-12px py-6px flex items-center gap-6px',
         isExhausted ? 'credits-bubble-card--exhausted' : 'credits-bubble-card--low'
       )}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => {
-        // Prevent input textarea from blurring and tearing down the bubble mid-click
+        // Prevent input textarea from blurring
         e.preventDefault();
         e.stopPropagation();
       }}
@@ -127,39 +127,9 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
         <Attention theme='filled' size='13' fill='currentColor' />
       </span>
 
-      <span className='text-12px font-500 leading-16px text-t-primary whitespace-nowrap'>
+      <span className='text-12px font-500 leading-16px text-t-primary whitespace-nowrap select-none'>
         {text}
       </span>
-
-      <button
-        type='button'
-        className={classNames(
-          'shrink-0 px-9px py-2px rd-5px text-11px font-600 border-none cursor-pointer transition-opacity hover:opacity-90 active:opacity-80',
-          isExhausted
-            ? 'bg-[var(--danger)] text-white'
-            : 'bg-[var(--primary-6)] text-white'
-        )}
-        onMouseDown={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        onClick={handleTopUp}
-      >
-        {actionText}
-      </button>
-
-      <button
-        type='button'
-        aria-label={t('common.creditsBubble.close', { defaultValue: '关闭提示' })}
-        className='shrink-0 flex items-center justify-center size-16px rd-4px text-t-tertiary hover:text-t-primary hover:bg-fill-2 transition-colors border-none bg-transparent cursor-pointer p-0 ml-2px'
-        onMouseDown={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        onClick={handleDismiss}
-      >
-        <CloseSmall theme='outline' size='13' fill='currentColor' />
-      </button>
 
       <div className='sendbox-credits-bubble-arrow-down' aria-hidden='true' />
     </div>

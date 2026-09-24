@@ -394,7 +394,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
 
   return (
     <div className={classNames('relative min-w-0 flex items-center', collapsed ? 'w-full justify-center' : 'flex-1')}>
-      <SiderCreditsBubble collapsed={collapsed} isMobile={isMobile} />
+      {!menuVisible && <SiderCreditsBubble collapsed={collapsed} isMobile={isMobile} />}
       <Popover
         className='sider-soft-popover sider-user-menu-popover'
         trigger='click'

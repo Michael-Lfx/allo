@@ -42,16 +42,16 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({ size = 'sm'
       }}
       onKeyDown={handleKeyDown}
       className={classNames(
-        'inline-flex items-center justify-center bg-transparent rd-4px transition-colors',
-        'cursor-pointer text-t-tertiary hover:bg-fill-2 hover:text-t-secondary active:bg-fill-3',
-        'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]',
-        size === 'xs' ? 'size-18px' : 'size-22px',
+        'inline-flex items-center justify-center rd-5px transition-all duration-150',
+        'cursor-pointer text-[var(--warning-6,#f59e0b)] hover:text-[#fbbf24] hover:bg-[rgba(245,158,11,0.18)] active:scale-95',
+        'focus-visible:outline-none focus-visible:shadow-[0_0_0_2px_rgba(245,158,11,0.4)]',
+        size === 'xs' ? 'size-18px p-1px' : 'size-22px p-2px',
         className
       )}
     >
       <ShoppingCart
-        theme='outline'
-        size={size === 'xs' ? '12' : '14'}
+        theme='filled'
+        size={size === 'xs' ? '13' : '15'}
         fill='currentColor'
         className='block leading-none'
       />

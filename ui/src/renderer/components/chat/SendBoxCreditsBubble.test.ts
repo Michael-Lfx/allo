@@ -24,11 +24,10 @@ describe('SendBoxCreditsBubble structure and integration', () => {
     expect(sendBoxSource.includes('credits-shake')).toBe(true);
   });
 
-  test('renders exhausted vs low hint translations', () => {
+  test('renders exhausted vs low hint translations and click-outside dismiss', () => {
     expect(bubbleSource.includes('conversation.sendBox.creditsExhaustedBlocked')).toBe(true);
     expect(bubbleSource.includes('conversation.sendBox.creditsLowHint')).toBe(true);
-    expect(bubbleSource.includes('common.creditsBubble.exhaustedAction')).toBe(true);
-    expect(bubbleSource.includes('common.creditsBubble.lowAction')).toBe(true);
-    expect(bubbleSource.includes('openOfficialWebsiteCredits')).toBe(true);
+    expect(bubbleSource.includes('pointerdown')).toBe(true);
+    expect(bubbleSource.includes('dismissCreditsBubble')).toBe(true);
   });
 });
