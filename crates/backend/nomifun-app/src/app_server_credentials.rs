@@ -52,12 +52,34 @@ pub struct ConnectorDeclaration {
     /// The marketplace directory name — the link between a connector row and its
     /// declaration (`34` §5.2).
     pub connector_id: String,
-    /// `none` | `oauth` | `token`, as stored by the importer from the market's
-    /// `auth_mode` (`34` §6.1).
-    pub auth_mode: String,
     pub title: Option<AppServerLocalizedString>,
     pub description: Option<AppServerLocalizedString>,
     pub fields: Vec<DeclaredField>,
+}
+
+/// Everything the host knows about one connector's credential face.
+///
+/// The mode and the form come from **two different imported components**, and the
+/// two do not exist under the same conditions:
+///
+/// - the normalized `auth_mode` rides in the `connector` component, which every
+///   marketplace connector has — including the 14 that need no form at all
+///   (`server-side` / `mcp` / `oneid-token`, `34` §6.1);
+/// - the form rides in the `credential` component, which only the 61 connectors
+///   that shipped a `token-schema.json` have (`34` §5.2).
+///
+/// So the mode has to be read from the connector component. Reading it from the
+/// form instead makes every declared connector answer `none` — the form payload
+/// carries no `auth_mode` — and falling back to the transport re-shows 授权 on the
+/// 14 that declare they need nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectorCredentialSource {
+    pub connector_id: String,
+    /// `none` | `oauth` | `token`, as the importer normalized the market index's
+    /// `auth_mode` (`34` §6.1).
+    pub auth_mode: String,
+    /// The form, when this connector shipped a `token-schema.json`.
+    pub declaration: Option<ConnectorDeclaration>,
 }
 
 fn localized(value: Option<&Value>, fallback: &str) -> AppServerLocalizedString {
@@ -110,11 +132,6 @@ pub fn declaration_from_payload(payload: &str) -> Option<ConnectorDeclaration> {
     }
     Some(ConnectorDeclaration {
         connector_id,
-        auth_mode: value
-            .get("auth_mode")
-            .and_then(Value::as_str)
-            .unwrap_or("none")
-            .to_owned(),
         title: optional_localized(value.get("title")),
         description: optional_localized(value.get("description")),
         fields,
@@ -123,16 +140,17 @@ pub fn declaration_from_payload(payload: &str) -> Option<ConnectorDeclaration> {
 
 /// The `credential.mode` for a connector.
 ///
-/// A declaration decides it. A connector with **no** declaration keeps the
+/// A marketplace declaration decides it, through the normalized `auth_mode`
+/// [`ConnectorCredentialSource`] carries. A connector with **no** source keeps the
 /// transport-derived answer it has always had: a hand-registered remote server
 /// still shows the OAuth entry point, while the 61 `token` connectors and the 204
 /// with an empty `auth_mode` no longer do (`34` §6.1).
 pub fn credential_mode(
-    declaration: Option<&ConnectorDeclaration>,
+    source: Option<&ConnectorCredentialSource>,
     transport: &McpTransport,
 ) -> AppServerCredentialMode {
-    match declaration {
-        Some(declaration) => match declaration.auth_mode.as_str() {
+    match source {
+        Some(source) => match source.auth_mode.as_str() {
             "token" => AppServerCredentialMode::Token,
             "oauth" => AppServerCredentialMode::Oauth,
             _ => AppServerCredentialMode::None,
@@ -266,9 +284,15 @@ impl AppServerConnectorCredentials {
         self
     }
 
-    /// The declaration for one registered connector, or `None` when it was not
-    /// imported from a marketplace (nothing declared anything).
-    pub async fn declaration_for(&self, mcp_server_id: &str) -> Option<ConnectorDeclaration> {
+    /// What one registered connector's marketplace entry declared, or `None` when
+    /// it was not imported from a marketplace (`34` §5.2).
+    ///
+    /// The link is the snapshot, not a new table: `find_snapshot_by_mcp_server_id`
+    /// already answers "which import registered this `mcp_servers` row", and that
+    /// snapshot holds both the `connector` component (which carries the
+    /// marketplace directory name **and** the normalized `auth_mode`) and the
+    /// `credential` component keyed by the same name.
+    pub async fn source_for(&self, mcp_server_id: &str) -> Option<ConnectorCredentialSource> {
         let snapshot = self
             .snapshots
             .find_snapshot_by_mcp_server_id(mcp_server_id)
@@ -276,8 +300,12 @@ impl AppServerConnectorCredentials {
             .ok()??;
         let components = self.snapshots.get_components(&snapshot.snapshot_id).await.ok()?;
 
-        // Which marketplace directory registered this row?
-        let connector_id = components
+        // Which marketplace directory registered this row, and how does that
+        // entry authenticate? Both answers live in the `connector` component: a
+        // `connector_id` is what distinguishes a marketplace entry from the
+        // `.mcp.json` path (which hard-codes an `auth_mode` and has no directory
+        // of its own).
+        let (connector_id, auth_mode) = components
             .iter()
             .filter(|component| component.kind == "connector")
             .find_map(|component| {
@@ -287,17 +315,27 @@ impl AppServerConnectorCredentials {
                     return None;
                 }
                 let payload: Value = serde_json::from_str(&component.payload_json).ok()?;
-                payload
-                    .get("connector_id")
+                let connector_id = payload.get("connector_id").and_then(Value::as_str)?;
+                // Absent only on a snapshot predating the normalization; `none` is
+                // then the fail-closed answer, not a guess at `oauth`.
+                let auth_mode = payload
+                    .get("auth_mode")
                     .and_then(Value::as_str)
-                    .map(str::to_owned)
+                    .unwrap_or("none");
+                Some((connector_id.to_owned(), auth_mode.to_owned()))
             })?;
 
-        components
+        let declaration = components
             .iter()
             .filter(|component| component.kind == "credential")
             .filter_map(|component| declaration_from_payload(&component.payload_json))
-            .find(|declaration| declaration.connector_id == connector_id)
+            .find(|declaration| declaration.connector_id == connector_id);
+
+        Some(ConnectorCredentialSource {
+            connector_id,
+            auth_mode,
+            declaration,
+        })
     }
 
     /// The `credential` block for one connector, as `principal` sees it.
@@ -308,9 +346,9 @@ impl AppServerConnectorCredentials {
         last_test_status: McpServerStatus,
         principal: Option<&str>,
     ) -> Option<AppServerConnectorCredential> {
-        let declaration = self.declaration_for(mcp_server_id).await;
-        let mode = credential_mode(declaration.as_ref(), transport);
-        if declaration.is_none() && mode == AppServerCredentialMode::None {
+        let source = self.source_for(mcp_server_id).await;
+        let mode = credential_mode(source.as_ref(), transport);
+        if source.is_none() && mode == AppServerCredentialMode::None {
             return None;
         }
         let values = transport_values(transport);
@@ -318,7 +356,7 @@ impl AppServerConnectorCredentials {
         let operator = secret_ref::operator_principal();
         Some(credential_block(
             mcp_server_id,
-            declaration.as_ref(),
+            source.as_ref().and_then(|source| source.declaration.as_ref()),
             mode,
             transport,
             &values,
@@ -349,11 +387,15 @@ impl AppServerConnectorCredentials {
             .get_server(&parse_server_id(mcp_server_id)?)
             .await
             .map_err(AppError::from)?;
-        let declaration = self.declaration_for(mcp_server_id).await.ok_or_else(|| {
-            AppError::BadRequest(format!(
-                "connector {mcp_server_id} declares no credential form to fill"
-            ))
-        })?;
+        let declaration = self
+            .source_for(mcp_server_id)
+            .await
+            .and_then(|source| source.declaration)
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "connector {mcp_server_id} declares no credential form to fill"
+                ))
+            })?;
         let (secrets, plains) = route_values(&declaration, &values).map_err(AppError::BadRequest)?;
 
         if !secrets.is_empty() {
@@ -375,7 +417,10 @@ impl AppServerConnectorCredentials {
         let writer = self.writer.as_ref().ok_or_else(|| {
             AppError::BadRequest("this host cannot store connector credentials".into())
         })?;
-        let declaration = self.declaration_for(mcp_server_id).await;
+        let declaration = self
+            .source_for(mcp_server_id)
+            .await
+            .and_then(|source| source.declaration);
         let all_keys: Vec<String> = match (&declaration, &keys) {
             (Some(declaration), None) => declaration
                 .fields
@@ -471,7 +516,8 @@ impl nomifun_app_server::ConnectorCredentialProvider for AppServerConnectorCrede
     }
 }
 
-fn parse_server_id(id: &str) -> Result<nomifun_api_types::McpServerId, AppError> {    nomifun_api_types::McpServerId::parse(id)
+fn parse_server_id(id: &str) -> Result<nomifun_api_types::McpServerId, AppError> {
+    nomifun_api_types::McpServerId::parse(id)
         .map_err(|error| AppError::BadRequest(format!("connector {id} is not a valid id: {error}")))
 }
 
@@ -638,10 +684,12 @@ mod tests {
     use super::*;
     use nomifun_common::secret_ref::scoped_key;
 
+    /// A stored `credential` component payload — what the importer writes
+    /// (`credential_component` in `nomifun-importer`), which carries **no**
+    /// `auth_mode`: the mode is not the form's business.
     fn declaration_payload() -> String {
         serde_json::json!({
             "connector_id": "tdengine",
-            "auth_mode": "token",
             "title": { "zh": "TDengine 配置", "en": "TDengine configuration" },
             "fields": [
                 { "key": "TDENGINE_API_KEY", "kind": "secret", "required": true,
@@ -651,6 +699,14 @@ mod tests {
             ],
         })
         .to_string()
+    }
+
+    fn source(auth_mode: &str) -> ConnectorCredentialSource {
+        ConnectorCredentialSource {
+            connector_id: "tdengine".to_owned(),
+            auth_mode: auth_mode.to_owned(),
+            declaration: declaration_from_payload(&declaration_payload()),
+        }
     }
 
     fn http_transport() -> McpTransport {
@@ -665,7 +721,6 @@ mod tests {
     fn a_declaration_round_trips_from_its_stored_payload() {
         let declaration = declaration_from_payload(&declaration_payload()).expect("declaration");
         assert_eq!(declaration.connector_id, "tdengine");
-        assert_eq!(declaration.auth_mode, "token");
         assert_eq!(declaration.fields.len(), 2);
         assert!(declaration.fields[0].is_secret());
         assert!(!declaration.fields[1].is_secret());
@@ -678,37 +733,37 @@ mod tests {
         assert!(declaration_from_payload("{}").is_none());
         assert!(declaration_from_payload(r#"{"connector_id":"x","fields":[]}"#).is_none());
         assert!(declaration_from_payload("not json").is_none());
+        // An `auth_mode` in the form payload is ignored, not believed: the mode is
+        // read from the connector component (`ConnectorCredentialSource`).
+        let with_mode: Value = serde_json::from_str(&declaration_payload()).unwrap();
+        assert!(with_mode.get("auth_mode").is_none());
     }
 
     #[test]
-    fn the_mode_comes_from_the_declaration_and_the_transport_is_only_a_fallback() {
-        let declaration = declaration_from_payload(&declaration_payload()).unwrap();
+    fn the_mode_comes_from_the_market_index_and_the_transport_is_only_a_fallback() {
         assert_eq!(
-            credential_mode(Some(&declaration), &http_transport()),
+            credential_mode(Some(&source("token")), &http_transport()),
             AppServerCredentialMode::Token
         );
-
-        let mut oauth = declaration.clone();
-        oauth.auth_mode = "oauth".to_owned();
         assert_eq!(
-            credential_mode(Some(&oauth), &http_transport()),
+            credential_mode(Some(&source("oauth")), &http_transport()),
             AppServerCredentialMode::Oauth
         );
 
         // The market's empty / `server-side` / `mcp` / `oneid-token` all mean
         // "nothing the client can fill" — this is the 204-connector behaviour
-        // change (`34` §6.1).
+        // change (`34` §6.1). `server-side` / `mcp` / `oneid-token` matter for a
+        // second reason: their 14 connectors ship no `token-schema.json`, so there
+        // is a source and no form.
         for mode in ["", "none", "server-side", "mcp", "oneid-token"] {
-            let mut declared = declaration.clone();
-            declared.auth_mode = mode.to_owned();
             assert_eq!(
-                credential_mode(Some(&declared), &http_transport()),
+                credential_mode(Some(&source(mode)), &http_transport()),
                 AppServerCredentialMode::None,
                 "{mode} must not offer an auth entry point"
             );
         }
 
-        // No declaration: keep what a hand-registered server has always shown.
+        // No source: keep what a hand-registered server has always shown.
         assert_eq!(
             credential_mode(None, &http_transport()),
             AppServerCredentialMode::Oauth
@@ -722,6 +777,41 @@ mod tests {
                     env: HashMap::new(),
                 }
             ),
+            AppServerCredentialMode::None
+        );
+    }
+
+    /// The wiring that step 5 caught: a declaration with no `auth_mode` of its own
+    /// must still report `token`, because the mode comes from the connector
+    /// component. Before this, `credential_mode` was handed the form's parsed
+    /// `auth_mode` — which the importer never writes — so all 61 `token`
+    /// connectors answered `none` and the WebUI had no form to render.
+    #[test]
+    fn a_declared_token_connector_reports_token_without_an_auth_mode_in_the_form() {
+        let source = source("token");
+        let declaration = source.declaration.as_ref().expect("a form");
+        assert!(
+            !declaration_payload().contains("auth_mode"),
+            "the fixture must stay faithful to what the importer stores"
+        );
+        assert_eq!(
+            credential_mode(Some(&source), &http_transport()),
+            AppServerCredentialMode::Token
+        );
+        assert_eq!(declaration.fields.len(), 2);
+    }
+
+    /// The 14 `server-side` / `mcp` / `oneid-token` connectors: a source, no form,
+    /// and therefore no auth affordance — the transport must not override that.
+    #[test]
+    fn a_source_without_a_form_still_reports_none_on_a_url_transport() {
+        let source = ConnectorCredentialSource {
+            connector_id: "server-side-demo".to_owned(),
+            auth_mode: "none".to_owned(),
+            declaration: None,
+        };
+        assert_eq!(
+            credential_mode(Some(&source), &http_transport()),
             AppServerCredentialMode::None
         );
     }

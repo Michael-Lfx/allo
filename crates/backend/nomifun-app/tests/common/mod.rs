@@ -34,6 +34,38 @@ pub async fn build_app() -> (axum::Router, AppServices) {
     (router, services)
 }
 
+/// `build_app`, plus the host config file an Agent Store host always has.
+///
+/// The credential **write** face (`connector/credential/set|clear`) is wired only
+/// when the host declares where its config lives (`AppServices::
+/// agent_store_config_path`) — that file is where `[credentials]` goes, and an
+/// empty `[credentials]` written to an invented path would be worse than saying
+/// no. `build_app` deliberately leaves it `None` so a test host never adopts the
+/// machine's own market sources; this variant points at a file inside the test's
+/// own temp root and hands the path back so a test can read what was stored.
+pub async fn build_app_with_agent_store_config() -> (axum::Router, AppServices, std::path::PathBuf) {
+    let root = tempfile::Builder::new()
+        .prefix("nomifun-app-e2e-store-")
+        .tempdir()
+        .unwrap()
+        .keep();
+    let db = nomifun_db::init_database_memory().await.unwrap();
+    let config_path = root.join("agent-store").join("config.toml");
+    let services = AppServices::from_config(
+        db,
+        &AppConfig {
+            data_dir: root.join("data"),
+            work_dir: root.join("work"),
+            agent_store_config_path: Some(config_path.clone()),
+            ..AppConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let router = create_router(&services).await;
+    (router, services, config_path)
+}
+
 pub const CLAUDE_AGENT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000101";
 pub const GEMINI_AGENT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000103";
 

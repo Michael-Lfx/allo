@@ -649,6 +649,14 @@ async fn a_declared_token_schema_becomes_the_credential_form() {
     let connector_payload: serde_json::Value =
         serde_json::from_str(&connector.payload_json).unwrap();
     assert_eq!(connector_payload["auth_mode"], "token");
+    // …and the form component deliberately says nothing about it: the mode and the
+    // form are two components, and the host reads the mode from the connector one
+    // (`34` §6.1, `ConnectorCredentialSource`). Duplicating it here is what made the
+    // host's lookup answer `none` for all 61 `token` connectors.
+    assert!(
+        payload.get("auth_mode").is_none(),
+        "the credential form must not carry an auth_mode: {payload}"
+    );
 
     // Placeholders upgraded according to the declaration: secrets become
     // references, plain settings stay templates for the runtime to fill.

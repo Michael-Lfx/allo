@@ -9,7 +9,6 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use common::{body_json, build_app, get_with_token, setup_and_login};
-
 const SOFTWARE_COMPANY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../nomifun-importer/tests/fixtures/software-company"
@@ -2527,4 +2526,293 @@ async fn importer_market_strict_entry_is_listed_but_refused() {
     let installed = body_json(install).await;
     assert_eq!(installed["installed_count"], 0, "{installed}");
     assert!(!installed["errors"].as_array().unwrap().is_empty(), "{installed}");
+}
+
+/// The credential face, end to end over the real HTTP surface (`34` §9 step 5).
+///
+/// Every other test of this feature stops at a boundary this one crosses:
+///
+/// - `nomifun-importer`'s tests stop at the stored components;
+/// - `app_server_credentials`'s unit tests hand-build the payloads, so they
+///   cannot see a wiring mistake *between* the two — which is exactly how the mode
+///   came to be read from a component that never carried it, leaving all 61
+///   `token` connectors with no form to render;
+/// - the WebUI's render tests are handed a `credential` block that a real host
+///   never produced.
+///
+/// So this drives a marketplace directory → install → `connectors` projection →
+/// `credential/get` → `set` → the file on disk → `clear`, and asserts on the wire
+/// shape the SPA actually consumes. The three entries cover the three modes the
+/// mode table has to tell apart (`34` §6.1): a `token` connector with a mixed
+/// form, a `server-side` one with no form at all, and a real `oauth` one.
+#[tokio::test]
+async fn importer_connector_credential_form_is_declared_installed_and_filled() {
+    const SECRET_DEFAULT: &str = "sk-live-must-never-be-persisted";
+    const FILLED_SECRET: &str = "supplied-by-the-user";
+
+    let (mut app, _services, config_path) = common::build_app_with_agent_store_config().await;
+    let (token, csrf) = setup_and_login(&mut app, &_services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let market_root = std::env::temp_dir().join(format!("as-cred-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(market_root.join(".codebuddy-connector")).unwrap();
+    std::fs::write(
+        market_root.join(".codebuddy-connector/connectors.json"),
+        r#"{
+            "name": "credential-demo",
+            "connectors": [
+                { "id": "demo-mixed", "name": "DemoMixed", "version": "1.0.0", "type": "mcp", "auth_mode": "token" },
+                { "id": "demo-none", "name": "DemoNone", "version": "1.0.0", "type": "mcp", "auth_mode": "server-side" },
+                { "id": "demo-oauth", "name": "DemoOauth", "version": "1.0.0", "type": "mcp", "auth_mode": "oauth" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    for entry in ["demo-mixed", "demo-none", "demo-oauth"] {
+        std::fs::create_dir_all(market_root.join(format!("connectors/{entry}/skills/demo"))).unwrap();
+    }
+    // `tdengine`'s shape: the url and the header are both templates over the same
+    // four fields, three of them plain settings with defaults.
+    std::fs::write(
+        market_root.join("connectors/demo-mixed/mcp.json"),
+        r#"{
+            "mcpServers": {
+                "demo-mixed": {
+                    "type": "streamableHttp",
+                    "url": "${DEMO_SCHEMA}://${DEMO_HOST}:${DEMO_PORT}/mcp",
+                    "headers": { "Authorization": "Bearer ${DEMO_API_KEY}" }
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("connectors/demo-mixed/token-schema.json"),
+        format!(
+            r#"{{
+                "title": "DemoMixed 配置",
+                "title_en": "DemoMixed configuration",
+                "description": "填入连接 DemoMixed 所需的参数。",
+                "docUrl": "https://docs.example.com/mixed",
+                "docLabel": "如何获取密钥？",
+                "fields": [
+                    {{ "key": "DEMO_SCHEMA", "type": "text", "label": "协议", "label_en": "Scheme", "defaultValue": "http" }},
+                    {{ "key": "DEMO_HOST", "type": "text", "label": "主机", "label_en": "Host", "defaultValue": "localhost" }},
+                    {{ "key": "DEMO_PORT", "type": "text", "label": "端口", "label_en": "Port", "defaultValue": "6042" }},
+                    {{ "key": "DEMO_API_KEY", "type": "password", "label": "密钥", "label_en": "Key", "required": true, "defaultValue": "{SECRET_DEFAULT}" }}
+                ]
+            }}"#
+        ),
+    )
+    .unwrap();
+    for (id, server) in [("demo-mixed", "demo-mixed"), ("demo-none", "demo-none"), ("demo-oauth", "demo-oauth")] {
+        std::fs::write(
+            market_root.join(format!("connectors/{id}/skills/demo/SKILL.md")),
+            "---\nname: demo\n---\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            market_root.join(format!("connectors/{id}/mcp.json")),
+            format!(
+                r#"{{ "mcpServers": {{ "{server}": {{ "type": "streamableHttp", "url": "https://example.com/{server}/mcp" }} }} }}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({ "source_kind": "directory", "source": market_root.to_string_lossy() }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "market add must succeed: {}", body_json(add).await);
+    let marketplace_id = body_json(add).await["marketplace_id"].as_str().unwrap().to_owned();
+
+    for entry in ["demo-mixed", "demo-none", "demo-oauth"] {
+        let install = app
+            .clone()
+            .oneshot(bearer_json(
+                "POST",
+                &format!("/api/app-server/store/{marketplace_id}/entries/{entry}/install"),
+                serde_json::json!({}),
+                &token,
+                &csrf,
+                Some(&connection_id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(install.status(), StatusCode::OK, "{entry} install must succeed");
+        let installed = body_json(install).await;
+        assert_eq!(installed["warnings"].as_array().map(Vec::len), Some(0), "{entry}: {installed}");
+        // The connector component is what this test then reads back, and the
+        // fixture also ships a skill — so the count alone would not prove it.
+        assert!(
+            installed["outcomes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|outcome| outcome["kind"] == "connector" && outcome["ok"] == true),
+            "{entry}: {installed}"
+        );
+    }
+
+    // ---- the form, as the SPA reads it -----------------------------------
+    let connectors = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/connectors", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(connectors.status(), StatusCode::OK);
+    let listed = body_json(connectors).await;
+    let by_name = |name: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|server| server["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is registered: {listed}"))
+            .clone()
+    };
+    for name in ["demo-mixed", "demo-none", "demo-oauth"] {
+        assert!(
+            !serde_json::to_string(&by_name(name)).unwrap().contains(SECRET_DEFAULT),
+            "{name}: a packaged secret default must not reach the projection"
+        );
+    }
+
+    let mixed = by_name("demo-mixed");
+    let credential = &mixed["credential"];
+    // The mode comes from the market index — not from the transport, which would
+    // answer `oauth` for every url-shaped connector.
+    assert_eq!(credential["mode"], "token", "{mixed}");
+    assert_eq!(credential["status"], "requires_input", "{mixed}");
+    assert_eq!(credential["missing"], serde_json::json!(["DEMO_API_KEY"]), "{mixed}");
+    // Connector-authored copy travels in both languages.
+    assert_eq!(credential["title"]["zh"], "DemoMixed 配置", "{mixed}");
+    assert_eq!(credential["title"]["en"], "DemoMixed configuration", "{mixed}");
+    assert_eq!(credential["description"]["zh"], "填入连接 DemoMixed 所需的参数。", "{mixed}");
+    assert_eq!(credential["fields"][3]["label"]["en"], "Key", "{mixed}");
+
+    let fields = credential["fields"].as_array().unwrap();
+    assert_eq!(fields.len(), 4, "{mixed}");
+    // `type: password` and the `_key` name both read as a secret; the three
+    // settings do not, even though one of them has `API` in it.
+    let kinds: Vec<&str> = fields.iter().map(|field| field["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["plain", "plain", "plain", "secret"], "{mixed}");
+    // Only a plain field carries a value — and it is the default the connector
+    // shipped, which is what prefills the form.
+    assert_eq!(fields[0]["value"], "http", "{mixed}");
+    assert_eq!(fields[1]["value"], "localhost", "{mixed}");
+    assert_eq!(fields[2]["value"], "6042", "{mixed}");
+    assert_eq!(fields[3]["value"], serde_json::Value::Null, "{mixed}");
+    assert_eq!(fields[3]["required"], true, "{mixed}");
+    assert_eq!(fields[3]["doc_url"]["en"], "https://docs.example.com/mixed", "{mixed}");
+
+    // The 14 connectors whose market `auth_mode` is `server-side` / `mcp` /
+    // `oneid-token` ship no `token-schema.json`: they must report `none` rather
+    // than inherit an OAuth entry point from the transport.
+    let none = by_name("demo-none");
+    assert_eq!(none["credential"]["mode"], "none", "{none}");
+    assert_eq!(none["credential"]["status"], "not_required", "{none}");
+    assert_eq!(none["credential"]["fields"], serde_json::json!([]), "{none}");
+
+    let oauth = by_name("demo-oauth");
+    assert_eq!(oauth["credential"]["mode"], "oauth", "{oauth}");
+
+    // ---- read, fill, read back -------------------------------------------
+    let connector_id = mixed["id"].as_str().unwrap().to_owned();
+    let read = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/connectors/{connector_id}/credential"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK, "credential/get must succeed");
+    assert_eq!(body_json(read).await["missing"], serde_json::json!(["DEMO_API_KEY"]));
+
+    let written = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/credential"),
+            // A key the form does not name must be refused, not stored.
+            serde_json::json!({ "values": { "DEMO_API_KEY": FILLED_SECRET, "DEMO_HOST": "db.internal" } }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(written.status(), StatusCode::OK, "credential/set must succeed");
+    let written = body_json(written).await;
+    assert_eq!(written["status"], "configured", "{written}");
+    assert_eq!(written["missing"], serde_json::json!([]), "{written}");
+    // The plain half went to the connector's own settings, so the form prefills
+    // the new value next time.
+    assert_eq!(written["fields"][1]["value"], "db.internal", "{written}");
+    // The secret half went to the credential store: it is never echoed back, not
+    // even by the call that wrote it.
+    assert!(
+        !serde_json::to_string(&written).unwrap().contains(FILLED_SECRET),
+        "credential/set must not echo the value it stored: {written}"
+    );
+
+    let stored = std::fs::read_to_string(&config_path).expect("the host config file");
+    assert!(stored.contains("[credentials]"), "{stored}");
+    assert!(stored.contains(FILLED_SECRET), "{stored}");
+    // D1: the key is namespaced by the calling principal, so two users of one
+    // shared host cannot resolve — or overwrite — each other's token.
+    assert!(
+        stored.contains(":DEMO_API_KEY"),
+        "the stored key must be scoped by principal: {stored}"
+    );
+    assert!(
+        !stored.contains("\nDEMO_API_KEY ="),
+        "a bare host-level key would be visible to every caller: {stored}"
+    );
+
+    let reread = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/connectors", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(reread).await.as_array().unwrap().iter()
+            .find(|server| server["name"] == "demo-mixed").unwrap()["credential"]["status"],
+        "configured",
+        "the list projection must agree with the write"
+    );
+
+    // ---- clear ------------------------------------------------------------
+    let cleared = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/credential/clear"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(cleared.status(), StatusCode::OK, "credential/clear must succeed");
+    let cleared = body_json(cleared).await;
+    assert_eq!(cleared["status"], "requires_input", "{cleared}");
+    assert_eq!(cleared["missing"], serde_json::json!(["DEMO_API_KEY"]), "{cleared}");
+    let stored = std::fs::read_to_string(&config_path).unwrap_or_default();
+    assert!(!stored.contains(FILLED_SECRET), "clear must forget the value: {stored}");
+
+    let _ = std::fs::remove_dir_all(&market_root);
 }
