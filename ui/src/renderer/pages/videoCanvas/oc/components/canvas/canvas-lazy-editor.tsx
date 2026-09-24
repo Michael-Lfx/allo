@@ -18,7 +18,7 @@ export async function retryDynamicImport<T>(load: () => Promise<T>, attempts = 3
 
 type PropsOf<T> = T extends ComponentType<infer P> ? P : never;
 
-export function CanvasLazyEditor<M extends { default: ComponentType<object> }>({
+export function CanvasLazyEditor<M extends { default: ComponentType<any> }>({
     load,
     fallback,
     errorTitle,
