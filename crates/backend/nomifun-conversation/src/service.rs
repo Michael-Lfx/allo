@@ -1898,6 +1898,45 @@ impl ConversationService {
         }
     }
 
+    async fn resolve_existing_turn_delivery_receipt(
+        &self,
+        user_id: &str,
+        conversation_key: &str,
+        operation_id: &str,
+        request_payload: &str,
+        receipt: nomifun_db::models::ConversationDeliveryReceiptRow,
+    ) -> Result<IdempotentMessageDelivery, AppError> {
+        if receipt.user_id != user_id
+            || receipt.conversation_id != conversation_key
+            || receipt.operation_id != operation_id
+            || receipt.kind != "turn"
+            || receipt.request_payload != request_payload
+        {
+            return Err(AppError::Conflict(
+                "public message idempotency key was reused with a different request".to_owned(),
+            ));
+        }
+        if !matches!(receipt.status.as_str(), "accepted" | "completed") {
+            return Err(AppError::Conflict(format!(
+                "message idempotency receipt has unsupported status '{}'",
+                receipt.status
+            )));
+        }
+        self.adopt_completed_turn_receipt_if_still_active(user_id, conversation_key, &receipt)
+            .await?;
+        Ok(IdempotentMessageDelivery {
+            message_id: receipt.message_id,
+            replayed: true,
+            completed: receipt.status == "completed",
+            result_ok: receipt.result_ok,
+            result_text: receipt.result_text,
+            result_error: receipt.result_error,
+            result_error_code: receipt.result_error_code,
+            result_error_retryable: receipt.result_error_retryable,
+            turn_id: None,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn continue_abandoned_public_turn_admission(
         repo: Arc<dyn IConversationRepository>,
@@ -9370,40 +9409,15 @@ impl ConversationService {
             .get_delivery_receipt(user_id, conversation_key, operation_id)
             .await?
         {
-            if receipt.user_id != user_id
-                || receipt.conversation_id != conversation_key
-                || receipt.operation_id != operation_id
-                || receipt.kind != "turn"
-                || receipt.request_payload != request_payload
-            {
-                return Err(AppError::Conflict(
-                    "public message idempotency key was reused with a different request"
-                        .to_owned(),
-                ));
-            }
-            if !matches!(receipt.status.as_str(), "accepted" | "completed") {
-                return Err(AppError::Conflict(format!(
-                    "message idempotency receipt has unsupported status '{}'",
-                    receipt.status
-                )));
-            }
-            self.adopt_completed_turn_receipt_if_still_active(
-                user_id,
-                conversation_key,
-                &receipt,
-            )
-            .await?;
-            return Ok(IdempotentMessageDelivery {
-                message_id: receipt.message_id,
-                replayed: true,
-                completed: receipt.status == "completed",
-                result_ok: receipt.result_ok,
-                result_text: receipt.result_text,
-                result_error: receipt.result_error,
-                result_error_code: receipt.result_error_code,
-                result_error_retryable: receipt.result_error_retryable,
-                turn_id: None,
-            });
+            return self
+                .resolve_existing_turn_delivery_receipt(
+                    user_id,
+                    conversation_key,
+                    operation_id,
+                    &request_payload,
+                    receipt,
+                )
+                .await;
         }
 
         // A fresh durable claim is an initial mutation-owner boundary. Hold the
@@ -9449,6 +9463,27 @@ impl ConversationService {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
         if row.status.as_deref() == Some("running") {
+            // An independent concurrent service sharing this SQLite database
+            // may have won the admission race and transitioned the conversation
+            // to Running after our pre-gate receipt lookup above. Re-read the
+            // receipt under the preparation gate: if this exact operation was
+            // the winner, absorb the concurrent delivery as an idempotent replay
+            // rather than failing closed on an unproven orphan turn.
+            if let Some(receipt) = self
+                .conversation_repo
+                .get_delivery_receipt(user_id, conversation_key, operation_id)
+                .await?
+            {
+                return self
+                    .resolve_existing_turn_delivery_receipt(
+                        user_id,
+                        conversation_key,
+                        operation_id,
+                        &request_payload,
+                        receipt,
+                    )
+                    .await;
+            }
             return Err(self.unproven_running_generation_error(&row));
         }
 
