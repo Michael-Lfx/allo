@@ -54,6 +54,7 @@ pub fn legacy_default_data_dir() -> PathBuf {
 /// dev state fully isolated from the installed app. Pure, for unit testing;
 /// only `default_data_dir`'s unset default uses it (explicit env is taken
 /// verbatim by clap, channel-agnostic).
+#[allow(dead_code)]
 fn nomi_leaf(suffix: &str) -> String {
     storage_paths::nomi_leaf(suffix)
 }

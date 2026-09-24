@@ -63,6 +63,7 @@ pub fn extract_domain_candidate(messages: &[serde_json::Value]) -> Option<Domain
 }
 
 /// Prefer session-end interest.db (LLM), then substantive rules, transcript, skill slug.
+#[allow(dead_code)]
 pub fn extract_domain_candidate_for_work_package(
     data_dir: &std::path::Path,
     interest_enabled: bool,

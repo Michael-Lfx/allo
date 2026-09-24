@@ -7,7 +7,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
-use nomi_types::message::{ContentBlock, Message, Role};
+use nomi_types::message::{ContentBlock, Message};
 
 // ---------------------------------------------------------------------------
 // RedactionPattern

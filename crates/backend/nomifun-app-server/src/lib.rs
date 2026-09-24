@@ -83,7 +83,7 @@ use nomifun_api_types::{
     AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
-    AppServerMarketplaceSummary, AppServerModelList, AppServerModelSummary,
+    AppServerMarketplaceSummary, AppServerModelList,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary,
     AppServerStoreInstallResult,

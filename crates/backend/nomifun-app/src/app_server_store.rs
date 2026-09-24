@@ -30,6 +30,7 @@ pub struct AppServerStoreProvider {
     markets: Arc<dyn MarketplaceProvider>,
     market_rows: Arc<dyn IMarketplaceRepository>,
     snapshots: Arc<dyn IPluginSnapshotRepository>,
+    #[allow(dead_code)]
     importer: ImporterService,
     installs: Arc<dyn InstallProvider>,
     /// Remote materialization root (`{work_dir}/agent-store-markets`),
@@ -78,6 +79,7 @@ struct ConnectorIndexInfo {
     name_zh: Option<String>,
     name_en: Option<String>,
     version: Option<String>,
+    #[allow(dead_code)]
     description: Option<String>,
 }
 

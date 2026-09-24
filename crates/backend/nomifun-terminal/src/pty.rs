@@ -354,10 +354,11 @@ impl PtyHandle {
 fn command_with_locale_precedence(
     program: String,
     args: Vec<String>,
-    env: &HashMap<String, String>,
+    _env: &HashMap<String, String>,
 ) -> CommandSpec {
     #[cfg(unix)]
     {
+        let env = _env;
         // Process requests inherit the backend environment. Preserve the old
         // terminal contract where a session-level LC_CTYPE/LANG override is not
         // silently shadowed by a stronger inherited locale category. `env`

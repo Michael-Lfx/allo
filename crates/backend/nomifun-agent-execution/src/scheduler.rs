@@ -13,12 +13,12 @@ use dashmap::DashMap;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use nomifun_api_types::{
-    AgentExecution, AgentExecutionDetail, ExecutionAttempt, ExecutionModelRef,
+    AgentExecution, AgentExecutionDetail, ExecutionModelRef,
     ExecutionParticipant, ExecutionStep,
 };
 use nomifun_common::{
     AdaptationPolicy, AgentExecutionEventKind, AgentExecutionStatus, AgentStepMode,
-    AgentToolPolicy, AppError, ExecutionAttemptStatus, ExecutionStepKind, ExecutionStepStatus,
+    AppError, ExecutionAttemptStatus, ExecutionStepKind, ExecutionStepStatus,
     StepFailurePolicy, apply_agent_role_context, generate_id, now_ms,
 };
 use nomifun_db::{
@@ -2779,6 +2779,8 @@ pub(crate) fn system_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomifun_api_types::ExecutionAttempt;
+    use nomifun_common::AgentToolPolicy;
 
     #[derive(Debug)]
     struct TestCleanup {

@@ -499,6 +499,7 @@ pub(crate) struct PreparedTeamLeader {
     pub conversation: ConversationResponse,
     /// The Leader's resolved model — the same resolution the template participants
     /// inherited, so a receipt and its template agree by construction.
+    #[allow(dead_code)]
     pub model: ProviderWithModel,
 }
 

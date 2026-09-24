@@ -24,7 +24,7 @@ use nomifun_api_types::{
     AppServerImportResult, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceEntry, AppServerMarketplaceEntrySnapshot,
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
-    AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
+    AppServerMarketplaceSummary,
 };
 use nomifun_app_server::{InstallProvider, MarketplaceProvider};
 use nomifun_common::{AppError, LocalizedVariant, collect_localized_variants};

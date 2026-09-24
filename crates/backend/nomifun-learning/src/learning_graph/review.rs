@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::completer::LearningCompleter;
 
-use super::{LearningGraphData, draft::DraftGraph};
+use super::draft::DraftGraph;
 
 /// 一次终审最多采纳的条数：超过说明图有系统性问题，条目只会互相稀释。
 const MAX_REVIEW_FINDINGS: usize = 8;

@@ -2,7 +2,7 @@
 
 use nomi_config::{
     GatewayConfig, InsightsConfig, MediaGenConfig, ServerConfig, ServerLoginMethod,
-    DEFAULT_FLOWY_WEBSITE_URL, DEFAULT_WECHAT_FLOWY_SERVER_BASE, LEGACY_WECHAT_FLOWY_SERVER_BASE,
+    DEFAULT_FLOWY_WEBSITE_URL, DEFAULT_WECHAT_FLOWY_SERVER_BASE,
 };
 
 /// Built-in provider row id synced after cloud login.
@@ -77,7 +77,7 @@ pub fn default_gateway_config() -> GatewayConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nomi_config::ServerLoginMethod;
+    use nomi_config::{ServerLoginMethod, LEGACY_WECHAT_FLOWY_SERVER_BASE};
 
     #[test]
     fn ensure_gateway_defaults_fills_empty_base_url() {

@@ -387,6 +387,7 @@ pub struct MinedSessionTools {
     /// Ordered sequence of tool names invoked in the session.
     pub tool_sequence: Vec<String>,
     /// The session these tools were mined from.
+    #[allow(dead_code)]
     pub session_id: String,
 }
 

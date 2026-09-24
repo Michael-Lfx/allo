@@ -13,6 +13,7 @@ pub(crate) enum TurnPhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TurnCommand {
     Admit,
+    #[allow(dead_code)]
     Cancel,
     Finish,
 }

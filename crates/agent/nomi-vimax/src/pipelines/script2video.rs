@@ -1768,6 +1768,7 @@ fn pick_video_assets(
 }
 
 /// Previous shot in timeline order within the same scene (by idx).
+#[allow(dead_code)]
 fn timeline_predecessor<'a>(
     shots: &'a [ShotDescription],
     shot_idx: i32,
@@ -3060,6 +3061,7 @@ fn character_voice_lock_clause(
 /// Resolves audio from storyboard `台词`/`音效` (or mines motion/visual). Does
 /// **not** paste FIXED SPEAKER VOICE into the caption — that doubled the
 /// storyboard line and fought `@AudioN`.
+#[allow(dead_code)]
 fn seedance_audio_caption_block(
     audio_desc: Option<&str>,
     motion_desc: &str,
@@ -3104,6 +3106,7 @@ fn seedance_audio_caption_block(
 
 /// Turn storyboard `台词:…音效:…` (or already-typed `{…} <…>`) into Seedance captions
 /// without wrapping the 台词 marker itself.
+#[allow(dead_code)]
 fn format_storyboard_audio_caption(raw: &str) -> String {
     const LINE: &[&str] = &["台词:", "台词："];
     let has_line_marker = LINE.iter().any(|m| find_case_insensitive(raw, m).is_some());

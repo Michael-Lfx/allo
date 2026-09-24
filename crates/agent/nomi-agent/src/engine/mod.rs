@@ -1991,7 +1991,7 @@ impl AgentEngine {
             let mut assistant_text = String::new();
             let mut thinking_text = String::new();
             let mut thinking_signature: Option<String>;
-            let mut provider_round_id: Option<String> = None;
+            let mut provider_round_id: Option<String>;
             let mut tool_calls: Vec<ContentBlock>;
             let mut previewed_tool_calls: BTreeMap<String, String>;
             // Ids of unadvertised tool previews already warned about this pass.
@@ -2000,7 +2000,7 @@ impl AgentEngine {
             let mut warned_unadvertised_progress: HashSet<String>;
             let mut stop_reason: StopReason;
             let mut truncated_calls: Vec<round::LedgerCutoff> = Vec::new();
-            let mut saw_truncated_tool_use = false;
+            let mut saw_truncated_tool_use: bool;
             let mut turn_usage: TokenUsage;
             let mut done_count: u8;
             let mut request_breakdown;
