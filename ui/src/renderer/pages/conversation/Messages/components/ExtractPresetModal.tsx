@@ -131,18 +131,23 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
     >
       <div className='flex flex-col gap-18px py-4px'>
         {/* Modal Header */}
-        <div className='flex items-start gap-12px'>
-          <div className='flex h-36px w-36px shrink-0 items-center justify-center rd-10px bg-primary-1 text-primary-6 mt-1px'>
+        <div className='flex items-center gap-12px'>
+          <div
+            className='flex h-36px w-36px shrink-0 items-center justify-center rd-10px bg-primary-1 text-primary-6 [&>span]:flex [&>span]:items-center [&>span]:justify-center'
+            style={{ lineHeight: 0 }}
+          >
             <MagicWand theme='filled' size={20} fill='currentColor' />
           </div>
           <div className='min-w-0 flex-1 pr-16px'>
-            <h2 className='m-0 text-16px font-600 text-t-primary leading-tight flex items-center gap-6px'>
-              <span>{t('conversation.extractPreset.title', { defaultValue: '提炼为专属设定' })}</span>
-              <span className='px-6px py-1px rd-4px text-10px font-medium bg-primary-1 text-primary-6 b-1 b-solid border-primary-2'>
+            <div className='flex items-center gap-6px'>
+              <h2 className='m-0 text-16px font-600 text-t-primary leading-tight'>
+                {t('conversation.extractPreset.title', { defaultValue: '提炼为专属设定' })}
+              </h2>
+              <span className='px-6px py-1px rd-4px text-10px font-medium bg-primary-1 text-primary-6 b-1 b-solid border-primary-2 leading-none'>
                 AI Preset
               </span>
-            </h2>
-            <p className='m-0 mt-5px text-12px text-t-secondary leading-relaxed'>
+            </div>
+            <p className='m-0 mt-4px text-12px text-t-secondary leading-snug'>
               {t('conversation.extractPreset.subtitle', {
                 defaultValue: '从当前对话成果中智能提纯经验，生成包含提示词与技能绑定的独立设定。',
               })}
@@ -155,7 +160,10 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
           <div className='py-28px flex flex-col items-center justify-center text-center animate-fade-in'>
             <div className='relative flex h-46px w-46px items-center justify-center mb-14px'>
               <div className='absolute inset-0 rd-full animate-ping opacity-20 bg-primary-6' />
-              <div className='relative flex h-40px w-40px items-center justify-center rd-full bg-primary-1 text-primary-6 shadow-sm'>
+              <div
+                className='relative flex h-40px w-40px items-center justify-center rd-full bg-primary-1 text-primary-6 shadow-sm [&>span]:flex [&>span]:items-center [&>span]:justify-center'
+                style={{ lineHeight: 0 }}
+              >
                 <Lightning theme='filled' size={20} fill='currentColor' className='animate-pulse' />
               </div>
             </div>
@@ -178,7 +186,10 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
             <div className='grid grid-cols-3 gap-10px'>
               <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
                 <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
-                  <span className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-10px font-bold'>
+                  <span
+                    className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
+                    style={{ lineHeight: 1 }}
+                  >
                     1
                   </span>
                   <span>{t('conversation.extractPreset.flowStep1Title', { defaultValue: '角色定位归纳' })}</span>
@@ -192,7 +203,10 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
 
               <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
                 <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
-                  <span className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-10px font-bold'>
+                  <span
+                    className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
+                    style={{ lineHeight: 1 }}
+                  >
                     2
                   </span>
                   <span>{t('conversation.extractPreset.flowStep2Title', { defaultValue: '工作流沉淀' })}</span>
@@ -206,7 +220,10 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
 
               <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
                 <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
-                  <span className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-10px font-bold'>
+                  <span
+                    className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-11px font-600 leading-none select-none text-center'
+                    style={{ lineHeight: 1 }}
+                  >
                     3
                   </span>
                   <span>{t('conversation.extractPreset.flowStep3Title', { defaultValue: '适用技能装配' })}</span>
