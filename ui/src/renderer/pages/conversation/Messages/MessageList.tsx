@@ -42,11 +42,6 @@ import MessageThinking from './components/MessageThinking';
 import MessageMoaReference from './components/MessageMoaReference';
 import MessageSkillLoad from './components/MessageSkillLoad';
 import MessageListSkeleton from './components/MessageListSkeleton';
-import FirstWinOutcomeCard from './components/FirstWinOutcomeCard';
-import {
-  buildFirstWinOutcomeSnapshot,
-  shouldShowFirstWinOutcomeCard,
-} from './components/firstWinOutcomeModel';
 import { TaskGroup } from '@renderer/components/beautifulUi/taskRows/TaskRows';
 import { resolveTaskGroupStatus } from '@renderer/components/beautifulUi/taskRows/taskRowModel';
 import TurnProcessDisclosure from './components/TurnProcessDisclosure';
@@ -60,7 +55,6 @@ import {
 import ProcessTraceItem, { type ProcessTraceItemExpansionControls } from './components/ProcessTraceItem';
 import { isContextCompressionTip } from './processTipModel';
 import { formatFileTargetPreview, splitToolReceiptTargets } from './processFileTargetLabel';
-import { useFirstWinMode } from '@/renderer/utils/onboarding/firstWinMode';
 import { FOLLOW_BOTTOM_THRESHOLD_PX, useAutoScroll } from './useAutoScroll';
 import { useAutoPreviewOfficeFiles } from '@/renderer/hooks/file/useAutoPreviewOfficeFiles';
 import SelectionReplyButton from './components/SelectionReplyButton';
@@ -885,8 +879,6 @@ const MessageList: React.FC<{
   const loadedConversationId = useMessageListLoadedId();
   const artifacts = useConversationArtifacts();
   const conversationContext = useConversationContextSafe();
-  const { isFirstWin } = useFirstWinMode();
-  const [outcomeDismissed, setOutcomeDismissed] = useState(false);
   useKnowledgeWritebackEvents(conversationContext?.conversation_id);
   useAutoPreviewOfficeFiles(conversationContext);
   const workspaceRoots = useMemo(
@@ -1380,21 +1372,6 @@ const MessageList: React.FC<{
     [displayList]
   );
 
-  const firstWinOutcomeSnapshot = useMemo(
-    () => buildFirstWinOutcomeSnapshot(displayList),
-    [displayList]
-  );
-  const showFirstWinOutcome = shouldShowFirstWinOutcomeCard({
-    isFirstWin,
-    isProcessing: conversationContext?.isProcessing === true,
-    snapshot: firstWinOutcomeSnapshot,
-    dismissed: outcomeDismissed,
-  });
-
-  useEffect(() => {
-    setOutcomeDismissed(false);
-  }, [conversationContext?.conversation_id]);
-
   const lastLiveStepLabelRef = useRef<string | undefined>(undefined);
   const [liveStepAnnouncement, setLiveStepAnnouncement] = useState('');
 
@@ -1674,16 +1651,6 @@ const MessageList: React.FC<{
     </div>
   );
 
-  const firstWinOutcomeFooter =
-    showFirstWinOutcome && firstWinOutcomeSnapshot ? (
-      <div className='px-8px max-w-full md:max-w-780px mx-auto' data-testid='first-win-outcome-footer'>
-        <FirstWinOutcomeCard
-          snapshot={firstWinOutcomeSnapshot}
-          conversationId={conversationContext?.conversation_id}
-          onDismiss={() => setOutcomeDismissed(true)}
-        />
-      </div>
-    ) : null;
   const [dynamicSpacerHeight, setDynamicSpacerHeight] = useState<number | null>(null);
   const isNewUserTurn = list.length > 0 && list[list.length - 1]?.position === 'right';
   const isProcessingOrNewTurn = conversationContext?.isProcessing === true || isNewUserTurn;
@@ -1955,12 +1922,7 @@ const MessageList: React.FC<{
                   rangeChanged={handleVirtuosoRangeChanged}
                   components={{
                     Header: () => <div className='h-10px' />,
-                    Footer: () => (
-                      <>
-                        {firstWinOutcomeFooter}
-                        {listEndSpacer}
-                      </>
-                    ),
+                    Footer: () => listEndSpacer,
                   }}
                   itemContent={(index, item) => renderItem(index, item)}
                 />
@@ -1970,7 +1932,6 @@ const MessageList: React.FC<{
                   {displayList.map((item, index) => (
                     <React.Fragment key={item.id}>{renderItem(index, item)}</React.Fragment>
                   ))}
-                  {firstWinOutcomeFooter}
                   {listEndSpacer}
                 </>
               )}

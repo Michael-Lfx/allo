@@ -21,17 +21,27 @@
     "skillsMarketDesc": "Search and activate community Skills on demand. Configure once, available for all agents.",
     "skillsMarketDetails": "View More >>"
   },
-  "firstWinOutcome": {
-    "aria": "First reviewable result",
-    "title": "First reviewable result",
-    "statusWithChanges": "Verified · reviewable file changes",
-    "statusAnswer": "Delivered · reviewable answer summary",
-    "noFilesHint": "No file changes yet · copy the summary or ask a follow-up to confirm value",
-    "continue": "Ask a follow-up",
-    "reviewFiles": "Review changes",
-    "saveFlow": "Save as flow",
-    "confirm": "This helped",
-    "followUpPrompt": "Continue from that result:"
+  "extractPreset": {
+    "action": "Extract as Preset",
+    "title": "Extract as Dedicated Preset",
+    "subtitle": "Distill insights and workflows from this conversation into a reusable agent preset.",
+    "description": "AI will analyze the conversation context and extract a dedicated persona, structured system instructions, and recommended skills.",
+    "flowStep1Title": "Define Persona",
+    "flowStep1Desc": "Derive role name and core responsibilities",
+    "flowStep2Title": "Structure Prompt",
+    "flowStep2Desc": "Generate structured prompt and constraints",
+    "flowStep3Title": "Attach Skills",
+    "flowStep3Desc": "Detect and bind matching skills from chat",
+    "additionalGuidanceLabel": "Additional Guidance (Optional)",
+    "additionalGuidancePlaceholder": "Optional requirements (e.g. reply in English, code conventions). Leave blank to auto-extract.",
+    "footerNote": "The Preset drawer will open upon extraction for you to review and save.",
+    "cancel": "Cancel",
+    "startExtract": "Extract Preset",
+    "extracting": "Forging Preset...",
+    "stepAnalyzing": "Analyzing conversation context and intent...",
+    "stepStructuring": "Structuring workflow instructions and constraints...",
+    "stepMatchingSkills": "Detecting and binding matching skills...",
+    "success": "Preset extracted successfully. You can review and save it."
   },
   "history": {
     "noHistory": "No chat history",

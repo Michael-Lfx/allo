@@ -36,6 +36,13 @@ import TagManagementModal from './TagManagementModal';
 type PresetNavigationState = {
   openPresetId?: string;
   openPresetEditor?: boolean;
+  createPresetDraft?: {
+    name?: string;
+    description?: string;
+    context?: string;
+    skills?: string[];
+    avatar?: string;
+  };
 };
 const OPEN_PRESET_EDITOR_INTENT_KEY = 'guid.openPresetEditorIntent';
 
@@ -153,6 +160,13 @@ const PresetSettings: React.FC = () => {
 
   useEffect(() => {
     if (hasConsumedNavigationIntentRef.current) return;
+
+    if (navigationState?.createPresetDraft) {
+      hasConsumedNavigationIntentRef.current = true;
+      void editor.handleCreate(navigationState.createPresetDraft);
+      return;
+    }
+
     const openPresetFromRoute =
       navigationState?.openPresetEditor && navigationState.openPresetId ? navigationState.openPresetId : null;
 

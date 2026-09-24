@@ -270,6 +270,7 @@ const AgentSkillImportDrawer: React.FC<AgentSkillImportDrawerProps> = ({ visible
 
 /** Embedded preset step; it has no second Drawer and keeps the parent draft alive. */
 export const AgentSkillImportEmbedded: React.FC<AgentSkillImportDrawerProps & { closeLabel?: string }> = (props) => {
+  if (!props.visible) return null;
   const mode = props.mode ?? 'preset';
   const controller = useAgentSkillImportController({ ...props, mode });
   return (

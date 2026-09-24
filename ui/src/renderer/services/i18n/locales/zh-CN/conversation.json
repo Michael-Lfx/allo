@@ -21,17 +21,27 @@
     "skillsMarketDesc": "按需搜索并调用社区 Skills，一次配置，所有Agent通用。",
     "skillsMarketDetails": "详情 >>"
   },
-  "firstWinOutcome": {
-    "aria": "首个可检查成果",
-    "title": "首个可检查成果",
-    "statusWithChanges": "已验证 · 有可检查的文件变更",
-    "statusAnswer": "已交付 · 可检查的结果摘要",
-    "noFilesHint": "暂无文件变更 · 可复制摘要或继续追问确认价值",
-    "continue": "继续追问",
-    "reviewFiles": "查看变更",
-    "saveFlow": "保存为流程",
-    "confirm": "成果有用",
-    "followUpPrompt": "在刚才的结果上继续："
+  "extractPreset": {
+    "action": "提炼为设定",
+    "title": "提炼为专属设定",
+    "subtitle": "从当前对话成果中智能提纯经验，生成包含提示词与技能绑定的独立设定。",
+    "description": "AI 将根据当前对话上下文，自动提取并提炼出专属角色名称、系统提示词与推荐绑定的技能。",
+    "flowStep1Title": "角色定位归纳",
+    "flowStep1Desc": "提炼角色定位与核心职责",
+    "flowStep2Title": "工作流沉淀",
+    "flowStep2Desc": "沉淀系统提示词与交互规范",
+    "flowStep3Title": "适用技能装配",
+    "flowStep3Desc": "智能匹配并装配适用技能",
+    "additionalGuidanceLabel": "补充定制要求（选填）",
+    "additionalGuidancePlaceholder": "可在此补充角色偏好或输出约束（如保持中文、特定代码规范等），留空将全自动提炼",
+    "footerNote": "提炼完成后将自动拉起设定抽屉，您可二次润色微调后保存入库",
+    "cancel": "取消",
+    "startExtract": "开始智能提炼",
+    "extracting": "正在智能锻造中...",
+    "stepAnalyzing": "正在分析对话上下文与核心意图...",
+    "stepStructuring": "正在构建工作流与系统提示词...",
+    "stepMatchingSkills": "正在匹配并装配适用技能...",
+    "success": "已成功提炼设定，您可继续调整并保存"
   },
   "history": {
     "noHistory": "暂无对话历史",

@@ -418,10 +418,34 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
   transform: translateY(0.5px) scale(0.985);
 }
 
-.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading) {
+.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success) {
   background-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
   border-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
   color: var(--flowy-accent-fg, var(--control-selected-fg, #fff)) !important;
+}
+
+.arco-btn-primary.arco-btn-status-danger:not(.arco-btn-disabled):not(.arco-btn-loading) {
+  background-color: var(--flowy-danger, var(--color-danger-6, #e11d48)) !important;
+  border-color: var(--flowy-danger, var(--color-danger-6, #e11d48)) !important;
+  color: #ffffff !important;
+}
+
+.arco-btn-primary.arco-btn-status-danger:not(.arco-btn-disabled):hover {
+  background-color: color-mix(in srgb, var(--flowy-danger, var(--color-danger-6, #e11d48)) 88%, #ffffff) !important;
+  border-color: color-mix(in srgb, var(--flowy-danger, var(--color-danger-6, #e11d48)) 88%, #ffffff) !important;
+  color: #ffffff !important;
+}
+
+.arco-btn-primary.arco-btn-status-warning:not(.arco-btn-disabled):not(.arco-btn-loading) {
+  background-color: var(--warning, #f59e0b) !important;
+  border-color: var(--warning, #f59e0b) !important;
+  color: #ffffff !important;
+}
+
+.arco-btn-primary.arco-btn-status-success:not(.arco-btn-disabled):not(.arco-btn-loading) {
+  background-color: var(--success, #10b981) !important;
+  border-color: var(--success, #10b981) !important;
+  color: #ffffff !important;
 }
 
 .arco-btn-primary.arco-btn-loading,
