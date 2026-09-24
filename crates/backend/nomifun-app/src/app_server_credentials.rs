@@ -687,6 +687,44 @@ fn reload_credentials(path: &std::path::Path) {
     }
 }
 
+/// Move the host-level `[credentials]` entries under the installation owner
+/// (`34` §9 第 6 步).
+///
+/// One-time and idempotent, and a **no-op unless the host has declared who owns
+/// it** — the caller passes the owner it just declared, so a host that never
+/// declares one keeps the single-user reading of `[credentials]` it has always
+/// had. The file is read, rewritten only when something actually moved, written
+/// atomically and owner-only, and the in-process map is refreshed from the result
+/// so the rename takes effect without a restart.
+///
+/// Returns what happened, including the conflicts that were deliberately left
+/// alone; the caller reports them.
+pub fn scope_host_level_credentials(
+    path: &std::path::Path,
+    owner: &str,
+) -> Result<nomifun_app_server::agent_store::CredentialScoping, AppError> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(source) => source,
+        // No config file yet: there is nothing to migrate, and creating one here
+        // would invent a file the operator never asked for.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Default::default());
+        }
+        Err(error) => {
+            return Err(AppError::Internal(format!("read config: {error}")));
+        }
+    };
+    let (document, report) = nomifun_app_server::agent_store::AgentStoreConfig::scope_credentials(
+        &source, owner,
+    )
+    .map_err(AppError::Internal)?;
+    if report.changed_anything() {
+        write_private(path, &document)?;
+        reload_credentials(path);
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1026,8 +1064,81 @@ mod tests {
         );
     }
 
+    /// The storage migration, end to end on a real file (`34` §9 第 6 步).
     #[test]
-    fn a_connector_with_nothing_to_fill_is_not_required() {        let block = credential_block(
+    fn host_level_credentials_are_scoped_to_the_owner_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# hand-edited\n[credentials]\n# the demo token\nDEMO_TOKEN = \"v\"\n\"bob:OWN\" = \"b\"\n",
+        )
+        .unwrap();
+
+        let report = scope_host_level_credentials(&path, "alice").expect("migration");
+        assert_eq!(report.moved, vec!["DEMO_TOKEN"]);
+        assert!(report.conflicts.is_empty());
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("# hand-edited"), "{written}");
+        assert!(written.contains("# the demo token"), "{written}");
+        // The value is still there — under a name that says whose it is.
+        let reparsed =
+            nomifun_app_server::agent_store::AgentStoreConfig::from_source(&written).unwrap();
+        assert_eq!(reparsed.credentials.get("alice:DEMO_TOKEN").map(String::as_str), Some("v"));
+        assert_eq!(reparsed.credentials.get("bob:OWN").map(String::as_str), Some("b"));
+        assert!(!reparsed.credentials.contains_key("DEMO_TOKEN"), "{written}");
+
+        // The in-process map was refreshed, so the rename is live in this process:
+        // the owner resolves it, and the host-internal path acts for the owner.
+        assert_eq!(
+            secret_ref::lookup_for_with(
+                Some("alice"),
+                "DEMO_TOKEN",
+                &reparsed.credentials,
+                Some("alice")
+            )
+            .as_deref(),
+            Some("v")
+        );
+        assert_eq!(
+            secret_ref::lookup_for_with(None, "DEMO_TOKEN", &reparsed.credentials, Some("alice"))
+                .as_deref(),
+            Some("v")
+        );
+        // …and a second principal still sees nothing, which is the acceptance item
+        // the whole feature exists for.
+        assert_eq!(
+            secret_ref::lookup_for_with(
+                Some("bob"),
+                "DEMO_TOKEN",
+                &reparsed.credentials,
+                Some("alice")
+            ),
+            None
+        );
+
+        // Idempotent, and it does not rewrite the file a second time: the mtime is
+        // the cheap witness that a no-op stayed a no-op.
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let again = scope_host_level_credentials(&path, "alice").expect("second pass");
+        assert!(again.is_empty(), "{again:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn scoping_a_host_with_no_config_file_invents_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("config.toml");
+        let report = scope_host_level_credentials(&path, "alice").expect("no file is not an error");
+        assert!(report.is_empty());
+        assert!(!path.exists(), "a host with no config must not get one");
+    }
+
+    #[test]
+    fn a_connector_with_nothing_to_fill_is_not_required() {
+        let block = credential_block(
             "conn-1",
             None,
             AppServerCredentialMode::None,

@@ -464,8 +464,11 @@ fn row_to_sdk_mcp_server(row: &McpServerRow) -> Result<McpServer, String> {
 /// literal `secret:NAME` to another runtime is the failure this removes.
 ///
 /// The ACP build reaches this with the installation owner's session (a
-/// `ModelOnly` principal receives no tools at all), so host-level entries are the
-/// right ones to read; there is no per-caller principal to thread yet (`34` §7).
+/// `ModelOnly` principal receives no tools at all), so the host-internal scope is
+/// the right one; there is no per-caller principal to thread yet (`34` §7). It
+/// names the **declared owner** explicitly because that is the identity whose
+/// entries it reads — after the storage migration, a scope that omitted the owner
+/// would resolve nothing (`34` §9 第 6 步).
 fn resolve_remote_request(
     server_name: &str,
     url: &str,
@@ -473,7 +476,13 @@ fn resolve_remote_request(
     values: &HashMap<String, String>,
 ) -> Result<(String, Vec<(String, String)>), String> {
     let credentials = nomifun_common::secret_ref::credentials();
-    let scope = nomifun_common::secret_ref::TransportScope::new(&credentials, values);
+    let owner = nomifun_common::secret_ref::operator_principal();
+    let scope = nomifun_common::secret_ref::TransportScope::for_principal(
+        &credentials,
+        values,
+        None,
+        owner.as_deref(),
+    );
     let resolved_url = nomifun_common::secret_ref::resolve_request_string(url, &scope);
     let mut resolved_headers = Vec::with_capacity(headers.len());
     let mut missing = resolved_url.missing.clone();

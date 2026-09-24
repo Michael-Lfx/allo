@@ -378,9 +378,42 @@ async fn serve(
     // principal on a shared host from resolving them: after this point a bare
     // entry is visible only to this identity, and per-principal entries
     // (`<principal>:NAME`) are what everyone else uses (34 §7).
-    nomifun_common::secret_ref::set_operator_principal(Some(
-        services.authoritative_user_id.to_string(),
-    ));
+    let owner = services.authoritative_user_id.to_string();
+    nomifun_common::secret_ref::set_operator_principal(Some(owner.clone()));
+
+    // …and make that ownership a property of the **data** rather than of this
+    // process (34 §9 step 6). Until the entries are renamed, the declaration above
+    // is the only thing keeping them from being read by every caller; a host that
+    // later stops declaring an owner, or an operator moving the file to a machine
+    // whose identity changed, would re-expose all of them. One pass, idempotent,
+    // and a no-op on a file that has already been scoped. Run after the declaration
+    // so the reload below installs the renamed map.
+    if let Some(path) = cli.agent_store_config.as_deref() {
+        match nomifun_app::app_server_credentials::scope_host_level_credentials(path, &owner) {
+            Ok(report) if !report.is_empty() => {
+                tracing::info!(
+                    moved = ?report.moved,
+                    dropped = ?report.dropped,
+                    "[credentials] host-level entries are now scoped to the installation owner"
+                );
+                // Values are never logged; the conflict warning names keys only.
+                if !report.conflicts.is_empty() {
+                    tracing::warn!(
+                        conflicts = ?report.conflicts,
+                        "a host-level [credentials] entry and its owner-scoped twin hold \
+                         different values; the scoped one wins and the host-level entry was \
+                         left in place — remove whichever was not meant"
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // Never fatal: a host that cannot rewrite its own config still
+                // resolves credentials exactly as it did before this ran.
+                tracing::warn!(%error, "[credentials] scoping failed; continuing unscoped");
+            }
+        }
+    }
 
     // First-run admin provisioning (no-op in local mode and once an admin
     // exists). Returns whether the install still awaits interactive setup.

@@ -643,6 +643,33 @@ pub struct AgentStoreModel {
     pub reasoning_key: Option<String>,
 }
 
+/// What one pass of [`AgentStoreConfig::scope_credentials`] did (`34` §9 第 6 步).
+///
+/// A report rather than a bare `Result`: a host that rewrites the operator's
+/// hand-edited file owes them a sentence about what moved, what it considered
+/// duplicate, and what it refused to decide.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CredentialScoping {
+    /// Bare `NAME` entries renamed to `<owner>:NAME`.
+    pub moved: Vec<String>,
+    /// Bare entries dropped because `<owner>:NAME` already held the same value.
+    pub dropped: Vec<String>,
+    /// Bare entries left exactly where they were: `<owner>:NAME` holds a
+    /// **different** value, and picking one would be destroying a credential.
+    pub conflicts: Vec<String>,
+}
+
+impl CredentialScoping {
+    /// Whether the document changed, i.e. whether the caller has anything to write.
+    pub fn changed_anything(&self) -> bool {
+        !self.moved.is_empty() || !self.dropped.is_empty()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.moved.is_empty() && self.dropped.is_empty() && self.conflicts.is_empty()
+    }
+}
+
 impl AgentStoreConfig {
     /// Parse the file at `path`. Returns a human-readable error for logging.
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -868,6 +895,92 @@ impl AgentStoreConfig {
             table.remove(key);
         }
         Ok(document.to_string())
+    }
+
+    /// Move every host-level `[credentials]` entry under `owner` (`34` §7 / §9 第 6 步).
+    ///
+    /// `NAME = "…"` is the form a single-user host has always written by hand. Once
+    /// a host declares who owns it, that form has exactly one legitimate reader —
+    /// the owner — and **the declaration is the only thing keeping it that way**:
+    /// drop it (a host that stops declaring an owner, an operator moving the file
+    /// to a machine with a different identity) and every bare entry becomes
+    /// readable by every caller again. Renaming them under the owner's prefix makes
+    /// the scoping a property of the **data** instead of of the running process.
+    ///
+    /// Never destructive at a distance:
+    ///
+    /// - an already-scoped key is untouched;
+    /// - a bare key whose owner-scoped twin holds the **same** value is dropped —
+    ///   pure duplication;
+    /// - a bare key whose twin holds a **different** value is left exactly where it
+    ///   is and reported as a conflict: the operator decides which value was meant;
+    /// - everything else in the file — comments, ordering, unrelated keys — survives,
+    ///   because this file is hand-edited by design.
+    ///
+    /// Idempotent: a second pass over the result has nothing left to move. The
+    /// caller writes the returned document; nothing here touches the disk or a value.
+    pub fn scope_credentials(
+        source: &str,
+        owner: &str,
+    ) -> Result<(String, CredentialScoping), String> {
+        let owner = owner.trim();
+        if owner.is_empty() {
+            return Err("a credential owner must not be empty".to_owned());
+        }
+        if owner.contains(':') {
+            // The separator itself is how a scoped key is read back, so an owner
+            // that contains one would make its own keys unparseable.
+            return Err("a credential owner must not contain ':'".to_owned());
+        }
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+        let Some(table) = document
+            .get_mut("credentials")
+            .and_then(toml_edit::Item::as_table_mut)
+        else {
+            // No table at all: return the source verbatim rather than a
+            // re-serialisation of it.
+            return Ok((source.to_owned(), CredentialScoping::default()));
+        };
+
+        let host_level: Vec<String> = table
+            .iter()
+            .map(|(key, _)| key.to_owned())
+            .filter(|key| nomifun_common::secret_ref::parse_scoped_key(key).is_none())
+            .collect();
+
+        let mut report = CredentialScoping::default();
+        for name in host_level {
+            let scoped = nomifun_common::secret_ref::scoped_key(owner, &name);
+            match (table.get(&name).and_then(toml_edit::Item::as_str), table.get(&scoped).and_then(toml_edit::Item::as_str)) {
+                // Same value under both spellings: the bare one is the duplicate.
+                (Some(bare), Some(scoped_value)) if bare == scoped_value => {
+                    table.remove(&name);
+                    report.dropped.push(name);
+                }
+                // Two different values for one name: not ours to decide.
+                (Some(_), Some(_)) => report.conflicts.push(name),
+                (Some(_), None) => {
+                    let Some((key, item)) = table.remove_entry(&name) else {
+                        continue;
+                    };
+                    // `insert_formatted` + the old key's decor: the comment written
+                    // above the entry follows it to its new name.
+                    let renamed =
+                        toml_edit::Key::new(&scoped).with_decor(key.decor().clone());
+                    table.insert_formatted(&renamed, item);
+                    report.moved.push(name);
+                }
+                // A non-string credential value: not something this understands.
+                (None, _) => report.conflicts.push(name),
+            }
+        }
+
+        report.moved.sort();
+        report.dropped.sort();
+        report.conflicts.sort();
+        Ok((document.to_string(), report))
     }
 
     /// Minimal-change rewrite of one `[tools.domains]` boolean switch.
@@ -2268,9 +2381,84 @@ type = "openai"
         assert_eq!(reparsed.credentials.get("TOKEN").map(String::as_str), Some("host"));
     }
 
+    /// The one-time move of host-level entries under the owner (`34` §9 第 6 步).
     #[test]
-    fn clearing_a_credential_is_idempotent_and_leaves_the_rest_alone() {
-        let source = "[credentials]\nA = \"1\"\nB = \"2\"\n\n[tools]\nlsp = false\n";
+    fn scoping_moves_host_level_entries_under_the_owner_and_keeps_the_rest() {
+        let source = "# my host\n[memory]\ndistill_enabled = false\n\n[credentials]\n# the old demo token\nDEMO_TOKEN = \"v\"\nOTHER = \"o\"\n\"alice:OWN\" = \"a\"\n";
+        let (scoped, report) = AgentStoreConfig::scope_credentials(source, "alice").expect("scoping");
+
+        assert_eq!(report.moved, vec!["DEMO_TOKEN", "OTHER"]);
+        assert!(report.dropped.is_empty() && report.conflicts.is_empty());
+        assert!(report.changed_anything() && !report.is_empty());
+
+        // The rest of the hand-edited file is untouched, and the comment above the
+        // entry followed it to its new name.
+        assert!(scoped.contains("# my host"), "{scoped}");
+        assert!(scoped.contains("distill_enabled = false"), "{scoped}");
+        assert!(scoped.contains("# the old demo token"), "{scoped}");
+
+        let reparsed = AgentStoreConfig::load_from_str(&scoped);
+        assert_eq!(reparsed.credentials.get("alice:DEMO_TOKEN").map(String::as_str), Some("v"));
+        assert_eq!(reparsed.credentials.get("alice:OTHER").map(String::as_str), Some("o"));
+        assert_eq!(reparsed.credentials.get("alice:OWN").map(String::as_str), Some("a"));
+        assert!(!reparsed.credentials.contains_key("DEMO_TOKEN"), "{scoped}");
+        assert!(!reparsed.credentials.contains_key("OTHER"), "{scoped}");
+
+        // Idempotent: nothing is host-level any more, so a second pass is a no-op
+        // and the caller has nothing to write.
+        let (again, second) = AgentStoreConfig::scope_credentials(&scoped, "alice").expect("again");
+        assert!(second.is_empty(), "{second:?}");
+        assert!(!second.changed_anything());
+        assert_eq!(again, scoped, "a second pass must not rewrite the file");
+    }
+
+    #[test]
+    fn scoping_drops_a_duplicate_and_refuses_to_pick_a_winner_in_a_conflict() {
+        // Same value under both spellings: the bare one is pure duplication.
+        let (scoped, report) = AgentStoreConfig::scope_credentials(
+            "[credentials]\nTOKEN = \"same\"\n\"alice:TOKEN\" = \"same\"\n",
+            "alice",
+        )
+        .expect("scoping");
+        assert_eq!(report.dropped, vec!["TOKEN"]);
+        assert!(report.moved.is_empty());
+        assert!(!scoped.contains("\nTOKEN ="), "{scoped}");
+
+        // Different values: leaving both is the only non-destructive answer, and
+        // the report says so instead of the file quietly losing one of them.
+        let (untouched, report) = AgentStoreConfig::scope_credentials(
+            "[credentials]\nTOKEN = \"host\"\n\"alice:TOKEN\" = \"alice\"\n",
+            "alice",
+        )
+        .expect("scoping");
+        assert_eq!(report.conflicts, vec!["TOKEN"]);
+        assert!(!report.changed_anything(), "{report:?}");
+        let reparsed = AgentStoreConfig::load_from_str(&untouched);
+        assert_eq!(reparsed.credentials.get("TOKEN").map(String::as_str), Some("host"));
+        assert_eq!(reparsed.credentials.get("alice:TOKEN").map(String::as_str), Some("alice"));
+    }
+
+    #[test]
+    fn scoping_a_file_without_credentials_changes_nothing_at_all() {
+        let source = "# only memory\n[memory]\nenabled = false\n";
+        let (out, report) = AgentStoreConfig::scope_credentials(source, "alice").expect("scoping");
+        assert!(report.is_empty());
+        assert_eq!(out, source, "no table means no re-serialisation either");
+
+        // An empty table is the post-clear state, and it must survive unchanged.
+        let cleared = "[default_marketplaces.x]\nsource = \"s\"\n\n[credentials]\n";
+        let (out, report) = AgentStoreConfig::scope_credentials(cleared, "alice").expect("scoping");
+        assert!(report.is_empty());
+        assert_eq!(out, cleared);
+
+        // A missing owner is a caller error, not a silent no-op: moving entries to
+        // a nameless principal would make them unreachable.
+        assert!(AgentStoreConfig::scope_credentials(source, "  ").is_err());
+        assert!(AgentStoreConfig::scope_credentials(source, "a:b").is_err());
+    }
+
+    #[test]
+    fn clearing_a_credential_is_idempotent_and_leaves_the_rest_alone() {        let source = "[credentials]\nA = \"1\"\nB = \"2\"\n\n[tools]\nlsp = false\n";
         let edited = AgentStoreConfig::without_credential(source, "A").expect("edit");
         let reparsed = AgentStoreConfig::load_from_str(&edited);
         assert!(!reparsed.credentials.contains_key("A"));

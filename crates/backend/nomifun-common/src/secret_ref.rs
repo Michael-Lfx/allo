@@ -208,6 +208,72 @@ fn host_entries_visible_to(principal: Option<&str>, operator: Option<&str>) -> b
     }
 }
 
+/// Whose entry a caller with no identity of its own resolves (`34` §7).
+///
+/// A host-internal path — the agent assembly, an SDK convenience call — has no
+/// principal to offer, and the code that reaches it is "acting for the operator"
+/// (`nomi.rs`). So an unnamed caller reads the **owner's** own entry. Before the
+/// storage migration this was indistinguishable from reading the host-level entry,
+/// because host-level was all an unnamed caller could see; afterwards the owner's
+/// credentials live under their prefix, and a host-internal path that did not
+/// follow them there would silently lose every existing credential.
+fn effective_principal<'a>(principal: Option<&'a str>, owner: Option<&'a str>) -> Option<&'a str> {
+    principal.or(owner)
+}
+
+/// A **view** over the installed credential entries for one owner declaration
+/// (`34` D1 的终态：per-principal 查询面).
+///
+/// Everything that asks "what does this caller resolve?" goes through here, so
+/// the ladder exists once instead of being re-derived from key strings at each
+/// call site:
+///
+/// 1. the caller's own `<principal>:NAME` — for an unnamed caller, the owner's;
+/// 2. a bare `NAME`, the host-level entry, only if [`host_entries_visible_to`];
+/// 3. (the ambient environment, added by [`lookup_for_with`] — it is the
+///    operator's too, so it rides the same gate).
+///
+/// A caller **never** falls back to another principal's entry: cross-principal
+/// substitution is the one thing this must not do.
+pub struct CredentialQuery<'a> {
+    entries: &'a HashMap<String, String>,
+    owner: Option<&'a str>,
+}
+
+impl<'a> CredentialQuery<'a> {
+    pub fn new(entries: &'a HashMap<String, String>, owner: Option<&'a str>) -> Self {
+        Self { entries, owner }
+    }
+
+    /// The stored value `principal` resolves for `name`, or `None`.
+    pub fn get(&self, principal: Option<&str>, name: &str) -> Option<&'a str> {
+        if let Some(principal) = effective_principal(principal, self.owner)
+            && let Some(value) = self.entries.get(&scoped_key(principal, name))
+        {
+            return Some(value);
+        }
+        if !host_entries_visible_to(principal, self.owner) {
+            return None;
+        }
+        self.entries.get(name).map(String::as_str)
+    }
+
+    /// The **host-level** names in the store — the bare, pre-`34` form.
+    ///
+    /// This is what the storage migration has to move under the owner (§9 step 6),
+    /// and what a diagnostic can report without touching a value.
+    pub fn host_level_names(&self) -> Vec<&'a str> {
+        let mut names: Vec<&'a str> = self
+            .entries
+            .keys()
+            .filter(|key| parse_scoped_key(key).is_none())
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        names
+    }
+}
+
 /// Look up a credential **for one principal** (`34` §7).
 ///
 /// `<principal>:NAME` wins; a bare `NAME` is the host-level fallback and is
@@ -226,20 +292,14 @@ pub fn lookup_for_with(
     credentials: &HashMap<String, String>,
     operator: Option<&str>,
 ) -> Option<String> {
-    if let Some(principal) = principal
-        && let Some(value) = credentials.get(&scoped_key(principal, name))
-    {
-        return Some(value.clone());
+    if let Some(value) = CredentialQuery::new(credentials, operator).get(principal, name) {
+        return Some(value.to_owned());
     }
-    if !host_entries_visible_to(principal, operator) {
-        return None;
-    }
-    // The same ladder as before: an explicit config entry, then the ambient
-    // environment (which is also the operator's).
-    credentials
-        .get(name)
-        .cloned()
-        .or_else(|| std::env::var(name).ok())
+    // The last rung is the ambient environment, which is also the operator's — so
+    // it sits behind the same visibility gate as the host-level entry.
+    host_entries_visible_to(principal, operator)
+        .then(|| std::env::var(name).ok())
+        .flatten()
 }
 
 /// The per-principal form of a credential key: `<principal>:NAME`.
@@ -724,6 +784,69 @@ mod tests {
             lookup_for_with(Some("bob"), "TOKEN", &credentials, None).as_deref(),
             Some("bob-token")
         );
+    }
+
+    /// Once the host-level entries have been moved under the owner (`34` §9 step
+    /// 6), a caller with no identity of its own must follow them there — the agent
+    /// assembly path is exactly that caller, and if it did not, the migration would
+    /// silently empty every existing credential out of every session.
+    #[test]
+    fn an_unnamed_caller_acts_for_the_owner_after_the_storage_migration() {
+        let credentials = HashMap::from([(scoped_key("alice", "TOKEN"), "alice-token".to_owned())]);
+
+        // Owner declared, entry already scoped: the host-internal path resolves it.
+        assert_eq!(
+            lookup_for_with(None, "TOKEN", &credentials, Some("alice")).as_deref(),
+            Some("alice-token")
+        );
+        // A different owner does not hand its entry to this host-internal path.
+        assert_eq!(lookup_for_with(None, "TOKEN", &credentials, Some("bob")), None);
+        // No owner declared: an unnamed caller has nobody to act for, so it reads
+        // only the host-level namespace — the pre-`34` behaviour, unchanged.
+        assert_eq!(lookup_for_with(None, "TOKEN", &credentials, None), None);
+        // A named non-owner still cannot reach the owner's entry.
+        assert_eq!(lookup_for_with(Some("bob"), "TOKEN", &credentials, Some("alice")), None);
+    }
+
+    /// The migration's other half: the owner's own entry wins over a leftover
+    /// host-level one, so a conflict cannot quietly change which value an
+    /// already-named caller sends.
+    #[test]
+    fn the_owners_own_entry_wins_over_a_leftover_host_level_one() {
+        let credentials = HashMap::from([
+            ("TOKEN".to_owned(), "host".to_owned()),
+            (scoped_key("alice", "TOKEN"), "alice-token".to_owned()),
+        ]);
+        assert_eq!(
+            lookup_for_with(Some("alice"), "TOKEN", &credentials, Some("alice")).as_deref(),
+            Some("alice-token")
+        );
+        assert_eq!(
+            lookup_for_with(None, "TOKEN", &credentials, Some("alice")).as_deref(),
+            Some("alice-token"),
+            "the unnamed path acts for the owner, so it follows the same ladder"
+        );
+    }
+
+    #[test]
+    fn the_query_face_names_what_is_still_host_level() {
+        let credentials = HashMap::from([
+            ("HOST_LEVEL".to_owned(), "h".to_owned()),
+            ("ANOTHER".to_owned(), "a".to_owned()),
+            (scoped_key("alice", "SCOPED"), "s".to_owned()),
+        ]);
+        let query = CredentialQuery::new(&credentials, Some("alice"));
+
+        // What the migration has to move: the bare entries, sorted, and never the
+        // scoped ones.
+        assert_eq!(query.host_level_names(), vec!["ANOTHER", "HOST_LEVEL"]);
+        // And no value is reachable through the enumeration.
+        assert_eq!(query.get(Some("alice"), "SCOPED"), Some("s"));
+        assert_eq!(query.get(Some("alice"), "ANOTHER"), Some("a"));
+        assert_eq!(query.get(Some("bob"), "ANOTHER"), None);
+
+        let scoped_only = HashMap::from([(scoped_key("alice", "SCOPED"), "s".to_owned())]);
+        assert!(CredentialQuery::new(&scoped_only, Some("alice")).host_level_names().is_empty());
     }
 
     #[test]

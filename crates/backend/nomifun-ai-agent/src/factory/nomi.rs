@@ -2185,6 +2185,13 @@ fn apply_bearer_token(
 /// (`Authorization: Bearer ${secret:TOKEN}`). What is still a mistake is
 /// `Bearer secret:TOKEN` — the bare word `secret:` is not a template — and that
 /// shape is named in a warning. The header *name* is logged, never the value.
+///
+/// The scope carries the host's **declared owner**, because an assembly path has
+/// no principal of its own and "acts for the operator" (`34` §7). That is not
+/// cosmetic: the storage migration moves host-level `[credentials]` entries under
+/// the owner's prefix, so a scope that did not name the owner would stop seeing
+/// every credential an existing host has, and every session would come up short
+/// (`34` §9 第 6 步).
 fn resolve_header_secrets(
     conversation_id: Option<&str>,
     server_name: &str,
@@ -2192,7 +2199,13 @@ fn resolve_header_secrets(
     values: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let credentials = nomifun_common::secret_ref::credentials();
-    let scope = nomifun_common::secret_ref::TransportScope::new(&credentials, values);
+    let owner = nomifun_common::secret_ref::operator_principal();
+    let scope = nomifun_common::secret_ref::TransportScope::for_principal(
+        &credentials,
+        values,
+        None,
+        owner.as_deref(),
+    );
     let mut resolved_env = HashMap::with_capacity(headers.len());
     let mut missing: Vec<String> = Vec::new();
     for (key, value) in headers {
@@ -2277,7 +2290,8 @@ fn should_load_user_mcp_row(row: &McpServerRow, selected_ids: Option<&[McpServer
 ///
 /// Callers here are installation-owner-only paths (`is_instance_owner`), so
 /// `principal: None` — "acts for the operator" — is the accurate scope, not a
-/// placeholder (`34` §7).
+/// placeholder (`34` §7). The owner is passed explicitly for the same reason as in
+/// [`resolve_header_secrets`]: it is the identity whose entries this path reads.
 ///
 /// The error names the missing credentials, never the URL (which contains them).
 fn resolve_url_secrets(
@@ -2287,7 +2301,13 @@ fn resolve_url_secrets(
     values: &HashMap<String, String>,
 ) -> Result<String, String> {
     let credentials = nomifun_common::secret_ref::credentials();
-    let scope = nomifun_common::secret_ref::TransportScope::new(&credentials, values);
+    let owner = nomifun_common::secret_ref::operator_principal();
+    let scope = nomifun_common::secret_ref::TransportScope::for_principal(
+        &credentials,
+        values,
+        None,
+        owner.as_deref(),
+    );
     let resolved = nomifun_common::secret_ref::resolve_request_string(url, &scope);
     if resolved.missing.is_empty() {
         return Ok(resolved.value.unwrap_or_else(|| url.to_owned()));
