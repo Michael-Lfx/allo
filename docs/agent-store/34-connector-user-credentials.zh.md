@@ -386,6 +386,16 @@ credential: {
   | `connector/test`、`connector/call` | 协议连接绑定的 `LocalPrincipal.principal_id`（§3.1） | 不会发生（连接必然有 principal） |
   | agent 装配（`nomi.rs:2095` 等） | 只有 `conversation_id`，需补一条 conversation → owner principal 的查询 | **secret 一律视为缺失**（fail-closed），沿用既有 `report_missing_credentials` 上报 |
 
+  **实施期更正（第 6 步）**：第一条的"连接必然有 principal"是对的，但**这个面今天只有一个
+  principal 能连上**——整个 `/api/app-server/*` 包在 `protect_instance_owner` 里
+  （`router/routes.rs:1233`），非安装所有者拿 `403 Forbidden("Installation owner access
+  required")`（`nomifun-auth/src/middleware.rs:145`），连 `initialize` 都过不去，更到不了
+  `connector/*`。所以 `credential` 块按调用者投影这件事，**今天可观测的效果是"关于所有者"**；
+  第二个 principal 各取各的，要等出现次级 principal 的连接面（§10 已登记）。per-principal
+  键控与查询面的价值因此分两半：一半是**未来的面**（一旦开放，存储已经是对的），一半是
+  **现在就在生效的**——`[credentials]` 是一个手工维护的共享文件，改名把它从"靠进程里的
+  声明兜住"变成"数据本身就是分开的"（§9.2 第 6 步）。
+
   **绝不回退到宿主级取值**：共享宿主上那等于串号。宿主级的旧键只对**宿主操作者本人**
   （本地 owner principal）回退可见（§7）。
 - 解析后的 transport 由这一个方法产出，probe / call / agent 三条路共用，消除 §3.4 第二条的分叉。
@@ -503,11 +513,13 @@ credential: {
    手工维护的文件，而不是「保留宿主级并登记」放着不管。冲突键（裸键与 `<owner>:NAME`
    不同值）保留原样并告警：挑一个等于毁掉另一个凭据，取舍是操作者的。
 
-§9 表里第 6 步的三条验收对应到测试：**无前缀旧键只对 owner principal 可见** 与 **两个
-principal 互不可见** 由 `secret_ref` 的 `a_host_level_entry_belongs_to_the_operator_only`、
-`a_principal_never_substitutes_another_principals_entry` 钉住，并在文件级迁移测试末段用第二个
-principal 再断言一次；**迁移测试** 是 `nomifun-app-server` 三条纯变换（改名 / 重复 / 冲突 / 无表
-不动）加 `nomifun-app` 两条文件级（迁移 + 幂等 + 无配置文件不建）。
+§9 表里第 6 步的三条验收：**迁移测试** 是 `nomifun-app-server` 三条纯变换（改名 / 重复 /
+冲突 / 无表不动）加 `nomifun-app` 两条文件级（迁移 + 幂等 + 无配置文件不建）；**无前缀旧键
+只对 owner principal 可见** 与 **两个 principal 互不可见** 由 `secret_ref` 的
+`a_host_level_entry_belongs_to_the_operator_only`、`a_principal_never_substitutes_another_
+principals_entry` 钉住，并在文件级迁移测试末段用第二个 principal 再断言一次。后两条**无法
+在协议面上断言**：非所有者连 `initialize` 都是 403（§6.2 的实施期更正），所以协议面上"两个
+principal 各取各的"这件事当前不存在可测面——这也是它被登记进 §10 的原因。
 
 **第 5 步期间修掉的两处第 4 步缺口**（都是浏览器里跑起来才看见的）：
 
@@ -581,6 +593,12 @@ principal 再断言一次；**迁移测试** 是 `nomifun-app-server` 三条纯�
   正式写入"前者为后者的一种来源分支"，避免两套并存。
 - `examples_zh/_en`（283 条均有）是否进入连接器详情作为推荐提问。
 - `06` 的 OAuth scope 挑战（远程端点按需申请 scope）不在本方案内，另行登记。
+- **次级 principal 的连接面**：`/api/app-server/*` 整体是安装所有者专用
+  （`protect_instance_owner`，非所有者 403）。在出现"非所有者也能连上的连接面"之前，
+  `credential` 块里"按调用者给出 `missing`/`status`"与"两个 principal 各取各的"没有可观测
+  场景，也就没有可测面。这不影响存储层的正确性（键控与迁移都已就位），但它决定了这条
+  能力的**收益时间**：要么等次级连接面立项，要么承认今天的收益只有"共享文件不靠进程声明
+  兜住"这一半。
 - **`ConnectorStatus` 仍是 transport 推导的**：UI 已改为优先用 `credential` 四态（第 5 步），
   但 `connector/list` / `connector/status` 的 `status` 字段对未探测过的 token 连接器仍是
   `authorization_required`——直接读该字段的 SDK 使用者会得到「需要授权」。要根除得让
