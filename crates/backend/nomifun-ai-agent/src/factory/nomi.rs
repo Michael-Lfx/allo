@@ -1257,6 +1257,7 @@ fn catalog_model_base(model: &str) -> &str {
         .unwrap_or(model)
 }
 
+#[allow(dead_code)]
 fn is_preferred_image_analysis_model(model: &str) -> bool {
     image_analysis_model_priority(model) == 3
 }

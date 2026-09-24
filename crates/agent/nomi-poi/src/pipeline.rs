@@ -10,6 +10,7 @@ use super::types::{PoiApplyReport, TopicStatus};
 /// Compare outcome before writing SQLite.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompareAction {
+    #[allow(dead_code)]
     Skip,
     Reinforce { topic_id: String },
     MergeInto { topic_id: String },

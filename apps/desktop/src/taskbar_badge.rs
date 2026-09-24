@@ -511,7 +511,7 @@ fn paint_label(
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{COLORREF, RECT};
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject,
+        CreateCompatibleDC, CreateDIBSection, CreateFontW,
         DrawTextW, SelectObject, SetBkMode, SetTextColor, ANTIALIASED_QUALITY,
         BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
         DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE,

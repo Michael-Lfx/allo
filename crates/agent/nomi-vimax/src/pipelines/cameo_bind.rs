@@ -1293,6 +1293,7 @@ fn demographic_cues(label: &str) -> Vec<String> {
     cues
 }
 
+#[allow(dead_code)]
 fn write_cameo_portrait(
     film_root: &Path,
     character: &CharacterInScene,

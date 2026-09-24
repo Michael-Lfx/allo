@@ -32,6 +32,8 @@
 //! only thing allowed to put seconds in front of the model, and
 //! [`strip_authored_timecodes`] removes any a planner wrote anyway.
 
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 

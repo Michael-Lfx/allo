@@ -52,6 +52,7 @@ impl SceneReel {
         self.tail_frame = resolve_scene_tail_continuity(scene_dir).await;
     }
 
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.scenes.len()
     }

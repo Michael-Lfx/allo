@@ -2227,7 +2227,7 @@ impl StreamRelay {
         // text, no duplicate tool side effect / billing).
         let mut emitted_response = false;
         let mut retained_non_text_response_since_checkpoint = false;
-        let mut committed_artifact_count = 0usize;
+        let _committed_artifact_count = 0usize;
         let mut send_error_done = send_error_rx.is_none();
 
         loop {

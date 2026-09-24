@@ -26,7 +26,7 @@ use nomifun_api_types::{
 };
 use nomifun_common::{
     AdaptationPolicy, AgentExecutionReceipt, AgentExecutionStatus, AppError, ConversationId,
-    DecisionPolicy, DelegationPolicy, PlanGate, ProviderWithModel, UserId,
+    DelegationPolicy, PlanGate, ProviderWithModel, UserId,
 };
 use nomifun_conversation::ConversationService;
 

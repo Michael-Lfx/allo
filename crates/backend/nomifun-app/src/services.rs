@@ -2184,6 +2184,7 @@ impl AppServices {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn try_from_config(
         database: Database,
         config: &AppConfig,

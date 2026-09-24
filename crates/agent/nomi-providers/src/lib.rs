@@ -57,6 +57,7 @@ pub(crate) enum OutputCeilingLocation<'a> {
     /// providers that rename `max_tokens`.
     Top { dynamic: Option<&'a str> },
     /// Gemini nests its ceiling under generationConfig.maxOutputTokens.
+    #[allow(dead_code)]
     GeminiGenerationConfig,
 }
 
