@@ -123,24 +123,26 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
       footer={null}
       className='flowy-modal flowy-extract-preset-modal'
       style={{
-        maxWidth: 440,
-        width: '90vw',
-        borderRadius: 12,
-        padding: 0,
+        maxWidth: 520,
+        width: '92vw',
+        borderRadius: 14,
         overflow: 'hidden',
       }}
     >
-      <div className='p-16px pt-14px'>
+      <div className='flex flex-col gap-18px py-4px'>
         {/* Modal Header */}
-        <div className='flex items-start gap-10px mb-14px'>
-          <div className='flex h-32px w-32px shrink-0 items-center justify-center rd-8px bg-primary-1 text-primary-6 mt-1px'>
-            <MagicWand theme='filled' size={18} fill='currentColor' />
+        <div className='flex items-start gap-12px'>
+          <div className='flex h-36px w-36px shrink-0 items-center justify-center rd-10px bg-primary-1 text-primary-6 mt-1px'>
+            <MagicWand theme='filled' size={20} fill='currentColor' />
           </div>
-          <div className='min-w-0 flex-1 pr-12px'>
-            <h2 className='m-0 text-15px font-600 text-t-primary leading-tight'>
-              {t('conversation.extractPreset.title', { defaultValue: '提炼为专属设定' })}
+          <div className='min-w-0 flex-1 pr-16px'>
+            <h2 className='m-0 text-16px font-600 text-t-primary leading-tight flex items-center gap-6px'>
+              <span>{t('conversation.extractPreset.title', { defaultValue: '提炼为专属设定' })}</span>
+              <span className='px-6px py-1px rd-4px text-10px font-medium bg-primary-1 text-primary-6 b-1 b-solid border-primary-2'>
+                AI Preset
+              </span>
             </h2>
-            <p className='m-0 mt-3px text-12px text-t-secondary leading-snug'>
+            <p className='m-0 mt-5px text-12px text-t-secondary leading-relaxed'>
               {t('conversation.extractPreset.subtitle', {
                 defaultValue: '从当前对话成果中智能提纯经验，生成包含提示词与技能绑定的独立设定。',
               })}
@@ -150,22 +152,20 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
 
         {/* Dynamic Body: Edit vs Extracting Motion State */}
         {isExtracting ? (
-          <div className='py-20px flex flex-col items-center justify-center text-center animate-fade-in'>
-            <div className='relative flex h-40px w-40px items-center justify-center mb-12px'>
-              <div
-                className='absolute inset-0 rd-full animate-ping opacity-25 bg-primary-6'
-              />
-              <div className='relative flex h-36px w-36px items-center justify-center rd-full bg-primary-1 text-primary-6 shadow-sm'>
-                <Lightning theme='filled' size={18} fill='currentColor' className='animate-pulse' />
+          <div className='py-28px flex flex-col items-center justify-center text-center animate-fade-in'>
+            <div className='relative flex h-46px w-46px items-center justify-center mb-14px'>
+              <div className='absolute inset-0 rd-full animate-ping opacity-20 bg-primary-6' />
+              <div className='relative flex h-40px w-40px items-center justify-center rd-full bg-primary-1 text-primary-6 shadow-sm'>
+                <Lightning theme='filled' size={20} fill='currentColor' className='animate-pulse' />
               </div>
             </div>
 
-            <div className='text-13px font-500 text-t-primary transition-all duration-300 mb-10px'>
+            <div className='text-13px font-500 text-t-primary transition-all duration-300 mb-12px'>
               {stepLabels[extractingStep]}
             </div>
 
             {/* Linear Animated Progress */}
-            <div className='h-3px w-180px bg-fill-3 rd-full overflow-hidden'>
+            <div className='h-3px w-200px bg-fill-3 rd-full overflow-hidden'>
               <div
                 className='h-full bg-primary-6 rd-full transition-all duration-500'
                 style={{ width: `${((extractingStep + 1) / stepLabels.length) * 100}%` }}
@@ -173,38 +173,84 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
             </div>
           </div>
         ) : (
-          <div className='mb-14px'>
-            <div className='mb-6px'>
-              <label className='text-12px font-500 text-t-primary'>
+          <>
+            {/* Workflow Process Cards */}
+            <div className='grid grid-cols-3 gap-10px'>
+              <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+                <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
+                  <span className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-10px font-bold'>
+                    1
+                  </span>
+                  <span>{t('conversation.extractPreset.flowStep1Title', { defaultValue: '角色定位归纳' })}</span>
+                </div>
+                <p className='m-0 text-11px text-t-secondary leading-snug'>
+                  {t('conversation.extractPreset.flowStep1Desc', {
+                    defaultValue: '自动提炼角色名称与核心职责',
+                  })}
+                </p>
+              </div>
+
+              <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+                <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
+                  <span className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-10px font-bold'>
+                    2
+                  </span>
+                  <span>{t('conversation.extractPreset.flowStep2Title', { defaultValue: '工作流沉淀' })}</span>
+                </div>
+                <p className='m-0 text-11px text-t-secondary leading-snug'>
+                  {t('conversation.extractPreset.flowStep2Desc', {
+                    defaultValue: '结构化生成 Prompt 与约束规范',
+                  })}
+                </p>
+              </div>
+
+              <div className='p-12px rd-8px bg-fill-1 b-1 b-solid border-arco-2 hover:border-primary-3 transition-colors'>
+                <div className='flex items-center gap-6px text-12px font-600 text-t-primary mb-4px'>
+                  <span className='flex h-18px w-18px shrink-0 items-center justify-center rd-full bg-primary-1 text-primary-6 text-10px font-bold'>
+                    3
+                  </span>
+                  <span>{t('conversation.extractPreset.flowStep3Title', { defaultValue: '适用技能装配' })}</span>
+                </div>
+                <p className='m-0 text-11px text-t-secondary leading-snug'>
+                  {t('conversation.extractPreset.flowStep3Desc', {
+                    defaultValue: '智能嗅探并推荐绑定相关技能',
+                  })}
+                </p>
+              </div>
+            </div>
+
+            {/* Customization Guidance */}
+            <div>
+              <label className='block text-12px font-500 text-t-primary mb-6px'>
                 {t('conversation.extractPreset.additionalGuidanceLabel', {
                   defaultValue: '补充定制要求（选填）',
                 })}
               </label>
+              <Input.TextArea
+                value={guidance}
+                onChange={setGuidance}
+                placeholder={t('conversation.extractPreset.additionalGuidancePlaceholder', {
+                  defaultValue:
+                    '可在此补充对设定角色的要求或偏好（例如：输出保持中文、遵循特定代码规范等），留空将自动智能提炼',
+                })}
+                autoSize={{ minRows: 3, maxRows: 5 }}
+                maxLength={500}
+                showWordLimit
+                className='rd-8px !bg-fill-1 b-1 b-solid border-arco-2 focus:border-primary-5 transition-all text-13px leading-relaxed'
+                style={{
+                  boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.02)',
+                }}
+              />
             </div>
-            <Input.TextArea
-              value={guidance}
-              onChange={setGuidance}
-              placeholder={t('conversation.extractPreset.additionalGuidancePlaceholder', {
-                defaultValue:
-                  '可在此补充对设定角色的要求或偏好（例如：输出保持中文、遵循特定代码规范等），留空将自动智能提炼',
-              })}
-              autoSize={{ minRows: 4, maxRows: 6 }}
-              maxLength={500}
-              showWordLimit
-              className='rd-8px !bg-fill-1 b-1 b-solid border-arco-2 focus:border-primary-5 transition-all text-13px leading-relaxed'
-              style={{
-                boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.02)',
-              }}
-            />
-          </div>
+          </>
         )}
 
         {/* Modal Footer */}
         {!isExtracting && (
-          <div className='flex items-center justify-end gap-8px pt-12px border-t border-t-solid border-arco-1'>
+          <div className='flex items-center justify-end gap-10px pt-14px border-t border-t-solid border-arco-1'>
             <Button
               onClick={onCancel}
-              className='rd-6px px-14px'
+              className='rd-6px px-16px'
             >
               {t('conversation.extractPreset.cancel', { defaultValue: '取消' })}
             </Button>
@@ -212,7 +258,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
               type='primary'
               onClick={handleStartExtract}
               data-testid='btn-confirm-extract-preset'
-              className='rd-6px px-16px font-500'
+              className='rd-6px px-18px font-500 shadow-sm'
             >
               {t('conversation.extractPreset.startExtract', { defaultValue: '开始智能提炼' })}
             </Button>
