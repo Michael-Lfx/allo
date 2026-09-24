@@ -1667,6 +1667,16 @@ impl Bindings {
     /// as a secret *and* warned about: silently leaving it would send the literal
     /// `${NAME}` to the server, which is the failure this whole path exists to
     /// remove.
+    ///
+    /// **The rewrite normalizes to the declaration, not to the input spelling.**
+    /// `${secret:NAME}` is this function's own output (`34` §5.1), so a source that
+    /// already writes it — a hand-authored connector directory, a template copied
+    /// out of an installed one — meets it here too. Prefixing it again produces
+    /// `${secret:secret:NAME}`, which can never resolve: the connector then reports
+    /// a missing credential *even after the user has filled the form in*, because
+    /// the form is built from the declaration and knows nothing about the doubled
+    /// name. Reading it back is also what lets a `secret:` scope on a field the
+    /// declaration calls plain be corrected rather than left unresolvable.
     fn rewrite(&self, text: &str, builder: &mut ComponentBuilder) -> String {
         if !text.contains("${") {
             return text.to_owned();
@@ -1680,18 +1690,33 @@ impl Bindings {
                 out.push_str(&rest[start..]);
                 return out;
             };
-            let name = &after[..end];
-            if self.secret.contains(name) {
-                out.push_str("${secret:");
+            let raw = &after[..end];
+            let scoped = raw.strip_prefix("secret:");
+            let name = scoped.unwrap_or(raw);
+            if name.is_empty() {
+                // `${}` and `${secret:}` name nothing. The resolver treats them as
+                // literal text, so they leave here exactly as they arrived.
+                out.push_str(&rest[start..start + 2 + end + 1]);
+            } else if self.plain.contains(name) {
+                // The declaration decides: a field stored as the connector's own
+                // setting resolves from `values`, so a `secret:` scope — the
+                // source's, not ours — would never resolve.
+                if scoped.is_some() {
+                    builder.warn(format!(
+                        "mcp.json 的 ${{secret:{name}}} 在 token-schema.json 里是普通字段；\
+                         已去掉 secret: 前缀（普通字段不进凭据库）"
+                    ));
+                }
+                out.push_str("${");
                 out.push_str(name);
                 out.push('}');
-            } else if self.plain.contains(name) {
-                out.push_str(&rest[start..start + 2 + end + 1]);
             } else {
-                builder.warn(format!(
-                    "mcp.json 的占位符 ${{{name}}} 在 token-schema.json 里没有同名字段；\
-                     按密钥处理（需用户填写）"
-                ));
+                if !self.secret.contains(name) {
+                    builder.warn(format!(
+                        "mcp.json 的占位符 ${{{name}}}（或 ${{secret:{name}}}）在 token-schema.json \
+                         里没有同名字段；按密钥处理（需用户填写）"
+                    ));
+                }
                 out.push_str("${secret:");
                 out.push_str(name);
                 out.push('}');
@@ -2080,5 +2105,117 @@ mod tests {
             "wb-software-company-software-team-lead"
         );
         assert_eq!(component_id("my plugin", "hello world"), "wb-my-plugin-hello-world");
+    }
+
+    // -----------------------------------------------------------------------
+    // `${NAME}` → reference normalization (`34` §5.1/§5.4)
+    // -----------------------------------------------------------------------
+
+    /// Two declared fields, one of each kind: `KEY` is a secret, `HOST` is a plain
+    /// setting.
+    fn bindings() -> Bindings {
+        let declaration = CredentialDeclaration {
+            title: LocalizedPair::from(Some("t"), None, "t"),
+            description: LocalizedPair::from(None, None, ""),
+            doc_url: LocalizedPair::from(None, None, ""),
+            doc_label: LocalizedPair::from(None, None, ""),
+            fields: vec![
+                CredentialField {
+                    key: "KEY".into(),
+                    kind: "secret".into(),
+                    required: true,
+                    label: LocalizedPair::from(Some("密钥"), None, "KEY"),
+                    placeholder: LocalizedPair::from(None, None, ""),
+                    description: LocalizedPair::from(None, None, ""),
+                    default_value: None,
+                },
+                CredentialField {
+                    key: "HOST".into(),
+                    kind: "plain".into(),
+                    required: false,
+                    label: LocalizedPair::from(Some("主机"), None, "HOST"),
+                    placeholder: LocalizedPair::from(None, None, ""),
+                    description: LocalizedPair::from(None, None, ""),
+                    default_value: Some("localhost".into()),
+                },
+            ],
+        };
+        Bindings::from_declaration(Some(&declaration))
+    }
+
+    fn rewrite(text: &str) -> (String, Vec<String>) {
+        let mut builder = ComponentBuilder::new("1".into());
+        let out = bindings().rewrite(text, &mut builder);
+        (out, builder.warnings)
+    }
+
+    #[test]
+    fn a_bare_placeholder_becomes_a_reference_by_declaration() {
+        let (out, warnings) = rewrite("Bearer ${KEY}");
+        assert_eq!(out, "Bearer ${secret:KEY}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // A plain setting stays bare: it is resolved from the transport's own
+        // values, and scoping it as a secret would look in the wrong store.
+        let (out, warnings) = rewrite("http://${HOST}:6042/mcp");
+        assert_eq!(out, "http://${HOST}:6042/mcp");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// The form this function *writes* must survive a second pass. A source that
+    /// already uses the documented normalized spelling used to come out as
+    /// `${secret:secret:KEY}` — a reference nothing can resolve, so the connector
+    /// reported a missing credential even after the user had filled the form in.
+    #[test]
+    fn an_already_normalized_reference_is_not_prefixed_twice() {
+        let (out, warnings) = rewrite("Bearer ${secret:KEY}");
+        assert_eq!(out, "Bearer ${secret:KEY}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn the_rewrite_is_idempotent() {
+        for source in [
+            "Bearer ${KEY}",
+            "Bearer ${secret:KEY}",
+            "http://${HOST}:6042/mcp",
+            "${KEY}${HOST}${secret:KEY}",
+        ] {
+            let (once, _) = rewrite(source);
+            let (twice, warnings) = rewrite(&once);
+            assert_eq!(once, twice, "second pass changed {source:?}");
+            assert!(warnings.is_empty(), "{source:?}: {warnings:?}");
+        }
+    }
+
+    /// A `secret:` scope on a field the declaration calls plain would look in the
+    /// credential store for a value that lives in the connector's own settings, so
+    /// the declaration wins — and the source's spelling is reported, because the
+    /// two disagreeing is worth knowing about.
+    #[test]
+    fn the_declaration_wins_over_a_secret_scope_on_a_plain_field() {
+        let (out, warnings) = rewrite("http://${secret:HOST}:6042/mcp");
+        assert_eq!(out, "http://${HOST}:6042/mcp");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("HOST"), "{warnings:?}");
+    }
+
+    #[test]
+    fn an_undeclared_placeholder_becomes_a_secret_and_is_reported() {
+        for source in ["${OTHER}", "${secret:OTHER}"] {
+            let (out, warnings) = rewrite(source);
+            assert_eq!(out, "${secret:OTHER}", "{source}");
+            assert_eq!(warnings.len(), 1, "{source}: {warnings:?}");
+            assert!(warnings[0].contains("OTHER"), "{source}: {warnings:?}");
+        }
+    }
+
+    #[test]
+    fn shapes_that_name_nothing_stay_literal() {
+        // The resolver treats these as text, so the importer must not turn them
+        // into references to an empty name.
+        assert_eq!(rewrite("${}").0, "${}");
+        assert_eq!(rewrite("${secret:}").0, "${secret:}");
+        assert_eq!(rewrite("${unterminated").0, "${unterminated");
     }
 }
