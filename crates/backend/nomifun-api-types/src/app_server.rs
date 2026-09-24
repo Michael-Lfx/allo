@@ -17,6 +17,8 @@ use nomifun_common::LocalizedVariant;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use crate::McpTransport;
+
 /// Agent Store compatibility status (`10-public-contracts.md` §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -263,6 +265,37 @@ pub struct AppServerConnectorCredential {
     pub doc_url: Option<AppServerLocalizedString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_label: Option<AppServerLocalizedString>,
+}
+
+/// Register a connector on this host (`connector/register`, doc `34` §6.5).
+///
+/// For a server the host never imported from a marketplace — an external
+/// developer's own MCP server, or one added by hand. The **template is the whole
+/// declaration**: whatever `${secret:NAME}` the URL, headers or env name becomes
+/// that connector's credential form, and `values` carries its own non-secret
+/// settings.
+///
+/// Values do **not** travel here. A secret arrives through
+/// `connector/credential/set`, so there is exactly one write surface for them and
+/// the registration call itself carries nothing worth redacting.
+///
+/// Registration grants no connection: the row is created disabled, and enabling it
+/// still requires a probe that passes. It does let the caller choose where the host
+/// will reach, which is why this method lives on the installation-owner-only
+/// surface (`protect_instance_owner`) — the same authority the host's own MCP
+/// manager already gives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppServerConnectorRegistration {
+    /// The connector's name on this host. Re-registering the same name updates it
+    /// (the MCP configuration upserts by name); a builtin server's name is refused.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `{"type":"http"|"sse","url":…,"headers":…,"values":…}` or
+    /// `{"type":"stdio","command":…,"args":…,"env":…}` — the same shape the host
+    /// stores, so what the caller sends is what the resolver later reads.
+    pub transport: McpTransport,
 }
 
 /// Public Connector summary (`01-domain-model.md` §7).

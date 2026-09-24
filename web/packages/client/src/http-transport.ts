@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "fp-10";
+const PROTOCOL_VERSION = "fp-11";
 
 type Verb = "GET" | "POST" | "DELETE";
 
@@ -244,6 +244,13 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
     verb: "POST",
     path: "/connectors/:connector_id/credential/clear",
     source: "connector_credential_clear_route() -> connector_credential_clear_impl",
+  },
+  // Registering a connector the host never imported (34 §6.5). Shares the
+  // connector collection route with `connector/list`, one verb each.
+  "connector/register": {
+    verb: "POST",
+    path: "/connectors",
+    source: "register_connector_route() -> register_connector_impl",
   },
 
   // -- importer / installer -------------------------------------------------

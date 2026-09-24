@@ -63,7 +63,7 @@
  * faces deliberately never do; both methods are WebSocket-only, so the
  * documented route split becomes `48 / 73` (doc `32`).
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-10";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-11";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -909,6 +909,30 @@ export type ConnectorStatus =
   | "degraded"
   | "error"
   | "reauthorization_required";
+
+/** `connector/register` — a connector the host never imported (doc `34` §6.5). */
+export interface ConnectorRegistration {
+  /** Its name on this host. Re-registering the same name updates it. */
+  name: string;
+  description?: string | null;
+  /**
+   * The template the host will store and later resolve — the same shape it keeps
+   * for a marketplace connector. Whatever `${secret:NAME}` its URL, headers or env
+   * name becomes the credential form; `values` carries the connector's own
+   * non-secret settings.
+   */
+  transport: ConnectorTransport;
+}
+
+/** The transport template, mirroring the host's own stored shape. */
+export type ConnectorTransport =
+  | {
+      type: "http" | "sse";
+      url: string;
+      headers?: Record<string, string>;
+      values?: Record<string, string>;
+    }
+  | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
 
 export interface ConnectorSummary {
   id: string;

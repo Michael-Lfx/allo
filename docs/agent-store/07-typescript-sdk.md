@@ -209,6 +209,9 @@ interface ConnectorClient {
   // （`fields[].value` 只对 plain 字段出现），写入按调用者命名空间落库。
   // fp-10：表单自己的文案（`title` / `description` / `doc_url` / `doc_label`）挂在
   // `ConnectorCredential` 上——市场一份 schema 只声明它一次，不逐字段重复。
+  // fp-11：交一个宿主从未导入过的 MCP server（自带 server 与 key 的入口）；
+  // **模板即声明**，`${secret:NAME}` 就是表单字段，密钥仍只走 setCredentials。
+  register(registration: ConnectorRegistration): Promise<ConnectorDetail>;
   credentials(id: ConnectorId): Promise<ConnectorCredential>;
   setCredentials(id: ConnectorId, values: Record<string, string>): Promise<ConnectorCredential>;
   clearCredentials(id: ConnectorId, keys?: string[]): Promise<ConnectorCredential>;
@@ -226,6 +229,16 @@ interface ApprovalClient {
   respond(input: ApprovalResponseInput): Promise<ApprovalReceipt>;
 }
 ```
+
+> 自带 MCP server 的开发者（`fp-11`）：把手上那份模板交给 `register()` 就是全部工作——
+> `{name, transport, description?}`，`transport` 与宿主存储同形（`http`/`sse` 的
+> `url`/`headers`/`values`，或 `stdio` 的 `command`/`args`/`env`）。**模板即声明**：
+> `headers` 里写 `Authorization: "Bearer ${secret:ACME_KEY}"`，那个名字就成为凭据表单的字段，
+> 不需要市场条目、也不需要 `token-schema.json`；`${NAME}` 归连接器自己的 `values`。
+> 返回值是 `connector/get` 的形态，所以 `created.credential.missing` 直接是还差哪几个键；
+> 接着 `setCredentials(created.id, {ACME_KEY: …})` 与 `test(created.id)`。
+> 密钥不进 `register`；注册出来的行是 disabled（启用仍需探测通过）；方法在安装所有者专用面上；
+> 同名再注册是更新。（未做 `unregister`，见 `34` §10。）
 
 OAuth 客户端只获得：
 

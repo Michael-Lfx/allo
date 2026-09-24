@@ -66,7 +66,7 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          protocol_version: "fp-10",
+          protocol_version: "fp-11",
           client: { name: "smoke", version: "0.0.0" },
           capabilities: {},
         }),
@@ -720,7 +720,7 @@ async function main() {
 
     // --- handshake ---------------------------------------------------------
     const handshake = await client.connect();
-    if (handshake.protocol_version === "fp-10" && handshake.capabilities.agents) {
+    if (handshake.protocol_version === "fp-11" && handshake.capabilities.agents) {
       ok("initialize handshake returns protocol version and single-agent capabilities");
     } else {
       fail("initialize handshake", JSON.stringify(handshake.capabilities));

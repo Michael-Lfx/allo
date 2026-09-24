@@ -17,7 +17,7 @@ import type { ServerWebSocket } from "bun";
 import { decodeHistoryCursor } from "../src/lib/history-cursor";
 
 const PORT = Number(process.argv[2] ?? 17860);
-const PROTOCOL_VERSION = "fp-10";
+const PROTOCOL_VERSION = "fp-11";
 const AGENT_ID = "0190f5fe-7c00-7a00-8000-000000000004";
 
 interface MockRun {

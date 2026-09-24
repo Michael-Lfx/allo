@@ -79,7 +79,8 @@ use nomifun_api_types::{
     AppServerConnectorCallResult,
     AppServerConnectorCredential,
     AppServerConnectorDetail,
-    AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
+    AppServerConnectorProbeResult, AppServerConnectorRegistration, AppServerConnectorStatusView,
+    AppServerConnectorSummary,
     AppServerExpertPack,
     AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
     AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
@@ -178,7 +179,16 @@ use tokio::sync::mpsc;
 /// `token-schema.json` declares them once (`34` §5.2) — so they moved off
 /// `credential.fields[]` and onto the `credential` block. Nothing else changed
 /// shape; the split stays `51 / 76`.
-pub const PROTOCOL_VERSION: &str = "fp-10";
+/// **`fp-11` lets a caller bring its own MCP server**: `connector/register`
+/// (`POST /api/app-server/connectors`) takes a server definition the host never
+/// imported and stores its transport as handed in. The template **is** the
+/// credential declaration (`34` §6.5): its `${secret:NAME}` references become the
+/// credential form, so an external developer's own server is fillable without
+/// shipping a `token-schema.json` or going through a marketplace. Secrets still
+/// travel only through `connector/credential/set`, the row is created disabled,
+/// and the method sits on the installation-owner-only surface. One method, and it
+/// has an HTTP route, so the documented split moves to `52 / 77`.
+pub const PROTOCOL_VERSION: &str = "fp-11";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1302,7 +1312,13 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
             get(read_skill_file_route),
         )
         // Agent Store Connector catalog / status / probe / OAuth
-        .route("/api/app-server/connectors", get(list_connectors_route))
+        // Connectors: `GET` lists them, `POST` registers one the host never
+        // imported (34 §6.5) — the second is the SDK's way in for an external
+        // developer's own server.
+        .route(
+            "/api/app-server/connectors",
+            get(list_connectors_route).post(register_connector_route),
+        )
         .route("/api/app-server/models", get(list_models_route))
         .route("/api/app-server/connectors/{connector_id}", get(get_connector_route))
         .route(
@@ -1324,8 +1340,7 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route(
             "/api/app-server/connectors/{connector_id}/credential",
             get(connector_credential_get_route).post(connector_credential_set_route),
-        )
-        .route(
+        )        .route(
             "/api/app-server/connectors/{connector_id}/credential/clear",
             post(connector_credential_clear_route),
         )
@@ -1919,6 +1934,18 @@ async fn get_connector_impl(
 ) -> Result<AppServerConnectorDetail, AppServerError> {
     connector_catalog_provider(state)?
         .get(connector_id, principal)
+        .await
+        .map_err(AppServerError::from)
+}
+
+/// `connector/register`: hand the host a connector it never imported (`34` §6.5).
+async fn register_connector_impl(
+    state: &AppServerRouterState,
+    registration: AppServerConnectorRegistration,
+    principal: Option<&str>,
+) -> Result<AppServerConnectorDetail, AppServerError> {
+    connector_catalog_provider(state)?
+        .register(registration, principal)
         .await
         .map_err(AppServerError::from)
 }
@@ -3094,6 +3121,19 @@ async fn list_connectors_route(
 ) -> Result<Json<Vec<AppServerConnectorSummary>>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(list_connectors_impl(&state, Some(user.id.as_str())).await?))
+}
+
+/// `POST /api/app-server/connectors` — register a hand-made connector (`34` §6.5).
+async fn register_connector_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Json(registration): Json<AppServerConnectorRegistration>,
+) -> Result<Json<AppServerConnectorDetail>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(
+        register_connector_impl(&state, registration, Some(user.id.as_str())).await?,
+    ))
 }
 
 async fn list_models_route(
@@ -7374,6 +7414,23 @@ async fn dispatch_connection_request(
             })?))
         }
         // ---------------- Agent Store Connector credentials (34 §6.1) --------
+        "connector/register" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorRegistration>(params)?;
+            let connector = register_connector_impl(
+                state,
+                AppServerConnectorRegistration {
+                    name: params.name,
+                    description: params.description,
+                    transport: params.transport,
+                },
+                Some(user.id.as_str()),
+            )
+            .await?;
+            Ok(ws_response(request_id, serde_json::to_value(connector).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode connector: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         "connector/credential/get" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorQuery>(params)?;
@@ -7828,6 +7885,16 @@ struct WsStoreEntry {
 #[serde(deny_unknown_fields)]
 struct WsConnectorQuery {
     connector_id: String,
+}
+
+/// `connector/register` (`34` §6.5).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConnectorRegistration {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    transport: nomifun_api_types::McpTransport,
 }
 
 /// `connector/credential/set` (`34` §6.1).

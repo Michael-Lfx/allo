@@ -12,6 +12,7 @@ import type {
   ConnectorCredential,
   ConnectorDetail,
   ConnectorProbeResult,
+  ConnectorRegistration,
   ConnectorStatusView,
   ConnectorSummary,
   OAuthStartResult,
@@ -143,6 +144,29 @@ export class ConnectorClient {
       connector_id: connectorId,
       ...(keys ? { keys } : {}),
     });
+  }
+
+  /**
+   * Register a connector this host never imported — your own MCP server, handed
+   * over together with the template that says what it needs (doc `34` §6.5).
+   *
+   * The **template is the whole declaration**: whatever `${secret:NAME}` the URL,
+   * headers or env name becomes that connector's credential form, so there is no
+   * `token-schema.json` to ship and nothing to install from a marketplace. The
+   * connector's own non-secret settings travel in `values`.
+   *
+   * Secrets do **not** travel here: hand them over with {@link setCredentials},
+   * which keeps exactly one write surface for values. The returned detail already
+   * carries the credential block, so `missing` tells you which keys are still
+   * needed.
+   *
+   * Re-registering the same name updates it; a builtin server's name is refused.
+   * The row is created **disabled** — enabling it still requires a probe that
+   * passes — and this method is on the installation-owner-only surface, because
+   * choosing where the host reaches is the owner's call.
+   */
+  register(registration: ConnectorRegistration): Promise<ConnectorDetail> {
+    return this.transport.request<ConnectorDetail>("connector/register", registration);
   }
 
   /**

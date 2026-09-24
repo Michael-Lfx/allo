@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityTriple,
     AppServerConnectorCallResult, AppServerConnectorCredential, AppServerConnectorDetail,
-    AppServerConnectorProbeResult, AppServerConnectorStatusView,
+    AppServerConnectorProbeResult, AppServerConnectorRegistration, AppServerConnectorStatusView,
     AppServerConnectorSummary, AppServerExpertPack, AppServerImportDetail, AppServerImportRequest,
     AppServerImportResult, AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
@@ -110,6 +110,23 @@ pub trait ConnectorCatalogProvider: Send + Sync {
         id: &str,
         principal: Option<&str>,
     ) -> Result<AppServerConnectorProbeResult, AppError>;
+
+    /// Register a connector the host never imported from a marketplace
+    /// (`connector/register`, doc `34` §6.5).
+    ///
+    /// The registration's transport **is** the credential declaration: its
+    /// `${secret:NAME}` references become the form, so a server handed in by an
+    /// external developer is fillable without a `token-schema.json` existing
+    /// anywhere. Returns the projection for this caller, which is how the caller
+    /// learns which keys are still missing.
+    ///
+    /// Implementations own two refusals, because only they can see the config: a
+    /// blank name, and a name that belongs to a builtin server.
+    async fn register(
+        &self,
+        registration: AppServerConnectorRegistration,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError>;
 }
 
 /// Connector OAuth pass-through. Only states and public errors cross this
@@ -602,6 +619,20 @@ impl ConnectorCatalogProvider for FakeConnectorCatalog {
             code: if failed { Some("MCP_CONNECTION_FAILED".into()) } else { None },
             tools_truncated: false,
         })
+    }
+
+    /// Registration is the one connector operation that is *inherently* host state,
+    /// and this fake has none. Refusing keeps the protocol tests honest: a mock that
+    /// pretended to register would make a route that never writes anything look
+    /// green.
+    async fn register(
+        &self,
+        _registration: AppServerConnectorRegistration,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError> {
+        Err(AppError::Internal(
+            "FakeConnectorCatalog cannot register connectors".to_owned(),
+        ))
     }
 }
 

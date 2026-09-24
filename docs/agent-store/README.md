@@ -104,9 +104,10 @@
 ## 本轮（2026-09-23 实施，**未发版**）
 
 按 `34-connector-user-credentials.zh.md` 的 §9 顺序实施"连接器用户凭据（key / token 类）"，
-第 1–5 步完成、第 6 步未开始。**指纹已 bump 到 `fp-10`**（第 4 步上到 `fp-9`，方法计数
-`48 / 73` → `51 / 76`；第 5 步把表单文案归位到块上，计数不变），两仓已同步，但**尚未走发版链**
-——`25` 的清单只在真正发版时执行。
+第 1–6 步完成，并加上第 7 步「自带 MCP server」（`connector/register`，`fp-11`）。**指纹已 bump
+到 `fp-11`**（第 4 步上到 `fp-9`，方法计数 `48 / 73` → `51 / 76`；第 5 步把表单文案归位到块上，
+计数不变；第 7 步加一个方法，`52 / 77`），两仓已同步，但**尚未走发版链**——`25` 的清单只在
+真正发版时执行。
 
 1. **第 1 步（导入 + 解析）**：导入期保留 `headers` / `staticHeaders` 并按拼写表归一传输
    （`sse` 不再被压平成 `http`）；`secret_ref` 增加 `${secret:NAME}` 模板形式；探针 / 调用 /
@@ -132,13 +133,24 @@
    声明上而 `auth_mode` 实际写在 `connector` 组件里（61 个 `token` 连接器因此全是 `mode: none`，
    14 个 `server-side` 类又落回 `oauth`）；表单文案被逐字段复制（`doc_url` 应属表单，
    市场只在 schema 顶层声明一次）。后者是 wire 变更，指纹 `fp-9` → **`fp-10`**。
-6. **自检读数**：`check:fingerprint`（`fp-10`，本仓 7 文件 10 处 + 站点 2 文件）/ `check:release-sync`
-   （`51 / 76` 两站点指南同值）/ `web typecheck` + `web test`（544 passed, 1 skipped）/
-   `cargo test -p nomifun-app-server`（177）/ `nomifun-app` lib 365 + 连接器凭据 e2e 1 /
-   `nomifun-common` 244 / `nomifun-mcp` 265 lib + 39 集成 / `nomifun-importer` 23 /
-   站点 `check:docs-sync` 0 drift + `test:docs-sync` 16 —— **全绿**。
-   站点仓改动**尚未提交**（工作树）。
-7. **仍未做**：**第 6 步存储终态与旧键迁移**；活体端到端（真的 mock server 收 header）。
+6. **第 6 步（存储终态）+ 活体验收**：`CredentialQuery` 把"这个调用者能解析到什么"收成一处，
+   `None` 按安装所有者解析，`scope_credentials` 把宿主级裸键一次性改名到 `<owner>:NAME`（幂等、
+   冲突不擅断）。**`web/scripts/verify-connector-credentials-live.ts`** 起一个记录请求的 mock MCP
+   server 跑完整条链（41 条断言）——**它第一次跑就抓出两个只发请求才看得见的 bug**：归一形态被
+   二次加前缀（`${secret:secret:NAME}`）、`set` 不清除上一次探测的判定。
+7. **第 7 步（自带 server）**：`connector/register`（`fp-11`，`52 / 77`）+ **模板即声明**——
+   宿主从未导入过的 server 也能从自己的 `transport` 派生凭据表单，于是"外部开发者自带 server
+   与 key"不必再打成市场条目。密钥仍只走 `credential/set`，注册出来的行 disabled，方法在安装
+   所有者专用面上；活体脚本同时覆盖这条路径（register → 缺键 → set → 探针收到解析后的 header）。
+8. **自检读数**：`check:fingerprint`（`fp-11`，本仓 7 文件 10 处 + 站点 2 文件）/ `check:release-sync`
+   （`52 / 77` 两站点指南同值）/ `web typecheck` + `web test`（551 passed, 1 skipped）/
+   `cargo test -p nomifun-app-server`（180）/ `nomifun-app` lib 368 + 连接器凭据 e2e 2 /
+   `nomifun-common` 247 / `nomifun-mcp` 266 lib / `nomifun-importer` 48 lib + 23 集成 /
+   站点 `check:docs-sync` 0 drift + `test:docs-sync` 16 —— **全绿**（`check:release-sync` 的版本
+   一项除外：同一条分支上另一条工作线把 `sdk` 包提到 `beta.8` 而 `protocol` 未同步，与本轮无关）。
+9. **仍未做**：`connector/unregister`（注册出来的行只能用宿主的 MCP 管理面删）；§9.1 第 5 条的
+   `sse` 与"空值待填"两种形态仍由 Rust 层覆盖；与凭据无关但同趟撞到的 `install/uninstall` 后
+   重装同内容装出空结果（见文 34 §10）。
    上一轮（`0.1.0-beta.7`）的发布记录见下节。
 
 ## 上一轮（2026-09-20 发布 `0.1.0-beta.7`）
