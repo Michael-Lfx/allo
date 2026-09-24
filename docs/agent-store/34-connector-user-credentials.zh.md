@@ -1,7 +1,6 @@
 # 连接器用户凭据（key / token 类）· 技术方案
 
-> 状态：**设计定稿；第 1–5 步已实施**（2026-09-24）。决策 D1–D6 见 §4，均有取值与代价。
-> §9 的进度栏记录每步的实施状态与仍未接通的部分。
+> 状态：**设计定稿；第 1–5 步已实施**（2026-09-24）。决策 D1–D6 见 §4，均有取值与代价。> §9 的进度栏记录每步的实施状态与仍未接通的部分。
 > 前置：`02-codebuddy-workbuddy-import-spec.md`（§5/§10 `userConfig → CredentialSchema`、值不入库）、
 > `05-flowy-agent-store-app-server-protocol.md`（协议正文）、`06-connector-oauth-security.md`（并行的 OAuth 通道）、
 > `20-tool-injection-policy.zh.md`、`21-open-decisions.zh.md`（D5=C 及 §116 落地记录）、
@@ -321,14 +320,19 @@ credential: {
   mode: "none" | "oauth" | "token",
   status: "not_required" | "requires_input" | "configured" | "error",
   missing: ["TDENGINE_API_KEY"],            // 仅键名
+  title: {zh, en}, description: {zh, en},   // 表单级文案，见 §5.2
+  doc_url: {zh, en}, doc_label: {zh, en},   // 「去哪里拿密钥」也是**表单级**（fp-10 起）
   fields: [{                                // 仅元数据，永不含 secret 值
     key, kind: "secret" | "plain", required,
     label: {zh, en}, placeholder: {zh, en}, description: {zh, en},
     value?: string,                         // 仅 plain：当前生效值（默认或用户所填）
-    doc_url: {zh, en}, doc_label: {zh, en}
   }]
 }
 ```
+
+**`doc_url` / `doc_label` 在块上，不在字段上**（本节初稿把它们写在字段里，与 §5.2 矛盾，
+`fp-10` 已按 §5.2 改正）：市场的一份 `token-schema.json` 只在顶层声明一次，逐字段复制的结果是
+四字段表单渲染出四个「如何获取密钥？」，其中三个挂在「协议」「主机」「端口」底下。
 
 | 方法 | 请求 | 响应 |
 |---|---|---|
@@ -427,7 +431,7 @@ credential: {
 | agent 装配路径缺身份 | conversation → owner principal 查询缺失时按 fail-closed 处理（§6.2），不静默降级到宿主级 |
 | OAuth 连接器 | 行为不变；仅状态词表映射。`oauth_tokens` 的存储键控**不动**（§2） |
 | 新增 DTO 字段 | 均为可选字段，旧客户端忽略即可 |
-| 指纹 | 本方案实施时为 `fp-9`；本文档本身不含 wire 变更 |
+| 指纹 | 本方案实施时为 `fp-10`（第 4 步上到 `fp-9`，第 5 步把表单文案从 `fields[]` 归位到块上，故再 bump 一次；无方法增删，计数不变） |
 
 ---
 
@@ -480,23 +484,34 @@ credential: {
 | 2 | ✅ 完成 | `token-schema.json` 归一为 `credential` 组件（字段 + i18n 双语言 + 取密钥入口）；`${NAME}` 按 §5.4 升级引用；secret 默认值丢弃并告警；`looks_sensitive_key` 补 `key`/`pat`，字段判定另用更紧谓词；`auth_mode` 取自市场索引（写进 `connector` 组件） |
 | 3 | ✅ 完成 | **已完成**：`values` 层（四处类型：`McpTransport` / `McpServerTransport` / `SessionMcpTransport` / 网关 `McpTransportParam`）；`TransportScope` + `resolve_request_string` 两类命名空间分流；`<principal>:NAME` 键控与安装所有者可见性规则；探针与工具调用两条路径都接通调用者身份，stdio 会话池按"解析后的 env"复用（凭据不同即不复用）。**装配路径无需再改**：`load_user_mcp_servers`、host 声明合并与 ACP 构建都在 `is_instance_owner = authority.controls_host()` 之后，只有安装所有者本人的会话会注入 MCP，因此按宿主解析就是准确语义（实施时原以为这是遗留，核对门禁后确认不是） |
 | 4 | ✅ 完成 | 协议类型（`credential` 块 + 字段 + 双语言）；目录投影按**调用者**给出 `mode`/`status`/`missing`/`fields`；`[credentials]` 写入面（`toml_edit` 最小改动，注释与排版保留、原子落盘、写完重载进程内映射）；`connector/credential/get\|set\|clear` 三方法 + HTTP/WS 路由 + `ConnectorCredentialProvider` seam + 组合根接线；SDK 三个方法与协议类型；**`fp-8` → `fp-9`**、方法计数 `48 / 73` → `51 / 76`、两仓同步 |
-| 5 | ✅ 完成 | WebUI：`ConnectorCredentialForm`（schema 驱动，标题/说明/字段/取密钥入口全部由 host 下发且带回退；`secret` 掩码不预填不回显，`plain` 预填；空值不提交）；抽屉按 `credential.mode` 给入口（`token` → 「填入凭据」，`oauth` → 既有授权，`none` → 无），徽标统一为四态并带缺失项数量；token 模式的 `error` 复用既有 `drawer-hint is-error`（一个连接器一处错误展示）；写入后按探针同形刷新（`get` + `status` + `list`），不新写轮询 |
+| 5 | ✅ 完成 | WebUI：`ConnectorCredentialForm`（schema 驱动，标题/说明/字段/取密钥入口全部由 host 下发且带回退；`secret` 掩码不预填不回显，`plain` 预填；空值不提交，保存按钮只在有变化时可点）；抽屉按 `credential.mode` 给入口（`token` → 「填入凭据」，`oauth` → 既有授权，`none` → 无），徽标统一为四态并带缺失项数量；token 模式的 `error` 复用既有 `drawer-hint is-error`（一个连接器一处错误展示）；写入后按探针同形刷新（`get` + `status` + `list`），不新写轮询 |
 | 6 | ⬜ 未开始 | 存储终态（D1）：per-principal 查询面 + 旧键迁移 |
 
-**第 5 步期间修掉的一处第 4 步接线缺口**：`credential.mode` 当初挂在凭据声明上，
-但导入期从不往 `credential` 组件写 `auth_mode`（归一值写在 `connector` 组件里），
-`declaration.auth_mode` 因而恒为 `none`——61 个 `token` 连接器一律投影成 `mode: none`
-（正是本方案要修的那个 bug 的镜像），而 14 个 `server-side` / `mcp` / `oneid-token`
-连接器没有 token-schema、也就没有声明，落到 transport 兜底又变回 `oauth`。现引入
-`ConnectorCredentialSource`：模式取自 `connector` 组件（每个市场连接器都有），表单取自
-`credential` 组件（只有 61 个有），transport 兜底只留给非市场来源的手工注册服务器。
-单元测试手写 payload 因而看不见这段接线，补了一条 e2e 走完整条链路：市场目录 → 安装 →
-`connectors` 投影 → `credential/get` → `set` → 磁盘上的 `[credentials]` → `clear`。
+**第 5 步期间修掉的两处第 4 步缺口**（都是浏览器里跑起来才看见的）：
+
+1. **模式读错了组件**。`credential.mode` 当初挂在凭据声明上，但导入期从不往
+   `credential` 组件写 `auth_mode`（归一值写在 `connector` 组件里），`declaration.auth_mode`
+   因而恒为 `none`——61 个 `token` 连接器一律投影成 `mode: none`（正是本方案要修的那个 bug
+   的镜像），而 14 个 `server-side` / `mcp` / `oneid-token` 连接器没有 token-schema、也就没有
+   声明，落到 transport 兜底又变回 `oauth`。现引入 `ConnectorCredentialSource`：模式取自
+   `connector` 组件（每个市场连接器都有），表单取自 `credential` 组件（只有 61 个有），
+   transport 兜底只留给非市场来源的手工注册服务器。
+2. **表单文案摆错了层级**。§5.2 把 `title` / `description` / `doc_url` / `doc_label` 放在
+   **连接器层**，字段层只有 `key/kind/required/label/placeholder/description`；实现却读成了
+   `value.get("doc_url")`（整个 payload），把同一个链接复制到每个字段上——四字段表单于是
+   渲染出四个「如何获取密钥？」，三个挂在「端口」这类设置底下。已按 §5.2 归位到
+   `credential` 块上，表单只渲染一次。这是 DTO 形状变化，指纹 `fp-9` → **`fp-10`**
+   （无方法增删，计数仍 `51 / 76`），§6.1 的 JSON 草图也一并改正。
+
+单元测试手写 payload 因而看不见第 1 条那段接线，补了一条 e2e 走完整条链路：市场目录 → 安装 →
+`connectors` 投影 → `credential/get` → `set` → 磁盘上的 `[credentials]` → `clear`，并对
+"字段里没有 `doc_url`" 加了反向断言。
 
 第 3 步的 raw 计数：`nomifun-common` +6 单测、`nomifun-importer` +2、`nomifun-mcp` +5、
 `nomifun-app-server` +0（既有 173 条回归通过）。第 4 步新增：`nomifun-app-server` 4（agent_store
 写入面）、`nomifun-app` 8（投影与写入面）、`web` 三个 SDK 方法（路由计数锁步校验）。
-第 5 步新增：`web` 22（表单与四态词表，含渲染测试）、`nomifun-app` 1 条 e2e（上面那条链路）。
+第 5 步新增：`web` 23（表单与四态词表，含渲染测试）、`nomifun-app` 2（投影的表单级断言 +
+上面那条 e2e）。
 
 ### 9.1 端到端验收（活体）
 
@@ -509,9 +524,13 @@ credential: {
 5. 覆盖四种形态各一例：双字段（`CLIENT_ID` + `CLIENT_SECRET`）、混合表单（3 plain + 1 secret，含 url 模板）、
    `sse` 传输（确认未被压平）、空值待填（`SCRM_APP_KEY: ""`）。
 
-其中"填了凭据之后探针真的带上解析后的 header"这一段仍未有自动化覆盖：第 5 步的 e2e
-止于 `[credentials]` 与投影一致，未起一个真的 MCP server 去收 header。补法是把这条
-变成 §9.1 的 live 脚本（需要 mock server + 探针），或复用 `nomifun-mcp` 的连接测试夹具。
+第 5 步期间已手工跑过其中一部分（起 `agent-store.exe --features static-webui`，挂一个本地
+目录市场，装三个条目后在 WebUI 里逐个打开抽屉）：三张卡分别是「待填写 · 缺 1 项」「待填写 ·
+缺 2 项」「无徽标」（`server-side`），抽屉的「认证」行显示「密钥凭据」而非 transport 推导的
+`oauth`，`token` 模式只给「填入凭据」、没有授权入口，表单里三个 plain 预填、secret 空且掩码、
+「保存」在有改动前禁用。**第 2 条（填了之后探针真的带上解析后的 header）仍无自动化覆盖**：
+第 5 步的 e2e 止于 `[credentials]` 与投影一致，未起一个真的 MCP server 去收 header。补法是把
+这条变成 live 脚本（mock server + 探针），或复用 `nomifun-mcp` 的连接测试夹具。
 
 ---
 
