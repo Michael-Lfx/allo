@@ -99,6 +99,11 @@ Ask first before touching these:
   adding. See CONTRIBUTING.md § Dependencies, Assets, And Licenses.
 - **Release, signing, updater** — see [RELEASING.md](RELEASING.md) and
   [BUILD_RELEASE.zh-CN.md](BUILD_RELEASE.zh-CN.md).
+- **No in-tree mock data or fake balances in production code** — never
+  hardcode mock balances, fake account states, bypass tokens, or test defaults
+  into production Contexts (`*Context.tsx`), hooks, or runtime state. UI
+  previews must use isolated sandbox files, test pages, or temporary HTML
+  artifacts, never in-tree production fallbacks.
 
 ## Coding Conventions
 
@@ -109,6 +114,11 @@ Ask first before touching these:
   `bun run check:theme`.
 - HTTP DTOs belong in `nomifun-api-types`.
 - Commit messages: Conventional Commits style (`feat:`, `fix:`, `docs:`, etc.).
+- **Zero mock contamination in production runtime**: PR submission requires
+  strict self-audit to ensure no `mock*`, `__setMock*`, or hardcoded asset
+  balances exist in production code paths. Changes to core billing, credits,
+  and auth contexts must be kept in minimal, dedicated PRs rather than mixed
+  into general UI styling.
 
 ## Git Workflow: Branch Off `origin/main`, Rebase, Then PR
 
