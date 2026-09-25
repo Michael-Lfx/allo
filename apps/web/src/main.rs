@@ -53,12 +53,15 @@ struct Args {
     /// `nomifun_app::cli::default_data_dir`). The env value is the FINAL data
     /// root, taken literally on every host — production deployments (Docker
     /// `/data`, systemd `/var/lib/nomifun`) rely on that.
+    /// Env contract: `--data-dir` > `FLOWY_DATA_DIR` > `NOMIFUN_DATA_DIR` >
+    /// channel default. clap's derive binds only ONE env var per arg — a
+    /// second `#[arg(env = …)]` attribute silently REPLACES the first — so
+    /// the `NOMIFUN_DATA_DIR` alias is applied after parsing (see `main`).
     #[arg(
         long,
         default_value_os_t = nomifun_app::cli::default_data_dir(),
         value_parser = nomifun_app::cli::parse_non_empty_path
     )]
-    #[arg(long, env = "NOMIFUN_DATA_DIR")]
     #[arg(long, env = "FLOWY_DATA_DIR")]
     data_dir: PathBuf,
     /// Directory containing the built SPA (ui/dist).
@@ -216,7 +219,20 @@ fn main() -> Result<ExitCode> {
         return Ok(code);
     }
 
-    let args = Args::parse();
+    // Args::parse alone cannot bind BOTH FLOWY_DATA_DIR and NOMIFUN_DATA_DIR
+    // to --data-dir (a second clap `env` attribute silently replaces the
+    // first), so the alias is applied after parsing — only over the
+    // compiled-in default, keeping flag > FLOWY_DATA_DIR > NOMIFUN_DATA_DIR.
+    let matches = <Args as clap::CommandFactory>::command().get_matches();
+    let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches)
+        .unwrap_or_else(|e| e.exit());
+    if let Err(message) = nomifun_app::cli::apply_data_dir_env_alias(
+        matches.value_source("data_dir"),
+        &mut args.data_dir,
+        nomifun_app::cli::nomifun_data_dir_env(),
+    ) {
+        nomifun_app::cli::exit_with_data_dir_env_error(message);
+    }
     // Fail before runtime, database, and auth initialization. API-only mode is
     // the explicit Vite-development bypass and never mounts the static bundle.
     let _static_manifest = validate_static_dist(&args)?;

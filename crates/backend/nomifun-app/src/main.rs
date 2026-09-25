@@ -1,7 +1,6 @@
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::Parser;
 
 // bootstrap/cli/commands now live in the library so embedded hosts can reuse
 // them; the bin consumes them from there.
@@ -9,7 +8,11 @@ use nomifun_app::cli::{Cli, Command};
 use nomifun_app::{bootstrap, commands};
 
 fn main() -> Result<ExitCode> {
-    let mut cli = Cli::parse();
+    // parse_with_data_dir_env_alias: derive alone cannot bind BOTH
+    // FLOWY_DATA_DIR and NOMIFUN_DATA_DIR to --data-dir (a second clap `env`
+    // attribute silently replaces the first), so the alias is applied after
+    // parsing, only over the compiled-in default.
+    let mut cli = Cli::parse_with_data_dir_env_alias();
 
     // mcp-* subcommands route into short-lived stdio helpers that live entirely
     // outside the main HTTP server. They share the global flags so clap can

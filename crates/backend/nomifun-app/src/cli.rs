@@ -80,6 +80,66 @@ pub fn parse_non_empty_path(s: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(s))
 }
 
+/// The `NOMIFUN_DATA_DIR` alias of clap-bound `FLOWY_DATA_DIR`, validated
+/// exactly like the flag/env value (`Some(Err(_))` on the empty-string slip).
+pub fn nomifun_data_dir_env() -> Option<Result<PathBuf, String>> {
+    std::env::var("NOMIFUN_DATA_DIR")
+        .ok()
+        .map(|value| parse_non_empty_path(&value))
+}
+
+/// Apply the `NOMIFUN_DATA_DIR` alias to a clap-parsed `data_dir`, but only
+/// when the parsed value still comes from the compiled-in default — i.e.
+/// neither the `--data-dir` flag nor the clap-bound `FLOWY_DATA_DIR` env
+/// supplied it. Final precedence: flag > `FLOWY_DATA_DIR` >
+/// `NOMIFUN_DATA_DIR` > channel default, matching the desktop shell's
+/// `nomifun_common::storage_paths::resolve_data_dir_from_env`.
+pub fn apply_data_dir_env_alias(
+    source: Option<clap::parser::ValueSource>,
+    data_dir: &mut PathBuf,
+    alias: Option<Result<PathBuf, String>>,
+) -> Result<(), String> {
+    if source != Some(clap::parser::ValueSource::DefaultValue) {
+        return Ok(());
+    }
+    match alias {
+        None => Ok(()),
+        Some(Ok(dir)) => {
+            *data_dir = dir;
+            Ok(())
+        }
+        Some(Err(message)) => Err(format!("NOMIFUN_DATA_DIR {message}")),
+    }
+}
+
+/// Exit the process with a clap-style usage error for a bad env value.
+pub fn exit_with_data_dir_env_error(message: String) -> ! {
+    clap::Error::raw(
+        clap::error::ErrorKind::InvalidValue,
+        format!("{message}\n"),
+    )
+    .exit()
+}
+
+impl Cli {
+    /// `Cli::parse()` plus the dual data-dir env contract clap's derive
+    /// cannot express (see [`apply_data_dir_env_alias`]).
+    pub fn parse_with_data_dir_env_alias() -> Cli {
+        use clap::{CommandFactory, FromArgMatches};
+
+        let matches = Self::command().get_matches();
+        let mut cli = Self::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+        if let Err(message) = apply_data_dir_env_alias(
+            matches.value_source("data_dir"),
+            &mut cli.data_dir,
+            nomifun_data_dir_env(),
+        ) {
+            exit_with_data_dir_env_error(message);
+        }
+        cli
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "nomicore", about = "Nomi Backend Server", version)]
 pub struct Cli {
@@ -92,8 +152,12 @@ pub struct Cli {
     pub port: u16,
 
     /// Data directory for database and file storage.
+    /// Env contract: `--data-dir` > `FLOWY_DATA_DIR` > `NOMIFUN_DATA_DIR` >
+    /// channel default. clap's derive binds only ONE env var per arg — a
+    /// second `#[arg(env = …)]` attribute silently REPLACES the first — so
+    /// the `NOMIFUN_DATA_DIR` alias is resolved by
+    /// [`Cli::parse_with_data_dir_env_alias`], not declared here.
     #[arg(long, default_value_os_t = default_data_dir(), value_parser = parse_non_empty_path)]
-    #[arg(long, env = "NOMIFUN_DATA_DIR")]
     #[arg(long, env = "FLOWY_DATA_DIR")]
     pub data_dir: PathBuf,
 
@@ -427,5 +491,74 @@ mod tests {
             .to_string();
         assert!(restore.contains("Custom external workspaces"));
         assert!(restore.contains("storage-generation"));
+    }
+
+    /// Regression: two stacked `#[arg(env = …)]` attributes on `data_dir`
+    /// made clap silently drop `NOMIFUN_DATA_DIR` (the documented primary
+    /// name) while only `FLOWY_DATA_DIR` took effect. The alias is now applied
+    /// post-parse via `apply_data_dir_env_alias`. These tests pass explicit
+    /// value sources/aliases instead of mutating process env, so they stay
+    /// safe under the parallel test harness.
+    #[test]
+    fn data_dir_env_alias_applies_only_over_compiled_default() {
+        use clap::parser::ValueSource;
+
+        let alias = || Some(Ok(PathBuf::from("/alias-data")));
+
+        // Neither flag nor FLOWY_DATA_DIR given → the alias fills the default.
+        let mut dir = PathBuf::from("/channel-default");
+        super::apply_data_dir_env_alias(Some(ValueSource::DefaultValue), &mut dir, alias())
+            .unwrap();
+        assert_eq!(dir, PathBuf::from("/alias-data"));
+
+        // Explicit --data-dir beats the alias.
+        let mut dir = PathBuf::from("/from-flag");
+        super::apply_data_dir_env_alias(Some(ValueSource::CommandLine), &mut dir, alias())
+            .unwrap();
+        assert_eq!(dir, PathBuf::from("/from-flag"));
+
+        // The clap-bound FLOWY_DATA_DIR beats the NOMIFUN_DATA_DIR alias
+        // (same precedence as the desktop shell's resolve_data_dir_from_env).
+        let mut dir = PathBuf::from("/from-flowy-env");
+        super::apply_data_dir_env_alias(Some(ValueSource::EnvVariable), &mut dir, alias())
+            .unwrap();
+        assert_eq!(dir, PathBuf::from("/from-flowy-env"));
+
+        // Alias unset → the compiled-in default survives.
+        let mut dir = PathBuf::from("/channel-default");
+        super::apply_data_dir_env_alias(Some(ValueSource::DefaultValue), &mut dir, None)
+            .unwrap();
+        assert_eq!(dir, PathBuf::from("/channel-default"));
+    }
+
+    #[test]
+    fn data_dir_env_alias_rejects_empty_value() {
+        use clap::parser::ValueSource;
+
+        let mut dir = PathBuf::from("/channel-default");
+        let err = super::apply_data_dir_env_alias(
+            Some(ValueSource::DefaultValue),
+            &mut dir,
+            Some(super::parse_non_empty_path("   ")),
+        )
+        .expect_err("empty NOMIFUN_DATA_DIR must be rejected, not defaulted");
+        assert!(
+            err.contains("must not be empty"),
+            "error should explain the empty-value slip, got: {err}"
+        );
+        assert_eq!(
+            dir,
+            PathBuf::from("/channel-default"),
+            "a rejected alias must not clobber the parsed value"
+        );
+    }
+
+    #[test]
+    fn data_dir_flag_overrides_env_and_default() {
+        // No env mutation: the flag must win regardless of any ambient
+        // FLOWY_DATA_DIR in the dev shell running the tests.
+        let with_flag =
+            Cli::try_parse_from(["nomicore", "--data-dir", "/explicit-data"]).unwrap();
+        assert_eq!(with_flag.data_dir, PathBuf::from("/explicit-data"));
     }
 }
