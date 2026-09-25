@@ -80,12 +80,23 @@ pub fn parse_non_empty_path(s: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(s))
 }
 
+/// Map a raw `NOMIFUN_DATA_DIR` env value onto the validated data-dir path.
+/// Split from [`nomifun_data_dir_env`] so tests can feed non-UTF8 values
+/// without mutating process env (parallel-harness safe). A present but
+/// non-UTF8 value is a hard error — matching clap's `InvalidUtf8` failure
+/// for the `FLOWY_DATA_DIR` binding instead of silently falling back.
+fn data_dir_env_value(value: Option<std::ffi::OsString>) -> Option<Result<PathBuf, String>> {
+    value.map(|raw| match raw.to_str() {
+        Some(text) => parse_non_empty_path(text),
+        None => Err("must be valid UTF-8".to_owned()),
+    })
+}
+
 /// The `NOMIFUN_DATA_DIR` alias of clap-bound `FLOWY_DATA_DIR`, validated
-/// exactly like the flag/env value (`Some(Err(_))` on the empty-string slip).
+/// exactly like the flag/env value (`Some(Err(_))` on the empty-string slip
+/// or a non-UTF8 value).
 pub fn nomifun_data_dir_env() -> Option<Result<PathBuf, String>> {
-    std::env::var("NOMIFUN_DATA_DIR")
-        .ok()
-        .map(|value| parse_non_empty_path(&value))
+    data_dir_env_value(std::env::var_os("NOMIFUN_DATA_DIR"))
 }
 
 /// Apply the `NOMIFUN_DATA_DIR` alias to a clap-parsed `data_dir`, but only
@@ -121,22 +132,32 @@ pub fn exit_with_data_dir_env_error(message: String) -> ! {
     .exit()
 }
 
+/// Parse a clap-derive args struct from process argv and apply the
+/// `NOMIFUN_DATA_DIR` alias to its `data_dir` field — the dual-env contract
+/// clap's derive cannot express (see [`apply_data_dir_env_alias`]).
+/// `field` selects the struct's data-dir member so every host binary shares
+/// one implementation.
+pub fn parse_args_with_data_dir_env_alias<T>(field: impl Fn(&mut T) -> &mut PathBuf) -> T
+where
+    T: clap::CommandFactory + clap::FromArgMatches,
+{
+    let matches = T::command().get_matches();
+    let mut args = T::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    if let Err(message) = apply_data_dir_env_alias(
+        matches.value_source("data_dir"),
+        field(&mut args),
+        nomifun_data_dir_env(),
+    ) {
+        exit_with_data_dir_env_error(message);
+    }
+    args
+}
+
 impl Cli {
     /// `Cli::parse()` plus the dual data-dir env contract clap's derive
     /// cannot express (see [`apply_data_dir_env_alias`]).
     pub fn parse_with_data_dir_env_alias() -> Cli {
-        use clap::{CommandFactory, FromArgMatches};
-
-        let matches = Self::command().get_matches();
-        let mut cli = Self::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
-        if let Err(message) = apply_data_dir_env_alias(
-            matches.value_source("data_dir"),
-            &mut cli.data_dir,
-            nomifun_data_dir_env(),
-        ) {
-            exit_with_data_dir_env_error(message);
-        }
-        cli
+        parse_args_with_data_dir_env_alias(|cli: &mut Cli| &mut cli.data_dir)
     }
 }
 
@@ -333,9 +354,10 @@ mod tests {
 
     #[test]
     fn default_data_dir_matches_active_channel() {
-        // Pure shape check on the unset default — env handling belongs to clap
-        // (`env = "NOMIFUN_DATA_DIR"`) and is not exercised here to keep the
-        // test independent of the ambient environment.
+        // Pure shape check on the unset default — env handling lives in
+        // `parse_with_data_dir_env_alias` / `apply_data_dir_env_alias` and is
+        // not exercised here to keep the test independent of the ambient
+        // environment.
         let dir = super::default_data_dir();
         let leaf = super::nomi_leaf(&crate::channel::dir_suffix());
         assert!(
@@ -550,6 +572,32 @@ mod tests {
             dir,
             PathBuf::from("/channel-default"),
             "a rejected alias must not clobber the parsed value"
+        );
+    }
+
+    /// A present but non-UTF8 NOMIFUN_DATA_DIR must fail fast like clap's
+    /// `InvalidUtf8` on the FLOWY_DATA_DIR binding — never silently fall back
+    /// to the default data dir.
+    #[cfg(windows)]
+    #[test]
+    fn data_dir_env_value_rejects_non_utf8_instead_of_ignoring() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let lone_surrogate = std::ffi::OsString::from_wide(&[0xD800]);
+        let mapped = super::data_dir_env_value(Some(lone_surrogate))
+            .expect("a set value must map to a result, not disappear");
+        let err = mapped.expect_err("non-UTF8 value must be rejected");
+        assert!(
+            err.contains("UTF-8"),
+            "error should name the encoding problem, got: {err}"
+        );
+
+        assert!(super::data_dir_env_value(None).is_none());
+        assert_eq!(
+            super::data_dir_env_value(Some(std::ffi::OsString::from("/valid-dir")))
+                .unwrap()
+                .unwrap(),
+            PathBuf::from("/valid-dir")
         );
     }
 

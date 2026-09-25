@@ -223,16 +223,9 @@ fn main() -> Result<ExitCode> {
     // to --data-dir (a second clap `env` attribute silently replaces the
     // first), so the alias is applied after parsing — only over the
     // compiled-in default, keeping flag > FLOWY_DATA_DIR > NOMIFUN_DATA_DIR.
-    let matches = <Args as clap::CommandFactory>::command().get_matches();
-    let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches)
-        .unwrap_or_else(|e| e.exit());
-    if let Err(message) = nomifun_app::cli::apply_data_dir_env_alias(
-        matches.value_source("data_dir"),
-        &mut args.data_dir,
-        nomifun_app::cli::nomifun_data_dir_env(),
-    ) {
-        nomifun_app::cli::exit_with_data_dir_env_error(message);
-    }
+    let args = nomifun_app::cli::parse_args_with_data_dir_env_alias(|args: &mut Args| {
+        &mut args.data_dir
+    });
     // Fail before runtime, database, and auth initialization. API-only mode is
     // the explicit Vite-development bypass and never mounts the static bundle.
     let _static_manifest = validate_static_dist(&args)?;
