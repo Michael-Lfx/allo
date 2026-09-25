@@ -88,7 +88,17 @@ sudo systemctl status nomifun-web
 
 同样建议在前面摆一个 Caddy/nginx 做 TLS,并在 unit 里设 `Environment=NOMIFUN_HTTPS=true`。
 
-> ⚠️ unit 里 `Environment=NOMIFUN_DATA_DIR=/var/lib/nomifun` 必须与 `StateDirectory=nomifun` **保持一致**。若你改 unit(比如注释掉 `User`/`Group` 改用 root)时不慎删掉那行,数据会悄悄落到服务用户的按用户目录(`$XDG_DATA_HOME/NomiFun`,通常是 `~nomifun/.local/share/NomiFun`),与 systemd 托管的 `/var/lib/nomifun` 脱钩。
+> ⚠️ unit 里 `Environment=NOMIFUN_DATA_DIR=/var/lib/nomifun` 必须与 `StateDirectory=nomifun` **保持一致**。若你改 unit(比如注释掉 `User`/`Group` 改用 root)时不慎删掉那行,数据会悄悄落到服务用户的按用户目录(`$XDG_DATA_HOME/Flowy/Nomi`,通常是 `~nomifun/.local/share/Flowy/Nomi`),与 systemd 托管的 `/var/lib/nomifun` 脱钩。
+
+> ⚠️ **从 ≤ v1.4.9 升级**：旧版本会静默忽略 `NOMIFUN_DATA_DIR`(CLI 解析器的属性堆叠 bug),数据实际写在服务用户的按用户目录(`~nomifun/.local/share/Flowy/Nomi`)。升级到修复版本后服务会以**空的** `/var/lib/nomifun` 启动。请先迁移再重启：
+>
+> ```bash
+> sudo systemctl stop nomifun-web
+> sudo -u nomifun cp -a ~nomifun/.local/share/Flowy/Nomi/. /var/lib/nomifun/
+> sudo systemctl start nomifun-web
+> ```
+>
+> 或临时在 unit 里加 `Environment=FLOWY_DATA_DIR=/home/nomifun/.local/share/Flowy/Nomi`(优先级高于 `NOMIFUN_DATA_DIR`)保持旧路径，择机再迁移。详见 [Web 服务器部署指南](../../docs/guides/web-server-deployment.zh.md) 的「从 v1.4.x 或更早版本升级」。
 
 ---
 
@@ -98,7 +108,7 @@ sudo systemctl status nomifun-web
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | 监听地址。`0.0.0.0` 会对 LAN/VPN/公网可达；请先完成管理员设置或预置密码，公网必须放在 TLS 之后 |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | 同时服务 API、`/ws`、SPA 的端口 |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户目录 | 数据目录(db / 日志 / bun 缓存 / agent 状态)。默认是服务用户的按用户目录(Linux 为 `$XDG_DATA_HOME/NomiFun`);生产请显式指定绝对路径 |
+| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户目录 | 数据目录(db / 日志 / bun 缓存 / agent 状态)。默认是服务用户的按用户目录(Linux 为 `$XDG_DATA_HOME/Flowy/Nomi`);生产请显式指定绝对路径 |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | SPA 静态目录。部署时**必须**显式指定 |
 | — | `NOMIFUN_HTTPS` | `false` | 设 `true` 时会话/CSRF cookie 带 `Secure`(仅在 TLS 后用) |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | 预置管理员用户名(仅预置时用) |

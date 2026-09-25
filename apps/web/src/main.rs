@@ -418,6 +418,20 @@ mod tests {
         assert!(!is_api_path("/assets/index-abc123.js"));
     }
 
+    /// Guard: `parse_args_with_data_dir_env_alias` addresses the data-dir arg
+    /// by the string id `"data_dir"`. A field rename makes `value_source`
+    /// panic in debug builds but return `None` in release builds — silently
+    /// disabling the `NOMIFUN_DATA_DIR` alias again. Fail loudly here instead.
+    #[test]
+    fn args_command_exposes_data_dir_arg_id() {
+        use clap::CommandFactory;
+
+        assert!(
+            Args::command().get_arguments().any(|a| a.get_id() == "data_dir"),
+            "the data_dir arg id must exist for parse_args_with_data_dir_env_alias"
+        );
+    }
+
     #[tokio::test]
     async fn unmatched_api_path_gets_json_404_not_index_html() {
         use tower::ServiceExt;

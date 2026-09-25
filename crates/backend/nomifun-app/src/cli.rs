@@ -609,4 +609,16 @@ mod tests {
             Cli::try_parse_from(["nomicore", "--data-dir", "/explicit-data"]).unwrap();
         assert_eq!(with_flag.data_dir, PathBuf::from("/explicit-data"));
     }
+
+    /// Guard: `parse_args_with_data_dir_env_alias` addresses the data-dir arg
+    /// by the string id `"data_dir"`. A field rename makes `value_source`
+    /// panic in debug builds but return `None` in release builds — silently
+    /// disabling the `NOMIFUN_DATA_DIR` alias again. Fail loudly here instead.
+    #[test]
+    fn cli_command_exposes_data_dir_arg_id() {
+        assert!(
+            Cli::command().get_arguments().any(|a| a.get_id() == "data_dir"),
+            "the data_dir arg id must exist for Cli::parse_with_data_dir_env_alias"
+        );
+    }
 }

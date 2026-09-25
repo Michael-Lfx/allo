@@ -50,7 +50,7 @@ All flags below are read by `apps/web/src/main.rs`. Each has an environment-vari
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | IP to bind on. `0.0.0.0` accepts LAN/VPN/public traffic; pre-seed the admin or complete first-run setup before broad exposure. |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | TCP port. Serves the API, the WebSocket at `/ws`, and the SPA. |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | per-user dir | Backend data dir (SQLite database, agent state, logs, Bun cache). Defaults to the per-user location shared with the desktop app (`%LOCALAPPDATA%\NomiFun`, `~/Library/Application Support/NomiFun`, `$XDG_DATA_HOME/NomiFun`). **Still set an explicit absolute path in production.** |
+| `--data-dir` | `NOMIFUN_DATA_DIR` | per-user dir | Backend data dir (SQLite database, agent state, logs, Bun cache). Defaults to the per-user location shared with the desktop app (`%LOCALAPPDATA%\Flowy\Nomi`, `~/Library/Application Support/Flowy/Nomi`, `$XDG_DATA_HOME/Flowy/Nomi`). **Still set an explicit absolute path in production.** |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | Directory containing the built SPA. **Set this explicitly when deploying.** |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | Username used when pre-seeding the first admin. Ignored once an admin exists. |
 | `--admin-password` | `NOMIFUN_ADMIN_PASSWORD` | — | Pre-seed the first admin password at boot, skipping interactive setup. Ignored once an admin exists. |
@@ -72,6 +72,31 @@ When the admin account is created (interactively or via pre-seed), values are va
 - **Password**: 8–128 chars, rejected if it appears in a small common-passwords list (`password`, `12345678`, `qwertyui`, …).
 
 A weak `NOMIFUN_ADMIN_PASSWORD` will refuse to boot. A weak interactively-typed password will return `400` with the validation message.
+
+## Upgrading from v1.4.x or earlier
+
+**All releases up to and including v1.4.9 silently ignored `NOMIFUN_DATA_DIR`** in the `nomifun-web` and `nomicore` binaries — a stacked-attribute bug in the CLI parser let only the `FLOWY_DATA_DIR` alias take effect. If you deployed with Docker or systemd per this guide, your data did **not** land in `/data` / `/var/lib/nomifun`; it went to the per-user default (`/root/.local/share/Flowy/Nomi` in the official image, which runs as root; `~nomifun/.local/share/Flowy/Nomi` under the shipped systemd unit).
+
+This release honours `NOMIFUN_DATA_DIR` as documented, so the first boot after upgrading starts against an **empty** `/data` / `/var/lib/nomifun`. Your existing data is untouched at the old path. Pick one:
+
+- **Migrate (recommended)** — stop the old service/container, copy the dataset over, then start the new one:
+
+  ```bash
+  # systemd:
+  sudo -u nomifun cp -a ~nomifun/.local/share/Flowy/Nomi/. /var/lib/nomifun/
+
+  # Docker: copy out of the OLD stopped container into the volume you mount at /data:
+  docker cp <old-container>:/root/.local/share/Flowy/Nomi/. ./nomifun-data-backup
+  docker run --rm -v "$PWD/nomifun-data-backup:/from" -v <your-data-volume>:/data \
+    busybox sh -c 'cp -a /from/. /data/'
+  ```
+
+- **Keep the old location for now** — set `FLOWY_DATA_DIR=<old path>` explicitly. It takes precedence over `NOMIFUN_DATA_DIR` and preserves the pre-upgrade data root while you plan the move.
+
+Two further behaviour changes ship with the fix:
+
+- An **empty** `NOMIFUN_DATA_DIR=` (e.g. a leftover blank `Environment=` line in a unit) now fails fast at startup with a clear error instead of being silently ignored.
+- Precedence is pinned to `--data-dir` > `FLOWY_DATA_DIR` > `NOMIFUN_DATA_DIR` > channel default — the same order the desktop shell has always used.
 
 ## First-run admin provisioning
 
@@ -259,7 +284,7 @@ The shipped unit:
 - Binds `127.0.0.1:8787` by default. Change `NOMIFUN_WEB_HOST` to
   `0.0.0.0` only after first-run setup is complete or
   `NOMIFUN_ADMIN_PASSWORD` is configured.
-- Sets `NOMIFUN_DATA_DIR=/var/lib/nomifun` to match the systemd-managed `StateDirectory=nomifun`. **Keep these two in sync** — if you drop the env line, the data dir silently falls back to the service user's per-user directory (`$XDG_DATA_HOME/NomiFun`, typically `~nomifun/.local/share/NomiFun`), decoupled from systemd state.
+- Sets `NOMIFUN_DATA_DIR=/var/lib/nomifun` to match the systemd-managed `StateDirectory=nomifun`. **Keep these two in sync** — if you drop the env line, the data dir silently falls back to the service user's per-user directory (`$XDG_DATA_HOME/Flowy/Nomi`, typically `~nomifun/.local/share/Flowy/Nomi`), decoupled from systemd state.
 - Runs as a dedicated `nomifun` user (`User=nomifun`, `Group=nomifun`).
 - Restarts on failure with a 3 s backoff.
 - Applies moderate hardening (`NoNewPrivileges=yes`, `PrivateTmp=yes`). **Do not add** `ProtectHome=yes` or strict `ProtectSystem` — the agent engine reads/writes operator-directed files and over-sandboxing breaks core features.
