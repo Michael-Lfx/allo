@@ -1,4 +1,4 @@
-﻿# Releasing Flowy
+# Releasing Flowy
 
 中文发版手册见 `RELEASING.zh-CN.md`.
 
@@ -31,6 +31,8 @@ versions are kept in sync by the script but are not read by any build.
 4. Confirm no private keys, local paths, proprietary assets, or internal-only
    roadmap claims are included.
 5. Confirm third-party licenses and attributions are current.
+6. Confirm no debugging mock data, hardcoded test balances, or bypass flags
+   remain in production runtime code paths.
 
 ## Desktop Release
 
