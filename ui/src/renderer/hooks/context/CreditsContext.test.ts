@@ -10,9 +10,7 @@ import {
   getMsUntilNextMidnight,
   getTodayKey,
   loadDayKey,
-  loadMockCredits,
   saveDayKey,
-  saveMockCredits,
 } from './CreditsContext';
 
 class MemoryStorage implements Storage {
@@ -153,31 +151,6 @@ describe('CreditsContext helper functions', () => {
     test('returns 0 when no day key exists in storage', () => {
       expect(loadDayKey('account_new')).toBe(0);
       expect(loadDayKey(undefined)).toBe(0);
-    });
-  });
-
-  describe('mock credits storage for dev/testing', () => {
-    test('returns null when no mock credits are stored', () => {
-      expect(loadMockCredits()).toBeNull();
-    });
-
-    test('saves and loads mock credits correctly', () => {
-      saveMockCredits(500, true);
-      expect(loadMockCredits()).toEqual({ balance: 500, authenticated: true });
-
-      saveMockCredits(0, true);
-      expect(loadMockCredits()).toEqual({ balance: 0, authenticated: true });
-
-      saveMockCredits(2000, true);
-      expect(loadMockCredits()).toEqual({ balance: 2000, authenticated: true });
-    });
-
-    test('clears mock credits when balance is null', () => {
-      saveMockCredits(500, true);
-      expect(loadMockCredits()).toEqual({ balance: 500, authenticated: true });
-
-      saveMockCredits(null);
-      expect(loadMockCredits()).toBeNull();
     });
   });
 });

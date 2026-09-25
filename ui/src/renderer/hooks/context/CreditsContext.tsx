@@ -109,42 +109,6 @@ export function saveDayKey(key: number, accountId?: string): void {
   }
 }
 
-// --- Mock Credits Support for Testing/Dev ------------------------------------
-const MOCK_CREDITS_STORAGE = 'nomifun:credits:mockBalance';
-const MOCK_AUTH_STORAGE = 'nomifun:credits:mockAuth';
-
-export function loadMockCredits(): { balance: number; authenticated: boolean } | null {
-  try {
-    const storage = getStorage();
-    if (!storage) return null;
-    const rawBalance = storage.getItem(MOCK_CREDITS_STORAGE);
-    if (rawBalance === null || rawBalance === undefined) return null;
-    const balance = Number(rawBalance);
-    if (Number.isNaN(balance)) return null;
-    const rawAuth = storage.getItem(MOCK_AUTH_STORAGE);
-    const authenticated = rawAuth === null ? true : rawAuth === 'true';
-    return { balance, authenticated };
-  } catch {
-    return null;
-  }
-}
-
-export function saveMockCredits(balance: number | null, authenticated = true): void {
-  try {
-    const storage = getStorage();
-    if (!storage) return;
-    if (balance === null) {
-      storage.removeItem(MOCK_CREDITS_STORAGE);
-      storage.removeItem(MOCK_AUTH_STORAGE);
-    } else {
-      storage.setItem(MOCK_CREDITS_STORAGE, String(balance));
-      storage.setItem(MOCK_AUTH_STORAGE, authenticated ? 'true' : 'false');
-    }
-  } catch {
-    // ignore storage errors
-  }
-}
-
 // --- Auto-refresh scene throttle ---------------------------------------------
 // Shared across the runtime so multiple consumers can't fan out duplicate
 // requests. `mount` and `midnight` have no throttle; `focus`/`online`/`polling`
@@ -194,81 +158,22 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
     whoami?.username ||
     (authState.phase === 'authenticated' ? authState.accountId : undefined);
 
-  const [mockCredits, setMockCreditsState] = useState<{ balance: number; authenticated: boolean } | null>(() => {
-    const loaded = loadMockCredits();
-    if (loaded !== null) return loaded;
-    // Default mock balance of 500 in dev / mock-ready mode so the user can immediately observe the warning bubble
-    return { balance: 500, authenticated: true };
-  });
-
   const [balance, setBalance] = useState(0);
   const [authenticated, setAuthenticated] = useState(false);
   const [lastCheckInDayKey, setLastCheckInDayKey] = useState<number>(() => loadDayKey(currentAccountId));
   const [isFetchingBalance, setIsFetchingBalance] = useState(false);
 
-  // Global mock change listener & window helper bindings
+  // Proactive cleanup of legacy mock keys from localStorage
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleMockChange = (e: Event) => {
-      const customEvent = e as CustomEvent<{ balance: number | null; authenticated?: boolean }>;
-      const { balance: newBalance, authenticated: newAuth = true } = customEvent.detail || {};
-      saveMockCredits(newBalance, newAuth);
-      setMockCreditsState(newBalance === null ? null : { balance: newBalance, authenticated: newAuth });
-    };
-
-    window.addEventListener('nomi:credits:mock:change', handleMockChange);
-
-    // Global testing utilities available on window
-    (window as unknown as { __setMockCredits: (bal: number | null, auth?: boolean) => void }).__setMockCredits = (
-      bal: number | null,
-      auth = true
-    ) => {
-      window.dispatchEvent(
-        new CustomEvent('nomi:credits:mock:change', {
-          detail: { balance: bal, authenticated: auth },
-        })
-      );
-      console.info(
-        `%c[Credits Mock]%c Set mock balance to: ${bal} (authenticated: ${auth}). Call window.__resetCreditsDismiss() if you closed bubbles today.`,
-        'color: #f59e0b; font-weight: bold;',
-        'color: inherit;'
-      );
-    };
-
-    (window as unknown as { __resetCreditsDismiss: () => void }).__resetCreditsDismiss = () => {
-      try {
-        const prefix = 'nomifun:credits-bubble:dismiss:';
-        const keysToRemove: string[] = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith(prefix)) {
-            keysToRemove.push(k);
-          }
-        }
-        keysToRemove.forEach((k) => localStorage.removeItem(k));
-        console.info(
-          `%c[Credits Mock]%c Cleared ${keysToRemove.length} dismiss record(s). Bubbles are restored.`,
-          'color: #10b981; font-weight: bold;',
-          'color: inherit;'
-        );
-        window.dispatchEvent(
-          new CustomEvent('nomi:credits:mock:change', {
-            detail: {
-              balance: mockCredits?.balance ?? 500,
-              authenticated: mockCredits?.authenticated ?? true,
-            },
-          })
-        );
-      } catch (err) {
-        console.error('Failed to reset credits dismiss:', err);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem('nomifun:credits:mockBalance');
+        window.localStorage.removeItem('nomifun:credits:mockAuth');
       }
-    };
-
-    return () => {
-      window.removeEventListener('nomi:credits:mock:change', handleMockChange);
-    };
-  }, [mockCredits]);
+    } catch {
+      // ignore
+    }
+  }, []);
   const [isCheckingIn, setIsCheckingIn] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState(0);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
@@ -504,19 +409,14 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
     };
   }, [isAuthenticated, currentAccountId, triggerBalance, fetchBalance, checkIn]);
 
-  const effectiveBalance = mockCredits !== null ? mockCredits.balance : balance;
-  const effectiveAuthenticated =
-    mockCredits !== null ? mockCredits.authenticated : isAuthenticated && authenticated;
-  const effectiveLastRefreshAt = mockCredits !== null ? (lastRefreshAt || 1) : lastRefreshAt;
-
   const value = useMemo<CreditsContextValue>(
     () => ({
-      balance: effectiveBalance,
-      authenticated: effectiveAuthenticated,
+      balance,
+      authenticated: isAuthenticated && authenticated,
       lastCheckInDayKey,
       isFetchingBalance,
       isCheckingIn,
-      lastRefreshAt: effectiveLastRefreshAt,
+      lastRefreshAt,
       cooldownSeconds,
       canRefresh,
       fetchBalance,
@@ -524,12 +424,13 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
       manualRefresh,
     }),
     [
-      effectiveBalance,
-      effectiveAuthenticated,
+      balance,
+      isAuthenticated,
+      authenticated,
       lastCheckInDayKey,
       isFetchingBalance,
       isCheckingIn,
-      effectiveLastRefreshAt,
+      lastRefreshAt,
       cooldownSeconds,
       canRefresh,
       fetchBalance,
