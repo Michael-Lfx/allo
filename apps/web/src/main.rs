@@ -53,12 +53,15 @@ struct Args {
     /// `nomifun_app::cli::default_data_dir`). The env value is the FINAL data
     /// root, taken literally on every host — production deployments (Docker
     /// `/data`, systemd `/var/lib/nomifun`) rely on that.
+    /// Env contract: `--data-dir` > `FLOWY_DATA_DIR` > `NOMIFUN_DATA_DIR` >
+    /// channel default. clap's derive binds only ONE env var per arg — a
+    /// second `#[arg(env = …)]` attribute silently REPLACES the first — so
+    /// the `NOMIFUN_DATA_DIR` alias is applied after parsing (see `main`).
     #[arg(
         long,
         default_value_os_t = nomifun_app::cli::default_data_dir(),
         value_parser = nomifun_app::cli::parse_non_empty_path
     )]
-    #[arg(long, env = "NOMIFUN_DATA_DIR")]
     #[arg(long, env = "FLOWY_DATA_DIR")]
     data_dir: PathBuf,
     /// Directory containing the built SPA (ui/dist).
@@ -216,7 +219,13 @@ fn main() -> Result<ExitCode> {
         return Ok(code);
     }
 
-    let args = Args::parse();
+    // Args::parse alone cannot bind BOTH FLOWY_DATA_DIR and NOMIFUN_DATA_DIR
+    // to --data-dir (a second clap `env` attribute silently replaces the
+    // first), so the alias is applied after parsing — only over the
+    // compiled-in default, keeping flag > FLOWY_DATA_DIR > NOMIFUN_DATA_DIR.
+    let args = nomifun_app::cli::parse_args_with_data_dir_env_alias(|args: &mut Args| {
+        &mut args.data_dir
+    });
     // Fail before runtime, database, and auth initialization. API-only mode is
     // the explicit Vite-development bypass and never mounts the static bundle.
     let _static_manifest = validate_static_dist(&args)?;
@@ -407,6 +416,20 @@ mod tests {
         assert!(!is_api_path("/login"));
         assert!(!is_api_path("/apiary")); // prefix must respect segment boundary
         assert!(!is_api_path("/assets/index-abc123.js"));
+    }
+
+    /// Guard: `parse_args_with_data_dir_env_alias` addresses the data-dir arg
+    /// by the string id `"data_dir"`. A field rename makes `value_source`
+    /// panic in debug builds but return `None` in release builds — silently
+    /// disabling the `NOMIFUN_DATA_DIR` alias again. Fail loudly here instead.
+    #[test]
+    fn args_command_exposes_data_dir_arg_id() {
+        use clap::CommandFactory;
+
+        assert!(
+            Args::command().get_arguments().any(|a| a.get_id() == "data_dir"),
+            "the data_dir arg id must exist for parse_args_with_data_dir_env_alias"
+        );
     }
 
     #[tokio::test]

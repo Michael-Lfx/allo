@@ -50,7 +50,7 @@ cargo run -p nomifun-web      # 会自动使用默认 --dist=../../ui/dist
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | 绑定的 IP。`0.0.0.0` 会接收 LAN/VPN/公网流量；大范围暴露前请先预置管理员或完成首次设置。 |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | TCP 端口。提供 API、`/ws` 处的 WebSocket，以及 SPA。 |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户目录 | 后端数据目录 (SQLite 数据库、agent 状态、日志、Bun 缓存)。默认是与桌面应用共享的按用户位置 (`%LOCALAPPDATA%\NomiFun`、`~/Library/Application Support/NomiFun`、`$XDG_DATA_HOME/NomiFun`)。**生产环境请仍显式指定绝对路径。** |
+| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户目录 | 后端数据目录 (SQLite 数据库、agent 状态、日志、Bun 缓存)。默认是与桌面应用共享的按用户位置 (`%LOCALAPPDATA%\Flowy\Nomi`、`~/Library/Application Support/Flowy/Nomi`、`$XDG_DATA_HOME/Flowy/Nomi`)。**生产环境请仍显式指定绝对路径。** |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | 构建好的 SPA 所在目录。**部署时请显式设置。** |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | 预置首个管理员时使用的用户名。一旦管理员存在则被忽略。 |
 | `--admin-password` | `NOMIFUN_ADMIN_PASSWORD` | — | 在启动时预置首个管理员密码，跳过交互式设置。一旦管理员存在则被忽略。 |
@@ -72,6 +72,31 @@ cargo run -p nomifun-web      # 会自动使用默认 --dist=../../ui/dist
 - **密码**：8–128 字符，若出现在一个小型常见密码列表中 (`password`、`12345678`、`qwertyui` …) 则被拒绝。
 
 弱的 `NOMIFUN_ADMIN_PASSWORD` 会拒绝启动。交互式输入的弱密码会返回 `400` 并附带校验信息。
+
+## 从 v1.4.x 或更早版本升级
+
+**v1.4.9 及之前的所有版本都会静默忽略 `NOMIFUN_DATA_DIR`**（`nomifun-web` 与 `nomicore` 二进制中 CLI 解析器的属性堆叠 bug 导致只有别名 `FLOWY_DATA_DIR` 生效）。如果你是按本指南用 Docker 或 systemd 部署的，数据**并没有**落在 `/data` / `/var/lib/nomifun`，而是写到了按用户默认目录（官方镜像以 root 运行，为 `/root/.local/share/Flowy/Nomi`；随附 systemd unit 下为 `~nomifun/.local/share/Flowy/Nomi`）。
+
+本版本起 `NOMIFUN_DATA_DIR` 按文档承诺生效，因此升级后的首次启动会面对一个**空的** `/data` / `/var/lib/nomifun`。旧数据仍完好地留在旧路径。二选一：
+
+- **迁移（推荐）** —— 停掉旧服务/容器，把数据集复制过去，再启动新版本：
+
+  ```bash
+  # systemd：
+  sudo -u nomifun cp -a ~nomifun/.local/share/Flowy/Nomi/. /var/lib/nomifun/
+
+  # Docker：从旧的已停止容器里拷出，再灌进你挂载到 /data 的卷：
+  docker cp <旧容器>:/root/.local/share/Flowy/Nomi/. ./nomifun-data-backup
+  docker run --rm -v "$PWD/nomifun-data-backup:/from" -v <你的数据卷>:/data \
+    busybox sh -c 'cp -a /from/. /data/'
+  ```
+
+- **暂时保留旧位置** —— 显式设置 `FLOWY_DATA_DIR=<旧路径>`。它的优先级高于 `NOMIFUN_DATA_DIR`，可在筹划迁移期间保持升级前的数据根。
+
+本次修复还带来两个行为变化：
+
+- **空值** `NOMIFUN_DATA_DIR=`（例如 unit 里残留的空 `Environment=` 行）现在会在启动时快速失败并给出明确错误，而不再被静默忽略。
+- 优先级固定为 `--data-dir` > `FLOWY_DATA_DIR` > `NOMIFUN_DATA_DIR` > channel 默认值 —— 与桌面外壳一直以来的顺序一致。
 
 ## 首次运行管理员配置
 
@@ -258,7 +283,7 @@ sudo systemctl status nomifun-web
 - 默认绑定 `127.0.0.1:8787`。只有在首次设置完成或已配置
   `NOMIFUN_ADMIN_PASSWORD` 后，才应把 `NOMIFUN_WEB_HOST` 改成
   `0.0.0.0`。
-- 设置 `NOMIFUN_DATA_DIR=/var/lib/nomifun` 以匹配 systemd 管理的 `StateDirectory=nomifun`。**保持这两者同步** —— 如果你删除该环境变量行，数据目录会静默回退到服务用户的按用户目录 (`$XDG_DATA_HOME/NomiFun`，通常是 `~nomifun/.local/share/NomiFun`)，与 systemd state 解耦。
+- 设置 `NOMIFUN_DATA_DIR=/var/lib/nomifun` 以匹配 systemd 管理的 `StateDirectory=nomifun`。**保持这两者同步** —— 如果你删除该环境变量行，数据目录会静默回退到服务用户的按用户目录 (`$XDG_DATA_HOME/Flowy/Nomi`，通常是 `~nomifun/.local/share/Flowy/Nomi`)，与 systemd state 解耦。
 - 以专用的 `nomifun` 用户运行 (`User=nomifun`、`Group=nomifun`)。
 - 失败时以 3 秒退避重启。
 - 应用适度的硬化 (`NoNewPrivileges=yes`、`PrivateTmp=yes`)。**不要添加** `ProtectHome=yes` 或严格的 `ProtectSystem` —— agent 引擎需要读写操作员指定的文件，过度沙箱化会破坏核心功能。

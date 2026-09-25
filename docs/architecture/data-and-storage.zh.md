@@ -16,8 +16,8 @@ NomiFun 把状态保存在三个地方：一个 SQLite 数据库（一切结构�
 
 | 宿主 | 默认路径 | 覆盖方式 |
 | --- | --- | --- |
-| 桌面（`Flowy` 包） | 按用户的应用数据目录、厂商目录 `Flowy` 之下：Windows 上的 `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上的 `~/Library/Application Support/Flowy/Nomi`，Linux 上的 `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`）。设置了 `NOMIFUN_DATA_DIR`（别名 `FLOWY_DATA_DIR`）时，该值**就是**数据根（按字面值，不追加 `/Nomi`）。当前目录或旧根目录中的 pre-v3 数据集会整体退役；其中的产品行不会搬入 v3。 | 环境变量 `NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` |
-| Web（`nomifun-web`）与 `nomicore` bin | 与桌面外壳**完全相同**的按用户目录 —— `%LOCALAPPDATA%\Flowy\Nomi` / `~/Library/Application Support/Flowy/Nomi` / `$XDG_DATA_HOME/Flowy/Nomi`（旧的相对 `./data` 默认值已删除）。设置了 `NOMIFUN_DATA_DIR` 时取**字面值**（不追加 `/Nomi`），因此 Docker `/data`、systemd `/var/lib/nomifun` 部署不受影响。 | 命令行 `--data-dir` 或环境变量 `NOMIFUN_DATA_DIR` |
+| 桌面（`Flowy` 包） | 按用户的应用数据目录、厂商目录 `Flowy` 之下：Windows 上的 `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上的 `~/Library/Application Support/Flowy/Nomi`，Linux 上的 `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`）。设置了 `NOMIFUN_DATA_DIR`（兼容别名 `FLOWY_DATA_DIR`；两者同设时 `FLOWY_DATA_DIR` 优先）时，该值**就是**数据根（按字面值，不追加 `/Nomi`）。当前目录或旧根目录中的 pre-v3 数据集会整体退役；其中的产品行不会搬入 v3。 | 环境变量 `NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` |
+| Web（`nomifun-web`）与 `nomicore` bin | 与桌面外壳**完全相同**的按用户目录 —— `%LOCALAPPDATA%\Flowy\Nomi` / `~/Library/Application Support/Flowy/Nomi` / `$XDG_DATA_HOME/Flowy/Nomi`（旧的相对 `./data` 默认值已删除）。设置了 `NOMIFUN_DATA_DIR` 时取**字面值**（不追加 `/Nomi`），因此 Docker `/data`、systemd `/var/lib/nomifun` 部署不受影响。优先级：`--data-dir` > `FLOWY_DATA_DIR` > `NOMIFUN_DATA_DIR` > channel 默认值。 | 命令行 `--data-dir` 或环境变量 `NOMIFUN_DATA_DIR` |
 
 此外，`nomifun-common::storage_paths` 的路径解析辅助还会识别 `FLOWY_HOME` /
 `NOMIFUN_HOME`。
