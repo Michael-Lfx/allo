@@ -86,15 +86,12 @@ struct Args {
     /// Data directory for the backend (db + storage). Defaults to the same
     /// per-user dir as the other hosts built for the active channel (for
     /// example, `%LOCALAPPDATA%\Flowy\Nomi-dev` for `NOMI_CHANNEL=dev`).
-    /// Env contract: `--data-dir` > `FLOWY_DATA_DIR` > `NOMIFUN_DATA_DIR` >
-    /// channel default. clap's derive binds only ONE env var per arg — a
-    /// second `#[arg(env = …)]` attribute silently REPLACES the first — so
-    /// the `NOMIFUN_DATA_DIR` alias is applied after parsing (see `main`).
     #[arg(
         long,
         default_value_os_t = nomifun_app::cli::default_data_dir(),
         value_parser = nomifun_app::cli::parse_non_empty_path
     )]
+    #[arg(long, env = "NOMIFUN_DATA_DIR")]
     #[arg(long, env = "FLOWY_DATA_DIR")]
     data_dir: PathBuf,
     /// DANGER of omission: `--auth` enables login-required mode (safe default
@@ -248,13 +245,7 @@ fn main() -> Result<ExitCode> {
         return Ok(code);
     }
 
-    // Args::parse alone cannot bind BOTH FLOWY_DATA_DIR and NOMIFUN_DATA_DIR
-    // to --data-dir (a second clap `env` attribute silently replaces the
-    // first), so the alias is applied after parsing — only over the
-    // compiled-in default, keeping flag > FLOWY_DATA_DIR > NOMIFUN_DATA_DIR.
-    let args = nomifun_app::cli::parse_args_with_data_dir_env_alias(|args: &mut Args| {
-        &mut args.data_dir
-    });
+    let args = Args::parse();
 
     // Subcommand dispatch (before any backend/server init).
     if let Some(Command::Init(init_args)) = &args.command {
