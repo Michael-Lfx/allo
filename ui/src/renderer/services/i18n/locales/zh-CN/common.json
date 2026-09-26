@@ -257,6 +257,7 @@
     "exhaustedAction": "立即充值",
     "lowTitle": "积分即将耗尽",
     "lowDesc": "当前积分低于 1,000，建议及时补充以保障对话连续性",
-    "lowAction": "去充值"
+    "lowAction": "去充值",
+    "topUpAction": "充值"
   }
 }

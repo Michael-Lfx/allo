@@ -951,6 +951,7 @@ export type I18nKey =
   | 'common.creditsBubble.lowAction'
   | 'common.creditsBubble.lowDesc'
   | 'common.creditsBubble.lowTitle'
+  | 'common.creditsBubble.topUpAction'
   | 'common.default'
   | 'common.defaultModel'
   | 'common.delete'
