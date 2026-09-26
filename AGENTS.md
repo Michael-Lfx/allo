@@ -104,6 +104,19 @@ Ask first before touching these:
   into production Contexts (`*Context.tsx`), hooks, or runtime state. UI
   previews must use isolated sandbox files, test pages, or temporary HTML
   artifacts, never in-tree production fallbacks.
+- **Dual-locale i18n coverage & zero fallback leakage** — any user-facing text,
+  action labels, tooltips, placeholders, and error messages must be extracted
+  and registered in both `zh-CN` and `en-US` locales. Never rely on
+  `defaultValue` in `t()` without defining the key in locale JSONs; doing so
+  causes silent leakage of Chinese/English text into the opposing language
+  environment. Always update `i18n-keys.d.ts` and pass `bun run check:i18n`.
+- **Dark/light dual-theme compatibility & CSS rule completeness** — every UI
+  component must adapt cleanly to both dark and light modes. Never use hardcoded
+  hex/rgb values for text, backgrounds, or borders that fail contrast in
+  either mode. Use semantic theme tokens (`text-t-primary`, `bg-fill-1`,
+  `var(--border-subtle)`), ensure directional borders include matching style
+  rules (e.g. `border-t-solid`) to pass `bun run check:dead-css`, and pass
+  `bun run check:theme`.
 
 ## Coding Conventions
 
@@ -119,6 +132,59 @@ Ask first before touching these:
   balances exist in production code paths. Changes to core billing, credits,
   and auth contexts must be kept in minimal, dedicated PRs rather than mixed
   into general UI styling.
+- **Strict dual-locale parity**: Any newly added or refactored UI text must be
+  populated into both `zh-CN` and `en-US` locale files immediately. Do not
+  treat `defaultValue` in `t('key', { defaultValue: '...' })` as a substitute
+  for real locale keys. Always regenerate keys via `bun run gen:i18n` and run
+  `bun run check:i18n`.
+- **Dual-theme audit & dead-css prevention**: Review all visual elements under
+  both light and dark themes. Ensure borders, backgrounds, and text colors adapt
+  appropriately through theme tokens. When specifying border width utility
+  classes like `border-t` or `border-b`, always pair them with the corresponding
+  border-style class (e.g. `border-t-solid`) so they render across all browsers
+  and pass `check:dead-css`.
+
+## Frontend Quality Red Lines (Lessons Learned)
+
+Three recurring quality issues have led to explicit repository red lines:
+
+1. **Zero Mock Contamination in Production Runtime**:
+   - **The Issue**: Hardcoding mock balances, fake accounts, or test states into
+     production contexts or hooks to preview UI states pollutes user accounts
+     and leaks into release builds.
+   - **The Rule**: Never hardcode mock balances, fake account states, bypass
+     tokens, or test defaults into production Contexts (`*Context.tsx`), hooks,
+     or runtime state. UI previews must use isolated sandbox files, test pages,
+     or temporary HTML artifacts, never in-tree production fallbacks.
+   - **The Boundary**: Changes to billing, credits, and auth contexts must be
+     kept in minimal, dedicated PRs rather than mixed into styling or feature PRs.
+
+2. **Full i18n Coverage & Zero Fallback Leakage**:
+   - **The Issue**: Using `t('key', { defaultValue: '中文' })` while omitting
+     the key from `en-US.json` (or `zh-CN.json`). In the omitted locale,
+     i18next silently falls back to `defaultValue`, leaking untranslated Chinese
+     to English users.
+   - **The Rule**: Every single user-visible string — buttons, pills, tooltips,
+     popovers, badges, aria-labels, titles, and error toasts — must be declared
+     symmetrically in both `zh-CN` and `en-US` locale dictionaries
+     (`ui/src/renderer/services/i18n/locales/`).
+   - **Verification**: Run `bun run gen:i18n` to update `i18n-keys.d.ts`, verify
+     with `bun run check:i18n`, and add dual-locale assertions in accompanying
+     unit tests.
+
+3. **Dual-Theme (Light & Dark) Compatibility & CSS Completeness**:
+   - **The Issue**: Hardcoding absolute colors (e.g. `#fff`, `#000`) causes
+     invisible text or poor contrast when switching themes. Incomplete UnoCSS
+     border utilities (e.g. `border-t` without `border-t-solid`) fail to render
+     borders and violate dead-css rules.
+   - **The Rule**: Every UI component must adapt cleanly to both Light and Dark
+     modes. Always use semantic design tokens (`text-t-primary`, `text-t-secondary`,
+     `bg-fill-1`, `var(--border-subtle)`, `var(--flowy-attention)`).
+     Directional border width classes like `border-t` or `border-b` must be
+     accompanied by explicit style classes (e.g. `border-t-solid`).
+   - **Verification**: Visually verify both modes, run `bun run check:theme`, and
+     ensure `bun run check` / `bun run check:dead-css` passes without warnings.
+
 
 ## Git Workflow: Branch Off `origin/main`, Rebase, Then PR
 
