@@ -125,7 +125,7 @@ const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMo
 
       <div className='text-11px leading-15px text-t-secondary break-words'>{desc}</div>
 
-      <div className='flex items-center justify-end pt-4px border-t border-[var(--border-subtle,rgba(255,255,255,0.06))]'>
+      <div className='flex items-center justify-end pt-4px border-t border-t-solid border-[var(--border-base)]'>
         <button
           type='button'
           className={classNames(

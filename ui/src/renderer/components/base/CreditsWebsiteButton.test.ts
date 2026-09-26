@@ -7,6 +7,12 @@ const siderUserMenuSource = readFileSync(
   'utf8'
 );
 const routerSource = readFileSync(new URL('../layout/Router.tsx', import.meta.url), 'utf8');
+const zhCommon = JSON.parse(
+  readFileSync(new URL('../../services/i18n/locales/zh-CN/common.json', import.meta.url), 'utf8')
+);
+const enCommon = JSON.parse(
+  readFileSync(new URL('../../services/i18n/locales/en-US/common.json', import.meta.url), 'utf8')
+);
 
 describe('credits website button', () => {
   test('uses a shopping cart icon instead of refresh', () => {
@@ -33,6 +39,12 @@ describe('credits website button', () => {
     expect(componentSource.includes("t('billing.openBilling')")).toBe(true);
     expect(componentSource.includes('aria-label={label}')).toBe(true);
     expect(componentSource.includes('title={label}')).toBe(true);
+  });
+
+  test('uses the top-up action i18n key with dual-locale coverage in common.json', () => {
+    expect(componentSource.includes("t('common.creditsBubble.topUpAction'")).toBe(true);
+    expect(zhCommon.creditsBubble?.topUpAction).toBe('充值');
+    expect(enCommon.creditsBubble?.topUpAction).toBe('Top up');
   });
 
   test('replaces the user-menu refresh control', () => {

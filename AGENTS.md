@@ -119,6 +119,57 @@ Ask first before touching these:
   balances exist in production code paths. Changes to core billing, credits,
   and auth contexts must be kept in minimal, dedicated PRs rather than mixed
   into general UI styling.
+- **i18n parity and dual-theme safety** — every user-visible string lands in
+  both `zh-CN` and `en-US`, and every visual works in both light and dark
+  modes. The full rules and verification steps live in § Frontend Quality Red
+  Lines below.
+
+## Frontend Quality Red Lines (Lessons Learned)
+
+Three recurring quality issues have led to explicit repository red lines:
+
+1. **Zero Mock Contamination in Production Runtime**:
+   - **The Issue**: Hardcoding mock balances, fake accounts, or test states into
+     production contexts or hooks to preview UI states pollutes user accounts
+     and leaks into release builds.
+   - **The Rule**: Never hardcode mock balances, fake account states, bypass
+     tokens, or test defaults into production Contexts (`*Context.tsx`), hooks,
+     or runtime state. UI previews must use isolated sandbox files, test pages,
+     or temporary HTML artifacts, never in-tree production fallbacks.
+   - **The Boundary**: Changes to billing, credits, and auth contexts must be
+     kept in minimal, dedicated PRs rather than mixed into styling or feature PRs.
+
+2. **Full i18n Coverage & Zero Fallback Leakage**:
+   - **The Issue**: Using `t('key', { defaultValue: '中文' })` while omitting
+     the key from `en-US.json` (or `zh-CN.json`). In the omitted locale,
+     i18next silently falls back to `defaultValue`, leaking untranslated Chinese
+     to English users.
+   - **The Rule**: Every single user-visible string — buttons, pills, tooltips,
+     popovers, badges, aria-labels, titles, and error toasts — must be declared
+     symmetrically in both `zh-CN` and `en-US` locale dictionaries
+     (`ui/src/renderer/services/i18n/locales/`).
+   - **Verification**: Run `bun run gen:i18n` to update `i18n-keys.d.ts`, verify
+     with `bun run check:i18n`, and add dual-locale assertions in accompanying
+     unit tests.
+
+3. **Dual-Theme (Light & Dark) Compatibility & CSS Completeness**:
+   - **The Issue**: Hardcoding absolute colors (e.g. `#fff`, `#000`) causes
+     invisible text or poor contrast when switching themes. Incomplete UnoCSS
+     border utilities (e.g. `border-t` without `border-t-solid`) fail to render
+     borders and violate dead-css rules.
+   - **The Rule**: Every UI component must adapt cleanly to both Light and Dark
+     modes. Always use semantic design tokens (`text-t-primary`, `text-t-secondary`,
+     `bg-fill-1`, `var(--border-base)`, `var(--flowy-attention)`).
+     Directional border width classes like `border-t` or `border-b` must be
+     accompanied by explicit style classes (e.g. `border-t-solid`).
+   - **The Boundary**: Creative visuals and new colors are welcome — express
+     them as theme-aware values (define a new theme token, or use a `var()`
+     whose fallback stays legible in both modes), never as a hardcoded value
+     tuned for one theme. A hardcoded color that keeps its contrast in both
+     modes (e.g. white text on a saturated accent button) is fine.
+   - **Verification**: Visually verify both modes, run `bun run check:theme`, and
+     ensure `bun run check` / `bun run check:dead-css` passes without warnings.
+
 
 ## Git Workflow: Branch Off `origin/main`, Rebase, Then PR
 

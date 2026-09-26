@@ -94,6 +94,16 @@
  *   写法：把「长得像颜色/装饰工具类」的 token 喂给真实 UnoCSS 生成器，产出 0 条 CSS
  *   即记为 generator 违规（同样走棘轮）。判别轴见 looksLikeUtility 上的注释。
  *
+ * 第九层：undefVarColor —— `var(--x, <写死颜色>)` 且 --x 全仓未定义。
+ *   定义集 = ui/src 全部 CSS 声明 + TS 侧的 setProperty / 对象键定义 + Arco 运行时
+ *   样式表（arco.css，main.tsx 全局引入）+ UnoCSS 注入的 `--un-*`。「未定义 + 写死
+ *   颜色兜底」意味着这个颜色永远生效、主题切换被静默绕过（`var(--border-subtle,
+ *   rgba(255,255,255,0.06))` 浅色下隐形；`var(--color-primary-6, #165dff)` 无视
+ *   preset 永远是 Arco 蓝）。
+ *   故意只拦**颜色字面量兜底**：尺寸兜底（`var(--w, 12px)`）、var 链兜底
+ *   （`var(--a, var(--b))`）、裸 `var(--x)` 里有大量合法的运行时/组件作用域变量，
+ *   拦它们只会复刻「按样式表定义判别不收敛」的老路。宁可漏，不可误报。
+ *
  * 用法 / Usage:
  *   bun scripts/check-dead-css-utilities.mjs                 # 校验，发现违规 exit 1
  *   bun scripts/check-dead-css-utilities.mjs --self-test     # 校验器自测（三段 + 棘轮）
@@ -200,6 +210,11 @@ const FORMS = {
     label: 'utility-shaped token 经真实 UnoCSS 生成器产出 0 条 CSS',
     fix: '改成能真正编译出 CSS 的类名；或确认该字符串不是 class（应进 NOT_UTILITIES）',
   },
+  undefVarColor: {
+    scan: 'none',
+    label: 'var(--x, <写死颜色>) 且 --x 全仓未定义：兜底永远生效，主题切换被静默绕过',
+    fix: '删掉写死的颜色兜底并改用已定义的语义 token（--border-base / --color-border / --flowy-* 等）；确需新 token 就在主题 preset 里补明暗双值定义',
+  },
 };
 
 /**
@@ -207,12 +222,26 @@ const FORMS = {
  * This table may only shrink: delete a row once its file is clean.
  */
 const BASELINE = new Map([
+['ui/src/renderer/components/beautifulUi/approvalCard/approvalCard.module.css', { undefVarColor: 11 }],
+  ['ui/src/renderer/components/beautifulUi/codeBlock/codeBlock.module.css', { undefVarColor: 4 }],
+  ['ui/src/renderer/components/beautifulUi/codeBlock/codeBlockHighlight.ts', { undefVarColor: 3 }],
+  ['ui/src/renderer/components/beautifulUi/contextCards/contextCards.module.css', { undefVarColor: 2 }],
+  ['ui/src/renderer/components/beautifulUi/diffTable/diffTable.module.css', { undefVarColor: 4 }],
+  ['ui/src/renderer/components/beautifulUi/inlineDiff/inlineDiff.module.css', { undefVarColor: 9 }],
+  ['ui/src/renderer/components/beautifulUi/loadingState/loadingState.module.css', { undefVarColor: 2 }],
+  ['ui/src/renderer/components/beautifulUi/recommendationCard/recommendationCard.module.css', { undefVarColor: 8 }],
+  ['ui/src/renderer/components/beautifulUi/selectionActions/selectionActions.module.css', { undefVarColor: 1 }],
+  ['ui/src/renderer/components/beautifulUi/taskRows/taskRows.module.css', { undefVarColor: 3 }],
+  ['ui/src/renderer/components/beautifulUi/thinking/thinkingTrace.module.css', { undefVarColor: 5 }],
+  ['ui/src/renderer/components/beautifulUi/toolChips/toolChips.module.css', { undefVarColor: 7 }],
+  ['ui/src/renderer/components/chat/commandQueuePanel.module.css', { undefVarColor: 4 }],
 ['ui/src/renderer/components/editors/CodeMirrorEditor.tsx', { borderNoStyle: 3 }],
   ['ui/src/renderer/components/layout/SettingsSiderErrorBoundary.tsx', { deadBorder: 2, ramp: 1 }],
   ['ui/src/renderer/components/layout/Sider/CompanionAccessTokenPanel.tsx', { ramp: 1 }],
   ['ui/src/renderer/components/layout/Sider/SiderNav/SiderEvalEntry.tsx', { ramp: 1 }],
   ['ui/src/renderer/components/layout/Sider/SiderNav/SiderWorkshopEntry.tsx', { ramp: 1 }],
   ['ui/src/renderer/components/layout/Sider/WebuiControlPanel.tsx', { ramp: 1 }],
+  ['ui/src/renderer/components/Markdown/ShadowView.tsx', { undefVarColor: 1 }],
   ['ui/src/renderer/components/settings/SettingsModal/contents/ModelModalContent.tsx', { ramp: 9 }],
   ['ui/src/renderer/components/settings/SettingsModal/contents/SystemModalContent/DeveloperModePasswordModal.tsx', { ramp: 1 }],
   ['ui/src/renderer/components/settings/SettingsModal/contents/ToolsModalContent.tsx', { deadBorder: 1 }],
@@ -222,6 +251,7 @@ const BASELINE = new Map([
   ['ui/src/renderer/features/supportChat/components/SupportMessageComposer.tsx', { borderNoStyle: 1, doublePrefix: 1 }],
   ['ui/src/renderer/main.tsx', { ramp: 1 }],
   ['ui/src/renderer/pages/assets/index.tsx', { ramp: 6 }],
+  ['ui/src/renderer/pages/beautifulUiPreview/beautifulUiPreview.module.css', { undefVarColor: 7 }],
   ['ui/src/renderer/pages/colorLab/ColorLabShell.tsx', { generator: 1 }],
   ['ui/src/renderer/pages/colorLab/index.tsx', { generator: 1 }],
   ['ui/src/renderer/pages/conversation/components/AutoWorkControl.tsx', { ramp: 1 }],
@@ -232,6 +262,8 @@ const BASELINE = new Map([
   ['ui/src/renderer/pages/conversation/components/IdmmInterventionRow.tsx', { ramp: 1 }],
   ['ui/src/renderer/pages/conversation/execution/ExecutionControls.tsx', { borderNoStyle: 3, dirNamedBorder: 3 }],
   ['ui/src/renderer/pages/conversation/execution/StepModelPill.tsx', { ramp: 1 }],
+  ['ui/src/renderer/pages/conversation/Messages/components/SkillSuggestCard.module.css', { undefVarColor: 1 }],
+  ['ui/src/renderer/pages/conversation/Messages/messages.css', { undefVarColor: 19 }],
   ['ui/src/renderer/pages/conversation/platforms/nomi/ContextUsageRing.tsx', { ramp: 1 }],
   ['ui/src/renderer/pages/conversation/platforms/nomi/NomiSessionMetricsPanel.tsx', { ramp: 5 }],
   ['ui/src/renderer/pages/conversation/platforms/openclaw/StarOfficeMonitorCard.tsx', { ramp: 1 }],
@@ -245,6 +277,7 @@ const BASELINE = new Map([
   ['ui/src/renderer/pages/cron/ScheduledTasksPage/ScheduledTaskActions.tsx', { ramp: 1 }],
   ['ui/src/renderer/pages/cron/ScheduledTasksPage/TaskDetailPage.tsx', { ramp: 2 }],
   ['ui/src/renderer/pages/customerService/index.tsx', { ramp: 4 }],
+  ['ui/src/renderer/pages/eval/index.tsx', { undefVarColor: 1 }],
   ['ui/src/renderer/pages/knowledge/CreateStudio/index.tsx', { ramp: 5 }],
   ['ui/src/renderer/pages/knowledge/CreateStudio/SourceConfig.tsx', { ramp: 3 }],
   ['ui/src/renderer/pages/knowledge/CreateStudio/TeachingCard.tsx', { ramp: 1 }],
@@ -253,7 +286,9 @@ const BASELINE = new Map([
   ['ui/src/renderer/pages/knowledge/knowledgeKind.tsx', { ramp: 2 }],
   ['ui/src/renderer/pages/knowledge/KnowledgeTagManagementModal.tsx', { ramp: 3 }],
   ['ui/src/renderer/pages/knowledge/QuickCapture.tsx', { ramp: 1 }],
+  ['ui/src/renderer/pages/learning/components/LearningGraphWorkspace.tsx', { undefVarColor: 3 }],
   ['ui/src/renderer/pages/learning/components/QuestionManager.tsx', { borderNoStyle: 1 }],
+  ['ui/src/renderer/pages/learning/model.ts', { undefVarColor: 3 }],
   ['ui/src/renderer/pages/modelHub/FreeModelsContent.tsx', { ramp: 6 }],
   ['ui/src/renderer/pages/modelHub/SpeechToTextContent.tsx', { borderNoStyle: 1 }],
   ['ui/src/renderer/pages/nomi/CompanionSessionRail.tsx', { ramp: 1 }],
@@ -271,6 +306,7 @@ const BASELINE = new Map([
   ['ui/src/renderer/pages/settings/components/AddPlatformModal.tsx', { ramp: 1 }],
   ['ui/src/renderer/pages/settings/components/ModelAdvancedEditor.tsx', { ramp: 3 }],
   ['ui/src/renderer/pages/settings/components/ProviderConnectionsSection.tsx', { ramp: 1 }],
+  ['ui/src/renderer/pages/settings/components/settings.css', { undefVarColor: 4 }],
   ['ui/src/renderer/pages/settings/DisplaySettings/CssThemeModal.tsx', { deadBorder: 1 }],
   ['ui/src/renderer/pages/settings/IdmmSettingsContent.tsx', { deadBorder: 1 }],
   ['ui/src/renderer/pages/settings/InsightsSettings.tsx', { generator: 1 }],
@@ -339,6 +375,7 @@ const BASELINE = new Map([
   ['ui/src/renderer/pages/workshop/generation/PromptField.tsx', { ramp: 2 }],
   ['ui/src/renderer/pages/workshop/generation/ResultView.tsx', { ramp: 8 }],
   ['ui/src/renderer/pages/workshop/index.tsx', { ramp: 4 }],
+  ['ui/src/renderer/styles/theme-control-contract.css', { undefVarColor: 4 }],
 ]);
 
 function countsOf(hits) {
@@ -520,6 +557,90 @@ function scanSource(source) {
   // 两种扫描方式产出的命中混在一起，按行号排一下再报，坐标才读得顺。
   // The two scan modes interleave; sort so the report reads top-to-bottom.
   return hits.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * 第九层 undefVarColor：定义集与扫描 / Definitions and scan for the undefVarColor layer.
+ *
+ * 定义集从四类来源攒：① 扫描文件里的 CSS 声明 `--x:`（css 与 tsx 模板字符串里的
+ * 嵌入式 CSS 都命中）；② `setProperty('--x', …)`；③ 内联 style 对象键 `'--x':`；
+ * ④ Arco 运行时样式表（main.tsx 全局引入 arco.css）。`--un-*` 由 UnoCSS 运行时注入，
+ * 直接放行。定义集只求不漏定义（误标「已定义」只是放行一条检查），不求反驳注释或
+ * 散文里的 `--x:`。
+ */
+const VAR_DEF_RE = /(?<![\w-])(--[\w-]+)\s*:/g;
+const VAR_SETPROP_RE = /setProperty\(\s*['"](--[\w-]+)/g;
+const VAR_OBJKEY_RE = /['"](--[\w-]+)['"]\s*:/g;
+/**
+ * 只认颜色字面量兜底：#hex / rgb( / rgba( / hsl( / hsla( / oklch( / white / black。
+ * 尺寸兜底（12px）、var 链兜底（var(--a, var(--b))）、字体栈都不在这条的失败模式里。
+ */
+const VAR_COLOR_FALLBACK_RE = /var\(\s*(--[\w-]+)\s*,\s*(?:#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(|oklch\(|\bwhite\b|\bblack\b)/gi;
+
+/** Arco 的运行时样式表由 main.tsx 全局引入，它定义的变量都算已定义。 */
+const ARCO_CSS = join(ROOT, 'ui', 'node_modules', '@arco-design', 'web-react', 'dist', 'css', 'arco.css');
+
+function collectVarDefs(source, into) {
+  for (const re of [VAR_DEF_RE, VAR_SETPROP_RE, VAR_OBJKEY_RE]) {
+    for (const m of source.matchAll(re)) into.add(m[1]);
+  }
+}
+
+function scanUndefVarColor(file, source, defined) {
+  const hits = [];
+  const push = (line, text) => {
+    for (const m of text.matchAll(VAR_COLOR_FALLBACK_RE)) {
+      const name = m[1];
+      if (name.startsWith('--un-') || defined.has(name)) continue;
+      hits.push({ form: 'undefVarColor', line, snippet: m[0].replace(/\s+/g, ' ') });
+    }
+  };
+  if (file.endsWith('.css')) {
+    // 抹掉块注释但保留行号 / blank out block comments, keep line numbers
+    const stripped = source.replace(/\/\*[\s\S]*?\*\//g, (s) => s.replace(/[^\n]/g, ' '));
+    stripped.split('\n').forEach((text, i) => push(i + 1, text));
+  } else {
+    // ts/tsx 里 var() 只会出现在字符串字面量中，沿用 extractClassLists 的注释跳过。
+    for (const { line, text } of extractClassLists(source)) push(line, text);
+  }
+  return hits;
+}
+
+/** 第九层自检：用假定义集喂扫描函数，不依赖真实仓库。 */
+function selfTestUndefVarColor() {
+  const defined = new Set(['--border-base', '--color-text-3', '--primary-6']);
+  const cases = [
+    // 违规：未定义 + 写死颜色兜底 / undefined var with a hardcoded colour fallback
+    { file: 'a.tsx', src: "<div className='border-t border-t-solid border-[var(--border-subtle,rgba(255,255,255,0.06))]' />", bad: 1 },
+    { file: 'a.tsx', src: "background: 'var(--canvas-accent, #165dff)'", bad: 1 },
+    { file: 'a.tsx', src: "color: 'var(--ink, white)'", bad: 1 },
+    { file: 'a.css', src: '.x { color: var(--ghost, #fff); }', bad: 1 },
+    { file: 'a.css', src: '.x { border-color: var(--ghost, rgb(1, 2, 3)); }', bad: 1 },
+    // 干净：变量已定义，兜底是死代码但不是这条的失败模式 / defined var
+    { file: 'a.tsx', src: "<div className='border-[var(--border-base,#fff)]' />", bad: 0 },
+    { file: 'a.css', src: '.x { color: var(--color-text-3, #999); }', bad: 0 },
+    // 干净：尺寸兜底、var 链兜底、字体栈里有大量合法的运行时变量
+    { file: 'a.css', src: '.x { width: var(--chat-x, 12px); color: var(--a, var(--b)); }', bad: 0 },
+    { file: 'a.tsx', src: "fontFamily: 'var(--font-body, system-ui)'", bad: 0 },
+    // 干净：--un-* 由 UnoCSS 运行时注入 / UnoCSS runtime vars
+    { file: 'a.tsx', src: "<div className='x-[var(--un-text-opacity,#fff)]' />", bad: 0 },
+    // 干净：注释里的写法不渲染 / comments style nothing
+    { file: 'a.tsx', src: '// 反例：var(--ghost, #fff)\nconst x = 1;', bad: 0 },
+    { file: 'a.css', src: '/* var(--ghost, #fff) */\n.x { color: red; }', bad: 0 },
+  ];
+  let failed = 0;
+  cases.forEach(({ file, src, bad }, i) => {
+    const hits = scanUndefVarColor(file, src, defined);
+    if (hits.length !== bad) {
+      failed += 1;
+      console.error(`undefVarColor self-test case ${i} failed: expected ${bad} violation(s), got ${hits.length}\n  ${src}`);
+    }
+  });
+  if (failed > 0) {
+    console.error(`❌ undefVarColor self-test: ${failed}/${cases.length} case(s) failed`);
+    process.exit(1);
+  }
+  console.log(`✅ undefVarColor self-test: ${cases.length}/${cases.length} cases pass`);
 }
 
 function selfTest() {
@@ -852,6 +973,7 @@ if (process.argv.includes('--self-test')) {
   selfTest();
   await selfTestBackstopShape();
   await selfTestBackstopEmission(uno);
+  selfTestUndefVarColor();
   process.exit(0);
 }
 
@@ -859,12 +981,14 @@ const dumpBaseline = process.argv.includes('--dump-baseline');
 
 const perFile = new Map();
 const utilityOcc = new Map();
+const definedVars = new Set();
 let scanned = 0;
 
 for (const abs of walk(SCAN_DIR)) {
   const file = relative(ROOT, abs).split('\\').join('/');
   scanned += 1;
   const source = readFileSync(abs, 'utf8');
+  collectVarDefs(source, definedVars);
   const hits = scanSource(source);
   perFile.set(file, { hits, source });
   for (const { line, text } of extractClassLists(source)) {
@@ -890,6 +1014,17 @@ for (const [token, occs] of utilityOcc) {
     const already = new Set(entry.hits.map((h) => h.snippet));
     if (already.has(token)) continue;
     entry.hits.push({ form: 'generator', line, snippet: token });
+  }
+}
+
+// 第九层：定义集要先攒齐（含 Arco 运行时样式表），所以放在主循环之后统一扫。
+// The undefVarColor layer needs the full definition set first, hence a post-pass.
+if (existsSync(ARCO_CSS)) collectVarDefs(readFileSync(ARCO_CSS, 'utf8'), definedVars);
+for (const [file, entry] of perFile) {
+  const extra = scanUndefVarColor(file, entry.source, definedVars);
+  if (extra.length) {
+    entry.hits.push(...extra);
+    entry.hits.sort((a, b) => a.line - b.line);
   }
 }
 
