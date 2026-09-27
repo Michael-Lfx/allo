@@ -174,19 +174,41 @@ impl SessionManager {
                 .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", id_or_latest))?
         };
 
-        let pattern = format!("*_{}.json", meta.id);
-        let session_files: Vec<_> =
-            glob::glob(self.directory.join(&pattern).to_string_lossy().as_ref())?
-                .filter_map(|r| r.ok())
-                .collect();
-
-        let path = session_files
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("Session file not found for '{}'", meta.id))?;
+        // The file name is a pure function of the index entry, so resolve it
+        // directly instead of scanning the directory. `load` used to glob
+        // `*_{id}.json` and take whichever match the filesystem returned first,
+        // which cost a directory walk plus a pattern allocation on every resume.
+        let path = match crate::profiler::timed(crate::profiler::HotPath::SessionLookup, || {
+            self.session_path(meta)
+        }) {
+            Some(path) => path,
+            None => {
+                // Fallback for a directory this manager did not write: an older
+                // layout, or a file renamed by hand.
+                let pattern = format!("*_{}.json", meta.id);
+                glob::glob(self.directory.join(&pattern).to_string_lossy().as_ref())?
+                    .filter_map(|entry| entry.ok())
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("Session file not found for '{}'", meta.id))?
+            }
+        };
 
         let content = std::fs::read_to_string(path)?;
         let session: Session = serde_json::from_str(&content)?;
         Ok(session)
+    }
+
+    /// The exact file [`Self::write_session_file`] would create for `meta`, if it exists.
+    ///
+    /// Derived from the index entry rather than found by scanning, so the common
+    /// resume path does not depend on directory iteration order.
+    fn session_path(&self, meta: &SessionMeta) -> Option<PathBuf> {
+        let path = self.directory.join(format!(
+            "{}_{}.json",
+            meta.created_at.format("%Y-%m-%d"),
+            meta.id
+        ));
+        path.exists().then_some(path)
     }
 
     /// List all sessions
@@ -712,5 +734,79 @@ mod tests {
         let missing = dir.path().join("nope").join("session.json");
         assert!(write_atomic(&missing, b"second").is_err());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
+    }
+
+    /// The derived name must win over a stray file that the old glob could have
+    /// returned first: resume must not depend on directory iteration order.
+    #[test]
+    fn load_prefers_the_file_name_derived_from_the_index() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let session = manager
+            .create("openai", "gpt-4", "/tmp", Some("derived"))
+            .unwrap();
+
+        let mut decoy = session.clone();
+        decoy.model = "decoy".into();
+        std::fs::write(
+            dir.path().join("1999-01-01_derived.json"),
+            serde_json::to_string(&decoy).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = manager.load("derived").unwrap();
+
+        assert_eq!(
+            loaded.model, "gpt-4",
+            "the derived file name must be read, not the first glob match"
+        );
+    }
+
+    /// A directory this manager did not write (older layout, hand-renamed file)
+    /// must still resume through the scan fallback.
+    #[test]
+    fn load_scans_when_the_derived_file_name_is_absent() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let session = manager
+            .create("openai", "gpt-4", "/tmp", Some("moved"))
+            .unwrap();
+
+        let derived = dir.path().join(format!(
+            "{}_{}.json",
+            session.created_at.format("%Y-%m-%d"),
+            session.id
+        ));
+        let moved = dir.path().join("2001-02-03_moved.json");
+        std::fs::rename(&derived, &moved).unwrap();
+
+        let loaded = manager
+            .load("moved")
+            .expect("the fallback scan must still find the file");
+
+        assert_eq!(loaded.id, "moved");
+        assert_eq!(loaded.model, "gpt-4");
+    }
+
+    #[test]
+    fn load_reports_a_missing_file_with_the_session_id() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let session = manager
+            .create("openai", "gpt-4", "/tmp", Some("gone"))
+            .unwrap();
+        let derived = dir.path().join(format!(
+            "{}_{}.json",
+            session.created_at.format("%Y-%m-%d"),
+            session.id
+        ));
+        std::fs::remove_file(&derived).unwrap();
+
+        let error = manager.load("gone").expect_err("the file is gone");
+
+        assert!(
+            error.to_string().contains("gone"),
+            "the error must name the id: {error}"
+        );
     }
 }
