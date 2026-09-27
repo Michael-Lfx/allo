@@ -18,58 +18,101 @@ use std::{
 
 use nomi_types::message::ContentBlock;
 
-/// Stable JSON encoding for loop signatures. Provider/object construction
-/// order is not semantic, so object keys are sorted recursively; array order
-/// remains significant.
-fn canonical_json(value: &serde_json::Value) -> String {
+/// Stable structural hash of a JSON value for loop signatures.
+///
+/// Provider/object construction order is not semantic, so object keys are visited
+/// in sorted order; array order remains significant. Every node is framed with a
+/// type tag and a collection length, so distinct shapes cannot alias — the
+/// canonical-JSON string this replaced could not tell `["a","b"]` from
+/// `["a,b"]`, nor the number `1` from the string `"1"`.
+///
+/// It also removes the allocation: the previous encoder rebuilt a canonical
+/// `String`, with a `Vec` and a sort at every object node, twice per turn.
+fn hash_json(value: &serde_json::Value, hasher: &mut impl Hasher) {
     match value {
-        serde_json::Value::Array(items) => format!(
-            "[{}]",
-            items
-                .iter()
-                .map(canonical_json)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        serde_json::Value::Object(map) => {
-            let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-            let fields = entries
-                .into_iter()
-                .map(|(key, value)| {
-                    let key = serde_json::to_string(key)
-                        .expect("serializing a JSON object key cannot fail");
-                    format!("{key}:{}", canonical_json(value))
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{{{fields}}}")
+        serde_json::Value::Null => 0u8.hash(hasher),
+        serde_json::Value::Bool(flag) => {
+            1u8.hash(hasher);
+            flag.hash(hasher);
         }
-        scalar => serde_json::to_string(scalar)
-            .expect("serializing a scalar serde_json::Value cannot fail"),
+        serde_json::Value::Number(number) => {
+            2u8.hash(hasher);
+            // Hashing the numeric value directly keeps equal numbers equivalent and
+            // avoids a `to_string` allocation per number.
+            if let Some(integer) = number.as_i64() {
+                0u8.hash(hasher);
+                integer.hash(hasher);
+            } else if let Some(unsigned) = number.as_u64() {
+                1u8.hash(hasher);
+                unsigned.hash(hasher);
+            } else if let Some(float) = number.as_f64() {
+                2u8.hash(hasher);
+                float.to_bits().hash(hasher);
+            }
+        }
+        serde_json::Value::String(text) => {
+            3u8.hash(hasher);
+            text.hash(hasher);
+        }
+        serde_json::Value::Array(items) => {
+            4u8.hash(hasher);
+            items.len().hash(hasher);
+            for item in items {
+                hash_json(item, hasher);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            5u8.hash(hasher);
+            map.len().hash(hasher);
+            // `serde_json::Map` is a `BTreeMap` by default, but a feature enabled
+            // anywhere in the dependency graph can switch it to an insertion-ordered
+            // map, so normalise the order here rather than assume it.
+            let mut entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            for (key, value) in entries {
+                key.hash(hasher);
+                hash_json(value, hasher);
+            }
+        }
     }
 }
 
-/// Canonical signature of a turn's tool calls: each call's name + serialized
-/// input, sorted to be order-independent while preserving duplicate calls. The tool
-/// `id` is deliberately excluded — it changes every turn, but two turns that
-/// issue the same logical call(s) with the same arguments must collide. Returns
-/// `None` when there are no tool calls (a text-only turn never stagnates).
-pub fn tool_calls_signature(tool_calls: &[ContentBlock]) -> Option<String> {
-    let mut sigs: Vec<String> = tool_calls
+/// Structural signature of one call: its tool name and its arguments.
+fn call_signature(name: &str, input: &serde_json::Value) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    hash_json(input, &mut hasher);
+    hasher.finish()
+}
+
+/// Fold an order-normalised list of per-call signatures into one turn signature.
+///
+/// `slice::hash` writes the length before the elements, so multiplicity and count
+/// are part of the result.
+fn fold_signatures(signatures: &[u64]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    signatures.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Canonical signature of a turn's tool calls: each call's name plus a structural
+/// hash of its input, sorted to be order-independent while preserving duplicate
+/// calls. The tool `id` is deliberately excluded — it changes every turn, but two
+/// turns that issue the same logical call(s) with the same arguments must collide.
+/// Returns `None` when there are no tool calls (a text-only turn never stagnates).
+pub fn tool_calls_signature(tool_calls: &[ContentBlock]) -> Option<u64> {
+    let mut signatures: Vec<u64> = tool_calls
         .iter()
-        .filter_map(|c| match c {
-            ContentBlock::ToolUse { name, input, .. } => {
-                Some(format!("{name}({})", canonical_json(input)))
-            }
+        .filter_map(|call| match call {
+            ContentBlock::ToolUse { name, input, .. } => Some(call_signature(name, input)),
             _ => None,
         })
         .collect();
-    if sigs.is_empty() {
+    if signatures.is_empty() {
         None
     } else {
-        sigs.sort();
-        Some(sigs.join("|"))
+        signatures.sort_unstable();
+        Some(fold_signatures(&signatures))
     }
 }
 
@@ -80,7 +123,7 @@ pub fn tool_calls_signature(tool_calls: &[ContentBlock]) -> Option<String> {
 pub fn tool_outcome_signature(
     tool_calls: &[ContentBlock],
     tool_results: &[ContentBlock],
-) -> Option<String> {
+) -> Option<u64> {
     tool_outcome_signature_filtered(tool_calls, tool_results, |_, _, _| true)
 }
 
@@ -92,21 +135,16 @@ pub fn tool_outcome_signature_filtered<F>(
     tool_calls: &[ContentBlock],
     tool_results: &[ContentBlock],
     mut should_track: F,
-) -> Option<String>
+) -> Option<u64>
 where
     F: FnMut(&str, &str, &serde_json::Value) -> bool,
 {
-    let tracked_calls: Vec<(&str, String)> = tool_calls
+    let tracked_calls: Vec<(&str, u64)> = tool_calls
         .iter()
         .filter_map(|call| match call {
-            ContentBlock::ToolUse { id, name, input, .. }
-                if should_track(id, name, input) => Some((
-                    id.as_str(),
-                    format!(
-                        "{name}({})",
-                        canonical_json(input)
-                    ),
-                )),
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } if should_track(id, name, input) => Some((id.as_str(), call_signature(name, input))),
             _ => None,
         })
         .collect();
@@ -136,28 +174,29 @@ where
                 .push(hasher.finish());
         }
     }
+    // Several results for one id must collide regardless of arrival order.
     for hashes in result_hashes_by_id.values_mut() {
         hashes.sort_unstable();
     }
 
-    let mut paired_signatures: Vec<String> = tracked_calls
+    let mut paired_signatures: Vec<u64> = tracked_calls
         .into_iter()
         .map(|(id, call)| {
-            let results = result_hashes_by_id
-                .get(id)
-                .map(|hashes| {
-                    hashes
-                        .iter()
-                        .map(|hash| format!("{hash:016x}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                })
-                .unwrap_or_else(|| "<missing>".to_string());
-            format!("{call}=>{results}")
+            let mut hasher = DefaultHasher::new();
+            call.hash(&mut hasher);
+            match result_hashes_by_id.get(id) {
+                Some(hashes) => {
+                    true.hash(&mut hasher);
+                    hashes.hash(&mut hasher);
+                }
+                // Distinguishes "no result observed" from "results hashed".
+                None => false.hash(&mut hasher),
+            }
+            hasher.finish()
         })
         .collect();
-    paired_signatures.sort();
-    Some(paired_signatures.join("|"))
+    paired_signatures.sort_unstable();
+    Some(fold_signatures(&paired_signatures))
 }
 
 /// Whether a completed tool turn contained at least one result and every result
@@ -195,11 +234,12 @@ pub enum StagnationAction {
     Abort,
 }
 
-/// Tracks consecutive identical outcomes and consecutive all-failed turns.
+/// Tracks consecutive identical outcomes (compared as structural hashes) and
+/// consecutive all-failed turns.
 pub struct StagnationGuard {
     nudge_threshold: usize,
     abort_threshold: usize,
-    last: Option<String>,
+    last: Option<u64>,
     repeats: usize,
     consecutive_failures: usize,
 }
@@ -233,21 +273,24 @@ impl StagnationGuard {
     /// be represented by `all_failed == false`.
     pub fn observe(
         &mut self,
-        signature: Option<String>,
+        signature: Option<u64>,
         all_failed: bool,
     ) -> StagnationAction {
-        let repeated_outcome_action = if let Some(sig) = signature {
-            if self.last.as_deref() == Some(sig.as_str()) {
-                self.repeats += 1;
-            } else {
-                self.last = Some(sig);
-                self.repeats = 1;
+        let repeated_outcome_action = match signature {
+            Some(sig) => {
+                if self.last == Some(sig) {
+                    self.repeats += 1;
+                } else {
+                    self.last = Some(sig);
+                    self.repeats = 1;
+                }
+                self.action_for(self.repeats)
             }
-            self.action_for(self.repeats)
-        } else {
-            self.last = None;
-            self.repeats = 0;
-            StagnationAction::Continue
+            None => {
+                self.last = None;
+                self.repeats = 0;
+                StagnationAction::Continue
+            }
         };
 
         let failed_outcome_action = if all_failed {
@@ -384,22 +427,22 @@ mod tests {
     #[test]
     fn nudges_then_aborts_consecutive_identical_outcomes() {
         let mut guard = StagnationGuard::new(3);
-        let sig = Some("Bash(ls)".to_string());
-        assert_eq!(guard.observe(sig.clone(), false), StagnationAction::Continue);
-        assert_eq!(guard.observe(sig.clone(), false), StagnationAction::Continue);
-        assert_eq!(guard.observe(sig.clone(), false), StagnationAction::Nudge);
-        assert_eq!(guard.observe(sig.clone(), false), StagnationAction::Continue);
-        assert_eq!(guard.observe(sig.clone(), false), StagnationAction::Continue);
-        assert_eq!(guard.observe(sig.clone(), false), StagnationAction::Abort);
+        let sig = Some(11u64);
+        assert_eq!(guard.observe(sig, false), StagnationAction::Continue);
+        assert_eq!(guard.observe(sig, false), StagnationAction::Continue);
+        assert_eq!(guard.observe(sig, false), StagnationAction::Nudge);
+        assert_eq!(guard.observe(sig, false), StagnationAction::Continue);
+        assert_eq!(guard.observe(sig, false), StagnationAction::Continue);
+        assert_eq!(guard.observe(sig, false), StagnationAction::Abort);
     }
 
     #[test]
     fn alternating_all_failed_outcomes_nudge_then_abort() {
         let mut guard = StagnationGuard::new(3);
-        let a = Some("create({})=>error".to_string());
-        let b = Some("update({})=>error".to_string());
+        let a = Some(1u64);
+        let b = Some(2u64);
 
-        let actions = [a.clone(), b.clone(), a.clone(), b.clone(), a, b]
+        let actions = [a, b, a, b, a, b]
             .into_iter()
             .map(|signature| guard.observe(signature, true))
             .collect::<Vec<_>>();
@@ -411,18 +454,18 @@ mod tests {
     #[test]
     fn a_successful_outcome_resets_the_all_failed_streak() {
         let mut guard = StagnationGuard::new(3);
-        let a = Some("create({})=>error".to_string());
-        let b = Some("update({})=>error".to_string());
-        let success = Some("status({})=>success".to_string());
+        let a = Some(1u64);
+        let b = Some(2u64);
+        let success = Some(3u64);
 
-        assert_eq!(guard.observe(a.clone(), true), StagnationAction::Continue);
-        assert_eq!(guard.observe(b.clone(), true), StagnationAction::Continue);
+        assert_eq!(guard.observe(a, true), StagnationAction::Continue);
+        assert_eq!(guard.observe(b, true), StagnationAction::Continue);
         // `false` represents a turn with at least one successful result. The
         // exact-outcome guard remains independent and still catches unchanged
         // successful non-polling cycles.
         assert_eq!(guard.observe(success, false), StagnationAction::Continue);
-        assert_eq!(guard.observe(a.clone(), true), StagnationAction::Continue);
-        assert_eq!(guard.observe(b.clone(), true), StagnationAction::Continue);
+        assert_eq!(guard.observe(a, true), StagnationAction::Continue);
+        assert_eq!(guard.observe(b, true), StagnationAction::Continue);
         assert_eq!(guard.observe(a, true), StagnationAction::Nudge);
     }
 
@@ -437,26 +480,26 @@ mod tests {
     #[test]
     fn a_different_turn_breaks_the_streak() {
         let mut guard = StagnationGuard::new(3);
-        let a = Some("Bash(ls)".to_string());
-        let b = Some("Read(a)".to_string());
-        guard.observe(a.clone(), false);
-        guard.observe(a.clone(), false);
-        guard.observe(b.clone(), false); // breaks the streak
-        assert_eq!(guard.observe(a.clone(), false), StagnationAction::Continue);
-        assert_eq!(guard.observe(a.clone(), false), StagnationAction::Continue);
-        assert_eq!(guard.observe(a.clone(), false), StagnationAction::Nudge);
+        let a = Some(1u64);
+        let b = Some(2u64);
+        guard.observe(a, false);
+        guard.observe(a, false);
+        guard.observe(b, false); // breaks the streak
+        assert_eq!(guard.observe(a, false), StagnationAction::Continue);
+        assert_eq!(guard.observe(a, false), StagnationAction::Continue);
+        assert_eq!(guard.observe(a, false), StagnationAction::Nudge);
     }
 
     #[test]
     fn text_turn_between_identical_calls_breaks_streak() {
         let mut guard = StagnationGuard::new(3);
-        let a = Some("Bash(ls)".to_string());
-        guard.observe(a.clone(), false);
-        guard.observe(a.clone(), false);
+        let a = Some(1u64);
+        guard.observe(a, false);
+        guard.observe(a, false);
         assert_eq!(guard.observe(None, false), StagnationAction::Continue);
-        assert_eq!(guard.observe(a.clone(), false), StagnationAction::Continue);
-        assert_eq!(guard.observe(a.clone(), false), StagnationAction::Continue);
-        assert_eq!(guard.observe(a.clone(), false), StagnationAction::Nudge);
+        assert_eq!(guard.observe(a, false), StagnationAction::Continue);
+        assert_eq!(guard.observe(a, false), StagnationAction::Continue);
+        assert_eq!(guard.observe(a, false), StagnationAction::Nudge);
     }
 
     #[test]
@@ -480,7 +523,7 @@ mod tests {
         assert_ne!(first, second);
 
         let mut guard = StagnationGuard::new(3);
-        assert_eq!(guard.observe(first.clone(), false), StagnationAction::Continue);
+        assert_eq!(guard.observe(first, false), StagnationAction::Continue);
         assert_eq!(guard.observe(first, false), StagnationAction::Continue);
         assert_eq!(guard.observe(second, false), StagnationAction::Continue);
     }
@@ -506,12 +549,19 @@ mod tests {
             },
         ];
 
-        let mixed = tool_outcome_signature_filtered(&calls, &results, |_, name, _| {
-            name != "write_stdin"
-        })
-        .expect("the non-polling mutation remains tracked");
-        assert!(mixed.contains("update"));
-        assert!(!mixed.contains("write_stdin"));
+        let mixed =
+            tool_outcome_signature_filtered(&calls, &results, |_, name, _| name != "write_stdin");
+        assert!(
+            mixed.is_some(),
+            "the non-polling mutation remains tracked"
+        );
+        // Excluding the poll must leave exactly the mutation's outcome: dropping an
+        // untracked call cannot change the signature of the tracked ones.
+        let mutation_only =
+            tool_outcome_signature_filtered(&calls[1..], &results[1..], |_, name, _| {
+                name != "write_stdin"
+            });
+        assert_eq!(mixed, mutation_only);
 
         let poll_only =
             tool_outcome_signature_filtered(&calls[..1], &results[..1], |_, name, _| {
@@ -523,9 +573,8 @@ mod tests {
     #[test]
     fn successful_non_polling_cycles_nudge_then_abort() {
         let mut guard = StagnationGuard::new(3);
-        let sig = Some("status({})".to_string());
-        let actions: Vec<StagnationAction> =
-            (0..6).map(|_| guard.observe(sig.clone(), false)).collect();
+        let sig = Some(1u64);
+        let actions: Vec<StagnationAction> = (0..6).map(|_| guard.observe(sig, false)).collect();
         assert_eq!(actions[2], StagnationAction::Nudge);
         assert_eq!(actions[5], StagnationAction::Abort);
     }
@@ -547,6 +596,42 @@ mod tests {
         assert_ne!(
             tool_outcome_signature(&calls, &normal),
             tool_outcome_signature(&calls, &swapped)
+        );
+    }
+
+    /// The JSON-string join this replaced could not tell `["a","b"]` from
+    /// `["a,b"]`, nor the number `1` from the string `"1"`. A false collision
+    /// silently suppresses a real loop, so type and length framing are load-bearing.
+    #[test]
+    fn signature_frames_types_and_lengths() {
+        let signature = |input: serde_json::Value| {
+            tool_calls_signature(&[tool_use("Read", input, "call")])
+        };
+
+        assert_ne!(
+            signature(json!({"parts": ["a", "b"]})),
+            signature(json!({"parts": ["a,b"]})),
+            "adjacent array items must not alias a single joined string"
+        );
+        assert_ne!(
+            signature(json!({"value": 1})),
+            signature(json!({"value": "1"})),
+            "a number and its decimal string must not alias"
+        );
+    }
+
+    /// Providers build the same arguments with different key order. A structural
+    /// hash must be blind to that, exactly as the canonical encoder was.
+    #[test]
+    fn signature_is_stable_across_object_key_order() {
+        let left: serde_json::Value =
+            serde_json::from_str(r#"{"b":2,"a":{"d":4,"c":3}}"#).unwrap();
+        let right: serde_json::Value =
+            serde_json::from_str(r#"{"a":{"c":3,"d":4},"b":2}"#).unwrap();
+
+        assert_eq!(
+            tool_calls_signature(&[tool_use("Read", left, "first")]),
+            tool_calls_signature(&[tool_use("Read", right, "second")])
         );
     }
 }
