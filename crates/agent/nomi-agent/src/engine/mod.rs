@@ -1675,7 +1675,12 @@ impl AgentEngine {
             msg_id = %msg_id,
         );
         let mut efficiency = ToolEfficiencyStats::default();
-        let mut safe_messages = self.messages.clone();
+        // Rollback checkpoint: the transcript LENGTH at the last known-good
+        // point, not a copy of it. Every checkpoint used to deep-clone the whole
+        // `Vec<Message>` — base64 images included — once per turn start, once per
+        // completed pass, and once per restart. Messages are only ever appended
+        // between checkpoints, so restoring is a truncate.
+        let mut safe_len = self.messages.len();
         let mut turn_started = false;
         let result = async {
             let result = self
@@ -1684,7 +1689,7 @@ impl AgentEngine {
                     msg_id,
                     source_message_id,
                     &mut efficiency,
-                    &mut safe_messages,
+                    &mut safe_len,
                     &mut turn_started,
                 )
                 .await;
@@ -1705,7 +1710,7 @@ impl AgentEngine {
         // If the host drops this future during non-cooperative cancellation,
         // `abort_current_turn` redacts only unsent images.
             if result.is_err() && turn_started {
-            self.messages = safe_messages;
+            self.rollback_transcript_to(safe_len);
             if matches!(
                 &result,
                 Err(AgentError::Provider(_)
@@ -1736,7 +1741,9 @@ impl AgentEngine {
         msg_id: &str,
         source_message_id: &str,
         efficiency: &mut ToolEfficiencyStats,
-        safe_messages: &mut Vec<Message>,
+        // Transcript length at the last known-good point (see `safe_len` in the
+        // caller): rollback truncates to it instead of restoring a cloned Vec.
+        safe_len: &mut usize,
         turn_started: &mut bool,
     ) -> Result<AgentResult, AgentError> {
         if user_content.is_empty()
@@ -2778,7 +2785,7 @@ impl AgentEngine {
                         target: "nomi_agent",
                         "coding harness: plan-sync pass produced no update_plan; continuing to reply pass"
                     );
-                    *safe_messages = self.messages.clone();
+                    *safe_len = self.messages.len();
                     self.persist_session(false);
                     turn += 1;
                     continue;
@@ -2795,12 +2802,12 @@ impl AgentEngine {
                 // machine-observably already happened.
                 //
                 // This runs FIRST inside the block, before `stagnation_guard`
-                // is reset and before `safe_messages` is refreshed, because a
+                // is reset and before the rollback checkpoint is refreshed, because a
                 // truncated pass is not a completed assistant response and the
                 // three continuation hooks below all assume one. The placement
                 // window is exact: after the steering drain further down, the
                 // tail message would be a steering user message and `pop()`
-                // would delete the wrong one; after the `safe_messages`
+                // would delete the wrong one; after the checkpoint
                 // refresh, the rollback floor would still contain the truncated
                 // draft.
                 //
@@ -2907,7 +2914,7 @@ impl AgentEngine {
                             .expect("round attempts are bounded below u32::MAX"),
                     );
                     // Round N's rollback floor: the requirement, not the draft.
-                    *safe_messages = self.messages.clone();
+                    *safe_len = self.messages.len();
                     self.save_session();
                     tracing::warn!(
                         target: "nomi_agent",
@@ -2932,7 +2939,7 @@ impl AgentEngine {
                 // rollback point; any steering/goal continuation appended below
                 // belongs to the *next* provider pass and must be dropped if that
                 // pass fails.
-                *safe_messages = self.messages.clone();
+                *safe_len = self.messages.len();
                 // Steering interjection (point B): a user message injected
                 // mid-turn extends a would-end turn instead of returning, so
                 // the model incorporates it on the next step. Mirrors the
@@ -3517,7 +3524,7 @@ impl AgentEngine {
 
             // Coalesced checkpoint after tools — pretty JSON + index wait for
             // EndTurn / user-message durable saves.
-            *safe_messages = self.messages.clone();
+            *safe_len = self.messages.len();
             self.persist_session(false);
             if stagnation_action == crate::loop_guard::StagnationAction::Abort {
                 if let Some(harness) = self.coding_harness.as_mut() {
@@ -4036,6 +4043,21 @@ impl AgentEngine {
         self.persist_session(true);
     }
 
+    /// Restore the transcript to the length checkpoint recorded by the turn wrapper.
+    ///
+    /// Messages are only appended between checkpoints, so a rollback is a truncate:
+    /// the checkpoint is a `usize`, not a cloned `Vec<Message>` (which copied the
+    /// whole transcript, base64 images included, on every pass and every restart).
+    ///
+    /// Deliberately does NOT re-expand a transcript that a mid-turn compaction has
+    /// already REPLACED with a shorter one. That compaction was persisted, so
+    /// restoring a longer in-memory transcript would put memory ahead of disk.
+    /// `truncate` is already a no-op when the checkpoint is not below the current
+    /// length, which is exactly that guarantee.
+    fn rollback_transcript_to(&mut self, len: usize) {
+        self.messages.truncate(len);
+    }
+
     fn mark_turn_ended(&mut self) {
         self.compact_state.last_turn_ended_at = Some(chrono::Utc::now());
     }
@@ -4077,7 +4099,13 @@ impl AgentEngine {
         let mut save_err: Option<String> = None;
         let mut index_err: Option<String> = None;
         if let (Some(mgr), Some(session)) = (&self.session_manager, &mut self.current_session) {
-            session.messages = self.messages.clone();
+            // Move the transcript into the persisted session instead of cloning
+            // it. Cloning the whole `Vec<Message>` — base64 images included — on
+            // every checkpoint was the engine's largest steady-state allocation.
+            // The move is O(1) and is undone right after the index update below;
+            // nothing between the two can await or return early, so `self.messages`
+            // is never observable as empty.
+            session.messages = std::mem::take(&mut self.messages);
             session.total_usage = self.total_usage.clone();
             session.activated_deferred_tools = self.tools.session_deferred_tool_identities();
             session.editable_turn = self.editable_turn.clone();
@@ -4094,6 +4122,11 @@ impl AgentEngine {
             if durable && let Err(e) = mgr.update_index_for(session) {
                 index_err = Some(e.to_string());
             }
+
+            // Hand the transcript back to the engine: `session.messages` is drained
+            // rather than cloned, and the session struct is not used past this point
+            // except by the error branches below.
+            self.messages = std::mem::take(&mut session.messages);
         } else {
             return;
         }

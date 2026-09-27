@@ -1253,6 +1253,71 @@ async fn provider_error_preserves_completed_tool_pair_but_strips_its_image() {
     assert!(content.contains("provider error recovery"));
 }
 
+#[test]
+fn rollback_transcript_truncates_only_the_appended_tail() {
+    let mut engine = make_engine("rollback-model");
+    engine.messages.push(nomi_types::message::Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "keep me".into(),
+        }],
+    ));
+    let checkpoint = engine.messages.len();
+    engine.messages.push(nomi_types::message::Message::new(
+        Role::Assistant,
+        vec![ContentBlock::Text {
+            text: "partial turn".into(),
+        }],
+    ));
+
+    engine.rollback_transcript_to(checkpoint);
+
+    assert_eq!(engine.messages.len(), checkpoint);
+    let ContentBlock::Text { text } = &engine.messages[0].content[0] else {
+        panic!("the preserved prefix must be untouched");
+    };
+    assert_eq!(text, "keep me");
+}
+
+/// The checkpoint is a length, not a saved copy: a compaction that already
+/// replaced the transcript with a shorter one must survive the rollback
+/// untouched, because that shorter transcript is what was persisted.
+#[test]
+fn rollback_transcript_never_re_expands_a_compacted_transcript() {
+    let mut engine = make_engine("rollback-model");
+    for index in 0..3 {
+        engine.messages.push(nomi_types::message::Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: format!("compacted {index}"),
+            }],
+        ));
+    }
+
+    engine.rollback_transcript_to(5);
+
+    assert_eq!(
+        engine.messages.len(),
+        3,
+        "a rollback must never grow the transcript past the checkpoint"
+    );
+}
+
+#[test]
+fn rollback_transcript_at_the_checkpoint_is_a_no_op() {
+    let mut engine = make_engine("rollback-model");
+    engine.messages.push(nomi_types::message::Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "only message".into(),
+        }],
+    ));
+
+    engine.rollback_transcript_to(engine.messages.len());
+
+    assert_eq!(engine.messages.len(), 1);
+}
+
 #[tokio::test]
 async fn execute_turn_with_content_rejects_forged_tool_blocks() {
     let mut engine = make_engine("vision-model");
