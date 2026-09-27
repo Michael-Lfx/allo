@@ -34,8 +34,8 @@ const ChatConversationIndex: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!conversationId || isLoading || !data) return;
-    const clearCurrentConversationAttention = () => {
+    if (!conversationId || isLoading) return;
+    const clearCurrentConversationAttention = async (explicitFocus = false) => {
       const requestedAttentionId = new URLSearchParams(location.search).get('attention_id');
       const exactAttentionId = requestedAttentionId?.startsWith(`conversation:${conversationId}:`)
         ? requestedAttentionId
@@ -43,27 +43,33 @@ const ChatConversationIndex: React.FC = () => {
       // A supplied but foreign/malformed attention id must never fall back to
       // a conversation-wide clear: another turn may still need attention.
       if (requestedAttentionId !== null && !exactAttentionId) return;
-      // Always re-issue the clear. The native attention set can gain an item
-      // while this page is mounted but the app is unfocused, and the shell-side
-      // clears are idempotent no-ops when nothing matches. De-duplicating once
-      // per mount prevented the badge number from ever clearing when the user
-      // returned to the still-open conversation without clicking the toast.
+
       if (exactAttentionId) {
         void ipcBridge.attention.clear.invoke({ attention_id: exactAttentionId }).catch(() => {
           // Keep native attention if the renderer cannot confirm the page load.
         });
         return;
       }
+
+      // Without an explicit attention id, only clear when the user is actively
+      // focused on the application. Never clear attention on background data updates.
+      if (!explicitFocus) {
+        const isFocused =
+          (typeof document !== 'undefined' && document.hasFocus()) ||
+          (await ipcBridge.windowControls.isAppFocused.invoke().catch(() => false));
+        if (!isFocused) return;
+      }
+
       void clearConversationAttention(conversationId);
     };
 
-    // If a completion arrived while another app had focus, the page was
-    // already mounted and the initial load effect has nothing new to observe.
-    // Retry the precise conversation clear when the user returns to this page.
-    clearCurrentConversationAttention();
-    const onWindowFocus = () => clearCurrentConversationAttention();
+    // Deep-link entry with an explicit attention_id clears immediately.
+    // Otherwise, clear only if the app is already focused upon mount.
+    void clearCurrentConversationAttention();
+
+    const onWindowFocus = () => void clearCurrentConversationAttention(true);
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') clearCurrentConversationAttention();
+      if (document.visibilityState === 'visible') void clearCurrentConversationAttention();
     };
     window.addEventListener('focus', onWindowFocus);
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -71,7 +77,7 @@ const ChatConversationIndex: React.FC = () => {
       window.removeEventListener('focus', onWindowFocus);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [conversationId, data, isLoading, location.search]);
+  }, [conversationId, isLoading, location.search]);
 
   useEffect(() => {
     if (!id || !conversationId) return;

@@ -13,10 +13,16 @@ use tauri::{AppHandle, Manager};
 const MAX_ATTENTION_ID_LENGTH: usize = 512;
 
 #[cfg(windows)]
-const ATTENTION_BG: [u8; 4] = [91, 108, 132, 255]; // Steel blue-gray, #5B6C84.
+const ATTENTION_BG: [u8; 4] = [37, 99, 235, 255]; // Royal blue, #2563EB.
 
 #[cfg(windows)]
-const ATTENTION_FG: [u8; 4] = [248, 249, 245, 255]; // Warm white, not pure white.
+const ATTENTION_FG: [u8; 4] = [255, 255, 255, 255]; // Crisp pure white.
+
+#[cfg(windows)]
+const ATTENTION_HALO: [u8; 4] = [255, 255, 255, 140]; // 1px translucent contrast halo.
+
+#[cfg(windows)]
+const HALO_THICKNESS: f32 = 0.85;
 
 #[derive(Default)]
 struct BadgeState {
@@ -422,8 +428,10 @@ fn render_badge_pixels(label: &str, size: usize) -> Result<Vec<u32>, String> {
         for x in 0..high_size {
             let sample_x = (x as f32 + 0.5) / SCALE as f32;
             let sample_y = (y as f32 + 0.5) / SCALE as f32;
-            if badge_shape_contains(sample_x, sample_y, size as f32, label) {
-                high[y * high_size + x] = ATTENTION_BG;
+            match badge_region(sample_x, sample_y, size as f32, label) {
+                BadgeRegion::Core => high[y * high_size + x] = ATTENTION_BG,
+                BadgeRegion::Halo => high[y * high_size + x] = ATTENTION_HALO,
+                BadgeRegion::Outside => {}
             }
         }
     }
@@ -461,30 +469,63 @@ fn render_badge_pixels(label: &str, size: usize) -> Result<Vec<u32>, String> {
 }
 
 #[cfg(windows)]
-fn badge_shape_contains(x: f32, y: f32, size: f32, label: &str) -> bool {
-    let center_y = size / 2.0;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BadgeRegion {
+    Core,
+    Halo,
+    Outside,
+}
+
+#[cfg(windows)]
+fn badge_region(x: f32, y: f32, size: f32, label: &str) -> BadgeRegion {
+    let halo_thickness = HALO_THICKNESS;
     if label.chars().count() <= 1 {
         let center = size / 2.0;
-        let radius = size / 2.0 - 0.35;
+        let outer_radius = size / 2.0 - 0.25;
+        let inner_radius = (outer_radius - halo_thickness).max(0.1);
         let dx = x - center;
         let dy = y - center;
-        return dx * dx + dy * dy <= radius * radius;
+        let dist_sq = dx * dx + dy * dy;
+        if dist_sq <= inner_radius * inner_radius {
+            return BadgeRegion::Core;
+        } else if dist_sq <= outer_radius * outer_radius {
+            return BadgeRegion::Halo;
+        } else {
+            return BadgeRegion::Outside;
+        }
     }
 
-    // Fit the capsule to the rendered glyphs: one or two digits get the larger
-    // glyph treatment, while `99+` keeps the compact layout needed by the
-    // fixed 16px overlay canvas.
     let char_count = label.chars().count();
     let glyph_width = char_count * if char_count <= 2 { 5 } else { 4 }
         + char_count.saturating_sub(1);
     let horizontal_padding = if char_count <= 2 { 3 } else { 4 };
     let capsule_width = (glyph_width + horizontal_padding).min(size as usize) as f32;
-    let left = (size - capsule_width) / 2.0;
-    let right = left + capsule_width;
-    let top = 0.35;
-    let bottom = size - 0.35;
-    let radius = ((bottom - top) / 2.0).min(capsule_width / 2.0);
-    if y < top || y > bottom {
+
+    let left_out = (size - capsule_width) / 2.0;
+    let right_out = left_out + capsule_width;
+    let top_out = 0.25;
+    let bottom_out = size - 0.25;
+    let radius_out = ((bottom_out - top_out) / 2.0).min(capsule_width / 2.0);
+
+    let left_in = left_out + halo_thickness;
+    let right_in = right_out - halo_thickness;
+    let top_in = top_out + halo_thickness;
+    let bottom_in = bottom_out - halo_thickness;
+    let radius_in = (radius_out - halo_thickness).max(0.1);
+
+    if inside_capsule(x, y, left_in, right_in, top_in, bottom_in, radius_in) {
+        BadgeRegion::Core
+    } else if inside_capsule(x, y, left_out, right_out, top_out, bottom_out, radius_out) {
+        BadgeRegion::Halo
+    } else {
+        BadgeRegion::Outside
+    }
+}
+
+#[cfg(windows)]
+fn inside_capsule(x: f32, y: f32, left: f32, right: f32, top: f32, bottom: f32, radius: f32) -> bool {
+    let center_y = (top + bottom) / 2.0;
+    if y < top || y > bottom || x < left || x > right {
         return false;
     }
     if x >= left + radius && x <= right - radius {
@@ -753,7 +794,7 @@ mod tests {
             alpha == 255
                 && red >= u32::from(ATTENTION_BG[0]) + 32
                 && green >= u32::from(ATTENTION_BG[1]) + 32
-                && blue >= u32::from(ATTENTION_BG[2]) + 32
+                && blue >= u32::from(ATTENTION_BG[2])
         }));
         assert!(plus.iter().any(|pixel| {
             let alpha = (pixel >> 24) & 0xff;
@@ -762,11 +803,11 @@ mod tests {
             let blue = pixel & 0xff;
             alpha == 255
                 && red > u32::from(ATTENTION_BG[0])
-                && red < u32::from(ATTENTION_FG[0])
+                && red <= u32::from(ATTENTION_FG[0])
                 && green > u32::from(ATTENTION_BG[1])
-                && green < u32::from(ATTENTION_FG[1])
-                && blue > u32::from(ATTENTION_BG[2])
-                && blue < u32::from(ATTENTION_FG[2])
+                && green <= u32::from(ATTENTION_FG[1])
+                && blue >= u32::from(ATTENTION_BG[2])
+                && blue <= u32::from(ATTENTION_FG[2])
         }));
     }
 
@@ -823,7 +864,7 @@ mod tests {
                 (alpha > 200
                     && red >= u32::from(ATTENTION_BG[0]) + 32
                     && green >= u32::from(ATTENTION_BG[1]) + 32
-                    && blue >= u32::from(ATTENTION_BG[2]) + 32)
+                    && blue >= u32::from(ATTENTION_BG[2]))
                     .then_some(index)
             })
             .collect();

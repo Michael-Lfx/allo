@@ -32,6 +32,7 @@ export const useConversationDesktopNotify = () => {
       const pathname =
         typeof window === 'undefined' ? '' : routePathnameFromHref(window.location.href);
       if (!isConversationOnScreen({ visible, pathname, conversationId })) return false;
+      if (typeof document !== 'undefined' && document.hasFocus()) return true;
       return ipcBridge.windowControls.isAppFocused.invoke();
     };
 
