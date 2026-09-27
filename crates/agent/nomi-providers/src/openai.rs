@@ -571,27 +571,25 @@ fn dedup_tool_results(messages: &mut Vec<Value>) {
         }
     }
 
-    // Keep only the last occurrence
-    let mut seen: HashMap<String, bool> = HashMap::new();
-    let mut to_remove = Vec::new();
+    // Mark every occurrence except the last one for removal
+    let mut keep = vec![true; messages.len()];
     for (i, msg) in messages.iter().enumerate() {
         if msg["role"].as_str() == Some("tool")
             && let Some(id) = msg["tool_call_id"].as_str()
             && let Some(&last_i) = last_index.get(id)
+            && i != last_i
         {
-            if i != last_i && !seen.contains_key(id) {
-                to_remove.push(i);
-            }
-            if i == last_i {
-                seen.insert(id.to_string(), true);
-            }
+            keep[i] = false;
         }
     }
 
-    // Remove in reverse order to preserve indices
-    for i in to_remove.into_iter().rev() {
-        messages.remove(i);
-    }
+    // Single O(n) in-place compaction, instead of O(n²) Vec::remove in reverse
+    let mut idx = 0;
+    messages.retain(|_| {
+        let keep_i = keep[idx];
+        idx += 1;
+        keep_i
+    });
 }
 
 /// Remove tool_call entries from assistant messages that have no corresponding tool result
