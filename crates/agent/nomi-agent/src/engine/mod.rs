@@ -2735,10 +2735,27 @@ impl AgentEngine {
                     // history length, of autocompaction, and of prior rounds.
                     // Only ever an assistant message, so every already-drained
                     // steering interjection stays in the transcript.
-                    let dropped = self.messages.pop().expect(
-                        "the assistant message pushed immediately above is still the tail",
-                    );
-                    debug_assert_eq!(dropped.role, Role::Assistant);
+                    // An invariant, checked rather than asserted: a violation must
+                    // degrade into an honest terminal, never take the process
+                    // down. Only an assistant draft is removable here — anything
+                    // else is the requirement or a steering interjection, and
+                    // deleting one would corrupt the conversation.
+                    if self
+                        .messages
+                        .last()
+                        .is_some_and(|tail| tail.role == Role::Assistant)
+                    {
+                        let dropped = self.messages.pop();
+                        debug_assert_eq!(
+                            dropped.map(|message| message.role),
+                            Some(Role::Assistant)
+                        );
+                    } else {
+                        tracing::error!(
+                            target: "nomi_agent",
+                            "truncation restart: the transcript tail is not this pass's assistant draft"
+                        );
+                    }
                     let dropped_draft_bytes = assistant_text.len();
                     round.begin_attempt();
                     // Already-sent images stay in the prefix. Redact only
@@ -2803,8 +2820,10 @@ impl AgentEngine {
                     // the current response bubble.
                     self.output.emit_output_discarded(
                         &self.current_msg_id,
-                        u32::try_from(round.attempt)
-                            .expect("round attempts are bounded below u32::MAX"),
+                        // Saturating rather than asserting: the counter is bounded
+                        // by MAX_ROUND_ATTEMPTS, and a clamped report is always
+                        // preferable to aborting a turn over a display value.
+                        u32::try_from(round.attempt).unwrap_or(u32::MAX),
                     );
                     // Round N's rollback floor: the requirement, not the draft.
                     *safe_len = self.messages.len();
@@ -3000,10 +3019,19 @@ impl AgentEngine {
             let tool_started = Instant::now();
             let mut outcome = if let Some(ref approval_mgr) = self.approval_manager {
                 // JSON stream mode: use protocol-based approval
-                let writer = self
-                    .protocol_writer
-                    .as_ref()
-                    .expect("protocol writer required for approval");
+                // Fail closed. Approval mode with no channel to ask through means
+                // nothing can be approved, and executing unprompted would bypass
+                // the user's gate entirely.
+                let Some(writer) = self.protocol_writer.as_ref() else {
+                    tracing::error!(
+                        target: "nomi_agent",
+                        "approval is enabled but no protocol writer is attached; refusing the tool pass"
+                    );
+                    return Err(AgentError::ApiError(
+                        "tool approval is enabled but the host provided no protocol writer"
+                            .to_string(),
+                    ));
+                };
                 let auto_approve = self.confirmer.lock().unwrap().is_auto_approve();
                 match execute_tool_calls_with_approval(
                     &self.tools,
@@ -3107,6 +3135,17 @@ impl AgentEngine {
                         );
                     }
 
+                    // A result whose ToolUse was never committed has no context to
+                    // render against. Decline to publish it rather than panic: the
+                    // transcript stays valid and the omission is reported.
+                    let Some(context) = tool_call_contexts.get(tool_use_id) else {
+                        tracing::error!(
+                            target: "nomi_agent",
+                            tool_use_id,
+                            "committed tool result has no execution context; not published"
+                        );
+                        continue;
+                    };
                     match self
                         .output
                         .emit_tool_result_with_images_and_context(
@@ -3116,9 +3155,7 @@ impl AgentEngine {
                         *is_error,
                         content,
                         images,
-                        tool_call_contexts.get(tool_use_id).expect(
-                            "every committed ToolUse receives execution context",
-                        ),
+                        context,
                     ) {
                         crate::output::ToolMediaDelivery::Unmanaged => {
                             // Diagnostic screenshots or other binary payloads

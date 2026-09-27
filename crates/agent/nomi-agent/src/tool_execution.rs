@@ -306,10 +306,26 @@ pub async fn execute_tool_calls_scoped(
                 }
                 completed[idx] = Some(outcome);
             }
-            for outcome in completed {
-                let (block, modifier) = outcome.expect("every concurrent call has an outcome");
-                results.push(block);
-                modifiers.push(modifier);
+            for (idx, outcome) in completed.into_iter().enumerate() {
+                match outcome {
+                    Some((block, modifier)) => {
+                        results.push(block);
+                        modifiers.push(modifier);
+                    }
+                    None => {
+                        // Every index is settled by a gate, a denial, or an
+                        // execution. An unsettled one is an internal invariant
+                        // break: answer the call with a paired error result
+                        // (silence would leave an unmatched tool_use in the
+                        // transcript) and keep the turn alive.
+                        tracing::error!(
+                            target: "nomi_agent",
+                            "concurrent tool batch left a call unsettled"
+                        );
+                        results.push(unsettled_call_result(pending[idx].block()));
+                        modifiers.push(None);
+                    }
+                }
             }
         } else {
             for prepared in pending {
@@ -449,6 +465,26 @@ fn prepare_calls<'a>(
             PreparedCall { call, gate }
         })
         .collect()
+}
+
+/// The paired error result for a call the executor could not settle.
+///
+/// Every `ToolUse` must receive exactly one `ToolResult` or the next provider
+/// request is rejected: an unsettled call is answered, never dropped, and never
+/// worth aborting the process over.
+fn unsettled_call_result(call: &ContentBlock) -> ContentBlock {
+    let tool_use_id = match call {
+        ContentBlock::ToolUse { id, .. } => id.clone(),
+        _ => String::new(),
+    };
+    ContentBlock::ToolResult {
+        tool_use_id,
+        content: "The tool call was not settled by the executor and was not run. \
+                  Retry it or choose another approach."
+            .to_string(),
+        is_error: true,
+        images: Vec::new(),
+    }
 }
 
 /// Signal that the user wants to abort
@@ -2563,6 +2599,31 @@ mod tests {
             "a refused call must never run concurrently"
         );
         assert!(batches[0].occupancy[0].exclusive);
+    }
+
+    /// An unsettled call must still be answered. An unmatched `tool_use` makes the
+    /// next provider request invalid, so the fallback is a paired error result
+    /// rather than a panic or silence.
+    #[test]
+    fn unsettled_call_result_pairs_the_call_id() {
+        let call = deferred_call("never-settled");
+
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = unsettled_call_result(&call)
+        else {
+            panic!("an unsettled call must be answered with a tool result");
+        };
+
+        assert_eq!(tool_use_id, "never-settled");
+        assert!(
+            is_error,
+            "the call did not run, so the paired result must be an error"
+        );
+        assert!(content.contains("not run"));
     }
 
     #[tokio::test]
