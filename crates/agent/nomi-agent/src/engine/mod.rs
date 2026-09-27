@@ -3029,7 +3029,8 @@ impl AgentEngine {
                 );
                 let cwd = self.workspace_cwd();
                 self.horizon
-                    .observe_end_turn(&assistant_text, cwd.as_deref(), 0);
+                    .observe_end_turn(&assistant_text, cwd.as_deref(), 0)
+                    .await;
                 self.sync_goal_progress();
                 self.horizon.consume_turn_scoped();
                 let continuation = if skip_goal {

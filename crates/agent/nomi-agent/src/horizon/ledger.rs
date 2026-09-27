@@ -7,10 +7,12 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::time::UNIX_EPOCH;
+use std::time::{Instant, UNIX_EPOCH};
 
 use nomi_coding::progress::is_recon_tool;
 use nomi_coding::verify::{is_side_effect_tool, looks_like_verification_command};
+
+use crate::profiler::{self, HotPath};
 
 /// Consecutive natural EndTurns without world progress before Horizon stops
 /// auto-continue. The first idle EndTurn still gets one delta continuation;
@@ -126,13 +128,17 @@ impl ProgressLedger {
     }
 
     /// Natural EndTurn (no tool calls, or after a text-only close).
-    pub fn observe_end_turn(
+    ///
+    /// Async because the workspace fingerprint shells out to `git`: running that
+    /// synchronously inside the engine's async turn would block a runtime worker
+    /// for as long as the subprocess takes.
+    pub async fn observe_end_turn(
         &mut self,
         assistant_text: &str,
         cwd: Option<&Path>,
         pending_steps: usize,
     ) -> bool {
-        let fp = workspace_fingerprint(cwd);
+        let fp = workspace_fingerprint(cwd).await;
         let fp_changed = match (self.last_workspace_fp, fp) {
             (Some(prev), Some(now)) => prev != now,
             (None, Some(_)) => false,
@@ -216,34 +222,50 @@ pub fn text_signature(text: &str) -> u64 {
     hasher.finish()
 }
 
-pub fn workspace_fingerprint(cwd: Option<&Path>) -> Option<u64> {
+/// Fingerprint the workspace so a verification-visible change can be detected.
+///
+/// Prefers `git`; falls back to a directory listing when `cwd` is not a
+/// repository. `None` means "there is no workspace to compare", which callers
+/// treat as "unchanged".
+pub async fn workspace_fingerprint(cwd: Option<&Path>) -> Option<u64> {
     let cwd = cwd?;
     if !cwd.exists() {
         return None;
     }
-    git_fingerprint(cwd).or_else(|| Some(dir_fingerprint(cwd)))
+    match git_fingerprint(cwd).await {
+        Some(fingerprint) => Some(fingerprint),
+        None => Some(profiler::timed(HotPath::WorkspaceFingerprint, || {
+            dir_fingerprint(cwd)
+        })),
+    }
 }
 
-fn git_fingerprint(cwd: &Path) -> Option<u64> {
+/// One `git status --porcelain=v2 --branch` probe.
+///
+/// The v2 format prints `# branch.oid <oid>` before the entries, so this single
+/// spawn covers what `rev-parse HEAD` plus `git status --porcelain` used to pay
+/// two processes for on every EndTurn — and it distinguishes staged/unstaged
+/// kinds and reports the checked-out head, which the old pair did not.
+///
+/// Awaited rather than blocking: a slow or hanging `git` must not pin a runtime
+/// worker. Elapsed time is reported either way, including failed probes.
+async fn git_fingerprint(cwd: &Path) -> Option<u64> {
     if !cwd.join(".git").exists() {
         return None;
     }
-    let head = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
+    let started = Instant::now();
+    let output = tokio::process::Command::new("git")
+        .args(["status", "--porcelain=v2", "--branch"])
         .current_dir(cwd)
         .output()
+        .await
         .ok()?;
-    if !head.status.success() {
+    profiler::record(HotPath::WorkspaceFingerprint, started.elapsed());
+    if !output.status.success() {
         return None;
     }
-    let porcelain = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
     let mut hasher = DefaultHasher::new();
-    hasher.write(&head.stdout);
-    hasher.write(&porcelain.stdout);
+    hasher.write(&output.stdout);
     Some(hasher.finish())
 }
 
@@ -294,45 +316,47 @@ mod tests {
         }
     }
 
-    #[test]
-    fn recon_only_does_not_count_as_progress() {
+    #[tokio::test]
+    async fn recon_only_does_not_count_as_progress() {
         let mut ledger = ProgressLedger::default();
         ledger.observe_tools(&[read_ok()]);
-        let progressed = ledger.observe_end_turn("I will look around more.", None, 0);
+        let progressed = ledger
+            .observe_end_turn("I will look around more.", None, 0)
+            .await;
         assert!(!progressed);
         assert_eq!(ledger.no_progress_streak(), 1);
         assert!(!ledger.snapshot().mutated);
     }
 
-    #[test]
-    fn consume_turn_scoped_lets_later_endturn_count_as_idle() {
+    #[tokio::test]
+    async fn consume_turn_scoped_lets_later_endturn_count_as_idle() {
         let mut ledger = ProgressLedger::default();
         ledger.observe_tools(&[edit_ok()]);
-        assert!(ledger.observe_end_turn("edited", None, 0));
+        assert!(ledger.observe_end_turn("edited", None, 0).await);
         ledger.consume_turn_scoped();
         assert!(!ledger.snapshot().mutated);
-        assert!(!ledger.observe_end_turn("just talking", None, 0));
+        assert!(!ledger.observe_end_turn("just talking", None, 0).await);
         assert_eq!(ledger.no_progress_streak(), 1);
     }
 
-    #[test]
-    fn successful_edit_resets_idle_streak() {
+    #[tokio::test]
+    async fn successful_edit_resets_idle_streak() {
         let mut ledger = ProgressLedger::default();
-        ledger.observe_end_turn("planning", None, 0);
+        ledger.observe_end_turn("planning", None, 0).await;
         assert_eq!(ledger.no_progress_streak(), 1);
         ledger.observe_tools(&[edit_ok()]);
-        let progressed = ledger.observe_end_turn("edited the file", None, 0);
+        let progressed = ledger.observe_end_turn("edited the file", None, 0).await;
         assert!(progressed);
         assert_eq!(ledger.no_progress_streak(), 0);
         assert!(ledger.snapshot().mutated);
     }
 
-    #[test]
-    fn duplicate_endturn_text_is_idle() {
+    #[tokio::test]
+    async fn duplicate_endturn_text_is_idle() {
         let mut ledger = ProgressLedger::default();
         let text = "I will continue working on the feature now.";
-        ledger.observe_end_turn(text, None, 0);
-        ledger.observe_end_turn(text, None, 0);
+        ledger.observe_end_turn(text, None, 0).await;
+        ledger.observe_end_turn(text, None, 0).await;
         assert_eq!(ledger.no_progress_streak(), 2);
         assert!(ledger
             .last_idle_reason()
@@ -340,32 +364,106 @@ mod tests {
             .contains("identical"));
     }
 
-    #[test]
-    fn verify_command_counts_as_progress() {
+    #[tokio::test]
+    async fn verify_command_counts_as_progress() {
         let mut ledger = ProgressLedger::default();
         ledger.observe_tools(&[ToolObservation {
             name: "Bash".into(),
             command: Some("cargo test -p nomi-agent".into()),
             success: true,
         }]);
-        assert!(ledger.observe_end_turn("tests passed", None, 0));
+        assert!(ledger.observe_end_turn("tests passed", None, 0).await);
         assert!(ledger.snapshot().verify_ok);
     }
 
-    #[test]
-    fn pending_step_increase_counts_as_progress() {
+    #[tokio::test]
+    async fn pending_step_increase_counts_as_progress() {
         let mut ledger = ProgressLedger::default();
-        assert!(!ledger.observe_end_turn("start", None, 0));
-        assert!(ledger.observe_end_turn("planned two steps", None, 2));
+        assert!(!ledger.observe_end_turn("start", None, 0).await);
+        assert!(ledger.observe_end_turn("planned two steps", None, 2).await);
         assert_eq!(ledger.no_progress_streak(), 0);
     }
 
-    #[test]
-    fn user_request_clears_streak_but_keeps_fingerprint() {
+    #[tokio::test]
+    async fn user_request_clears_streak_but_keeps_fingerprint() {
         let mut ledger = ProgressLedger::default();
-        ledger.observe_end_turn("idle", None, 0);
+        ledger.observe_end_turn("idle", None, 0).await;
         ledger.on_user_request();
         assert_eq!(ledger.no_progress_streak(), 0);
         assert!(!ledger.snapshot().mutated);
+    }
+
+    #[tokio::test]
+    async fn fingerprint_of_a_missing_directory_is_none() {
+        assert_eq!(workspace_fingerprint(None).await, None);
+        assert_eq!(
+            workspace_fingerprint(Some(Path::new("does/not/exist"))).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn fingerprint_of_a_plain_directory_is_stable_until_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = workspace_fingerprint(Some(dir.path())).await;
+        assert!(before.is_some(), "a readable directory must fingerprint");
+        assert_eq!(
+            before,
+            workspace_fingerprint(Some(dir.path())).await,
+            "an unchanged directory must fingerprint identically"
+        );
+
+        std::fs::write(dir.path().join("note.txt"), "x").unwrap();
+
+        assert_ne!(
+            before,
+            workspace_fingerprint(Some(dir.path())).await,
+            "a new file must move the fingerprint"
+        );
+    }
+
+    /// The `git` probe is the call the engine used to make synchronously, twice
+    /// per EndTurn. It must still be a real fingerprint, and it must be reported.
+    #[tokio::test]
+    async fn git_workspace_probe_tracks_a_new_file_and_reports_itself() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return; // git is not installed here; the directory fallback is covered above.
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .output();
+        if init.map(|output| !output.status.success()).unwrap_or(true) {
+            return; // no usable git in this environment
+        }
+
+        let before = profiler_count(HotPath::WorkspaceFingerprint);
+
+        let initial = workspace_fingerprint(Some(dir.path())).await;
+        assert!(initial.is_some(), "a git worktree must fingerprint");
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let dirty = workspace_fingerprint(Some(dir.path())).await;
+        assert_ne!(
+            initial, dirty,
+            "an untracked new file must move the git fingerprint"
+        );
+
+        assert!(
+            profiler_count(HotPath::WorkspaceFingerprint) > before,
+            "every probe must be reported to the profiler"
+        );
+    }
+
+    fn profiler_count(path: crate::profiler::HotPath) -> u64 {
+        crate::profiler::snapshot()
+            .into_iter()
+            .find(|sample| sample.path == path.as_str())
+            .map(|sample| sample.count)
+            .unwrap_or(0)
     }
 }
