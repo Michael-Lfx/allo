@@ -432,130 +432,29 @@ const MAX_PROVIDER_REQUEST_IMAGES: usize = 20;
 const MAX_SINGLE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES: usize = MAX_SINGLE_IMAGE_BYTES.div_ceil(3) * 4;
 
-#[derive(Debug, Default, PartialEq, Eq)]
-struct ToolEfficiencyStats {
-    model_turn_attempts: usize,
-    model_turns_with_tools: usize,
-    total_tool_calls: usize,
-    max_calls_in_model_turn: usize,
-    exec_command_script_calls: usize,
-    batch_read_files_requested: usize,
-    error_results: usize,
-    skipped_after_prior_error: usize,
-}
+mod efficiency;
 
-impl ToolEfficiencyStats {
-    fn observe_model_turn_attempt(&mut self) {
-        self.model_turn_attempts = self.model_turn_attempts.saturating_add(1);
-    }
+#[cfg(test)]
+mod restart_tests;
 
-    fn observe_calls(&mut self, _registry: &ToolRegistry, blocks: &[ContentBlock]) {
-        let calls = blocks
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolUse { name, input, .. } => Some((name.as_str(), input)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if calls.is_empty() {
-            return;
-        }
+use efficiency::ToolEfficiencyStats;
 
-        self.model_turns_with_tools = self.model_turns_with_tools.saturating_add(1);
-        self.total_tool_calls = self.total_tool_calls.saturating_add(calls.len());
-        self.max_calls_in_model_turn = self.max_calls_in_model_turn.max(calls.len());
-        for (name, input) in &calls {
-            if *name == "exec_command" && input.get("script").is_some() {
-                self.exec_command_script_calls =
-                    self.exec_command_script_calls.saturating_add(1);
-            }
-            if *name == "Read"
-                && let Some(paths) = input.get("file_paths").and_then(Value::as_array)
-            {
-                self.batch_read_files_requested = self
-                    .batch_read_files_requested
-                    .saturating_add(paths.len());
-            }
-        }
-    }
-
-    fn terminal_dimensions(
-        &self,
-        result: &Result<AgentResult, AgentError>,
-    ) -> (&'static str, &'static str, &'static str, usize) {
-        match result {
-            Ok(result) => (
-                "ok",
-                match result.stop_reason {
-                    StopReason::EndTurn => "end_turn",
-                    StopReason::ToolUse => "tool_use",
-                    StopReason::MaxTokens => "max_tokens",
-                    StopReason::MaxTurns => "max_turns",
-                    StopReason::Refusal => "refusal",
-                },
-                "none",
-                result.turns,
-            ),
-            Err(error) => (
-                "error",
-                "error",
-                match error {
-                    AgentError::ApiError(_) => "api_error",
-                    AgentError::Provider(_) => "provider_error",
-                    AgentError::UserAborted => "user_aborted",
-                    AgentError::ContextTooLong { .. } => "context_too_long",
-                    AgentError::Stagnation(_) => "tool_stagnation",
-                },
-                self.model_turn_attempts,
-            ),
-        }
-    }
-
-    fn observe_results(&mut self, blocks: &[ContentBlock]) {
-        for block in blocks {
-            let ContentBlock::ToolResult {
-                content, is_error, ..
-            } = block
-            else {
-                continue;
-            };
-            if *is_error {
-                self.error_results = self.error_results.saturating_add(1);
-            }
-            if *is_error && content == SKIPPED_AFTER_PRIOR_ERROR {
-                self.skipped_after_prior_error =
-                    self.skipped_after_prior_error.saturating_add(1);
-            }
-        }
-    }
-
-    fn log(
-        &self,
-        session_id: &str,
-        msg_id: &str,
-        result: &Result<AgentResult, AgentError>,
-    ) {
-        let (terminal, stop_reason, error_kind, agent_turns) =
-            self.terminal_dimensions(result);
-        tracing::info!(
-            target: "nomi_agent::tool_efficiency",
-            session_id,
-            msg_id,
-            agent_turns,
-            stop_reason,
-            terminal,
-            error_kind,
-            model_turn_attempts = self.model_turn_attempts,
-            model_turns_with_tools = self.model_turns_with_tools,
-            tool_calls_total = self.total_tool_calls,
-            max_calls_in_model_turn = self.max_calls_in_model_turn,
-            exec_command_script_calls = self.exec_command_script_calls,
-            batch_read_files_requested = self.batch_read_files_requested,
-            tool_error_results = self.error_results,
-            skipped_after_prior_error = self.skipped_after_prior_error,
-            "agent tool efficiency summary"
-        );
-    }
+/// Whether a provider pass that produced no tool calls must be re-attempted
+/// against the original requirement instead of being accepted as a final answer.
+///
+/// This is the single definition of "resumable round". It used to be written out
+/// verbatim at two call sites — the plan-sync pass and the plain empty-call pass
+/// — where a one-sided edit would have silently disabled truncation recovery on
+/// one path while keeping it on the other.
+fn should_restart_round(
+    stop_reason: StopReason,
+    round: &round::RoundState,
+    tools_advertised: bool,
+) -> bool {
+    stop_reason == StopReason::MaxTokens
+        && round.attempt < round::MAX_ROUND_ATTEMPTS
+        && tools_advertised
+        && !round.ledger.cutoff.is_empty()
 }
 
 /// Consecutive turns with the identical tool-call signature that trip the
@@ -2773,10 +2672,7 @@ impl AgentEngine {
             round.ledger.set_cutoff(std::mem::take(&mut truncated_calls));
 
             if plan_sync_pass && tool_calls.is_empty() {
-                let restart = stop_reason == StopReason::MaxTokens
-                    && round.attempt < round::MAX_ROUND_ATTEMPTS
-                    && tools_advertised
-                    && !round.ledger.cutoff.is_empty();
+                let restart = should_restart_round(stop_reason, &round, tools_advertised);
                 if !restart {
                     if let Some(harness) = self.coding_harness.as_mut() {
                         harness.advance_after_plan_sync();
@@ -2831,10 +2727,7 @@ impl AgentEngine {
                 // twice. A prose-only truncation is honestly reported as
                 // retryable `MaxTokens` instead, which is a decision for the user
                 // to spend budget on, not the engine.
-                let restart = stop_reason == StopReason::MaxTokens
-                    && round.attempt < round::MAX_ROUND_ATTEMPTS
-                    && tools_advertised
-                    && !round.ledger.cutoff.is_empty();
+                let restart = should_restart_round(stop_reason, &round, tools_advertised);
                 if restart {
                     // The assistant message pushed just above is the tail, and
                     // nothing between that push and here mutates `self.messages`
