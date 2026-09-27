@@ -3804,10 +3804,6 @@ impl AgentEngine {
         std::borrow::Cow::Owned(self.live_advertised_tools())
     }
 
-    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
-        self.advertised_tools_ref().into_owned()
-    }
-
     fn request_token_estimate(&self) -> u64 {
         estimate::estimate_tokens_from_request(
             &self.system_prompt,

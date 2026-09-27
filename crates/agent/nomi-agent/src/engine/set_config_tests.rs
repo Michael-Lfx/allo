@@ -1270,7 +1270,11 @@ fn advertised_tools_ref_borrows_the_frozen_table_instead_of_cloning_it() {
             panic!("a frozen tool table must be borrowed, not cloned")
         }
     }
-    assert_eq!(engine.advertised_tools().len(), frozen.len());
+    assert_eq!(
+        engine.advertised_tools_ref().into_owned().len(),
+        frozen.len(),
+        "the borrowed table must convert back to the same list"
+    );
 }
 
 #[test]
