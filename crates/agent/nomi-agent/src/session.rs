@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -127,18 +127,24 @@ impl SessionManager {
         Ok(session)
     }
 
-    /// Save current session state (called after each turn)
+    /// Save current session state (called after each turn).
+    ///
+    /// The body is written compact and atomically. It is machine-read only, so
+    /// pretty-printing it would add a full `O(transcript)` format pass to every
+    /// turn-end to produce whitespace no reader consumes. Durability lives in the
+    /// write-and-rename below plus the caller's index update, not in newlines.
     pub fn save(&self, session: &Session) -> anyhow::Result<()> {
-        self.write_session_file(session, true)
+        self.write_session_file(session)
     }
 
-    /// Compact JSON, used on intermediate tool rounds so checkpoint IO does not
-    /// sit on the next-turn TTFT path. Callers skip index updates.
+    /// Identical bytes to [`Self::save`], for intermediate tool rounds. The
+    /// difference is at the caller: this path deliberately skips the index
+    /// update so checkpoint IO does not sit on the next-turn TTFT path.
     pub fn save_coalesced(&self, session: &Session) -> anyhow::Result<()> {
-        self.write_session_file(session, false)
+        self.write_session_file(session)
     }
 
-    fn write_session_file(&self, session: &Session, pretty: bool) -> anyhow::Result<()> {
+    fn write_session_file(&self, session: &Session) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.directory)?;
         let filename = format!(
             "{}_{}.json",
@@ -146,12 +152,8 @@ impl SessionManager {
             session.id
         );
         let path = self.directory.join(&filename);
-        let json = if pretty {
-            serde_json::to_string_pretty(session)?
-        } else {
-            serde_json::to_string(session)?
-        };
-        std::fs::write(path, json)?;
+        let json = serde_json::to_string(session)?;
+        write_atomic(&path, json.as_bytes())?;
         Ok(())
     }
 
@@ -248,8 +250,8 @@ impl SessionManager {
         }
 
         let index_path = self.directory.join("index.json");
-        let json = serde_json::to_string_pretty(&index)?;
-        std::fs::write(index_path, json)?;
+        let json = serde_json::to_string(&index)?;
+        write_atomic(&index_path, json.as_bytes())?;
         Ok(())
     }
 
@@ -278,8 +280,8 @@ impl SessionManager {
 
         // Save updated index
         let index_path = self.directory.join("index.json");
-        let json = serde_json::to_string_pretty(&index)?;
-        std::fs::write(index_path, json)?;
+        let json = serde_json::to_string(&index)?;
+        write_atomic(&index_path, json.as_bytes())?;
         Ok(())
     }
 
@@ -300,12 +302,32 @@ impl SessionManager {
             let before = index.sessions.len();
             index.sessions.retain(|s| s.id != id);
             if index.sessions.len() != before {
-                let json = serde_json::to_string_pretty(&index)?;
-                std::fs::write(index_path, json)?;
+                let json = serde_json::to_string(&index)?;
+                write_atomic(&index_path, json.as_bytes())?;
             }
         }
         Ok(())
     }
+}
+
+/// Replace `path` with `bytes` atomically.
+///
+/// The bytes land in a sibling temp file in the **same directory** (so the rename
+/// is a same-filesystem, atomic operation) and are then renamed over the target.
+/// A reader therefore observes either the previous file or the complete new one —
+/// never a half-written session or index, which is what a direct
+/// `fs::write` over the target can leave behind after a crash or power loss.
+///
+/// The temp file is removed on a failed rename so a failure does not accumulate
+/// `*.tmp` debris next to real session files.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes)?;
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// Decide whether a loaded session may be resumed for the conversation instance
@@ -569,5 +591,126 @@ mod tests {
         let manager = SessionManager::new(dir.path().to_path_buf(), 10);
         // No sessions / no index yet — must not error.
         assert!(manager.delete_session("3").is_ok());
+    }
+
+    /// The session body is machine-read only; writing it pretty costs a full
+    /// `O(transcript)` format pass on every turn-end. Compact is the contract.
+    #[test]
+    fn session_file_is_written_compactly() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let mut session = manager
+            .create("openai", "gpt-4", "/tmp", Some("compact"))
+            .unwrap();
+        session.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+        ));
+        manager.save(&session).unwrap();
+
+        let path = dir.path().join(format!(
+            "{}_{}.json",
+            session.created_at.format("%Y-%m-%d"),
+            session.id
+        ));
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains('\n'),
+            "session body must be compact single-line JSON"
+        );
+        let parsed: Session = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.id, session.id);
+        assert_eq!(parsed.messages.len(), 1);
+    }
+
+    /// A crash must never expose a half-written file: content lands in a sibling
+    /// temp file first and is renamed over the target, so no temp file survives a
+    /// successful save and the newest body is the one that loads.
+    #[test]
+    fn save_leaves_no_temp_files_behind() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let mut session = manager
+            .create("openai", "gpt-4", "/tmp", Some("atomic"))
+            .unwrap();
+        manager.save(&session).unwrap();
+        session.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "second".into(),
+            }],
+        ));
+        manager.save(&session).unwrap();
+
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "atomic writes must not leave temp files: {leftovers:?}"
+        );
+        let loaded = manager.load("atomic").unwrap();
+        assert_eq!(loaded.messages.len(), 1);
+    }
+
+    #[test]
+    fn overwriting_a_session_replaces_its_file_in_place() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let mut session = manager
+            .create("openai", "gpt-4", "/tmp", Some("rewrite"))
+            .unwrap();
+        manager.save(&session).unwrap();
+        session.model = "gpt-4o".into();
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load("rewrite").unwrap();
+        assert_eq!(loaded.model, "gpt-4o");
+        let session_files: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with("_rewrite.json"))
+            .collect();
+        assert_eq!(session_files.len(), 1, "a rewrite must not fork the file");
+    }
+
+    #[test]
+    fn index_json_survives_an_atomic_rewrite() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let mut session = manager
+            .create("openai", "gpt-4", "/tmp", Some("idx"))
+            .unwrap();
+        session.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "summarize me".into(),
+            }],
+        ));
+        manager.update_index_for(&session).unwrap();
+
+        let raw = std::fs::read_to_string(dir.path().join("index.json")).unwrap();
+        let index: SessionIndex = serde_json::from_str(&raw).unwrap();
+        assert_eq!(index.sessions.len(), 1);
+        assert_eq!(index.sessions[0].summary, "summarize me");
+        assert!(!dir.path().join("index.json.tmp").exists());
+    }
+
+    #[test]
+    fn write_atomic_reports_errors_without_destroying_the_target() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("keep.json");
+        write_atomic(&target, b"first").unwrap();
+
+        // A missing parent directory is an error, not a partial write.
+        let missing = dir.path().join("nope").join("session.json");
+        assert!(write_atomic(&missing, b"second").is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
     }
 }
