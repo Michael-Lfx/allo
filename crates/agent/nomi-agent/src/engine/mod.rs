@@ -3780,7 +3780,13 @@ impl AgentEngine {
         authority
     }
 
-    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
+    /// The tool table as it will be sent, borrowed whenever no local adjustment
+    /// applies.
+    ///
+    /// The estimator needs only a slice, but the frozen-table path used to hand it
+    /// `frozen.clone()`: a full copy of every tool description and schema on every
+    /// `request_token_estimate` call, and a compaction path makes several.
+    fn advertised_tools_ref(&self) -> std::borrow::Cow<'_, [nomi_types::tool::ToolDef]> {
         if self
             .coding_harness
             .as_ref()
@@ -3790,18 +3796,22 @@ impl AgentEngine {
             if let Some(harness) = self.coding_harness.as_ref() {
                 apply_coding_finalize_tool_table(&mut tools, harness);
             }
-            return tools;
+            return std::borrow::Cow::Owned(tools);
         }
         if let Some(frozen) = &self.frozen_provider_tools {
-            return frozen.clone();
+            return std::borrow::Cow::Borrowed(frozen.as_slice());
         }
-        self.live_advertised_tools()
+        std::borrow::Cow::Owned(self.live_advertised_tools())
+    }
+
+    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
+        self.advertised_tools_ref().into_owned()
     }
 
     fn request_token_estimate(&self) -> u64 {
         estimate::estimate_tokens_from_request(
             &self.system_prompt,
-            &self.advertised_tools(),
+            &self.advertised_tools_ref(),
             &self.messages,
             None,
         )

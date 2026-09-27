@@ -1254,6 +1254,26 @@ async fn provider_error_preserves_completed_tool_pair_but_strips_its_image() {
 }
 
 #[test]
+fn advertised_tools_ref_borrows_the_frozen_table_instead_of_cloning_it() {
+    let mut engine = make_engine("tools-model");
+    let frozen = vec![nomi_types::tool::ToolDef {
+        name: "Read".into(),
+        description: "read a file".into(),
+        input_schema: serde_json::json!({"type": "object"}),
+        deferred: false,
+    }];
+    engine.frozen_provider_tools = Some(frozen.clone());
+
+    match engine.advertised_tools_ref() {
+        std::borrow::Cow::Borrowed(tools) => assert_eq!(tools.len(), frozen.len()),
+        std::borrow::Cow::Owned(_) => {
+            panic!("a frozen tool table must be borrowed, not cloned")
+        }
+    }
+    assert_eq!(engine.advertised_tools().len(), frozen.len());
+}
+
+#[test]
 fn rollback_transcript_truncates_only_the_appended_tail() {
     let mut engine = make_engine("rollback-model");
     engine.messages.push(nomi_types::message::Message::new(
