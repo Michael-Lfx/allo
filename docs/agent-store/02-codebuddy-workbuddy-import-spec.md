@@ -212,7 +212,9 @@ Members: software-product-manager, software-architect,
 | ② | `connectors/<id>/mcp.json` | **落点**：`url`、`headers` 或 `env` 里的 `${KEY}` 引用 | 值仍会存进凭据库，但请求里没有任何位置去解析它 → **"渲染但无效"**：用户填了、`missing` 空了、徽标「已配置」，而请求里什么也没有 |
 | ③ | `connectors/<id>/token-schema.json` | 字段声明 + 表单文案 | 没有表单：`fields` 为空、用户无从输入，`connector/credential/set` 会以 `declares no credential form to fill` 拒绝写入 |
 
-**完整最小例子**（2026-09-28 在真宿主上逐条跑通过的形态，取值照抄即可）：
+**完整最小例子**（2026-09-28 在真宿主上逐条跑通过的形态，取值照抄即可）。**可直接使用的实物**在
+`examples/github-token-demo/`——一个能当 `directory` 市场注册的最小市场（索引 + 条目三件套 + 附属技能 +
+使用说明），装出来的连接器就带这张表单：
 
 ```jsonc
 // ① .codebuddy-connector/connectors.json —— 该条目行

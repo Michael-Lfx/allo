@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "github-token-demo": {
+      "type": "streamableHttp",
+      "timeout": 600,
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${GITHUB_PAT}"
+      }
+    }
+  }
+}

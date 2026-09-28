@@ -1,0 +1,22 @@
+{
+  "title": "配置 GitHub 访问令牌",
+  "title_en": "Configure GitHub Access Token",
+  "description": "请到 GitHub 设置里创建一个 Personal Access Token（classic 或 fine-grained 均可）。凭证仅存储在本机，不会上传到云端。",
+  "description_en": "Create a Personal Access Token in your GitHub settings (classic or fine-grained). Credentials are stored locally only.",
+  "docLabel": "如何获取 Personal Access Token？",
+  "docLabel_en": "How to get a Personal Access Token?",
+  "docUrl": "https://github.com/settings/tokens",
+  "fields": [
+    {
+      "key": "GITHUB_PAT",
+      "label": "Personal Access Token",
+      "label_en": "Personal Access Token",
+      "type": "password",
+      "required": true,
+      "placeholder": "请输入您的 Personal Access Token（github_pat_ 或 ghp_ 开头）",
+      "placeholder_en": "Enter your Personal Access Token (starts with github_pat_ or ghp_)",
+      "description": "用于访问 GitHub 远端 MCP 服务；需要 repo 等工作区权限",
+      "description_en": "Used to reach the GitHub remote MCP server; needs repo and related scopes"
+    }
+  ]
+}
