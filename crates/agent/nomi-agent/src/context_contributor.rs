@@ -93,6 +93,22 @@ pub fn build_turn_tail_context(contributions: Vec<String>) -> Option<String> {
 /// controller metadata rather than user text.
 pub const TURN_TAIL_CONTEXT_PREFIX: &str = "[Context]\n";
 
+/// Marker opening the resumable-restart restatement that
+/// [`crate::round::RoundState::take_section`] renders into the turn tail.
+///
+/// The restatement is an *instruction about the attempt in flight*, not
+/// persisted `[Context]` metadata, even though it travels inside the same
+/// block. The truncation cleanup must therefore not mistake a block carrying it
+/// for pure context: dropping one silently deletes the account of what was cut
+/// off, and the hint itself promises the model that its draft was removed and
+/// the request restated. The classifier below looks for this marker
+/// explicitly, and `round.rs` renders the section from it so the two cannot
+/// drift.
+///
+/// Declared here, beside [`TURN_TAIL_CONTEXT_PREFIX`], because this module owns
+/// the turn-tail vocabulary.
+pub const RESUMABLE_SECTION_MARKER: &str = "[resumable round ";
+
 pub fn is_turn_tail_context_text(text: &str) -> bool {
     text.starts_with(TURN_TAIL_CONTEXT_PREFIX)
 }
@@ -116,13 +132,23 @@ pub fn without_leading_turn_tail(
 /// True when a user message exists only to carry persisted turn-tail extras.
 /// Truncation restarts drop these so a later `[Context]` append does not hide
 /// the original requirement and trigger a duplicate re-push.
+///
+/// A block that also carries a resumable restatement
+/// ([`RESUMABLE_SECTION_MARKER`]) is *not* pure context: it is an instruction
+/// the model is still bound by. Keeping it is what makes each restart append
+/// its own hint on top of the earlier ones — pass N carries the requirement,
+/// re-stated at the tail exactly as the hint promises, behind N restatements.
+///
+/// Reached from the engine's truncation cleanup, so a false positive here
+/// deletes conversation state; a false negative only costs a redundant
+/// `[Context]` block in the prefix.
 pub fn is_context_only_user_content(
     content: &[nomi_types::message::ContentBlock],
 ) -> bool {
     matches!(
         content.first(),
         Some(nomi_types::message::ContentBlock::Text { text })
-            if is_turn_tail_context_text(text)
+            if is_turn_tail_context_text(text) && !text.contains(RESUMABLE_SECTION_MARKER)
     ) && without_leading_turn_tail(content)
         .iter()
         .all(|block| match block {
@@ -517,7 +543,7 @@ mod tests {
     fn context_only_user_is_an_appended_turn_tail() {
         use nomi_types::message::ContentBlock;
         let extra = vec![ContentBlock::Text {
-            text: "[Context]\nCurrent date: 2025-01-01\n\n[resumable round 2/3]".into(),
+            text: "[Context]\nCurrent date: 2025-01-01".into(),
         }];
         assert!(is_context_only_user_content(&extra));
         let requirement = vec![
@@ -532,5 +558,51 @@ mod tests {
         assert!(!is_context_only_user_content(&[ContentBlock::Text {
             text: "write a.html".into(),
         }]));
+    }
+
+    /// The restatement a restart hands the model must survive the truncation
+    /// cleanup that runs after the *next* truncation. It rides the `[Context]`
+    /// prefix, so only the marker separates it from droppable metadata.
+    #[test]
+    fn a_resumable_restatement_is_never_pure_turn_tail_context() {
+        use nomi_types::message::ContentBlock;
+        let date = "Current date: 2025-01-01";
+
+        let hinted = vec![ContentBlock::Text {
+            text: format!("{TURN_TAIL_CONTEXT_PREFIX}{date}\n\n{RESUMABLE_SECTION_MARKER}2/3] ..."),
+        }];
+        assert!(
+            !is_context_only_user_content(&hinted),
+            "a hint-bearing [Context] block is an instruction, not metadata"
+        );
+
+        // The same block without the hint stays droppable, or a stale
+        // `[Context]` append would hide the requirement from a later restart.
+        let plain = vec![ContentBlock::Text {
+            text: format!("{TURN_TAIL_CONTEXT_PREFIX}{date}"),
+        }];
+        assert!(is_context_only_user_content(&plain));
+    }
+
+    /// The rendered section really is recognised by the classifier. This pins
+    /// the shared marker against a `round.rs` rewording, which would otherwise
+    /// silently restore the hint-eating bug.
+    #[test]
+    fn a_rendered_section_is_recognised_through_the_context_prefix() {
+        use nomi_types::message::ContentBlock;
+        let mut round = crate::round::RoundState::new(vec![ContentBlock::Text {
+            text: "write a.html".into(),
+        }]);
+        round.begin_attempt();
+        let section = round.take_section().expect("a restart renders a section");
+
+        let persisted = vec![ContentBlock::Text {
+            text: format!("{TURN_TAIL_CONTEXT_PREFIX}Current date: 2025-01-01\n\n{section}"),
+        }];
+        assert!(
+            !is_context_only_user_content(&persisted),
+            "the truncation cleanup must keep the restatement it just handed the model: \
+             {section}"
+        );
     }
 }
