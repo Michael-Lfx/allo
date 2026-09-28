@@ -49,6 +49,13 @@ describe('Markdown fenced CodeBlock Beautiful UI wrap', () => {
     expect(source.includes("fontWeight: 'bold'")).toBe(false);
   });
 
+  test('clips collapsed preview to three line rows, not body padding', () => {
+    expect(source.includes('const PREVIEW_LINES = 3')).toBe(true);
+    expect(source.includes('CODE_PADDING_VERTICAL')).toBe(false);
+    expect(source.includes('PREVIEW_LINES * CODE_LINE_HEIGHT')).toBe(true);
+    expect(source.includes('+ CODE_PADDING_VERTICAL')).toBe(false);
+  });
+
   test('uses Lucide chevrons for expand and collapse', () => {
     expect(source.includes("from 'lucide-react'")).toBe(true);
     expect(source.includes('ChevronDown')).toBe(true);
