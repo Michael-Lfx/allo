@@ -1,6 +1,6 @@
 {
   "modalTitle": "Software update",
-  "compactTitle": "Check for updates",
+  "compactTitle": "New version available",
   "compactProgressTitle": "Version update",
   "checking": "Checking for updates...",
   "checkFailed": "Failed to check for updates",
