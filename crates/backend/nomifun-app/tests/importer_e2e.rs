@@ -9,7 +9,6 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use common::{body_json, build_app, get_with_token, setup_and_login};
-
 const SOFTWARE_COMPANY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../nomifun-importer/tests/fixtures/software-company"
@@ -75,7 +74,11 @@ async fn app_server_handshake(
         ))
         .await
         .unwrap();
-    assert!(response.status().is_success(), "initialize must succeed");
+    assert!(
+        response.status().is_success(),
+        "initialize must succeed, got {}",
+        response.status()
+    );
     let connection_id = response
         .headers()
         .get("x-app-server-connection-id")
@@ -2527,4 +2530,992 @@ async fn importer_market_strict_entry_is_listed_but_refused() {
     let installed = body_json(install).await;
     assert_eq!(installed["installed_count"], 0, "{installed}");
     assert!(!installed["errors"].as_array().unwrap().is_empty(), "{installed}");
+}
+
+/// The credential face, end to end over the real HTTP surface (`34` §9 step 5).
+///
+/// Every other test of this feature stops at a boundary this one crosses:
+///
+/// - `nomifun-importer`'s tests stop at the stored components;
+/// - `app_server_credentials`'s unit tests hand-build the payloads, so they
+///   cannot see a wiring mistake *between* the two — which is exactly how the mode
+///   came to be read from a component that never carried it, leaving all 61
+///   `token` connectors with no form to render;
+/// - the WebUI's render tests are handed a `credential` block that a real host
+///   never produced.
+///
+/// So this drives a marketplace directory → install → `connectors` projection →
+/// `credential/get` → `set` → the file on disk → `clear`, and asserts on the wire
+/// shape the SPA actually consumes. The three entries cover the three modes the
+/// mode table has to tell apart (`34` §6.1): a `token` connector with a mixed
+/// form, a `server-side` one with no form at all, and a real `oauth` one.
+#[tokio::test]
+async fn importer_connector_credential_form_is_declared_installed_and_filled() {
+    const SECRET_DEFAULT: &str = "sk-live-must-never-be-persisted";
+    const FILLED_SECRET: &str = "supplied-by-the-user";
+
+    let (mut app, services, config_path) = common::build_app_with_agent_store_config().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let market_root = std::env::temp_dir().join(format!("as-cred-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(market_root.join(".codebuddy-connector")).unwrap();
+    std::fs::write(
+        market_root.join(".codebuddy-connector/connectors.json"),
+        r#"{
+            "name": "credential-demo",
+            "connectors": [
+                { "id": "demo-mixed", "name": "DemoMixed", "version": "1.0.0", "type": "mcp", "auth_mode": "token" },
+                { "id": "demo-none", "name": "DemoNone", "version": "1.0.0", "type": "mcp", "auth_mode": "server-side" },
+                { "id": "demo-oauth", "name": "DemoOauth", "version": "1.0.0", "type": "mcp", "auth_mode": "oauth" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    for entry in ["demo-mixed", "demo-none", "demo-oauth"] {
+        std::fs::create_dir_all(market_root.join(format!("connectors/{entry}/skills/demo"))).unwrap();
+    }
+    // `tdengine`'s shape: the url and the header are both templates over the same
+    // four fields, three of them plain settings with defaults.
+    std::fs::write(
+        market_root.join("connectors/demo-mixed/mcp.json"),
+        r#"{
+            "mcpServers": {
+                "demo-mixed": {
+                    "type": "streamableHttp",
+                    "url": "${DEMO_SCHEMA}://${DEMO_HOST}:${DEMO_PORT}/mcp",
+                    "headers": { "Authorization": "Bearer ${DEMO_API_KEY}" }
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("connectors/demo-mixed/token-schema.json"),
+        format!(
+            r#"{{
+                "title": "DemoMixed 配置",
+                "title_en": "DemoMixed configuration",
+                "description": "填入连接 DemoMixed 所需的参数。",
+                "docUrl": "https://docs.example.com/mixed",
+                "docLabel": "如何获取密钥？",
+                "fields": [
+                    {{ "key": "DEMO_SCHEMA", "type": "text", "label": "协议", "label_en": "Scheme", "defaultValue": "http" }},
+                    {{ "key": "DEMO_HOST", "type": "text", "label": "主机", "label_en": "Host", "defaultValue": "localhost" }},
+                    {{ "key": "DEMO_PORT", "type": "text", "label": "端口", "label_en": "Port", "defaultValue": "6042" }},
+                    {{ "key": "DEMO_API_KEY", "type": "password", "label": "密钥", "label_en": "Key", "required": true, "defaultValue": "{SECRET_DEFAULT}" }}
+                ]
+            }}"#
+        ),
+    )
+    .unwrap();
+    // The two connectors that need **no** form get a plain url; `demo-mixed`'s
+    // templated `mcp.json` is written *after* this loop, because this loop writes
+    // one for every entry and used to clobber it — which quietly turned the probe
+    // assertions below into assertions about a connector with no credential
+    // reference at all.
+    for (id, server) in [("demo-none", "demo-none"), ("demo-oauth", "demo-oauth")] {
+        std::fs::create_dir_all(market_root.join(format!("connectors/{id}/skills/demo"))).unwrap();
+        std::fs::write(
+            market_root.join(format!("connectors/{id}/skills/demo/SKILL.md")),
+            "---\nname: demo\n---\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            market_root.join(format!("connectors/{id}/mcp.json")),
+            format!(
+                r#"{{ "mcpServers": {{ "{server}": {{ "type": "streamableHttp", "url": "https://example.com/{server}/mcp" }} }} }}"#
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(market_root.join("connectors/demo-mixed/skills/demo")).unwrap();
+    std::fs::write(
+        market_root.join("connectors/demo-mixed/skills/demo/SKILL.md"),
+        "---\nname: demo\n---\n\nbody\n",
+    )
+    .unwrap();
+
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({ "source_kind": "directory", "source": market_root.to_string_lossy() }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "market add must succeed: {}", body_json(add).await);
+    let marketplace_id = body_json(add).await["marketplace_id"].as_str().unwrap().to_owned();
+
+    for entry in ["demo-mixed", "demo-none", "demo-oauth"] {
+        let install = app
+            .clone()
+            .oneshot(bearer_json(
+                "POST",
+                &format!("/api/app-server/store/{marketplace_id}/entries/{entry}/install"),
+                serde_json::json!({}),
+                &token,
+                &csrf,
+                Some(&connection_id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(install.status(), StatusCode::OK, "{entry} install must succeed");
+        let installed = body_json(install).await;
+        assert_eq!(installed["warnings"].as_array().map(Vec::len), Some(0), "{entry}: {installed}");
+        // The connector component is what this test then reads back, and the
+        // fixture also ships a skill — so the count alone would not prove it.
+        assert!(
+            installed["outcomes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|outcome| outcome["kind"] == "connector" && outcome["ok"] == true),
+            "{entry}: {installed}"
+        );
+    }
+
+    // ---- the form, as the SPA reads it -----------------------------------
+    let connectors = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/connectors", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(connectors.status(), StatusCode::OK);
+    let listed = body_json(connectors).await;
+    let by_name = |name: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|server| server["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is registered: {listed}"))
+            .clone()
+    };
+    for name in ["demo-mixed", "demo-none", "demo-oauth"] {
+        assert!(
+            !serde_json::to_string(&by_name(name)).unwrap().contains(SECRET_DEFAULT),
+            "{name}: a packaged secret default must not reach the projection"
+        );
+    }
+
+    let mixed = by_name("demo-mixed");
+    let credential = &mixed["credential"];
+    // The mode comes from the market index — not from the transport, which would
+    // answer `oauth` for every url-shaped connector.
+    assert_eq!(credential["mode"], "token", "{mixed}");
+    assert_eq!(credential["status"], "requires_input", "{mixed}");
+    assert_eq!(credential["missing"], serde_json::json!(["DEMO_API_KEY"]), "{mixed}");
+    // Connector-authored copy travels in both languages.
+    assert_eq!(credential["title"]["zh"], "DemoMixed 配置", "{mixed}");
+    assert_eq!(credential["title"]["en"], "DemoMixed configuration", "{mixed}");
+    assert_eq!(credential["description"]["zh"], "填入连接 DemoMixed 所需的参数。", "{mixed}");
+    assert_eq!(credential["fields"][3]["label"]["en"], "Key", "{mixed}");
+
+    let fields = credential["fields"].as_array().unwrap();
+    assert_eq!(fields.len(), 4, "{mixed}");
+    // `type: password` and the `_key` name both read as a secret; the three
+    // settings do not, even though one of them has `API` in it.
+    let kinds: Vec<&str> = fields.iter().map(|field| field["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["plain", "plain", "plain", "secret"], "{mixed}");
+    // Only a plain field carries a value — and it is the default the connector
+    // shipped, which is what prefills the form.
+    assert_eq!(fields[0]["value"], "http", "{mixed}");
+    assert_eq!(fields[1]["value"], "localhost", "{mixed}");
+    assert_eq!(fields[2]["value"], "6042", "{mixed}");
+    assert_eq!(fields[3]["value"], serde_json::Value::Null, "{mixed}");
+    assert_eq!(fields[3]["required"], true, "{mixed}");
+    // The "where do I get a key" link is the **form's**, declared once by the
+    // schema (`34` §5.2) — the market ships no per-field documentation, and
+    // copying this onto every row is how 「如何获取密钥？」 ended up under `PORT`.
+    assert_eq!(credential["doc_url"]["en"], "https://docs.example.com/mixed", "{mixed}");
+    assert_eq!(credential["doc_label"]["zh"], "如何获取密钥？", "{mixed}");
+    for field in fields {
+        assert!(field.get("doc_url").is_none(), "{field}");
+        assert!(field.get("doc_label").is_none(), "{field}");
+    }
+
+    // The 14 connectors whose market `auth_mode` is `server-side` / `mcp` /
+    // `oneid-token` ship no `token-schema.json`: they must report `none` rather
+    // than inherit an OAuth entry point from the transport.
+    let none = by_name("demo-none");
+    assert_eq!(none["credential"]["mode"], "none", "{none}");
+    assert_eq!(none["credential"]["status"], "not_required", "{none}");
+    assert_eq!(none["credential"]["fields"], serde_json::json!([]), "{none}");
+
+    let oauth = by_name("demo-oauth");
+    assert_eq!(oauth["credential"]["mode"], "oauth", "{oauth}");
+
+    // ---- read, fill, read back -------------------------------------------
+    let connector_id = mixed["id"].as_str().unwrap().to_owned();
+    let read = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/connectors/{connector_id}/credential"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK, "credential/get must succeed");
+    assert_eq!(body_json(read).await["missing"], serde_json::json!(["DEMO_API_KEY"]));
+
+    // A probe with the key missing refuses with a typed code — and **persists that
+    // verdict**, which is what makes the next assertion meaningful: filling the form
+    // in has to clear it (`34` §6.1), or the connector keeps reporting 「验证失败」
+    // about a value that is no longer in use. The demo-mixed URL points at a host
+    // that does not exist, so the probe can only fail before it is configured.
+    let probed = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/test"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(probed.status(), StatusCode::OK, "connector/test must report, not fail");
+    let probed = body_json(probed).await;
+    assert_eq!(probed["success"], false, "{probed}");
+    assert_eq!(probed["code"], "MCP_MISSING_CREDENTIAL", "{probed}");
+
+    let written = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/credential"),
+            // A key the form does not name must be refused, not stored.
+            serde_json::json!({ "values": { "DEMO_API_KEY": FILLED_SECRET, "DEMO_HOST": "db.internal" } }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(written.status(), StatusCode::OK, "credential/set must succeed");
+    let written = body_json(written).await;
+    // `configured`, and **not** `error`: the failed probe above persisted a verdict
+    // about the value that is now replaced, and a successful set clears it. Getting
+    // this wrong is invisible in the mutations and glaring in the UI — the drawer
+    // would say 「验证失败」 next to rows that all read 「已保存」.
+    assert_eq!(written["status"], "configured", "{written}");
+    assert_eq!(written["missing"], serde_json::json!([]), "{written}");
+    // The plain half went to the connector's own settings, so the form prefills
+    // the new value next time.
+    assert_eq!(written["fields"][1]["value"], "db.internal", "{written}");
+    // The secret half went to the credential store: it is never echoed back, not
+    // even by the call that wrote it.
+    assert!(
+        !serde_json::to_string(&written).unwrap().contains(FILLED_SECRET),
+        "credential/set must not echo the value it stored: {written}"
+    );
+
+    let stored = std::fs::read_to_string(&config_path).expect("the host config file");
+    assert!(stored.contains("[credentials]"), "{stored}");
+    assert!(stored.contains(FILLED_SECRET), "{stored}");
+    // D1: the key is namespaced by the calling principal, so two users of one
+    // shared host cannot resolve — or overwrite — each other's token.
+    assert!(
+        stored.contains(":DEMO_API_KEY"),
+        "the stored key must be scoped by principal: {stored}"
+    );
+    assert!(
+        !stored.contains("\nDEMO_API_KEY ="),
+        "a bare host-level key would be visible to every caller: {stored}"
+    );
+
+    let reread = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/connectors", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(reread).await.as_array().unwrap().iter()
+            .find(|server| server["name"] == "demo-mixed").unwrap()["credential"]["status"],
+        "configured",
+        "the list projection must agree with the write"
+    );
+
+    // A second principal cannot be exercised here: the whole `/api/app-server/*`
+    // surface is wrapped in `protect_instance_owner` (`router/routes.rs:1233`), so
+    // a non-owner gets `403` on `initialize` — it never reaches a connector row.
+    // Per-principal isolation is therefore pinned where it is reachable today: the
+    // resolution ladder (`secret_ref`'s tests) and the storage migration
+    // (`app_server_credentials`'s file-level test). Doc `34` §6.2/§10 record it.
+
+    // ---- clear ------------------------------------------------------------
+    let cleared = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/credential/clear"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(cleared.status(), StatusCode::OK, "credential/clear must succeed");
+    let cleared = body_json(cleared).await;
+    assert_eq!(cleared["status"], "requires_input", "{cleared}");
+    assert_eq!(cleared["missing"], serde_json::json!(["DEMO_API_KEY"]), "{cleared}");
+    // Clearing as the owner forgets the owner's value.
+    let stored = std::fs::read_to_string(&config_path).unwrap_or_default();
+    assert!(!stored.contains(FILLED_SECRET), "clear must forget the value: {stored}");
+
+    let _ = std::fs::remove_dir_all(&market_root);
+}
+
+/// A caller bringing its **own** MCP server, credential and all (`34` §6.5).
+///
+/// The external-developer case: no marketplace, no `token-schema.json`, nothing
+/// installed — the template handed to `connector/register` is the whole
+/// declaration, and the credential form has to appear from it. Before this, such a
+/// server was unreachable from a client: it projected as `oauth`, carried no
+/// fields, and `credential/set` refused it for having no form to fill.
+#[tokio::test]
+async fn importer_registering_a_hand_made_connector_declares_its_own_form() {
+    const OWN_KEY: &str = "the-developers-own-key";
+
+    let (mut app, services, config_path) = common::build_app_with_agent_store_config().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let register = |body: serde_json::Value| {
+        bearer_json(
+            "POST",
+            "/api/app-server/connectors",
+            body,
+            &token,
+            &csrf,
+            Some(&connection_id),
+        )
+    };
+
+    let created = app
+        .clone()
+        .oneshot(register(serde_json::json!({
+            "name": "hand-made-mcp",
+            "description": "The developer's own server",
+            "transport": {
+                "type": "http",
+                "url": "https://${SCHEME}://mcp.acme.example/mcp",
+                "headers": { "Authorization": "Bearer ${secret:ACME_KEY}" },
+                "values": { "SCHEME": "https" },
+            },
+        })))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK, "register must succeed");
+    let created = body_json(created).await;
+
+    // The template is the declaration: `mode: token` (not the transport-derived
+    // `oauth`), both references as fields — the URL's plain one already satisfied by
+    // `values`, the header's secret one still missing.
+    let credential = &created["credential"];
+    assert_eq!(credential["mode"], "token", "{created}");
+    assert_eq!(credential["status"], "requires_input", "{created}");
+    assert_eq!(credential["missing"], serde_json::json!(["ACME_KEY"]), "{created}");
+    let fields = credential["fields"].as_array().unwrap();
+    assert_eq!(fields.len(), 2, "{created}");
+    // URL first, then headers — the scan order, and the label falls back to the key
+    // because there is no author to name either one.
+    assert_eq!(fields[0]["key"], "SCHEME", "{created}");
+    assert_eq!(fields[0]["kind"], "plain", "{created}");
+    assert_eq!(fields[0]["required"], false, "`values` already answered it: {created}");
+    assert_eq!(fields[0]["value"], "https", "{created}");
+    assert_eq!(fields[1]["key"], "ACME_KEY", "{created}");
+    assert_eq!(fields[1]["kind"], "secret", "{created}");
+    assert_eq!(fields[1]["required"], true, "{created}");
+    assert_eq!(fields[1]["label"]["zh"], "ACME_KEY", "{created}");
+    assert_eq!(
+        fields[1]["value"], serde_json::Value::Null,
+        "a secret's value never crosses: {created}"
+    );
+    let connector_id = created["id"].as_str().unwrap().to_owned();
+
+    // It is a real catalog entry, so the whole read face works on it.
+    let listed = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/connectors", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    let listed = body_json(listed).await;
+    assert!(
+        listed.as_array().unwrap().iter().any(|server| server["name"] == "hand-made-mcp"),
+        "{listed}"
+    );
+
+    // Handing over the key is the same call as for a marketplace connector — one
+    // write surface, `<principal>:NAME` on disk, value never echoed back.
+    let configured = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/credential"),
+            serde_json::json!({ "values": { "ACME_KEY": OWN_KEY } }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(configured.status(), StatusCode::OK, "credential/set must accept it");
+    let configured = body_json(configured).await;
+    assert_eq!(configured["status"], "configured", "{configured}");
+    assert_eq!(configured["missing"], serde_json::json!([]), "{configured}");
+    assert!(
+        !serde_json::to_string(&configured).unwrap().contains(OWN_KEY),
+        "set never echoes the value: {configured}"
+    );
+    let stored = std::fs::read_to_string(&config_path).expect("the host config file");
+    assert!(stored.contains(OWN_KEY), "{stored}");
+    assert!(stored.contains(":ACME_KEY"), "{stored}");
+
+    // A key the template does not name is refused — registering a server does not
+    // turn the credential store into a free-form map.
+    let refused = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/connectors/{connector_id}/credential"),
+            serde_json::json!({ "values": { "SOMETHING_ELSE": "v" } }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a key the template never names must be refused"
+    );
+
+    // Re-registering the same name updates that connector rather than adding a
+    // second one (the MCP configuration upserts by name).
+    let re_registered = app
+        .clone()
+        .oneshot(register(serde_json::json!({
+            "name": "hand-made-mcp",
+            "transport": {
+                "type": "http",
+                "url": "https://mcp2.acme.example/mcp",
+                "headers": { "Authorization": "Bearer ${secret:ACME_KEY}" },
+            },
+        })))
+        .await
+        .unwrap();
+    assert_eq!(re_registered.status(), StatusCode::OK);
+    let re_registered = body_json(re_registered).await;
+    assert_eq!(re_registered["id"], connector_id, "same name, same row");
+    assert!(
+        re_registered["transport_summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("mcp2.acme.example")),
+        "{re_registered}"
+    );
+    // …and the credential the caller had already handed over survives the update.
+    assert_eq!(re_registered["credential"]["status"], "configured", "{re_registered}");
+
+    // A nameless connector is a request error, not a row with an empty name.
+    let nameless = app
+        .clone()
+        .oneshot(register(serde_json::json!({
+            "name": "   ",
+            "transport": { "type": "http", "url": "https://x.example/mcp" },
+        })))
+        .await
+        .unwrap();
+    assert_eq!(nameless.status(), StatusCode::BAD_REQUEST, "a blank name is refused");
+}
+
+/// `store/update-entry` end to end, across all three kinds (`36` §9).
+///
+/// The shape under test is the ordering: the new version is imported and
+/// installed **first**, and the previous one is released only when that
+/// succeeded. The three kinds differ in what "released" means — an expert keeps
+/// its Preset id, a skill gets a new directory under a new snapshot, a connector
+/// keeps its `mcp_servers` row — so all three are asserted, not just one.
+#[tokio::test]
+async fn importer_store_update_entry_upgrades_all_three_kinds() {
+    /// `(name, id, enabled)` of every Preset the installer created.
+    async fn preset_rows(app: axum::Router, token: &str) -> Vec<(String, String, bool)> {
+        let response = app.oneshot(get_with_token("/api/presets", token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|preset| {
+                preset["name"].as_str().is_some_and(|name| name.starts_with("agent-store: "))
+            })
+            .map(|preset| {
+                (
+                    preset["name"].as_str().unwrap_or_default().to_owned(),
+                    preset["preset_id"].as_str().unwrap_or_default().to_owned(),
+                    preset["enabled"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    }
+
+    /// `(name, id, enabled)` of every registered MCP server.
+    async fn mcp_rows(app: axum::Router, token: &str) -> Vec<(String, String, bool)> {
+        let response = app.oneshot(get_with_token("/api/mcp/servers", token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|server| {
+                (
+                    server["name"].as_str().unwrap_or_default().to_owned(),
+                    server["mcp_server_id"].as_str().unwrap_or_default().to_owned(),
+                    server["enabled"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    }
+
+    async fn store_item(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        entry: &str,
+    ) -> serde_json::Value {
+        let store = app
+            .oneshot(bearer_get("/api/app-server/store", token, csrf, connection_id))
+            .await
+            .unwrap();
+        assert_eq!(store.status(), StatusCode::OK);
+        let json = body_json(store).await;
+        json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["entry_name"] == entry)
+            .unwrap_or_else(|| panic!("entry {entry} missing from the store: {json}"))
+            .clone()
+    }
+
+    async fn store_action(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        marketplace_id: &str,
+        entry: &str,
+        verb: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(bearer_json(
+                "POST",
+                &format!("/api/app-server/store/{marketplace_id}/entries/{entry}/{verb}"),
+                serde_json::json!({}),
+                token,
+                csrf,
+                Some(connection_id),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, body_json(response).await)
+    }
+
+    /// The install state of one snapshot, as `(component_id, installed)` pairs.
+    async fn component_states(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        snapshot_id: &str,
+    ) -> Vec<(String, bool)> {
+        let response = app
+            .oneshot(bearer_get(
+                &format!("/api/app-server/installs/{snapshot_id}"),
+                token,
+                csrf,
+                connection_id,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        json["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|component| {
+                (
+                    component["id"].as_str().unwrap_or_default().to_owned(),
+                    component["state"].as_str() == Some("installed"),
+                )
+            })
+            .collect()
+    }
+
+    const ENTRIES: [&str; 3] = ["expert-demo", "skill-demo", "connector-demo"];
+
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Each kind lives in the market layout that actually produces it: a plugin
+    // market (plugin.json carries the version), a skill market and a connector
+    // market (both advertise the version in their own index — a `SKILL.md` /
+    // `mcp.json` entry has no version of its own, which is exactly `36` D2).
+    let staging = std::env::temp_dir().join(format!("as-update-{}", nomifun_common::generate_id()));
+    let expert_root = staging.join("experts");
+    let skill_root = staging.join("skills");
+    let connector_root = staging.join("connectors");
+    std::fs::create_dir_all(expert_root.join(".codebuddy-plugin")).unwrap();
+    std::fs::create_dir_all(expert_root.join("plugins/expert-demo/.codebuddy-plugin")).unwrap();
+    std::fs::create_dir_all(expert_root.join("plugins/expert-demo/agents")).unwrap();
+    std::fs::create_dir_all(skill_root.join(".codebuddy-skill")).unwrap();
+    std::fs::create_dir_all(skill_root.join("skills/skill-demo")).unwrap();
+    std::fs::create_dir_all(connector_root.join(".codebuddy-connector")).unwrap();
+    std::fs::create_dir_all(connector_root.join("connectors/connector-demo")).unwrap();
+
+    let write_expert_index = || {
+        std::fs::write(
+            expert_root.join(".codebuddy-plugin/marketplace.json"),
+            r#"{
+                "name": "update-experts",
+                "version": "0.1.0",
+                "plugins": [
+                    { "name": "expert-demo", "source": "./plugins/expert-demo" }
+                ]
+            }"#,
+        )
+        .unwrap()
+    };
+    let write_skill_index = |version: &str| {
+        std::fs::write(
+            skill_root.join(".codebuddy-skill/marketplace.json"),
+            format!(
+                r#"{{
+                    "name": "update-skills",
+                    "version": "0.1.0",
+                    "skills": [
+                        {{ "name": "skill-demo", "source": "skill-demo", "version": "{version}" }}
+                    ]
+                }}"#
+            ),
+        )
+        .unwrap()
+    };
+    let write_connector_index = |version: &str| {
+        std::fs::write(
+            connector_root.join(".codebuddy-connector/connectors.json"),
+            format!(
+                r#"{{
+                    "name": "update-connectors",
+                    "connectors": [
+                        {{ "id": "connector-demo", "name_zh": "演示连接器", "version": "{version}" }}
+                    ]
+                }}"#
+            ),
+        )
+        .unwrap()
+    };
+    let write_expert = |version: &str, body: &str| {
+        std::fs::write(
+            expert_root.join("plugins/expert-demo/.codebuddy-plugin/plugin.json"),
+            format!(
+                r#"{{ "name": "expert-demo", "version": "{version}", "agents": ["./agents"] }}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            expert_root.join("plugins/expert-demo/agents/lead.md"),
+            format!("---\nname: lead\ndescription: Lead\n---\n\n{body}\n"),
+        )
+        .unwrap();
+    };
+    let write_skill = |body: &str| {
+        std::fs::write(
+            skill_root.join("skills/skill-demo/SKILL.md"),
+            format!("---\nname: skill-demo\ndescription: Demo skill\n---\n{body}\n"),
+        )
+        .unwrap();
+    };
+    let write_connector = |url: &str| {
+        std::fs::write(
+            connector_root.join("connectors/connector-demo/mcp.json"),
+            format!(
+                r#"{{ "mcpServers": {{ "connector-demo": {{ "type": "http", "url": "{url}" }} }} }}"#
+            ),
+        )
+        .unwrap();
+    };
+
+    write_expert_index();
+    write_skill_index("1.0.0");
+    write_connector_index("1.0.0");
+    write_expert("1.0.0", "First body.");
+    write_skill("first body");
+    write_connector("https://first.example/mcp");
+
+    let mut market_of: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    for (entry, root, name) in [
+        ("expert-demo", &expert_root, "update-experts"),
+        ("skill-demo", &skill_root, "update-skills"),
+        ("connector-demo", &connector_root, "update-connectors"),
+    ] {
+        let add = app
+            .clone()
+            .oneshot(bearer_json(
+                "POST",
+                "/api/app-server/markets",
+                serde_json::json!({
+                    "source_kind": "directory",
+                    "source": root.to_string_lossy(),
+                    "name": name,
+                }),
+                &token,
+                &csrf,
+                Some(&connection_id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(add.status(), StatusCode::OK, "market add must succeed for {entry}");
+        market_of.insert(
+            entry,
+            body_json(add).await["marketplace_id"].as_str().unwrap().to_owned(),
+        );
+    }
+
+    // Update is not a second way to install: an entry nobody installed is refused
+    // before anything is imported.
+    let (status, body) = store_action(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &market_of["expert-demo"],
+        "expert-demo",
+        "update",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "not-installed update must be refused: {body}");
+
+    // Install all three at 1.0.0.
+    for entry in ENTRIES {
+        let (status, body) = store_action(
+            app.clone(),
+            &token,
+            &csrf,
+            &connection_id,
+            &market_of[entry],
+            entry,
+            "install",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "install {entry}: {body}");
+        assert_eq!(body["version"], "1.0.0", "install {entry}: {body}");
+        assert!(body["errors"].as_array().unwrap().is_empty(), "install {entry}: {body}");
+    }
+
+    let presets_before = preset_rows(app.clone(), &token).await;
+    assert_eq!(presets_before.len(), 1, "one expert ⇒ one preset: {presets_before:?}");
+    let expert_preset_id = presets_before[0].1.clone();
+    let connectors_before = mcp_rows(app.clone(), &token).await;
+    let connector_row = connectors_before
+        .iter()
+        .find(|(name, _, _)| name == "connector-demo")
+        .unwrap_or_else(|| panic!("connector row missing: {connectors_before:?}"))
+        .clone();
+
+    let mut old_snapshots: Vec<(String, String)> = Vec::new();
+    for entry in ENTRIES {
+        let item = store_item(app.clone(), &token, &csrf, &connection_id, entry).await;
+        old_snapshots.push((entry.to_owned(), item["snapshot_id"].as_str().unwrap().to_owned()));
+    }
+
+    // The market publishes 1.0.1 with different content in every entry.
+    write_skill_index("1.0.1");
+    write_connector_index("1.0.1");
+    write_expert("1.0.1", "Second body.");
+    write_skill("second body");
+    write_connector("https://second.example/mcp");
+
+    for entry in ENTRIES {
+        let item = store_item(app.clone(), &token, &csrf, &connection_id, entry).await;
+        assert_eq!(item["version"], "1.0.1", "{entry} must advertise the new version: {item}");
+        assert_eq!(item["installed_version"], "1.0.0", "{entry}: {item}");
+        assert_eq!(
+            item["update_available"], true,
+            "{entry} must advertise the pending update: {item}"
+        );
+    }
+
+    // Upgrade. A connector row is left disabled by the upsert (the configuration
+    // changed), which is asserted rather than assumed.
+    for entry in ENTRIES {
+        let (status, body) = store_action(
+            app.clone(),
+            &token,
+            &csrf,
+            &connection_id,
+            &market_of[entry],
+            entry,
+            "update",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "update {entry}: {body}");
+        assert_eq!(body["version"], "1.0.1", "update {entry}: {body}");
+        assert_eq!(body["previous_version"], "1.0.0", "update {entry}: {body}");
+        assert_eq!(body["reused"], false, "update {entry}: {body}");
+        assert!(body["errors"].as_array().unwrap().is_empty(), "update {entry}: {body}");
+        assert_eq!(
+            body["released_count"], 1,
+            "the replaced snapshot's component must be released: {body}"
+        );
+        assert!(
+            body["outcomes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|outcome| outcome["ok"] == true),
+            "update {entry}: {body}"
+        );
+    }
+
+    // Expert: same Preset row, still enabled, still exactly one.
+    let presets_after = preset_rows(app.clone(), &token).await;
+    assert_eq!(
+        presets_after.len(),
+        1,
+        "an upgrade must not mint a second preset: {presets_after:?}"
+    );
+    assert_eq!(
+        presets_after[0].1, expert_preset_id,
+        "the upgrade must keep the preset id: {presets_after:?}"
+    );
+    assert!(presets_after[0].2, "the preset keeps its enable state: {presets_after:?}");
+
+    // Connector: the same `mcp_servers` row, upserted in place — and reported as
+    // disabled because the transport changed (`36` D7).
+    let connectors_after = mcp_rows(app.clone(), &token).await;
+    let connector_after = connectors_after
+        .iter()
+        .find(|(name, _, _)| name == "connector-demo")
+        .unwrap_or_else(|| panic!("connector row missing: {connectors_after:?}"));
+    assert_eq!(
+        connector_after.1, connector_row.1,
+        "an upgrade must reuse the mcp_servers row, not create a second one: {connectors_after:?}"
+    );
+    assert_eq!(connectors_after.len(), connectors_before.len(), "{connectors_after:?}");
+    assert!(
+        !connector_after.2,
+        "a changed transport is left disabled until it is re-probed: {connectors_after:?}"
+    );
+
+    // The replaced snapshots keep their history but no longer claim to be
+    // installed — and the new ones do (`36` D5/D8).
+    for (entry, old_snapshot) in &old_snapshots {
+        let old_states =
+            component_states(app.clone(), &token, &csrf, &connection_id, old_snapshot).await;
+        assert!(
+            old_states.iter().all(|(_, installed)| !installed),
+            "the replaced {entry} snapshot must be released: {old_states:?}"
+        );
+        let item = store_item(app.clone(), &token, &csrf, &connection_id, entry).await;
+        let new_snapshot = item["snapshot_id"].as_str().unwrap().to_owned();
+        assert_ne!(&new_snapshot, old_snapshot, "an upgrade lands on a new snapshot");
+        let new_states =
+            component_states(app.clone(), &token, &csrf, &connection_id, &new_snapshot).await;
+        assert!(
+            new_states.iter().all(|(_, installed)| *installed),
+            "the new {entry} snapshot must be installed: {new_states:?}"
+        );
+    }
+    for entry in ENTRIES {
+        let item = store_item(app.clone(), &token, &csrf, &connection_id, entry).await;
+        assert_eq!(item["update_available"], false, "{entry}: {item}");
+        assert_eq!(item["installed_version"], "1.0.1", "{entry}: {item}");
+    }
+
+    // Idempotent: a second call has nothing to do and says so.
+    let (status, body) = store_action(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &market_of["expert-demo"],
+        "expert-demo",
+        "update",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["reused"], true, "{body}");
+    assert_eq!(body["installed_count"], 0, "{body}");
+
+    // `36` D6: content changed, version left alone. As far as the protocol is
+    // concerned there is no new version to install, so the update is a no-op —
+    // and the installed version stays exactly where it was.
+    write_skill("third body without a version bump");
+    let (status, body) = store_action(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &market_of["skill-demo"],
+        "skill-demo",
+        "update",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["reused"], true, "an unchanged version is nothing to update: {body}");
+    assert!(body["errors"].as_array().unwrap().is_empty(), "{body}");
+    assert_eq!(body["version"], "1.0.1", "nothing may move: {body}");
+    let item = store_item(app.clone(), &token, &csrf, &connection_id, "skill-demo").await;
+    assert_eq!(item["installed_version"], "1.0.1", "{item}");
+    assert_eq!(item["update_available"], false, "{item}");
+
+    // The refusal itself still stands where it belongs — a direct import of the
+    // same content under the same identity — so raising the version for the
+    // snapshot did not weaken immutability.
+    let import = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!(
+                "/api/app-server/markets/{}/entries/skill-demo/import",
+                market_of["skill-demo"]
+            ),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(import.status(), StatusCode::OK);
+    let import = body_json(import).await;
+    assert_eq!(
+        import["status"], "blocked",
+        "same identity + different digest must still be refused: {import}"
+    );
+    assert!(
+        import["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().is_some_and(|text| text.contains("digest"))),
+        "{import}"
+    );
 }

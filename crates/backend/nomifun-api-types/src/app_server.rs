@@ -17,6 +17,8 @@ use nomifun_common::LocalizedVariant;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use crate::McpTransport;
+
 /// Agent Store compatibility status (`10-public-contracts.md` §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -185,6 +187,117 @@ pub struct AppServerConnectorTool {
     pub input_schema: Option<serde_json::Value>,
 }
 
+/// One localized string, both languages already resolved by the host.
+///
+/// The marketplace ships `title` / `title_en` (and friends) with holes in every
+/// combination; the host applies the fallback once (`zh → en → key`,
+/// `en → zh → key`) so the WebUI and the SDK cannot disagree about it (34 §5.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerLocalizedString {
+    pub zh: String,
+    pub en: String,
+}
+
+/// A connector's request to have the user fill something in (`34` §6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppServerCredentialMode {
+    /// Nothing to fill.
+    None,
+    /// The OAuth flow (`connector/auth/*`).
+    Oauth,
+    /// A key / token the user supplies.
+    Token,
+}
+
+/// What the caller has to do about a connector's credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppServerCredentialStatus {
+    NotRequired,
+    /// At least one required field has no value.
+    RequiresInput,
+    Configured,
+    /// Configured, and the server rejected it (401/403 on the last probe).
+    Error,
+}
+
+/// One field of a connector's credential form.
+///
+/// **Never carries a secret**: `value` is present only for a `plain` field, whose
+/// value belongs to the connector (a `HOST`, a `PORT`) rather than to the vault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerCredentialField {
+    pub key: String,
+    /// `secret` (the credential store) or `plain` (the connector's own values).
+    pub kind: String,
+    pub required: bool,
+    pub label: AppServerLocalizedString,
+    pub placeholder: AppServerLocalizedString,
+    pub description: AppServerLocalizedString,
+    /// Only for `plain`: the value in effect (declared default, or what the user
+    /// set). Never a secret's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// Everything a client needs to render one connector's credential form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerConnectorCredential {
+    pub connector_id: String,
+    pub mode: AppServerCredentialMode,
+    pub status: AppServerCredentialStatus,
+    /// **Key names only** — what is still missing, never a value.
+    #[serde(default)]
+    pub missing: Vec<String>,
+    #[serde(default)]
+    pub fields: Vec<AppServerCredentialField>,
+    /// Form-level text from the marketplace declaration (`34` §5.2): a
+    /// `token-schema.json` declares its title, its description and its "where do
+    /// I get a key" link **once, for the form** — the market declares no
+    /// per-field links, and copying the form's onto every field would put "how to
+    /// get a key" under `PORT`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<AppServerLocalizedString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<AppServerLocalizedString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_url: Option<AppServerLocalizedString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_label: Option<AppServerLocalizedString>,
+}
+
+/// Register a connector on this host (`connector/register`, doc `34` §6.5).
+///
+/// For a server the host never imported from a marketplace — an external
+/// developer's own MCP server, or one added by hand. The **template is the whole
+/// declaration**: whatever `${secret:NAME}` the URL, headers or env name becomes
+/// that connector's credential form, and `values` carries its own non-secret
+/// settings.
+///
+/// Values do **not** travel here. A secret arrives through
+/// `connector/credential/set`, so there is exactly one write surface for them and
+/// the registration call itself carries nothing worth redacting.
+///
+/// Registration grants no connection: the row is created disabled, and enabling it
+/// still requires a probe that passes. It does let the caller choose where the host
+/// will reach, which is why this method lives on the installation-owner-only
+/// surface (`protect_instance_owner`) — the same authority the host's own MCP
+/// manager already gives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppServerConnectorRegistration {
+    /// The connector's name on this host. Re-registering the same name updates it
+    /// (the MCP configuration upserts by name); a builtin server's name is refused.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `{"type":"http"|"sse","url":…,"headers":…,"values":…}` or
+    /// `{"type":"stdio","command":…,"args":…,"env":…}` — the same shape the host
+    /// stores, so what the caller sends is what the resolver later reads.
+    pub transport: McpTransport,
+}
+
 /// Public Connector summary (`01-domain-model.md` §7).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerConnectorSummary {
@@ -205,6 +318,12 @@ pub struct AppServerConnectorSummary {
     /// `None` for builtin hosts or markets that ship no icon for this entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    /// The credential state, when the host can describe one (`34` §6.1).
+    ///
+    /// Optional so an older provider — and every projection that has no
+    /// declaration to read — stays valid on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<AppServerConnectorCredential>,
 }
 
 /// Public Connector detail: summary fields plus tools and auth state.
@@ -856,6 +975,27 @@ pub struct AppServerInstallResult {
     pub outcomes: Vec<AppServerInstallOutcome>,
 }
 
+/// Result of replacing one installed snapshot with another (`36` D5).
+///
+/// **Host-internal**: there is no `install/replace` wire verb — the only caller
+/// is `store/update-entry`, which folds this into its own result. Keeping it out
+/// of the protocol is deliberate: "replace" is meaningless to a caller that does
+/// not already own both snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerInstallReplaceResult {
+    /// The new snapshot's install report.
+    pub install: AppServerInstallResult,
+    /// Components of the **old** snapshot that were actually released. Zero
+    /// means the previous installation was not touched — a fact a caller can
+    /// assert on rather than infer (`36` §8).
+    pub released_count: usize,
+    /// Old-snapshot components that could not be released. Their install record
+    /// is kept, exactly as `install/uninstall` does, so a retry still has the
+    /// pointer to the artifact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release_errors: Vec<String>,
+}
+
 /// Install state projection for one snapshot (or empty when not installed).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerInstallStatus {
@@ -1159,15 +1299,20 @@ pub struct AppServerStoreList {
     pub markets_pending: bool,
 }
 
-/// `market install-entry` result: import (when missing) + runtime
-/// registration in one idempotent call.
+/// `market install-entry` / `store/update-entry` result: import (when missing) +
+/// runtime registration in one idempotent call.
+///
+/// The two verbs return the same shape (`36` D4) because nine of their fields
+/// mean exactly the same thing; the three below are the update-only half, and
+/// absence is the honest answer for an install.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerStoreInstallResult {
     pub marketplace_id: String,
     pub entry_name: String,
     pub snapshot_id: String,
     pub version: String,
-    /// `true` when the components were already registered (no-op install).
+    /// `true` when the components were already registered (no-op install), or —
+    /// for an update — when the entry was already at the advertised version.
     pub reused: bool,
     pub installed_count: usize,
     pub warnings: Vec<String>,
@@ -1177,6 +1322,26 @@ pub struct AppServerStoreInstallResult {
     /// host that predates the field — read it as "no detail available".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outcomes: Vec<AppServerInstallOutcome>,
+    /// Version the entry was installed at **before** this call. Only
+    /// `store/update-entry` sets it; absence means "this was an install, there
+    /// was nothing before it".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
+    /// The snapshot that was replaced. Same rule as `previous_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_snapshot_id: Option<String>,
+    /// Components of the replaced snapshot whose runtime artifacts were actually
+    /// released. `0` on an install, on an update that was a no-op, and on an
+    /// update that failed and left the previous installation in place — three
+    /// different reasons for the same honest number.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub released_count: usize,
+}
+
+/// `skip_serializing_if` for the counters above: absent when zero, so an
+/// install's byte shape is unchanged by the update-only fields.
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// One model in the public catalog (`models/list`). The projection carries

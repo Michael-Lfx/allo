@@ -72,6 +72,7 @@ function status(components: InstallStatus["components"], extra: Partial<InstallS
 interface FakeOptions {
   store?: StoreItem[];
   install?: StoreInstallResult;
+  update?: StoreInstallResult;
   /** Successive `install/status` answers; the last one repeats. */
   statuses?: InstallStatus[];
   skills?: SkillSummary[];
@@ -99,6 +100,19 @@ function fakeHost(options: FakeOptions = {}) {
     async installStoreEntry(marketplaceId: string, entryName: string) {
       calls.push(`installStoreEntry:${marketplaceId}/${entryName}`);
       return options.install ?? installResult();
+    },
+    async updateStoreEntry(marketplaceId: string, entryName: string) {
+      calls.push(`updateStoreEntry:${marketplaceId}/${entryName}`);
+      return (
+        options.update ??
+        installResult({
+          version: "2.0.0",
+          previous_version: "1.0.0",
+          previous_snapshot_id: "snap-1",
+          released_count: 1,
+          outcomes: [outcome({ action: "reused" })],
+        })
+      );
     },
     async getInstallStatus(snapshotId: string) {
       calls.push(`getInstallStatus:${snapshotId}`);
@@ -222,7 +236,7 @@ describe("StoreClient · catalog reads", () => {
     expect(client.updateHint(item({ installed: true }))).toBe("none");
     expect(
       client.updateHint(item({ installed: true, update_available: true, snapshot_id: "snap-1" })),
-    ).toBe("uninstall_reinstall");
+    ).toBe("update");
     expect(client.updateHint(item({ installed: true, update_available: true, snapshot_id: null }))).toBe(
       "unknown",
     );
@@ -278,6 +292,79 @@ describe("StoreClient · install", () => {
     // install happened.
     expect(result.ok).toBe(true);
     expect(result.components).toEqual([]);
+  });
+});
+
+describe("StoreClient · update", () => {
+  const upgradable = item({
+    installed: true,
+    snapshot_id: "snap-1",
+    installed_version: "1.0.0",
+    update_available: true,
+  });
+
+  it("upgrades through the dedicated verb and reports the version pair", async () => {
+    const { host, calls } = fakeHost();
+    const client = new StoreClient(host);
+
+    const result = await client.update(upgradable, { waitForReady: false });
+
+    expect(calls).toContain("updateStoreEntry:market-1/team-tools");
+    expect(calls).not.toContain("installStoreEntry:market-1/team-tools");
+    expect(result).toMatchObject({
+      snapshotId: "snap-1",
+      ok: true,
+      fromVersion: "1.0.0",
+      toVersion: "2.0.0",
+      releasedCount: 1,
+    });
+  });
+
+  it("carries the host's `released_count: 0` through as 'nothing was released'", async () => {
+    // The failure case the whole ordering exists for: the new version did not
+    // land, so the previous installation was left alone.
+    const { host } = fakeHost({
+      update: installResult({
+        version: "1.0.0",
+        previous_version: "1.0.0",
+        previous_snapshot_id: "snap-1",
+        released_count: 0,
+        errors: ["comp-1: preset_update_failed"],
+        outcomes: [outcome({ action: "failed", ok: false, code: "preset_update_failed" })],
+      }),
+    });
+    const client = new StoreClient(host);
+
+    const result = await client.update(upgradable, { waitForReady: false });
+
+    expect(result.ok).toBe(false);
+    expect(result.releasedCount).toBe(0);
+    // The reason has to survive to the caller: `ok: false` with nothing to show
+    // is exactly the un-explainable failure (`18` §11 D10).
+    expect(result.errors).toEqual(["comp-1: preset_update_failed"]);
+  });
+
+  it("treats a no-op update as ok, not as a failure", async () => {
+    const { host } = fakeHost({
+      update: installResult({ reused: true, installed_count: 0, outcomes: [] }),
+    });
+    const client = new StoreClient(host);
+
+    const result = await client.update(upgradable, { waitForReady: false });
+
+    expect(result.ok).toBe(true);
+    expect(result.reused).toBe(true);
+    expect(result.components).toEqual([]);
+  });
+
+  it("refuses an item with no snapshot instead of guessing", async () => {
+    const { host, calls } = fakeHost();
+    const client = new StoreClient(host);
+
+    await expect(
+      client.update(item({ installed: true, update_available: true, snapshot_id: null })),
+    ).rejects.toThrow(StoreError);
+    expect(calls).toEqual([]);
   });
 });
 

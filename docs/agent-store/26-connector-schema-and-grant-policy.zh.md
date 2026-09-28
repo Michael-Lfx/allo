@@ -248,6 +248,7 @@ ConnectorTool {
 | 旧 allowlist 条目在新词汇下失配 → 集成开始收 `policy_denied` | **有意的 fail-closed 收窄**，在 `05`/changelog/本文 §4.4 点名；恢复只需改写条目 |
 | `enabled = true` + 无 `allow` 的旧配置从「全关」变「全放」 | 这是本方案的目标语义；构造策略时打 `tracing::info!` 说明当前是「无 allow/deny，全部可调」 |
 | 连接器升级后新增危险工具自动可调 | 登记为已知代价（§4.5 第 1 条）；`deny` 是提前钉住的抓手；`connector/list` 的 `enabled` 是可审计面 |
+| 升级连接器后**静默**换了 endpoint / 凭据引用来源 | `36` D7：升级 = 一次配置变更，服务端沿用既有保护——`McpConfigService::upsert_server` 在 transport 变化时把该行置为 `enabled = false`、`last_test_status = "disconnected"`、清空已探测工具，必须重新探测才恢复；客户端在升级成功的提示里如实说明。**刻意不**在升级后自动重新启用：升级恰恰最可能换 endpoint |
 | 超大 schema 把 `connector/get` 撑爆 | `MAX_CONNECTOR_TOOLS_BYTES` + `tools_truncated` 自曝（§5.2） |
 | 后端复制引擎的匹配规则后漂移 | 用同一个 `glob` crate + 照抄引擎用例表（§4.3） |
 | 给读面顺手加代理门，弄坏既有 catalog UI | 明写「读面不加门」及其两条理由（§5.3） |

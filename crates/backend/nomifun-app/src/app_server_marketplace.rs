@@ -1100,13 +1100,17 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
 
         // Resolve the entry source: directory sources read the source dir
         // directly; remote sources read inside the promoted live root.
-        let source = crate::market_fetch::entry_source_path(
-            &row.source_kind,
-            &row.source_uri,
-            &self.market_root,
-            marketplace_id,
-            &entry.source_uri,
-        );
+        //
+        // The same resolution is what `store/list` shows, so it goes through the
+        // one derivation (`36` D2) and the version it yields is the version this
+        // import is stored under — a bare `SKILL.md` / `mcp.json` entry parses to
+        // `1.0.0`, which would otherwise pin every skill and connector to one
+        // identity and turn any content change into a digest conflict.
+        let index = crate::app_server_store::market_root_dir(&row, &self.market_root)
+            .map(|root| crate::app_server_store::MarketIndex::read(&root))
+            .unwrap_or_default();
+        let facts = crate::app_server_store::entry_facts(&row, &entry, &self.market_root, &index);
+        let source = facts.source.clone();
 
         // `strict=true` refuses an entry whose source carries no plugin.json of
         // its own (`02` §8 / §11.1). Re-evaluated against the real tree instead
@@ -1146,7 +1150,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
             // them as CodeBuddy plugins would scan empty `agents`/`skills`
             // roots and yield zero components. Treat those as single-skill
             // directories instead.
-            let manifest = nomifun_importer::read_plugin_display(&source);
+            let manifest = &facts.manifest;
             let has_agents = manifest
                 .as_ref()
                 .is_some_and(|m| !m.agents.is_empty() || m.team_info.is_some());
@@ -1183,7 +1187,13 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 entry_name.to_owned(),
                 revision,
             )
-        };
+        }
+        // The version the market advertises (`36` D2). Without it, skills and
+        // connectors would be stored at the `1.0.0` placeholder while
+        // `store/list` shows the index version — an update that can never be
+        // delivered, and a content change that collides with the snapshot
+        // already stored under `1.0.0`.
+        .with_declared_version(Some(facts.version.clone()));
         self.importer
             .run_import(&request)
             .await

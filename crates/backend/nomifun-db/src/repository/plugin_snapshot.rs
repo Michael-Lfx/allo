@@ -38,6 +38,10 @@ pub struct NewPluginSnapshot<'a> {
 /// on-disk path (skills) / connector name (mcp_servers) / preset id.
 #[derive(Debug, Clone)]
 pub struct ComponentRuntimeRef<'a> {
+    /// The snapshot this registration belongs to. Required, not decorative: a
+    /// component id is shared by every version of an entry (`36` D8), so a
+    /// write keyed on the id alone would also mark the other versions' rows.
+    pub snapshot_id: &'a str,
     pub component_id: &'a str,
     /// `skill` | `connector` | `preset`.
     pub runtime_type: &'a str,
@@ -121,19 +125,30 @@ pub trait IPluginSnapshotRepository: Send + Sync {
         refs: &[ComponentRuntimeRef<'_>],
         installed_at: i64,
     ) -> Result<(), DbError>;
-
-    /// Sets `disabled` for the given components. Idempotent.
+    /// Sets `disabled` for the given components of **one snapshot**. Idempotent.
+    ///
+    /// `snapshot_id` is load-bearing, not decoration: a component's id is
+    /// `wb-<plugin>-<slug>` and therefore identical across every version of the
+    /// same entry, while `plugin_snapshot_components` is unique on
+    /// `(snapshot_id, component_id)`. Matching on the id alone reaches the rows
+    /// of *other* versions too — see `36` D8.
     async fn set_components_disabled(
         &self,
+        snapshot_id: &str,
         component_ids: &[&str],
         disabled: bool,
     ) -> Result<(), DbError>;
 
-    /// Clears the installation state for the given components (uninstall):
-    /// `installed=0`, `disabled=0`, staggered refs nulled. The snapshot rows
-    /// themselves are kept.
+    /// Clears the installation state for the given components of **one
+    /// snapshot** (uninstall): `installed=0`, `disabled=0`, staggered refs
+    /// nulled. The snapshot rows themselves are kept.
+    ///
+    /// Snapshot-scoped for the same reason as [`Self::set_components_disabled`]:
+    /// clearing by component id alone would wipe the install record of a
+    /// *newer* snapshot that just took the same component over (`36` D5/D8).
     async fn clear_components_installed(
         &self,
+        snapshot_id: &str,
         component_ids: &[&str],
     ) -> Result<(), DbError>;
 

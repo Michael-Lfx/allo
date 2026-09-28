@@ -124,8 +124,8 @@ fn parse_codebuddy_entry(entry: &serde_json::Value) -> Option<McpServerTransport
 
         // Normalize transport type
         match transport_type {
-            "sse" => Some(McpServerTransport::Sse { url, headers }),
-            _ => Some(McpServerTransport::Http { url, headers }),
+            "sse" => Some(McpServerTransport::Sse { url, headers, values: HashMap::new() }),
+            _ => Some(McpServerTransport::Http { url, headers, values: HashMap::new() }),
         }
     } else {
         None
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "remote");
         match &servers[0].transport {
-            McpServerTransport::Http { url, headers } => {
+            McpServerTransport::Http { url, headers, .. } => {
                 assert_eq!(url, "https://example.com/mcp");
                 assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
             }

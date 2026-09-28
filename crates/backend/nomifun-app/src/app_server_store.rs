@@ -71,41 +71,76 @@ fn desc_from_display(display: &PluginManifest) -> Option<String> {
         .or_else(|| display.description.clone())
 }
 
-/// Display metadata for one connector-market entry (from the market's
-/// `.codebuddy-connector/connectors.json` index). Used when the entry
-/// directory ships no plugin.json display block.
+/// Display metadata for one market index row (`.codebuddy-connector/connectors.json`
+/// or `.codebuddy-skill/marketplace.json`). Used when the entry directory ships
+/// no plugin.json display block — which is the norm for connectors and skills.
 #[derive(Debug, Clone, Default)]
-struct ConnectorIndexInfo {
+pub(crate) struct MarketIndexInfo {
     name_zh: Option<String>,
     name_en: Option<String>,
+    /// The version the market advertises for this entry. This is the only
+    /// version a connector or skill entry has: neither carries a manifest of its
+    /// own, so without it the entry is pinned at the `1.0.0` placeholder and can
+    /// never be seen to change (`36` D2 / `18` §11 D9).
     version: Option<String>,
     #[allow(dead_code)]
     description: Option<String>,
 }
 
-/// Load the connector-market index (`id` → display info) from the market
-/// root's `.codebuddy-connector/connectors.json` (best-effort; a missing or
-/// malformed index yields an empty map).
-fn read_connector_index(root: &Path) -> HashMap<String, ConnectorIndexInfo> {
-    let text = match std::fs::read_to_string(root.join(".codebuddy-connector/connectors.json")) {
-        Ok(text) => text,
-        Err(_) => return HashMap::new(),
+/// One market's own entry indexes, read once per market.
+///
+/// Both maps are keyed by the **entry name the prober carries**, which is the id
+/// for connectors and the row's `name` for skills — the same string
+/// [`entry_facts`] looks up.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MarketIndex {
+    connectors: HashMap<String, MarketIndexInfo>,
+    skills: HashMap<String, MarketIndexInfo>,
+}
+
+impl MarketIndex {
+    /// Read the indexes a market root may carry (best-effort: a missing or
+    /// malformed index yields an empty map rather than failing the catalog).
+    pub(crate) fn read(root: &Path) -> Self {
+        Self {
+            connectors: read_index(root, ".codebuddy-connector/connectors.json", "connectors", "id"),
+            skills: read_index(root, ".codebuddy-skill/marketplace.json", "skills", "name"),
+        }
+    }
+
+    fn info(&self, kind: &str, entry_name: &str) -> Option<&MarketIndexInfo> {
+        match kind {
+            "connector" => self.connectors.get(entry_name),
+            "skill" => self.skills.get(entry_name),
+            _ => None,
+        }
+    }
+}
+
+/// Load one market index file (`root/<relative>` → rows keyed by `key_field`).
+fn read_index(
+    root: &Path,
+    relative: &str,
+    rows_key: &str,
+    key_field: &str,
+) -> HashMap<String, MarketIndexInfo> {
+    let Ok(text) = std::fs::read_to_string(root.join(relative)) else {
+        return HashMap::new();
     };
-    let value: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(value) => value,
-        Err(_) => return HashMap::new(),
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return HashMap::new();
     };
-    let Some(items) = value.get("connectors").and_then(|value| value.as_array()) else {
+    let Some(items) = value.get(rows_key).and_then(|value| value.as_array()) else {
         return HashMap::new();
     };
     let mut map = HashMap::new();
     for item in items {
-        let Some(id) = item.get("id").and_then(|value| value.as_str()) else {
+        let Some(key) = item.get(key_field).and_then(|value| value.as_str()) else {
             continue;
         };
         map.insert(
-            id.to_owned(),
-            ConnectorIndexInfo {
+            key.to_owned(),
+            MarketIndexInfo {
                 name_zh: item.get("name_zh").and_then(|v| v.as_str()).map(str::to_owned),
                 name_en: item
                     .get("name_en")
@@ -126,14 +161,15 @@ fn read_connector_index(root: &Path) -> HashMap<String, ConnectorIndexInfo> {
 
 /// The version this entry currently advertises in its marketplace.
 ///
-/// One derivation, shared by `list` and `install_entry`. If the two disagreed,
-/// the catalogue could advertise an update that installing would never deliver
-/// — or hide one it would silently apply. `list`'s `update_available` is
+/// One derivation, shared by `list`, `install_entry` and — through
+/// [`entry_facts`] — `market/entry-import`. If they disagreed, the catalogue
+/// could advertise an update that installing would never deliver — or hide one
+/// it would silently apply. `list`'s `update_available` is
 /// `snapshot.version != this`, and `install_entry` re-imports on exactly the
 /// same inequality.
 fn entry_live_version(
     manifest: Option<&PluginManifest>,
-    index_info: Option<&ConnectorIndexInfo>,
+    index_info: Option<&MarketIndexInfo>,
     entry: &nomifun_db::MarketplaceEntry,
 ) -> String {
     manifest
@@ -143,9 +179,56 @@ fn entry_live_version(
         .unwrap_or_else(|| entry.version.clone().unwrap_or_else(|| "1.0.0".into()))
 }
 
+/// Everything the store derives for one entry, in one place.
+///
+/// `store/list`, `store/install-entry` and `market/entry-import` all need the
+/// same answers: where the entry lives, what it declares, what kind it is, its
+/// market index row, and **the version it currently advertises**. Sharing the
+/// derivation is what stops the catalog from advertising an update the importer
+/// would never deliver (`36` D2) — the importer reads [`EntryFacts::version`]
+/// out of here and stores the snapshot under it.
+pub(crate) struct EntryFacts {
+    /// Entry payload directory (internal; never crosses the protocol seam).
+    pub source: PathBuf,
+    pub manifest: Option<PluginManifest>,
+    pub kind: &'static str,
+    pub index_info: Option<MarketIndexInfo>,
+    pub version: String,
+}
+
+/// Derive [`EntryFacts`] for one entry.
+///
+/// `index` is the market's own index (connectors / skills), read **once per
+/// market** by the caller: re-reading it here would add one file parse per
+/// catalog row.
+pub(crate) fn entry_facts(
+    market: &PluginMarketplaceRow,
+    entry: &nomifun_db::MarketplaceEntry,
+    market_root: &Path,
+    index: &MarketIndex,
+) -> EntryFacts {
+    let source = crate::market_fetch::entry_source_path(
+        &market.source_kind,
+        &market.source_uri,
+        market_root,
+        &market.marketplace_id,
+        &entry.source_uri,
+    );
+    let manifest = nomifun_importer::read_plugin_display(&source);
+    let kind = derive_kind(&source, &entry.source_kind, &manifest);
+    // Connector markets declare display metadata in their `connectors.json`
+    // index (id → name_zh/name_en/version); fall back to it when no plugin.json
+    // display block exists. Skill markets keep the same facts in their own
+    // `marketplace.json` rows, and it is the only place a skill's version exists
+    // at all — a bare `SKILL.md` entry parses to the `1.0.0` placeholder.
+    let index_info = index.info(kind, &entry.name).cloned();
+    let version = entry_live_version(manifest.as_ref(), index_info.as_ref(), entry);
+    EntryFacts { source, manifest, kind, index_info, version }
+}
+
 /// The market root directory for index lookups (best-effort; for remote
 /// markets this is the mirrored live root, for directory sources the source).
-fn market_root_dir(market: &PluginMarketplaceRow, market_root: &Path) -> Option<PathBuf> {
+pub(crate) fn market_root_dir(market: &PluginMarketplaceRow, market_root: &Path) -> Option<PathBuf> {
     if market.source_kind == "directory" {
         Some(PathBuf::from(&market.source_uri))
     } else {
@@ -191,18 +274,14 @@ impl StoreProvider for AppServerStoreProvider {
             let market_root = market_root_dir(&market, &self.market_root);
             let index = market_root
                 .as_ref()
-                .map(|root| read_connector_index(root))
+                .map(|root| MarketIndex::read(root))
                 .unwrap_or_default();
             for entry in market.entries() {
-                // Resolve the entry payload directory (internal).
-                let source = crate::market_fetch::entry_source_path(
-                    &market.source_kind,
-                    &market.source_uri,
-                    &self.market_root,
-                    &market.marketplace_id,
-                    &entry.source_uri,
-                );
-                let manifest = nomifun_importer::read_plugin_display(&source);
+                // One derivation for source / manifest / kind / index row /
+                // version (`36` D2). Destructured so the rest of the loop keeps
+                // reading the same names.
+                let EntryFacts { source, manifest, kind, index_info, version } =
+                    entry_facts(&market, &entry, &self.market_root, &index);
 
                 // `02` §8: a `strict=true` entry must ship its own
                 // `.codebuddy-plugin/plugin.json`. Checked against the live tree
@@ -214,15 +293,6 @@ impl StoreProvider for AppServerStoreProvider {
                     source.join(".codebuddy-plugin/plugin.json").is_file(),
                 );
 
-                let kind = derive_kind(&source, &entry.source_kind, &manifest);
-                // Connector markets declare display metadata in their
-                // `connectors.json` index (id → name_zh/name_en/version);
-                // fall back to it when no plugin.json display block exists.
-                let index_info = if kind == "connector" {
-                    index.get(&entry.name)
-                } else {
-                    None
-                };
                 let display_name = manifest
                     .as_ref()
                     .and_then(|m| m.display_name.as_ref())
@@ -236,10 +306,9 @@ impl StoreProvider for AppServerStoreProvider {
                     .as_ref()
                     .and_then(|text| text.zh.as_ref().or(text.en.as_ref()))
                     .cloned()
-                    .or_else(|| index_info.and_then(|info| info.name_zh.clone()))
-                    .or_else(|| index_info.and_then(|info| info.name_en.clone()))
+                    .or_else(|| index_info.as_ref().and_then(|info| info.name_zh.clone()))
+                    .or_else(|| index_info.as_ref().and_then(|info| info.name_en.clone()))
                     .unwrap_or_else(|| entry.name.clone());
-                let version = entry_live_version(manifest.as_ref(), index_info, &entry);
                 let avatar = manifest
                     .as_ref()
                     .and_then(|m| m.avatar.as_ref())
@@ -360,26 +429,10 @@ impl StoreProvider for AppServerStoreProvider {
         // What the marketplace advertises right now, derived exactly the way
         // `store/list` derives it.
         let live = {
-            let market_root = market_root_dir(&row, &self.market_root);
-            let index = market_root
-                .as_ref()
-                .map(|root| read_connector_index(root))
+            let index = market_root_dir(&row, &self.market_root)
+                .map(|root| MarketIndex::read(&root))
                 .unwrap_or_default();
-            let source = crate::market_fetch::entry_source_path(
-                &row.source_kind,
-                &row.source_uri,
-                &self.market_root,
-                &row.marketplace_id,
-                &entry.source_uri,
-            );
-            let manifest = nomifun_importer::read_plugin_display(&source);
-            let kind = derive_kind(&source, &entry.source_kind, &manifest);
-            let index_info = if kind == "connector" {
-                index.get(&entry.name).cloned()
-            } else {
-                None
-            };
-            entry_live_version(manifest.as_ref(), index_info.as_ref(), &entry)
+            entry_facts(&row, &entry, &self.market_root, &index).version
         };
 
         let existing = self
@@ -399,10 +452,10 @@ impl StoreProvider for AppServerStoreProvider {
                     components.iter().any(|component| component.installed == 1)
                 };
                 if installed {
-                    // There is no update verb on the wire (`store/update-entry`
-                    // does not exist), so an installed entry stays a no-op here
-                    // even when `update_available` is set. Re-importing it
-                    // silently would make "install" a hidden upgrade.
+                    // An installed entry stays a no-op here even when
+                    // `update_available` is set: re-importing it silently would
+                    // make "install" a hidden upgrade. Upgrading is
+                    // `store/update-entry`, an explicit action (`36` D3).
                     return Ok(AppServerStoreInstallResult {
                         marketplace_id: marketplace_id.to_owned(),
                         entry_name: entry_name.to_owned(),
@@ -415,6 +468,9 @@ impl StoreProvider for AppServerStoreProvider {
                         // Nothing was attempted, so there is no per-component
                         // detail to report.
                         outcomes: vec![],
+                        previous_version: None,
+                        previous_snapshot_id: None,
+                        released_count: 0,
                     });
                 }
                 if row.version == live {
@@ -425,9 +481,8 @@ impl StoreProvider for AppServerStoreProvider {
                     // The marketplace moved on (or rolled back) since this entry
                     // was imported. Install the *current* version rather than
                     // the stale snapshot: without this, "uninstall then install"
-                    // — the only upgrade path the wire offers — would faithfully
-                    // reinstall the old version. The previous snapshot stays
-                    // immutable and keeps its history.
+                    // would faithfully reinstall the old version. The previous
+                    // snapshot stays immutable and keeps its history.
                     let result = self.markets.import_entry(marketplace_id, entry_name).await?;
                     if result.status == "blocked" {
                         return Ok(AppServerStoreInstallResult {
@@ -441,6 +496,9 @@ impl StoreProvider for AppServerStoreProvider {
                             errors: result.errors,
                             // The import was refused, so nothing was registered.
                             outcomes: vec![],
+                            previous_version: None,
+                            previous_snapshot_id: None,
+                            released_count: 0,
                         });
                     }
                     result.snapshot_id
@@ -468,6 +526,9 @@ impl StoreProvider for AppServerStoreProvider {
                         errors: result.errors,
                         // The import was refused, so nothing was registered.
                         outcomes: vec![],
+                        previous_version: None,
+                        previous_snapshot_id: None,
+                        released_count: 0,
                     });
                 }
                 result.snapshot_id
@@ -492,6 +553,148 @@ impl StoreProvider for AppServerStoreProvider {
             warnings: install_result.warnings,
             errors: install_result.errors,
             outcomes: install_result.outcomes,
+            previous_version: None,
+            previous_snapshot_id: None,
+            released_count: 0,
+        })
+    }
+
+    /// Upgrade an installed entry to the version its marketplace advertises
+    /// (`36` §5.2).
+    ///
+    /// The order inside is the contract: the new version is imported and
+    /// installed **first**, and only a fully successful install releases the old
+    /// one — so a failure leaves the previous installation in place instead of
+    /// leaving the user with nothing. `released_count: 0` is the machine
+    /// readable form of "the previous installation was not touched".
+    async fn update_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerStoreInstallResult, AppError> {
+        let row = self
+            .market_rows
+            .get_marketplace(marketplace_id)
+            .await
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::NotFound(format!("marketplace {marketplace_id} not found")))?;
+        let entry = row
+            .entries()
+            .into_iter()
+            .find(|entry| entry.name == entry_name)
+            .ok_or_else(|| AppError::NotFound(format!("entry {entry_name} not found")))?;
+
+        // What the marketplace advertises right now, derived exactly the way
+        // `store/list` derives it.
+        let live = {
+            let index = market_root_dir(&row, &self.market_root)
+                .map(|root| MarketIndex::read(&root))
+                .unwrap_or_default();
+            entry_facts(&row, &entry, &self.market_root, &index).version
+        };
+
+        let existing = self
+            .snapshots
+            .find_snapshot_by_provenance(marketplace_id, entry_name)
+            .await
+            .map_err(AppError::from)?
+            // Never installed: refuse instead of installing. An "update" must not
+            // become a way to install something nobody asked for (`36` §2) — the
+            // client refuses the same case with `not_installed` before it calls.
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "entry {entry_name} has no snapshot to update; use store/install-entry"
+                ))
+            })?;
+        let installed = {
+            let components = self
+                .snapshots
+                .get_components(&existing.snapshot_id)
+                .await
+                .map_err(AppError::from)?;
+            components.iter().any(|component| component.installed == 1)
+        };
+        if !installed {
+            // A snapshot exists (someone imported it) but nothing was ever
+            // registered: installing is the honest action, and that is exactly
+            // what `store/install-entry` does.
+            return Err(AppError::BadRequest(format!(
+                "entry {entry_name} is imported but not installed; use store/install-entry"
+            )));
+        }
+
+        if existing.version == live {
+            // Already at the advertised version. Idempotent no-op, not an error:
+            // two clients racing the same update must not produce a failure.
+            return Ok(AppServerStoreInstallResult {
+                marketplace_id: marketplace_id.to_owned(),
+                entry_name: entry_name.to_owned(),
+                snapshot_id: existing.snapshot_id,
+                version: existing.version,
+                reused: true,
+                installed_count: 0,
+                warnings: vec!["entry already at the advertised version".into()],
+                errors: vec![],
+                outcomes: vec![],
+                previous_version: None,
+                previous_snapshot_id: None,
+                released_count: 0,
+            });
+        }
+
+        // Import the version the market now advertises (`36` D2 is what makes
+        // this the *advertised* version for skills and connectors instead of the
+        // `1.0.0` placeholder). Content that changed without a version bump is
+        // still refused by the importer: the previous installation then stays
+        // exactly as it was, and the remedy is on the market side (`36` D6).
+        let imported = self.markets.import_entry(marketplace_id, entry_name).await?;
+        if imported.status == "blocked" {
+            return Ok(AppServerStoreInstallResult {
+                marketplace_id: marketplace_id.to_owned(),
+                entry_name: entry_name.to_owned(),
+                // The installed snapshot: nothing moved, and naming the refused
+                // import would point the client at a row that does not exist.
+                snapshot_id: existing.snapshot_id,
+                version: existing.version,
+                reused: true,
+                installed_count: 0,
+                warnings: imported.warnings,
+                errors: imported.errors,
+                outcomes: vec![],
+                previous_version: None,
+                previous_snapshot_id: None,
+                released_count: 0,
+            });
+        }
+
+        let replaced = self
+            .installs
+            .replace(&existing.snapshot_id, &imported.snapshot_id)
+            .await?;
+        let mut warnings = replaced.install.warnings;
+        // A component of the old version that could not be released leaves an
+        // artifact behind. Its install record is kept (the `install/uninstall`
+        // contract), so `install/uninstall` on the old snapshot can still retry —
+        // which is why this is a warning rather than a failed update.
+        warnings.extend(
+            replaced
+                .release_errors
+                .into_iter()
+                .map(|failure| format!("replaced snapshot could not be fully released: {failure}")),
+        );
+        Ok(AppServerStoreInstallResult {
+            marketplace_id: marketplace_id.to_owned(),
+            entry_name: entry_name.to_owned(),
+            snapshot_id: replaced.install.snapshot_id,
+            version: replaced.install.version,
+            reused: false,
+            installed_count: replaced.install.installed_count,
+            warnings,
+            errors: replaced.install.errors,
+            outcomes: replaced.install.outcomes,
+            previous_version: Some(existing.version),
+            previous_snapshot_id: Some(existing.snapshot_id),
+            released_count: replaced.released_count,
         })
     }
 }

@@ -9,8 +9,10 @@
 import type { Transport } from "./transport";
 import type {
   ConnectorCallResult,
+  ConnectorCredential,
   ConnectorDetail,
   ConnectorProbeResult,
+  ConnectorRegistration,
   ConnectorStatusView,
   ConnectorSummary,
   OAuthStartResult,
@@ -97,6 +99,74 @@ export class ConnectorClient {
     return this.transport.request<OAuthStatusView>("connector/auth/status", {
       connector_id: connectorId,
     });
+  }
+
+  /**
+   * The credential form a connector needs filled in, as **this caller** sees it
+   * (doc `34` §6.1).
+   *
+   * `mode` says which kind of authentication applies (`none` / `oauth` / `token`),
+   * `status` whether anything is still missing, and `missing` names the keys.
+   * `fields` is everything needed to render the form — labels, placeholders,
+   * descriptions and the marketplace's "where do I get a key" link, in both
+   * languages. No secret ever comes back: only `plain` fields carry a `value`.
+   */
+  credentials(connectorId: string): Promise<ConnectorCredential> {
+    return this.transport.request<ConnectorCredential>("connector/credential/get", {
+      connector_id: connectorId,
+    });
+  }
+
+  /**
+   * Store what the user typed and get the new state back.
+   *
+   * Only keys the connector's own declaration names are accepted — the form is
+   * the whole write surface. `secret` fields go to the host's credential store
+   * under the caller's own namespace, `plain` fields into the connector's
+   * configuration, so a shared host never resolves one user's token for another.
+   */
+  setCredentials(
+    connectorId: string,
+    values: Record<string, string>,
+  ): Promise<ConnectorCredential> {
+    return this.transport.request<ConnectorCredential>("connector/credential/set", {
+      connector_id: connectorId,
+      values,
+    });
+  }
+
+  /**
+   * Forget stored credentials. `keys` omitted = every secret field of this
+   * connector. Idempotent: clearing what is not there succeeds.
+   */
+  clearCredentials(connectorId: string, keys?: string[]): Promise<ConnectorCredential> {
+    return this.transport.request<ConnectorCredential>("connector/credential/clear", {
+      connector_id: connectorId,
+      ...(keys ? { keys } : {}),
+    });
+  }
+
+  /**
+   * Register a connector this host never imported — your own MCP server, handed
+   * over together with the template that says what it needs (doc `34` §6.5).
+   *
+   * The **template is the whole declaration**: whatever `${secret:NAME}` the URL,
+   * headers or env name becomes that connector's credential form, so there is no
+   * `token-schema.json` to ship and nothing to install from a marketplace. The
+   * connector's own non-secret settings travel in `values`.
+   *
+   * Secrets do **not** travel here: hand them over with {@link setCredentials},
+   * which keeps exactly one write surface for values. The returned detail already
+   * carries the credential block, so `missing` tells you which keys are still
+   * needed.
+   *
+   * Re-registering the same name updates it; a builtin server's name is refused.
+   * The row is created **disabled** — enabling it still requires a probe that
+   * passes — and this method is on the installation-owner-only surface, because
+   * choosing where the host reaches is the owner's call.
+   */
+  register(registration: ConnectorRegistration): Promise<ConnectorDetail> {
+    return this.transport.request<ConnectorDetail>("connector/register", registration);
   }
 
   /**

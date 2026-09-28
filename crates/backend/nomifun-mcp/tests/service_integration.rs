@@ -42,8 +42,7 @@ fn http_req(name: &str) -> CreateMcpServerRequest {
         description: None,
         transport: McpTransport::Http {
             url: "https://example.com/mcp".into(),
-            headers: HashMap::from([("Auth".into(), "Bearer tok".into())]),
-        },
+            headers: HashMap::from([("Auth".into(), "Bearer tok".into())]), values: HashMap::new()},
         original_json: None,
         builtin: false,
     }
@@ -70,8 +69,7 @@ fn http_import_req(name: &str) -> ImportMcpServerRequest {
         description: None,
         transport: McpTransport::Http {
             url: "https://example.com/mcp".into(),
-            headers: HashMap::from([("Auth".into(), "Bearer tok".into())]),
-        },
+            headers: HashMap::from([("Auth".into(), "Bearer tok".into())]), values: HashMap::new()},
         original_json: None,
         builtin: false,
         enabled: None,
@@ -102,7 +100,7 @@ async fn create_http_with_headers() {
     let resp = svc.add_server(http_req("test-http")).await.unwrap();
 
     match resp.transport {
-        McpTransport::Http { ref url, ref headers } => {
+        McpTransport::Http { ref url, ref headers, .. } => {
             assert_eq!(url, "https://example.com/mcp");
             assert_eq!(headers.get("Auth").unwrap(), "Bearer tok");
         }
@@ -186,8 +184,7 @@ async fn edit_transport() {
                 description: None,
                 transport: Some(McpTransport::Sse {
                     url: "https://new.url".into(),
-                    headers: HashMap::new(),
-                }),
+                    headers: HashMap::new(), values: HashMap::new()}),
                 original_json: None,
                 builtin: None,
             },

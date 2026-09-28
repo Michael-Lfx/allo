@@ -70,10 +70,23 @@ const SPLIT_SOURCE = {
   pattern: /DOCUMENTED_ROUTE_SPLIT = \{ mapped: (\d+), unmapped: (\d+) \} as const/,
 };
 
-/** 引用该拆分的文档正文，每种语言各一处落地点。 */
+/**
+ * 引用该拆分的文档正文，每种语言各一处落地点。
+ *
+ * 每条的 pattern 是**并集**：站点正文经历过一次文风规范化（"个方法" → "个协议方法"，
+ * `Covers … methods` → `Public HTTP endpoints map … protocol methods`），旧写法必须继续
+ * 被认出来——否则这个门禁只是"没在查"，而不是"查过了"。修改措辞时**加一个分支**，
+ * 不要替换掉旧的。
+ */
 const SPLIT_MIRRORS = [
-  { file: "content/docs/zh-CN/typescript-sdk.md", pattern: /覆盖 \*\*(\d+) \/ (\d+)\*\* 个方法/g },
-  { file: "content/docs/en-US/typescript-sdk.md", pattern: /Covers \*\*(\d+) \/ (\d+)\*\* methods/g },
+  {
+    file: "content/docs/zh-CN/typescript-sdk.md",
+    pattern: /覆盖 \*\*(\d+) \/ (\d+)\*\* 个(?:协议)?方法/g,
+  },
+  {
+    file: "content/docs/en-US/typescript-sdk.md",
+    pattern: /(?:(?:public HTTP endpoints )?map|Covers) \*\*(\d+) \/ (\d+)\*\* (?:protocol )?methods/gi,
+  },
 ];
 
 const problems = [];

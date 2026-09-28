@@ -18,7 +18,8 @@ pub use agent_store::{
 };
 pub use catalog::{
     AgentCatalogProvider, ConnectorAuthProvider, ConnectorCallError, ConnectorCallProvider,
-    ConnectorCatalogProvider, ExpertPackError, ExpertPackProvider, ImportProvider,
+    ConnectorCatalogProvider, ConnectorCredentialProvider, ExpertPackError, ExpertPackProvider,
+    ImportProvider,
     InstallProvider, MarketplaceProvider, ModelCatalogProvider, MAX_CONNECTOR_CALL_RESULT_BYTES,
     MAX_CONNECTOR_TOOLS_BYTES,
     MAX_EXPERT_PACK_BYTES,
@@ -76,8 +77,10 @@ use nomifun_api_types::{
     AppServerConfigMcpServerView, AppServerConfigMcpView, AppServerConfigMemoryView,
     AppServerConfigProviderView, AppServerConfigView, AppServerMcpSourceView,
     AppServerConnectorCallResult,
+    AppServerConnectorCredential,
     AppServerConnectorDetail,
-    AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
+    AppServerConnectorProbeResult, AppServerConnectorRegistration, AppServerConnectorStatusView,
+    AppServerConnectorSummary,
     AppServerExpertPack,
     AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
     AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
@@ -162,7 +165,39 @@ use tokio::sync::mpsc;
 /// (`frontmatter.rs:114`, `app_server.rs:435`); see doc 32. Both methods are
 /// WebSocket-only, like the rest of the agent/team family, so the documented
 /// route split moves to `48 / 73` (mapped unchanged, two new unmapped).
-pub const PROTOCOL_VERSION: &str = "fp-8";
+/// **`fp-9` adds connector user credentials** (doc 34): a connector that needs a
+/// key or token the *user* supplies now has a form — `connector/credential/get`,
+/// `set` and `clear`, plus a `credential` block on the connector summary
+/// (`mode` / `status` / `missing` / `fields`). Secret values never cross this
+/// wire in either direction; `missing` and the block's field list carry key names
+/// and marketplace text only. Credentials are written per principal
+/// (`<principal>:NAME`), so a shared host no longer resolves one user's token for
+/// another. The three methods are mapped, not WebSocket-only, so the documented
+/// split moves to `51 / 73`.
+/// **`fp-10` puts the credential form's own text where it belongs**: `title`,
+/// `description`, `doc_url` and `doc_label` are the *form's* — a marketplace
+/// `token-schema.json` declares them once (`34` §5.2) — so they moved off
+/// `credential.fields[]` and onto the `credential` block. Nothing else changed
+/// shape; the split stays `51 / 76`.
+/// **`fp-11` lets a caller bring its own MCP server**: `connector/register`
+/// (`POST /api/app-server/connectors`) takes a server definition the host never
+/// imported and stores its transport as handed in. The template **is** the
+/// credential declaration (`34` §6.5): its `${secret:NAME}` references become the
+/// credential form, so an external developer's own server is fillable without
+/// shipping a `token-schema.json` or going through a marketplace. Secrets still
+/// travel only through `connector/credential/set`, the row is created disabled,
+/// and the method sits on the installation-owner-only surface. One method, and it
+/// has an HTTP route, so the documented split moves to `52 / 77`.
+/// **`fp-12` makes upgrading an installed store entry an explicit action**:
+/// `store/update-entry` (`POST /api/app-server/store/{marketplace_id}/entries/{entry_name}/update`)
+/// installs the version the marketplace advertises **over** the installed one —
+/// new first, old released only on success — instead of leaving "uninstall, then
+/// install again" as the only path. `store/install-entry` keeps its
+/// installed-is-a-no-op contract, so installing still never upgrades by surprise,
+/// and the result carries `previous_version` / `previous_snapshot_id` /
+/// `released_count` for the update case (`36` D3/D4). One method, and it has an
+/// HTTP route, so the documented split moves to `53 / 78`.
+pub const PROTOCOL_VERSION: &str = "fp-12";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1158,6 +1193,11 @@ pub struct AppServerRouterState {
     pub connector_calls: Option<Arc<dyn ConnectorCallProvider>>,
     /// Connector OAuth pass-through. `None` keeps the `oauth` capability off.
     pub connector_auth: Option<Arc<dyn ConnectorAuthProvider>>,
+    /// The connector **credential** face (`connector/credential/*`, `34` §6.1).
+    /// `None` keeps the capability off and the methods answering
+    /// `unsupported_operation`; a read-only host still describes credentials
+    /// through the catalog's `credential` block.
+    pub connector_credentials: Option<Arc<dyn ConnectorCredentialProvider>>,
     /// Agent Store Importer/PluginSnapshot provider. `None` keeps the
     /// `imports` capability off.
     pub imports: Option<Arc<dyn ImportProvider>>,
@@ -1224,6 +1264,7 @@ impl Default for AppServerRouterState {
             connectors: None,
             connector_calls: None,
             connector_auth: None,
+            connector_credentials: None,
             imports: None,
             installs: None,
             markets: None,
@@ -1280,7 +1321,13 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
             get(read_skill_file_route),
         )
         // Agent Store Connector catalog / status / probe / OAuth
-        .route("/api/app-server/connectors", get(list_connectors_route))
+        // Connectors: `GET` lists them, `POST` registers one the host never
+        // imported (34 §6.5) — the second is the SDK's way in for an external
+        // developer's own server.
+        .route(
+            "/api/app-server/connectors",
+            get(list_connectors_route).post(register_connector_route),
+        )
         .route("/api/app-server/models", get(list_models_route))
         .route("/api/app-server/connectors/{connector_id}", get(get_connector_route))
         .route(
@@ -1295,6 +1342,16 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route(
             "/api/app-server/connectors/{connector_id}/call",
             post(connector_call_route),
+        )
+        // Connector credentials (34 §6.1): the user-supplied key/token form.
+        // Both writes are POST — this protocol's write verbs are POST
+        // throughout, so the client's route table has one verb per method.
+        .route(
+            "/api/app-server/connectors/{connector_id}/credential",
+            get(connector_credential_get_route).post(connector_credential_set_route),
+        )        .route(
+            "/api/app-server/connectors/{connector_id}/credential/clear",
+            post(connector_credential_clear_route),
         )
         .route(
             "/api/app-server/connectors/{connector_id}/auth-start",
@@ -1347,6 +1404,10 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route(
             "/api/app-server/store/{marketplace_id}/entries/{entry_name}/install",
             post(store_install_entry_route),
+        )
+        .route(
+            "/api/app-server/store/{marketplace_id}/entries/{entry_name}/update",
+            post(store_update_entry_route),
         )
         .with_state(state)
 }
@@ -1865,8 +1926,12 @@ async fn execute_skill_delete(
 
 async fn list_connectors_impl(
     state: &AppServerRouterState,
+    principal: Option<&str>,
 ) -> Result<Vec<AppServerConnectorSummary>, AppServerError> {
-    connector_catalog_provider(state)?.list().await.map_err(AppServerError::from)
+    connector_catalog_provider(state)?
+        .list(principal)
+        .await
+        .map_err(AppServerError::from)
 }
 
 async fn list_models_impl(
@@ -1878,8 +1943,24 @@ async fn list_models_impl(
 async fn get_connector_impl(
     state: &AppServerRouterState,
     connector_id: &str,
+    principal: Option<&str>,
 ) -> Result<AppServerConnectorDetail, AppServerError> {
-    connector_catalog_provider(state)?.get(connector_id).await.map_err(AppServerError::from)
+    connector_catalog_provider(state)?
+        .get(connector_id, principal)
+        .await
+        .map_err(AppServerError::from)
+}
+
+/// `connector/register`: hand the host a connector it never imported (`34` §6.5).
+async fn register_connector_impl(
+    state: &AppServerRouterState,
+    registration: AppServerConnectorRegistration,
+    principal: Option<&str>,
+) -> Result<AppServerConnectorDetail, AppServerError> {
+    connector_catalog_provider(state)?
+        .register(registration, principal)
+        .await
+        .map_err(AppServerError::from)
 }
 
 /// `connector/call`: the call-proxy seam (doc 24 §5).
@@ -1939,9 +2020,10 @@ async fn connector_call_impl(
     connector_id: &str,
     tool: &str,
     arguments: serde_json::Value,
+    principal: Option<&str>,
 ) -> Result<AppServerConnectorCallResult, AppServerError> {
     connector_call_provider(state)?
-        .call(connector_id, tool, arguments)
+        .call_for(connector_id, tool, arguments, principal)
         .await
         .map_err(connector_call_error)
 }
@@ -1949,9 +2031,59 @@ async fn connector_call_impl(
 async fn connector_status_impl(
     state: &AppServerRouterState,
     connector_id: &str,
+    principal: Option<&str>,
 ) -> Result<AppServerConnectorStatusView, AppServerError> {
     connector_catalog_provider(state)?
-        .status(connector_id)
+        .status(connector_id, principal)
+        .await
+        .map_err(AppServerError::from)
+}
+
+/// `connector/credential/*`: the only face that **writes** a credential (`34` §6.1).
+fn connector_credential_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn ConnectorCredentialProvider>, AppServerError> {
+    state.connector_credentials.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "connector credentials are not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+async fn connector_credential_get_impl(
+    state: &AppServerRouterState,
+    connector_id: &str,
+    principal: Option<&str>,
+) -> Result<AppServerConnectorCredential, AppServerError> {
+    connector_credential_provider(state)?
+        .get(connector_id, principal)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn connector_credential_set_impl(
+    state: &AppServerRouterState,
+    connector_id: &str,
+    values: std::collections::HashMap<String, String>,
+    principal: Option<&str>,
+) -> Result<AppServerConnectorCredential, AppServerError> {
+    connector_credential_provider(state)?
+        .set(connector_id, values, principal)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn connector_credential_clear_impl(
+    state: &AppServerRouterState,
+    connector_id: &str,
+    keys: Option<Vec<String>>,
+    principal: Option<&str>,
+) -> Result<AppServerConnectorCredential, AppServerError> {
+    connector_credential_provider(state)?
+        .clear(connector_id, keys, principal)
         .await
         .map_err(AppServerError::from)
 }
@@ -1959,9 +2091,10 @@ async fn connector_status_impl(
 async fn connector_test_impl(
     state: &AppServerRouterState,
     connector_id: &str,
+    principal: Option<&str>,
 ) -> Result<AppServerConnectorProbeResult, AppServerError> {
     connector_catalog_provider(state)?
-        .test(connector_id)
+        .test_for(connector_id, principal)
         .await
         .map_err(AppServerError::from)
 }
@@ -2543,6 +2676,17 @@ async fn store_install_entry_impl(
         .map_err(AppServerError::from)
 }
 
+async fn store_update_entry_impl(
+    state: &AppServerRouterState,
+    marketplace_id: &str,
+    entry_name: &str,
+) -> Result<AppServerStoreInstallResult, AppServerError> {
+    store_provider(state)?
+        .update_entry(marketplace_id, entry_name)
+        .await
+        .map_err(AppServerError::from)
+}
+
 async fn list_agents_impl(
     state: &AppServerRouterState,
 ) -> Result<Vec<AppServerAgentSummary>, AppServerError> {
@@ -2946,6 +3090,16 @@ async fn store_install_entry_route(
     Ok(Json(store_install_entry_impl(&state, &marketplace_id, &entry_name).await?))
 }
 
+async fn store_update_entry_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path((marketplace_id, entry_name)): Path<(String, String)>,
+) -> Result<Json<AppServerStoreInstallResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(store_update_entry_impl(&state, &marketplace_id, &entry_name).await?))
+}
+
 async fn list_skills_route(
     State(state): State<AppServerRouterState>,
     headers: HeaderMap,
@@ -3000,7 +3154,20 @@ async fn list_connectors_route(
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<Vec<AppServerConnectorSummary>>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
-    Ok(Json(list_connectors_impl(&state).await?))
+    Ok(Json(list_connectors_impl(&state, Some(user.id.as_str())).await?))
+}
+
+/// `POST /api/app-server/connectors` — register a hand-made connector (`34` §6.5).
+async fn register_connector_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Json(registration): Json<AppServerConnectorRegistration>,
+) -> Result<Json<AppServerConnectorDetail>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(
+        register_connector_impl(&state, registration, Some(user.id.as_str())).await?,
+    ))
 }
 
 async fn list_models_route(
@@ -3019,7 +3186,9 @@ async fn get_connector_route(
     Path(connector_id): Path<String>,
 ) -> Result<Json<AppServerConnectorDetail>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
-    Ok(Json(get_connector_impl(&state, &connector_id).await?))
+    Ok(Json(
+        get_connector_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
 }
 
 async fn connector_status_route(
@@ -3029,7 +3198,9 @@ async fn connector_status_route(
     Path(connector_id): Path<String>,
 ) -> Result<Json<AppServerConnectorStatusView>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
-    Ok(Json(connector_status_impl(&state, &connector_id).await?))
+    Ok(Json(
+        connector_status_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
 }
 
 /// `POST /api/app-server/connectors/{connector_id}/call`
@@ -3045,8 +3216,17 @@ async fn connector_call_route(
     Json(body): Json<WsConnectorCallBody>,
 ) -> Result<Json<AppServerConnectorCallResult>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    // Called *as this caller*: credentials are per-principal, and a pooled stdio
+    // session is bound to whoever's env spawned it (34 §7).
     Ok(Json(
-        connector_call_impl(&state, &connector_id, &body.tool, body.arguments).await?,
+        connector_call_impl(
+            &state,
+            &connector_id,
+            &body.tool,
+            body.arguments,
+            Some(user.id.as_str()),
+        )
+        .await?,
     ))
 }
 
@@ -3067,7 +3247,72 @@ async fn connector_test_route(
     Path(connector_id): Path<String>,
 ) -> Result<Json<AppServerConnectorProbeResult>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
-    Ok(Json(connector_test_impl(&state, &connector_id).await?))
+    // The probe is made *as this caller*: a connector's credential references are
+    // per-principal, so user A's probe must not authenticate with user B's token
+    // (34 §7).
+    Ok(Json(
+        connector_test_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectorCredentialSetBody {
+    /// `KEY -> value`. Only keys the connector's own declaration names.
+    values: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectorCredentialClearBody {
+    /// Absent = every secret field of this connector.
+    #[serde(default)]
+    keys: Option<Vec<String>>,
+}
+
+async fn connector_credential_get_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(connector_id): Path<String>,
+) -> Result<Json<AppServerConnectorCredential>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(
+        connector_credential_get_impl(&state, &connector_id, Some(user.id.as_str())).await?,
+    ))
+}
+
+async fn connector_credential_set_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(connector_id): Path<String>,
+    Json(body): Json<ConnectorCredentialSetBody>,
+) -> Result<Json<AppServerConnectorCredential>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(
+        connector_credential_set_impl(
+            &state,
+            &connector_id,
+            body.values,
+            Some(user.id.as_str()),
+        )
+        .await?,
+    ))
+}
+
+async fn connector_credential_clear_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(connector_id): Path<String>,
+    body: Option<Json<ConnectorCredentialClearBody>>,
+) -> Result<Json<AppServerConnectorCredential>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let keys = body.and_then(|Json(body)| body.keys);
+    Ok(Json(
+        connector_credential_clear_impl(&state, &connector_id, keys, Some(user.id.as_str())).await?,
+    ))
 }
 
 async fn connector_auth_start_route(
@@ -3340,7 +3585,7 @@ async fn execute_agent_run(
     if !snapshot.mcp_server_ids.is_empty() {
         let connectors = connector_catalog_provider(state)?;
         for mcp_server_id in &snapshot.mcp_server_ids {
-            let detail = connectors.get(mcp_server_id).await.map_err(AppServerError::from)?;
+            let detail = connectors.get(mcp_server_id, None).await.map_err(AppServerError::from)?;
             if !detail.summary.enabled {
                 return Err(AppServerError::new(
                     "connector_unavailable",
@@ -4131,7 +4376,7 @@ async fn definition_connector_fence(
             )
         })?;
         let detail = connectors
-            .get(id.as_str())
+            .get(id.as_str(), None)
             .await
             .map_err(AppServerError::from)?;
         if !detail.summary.enabled {
@@ -7094,14 +7339,21 @@ async fn dispatch_connection_request(
         "connector/call" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorCall>(params)?;
-            let result = connector_call_impl(state, &params.connector_id, &params.tool, params.arguments).await?;
+            let result = connector_call_impl(
+                state,
+                &params.connector_id,
+                &params.tool,
+                params.arguments,
+                Some(user.id.as_str()),
+            )
+            .await?;
             Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode call result: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
         "connector/list" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
-            let connectors = list_connectors_impl(state).await?;
+            let connectors = list_connectors_impl(state, Some(user.id.as_str())).await?;
             Ok(ws_response(request_id, serde_json::to_value(connectors).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connectors: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
@@ -7174,7 +7426,7 @@ async fn dispatch_connection_request(
         "connector/get" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorQuery>(params)?;
-            let connector = get_connector_impl(state, &params.connector_id).await?;
+            let connector = get_connector_impl(state, &params.connector_id, Some(user.id.as_str())).await?;
             Ok(ws_response(request_id, serde_json::to_value(connector).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connector: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
@@ -7182,7 +7434,7 @@ async fn dispatch_connection_request(
         "connector/status" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorQuery>(params)?;
-            let status = connector_status_impl(state, &params.connector_id).await?;
+            let status = connector_status_impl(state, &params.connector_id, Some(user.id.as_str())).await?;
             Ok(ws_response(request_id, serde_json::to_value(status).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connector status: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
@@ -7190,9 +7442,65 @@ async fn dispatch_connection_request(
         "connector/test" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorQuery>(params)?;
-            let result = connector_test_impl(state, &params.connector_id).await?;
+            let result = connector_test_impl(state, &params.connector_id, Some(user.id.as_str())).await?;
             Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connector probe: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        // ---------------- Agent Store Connector credentials (34 §6.1) --------
+        "connector/register" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorRegistration>(params)?;
+            let connector = register_connector_impl(
+                state,
+                AppServerConnectorRegistration {
+                    name: params.name,
+                    description: params.description,
+                    transport: params.transport,
+                },
+                Some(user.id.as_str()),
+            )
+            .await?;
+            Ok(ws_response(request_id, serde_json::to_value(connector).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode connector: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "connector/credential/get" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorQuery>(params)?;
+            let credential =
+                connector_credential_get_impl(state, &params.connector_id, Some(user.id.as_str()))
+                    .await?;
+            Ok(ws_response(request_id, serde_json::to_value(credential).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode credential: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "connector/credential/set" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorCredentialSet>(params)?;
+            let credential = connector_credential_set_impl(
+                state,
+                &params.connector_id,
+                params.values,
+                Some(user.id.as_str()),
+            )
+            .await?;
+            Ok(ws_response(request_id, serde_json::to_value(credential).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode credential: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "connector/credential/clear" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorCredentialClear>(params)?;
+            let credential = connector_credential_clear_impl(
+                state,
+                &params.connector_id,
+                params.keys,
+                Some(user.id.as_str()),
+            )
+            .await?;
+            Ok(ws_response(request_id, serde_json::to_value(credential).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode credential: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
         // ---------------- Agent Store Connector OAuth ----------------
@@ -7281,6 +7589,14 @@ async fn dispatch_connection_request(
             let result = store_install_entry_impl(state, &params.marketplace_id, &params.entry_name).await?;
             Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode store install: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "store/update-entry" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsStoreEntry>(params)?;
+            let result = store_update_entry_impl(state, &params.marketplace_id, &params.entry_name).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode store update: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
         // ---------------- Agent Store Importer (05 §4.4; same impls as the HTTP routes) ----------------
@@ -7611,6 +7927,33 @@ struct WsStoreEntry {
 #[serde(deny_unknown_fields)]
 struct WsConnectorQuery {
     connector_id: String,
+}
+
+/// `connector/register` (`34` §6.5).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConnectorRegistration {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    transport: nomifun_api_types::McpTransport,
+}
+
+/// `connector/credential/set` (`34` §6.1).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConnectorCredentialSet {
+    connector_id: String,
+    values: std::collections::HashMap<String, String>,
+}
+
+/// `connector/credential/clear`; `keys` absent = every secret field.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConnectorCredentialClear {
+    connector_id: String,
+    #[serde(default)]
+    keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -8511,6 +8854,7 @@ mod tests {
                 nomifun_api_types::AppServerConnectorStatus::Installed
             },
             avatar_url: None,
+            credential: None,
         };
         let mut state = AppServerRouterState::default();
         state.connectors = Some(Arc::new(crate::catalog::FakeConnectorCatalog {
@@ -11079,6 +11423,7 @@ model = "mimo-v2.5-free"
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
+            credential: None,
         }
     }
 
@@ -11263,6 +11608,10 @@ model = "mimo-v2.5-free"
                 serde_json::json!({ "marketplace_id": "m1", "cascade": true }),
             ),
             ("store/list", serde_json::json!({})),
+            (
+                "store/update-entry",
+                serde_json::json!({ "marketplace_id": "m1", "entry_name": "formatter" }),
+            ),
         ] {
             let error = dispatch_connection_request(
                 &state,
@@ -12092,7 +12441,7 @@ model = "mimo-v2.5-free"
     async fn connector_call_face_is_closed_without_a_provider() {
         let bare = AppServerRouterState::default();
         assert!(connector_call_provider(&bare).is_err());
-        let error = connector_call_impl(&bare, "conn-1", "echo", serde_json::json!({}))
+        let error = connector_call_impl(&bare, "conn-1", "echo", serde_json::json!({}), None)
             .await
             .unwrap_err();
         assert_eq!(error.code, "unsupported_operation");
@@ -12117,7 +12466,7 @@ model = "mimo-v2.5-free"
                 connector_calls: Some(Arc::new(FakeConnectorCalls::failing(error))),
                 ..Default::default()
             };
-            let wire = connector_call_impl(&state, "conn-1", "echo", serde_json::json!({}))
+            let wire = connector_call_impl(&state, "conn-1", "echo", serde_json::json!({}), None)
                 .await
                 .unwrap_err();
             assert_eq!(wire.code, expected, "wrong wire code for {expected}");
@@ -12135,6 +12484,7 @@ model = "mimo-v2.5-free"
             "conn-1",
             "create_issue",
             serde_json::json!({ "title": "t" }),
+            None,
         )
         .await
         .unwrap();

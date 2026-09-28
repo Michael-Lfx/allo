@@ -7,13 +7,15 @@
 //! wire codes (`not_found`, `connector_unavailable`, ...).
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 
 use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityTriple,
-    AppServerConnectorCallResult, AppServerConnectorDetail, AppServerConnectorProbeResult,
-    AppServerConnectorStatusView,
+    AppServerConnectorCallResult, AppServerConnectorCredential, AppServerConnectorDetail,
+    AppServerConnectorProbeResult, AppServerConnectorRegistration, AppServerConnectorStatusView,
     AppServerConnectorSummary, AppServerExpertPack, AppServerImportDetail, AppServerImportRequest,
-    AppServerImportResult, AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
+    AppServerImportResult, AppServerImportSummary, AppServerInstallReplaceResult,
+    AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceEntry, AppServerMarketplaceEntrySnapshot, AppServerMarketplaceRefreshResult,
     AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
@@ -89,12 +91,43 @@ pub trait SkillFileProvider: Send + Sync {
 }
 
 /// Read-side Connector catalog + status/probe (`connector/list|get|status|test`).
+///
+/// Every method takes the caller's `principal` (`34` §7): a connector's credential
+/// state — which fields are still missing, whether it is configured at all — is a
+/// statement **about that caller**, not about the host. `None` is a host-internal
+/// caller, which acts for the installation owner.
 #[async_trait]
 pub trait ConnectorCatalogProvider: Send + Sync {
-    async fn list(&self) -> Result<Vec<AppServerConnectorSummary>, AppError>;
-    async fn get(&self, id: &str) -> Result<AppServerConnectorDetail, AppError>;
-    async fn status(&self, id: &str) -> Result<AppServerConnectorStatusView, AppError>;
+    async fn list(&self, principal: Option<&str>) -> Result<Vec<AppServerConnectorSummary>, AppError>;
+    async fn get(&self, id: &str, principal: Option<&str>) -> Result<AppServerConnectorDetail, AppError>;
+    async fn status(&self, id: &str, principal: Option<&str>)
+    -> Result<AppServerConnectorStatusView, AppError>;
     async fn test(&self, id: &str) -> Result<AppServerConnectorProbeResult, AppError>;
+    /// The same probe, resolving credentials **for one principal** (`34` §7): a
+    /// connector's `secret:NAME` references are per-principal, so a probe on behalf
+    /// of user A must not authenticate with user B's token.
+    async fn test_for(
+        &self,
+        id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorProbeResult, AppError>;
+
+    /// Register a connector the host never imported from a marketplace
+    /// (`connector/register`, doc `34` §6.5).
+    ///
+    /// The registration's transport **is** the credential declaration: its
+    /// `${secret:NAME}` references become the form, so a server handed in by an
+    /// external developer is fillable without a `token-schema.json` existing
+    /// anywhere. Returns the projection for this caller, which is how the caller
+    /// learns which keys are still missing.
+    ///
+    /// Implementations own two refusals, because only they can see the config: a
+    /// blank name, and a name that belongs to a builtin server.
+    async fn register(
+        &self,
+        registration: AppServerConnectorRegistration,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError>;
 }
 
 /// Connector OAuth pass-through. Only states and public errors cross this
@@ -177,6 +210,54 @@ pub trait ConnectorCallProvider: Send + Sync {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<AppServerConnectorCallResult, ConnectorCallError>;
+
+    /// The same proxy, resolving credentials for one principal (`34` §7).
+    ///
+    /// Defaults to [`Self::call`] — a provider that has no per-principal
+    /// credentials to offer behaves exactly as before, which is what the
+    /// protocol's fakes and single-user hosts want.
+    async fn call_for(
+        &self,
+        connector_id: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorCallResult, ConnectorCallError> {
+        self.call(connector_id, tool, arguments).await
+    }
+}
+
+/// The connector **credential** face (`connector/credential/get|set|clear`, `34` §6.1).
+///
+/// Deliberately separate from [`ConnectorCatalogProvider`]: that one describes
+/// connectors, this one is the only seam that *writes* — to the host's
+/// `[credentials]` table and to a connector's own plain values. Everything it
+/// touches is either a key name, a value the caller just supplied, or a value the
+/// connector itself owns; a secret value is never read back out.
+#[async_trait]
+pub trait ConnectorCredentialProvider: Send + Sync {
+    /// The form and state, as `principal` sees it.
+    async fn get(
+        &self,
+        connector_id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError>;
+
+    /// Store what the user typed; returns the new state.
+    async fn set(
+        &self,
+        connector_id: &str,
+        values: HashMap<String, String>,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError>;
+
+    /// Forget this caller's entries (`keys: None` = every secret field). Idempotent.
+    async fn clear(
+        &self,
+        connector_id: &str,
+        keys: Option<Vec<String>>,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorCredential, AppError>;
 }
 
 /// Import pipeline seam (`import/run`, `import/list`, `import/get`). The
@@ -196,6 +277,23 @@ pub trait ImportProvider: Send + Sync {
 pub trait InstallProvider: Send + Sync {
     /// Install a snapshot: register its components into the runtime.
     async fn install(&self, request: AppServerInstallRequest) -> Result<AppServerInstallResult, AppError>;
+
+    /// Install `new_snapshot_id` **over** `old_snapshot_id` (`36` D5), carrying
+    /// over what the old version's components already own.
+    ///
+    /// Order is the contract, not an implementation detail: the new snapshot is
+    /// imported and installed **first**, and only a fully successful install
+    /// releases the old one. A failure therefore leaves the previous
+    /// installation untouched — a client that called "update" never ends up with
+    /// nothing. Components are paired across the two snapshots by component id
+    /// (`wb-<plugin>-<slug>`, stable across versions).
+    ///
+    /// Not a wire verb: `store/update-entry` is the only caller.
+    async fn replace(
+        &self,
+        old_snapshot_id: &str,
+        new_snapshot_id: &str,
+    ) -> Result<AppServerInstallReplaceResult, AppError>;
 
     /// Current per-component installation state for a snapshot.
     async fn status(&self, snapshot_id: &str) -> Result<AppServerInstallStatus, AppError>;
@@ -322,6 +420,20 @@ pub trait StoreProvider: Send + Sync {
     /// their components into the runtime. Idempotent — an already-installed
     /// entry returns the current state.
     async fn install_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerStoreInstallResult, AppError>;
+
+    /// Upgrade an installed entry to the version its marketplace now advertises
+    /// (`36` §5.2).
+    ///
+    /// The new version is imported and installed **first**; only a fully
+    /// successful install releases the old one, so a failure leaves the previous
+    /// installation in place. Idempotent: an entry already at the advertised
+    /// version answers `reused: true` with nothing attempted. An entry that is
+    /// not installed is refused — never installed on the way past.
+    async fn update_entry(
         &self,
         marketplace_id: &str,
         entry_name: &str,
@@ -467,11 +579,15 @@ impl FakeConnectorCatalog {
 
 #[async_trait]
 impl ConnectorCatalogProvider for FakeConnectorCatalog {
-    async fn list(&self) -> Result<Vec<AppServerConnectorSummary>, AppError> {
+    async fn list(&self, _principal: Option<&str>) -> Result<Vec<AppServerConnectorSummary>, AppError> {
         Ok(self.connectors.clone())
     }
 
-    async fn get(&self, id: &str) -> Result<AppServerConnectorDetail, AppError> {
+    async fn get(
+        &self,
+        id: &str,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError> {
         let summary = self.find(id)?;
         Ok(AppServerConnectorDetail {
             summary,
@@ -484,7 +600,11 @@ impl ConnectorCatalogProvider for FakeConnectorCatalog {
         })
     }
 
-    async fn status(&self, id: &str) -> Result<AppServerConnectorStatusView, AppError> {
+    async fn status(
+        &self,
+        id: &str,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorStatusView, AppError> {
         let summary = self.find(id)?;
         let connector_id = summary.id.clone();
         let authenticated = !self.auth_required_ids.contains(&connector_id);
@@ -512,6 +632,14 @@ impl ConnectorCatalogProvider for FakeConnectorCatalog {
     }
 
     async fn test(&self, id: &str) -> Result<AppServerConnectorProbeResult, AppError> {
+        self.test_for(id, None).await
+    }
+
+    async fn test_for(
+        &self,
+        id: &str,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorProbeResult, AppError> {
         let summary = self.find(id)?;
         let connector_id = summary.id.clone();
         let failed = self.probe_fail_ids.contains(&connector_id);
@@ -523,6 +651,20 @@ impl ConnectorCatalogProvider for FakeConnectorCatalog {
             code: if failed { Some("MCP_CONNECTION_FAILED".into()) } else { None },
             tools_truncated: false,
         })
+    }
+
+    /// Registration is the one connector operation that is *inherently* host state,
+    /// and this fake has none. Refusing keeps the protocol tests honest: a mock that
+    /// pretended to register would make a route that never writes anything look
+    /// green.
+    async fn register(
+        &self,
+        _registration: AppServerConnectorRegistration,
+        _principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError> {
+        Err(AppError::Internal(
+            "FakeConnectorCatalog cannot register connectors".to_owned(),
+        ))
     }
 }
 
@@ -690,6 +832,18 @@ impl InstallProvider for FakeInstallProvider {
         _component_ids: &[String],
     ) -> Result<AppServerInstallStatus, AppError> {
         Ok(self.status.clone())
+    }
+
+    async fn replace(
+        &self,
+        _old_snapshot_id: &str,
+        _new_snapshot_id: &str,
+    ) -> Result<AppServerInstallReplaceResult, AppError> {
+        Ok(AppServerInstallReplaceResult {
+            install: self.install_result.clone(),
+            released_count: 0,
+            release_errors: vec![],
+        })
     }
 }
 
@@ -1047,6 +1201,9 @@ impl FakeStoreProvider {
                 warnings: vec![],
                 errors: vec![],
                 outcomes: vec![],
+                previous_version: None,
+                previous_snapshot_id: None,
+                released_count: 0,
             },
         }
     }
@@ -1072,6 +1229,29 @@ impl StoreProvider for FakeStoreProvider {
         } else {
             Err(AppError::NotFound(format!("entry {entry_name} not found")))
         }
+    }
+
+    async fn update_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerStoreInstallResult, AppError> {
+        let item = self
+            .items
+            .iter()
+            .find(|item| item.marketplace_id == marketplace_id && item.entry_name == entry_name)
+            .ok_or_else(|| AppError::NotFound(format!("entry {entry_name} not found")))?;
+        if !item.installed {
+            return Err(AppError::BadRequest(format!(
+                "entry {entry_name} has no snapshot to update; use store/install-entry"
+            )));
+        }
+        let mut result = self.install_result.clone();
+        result.previous_version = item.installed_version.clone();
+        result.previous_snapshot_id = item.snapshot_id.clone();
+        result.released_count = if item.update_available { 1 } else { 0 };
+        result.reused = !item.update_available;
+        Ok(result)
     }
 }
 
@@ -1103,6 +1283,7 @@ mod tests {
             kind: "stdio-mcp".into(),
             transport_summary: "npx @playwright/mcp".into(),
             auth_mode: "none".into(),
+            credential: None,
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
@@ -1128,7 +1309,7 @@ mod tests {
             auth_required_ids: vec![],
             probe_fail_ids: vec!["0190f5fe-7c00-7a00-8000-000000000001".into()],
         };
-        let status = catalog.status("playwright").await.unwrap();
+        let status = catalog.status("playwright", None).await.unwrap();
         assert_eq!(status.status.as_str(), "error");
         assert_ne!(status.status.as_str(), "connected");
     }
@@ -1140,7 +1321,7 @@ mod tests {
             auth_required_ids: vec!["0190f5fe-7c00-7a00-8000-000000000001".into()],
             probe_fail_ids: vec![],
         };
-        let status = catalog.status("playwright").await.unwrap();
+        let status = catalog.status("playwright", None).await.unwrap();
         assert_eq!(status.status.as_str(), "authorization_required");
     }
 

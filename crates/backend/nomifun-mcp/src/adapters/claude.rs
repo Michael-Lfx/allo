@@ -102,11 +102,13 @@ fn parse_claude_list_line(line: &str) -> Option<DetectedServer> {
                 McpServerTransport::Sse {
                     url: normalized_command_or_url.to_owned(),
                     headers: HashMap::new(),
+                    values: HashMap::new(),
                 }
             } else {
                 McpServerTransport::Http {
                     url: normalized_command_or_url.to_owned(),
                     headers: HashMap::new(),
+                    values: HashMap::new(),
                 }
             }
         } else {

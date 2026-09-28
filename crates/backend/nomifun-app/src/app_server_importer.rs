@@ -76,6 +76,7 @@ impl ImportProvider for AppServerImportProvider {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         };
         self.importer
             .run_import(&import_request)

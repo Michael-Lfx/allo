@@ -32,12 +32,13 @@ SDK 不负责：
 - 保存真实 OAuth Token；
 - 执行本地任意命令；
 - 绕过 App Server 的 Tool Policy、Approval 和权限校验；
-- **发明 wire 上不存在的动词**：安装面**没有更新动词**（不存在
-  `store/update-entry` / `install/update`）。一个待更新条目只被呈现为
-  `store/list` 的 `update_available` **标志**，加上一句显式的「先卸载、再安装
-  一次」提示（`StoreClient.updateHint()` 返回 `uninstall_reinstall`）；
-  `install()` 对**已安装**条目是 no-op（`reused=true`），绝不偷偷升级。
-  store 层永远不会因为看到一个「有新版本」的标志就自行拼一个更新动作；
+- **发明 wire 上不存在的动词**：一个待更新条目只被呈现为 `store/list` 的
+  `update_available` **标志**，升级要显式叫一次 `store.update()`（`store/update-entry`，
+  `fp-12` 加入；`StoreClient.updateHint()` 回答 `update` / `none` / `unknown`）。
+  `install()` 对**已安装**条目仍是 no-op（`reused=true`），绝不偷偷升级——store 层
+  永远不会因为看到一个「有新版本」的标志就自行拼一个更新动作。失败语义由 host 负责：
+  新版本先装、装成功才释放旧的，所以 `update()` 失败时旧安装仍在（`releasedCount === 0`），
+  调用方不必处理「升到一半」的条目；
 - **为宿主管理面提供 typed method**：六个方法（`config/get` · `config/set` ·
   `skill/create` · `skill/update` · `skill/delete` · `skill/copy`）的**类型**
   在 `@flowy-agent-store/protocol` 里，但 `@flowy-agent-store/client` **刻意
@@ -205,6 +206,16 @@ interface ConnectorClient {
   authStatus(id: ConnectorId): Promise<OAuthStatus>;
   authStart(id: ConnectorId): Promise<OAuthStartResult>;
   logout(id: ConnectorId): Promise<void>;
+  // fp-9：用户自己填 key / token 的表单与状态。响应**永不含 secret 的值**
+  // （`fields[].value` 只对 plain 字段出现），写入按调用者命名空间落库。
+  // fp-10：表单自己的文案（`title` / `description` / `doc_url` / `doc_label`）挂在
+  // `ConnectorCredential` 上——市场一份 schema 只声明它一次，不逐字段重复。
+  // fp-11：交一个宿主从未导入过的 MCP server（自带 server 与 key 的入口）；
+  // **模板即声明**，`${secret:NAME}` 就是表单字段，密钥仍只走 setCredentials。
+  register(registration: ConnectorRegistration): Promise<ConnectorDetail>;
+  credentials(id: ConnectorId): Promise<ConnectorCredential>;
+  setCredentials(id: ConnectorId, values: Record<string, string>): Promise<ConnectorCredential>;
+  clearCredentials(id: ConnectorId, keys?: string[]): Promise<ConnectorCredential>;
 }
 
 interface ArtifactClient {
@@ -219,6 +230,16 @@ interface ApprovalClient {
   respond(input: ApprovalResponseInput): Promise<ApprovalReceipt>;
 }
 ```
+
+> 自带 MCP server 的开发者（`fp-11`）：把手上那份模板交给 `register()` 就是全部工作——
+> `{name, transport, description?}`，`transport` 与宿主存储同形（`http`/`sse` 的
+> `url`/`headers`/`values`，或 `stdio` 的 `command`/`args`/`env`）。**模板即声明**：
+> `headers` 里写 `Authorization: "Bearer ${secret:ACME_KEY}"`，那个名字就成为凭据表单的字段，
+> 不需要市场条目、也不需要 `token-schema.json`；`${NAME}` 归连接器自己的 `values`。
+> 返回值是 `connector/get` 的形态，所以 `created.credential.missing` 直接是还差哪几个键；
+> 接着 `setCredentials(created.id, {ACME_KEY: …})` 与 `test(created.id)`。
+> 密钥不进 `register`；注册出来的行是 disabled（启用仍需探测通过）；方法在安装所有者专用面上；
+> 同名再注册是更新。（未做 `unregister`，见 `34` §10。）
 
 OAuth 客户端只获得：
 

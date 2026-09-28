@@ -24,10 +24,14 @@ pub enum McpServerTransport {
     Sse {
         url: String,
         headers: HashMap<String, String>,
+        /// Non-secret `${NAME}` values for this connector's URL/headers (34 §5.3).
+        values: HashMap<String, String>,
     },
     Http {
         url: String,
         headers: HashMap<String, String>,
+        /// Non-secret `${NAME}` values for this connector's URL/headers (34 §5.3).
+        values: HashMap<String, String>,
     },
 }
 
@@ -45,16 +49,23 @@ impl McpServerTransport {
     ///
     /// Only serializes the variant-specific fields (command/args/env or
     /// url/headers), not the type discriminant.
+    ///
+    /// `values` is written **only when the connector actually has plain
+    /// settings**. Serializing an empty map would rewrite every pre-existing
+    /// HTTP/SSE row's stored config, and `upsert_server` reads a config change as
+    /// "needs a new test": it would disable the row, clear its probed tools and
+    /// mark it disconnected the next time the server is saved. The wire DTO
+    /// (`nomifun_api_types::McpTransport`) skips empty maps for the same reason.
     pub fn to_config_json(&self) -> Result<String, McpError> {
         let value = match self {
             Self::Stdio { command, args, env } => {
                 serde_json::json!({ "command": command, "args": args, "env": env })
             }
-            Self::Sse { url, headers } => {
-                serde_json::json!({ "url": url, "headers": headers })
+            Self::Sse { url, headers, values } => {
+                with_values(serde_json::json!({ "url": url, "headers": headers }), values)
             }
-            Self::Http { url, headers } => {
-                serde_json::json!({ "url": url, "headers": headers })
+            Self::Http { url, headers, values } => {
+                with_values(serde_json::json!({ "url": url, "headers": headers }), values)
             }
         };
         serde_json::to_string(&value).map_err(McpError::from)
@@ -90,7 +101,8 @@ impl McpServerTransport {
                     .ok_or_else(|| McpError::InvalidTransport("sse: missing url".into()))?
                     .to_owned();
                 let headers = parse_headers_object(&value["headers"]);
-                Ok(Self::Sse { url, headers })
+                let values = parse_headers_object(&value["values"]);
+                Ok(Self::Sse { url, headers, values })
             }
             "http" => {
                 let url = value["url"]
@@ -98,11 +110,26 @@ impl McpServerTransport {
                     .ok_or_else(|| McpError::InvalidTransport("http: missing url".into()))?
                     .to_owned();
                 let headers = parse_headers_object(&value["headers"]);
-                Ok(Self::Http { url, headers })
+                let values = parse_headers_object(&value["values"]);
+                Ok(Self::Http { url, headers, values })
             }
             other => Err(McpError::InvalidTransport(format!("unknown transport type: {other}"))),
         }
     }
+}
+
+/// Helper: attach the additive `values` map to a stored transport object.
+///
+/// Empty stays absent, so a connector without plain settings keeps the exact
+/// config JSON it had before the field existed (see `to_config_json`).
+fn with_values(
+    mut value: serde_json::Value,
+    values: &HashMap<String, String>,
+) -> serde_json::Value {
+    if !values.is_empty() {
+        value["values"] = serde_json::json!(values);
+    }
+    value
 }
 
 /// Helper: extract `HashMap<String, String>` from a JSON object value.
@@ -123,8 +150,8 @@ impl From<McpTransport> for McpServerTransport {
     fn from(t: McpTransport) -> Self {
         match t {
             McpTransport::Stdio { command, args, env } => Self::Stdio { command, args, env },
-            McpTransport::Sse { url, headers } => Self::Sse { url, headers },
-            McpTransport::Http { url, headers } => Self::Http { url, headers },
+            McpTransport::Sse { url, headers, values } => Self::Sse { url, headers, values },
+            McpTransport::Http { url, headers, values } => Self::Http { url, headers, values },
         }
     }
 }
@@ -133,8 +160,8 @@ impl From<McpServerTransport> for McpTransport {
     fn from(t: McpServerTransport) -> Self {
         match t {
             McpServerTransport::Stdio { command, args, env } => McpTransport::Stdio { command, args, env },
-            McpServerTransport::Sse { url, headers } => McpTransport::Sse { url, headers },
-            McpServerTransport::Http { url, headers } => McpTransport::Http { url, headers },
+            McpServerTransport::Sse { url, headers, values } => McpTransport::Sse { url, headers, values },
+            McpServerTransport::Http { url, headers, values } => McpTransport::Http { url, headers, values },
         }
     }
 }
@@ -286,14 +313,12 @@ mod tests {
 
         let sse = McpServerTransport::Sse {
             url: "http://x".into(),
-            headers: HashMap::new(),
-        };
+            headers: HashMap::new(), values: HashMap::new()};
         assert_eq!(sse.transport_type(), "sse");
 
         let http = McpServerTransport::Http {
             url: "http://x".into(),
-            headers: HashMap::new(),
-        };
+            headers: HashMap::new(), values: HashMap::new()};
         assert_eq!(http.transport_type(), "http");
     }
 
@@ -313,8 +338,7 @@ mod tests {
     fn sse_roundtrip_via_db() {
         let original = McpServerTransport::Sse {
             url: "https://example.com/sse".into(),
-            headers: HashMap::from([("Authorization".into(), "Bearer tok".into())]),
-        };
+            headers: HashMap::from([("Authorization".into(), "Bearer tok".into())]), values: HashMap::new()};
         let json = original.to_config_json().unwrap();
         let parsed = McpServerTransport::from_db("sse", &json).unwrap();
         assert_eq!(parsed, original);
@@ -324,11 +348,38 @@ mod tests {
     fn http_roundtrip_via_db() {
         let original = McpServerTransport::Http {
             url: "https://example.com/mcp".into(),
-            headers: HashMap::new(),
-        };
+            headers: HashMap::new(), values: HashMap::new()};
         let json = original.to_config_json().unwrap();
         let parsed = McpServerTransport::from_db("http", &json).unwrap();
         assert_eq!(parsed, original);
+    }
+
+    /// The additive `values` map must not rewrite a stored config that has none:
+    /// `upsert_server` reads any difference as "the configuration changed", and
+    /// that resets `enabled`, clears the probed tools and marks the row
+    /// disconnected. Every pre-existing HTTP/SSE server would have paid that on
+    /// its next save.
+    #[test]
+    fn an_empty_values_map_keeps_the_stored_config_shape() {
+        let unchanged = McpServerTransport::Http {
+            url: "https://example.com/mcp".into(),
+            headers: HashMap::from([("X-Api-Version".into(), "2".into())]),
+            values: HashMap::new(),
+        };
+        // The shape every row in the wild already has.
+        assert_eq!(
+            unchanged.to_config_json().unwrap(),
+            r#"{"headers":{"X-Api-Version":"2"},"url":"https://example.com/mcp"}"#
+        );
+
+        let with_values = McpServerTransport::Sse {
+            url: "https://example.com/sse".into(),
+            headers: HashMap::new(),
+            values: HashMap::from([("HOST".into(), "example.com".into())]),
+        };
+        let json = with_values.to_config_json().unwrap();
+        assert!(json.contains(r#""values":{"HOST":"example.com"}"#), "{json}");
+        assert_eq!(McpServerTransport::from_db("sse", &json).unwrap(), with_values);
     }
 
     #[test]
@@ -393,8 +444,7 @@ mod tests {
     fn api_transport_roundtrip_sse() {
         let domain = McpServerTransport::Sse {
             url: "http://x".into(),
-            headers: HashMap::from([("H".into(), "V".into())]),
-        };
+            headers: HashMap::from([("H".into(), "V".into())]), values: HashMap::new()};
         let api: McpTransport = domain.clone().into();
         let back: McpServerTransport = api.into();
         assert_eq!(back, domain);
@@ -404,8 +454,7 @@ mod tests {
     fn api_transport_roundtrip_http() {
         let domain = McpServerTransport::Http {
             url: "http://x".into(),
-            headers: HashMap::new(),
-        };
+            headers: HashMap::new(), values: HashMap::new()};
         let api: McpTransport = domain.clone().into();
         let back: McpServerTransport = api.into();
         assert_eq!(back, domain);
@@ -498,7 +547,7 @@ mod tests {
         assert!(server.tools.is_empty());
         assert_eq!(server.last_test_status, McpServerStatus::Disconnected);
         match &server.transport {
-            McpServerTransport::Http { url, headers } => {
+            McpServerTransport::Http { url, headers, .. } => {
                 assert_eq!(url, "https://example.com/mcp");
                 assert!(headers.is_empty());
             }
@@ -578,6 +627,7 @@ mod tests {
             transport: McpServerTransport::Http {
                 url: "http://x".into(),
                 headers: HashMap::new(),
+                values: HashMap::new(),
             },
             tools: vec![],
             last_test_status: McpServerStatus::Disconnected,

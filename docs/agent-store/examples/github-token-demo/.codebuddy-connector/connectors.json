@@ -1,0 +1,20 @@
+{
+  "name": "github-token-demo",
+  "description": "示例连接器市场：一个需要用户自己填 key 的连接器（凭据声明的三处配套，见 02 §10.1）",
+  "owner": {
+    "name": "Agent Store docs example",
+    "email": "agent-store@example.com"
+  },
+  "connectors": [
+    {
+      "id": "github-token-demo",
+      "name": "GitHub（示例：可填密钥）",
+      "name_en": "GitHub (example: key required)",
+      "description": "与官方 github 条目同一个远端 MCP 服务，但按 token 认证声明，并把 Authorization 头作为引用落点。",
+      "description_en": "The same remote MCP server as the official github entry, declared as token auth with the Authorization header as the reference landing point.",
+      "source": "github-token-demo",
+      "auth_mode": "token",
+      "version": "1.0.0"
+    }
+  ]
+}

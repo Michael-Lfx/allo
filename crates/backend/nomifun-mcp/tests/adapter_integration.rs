@@ -83,8 +83,7 @@ async fn detect_returns_configured_servers() {
     };
     let t2 = McpServerTransport::Http {
         url: "https://example.com/mcp".into(),
-        headers: HashMap::from([("Auth".into(), "Bearer x".into())]),
-    };
+        headers: HashMap::from([("Auth".into(), "Bearer x".into())]), values: HashMap::new()};
     let adapter = InMemoryAdapter::new(McpSource::Gemini, true)
         .with_servers(vec![detected("server-a", t1), detected("server-b", t2)]);
 

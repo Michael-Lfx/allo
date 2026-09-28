@@ -662,6 +662,7 @@ mod tests {
         let borrowed: Vec<ComponentRuntimeRef<'_>> = refs
             .iter()
             .map(|(component_id, runtime_type, location)| ComponentRuntimeRef {
+                snapshot_id: SNAPSHOT,
                 component_id: *component_id,
                 runtime_type: *runtime_type,
                 location: *location,
@@ -824,7 +825,7 @@ mod tests {
         // refuses a disabled Preset. Reading the row here would accept an expert
         // `agent/run` would reject, so the adapter reads what the run path reads
         // (`team_run.rs:192-207` does the same).
-        repo.set_components_disabled(&[AGENT_ID], true)
+        repo.set_components_disabled(SNAPSHOT, &[AGENT_ID], true)
             .await
             .expect("disable the row");
         let row_flag_only = exporter(
@@ -921,7 +922,7 @@ mod tests {
             ],
         )
         .await;
-        repo.set_components_disabled(&[CONNECTOR_ID], true)
+        repo.set_components_disabled(SNAPSHOT, &[CONNECTOR_ID], true)
             .await
             .expect("disable connector");
         let provider = exporter(

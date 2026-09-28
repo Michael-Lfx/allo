@@ -1,7 +1,39 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-8`** —— 2026-09-24 起承载**专家 / 专家团定义导出**：新增两个 **WebSocket-only** 方法
+> 指纹：**`fp-12`** —— 2026-09-28 让**升级**成为一个显式动作：新增
+> `store/update-entry`（`POST /api/app-server/store/{marketplace_id}/entries/{entry_name}/update`），
+> 把已安装条目升到市场当前广告的版本。顺序是契约：**先导入并安装新版本，只有这次安装
+> 全部成功才释放旧版本**——失败时旧安装原样保留（`released_count: 0` 是它的机器可读形式），
+> 而不是让用户手里什么都不剩。组件按 `component_id`（`wb-<plugin>-<slug>`，跨版本稳定）
+> 配对：专家的 Preset **原地升级、保 id**，连接器的 `mcp_servers` 行同名 upsert 复用同一行，
+> 技能的产物按快照各自独立。`store/install-entry` 的「已装即 no-op」契约**不变**，所以
+> 安装永远不会偷偷升级；结果新增 `previous_version` / `previous_snapshot_id` /
+> `released_count` 三个字段，仅升级会填（`36` D3/D4）。同批修掉两个前置缺陷：条目版本现在
+> 真的进导入请求（否则技能与连接器的快照被钉在 `1.0.0` 占位版本，`update_available` 永远
+> 为真且内容一改就 digest 冲突，`36` D2），安装态写入按 `(snapshot_id, component_id)` 收窄
+> （`component_id` 跨快照相同，否则释放旧版本会连新版本的安装记录一起清掉，`36` D8）。
+> 计数 `52 / 77` → **`53 / 78`**。
+> 上一值 **`fp-11`**（2026-09-24）让调用方**把自己的 MCP server 交进来**：新增
+> `connector/register`（`POST /api/app-server/connectors`，与 `connector/list` 共用集合路由、
+> 各占一个动词）。这是**自带 server 与 key 的外部开发者**的入口——此前他们只能把 server 打成
+> 市场条目（还要写 `token-schema.json`）才拿得到表单。规则是**模板即声明**：交进来的
+> `transport` 里 URL / headers / env 的 `${secret:NAME}` 就是那张凭据表单，`${NAME}` 归连接器
+> 自己的 `values`（`34` §5.4/§6.5）。密钥不进这个方法（只有 `credential/set` 一条写入面），
+> 注册出来的行是 disabled，方法在**安装所有者专用**面上。计数 `51 / 76` → **`52 / 77`**。
+> 上一值 **`fp-10`**（2026-09-24）把**凭据表单自己的文案**归位：`title` / `description` /
+> `doc_url` / `doc_label` 从 `fields[]` 移到 `ConnectorCredential` 块上。市场的一份
+> `token-schema.json` 只在顶层声明它们一次（`34` §5.2），此前逐字段复制的结果是
+> 「如何获取密钥？」出现在「端口」底下、同一个链接在表单里重复四遍。无方法增删，
+> 计数仍 **`51 / 76`**。
+> 上一值 **`fp-9`**（2026-09-24）承载**连接器用户凭据**：连接器摘要多一个 `credential` 块
+> （`mode` / `status` / `missing` / `fields`），并新增三个**有 HTTP 路由**的方法
+> `connector/credential/get` · `set` · `clear`。这是本文第一次让**用户自己填的 key / token**
+> 有正式位置：密钥值两个方向都不过线，`missing` 与字段清单只含键名与市场文案；写入按 principal
+> 命名空间（`<principal>:NAME`），共享宿主不再用一个用户的 token 解析另一个用户的请求。规格见
+> §4.3.4；方案与证据见 `34-connector-user-credentials.zh.md`。三个方法都有 HTTP 绑定，
+> 故方法计数 `48 / 73` → **`51 / 76`**（映射 48 → 51，未映射仍 25）。
+> 上一值 **`fp-8`**（2026-09-24）承载**专家 / 专家团定义导出**：新增两个 **WebSocket-only** 方法
 > `agent/export` 与 `team/export`，回一份可移植的 `AppServerExpertPack`——persona 正文、模型提示、
 > **按引用**的技能清单、以及（团的）固定名单加逐成员展开。这是本文**第一次把 Agent Markdown 正文
 > 放上协议面**：目录面（`agent/list` / `agent/get`）**刻意永远不带**它（`frontmatter.rs:114`、
@@ -550,6 +582,99 @@ ConnectorProbeResult.tools_truncated   # fp-2 新增
 - **新鲜度**：`connector/get` 的 tools 来自**上次探针落库**的结果，可能很旧、也可能是空数组
   （首次探针成功前恒为空）。要新鲜就先调 `connector/test`——零额外机制。
 
+#### 4.3.4 连接器用户凭据（`credential` 块 + 三个方法，`fp-9` 加入；`fp-10` 归位表单文案）
+
+需要**用户自己填** key / token 的连接器此前没有输入口：市场的声明在导入期被丢弃，UI 只能把
+"http/sse 传输"一律当成 OAuth。`fp-9` 补上这条链路；`fp-10` 把表单自己的文案（`title` /
+`description` / `doc_url` / `doc_label`）从 `fields[]` 挪到块上——市场的一份 `token-schema.json`
+只声明一次这些东西（`34` §5.2），此前逐字段复制会让「如何获取密钥？」出现在「端口」底下。
+
+```text
+ConnectorSummary.credential?          # 新字段，可空
+
+ConnectorCredential {
+  connector_id,
+  mode,        # none | oauth | token
+  status,      # not_required | requires_input | configured | error
+  missing,     # 仍是**键名**，永不含值
+  fields[],    # 见下；只含元数据
+  title?,      # 两语言已在 host 归一，客户端不再各自实现回退链
+  description?,
+  doc_url?,    # 市场的"去哪里拿密钥"页，**表单级**（`fp-10` 起）
+  doc_label?,
+}
+CredentialField {
+  key, kind,   # secret（宿主的凭据库）| plain（连接器自己的设置）
+  required,
+  label / placeholder / description,   # 均是 {zh, en}
+  value?,      # **只在 plain 上出现**：当前生效值（声明默认或用户所填）
+}
+```
+
+| 方法 | 参数 | 返回 |
+|---|---|---|
+| `connector/credential/get` | `connector_id` | `ConnectorCredential` |
+| `connector/credential/set` | `connector_id`、`values` | 同上（新状态） |
+| `connector/credential/clear` | `connector_id`、`keys?` | 同上 |
+
+规则：
+
+- **值两个方向都不过线**：请求能带值（那是用户刚输入的），响应永不含 secret 的值——`fields[].value`
+  只对 `plain` 出现，`missing` 只有键名。这一点有测试逐字断言序列化结果。
+- **写入面 = 表格本身**：`set` 只接受该连接器声明里出现过的键，未声明的键直接拒绝——否则客户端
+  能把任意键塞进宿主的凭据文件。
+- **按 principal 键控**：secret 写入 `<principal>:NAME`；宿主级裸键属于**安装所有者**，声明
+  所有者之后其他 principal 读不到。`missing` / `status` 都是**关于调用者**的陈述：同一个连接器
+  对 A 是 `configured`、对 B 可能是 `requires_input`。
+- **`mode` 由存储的声明决定**：市场 `auth_mode` 映射为 `token` / `oauth` / `none`（空、
+  `server-side`、`mcp`、`oneid-token` 都归 `none`）。**只有没有声明的连接器**才看别处：
+  若它自己的模板里有 `${secret:NAME}` / 整值 `secret:NAME`，就是 `token`（模板即声明，见 §4.3.5）；
+  两者都没有才退回 transport 推导（http/sse → `oauth`）——手工注册且没什么可填的远端 server
+  因此仍显示 OAuth 入口，而 61 个 `token` 类与 204 个 `auth_mode` 为空的连接器不再显示。
+  这是**有意的行为变更**。
+- **`error` 只有一个产生者**：`connector/test`。缺凭据（`requires_input`）优先于 `error`——
+  让用户去填比复述一次探测失败更有用。
+- **`plain` 值写进连接器自己的 transport**，因此改 plain 值与改传输同规则：config 变化会把
+  连接器置回未启用，需要重测。secret 写入不进 transport，不触发该规则。
+- **门面**：`connector/credential/*` 走独立的 `ConnectorCredentialProvider`，`None` 时能力关闭、
+  返回 `unsupported_operation`。宿主没有 config 文件时不接线，而不是编一个没地方写的位置。
+
+#### 4.3.5 自带 MCP server（`connector/register`，`fp-11` 加入）
+
+外部开发者有自己的 MCP server 与自己的 key，此前**没有入口**：`credential/set` 要求连接器有一张
+导入来的表单，而宿主从未导入过他的 server；`AppServerClient` 又没有 MCP CRUD，于是"自带 server"
+只能打成市场条目。`connector/register` 补上这条路。
+
+```text
+POST /api/app-server/connectors       # connector/register（与 connector/list 共用集合路由）
+
+ConnectorRegistration {
+  name,                    # 宿主上的名字；同名再注册 = 更新（配置按名字 upsert），builtin 名拒绝
+  description?,
+  transport,               # 与宿主存储同形：{type:"http"|"sse",url,headers?,values?}
+}                          #            或 {type:"stdio",command,args?,env?}
+→ ConnectorDetail          # 与 connector/get 同形，含 credential 块
+```
+
+**模板即声明**：`transport` 里出现的引用就是这张凭据表单，不需要 `token-schema.json`：
+
+- `${secret:NAME}` / 整值 `secret:NAME` → `secret` 字段，`required: true`，label 回退为键名；
+- `${NAME}` → `plain` 字段，`values` 里已有值则 `required: false` 且回传该值，否则 `required: true`；
+- 扫描顺序 url → headers/env（按键名排序），同名去重，**同名跨两个命名空间时按 `secret` 处理**
+  （否则一个本该进凭据库的值会落到可读可导出的 `values` 里）；
+- stdio 的 `${NAME}` **不派生字段**：它的 spawn 路径按空的 plain 表解析、plain 写入也被拒绝，
+  派生一个永远填不进去的字段只会掩盖模板本身的错。
+
+三条边界（都在测试里）：
+
+- **密钥不进这个方法**：只有 `credential/set` 一条写入面，注册调用本身不含任何需要脱敏的东西；
+- **注册不授予连接**：新行 disabled，启用仍需一次通过探测；同名再注册后的 `credential` 状态保留；
+- **方法在安装所有者专用面上**（`protect_instance_owner`）：能注册 = 能决定宿主去连哪里，
+  与宿主自己的 MCP 管理器同级权限。它还继承了"未声明的键不许写"那条规则——注册一个 server
+  不等于把凭据库变成自由键值表。
+
+**未做**：没有 `connector/unregister`，注册出来的行只能用宿主自己的 MCP 管理面删除（登记在 `34` §10）。
+
 ### 4.4 Import 与 PluginSnapshot（roadmap Phase 1）
 
 导入是**带本地路径的一次性操作**，走 HTTP 辅助通道（与 workspace 注册同构，见 05 §5 的 HTTP 直连模式；每次调用独立握手）：
@@ -868,6 +993,7 @@ PluginSnapshot 对用户不可见。
 ```text
 GET  /api/app-server/store                                      # store/list（聚合目录）
 POST /api/app-server/store/{marketplace_id}/entries/{entry}/install  # store/install-entry（一键安装）
+POST /api/app-server/store/{marketplace_id}/entries/{entry}/update   # store/update-entry（升级，fp-12）
 GET  /api/app-server/store/{marketplace_id}/entries/{entry}/assets/{*path}  # 条目展示资产（头像等）
 ```
 
@@ -910,16 +1036,25 @@ items[] {
   声明日期，客户端不得渲染占位。真实市场（普查 2026-09-10）尚未携带该字段，
   因此 WebUI 的「最新」排序在该 kind 一条日期都没有时**不出现**——没有数据的
   排序控件是死控件；
-- `store/install-entry` 幂等且**版本感知**：wire 上**没有**更新动词
-  （`store/update-entry` 不存在），所以客户端唯一的升级路径就是「卸载，再安装
-  一次」。因此：条目**已安装** → 仍是 no-op（`reused=true`）——在这里重新导入
-  等于把「安装」变成一次隐藏的升级；条目**未安装**且快照版本 == 市场当前版本
-  → 装那个快照；条目**未安装**且版本不同（前进或回滚）→ 经
-  `market/entry-import` **重新导入**并装新快照，旧快照保持不可变、历史保留。
-  版本推导收敛为**一个共享 helper**（`entry_live_version`），`store/list` 与
-  `install_entry` 共用，目录与安装器因此不可能各说一套。响应
+- `store/install-entry` 幂等且**版本感知**：条目**已安装** → no-op（`reused=true`）
+  ——在这里重新导入等于把「安装」变成一次隐藏的升级，所以安装永远不会偷偷升级；条目
+  **未安装**且快照版本 == 市场当前版本 → 装那个快照；条目**未安装**且版本不同（前进或
+  回滚）→ 经 `market/entry-import` **重新导入**并装新快照，旧快照保持不可变、历史保留。
+  版本推导收敛为**一个共享 helper**（`entry_live_version`），`store/list`、
+  `install_entry` 与导入面共用，目录与安装器因此不可能各说一套。响应
   `{ snapshot_id, version, installed_count, outcomes[], errors[] }`——`outcomes`
   从安装器转发（§4.5.2），一键商店安装与直接 `install/run` 一样可分支判断；
+- `store/update-entry`（`fp-12` 加入）是**显式升级**，把已安装条目升到 `store/list`
+  当前广告的版本。它**不**在安装面上开洞：安装依旧是「已装即 no-op」，升级要单独叫。
+  顺序即契约：**先导入并安装新版本，只有这次安装无错才释放旧版本**——任何一步失败都保留
+  旧安装（`released_count: 0`）。因此：条目**未安装** → `invalid_request`（不是第二次安装
+  入口）；**已在广告版本** → no-op（`reused=true`）；版本不同 → 导入 → 替换。组件按
+  `component_id` 跨快照配对：**专家原地升级、Preset id 不变**（id 是会话绑定与任何外部
+  引用的锚点），**连接器同名 upsert 复用同一 `mcp_servers` 行**（配置变了会被置为 disabled，
+  这是既有的「配置变更须重测」语义，如实上报），**技能按快照各自一个目录**、旧的删除、解析
+  取最新快照。响应在安装结果上多 `previous_version` / `previous_snapshot_id` /
+  `released_count` 三个字段（仅升级填）。内容改了而市场**没抬版本** → 导入器仍以
+  `digest 冲突` 拒绝，`errors[]` 如实带回，补救在市场侧（`36` D6）；
 - store 资产端点与快照资产端点同一 MIME 白名单与路径穿越校验；**不要求
   App Server 连接头**（`<img>` 标签无法携带，头像/图标是公开展示内容）：
   先按条目目录（`entry_dir`，plugin.json `avatar`）解析，缺失时回退市场根

@@ -1090,7 +1090,18 @@ pub fn create_router_with_all_state(
                     states.mcp.connection_test_service.clone(),
                     states.mcp.oauth_service.clone(),
                 )
-                .with_assets(app_server_entry_assets.clone()),
+                .with_assets(app_server_entry_assets.clone())
+                // The declaration an imported connector shipped lives in its
+                // snapshot (`34` §5.2); this is what lets `connector/get` describe
+                // the form and the mode instead of guessing `oauth` from the
+                // transport.
+                .with_credentials(
+                    crate::app_server_credentials::AppServerConnectorCredentials::new(Arc::new(
+                        nomifun_db::SqlitePluginSnapshotRepository::new(
+                            services.database.pool().clone(),
+                        ),
+                    )),
+                ),
             )),
             connector_auth: Some(Arc::new(
                 crate::app_server_catalog::AppServerConnectorAuth::new(
@@ -1098,6 +1109,22 @@ pub fn create_router_with_all_state(
                     states.mcp.oauth_service.clone(),
                 ),
             )),
+            // The credential **write** face (`34` §6.1). Same declaration reader
+            // as the catalog, plus the two things a write needs: the MCP config
+            // service (plain values) and the host config path (credentials).
+            // Absent on a host that declares no config file: the catalog still
+            // describes the form, and `connector/credential/*` answers
+            // `unsupported_operation` rather than inventing a place to write.
+            connector_credentials: services.agent_store_config_path.clone().map(|path| {
+                Arc::new(
+                    crate::app_server_credentials::AppServerConnectorCredentials::new(Arc::new(
+                        nomifun_db::SqlitePluginSnapshotRepository::new(
+                            services.database.pool().clone(),
+                        ),
+                    ))
+                    .with_writer(states.mcp.config_service.clone(), path),
+                ) as Arc<dyn nomifun_app_server::ConnectorCredentialProvider>
+            }),
             // Connector call proxy (`connector/call`, doc 24 §5). Wired
             // unconditionally, but the provider's first gate is the host's
             // `[connector_proxy]` policy — an opted-out host refuses every call

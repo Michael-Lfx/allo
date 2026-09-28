@@ -96,8 +96,7 @@ async fn http_unreachable_url_returns_connection_error() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Http {
         url: "http://127.0.0.1:1/mcp-unreachable".into(),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("test-http", &transport).await;
 
@@ -114,8 +113,7 @@ async fn sse_unreachable_url_returns_connection_error() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: "http://127.0.0.1:1/sse-unreachable".into(),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("test-sse", &transport).await;
 
@@ -154,8 +152,7 @@ async fn http_401_returns_needs_auth() {
     let svc = make_service();
     let transport = McpServerTransport::Http {
         url: format!("http://{}/mcp", addr),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("auth-server", &transport).await;
 
@@ -191,8 +188,7 @@ async fn sse_401_returns_needs_auth() {
     let svc = make_service();
     let transport = McpServerTransport::Sse {
         url: format!("http://{}/sse", addr),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("sse-auth", &transport).await;
 
@@ -223,8 +219,7 @@ async fn sse_connection_test_uses_string_jsonrpc_ids() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: format!("http://{}/sse", addr),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("string-id-sse", &transport).await;
 
@@ -246,8 +241,7 @@ async fn sse_tool_call_returns_the_upstream_result() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: format!("http://{addr}/sse"),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let outcome = svc
         .call_tool(&transport, "echo", serde_json::json!({ "n": 1 }))
@@ -265,8 +259,7 @@ async fn sse_tool_level_failure_is_a_result_and_a_server_error_is_not() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: format!("http://{addr}/sse"),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     // A tool-level failure resolves, with `is_error` set.
     let failed = svc
@@ -285,8 +278,7 @@ async fn sse_unknown_tool_is_a_call_failure() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
     let transport = McpServerTransport::Sse {
         url: format!("http://{addr}/sse"),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let error = svc
         .call_tool(&transport, "no-such-tool", serde_json::json!({}))
@@ -531,8 +523,7 @@ async fn http_500_returns_error_with_status() {
     let svc = make_service();
     let transport = McpServerTransport::Http {
         url: format!("http://{}/mcp", addr),
-        headers: HashMap::new(),
-    };
+        headers: HashMap::new(), values: HashMap::new()};
 
     let result = svc.test_connection("error-server", &transport).await;
 
@@ -586,8 +577,7 @@ async fn http_custom_headers_are_sent() {
     headers.insert("X-Api-Key".into(), "secret".into());
     let transport = McpServerTransport::Http {
         url: format!("http://{}/mcp", addr),
-        headers,
-    };
+        headers, values: HashMap::new()};
 
     let result = svc.test_connection("header-server", &transport).await;
 
@@ -602,6 +592,196 @@ async fn http_custom_headers_are_sent() {
             "Custom header should have been sent"
         );
     }
+
+    server_handle.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Credential references: resolved, or not sent at all
+// ---------------------------------------------------------------------------
+
+/// What the mock MCP server observed, so the assertions are about the wire
+/// rather than about a helper's return value.
+#[derive(Default)]
+struct ObservedRequest {
+    authorization: Option<String>,
+    query: Option<String>,
+}
+
+/// A minimal Streamable-HTTP MCP server that records the auth-bearing parts of
+/// every request it receives.
+async fn spawn_recording_mcp_server() -> (
+    std::net::SocketAddr,
+    Arc<Mutex<Vec<ObservedRequest>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen: Arc<Mutex<Vec<ObservedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+
+    let handle = tokio::spawn(async move {
+        let app = axum::Router::new().route(
+            "/mcp",
+            axum::routing::post(
+                move |uri: axum::http::Uri, headers: axum::http::HeaderMap, body: axum::Json<serde_json::Value>| {
+                    let recorder = Arc::clone(&recorder);
+                    async move {
+                        recorder.lock().unwrap().push(ObservedRequest {
+                            authorization: headers
+                                .get(axum::http::header::AUTHORIZATION)
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::to_owned),
+                            query: uri.query().map(str::to_owned),
+                        });
+
+                        // Answer the handshake by method so the probe reaches
+                        // `tools/list` and can succeed.
+                        let id = body.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                        let result = match body.get("method").and_then(|m| m.as_str()) {
+                            Some("initialize") => serde_json::json!({
+                                "protocolVersion": "2024-11-05",
+                                "capabilities": {},
+                                "serverInfo": { "name": "recording", "version": "1.0" }
+                            }),
+                            Some("tools/list") => serde_json::json!({ "tools": [] }),
+                            _ => serde_json::json!({}),
+                        };
+                        axum::Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": result,
+                        }))
+                    }
+                },
+            ),
+        );
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (addr, seen, handle)
+}
+
+#[tokio::test]
+async fn an_unresolved_reference_sends_nothing_at_all() {
+    let (addr, seen, server_handle) = spawn_recording_mcp_server().await;
+
+    let svc = make_service();
+    let mut headers = HashMap::new();
+    // Namespaced so this test cannot collide with another test's credentials.
+    headers.insert("x-api-key".into(), "${secret:__STEP1_UNSET__}".into());
+    let transport = McpServerTransport::Http {
+        url: format!("http://{}/mcp", addr),
+        headers, values: HashMap::new()};
+
+    let result = svc.test_connection("unresolved-server", &transport).await;
+
+    assert!(!result.success, "an unresolvable reference must not probe successfully");
+    assert_eq!(
+        result.code,
+        Some(nomifun_api_types::McpConnectionTestErrorCode::MissingCredential),
+    );
+    let error = result.error.unwrap_or_default();
+    assert!(error.contains("__STEP1_UNSET__"), "the error names the credential: {error}");
+    assert!(
+        !error.contains("${secret:"),
+        "the error must not echo the unresolved template: {error}"
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "fail-closed means the request is never attempted"
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn resolved_references_reach_the_wire_in_headers_and_url() {
+    let (addr, seen, server_handle) = spawn_recording_mcp_server().await;
+
+    // The process-wide map is what the real hosts install at startup. The name is
+    // namespaced so a parallel test cannot observe it by accident.
+    nomifun_common::secret_ref::set_credentials(HashMap::from([(
+        "__STEP1_TOKEN__".to_owned(),
+        "resolved-token".to_owned(),
+    )]));
+
+    let svc = make_service();
+    let mut headers = HashMap::new();
+    // Embedded form, with the literal prefix the marketplace writes.
+    headers.insert(
+        "Authorization".into(),
+        "Bearer ${secret:__STEP1_TOKEN__}".into(),
+    );
+    // Whole-value form, to prove both survive the same path.
+    headers.insert("x-api-key".into(), "secret:__STEP1_TOKEN__".into());
+    let url = format!("http://{}/mcp?token=${{secret:__STEP1_TOKEN__}}", addr);
+    let transport = McpServerTransport::Http { url, headers, values: HashMap::new() };
+
+    let result = svc.test_connection("resolved-server", &transport).await;
+    assert!(result.success, "probe should succeed: {:?}", result.error);
+
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty(), "the request must have been sent");
+    let first = &seen[0];
+    assert_eq!(
+        first.authorization.as_deref(),
+        Some("Bearer resolved-token"),
+        "the `Bearer ` prefix comes from the template text, not from the header name"
+    );
+    assert_eq!(
+        first.query.as_deref(),
+        Some("token=resolved-token"),
+        "a credential in the URL query is resolved too"
+    );
+
+    // Leave no credential behind for another test in this binary.
+    nomifun_common::secret_ref::set_credentials(HashMap::new());
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn plain_values_resolve_from_the_transport_and_are_required() {
+    // A connector's own settings (`HOST`, `PORT`) are not credentials, but their
+    // `${NAME}` placeholders must resolve all the same — and a missing one has to
+    // stop the request rather than send `${HOST}` to the server.
+    let (addr, seen, server_handle) = spawn_recording_mcp_server().await;
+
+    let svc = make_service();
+    let values = HashMap::from([
+        ("HOST".to_owned(), "127.0.0.1".to_owned()),
+        ("PORT".to_owned(), addr.port().to_string()),
+    ]);
+    let transport = McpServerTransport::Http {
+        url: "http://${HOST}:${PORT}/mcp".to_owned(),
+        headers: HashMap::from([("X-Qinghu-Env".to_owned(), "${ENV}".to_owned())]),
+        values: values.clone(),
+    };
+    let result = svc.test_connection("plain-values", &transport).await;
+    assert!(!result.success, "`ENV` is not filled in");
+    assert_eq!(
+        result.code,
+        Some(nomifun_api_types::McpConnectionTestErrorCode::MissingCredential),
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "the URL could not be fully resolved, so nothing may be sent"
+    );
+
+    // Fill the missing piece: now the request goes out, to the resolved URL.
+    let transport = McpServerTransport::Http {
+        url: "http://${HOST}:${PORT}/mcp".to_owned(),
+        headers: HashMap::from([("X-Qinghu-Env".to_owned(), "${ENV}".to_owned())]),
+        values: values.into_iter().chain([("ENV".to_owned(), "prod".to_owned())]).collect(),
+    };
+    let result = svc.test_connection("plain-values", &transport).await;
+    assert!(result.success, "probe should succeed: {:?}", result.error);
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.first().and_then(|request| request.query.clone()),
+        None,
+        "the resolved URL has no query string",
+    );
 
     server_handle.abort();
 }

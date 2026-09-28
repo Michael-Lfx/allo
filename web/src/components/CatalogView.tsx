@@ -71,8 +71,8 @@ import { IconButton } from "./IconButton";
 import { DialogShell } from "./dialogs/DialogShell";
 import { McpManagerDialog } from "./dialogs/McpSettingsSection";
 import { ImportPanel } from "./catalog/ImportPanel";
+import { ConnectorCredentialForm } from "./catalog/ConnectorCredentialForm";
 import {
-  AUTH_STATE_KEYS,
   AgentBadge,
   AvatarBadge,
   CONNECTOR_STATE_KEYS,
@@ -85,6 +85,10 @@ import {
   Tags,
   agentDisplayName,
   connectorStateClass,
+  credentialModeLabel,
+  credentialStateClass,
+  credentialStatus,
+  credentialStatusLabel,
   importStatusLabel,
   installStateClass,
   installStateLabel,
@@ -112,6 +116,14 @@ type PanelKind = "store" | "skill" | "connector" | "agent" | "team";
 // ---------------------------------------------------------------------------
 // semantic helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * `36` D6: the importer refusing an update because the market changed the
+ * entry's content without raising its version. Matched on the host's own line
+ * (either language) — the refusal is carried in `errors[]`, not in a status the
+ * client can branch on.
+ */
+const DIGEST_CONFLICT = /digest\s*(冲突|conflict)/i;
 
 /** Install / installed / update action attached to a store card. */
 function StoreInstallAction({
@@ -144,6 +156,8 @@ function StoreInstallAction({
     // `store/install-entry`, which is a documented no-op for an installed entry
     // — and for a pending update it was worse: re-importing would have been a
     // hidden upgrade. `16` §6: no shell control that does nothing when pressed.
+    // The pending update is therefore only *reported* here; the real action is
+    // the drawer's (see `StoreDrawer`), where both versions are on screen.
     const pendingUpdate = item.update_available;
     return (
       <span
@@ -443,6 +457,64 @@ export function CatalogView() {
   }, [client, setAuthStatus]);
 
   /**
+   * Persist the credential form and re-read the connector (`34` §6.3).
+   *
+   * No waiting loop: there is no browser step here, the write is synchronous, and
+   * the host answers with the new block — so this is the probe's own refresh
+   * shape (`get` + `status`), not a second polling cadence. The installed list is
+   * re-read too, because its rows carry the same credential block and the badge
+   * on a card must not keep the state from before the write.
+   */
+  const saveCredentials = useCallback(async (connectorId: string, values: Record<string, string>) => {
+    if (!client) return;
+    setDetailBusy(connectorId);
+    try {
+      await client.connectors.setCredentials(connectorId, values);
+      if (!activeRef.current) return;
+      setError(null);
+      const [detail, status, list] = await Promise.all([
+        client.connectors.get(connectorId),
+        client.connectors.status(connectorId),
+        client.connectors.list(),
+      ]);
+      if (!activeRef.current) return;
+      setConnectorDetail(detail);
+      setAuthStatus(connectorId, status.auth_status);
+      setConnectors(list);
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setDetailBusy(null);
+    }
+  }, [client, setAuthStatus]);
+
+  /** Forget this caller's stored secrets (`34` §6.1). Same refresh as a save. */
+  const clearCredentials = useCallback(async (connectorId: string) => {
+    if (!client) return;
+    setDetailBusy(connectorId);
+    try {
+      await client.connectors.clearCredentials(connectorId);
+      if (!activeRef.current) return;
+      setError(null);
+      const [detail, status, list] = await Promise.all([
+        client.connectors.get(connectorId),
+        client.connectors.status(connectorId),
+        client.connectors.list(),
+      ]);
+      if (!activeRef.current) return;
+      setConnectorDetail(detail);
+      setAuthStatus(connectorId, status.auth_status);
+      setConnectors(list);
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setDetailBusy(null);
+    }
+  }, [client, setAuthStatus]);
+
+  /**
    * Flip one connector's host-level `enabled` (doc `28` §4.5).
    *
    * Same first-party route as the composer's switch. The switch's own value comes
@@ -603,6 +675,66 @@ export function CatalogView() {
       setUninstallFor(null);
     }
   }, [client, pushToast, reload, t]);
+
+  const [storeUpdateBusy, setStoreUpdateBusy] = useState<string | null>(null);
+
+  /**
+   * Upgrade one installed store entry to the version its marketplace now
+   * advertises (`store/update-entry`, `36` D3). Same refresh/toast contract as
+   * `runStoreInstall`: re-read the two projections a write can move, then say
+   * what happened — the version pair this time, not only the name.
+   *
+   * A refusal is reported, never dressed up as a success. `36` D6 gives the
+   * digest conflict its own remedy sentence: the market changed the entry's
+   * content without raising the version, so the immutable snapshot (`02` §9)
+   * refuses the import and "try again" is not the answer — raising the version
+   * (or renaming the entry) is.
+   */
+  const runStoreUpdate = useCallback(async (item: StoreItem) => {
+    if (!client) return;
+    setStoreUpdateBusy(item.id);
+    setError(null);
+    try {
+      const outcome = await client.store.update(item);
+      if (!activeRef.current) return;
+      if (!outcome.ok) {
+        const reason = outcome.errors.join("; ");
+        pushToast(
+          "error",
+          DIGEST_CONFLICT.test(reason) ? "catalog.storeUpdateBlockedVersion" : "catalog.storeUpdateFailed",
+          { reason },
+        );
+        // The host only ever releases the previous installation after the new
+        // one landed, so a refused update left the item exactly as it was.
+        return;
+      }
+      reload();
+      const list = await client.listStore();
+      if (!activeRef.current) return;
+      setStoreItems(list.items);
+      // Keep the open drawer's item in sync.
+      setStoreDrawerItem((current) => {
+        if (!current) return current;
+        return list.items.find((candidate) => candidate.id === current.id) ?? current;
+      });
+      pushToast("success", "catalog.storeUpdateDone", {
+        name: item.name,
+        from: outcome.fromVersion ?? item.installed_version ?? item.version,
+        to: outcome.toVersion ?? item.version,
+      });
+    } catch (caught) {
+      // Only a transport/host failure throws; a refused update resolves.
+      if (!activeRef.current) return;
+      const reason = formatError(caught);
+      pushToast(
+        "error",
+        DIGEST_CONFLICT.test(reason) ? "catalog.storeUpdateBlockedVersion" : "catalog.storeUpdateFailed",
+        { reason },
+      );
+    } finally {
+      if (activeRef.current) setStoreUpdateBusy(null);
+    }
+  }, [client, pushToast, reload]);
 
   const closeDrawer = useCallback(() => {
     setDrawer(null);
@@ -1082,7 +1214,25 @@ export function CatalogView() {
                   </div>
                   <span className={`status-dot ${connectorStateClass(connector.status)}`} aria-hidden="true" />
                 </div>
-                <Tags tags={[connector.kind, connector.auth_mode, ...(connector.description ? [connector.description] : [])]} />
+                {/* The raw `auth_mode` enum used to sit in this row, and it read
+                    `oauth` for every url-shaped connector — including the 61 that
+                    authenticate with a key (`34` §6.1). */}
+                <Tags tags={[connector.kind, ...(connector.description ? [connector.description] : [])]} />
+                {/* The one thing a list has to say about a credential: this
+                    connector still wants something from you. A connector that is
+                    in order says nothing here — 218 of them need no auth at all,
+                    and a chip on every card would say nothing. */}
+                {connector.credential &&
+                  (connector.credential.status === "requires_input" || connector.credential.status === "error") && (
+                    <div className="market-tags">
+                      <span className={`market-tag is-status ${credentialStateClass(connector.credential.status)}`}>
+                        {credentialStatusLabel(t, connector.credential.status, connector.credential.mode)}
+                        {connector.credential.missing.length > 0
+                          ? ` · ${t("catalog.credentialMissingCount", { count: connector.credential.missing.length })}`
+                          : ""}
+                      </span>
+                    </div>
+                  )}
               </button>
             )}
           />
@@ -1206,6 +1356,8 @@ export function CatalogView() {
                 busy={storeInstallBusy === storeDrawerItem.id}
                 result={storeInstallResult}
                 onInstall={() => void runStoreInstall(storeDrawerItem)}
+                updateBusy={storeUpdateBusy === storeDrawerItem.id}
+                onUpdate={() => void runStoreUpdate(storeDrawerItem)}
                 uninstallBusy={storeUninstallBusy === storeDrawerItem.id}
                 onUninstall={() => setUninstallFor(storeDrawerItem)}
                 rootUrl={client?.serverRootUrl}
@@ -1221,6 +1373,8 @@ export function CatalogView() {
                 onAuthRefresh={() => void refreshAuth(connectorDetail.id)}
                 onLogout={() => void logoutConnector(connectorDetail.id)}
                 onToggleEnabled={() => void toggleConnectorEnabled(connectorDetail.id)}
+                onSaveCredentials={(values) => void saveCredentials(connectorDetail.id, values)}
+                onClearCredentials={() => void clearCredentials(connectorDetail.id)}
               />
             )}
             {drawer === "agent" && agentDetail && <AgentDrawer detail={agentDetail} />}
@@ -1310,6 +1464,8 @@ function StoreDrawer({
   busy,
   result,
   onInstall,
+  updateBusy,
+  onUpdate,
   onUninstall,
   uninstallBusy,
   rootUrl,
@@ -1318,6 +1474,8 @@ function StoreDrawer({
   busy: boolean;
   result: StoreInstallResult | null;
   onInstall: () => void;
+  updateBusy: boolean;
+  onUpdate: () => void;
   onUninstall: () => void;
   uninstallBusy: boolean;
   rootUrl?: string;
@@ -1391,16 +1549,17 @@ function StoreDrawer({
           </button>
         )}
         {!item.blocked_reason && item.installed && item.update_available && (
-          // There is no update verb on the wire (`store/update-entry` does not
-          // exist). This used to be a button that called install, which returns
-          // `reused` for an installed entry — a control that did nothing. The
-          // note states the path that does work: release it, install again, and
-          // the version-aware re-import picks up what the marketplace offers.
+          // A real upgrade, on the verb the wire grew for it (`store/update-entry`,
+          // `36` D3) — this used to be a note saying "uninstall, then install
+          // again", and before that a button that called install, which returns
+          // `reused` for an installed entry: a control that did nothing.
           <>
             <span className="market-tag is-status is-warn" title={t("catalog.storeUpdate")}>
               {t("catalog.storeUpdate")}
             </span>
-            <span className="settings-row-note">{t("catalog.storeUpdateNote")}</span>
+            <button className="primary-button" type="button" disabled={updateBusy} onClick={onUpdate}>
+              {updateBusy ? t("catalog.storeUpdating") : t("catalog.storeUpdateNow")}
+            </button>
           </>
         )}
         {result && (
@@ -1458,6 +1617,8 @@ export function ConnectorDrawer({
   onAuthRefresh,
   onLogout,
   onToggleEnabled,
+  onSaveCredentials,
+  onClearCredentials,
 }: {
   detail: ConnectorDetail;
   auth?: OAuthStatusView;
@@ -1467,9 +1628,41 @@ export function ConnectorDrawer({
   onAuthRefresh: () => void;
   onLogout: () => void;
   onToggleEnabled: () => void;
+  onSaveCredentials: (values: Record<string, string>) => void;
+  onClearCredentials: () => void;
 }) {
   const { t } = useTranslation();
+  const [filling, setFilling] = useState(false);
   const authenticated = auth?.state === "authenticated";
+  const credential = detail.credential ?? null;
+  // `34` §6.1: the auth affordance follows `credential.mode`, never the
+  // transport-derived `auth_mode`. The two disagreed on every url-shaped
+  // connector, which handed the 61 `token` connectors an OAuth entry point.
+  const mode = credential?.mode ?? "none";
+  const status = credential
+    ? credentialStatus({
+        mode,
+        status: credential.status,
+        authenticated,
+        authFailed: Boolean(auth?.error),
+      })
+    : null;
+  /**
+   * One reason line, whichever mode produced it (`34` §6.3). A browser-step
+   * failure arrives as `auth_status.error`; a `token` credential the probe
+   * rejected has only its state on the wire, so the same element carries the
+   * chrome sentence rather than a second error surface appearing beside it.
+   */
+  const failure = auth?.error
+    ? t("catalog.authFailed", { error: auth.error })
+    : credential?.status === "error"
+      ? t("catalog.credentialFailed")
+      : null;
+  const missing = credential?.missing.length ?? 0;
+  // The form to render, or `null`. A `token` connector with no fields has no
+  // entry point: an old snapshot can carry the mode without the declaration it
+  // came with, and the host would refuse the write anyway.
+  const form = credential && credential.mode === "token" && credential.fields.length > 0 ? credential : null;
   return (
     <div className="drawer-body">
       <div className="drawer-head">
@@ -1477,9 +1670,21 @@ export function ConnectorDrawer({
         <div>
           <h2>{detail.name}</h2>
           <div className="drawer-chips">
-            <span className={`market-tag is-status ${connectorStateClass(detail.status)}`}>
-              {stateLabel(t, CONNECTOR_STATE_KEYS, detail.status)}
-            </span>
+            {/* One status vocabulary for the auth face (`34` §6.3): the credential
+                four-state when the host describes it, the connection status only
+                for a connector that has no credential face at all. */}
+            {status ? (
+              <span className={`market-tag is-status ${credentialStateClass(status)}`}>
+                {credentialStatusLabel(t, status, mode)}
+                {status === "requires_input" && missing > 0
+                  ? ` · ${t("catalog.credentialMissingCount", { count: missing })}`
+                  : ""}
+              </span>
+            ) : (
+              <span className={`market-tag is-status ${connectorStateClass(detail.status)}`}>
+                {stateLabel(t, CONNECTOR_STATE_KEYS, detail.status)}
+              </span>
+            )}
             {!detail.enabled && <span className="market-tag is-status is-warn">{t("catalog.disabled")}</span>}
           </div>
         </div>
@@ -1487,7 +1692,9 @@ export function ConnectorDrawer({
       <dl className="market-meta">
         <MetaRow label={t("catalog.fieldType")} value={detail.kind} />
         <MetaRow label={t("catalog.fieldTransport")} value={detail.transport_summary} mono />
-        <MetaRow label={t("catalog.fieldAuth")} value={detail.auth_mode} />
+        {credential && (
+          <MetaRow label={t("catalog.fieldAuth")} value={credentialModeLabel(t, mode)} />
+        )}
         <MetaRow label={t("catalog.fieldNamespace")} value={detail.tool_filter ?? undefined} mono />
       </dl>
       <div className="drawer-actions">
@@ -1506,11 +1713,8 @@ export function ConnectorDrawer({
         >
           <span className="switch-pill-knob" aria-hidden="true" />
         </button>
-        {detail.auth_mode === "oauth" ? (
+        {mode === "oauth" ? (
           <>
-            <span className={`market-tag is-status ${authenticated ? "is-success" : "is-warn"}`}>
-              {stateLabel(t, AUTH_STATE_KEYS, auth?.state ?? "not_authenticated")}
-            </span>
             {!authenticated ? (
               <button className="quiet-button" type="button" onClick={onAuthStart} disabled={busy}>{t("catalog.authAuthorize")}</button>
             ) : (
@@ -1518,15 +1722,32 @@ export function ConnectorDrawer({
             )}
             <button className="quiet-button" type="button" onClick={onAuthRefresh} disabled={busy}>{t("catalog.authRefreshStatus")}</button>
           </>
+        ) : form ? (
+          <button
+            className="quiet-button"
+            type="button"
+            aria-expanded={filling}
+            disabled={busy}
+            onClick={() => setFilling((open) => !open)}
+          >
+            {t("catalog.credentialFill")}
+          </button>
         ) : null}
         <button className="primary-button" type="button" onClick={onProbe} disabled={busy}>{t("catalog.authTest")}</button>
       </div>
       {busy && <p className="drawer-hint">{t("common.processing")}</p>}
-      {/* Why the last attempt did not finish (token exchange failure, callback
-          timeout, a throttling gateway). Carried by `auth_status.error` — and
-          only rendered while the flow is still unauthenticated, which is
-          exactly when it is true. */}
-      {auth?.error && <p className="drawer-hint is-error">{t("catalog.authFailed", { error: auth.error })}</p>}
+      {failure && <p className="drawer-hint is-error">{failure}</p>}
+      {form && filling && (
+        <ConnectorCredentialForm
+          // Remount on a change of the host's answer, so the `plain` rows are
+          // re-seeded from `field.value` instead of keeping a stale local copy.
+          key={`${detail.id}:${status}`}
+          credential={form}
+          busy={busy}
+          onSave={onSaveCredentials}
+          onClear={onClearCredentials}
+        />
+      )}
       <details className="drawer-details" open={(detail.tools?.length ?? 0) > 0}>
         <summary>{t("catalog.tools", { count: detail.tools?.length ?? 0 })}</summary>
         {(detail.tools ?? []).length === 0 ? (

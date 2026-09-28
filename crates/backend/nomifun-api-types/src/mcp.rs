@@ -12,6 +12,12 @@ pub use nomifun_common::McpServerId;
 /// MCP server transport configuration (tagged union).
 ///
 /// `http` represents Streamable HTTP (the MCP standard); `sse` is legacy.
+///
+/// `values` carries a connector's **non-secret** settings (`HOST`, `PORT`,
+/// `ENV`) for the `${NAME}` placeholders a marketplace `mcp.json` writes into its
+/// URL or headers (34 §5.3). They are not credentials: they belong to the
+/// connector, stay visible, and never enter the credential store. The map is what
+/// lets a declaration keep its template *and* be prefilled.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum McpTransport {
@@ -28,12 +34,16 @@ pub enum McpTransport {
         url: String,
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         headers: HashMap<String, String>,
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        values: HashMap<String, String>,
     },
     #[serde(rename = "http")]
     Http {
         url: String,
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         headers: HashMap<String, String>,
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        values: HashMap<String, String>,
     },
 }
 
@@ -228,6 +238,10 @@ pub enum McpConnectionTestErrorCode {
     RpcError,
     ProtocolError,
     ReauthorizationRequired,
+    /// A `secret:NAME` / `${secret:NAME}` reference in the URL or headers has no
+    /// value installed, so the request was **not** sent. Configuration problem,
+    /// not a transport one — hence 422 rather than a gateway status.
+    MissingCredential,
 }
 
 impl McpConnectionTestErrorCode {
@@ -242,6 +256,7 @@ impl McpConnectionTestErrorCode {
             Self::RpcError => "MCP_RPC_ERROR",
             Self::ProtocolError => "MCP_PROTOCOL_ERROR",
             Self::ReauthorizationRequired => "MCP_REAUTHORIZATION_REQUIRED",
+            Self::MissingCredential => "MCP_MISSING_CREDENTIAL",
         }
     }
 }
@@ -385,6 +400,7 @@ mod tests {
         let t = McpTransport::Http {
             url: "https://example.com/mcp".into(),
             headers: HashMap::new(),
+            values: HashMap::new(),
         };
         let json = serde_json::to_value(&t).unwrap();
         assert_eq!(json["type"], "http");
@@ -397,6 +413,7 @@ mod tests {
         let t = McpTransport::Sse {
             url: "https://example.com/sse".into(),
             headers: HashMap::from([("Authorization".into(), "Bearer xxx".into())]),
+            values: HashMap::new(),
         };
         let json = serde_json::to_value(&t).unwrap();
         assert_eq!(json["type"], "sse");
@@ -710,7 +727,11 @@ mod tests {
         let entry = DetectedMcpServerEntry {
             name: "test".into(),
             description: None,
-            transport: McpTransport::Http { url: "https://example.com/mcp".into(), headers: HashMap::new() },
+            transport: McpTransport::Http {
+                url: "https://example.com/mcp".into(),
+                headers: HashMap::new(),
+                values: HashMap::new(),
+            },
             original_json: None,
             importable: false,
             import_skip_reason: Some("Needs authentication".into()),

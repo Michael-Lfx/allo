@@ -16,7 +16,7 @@
 
 import { useTranslation } from "react-i18next";
 import { pickLocalized, useLocalizedLang, type LocalizedLang } from "../../ui/localize";
-import type { AgentSummary, CompatibilityTriple, InstallState, StoreItem } from "../../lib/protocol";
+import type { AgentSummary, CompatibilityTriple, ConnectorCredential, InstallState, StoreItem } from "../../lib/protocol";
 
 // ---------------------------------------------------------------------------
 // wire status → i18n key
@@ -33,11 +33,77 @@ export const CONNECTOR_STATE_KEYS: Record<string, string> = {
   reauthorization_required: "catalog.stateReauthRequired",
 };
 
-export const AUTH_STATE_KEYS: Record<string, string> = {
-  authenticated: "catalog.authAuthenticated",
-  not_authenticated: "catalog.authNotAuthenticated",
-  reauthorization_required: "catalog.authReauthRequired",
+/**
+ * The credential four-state vocabulary (doc `34` §6.1/§6.3).
+ *
+ * There is one of these, not one per authentication mode: OAuth's
+ * `authenticated` / `not_authenticated` are mapped into it by
+ * {@link credentialStatus}. The wording is still mode-aware, because one state
+ * means different things either side of the line — `requires_input` is "there
+ * are boxes to fill" for a `token` connector and "the browser step has not
+ * happened" for an `oauth` one, and sharing the sentence would tell a token user
+ * to authorize and an OAuth user to paste a key.
+ */
+export const CREDENTIAL_STATUS_KEYS: Record<string, string> = {
+  not_required: "catalog.credentialNotRequired",
+  error: "catalog.credentialError",
 };
+
+const CREDENTIAL_MODE_KEYS: Record<string, Record<string, string>> = {
+  requires_input: {
+    token: "catalog.credentialNeedsFill",
+    oauth: "catalog.credentialNeedsAuth",
+  },
+  configured: {
+    token: "catalog.credentialConfigured",
+    oauth: "catalog.credentialAuthorized",
+  },
+};
+
+export function credentialStatusLabel(t: Translate, status: string, mode: string): string {
+  const key = CREDENTIAL_MODE_KEYS[status]?.[mode] ?? CREDENTIAL_STATUS_KEYS[status];
+  return key ? t(key) : t("catalog.stateOther", { status });
+}
+
+/**
+ * `credential.mode` → the localized noun.
+ *
+ * The drawer used to print the raw `auth_mode` enum here, which is derived from
+ * the transport and therefore reads `oauth` for every url-shaped connector —
+ * including the 61 that authenticate with a key. This is the value the UI acts
+ * on, so this is the one it states.
+ */
+const CREDENTIAL_MODE_LABELS: Record<string, string> = {
+  none: "catalog.credentialModeNone",
+  oauth: "catalog.credentialModeOauth",
+  token: "catalog.credentialModeToken",
+};
+
+export function credentialModeLabel(t: Translate, mode: string): string {
+  const key = CREDENTIAL_MODE_LABELS[mode];
+  return key ? t(key) : mode;
+}
+
+/**
+ * The one four-state status the UI shows for a connector's credential face.
+ *
+ * A `token` connector's `credential.status` is the host's own answer and is
+ * taken as it stands. For OAuth it is not: the host derives that field from the
+ * last probe (`credential_block`), so a connector the user has already
+ * authorized but never tested would read 「需要授权」. The authorization state is
+ * the authority there, and a failure after the browser step — the reason
+ * `auth_status.error` carries — is the `error` state.
+ */
+export function credentialStatus(view: {
+  mode: string;
+  status: string;
+  authenticated: boolean;
+  authFailed: boolean;
+}): string {
+  if (view.mode !== "oauth") return view.status;
+  if (view.authFailed || view.status === "error") return "error";
+  return view.authenticated ? "configured" : "requires_input";
+}
 
 export const IMPORT_STATUS_KEYS: Record<string, string> = {
   completed: "catalog.importStatusCompleted",
@@ -113,13 +179,20 @@ export function installStateLabel(t: ReturnType<typeof useTranslation>["t"], sta
 /**
  * Whether a connector row should offer the OAuth 「连接」 action.
  *
- * The summary status already folds OAuth readiness in (`summary_status` in
- * `nomifun-app/src/app_server_catalog.rs`: oauth + most recent probe not
- * connected → `authorization_required`), so this needs no per-row
+ * The decision is `credential.mode`, **not** `auth_mode` (`34` §6.1):
+ * `auth_mode` is derived from the transport, so it answers `oauth` for every
+ * url-shaped connector — including the 61 that authenticate with a key, which
+ * then got an OAuth entry point they cannot use.
+ *
+ * The summary status already folds readiness in (`summary_status` in
+ * `nomifun-app/src/app_server_catalog.rs`), so this needs no per-row
  * `connector/status` call — N rows must not become N requests.
  */
-export function connectorNeedsAuth(connector: { auth_mode: string; status: string }): boolean {
-  return connector.auth_mode === "oauth" && connector.status === "authorization_required";
+export function connectorNeedsAuth(connector: {
+  credential?: ConnectorCredential | null;
+  status: string;
+}): boolean {
+  return connector.credential?.mode === "oauth" && connector.status === "authorization_required";
 }
 
 /**
@@ -127,12 +200,33 @@ export function connectorNeedsAuth(connector: { auth_mode: string; status: strin
  *
  * A **disabled** connector reports `installed` on the wire, which would render
  * 「已安装」 while the switch beside it is off — so the disabled state wins.
+ *
+ * Otherwise the line is the credential four-state whenever the host describes one:
+ * `ConnectorStatus` is derived from the transport, so it calls all 224 url-shaped
+ * connectors `authorization_required` — which would label the 61 that want a key
+ * 「需要授权」 on the very row whose action button now says something else.
  */
 export function connectorRowStatusLabel(
   t: Translate,
-  connector: { enabled: boolean; status: string },
+  connector: { enabled: boolean; status: string; credential?: ConnectorCredential | null },
 ): string {
-  return connector.enabled ? stateLabel(t, CONNECTOR_STATE_KEYS, connector.status) : t("catalog.disabled");
+  if (!connector.enabled) return t("catalog.disabled");
+  const credential = connector.credential;
+  if (!credential) return stateLabel(t, CONNECTOR_STATE_KEYS, connector.status);
+  return credentialStatusLabel(
+    t,
+    credentialStatus({
+      mode: credential.mode,
+      status: credential.status,
+      // A summary carries no per-connector authorization state, and an OAuth
+      // connector without a successful probe reports `requires_input` anyway — so
+      // this reads exactly as the old `authorization_required` did for OAuth and
+      // stops calling a key connector unauthorized.
+      authenticated: false,
+      authFailed: false,
+    }),
+    credential.mode,
+  );
 }
 
 /** Which install transition a component row offers. */
@@ -152,6 +246,20 @@ export function connectorStateClass(status: string): string {
     case "authorization_required":
     case "reauthorization_required":
       return "is-warn";
+    default:
+      return "";
+  }
+}
+
+/** The credential four-state status → CSS modifier. `not_required` is muted. */
+export function credentialStateClass(status: string): string {
+  switch (status) {
+    case "configured":
+      return "is-success";
+    case "requires_input":
+      return "is-warn";
+    case "error":
+      return "is-error";
     default:
       return "";
   }

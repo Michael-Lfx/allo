@@ -236,6 +236,9 @@ fn connector_summary(
         enabled,
         status: summary_status(enabled, last_test, auth_mode),
         avatar_url,
+        // Filled by `AppServerConnectorCatalog` when a declaration reader is
+        // wired; a projection with no snapshot behind it leaves it `None`.
+        credential: None,
     }
 }
 
@@ -264,6 +267,10 @@ pub struct AppServerConnectorCatalog {
     oauth: McpOAuthService,
     /// Marketplace icon resolver for connectors installed from a market.
     assets: Option<crate::app_server_entry_assets::AppServerEntryAssets>,
+    /// Reads the credential declaration an imported connector shipped (`34` §5.2).
+    /// Absent in tests and in hosts with no import history: the summary then
+    /// simply carries no `credential` block.
+    credentials: Option<crate::app_server_credentials::AppServerConnectorCredentials>,
 }
 
 impl AppServerConnectorCatalog {
@@ -272,7 +279,34 @@ impl AppServerConnectorCatalog {
         connection_test: McpConnectionTestService,
         oauth: McpOAuthService,
     ) -> Self {
-        Self { config, connection_test, oauth, assets: None }
+        Self { config, connection_test, oauth, assets: None, credentials: None }
+    }
+
+    /// Wire the credential declaration reader (composition root).
+    pub fn with_credentials(
+        mut self,
+        credentials: crate::app_server_credentials::AppServerConnectorCredentials,
+    ) -> Self {
+        self.credentials = Some(credentials);
+        self
+    }
+
+    /// The `credential` block for one server, as `principal` sees it.
+    async fn credential_block(
+        &self,
+        mcp_server_id: &str,
+        server: &nomifun_api_types::McpServerResponse,
+        principal: Option<&str>,
+    ) -> Option<nomifun_api_types::AppServerConnectorCredential> {
+        let reader = self.credentials.as_ref()?;
+        reader
+            .describe(
+                mcp_server_id,
+                &server.transport,
+                server.last_test_status,
+                principal,
+            )
+            .await
     }
 
     /// Wire marketplace icon resolution (composition root).
@@ -301,7 +335,7 @@ impl AppServerConnectorCatalog {
 
 #[async_trait]
 impl ConnectorCatalogProvider for AppServerConnectorCatalog {
-    async fn list(&self) -> Result<Vec<AppServerConnectorSummary>, AppError> {
+    async fn list(&self, principal: Option<&str>) -> Result<Vec<AppServerConnectorSummary>, AppError> {
         let servers = self.config.list_servers().await.map_err(AppError::from)?;
         let mut out = Vec::with_capacity(servers.len());
         for server in servers {
@@ -310,29 +344,37 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
                 Some(assets) => assets.avatar_for_mcp_server(&id).await,
                 None => None,
             };
-            out.push(connector_summary(
-                id,
-                server.name,
-                server.description,
+            let mut summary = connector_summary(
+                id.clone(),
+                server.name.clone(),
+                server.description.clone(),
                 server.enabled,
                 &server.transport,
                 server.last_test_status,
                 avatar_url,
-            ));
+            );
+            summary.credential = self.credential_block(&id, &server, principal).await;
+            out.push(summary);
         }
         Ok(out)
     }
 
-    async fn get(&self, id: &str) -> Result<AppServerConnectorDetail, AppError> {
+    async fn get(
+        &self,
+        id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError> {
         let server = self.get_server(id).await?;
         let connector_id = server.mcp_server_id.as_str().to_owned();
-        let transport = server.transport;
+        // Cloned, not moved: the `credential` block below still needs the whole
+        // server row (its `values` live inside the transport).
+        let transport = server.transport.clone();
         let auth_mode = auth_mode_for(&transport);
         let avatar_url = match self.assets.as_ref() {
             Some(assets) => assets.avatar_for_mcp_server(&connector_id).await,
             None => None,
         };
-        let summary = connector_summary(
+        let mut summary = connector_summary(
             connector_id.clone(),
             server.name.clone(),
             server.description.clone(),
@@ -341,6 +383,7 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
             server.last_test_status,
             avatar_url,
         );
+        summary.credential = self.credential_block(&connector_id, &server, principal).await;
         let auth_status = if auth_mode == "oauth" {
             self.oauth_authenticated(&transport).await.map(|authenticated| AppServerOAuthStatusView {
                 state: if authenticated { "authenticated".into() } else { "not_authenticated".into() },
@@ -361,7 +404,11 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
         })
     }
 
-    async fn status(&self, id: &str) -> Result<AppServerConnectorStatusView, AppError> {
+    async fn status(
+        &self,
+        id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorStatusView, AppError> {
         let server = self.get_server(id).await?;
         let connector_id = server.mcp_server_id.as_str().to_owned();
         let transport = server.transport;
@@ -398,15 +445,65 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
     }
 
     async fn test(&self, id: &str) -> Result<AppServerConnectorProbeResult, AppError> {
+        self.test_for(id, None).await
+    }
+
+    async fn test_for(
+        &self,
+        id: &str,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorProbeResult, AppError> {
         let server = self.get_server(id).await?;
         let connector_id = server.mcp_server_id.as_str().to_owned();
         let transport = nomifun_mcp::McpServerTransport::from(server.transport);
-        let result = self.connection_test.test_connection(&server.name, &transport).await;
+        let result = self
+            .connection_test
+            .test_connection_for(&server.name, &transport, principal)
+            .await;
         self.config
             .persist_test_result(&server.mcp_server_id, &result)
             .await
             .map_err(AppError::from)?;
         Ok(probe_result(connector_id, result))
+    }
+
+    /// Register a connector the host never imported (`34` §6.5).
+    ///
+    /// The MCP configuration's own `add_server` is the whole write: it upserts by
+    /// name (so re-registering updates rather than duplicating), refuses a builtin
+    /// server's name, and persists the row **disabled** — the template is stored as
+    /// handed in, credentials and all, and nothing about it is resolved here.
+    ///
+    /// Returned as this caller's detail, which is the point: the caller immediately
+    /// sees the form its own template declared (`mode: token`, the `${secret:NAME}`
+    /// names as fields) and which of them are still missing.
+    async fn register(
+        &self,
+        registration: nomifun_api_types::AppServerConnectorRegistration,
+        principal: Option<&str>,
+    ) -> Result<AppServerConnectorDetail, AppError> {
+        let name = registration.name.trim();
+        if name.is_empty() {
+            return Err(AppError::BadRequest(
+                "a connector name must not be empty".to_owned(),
+            ));
+        }
+        let created = self
+            .config
+            .add_server(nomifun_api_types::CreateMcpServerRequest {
+                name: name.to_owned(),
+                description: registration
+                    .description
+                    .map(|description| description.trim().to_owned())
+                    .filter(|description| !description.is_empty()),
+                transport: registration.transport,
+                original_json: None,
+                builtin: false,
+            })
+            .await
+            .map_err(AppError::from)?;
+        let connector_id = created.mcp_server_id.as_str().to_owned();
+        self.get(&connector_id, principal).await
     }
 }
 

@@ -140,12 +140,12 @@ fn parse_toml_server_entry(name: &str, config: &toml::Value) -> Option<DetectedS
         "sse" => {
             let url = table.get("url")?.as_str()?.to_owned();
             let headers = parse_toml_headers(table);
-            McpServerTransport::Sse { url, headers }
+            McpServerTransport::Sse { url, headers, values: HashMap::new() }
         }
         "http" | "streamable_http" => {
             let url = table.get("url")?.as_str()?.to_owned();
             let headers = parse_toml_headers(table);
-            McpServerTransport::Http { url, headers }
+            McpServerTransport::Http { url, headers, values: HashMap::new() }
         }
         _ => return None,
     };
@@ -275,7 +275,7 @@ Authorization = "Bearer tok"
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "remote");
         match &servers[0].transport {
-            McpServerTransport::Http { url, headers } => {
+            McpServerTransport::Http { url, headers, .. } => {
                 assert_eq!(url, "https://example.com/mcp");
                 assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
             }

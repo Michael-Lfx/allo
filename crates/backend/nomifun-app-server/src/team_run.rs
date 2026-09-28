@@ -471,7 +471,7 @@ async fn team_connector_fence(
             )
         })?;
         let detail = connectors
-            .get(id.as_str())
+            .get(id.as_str(), None)
             .await
             .map_err(AppServerError::from)?;
         if !detail.summary.enabled {

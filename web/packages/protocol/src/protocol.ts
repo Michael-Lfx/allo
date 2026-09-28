@@ -63,7 +63,7 @@
  * faces deliberately never do; both methods are WebSocket-only, so the
  * documented route split becomes `48 / 73` (doc `32`).
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-8";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-12";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -910,6 +910,30 @@ export type ConnectorStatus =
   | "error"
   | "reauthorization_required";
 
+/** `connector/register` — a connector the host never imported (doc `34` §6.5). */
+export interface ConnectorRegistration {
+  /** Its name on this host. Re-registering the same name updates it. */
+  name: string;
+  description?: string | null;
+  /**
+   * The template the host will store and later resolve — the same shape it keeps
+   * for a marketplace connector. Whatever `${secret:NAME}` its URL, headers or env
+   * name becomes the credential form; `values` carries the connector's own
+   * non-secret settings.
+   */
+  transport: ConnectorTransport;
+}
+
+/** The transport template, mirroring the host's own stored shape. */
+export type ConnectorTransport =
+  | {
+      type: "http" | "sse";
+      url: string;
+      headers?: Record<string, string>;
+      values?: Record<string, string>;
+    }
+  | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
+
 export interface ConnectorSummary {
   id: string;
   name: string;
@@ -924,6 +948,63 @@ export interface ConnectorSummary {
    * Absent for builtin hosts and for markets that ship no icon for the entry.
    */
   avatar_url?: string | null;
+  /**
+   * What the connector needs the user to fill in, when the host can describe it
+   * (doc `34` §6.1). Absent for a connector with no declaration and nothing to
+   * ask for.
+   *
+   * **Never carries a secret value**: `fields[].value` exists only for `plain`
+   * fields, which are the connector's own settings (`HOST`, `PORT`), and
+   * `missing` holds key names.
+   */
+  credential?: ConnectorCredential | null;
+}
+
+/** Both languages, already resolved by the host (doc `34` §5.2). */
+export interface LocalizedString {
+  zh: string;
+  en: string;
+}
+
+/** How a connector authenticates. */
+export type CredentialMode = "none" | "oauth" | "token";
+
+/** What the caller has to do about it. */
+export type CredentialStatus = "not_required" | "requires_input" | "configured" | "error";
+
+/** One row of the credential form. */
+export interface CredentialField {
+  key: string;
+  /** `secret` (the host's credential store) or `plain` (the connector's own value). */
+  kind: "secret" | "plain";
+  required: boolean;
+  label: LocalizedString;
+  placeholder: LocalizedString;
+  description: LocalizedString;
+  /** Only for `plain`: the value in effect. A secret's value never crosses the wire. */
+  value?: string | null;
+}
+
+/** The credential form and its state, as this caller sees them (doc `34` §6.1). */
+export interface ConnectorCredential {
+  connector_id: string;
+  mode: CredentialMode;
+  status: CredentialStatus;
+  /** Key names still missing for this caller — never values. */
+  missing: string[];
+  fields: CredentialField[];
+  /**
+   * Form-level text from the marketplace declaration (doc `34` §5.2).
+   *
+   * A `token-schema.json` declares its title, its description and its "where do I
+   * get a key" link **once, for the form** — the market ships no per-field links,
+   * and copying the form's onto every field reads as "how do I get a key" under
+   * `PORT`.
+   */
+  title?: LocalizedString | null;
+  description?: LocalizedString | null;
+  doc_url?: LocalizedString | null;
+  doc_label?: LocalizedString | null;
 }
 
 export interface ConnectorTool {
@@ -1326,7 +1407,8 @@ export interface StoreInstallResult {
   entry_name: string;
   snapshot_id: string;
   version: string;
-  /** true when the components were already registered (no-op install). */
+  /** true when the components were already registered (no-op install), or — for
+   *  an update — when the entry was already at the advertised version. */
   reused: boolean;
   installed_count: number;
   warnings: string[];
@@ -1335,6 +1417,15 @@ export interface StoreInstallResult {
    *  store install is as branchable as a direct `install/run`. Absent on a host
    *  that predates the field. */
   outcomes?: InstallOutcome[];
+  /** Version the entry was installed at before this call (`store/update-entry`
+   *  only; absent means "this was an install"). */
+  previous_version?: string | null;
+  /** The snapshot that was replaced. Same rule as `previous_version`. */
+  previous_snapshot_id?: string | null;
+  /** Components of the replaced snapshot whose runtime artifacts were actually
+   *  released. `0` on an install, on a no-op update, and when a failed update
+   *  left the previous installation in place. */
+  released_count?: number;
 }
 
 // ---------------------------------------------------------------------------

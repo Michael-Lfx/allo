@@ -288,7 +288,7 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 - 幂等：重复 `market/add` 同一源不产生重复注册；相同内容重复导入返回已有快照；
 - 协议面细节以 `05-flowy-agent-store-app-server-protocol.md` 为唯一正文。
 
-### 9.1 Store 一键安装的版本语义（2026-09-15）
+### 9.1 Store 一键安装的版本语义（2026-09-15；升级动作 2026-09-28 补入）
 
 `store/install-entry` 是 `market/entry-import` + `install/run` 的合成面，其版本
 判定已收敛到**一个共享 helper**（`entry_live_version`），`store/list` 的
@@ -300,10 +300,21 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 - 条目**未安装**且版本不同（前进或回滚）→ 经 `market/entry-import` **重新导入**
   并装新快照；旧快照保持不可变、历史保留。
 
-**wire 上没有更新动词**（`store/update-entry` 不存在），所以客户端唯一的升级
-路径是「卸载，再安装一次」；`install_entry` 的版本感知正是让这条路径**真的能**
-取到新版本。这与 §7 的自动更新扫掠职责不同：**扫掠只刷新「索引」——它从不更新
-已安装的快照**（§9.2）。
+**升级现在有自己的动词**（`store/update-entry`，`fp-12`，`36` 技术方案）：把已安装
+条目升到 `store/list` 当前广告的版本。顺序即契约——**先导入并安装新版本，只有这次
+安装全部成功才释放旧版本**，任何一步失败都保留旧安装（`released_count: 0`），因此
+「升到一半」不是客户端要处理的状态。组件按 `component_id` 跨快照配对：专家的 Preset
+**原地升级、保 id**；连接器的 `mcp_servers` 行同名 upsert，**复用同一行**（配置变了会被
+置为 disabled 直到重新探测）；技能的产物按快照各自独立。未安装的条目调它 → 拒绝
+（不是第二次安装入口）；已在广告版本 → no-op。这与 §7 的自动更新扫掠职责不同：
+**扫掠只刷新「索引」——它从不更新已安装的快照**（§9.2）。
+
+**版本从哪来（`36` D2 修掉的一处实缺）**：连接器与技能条目**没有自带版本**——
+`mcp.json` / `SKILL.md` 解析出来的都是占位版本 `1.0.0`。它们的版本只在**市场自己的
+索引行**里（`.codebuddy-connector/connectors.json` 的 `id → version`、
+`.codebuddy-skill/marketplace.json` 的 `name → version`）。此前目录侧读这个索引、
+导入侧不读，于是快照永远停在 `1.0.0`：`update_available` 恒为真、内容一改就撞快照
+digest 冲突。现在导入请求带上条目版本，目录与快照说的是同一个版本（§11 D9）。
 
 ### 9.2 自动更新扫掠的边界（2026-09-15 订正）
 
@@ -313,7 +324,7 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 
 必须写明的边界：**扫掠只刷新索引/投影**（重新获取清单、重建条目投影，仍走 §5 的
 条件请求短路），**绝不改动任何已安装快照**——升级已安装条目始终是用户的显式动作
-（§9.1 的「卸载再安装」）。
+（§9.1 的 `store/update-entry`）。
 
 ---
 
@@ -364,5 +375,7 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 | D6 | **manifest-only 模式下 `plugins[]` 条目未标 `external`** | `market_fetch.rs:226` 的 `key_kind != "plugin"` 例外：skills/connectors 解析不到时标 `external`（`:229-241`），plugins 仍标 `directory`（`:244-255`） | 与 §5.2 步骤 5 原文「条目标记为 external」不符；plugin 市场在 manifest-only 场景下 UI 显示成本地目录，导入时才报缺失 | ✅ **已定（2026-09-10，T20）：采纳 ② 改规范**——§5.2 步骤 5 已按条目类型写明；① 改实现（去掉例外）会改变 `store/list` 投影与既有断言，收益不抵风险 |
 | D7 | **真实市场携带规范未列的清单/条目字段** | `scripts/check-agent-store-market.mjs --census`（T20 新增模式）对三个真实市场普查：manifest 层 spec-silent = `plugin`(×7)、`members`(×3)、`license`(×1)（experts）/ `distribution`、`homepage`、`license`、`repository`、`settings`（skills）；**entry 层** = `description_zh/en`(×268)、`examples_zh/en`(×268)、`legacy_tags_zh/en`(×154)、`name_zh`(×15)、`featured`(×3, number)、`name_en`(×2)、`category_zh/en`(×1) | 这些字段当前靠 schema `additionalProperties` 容忍（不报错、不消费）。但 §3/§4 的字段表声称固定「必填/可选/默认」，表里没有它们 → 第三方无法从规范判断哪些会被消费 | ✅ **已定（2026-09-10，T20）：采纳 ①**——在 §3 末尾补「真实市场已出现、规范未消费」清单（标注**透传、不消费**），使字段表与真实数据一致；后续若要消费其中某项（如本地化变体），按显式修订定义。→ **2026-09-10（批 1，R28）本地化变体已收编**：新增 `localized` 通用映射并定义客户端回退链与 `tags_*` 族优先级（§4.1）；`examples_*` 已透传但无展示位、`featured` 维持透传不消费 |
 | D8 | **`market/get` 未返回条目安装快照** | 响应结构 `AppServerMarketplaceDetail`（`app_server.rs:592-599`）只有 `summary + entries`；类型 `AppServerMarketplaceEntrySnapshot`（`:583-590`）已定义却未挂载；`to_entry`（`app_server_marketplace.rs:409-419`）不含 `snapshot_id` / 安装态 | §9 声称 `market/get`「含发现条目**与安装快照**」；W13 的「移除市场」影响面因此只能从聚合的 `store/list` 派生（见 `16` 已知偏差 D-W13-1） | ✅ **已实现（2026-09-10，批 1；D11=A 批准协议增量）**：`market/get` 的每条目新增可选 `snapshot`（`AppServerMarketplaceEntrySnapshot` 增 `installed_count`，纯 additive、缺省不上 wire），由 `app_server_marketplace.rs` 的 `get()` 经新增仓储查询 `list_snapshot_provenance_by_marketplace`（一次 JOIN 出 component / installed 计数）投影；TS 侧补 `MarketplaceEntrySnapshot`。验证：`cargo test -p nomifun-db --lib marketplace` **8 passed**（含新用例）、`market_impls_route_through_the_provider_and_gate` 通过 —— **§9 声称的「`market/get` 含发现条目与安装快照」由此成立** |
+| D9 | **connector 与 skill 条目改了内容就发布不出去**（2026-09-28 实测；同日扩面） | 快照身份是 `market-<entry>@<version>`，注册表拒绝"同身份同版本、不同内容"覆盖（`digest 冲突：同一身份与版本（market-github@1.0.0）已存在不同内容…，不得覆盖既有不可变快照`）。而这两类条目的版本**不在条目里**：`mcp.json` / 裸 `SKILL.md` 解析出来的都是占位版本 `1.0.0`，真实版本只在市场索引行（`.codebuddy-connector/connectors.json` 的 `id → version` / `.codebuddy-skill/marketplace.json` 的 `name → version`）。`entry_live_version`（`app_server_store.rs`）**目录侧**会读它，但**导入请求根本不带版本**——`import_entry` 用 `ImportRequest::from_marketplace(...)`，导入器于是定成 `1.0.0`。实测：把索引 `version` 抬到 `1.0.1`，`store/list` 认了（条目显示 1.0.1），`store/install-entry` 仍撞冲突。**技能同样中招**：官方技能市场的条目是 `skills/<slug>/` + 只有 `SKILL.md`（无 `marketplace.json`）→ `ParsedManifest::SingleSkill` → 版本也是硬编码 `1.0.0`，而索引里逐条写着真版本（如腾讯文档 `1.0.31`）——于是技能的 `update_available` **恒为真**、卸载再装仍拿回 `1.0.0` | **已发布条目无法通过市场更新内容**：索引版本抬了也只表现为 `update_available` 永远为真、永远装不上；唯一绕法是改条目名（等于换一个新条目）。（插件不受影响：版本在自带 `plugin.json` 里） | ✅ **已定并实施（2026-09-28，`36` D2 采纳方案①）**：`ImportRequest` 增 `declared_version`，由 `import_entry` 用**同一个** `entry_live_version` 算出的值传入（导入器只在缺省时回退清单版本）。同时补齐技能侧的市场索引读取（`MarketIndex::read` 读 connectors.json + marketplace.json 两张表），目录显示与快照版本自此同源。注意连接器条目**不能**靠加 `plugin.json` 解（那会把 kind 判定推向 `CodeBuddyPlugin`、不再产生 connector 组件）。升级动作本身见 `36`（`store/update-entry`，`fp-12`） |
+| D10 | **`StoreInstallResult` 丢掉 `warnings` / `errors`，导入被拒没有原因**（2026-09-28 实测） | 客户端把 `store/install-entry` 的响应映射成 `{snapshotId, reused, components, ok, ready}`（`web/packages/client/src/store.ts`），服务端的 `warnings` / `errors` 不在这几个字段里 | 导入被拒（如 D9 的 digest 冲突、"已安装即 no-op"）在 SDK / UI 侧只表现为 `ok:false` + 空 `components`，**没有可显示的原因**；当时是用 `transport.request("store/install-entry", …)` 绕过客户端才拿到那句冲突说明 | ✅ **已修（2026-09-28，`36` 实施同批）**：`StoreOperationOutcome` 新增 `errors[]` / `warnings[]`（`install()` / `update()` / `uninstall()` / `setEnabled()` 四条路都带上；`AppServerInstallStatus` 无 `warnings` 字段，那两条路回 `[]` 并注明"该动词不上报"）。WebUI 的升级失败提示直接展示 `errors.join("; ")`，digest 冲突另给"市场没抬版本"的补救句（`36` D6） |
 
 > D1 影响 webui 的 W13（市场管理）排期，需优先拍板（主计划 Q7）。

@@ -114,3 +114,4 @@ Thumbs.db
 web/packages/runtime/vendor/
 .edgeone
 .zcodeignore
+.dsh/
