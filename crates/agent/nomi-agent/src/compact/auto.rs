@@ -38,6 +38,13 @@ pub struct AutocompactRequest<'a> {
     pub session_id: Option<&'a str>,
 }
 
+/// Only an automatic fold continues the conversation on the engine's behalf.
+/// A user-issued `/compact` must not be told to "resume without asking the
+/// user" — that instruction belongs to the auto path alone.
+fn is_auto_trigger(trigger: Option<CompactTrigger>) -> bool {
+    trigger.unwrap_or(CompactTrigger::Auto) != CompactTrigger::Manual
+}
+
 /// Maximum number of prompt-too-long retries.
 const MAX_PTL_RETRIES: u32 = 2;
 
@@ -492,7 +499,8 @@ pub async fn autocompact_with(
     };
 
     let formatted = format_compact_summary(&summary_text);
-    let summary_content = build_summary_content(&formatted, true, archive_rel.as_deref());
+    let summary_content =
+        build_summary_content(&formatted, is_auto_trigger(request.trigger), archive_rel.as_deref());
 
     let metadata = CompactMetadata {
         trigger: request.trigger.unwrap_or(CompactTrigger::Auto),
@@ -1170,6 +1178,16 @@ mod tests {
                 images: Vec::new(),
             }],
         )
+    }
+
+    /// A user-issued `/compact` must not be told to answer without asking the
+    /// user; that continuation belongs to the automatic fold only.
+    #[test]
+    fn manual_trigger_is_not_auto() {
+        assert!(!is_auto_trigger(Some(CompactTrigger::Manual)));
+        assert!(is_auto_trigger(Some(CompactTrigger::Auto)));
+        assert!(is_auto_trigger(Some(CompactTrigger::Idle)));
+        assert!(is_auto_trigger(None), "an unset trigger folds like an auto one");
     }
 
     #[test]

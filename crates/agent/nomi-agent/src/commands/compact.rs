@@ -374,6 +374,26 @@ mod tests {
             "summarizer prompt should include Compact Instructions, got: {prompt}"
         );
         assert!(prompt.contains("keep the API contract"));
+        // A user-issued /compact must not inherit the auto-only
+        // "resume without asking the user" continuation.
+        let summary = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|block| match block {
+                ContentBlock::Text { text } if text.contains("This session is being continued") => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .expect("the compacted transcript carries the continuation preamble");
+        assert!(
+            !summary.contains("without asking the user"),
+            "manual compaction must not tell the model to skip asking the user: {summary}"
+        );
+        assert!(
+            summary.contains("Standing facts preserved"),
+            "the folded summary should survive: {summary}"
+        );
     }
 
     #[tokio::test]
