@@ -19,7 +19,7 @@ const ATTENTION_BG: [u8; 4] = [37, 99, 235, 255]; // Royal blue, #2563EB.
 const ATTENTION_FG: [u8; 4] = [255, 255, 255, 255]; // Crisp pure white.
 
 #[cfg(windows)]
-const ATTENTION_HALO: [u8; 4] = [255, 255, 255, 140]; // 1px translucent contrast halo.
+const ATTENTION_HALO: [u8; 4] = [255, 255, 255, 140]; // Translucent white contrast rim.
 
 #[cfg(windows)]
 const HALO_THICKNESS: f32 = 0.85;
@@ -478,11 +478,10 @@ enum BadgeRegion {
 
 #[cfg(windows)]
 fn badge_region(x: f32, y: f32, size: f32, label: &str) -> BadgeRegion {
-    let halo_thickness = HALO_THICKNESS;
     if label.chars().count() <= 1 {
         let center = size / 2.0;
         let outer_radius = size / 2.0 - 0.25;
-        let inner_radius = (outer_radius - halo_thickness).max(0.1);
+        let inner_radius = (outer_radius - HALO_THICKNESS).max(0.1);
         let dx = x - center;
         let dy = y - center;
         let dist_sq = dx * dx + dy * dy;
@@ -507,11 +506,11 @@ fn badge_region(x: f32, y: f32, size: f32, label: &str) -> BadgeRegion {
     let bottom_out = size - 0.25;
     let radius_out = ((bottom_out - top_out) / 2.0).min(capsule_width / 2.0);
 
-    let left_in = left_out + halo_thickness;
-    let right_in = right_out - halo_thickness;
-    let top_in = top_out + halo_thickness;
-    let bottom_in = bottom_out - halo_thickness;
-    let radius_in = (radius_out - halo_thickness).max(0.1);
+    let left_in = left_out + HALO_THICKNESS;
+    let right_in = right_out - HALO_THICKNESS;
+    let top_in = top_out + HALO_THICKNESS;
+    let bottom_in = bottom_out - HALO_THICKNESS;
+    let radius_in = (radius_out - HALO_THICKNESS).max(0.1);
 
     if inside_capsule(x, y, left_in, right_in, top_in, bottom_in, radius_in) {
         BadgeRegion::Core

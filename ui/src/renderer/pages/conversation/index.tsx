@@ -12,6 +12,7 @@ import { tryParseEntityId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { clearConversationAttention } from '@/renderer/utils/attention';
+import { resolveAttentionClearTarget } from '@/renderer/hooks/system/conversationNotifyPolicy';
 
 const ChatConversationIndex: React.FC = () => {
   const { id } = useParams();
@@ -36,18 +37,19 @@ const ChatConversationIndex: React.FC = () => {
   useEffect(() => {
     if (!conversationId || isLoading) return;
     const clearCurrentConversationAttention = async (explicitFocus = false) => {
-      const requestedAttentionId = new URLSearchParams(location.search).get('attention_id');
-      const exactAttentionId = requestedAttentionId?.startsWith(`conversation:${conversationId}:`)
-        ? requestedAttentionId
-        : undefined;
-      // A supplied but foreign/malformed attention id must never fall back to
-      // a conversation-wide clear: another turn may still need attention.
-      if (requestedAttentionId !== null && !exactAttentionId) return;
+      const target = resolveAttentionClearTarget({
+        requestedAttentionId: new URLSearchParams(location.search).get('attention_id'),
+        conversationId,
+      });
+      if (target.kind === 'skip') return;
 
-      if (exactAttentionId) {
-        void ipcBridge.attention.clear.invoke({ attention_id: exactAttentionId }).catch(() => {
+      if (target.kind === 'exact') {
+        void ipcBridge.attention.clear.invoke({ attention_id: target.attentionId }).catch(() => {
           // Keep native attention if the renderer cannot confirm the page load.
         });
+        // Consume-once: strip the deep-link param so subsequent focus events
+        // take the focus-gated scope clear instead of re-clearing a dead id.
+        navigate(location.pathname, { replace: true });
         return;
       }
 
@@ -77,7 +79,7 @@ const ChatConversationIndex: React.FC = () => {
       window.removeEventListener('focus', onWindowFocus);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [conversationId, isLoading, location.search]);
+  }, [conversationId, isLoading, location.pathname, location.search, navigate]);
 
   useEffect(() => {
     if (!id || !conversationId) return;
