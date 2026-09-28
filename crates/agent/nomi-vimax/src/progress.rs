@@ -14,6 +14,9 @@ pub type ProgressCallback = Arc<dyn Fn(&str, &str, Option<Value>) + Send + Sync>
 pub enum RunStatus {
     Planning,
     Rendering,
+    /// Render job is alive but waiting for the director to approve the next shot.
+    /// Must sit above `Idle`'s `serde(other)` so persisted `"awaiting_review"` does not become Idle.
+    AwaitingReview,
     Succeeded,
     Failed,
     Cancelled,
@@ -31,6 +34,7 @@ impl RunStatus {
             Self::Idle => "idle",
             Self::Planning => "planning",
             Self::Rendering => "rendering",
+            Self::AwaitingReview => "awaiting_review",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -39,7 +43,7 @@ impl RunStatus {
     }
 
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Planning | Self::Rendering)
+        matches!(self, Self::Planning | Self::Rendering | Self::AwaitingReview)
     }
 }
 
@@ -75,6 +79,26 @@ pub struct RenderStatus {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProgressEvent>,
+    /// Populated while [`RunStatus::AwaitingReview`] — which shot is gated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_review: Option<PendingShotReview>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_mode: Option<String>,
+}
+
+/// Shot currently held at the review gate (render job still alive).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingShotReview {
+    pub scene_root: String,
+    pub shot_idx: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_idx: Option<i32>,
+    #[serde(default)]
+    pub duration_secs: u32,
+    #[serde(default)]
+    pub image_ref_count: usize,
+    #[serde(default)]
+    pub audio_ref_count: usize,
 }
 
 fn is_zero_i64(v: &i64) -> bool {
@@ -283,5 +307,17 @@ mod tests {
         assert_eq!(film_event_name(RunStatus::Interrupted), Some("film_cancelled"));
         assert_eq!(film_event_name(RunStatus::Planning), None);
         assert_eq!(film_event_name(RunStatus::Idle), None);
+        assert_eq!(film_event_name(RunStatus::AwaitingReview), None);
+    }
+
+    #[test]
+    fn awaiting_review_roundtrips_and_is_active() {
+        let json = serde_json::to_string(&RunStatus::AwaitingReview).unwrap();
+        assert_eq!(json, "\"awaiting_review\"");
+        let back: RunStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, RunStatus::AwaitingReview);
+        assert!(back.is_active());
+        let unknown: RunStatus = serde_json::from_str("\"paused\"").unwrap();
+        assert_eq!(unknown, RunStatus::Idle);
     }
 }

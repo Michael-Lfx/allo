@@ -57,7 +57,7 @@ export interface StudioSessionMessage {
   error?: string;
 }
 
-export type StudioComposerAction = 'plan' | 'render' | 'continue' | 'stop' | 'none';
+export type StudioComposerAction = 'plan' | 'render' | 'continue' | 'stop' | 'none' | 'approve_shot';
 
 export interface StudioUserNote {
   id: string;
@@ -89,4 +89,5 @@ export interface StudioComposerActionInput {
   hasFinalVideo: boolean;
   actionAssetsReady: boolean;
   canRender: boolean;
+  runStatus?: VimaxRunStatus | null;
 }

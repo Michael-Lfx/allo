@@ -69,6 +69,7 @@ export function statusTagColor(status: VimaxRunStatus | null | undefined): strin
   switch (status) {
     case 'planning':
     case 'rendering':
+    case 'awaiting_review':
       return 'arcoblue';
     case 'succeeded':
       return 'green';

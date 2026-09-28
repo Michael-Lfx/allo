@@ -60,6 +60,19 @@
   padding: 12px 14px 10px;
 }
 
+.collapseButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.collapseText {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-2);
+}
+
 .headerMeta {
   display: flex;
   min-width: 0;

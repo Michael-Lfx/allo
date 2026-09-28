@@ -92,6 +92,9 @@ pub struct SessionRecord {
     /// Output frame rate. Seedance is fixed at 24; stored for UI + future models.
     #[serde(default)]
     pub fps: u32,
+    /// `continuous` (default) or `shot_review`. Empty → continuous.
+    #[serde(default)]
+    pub render_mode: String,
     #[serde(default = "default_stage")]
     pub stage: String,
     #[serde(default)]
@@ -351,6 +354,7 @@ impl SessionIndex {
             aspect_ratio: String::new(),
             resolution: String::new(),
             fps: 0,
+            render_mode: String::new(),
             stage: "created".into(),
             summary: String::new(),
             status: RunStatus::Idle,
@@ -1271,6 +1275,7 @@ mod import_export_tests {
             aspect_ratio: String::new(),
             resolution: String::new(),
             fps: 0,
+            render_mode: String::new(),
             stage: "created".into(),
             summary: String::new(),
             status: RunStatus::Idle,

@@ -460,6 +460,10 @@
   padding: 16px 20px 28px;
 }
 
+.studioMainInnerWide {
+  max-width: 1240px;
+}
+
 @media (max-width: 768px) {
   .studioBody {
     flex-direction: column;
@@ -625,21 +629,24 @@
 }
 
 .storyStage {
-  display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.55fr);
-  grid-template-rows: minmax(360px, 1fr);
-  min-height: 360px;
-  max-height: min(62vh, 560px);
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: visible;
   border: 1px solid var(--color-border-2);
   border-radius: 14px;
-  background: #080b12;
+  color: var(--color-text-1);
+  background: var(--color-bg-1);
+}
+
+.storyStageReview {
+  min-height: 0;
 }
 
 .storyMedia {
   position: relative;
   display: grid;
-  min-height: 360px;
+  min-height: 0;
   min-width: 0;
   place-items: center;
   overflow: hidden;
@@ -671,8 +678,9 @@
   gap: 10px;
   min-height: 0;
   max-height: 100%;
-  overflow: hidden;
-  padding: 22px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 16px 18px 20px;
   color: rgba(255, 255, 255, 0.92);
   background: linear-gradient(160deg, #171c29, #0e1119);
 }
@@ -800,6 +808,1165 @@
   margin-top: auto;
 }
 
+.packetInspectorHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.packetSaveHint,
+.packetMetaLine,
+.packetHint,
+.packetBeatLabel,
+.packetSectionLabel {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.packetSectionLabel {
+  margin-top: 6px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.packetBeats,
+.packetBeat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.packetField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.packetField textarea,
+.packetField input[type='number'] {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.06);
+  font: inherit;
+  resize: vertical;
+}
+
+.packetField textarea:disabled,
+.packetField input:disabled {
+  opacity: 0.55;
+}
+
+.packetRefRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 8px;
+}
+
+.packetRefSlot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.packetRefPreview {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.packetRefSlotEmpty .packetRefPreview {
+  border-style: dashed;
+}
+
+.packetRefImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.packetRefAudio {
+  width: 96%;
+}
+
+.packetRefPlaceholder,
+.packetRefRetry {
+  padding: 8px;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 11px;
+  text-align: center;
+}
+
+.packetRefLabel {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.packetRefActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.packetRefActions button,
+.packetRefActions select,
+.packetIconButton,
+.packetTakeChip,
+.shotReviewSecondary,
+.shotReviewPrimary {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  padding: 3px 7px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.packetRefActions select {
+  max-width: 100%;
+}
+
+.packetFileInput {
+  display: none;
+}
+
+.packetMicroflow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.packetMicroflow li {
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 11px;
+}
+
+.packetMicroflowActive {
+  color: #fff !important;
+  background: rgb(var(--primary-6)) !important;
+}
+
+.packetPrompt {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 8px;
+}
+
+.packetPrompt summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.packetPromptBody {
+  margin: 8px 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.packetPromptActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.packetOverrideToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.packetTakes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.packetTakeChip {
+  min-width: 28px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.packetTakeCurrent {
+  border-color: rgb(var(--primary-6));
+  color: #fff;
+}
+
+.packetRetakeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.packetError {
+  margin: 0;
+  padding: 0 10px 8px;
+  color: rgb(var(--danger-6));
+  font-size: 12px;
+}
+
+.packetInspectorSkeleton {
+  gap: 12px;
+}
+
+.packetSkeletonBlock {
+  height: 64px;
+  border-radius: 10px;
+  background: var(--color-fill-2);
+}
+
+.shotGraph {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  min-height: 480px;
+}
+
+.shotMiniViewport,
+.shotInfiniteCanvas {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 480px;
+  height: min(64vh, 760px);
+  overflow: hidden;
+  border-top: 1px solid var(--color-border-2);
+  touch-action: none;
+  overscroll-behavior: none;
+  background: var(--color-bg-1);
+}
+
+.shotInfiniteCanvas :global(.ant-app) {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+.shotCanvasStage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.shotCanvasChips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.shotCanvasChrome {
+  pointer-events: none;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 6;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.shotCanvasChrome > * {
+  pointer-events: auto;
+}
+
+.shotCanvasFullBtn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border-2);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg-1) 88%, transparent);
+  color: var(--color-text-2);
+  cursor: pointer;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-1) 8%, transparent);
+}
+
+.shotCanvasFullBtn:hover {
+  color: var(--color-text-1);
+  background: var(--color-bg-2);
+}
+
+.shotInfiniteCanvas[data-expanded='true'] {
+  min-height: 0;
+  height: auto;
+  border-top: 0;
+}
+
+.shotCanvasChips > * {
+  pointer-events: auto;
+}
+
+.shotCanvasLightbox {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 24px;
+  border: 0;
+  background: rgba(8, 10, 14, 0.72);
+  cursor: zoom-out;
+}
+
+.shotCanvasLightboxMedia {
+  max-width: min(92%, 1100px);
+  max-height: 86%;
+  border-radius: 12px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.shotMiniViewportPanning {
+  cursor: grabbing;
+}
+
+.shotMiniGrid {
+  pointer-events: none;
+  position: absolute;
+  inset: -32px;
+  background-image: radial-gradient(var(--color-border-2) 1px, transparent 1.2px);
+  background-size: calc(22px * var(--mini-k, 1)) calc(22px * var(--mini-k, 1));
+  background-position: var(--mini-x, 0px) var(--mini-y, 0px);
+}
+
+.shotMiniWorld {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate3d(var(--mini-x, 0px), var(--mini-y, 0px), 0) scale(var(--mini-k, 1));
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.shotMiniWires {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 1;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.shotMiniWires path {
+  fill: none;
+  stroke: color-mix(in srgb, rgb(var(--primary-6)) 55%, var(--color-border-2));
+  stroke-width: 1.25;
+}
+
+.shotMiniNode {
+  position: absolute;
+  z-index: 2;
+}
+
+.shotMiniNode .shotGraphNode,
+.shotMiniNode .shotGraphVideoNode {
+  width: 100%;
+}
+
+.shotMiniPromptDock {
+  position: absolute;
+  z-index: 12;
+  pointer-events: auto;
+}
+
+.shotMiniPromptDock .shotGraphNodePrompt,
+.shotMiniPromptDock .shotGraphVideoPrompt {
+  position: relative;
+  width: 100%;
+  margin: 0;
+}
+
+.shotMiniPromptFoot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 2px 4px;
+}
+
+.shotMiniSend {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: rgb(var(--primary-6));
+  cursor: pointer;
+}
+
+.shotMiniSend:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.shotMiniFactActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shotMiniFactActions .shotGraphTextBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.shotMiniMenuScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.shotMiniMenu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  min-width: 168px;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 10px;
+  background: var(--color-bg-2);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+}
+
+.shotMiniMenu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--color-text-1);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shotMiniMenu button:hover:not(:disabled) {
+  background: var(--color-fill-2);
+}
+
+.shotMiniMenu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.shotGraphCanvas {
+  position: relative;
+  display: grid;
+  align-items: start;
+  grid-template-columns: 148px minmax(0, 1fr);
+  min-width: 0;
+  overflow: visible;
+}
+
+.shotGraphFacts {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 12px 6px;
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.shotGraphFacts span,
+.shotGraphFacts .packetSaveHint {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  color: var(--color-text-2);
+}
+
+.shotGraphNodeHit,
+.shotGraphVideoHit {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shotGraphNodeSelected {
+  border-color: rgb(var(--primary-6));
+  box-shadow: 0 0 0 1px rgb(var(--primary-6));
+}
+
+.shotGraphNodeKind {
+  display: none;
+}
+
+.shotGraphNodeCaption {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 16px 8px 6px;
+  background: linear-gradient(transparent, rgba(6, 8, 14, 0.78));
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.shotGraphNoPrompt {
+  display: none;
+}
+
+.shotGraphWires {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.shotGraphWires path {
+  fill: none;
+  stroke: color-mix(in srgb, rgb(var(--primary-6)) 55%, var(--color-border-2));
+  stroke-width: 1.25;
+}
+
+.shotGraphInputs {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 8px 12px 12px;
+  overflow: visible;
+}
+
+.shotGraphOutput {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+  padding: 10px 12px 12px 8px;
+}
+
+.shotGraphNodeStack {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 132px;
+}
+
+.shotGraphNodeStackActive {
+  z-index: 8;
+}
+
+.shotGraphNode {
+  position: relative;
+  flex-shrink: 0;
+  width: 132px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border-2);
+  border-radius: 10px;
+  background: var(--color-bg-2);
+}
+
+.shotGraphNodeEmpty {
+  border-style: dashed;
+  background: var(--color-fill-1);
+}
+
+.shotGraphNodeMuted {
+  opacity: 0.72;
+}
+
+.shotGraphNodeAudio .shotGraphNodePreview {
+  aspect-ratio: 4 / 3;
+}
+
+.shotGraphNodePreview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: var(--color-fill-3);
+}
+
+.shotGraphNodePlaceholder {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+}
+
+.shotGraphAudioFill {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--color-text-2);
+  background: var(--color-fill-2);
+}
+
+.shotGraphAudioEl {
+  display: none;
+}
+
+.shotGraphNodeTools {
+  position: absolute;
+  z-index: 4;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  gap: 3px;
+}
+
+.shotGraphNodeTool {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  color: #fff;
+  background: rgba(15, 23, 42, 0.62);
+  cursor: pointer;
+}
+
+.shotGraphNodeTool:hover {
+  background: rgba(15, 23, 42, 0.82);
+}
+
+.shotGraphNodeLibSelect {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.shotGraphPortOut,
+.shotGraphPortIn {
+  position: absolute;
+  z-index: 3;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--color-bg-1);
+  border-radius: 999px;
+  background: rgb(var(--primary-6));
+}
+
+.shotGraphPortOut {
+  top: 42%;
+  right: -4px;
+}
+
+.shotGraphPortIn {
+  top: 46%;
+  left: -4px;
+}
+
+.shotGraphVideoStack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  max-width: 560px;
+}
+
+.shotGraphVideoNode {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--color-border-2);
+  border-radius: 10px;
+  color: var(--color-text-1);
+  background: var(--color-bg-2);
+}
+
+.shotGraphVideoChrome {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 0;
+}
+
+.shotGraphVideoTitle {
+  color: var(--color-text-1);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.shotGraphDuration {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-3);
+  font-size: 11px;
+}
+
+.shotGraphDuration input {
+  width: 36px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 5px;
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  appearance: textfield;
+}
+
+.shotGraphDuration input::-webkit-outer-spin-button,
+.shotGraphDuration input::-webkit-inner-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+.shotGraphVideoBody {
+  width: 100%;
+  height: auto;
+  min-height: 160px;
+  max-height: 280px;
+  aspect-ratio: 16 / 9;
+}
+
+.shotGraphVideoNode .packetMicroflow {
+  display: none;
+}
+
+.shotGraphNodePrompt,
+.shotGraphVideoPrompt {
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 12px;
+  color: var(--color-text-1);
+  background: var(--color-bg-popup, var(--color-bg-2));
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.1);
+}
+
+.shotGraphNodePrompt {
+  width: 280px;
+  max-width: min(280px, 42vw);
+}
+
+.shotGraphVideoPrompt {
+  width: 100%;
+}
+
+.shotGraphPromptHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--color-text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.shotGraphPromptInput {
+  width: 100%;
+}
+
+.shotGraphPromptInput textarea {
+  color: var(--color-text-1) !important;
+  background: var(--color-fill-2) !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+
+.shotGraphToolbar {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px 8px;
+}
+
+.shotGraphTextBtn {
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-text-2);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.shotGraphTextBtn:hover:not(:disabled) {
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+}
+
+.shotGraphTextBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.shotGraph .packetTakeChip {
+  color: var(--color-text-2);
+  background: var(--color-fill-2);
+  border-color: var(--color-border-2);
+}
+
+.shotGraph .packetTakeCurrent {
+  color: rgb(var(--primary-6));
+  border-color: rgb(var(--primary-6));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 10%, var(--color-bg-2));
+}
+
+.shotGraphEmpty {
+  margin: 0;
+  padding: 8px;
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.shotGraphMediaChip {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  z-index: 2;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.sessionCollapsedRail {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 48px;
+  height: 100%;
+  padding: 16px 0 20px;
+  border: 0;
+  border-left: 1px solid var(--color-border-2);
+  background: color-mix(in srgb, var(--color-bg-2) 92%, var(--color-bg-1));
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+
+.sessionCollapsedRail:hover,
+.sessionCollapsedRail:focus-visible {
+  color: rgb(var(--primary-6));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 7%, var(--color-bg-2));
+  outline: none;
+}
+
+.sessionCollapsedRailIcon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--color-fill-2);
+}
+
+.sessionCollapsedRailLabel {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.22em;
+}
+
+.filmPanelCompact {
+  flex-shrink: 0;
+}
+
+.filmPlayerCompact {
+  max-height: 168px;
+}
+
+.storyboardPreparing {
+  display: flex;
+  flex: 1;
+  min-height: 240px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--color-border-2);
+  border-radius: 14px;
+  text-align: center;
+}
+
+.shotReviewBar {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--color-border-2);
+  background: var(--color-fill-1);
+}
+
+.shotReviewCopy {
+  color: var(--color-text-1);
+  font-size: 12px;
+}
+
+.shotReviewActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.shotReviewPrimary {
+  border-color: rgb(var(--primary-6));
+  color: #fff;
+  background: rgb(var(--primary-6));
+  font-weight: 650;
+}
+
+.shotReviewPrimary:disabled,
+.shotReviewSecondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.shotStateBadge,
+.shotTakeBadge,
+.shotPackedBadge {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.shotTakeBadge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+}
+
+.shotThumbMetaBr {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 2;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: calc(100% - 44px);
+  pointer-events: none;
+}
+
+.shotBadgeReview {
+  background: #165dff;
+  color: #fff;
+}
+
+.shotBadgeGenerating {
+  background: #d48806;
+  color: #fff;
+}
+
+.shotBadgeReady {
+  background: #1d9b5a;
+  color: #fff;
+}
+
+.shotBadgeScript,
+.shotBadgeContinuity {
+  background: #d48806;
+  color: #fff;
+}
+
+.shotBadgeFailed {
+  background: #cb2634;
+  color: #fff;
+}
+
+.shotBadgeIdle {
+  display: none;
+}
+
+.shotCardReview {
+  box-shadow: 0 0 0 2px rgb(var(--primary-6));
+}
+
+.shotStaleBanner {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 2;
+  max-width: calc(100% - 20px);
+  border-radius: 6px;
+  padding: 3px 8px;
+  background: rgba(212, 136, 6, 0.88);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.studioHeader .renderModeCluster {
+  align-self: center;
+}
+
+.renderModeCluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.renderModeLabel {
+  color: var(--color-text-3);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.renderModeGroup {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--color-border-2);
+  border-radius: 9px;
+  background: var(--color-fill-1);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-1) 70%, transparent) inset;
+}
+
+.renderModeBtn {
+  height: 30px;
+  border: 0;
+  border-radius: 0;
+  padding: 0 12px;
+  color: var(--color-text-2);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.renderModeBtn:hover {
+  color: var(--color-text-1);
+  background: color-mix(in srgb, var(--color-bg-2) 70%, transparent);
+}
+
+.renderModeBtnActive {
+  color: rgb(var(--primary-6));
+  background: var(--color-bg-1);
+  box-shadow: 0 0 0 1px rgba(var(--primary-6), 0.18) inset;
+}
+
+.filmHistorySelect {
+  min-width: 140px;
+}
+
 .reviseInline {
   margin-top: 16px;
   padding-top: 14px;
@@ -840,11 +2007,14 @@
   --storyboard-edge: 8px;
   --storyboard-gutter: 18px;
   --storyboard-gutter-gap: 6px;
-  padding: 18px var(--storyboard-edge) 18px;
+  display: flex;
+  flex-direction: column;
+  padding: 18px var(--storyboard-edge) 14px;
 }
 
 .storyboardHeader {
   display: flex;
+  flex-shrink: 0;
   align-items: flex-end;
   justify-content: space-between;
   gap: 10px;
@@ -854,14 +2024,17 @@
 
 .storyboardLayout {
   display: grid;
+  min-width: 0;
   grid-template-columns: var(--storyboard-gutter, 18px) minmax(0, 1fr) var(--storyboard-gutter, 18px);
+  grid-template-rows: auto auto;
   column-gap: var(--storyboard-gutter-gap, 6px);
   row-gap: 12px;
-  min-width: 0;
 }
 
 .storyboardLayout .storyStage {
   grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
 }
 
 .filmstripNav {
@@ -1031,39 +2204,15 @@
 }
 
 .shotPackedBadge {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  z-index: 1;
-  border-radius: 999px;
-  padding: 2px 6px;
   background: rgba(0, 0, 0, 0.72);
   color: rgba(255, 255, 255, 0.92);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.shotCreditsBadge {
-  position: absolute;
-  right: 14px;
-  top: 14px;
-  z-index: 2;
-  border-radius: 999px;
-  padding: 4px 9px;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  backdrop-filter: blur(8px);
 }
 
 .shotCardCredits {
   position: absolute;
   top: 6px;
   right: 6px;
-  z-index: 1;
+  z-index: 2;
   overflow: hidden;
   max-width: calc(100% - 12px);
   border-radius: 999px;
@@ -1322,17 +2471,49 @@
   }
 
   .storyStage {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(240px, 42vh) minmax(200px, 1fr);
     max-height: none;
   }
 
+  .storyStageReview {
+    min-height: 0;
+  }
+
+  .shotGraphCanvas {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .shotGraphWires {
+    display: none;
+  }
+
+  .shotGraphInputs {
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .shotGraphNodeStack,
+  .shotGraphNode {
+    width: 108px;
+  }
+
+  .shotGraphNodePrompt {
+    width: min(280px, calc(100vw - 40px));
+  }
+
+  .shotGraphPortOut,
+  .shotGraphPortIn {
+    display: none;
+  }
+
   .storyMedia {
-    min-height: 240px;
+    min-height: 180px;
   }
 
   .storyInspector {
-    max-height: 280px;
+    max-height: none;
   }
 
   .storyboardPanel {

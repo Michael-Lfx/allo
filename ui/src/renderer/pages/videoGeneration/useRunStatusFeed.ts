@@ -17,7 +17,8 @@
  */
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import { getSessionStatus, isActiveStatus } from './api';
-import type { SessionStatus, VimaxRunStatus } from './types';
+import type { SessionStatus, VimaxRenderMode, VimaxRunStatus } from './types';
+import { parseSessionRenderMode } from './types';
 import { isInsufficientCreditsError } from './creditsError';
 import { resolveSessionCreditsConsumed } from './sessionCredits';
 
@@ -37,6 +38,8 @@ export interface RunStatusFlags {
   creditsFailed: boolean;
   /** Aggregate Flowy video-task credits for this session (changes as clips bill). */
   creditsConsumed: number;
+  /** Live film gate; null until status reports a known mode. */
+  renderMode: VimaxRenderMode | null;
 }
 
 const EMPTY_FLAGS: RunStatusFlags = {
@@ -51,6 +54,7 @@ const EMPTY_FLAGS: RunStatusFlags = {
   coverPath: null,
   creditsFailed: false,
   creditsConsumed: 0,
+  renderMode: null,
 };
 
 const FLAG_KEYS = [
@@ -65,6 +69,7 @@ const FLAG_KEYS = [
   'coverPath',
   'creditsFailed',
   'creditsConsumed',
+  'renderMode',
 ] as const;
 
 interface FeedState {
@@ -106,6 +111,7 @@ function computeFlags(next: SessionStatus | null, prev: RunStatusFlags): RunStat
       statusCredits: next?.credits_consumed,
       events: next?.events,
     }),
+    renderMode: parseSessionRenderMode(next?.render_mode),
   };
   for (const key of FLAG_KEYS) {
     if (!Object.is(flags[key], prev[key])) return flags;

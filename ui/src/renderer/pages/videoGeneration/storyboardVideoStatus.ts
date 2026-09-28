@@ -3,9 +3,17 @@
  * session status (progress events + stage metadata).
  */
 
-import type { SessionStatus } from './types';
+import type { SessionStatus, ShotRunState } from './types';
 
 export type StoryboardVideoSlotStatus = 'ready' | 'generating' | 'pending';
+
+export type StoryboardFilmstripBadge =
+  | 'awaiting_review'
+  | 'generating'
+  | 'ready'
+  | 'script_stale'
+  | 'continuity_stale'
+  | 'failed';
 
 export interface ActiveVideoGenerationTarget {
   /** Shot index within its pipeline scene (`shot.idx`). */
@@ -166,4 +174,19 @@ export function resolveStoryboardVideoStatus(options: {
   }
 
   return 'generating';
+}
+
+/** Filmstrip chip: packet run-state first, then on-disk video presence. */
+export function storyboardFilmstripBadge(options: {
+  runState?: ShotRunState | null;
+  videoStatus: StoryboardVideoSlotStatus;
+}): StoryboardFilmstripBadge | null {
+  const runState = options.runState ?? undefined;
+  if (runState === 'awaiting_review') return 'awaiting_review';
+  if (runState === 'generating' || options.videoStatus === 'generating') return 'generating';
+  if (runState === 'script_stale') return 'script_stale';
+  if (runState === 'continuity_stale') return 'continuity_stale';
+  if (runState === 'failed') return 'failed';
+  if (runState === 'ready' || options.videoStatus === 'ready') return 'ready';
+  return null;
 }

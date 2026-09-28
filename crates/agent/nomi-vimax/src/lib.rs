@@ -20,6 +20,7 @@ pub mod rag;
 pub mod revise;
 pub mod service;
 pub mod session;
+pub mod shot_packet;
 pub mod skills;
 pub mod video_quality;
 
@@ -49,8 +50,12 @@ pub use domain::WorkflowKind;
 pub use drama::{BeatRole, DramaBeat, DramaEngine, lint_drama_engine};
 pub use error::{VimaxError, VimaxResult};
 pub use progress::{
-    INTERRUPTED_SUMMARY, ProgressCallback, ProgressEvent, RenderStatus, RunStatus,
-    VimaxTerminalTelemetry, duration_ms_from_status, film_event_name,
+    INTERRUPTED_SUMMARY, PendingShotReview, ProgressCallback, ProgressEvent, RenderStatus,
+    RunStatus, VimaxTerminalTelemetry, duration_ms_from_status, film_event_name,
+};
+pub use shot_packet::{
+    FilmInfo, RenderMode, ShotPacket, ShotPacketPatch, ShotPacketView, ShotReviewBridge,
+    ShotReviewDecision, ShotRunState, ShotTakeInfo,
 };
 pub use revise::ReviseResult;
 pub use service::{TerminalTelemetryHook, VimaxService};

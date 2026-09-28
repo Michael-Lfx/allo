@@ -11,7 +11,7 @@ describe('studio session composer send bar', () => {
     expect(composer.includes('canvas-send-token')).toBe(false);
     expect(composer.includes('ArrowUp')).toBe(false);
     expect(composer.includes('styles.sendBar')).toBe(true);
-    expect(composer.includes("data-testid={busy ? 'studio-session-stop' : 'studio-session-send'}")).toBe(
+    expect(composer.includes("data-testid={busy ? 'studio-session-stop' : reviewing ? 'studio-session-approve' : 'studio-session-send'}")).toBe(
       true
     );
 
@@ -25,6 +25,7 @@ describe('studio session composer send bar', () => {
     expect(composer.includes("t('videoGeneration.agentSession.send.plan'")).toBe(true);
     expect(composer.includes("t('videoGeneration.agentSession.send.render'")).toBe(true);
     expect(composer.includes("t('videoGeneration.agentSession.send.continue'")).toBe(true);
+    expect(composer.includes("t('videoGeneration.agentSession.send.approve'")).toBe(true);
     expect(composer.includes("t('videoGeneration.agentSession.action.planning'")).toBe(true);
     expect(composer.includes("t('videoGeneration.agentSession.action.rendering'")).toBe(true);
     expect(composer.includes("defaultValue: '生成成片'")).toBe(true);

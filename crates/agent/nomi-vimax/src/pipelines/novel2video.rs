@@ -417,6 +417,9 @@ impl Novel2VideoPipeline {
         if !media_local::is_usable_video_file(&final_path) && !reel.is_empty() {
             emit_pct(&progress, "concat_start", "正在拼接全部场景视频", 95.0);
             media_local::concat_videos(&reel.concat_clips(), &final_path).await?;
+            let session = super::cameo_bind::resolve_session_root(&self.working_dir);
+            let takes = crate::shot_packet::collect_shot_take_manifest(&self.working_dir).await;
+            let _ = crate::shot_packet::archive_current_film(&session, &self.working_dir, takes).await;
         }
         emit_pct(&progress, "render_done", "小说成片渲染完成", 100.0);
         Ok(final_path)

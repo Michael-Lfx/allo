@@ -5,11 +5,26 @@ import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 
+import { CreditsContext } from '@renderer/hooks/context/CreditsContext';
 import billing from '@/renderer/services/i18n/locales/zh-CN/billing.json';
 import videoGeneration from '@/renderer/services/i18n/locales/zh-CN/videoGeneration.json';
 import type { FailureKind } from '../classifyFailure';
 import StudioSessionMessageView from './StudioSessionMessage';
 import type { StudioSessionMessage } from './types';
+
+const testCredits = {
+  balance: 0,
+  authenticated: false,
+  lastCheckInDayKey: 0,
+  isFetchingBalance: false,
+  isCheckingIn: false,
+  lastRefreshAt: 0,
+  cooldownSeconds: 0,
+  canRefresh: false,
+  fetchBalance: async () => undefined,
+  checkIn: async () => false,
+  manualRefresh: () => undefined,
+};
 
 const testI18n = createInstance();
 await testI18n.use(initReactI18next).init({
@@ -30,17 +45,19 @@ const failureItem: StudioSessionMessage = {
 
 const renderFailure = (issueKind?: FailureKind) =>
   renderToStaticMarkup(
-    <I18nextProvider i18n={testI18n}>
-      <MemoryRouter>
-        <StudioSessionMessageView
-          sessionId='session-1'
-          item={failureItem}
-          title='积分不足'
-          body='当前积分不足以完成本次生成。'
-          issueKind={issueKind}
-        />
-      </MemoryRouter>
-    </I18nextProvider>
+    <CreditsContext.Provider value={testCredits}>
+      <I18nextProvider i18n={testI18n}>
+        <MemoryRouter>
+          <StudioSessionMessageView
+            sessionId='session-1'
+            item={failureItem}
+            title='积分不足'
+            body='当前积分不足以完成本次生成。'
+            issueKind={issueKind}
+          />
+        </MemoryRouter>
+      </I18nextProvider>
+    </CreditsContext.Provider>
   );
 
 describe('studio session failure card render', () => {
@@ -58,16 +75,18 @@ describe('studio session failure card render', () => {
 
   test('cancelled cards do not render a billing CTA', () => {
     const html = renderToStaticMarkup(
-      <I18nextProvider i18n={testI18n}>
-        <MemoryRouter>
-          <StudioSessionMessageView
-            sessionId='session-1'
-            item={{ id: 'cancelled-1', role: 'error', kind: 'cancelled' }}
-            title='已停止'
-            issueKind='credits'
-          />
-        </MemoryRouter>
-      </I18nextProvider>
+      <CreditsContext.Provider value={testCredits}>
+        <I18nextProvider i18n={testI18n}>
+          <MemoryRouter>
+            <StudioSessionMessageView
+              sessionId='session-1'
+              item={{ id: 'cancelled-1', role: 'error', kind: 'cancelled' }}
+              title='已停止'
+              issueKind='credits'
+            />
+          </MemoryRouter>
+        </I18nextProvider>
+      </CreditsContext.Provider>
     );
     expect(html).not.toContain('data-testid="video-failure-open-billing"');
   });

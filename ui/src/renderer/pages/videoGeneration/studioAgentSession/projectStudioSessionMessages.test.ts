@@ -47,6 +47,21 @@ describe('resolveStudioComposerAction', () => {
     ).toBe('stop');
   });
 
+  test('awaiting review exposes confirm-this-shot', () => {
+    expect(
+      resolveStudioComposerAction({
+        busy: true,
+        isFailed: false,
+        isAction: false,
+        hasStoryboard: true,
+        hasFinalVideo: false,
+        actionAssetsReady: false,
+        canRender: false,
+        runStatus: 'awaiting_review',
+      })
+    ).toBe('approve_shot');
+  });
+
   test('planned storyboard waits for a render send', () => {
     expect(
       resolveStudioComposerAction({

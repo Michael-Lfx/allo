@@ -356,6 +356,7 @@ function seedMissingChapters(
 export function resolveStudioComposerAction(
   input: StudioComposerActionInput
 ): StudioComposerAction {
+  if (input.runStatus === 'awaiting_review') return 'approve_shot';
   if (input.busy) return 'stop';
   if (input.hasFinalVideo) return 'none';
   if (input.isFailed) return 'continue';
@@ -375,8 +376,11 @@ export function projectStudioSessionMessages(
   const status = input.status ?? null;
   const events = eventsForProjection(input);
   const runStatus = input.runStatus ?? status?.status ?? null;
-  const busy = runStatus === 'planning' || runStatus === 'rendering';
-  const rendering = runStatus === 'rendering';
+  const busy =
+    runStatus === 'planning' ||
+    runStatus === 'rendering' ||
+    runStatus === 'awaiting_review';
+  const rendering = runStatus === 'rendering' || runStatus === 'awaiting_review';
 
   const brief = input.sourceText?.trim() ?? '';
   const briefMedia = input.briefMedia ?? [];
@@ -509,6 +513,18 @@ export function projectStudioSessionMessages(
       role: 'system',
       kind: 'cancelled',
       stage: runStatus,
+      at: status?.updated_at ?? undefined,
+    });
+  }
+
+  if (runStatus === 'awaiting_review') {
+    messages.push({
+      id: 'shot-review',
+      role: 'assistant',
+      kind: 'milestone',
+      beat: 'render_clips',
+      stage: 'shot_awaiting_review',
+      live: true,
       at: status?.updated_at ?? undefined,
     });
   }

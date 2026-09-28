@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Spin } from '@arco-design/web-react';
-import { FullScreen, Left, LoadingFour, Music, Right, VideoOne } from '@icon-park/react';
-import { getArtifact } from '../api';
+import { Left, LoadingFour, Right, VideoOne } from '@icon-park/react';
+import { approveShot, cancelSession, getArtifact, listShotPackets } from '../api';
+import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
+import type { ShotPacket, ShotRunState } from '../types';
+import ShotPacketInspector from './ShotPacketInspector';
 import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import {
@@ -16,9 +19,6 @@ import {
   type StoryboardScene,
   type StoryboardShot,
 } from '../artifactPresentation';
-import StoryboardShotEditorModal, {
-  type StoryboardShotEditorFocus,
-} from './StoryboardShotEditorModal';
 import {
   creditsByShotFromSessionEvents,
   parseShotCreditsFile,
@@ -28,29 +28,39 @@ import {
 import {
   activeVideoGenerationTarget,
   resolveStoryboardVideoStatus,
+  storyboardFilmstripBadge,
   type StoryboardVideoSlotStatus,
 } from '../storyboardVideoStatus';
 import type { ArtifactNode } from '../types';
-import { useRunStatusFull } from '../useRunStatusFeed';
+import { patchRunStatus, useRunStatusFull } from '../useRunStatusFeed';
 import styles from '../index.module.css';
 
-const InspectorSpecBlock: React.FC<{
-  label: string;
-  body: string;
-}> = ({ label, body }) => (
-  <div className={styles.storyInspectorSpecBlock}>
-    <div className={styles.storyInspectorSubLabel}>{label}</div>
-    <p className={`${styles.storyInspectorBody} text-13px leading-21px text-white/90`}>{body}</p>
-  </div>
-);
+function packetKey(sceneRoot: string | undefined, shotIdx: number | undefined): string {
+  return `${(sceneRoot ?? '').replace(/\\/g, '/')}:${shotIdx ?? 0}`;
+}
 
-function activateInspectorSection(
-  event: React.KeyboardEvent<HTMLDivElement>,
-  open: () => void
-): void {
-  if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault();
-    open();
+function packetForScene(packets: ShotPacket[], scene: StoryboardScene): ShotPacket | undefined {
+  const root = (scene.sceneRoot ?? '').replace(/\\/g, '/');
+  const idx = scene.shotIndex ?? 0;
+  return packets.find((packet) => packet.scene_root.replace(/\\/g, '/') === root && packet.shot_idx === idx);
+}
+
+function shotBadgeClass(state: ShotRunState | 'ready' | undefined): string {
+  switch (state) {
+    case 'awaiting_review':
+      return styles.shotBadgeReview;
+    case 'generating':
+      return styles.shotBadgeGenerating;
+    case 'ready':
+      return styles.shotBadgeReady;
+    case 'script_stale':
+      return styles.shotBadgeScript;
+    case 'continuity_stale':
+      return styles.shotBadgeContinuity;
+    case 'failed':
+      return styles.shotBadgeFailed;
+    default:
+      return styles.shotBadgeIdle;
   }
 }
 
@@ -63,6 +73,8 @@ interface StoryboardBoardProps {
   onFocusScene?: (sceneId: string) => void;
   /** Published clip count for the panel header. */
   onShotCount?: (count: number) => void;
+  imageModel?: string | null;
+  videoModel?: string | null;
 }
 
 interface SceneMediaProps {
@@ -201,8 +213,11 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   focusSceneId,
   onFocusScene,
   onShotCount,
+  imageModel,
+  videoModel,
 }) => {
   const { t } = useTranslation();
+  const [message, messageHolder] = useArcoMessage();
   const runStatus = useRunStatusFull();
   const storyboardPaths = useMemo(() => findStoryboardPaths(artifacts), [artifacts]);
   const storyboardPathKey = storyboardPaths.join('|');
@@ -214,14 +229,19 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     Array<{ path: string; shots: StoryboardShot[] }>
   >([]);
   const [activeSceneId, setActiveSceneId] = useState<string>();
-  const [editorFocus, setEditorFocus] = useState<StoryboardShotEditorFocus | null>(null);
   const [sidecarCredits, setSidecarCredits] = useState<Map<string, number>>(() => new Map());
+  const [packets, setPackets] = useState<ShotPacket[]>([]);
+  const [inspectorDirty, setInspectorDirty] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const generatingTarget = useMemo(
     () => activeVideoGenerationTarget(runStatus),
     [runStatus]
   );
-  const rendering = runStatus?.status === 'rendering';
+  const rendering =
+    runStatus?.status === 'rendering' || runStatus?.status === 'awaiting_review';
+  const awaitingReview = runStatus?.status === 'awaiting_review';
+  const pendingReview = awaitingReview ? runStatus?.pending_review ?? null : null;
 
   // Storyboard *rows* come only from storyboard.json. Video start writes
   // shots/N/shot_description.json and the artifact poll used to refetch the
@@ -254,6 +274,25 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries),
     [artifacts, storyboardEntries]
   );
+  const packetRefreshKey = useMemo(
+    () => scenes.map((scene) => `${scene.id}:${scene.videoPath ?? ''}`).join('|'),
+    [scenes]
+  );
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    void listShotPackets(sessionId)
+      .then((rows) => {
+        if (!cancelled) setPackets(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setPackets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, runStatus?.status, runStatus?.stage, runStatus?.updated_at, scenes.length, packetRefreshKey]);
 
   useEffect(() => {
     onShotCount?.(scenes.length);
@@ -269,6 +308,23 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     syncedFocusSceneIdRef.current = focusSceneId;
     setActiveSceneId(focusSceneId);
   }, [focusSceneId, scenes]);
+
+  const pendingKey = pendingReview
+    ? packetKey(pendingReview.scene_root, pendingReview.shot_idx)
+    : '';
+  const pendingSyncedRef = useRef('');
+  useEffect(() => {
+    if (!pendingKey || scenes.length === 0) return;
+    if (pendingSyncedRef.current === pendingKey) return;
+    const match = scenes.find(
+      (scene) => packetKey(scene.sceneRoot, scene.shotIndex) === pendingKey
+    );
+    if (!match) return;
+    pendingSyncedRef.current = pendingKey;
+    syncedFocusSceneIdRef.current = match.id;
+    setActiveSceneId(match.id);
+    onFocusScene?.(match.id);
+  }, [pendingKey, scenes, onFocusScene]);
 
   const selectScene = useCallback(
     (sceneId: string) => {
@@ -412,7 +468,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
 
   if (!activeScene) {
     return (
-      <div className='flex min-h-240px flex-col items-center justify-center gap-8px rd-14px border border-dashed border-[var(--color-border-2)] text-center'>
+      <div className={styles.storyboardPreparing}>
         <VideoOne theme='outline' size={28} className='text-[var(--color-text-3)]' />
         <div className='text-13px font-600 text-[var(--color-text-1)]'>
           {t('videoGeneration.studio.storyboard.preparing', {
@@ -434,138 +490,148 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     (activeVideoStatus === 'ready' ? undefined : activeScene.imagePath);
   const mainIsVideo = Boolean(activeScene.videoPath);
   const sceneNumber = activeScene.index + 1;
-  const activeSceneIndex = scenes.findIndex((scene) => scene.id === activeScene.id);
-  const expandLabel = t('videoGeneration.studio.storyboard.expand', {
-    defaultValue: '展开查看',
-  });
-  const activeShotCredits = creditsForScene(activeScene);
+  const activePacket = packetForScene(packets, activeScene);
+  const pendingScene = pendingReview
+    ? scenes.find(
+        (scene) =>
+          packetKey(scene.sceneRoot, scene.shotIndex) ===
+          packetKey(pendingReview.scene_root, pendingReview.shot_idx)
+      )
+    : undefined;
+  const pendingNumber = pendingScene ? pendingScene.index + 1 : pendingReview?.shot_idx != null
+    ? pendingReview.shot_idx + 1
+    : 0;
+  const reviewLocked =
+    awaitingReview &&
+    Boolean(pendingReview) &&
+    packetKey(activeScene.sceneRoot, activeScene.shotIndex) !==
+      packetKey(pendingReview?.scene_root, pendingReview?.shot_idx);
+  const shotGenerating =
+    videoStatusFor(activeScene) === 'generating' || activePacket?.run_state === 'generating';
+
+  const handleApprove = async (switchToContinuous = false) => {
+    if (!pendingReview || inspectorDirty) return;
+    setReviewBusy(true);
+    try {
+      await approveShot(
+        sessionId,
+        pendingReview.scene_root,
+        pendingReview.shot_idx,
+        switchToContinuous
+      );
+      if (switchToContinuous) {
+        patchRunStatus({ render_mode: 'continuous' });
+      }
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const handlePausePipeline = async () => {
+    setReviewBusy(true);
+    try {
+      await cancelSession(sessionId);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReviewBusy(false);
+    }
+  };
 
   return (
+    <>
+      {messageHolder}
     <div className={styles.storyboardLayout}>
-      <div className={styles.storyStage}>
-        <div className={styles.storyMedia}>
-          <SceneMedia
-            key={activeScene.id}
-            sessionId={sessionId}
-            path={mainPath}
-            video={mainIsVideo}
-            alt={t('videoGeneration.studio.storyboard.shotAlt', {
-              number: sceneNumber,
-              defaultValue: '镜头 {{number}}',
-            })}
-            videoStatus={activeVideoStatus}
-          />
-          <span className='absolute left-14px top-14px z-2 rd-full bg-black/55 px-9px py-4px text-11px font-650 text-white backdrop-blur'>
-            {t('videoGeneration.studio.storyboard.shotNumberOf', {
-              number: sceneNumber,
-              total: scenes.length,
-              defaultValue: '镜头 {{number}} / {{total}}',
-            })}
-            {activeScene.beatCount != null
-              ? ` · ${t('videoGeneration.studio.storyboard.packedBeats', {
-                  count: activeScene.beatCount,
-                  defaultValue: '{{count}} 个切镜一次生成',
-                })}`
-              : ''}
-          </span>
-          {activeShotCredits > 0 ? (
-            <span
-              data-testid='shot-video-credits'
-              className={styles.shotCreditsBadge}
-            >
-              {t('videoGeneration.studio.creditsConsumed', {
-                credits: activeShotCredits,
-                defaultValue: '消耗 {{credits}} 积分',
-              })}
-            </span>
-          ) : null}
-        </div>
-        <aside className={styles.storyInspector}>
-          <div
-            className={`${styles.storyInspectorOpen} ${styles.storyInspectorVisual}`}
-            role='button'
-            tabIndex={0}
-            aria-label={`${t('videoGeneration.studio.storyboard.visualDirection', {
-              defaultValue: '画面描述',
-            })} · ${expandLabel}`}
-            onClick={() => setEditorFocus('visual')}
-            onKeyDown={(event) =>
-              activateInspectorSection(event, () => setEditorFocus('visual'))
-            }
-          >
-            <div className={styles.storyInspectorLabelRow}>
-              <div className={styles.storyInspectorLabel}>
-                {t('videoGeneration.studio.storyboard.visualDirection', {
-                  defaultValue: '画面描述',
-                })}
-              </div>
-              <FullScreen
-                theme='outline'
-                size={14}
-                className={styles.storyInspectorExpand}
-              />
-            </div>
-            <div className={styles.storyInspectorScroll}>
-              <p className={`${styles.storyInspectorBody} text-14px leading-23px text-white/90`}>
-                {activeScene.visualDescription ||
-                  t('videoGeneration.studio.storyboard.visualPending', {
-                    defaultValue: '画面生成后将在这里展示。',
+      <div className={`${styles.storyStage} ${pendingReview ? styles.storyStageReview : ''}`}>
+        <ShotPacketInspector
+          sessionId={sessionId}
+          scene={activeScene}
+          artifacts={artifacts}
+          generating={shotGenerating}
+          reviewLocked={reviewLocked}
+          shotNumber={sceneNumber}
+          shotTotal={scenes.length}
+          imageModel={imageModel}
+          videoModel={videoModel}
+          onUnsavedChange={setInspectorDirty}
+          videoPath={activeScene.videoPath}
+          posterPath={mainIsVideo ? activeScene.imagePath : mainPath}
+          videoStatus={activeVideoStatus}
+          preview={
+            <>
+              {activeScene.beatCount != null && activeScene.beatCount > 1 ? (
+                <span className={styles.shotGraphMediaChip}>
+                  {t('videoGeneration.studio.storyboard.packedBeatsShort', {
+                    count: activeScene.beatCount,
+                    defaultValue: '{{count}} 切',
                   })}
-              </p>
-              {activeScene.beats && activeScene.beats.length >= 2 ? (
-                <div className={`${styles.storyInspectorSpecStack} mt-12px`}>
-                  {activeScene.beats.map((beat, beatIndex) => (
-                    <InspectorSpecBlock
-                      key={`${activeScene.id}-beat-${beatIndex}`}
-                      label={t('videoGeneration.studio.storyboard.packedBeatItem', {
-                        number: beatIndex + 1,
-                        defaultValue: '切镜 {{number}}',
-                      })}
-                      body={beat.visualDescription}
-                    />
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </div>
-          <div className='shrink-0 border-t border-white/10' />
-          <div
-            className={`${styles.storyInspectorOpen} ${styles.storyInspectorAudio}`}
-            role='button'
-            tabIndex={0}
-            aria-label={`${t('videoGeneration.studio.storyboard.audioDirection', {
-              defaultValue: '音频 / 台词',
-            })} · ${expandLabel}`}
-            onClick={() => setEditorFocus('audio')}
-            onKeyDown={(event) =>
-              activateInspectorSection(event, () => setEditorFocus('audio'))
-            }
-          >
-            <div className={styles.storyInspectorLabelRow}>
-              <div className={styles.storyInspectorLabel}>
-                {t('videoGeneration.studio.storyboard.audioDirection', {
-                  defaultValue: '音频 / 台词',
-                })}
-              </div>
-              <FullScreen
-                theme='outline'
-                size={14}
-                className={styles.storyInspectorExpand}
-              />
-            </div>
-            <div className={styles.storyInspectorScroll}>
-              <div className='flex items-start gap-7px text-12px leading-18px text-white/58'>
-                <Music theme='outline' size={14} className='mt-2px shrink-0' />
-                <span className={styles.storyInspectorBody}>
-                  {activeScene.audioDescription ||
-                    t('videoGeneration.studio.storyboard.audioPending', {
-                      defaultValue: '暂无音频或台词描述',
-                    })}
                 </span>
-              </div>
+              ) : null}
+              {activePacket?.run_state === 'script_stale' || activePacket?.run_state === 'continuity_stale' ? (
+                <span className={styles.shotStaleBanner}>
+                  {activePacket.run_state === 'script_stale'
+                    ? t('videoGeneration.studio.storyboard.scriptStaleHint', {
+                        defaultValue: '脚本已改，画面仍是旧版',
+                      })
+                    : t('videoGeneration.studio.storyboard.continuityStaleHint', {
+                        defaultValue: '上一镜已换 take，连续性参考已过期',
+                      })}
+                </span>
+              ) : null}
+            </>
+          }
+        />
+        {pendingReview ? (
+          <div className={styles.shotReviewBar} data-testid='shot-review-bar'>
+            <div className={styles.shotReviewCopy}>
+              {t('videoGeneration.studio.storyboard.reviewBar', {
+                number: pendingNumber,
+                total: scenes.length,
+                duration: pendingReview.duration_secs || '—',
+                images: pendingReview.image_ref_count,
+                audio: pendingReview.audio_ref_count,
+                defaultValue:
+                  '镜头 {{number}} / {{total}} · 待过审 · 约 {{duration}}s · 参考图 {{images}} · 音色 {{audio}}',
+              })}
+              {inspectorDirty
+                ? ` · ${t('videoGeneration.studio.storyboard.saveBeforeApprove', {
+                    defaultValue: '请先保存脚本',
+                  })}`
+                : ''}
+            </div>
+            <div className={styles.shotReviewActions}>
+              <button
+                type='button'
+                className={styles.shotReviewPrimary}
+                disabled={inspectorDirty || reviewBusy}
+                data-testid='shot-review-approve'
+                onClick={() => void handleApprove(false)}
+              >
+                {t('videoGeneration.studio.storyboard.approveShot', { defaultValue: '确认生成' })}
+              </button>
+              <button
+                type='button'
+                className={styles.shotReviewSecondary}
+                disabled={reviewBusy}
+                onClick={() => void handleApprove(true)}
+              >
+                {t('videoGeneration.studio.storyboard.switchContinuous', {
+                  defaultValue: '改为连续出片',
+                })}
+              </button>
+              <button
+                type='button'
+                className={styles.shotReviewSecondary}
+                disabled={reviewBusy}
+                onClick={() => void handlePausePipeline()}
+              >
+                {t('videoGeneration.studio.storyboard.pausePipeline', { defaultValue: '暂停流水线' })}
+              </button>
             </div>
           </div>
-        </aside>
+        ) : null}
       </div>
 
       {showFilmstripNav ? (
@@ -608,16 +674,35 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
             const active = scene.id === activeScene.id;
             const status = videoStatusFor(scene);
             const shotCredits = creditsForScene(scene);
-            // Compact thumbs prefer the last-frame still so a ready shot never
-            // downloads its whole clip just to render a thumbnail.
+            const packet = packetForScene(packets, scene);
+            const runState = packet?.run_state;
+            const isReviewing =
+              pendingReview &&
+              packetKey(scene.sceneRoot, scene.shotIndex) ===
+                packetKey(pendingReview.scene_root, pendingReview.shot_idx);
             const thumbPath = scene.imagePath ?? scene.videoPath;
+            const badge = storyboardFilmstripBadge({ runState, videoStatus: status });
+            const badgeLabel =
+              badge === 'awaiting_review'
+                ? t('videoGeneration.studio.storyboard.badgeReview', { defaultValue: '待过审' })
+                : badge === 'generating'
+                  ? t('videoGeneration.studio.storyboard.badgeGenerating', { defaultValue: '生成中' })
+                  : badge === 'ready'
+                    ? t('videoGeneration.studio.storyboard.badgeReady', { defaultValue: '已出片' })
+                    : badge === 'script_stale'
+                      ? t('videoGeneration.studio.storyboard.badgeScriptStale', { defaultValue: '脚本已改' })
+                      : badge === 'continuity_stale'
+                        ? t('videoGeneration.studio.storyboard.badgeContinuity', { defaultValue: '连续性过期' })
+                        : badge === 'failed'
+                          ? t('videoGeneration.studio.storyboard.badgeFailed', { defaultValue: '失败' })
+                          : null;
             return (
               <div key={scene.id} className={styles.shotCardStack} data-scene-id={scene.id}>
               <button
                 type='button'
                 className={`${styles.shotCard} ${active ? styles.shotCardActive : ''} ${
-                  status === 'generating' ? styles.shotCardGenerating : ''
-                }`}
+                  status === 'generating' || runState === 'generating' ? styles.shotCardGenerating : ''
+                } ${isReviewing ? styles.shotCardReview : ''}`}
                 aria-pressed={active}
                 onClick={() => selectScene(scene.id)}
               >
@@ -636,16 +721,12 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                 <span className='absolute bottom-6px left-6px z-1 rd-full bg-black/70 px-6px py-2px text-10px font-700 text-white'>
                   {String(number).padStart(2, '0')}
                 </span>
-                {scene.beatCount != null ? (
-                  <span className={styles.shotPackedBadge}>
-                    {t('videoGeneration.studio.storyboard.packedBeatsShort', {
-                      count: scene.beatCount,
-                      defaultValue: '{{count}} 切',
-                    })}
-                  </span>
+                {packet?.current_take ? (
+                  <span className={styles.shotTakeBadge}>v{packet.current_take}</span>
                 ) : null}
                 {shotCredits > 0 ? (
                   <span
+                    data-testid='shot-video-credits'
                     className={styles.shotCardCredits}
                     title={t('videoGeneration.studio.creditsConsumed', {
                       credits: shotCredits,
@@ -656,6 +737,23 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                       credits: shotCredits,
                       defaultValue: '消耗 {{credits}} 积分',
                     })}
+                  </span>
+                ) : null}
+                {badgeLabel || scene.beatCount != null ? (
+                  <span className={styles.shotThumbMetaBr}>
+                    {scene.beatCount != null ? (
+                      <span className={styles.shotPackedBadge}>
+                        {t('videoGeneration.studio.storyboard.packedBeatsShort', {
+                          count: scene.beatCount,
+                          defaultValue: '{{count}} 切',
+                        })}
+                      </span>
+                    ) : null}
+                    {badgeLabel ? (
+                      <span className={`${styles.shotStateBadge} ${shotBadgeClass(badge ?? undefined)}`}>
+                        {badgeLabel}
+                      </span>
+                    ) : null}
                   </span>
                 ) : null}
               </span>
@@ -675,9 +773,6 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                           number: beatIndex + 1,
                           defaultValue: '切镜 {{number}}',
                         })}
-                        {beat.visualDescription
-                          ? ` · ${beat.visualDescription}`
-                          : ''}
                       </li>
                     ))}
                   </ol>
@@ -704,27 +799,8 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
       ) : (
         <span className={`${styles.filmstripGutter} ${styles.filmstripGutterNext}`} aria-hidden />
       )}
-      {editorFocus ? (
-        <StoryboardShotEditorModal
-          scene={activeScene}
-          sceneNumber={sceneNumber}
-          total={scenes.length}
-          visible
-          focusField={editorFocus}
-          hasPrev={activeSceneIndex > 0}
-          hasNext={activeSceneIndex >= 0 && activeSceneIndex < scenes.length - 1}
-          onClose={() => setEditorFocus(null)}
-          onPrev={() => {
-            const previous = scenes[activeSceneIndex - 1];
-            if (previous) selectScene(previous.id);
-          }}
-          onNext={() => {
-            const next = scenes[activeSceneIndex + 1];
-            if (next) selectScene(next.id);
-          }}
-        />
-      ) : null}
     </div>
+    </>
   );
 };
 

@@ -428,6 +428,7 @@ mod tests {
             aspect_ratio: "16:9".into(),
             resolution: "720p".into(),
             fps: 24,
+            render_mode: String::new(),
             stage: "succeeded".into(),
             summary: "done".into(),
             status: RunStatus::Succeeded,

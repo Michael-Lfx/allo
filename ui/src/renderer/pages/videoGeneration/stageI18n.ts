@@ -67,6 +67,7 @@ const KNOWN_STAGES = new Set([
   'render_done',
   'final_video_exists',
   'image_generate',
+  'shot_awaiting_review',
   'failed',
   'cancelled',
   'plan',

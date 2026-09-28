@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Spin, Tag } from '@arco-design/web-react';
-import { CloseSmall, Down, Robot, Up } from '@icon-park/react';
+import { Down, Robot, Up } from '@icon-park/react';
 import { classifyFailure, type FailureKind } from '../classifyFailure';
 import { formatElapsedClock } from '../progressEventElapsed';
 import { stageLabel } from '../stageI18n';
@@ -215,6 +215,7 @@ export interface StudioAgentSessionProps {
   onRender: () => void;
   onCancel: () => void;
   onContinue: () => void;
+  onApproveShot?: () => void;
   onFocusScene?: (sceneId: string) => void;
   onSelectArtifact?: (path: string) => void;
   cameoEpoch?: number;
@@ -248,6 +249,7 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
   onRender,
   onCancel,
   onContinue,
+  onApproveShot,
   onFocusScene,
   onSelectArtifact,
   cameoEpoch = 0,
@@ -266,7 +268,10 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
   );
 
   const variant: StudioStageVariant = isAction ? 'action' : 'film';
-  const liveBusy = busy || runStatus?.status === 'planning' || runStatus?.status === 'rendering';
+  const awaitingReview = runStatus?.status === 'awaiting_review';
+  const liveBusy =
+    (busy || runStatus?.status === 'planning' || runStatus?.status === 'rendering') &&
+    !awaitingReview;
 
   useEffect(() => {
     if (isAction || !sessionId) {
@@ -337,6 +342,7 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
     hasFinalVideo,
     actionAssetsReady,
     canRender,
+    runStatus: runStatus?.status,
   });
 
   useEffect(() => {
@@ -427,6 +433,16 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
           }),
         };
       }
+      if (item.stage === 'shot_awaiting_review') {
+        const number = (runStatus?.pending_review?.shot_idx ?? 0) + 1;
+        return {
+          title: t('videoGeneration.studio.storyboard.approveShot', { defaultValue: '确认生成' }),
+          body: t('videoGeneration.agentSession.hint.reviewWaiting', {
+            number,
+            defaultValue: '第 {{number}} 镜等待确认，也可在左侧过审条操作',
+          }),
+        };
+      }
       if (item.kind === 'film_ready') {
         return {
           title: t('videoGeneration.studio.filmReady', { defaultValue: '成片已就绪' }),
@@ -487,13 +503,14 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
       }
       return { title: label, body: '', meta: parts.join(' · ') };
     },
-    [failure, nowMs, relatedModel, t]
+    [failure, nowMs, relatedModel, runStatus?.pending_review?.shot_idx, t]
   );
 
   const handleSend = () => {
     if (action === 'plan') onPlan();
     else if (action === 'render') onRender();
     else if (action === 'continue') onContinue();
+    else if (action === 'approve_shot') onApproveShot?.();
   };
 
   const handleOpenMedia = (item: StudioSessionMedia, gallery: StudioSessionMedia[]) => {
@@ -606,14 +623,16 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
         <Button
           type='text'
           size='mini'
-          className='!px-4px'
+          className={styles.collapseButton}
           onClick={() => onCollapsedChange(true)}
           aria-label={t('videoGeneration.agentSession.collapse', { defaultValue: '收起会话' })}
         >
           {isMobile ? (
             <Down theme='outline' size={14} fill='currentColor' />
           ) : (
-            <CloseSmall theme='outline' size={14} fill='currentColor' />
+            <span className={styles.collapseText}>
+              {t('videoGeneration.agentSession.collapse', { defaultValue: '收起会话' })}
+            </span>
           )}
         </Button>
       </div>
@@ -659,6 +678,9 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
         onSend={handleSend}
         onStop={onCancel}
         stopping={cancelling}
+        reviewShotNumber={
+          runStatus?.pending_review ? runStatus.pending_review.shot_idx + 1 : null
+        }
         busyKind={
           planning || runStatus?.status === 'planning'
             ? 'planning'
