@@ -133,6 +133,7 @@ fn tc_2_3_02_insufficient_results_no_clearing() {
             cleared_count: 0,
             estimated_tokens_freed: 0,
             cleared_read_paths: vec![],
+            cleared_bodies: vec![],
         }
     );
 }
@@ -297,6 +298,7 @@ fn tc_2_3_10_empty_messages() {
             cleared_count: 0,
             estimated_tokens_freed: 0,
             cleared_read_paths: vec![],
+            cleared_bodies: vec![],
         }
     );
 }

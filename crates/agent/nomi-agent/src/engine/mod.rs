@@ -599,6 +599,11 @@ pub struct AgentEngine {
     /// cache: persist, prune, and image redaction must not rewrite them.
     /// Reset to 0 after compact / clear; clamped on rewind.
     sent_prefix_len: usize,
+    /// Tool-result bodies microcompact cleared since the last committed
+    /// checkpoint. A failed turn writes these back before truncate. A
+    /// successful checkpoint, or an autocompact that replaced the transcript,
+    /// drops the log so a later failure cannot undo work already kept.
+    prefix_rewrite_undo: Vec<micro::ClearedToolBody>,
     /// Owns every supervised command launched by this engine's command tools.
     /// Bootstrap installs it; direct/test constructors leave it empty.
     process_supervisor: Option<Arc<nomi_process_runtime::ProcessSupervisor>>,
@@ -698,6 +703,7 @@ impl AgentEngine {
             system_resource_inbox: None,
             frozen_provider_tools: None,
             sent_prefix_len: 0,
+            prefix_rewrite_undo: Vec::new(),
             process_supervisor: None,
             editable_turn: None,
             observation: None,
@@ -793,6 +799,7 @@ impl AgentEngine {
             system_resource_inbox: None,
             frozen_provider_tools: None,
             sent_prefix_len,
+            prefix_rewrite_undo: Vec::new(),
             process_supervisor: None,
             editable_turn,
             observation: None,
@@ -1585,11 +1592,14 @@ impl AgentEngine {
             msg_id = %msg_id,
         );
         let mut efficiency = ToolEfficiencyStats::default();
+        // A previous turn's successful microcompact must not be undone if this
+        // turn fails. Fresh undo is recorded only for rewrites after this point.
+        self.accept_prefix_rewrites();
         // Rollback checkpoint: the transcript LENGTH at the last known-good
         // point, not a copy of it. Every checkpoint used to deep-clone the whole
         // `Vec<Message>` — base64 images included — once per turn start, once per
-        // completed pass, and once per restart. Messages are only ever appended
-        // between checkpoints, so restoring is a truncate.
+        // completed pass, and once per restart. Appends restore by truncate.
+        // In-place microcompact clears are written back from the undo log first.
         let mut safe_len = self.messages.len();
         let mut turn_started = false;
         let result = async {
@@ -1631,6 +1641,8 @@ impl AgentEngine {
             }
             self.save_session();
         } else if turn_started {
+            // Compaction that already landed in a successful turn stays cleared.
+            self.accept_prefix_rewrites();
             self.save_session();
         }
         result
@@ -2593,6 +2605,12 @@ impl AgentEngine {
 
             self.compact_state.last_input_tokens = effective_watermark;
 
+            // Keep the provider's own reading apart from the watermark: the
+            // cheap-layer refresh measures against it instead of the biased
+            // local estimator.
+            self.compact_state
+                .note_provider_input_tokens(turn_usage.input_tokens);
+
             request_breakdown.calibrate_to(effective_watermark);
             self.last_context_breakdown = Some(request_breakdown);
             self.emit_live_context_usage(turn_started_at);
@@ -2692,7 +2710,7 @@ impl AgentEngine {
                         target: "nomi_agent",
                         "coding harness: plan-sync pass produced no update_plan; continuing to reply pass"
                     );
-                    *safe_len = self.messages.len();
+                    self.commit_transcript_checkpoint(safe_len);
                     self.persist_session(false);
                     turn += 1;
                     continue;
@@ -2837,7 +2855,7 @@ impl AgentEngine {
                         u32::try_from(round.attempt).unwrap_or(u32::MAX),
                     );
                     // Round N's rollback floor: the requirement, not the draft.
-                    *safe_len = self.messages.len();
+                    self.commit_transcript_checkpoint(safe_len);
                     self.save_session();
                     tracing::warn!(
                         target: "nomi_agent",
@@ -2862,7 +2880,7 @@ impl AgentEngine {
                 // rollback point; any steering/goal continuation appended below
                 // belongs to the *next* provider pass and must be dropped if that
                 // pass fails.
-                *safe_len = self.messages.len();
+                self.commit_transcript_checkpoint(safe_len);
                 // Steering interjection (point B): a user message injected
                 // mid-turn extends a would-end turn instead of returning, so
                 // the model incorporates it on the next step. Mirrors the
@@ -3466,7 +3484,7 @@ impl AgentEngine {
 
             // Coalesced checkpoint after tools — pretty JSON + index wait for
             // EndTurn / user-message durable saves.
-            *safe_len = self.messages.len();
+            self.commit_transcript_checkpoint(safe_len);
             self.persist_session(false);
             if stagnation_action == crate::loop_guard::StagnationAction::Abort {
                 if let Some(harness) = self.coding_harness.as_mut() {
@@ -3630,8 +3648,12 @@ impl AgentEngine {
                     self.compact_state.last_input_tokens,
                     &self.compact_config,
                 ) {
-                    self.run_snip_layer();
-                    self.run_microcompact();
+                    let freed = self.run_snip_layer() + self.run_microcompact();
+                    // Cheap rewrite may already be under the watermark. Measure
+                    // the refresh from the provider's own reading minus what the
+                    // rewrite released, so neither a stale high reading nor a
+                    // biased local estimate decides the fold.
+                    self.apply_compact_watermark(0, freed);
                 }
                 if !self.compact_state.is_compact_stuck() {
                     self.run_autocompact(false, CompactTrigger::Auto).await?;
@@ -3640,11 +3662,10 @@ impl AgentEngine {
             }
             CompactReason::IdleCacheExpired => {
                 if self.compact_config.enabled {
-                    self.run_snip_layer();
-                    self.run_microcompact_forced();
+                    let freed = self.run_snip_layer() + self.run_microcompact_forced();
                     // Cheap rewrite is cache-free; refresh occupancy before
                     // deciding whether the LLM summarizer is still worth it.
-                    self.apply_compact_watermark(0);
+                    self.apply_compact_watermark(0, freed);
                     if !self.compact_state.is_compact_stuck()
                         && auto::should_idle_autocompact(
                             self.compact_state.last_input_tokens,
@@ -3660,6 +3681,13 @@ impl AgentEngine {
                 if self.compact_config.enabled {
                     self.run_snip_layer();
                     self.run_microcompact();
+                    // Deliberately NO refresh here. `is_at_emergency_limit` is
+                    // the last gate before the engine is willing to send a
+                    // request it already believes is oversized; re-estimating a
+                    // short transcript would release that gate without
+                    // compacting anything, and the caller would re-send the very
+                    // request this check exists to refuse. The watermark is
+                    // still refreshed by `run_autocompact` once a fold lands.
                     let force_mechanical = self.compact_state.is_compact_stuck()
                         || self.compact_state.is_circuit_broken(&self.compact_config);
                     self.run_autocompact(force_mechanical, CompactTrigger::Auto)
@@ -3755,34 +3783,57 @@ impl AgentEngine {
         )
     }
 
-    fn apply_compact_watermark(&mut self, messages_summarized: usize) {
+    /// Refresh the watermark after a compaction pass.
+    ///
+    /// `messages_summarized > 0` means a fold replaced the transcript, so the
+    /// previous provider reading no longer describes it and the fresh estimate
+    /// is the only available measure. The cheap layers instead shrink the same
+    /// transcript, so they are anchored on the last real provider reading minus
+    /// what they released: a biased local estimate (this repo's `/4` rule
+    /// under-counts CJK) must never under-report occupancy and silently
+    /// suppress a fold that is still needed.
+    fn apply_compact_watermark(&mut self, messages_summarized: usize, tokens_freed: u64) {
         let estimate = self.request_token_estimate();
-        let still_above = auto::should_autocompact(estimate, &self.compact_config);
-        self.compact_state
-            .set_watermark(estimate, &self.compact_config);
+        let measured = if messages_summarized > 0 {
+            estimate
+        } else {
+            estimate.max(
+                self.compact_state
+                    .last_provider_input_tokens
+                    .saturating_sub(tokens_freed),
+            )
+        };
+        let still_above = auto::should_autocompact(measured, &self.compact_config);
+        self.compact_state.set_watermark(measured, &self.compact_config);
         if messages_summarized > 0 {
             self.compact_state.note_compact_outcome(still_above);
+            // The fold replaced the transcript, so the provider reading that
+            // described the old one is gone until the next pass reports.
+            self.compact_state.reset_provider_input_tokens();
         } else if !still_above {
             self.compact_state.clear_compact_stall();
         }
     }
 
-    fn run_microcompact(&mut self) {
+    /// Returns the tokens the pass released, for the watermark refresh.
+    fn run_microcompact(&mut self) -> u64 {
         if !micro::should_microcompact(&self.messages, &self.compact_config) {
-            return;
+            return 0;
         }
-        self.apply_microcompact();
+        self.apply_microcompact()
     }
 
-    fn run_microcompact_forced(&mut self) {
+    /// Returns the tokens the pass released, for the watermark refresh.
+    fn run_microcompact_forced(&mut self) -> u64 {
         if !self.compact_config.enabled {
-            return;
+            return 0;
         }
-        self.apply_microcompact();
+        self.apply_microcompact()
     }
 
-    fn apply_microcompact(&mut self) {
+    fn apply_microcompact(&mut self) -> u64 {
         let result = micro::microcompact(&mut self.messages, &self.compact_config);
+        self.prefix_rewrite_undo.extend(result.cleared_bodies);
         if result.cleared_count > 0 {
             self.sent_prefix_len = self.messages.len();
             clear_provider_round_ids(&mut self.messages);
@@ -3794,6 +3845,7 @@ impl AgentEngine {
         if !result.cleared_read_paths.is_empty() {
             self.invalidate_file_cache_paths(&result.cleared_read_paths);
         }
+        result.estimated_tokens_freed as u64
     }
 
     async fn run_autocompact(
@@ -3885,8 +3937,12 @@ impl AgentEngine {
                             "Autocompact: skipped apply ({} tokens → {new_estimate}, not smaller)",
                             result.pre_compact_tokens
                         ));
-                        self.apply_compact_watermark(0);
+                        self.apply_compact_watermark(0, 0);
                     } else {
+                        // The replacement transcript is a different vec. Undo
+                        // indices still name the discarded one, so drop them
+                        // instead of writing old tool bodies into the summary.
+                        self.accept_prefix_rewrites();
                         self.output.emit_info(&format!(
                             "Autocompact: summarized {} messages ({} tokens → compact)",
                             result.messages_summarized, result.pre_compact_tokens
@@ -3914,7 +3970,7 @@ impl AgentEngine {
                                 vec![ContentBlock::Text { text: reinject }],
                             ));
                         }
-                        self.apply_compact_watermark(result.messages_summarized);
+                        self.apply_compact_watermark(result.messages_summarized, 0);
                     }
                 } else if !auto::should_autocompact(
                     self.compact_state.last_input_tokens,
@@ -3993,17 +4049,57 @@ impl AgentEngine {
 
     /// Restore the transcript to the length checkpoint recorded by the turn wrapper.
     ///
-    /// Messages are only appended between checkpoints, so a rollback is a truncate:
-    /// the checkpoint is a `usize`, not a cloned `Vec<Message>` (which copied the
-    /// whole transcript, base64 images included, on every pass and every restart).
+    /// Appends between checkpoints restore by truncate: the checkpoint is a
+    /// `usize`, not a cloned `Vec<Message>` (which copied the whole transcript,
+    /// base64 images included, on every pass and every restart).
     ///
-    /// Deliberately does NOT re-expand a transcript that a mid-turn compaction has
-    /// already REPLACED with a shorter one. That compaction was persisted, so
-    /// restoring a longer in-memory transcript would put memory ahead of disk.
-    /// `truncate` is already a no-op when the checkpoint is not below the current
-    /// length, which is exactly that guarantee.
+    /// In-place microcompact does not change the length, so those cleared tool
+    /// bodies are written back when their message index still sits inside the
+    /// checkpoint. A transcript autocompact already REPLACED with a shorter vec
+    /// is not grown back: that replacement dropped the undo log, and `truncate`
+    /// is a no-op when the checkpoint is not below the current length.
     fn rollback_transcript_to(&mut self, len: usize) {
+        for entry in self.prefix_rewrite_undo.iter().rev() {
+            if entry.message_index >= len || entry.message_index >= self.messages.len() {
+                continue;
+            }
+            let Some(block) = self.messages[entry.message_index]
+                .content
+                .get_mut(entry.block_index)
+            else {
+                continue;
+            };
+            if let ContentBlock::ToolResult { content, images, .. } = block {
+                *content = entry.content.clone();
+                *images = entry.images.clone();
+            }
+        }
         self.messages.truncate(len);
+        self.prefix_rewrite_undo.clear();
+    }
+
+    fn accept_prefix_rewrites(&mut self) {
+        self.prefix_rewrite_undo.clear();
+    }
+
+    fn commit_transcript_checkpoint(&mut self, safe_len: &mut usize) {
+        *safe_len = self.messages.len();
+        self.accept_prefix_rewrites();
+    }
+
+    /// Snip deletes plain turns and shifts later indices. Tool-result undo
+    /// entries point at messages snip keeps, so only their indices move.
+    fn remap_prefix_rewrite_undo(&mut self, removed: &[usize]) {
+        if removed.is_empty() || self.prefix_rewrite_undo.is_empty() {
+            return;
+        }
+        let removed_set: HashSet<usize> = removed.iter().copied().collect();
+        self.prefix_rewrite_undo
+            .retain(|entry| !removed_set.contains(&entry.message_index));
+        for entry in &mut self.prefix_rewrite_undo {
+            let shift = removed.iter().filter(|&&index| index < entry.message_index).count();
+            entry.message_index -= shift;
+        }
     }
 
     fn mark_turn_ended(&mut self) {
@@ -4188,19 +4284,21 @@ impl AgentEngine {
         }
     }
 
-    fn run_snip_layer(&mut self) {
+    /// Returns the estimated tokens released, for the watermark refresh.
+    fn run_snip_layer(&mut self) -> u64 {
         let drop_idx = snip::snip_indices(
             &self.messages,
             snip::DEFAULT_SNIP_KEEP_TAIL,
             &self.compact_config,
         );
         if drop_idx.is_empty() {
-            return;
+            return 0;
         }
         let dropped: Vec<Message> = drop_idx
             .iter()
             .map(|&i| self.messages[i].clone())
             .collect();
+        let freed = estimate::estimate_tokens_from_messages(&dropped);
         let cwd = self.workspace_cwd();
         let session_id = self.current_session.as_ref().map(|s| s.id.clone());
         let archive_rel = crate::compact::archive::write_archive(
@@ -4209,13 +4307,14 @@ impl AgentEngine {
             "snip",
             &dropped,
         );
+        self.remap_prefix_rewrite_undo(&drop_idx);
         let removed = snip::snip_old_plain_turns(
             &mut self.messages,
             snip::DEFAULT_SNIP_KEEP_TAIL,
             &self.compact_config,
         );
         if removed == 0 {
-            return;
+            return 0;
         }
         self.messages.push(Message::now(
             Role::User,
@@ -4227,6 +4326,7 @@ impl AgentEngine {
         clear_provider_round_ids(&mut self.messages);
         self.output
             .emit_info(&format!("Snip: dropped {removed} older plain turns"));
+        freed
     }
 
     /// Stamp the owning-conversation token onto the current session and persist

@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use nomi_config::compact::CompactConfig;
 use nomi_types::message::{ContentBlock, Message, Role};
+use nomi_types::tool::ToolImage;
 
 /// Protect this many tokens of the most recent compactable tool output
 /// (OpenCode-style prune). Older results beyond this tail are cleared.
@@ -16,6 +17,15 @@ pub const PRUNE_PROTECT_TOKENS: usize = 40_000;
 
 /// Placeholder that replaces cleared tool result content.
 pub const CLEARED_TOOL_RESULT: &str = "[Tool result cleared]";
+
+/// One tool-result body replaced in place, so a failed turn can write it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearedToolBody {
+    pub message_index: usize,
+    pub block_index: usize,
+    pub content: String,
+    pub images: Vec<ToolImage>,
+}
 
 /// Statistics returned after a microcompact pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +37,9 @@ pub struct MicrocompactResult {
     /// Paths from cleared `Read` tool calls (for file-cache invalidation so
     /// FILE_UNCHANGED stubs cannot point at cleared context).
     pub cleared_read_paths: Vec<String>,
+    /// Bodies overwritten by this pass, in clear order. The first record for a
+    /// block is the original text.
+    pub cleared_bodies: Vec<ClearedToolBody>,
 }
 
 // ── Trigger checks ──────────────────────────────────────────────────────────
@@ -100,6 +113,7 @@ pub fn microcompact(messages: &mut [Message], config: &CompactConfig) -> Microco
             cleared_count: 0,
             estimated_tokens_freed: 0,
             cleared_read_paths: Vec::new(),
+            cleared_bodies: Vec::new(),
         };
     }
 
@@ -108,26 +122,38 @@ pub fn microcompact(messages: &mut [Message], config: &CompactConfig) -> Microco
     let mut cleared_count = 0usize;
     let mut tokens_freed = 0usize;
     let mut cleared_read_paths = Vec::new();
+    let mut cleared_bodies = Vec::new();
 
     // tool_use_id → (name, optional path) for Read invalidation.
     let read_paths = build_read_path_map(messages);
 
     for &(mi, bi) in to_clear {
-        if let ContentBlock::ToolResult {
-            tool_use_id,
-            content,
-            images,
-            ..
-        } = &mut messages[mi].content[bi]
-        {
-            // Rough token estimate: ~4 chars per token.
-            tokens_freed += content.len() / 4;
-            if let Some(paths) = read_paths.get(tool_use_id.as_str()) {
-                cleared_read_paths.extend(paths.iter().cloned());
-            }
+        let (tool_use_id, old_content, old_images) = {
+            let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                images,
+                ..
+            } = &messages[mi].content[bi]
+            else {
+                continue;
+            };
+            (tool_use_id.clone(), content.clone(), images.clone())
+        };
+        tokens_freed += old_content.len() / 4;
+        if let Some(paths) = read_paths.get(tool_use_id.as_str()) {
+            cleared_read_paths.extend(paths.iter().cloned());
+        }
+        if let ContentBlock::ToolResult { content, images, .. } = &mut messages[mi].content[bi] {
             *content = CLEARED_TOOL_RESULT.to_string();
             images.clear();
             cleared_count += 1;
+            cleared_bodies.push(ClearedToolBody {
+                message_index: mi,
+                block_index: bi,
+                content: old_content,
+                images: old_images,
+            });
         }
     }
 
@@ -135,6 +161,7 @@ pub fn microcompact(messages: &mut [Message], config: &CompactConfig) -> Microco
         cleared_count,
         estimated_tokens_freed: tokens_freed,
         cleared_read_paths,
+        cleared_bodies,
     }
 }
 

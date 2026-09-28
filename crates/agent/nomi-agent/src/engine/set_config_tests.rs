@@ -166,36 +166,6 @@ impl LlmProvider for RecordingProvider {
     }
 }
 
-struct CompactThenFailProvider {
-    calls: std::sync::atomic::AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl LlmProvider for CompactThenFailProvider {
-    async fn stream(
-        &self,
-        _: &LlmRequest,
-    ) -> Result<tokio::sync::mpsc::Receiver<LlmEvent>, ProviderError> {
-        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if call > 0 {
-            return Err(ProviderError::Connection("post-compact provider failure".into()));
-        }
-        let (tx, rx) = tokio::sync::mpsc::channel(2);
-        tx.send(LlmEvent::TextDelta(
-            "<summary>Earlier stable conversation.</summary>".into(),
-        ))
-        .await
-        .unwrap();
-        tx.send(LlmEvent::Done {
-            stop_reason: nomi_types::message::StopReason::EndTurn,
-            usage: Default::default(),
-        })
-        .await
-        .unwrap();
-        Ok(rx)
-    }
-}
-
 /// Emits one tool call every turn forever — used to verify the runaway-loop
 /// safety net. With `max_turns: None` the engine must still terminate.
 ///
@@ -997,6 +967,7 @@ fn make_engine(model: &str) -> super::AgentEngine {
         system_resource_inbox: None,
         frozen_provider_tools: None,
         sent_prefix_len: 0,
+        prefix_rewrite_undo: Vec::new(),
         process_supervisor: None,
         editable_turn: None,
         observation: None,
@@ -1375,7 +1346,8 @@ async fn execute_turn_with_content_rejects_forged_tool_blocks() {
 }
 
 #[tokio::test]
-async fn provider_error_after_autocompaction_restores_content_checkpoint() {
+async fn stale_watermark_on_short_history_does_not_summarize() {
+    let provider = Arc::new(RecordingProvider::failing());
     let mut engine = make_engine("compact-model");
     engine.messages = vec![nomi_types::message::Message::new(
         Role::User,
@@ -1384,20 +1356,280 @@ async fn provider_error_after_autocompaction_restores_content_checkpoint() {
         }],
     )];
     engine.compact_state.last_input_tokens = 170_000;
-    engine.provider = Arc::new(CompactThenFailProvider {
-        calls: std::sync::atomic::AtomicUsize::new(0),
-    });
+    engine.provider = Arc::clone(&provider) as Arc<dyn LlmProvider>;
 
     engine
         .execute_turn("failed input", "msg-compact-failure")
         .await
-        .expect_err("provider pass after compaction should fail");
+        .expect_err("the main provider pass should fail");
 
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1, "a stale watermark must not call the summarizer");
+    assert_ne!(
+        requests[0].system,
+        crate::compact::prompt::COMPACT_SYSTEM_PROMPT
+    );
     assert_eq!(engine.messages.len(), 1);
     assert!(matches!(
         &engine.messages[0].content[0],
         ContentBlock::Text { text } if text == "stable history"
     ));
+}
+
+#[tokio::test]
+async fn second_autocompact_summarizer_sees_prior_briefing() {
+    let provider = Arc::new(RecordingProvider::successful());
+    let mut engine = make_engine("second-compact");
+    engine.provider = Arc::clone(&provider) as Arc<dyn LlmProvider>;
+    engine.messages = transcript_with_prior_briefing();
+    engine.compact_state.last_input_tokens = 170_000;
+
+    engine
+        .execute_turn("continue the task", "msg-second-compact")
+        .await
+        .expect("turn should finish after the summary call");
+
+    let requests = provider.requests();
+    assert!(
+        requests.len() >= 2,
+        "summarizer then the main turn, got {}",
+        requests.len()
+    );
+    assert_eq!(requests[0].system, crate::compact::prompt::COMPACT_SYSTEM_PROMPT);
+    let summary_input = request_blob(&requests[0]);
+    assert!(
+        summary_input.contains("PRIOR_BRIEFING_MARKER"),
+        "summarizer input dropped the previous briefing"
+    );
+    let transcript = transcript_blob(&engine.messages);
+    assert!(
+        transcript.contains("不要改支付接口"),
+        "short user constraint was deleted before summarization"
+    );
+}
+
+#[tokio::test]
+async fn provider_error_after_idle_microcompact_restores_cleared_tool_output() {
+    let provider = Arc::new(RecordingProvider::failing());
+    let mut engine = make_engine("idle-micro-fail");
+    engine.provider = Arc::clone(&provider) as Arc<dyn LlmProvider>;
+    engine.compact_config.micro_keep_recent = 1;
+    engine.compact_config.idle_compact_seconds = 60;
+    engine.messages = bash_history_with_image();
+    engine.compact_state.last_turn_ended_at =
+        Some(chrono::Utc::now() - chrono::Duration::hours(2));
+    let prefix_len = engine.messages.len();
+
+    engine
+        .execute_turn("this turn fails", "msg-idle-fail")
+        .await
+        .expect_err("provider should fail after idle microcompact");
+
+    assert_eq!(engine.messages.len(), prefix_len);
+    assert!(transcript_blob(&engine.messages).contains("ORIGINAL_BASH_OUTPUT_MUST_SURVIVE"));
+    assert!(!transcript_blob(&engine.messages).contains("[Tool result cleared]"));
+    assert!(!transcript_blob(&engine.messages).contains("this turn fails"));
+}
+
+#[test]
+fn rollback_restores_microcompact_until_checkpoint_commits() {
+    let mut engine = make_engine("undo-log");
+    engine.compact_config.micro_keep_recent = 1;
+    engine.messages = bash_history_with_image();
+    let prefix = engine.messages.len();
+
+    engine.apply_microcompact();
+    assert!(transcript_blob(&engine.messages).contains("[Tool result cleared]"));
+    engine.messages.push(nomi_types::message::Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "uncommitted".into(),
+        }],
+    ));
+    engine.rollback_transcript_to(prefix);
+    let restored = transcript_blob(&engine.messages);
+    assert!(restored.contains("ORIGINAL_BASH_OUTPUT_MUST_SURVIVE"));
+    assert!(restored.contains("ORIGINAL_IMAGE"));
+    assert!(!restored.contains("[Tool result cleared]"));
+    assert_eq!(engine.messages.len(), prefix);
+
+    engine.apply_microcompact();
+    let mut checkpoint = 0;
+    engine.commit_transcript_checkpoint(&mut checkpoint);
+    assert_eq!(checkpoint, prefix);
+    engine.messages.push(nomi_types::message::Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "after commit".into(),
+        }],
+    ));
+    engine.rollback_transcript_to(prefix);
+    let kept = transcript_blob(&engine.messages);
+    assert!(kept.contains("[Tool result cleared]"));
+    assert!(!kept.contains("ORIGINAL_BASH_OUTPUT_MUST_SURVIVE"));
+    assert!(!kept.contains("ORIGINAL_IMAGE"));
+}
+
+#[tokio::test]
+async fn successful_microcompact_is_not_undone_by_later_failure() {
+    let mut engine = make_engine("idle-micro-keep");
+    engine.compact_config.micro_keep_recent = 1;
+    engine.compact_config.idle_compact_seconds = 60;
+    engine.messages = bash_history_with_image();
+    engine.compact_state.last_turn_ended_at =
+        Some(chrono::Utc::now() - chrono::Duration::hours(2));
+    engine.provider = Arc::new(RecordingProvider::successful());
+
+    engine
+        .execute_turn("this turn succeeds", "msg-idle-ok")
+        .await
+        .expect("successful turn should keep the microcompact clear");
+    assert!(transcript_blob(&engine.messages).contains("[Tool result cleared]"));
+    assert!(!transcript_blob(&engine.messages).contains("ORIGINAL_BASH_OUTPUT_MUST_SURVIVE"));
+
+    engine.provider = Arc::new(RecordingProvider::failing());
+    engine.compact_state.last_turn_ended_at = Some(chrono::Utc::now());
+    engine
+        .execute_turn("this later turn fails", "msg-idle-later-fail")
+        .await
+        .expect_err("later provider failure");
+
+    assert!(transcript_blob(&engine.messages).contains("[Tool result cleared]"));
+    assert!(!transcript_blob(&engine.messages).contains("ORIGINAL_BASH_OUTPUT_MUST_SURVIVE"));
+    assert!(!transcript_blob(&engine.messages).contains("this later turn fails"));
+}
+
+fn transcript_with_prior_briefing() -> Vec<nomi_types::message::Message> {
+    use nomi_types::message::Message;
+    let mut messages = vec![
+        Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "task".into(),
+            }],
+        ),
+        Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "[Conversation compacted]\n{\"trigger\":\"auto\"}".into(),
+            }],
+        ),
+        Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "This session is being continued from a previous conversation. PRIOR_BRIEFING_MARKER".into(),
+            }],
+        ),
+        Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "不要改支付接口".into(),
+            }],
+        ),
+    ];
+    for i in 0..12 {
+        messages.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: format!("old monologue {i}"),
+            }],
+        ));
+    }
+    for i in 0..23 {
+        messages.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: format!("tail-{i}"),
+            }],
+        ));
+    }
+    messages.push(Message::new(
+        Role::Assistant,
+        vec![ContentBlock::Text {
+            text: "x".repeat(400_000),
+        }],
+    ));
+    messages
+}
+
+fn bash_history_with_image() -> Vec<nomi_types::message::Message> {
+    use nomi_types::message::Message;
+    vec![
+        Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "inspect the build".into(),
+            }],
+        ),
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "bash-old".into(),
+                name: "Bash".into(),
+                input: serde_json::json!({}),
+                extra: None,
+            }],
+        ),
+        Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "bash-old".into(),
+                content: "ORIGINAL_BASH_OUTPUT_MUST_SURVIVE".into(),
+                is_error: false,
+                images: vec![nomi_types::tool::ToolImage {
+                    media_type: "image/png".into(),
+                    data: "ORIGINAL_IMAGE".into(),
+                }],
+            }],
+        ),
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "bash-new".into(),
+                name: "Bash".into(),
+                input: serde_json::json!({}),
+                extra: None,
+            }],
+        ),
+        Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "bash-new".into(),
+                content: "recent bash output".into(),
+                is_error: false,
+                images: Vec::new(),
+            }],
+        ),
+    ]
+}
+
+fn request_blob(request: &LlmRequest) -> String {
+    let mut out = request.system.clone();
+    for message in &request.messages {
+        out.push('\n');
+        out.push_str(&transcript_blob(std::slice::from_ref(message)));
+    }
+    out
+}
+
+fn transcript_blob(messages: &[nomi_types::message::Message]) -> String {
+    let mut out = String::new();
+    for message in messages {
+        for block in &message.content {
+            match block {
+                ContentBlock::Text { text } => out.push_str(text),
+                ContentBlock::Thinking { thinking, .. } => out.push_str(thinking),
+                ContentBlock::ToolResult { content, images, .. } => {
+                    out.push_str(content);
+                    for image in images {
+                        out.push_str(&image.data);
+                    }
+                }
+                ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => {}
+            }
+        }
+    }
+    out
 }
 
 #[test]

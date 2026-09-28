@@ -145,12 +145,24 @@ fn make_compact_engine_with_output(
         system_resource_inbox: None,
         frozen_provider_tools: None,
         sent_prefix_len: 0,
+        prefix_rewrite_undo: Vec::new(),
         process_supervisor: None,
         editable_turn: None,
         observation: None,
         horizon: Default::default(),
         plan_exit_latch: None,
     }
+}
+
+/// One user turn large enough to stay above a 197k emergency limit after the
+/// cheap layers refresh the watermark. A single message is not folded.
+fn oversized_user_turn() -> Message {
+    Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "x".repeat(820_000),
+        }],
+    )
 }
 
 fn tool_use_msg(id: &str, name: &str) -> Message {
@@ -544,7 +556,9 @@ async fn emergency_fires_when_at_limit() {
     let mut state = CompactState::new();
     state.last_input_tokens = 198_000; // >= 197k limit
 
-    let mut engine = make_compact_engine(config, state, vec![]);
+    // The stale 198k reading is refreshed after snip/micro. The transcript
+    // itself has to stay at the emergency limit for the block to remain.
+    let mut engine = make_compact_engine(config, state, vec![oversized_user_turn()]);
     let result = engine.run_compaction(CompactReason::EmergencyRecovery).await;
 
     match result {
@@ -552,11 +566,53 @@ async fn emergency_fires_when_at_limit() {
             input_tokens,
             limit,
         }) => {
-            assert_eq!(input_tokens, 198_000);
             assert_eq!(limit, 197_000);
+            assert!(
+                input_tokens >= limit as u64,
+                "refreshed occupancy should still be at the emergency limit, got {input_tokens}"
+            );
         }
         other => panic!("expected ContextTooLong, got: {:?}", other),
     }
+}
+
+// -- A stale high watermark must not be re-estimated away on the emergency path --
+
+#[tokio::test]
+async fn emergency_gate_is_not_released_by_a_local_re_estimate() {
+    let config = CompactConfig {
+        context_window: 200_000,
+        emergency_buffer: 3_000,
+        ..Default::default()
+    };
+    let mut state = CompactState::new();
+    state.last_input_tokens = 198_000; // >= 197k limit
+
+    // The transcript is tiny, so only the provider's reading says the request is
+    // oversized. Refreshing the watermark from the local estimate here would
+    // lower it under the limit without compacting anything, and the caller would
+    // re-send the very request the emergency check just refused.
+    let mut engine = make_compact_engine(
+        config,
+        state,
+        vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "continue".to_string(),
+            }],
+        )],
+    );
+    let result = engine.run_compaction(CompactReason::EmergencyRecovery).await;
+
+    assert!(
+        engine.compact_state.last_input_tokens >= 197_000,
+        "a local re-estimate must not lower the emergency watermark on its own, got {}",
+        engine.compact_state.last_input_tokens
+    );
+    assert!(
+        !result.is_ok(),
+        "the emergency path must not report success while the watermark is still at the limit"
+    );
 }
 
 // -- Emergency does not fire when below limit --
@@ -868,10 +924,11 @@ async fn circuit_broken_skips_auto_but_emergency_fires() {
     state.last_input_tokens = 198_000; // triggers both auto and emergency
     state.consecutive_failures = 3; // circuit broken
 
-    let mut engine = make_compact_engine(config, state, vec![]);
+    let mut engine = make_compact_engine(config, state, vec![oversized_user_turn()]);
     let result = engine.run_compaction(CompactReason::EmergencyRecovery).await;
 
-    // Auto is skipped due to circuit breaker; emergency fires
+    // Auto is skipped due to circuit breaker; emergency fires on the
+    // refreshed occupancy, which this transcript still exceeds.
     assert!(matches!(
         result,
         Err(super::AgentError::ContextTooLong { .. })

@@ -26,6 +26,11 @@ pub struct CompactState {
     pub consecutive_failures: u32,
     /// Input token count from the last API call (used as the watermark).
     pub last_input_tokens: u64,
+    /// Raw `input_tokens` the provider reported for the most recent completed
+    /// pass. Kept apart from the watermark and never merged with the local
+    /// estimator: after a cheap rewrite this is the ground truth a fold
+    /// decision is measured against.
+    pub last_provider_input_tokens: u64,
     /// Whether the soft-compaction notice (50% of window) has already been
     /// emitted for the current growth cycle. Cleared when tokens drop below
     /// the soft threshold so a new cycle can notify again.
@@ -49,6 +54,7 @@ impl CompactState {
         Self {
             consecutive_failures: 0,
             last_input_tokens: 0,
+            last_provider_input_tokens: 0,
             soft_compact_noticed: false,
             consecutive_compacts: 0,
             compact_stuck: false,
@@ -125,6 +131,18 @@ impl CompactState {
     pub fn set_watermark(&mut self, tokens: u64, config: &CompactConfig) {
         self.last_input_tokens = tokens;
         self.maybe_reset_soft_notice(config);
+    }
+
+    /// Record the provider's own `input_tokens` reading for a completed pass.
+    /// Monotonic since the last fold: a continuation pass must not forget a
+    /// larger earlier reading, and a later short pass must not erase it.
+    pub fn note_provider_input_tokens(&mut self, tokens: u64) {
+        self.last_provider_input_tokens = self.last_provider_input_tokens.max(tokens);
+    }
+
+    /// Drop the provider reading once a fold replaces the transcript.
+    pub fn reset_provider_input_tokens(&mut self) {
+        self.last_provider_input_tokens = 0;
     }
 
     /// After a compact that actually rewrote history: enter stuck when the
