@@ -4189,7 +4189,11 @@ impl AgentEngine {
     }
 
     fn run_snip_layer(&mut self) {
-        let drop_idx = snip::snip_indices(&self.messages, snip::DEFAULT_SNIP_KEEP_TAIL);
+        let drop_idx = snip::snip_indices(
+            &self.messages,
+            snip::DEFAULT_SNIP_KEEP_TAIL,
+            &self.compact_config,
+        );
         if drop_idx.is_empty() {
             return;
         }
@@ -4205,7 +4209,11 @@ impl AgentEngine {
             "snip",
             &dropped,
         );
-        let removed = snip::snip_old_plain_turns(&mut self.messages, snip::DEFAULT_SNIP_KEEP_TAIL);
+        let removed = snip::snip_old_plain_turns(
+            &mut self.messages,
+            snip::DEFAULT_SNIP_KEEP_TAIL,
+            &self.compact_config,
+        );
         if removed == 0 {
             return;
         }

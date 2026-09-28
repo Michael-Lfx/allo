@@ -221,7 +221,7 @@ fn is_tool_result_message(msg: &Message) -> bool {
 
 /// Check if a user turn is small enough to keep verbatim during compaction.
 /// Only pins text-only user messages (not tool results).
-fn is_pinnable_user_turn(msg: &Message, config: &CompactConfig) -> bool {
+pub(crate) fn is_pinnable_user_turn(msg: &Message, config: &CompactConfig) -> bool {
     if msg.role != Role::User {
         return false;
     }

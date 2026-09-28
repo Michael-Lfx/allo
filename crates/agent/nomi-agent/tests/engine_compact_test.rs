@@ -214,7 +214,10 @@ async fn resumed_turn_compacts_before_provider_when_occupancy_exceeds_new_thresh
         config,
         ToolRegistry::new(),
         silent_output(),
-        bulky_resumed_session(20, 1_700),
+        // Snip now keeps short plain turns, so the post-snip estimate is larger.
+        // 2100 chars keeps the refreshed occupancy above the 16k threshold and
+        // under the 19k emergency limit.
+        bulky_resumed_session(20, 2_100),
         std::env::temp_dir(),
     );
     let result = engine
