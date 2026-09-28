@@ -353,7 +353,7 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
   }
 
   return (
-    <div className='flex flex-col size-full'>
+    <div className='flex flex-col size-full min-h-0 overflow-hidden'>
       {/* Top toolbar */}
       <div className='px-8px py-4px border-b border-b-base flex items-center justify-between flex-shrink-0'>
         <span className='text-12px text-t-secondary'>
@@ -365,7 +365,10 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
           onClick={onRefresh}
         />
       </div>
-      <div className='flex-1 overflow-y-auto p-8px flex flex-col gap-10px'>
+      {/* min-h-0 is required: a flex child defaults to min-height:auto, so this
+          list grows with its rows and an ancestor overflow:hidden clips it
+          without a scrollport. The wheel then has nothing to move. */}
+      <div className='min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-8px flex flex-col gap-10px'>
         {groupedChanges.map((group) => (
           // border-base 曾是这里的边框色，但 theme 的 `base` 键指向 --bg-base（主背景），
           // 描出来的是一条和页面底色同色的边；要的是基础边框变量 --border-base。
