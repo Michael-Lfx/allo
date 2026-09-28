@@ -1706,8 +1706,10 @@ export interface ILearningGenerationToolCall {
  * WS 不重放、不补发，终态一律以同步 HTTP 响应为准，因此所有过程字段可选。 */
 export interface ILearningCourseGenerationEvent {
   phase: 'started' | 'scope' | 'round' | 'audit' | 'publishing' | 'completed' | 'failed';
-  /** 生成来源：课程简报 / 知识库 */
-  kind?: 'description' | 'knowledge_base';
+  /** 生成来源：课程简报 / 知识库 / 学习图生长（learning_graph） */
+  kind?: 'description' | 'knowledge_base' | 'learning_graph';
+  /** 学习图生长的细分事件名（growth_started/growth_redraft/growth_completed/...） */
+  event?: string;
   /** agent loop 轮次：loop=generate|repair、round/max_rounds、本轮工具调用与摘要文本 */
   loop?: 'generate' | 'repair';
   round?: number;

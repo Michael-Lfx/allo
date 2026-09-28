@@ -14,7 +14,6 @@ import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
 import type {
   ActivityKind,
-  ConceptRef,
   CreateLessonActivityRequest,
   GeneratedLessonActivity,
   Lesson,
@@ -53,9 +52,6 @@ export function LessonQuestionDialog({
   const [answers, setAnswers] = useState<string[]>(['']);
   const [distractors, setDistractors] = useState<string[]>([]);
   const [explanation, setExplanation] = useState('');
-  const [conceptIds, setConceptIds] = useState<string[]>([]);
-  const [conceptRefs, setConceptRefs] = useState<ConceptRef[]>([]);
-  const [conceptsLoading, setConceptsLoading] = useState(false);
   const [focus, setFocus] = useState('');
   const [generating, setGenerating] = useState(false);
   const [generated, setGenerated] = useState(false);
@@ -66,25 +62,6 @@ export function LessonQuestionDialog({
   const isFillInBlank = kind === 'fill_in_blank';
   const isReflection = kind === 'reflection';
   const locked = busy || generating;
-
-  useEffect(() => {
-    let cancelled = false;
-    setConceptsLoading(true);
-    learningApi
-      .listConceptRefs()
-      .then((refs) => {
-        if (!cancelled) setConceptRefs(refs);
-      })
-      .catch(() => {
-        // 概念绑定可选；列表加载失败不阻塞对话框
-      })
-      .finally(() => {
-        if (!cancelled) setConceptsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const switchKind = (next: ActivityKind) => {
     if (next === kind) return;
@@ -121,7 +98,7 @@ export function LessonQuestionDialog({
     return null;
   };
 
-  /** 组装提交体：反思题 answer 为 null；concept_ids 留空时后端绑定课时全部概念 */
+  /** 组装提交体：反思题 answer 为 null */
   const buildRequest = (): CreateLessonActivityRequest | null => {
     const errorKey = validate();
     if (errorKey !== null) {
@@ -137,7 +114,6 @@ export function LessonQuestionDialog({
       answer: isFillInBlank ? cleanedAnswers : isReflection ? null : answer,
       explanation: explanation.trim(),
       distractors: isFillInBlank ? distractors : undefined,
-      concept_ids: conceptIds,
     };
   };
 
@@ -190,7 +166,6 @@ export function LessonQuestionDialog({
     setAnswers(Array.isArray(draft.answer) ? (draft.answer as string[]) : ['']);
     setDistractors(draft.distractors);
     setExplanation(draft.explanation);
-    setConceptIds(draft.concept_ids);
     setGenerated(true);
   };
 
@@ -264,31 +239,6 @@ export function LessonQuestionDialog({
     </div>
   );
 
-  const conceptPicker = (
-    <div>
-      <div className='mb-6px font-500'>{t('learning.questionConceptBind')}</div>
-      <Select
-        className='w-full'
-        mode='multiple'
-        allowClear
-        loading={conceptsLoading}
-        value={conceptIds}
-        placeholder={t('learning.questionConceptBindPlaceholder')}
-        onChange={(value: string[]) => setConceptIds(value)}
-      >
-        {conceptRefs.map((concept) => (
-          <Select.Option key={concept.concept_id} value={concept.concept_id}>
-            {concept.title}
-            {concept.course_title !== null ? ` · ${concept.course_title}` : ''}
-          </Select.Option>
-        ))}
-      </Select>
-      <Text type='secondary' className='text-12px'>
-        {t('learning.questionConceptBindLessonHint')}
-      </Text>
-    </div>
-  );
-
   return (
     <Modal
       title={t('learning.lessonAddQuestion')}
@@ -317,7 +267,6 @@ export function LessonQuestionDialog({
                 {kindRadios}
               </div>
               {formFields}
-              {conceptPicker}
               <div className='flex justify-end'>
                 <Button type='primary' loading={busy} disabled={generating} onClick={() => void submit()}>
                   {t('learning.questionAddConfirm')}
@@ -371,7 +320,6 @@ export function LessonQuestionDialog({
                 <>
                   <Alert type='success' content={t('learning.questionGenerated')} />
                   {formFields}
-                  {conceptPicker}
                   <div className='flex justify-end'>
                     <Button
                       type='primary'

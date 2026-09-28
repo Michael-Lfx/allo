@@ -1,15 +1,20 @@
 import { useCallback, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
-import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
-import type { CourseDetail, GenerateCourseRequest, TeachingStyle } from '../types';
+import type {
+  CourseDetail,
+  EndpointInput,
+  GenerateCourseRequest,
+  ProposedEndpointView,
+  TeachingStyle,
+} from '../types';
 import { errorMessage, type Translate } from '../utils';
 
 /** 对话框内生成视图的一次完整尝试：运行中 / 已完成（课程入库）/
- * 失败 / 已取消（用户主动取消，学习图草稿保留可续建）。
+ * 失败 / 已取消（用户主动取消，重试即重新发起）。
  * request 保留用于失败后的「重试」。 */
 export interface CourseGenerationState {
   status: 'running' | 'completed' | 'failed' | 'cancelled';
@@ -31,8 +36,12 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const [generateVisible, setGenerateVisible] = useState(false);
   // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）/
-  // 方式三（学习图 beta：描述即学习目标，生成前置网络）；默认描述生成
+  // 方式三（学习图 beta：目标 → AI 提议终点 → 确认 → 建课并首生长）；默认描述生成
   const [creationTab, setCreationTab] = useState<'base' | 'description' | 'graph'>('description');
+  // 学习图向导步：目标输入 → 终点确认（AI 提议，可增删改）
+  const [graphStep, setGraphStep] = useState<'goal' | 'endpoints'>('goal');
+  const [proposingEndpoints, setProposingEndpoints] = useState(false);
+  const [draftEndpoints, setDraftEndpoints] = useState<EndpointInput[]>([]);
   const [creationDescription, setCreationDescription] = useState('');
   const [knowledgeBases, setKnowledgeBases] = useState<IKnowledgeBase[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
@@ -100,6 +109,60 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     [t, setBusyId]
   );
 
+  // 学习图向导第一步：目标 → AI 提议 1-3 条终点锚进入第二步（失败降级为
+  // 空列表，用户手填即可，绝不阻塞建课）。
+  const proposeGraphEndpoints = useCallback(async () => {
+    const description = creationDescription.trim();
+    if (!description) {
+      Message.warning(t('learning.describeRequired'));
+      return;
+    }
+    setProposingEndpoints(true);
+    try {
+      const proposed: ProposedEndpointView[] = await learningApi.proposeGraphEndpoints({
+        description,
+        provider_id: modelChoice?.provider_id,
+        model: modelChoice?.model,
+      });
+      setDraftEndpoints(
+        proposed.length > 0 ? proposed.map((endpoint) => ({ ...endpoint })) : [{ title: '', goal_note: '' }]
+      );
+      setGraphStep('endpoints');
+    } catch (actionError) {
+      Message.error(errorMessage(t, actionError));
+    } finally {
+      setProposingEndpoints(false);
+    }
+  }, [creationDescription, modelChoice, t]);
+
+  // 学习图向导第二步：确认终点锚 → 建课（终点点位随请求提交；首生长在
+  // 后台启动，进度走悬浮指示条）。
+  const confirmGraphCreation = useCallback(async () => {
+    const description = creationDescription.trim();
+    if (!description) {
+      Message.warning(t('learning.describeRequired'));
+      return;
+    }
+    const endpoints = draftEndpoints
+      .map((endpoint) => ({
+        title: endpoint.title.trim(),
+        goal_note: endpoint.goal_note?.trim() ?? '',
+      }))
+      .filter((endpoint) => endpoint.title.length > 0);
+    if (endpoints.length === 0) {
+      Message.warning(t('learning.learningGraphEndpointRequired'));
+      return;
+    }
+    await generateCourse({
+      course_kind: 'learning_graph',
+      description,
+      endpoints,
+      teaching_style: teachingStyle,
+      provider_id: modelChoice?.provider_id,
+      model: modelChoice?.model,
+    });
+  }, [creationDescription, draftEndpoints, generateCourse, modelChoice, teachingStyle]);
+
   // 提交当前 tab 的生成请求：base tab 要求已选知识库；description tab 要求
   // 已填写课程简报。校验失败时提示并停留在表单。
   const submitGeneration = useCallback(async () => {
@@ -125,17 +188,6 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       Message.warning(t('learning.describeRequired'));
       return;
     }
-    // 学习图（beta）：描述即学习目标，后端按 course_kind 分流到图生成；
-    // 传统课程走描述流生成大纲。
-    if (creationTab === 'graph') {
-      await generateCourse({
-        course_kind: 'learning_graph',
-        description,
-        teaching_style: teachingStyle,
-        ...modelFields,
-      });
-      return;
-    }
     await generateCourse({ description, teaching_style: teachingStyle, ...modelFields });
   }, [
     creationDescription,
@@ -147,78 +199,12 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     t,
   ]);
 
-  // 重试失败的生成：学习图优先续建存活草稿（中断前可能已建几十轮），
-  // 仅当续建不可用（草稿过期/重启 404、引擎未配置 409）时回退全量重生
-  // 成——续建本身再失败时不回退，草稿仍在，再次重试还会接着建。
+  // 重试失败的生成：直接按原请求重新发起（生长是幂等的小批次操作，
+  // 失败不残留半成品）。
   const retryGeneration = useCallback(() => {
     if (generation?.status !== 'failed' && generation?.status !== 'cancelled') return;
-    const failed = generation;
-    cancelRequestedRef.current = false;
-    // 取消不保留草稿：取消后的重试直接全量重生成；仅真实失败的学习图走
-    // 续建（草稿仍存活时接续，404/409 再回退全量）。
-    if (failed.request.course_kind !== 'learning_graph' || failed.status === 'cancelled') {
-      void generateCourse(failed.request);
-      return;
-    }
-    setBusyId('generate');
-    setGeneration({ status: 'running', request: failed.request, result: null, error: null });
-    void (async () => {
-      try {
-        const detail = await learningApi.resumeLearningGraph({
-          provider_id: modelChoice?.provider_id,
-          model: modelChoice?.model,
-        });
-        setGeneration({
-          status: 'completed',
-          request: failed.request,
-          result: detail,
-          error: null,
-        });
-      } catch (resumeError) {
-        if (cancelRequestedRef.current) {
-          setGeneration({
-            status: 'cancelled',
-            request: failed.request,
-            result: null,
-            error: null,
-          });
-          return;
-        }
-        const resumeUnavailable =
-          isBackendHttpError(resumeError) &&
-          (resumeError.status === 404 || resumeError.status === 409);
-        if (!resumeUnavailable) {
-          setGeneration({
-            status: 'failed',
-            request: failed.request,
-            result: null,
-            error: errorMessage(t, resumeError),
-          });
-          return;
-        }
-        try {
-          const detail = await learningApi.generateCourse(failed.request);
-          setGeneration({
-            status: 'completed',
-            request: failed.request,
-            result: detail,
-            error: null,
-          });
-        } catch (retryError) {
-          const cancelled = cancelRequestedRef.current;
-          setGeneration({
-            status: cancelled ? 'cancelled' : 'failed',
-            request: failed.request,
-            result: null,
-            error: cancelled ? null : errorMessage(t, retryError),
-          });
-        }
-      } finally {
-        cancelRequestedRef.current = false;
-        setBusyId(null);
-      }
-    })();
-  }, [generateCourse, generation, modelChoice, setBusyId, t]);
+    void generateCourse(generation.request);
+  }, [generateCourse, generation]);
 
   // 页面挂载时恢复后台生成状态：对话框状态是易失的（切页即丢），服务端
   // 注册表是事实来源。running 时重建 generation 状态，让悬浮指示条与对话
@@ -295,6 +281,13 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     openGenerator,
     openCreateForm,
     submitGeneration,
+    proposeGraphEndpoints,
+    confirmGraphCreation,
+    graphStep,
+    setGraphStep,
+    proposingEndpoints,
+    draftEndpoints,
+    setDraftEndpoints,
     retryGeneration,
     closeGenerator,
     refreshGenerationStatus,

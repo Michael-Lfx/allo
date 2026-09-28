@@ -237,7 +237,6 @@
               "options": null,
               "answer": null,
               "explanation": null,
-              "concepts": ["key", null],
               "distractors": null
             }
           ]
@@ -250,7 +249,6 @@
         assert!(activity.options.is_empty());
         assert!(activity.answer.is_null());
         assert_eq!(activity.explanation, "");
-        assert_eq!(activity.concepts, vec!["key".to_owned()]);
         assert!(activity.distractors.is_empty());
     }
 
@@ -298,35 +296,7 @@
     }
 
     #[test]
-    fn blueprint_validator_rejects_cycles_unsampled_sources_and_empty_outline() {
-        let samples = vec![("real.md".to_owned(), "# Real".to_owned())];
-        let blueprint = Blueprint {
-            title: "C".into(),
-            description: String::new(),
-            domain: String::new(),
-            version: 1,
-            concepts: vec![
-                ConceptPack {
-                    key: "a".into(),
-                    title: "A".into(),
-                    description: String::new(),
-                    prerequisites: Vec::new(),
-                },
-                ConceptPack {
-                    key: "b".into(),
-                    title: "B".into(),
-                    description: String::new(),
-                    prerequisites: Vec::new(),
-                },
-            ],
-            modules: Vec::new(),
-        };
-        let lesson = BlueprintLesson {
-            title: "L".into(),
-            purpose: String::new(),
-            concepts: vec!["a".into()],
-            source: None,
-        };
+    fn activity_stage_enforces_count_floors_and_ai_graded_cap() {
         let objective = vec![
             ActivityPack {
                 kind: ActivityKind::SingleChoice,
@@ -334,7 +304,6 @@
                 options: vec!["A".into(), "B".into(), "C".into()],
                 answer: json!("A"),
                 explanation: "e".into(),
-                concepts: vec!["a".into()],
                 distractors: Vec::new(),
                 tol: None,
                 section_key: None,
@@ -346,7 +315,6 @@
                 options: Vec::new(),
                 answer: json!(true),
                 explanation: "e".into(),
-                concepts: vec!["a".into()],
                 distractors: Vec::new(),
                 tol: None,
                 section_key: None,
@@ -359,7 +327,6 @@
             options: Vec::new(),
             answer: json!(null),
             explanation: String::new(),
-            concepts: vec!["a".into()],
             distractors: Vec::new(),
             tol: None,
             section_key: None,
@@ -374,21 +341,18 @@
         for activity in &at_cap {
             activity.validate_shape((3, 5), true).unwrap();
         }
-        assert!(validate_lesson_activities(&at_cap, &blueprint, &lesson).is_ok());
+        assert!(validate_lesson_activities(&at_cap).is_ok());
 
         // A fourth AI-graded question exceeds the cap.
         let mut over_cap = at_cap.clone();
         over_cap.push(reflection("r4"));
-        assert!(validate_lesson_activities(&over_cap, &blueprint, &lesson).is_err());
+        assert!(validate_lesson_activities(&over_cap).is_err());
 
-        // AI-graded questions never cross lessons: binding another lesson's
-        // concept is rejected, objective activities stay lesson-bound.
-        let mut cross_lesson = at_cap.clone();
-        cross_lesson[2].concepts = vec!["b".into()];
-        assert!(validate_lesson_activities(&cross_lesson, &blueprint, &lesson).is_err());
-        let mut objective_cross = at_cap.clone();
-        objective_cross[0].concepts = vec!["b".into()];
-        assert!(validate_lesson_activities(&objective_cross, &blueprint, &lesson).is_err());
+        // Objective floors: dropping one objective question breaks the
+        // minimum objective count.
+        let mut under_floor = at_cap.clone();
+        under_floor.remove(0);
+        assert!(validate_lesson_activities(&under_floor).is_err());
     }
 
     #[test]
@@ -405,7 +369,6 @@
             options: Vec::new(),
             answer: json!(["magnitude"]),
             explanation: "e".into(),
-            concepts: vec!["a".into()],
             distractors: vec!["length".into(), "norm".into()],
             tol: None,
             section_key: None,
@@ -443,30 +406,24 @@
             provider_id: None,
             model: None,
             mode: crate::models::CourseGenerationMode::OnDemand,
+            endpoints: Vec::new(),
         };
         assert_eq!(request.knowledge_base_id, Some(id));
     }
 
-    /// A minimal blueprint with one module, one lesson and one concept.
+    /// A minimal blueprint with one module and one lesson.
     fn lesson_test_blueprint() -> Blueprint {
         Blueprint {
             title: "C".into(),
             description: String::new(),
             domain: String::new(),
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "a".into(),
-                title: "A".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![BlueprintModule {
                 title: "M".into(),
                 description: String::new(),
                 lessons: vec![BlueprintLesson {
                     title: "L".into(),
                     purpose: "p".into(),
-                    concepts: vec!["a".into()],
                     source: Some(SourceSpan {
                         path: "real.md".into(),
                         start: None,
@@ -484,7 +441,6 @@
         let lesson = |title: &str, purpose: &str, source: Option<&str>| BlueprintLesson {
             title: title.into(),
             purpose: purpose.into(),
-            concepts: vec!["a".into()],
             source: source.map(|path| SourceSpan {
                 path: path.into(),
                 start: None,
@@ -496,12 +452,6 @@
             description: String::new(),
             domain: String::new(),
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "a".into(),
-                title: "A".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![
                 BlueprintModule {
                     title: "模块一".into(),
@@ -627,7 +577,6 @@
             &manifest,
             None,
             Some("下一课"),
-            "",
             ComplexityTier::Mid,
         );
         assert!(body_prompt.contains("## 本节任务"));
@@ -752,10 +701,10 @@
         r#"{
           "estimated_minutes": 20,
           "activities": [
-            {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "concepts": ["a"], "section_key": "s1"},
-            {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "concepts": ["a"], "section_key": "s1"},
-            {"kind": "multi_choice", "prompt": "q3", "options": ["速度", "质量", "位移"], "answer": ["速度", "位移"], "explanation": "e", "concepts": ["a"], "section_key": "s1"},
-            {"kind": "open_question", "prompt": "q4", "options": [], "answer": null, "explanation": "", "concepts": ["a"], "section_key": "general"}
+            {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "section_key": "s1", "difficulty": 1},
+            {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "section_key": "s1", "difficulty": 2},
+            {"kind": "multi_choice", "prompt": "q3", "options": ["速度", "质量", "位移"], "answer": ["速度", "位移"], "explanation": "e", "section_key": "s1", "difficulty": 2},
+            {"kind": "open_question", "prompt": "q4", "options": [], "answer": null, "explanation": "", "section_key": "general", "difficulty": 3}
           ]
         }"#
         .into()

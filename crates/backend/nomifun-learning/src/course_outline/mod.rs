@@ -1,14 +1,56 @@
-//! Course outline draft + deterministic audit + agent engine seam. Mirrors
-//! `learning_graph/`: the learning crate owns the draft vocabulary the
-//! `co_*` agent tools edit, the deterministic audit gate that has the last
-//! word on publishing, and the engine trait; the two-loop agent engine
-//! itself lives in nomifun-ai-agent.
+//! Course outline draft + deterministic audit + agent engine seam. The
+//! learning crate owns the draft vocabulary the `co_*` agent tools edit, the
+//! deterministic audit gate that has the last word on publishing, and the
+//! engine trait; the two-loop agent engine itself lives in nomifun-ai-agent.
+//! The audit vocabulary below is shared with the lesson draft's audit.
 
 pub mod draft;
 
 use serde::{Deserialize, Serialize};
 
 use crate::generation::Blueprint;
+
+// ── Shared audit vocabulary ────────────────────────────────────────────────
+
+pub(crate) const SEV_INFO: &str = "info";
+pub(crate) const SEV_WARNING: &str = "warning";
+pub(crate) const SEV_DANGER: &str = "danger";
+
+/// Scope blocks are large-block themes (broad nouns / theme phrases); a
+/// title covers a block when it shares at least this many consecutive
+/// characters (block words run 2-6 chars, so 2 is a deliberately weak bar).
+pub(crate) const BLOCK_MIN_SHARED: usize = 2;
+
+/// One deterministic audit finding. `severity` is one of [`SEV_INFO`] /
+/// [`SEV_WARNING`] / [`SEV_DANGER`]; DANGER findings block publishing and
+/// drive the repair loop. `node_ids` carries the evidence keys so reports
+/// can point at the offending entities.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct AuditFinding {
+    pub kind: String,
+    pub severity: String,
+    pub message: String,
+    pub node_ids: Vec<String>,
+}
+
+/// Length (in chars) of the longest common substring of `a` and `b` — the
+/// weak substring-overlap measure behind the scope-block coverage check and
+/// the closest-candidate hints.
+pub(crate) fn common_substring_len(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut best = 0usize;
+    for i in 0..a.len() {
+        for j in 0..b.len() {
+            let mut len = 0;
+            while i + len < a.len() && j + len < b.len() && a[i + len] == b[j + len] {
+                len += 1;
+            }
+            best = best.max(len);
+        }
+    }
+    best
+}
 
 /// Knowledge-base context resolved before the engine starts: the base's
 /// name and description are fetched up front, so the engine never touches

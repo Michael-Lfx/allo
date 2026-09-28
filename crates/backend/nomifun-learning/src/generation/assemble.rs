@@ -2,9 +2,9 @@ use super::*;
 
 
 /// Outline-only pack for on-demand generation: every lesson keeps its title,
-/// purpose, source and concept bindings but no summary or activities. The
-/// blueprint and samples are persisted alongside the course so deferred lesson
-/// generation can reconstruct the exact grounding context later.
+/// purpose and source but no summary or activities. The blueprint and
+/// samples are persisted alongside the course so deferred lesson generation
+/// can reconstruct the exact grounding context later.
 pub(crate) fn assemble_outline_pack(
     blueprint: &Blueprint,
     request: &GenerateCourseRequest,
@@ -25,7 +25,6 @@ pub(crate) fn assemble_outline_pack(
                     estimated_minutes: 10,
                     purpose: lesson.purpose.clone(),
                     source: lesson.source.clone(),
-                    concepts: lesson.concepts.clone(),
                     activities: Vec::new(),
                     sections: Vec::new(),
                 })
@@ -52,7 +51,6 @@ pub(crate) fn assemble_outline_pack(
         // Absent for the description flow: no knowledge base backs the course.
         source_kb_id: request.knowledge_base_id.clone(),
         version: blueprint.version.max(1),
-        concepts: blueprint.concepts.clone(),
         modules,
         teaching_style: request.teaching_style.unwrap_or_default(),
     }

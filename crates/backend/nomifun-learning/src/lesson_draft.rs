@@ -7,8 +7,8 @@
 //! The audit reuses the fallback pipeline's rules verbatim — the document
 //! contract (`validate_lesson_document`: length floor + three required
 //! sections in order) and the activity rules (`validate_lesson_activities`:
-//! count floors, reflection cap, concept binding, per-kind shape) — inlined
-//! with position-aware messages so one audit pass surfaces every finding.
+//! count floors, reflection cap, per-kind shape) — inlined with
+//! position-aware messages so one audit pass surfaces every finding.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,11 +17,11 @@ use crate::generation::{
     LessonOutput, validate_lesson_document,
 };
 use crate::models::{
-    ActivityKind, ActivityPack, ConceptPack, SectionKind, SectionPack, VISUAL_OPTIONS,
+    ActivityKind, ActivityPack, SectionKind, SectionPack, VISUAL_OPTIONS,
     visual_menu_text,
 };
 
-use crate::learning_graph::{SEV_DANGER, SEV_WARNING};
+use crate::course_outline::{SEV_DANGER, SEV_WARNING};
 
 /// Hard cap on the activities a draft may hold: the design guidance is 3-5,
 /// so anything near this cap is already off-script (the audit warns before
@@ -36,27 +36,28 @@ pub struct LessonExcerpt {
 }
 
 /// 学习图课程节点专属的生成上下文（beta）。传统课时恒为 `None`；为 Some
-/// 时，引擎提示词以图语义段落（学习目标/学习范围/前置路径/后续节点）取代
-/// 课程大纲段，保证节点内容有全局观、范围受限、并能顺畅衔接后续节点。
+/// 时，引擎提示词以图语义段落（学习目标/学习范围/前置/后续）取代课程大纲
+/// 段。概念网口径（ADR-0009）：前置段是本课 assumes 的概念与跨课程教这些
+/// 概念的节点摘要；后续段是同课程位于本课之后的节点（衔接参照）。
 #[derive(Debug, Clone)]
 pub struct GraphLessonContext {
     /// 用户生成图时输入的学习目标。
     pub goal: String,
     /// 学习图的学习范围（scope 分析文本）。
     pub scope: String,
-    /// 预渲染：到达此节点的前置整条路径（祖先闭包，按拓扑序排列；离节点
-    /// 最近的前置优先展示，超长截断），让生成知道「学习者此刻已经会什么」。
-    /// 节点内容是共享课程资产，不含任何用户个人进度。
+    /// 预渲染：本课 assumes 的概念 + 跨课程教这些概念的节点摘要（离题最近
+    /// 的教师优先，超长截断），让生成知道「学习者此刻已经会什么」。节点内
+    /// 容是共享课程资产，不含任何用户个人进度。
     pub prerequisite_path: String,
-    /// 预渲染：此节点之后的下游节点（直接后继全列 + 可及后代总数），
-    /// 让生成知道「要为哪些后续学习做衔接」。
+    /// 预渲染：同课程位于本课之后的节点（衔接参照，非依赖关系），让生成
+    /// 知道「要为哪些后续学习做衔接」。
     pub upcoming_nodes: String,
 }
 
 /// The lesson context an engine generates content for: course/module/lesson
-/// coordinates, the lesson's concepts, and the grounding (the cited excerpt
-/// for the kb flow, the course brief for the description flow). Built by
-/// `generate_lesson_content` from the persisted course snapshot.
+/// coordinates and the grounding (the cited excerpt for the kb flow, the
+/// course brief for the description flow). Built by `generate_lesson_content`
+/// from the persisted course snapshot.
 #[derive(Debug, Clone)]
 pub struct LessonGenerationContext {
     /// 课时行 id——草稿按它挂到课时（断点续跑的查找键：重试时定位到
@@ -72,10 +73,6 @@ pub struct LessonGenerationContext {
     pub total_lessons: usize,
     pub next_lesson_title: Option<String>,
     pub purpose: String,
-    /// Concept packs bound to this lesson (prompt display).
-    pub concepts: Vec<ConceptPack>,
-    /// The exact keys activities may bind — the audit rejects anything else.
-    pub concept_keys: Vec<String>,
     /// Kb-flow grounding; `None` on the description flow.
     pub excerpt: Option<LessonExcerpt>,
     /// Pre-rendered full course outline with the current lesson marked — the
@@ -86,9 +83,8 @@ pub struct LessonGenerationContext {
     pub adjacent_context: String,
     /// 学习图节点专属上下文；传统课时恒为 `None`。
     pub graph: Option<GraphLessonContext>,
-    /// 防超纲黑名单(learnhub「禁止使用的概念」):传统课时预渲染本课时
-    /// 之外的概念清单;学习图节点预渲染可及后代节点标题清单。空 = 无
-    /// (短课时或图的终点节点)。由上下文构造方决定原料,提示词统一消费。
+    /// 防超纲黑名单：传统课时已随概念契约下线（恒空）；学习图节点预渲染
+    /// 下游节点标题清单。空 = 无。由上下文构造方决定原料,提示词统一消费。
     pub forbidden_concepts: String,
 }
 
@@ -179,7 +175,6 @@ pub struct LessonDraftView {
     pub module_title: String,
     pub lesson_title: String,
     pub purpose: String,
-    pub concept_keys: Vec<String>,
     /// `excerpt:<path>` for the kb flow, `course_brief` for the description
     /// flow (the grounding text itself rode in on the engine's user turn).
     pub grounding: String,
@@ -250,7 +245,6 @@ impl LessonDraft {
             module_title: self.context.module_title.clone(),
             lesson_title: self.context.lesson_title.clone(),
             purpose: self.context.purpose.clone(),
-            concept_keys: self.context.concept_keys.clone(),
             grounding: match &self.context.excerpt {
                 Some(excerpt) => format!("excerpt:{}", excerpt.path),
                 None => "course_brief".into(),
@@ -587,7 +581,7 @@ impl LessonDraft {
 /// rules, inlined with position-aware messages, plus draft-specific
 /// warnings. DANGER findings block the finish gate.
 fn audit_findings(
-    context: &LessonGenerationContext,
+    _context: &LessonGenerationContext,
     document: Option<&str>,
     estimated_minutes: i64,
     activities: &[ActivityPack],
@@ -728,7 +722,7 @@ fn audit_findings(
         findings.push(warning(
             "reflections_multiple",
             "prefer exactly one reflection question per lesson (more only when one question \
-             cannot cover all of the lesson's concepts)"
+             cannot cover the whole lesson)"
                 .into(),
         ));
     }
@@ -743,29 +737,12 @@ fn audit_findings(
         ));
     }
 
-    // ── Per-activity rules (shape + concept binding), position-aware ──
-    let lesson_keys: HashSet<&str> = context
-        .concept_keys
-        .iter()
-        .map(String::as_str)
-        .collect();
+    // ── Per-activity rules (shape), position-aware ──
     let mut seen_prompts: HashSet<String> = HashSet::new();
     for (position, activity) in activities.iter().enumerate() {
         let at = format!("activity at position {position}");
         if activity.prompt.trim().is_empty() {
             findings.push(danger("activity_prompt_empty", format!("{at}: prompt is empty")));
-        }
-        for concept in &activity.concepts {
-            if !lesson_keys.contains(concept.as_str()) {
-                findings.push(danger(
-                    "concept_binding_unknown",
-                    format!(
-                        "{at} binds concept '{concept}' which is not bound to this lesson; \
-                         bind only: {}",
-                        context.concept_keys.join(", ")
-                    ),
-                ));
-            }
         }
         // Shared per-kind shape rules (all nine kinds); the generation
         // bounds (3-5 options for choice-like kinds) apply.
@@ -828,13 +805,6 @@ mod tests {
             total_lessons: 2,
             next_lesson_title: Some("课时二".into()),
             purpose: "理解期权的定义".into(),
-            concepts: vec![ConceptPack {
-                key: "c1".into(),
-                title: "期权定义".into(),
-                description: "权利与义务的不对称".into(),
-                prerequisites: Vec::new(),
-            }],
-            concept_keys: vec!["c1".into()],
             excerpt: Some(LessonExcerpt {
                 path: "docs/basics.md".into(),
                 text: "期权的定义……".into(),
@@ -857,8 +827,7 @@ mod tests {
         let mut value = serde_json::json!({
             "kind": kind,
             "prompt": "期权的本质是什么？",
-            "explanation": "因为买方持有权利。",
-            "concepts": ["c1"]
+            "explanation": "因为买方持有权利。"
         });
         if let (Some(object), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
             object.extend(extra.clone());
@@ -898,7 +867,8 @@ mod tests {
             .any(|f| f.kind == "document_invalid"
                 && f.message.contains("non-whitespace characters")));
 
-        // Unknown concept binding is rejected with the lesson's keys named.
+        // 补齐客观题后客观题下限告警消失（概念绑定校验已随概念体系退役，
+        // 题目不再携带 concept 绑定）。
         draft.apply_ops(vec![LessonOp::SetDocument {
             document: long_document(),
         }]);
@@ -912,24 +882,17 @@ mod tests {
                 activity: activity_json("true_false", serde_json::json!({ "answer": true })),
             },
             LessonOp::AddActivity {
-                activity: ActivityPack {
-                    concepts: vec!["ghost".into()],
-                    ..activity_json("reflection", serde_json::json!({ "answer": null }))
-                },
+                activity: activity_json("reflection", serde_json::json!({ "answer": null })),
             },
         ]);
-        let unknown = draft
-            .findings
-            .iter()
-            .find(|f| f.kind == "concept_binding_unknown")
-            .expect("ghost binding must be flagged");
-        assert!(unknown.message.contains("ghost"));
-        assert!(unknown.message.contains("c1"), "names the allowed keys");
-        // Objective floor is now satisfied, so only the binding blocks.
         assert!(!draft
             .findings
             .iter()
             .any(|f| f.kind == "objective_activities_too_few"));
+        assert!(!draft
+            .findings
+            .iter()
+            .any(|f| f.severity == SEV_DANGER && f.kind.starts_with("activity")));
     }
 
     #[test]

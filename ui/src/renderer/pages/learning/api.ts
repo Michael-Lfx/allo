@@ -3,18 +3,24 @@ import type {
   AttemptResult,
   CalendarStats,
   CheckinStatus,
-  ConceptRef,
   CourseDetail,
   CourseSummary,
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
   DueReview,
+  EndpointInput,
+  EndpointUpdateInput,
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
+  GraphConceptRowView,
+  GraphEndpointView,
+  GraphHistoryView,
   MemoryHealthStats,
   GeneratedLessonActivity,
   LearningGraphGenerationStatus,
+  ProposedEndpointView,
+  ProposeEndpointsRequest,
   Lesson,
   LessonStatus,
   QuestionEntry,
@@ -38,17 +44,18 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
-  // 同步生成：agent loop 全程在 HTTP 请求内执行，过程事件经
-  // WS 的 `learning.course-generation` 推送，终态以本响应为准。
+  // 同步创建：目标解析与终点提议在请求内完成；首生长在后台执行（进度经
+  // WS 的 `learning.course-generation` 推送，状态/取消用下方这对端点）。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
-  // 续建失败的学习图生成：服务端定位最近活跃草稿接着建（草稿内存存活
-  // 1 小时）；无存活草稿（404）或引擎未配置（409）时报错，调用方回退
-  // 全量重生成。
-  resumeLearningGraph: (request: { provider_id?: string; model?: string } = {}) =>
-    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate/resume`, request),
-  // 学习图生成状态/取消：关闭对话框后生成仍在后台继续（HTTP 请求内同步
-  // 执行），页面用这对端点恢复悬浮指示条与取消入口。
+  // 为学习目标提议终点锚（建课向导第二步；提议失败返回空列表，引导手填）
+  proposeGraphEndpoints: (request: ProposeEndpointsRequest) =>
+    httpRequest<ProposedEndpointView[]>(
+      'POST',
+      `${BASE}/graph/propose-endpoints`,
+      request
+    ),
+  // 学习图生成/生长状态/取消：后台运行对外可发现、可取消。
   generationStatus: () =>
     httpRequest<LearningGraphGenerationStatus>(
       'GET',
@@ -59,6 +66,43 @@ export const learningApi = {
       'POST',
       `${BASE}/courses/generate/cancel`,
       {}
+    ),
+  // 手动触发一次生长（就绪补到 7；已在生长中报 409）
+  growGraph: (courseId: string) =>
+    httpRequest<{ kicked: boolean }>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow`,
+      {}
+    ),
+  // 学习记录：批次时间线（倒序）
+  graphHistory: (courseId: string) =>
+    httpRequest<GraphHistoryView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/history`
+    ),
+  // 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源
+  graphConcepts: (courseId: string) =>
+    httpRequest<GraphConceptRowView[]>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/concepts`
+    ),
+  // 终点锚 CRUD（任何变更后端自动重画罗盘）
+  addGraphEndpoint: (courseId: string, request: EndpointInput) =>
+    httpRequest<GraphEndpointView>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/endpoints`,
+      request
+    ),
+  updateGraphEndpoint: (courseId: string, endpointId: string, request: EndpointUpdateInput) =>
+    httpRequest<void>(
+      'PUT',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/endpoints/${encodeURIComponent(endpointId)}`,
+      request
+    ),
+  deleteGraphEndpoint: (courseId: string, endpointId: string) =>
+    httpRequest<void>(
+      'DELETE',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/endpoints/${encodeURIComponent(endpointId)}`
     ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
@@ -204,7 +248,6 @@ export const learningApi = {
     httpRequest<string>('POST', `${BASE}/custom-questions`, request),
   deleteCustomQuestion: (id: string) =>
     httpRequest<void>('DELETE', `${BASE}/custom-questions/${encodeURIComponent(id)}`),
-  listConceptRefs: () => httpRequest<ConceptRef[]>('GET', `${BASE}/concepts`),
   deleteCourse: (id: string, deleteReviews: boolean) =>
     httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`, {
       delete_reviews: deleteReviews,

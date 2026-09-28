@@ -21,7 +21,7 @@ import type {
   LessonStatus,
   Section,
 } from '../types';
-import { allConceptsMastered, lessonStatusTagColors } from '../model';
+import { lessonStatusTagColors } from '../model';
 import {
   contentColumnWidth,
   outlineWidthClass,
@@ -118,7 +118,6 @@ export function CourseWorkspace({
     selectedFlatIndex >= 0 && selectedFlatIndex < flatLessons.length - 1
       ? flatLessons[selectedFlatIndex + 1]
       : null;
-  const conceptsMastered = allConceptsMastered(detail.concepts);
   return (
     <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
       <div
@@ -174,10 +173,6 @@ export function CourseWorkspace({
             </div>
           </Card>
         )}
-        {!recommendedLesson && conceptsMastered && (
-          <Alert type='success' content={t('learning.allConceptsMastered')} />
-        )}
-
         {/* 左侧独立大纲 + 右侧仅显示当前选中课时内容 */}
         <div className='flex flex-col gap-18px lg:flex-row lg:items-start'>
           <aside
@@ -297,23 +292,6 @@ export function CourseWorkspace({
                   </div>
                 </>
               )}
-              <Card title={t('learning.concepts')}>
-                <div className='grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-10px'>
-                  {detail.concepts.map((concept) => (
-                    <div
-                      key={concept.id}
-                      className='rounded-10px border border-solid border-[var(--color-border-2)] p-12px'
-                    >
-                      <div className='mb-6px font-600'>{concept.title}</div>
-                      {concept.mastery === null ? (
-                        <Text type='secondary'>{t('learning.masteryUnknown')}</Text>
-                      ) : (
-                        <Progress percent={Math.round(concept.mastery * 100)} size='small' />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </Card>
             </section>
           </div>
         </div>

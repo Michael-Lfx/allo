@@ -2861,22 +2861,8 @@ impl AppServices {
             knowledge_service.clone(),
             learning_completer,
         );
-        // Learning-graph agent engine: the two-loop tool-driven pipeline
-        // (generation loop + audit-gated repair loops, `lg_*` tool set).
-        // Generation requires the engine — there is no fallback pipeline.
-        learning_service.set_learning_graph_engine(Arc::new(
-            nomifun_ai_agent::LiveLearningGraphAgentEngine {
-                service: learning_service.clone(),
-                round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-                deps: nomifun_ai_agent::OneShotDeps {
-                    provider_repo: provider_repo.clone()
-                        as Arc<dyn nomifun_db::IProviderRepository>,
-                    provider_model_repo: provider_model_repo.clone(),
-                    encryption_key,
-                    workspace: data_dir.clone(),
-                },
-            },
-        ));
+        // 学习图生长不再走 agent 循环（ADR-0009）：教练单次调用 + 结构门
+        // + AI 概念评审都在 nomifun-learning 内部完成，注入点已删除。
         // Course outline agent engine: the two-loop tool-driven pipeline
         // (generation loop + audit-gated repair loops, `co_*` tool set) for
         // BOTH the kb and description flows; the legacy one-shot pipeline

@@ -123,7 +123,7 @@ impl LearningService {
         if draft
             .findings
             .iter()
-            .any(|finding| finding.severity == crate::learning_graph::SEV_DANGER)
+            .any(|finding| finding.severity == crate::course_outline::SEV_DANGER)
         {
             return Err(AppError::UnprocessableEntity(format!(
                 "lesson draft still fails the audit gate:\n{}",
@@ -159,8 +159,6 @@ mod tests {
             total_lessons: 1,
             next_lesson_title: None,
             purpose: "理解期权的定义".into(),
-            concepts: Vec::new(),
-            concept_keys: vec!["c1".into()],
             excerpt: None,
             outline_tree: String::new(),
             adjacent_context: String::new(),
@@ -173,8 +171,7 @@ mod tests {
         let mut value = serde_json::json!({
             "kind": kind,
             "prompt": "期权的本质是什么？",
-            "explanation": "因为买方持有权利。",
-            "concepts": ["c1"]
+            "explanation": "因为买方持有权利。"
         });
         if let (Some(object), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
             object.extend(extra.clone());

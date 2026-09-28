@@ -22,7 +22,7 @@ import { errorMessage, loadStoredReviewFilters } from './utils';
 
 const { Title, Text, Paragraph } = Typography;
 
-// 页内重型组件按需加载：概念图依赖 @xyflow/react 与 dagre，题目/任务表格
+// 页内重型组件按需加载：题目/任务表格
 // 与复习/创建/标签弹窗仅在对应 Tab 或操作打开时才下载执行。路由级 lazy
 // 只拆到整页，这里进一步把非首屏组件拆成独立 chunk，学习页首屏只加载
 // 课程卡片、复习横幅与模型选择器等核心模块，达到秒开。
@@ -426,6 +426,9 @@ const LearningPage: React.FC = () => {
             creationTab={creation.creationTab}
             creationDescription={creation.creationDescription}
             teachingStyle={creation.teachingStyle}
+            graphStep={creation.graphStep}
+            proposingEndpoints={creation.proposingEndpoints}
+            draftEndpoints={creation.draftEndpoints}
             onTeachingStyleChange={creation.setTeachingStyle}
             generation={creation.generation}
             onClose={creation.closeGenerator}
@@ -435,6 +438,10 @@ const LearningPage: React.FC = () => {
             onModelChange={(choice) => void creation.setModelChoice(choice)}
             onTabChange={creation.setCreationTab}
             onDescriptionChange={creation.setCreationDescription}
+            onProposeEndpoints={() => void creation.proposeGraphEndpoints()}
+            onConfirmGraphCreation={() => void creation.confirmGraphCreation()}
+            onGraphStepBack={() => creation.setGraphStep('goal')}
+            onDraftEndpointsChange={creation.setDraftEndpoints}
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}

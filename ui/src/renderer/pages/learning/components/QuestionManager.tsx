@@ -177,48 +177,9 @@ export function QuestionManager({
         <Tag color='purple'>{t('learning.questionCustomSource')}</Tag>
       ) : (
         <div className='flex flex-col gap-2px'>
-          <span className='truncate'>{entry.concept_title ?? '—'}</span>
-          <span className='truncate text-12px text-t-tertiary'>
-            {entry.course_title ?? t('learning.deletedCourse')}
-          </span>
+          <span className='truncate'>{entry.course_title ?? t('learning.deletedCourse')}</span>
         </div>
       ),
-  };
-  const stateColumn = {
-    title: t('learning.questionState'),
-    dataIndex: 'state',
-    width: 120,
-    render: (_value: unknown, entry: QuestionEntry) => {
-      const state = questionStateMeta(entry, t);
-      const hint =
-        entry.state === 'archived'
-          ? t('learning.questionStateArchivedHint')
-          : entry.state === 'unlearned'
-            ? t('learning.questionStateUnlearnedHint')
-            : entry.state === 'new'
-              ? t('learning.questionStateNewHint')
-              : entry.state === 'due'
-                ? t('learning.questionStateDueHint')
-                : t('learning.questionStateScheduledHint');
-      return (
-        <div className='flex items-center gap-4px'>
-          <Tooltip content={hint} position='tl'>
-            <Tag color={state.color}>{state.label}</Tag>
-          </Tooltip>
-          {entry.edit_pending && (
-            <Tooltip
-              content={entry.edit_note ?? t('learning.reviewEditPendingLabel')}
-              position='tl'
-            >
-              <Tag color='orange' size='small'>
-                <IconPushpin className='mr-2px' />
-                {t('learning.reviewEditPendingLabel')}
-              </Tag>
-            </Tooltip>
-          )}
-        </div>
-      );
-    },
   };
   const dueColumn = {
     title: t('learning.questionDueAt'),
@@ -307,6 +268,42 @@ export function QuestionManager({
       </div>
     ),
   };
+  const stateColumn = {
+    title: t('learning.questionState'),
+    dataIndex: 'state',
+    width: 120,
+    render: (_value: unknown, entry: QuestionEntry) => {
+      const state = questionStateMeta(entry, t);
+      const hint =
+        entry.state === 'archived'
+          ? t('learning.questionStateArchivedHint')
+          : entry.state === 'unlearned'
+            ? t('learning.questionStateUnlearnedHint')
+            : entry.state === 'new'
+              ? t('learning.questionStateNewHint')
+              : entry.state === 'due'
+                ? t('learning.questionStateDueHint')
+                : t('learning.questionStateScheduledHint');
+      return (
+        <div className='flex items-center gap-4px'>
+          <Tooltip content={hint} position='tl'>
+            <Tag color={state.color}>{state.label}</Tag>
+          </Tooltip>
+          {entry.edit_pending && (
+            <Tooltip
+              content={entry.edit_note ?? t('learning.reviewEditPendingLabel')}
+              position='tl'
+            >
+              <Tag color='orange' size='small'>
+                <IconPushpin className='mr-2px' />
+                {t('learning.reviewEditPendingLabel')}
+              </Tag>
+            </Tooltip>
+          )}
+        </div>
+      );
+    },
+  };
   const columns = [
     promptColumn,
     ...(visibleColumns.includes('source') ? [sourceColumn] : []),
@@ -388,7 +385,7 @@ export function QuestionManager({
       <Alert type='info' content={t('learning.questionQueueLegend')} />
       <Table
         rowKey={(entry: QuestionEntry) =>
-          `${entry.source}:${entry.question_id}:${entry.concept_id ?? '-'}`
+          `${entry.source}:${entry.question_id}`
         }
         loading={loading}
         data={entries}

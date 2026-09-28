@@ -2,15 +2,14 @@
 //! 的修复循环」这一曾逐字复制三份的骨架，收敛为一个按每流插头参数化的
 //! deep module。
 //!
-//! 学习图（[`crate::learning_graph_loop`]）/ 课程大纲
-//! （[`crate::course_outline_loop`]）/ 课时内容
-//! （[`crate::lesson_content_loop`]）三条流各自实现 [`FlowCycle`]，只提供
+//! 课程大纲（[`crate::course_outline_loop`]）与课时内容
+//! （[`crate::lesson_content_loop`]）两条流各自实现 [`FlowCycle`]，只提供
 //! 真正属于流的东西：系统提示词、工具白名单、finish 门、发布帧、以及
 //! [`LoopBudgets`] / [`WireConfig`] 两张显式差异表。外壳负责其余一切：
 //! 轮次预算、修复循环、空闲 nudge、发布优先级、错误诊断接线与 WS 事件
-//! 翻译。
+//! 翻译。（学习图草稿流已随 ADR-0009 的生长模型退役。）
 //!
-//! **差异即配置**（ADR-0004 的反损失保证）：三流之间的全部已知行为差异——
+//! **差异即配置**（ADR-0004 的反损失保证）：流之间的全部已知行为差异——
 //! 轮次/时长/token 预算、kind 帧标记、round_feedback 翻译、轮次日志、
 //! start 阶段帧、发布优先于报错、修复轮错误诊断——都落在显式声明里。想把
 //! 某个差异统一掉，必须修改对应声明并说明理由；不存在无声归并的通道。
@@ -655,7 +654,6 @@ mod tests {
     use super::test_support::{FakeCompleter, test_service_with};
     use super::LoopChannel;
     use crate::course_outline_loop::{BUDGETS as CO_BUDGETS, WIRE as CO_WIRE};
-    use crate::learning_graph_loop::{BUDGETS as LG_BUDGETS, WIRE as LG_WIRE};
     use crate::lesson_content_loop::{BUDGETS as LS_BUDGETS, WIRE as LS_WIRE};
 
     /// 捕获 learning 事件帧的 sink：翻译器测试直接断言（流名，帧）。
@@ -694,16 +692,11 @@ mod tests {
         (service, dir, sink)
     }
 
-    /// 行为差异矩阵：三流的预算与线上翻译配置逐字钉死。统一某个差异 =
+    /// 行为差异矩阵：两流的预算与线上翻译配置逐字钉死。统一某个差异 =
     /// 修改对应流的声明 + 更新这里的断言（ADR-0004）。
     #[test]
     fn flow_difference_matrix_is_pinned() {
-        // 预算：学习图 100 轮 / 32768 token / 1800s；大纲与课时与 loop_core
-        // 的共享默认逐字一致。
-        assert_eq!(
-            (LG_BUDGETS.generate_max_rounds, LG_BUDGETS.round_tokens, LG_BUDGETS.timeout_secs),
-            (100, 32768, 1800)
-        );
+        // 预算：大纲与课时与 loop_core 的共享默认逐字一致。
         for (name, budgets) in [("course outline", CO_BUDGETS), ("lesson content", LS_BUDGETS)] {
             assert_eq!(budgets.generate_max_rounds, crate::loop_core::GENERATE_MAX_ROUNDS, "{name}");
             assert_eq!(budgets.round_tokens, crate::loop_core::AGENT_MAX_TOKENS, "{name}");
@@ -711,12 +704,6 @@ mod tests {
         }
         // 线上差异表：kind 标记、round_feedback 翻译、轮次日志、start 阶段
         // 帧、事件流选择。
-        assert_eq!(LG_WIRE.kind_tag, Some("learning_graph"));
-        assert!(LG_WIRE.translate_round_feedback);
-        assert_eq!(LG_WIRE.round_log_gen_label, Some("构建"));
-        assert_eq!(LG_WIRE.generate_start_phase, Some("generating"));
-        assert_eq!(LG_WIRE.repair_start_phase, Some("repairing"));
-        assert!(!LG_WIRE.lesson_stream);
         assert_eq!(CO_WIRE.kind_tag, None);
         assert!(!CO_WIRE.translate_round_feedback);
         assert_eq!(CO_WIRE.round_log_gen_label, None);
@@ -729,43 +716,6 @@ mod tests {
         assert_eq!(LS_WIRE.generate_start_phase, None);
         assert_eq!(LS_WIRE.repair_start_phase, None);
         assert!(LS_WIRE.lesson_stream);
-    }
-
-    #[tokio::test]
-    async fn lg_wire_tags_frames_translates_round_feedback_and_keeps_round_log() {
-        let (service, _dir, sink) = recording_service().await;
-        let channel = LoopChannel::new(LG_WIRE, LG_BUDGETS.generate_max_rounds);
-        channel.emit(
-            &service,
-            "agent_round",
-            &serde_json::json!({
-                "loop": "generate", "round": 3, "text": "计划：覆盖10/12大块",
-                "tool_calls": [{ "name": "lg_patch", "is_error": false }],
-            }),
-        );
-        channel.emit(
-            &service,
-            "round_feedback",
-            &serde_json::json!({
-                "loop": "generate", "round": 4, "feedbacks_used": 1, "error": "malformed",
-            }),
-        );
-        // 无 phase 的 loop 内部事件不上线。
-        channel.emit(
-            &service,
-            "finish_blocked",
-            &serde_json::json!({ "round": 1, "draft_id": "d" }),
-        );
-        let frames = sink.frames("learning.course-generation");
-        assert_eq!(frames.len(), 2, "phase-less events stay off the wire: {frames:?}");
-        assert_eq!(frames[0]["kind"], "learning_graph");
-        assert_eq!(frames[0]["phase"], "round");
-        assert_eq!(frames[0]["max_rounds"], 100);
-        assert_eq!(frames[1]["kind"], "learning_graph");
-        assert!(frames[1]["text"].as_str().unwrap().contains("第 1 次"));
-        let log = channel.round_log_snapshot();
-        assert_eq!(log.len(), 1);
-        assert!(log[0].contains("第3轮(构建)") && log[0].contains("lg_patch✓"), "{log:?}");
     }
 
     #[tokio::test]

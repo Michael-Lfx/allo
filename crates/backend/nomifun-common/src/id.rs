@@ -307,8 +307,16 @@ define_entity_id!(
     LearningLessonId
 );
 define_entity_id!(
-    /// Globally unique concept identifier within a learning course.
+    /// Globally unique concept identifier within the cross-course registry.
     LearningConceptId
+);
+define_entity_id!(
+    /// Globally unique endpoint-anchor identifier.
+    LearningEndpointId
+);
+define_entity_id!(
+    /// Globally unique growth-batch identifier.
+    LearningGrowthBatchId
 );
 define_entity_id!(
     /// Globally unique learner enrollment identifier.

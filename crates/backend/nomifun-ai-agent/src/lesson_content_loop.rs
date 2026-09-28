@@ -80,7 +80,6 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / matching）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
 - 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。
 - 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
-- 概念绑定：concepts 只能取课时给定的概念 key（学习图节点留空数组）。
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
 【工具使用纪律】
@@ -112,7 +111,6 @@ const REPAIR_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容修复代理
 - activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项/容差/顺序与对应关系）。
 - section_binding_unknown：update_activity 把该题的 section_key 改绑到清单里的节 key（跨节综合题用 "general"）。
 - section_invalid（缺可视化）：按清单里该节的 visual 重写正文——用 $$公式$$ / ```svg / ```jsxgraph / ```mermaid / 表格承载核心讲解，文字作旁注。
-- concept_binding_unknown：update_activity 把 concepts 改绑到课时给定的概念 key。
 
 【结束条件】
 - 审计无 danger 时调用 ls_finish；若 ls_finish 被拒绝，认真阅读返回的阻塞报告并继续修复。
@@ -496,11 +494,11 @@ fn audit_report(
 }
 
 /// The generation loop's user turn: the lesson coordinates, purpose,
-/// concepts, bridging target, and the grounding (the cited excerpt for the
-/// kb flow, the course brief for the description flow). Learning-graph
-/// nodes (`context.graph` = Some) swap the outline/brief sections for
-/// graph-scoped sections: goal, scope, the prerequisite path, and the
-/// downstream nodes — and never bind concepts.
+/// bridging target, and the grounding (the cited excerpt for the kb flow,
+/// the course brief for the description flow). Learning-graph nodes
+/// (`context.graph` = Some) swap the outline/brief sections for
+/// graph-scoped sections: goal, scope, the concept-web prerequisite
+/// summary, and the downstream nodes (ADR-0009).
 fn lesson_user_text(context: &LessonGenerationContext) -> String {
     let mut text = String::new();
     text.push_str(&format!("课程：{}\n", context.course_title.trim()));
@@ -563,28 +561,9 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
             }
         }
     }
-    if graph.is_some() {
-        text.push_str("学习图节点不绑定概念：活动的 concepts 一律留空数组。\n");
-    } else {
-        text.push_str("本课概念（活动的 concepts 只能绑定这些 key）：\n");
-        for concept in &context.concepts {
-            text.push_str(&format!(
-                "- {} ({}) — {}\n",
-                concept.key,
-                concept.title,
-                concept.description.trim()
-            ));
-        }
-        for key in &context.concept_keys {
-            if !context.concepts.iter().any(|concept| &concept.key == key) {
-                text.push_str(&format!("- {key}\n"));
-            }
-        }
-    }
     if !context.forbidden_concepts.trim().is_empty() {
-        // 防超纲黑名单（learnhub「禁止使用的概念」）：传统课时 = 本课之外
-        // 的概念；学习图节点 = 可及后代节点标题。此前引擎路径从未渲染过
-        // 这个字段——黑名单只在 fallback 管线生效，这里是补上的注入点。
+        // 防超纲黑名单：传统课时已随概念契约下线（恒空）；学习图节点 =
+        // 概念网反查的下游节点标题（ADR-0009）。
         text.push_str(&format!("\n{}\n", context.forbidden_concepts.trim()));
     }
     if !context.adjacent_context.is_empty() {
@@ -605,7 +584,7 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
         None => {
             let brief = context.course_description.trim();
             if brief.is_empty() {
-                text.push_str("\n课程简报为空：以课时标题、目标与本课概念为准展开。\n");
+                text.push_str("\n课程简报为空：以课时标题与课时目标为准展开。\n");
             } else {
                 text.push_str(&format!("\n课程简报（文档与活动必须忠于它）：\n{brief}\n"));
             }
@@ -856,7 +835,7 @@ fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
 fn ls_patch_activities(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_patch_activities".into(),
-        description: "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\", \"concepts\": [\"option_def\"]}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；matching 的 options 是左列、answer 是一一对应右列数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null；concepts 只能取本课概念 key（留空 = 绑定整课）。每批 ≤10 个操作；写正文请用 ls_set_section_body。".into(),
+        description: "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；matching 的 options 是左列、answer 是一一对应右列数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -949,7 +928,7 @@ mod tests {
     use nomi_types::llm::{LlmEvent, ThinkingConfig};
     use nomi_types::message::{ContentBlock, StopReason};
 
-    use nomifun_learning::{ConceptPack, GraphLessonContext, LessonExcerpt};
+    use nomifun_learning::{GraphLessonContext, LessonExcerpt};
 
     use crate::learning_loop::test_support::{
         ScriptedProvider, done, test_deps, test_service, tool_use,
@@ -963,13 +942,13 @@ mod tests {
         format!("## 描述\n{body}\n## 例子\n{body}\n## 验证\n{body}\n")
     }
 
-    /// Three valid activities bound to c1 (2 objective + 1 reflection) —
-    /// clears the activity half of the audit gate.
+    /// Three valid activities (2 objective + 1 reflection) — clears the
+    /// activity half of the audit gate.
     fn valid_activity_ops() -> serde_json::Value {
         serde_json::json!({ "operations": [
-            { "op": "add_activity", "activity": { "kind": "single_choice", "prompt": "期权的本质是什么？", "options": ["权利", "义务", "债务"], "answer": "权利", "explanation": "买方持有的是权利而非义务。", "concepts": ["c1"] } },
-            { "op": "add_activity", "activity": { "kind": "true_false", "prompt": "期权卖方没有履约义务。", "answer": false, "explanation": "卖方承担履约义务。", "concepts": ["c1"] } },
-            { "op": "add_activity", "activity": { "kind": "reflection", "prompt": "结合一个场景说明权利与义务的不对称。", "answer": null, "explanation": "", "concepts": ["c1"] } },
+            { "op": "add_activity", "activity": { "kind": "single_choice", "prompt": "期权的本质是什么？", "options": ["权利", "义务", "债务"], "answer": "权利", "explanation": "买方持有的是权利而非义务。" } },
+            { "op": "add_activity", "activity": { "kind": "true_false", "prompt": "期权卖方没有履约义务。", "answer": false, "explanation": "卖方承担履约义务。" } },
+            { "op": "add_activity", "activity": { "kind": "reflection", "prompt": "结合一个场景说明权利与义务的不对称。", "answer": null, "explanation": "" } },
             { "op": "set_estimated_minutes", "minutes": 15 }
         ] })
     }
@@ -1012,13 +991,6 @@ mod tests {
             total_lessons: 2,
             next_lesson_title: Some("课时二".into()),
             purpose: "理解期权的定义".into(),
-            concepts: vec![ConceptPack {
-                key: "c1".into(),
-                title: "期权定义".into(),
-                description: "权利与义务的不对称".into(),
-                prerequisites: Vec::new(),
-            }],
-            concept_keys: vec!["c1".into()],
             excerpt: Some(LessonExcerpt {
                 path: "docs/basics.md".into(),
                 text: "期权的定义……".into(),
@@ -1031,7 +1003,7 @@ mod tests {
     }
 
     /// 学习图节点的用户回合：图语义段落（目标/范围/前置路径/后续节点）取代
-    /// 课程目录/模块/下一课段，概念绑定显式留空，课程简报句不渲染。
+    /// 课程目录/模块/下一课段；无摘录时以学习图专用「无简报」句兜底。
     #[test]
     fn lesson_user_text_renders_graph_sections_instead_of_outline() {
         let mut context = lesson_context();
@@ -1050,7 +1022,7 @@ mod tests {
         assert!(text.contains("1. 什么是衍生品"));
         assert!(text.contains("后续节点"));
         assert!(text.contains("期权定价基础"));
-        assert!(text.contains("concepts 一律留空数组"));
+        assert!(text.contains("学习图节点没有课程简报"));
         // 传统段落不再出现。
         assert!(!text.contains("课程完整目录"));
         assert!(!text.contains("下一课"));

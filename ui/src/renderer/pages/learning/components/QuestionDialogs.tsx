@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import { IconPushpin } from '@arco-design/web-react/icon';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
-import type { ConceptRef, QuestionEntry } from '../types';
+import type { QuestionEntry } from '../types';
 import {
   errorMessage,
   formatReviewTime,
@@ -303,31 +303,9 @@ function QuestionCreateDialog({
   const [answers, setAnswers] = useState<string[]>(['']);
   const [distractors, setDistractors] = useState<string[]>([]);
   const [explanation, setExplanation] = useState('');
-  const [conceptId, setConceptId] = useState<string | undefined>(undefined);
-  const [conceptRefs, setConceptRefs] = useState<ConceptRef[]>([]);
-  const [conceptsLoading, setConceptsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const isSingleChoice = kind === 'single_choice';
   const isFillInBlank = kind === 'fill_in_blank';
-
-  useEffect(() => {
-    let cancelled = false;
-    setConceptsLoading(true);
-    learningApi
-      .listConceptRefs()
-      .then((refs) => {
-        if (!cancelled) setConceptRefs(refs);
-      })
-      .catch(() => {
-        // Concept binding is optional; keep the dialog usable if listing fails.
-      })
-      .finally(() => {
-        if (!cancelled) setConceptsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const save = async () => {
     const errorKey = validateQuestionForm(prompt, options, answer, isSingleChoice, isFillInBlank);
@@ -345,7 +323,6 @@ function QuestionCreateDialog({
         options: isSingleChoice ? cleanedOptions : [],
         answer: isFillInBlank ? cleanedAnswers : answer,
         explanation: explanation.trim(),
-        concept_id: conceptId ?? null,
         distractors: isFillInBlank ? distractors : undefined,
       });
       Message.success(t('learning.questionCreated'));
@@ -442,27 +419,6 @@ function QuestionCreateDialog({
             autoSize={{ minRows: 2 }}
           />
         </div>
-        <div>
-          <div className='mb-6px font-500'>{t('learning.questionConceptBind')}</div>
-          <Select
-            className='w-full'
-            allowClear
-            loading={conceptsLoading}
-            value={conceptId}
-            placeholder={t('learning.questionConceptBindPlaceholder')}
-            onChange={(value: string | undefined) => setConceptId(value)}
-          >
-            {conceptRefs.map((concept) => (
-              <Select.Option key={concept.concept_id} value={concept.concept_id}>
-                {concept.title}
-                {concept.course_title !== null ? ` · ${concept.course_title}` : ''}
-              </Select.Option>
-            ))}
-          </Select>
-          <Text type='secondary' className='text-12px'>
-            {t('learning.questionConceptBindHint')}
-          </Text>
-        </div>
       </div>
     </Modal>
   );
@@ -531,7 +487,7 @@ function QuestionDetailDrawer({
         <div className='text-12px text-t-tertiary'>
           {entry.source === 'custom'
             ? t('learning.questionCustomSource')
-            : [entry.course_title ?? t('learning.deletedCourse'), entry.concept_title]
+            : [entry.course_title ?? t('learning.deletedCourse')]
                 .filter((part) => part !== null && part !== undefined)
                 .join(' › ')}
         </div>

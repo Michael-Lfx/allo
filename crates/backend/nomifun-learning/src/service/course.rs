@@ -68,39 +68,6 @@ impl LearningService {
         .await
         .map_err(internal)?;
 
-        let mut concepts = HashMap::new();
-        for concept in &pack.concepts {
-            let concept_id = LearningConceptId::new();
-            sqlx::query(
-                "INSERT INTO learning_concepts \
-                 (concept_id, course_id, concept_key, title, description) VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(concept_id.as_str())
-            .bind(course_id.as_str())
-            .bind(concept.key.trim())
-            .bind(concept.title.trim())
-            .bind(concept.description.trim())
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
-            concepts.insert(concept.key.clone(), concept_id);
-        }
-
-        for concept in &pack.concepts {
-            let concept_id = &concepts[&concept.key];
-            for prerequisite in &concept.prerequisites {
-                sqlx::query(
-                    "INSERT INTO learning_concept_prerequisites \
-                     (concept_id, prerequisite_concept_id) VALUES (?, ?)",
-                )
-                .bind(concept_id.as_str())
-                .bind(concepts[prerequisite].as_str())
-                .execute(&mut *transaction)
-                .await
-                .map_err(internal)?;
-            }
-        }
-
         for (module_position, module) in pack.modules.iter().enumerate() {
             let module_id = LearningModuleId::new();
             sqlx::query(
@@ -150,17 +117,6 @@ impl LearningService {
                 .await
                 .map_err(internal)?;
 
-                for concept_key in &lesson.concepts {
-                    sqlx::query(
-                        "INSERT INTO learning_lesson_concepts (lesson_id, concept_id) VALUES (?, ?)",
-                    )
-                    .bind(lesson_id.as_str())
-                    .bind(concepts[concept_key].as_str())
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(internal)?;
-                }
-
                 for (activity_position, activity) in lesson.activities.iter().enumerate() {
                     let activity_id = LearningActivityId::new();
                     let config = StoredActivityConfig {
@@ -186,23 +142,6 @@ impl LearningService {
                     .execute(&mut *transaction)
                     .await
                     .map_err(internal)?;
-
-                    let activity_concepts = if activity.concepts.is_empty() {
-                        &lesson.concepts
-                    } else {
-                        &activity.concepts
-                    };
-                    for concept_key in activity_concepts {
-                        sqlx::query(
-                            "INSERT INTO learning_activity_concepts \
-                             (activity_id, concept_id) VALUES (?, ?)",
-                        )
-                        .bind(activity_id.as_str())
-                        .bind(concepts[concept_key].as_str())
-                        .execute(&mut *transaction)
-                        .await
-                        .map_err(internal)?;
-                    }
                 }
             }
         }
@@ -338,7 +277,6 @@ impl LearningService {
                     generated: content_generated != 0,
                     source,
                     status,
-                    concepts: self.lesson_concepts(&lesson_id).await?,
                     activities: self.lesson_activities(&lesson_id).await?,
                     // 目录视图不加载节正文（体积大）；分节经课时详情接口
                     // 获取，目录双读 summary。
@@ -354,14 +292,11 @@ impl LearningService {
             });
         }
 
-        let concepts = self
-            .course_concepts(course_id, enrollment_id.as_ref())
-            .await?;
         // 学习图课程：大纲被「下一步推荐节点」取代——next_lesson_id 不参与，
-        // 换成图视图（结构 + 就绪集推荐 ≤10）。传统课程路径零变化。
+        // 换成图视图（终点锚 + 罗盘 + 就绪集）。传统课程路径零变化。
         let graph = if course.course_kind == CourseKind::LearningGraph {
             Some(
-                self.assemble_learning_graph_view(course_id, &modules)
+                self.assemble_learning_graph_view(course_id, user_id)
                     .await?,
             )
         } else {
@@ -370,7 +305,7 @@ impl LearningService {
         let next_lesson_id = if graph.is_some() {
             None
         } else {
-            recommend_next_lesson(&modules, &concepts)
+            recommend_next_lesson(&modules)
         };
         let due_review_count = if let Some(enrollment_id) = &enrollment_id {
             // Items are seeded per objective question when the lesson is
@@ -393,7 +328,6 @@ impl LearningService {
             course,
             enrollment_id,
             modules,
-            concepts,
             next_lesson_id,
             due_review_count,
             graph,
@@ -415,28 +349,6 @@ impl LearningService {
         .await
         .map_err(internal)?;
         id.map(parse_id).transpose()
-    }
-
-    /// Concept-key to concept-id map for a course, used to bind activities when
-    /// inserting deferred lesson content.
-    pub(super) async fn concept_map_for_course(
-        &self,
-        course_id: &LearningCourseId,
-    ) -> Result<HashMap<String, LearningConceptId>, AppError> {
-        let rows = sqlx::query(
-            "SELECT concept_key, concept_id FROM learning_concepts WHERE course_id = ?",
-        )
-        .bind(course_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        let mut map = HashMap::with_capacity(rows.len());
-        for row in rows {
-            let key: String = row.try_get("concept_key").map_err(internal)?;
-            let id: LearningConceptId = parse_id(row.try_get("concept_id").map_err(internal)?)?;
-            map.insert(key, id);
-        }
-        Ok(map)
     }
 
     /// A single lesson's public view (mirrors the per-lesson projection in
@@ -466,7 +378,6 @@ impl LearningService {
             end: row.try_get("source_end").ok().flatten(),
         });
         let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
-        let concepts = self.lesson_concepts(&id).await?;
         let activities = self.lesson_activities(&id).await?;
         let sections = self.lesson_sections(&id).await?;
         Ok(LessonView {
@@ -479,7 +390,6 @@ impl LearningService {
             generated: content_generated != 0,
             source,
             status,
-            concepts,
             activities,
             sections,
         })
@@ -550,7 +460,6 @@ impl LearningService {
             for enrollment_id in &enrollment_ids {
                 for table in [
                     "learning_review_items",
-                    "learning_mastery_states",
                     "learning_lesson_progress",
                     "learning_attempts",
                 ] {
@@ -568,11 +477,6 @@ impl LearningService {
                 .await
                 .map_err(internal)?;
             let content_sql = [
-                "DELETE FROM learning_activity_concepts WHERE activity_id IN (\
-                    SELECT a.activity_id FROM learning_activities a \
-                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
                 "DELETE FROM learning_activities WHERE lesson_id IN (\
                     SELECT l.lesson_id FROM learning_lessons l \
                     JOIN learning_modules m ON m.module_id = l.module_id \
@@ -582,16 +486,8 @@ impl LearningService {
                     JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
                     JOIN learning_modules m ON m.module_id = l.module_id \
                     WHERE m.course_id = ?)",
-                "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
-                    SELECT l.lesson_id FROM learning_lessons l \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
                 "DELETE FROM learning_lessons WHERE module_id IN (\
                     SELECT module_id FROM learning_modules WHERE course_id = ?)",
-                "DELETE FROM learning_concept_prerequisites WHERE concept_id IN (\
-                    SELECT concept_id FROM learning_concepts WHERE course_id = ?)",
-                "DELETE FROM learning_graph_prerequisites WHERE course_id = ?",
-                "DELETE FROM learning_concepts WHERE course_id = ?",
                 "DELETE FROM learning_modules WHERE course_id = ?",
             ];
             for sql in content_sql {
@@ -602,13 +498,6 @@ impl LearningService {
                     .map_err(internal)?;
             }
         }
-        // 学习图的前置边没有“保留复习数据”的留存语义：课程行一旦消失，图
-        // 关系必须随之清理，否则会留下启动契约审计判定为孤儿的前置边。
-        sqlx::query("DELETE FROM learning_graph_prerequisites WHERE course_id = ?")
-            .bind(course_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
         sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
             .bind(course_id.as_str())
             .execute(&mut *transaction)
@@ -665,7 +554,6 @@ impl LearningService {
             for enrollment_id in &enrollment_ids {
                 for table in [
                     "learning_review_items",
-                    "learning_mastery_states",
                     "learning_lesson_progress",
                     "learning_attempts",
                 ] {
@@ -682,11 +570,6 @@ impl LearningService {
                 .await
                 .map_err(internal)?;
             let content_sql = [
-                "DELETE FROM learning_activity_concepts WHERE activity_id IN (\
-                    SELECT a.activity_id FROM learning_activities a \
-                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
                 "DELETE FROM learning_activities WHERE lesson_id IN (\
                     SELECT l.lesson_id FROM learning_lessons l \
                     JOIN learning_modules m ON m.module_id = l.module_id \
@@ -696,16 +579,8 @@ impl LearningService {
                     JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
                     JOIN learning_modules m ON m.module_id = l.module_id \
                     WHERE m.course_id = ?)",
-                "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
-                    SELECT l.lesson_id FROM learning_lessons l \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
                 "DELETE FROM learning_lessons WHERE module_id IN (\
                     SELECT module_id FROM learning_modules WHERE course_id = ?)",
-                "DELETE FROM learning_concept_prerequisites WHERE concept_id IN (\
-                    SELECT concept_id FROM learning_concepts WHERE course_id = ?)",
-                "DELETE FROM learning_graph_prerequisites WHERE course_id = ?",
-                "DELETE FROM learning_concepts WHERE course_id = ?",
                 "DELETE FROM learning_modules WHERE course_id = ?",
             ];
             for sql in content_sql {
@@ -732,78 +607,20 @@ impl LearningService {
 
 }
 
-const MASTERY_RECOMMENDATION_THRESHOLD: f64 = 0.8;
-
-pub(super) fn recommend_next_lesson(
-    modules: &[ModuleView],
-    concepts: &[ConceptView],
-) -> Option<LearningLessonId> {
-    if let Some(lesson) = modules
+pub(super) fn recommend_next_lesson(modules: &[ModuleView]) -> Option<LearningLessonId> {
+    // 进行中的课时优先；否则第一个未满足（未完成且未跳过）的课时。
+    // 概念掌握度驱动的推荐随 per-course 概念体系一并退役（ADR-0009）。
+    modules
         .iter()
         .flat_map(|module| &module.lessons)
         .find(|lesson| lesson.status == LessonStatus::InProgress)
-    {
-        return Some(lesson.id.clone());
-    }
-    let mastery: HashMap<&str, f64> = concepts
-        .iter()
-        .filter_map(|concept| {
-            concept
-                .mastery
-                .map(|value| (concept.id.as_str(), value))
-        })
-        .collect();
-    let concept_by_id: HashMap<&str, &ConceptView> = concepts
-        .iter()
-        .map(|concept| (concept.id.as_str(), concept))
-        .collect();
-    let lessons: Vec<&LessonView> = modules
-        .iter()
-        .flat_map(|module| &module.lessons)
-        .collect();
-    for lesson in lessons
-        .iter()
-        .copied()
-        // skipped 与 completed 同为「已满足」：跳过的节点不再作为 next_lesson
-        // 推荐（学习图的推荐走图视图就绪集，这里只影响传统课程的防御语义）。
-        .filter(|lesson| !lesson.status.satisfies())
-    {
-        if lesson.concepts.is_empty() {
-            return Some(lesson.id.clone());
-        }
-        let deficient: Vec<&ConceptView> = lesson
-            .concepts
-            .iter()
-            .filter(|concept| {
-                mastery.get(concept.as_str()).copied().unwrap_or(0.0)
-                    < MASTERY_RECOMMENDATION_THRESHOLD
-            })
-            .filter_map(|concept| concept_by_id.get(concept.as_str()).copied())
-            .collect();
-        if deficient.is_empty() {
-            continue;
-        }
-        for prerequisite in deficient
-            .iter()
-            .flat_map(|concept| &concept.prerequisites)
-            .filter(|prerequisite| {
-                mastery
-                    .get(prerequisite.as_str())
-                    .copied()
-                    .unwrap_or(0.0)
-                    < MASTERY_RECOMMENDATION_THRESHOLD
-            })
-        {
-            if let Some(prerequisite_lesson) = lessons
+        .or_else(|| {
+            modules
                 .iter()
-                .find(|candidate| candidate.concepts.contains(prerequisite))
-            {
-                return Some(prerequisite_lesson.id.clone());
-            }
-        }
-        return Some(lesson.id.clone());
-    }
-    None
+                .flat_map(|module| &module.lessons)
+                .find(|lesson| !lesson.status.satisfies())
+        })
+        .map(|lesson| lesson.id.clone())
 }
 
 pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
@@ -819,32 +636,6 @@ pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
     if pack.modules.is_empty() {
         return Err(AppError::BadRequest("course must contain at least one module".into()));
     }
-    let mut concept_keys = HashSet::new();
-    for concept in &pack.concepts {
-        if concept.key.trim().is_empty() || concept.title.trim().is_empty() {
-            return Err(AppError::BadRequest(
-                "concept key and title are required".into(),
-            ));
-        }
-        if !concept_keys.insert(concept.key.as_str()) {
-            return Err(AppError::BadRequest(format!(
-                "duplicate concept key: {}",
-                concept.key
-            )));
-        }
-    }
-    for concept in &pack.concepts {
-        for prerequisite in &concept.prerequisites {
-            require_concept(&concept_keys, prerequisite)?;
-            if prerequisite == &concept.key {
-                return Err(AppError::BadRequest(format!(
-                    "concept {} cannot require itself",
-                    concept.key
-                )));
-            }
-        }
-    }
-    validate_prerequisite_graph(pack)?;
     for module in &pack.modules {
         if module.title.trim().is_empty() || module.lessons.is_empty() {
             return Err(AppError::BadRequest(
@@ -869,17 +660,11 @@ pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
                     )));
                 }
             }
-            for concept in &lesson.concepts {
-                require_concept(&concept_keys, concept)?;
-            }
             for activity in &lesson.activities {
                 if activity.prompt.trim().is_empty() {
                     return Err(AppError::BadRequest(
                         "activity prompt is required".into(),
                     ));
-                }
-                for concept in &activity.concepts {
-                    require_concept(&concept_keys, concept)?;
                 }
                 // Shared per-kind shape rules (all nine kinds) with the
                 // manual-authoring bounds (2-5 options).
@@ -890,66 +675,6 @@ pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
         }
     }
     Ok(())
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum VisitState {
-    Visiting,
-    Visited,
-}
-
-fn validate_prerequisite_graph(pack: &CoursePack) -> Result<(), AppError> {
-    let prerequisites: HashMap<&str, Vec<&str>> = pack
-        .concepts
-        .iter()
-        .map(|concept| {
-            (
-                concept.key.as_str(),
-                concept
-                    .prerequisites
-                    .iter()
-                    .map(String::as_str)
-                    .collect(),
-            )
-        })
-        .collect();
-    let mut states = HashMap::new();
-    for concept in prerequisites.keys() {
-        visit_concept(concept, &prerequisites, &mut states)?;
-    }
-    Ok(())
-}
-
-fn visit_concept<'a>(
-    concept: &'a str,
-    prerequisites: &HashMap<&'a str, Vec<&'a str>>,
-    states: &mut HashMap<&'a str, VisitState>,
-) -> Result<(), AppError> {
-    match states.get(concept) {
-        Some(VisitState::Visited) => return Ok(()),
-        Some(VisitState::Visiting) => {
-            return Err(AppError::BadRequest(format!(
-                "concept prerequisite cycle contains {concept}"
-            )));
-        }
-        None => {}
-    }
-    states.insert(concept, VisitState::Visiting);
-    for prerequisite in &prerequisites[concept] {
-        visit_concept(prerequisite, prerequisites, states)?;
-    }
-    states.insert(concept, VisitState::Visited);
-    Ok(())
-}
-
-fn require_concept(concepts: &HashSet<&str>, key: &str) -> Result<(), AppError> {
-    if concepts.contains(key) {
-        Ok(())
-    } else {
-        Err(AppError::BadRequest(format!(
-            "unknown concept key: {key}"
-        )))
-    }
 }
 
 fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummary, AppError> {

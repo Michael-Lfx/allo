@@ -158,10 +158,6 @@ pub(crate) async fn generate_lesson(
     excerpt: &str,
     teaching_style: TeachingStyle,
 ) -> Result<LessonOutput, String> {
-    // 防超纲黑名单(learnhub contextPack「禁止使用的概念」):本课时之外的
-    // 课程概念,正文不得出现名称也不得引用其结论。预渲染进大纲与正文提示词。
-    let forbidden = forbidden_concepts_text(blueprint, lesson);
-
     // ── Stage 1: the section outline (manifest + complexity tier) ──────
     let outline_prompt = build_section_outline_prompt(
         blueprint,
@@ -194,7 +190,6 @@ pub(crate) async fn generate_lesson(
             &outline.sections,
             previous_body,
             next_lesson_title,
-            &forbidden,
             tier,
             false,
             &mut repairs_used,
@@ -221,7 +216,6 @@ pub(crate) async fn generate_lesson(
                     &outline.sections,
                     previous_body,
                     next_lesson_title,
-                    &forbidden,
                     tier,
                     true,
                     &mut repairs_used,
@@ -256,8 +250,7 @@ pub(crate) async fn generate_lesson(
         excerpt,
     );
     let activities =
-        generate_lesson_activities(completer, model_override, &activities_prompt, blueprint, lesson)
-            .await?;
+        generate_lesson_activities(completer, model_override, &activities_prompt).await?;
 
     Ok(LessonOutput {
         summary: assembled,
@@ -339,7 +332,6 @@ async fn generate_section_body(
     manifest: &[SectionPack],
     previous_body: Option<&str>,
     next_lesson_title: Option<&str>,
-    forbidden: &str,
     tier: ComplexityTier,
     degraded: bool,
     repairs_used: &mut usize,
@@ -353,7 +345,6 @@ async fn generate_section_body(
         manifest,
         previous_body,
         next_lesson_title,
-        forbidden,
         tier,
     );
     if degraded {
@@ -586,37 +577,15 @@ pub(super) fn build_section_rewrite_prompt(
     prompt
 }
 
-/// 防超纲黑名单(learnhub contextPack「禁止使用的概念」):本课时之外的
-/// 课程概念按名称列出(封顶 200),正文不得出现也不得引用其结论。
-pub(crate) fn forbidden_concepts_text(    blueprint: &Blueprint,
-    lesson: &BlueprintLesson,
-) -> String {
-    let lesson_keys: std::collections::HashSet<&str> =
-        lesson.concepts.iter().map(String::as_str).collect();
-    let forbidden: Vec<String> = blueprint
-        .concepts
-        .iter()
-        .filter(|concept| !lesson_keys.contains(concept.key.as_str()))
-        .take(200)
-        .map(|concept| format!("- {}（{}）", concept.key, concept.title.trim()))
-        .collect();
-    if forbidden.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "禁止使用的概念（尚未讲授——正文不得出现这些名称，也不得引用其结论）：\n{}",
-            forbidden.join("\n")
-        )
-    }
-}
-
+/// 防超纲黑名单已随 per-course 概念体系整体下线（ADR-0009）：大纲不再产出
+/// 概念，正文越界由大纲树与相邻课时参考约束。
 
 /// Per-lesson cap on section-body repair rounds (ADR-0002: 每节最多 2 次、
 /// 整课时封顶 4 次；attempt 上限 3 = 初跑 + 2 次修复，与每节上限一致).
 const SECTION_REPAIR_BUDGET: usize = 4;
 
 
-/// Stage 1 prompt: course context, lesson scope, concepts and the cited
+/// Stage 1 prompt: course context, lesson scope and the cited
 /// excerpt — the model plans typed sections and declares the complexity
 /// tier. JSON (not YAML) reuses the crate's hardened parse-and-repair path.
 pub(crate) fn build_section_outline_prompt(
@@ -644,27 +613,6 @@ pub(crate) fn build_section_outline_prompt(
          do not plan sections that teach later lessons):\n{}\n",
         build_outline_tree(blueprint, module_index, lesson_index)
     ));
-    prompt.push_str("Lesson concepts to cover:\n");
-    for concept_key in &lesson.concepts {
-        let concept = blueprint
-            .concepts
-            .iter()
-            .find(|concept| &concept.key == concept_key);
-        if let Some(concept) = concept {
-            prompt.push_str(&format!(
-                "- {} ({}) — {}\n",
-                concept.key,
-                concept.title,
-                concept.description.trim()
-            ));
-        } else {
-            prompt.push_str(&format!("- {concept_key}\n"));
-        }
-    }
-    let forbidden = forbidden_concepts_text(blueprint, lesson);
-    if !forbidden.trim().is_empty() {
-        prompt.push_str(&format!("\n{forbidden}\n"));
-    }
     if !excerpt.trim().is_empty() {
         prompt.push_str(&format!(
             "Cited file excerpt (the sections must stay grounded in it):\n--- FILE: {} ---\n{excerpt}\n",
@@ -777,7 +725,7 @@ Hard constraints:
 - VISUAL-FIRST, DELIVER THE DECLARATION: the section task names the planned visual — deliver EXACTLY it (or a strictly better one from the palette), placed right after the opening motivation, BEFORE any extended prose. Prose explains and annotates the visual; it is never the carrier. The quality gate checks the declaration verbatim: 公式 → a $$…$$ display formula; 函数图/示意图 → a ```svg or ```jsxgraph figure; 流程图 → a ```mermaid diagram; 图表/表格 → a Markdown comparison table; 无 → dense prose is fine. Placing a visual that was NOT declared fails too — replan honestly.
 - Text efficiency: short paragraphs (1-3 sentences each); enumerations become lists or tables; definitions and formulas go in $$..$$; never write filler transitions ("接下来我们来看", "值得注意的是"), never restate in prose what the figure already shows. Dense and concrete beats long and smooth.
 - Typography: parallel pitfalls/notes/key-point blocks use blockquotes with a bold leading label (> **易错点** …); key conclusions stand alone as $$…$$ display formulas; mermaid node/edge text containing | {{ }} " # must be fully wrapped in double quotes (A["文本"]) or rendering degrades to source.
-- Teach only what the section task names, inside the lesson scope. Use only concepts the lesson's prerequisites and earlier sections already taught; never pull in the lesson's later sections. If a 禁止使用的概念 list is provided, none of those names may appear and their conclusions must not be relied on.
+- Teach only what the section task names, inside the lesson scope. Use only ideas the lesson's prerequisites and earlier sections already taught; never pull in the lesson's later sections.
 - Do NOT set up practice inside the body — questions live in the question bank. Do not write a section-ending quiz.
 - Connect naturally to the previous section's body when one is given: never repeat what it already said, never restate its conclusion in the opening.
 - Write in the dominant language of the source material, grounded in the cited excerpt or the course brief — never invent facts outside them.
@@ -829,7 +777,6 @@ pub(crate) fn build_section_body_prompt(
     manifest: &[SectionPack],
     previous_body: Option<&str>,
     next_lesson_title: Option<&str>,
-    forbidden: &str,
     tier: ComplexityTier,
 ) -> String {
     let mut prompt = format!(
@@ -862,23 +809,6 @@ pub(crate) fn build_section_body_prompt(
             mark
         ));
     }
-    prompt.push_str("Lesson concepts (use only these; earlier sections may have already taught some):\n");
-    for concept_key in &lesson.concepts {
-        let concept = blueprint
-            .concepts
-            .iter()
-            .find(|concept| &concept.key == concept_key);
-        if let Some(concept) = concept {
-            prompt.push_str(&format!(
-                "- {} ({}) — {}\n",
-                concept.key,
-                concept.title,
-                concept.description.trim()
-            ));
-        } else {
-            prompt.push_str(&format!("- {concept_key}\n"));
-        }
-    }
     if let Some(previous) = previous_body {
         let previous = previous.trim();
         let previous: String = previous.chars().take(2000).collect();
@@ -897,9 +827,6 @@ pub(crate) fn build_section_body_prompt(
                 "This is the lesson's last section — close with a one-sentence wrap-up.\n",
             ),
         }
-    }
-    if !forbidden.trim().is_empty() {
-        prompt.push_str(&format!("\n{forbidden}\n"));
     }
     if !excerpt.trim().is_empty() {
         prompt.push_str(&format!(
@@ -928,23 +855,6 @@ pub(crate) fn build_activities_prompt(
         lesson.title,
         tier.as_str(),
     );
-    prompt.push_str("Lesson concepts (use these exact keys when binding activities):\n");
-    for concept_key in &lesson.concepts {
-        let concept = blueprint
-            .concepts
-            .iter()
-            .find(|concept| &concept.key == concept_key);
-        if let Some(concept) = concept {
-            prompt.push_str(&format!(
-                "- {} ({}) — {}\n",
-                concept.key,
-                concept.title,
-                concept.description.trim()
-            ));
-        } else {
-            prompt.push_str(&format!("- {concept_key}\n"));
-        }
-    }
     prompt.push_str("Section manifest (section_key values for binding):\n");
     for section in manifest {
         prompt.push_str(&format!(

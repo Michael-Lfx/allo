@@ -29,22 +29,16 @@ pub use lesson_draft::{
 
 pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput};
 
-pub use learning_graph::{
-    GenerateLearningGraphRequest, LearningGraphAgentEngine, LearningGraphAudit, LearningGraphData,
-    LearningGraphEdge, LearningGraphNode, LearningGraphRecord, LearningGraphSummary,
-};
-
-pub use learning_graph::draft::{
-    DraftView, GraphOp, InspectView, NodeListView, NodeQuery, PatchReport, SplitUnit,
-    SubgraphDirection, SubgraphView,
-};
+pub use learning_graph::ConceptTier;
 
 pub use models::{
-    ActivityKind, ActivityView, AttemptResult, ConceptPack, ConceptView, CourseDetail,
+    ActivityKind, ActivityView, AttemptResult, CourseDetail,
     CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
-    DueReview, GenerateCourseRequest, GenerateLessonRequest, LessonStatus, LessonView, ModuleView,
-    RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack, SectionView,
-    SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
+    DueReview, EndpointInput, EndpointUpdateInput, GenerateCourseRequest, GenerateLessonRequest,
+    GraphBatchView, GraphConceptRefView, GraphConceptRowView, GraphEndpointView,
+    GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus, LessonView,
+    ModuleView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack,
+    SectionView, SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
     VISUAL_OPTIONS,
 };
 pub use models::{
