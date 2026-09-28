@@ -627,58 +627,47 @@ fn clean_orphaned_tool_calls(messages: &mut [Value]) {
 
 /// Merge consecutive assistant messages into one
 fn merge_consecutive_assistant(messages: &mut Vec<Value>) {
-    let mut i = 0;
-    while i + 1 < messages.len() {
-        if messages[i]["role"].as_str() == Some("assistant")
-            && messages[i + 1]["role"].as_str() == Some("assistant")
-        {
-            let next = messages.remove(i + 1);
+    let is_assistant = |message: &Value| message["role"].as_str() == Some("assistant");
+    if !messages
+        .windows(2)
+        .any(|pair| is_assistant(&pair[0]) && is_assistant(&pair[1]))
+    {
+        return;
+    }
 
-            // Merge text content
-            let curr_text = messages[i]["content"].as_str().unwrap_or("").to_string();
-            let next_text = next["content"].as_str().unwrap_or("").to_string();
-            let merged_text = match (curr_text.is_empty(), next_text.is_empty()) {
-                (true, true) => String::new(),
-                (true, false) => next_text,
-                (false, true) => curr_text,
-                (false, false) => format!("{}{}", curr_text, next_text),
-            };
-
-            if !merged_text.is_empty() {
-                messages[i]["content"] = json!(merged_text);
+    let mut merged: Vec<Value> = Vec::with_capacity(messages.len());
+    for next in messages.drain(..) {
+        match merged.last_mut() {
+            Some(curr) if is_assistant(curr) && is_assistant(&next) => {
+                absorb_assistant(curr, next)
             }
-
-            // Merge reasoning_content
-            let curr_rc = messages[i]["reasoning_content"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            let next_rc = next["reasoning_content"].as_str().unwrap_or("").to_string();
-            let merged_rc = match (curr_rc.is_empty(), next_rc.is_empty()) {
-                (true, true) => String::new(),
-                (true, false) => next_rc,
-                (false, true) => curr_rc,
-                (false, false) => format!("{}{}", curr_rc, next_rc),
-            };
-
-            if !merged_rc.is_empty() {
-                messages[i]["reasoning_content"] = json!(merged_rc);
-            }
-
-            // Merge tool_calls
-            if let Some(next_tcs) = next["tool_calls"].as_array() {
-                if let Some(obj) = messages[i].as_object_mut() {
-                    let curr_tcs = obj.entry("tool_calls").or_insert_with(|| json!([]));
-                    if let Some(arr) = curr_tcs.as_array_mut() {
-                        arr.extend(next_tcs.iter().cloned());
-                    }
-                }
-            }
-
-            // Don't increment i - check the merged result against the next message
-        } else {
-            i += 1;
+            _ => merged.push(next),
         }
+    }
+    *messages = merged;
+}
+
+fn absorb_assistant(curr: &mut Value, mut next: Value) {
+    append_string_field(curr, &mut next, "content");
+    append_string_field(curr, &mut next, "reasoning_content");
+    if let Some(Value::Array(next_tool_calls)) = next.get_mut("tool_calls").map(Value::take) {
+        if let Some(obj) = curr.as_object_mut() {
+            if let Value::Array(tool_calls) = obj.entry("tool_calls").or_insert_with(|| json!([])) {
+                tool_calls.extend(next_tool_calls);
+            }
+        }
+    }
+}
+
+fn append_string_field(curr: &mut Value, next: &mut Value, key: &str) {
+    let tail = match next.get_mut(key) {
+        Some(Value::String(text)) => std::mem::take(text),
+        _ => String::new(),
+    };
+    match curr.get_mut(key) {
+        Some(Value::String(text)) => text.push_str(&tail),
+        _ if !tail.is_empty() => curr[key] = Value::String(tail),
+        _ => {}
     }
 }
 
@@ -3435,6 +3424,34 @@ mod tests {
             .filter(|m| m["role"] == "assistant")
             .map(|m| m.get("reasoning_content").and_then(Value::as_str).map(str::to_owned))
             .collect()
+    }
+
+    #[test]
+    fn merge_consecutive_assistant_folds_each_run_into_its_first_message() {
+        let mut messages = vec![
+            json!({ "role": "user", "content": "q" }),
+            json!({ "role": "assistant", "content": null, "reasoning_content": "r1",
+                    "tool_calls": [{ "id": "a" }] }),
+            json!({ "role": "assistant", "content": "t2" }),
+            json!({ "role": "assistant", "content": "t3", "reasoning_content": "r3",
+                    "tool_calls": [{ "id": "b" }, { "id": "c" }] }),
+            json!({ "role": "tool", "tool_call_id": "a", "content": "ok" }),
+            json!({ "role": "assistant", "content": "" }),
+            json!({ "role": "assistant", "tool_calls": [{ "id": "d" }] }),
+        ];
+
+        merge_consecutive_assistant(&mut messages);
+
+        assert_eq!(
+            messages,
+            vec![
+                json!({ "role": "user", "content": "q" }),
+                json!({ "role": "assistant", "content": "t2t3", "reasoning_content": "r1r3",
+                        "tool_calls": [{ "id": "a" }, { "id": "b" }, { "id": "c" }] }),
+                json!({ "role": "tool", "tool_call_id": "a", "content": "ok" }),
+                json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "d" }] }),
+            ]
+        );
     }
 
     #[test]

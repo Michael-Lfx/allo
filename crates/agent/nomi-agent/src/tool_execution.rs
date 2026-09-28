@@ -130,8 +130,8 @@ fn call_needs_interactive_approval(
     let category = tool.category_for(input);
     let tool_auto_approve = tool.auto_approve_invocation(input, category);
     !tool_auto_approve
-        && !allow_list.contains(&name.to_string())
-        && !approval_manager.is_auto_approved(&category.to_string())
+        && !allow_list.iter().any(|allowed| allowed == name)
+        && !approval_manager.is_auto_approved(category.as_str())
 }
 
 fn tool_name_of_call(call: &ContentBlock) -> &str {
@@ -1137,8 +1137,8 @@ async fn execute_tool_calls_with_approval_timeout(
 
             let needs_approval = !auto_approve
                 && !tool_auto_approve
-                && !allow_list.contains(&name.to_string())
-                && !approval_manager.is_auto_approved(&category.to_string());
+                && !allow_list.iter().any(|allowed| allowed == name)
+                && !approval_manager.is_auto_approved(category.as_str());
 
             if needs_approval {
                 let (rx, approval_token) =

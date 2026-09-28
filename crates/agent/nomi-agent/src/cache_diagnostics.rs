@@ -7,6 +7,19 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use nomi_types::tool::ToolDef;
 
+struct HasherWriter<'a, H: Hasher>(&'a mut H);
+
+impl<H: Hasher> std::io::Write for HasherWriter<'_, H> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Snapshot of prompt state taken before each API call.
 #[derive(Debug, Clone)]
 struct PromptSnapshot {
@@ -100,8 +113,7 @@ impl CacheBreakDetector {
         for t in &sorted_tools {
             t.name.hash(&mut tools_hasher);
             t.description.hash(&mut tools_hasher);
-            let schema_str = serde_json::to_string(&t.input_schema).unwrap_or_default();
-            schema_str.hash(&mut tools_hasher);
+            let _ = serde_json::to_writer(HasherWriter(&mut tools_hasher), &t.input_schema);
             t.deferred.hash(&mut tools_hasher);
         }
         let tools_hash = tools_hasher.finish();
@@ -341,6 +353,35 @@ mod tests {
             }
             _ => panic!("expected FullMiss"),
         }
+    }
+
+    #[test]
+    fn schema_only_change_is_attributed_to_tools() {
+        let mut detector = CacheBreakDetector::new();
+        detector.record_request("prompt", &make_tools());
+        detector.check_response(CacheStats {
+            input_tokens: 10000,
+            cache_read_tokens: 8000,
+            cache_creation_tokens: 2000,
+        });
+
+        let mut tools = make_tools();
+        tools[0].input_schema = json!({"type": "object", "required": ["path"]});
+        detector.record_request("prompt", &tools);
+        let diag = detector
+            .check_response(CacheStats {
+                input_tokens: 10000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 10000,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            diag,
+            CacheDiagnostic::FullMiss {
+                cause: CacheBreakCause::ToolsChanged
+            }
+        ));
     }
 
     #[test]

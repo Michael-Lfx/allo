@@ -113,15 +113,21 @@ pub enum ToolCategory {
     Irreversible,
 }
 
+impl ToolCategory {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Edit => "edit",
+            Self::Exec => "exec",
+            Self::Mcp => "mcp",
+            Self::Irreversible => "irreversible",
+        }
+    }
+}
+
 impl std::fmt::Display for ToolCategory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Info => write!(f, "info"),
-            Self::Edit => write!(f, "edit"),
-            Self::Exec => write!(f, "exec"),
-            Self::Mcp => write!(f, "mcp"),
-            Self::Irreversible => write!(f, "irreversible"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
