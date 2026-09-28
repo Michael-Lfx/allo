@@ -1274,13 +1274,32 @@ pub struct EndpointInput {
     pub goal_note: String,
 }
 
-/// 终点锚的部分编辑输入：None = 不改动。
+/// 终点锚的部分编辑输入：None = 不改动；completed 可由用户置位/重开
+/// （与教练裁决同权，ADR-0009 Amendment 1）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct EndpointUpdateInput {
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     pub goal_note: Option<String>,
+    #[serde(default)]
+    pub completed: Option<bool>,
+}
+
+/// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
+/// ——建议先复习供给节点（候选仍可从学习记录进入，软闸只降推荐优先级）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphBlockedView {
+    /// 被挡的就绪候选节点。
+    pub lesson_id: LearningLessonId,
+    pub title: String,
+    /// 供给节点（教该候选所假定概念的节点，跨课程）。
+    pub supplier_lesson_id: LearningLessonId,
+    pub supplier_title: String,
+    /// 供给节点代表预测回忆率（该节点全部复习卡的最小值）。
+    pub r: f64,
+    /// 供给节点当前到期题数。
+    pub due_count: i64,
 }
 
 /// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：终点锚 + 罗盘 +
@@ -1296,8 +1315,11 @@ pub struct LearningGraphView {
     pub compass: Option<String>,
     pub compass_updated_at: Option<i64>,
     pub endpoints: Vec<GraphEndpointView>,
-    /// 「下一步推荐学习的节点」（就绪集 ≤10，花名册序）。
+    /// 「下一步推荐学习的节点」（就绪集 ≤10，花名册序；被 R 软闸挡住的
+    /// 候选不出现在这里，进 `blocked`）。
     pub recommended: Vec<LearningLessonId>,
+    /// R 软闸建议（≤3 条，按供给节点回忆率升序）。
+    pub blocked: Vec<GraphBlockedView>,
     /// 当前就绪存量与水位契约（补货目标 7 / 自动触发线 3）。
     pub ready_count: usize,
     pub ready_target: usize,
@@ -1313,10 +1335,13 @@ pub struct GraphHistoryView {
 }
 
 /// 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度）。
+/// status 是批行状态机：pending=生长进行中（或中断，见 failed）、
+/// applied=已落库、failed=生长失败（ADR-0009 Amendment 1）。
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphBatchView {
     pub batch_id: String,
     pub seq: i64,
+    pub status: String,
     pub note: String,
     pub created_at: i64,
     pub nodes: Vec<GraphNodeHistoryView>,

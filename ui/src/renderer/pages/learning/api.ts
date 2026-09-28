@@ -67,6 +67,13 @@ export const learningApi = {
       `${BASE}/courses/generate/cancel`,
       {}
     ),
+  // 手动重画罗盘（UI 罗盘卡的"重画"入口）
+  redrawGraphCompass: (courseId: string) =>
+    httpRequest<void>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/compass/redraw`,
+      {}
+    ),
   // 手动触发一次生长（就绪补到 7；已在生长中报 409）
   growGraph: (courseId: string) =>
     httpRequest<{ kicked: boolean }>(

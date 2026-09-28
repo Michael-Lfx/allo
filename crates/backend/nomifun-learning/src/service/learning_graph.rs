@@ -202,6 +202,10 @@ impl LearningService {
         if !force && ready_count >= crate::learning_graph::READY_TRIGGER {
             return Ok(false);
         }
+        // 停摆两臂只约束自动触发；手动 force 永远豁免（ADR-0009 Amendment 1）。
+        if !force && self.growth_stalled(course_id).await? {
+            return Ok(false);
+        }
         // 每课程一把 slot 锁：进行中的生长让重复触发快速退出（自动触发
         // 静默容忍，手动触发报冲突）。
         let slot_key = format!("graph-growth-{}", course_id.as_str());
@@ -252,6 +256,36 @@ impl LearningService {
         let _ = self.kick_growth(user_id, &course_id, false, None).await;
     }
 
+    /// 停摆两臂（ADR-0009 Amendment 1）：臂 1 = 空图（无学习节点，建课瞬间
+    /// 由首生长 force 走，不占自动触发）；臂 2 = 课程有终点且全部被教练标记
+    /// 完成。零终点课程第二臂不成立（无裁决即无完成）。返回 true = 自动
+    /// 触发退出。
+    async fn growth_stalled(&self, course_id: &LearningCourseId) -> Result<bool, AppError> {
+        let learning_nodes: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? AND l.lesson_id NOT IN \
+               (SELECT lesson_id FROM learning_course_endpoints WHERE course_id = ?)",
+        )
+        .bind(course_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        if learning_nodes == 0 {
+            return Ok(true);
+        }
+        let (endpoints, completed): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(completed), 0) \
+             FROM learning_course_endpoints WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(endpoints > 0 && endpoints == completed)
+    }
+
     /// 一轮生长：上下文组装 → 教练单次起草 → 结构门 →（打回重裁 ×1）→
     /// AI 概念评审 →（打回重裁 ×1）→ 事务落库（铸名/节点/概念网/批次）。
     /// 全程经 generation_registry 暴露状态、可取消；结束发 WS 终态帧。
@@ -270,14 +304,24 @@ impl LearningService {
                 "text": "教练正在阅读罗盘与花名册，起草本批节点…",
             }),
         );
-        let result = self.growth_body(engine, course_id).await;
+        // 批行状态机：生长开始即落 pending 行（slot 串行保证此课程此刻
+        // 不可能有别的生长在跑，残留的 pending 一律是上次中断 → 转 failed）。
+        let pending = self.begin_pending_batch(course_id).await?;
+        let result = self.growth_body(engine, &pending).await;
         match &result {
             Ok(applied) => {
+                // 空手批的 pending 行已在 growth_body 内自清；WS 以
+                // outcome=idle 收尾——前端刷新就绪读数即可，无历史噪音。
+                if applied.verdicts > 0 {
+                    // 教练裁决改了完成位：与终点编辑同权，触发罗盘重画。
+                    self.schedule_compass_regen(course_id, &engine.user_id);
+                }
                 self.emit_graph_event(
                     course_id,
                     "growth_completed",
                     serde_json::json!({
                         "phase": "completed",
+                        "outcome": if applied.idle { "idle" } else { "applied" },
                         "batch": applied.batch_id,
                         "nodes": applied.node_count,
                         "note": applied.note,
@@ -286,6 +330,8 @@ impl LearningService {
                 );
             }
             Err(error) => {
+                // 失败留痕：pending 行转 failed，历史时间线可见可重试。
+                self.fail_pending_batch(&pending.batch_id).await;
                 let cancelled = self.generation_cancel_requested();
                 self.emit_graph_event(
                     course_id,
@@ -300,11 +346,65 @@ impl LearningService {
         result.map(|_| ())
     }
 
+    /// 预留一条 pending 批行（先于任何 LLM 调用）：seq 单调分配，残留的
+    /// pending（上次崩溃/重启的中断痕迹）就地转 failed。
+    async fn begin_pending_batch(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<PendingBatch, AppError> {
+        sqlx::query(
+            "UPDATE learning_growth_batches SET status = 'failed' \
+             WHERE course_id = ? AND status = 'pending'",
+        )
+        .bind(course_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        let seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq) + 1, 1) FROM learning_growth_batches WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let batch_id = LearningGrowthBatchId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_growth_batches \
+             (batch_id, course_id, seq, node_ids_json, status, created_at) \
+             VALUES (?, ?, ?, '[]', 'pending', ?)",
+        )
+        .bind(&batch_id)
+        .bind(course_id.as_str())
+        .bind(seq)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(PendingBatch { batch_id })
+    }
+
+    async fn fail_pending_batch(&self, batch_id: &str) {
+        let _ = sqlx::query(
+            "UPDATE learning_growth_batches SET status = 'failed' WHERE batch_id = ?",
+        )
+        .bind(batch_id)
+        .execute(&self.pool)
+        .await;
+    }
+
+    async fn delete_pending_batch(&self, batch_id: &str) {
+        let _ = sqlx::query("DELETE FROM learning_growth_batches WHERE batch_id = ?")
+            .bind(batch_id)
+            .execute(&self.pool)
+            .await;
+    }
+
     async fn growth_body(
         &self,
         engine: &crate::learning_graph::GrowthRunner,
-        course_id: &LearningCourseId,
+        pending: &PendingBatch,
     ) -> Result<GrowthApplied, AppError> {
+        let course_id = &engine.course_id;
         let completer = self.course_completer()?;
         let model_override = engine
             .model_override
@@ -368,7 +468,27 @@ impl LearningService {
                 .await?;
             }
         }
-        self.apply_batch(course_id, engine, &batch).await
+        if batch.nodes.is_empty() {
+            // 空手批：不落档案（run_growth 删 pending 行），终点裁决仍生效
+            // ——「裁决终点完成」不需要以落一批节点为代价。
+            let mut transaction = self.pool.begin().await.map_err(internal)?;
+            let verdicts =
+                self.apply_endpoint_verdicts(&mut transaction, course_id, &batch).await?;
+            transaction.commit().await.map_err(internal)?;
+            // 行内自清：pending 在本分支内删除后再返回，外部观察者永远看
+            // 不到"裁决已生效但仍挂着 pending 行"的中间态。
+            self.delete_pending_batch(&pending.batch_id).await;
+            let ready_count = self.ready_count_for_owner(course_id, &engine.user_id).await?;
+            return Ok(GrowthApplied {
+                batch_id: pending.batch_id.clone(),
+                node_count: 0,
+                note: batch.note.clone(),
+                ready_count,
+                idle: true,
+                verdicts,
+            });
+        }
+        self.apply_batch(course_id, engine, pending, &batch).await
     }
 
     /// 教练上下文：目标/范围/罗盘/花名册/已教账/终点读数/登记表切片。
@@ -425,22 +545,238 @@ impl LearningService {
             }
         };
 
+        // 罗盘陈旧读数：重画之后又落了多少个已应用批次。
+        let compass_updated_at: Option<i64> =
+            course.try_get("compass_updated_at").map_err(internal)?;
+        let compass_stale: i64 = match compass_updated_at {
+            Some(at) => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_growth_batches \
+                 WHERE course_id = ? AND status = 'applied' AND created_at > ?",
+            )
+            .bind(course_id.as_str())
+            .bind(at)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(internal)?,
+            None => 0,
+        };
+        let compass_stale_batches = compass_stale as usize;
+
         let ready_count = self.ready_count_for_owner(course_id, &engine.user_id).await?;
-        let roster = self.render_roster(course_id, &engine.user_id).await?;
+        let endpoints = self.render_endpoint_list(course_id).await?;
+        let coverage_gauge = self.render_coverage_gauge(course_id, &engine.user_id).await?;
+        // 行为摘要先折（卡点节点要在花名册行上加 ⚑）。
+        let digest = self.fold_behavior_digest(course_id, &engine.user_id).await?;
+        let stalled: Vec<String> = digest
+            .as_ref()
+            .map(|digest| digest.blockers.iter().map(|b| b.lesson_id.clone()).collect())
+            .unwrap_or_default();
+        let roster = self.render_roster(course_id, &engine.user_id, &stalled).await?;
+        let lesson_titles = self.lesson_titles(course_id).await?;
+        let behavior_digest = digest
+            .map(|digest| digest.render(&lesson_titles))
+            .unwrap_or_default();
         let taught_summary = self.render_taught_summary().await?;
-        let endpoints = self.render_endpoint_gauge(course_id).await?;
         let registry_excerpt = self.render_registry_excerpt().await?;
 
         Ok(crate::learning_graph::CoachContext {
             goal: if goal.is_empty() { title } else { goal },
             scope_reference: scope,
             compass,
+            compass_stale_batches,
             roster,
             taught_summary,
             endpoints,
+            coverage_gauge,
+            behavior_digest,
             ready_count,
             registry_excerpt,
         })
+    }
+
+    /// 课程内课时标题表（行为摘要渲染卡点用）。
+    async fn lesson_titles(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<HashMap<String, String>, AppError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT l.lesson_id, l.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// 行为摘要折叠（ADR-0009 Amendment 1 三件：趋势 / 卡点 / 真实保留率）。
+    /// 返回 None = 课程无作答历史（窗口为空，教练上下文整块省略）。
+    async fn fold_behavior_digest(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<Option<crate::learning_graph::BehaviorDigest>, AppError> {
+        let settings = self.scheduler_settings().await;
+        let tz = settings.tz_offset_minutes;
+        let now = now_ms();
+        let today = crate::scheduler::review_day_number(now, tz);
+        // 窗口候选作答：近 60 学习日足够覆盖 7/10 双条款窗口。
+        let attempt_rows: Vec<(String, i64, i64, f64)> = sqlx::query_as(
+            "SELECT l.lesson_id, a.created_at, a.passed, a.score FROM learning_attempts a \
+             JOIN learning_enrollments e ON e.enrollment_id = a.enrollment_id AND e.user_id = ? \
+             JOIN learning_activities act ON act.activity_id = a.activity_id \
+             JOIN learning_lessons l ON l.lesson_id = act.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? AND a.created_at >= ?",
+        )
+        .bind(user_id.as_str())
+        .bind(course_id.as_str())
+        .bind(now - 60 * 24 * 60 * 60 * 1000)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        if attempt_rows.is_empty() {
+            return Ok(None);
+        }
+        let attempts: Vec<crate::learning_graph::DigestAttempt> = attempt_rows
+            .iter()
+            .map(|(lesson_id, created_at, passed, score)| {
+                crate::learning_graph::DigestAttempt {
+                    lesson_id: lesson_id.clone(),
+                    day: crate::scheduler::review_day_number(*created_at, tz),
+                    correct: *passed == 1 || *score >= 0.6,
+                }
+            })
+            .collect();
+
+        // 停滞基线（全历史）：最近一次答对的学习日，从未答对则首次作答日。
+        let base_rows: Vec<(String, Option<i64>, i64)> = sqlx::query_as(
+            "SELECT l.lesson_id, \
+                    MAX(CASE WHEN a.passed = 1 OR a.score >= 0.6 THEN a.created_at END), \
+                    MIN(a.created_at) \
+             FROM learning_attempts a \
+             JOIN learning_enrollments e ON e.enrollment_id = a.enrollment_id AND e.user_id = ? \
+             JOIN learning_activities act ON act.activity_id = a.activity_id \
+             JOIN learning_lessons l ON l.lesson_id = act.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? GROUP BY l.lesson_id",
+        )
+        .bind(user_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let stagnation_base: HashMap<String, i64> = base_rows
+            .into_iter()
+            .map(|(lesson_id, last_correct, first_attempt)| {
+                let base = last_correct.unwrap_or(first_attempt);
+                (lesson_id, crate::scheduler::review_day_number(base, tz))
+            })
+            .collect();
+
+        // 到期推进（真实保留率口径）：本课程的课程卡、auto/self 评分。
+        let push_rows: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT rl.review_day, rl.rating FROM learning_review_log rl \
+             JOIN learning_review_items ri ON ri.review_item_id = rl.item_id \
+             JOIN learning_enrollments e ON e.enrollment_id = ri.enrollment_id AND e.user_id = ? \
+             JOIN learning_activities act ON act.activity_id = ri.activity_id \
+             JOIN learning_lessons l ON l.lesson_id = act.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? AND rl.source = 'course' \
+               AND rl.rating_source IN ('auto', 'self')",
+        )
+        .bind(user_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let pushes: Vec<crate::learning_graph::DigestPush> = push_rows
+            .into_iter()
+            .map(|(day, rating)| crate::learning_graph::DigestPush { day, passed: rating >= 2 })
+            .collect();
+
+        Ok(Some(crate::learning_graph::fold_behavior_digest(
+            &attempts, &pushes, today, &stagnation_base,
+        )))
+    }
+
+    /// 覆盖读数（共用存量）：total = 课程全部非终点节点，met = completed、
+    /// skipped 单列，附概念档位足迹（ADR-0009 Amendment 1）。
+    async fn render_coverage_gauge(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<String, AppError> {
+        let user_value = user_id.as_str();
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT COALESCE(p.status, 'not_started'), l.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             LEFT JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
+             LEFT JOIN learning_lesson_progress p \
+               ON p.lesson_id = l.lesson_id AND p.enrollment_id = e.enrollment_id \
+             WHERE m.course_id = ? AND l.lesson_id NOT IN \
+               (SELECT lesson_id FROM learning_course_endpoints WHERE course_id = ?) \
+             ORDER BY l.position, l.lesson_id",
+        )
+        .bind(user_value)
+        .bind(course_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut met = 0usize;
+        let mut skipped = 0usize;
+        let mut pending_titles = Vec::new();
+        for (status, title) in &rows {
+            match LessonStatus::try_from(status.as_str()).map_err(AppError::Internal)? {
+                LessonStatus::Completed => met += 1,
+                LessonStatus::Skipped => skipped += 1,
+                _ => pending_titles.push(title.clone()),
+            }
+        }
+        // 概念档位足迹：本课程 teaches 的概念按最高档折叠计数。
+        let tier_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT lc.concept_id, lc.tier FROM learning_lesson_concepts lc \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? AND lc.role = 'teaches'",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut best: HashMap<String, crate::learning_graph::ConceptTier> = HashMap::new();
+        for (concept_id, tier) in &tier_rows {
+            let Some(tier) = crate::learning_graph::ConceptTier::try_from_str(tier) else {
+                continue;
+            };
+            let entry = best.entry(concept_id.clone()).or_insert(tier);
+            if tier > *entry {
+                *entry = tier;
+            }
+        }
+        let mut counts = [0usize; 3];
+        for tier in best.values() {
+            counts[*tier as usize] += 1;
+        }
+        let tier_footprint = [
+            (crate::learning_graph::ConceptTier::Teach, counts[2]),
+            (crate::learning_graph::ConceptTier::Apply, counts[1]),
+            (crate::learning_graph::ConceptTier::Know, counts[0]),
+        ]
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .collect();
+        Ok(crate::learning_graph::render_coverage_gauge(
+            &crate::learning_graph::CoverageReading {
+                total: rows.len(),
+                met,
+                skipped,
+                pending_titles,
+                tier_footprint,
+            },
+        ))
     }
 
     /// 结构门所需的全部事实（全局已教账按 canonical 名折叠）。
@@ -504,6 +840,7 @@ impl LearningService {
         &self,
         course_id: &LearningCourseId,
         engine: &crate::learning_graph::GrowthRunner,
+        pending: &PendingBatch,
         batch: &crate::learning_graph::ProposedBatch,
     ) -> Result<GrowthApplied, AppError> {
         // 模块与下一 position。
@@ -523,14 +860,6 @@ impl LearningService {
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
-        let batch_seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(seq) + 1, 1) FROM learning_growth_batches WHERE course_id = ?",
-        )
-        .bind(course_id.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(internal)?;
-
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         let now = now_ms();
 
@@ -653,33 +982,18 @@ impl LearningService {
             node_ids.push(lesson_id.into_string());
         }
 
-        // 4) 终点完成裁决（教练的标记位，机器从不自动置位）。
-        for title in &batch.completed_endpoints {
-            sqlx::query(
-                "UPDATE learning_course_endpoints SET completed = 1 \
-                 WHERE course_id = ? AND lower(title) = ?",
-            )
-            .bind(course_id.as_str())
-            .bind(title.trim().to_lowercase())
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
-        }
+        // 4) 终点完成裁决（教练的标记位，机器从不自动置位；双向可重开）。
+        let verdicts = self.apply_endpoint_verdicts(&mut transaction, course_id, batch).await?;
 
-        // 5) 批次档案。
-        let batch_id = LearningGrowthBatchId::new().into_string();
+        // 5) 批次档案转正（pending 行已在生长开始时落库，seq 早已分配）。
         let node_ids_json = serde_json::to_string(&node_ids).map_err(internal)?;
         sqlx::query(
-            "INSERT INTO learning_growth_batches \
-             (batch_id, course_id, seq, node_ids_json, note, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "UPDATE learning_growth_batches SET node_ids_json = ?, note = ?, status = 'applied' \
+             WHERE batch_id = ?",
         )
-        .bind(&batch_id)
-        .bind(course_id.as_str())
-        .bind(batch_seq)
         .bind(&node_ids_json)
         .bind(batch.note.trim())
-        .bind(now)
+        .bind(pending.batch_id.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(internal)?;
@@ -687,11 +1001,35 @@ impl LearningService {
 
         let ready_count = self.ready_count_for_owner(course_id, &engine.user_id).await?;
         Ok(GrowthApplied {
-            batch_id,
+            batch_id: pending.batch_id.clone(),
             node_count: node_ids.len(),
             note: batch.note.clone(),
             ready_count,
+            idle: false,
+            verdicts,
         })
+    }
+
+    /// 应用终点完成裁决（教练双向：置完成或重开）。返回裁决条数。
+    async fn apply_endpoint_verdicts(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        course_id: &LearningCourseId,
+        batch: &crate::learning_graph::ProposedBatch,
+    ) -> Result<usize, AppError> {
+        for verdict in &batch.completed_endpoints {
+            sqlx::query(
+                "UPDATE learning_course_endpoints SET completed = ? \
+                 WHERE course_id = ? AND lower(title) = ?",
+            )
+            .bind(if verdict.completed { 1 } else { 0 })
+            .bind(course_id.as_str())
+            .bind(verdict.title.trim().to_lowercase())
+            .execute(&mut **transaction)
+            .await
+            .map_err(internal)?;
+        }
+        Ok(batch.completed_endpoints.len())
     }
 
     // ── Readiness（就绪集合的读取侧）────────────────────────────────────
@@ -901,6 +1239,23 @@ impl LearningService {
         } else {
             false
         };
+        // 完成位切换：用户与教练裁决同权（置完成/重开，ADR-0009 Amendment 1）。
+        let completed_changed = if let Some(completed) = request.completed {
+            sqlx::query(
+                "UPDATE learning_course_endpoints SET completed = ? \
+                 WHERE endpoint_id = ? AND course_id = ?",
+            )
+            .bind(if completed { 1 } else { 0 })
+            .bind(endpoint_id.as_str())
+            .bind(course_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?
+            .rows_affected()
+                == 1
+        } else {
+            false
+        };
         // 终点标题变化同步到标记课时行（同一标题在课程内唯一）。
         if title_changed {
             sqlx::query(
@@ -915,7 +1270,7 @@ impl LearningService {
             .map_err(internal)?;
         }
         let _ = user_id;
-        if title_changed || note_changed {
+        if title_changed || note_changed || completed_changed {
             self.schedule_compass_regen(course_id, user_id);
         }
         Ok(())
@@ -957,6 +1312,17 @@ impl LearningService {
         transaction.commit().await.map_err(internal)?;
         self.schedule_compass_regen(course_id, user_id);
         Ok(())
+    }
+
+    /// 手动重画罗盘（UI 罗盘卡的"重画"入口；与终点变更触发的自动重画
+    /// 同管道，ADR-0009 Amendment 1）。
+    pub async fn redraw_graph_compass(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<(), AppError> {
+        self.require_graph_course(course_id).await?;
+        self.regen_compass(course_id, user_id, None).await
     }
 
     /// 终点任何变更（增/删/改）都会重画罗盘：后台尽力执行，失败留待下次
@@ -1058,7 +1424,12 @@ impl LearningService {
             })
             .collect::<Result<Vec<_>, AppError>>()?;
 
-        let ready = self.ready_set_for(course_id, user_id).await?;
+        // R 软闸分桶：结构就绪集合不变（ready_count 是水位口径），被挡的
+        // 候选从推荐里剔除并出建议（ADR-0009 Amendment 1）。
+        let (ready, blocked) = match user_id {
+            Some(user_id) => self.ready_partition(course_id, user_id).await?,
+            None => (self.ready_set_for(course_id, None).await?, Vec::new()),
+        };
         let ready_count = ready.len();
         let recommended = ready.into_iter().take(GRAPH_RECOMMEND_LIMIT).collect();
 
@@ -1069,11 +1440,208 @@ impl LearningService {
             compass_updated_at,
             endpoints,
             recommended,
+            blocked,
             ready_count,
             ready_target: crate::learning_graph::READY_TARGET,
             ready_trigger: crate::learning_graph::READY_TRIGGER,
             growth_running: self.generation_running(),
         })
+    }
+
+    /// R 软闸分桶（ADR-0009 Amendment 1）：就绪候选按「供给节点代表预测
+    /// 回忆率 ≥ 0.85」分为推荐与被挡。供给节点 = 教该候选所假定概念的节点
+    /// （跨课程）；代表 R = 该节点为该用户名下全部复习卡的最小预测回忆率，
+    /// 无卡视为满血 1.0。被挡条目按 R 升序最多 3 条。
+    pub(super) async fn ready_partition(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<(Vec<LearningLessonId>, Vec<crate::models::GraphBlockedView>), AppError> {
+        const R_GATE: f64 = 0.85;
+        const BLOCKED_LIMIT: usize = 3;
+        let candidates = self.ready_candidates(course_id, Some(user_id)).await?;
+        let ledger = self.taught_ledger().await?;
+        let ready: Vec<&crate::learning_graph::ReadyCandidate> = candidates
+            .iter()
+            .filter(|candidate| {
+                !candidate.satisfied
+                    && candidate.assumes.iter().all(|(concept_id, tier)| {
+                        ledger.get(concept_id).is_some_and(|taught| taught >= tier)
+                    })
+            })
+            .collect();
+        if ready.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
+        // 供给表：概念 → 教它的节点（跨课程，不含被评估的候选自身）。
+        let assumed_concepts: HashSet<String> = ready
+            .iter()
+            .flat_map(|candidate| candidate.assumes.iter().map(|(concept_id, _)| concept_id.clone()))
+            .collect();
+        let mut teachers: HashMap<String, Vec<String>> = HashMap::new();
+        if !assumed_concepts.is_empty() {
+            let mut query = sqlx::QueryBuilder::new(
+                "SELECT lc.concept_id, lc.lesson_id FROM learning_lesson_concepts lc \
+                 WHERE lc.role = 'teaches' AND lc.concept_id IN (",
+            );
+            let mut separated = query.separated(", ");
+            for concept in &assumed_concepts {
+                separated.push_bind(concept.clone());
+            }
+            query.push(")");
+            let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
+            for row in rows {
+                let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+                let lesson_id: String = row.try_get("lesson_id").map_err(internal)?;
+                teachers.entry(concept_id).or_default().push(lesson_id);
+            }
+        }
+
+        // 供给节点集合及其标题。
+        let supplier_ids: HashSet<String> = teachers
+            .values()
+            .flatten()
+            .cloned()
+            .collect();
+        if supplier_ids.is_empty() {
+            let ready_ids: Vec<LearningLessonId> = ready
+                .iter()
+                .map(|candidate| parse_id(candidate.lesson_id.clone()))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok((ready_ids, Vec::new()));
+        }
+        let mut titles: HashMap<String, String> = HashMap::new();
+        {
+            let ids: Vec<String> = supplier_ids.iter().cloned().collect();
+            let mut query = sqlx::QueryBuilder::new(
+                "SELECT lesson_id, title FROM learning_lessons WHERE lesson_id IN (",
+            );
+            let mut separated = query.separated(", ");
+            for lesson_id in &ids {
+                separated.push_bind(lesson_id.clone());
+            }
+            query.push(")");
+            let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
+            for row in rows {
+                let lesson_id: String = row.try_get("lesson_id").map_err(internal)?;
+                let title: String = row.try_get("title").map_err(internal)?;
+                titles.insert(lesson_id, title);
+            }
+        }
+
+        // 供给节点代表 R：该节点名下（该用户）全部复习卡的最小预测回忆率；
+        // 无卡/从未推进（stability 0）视为满血。顺带数到期题。
+        let settings = self.scheduler_settings().await;
+        let now = now_ms();
+        let mut card_rows: HashMap<String, Vec<(f64, Option<i64>)>> = HashMap::new();
+        {
+            let ids: Vec<String> = supplier_ids.iter().cloned().collect();
+            let mut query = sqlx::QueryBuilder::new(
+                "SELECT l.lesson_id, ri.stability_days, ri.last_reviewed_at, ri.due_at, \
+                        ri.archived_at \
+                 FROM learning_review_items ri \
+                 JOIN learning_enrollments e ON e.enrollment_id = ri.enrollment_id AND e.user_id = ? \
+                 JOIN learning_activities a ON a.activity_id = ri.activity_id \
+                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                 WHERE l.lesson_id IN (",
+            );
+            let mut separated = query.separated(", ");
+            separated.push_bind(user_id.as_str());
+            for lesson_id in &ids {
+                separated.push_bind(lesson_id.clone());
+            }
+            query.push(")");
+            let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
+            for row in rows {
+                let lesson_id: String = row.try_get("lesson_id").map_err(internal)?;
+                let stability: f64 = row.try_get("stability_days").map_err(internal)?;
+                let last_reviewed_at: Option<i64> =
+                    row.try_get("last_reviewed_at").map_err(internal)?;
+
+                card_rows.entry(lesson_id).or_default().push((stability, last_reviewed_at));
+            }
+        }
+        let mut supplier_r: HashMap<String, f64> = HashMap::new();
+        let mut supplier_due: HashMap<String, i64> = HashMap::new();
+        for (lesson_id, cards) in &card_rows {
+            let mut worst = 1.0f64;
+            for (stability, last_reviewed_at) in cards {
+                let elapsed = last_reviewed_at
+                    .map(|last| crate::scheduler::days_elapsed_between(last, now, settings.tz_offset_minutes))
+                    .unwrap_or(0);
+                if let Some(r) = crate::scheduler::predicted_retrievability(*stability, elapsed, &settings) {
+                    worst = worst.min(r);
+                }
+            }
+            supplier_r.insert(lesson_id.clone(), worst);
+            supplier_due.insert(lesson_id.clone(), 0);
+        }
+        // 到期题数（未归档、已到期）。
+        {
+            let ids: Vec<String> = supplier_ids.iter().cloned().collect();
+            let mut query = sqlx::QueryBuilder::new(
+                "SELECT l.lesson_id, COUNT(*) AS due FROM learning_review_items ri \
+                 JOIN learning_enrollments e ON e.enrollment_id = ri.enrollment_id AND e.user_id = ? \
+                 JOIN learning_activities a ON a.activity_id = ri.activity_id \
+                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                 WHERE l.lesson_id IN (",
+            );
+            let mut separated = query.separated(", ");
+            separated.push_bind(user_id.as_str());
+            for lesson_id in &ids {
+                separated.push_bind(lesson_id.clone());
+            }
+            query.push(") AND ri.due_at <= ? AND ri.archived_at IS NULL GROUP BY l.lesson_id");
+            let rows = query
+                .build()
+                .bind(now)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+            for row in rows {
+                let lesson_id: String = row.try_get("lesson_id").map_err(internal)?;
+                let due: i64 = row.try_get("due").map_err(internal)?;
+                supplier_due.insert(lesson_id, due);
+            }
+        }
+
+        // 分桶：候选的最差供给节点决定去留。
+        let mut blocked: Vec<crate::models::GraphBlockedView> = Vec::new();
+        let mut blocked_ids: HashSet<String> = HashSet::new();
+        for candidate in &ready {
+            let mut worst: Option<(f64, String)> = None;
+            for (concept_id, _) in &candidate.assumes {
+                for supplier in teachers.get(concept_id).into_iter().flatten() {
+                    let r = supplier_r.get(supplier).copied().unwrap_or(1.0);
+                    match &worst {
+                        Some((best_r, _)) if *best_r <= r => {}
+                        _ => worst = Some((r, supplier.clone())),
+                    }
+                }
+            }
+            if let Some((r, supplier_id)) = worst {
+                if r < R_GATE {
+                    blocked_ids.insert(candidate.lesson_id.clone());
+                    blocked.push(crate::models::GraphBlockedView {
+                        lesson_id: parse_id(candidate.lesson_id.clone())?,
+                        title: candidate.title.clone(),
+                        supplier_lesson_id: parse_id(supplier_id.clone())?,
+                        supplier_title: titles.get(&supplier_id).cloned().unwrap_or_default(),
+                        r,
+                        due_count: supplier_due.get(&supplier_id).copied().unwrap_or(0),
+                    });
+                }
+            }
+        }
+        blocked.sort_by(|a, b| a.r.partial_cmp(&b.r).unwrap_or(std::cmp::Ordering::Equal));
+        blocked.truncate(BLOCKED_LIMIT);
+        let ready_ids: Vec<LearningLessonId> = ready
+            .iter()
+            .filter(|candidate| !blocked_ids.contains(&candidate.lesson_id))
+            .map(|candidate| parse_id(candidate.lesson_id.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((ready_ids, blocked))
     }
 
     /// 学习记录：批次时间线（倒序），每批带节点行与学习者进度。
@@ -1085,7 +1653,7 @@ impl LearningService {
         let enrollment = self.enrollment_id_for(user_id, course_id).await?;
         let enrollment_value = enrollment.as_ref().map(LearningEnrollmentId::as_str);
         let batches = sqlx::query(
-            "SELECT batch_id, seq, node_ids_json, note, created_at \
+            "SELECT batch_id, seq, status, node_ids_json, note, created_at \
              FROM learning_growth_batches WHERE course_id = ? \
              ORDER BY seq DESC, batch_id",
         )
@@ -1131,6 +1699,7 @@ impl LearningService {
             views.push(crate::models::GraphBatchView {
                 batch_id,
                 seq: batch.try_get("seq").map_err(internal)?,
+                status: batch.try_get("status").map_err(internal)?,
                 note: batch.try_get("note").map_err(internal)?,
                 created_at: batch.try_get("created_at").map_err(internal)?,
                 nodes,
@@ -1374,6 +1943,7 @@ impl LearningService {
         &self,
         course_id: &LearningCourseId,
         user_id: &UserId,
+        stalled: &[String],
     ) -> Result<String, AppError> {
         let candidates = self.ready_candidates(course_id, Some(user_id)).await?;
         let concepts: HashMap<String, Vec<(String, String, String)>> = sqlx::query_as(
@@ -1393,9 +1963,16 @@ impl LearningService {
             map.entry(lesson_id).or_insert_with(Vec::new).push((canonical, tier, role));
             map
         });
+        let stalled: HashSet<&str> = stalled.iter().map(String::as_str).collect();
         let mut lines = Vec::with_capacity(candidates.len());
         for candidate in &candidates {
-            let status = if candidate.satisfied { "已满足" } else { "未开始" };
+            let status = if candidate.satisfied {
+                "已满足".to_owned()
+            } else if stalled.contains(candidate.lesson_id.as_str()) {
+                "⚑ 未开始（近期答错集中）".to_owned()
+            } else {
+                "未开始".to_owned()
+            };
             let mut parts: Vec<String> = Vec::new();
             if let Some(concepts) = concepts.get(candidate.lesson_id.as_str()) {
                 for (canonical, tier, role) in concepts {
@@ -1407,6 +1984,7 @@ impl LearningService {
             }
             lines.push(format!(
                 "{status} | {title} | {concepts}",
+                status = status,
                 title = candidate.title,
                 concepts = parts.join(" "),
             ));
@@ -1439,8 +2017,9 @@ impl LearningService {
             .join("、"))
     }
 
-    /// 逐终点覆盖读数（终点声明 + 罗盘视角下的已涉概念）。
-    async fn render_endpoint_gauge(
+    /// 终点锚清单（标题 + 程度声明）；覆盖读数单列
+    /// [`Self::render_coverage_gauge`]。
+    async fn render_endpoint_list(
         &self,
         course_id: &LearningCourseId,
     ) -> Result<String, AppError> {
@@ -1533,10 +2112,18 @@ async fn insert_endpoint(
     })
 }
 
-/// 一批生长落库的结果快照（WS 终态帧的数据源）。
+/// 生长进行中的批行（生长开始时落库的 pending 行；seq 已在落库时分配）。
+pub(crate) struct PendingBatch {
+    pub batch_id: String,
+}
+
+/// 一批生长落库的结果快照（WS 终态帧的数据源）：idle = 空手批（不落档案，
+/// 终点裁决可能仍已应用），verdicts = 本批应用的终点裁决条数。
 pub(crate) struct GrowthApplied {
     pub batch_id: String,
     pub node_count: usize,
     pub note: String,
     pub ready_count: usize,
+    pub idle: bool,
+    pub verdicts: usize,
 }
