@@ -25,8 +25,8 @@
     "dist"
   ],
   "dependencies": {
-    "@flowy-agent-store/client": "0.1.0-beta.7",
-    "@flowy-agent-store/protocol": "0.1.0-beta.7"
+    "@flowy-agent-store/client": "0.1.0-beta.8",
+    "@flowy-agent-store/protocol": "0.1.0-beta.8"
   },
   "scripts": {
     "build": "tsdown",
@@ -40,10 +40,10 @@
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
   "optionalDependencies": {
-    "@flowy-agent-store/runtime-win32-x64": "0.1.0-beta.7",
-    "@flowy-agent-store/runtime-linux-x64": "0.1.0-beta.7",
-    "@flowy-agent-store/runtime-linux-arm64": "0.1.0-beta.7",
-    "@flowy-agent-store/runtime-darwin-x64": "0.1.0-beta.7",
-    "@flowy-agent-store/runtime-darwin-arm64": "0.1.0-beta.7"
+    "@flowy-agent-store/runtime-win32-x64": "0.1.0-beta.8",
+    "@flowy-agent-store/runtime-linux-x64": "0.1.0-beta.8",
+    "@flowy-agent-store/runtime-linux-arm64": "0.1.0-beta.8",
+    "@flowy-agent-store/runtime-darwin-x64": "0.1.0-beta.8",
+    "@flowy-agent-store/runtime-darwin-arm64": "0.1.0-beta.8"
   }
 }
