@@ -174,6 +174,8 @@ pub struct NomiCompatOverrides {
     pub mirror_bearer_header: Option<String>,
     /// Some(true) = gateway requires assistant reasoning_content placeholders.
     pub require_reasoning_content: Option<bool>,
+    /// Some(true) = omit assistant reasoning that precedes the last user message.
+    pub drop_prior_turn_reasoning: Option<bool>,
     /// Catalog-advertised OpenAI-style `reasoning_effort` support. When set,
     /// overrides the provider-type default from [`nomi_config::ProviderCompat`].
     pub supports_effort: Option<bool>,

@@ -579,6 +579,9 @@ async fn build_probe_engine(config_extra: NomiResolvedConfig) -> Result<AgentEng
     if let Some(required) = config_extra.compat_overrides.require_reasoning_content {
         config.compat.require_reasoning_content = Some(required);
     }
+    if let Some(drop) = config_extra.compat_overrides.drop_prior_turn_reasoning {
+        config.compat.drop_prior_turn_reasoning = Some(drop);
+    }
     // Health probes never consume a provider round id. Intentionally do not
     // copy `chain_rounds`: Responses must send `store:false` for this one-shot
     // diagnostic even when the selected Chat capability opted into chaining.

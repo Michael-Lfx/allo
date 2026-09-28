@@ -876,6 +876,9 @@ impl NomiAgentManager {
         if let Some(required) = config_extra.compat_overrides.require_reasoning_content {
             config.compat.require_reasoning_content = Some(required);
         }
+        if let Some(drop) = config_extra.compat_overrides.drop_prior_turn_reasoning {
+            config.compat.drop_prior_turn_reasoning = Some(drop);
+        }
         if let Some(chain_rounds) = config_extra.compat_overrides.chain_rounds {
             config.compat.chain_rounds = Some(chain_rounds);
         }

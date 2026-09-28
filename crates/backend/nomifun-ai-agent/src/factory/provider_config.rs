@@ -138,6 +138,9 @@ pub(crate) async fn resolve_provider_fields(
     {
         compat_overrides.require_reasoning_content = Some(true);
     }
+    if drops_prior_turn_reasoning(model) {
+        compat_overrides.drop_prior_turn_reasoning = Some(true);
+    }
     if let Some(levels) = catalog_reasoning_effort {
         compat_overrides.supports_effort = Some(true);
         compat_overrides.effort_levels = Some(levels);
@@ -167,6 +170,10 @@ pub(crate) async fn resolve_provider_fields(
         output_limit,
         platform: row.platform.clone(),
     })
+}
+
+fn drops_prior_turn_reasoning(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("deepseek")
 }
 
 /// Read the cloud-catalog output limit only for Flowy's built-in provider.
@@ -405,6 +412,9 @@ pub(crate) async fn resolve_provider_config_with_output_limit(
     }
     if let Some(required) = fields.compat_overrides.require_reasoning_content {
         config.compat.require_reasoning_content = Some(required);
+    }
+    if let Some(drop) = fields.compat_overrides.drop_prior_turn_reasoning {
+        config.compat.drop_prior_turn_reasoning = Some(drop);
     }
     if let Some(supports_effort) = fields.compat_overrides.supports_effort {
         config.compat.supports_effort = Some(supports_effort);
@@ -1135,6 +1145,16 @@ mod tests {
             error,
             AppError::BadGateway(message) if message.contains("no visible response")
         ));
+    }
+
+    #[test]
+    fn only_deepseek_models_drop_prior_turn_reasoning() {
+        assert!(drops_prior_turn_reasoning("AIPC-deepseek-v4.1-flash"));
+        assert!(drops_prior_turn_reasoning("DeepSeek-R1"));
+        assert!(drops_prior_turn_reasoning("deepseek-v4-flash-free"));
+        assert!(!drops_prior_turn_reasoning("kimi-k2-thinking"));
+        assert!(!drops_prior_turn_reasoning("qwen3-max"));
+        assert!(!drops_prior_turn_reasoning("glm-4.6"));
     }
 
     #[test]

@@ -383,6 +383,10 @@ impl OpenAIProvider {
             merge_consecutive_assistant(&mut result);
         }
 
+        if compat.drop_prior_turn_reasoning() {
+            drop_prior_turn_reasoning(&mut result, require_reasoning_content);
+        }
+
         result
     }
 
@@ -674,6 +678,28 @@ fn merge_consecutive_assistant(messages: &mut Vec<Value>) {
             // Don't increment i - check the merged result against the next message
         } else {
             i += 1;
+        }
+    }
+}
+
+fn drop_prior_turn_reasoning(messages: &mut [Value], require_reasoning_content: bool) {
+    let Some(last_user) = messages
+        .iter()
+        .rposition(|m| m["role"].as_str() == Some("user"))
+    else {
+        return;
+    };
+    for msg in &mut messages[..last_user] {
+        if msg["role"].as_str() != Some("assistant") {
+            continue;
+        }
+        let Some(obj) = msg.as_object_mut() else {
+            continue;
+        };
+        if require_reasoning_content {
+            obj.insert("reasoning_content".into(), json!(" "));
+        } else {
+            obj.remove("reasoning_content");
         }
     }
 }
@@ -3371,6 +3397,84 @@ mod tests {
             "earlier plain assistants must keep their original JSON shape"
         );
         assert_eq!(assistants[1]["reasoning_content"], "secret");
+    }
+
+    fn two_turn_tool_history() -> Vec<Message> {
+        let thinking = |text: &str| ContentBlock::Thinking {
+            thinking: text.into(),
+            signature: None,
+        };
+        let tool_use = |id: &str| ContentBlock::ToolUse {
+            id: id.into(),
+            name: "read".into(),
+            input: json!({"path": "README.md"}),
+            extra: None,
+        };
+        let tool_result = |id: &str| ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: "contents".into(),
+            is_error: false,
+            images: Vec::new(),
+        };
+        vec![
+            Message::new(Role::User, vec![ContentBlock::Text { text: "first".into() }]),
+            Message::new(Role::Assistant, vec![thinking("old-a"), tool_use("call_1")]),
+            Message::new(Role::User, vec![tool_result("call_1")]),
+            Message::new(
+                Role::Assistant,
+                vec![thinking("old-b"), ContentBlock::Text { text: "done".into() }],
+            ),
+            Message::new(Role::User, vec![ContentBlock::Text { text: "second".into() }]),
+            Message::new(Role::Assistant, vec![thinking("current"), tool_use("call_2")]),
+            Message::new(Role::User, vec![tool_result("call_2")]),
+        ]
+    }
+
+    fn assistant_reasoning(out: &[Value]) -> Vec<Option<String>> {
+        out.iter()
+            .filter(|m| m["role"] == "assistant")
+            .map(|m| m.get("reasoning_content").and_then(Value::as_str).map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn drop_prior_turn_reasoning_keeps_only_current_turn() {
+        let mut compat = openai_compat();
+        compat.drop_prior_turn_reasoning = Some(true);
+        let out = OpenAIProvider::build_messages(&two_turn_tool_history(), "", &compat, false);
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![None, None, Some("current".to_owned())]
+        );
+    }
+
+    #[test]
+    fn drop_prior_turn_reasoning_uses_placeholder_when_required() {
+        let mut compat = openai_compat();
+        compat.drop_prior_turn_reasoning = Some(true);
+        let out = OpenAIProvider::build_messages(&two_turn_tool_history(), "", &compat, true);
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![
+                Some(" ".to_owned()),
+                Some(" ".to_owned()),
+                Some("current".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn prior_turn_reasoning_is_kept_by_default() {
+        let out =
+            OpenAIProvider::build_messages(&two_turn_tool_history(), "", &openai_compat(), false);
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![
+                Some("old-a".to_owned()),
+                Some("old-b".to_owned()),
+                Some("current".to_owned())
+            ]
+        );
     }
 
     #[tokio::test]

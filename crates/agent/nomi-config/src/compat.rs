@@ -76,6 +76,12 @@ pub struct ProviderCompat {
     /// messages. Used only by gateways that explicitly enforce this extension.
     pub require_reasoning_content: Option<bool>,
 
+    /// Omit `reasoning_content` from assistant messages that precede the last
+    /// user message. DeepSeek bills prior-turn reasoning as prompt tokens but
+    /// only requires it back for the current turn; Kimi's prefix cache needs
+    /// it verbatim, so this stays opt-in per model.
+    pub drop_prior_turn_reasoning: Option<bool>,
+
     /// Open-ended provider-native request body fields. Provider serializers
     /// merge these first and then overlay typed model/messages/tools/token
     /// fields, so saved capability parameters take effect without being able
@@ -173,6 +179,9 @@ impl ProviderCompat {
             require_reasoning_content: user
                 .require_reasoning_content
                 .or(defaults.require_reasoning_content),
+            drop_prior_turn_reasoning: user
+                .drop_prior_turn_reasoning
+                .or(defaults.drop_prior_turn_reasoning),
             extra_body: user.extra_body.or(defaults.extra_body),
             chain_rounds: user.chain_rounds.or(defaults.chain_rounds),
         }
@@ -232,6 +241,10 @@ impl ProviderCompat {
 
     pub fn require_reasoning_content(&self) -> bool {
         self.require_reasoning_content.unwrap_or(false)
+    }
+
+    pub fn drop_prior_turn_reasoning(&self) -> bool {
+        self.drop_prior_turn_reasoning.unwrap_or(false)
     }
 
     pub fn chain_rounds(&self) -> bool {

@@ -1359,6 +1359,9 @@ fn config_for_image_analysis(
     if let Some(required) = fields.compat_overrides.require_reasoning_content {
         config.compat.require_reasoning_content = Some(required);
     }
+    if let Some(drop) = fields.compat_overrides.drop_prior_turn_reasoning {
+        config.compat.drop_prior_turn_reasoning = Some(drop);
+    }
     Ok(config)
 }
 
