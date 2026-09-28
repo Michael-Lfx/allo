@@ -6,10 +6,10 @@ pub(super) use std::sync::{Arc, Mutex, RwLock};
 
 pub(super) use chrono::Datelike;
 pub(super) use nomifun_common::{
-    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningGraphId,
-    LearningConceptId, LearningCourseId, LearningEnrollmentId, LearningLessonId,
-    LearningModuleId, LearningReviewItemId, LearningTagId, ProviderId, UserId, UuidV7Error,
-    generate_id, now_ms,
+    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
+    LearningCourseId, LearningEnrollmentId, LearningEndpointId, LearningGrowthBatchId,
+    LearningLessonId, LearningModuleId, LearningReviewItemId, LearningTagId, ProviderId, UserId,
+    UuidV7Error, generate_id, now_ms,
 };
 pub(super) use nomifun_db::SqlitePool;
 pub(super) use nomifun_knowledge::KnowledgeService;
@@ -18,8 +18,6 @@ pub(super) use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) use crate::completer::LearningCompleter;
 pub(super) use crate::events::LearningEventEmitter;
-pub(super) use crate::learning_graph::draft::DraftGraph;
-pub(super) use crate::learning_graph::LearningGraphAgentEngine;
 pub(super) use crate::course_outline::draft::OutlineDraft;
 pub(super) use crate::course_outline::{CourseOutlineAgentEngine, KnowledgeBaseBrief, OutlineBrief};
 pub(super) use crate::lesson_draft::{
@@ -33,12 +31,10 @@ pub(super) use crate::generation::{
 };
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
-    CalendarLessonRef, CalendarStats, CheckinStatus, ConceptPack, ConceptRef,
-    ConceptView, CourseDetail, CourseKind, CoursePack, CourseSummary,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem, DiagnosticPlan,
-    DueReview, GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    GraphEdgeView, GraphNodeView, GeneratedLessonActivity, LearningGraphView, SectionKind,
-    SectionView, LessonStatus,
+    CalendarLessonRef, CalendarStats, CheckinStatus, CourseDetail, CourseKind, CoursePack,
+    CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem,
+    DiagnosticPlan, DueReview, GenerateCourseRequest, GenerateLessonActivityRequest,
+    GenerateLessonRequest, GeneratedLessonActivity, SectionKind, SectionView, LessonStatus,
     LessonView, MemoryCalibrationBin, MemoryCurvePoint, MemoryHealthStats, MemoryLoadDay,
     MemoryStateBucket, MemoryTrueRetention, ModuleView, QuestionEntry, TeachingStyle,
     ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
@@ -53,17 +49,6 @@ pub struct LearningService {
     pool: SqlitePool,
     knowledge_service: Arc<RwLock<Option<Arc<KnowledgeService>>>>,
     course_completer: Arc<RwLock<Option<Arc<dyn LearningCompleter>>>>,
-    /// In-memory learning-graph draft store backing the agent tool set
-    /// (`lg_start` .. `lg_finish`). Generation is a short-lived operation,
-    /// so drafts do not survive restarts; only `lg_finish` publishes to
-    /// the database. Each entry carries its last-activity timestamp: stale
-    /// drafts are evicted lazily (see
-    /// `service::learning_graph::LEARNING_GRAPH_DRAFT_TTL`), so crashed or
-    /// timed-out generation sessions cannot leak memory.
-    learning_graph_drafts: Arc<RwLock<HashMap<String, (DraftGraph, std::time::Instant)>>>,
-    /// Two-loop agent engine; when present, `generate_learning_graph` routes
-    /// through it (draft + `lg_*` tools, audit-gated publish).
-    learning_graph_engine: Arc<RwLock<Option<Arc<dyn LearningGraphAgentEngine>>>>,
     /// In-memory outline draft store backing the agent tool set (`co_start`
     /// .. `co_finish`). Same lifecycle as the learning-graph drafts:
     /// short-lived, `finish` is the single publish path.
@@ -127,8 +112,6 @@ impl LearningService {
             pool,
             knowledge_service: Arc::new(RwLock::new(None)),
             course_completer: Arc::new(RwLock::new(None)),
-            learning_graph_drafts: Arc::new(RwLock::new(HashMap::new())),
-            learning_graph_engine: Arc::new(RwLock::new(None)),
             course_outline_drafts: Arc::new(RwLock::new(HashMap::new())),
             course_outline_engine: Arc::new(RwLock::new(None)),
             lesson_drafts: Arc::new(RwLock::new(HashMap::new())),
@@ -326,15 +309,6 @@ impl LearningService {
         Ok(())
     }
 
-    /// Inject the two-loop learning-graph agent engine (wiring-time, before
-    /// any request). Generation requires the engine — there is no fallback.
-    pub fn set_learning_graph_engine(&self, engine: Arc<dyn LearningGraphAgentEngine>) {
-        *self
-            .learning_graph_engine
-            .write()
-            .expect("learning graph engine lock poisoned") = Some(engine);
-    }
-
     /// Inject the two-loop course outline agent engine (wiring-time, before
     /// any request). Absent, `generate_course` falls back to the legacy
     /// one-shot pipeline.
@@ -391,20 +365,6 @@ impl LearningService {
             })
     }
 
-    async fn lesson_concepts(
-        &self,
-        lesson_id: &LearningLessonId,
-    ) -> Result<Vec<LearningConceptId>, AppError> {
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT concept_id FROM learning_lesson_concepts WHERE lesson_id = ? ORDER BY concept_id",
-        )
-        .bind(lesson_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        ids.into_iter().map(parse_id).collect()
-    }
-
     async fn lesson_activities(
         &self,
         lesson_id: &LearningLessonId,
@@ -426,14 +386,6 @@ impl LearningService {
                 &row.try_get::<String, _>("config_json").map_err(internal)?,
             )
             .map_err(internal)?;
-            let concept_ids: Vec<String> = sqlx::query_scalar(
-                "SELECT concept_id FROM learning_activity_concepts \
-                 WHERE activity_id = ? ORDER BY concept_id",
-            )
-            .bind(id.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
             activities.push(ActivityView {
                 id,
                 kind: ActivityKind::try_from(kind_text.as_str())
@@ -442,57 +394,9 @@ impl LearningService {
                 options: config.options,
                 matches: config.matches,
                 position: row.try_get("position").map_err(internal)?,
-                concepts: concept_ids
-                    .into_iter()
-                    .map(parse_id)
-                    .collect::<Result<_, _>>()?,
             });
         }
         Ok(activities)
-    }
-
-    async fn course_concepts(
-        &self,
-        course_id: &LearningCourseId,
-        enrollment_id: Option<&LearningEnrollmentId>,
-    ) -> Result<Vec<ConceptView>, AppError> {
-        let rows = sqlx::query(
-            "SELECT c.concept_id, c.concept_key, c.title, c.description, m.mastery \
-             FROM learning_concepts c \
-             LEFT JOIN learning_mastery_states m \
-               ON m.concept_id = c.concept_id AND m.enrollment_id = ? \
-             WHERE c.course_id = ? ORDER BY c.concept_key, c.concept_id",
-        )
-        .bind(enrollment_id.map(LearningEnrollmentId::as_str))
-        .bind(course_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        let mut concepts = Vec::with_capacity(rows.len());
-        for row in rows {
-            let id: LearningConceptId =
-                parse_id(row.try_get("concept_id").map_err(internal)?)?;
-            let prerequisites: Vec<String> = sqlx::query_scalar(
-                "SELECT prerequisite_concept_id FROM learning_concept_prerequisites \
-                 WHERE concept_id = ? ORDER BY prerequisite_concept_id",
-            )
-            .bind(id.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
-            concepts.push(ConceptView {
-                id,
-                key: row.try_get("concept_key").map_err(internal)?,
-                title: row.try_get("title").map_err(internal)?,
-                description: row.try_get("description").map_err(internal)?,
-                prerequisites: prerequisites
-                    .into_iter()
-                    .map(parse_id)
-                    .collect::<Result<_, _>>()?,
-                mastery: row.try_get("mastery").map_err(internal)?,
-            });
-        }
-        Ok(concepts)
     }
 
 }
@@ -583,4 +487,4 @@ mod tags;
 mod tests;
 
 use self::lesson::validate_question_payload;
-use self::progress::{ensure_review_item, evaluate, update_activity_mastery, update_mastery_and_review};
+use self::progress::{ensure_review_item, evaluate, update_mastery_and_review};

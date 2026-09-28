@@ -41,6 +41,12 @@ pub(crate) const REFLECTION_GRADING_MAX_TOKENS: u32 = 2048;
 /// budget so a complex goal can enumerate a long, strictly-complete
 /// checklist without the reply being cut off mid-array.
 pub(crate) const LEARNING_GRAPH_SCOPE_MAX_TOKENS: u32 = 8192;
+/// Coach growth batch: ≤7 nodes with concept references + mints + notes.
+pub(crate) const COACH_MAX_TOKENS: u32 = 8192;
+/// Concept review verdict: pass marker or ≤8 problem entries.
+pub(crate) const CONCEPT_REVIEW_MAX_TOKENS: u32 = 4096;
+/// Compass markdown: per-endpoint remaining-route summary.
+pub(crate) const COMPASS_MAX_TOKENS: u32 = 4096;
 
 
 /// Figure-repair stage: one model call that receives the broken figure code

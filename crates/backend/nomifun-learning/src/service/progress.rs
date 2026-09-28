@@ -75,8 +75,9 @@ impl LearningService {
         .await
         .map_err(internal)?;
         if status == LessonStatus::Completed {
-            // Completing a lesson admits its concepts into the review queue:
-            // seed one item per concept due on the next review day (idempotent).
+            // Completing a lesson admits its objective questions into the
+            // review queue: seed one item per question due on the next review
+            // day (idempotent).
             let enrollment = parse_id::<LearningEnrollmentId>(enrollment_id.clone())?;
             let mut transaction = self.pool.begin().await.map_err(internal)?;
             let tz_offset_minutes = self.tz_offset_minutes().await;
@@ -102,7 +103,8 @@ impl LearningService {
         model: Option<String>,
     ) -> Result<AttemptResult, AppError> {
         let row = sqlx::query(
-            "SELECT a.kind, a.prompt, a.config_json, m.course_id \
+            "SELECT a.kind, a.prompt, a.config_json, m.course_id, \
+                    l.title AS lesson_title, l.summary AS lesson_summary \
              FROM learning_activities a \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
@@ -125,26 +127,27 @@ impl LearningService {
         let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
         let enrollment_id = self.ensure_enrollment(&course_id, user_id).await?;
         // AI-graded answers (reflection 0-1, open_question 0-10) are graded
-        // by the LLM: the activity's linked concepts ground the grading
-        // prompt. AI grading is authoritative — the empty-answer rejection
-        // is enforced here by the rule-based evaluator, and any grading
-        // failure (unconfigured completer, call error, unparseable reply)
-        // surfaces as an error to the learner. The old silent fallback
-        // passed every non-empty answer with a score of 1.0, hiding grading
-        // failures behind a fake success.
+        // by the LLM: the question itself plus its lesson's title/summary
+        // ground the grading prompt. AI grading is authoritative — the
+        // empty-answer rejection is enforced here by the rule-based
+        // evaluator, and any grading failure (unconfigured completer, call
+        // error, unparseable reply) surfaces as an error to the learner. The
+        // old silent fallback passed every non-empty answer with a score of
+        // 1.0, hiding grading failures behind a fake success.
         let (score, feedback) = if kind.is_ai_graded() {
             let answer = response.as_str().map(str::trim).unwrap_or_default();
             if answer.is_empty() {
                 // Always rejected: the evaluator errors on empty responses.
                 evaluate(kind, &config, &response)?
             } else {
-                let linked_concepts =
-                    activity_concept_titles(&self.pool, activity_id).await?;
+                let lesson_title: String = row.try_get("lesson_title").map_err(internal)?;
+                let lesson_summary: String = row.try_get("lesson_summary").map_err(internal)?;
                 self.grade_open_answer(
                     kind,
                     &activity_prompt,
                     answer,
-                    &linked_concepts,
+                    &lesson_title,
+                    &lesson_summary,
                     provider_id.as_ref(),
                     model.as_deref(),
                 )
@@ -173,21 +176,6 @@ impl LearningService {
         .execute(&mut *transaction)
         .await
         .map_err(internal)?;
-
-        let concept_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT concept_id FROM learning_activity_concepts WHERE activity_id = ?",
-        )
-        .bind(activity_id.as_str())
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(internal)?;
-        // In-course attempts only feed mastery evidence. The memory curve
-        // (FSRS rescheduling, review/lapse counts) is driven exclusively by
-        // the review queue (`answer_review` / `rate_review`), and review
-        // items are seeded when the lesson is completed, not here.
-        for concept_id in concept_ids {
-            update_mastery(&mut transaction, &enrollment_id, &concept_id, score, now).await?;
-        }
         transaction.commit().await.map_err(internal)?;
 
         Ok(AttemptResult {
@@ -199,9 +187,10 @@ impl LearningService {
     }
 
     /// LLM-grades an open answer (reflection 0-1, open_question 0-10) against
-    /// the exercise's concepts. The model sees the exercise prompt, the
-    /// learner's answer and the linked concepts; it must reply with strict
-    /// JSON `{ "score": f64, "feedback": string }`. open_question scores are
+    /// the question itself and its lesson's topic (title + summary). The
+    /// model sees the exercise prompt, the learner's answer and the lesson
+    /// context; it must reply with strict JSON
+    /// `{ "score": f64, "feedback": string }`. open_question scores are
     /// reported on a 0-10 scale and normalized to 0-1 here (≥6 passes).
     /// Every failure (no completer, call error, unparseable reply) returns
     /// `Err` and is surfaced to the learner — AI grading is authoritative,
@@ -211,7 +200,8 @@ impl LearningService {
         kind: ActivityKind,
         prompt: &str,
         answer: &str,
-        linked_concepts: &[(String, String, String)],
+        lesson_title: &str,
+        lesson_summary: &str,
         provider_id: Option<&ProviderId>,
         model: Option<&str>,
     ) -> Result<(f64, String), AppError> {
@@ -228,7 +218,7 @@ impl LearningService {
         } else {
             REFLECTION_GRADING_SYSTEM
         };
-        let user = build_open_grading_prompt(kind, prompt, answer, linked_concepts);
+        let user = build_open_grading_prompt(kind, prompt, answer, lesson_title, lesson_summary);
         let raw = completer
             .complete(
                 provider_id.zip(model).map(|(id, model)| (id.as_str(), model)),
@@ -239,7 +229,7 @@ impl LearningService {
             .await?;
         let (score, feedback) = parse_open_grading(&raw)?;
         // open_question arrives on a 0-10 scale; normalize to 0-1 so
-        // mastery/attempt storage stays on the shared scale (0.6 = pass).
+        // attempt storage stays on the shared scale (0.6 = pass).
         let normalized = if kind == ActivityKind::OpenQuestion {
             score / 10.0
         } else {
@@ -251,13 +241,13 @@ impl LearningService {
 }
 
 /// System prompt for AI reflection grading: the model judges correctness and
-/// completeness against the exercise's concepts, reports coverage of the full
-/// course concept list, and replies with strict JSON.
+/// completeness against the question itself and its lesson's topic, and
+/// replies with strict JSON.
 const REFLECTION_GRADING_SYSTEM: &str = r#"You are a strict but encouraging learning coach grading a learner's reflection answer for a course exercise.
 
 Score the answer from 0.0 to 1.0 (0.6 is passing):
-- Correctness: does the answer align with the concepts this exercise targets?
-- Completeness: does it cover the key points of those concepts?
+- Correctness: does the answer address what the question asks?
+- Completeness: does it cover the key points the question is about?
 
 Reply with ONLY one JSON object matching this shape:
 {
@@ -271,12 +261,12 @@ Rules:
 - Output JSON only, without Markdown fences or commentary."#;
 
 /// System prompt for AI open-question grading: a comprehensive-application
-/// question scored on a 0-10 scale (≥6 passes), graded on full-lesson
-/// coverage rather than a single concept.
+/// question scored on a 0-10 scale (≥6 passes), graded on lesson-topic
+/// coverage rather than a single sub-point.
 const OPEN_QUESTION_GRADING_SYSTEM: &str = r#"You are a strict but encouraging learning coach grading a learner's open-ended answer to a comprehensive course question.
 
 Score the answer from 0.0 to 10.0 (6.0 is passing):
-- Correctness: are the claims aligned with the concepts this question targets?
+- Correctness: are the claims aligned with what the question asks, in the context of its lesson topic?
 - Completeness: does the answer assemble the key points into a working whole?
 - Application: does it show the learner can use the ideas, not just recite them?
 
@@ -292,26 +282,28 @@ Rules:
 - Output JSON only, without Markdown fences or commentary."#;
 
 /// Builds the user message for AI answer grading: the exercise prompt, the
-/// learner's answer and the concepts the exercise targets (its own lesson's
-/// concepts — open questions never bind concepts of other lessons).
+/// learner's answer and the owning lesson's topic (title + summary) —
+/// grading is grounded in the question and the lesson, never in a concept
+/// list (ADR-0009: the per-course concept system is retired).
 fn build_open_grading_prompt(
     kind: ActivityKind,
     prompt: &str,
     answer: &str,
-    linked_concepts: &[(String, String, String)],
+    lesson_title: &str,
+    lesson_summary: &str,
 ) -> String {
-    let linked = linked_concepts
-        .iter()
-        .map(|(_, title, description)| format!("- {title}: {description}"))
-        .collect::<Vec<_>>()
-        .join("\n");
     let framing = if kind == ActivityKind::OpenQuestion {
         "Comprehensive question covering the whole lesson (score on the 0-10 scale):"
     } else {
         "Exercise prompt:"
     };
+    let lesson_context = if lesson_summary.trim().is_empty() {
+        format!("Lesson topic: {lesson_title}")
+    } else {
+        format!("Lesson topic: {lesson_title}\nLesson summary: {lesson_summary}")
+    };
     format!(
-        "{framing}\n{prompt}\n\nLearner's answer:\n{answer}\n\nConcepts this exercise targets:\n{linked}"
+        "{framing}\n{prompt}\n\nLearner's answer:\n{answer}\n\n{lesson_context}"
     )
 }
 
@@ -330,26 +322,6 @@ fn parse_open_grading(raw: &str) -> Result<(f64, String), AppError> {
         AppError::Internal(format!("unparseable answer grading reply: {error}"))
     })?;
     Ok((reply.score, reply.feedback))
-}
-
-/// Concept rows (id, title, description) bound to an activity, used both for
-/// mastery evidence and to ground AI reflection grading. Reflections are
-/// generated within one lesson, so this is the concept scope the grading
-/// prompt carries.
-async fn activity_concept_titles(
-    pool: &SqlitePool,
-    activity_id: &LearningActivityId,
-) -> Result<Vec<(String, String, String)>, AppError> {
-    sqlx::query_as(
-        "SELECT c.concept_id, c.title, c.description \
-         FROM learning_activity_concepts ac \
-         JOIN learning_concepts c ON c.concept_id = ac.concept_id \
-         WHERE ac.activity_id = ?",
-    )
-    .bind(activity_id.as_str())
-    .fetch_all(pool)
-    .await
-    .map_err(internal)
 }
 
 pub(super) fn evaluate(
@@ -485,42 +457,17 @@ pub(super) fn evaluate(
     Ok((score, feedback))
 }
 
-/// Feeds a review outcome into the mastery of every concept the activity is
-/// bound to, mirroring in-course attempts.
-pub(super) async fn update_activity_mastery(
-    transaction: &mut Transaction<'_, Sqlite>,
-    enrollment_id: &LearningEnrollmentId,
-    activity_id: &LearningActivityId,
-    score: f64,
-    now: i64,
-) -> Result<(), AppError> {
-    let concept_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT concept_id FROM learning_activity_concepts WHERE activity_id = ?",
-    )
-    .bind(activity_id.as_str())
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(internal)?;
-    for concept_id in concept_ids {
-        update_mastery(transaction, enrollment_id, &concept_id, score, now).await?;
-    }
-    Ok(())
-}
-
 /// Rates a review item `again` on a wrong/forgotten answer: reschedules the
-/// item and feeds the score into its activity's concepts. Items only exist
-/// after their lesson was completed, so the row is guaranteed to be present.
+/// item (FSRS only — per-course mastery states are retired, ADR-0009). Items
+/// only exist after their lesson was completed, so the row is guaranteed to
+/// be present.
 pub(super) async fn update_mastery_and_review(
     transaction: &mut Transaction<'_, Sqlite>,
     review_id: &LearningReviewItemId,
-    enrollment_id: &LearningEnrollmentId,
-    activity_id: &LearningActivityId,
-    score: f64,
     rating: ReviewRating,
     now: i64,
     settings: &SchedulerSettings,
 ) -> Result<(), AppError> {
-    update_activity_mastery(transaction, enrollment_id, activity_id, score, now).await?;
     let current = sqlx::query(
         "SELECT stability_days, difficulty, review_count, lapse_count, last_reviewed_at \
          FROM learning_review_items WHERE review_item_id = ?",
@@ -552,48 +499,6 @@ pub(super) async fn update_mastery_and_review(
     .bind(now)
     .bind(now)
     .bind(review_id.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(internal)?;
-    Ok(())
-}
-
-async fn update_mastery(
-    transaction: &mut Transaction<'_, Sqlite>,
-    enrollment_id: &LearningEnrollmentId,
-    concept_id: &str,
-    score: f64,
-    now: i64,
-) -> Result<(), AppError> {
-    let current: Option<(f64, i64)> = sqlx::query_as(
-        "SELECT mastery, evidence_count FROM learning_mastery_states \
-         WHERE enrollment_id = ? AND concept_id = ?",
-    )
-    .bind(enrollment_id.as_str())
-    .bind(concept_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(internal)?;
-    let (mastery, evidence_count) = current.unwrap_or((score, 0));
-    let next_mastery = if evidence_count == 0 {
-        score
-    } else {
-        mastery * 0.7 + score * 0.3
-    };
-    sqlx::query(
-        "INSERT INTO learning_mastery_states \
-         (enrollment_id, concept_id, mastery, evidence_count, last_practiced_at, updated_at) \
-         VALUES (?, ?, ?, 1, ?, ?) \
-         ON CONFLICT(enrollment_id, concept_id) DO UPDATE SET \
-           mastery = excluded.mastery, \
-           evidence_count = learning_mastery_states.evidence_count + 1, \
-           last_practiced_at = excluded.last_practiced_at, updated_at = excluded.updated_at",
-    )
-    .bind(enrollment_id.as_str())
-    .bind(concept_id)
-    .bind(next_mastery.clamp(0.0, 1.0))
-    .bind(now)
-    .bind(now)
     .execute(&mut **transaction)
     .await
     .map_err(internal)?;

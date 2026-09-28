@@ -1,14 +1,12 @@
-/** model.ts 纯决策函数的单测：stepper 构造/门禁、节状态、掌握度、前置
- * 锁定、生成阶段折叠。零渲染——这正是决策逻辑抽离的目的。 */
+/** model.ts 纯决策函数的单测：stepper 构造/门禁、节状态、生成阶段折叠。
+ * 零渲染——这正是决策逻辑抽离的目的。 */
 import { describe, expect, test } from 'bun:test';
 import {
-  allConceptsMastered,
   buildSteps,
   canGoToStep,
   deriveStep,
   lessonStatusTagColors,
   lessonProgressLine,
-  prereqLockedIds,
   sectionStatusTagColors,
   stepActivities,
   stepLocked,
@@ -95,14 +93,7 @@ describe('stepActivities / 门禁', () => {
   });
 });
 
-describe('掌握度与状态映射', () => {
-  test('allConceptsMastered：空课程不算掌握，任一未达标即未全掌握', () => {
-    expect(allConceptsMastered([])).toBe(false);
-    expect(allConceptsMastered([{ mastery: null }, { mastery: 1 }])).toBe(false);
-    expect(allConceptsMastered([{ mastery: 0.8 }, { mastery: 1 }])).toBe(true);
-    expect(allConceptsMastered([{ mastery: 0.79 }])).toBe(false);
-  });
-
+describe('状态映射', () => {
   test('状态调色板覆盖全部状态键', () => {
     for (const status of ['pending', 'ready', 'failed'] as const) {
       expect(typeof sectionStatusTagColors[status]).toBe('string');
@@ -110,23 +101,6 @@ describe('掌握度与状态映射', () => {
     for (const status of ['not_started', 'in_progress', 'completed', 'skipped'] as const) {
       expect(typeof lessonStatusTagColors[status]).toBe('string');
     }
-  });
-});
-
-describe('prereqLockedIds', () => {
-  test('未完成前置锁定后继；完成/跳过前置放行', () => {
-    const nodes = [
-      { lesson_id: 'a', status: 'completed' as const },
-      { lesson_id: 'b', status: 'in_progress' as const },
-      { lesson_id: 'c', status: 'skipped' as const },
-    ];
-    const edges = [
-      { from: 'a', to: 'b' },
-      { from: 'b', to: 'c' },
-    ];
-    const locked = prereqLockedIds(nodes, edges);
-    expect(locked.has('b')).toBe(false); // a 已完成
-    expect(locked.has('c')).toBe(true); // b 未完成
   });
 });
 
