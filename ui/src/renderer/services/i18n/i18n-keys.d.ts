@@ -2602,7 +2602,6 @@ export type I18nKey =
   | 'guid.switchedToAgent'
   | 'guid.taskIntents.automate'
   | 'guid.taskIntents.fixCode'
-  | 'guid.taskIntents.hint'
   | 'guid.taskIntents.research'
   | 'guid.taskIntents.summarize'
   | 'guid.taskReceipt.artifact'

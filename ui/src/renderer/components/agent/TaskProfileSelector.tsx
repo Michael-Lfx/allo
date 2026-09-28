@@ -4,12 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Button, Dropdown, Menu } from '@arco-design/web-react';
-import { Down } from '@icon-park/react';
 import classNames from 'classnames';
+import { Briefcase, Code } from '@icon-park/react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import dropdownMenuStyles from '@/renderer/styles/configDropdownMenu.module.css';
 import styles from './TaskProfileSelector.module.css';
 
 export type TaskProfile = 'office' | 'coding';
@@ -29,9 +27,23 @@ function normalizeProfile(value: string | undefined): TaskProfile {
   return value === 'coding' ? 'coding' : 'office';
 }
 
+function profileIcon(value: TaskProfile) {
+  switch (value) {
+    case 'office':
+      return <Briefcase theme='outline' size={16} fill='currentColor' />;
+    case 'coding':
+      return <Code theme='outline' size={16} fill='currentColor' />;
+    default: {
+      const _exhaustive: never = value;
+      return _exhaustive;
+    }
+  }
+}
+
 /**
- * Single dropdown pill for choosing Nomi work mode before a conversation starts.
- * Mid-session switching is intentionally unsupported — profile is fixed at create.
+ * Segmented work-mode control for choosing Nomi profile before a conversation
+ * starts. Mid-session switching is intentionally unsupported — profile is
+ * fixed at create.
  */
 const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
   initialProfile = 'office',
@@ -41,7 +53,6 @@ const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
 }) => {
   const { t } = useTranslation();
   const [profile, setProfile] = useState<TaskProfile>(() => normalizeProfile(initialProfile));
-  const [dropdownVisible, setDropdownVisible] = useState(false);
 
   const label = t('conversation.taskProfile.label', { defaultValue: '工作模式' });
   const officeLabel = t('conversation.taskProfile.office', { defaultValue: '日常办公' });
@@ -55,9 +66,7 @@ const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
   }, [initialProfile]);
 
   const handleSelect = useCallback(
-    (key: string) => {
-      setDropdownVisible(false);
-      const next = normalizeProfile(key);
+    (next: TaskProfile) => {
       if (disabled || next === profile) return;
       setProfile(next);
       onProfileSelect?.(next);
@@ -65,46 +74,35 @@ const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
     [disabled, onProfileSelect, profile]
   );
 
-  const menu = (
-    <Menu
-      className={dropdownMenuStyles.configDropdownMenu}
-      data-testid='task-profile-dropdown-menu'
-      onClickMenuItem={handleSelect}
-    >
-      <Menu.ItemGroup title={label}>
-        {PROFILES.map((value) => (
-          <Menu.Item key={value} data-testid={`task-profile-option-${value}`}>
-            <span className={profile === value ? styles.menuItemActive : undefined}>
-              {profileLabel(value)}
-            </span>
-          </Menu.Item>
-        ))}
-      </Menu.ItemGroup>
-    </Menu>
-  );
-
   return (
-    <Dropdown
-      droplist={menu}
-      trigger='click'
-      position='bl'
-      disabled={disabled}
-      popupVisible={dropdownVisible}
-      onVisibleChange={setDropdownVisible}
+    <div
+      className={classNames(styles.track, className)}
+      role='radiogroup'
+      aria-label={label}
+      data-testid='task-profile-selector'
     >
-      <Button
-        type='secondary'
-        shape='round'
-        data-button-shape='pill'
-        className={classNames(styles.trigger, className)}
-        disabled={disabled}
-        data-testid='task-profile-selector'
-        aria-label={label}
-      >
-        <span className={styles.triggerLabel}>{profileLabel(profile)}</span>
-        <Down theme='outline' size={12} fill='currentColor' />
-      </Button>
-    </Dropdown>
+      {PROFILES.map((value) => {
+        const active = value === profile;
+        return (
+          <button
+            key={value}
+            type='button'
+            role='radio'
+            aria-checked={active}
+            data-button-shape='pill'
+            data-testid={`task-profile-option-${value}`}
+            className={classNames(styles.option, active && styles.optionActive)}
+            disabled={disabled}
+            onClick={() => handleSelect(value)}
+          >
+            <span className={styles.optionIcon} aria-hidden='true'>
+              {profileIcon(value)}
+            </span>
+            <span className={styles.optionLabel}>{profileLabel(value)}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 };
 

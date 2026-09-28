@@ -121,7 +121,6 @@
     "deliver": "Deliver result"
   },
   "taskIntents": {
-    "hint": "Start with a real task",
     "fixCode": "Analyze failing tests in this project, fix them, and tell me the root cause",
     "summarize": "Read the workspace and summarize architecture and risks",
     "automate": "Turn my repetitive manual steps into an automatable workflow",

@@ -40,6 +40,12 @@
   overflow: hidden;
 }
 
+.guidTaskProfile {
+  display: flex;
+  justify-content: center;
+  margin: 4px 0 36px;
+}
+
 .heroHeaderControls {
   width: 100%;
   max-width: 760px;
@@ -433,67 +439,6 @@
   box-sizing: border-box;
 }
 
-.guidResourceCards {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0 0 12px;
-}
-
-.guidResourceHint {
-  margin: 0;
-  text-align: center;
-  font-size: 13px;
-  color: var(--flowy-text-muted);
-}
-
-.guidResourceIntentRow {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.guidResourceIntentChip {
-  max-width: 100%;
-  min-height: 48px;
-  padding: 9px 12px;
-  border: 1px solid var(--flowy-border-subtle);
-  border-radius: var(--flowy-radius-lg);
-  background: color-mix(in srgb, var(--flowy-interactive) 72%, transparent);
-  color: var(--flowy-text-secondary);
-  font-size: 13px;
-  line-height: 1.35;
-  text-align: left;
-  cursor: pointer;
-  font-family: inherit;
-  transition:
-    transform var(--flowy-motion-fast) var(--flowy-ease-move),
-    opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
-}
-
-.guidResourceIntentChip:hover,
-.guidResourceIntentChip:focus-visible {
-  color: var(--color-text-1);
-  border-color: color-mix(in srgb, rgb(var(--primary-6)) 35%, transparent);
-  background: color-mix(in srgb, rgb(var(--primary-6)) 8%, transparent);
-  outline: 2px solid transparent;
-}
-
-.guidResourceIntentChip:focus-visible {
-  outline-color: var(--flowy-focus);
-  outline-offset: 2px;
-}
-
-.guidResourceIntentChip:active {
-  transform: scale(0.985);
-}
-
-.guidResourceIntentChipActive {
-  color: var(--color-text-1);
-  border-color: color-mix(in srgb, rgb(var(--primary-6)) 45%, transparent);
-  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, transparent);
-}
-
 .guidReadinessBlock {
   display: flex;
   flex-direction: column;
@@ -627,99 +572,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.guidResourceCard {
-  min-width: 0;
-  height: 144px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--color-border-2);
-  border-radius: 8px;
-  color: var(--color-text-1);
-  background: color-mix(in srgb, var(--bg-2) 76%, transparent);
-  box-sizing: border-box;
-  text-align: left;
-  font-family: inherit;
-  outline: none;
-  transition:
-    background-color 0.16s ease,
-    border-color 0.16s ease,
-    box-shadow 0.16s ease,
-    transform 0.16s ease;
-}
-
-button.guidResourceCard {
-  cursor: pointer;
-}
-
-button.guidResourceCard:hover,
-button.guidResourceCard:focus-visible {
-  border-color: rgba(var(--primary-6), 0.32);
-  background: color-mix(in srgb, var(--bg-2) 90%, transparent);
-  box-shadow: 0 10px 26px rgba(var(--primary-6), 0.08);
-  transform: translateY(-1px);
-}
-
-.guidResourceCardHeader {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.guidResourceIcon {
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  color: rgb(var(--primary-6));
-  background: rgba(var(--primary-6), 0.08);
-}
-
-.guidResourceTitle {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--color-text-1);
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.guidResourceDescription {
-  color: var(--color-text-3);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 18px;
-}
-
-.guidResourceAction {
-  margin-top: auto;
-  color: rgb(var(--primary-6));
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 18px;
-}
-
-@media (max-width: 768px) {
-  .guidResourceCards {
-    grid-template-columns: 1fr;
-    gap: 10px;
-    margin-top: 16px;
-  }
-
-  .guidResourceCard {
-    height: auto;
-    min-height: 112px;
-  }
-
 }
 
 .entryStrip {
@@ -2540,17 +2392,11 @@ button.guidResourceCard:focus-visible {
   justify-content: flex-end;
 }
 
-/* 底部快捷按钮：基础间距 + 安全区 */
-.guidQuickActions {
-  bottom: calc(32px + env(safe-area-inset-bottom, 0px));
-}
-
-/* 矮视口（含 1280×720）：取消负 margin，给浮动快捷按钮留底边距，避免重叠 */
+/* 矮视口（含 1280×720）：取消负 margin，避免内容被裁切 */
 @media (max-height: 760px) {
   .guidPrimaryStage {
     justify-content: flex-start;
     padding-top: 24px;
-    padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
   }
 
   .guidPrimaryStage .guidLayout {
@@ -2573,10 +2419,6 @@ button.guidResourceCard:focus-visible {
     display: none;
   }
 
-  .guidResourceIntentRow {
-    grid-template-columns: 1fr;
-  }
-
   .guidDiscoveryArea {
     width: clamp(var(--app-min-width, 360px), calc(100% - 20px), 100%);
     padding: 16px 20px calc(108px + env(safe-area-inset-bottom, 0px));
@@ -2585,17 +2427,13 @@ button.guidResourceCard:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .guidInputCardWrap,
-  .guidResourceIntentChip,
   .entryStrip {
     transition: none;
   }
 
   .guidInputCardWrap:hover,
   .guidInputCardWrap:focus-within,
-  .guidInputCardWrapActive,
-  .guidResourceIntentChip:hover,
-  .guidResourceIntentChip:focus-visible,
-  .guidResourceIntentChip:active {
+  .guidInputCardWrapActive {
     transform: none;
   }
 }
