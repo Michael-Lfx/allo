@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use nomi_agent_trace::{
-    capture_borrowed, omitted_binary_payload, redact_preview, ExecutionStatus, ObservationEvent,
+    capture_borrowed, omitted_binary_payload, redact_preview, request_prefix_fingerprint,
+    ExecutionStatus, ObservationEvent,
     ObservationIds, ObservationRecorder, ObservationScope, RecorderError, EVENT_LLM_REQUEST,
     EVENT_LLM_RESPONSE, EVENT_OBSERVATION_GAP, EVENT_TOOL_EXECUTION_CANCELLED,
     EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
@@ -261,6 +262,11 @@ pub async fn stream_llm(
         "fidelity": "canonical",
         "capture": ["truncated", "redacted"],
         "request": llm_request_to_value(request),
+        "prefix_fingerprint": request_prefix_fingerprint(
+            &request.system,
+            &request.tools.iter().map(ToolFingerprint::from).collect::<Vec<_>>(),
+            &request.messages,
+        ),
     });
     observe_with_model_call(
         &session,
@@ -588,6 +594,25 @@ pub(crate) fn llm_request_to_value(request: &LlmRequest) -> Value {
         "reasoning_effort": request.reasoning_effort,
         "temperature": request.temperature,
     })
+}
+
+#[derive(serde::Serialize)]
+struct ToolFingerprint<'a> {
+    name: &'a str,
+    description: &'a str,
+    input_schema: &'a Value,
+    deferred: bool,
+}
+
+impl<'a> From<&'a ToolDef> for ToolFingerprint<'a> {
+    fn from(tool: &'a ToolDef) -> Self {
+        Self {
+            name: &tool.name,
+            description: &tool.description,
+            input_schema: &tool.input_schema,
+            deferred: tool.deferred,
+        }
+    }
 }
 
 fn observation_tool(tool: &ToolDef) -> Value {
@@ -932,6 +957,59 @@ mod tests {
             .unwrap();
         assert_eq!(request_event.payload["request"]["model"], "test-model");
         assert_eq!(request_event.payload["call_kind"], "agent_turn");
+    }
+
+    #[tokio::test]
+    async fn prefix_fingerprint_survives_when_request_body_exceeds_size_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = ObservationSession::new(recorder.clone());
+        session.bind_ids(ObservationIds {
+            conversation_id: Some("c-fp".into()),
+            root_turn_id: Some("t-fp".into()),
+            ..ObservationIds::default()
+        });
+        let messages: Vec<Message> = (0..100)
+            .map(|i| {
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::Text {
+                        text: format!("{i}:{}", "x".repeat(MAX_PREVIEW_CHARS)),
+                    }],
+                )
+            })
+            .collect();
+        let request = sample_request("sys", messages, Vec::new());
+
+        let mut rx = stream_llm(
+            &ScriptedProvider,
+            &request,
+            Some(Arc::clone(&session)),
+            "agent_turn",
+            ObservationScope::SessionWorkflow,
+        )
+        .await
+        .unwrap();
+        while rx.recv().await.is_some() {}
+
+        let events = recorder.read_events(Some("c-fp")).unwrap();
+        let payload = &events
+            .iter()
+            .find(|event| event.event_type == EVENT_LLM_REQUEST)
+            .expect("llm/request")
+            .payload;
+        assert!(
+            !payload["request"]["messages"].is_array(),
+            "fixture must exceed the event size budget"
+        );
+        let expected = request_prefix_fingerprint(
+            &request.system,
+            &Vec::<ToolFingerprint>::new(),
+            &request.messages,
+        );
+        assert_eq!(payload["prefix_fingerprint"], expected);
+        assert_eq!(payload["prefix_fingerprint"]["messages"].as_array().unwrap().len(), 100);
     }
 
     struct LongTextProvider;
