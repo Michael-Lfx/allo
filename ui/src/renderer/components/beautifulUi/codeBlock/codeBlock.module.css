@@ -102,11 +102,11 @@
   margin: 0;
   overflow: visible;
   padding: 10px 12px;
-  background: var(--color-fill-1, #f7f8fa);
+  background: var(--code-bg, #f6f8fa);
   color: var(--color-text-2, #4e5969);
   font-family: var(--code-font);
   font-size: 12.5px;
-  line-height: 1.7;
+  line-height: 21px;
 }
 
 .body code {
@@ -174,7 +174,6 @@
 
 .body :global(.hljs-comment) {
   color: var(--code-token-comment);
-  font-style: italic;
 }
 
 .body :global(.hljs-quote),
@@ -211,6 +210,33 @@
   color: var(--color-danger-6, #f53f3f);
 }
 
+.shikiRoot {
+  margin: 0;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+  overflow: visible;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+}
+
+.body :global(.shiki) span,
+.shikiRoot span {
+  color: var(--shiki-light);
+  background-color: transparent;
+  font-style: normal;
+}
+
+:global([data-theme='dark']) .body :global(.shiki) span,
+:global([data-theme='dark']) .shikiRoot span,
+:global(:host([data-theme='dark'])) .body :global(.shiki) span,
+:global(:host([data-theme='dark'])) .shikiRoot span {
+  color: var(--shiki-dark);
+}
+
 pre.body {
   overflow-x: clip;
   overflow-y: clip;
@@ -223,9 +249,9 @@ pre.body {
 .lineNo {
   flex-shrink: 0;
   width: 20px;
-  color: color-mix(in srgb, var(--color-text-3, #86909c) 60%, transparent);
+  color: color-mix(in srgb, var(--color-text-3, #86909c) 75%, transparent);
   font-size: 10.5px;
-  line-height: 1.86;
+  line-height: 21px;
   text-align: right;
   user-select: none;
 }

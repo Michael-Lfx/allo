@@ -3,62 +3,22 @@ import katex from 'katex';
 import React, { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import BeautifulUiCodeBlock from '@renderer/components/beautifulUi/codeBlock/CodeBlock';
-import { beautifulUiHighlightStyle } from '@renderer/components/beautifulUi/codeBlock/codeBlockHighlight';
 import { filenameFromFenceNode } from '@renderer/components/beautifulUi/codeBlock/codeBlockLanguage';
-import { formatCode, getDiffLineStyle } from './markdownUtils';
-import SyntaxHighlightBoundary from './SyntaxHighlightBoundary';
-import SyntaxHighlighter from './SyntaxHighlighter';
+import { CODE_LINE_HEIGHT_PX } from './codeFenceLayout';
+import { formatCode } from './markdownUtils';
+import ShikiCodeFence from './ShikiCodeFence';
 import { resolveSyntaxLanguage } from './syntaxLanguage';
 
 const PREVIEW_LINES = 3;
-const CODE_LINE_HEIGHT = 21;
+const CODE_LINE_HEIGHT = CODE_LINE_HEIGHT_PX;
 const CODE_PADDING_VERTICAL = 20;
 const COLLAPSED_HEIGHT = PREVIEW_LINES * CODE_LINE_HEIGHT + CODE_PADDING_VERTICAL;
 const EMPTY_DIFF_LINES: string[] = [];
-
-const MemoSyntaxHighlighter = React.memo(SyntaxHighlighter);
-
-const highlighterCustomStyle: React.CSSProperties = {
-  margin: 0,
-  padding: 0,
-  borderRadius: 0,
-  border: 'none',
-  background: 'transparent',
-  color: 'var(--color-text-2, #4e5969)',
-  overflow: 'visible',
-  maxWidth: '100%',
-  minWidth: 0,
-  width: '100%',
-  fontFamily: 'var(--code-font)',
-  fontSize: '12.5px',
-  lineHeight: 1.7,
-  whiteSpace: 'pre-wrap',
-};
-
-const highlighterCodeStyle: React.CSSProperties = {
-  color: 'inherit',
-  background: 'transparent',
-  display: 'block',
-  maxWidth: '100%',
-  minWidth: 0,
-  overflow: 'visible',
-  overflowWrap: 'anywhere',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
-  fontFamily: 'var(--code-font)',
-  fontSize: '12.5px',
-  lineHeight: 1.7,
-};
-
-const highlighterLineNumberStyle: React.CSSProperties = {
-  minWidth: '20px',
-  paddingRight: '10px',
-  marginRight: 0,
-  color: 'color-mix(in srgb, var(--color-text-3, #86909c) 60%, transparent)',
-  fontSize: '10.5px',
-  lineHeight: 1.86,
-  textAlign: 'right',
-  userSelect: 'none',
+const INLINE_CODE_STYLE: React.CSSProperties = {
+  fontFamily: 'var(--code-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)',
+  background: 'var(--code-bg)',
+  padding: '2px 6px',
+  borderRadius: 4,
 };
 
 const MermaidBlock = React.lazy(() => import('./MermaidBlock'));
@@ -80,6 +40,7 @@ type CodeFenceHighlightProps = {
   language: string;
   isDiff: boolean;
   isDark: boolean;
+  isStreaming: boolean;
   diffLines: string[];
 };
 
@@ -89,42 +50,19 @@ const CodeFenceHighlight = React.memo(function CodeFenceHighlight({
   language,
   isDiff,
   isDark,
+  isStreaming,
   diffLines,
 }: CodeFenceHighlightProps) {
-  const lineProps = useCallback(
-    (lineNumber: number) => ({
-      style: {
-        display: 'block' as const,
-        minWidth: 0,
-        ...(isDiff ? getDiffLineStyle(diffLines[lineNumber - 1] || '', isDark) : {}),
-      },
-    }),
-    [diffLines, isDark, isDiff]
-  );
-  const codeTagProps = useMemo(() => ({ style: { ...highlighterCodeStyle } }), []);
-  const fallback = (
-    <div style={highlighterCustomStyle} data-syntax-highlight-fallback>
-      <code style={highlighterCodeStyle}>{content}</code>
-    </div>
-  );
-
   return (
-    <SyntaxHighlightBoundary fallback={fallback} resetKey={`${language}\u0000${content}`}>
-      <MemoSyntaxHighlighter
-        children={content}
-        language={language}
-        style={beautifulUiHighlightStyle}
-        useInlineStyles={false}
-        showLineNumbers
-        PreTag='div'
-        wrapLongLines
-        wrapLines
-        lineNumberStyle={highlighterLineNumberStyle}
-        lineProps={lineProps}
-        customStyle={highlighterCustomStyle}
-        codeTagProps={codeTagProps}
-      />
-    </SyntaxHighlightBoundary>
+    <ShikiCodeFence
+      content={content}
+      language={language}
+      isStreaming={isStreaming}
+      isDiff={isDiff}
+      isDark={isDark}
+      diffLines={diffLines}
+      showLineNumbers
+    />
   );
 });
 
@@ -236,7 +174,7 @@ function CodeBlock(props: CodeBlockProps) {
   // Inline code (single line)
   if (!String(children).includes('\n')) {
     return (
-      <code {...rest} className={className} style={{ fontWeight: 'bold' }}>
+      <code {...rest} className={className} style={INLINE_CODE_STYLE}>
         {children}
       </code>
     );
@@ -301,6 +239,7 @@ function CodeBlock(props: CodeBlockProps) {
               language={highlightLanguage}
               isDiff={isDiff}
               isDark={isDark}
+              isStreaming={isStreaming}
               diffLines={diffLines}
             />
           </div>

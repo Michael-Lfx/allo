@@ -11,9 +11,8 @@ import { Message } from '@arco-design/web-react';
 import { Copy } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { beautifulUiHighlightStyle } from '@renderer/components/beautifulUi/codeBlock/codeBlockHighlight';
 import { repairFigure } from './figureRepair';
-import SyntaxHighlighter from './SyntaxHighlighter';
+import ShikiCodeFence from './ShikiCodeFence';
 
 type SvgBlockProps = {
   code: string;
@@ -140,23 +139,7 @@ function SvgBlock({ code, style }: SvgBlockProps) {
                 </button>
               </div>
             )}
-            <SyntaxHighlighter
-              children={source}
-              language='xml'
-              style={beautifulUiHighlightStyle}
-              PreTag='div'
-              customStyle={{
-                margin: 0,
-                borderRadius: 0,
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--text-primary)',
-                overflowX: 'auto',
-                maxWidth: '100%',
-                fontFamily: 'var(--code-font)',
-              }}
-              codeTagProps={{ style: { color: 'var(--text-primary)', fontFamily: 'var(--code-font)' } }}
-            />
+            <ShikiCodeFence content={source} language='xml' showLineNumbers={false} />
           </div>
         )}
       </div>

@@ -42,6 +42,16 @@ const createInitStyle = (
     color: inherit;
   }
 
+  .markdown-code-content,
+  .markdown-code-content * {
+    font-size: 12.5px;
+    line-height: 21px;
+  }
+  .markdown-code-content .lineNo {
+    font-size: 10.5px;
+    line-height: 21px;
+  }
+
   .markdown-shadow-body {
     word-break: break-word;
     overflow-wrap: anywhere;
@@ -115,6 +125,11 @@ const createInitStyle = (
     font-size:13px;
     line-height:20px;
   }
+  .markdown-code-content code span,
+  .markdown-code-content span {
+    font-size: inherit;
+    line-height: inherit;
+  }
 
   .markdown-shadow-body>p:last-child{
     margin-bottom:0px;
@@ -153,13 +168,13 @@ const createInitStyle = (
     color: var(--text-primary);
   }
   .markdown-shadow-body code:not(pre code) {
-    background: none;
+    background: var(--code-bg, #f6f8fa);
     color: inherit;
-    padding: 0;
+    padding: 2px 6px;
     border: 0;
-    border-radius: 0;
+    border-radius: 4px;
     font-size: 0.94em;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--code-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   }
   blockquote {
     border-left: 3px solid var(--bg-3);
@@ -828,6 +843,7 @@ const ShadowView = ({
     (shadowRoot: ShadowRoot) => {
       const computedStyle = getComputedStyle(document.documentElement);
       const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+      shadowRoot.host.setAttribute('data-theme', currentTheme);
       const cssVars = {
         '--bg-1': computedStyle.getPropertyValue('--bg-1'),
         '--bg-2': computedStyle.getPropertyValue('--bg-2'),
@@ -855,6 +871,7 @@ const ShadowView = ({
         '--code-token-tag': computedStyle.getPropertyValue('--code-token-tag'),
         '--code-token-variable': computedStyle.getPropertyValue('--code-token-variable'),
         '--code-token-punctuation': computedStyle.getPropertyValue('--code-token-punctuation'),
+        '--code-bg': computedStyle.getPropertyValue('--code-bg'),
       };
 
       // Remove old style and add new style

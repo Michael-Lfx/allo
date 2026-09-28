@@ -18,6 +18,7 @@
   --code-token-tag: #116329;
   --code-token-variable: #953800;
   --code-token-punctuation: #57606a;
+  --code-bg: #f6f8fa;
   --flowy-text-display: 28px;
   --flowy-text-title: 20px;
   --flowy-text-heading: 16px;
@@ -159,6 +160,7 @@ body[arco-theme='dark'] {
   --code-token-tag: #7ee787;
   --code-token-variable: #ffa657;
   --code-token-punctuation: #8b949e;
+  --code-bg: #0d1117;
 }
 
 .flowy-type-display {

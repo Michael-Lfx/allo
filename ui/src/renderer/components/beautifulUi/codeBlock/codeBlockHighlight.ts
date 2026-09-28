@@ -52,7 +52,7 @@ export const beautifulUiHighlightStyle: { [key: string]: CSSProperties } = {
   'hljs-variable': { color: variable },
   'hljs-variable.language_': { color: keyword },
   'hljs-params': { color: text },
-  'hljs-comment': { color: comment, fontStyle: 'italic' },
+  'hljs-comment': { color: comment },
   'hljs-doctag': { color: keyword },
   'hljs-quote': { color: tag },
   'hljs-tag': { color: punctuation },

@@ -38,11 +38,12 @@ describe('Markdown typography controls', () => {
     expect(shadowSource.includes('.markdown-code-content::-webkit-scrollbar')).toBe(true);
   });
 
-  test('keeps inline code in the sentence instead of painting a gray pill on every path', () => {
+  test('styles inline code as a compact mono chip matching fenced blocks', () => {
     expect(shadowSource.includes('.markdown-shadow-body code:not(pre code)')).toBe(true);
-    expect(shadowSource.includes('background: none')).toBe(true);
-    expect(shadowSource.includes('padding: 0')).toBe(true);
-    expect(shadowSource.includes('border-radius: 0')).toBe(true);
-    expect(shadowSource.includes('padding: 2px 6px')).toBe(false);
+    expect(shadowSource.includes('background: var(--code-bg')).toBe(true);
+    expect(shadowSource.includes('padding: 2px 6px')).toBe(true);
+    expect(shadowSource.includes('border-radius: 4px')).toBe(true);
+    expect(shadowSource.includes("font-family: var(--code-font")).toBe(true);
+    expect(shadowSource.includes('background: none')).toBe(false);
   });
 });

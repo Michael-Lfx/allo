@@ -16,7 +16,17 @@ describe('Markdown syntax language resolution', () => {
     expect(resolveSyntaxLanguage('js')).toBe('javascript');
     expect(resolveSyntaxLanguage('TS')).toBe('typescript');
     expect(resolveSyntaxLanguage('shell-session')).toBe('bash');
-    expect(resolveSyntaxLanguage('html')).toBe('xml');
+    expect(resolveSyntaxLanguage('html')).toBe('html');
+    expect(resolveSyntaxLanguage('tsx')).toBe('tsx');
+    expect(resolveSyntaxLanguage('jsx')).toBe('jsx');
+    expect(resolveSyntaxLanguage('toml')).toBe('toml');
+    expect(resolveSyntaxLanguage('vue')).toBe('vue');
+    expect(resolveSyntaxLanguage('graphql')).toBe('graphql');
+    expect(resolveSyntaxLanguage('gql')).toBe('graphql');
+    expect(resolveSyntaxLanguage('nginx')).toBe('nginx');
+    expect(resolveSyntaxLanguage('proto')).toBe('proto');
+    expect(resolveSyntaxLanguage('http')).toBe('http');
+    expect(resolveSyntaxLanguage('svg')).toBe('xml');
     expect(resolveSyntaxLanguage('yml')).toBe('yaml');
     expect(resolveSyntaxLanguage('docker')).toBe('dockerfile');
     expect(resolveSyntaxLanguage('c++')).toBe('cpp');
@@ -32,6 +42,6 @@ describe('Markdown syntax language resolution', () => {
   test('isolates highlighter failures behind a language resolver and error boundary', () => {
     expect(highlighterSource.includes('languages/hljs')).toBe(true);
     expect(codeBlockSource.includes('resolveSyntaxLanguage(language)')).toBe(true);
-    expect(codeBlockSource.includes('<SyntaxHighlightBoundary')).toBe(true);
+    expect(codeBlockSource.includes('ShikiCodeFence')).toBe(true);
   });
 });
