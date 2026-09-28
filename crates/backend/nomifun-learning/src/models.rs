@@ -71,52 +71,6 @@ pub struct GenerateCourseRequest {
     pub goal: Option<String>,
 }
 
-/// 用户目标的防御性限长（字符数）：整体文本即目标、要完整落库，因此只挡
-/// 滥用式的超长输入，不承担展示截断——课程标题的截断口径见
-/// [`goal_course_title`]。
-pub const COURSE_GOAL_MAX_CHARS: usize = 2000;
-
-/// 建课的来源库选择上限（t4）：按 t2 采样预算倒推——总量预算 40 文件在库间
-/// 等分（每库保底 [`crate::generation::MULTI_KB_PER_BASE_MIN_FILES`]），5 库
-/// 时每库 8 文件仍有完整的结构预算；再多的库只会把每库采样压到无意义的
-/// 零头。超限 400（在请求面拒绝，不进生成）。
-///
-/// 三处同值的两个镜像（跨层无法共享一个常量，改动时三处同步）：
-/// agent 引擎 `crates/agent/nomi-agent/src/learning_tools.rs::MAX_COURSE_BASES`
-/// （工具层先拒）与前端 `ui/src/renderer/pages/learning/hooks/
-/// useCourseCreation.ts::MAX_COURSE_KNOWLEDGE_BASES`（超限可见报错、不静默
-/// 截断）；这里是权威面。
-pub const COURSE_MAX_KNOWLEDGE_BASES: usize = 5;
-
-/// 课程标题的展示截断口径：目标文本折叠为单行（连续空白压成一个空格）、
-/// 去首尾空白，超过 [`COURSE_GOAL_TITLE_MAX_CHARS`] 字符时截断加省略号。
-/// 目标短时标题即目标全文（裁决：课程名默认即该文本，不引入 LLM 派名）。
-pub const COURSE_GOAL_TITLE_MAX_CHARS: usize = 60;
-
-/// 课程标题推导：目标文本 → 单行标题（折叠空白 + 限长）。空目标返回空串
-/// （调用方必须自行处理缺省回退），纯函数、确定性、可重放。
-pub fn goal_course_title(goal: &str) -> String {
-    let mut title = String::new();
-    let mut pending_space = false;
-    for ch in goal.trim().chars() {
-        if ch.is_whitespace() {
-            pending_space = !title.is_empty();
-            continue;
-        }
-        if pending_space {
-            title.push(' ');
-            pending_space = false;
-        }
-        title.push(ch);
-    }
-    if title.chars().count() > COURSE_GOAL_TITLE_MAX_CHARS {
-        let mut truncated: String = title.chars().take(COURSE_GOAL_TITLE_MAX_CHARS).collect();
-        truncated.push('…');
-        return truncated;
-    }
-    title
-}
-
 /// 课程生成状态（后台指示条/取消入口的数据源，学习图生长与大纲流共用）。
 /// 生成在 HTTP 请求内同步执行（大纲）或后台任务执行（学习图生长），注册表
 /// 让运行对外可发现、可取消。
@@ -125,6 +79,23 @@ pub struct LearningGraphGenerationStatus {
     pub running: bool,
     pub topic: Option<String>,
     pub elapsed_secs: Option<u64>,
+}
+
+/// 终点锚提议请求（建课向导第二步的 AI 提议）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProposeEndpointsRequest {
+    pub description: String,
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// AI 提议的一条终点锚（标题 + 一句程度声明）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProposedEndpointView {
+    pub title: String,
+    pub goal_note: String,
 }
 
 impl GenerateCourseRequest {

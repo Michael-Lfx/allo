@@ -429,6 +429,9 @@ const LearningPage: React.FC = () => {
             graphBasis={creation.graphBasis}
             creationGoal={creation.creationGoal}
             teachingStyle={creation.teachingStyle}
+            graphStep={creation.graphStep}
+            proposingEndpoints={creation.proposingEndpoints}
+            draftEndpoints={creation.draftEndpoints}
             onTeachingStyleChange={creation.setTeachingStyle}
             generation={creation.generation}
             onClose={creation.closeGenerator}
@@ -438,10 +441,10 @@ const LearningPage: React.FC = () => {
             onModelChange={(choice) => void creation.setModelChoice(choice)}
             onTabChange={creation.setCreationTab}
             onDescriptionChange={creation.setCreationDescription}
-            onGraphProficiencyChange={creation.setGraphProficiency}
-            onGraphBasisChange={creation.setGraphBasis}
+            onProposeEndpoints={() => void creation.proposeGraphEndpoints()}
             onConfirmGraphCreation={() => void creation.confirmGraphCreation()}
-            onGoalChange={creation.setCreationGoal}
+            onGraphStepBack={() => creation.setGraphStep('goal')}
+            onDraftEndpointsChange={creation.setDraftEndpoints}
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}

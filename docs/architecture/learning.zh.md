@@ -161,32 +161,15 @@ teaching_style）、`051_learning_section_visual.sql`（节 visual 承诺落库�
 （节降级兜底标记落库，ADR-0008）、
 `066_retire_graph_dag_and_concepts.sql`（**退役**：旧 DAG 图课程数据与
 per-course 概念体系五表全部删除，ADR-0009）、
-`067_concept_web_growth.sql`（概念登记表 / 概念网边
-`learning_lesson_concepts(role,tier)` / 生长批次）、`068` 批行状态机、
-`069` 课程软删墓碑、`070` 课时难度列、
-`071_retire_endpoints_compass_structure_snapshot.sql`（**退役**：终点表 + 标记
-课时行 + `compass_md`/`compass_updated_at` 列删除；新增
-`learning_courses.structure_json` 结构快照列，ADR-0010）、
-`076_learning_course_enabled.sql`（现存且启用口径）、
-`077_concept_alias_records.sql`（别名结构化记录 + 概念网边 ref_name）、
-`078_learning_xp_events.sql`（XP 结算账本 + 复习作答流水补列）、
-`079_learning_structure_mounts.sql`（挂载事实层 + findings 留痕，ADR-0012）、
-`080_learning_structure_repairs.sql`（修补审计表，ADR-0012）。
+`067_concept_web_growth.sql`（概念登记表 / 终点锚 / 概念网边
+`learning_lesson_concepts(role,tier)` / 生长批次 + 罗盘列）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 `/api/learning/courses*`（列表/导入/生成/状态/取消/删除/标签/注册/诊断）、
-`/api/learning/courses/{id}/graph/grow|history|concepts`
-（生长/学习记录/概念表）、
-`/api/learning/courses/{id}/graph/structure`（结构读侧投影：200 恒答、
-`structure: null` = 未生成；软删/不存在 404；含挂载三态投影 `mounts`）与
-`.../graph/structure/regenerate|mount|repair`（重跑生成 / 挂载回合 /
-修补回合，j08/j09；进度走 WS structure_* 事件）、
-`/api/learning/xp/reading` 与 `/api/learning/xp/calendar`（XP 读数与日历，
-j05）、
-`/api/learning/course-jobs*`、`/api/learning/generation-tasks*`（长任务
-状态/取消，j03 注册表：growth/structure/structure_mount/structure_repair/
-outline/lesson）、
-`/api/learning/lessons/{id}`（详情按需加载）、
+`/api/learning/graph/propose-endpoints`（建课向导的终点提议）、
+`/api/learning/courses/{id}/graph/grow|history|concepts|endpoints*`
+（生长/学习记录/概念表/终点锚 CRUD）、
+`/api/learning/course-jobs*`、`/api/learning/lessons/{id}`（详情按需加载）、
 `/api/learning/lessons/{id}/progress|generate|activities*`、`/api/learning/activities/{id}/attempts`、
 `/api/learning/reviews/*`、`/api/learning/checkins/today`（j05 起按 XP 口径
 锁定）、
@@ -195,62 +178,19 @@ outline/lesson）、
 `/api/learning/(custom-)questions*`、`/api/learning/tags`。
 
 生成/生长进度经 WebSocket 推送：`learning.course-generation` /
-`learning.lesson-generation`（学习图帧带 `kind=learning_graph` 与 `event` 细分
-名：growth_* 与 structure_started/completed/failed，j08/j09 起
-structure_mount_* / structure_repair_* 同通道）。
+`learning.lesson-generation`（学习图生长帧带 `kind=learning_graph` 与
+`event` 细分名）。
 
 ## 前端
 
 `ui/src/renderer/pages/learning/`：CourseWorkspace（分节 stepper、按需拉取
-课时详情）、LearningGraphWorkspace（知识结构状态条 + 就绪 x/7 补充节点 +
-四视图：学习 / 学习记录批次时间线 / 概念表 / **结构图**——思维导图、关系
-图谱（dagre 分层、assumes=门方向反转）、学习路线（主干子图 + 传递闭包自动
-补前导）、矩阵；j08/j09 起结构图带挂载三态段（三态计数/stale 显影/已挂清
-单/观察标签）与挂载/修补双入口；投影非权威标注收敛在详情层与页脚）、
-CreateCourseDialog（学习图单步向导：目标 + 可选程度/基础声明）、
-ReviewSession、CourseJobTable、XpPanel（今日 XP 卡 + 进度尺 + 84 格 XP 日
-历，j06 打卡退役接管）、MemoryHealthPanel（复习横幅下的记忆健康折叠条）、
-QuestionManager、LearningModelSelector 等；hooks `useCourseLearning` /
-`useReviewSession` / `useCourseJobs` / `useCourseCreation` /
-`useCheckinStatus`（j05 起 XP 口径）。
-
-## 真机冒烟（无头）
-
-`nomicore learning-smoke`（`nomifun-app/src/commands/learning_smoke.rs`，
-wayfinder 票 s1 + j05/j07/j08/j09 扩档 + q1/q2/q3 quiz 档）：与应用同接线
-（DB pool → LearningService + set_generation_dependencies + 课时/生成通道注入；
-provider 凭据复用 `resolve_provider_config` 现链），缺省从零临时 SQLite（`--db` 可
-指开发库）。九档：
-
-- `structure`：结构生成双产物过 gd.* 契约门 + 门口对账 + 落列，落列后重读
-  重验（失败非零退出）；
-- `grow`：生长批 ×N（批间确定性学习者替身程序化完成节点驱动再生长）；
-  判据 = 首批 assumes 全空（空登记表机械地板）+ 每批就绪即发布 + 铸名不撞；
-- `json`：json_object 能力读数（读数面非门禁，唯一硬判据 = 全灭 0/n；
-  探测调用直调内层 completer，不入档案）；
-- `loop`：结构 → 首批 → 教练循环 ×N 端到端合龙，EXIT=0 判据；
-- `content`（j07）：单节点正文生成走真实管线，读数 = 字数/小节数/题目数/
-  首现与用名标注（读数面非门禁）；
-- `xp`（j05）：教新 + 复习两线真实结算 → 读数/日历快照打印（读数面非门禁）；
-- `quiz`（q1/q2/q3 + smoke-hardening t5）：K 节点课程的完整回合——触发门
-  （恰 K 结算到期）/ 弱先序 / 投影不漏判底 / 逐节点结算（4 full + 2 partial
-  = 12）/ 校准读面 / 同日折叠零双付 / 首写为终。**双环境判据**：变式在场
-  与否以 plan 实况为准——零凭据临时库 = bank-only 计划 + 变式诚实跳过；
-  有凭据（显式 `--provider/--model` 或 `--db` 解出）= 变式在场断言（每节
-  点 bank + 恰一变式、`plan_json` 含 `"origin":"variant"`、变式判底随
-  grade 下发、同计划折叠复用不重铸），此时一条变式都没生成 = 硬失败；
-- `mount`（j08）：落位 + hash 锚定 + 条数一致 + **重跑幂等**（第二次必须
-  skipped，否则 EXIT=4）；
-- `repair`（j09）：留痕驱动回合 + **盘面复验**（磁盘重读独立跑全量 gd.*）
-  + **级联标记**（结构已改时挂载必须判 stale，否则 EXIT=3）。种子是**全量
-  合法盘面**（smoke-hardening t1：6 主干 × 42 块、八标量键齐 + 门口 G1 对
-  账）——noop（盘面没动）与 applied（修补 op 应用后仍合法）两条路都可赢；
-  旧的最小种子（2 块零 frontmatter）对两路复验都是结构性不可赢，已换。
-
-运行必挂 `nomifun_ai_agent::ArchivingCompleter`（每次调用的
-prompt/response/耗时落 `<data-dir>/observation/learning-smoke/<run>/`
-JSONL）；生产运行不挂（零开销）。无凭据临时库在任何需 LLM 的档位如实非
-零退出。
+课时详情）、LearningGraphWorkspace（终点锚 chips + 收起罗盘 + 就绪 x/7
+补充节点 + 三视图：学习 / 学习记录批次时间线 / 概念表）、
+CreateCourseDialog（学习图两步向导：目标 → 终点确认）、
+ReviewSession、CourseJobTable、CheckinPanel、MemoryHealthPanel（复习横幅
+下的记忆健康折叠条）、QuestionManager、
+LearningModelSelector 等；hooks `useCourseLearning` / `useReviewSession` /
+`useCourseJobs` / `useCourseCreation` / `useCheckinStatus`。
 
 ## 相关但独立的 harness
 

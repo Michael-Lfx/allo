@@ -643,33 +643,54 @@ impl LearningService {
         if exists.is_none() {
             return Err(AppError::NotFound(format!("course {course_id}")));
         }
-        // 课程内容（课时/模块/概念网边）物理删除——复习保留的只是题目数据，
-        // 不靠课时行续命。孤儿课时曾把新课的入口层向上顶（全局已教账把幽灵
-        // 供给当真），这条语义从根上掐掉污染源。
-        let content_sql = [
-            "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
-                SELECT l.lesson_id FROM learning_lessons l \
-                JOIN learning_modules m ON m.module_id = l.module_id \
-                WHERE m.course_id = ?)",
-            "DELETE FROM learning_activities WHERE lesson_id IN (\
-                SELECT l.lesson_id FROM learning_lessons l \
-                JOIN learning_modules m ON m.module_id = l.module_id \
-                WHERE m.course_id = ?)",
-            "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
-                SELECT a.activity_id FROM learning_activities a \
-                JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
-                JOIN learning_modules m ON m.module_id = l.module_id \
-                WHERE m.course_id = ?)",
-            "DELETE FROM learning_lessons WHERE module_id IN (\
-                SELECT module_id FROM learning_modules WHERE course_id = ?)",
-            "DELETE FROM learning_modules WHERE course_id = ?",
-        ];
-        for sql in content_sql {
-            sqlx::query(sql)
+        let enrollment_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ? AND user_id = ?",
+        )
+        .bind(course_id.as_str())
+        .bind(user_id.as_str())
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if delete_reviews {
+            for enrollment_id in &enrollment_ids {
+                for table in [
+                    "learning_review_items",
+                    "learning_lesson_progress",
+                    "learning_attempts",
+                ] {
+                    sqlx::query(&format!("DELETE FROM {table} WHERE enrollment_id = ?"))
+                        .bind(enrollment_id)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(internal)?;
+                }
+            }
+            sqlx::query("DELETE FROM learning_enrollments WHERE course_id = ? AND user_id = ?")
                 .bind(course_id.as_str())
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;
+            let content_sql = [
+                "DELETE FROM learning_activities WHERE lesson_id IN (\
+                    SELECT l.lesson_id FROM learning_lessons l \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
+                    SELECT a.activity_id FROM learning_activities a \
+                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_lessons WHERE module_id IN (\
+                    SELECT module_id FROM learning_modules WHERE course_id = ?)",
+                "DELETE FROM learning_modules WHERE course_id = ?",
+            ];
+            for sql in content_sql {
+                sqlx::query(sql)
+                    .bind(course_id.as_str())
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(internal)?;
+            }
         }
         sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
             .bind(course_id.as_str())

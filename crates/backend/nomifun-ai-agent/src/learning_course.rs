@@ -65,6 +65,7 @@ impl LearningCourseSink for LiveLearningCourseSink {
             // None（简报即目标）。
             goal: req.goal,
             domain: req.domain,
+            endpoints: Vec::new(),
             provider_id,
             model: req.model,
             mode,

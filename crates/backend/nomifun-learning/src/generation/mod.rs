@@ -318,14 +318,14 @@ pub(crate) use self::blueprint::{
     validate_blueprint,
 };
 pub(crate) use self::completer::{
-    complete, complete_json_coach, repair_figure, ACTIVITIES_MAX_TOKENS, BLUEPRINT_MAX_TOKENS,
-    COACH_MAX_TOKENS, CONCEPT_REVIEW_MAX_TOKENS, STRUCTURE_MAX_TOKENS,
-    OUTLINE_SCOPE_MAX_TOKENS, REFLECTION_GRADING_MAX_TOKENS, SECTION_BODY_MAX_TOKENS,
-    SECTION_OUTLINE_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
+    complete, repair_figure, ACTIVITIES_MAX_TOKENS, BLUEPRINT_MAX_TOKENS, COACH_MAX_TOKENS,
+    COMPASS_MAX_TOKENS, CONCEPT_REVIEW_MAX_TOKENS, LEARNING_GRAPH_SCOPE_MAX_TOKENS,
+    REFLECTION_GRADING_MAX_TOKENS, SECTION_BODY_MAX_TOKENS, SECTION_OUTLINE_MAX_TOKENS,
+    SINGLE_ACTIVITY_MAX_TOKENS,
 };
 pub(crate) use self::lesson::{
-    build_adjacent_context, build_outline_tree, enforce_grounding_budget, generate_lesson,
-    render_grounding_fragments, rewrite_section_body, validate_lesson_document,
+    build_adjacent_context, build_outline_tree, generate_lesson,
+    rewrite_section_body, validate_lesson_document,
 };
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
 // 多知识库采样（t4）：单库逐字旧路径，多库按库分摊 + 路径命名空间。

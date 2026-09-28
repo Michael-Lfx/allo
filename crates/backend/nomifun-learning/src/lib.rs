@@ -42,15 +42,12 @@ pub use learning_graph::structure_gen::StructureInput;
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, CourseDetail,
     CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
-    DueReview, GenerateCourseRequest, GenerateLessonRequest,
-    GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
-    GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
-    LessonView,
-    ModuleView, QuizGradeFeedback, QuizProgressView, QuizRoundNodeReport, QuizRoundQuestionView,
-    QuizRoundReport, QuizRoundView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind,
-    SectionPack,
+    DueReview, EndpointInput, EndpointUpdateInput, GenerateCourseRequest, GenerateLessonRequest,
+    GraphBatchView, GraphConceptRefView, GraphConceptRowView, GraphEndpointView,
+    GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus, LessonView,
+    ModuleView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack,
     SectionView, SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
-    VISUAL_OPTIONS, XpCalendar, XpCalendarDay, XpReading,
+    VISUAL_OPTIONS,
 };
 pub use models::{
     PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_distribution,

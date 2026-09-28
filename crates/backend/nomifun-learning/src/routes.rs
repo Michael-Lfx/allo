@@ -17,13 +17,11 @@ use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest,
-    GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, LearningGraphGenerationStatus, MemoryCalibrationBin, MountRoundSummary,
-    QuizGradeFeedback, QuizProgressView, QuizRoundReport, QuizRoundView,
-    RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
-    UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
-    XpCalendar, XpReading,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
+    EndpointUpdateInput, GenerateCourseRequest, GenerateLessonActivityRequest,
+    GenerateLessonRequest, LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
+    RepairFigureResponse, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
+    UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -34,9 +32,14 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
-        .route("/api/learning/courses/generate/status", get(learning_graph_generation_status))
-        .route("/api/learning/generation-tasks", get(list_generation_tasks))
-        .route("/api/learning/generation-tasks/{key}/cancel", post(cancel_generation_task))
+        .route(
+            "/api/learning/graph/propose-endpoints",
+            post(propose_graph_endpoints),
+        )
+        .route(
+            "/api/learning/courses/generate/status",
+            get(learning_graph_generation_status),
+        )
         .route(
             "/api/learning/courses/generate/cancel",
             post(cancel_learning_graph_generation),
@@ -264,6 +267,20 @@ async fn cancel_learning_graph_generation(
     }))))
 }
 
+/// 为学习目标提议终点锚（建课向导第二步的 AI 提议；失败返回空列表）。
+async fn propose_graph_endpoints(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<crate::models::ProposeEndpointsRequest>,
+) -> Result<Json<ApiResponse<Vec<crate::models::ProposedEndpointView>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .propose_graph_endpoints(&user.id, &request)
+            .await?,
+    )))
+}
+
 /// 手动触发一次生长（就绪 < 目标即补到 7；已在生长中报冲突）。
 async fn grow_learning_graph(
     State(state): State<LearningRouterState>,
@@ -313,114 +330,45 @@ async fn graph_concepts(
     )))
 }
 
-/// 结构重生成请求（可选模型偏好；缺省用实现方的默认 provider）。
-#[derive(Debug, Default, serde::Deserialize)]
-struct RegenerateStructureRequest {
-    #[serde(default)]
-    provider_id: Option<ProviderId>,
-    #[serde(default)]
-    model: Option<String>,
-}
-
-/// 重跑知识结构生成（g2：重生成 = 换参考地图不换课，快照原子覆盖）；
-/// 进度走 WS structure_* 事件。已在生成中报冲突。
-async fn regenerate_graph_structure(
+async fn add_graph_endpoint(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-    request: Option<Json<RegenerateStructureRequest>>,
-) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    Json(request): Json<crate::models::EndpointInput>,
+) -> Result<Json<ApiResponse<crate::models::GraphEndpointView>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
-    if request
-        .as_ref()
-        .and_then(|Json(request)| request.provider_id.as_ref())
-        .is_some() != request
-        .as_ref()
-        .and_then(|Json(request)| request.model.as_deref())
-        .is_some()
-    {
-        return Err(AppError::BadRequest(
-            "provider_id and model must be provided together".into(),
-        ));
-    }
-    let model_override = request
-        .and_then(|Json(request)| request.provider_id.zip(request.model));
-    let kicked = state
-        .service
-        .regenerate_structure(&user.id, &course_id, model_override.as_ref().map(|(provider, model)| (provider, model.as_str())))
-        .await?;
-    Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
+    Ok(Json(ApiResponse::ok(
+        state.service.add_endpoint(&user.id, &course_id, &request).await?,
+    )))
 }
 
-/// 结构挂载回合（j08）：显式命令触发、单课串行、可取消；同步返回回合摘
-/// 要（单 LLM 调用，秒级）。
-async fn mount_structure(
+async fn update_graph_endpoint(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-    request: Option<Json<RegenerateStructureRequest>>,
-) -> Result<Json<ApiResponse<MountRoundSummary>>, AppError> {
+    Path((id, endpoint_id)): Path<(String, String)>,
+    Json(request): Json<EndpointUpdateInput>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
-    if request
-        .as_ref()
-        .and_then(|Json(request)| request.provider_id.as_ref())
-        .is_some() != request
-        .as_ref()
-        .and_then(|Json(request)| request.model.as_deref())
-        .is_some()
-    {
-        return Err(AppError::BadRequest(
-            "provider_id and model must be provided together".into(),
-        ));
-    }
-    let model_override = request
-        .and_then(|Json(request)| request.provider_id.zip(request.model));
-    let summary = state
+    let endpoint_id = parse_id::<nomifun_common::LearningEndpointId>(endpoint_id)?;
+    state
         .service
-        .run_structure_mount(
-            &user.id,
-            &course_id,
-            model_override.as_ref().map(|(provider, model)| (provider, model.as_str())),
-        )
+        .update_endpoint(&user.id, &course_id, &endpoint_id, &request)
         .await?;
-    Ok(Json(ApiResponse::ok(summary)))
+    Ok(Json(ApiResponse::ok(())))
 }
 
-/// 结构修补回合（j09）：显式命令触发、单课串行、可取消；同步返回回合摘
-/// 要（单 LLM 调用，秒级）。触发门槛在服务面（findings ∪ 挂载观察皆空 =
-/// skipped）。
-async fn repair_structure(
+async fn delete_graph_endpoint(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-    request: Option<Json<RegenerateStructureRequest>>,
-) -> Result<Json<ApiResponse<StructureRepairSummary>>, AppError> {
+    Path((id, endpoint_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
-    if request
-        .as_ref()
-        .and_then(|Json(request)| request.provider_id.as_ref())
-        .is_some() != request
-        .as_ref()
-        .and_then(|Json(request)| request.model.as_deref())
-        .is_some()
-    {
-        return Err(AppError::BadRequest(
-            "provider_id and model must be provided together".into(),
-        ));
-    }
-    let model_override = request
-        .and_then(|Json(request)| request.provider_id.zip(request.model));
-    let summary = state
+    let endpoint_id = parse_id::<nomifun_common::LearningEndpointId>(endpoint_id)?;
+    state
         .service
-        .run_structure_repair(
-            &user.id,
-            &course_id,
-            model_override
-                .as_ref()
-                .map(|(provider, model)| (provider, model.as_str())),
-        )
+        .delete_endpoint(&user.id, &course_id, &endpoint_id)
         .await?;
-    Ok(Json(ApiResponse::ok(summary)))
+    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn get_course(

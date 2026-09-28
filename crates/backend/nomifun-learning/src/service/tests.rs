@@ -1907,6 +1907,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let module_id = nomifun_common::LearningModuleId::new();
         let lesson_a = nomifun_common::LearningLessonId::new();
         let lesson_b = nomifun_common::LearningLessonId::new();
+        let endpoint_id = nomifun_common::LearningEndpointId::new();
+        let endpoint_lesson_id = nomifun_common::LearningLessonId::new();
         let concept_id = nomifun_common::LearningConceptId::new();
         let now = now_ms();
         sqlx::query(
@@ -1958,6 +1960,45 @@ teaching_style: crate::models::TeachingStyle::Standard,
         )
         .bind(concept_id.as_str())
         .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        for (lesson, role, tier) in [
+            (lesson_a.as_str(), "teaches", "teach"),
+            (lesson_b.as_str(), "assumes", "know"),
+        ] {
+            sqlx::query(
+                "INSERT INTO learning_lesson_concepts \
+                 (lesson_id, concept_id, role, tier) VALUES (?, ?, ?, ?)",
+            )
+            .bind(lesson)
+            .bind(concept_id.as_str())
+            .bind(role)
+            .bind(tier)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        // 一条终点锚：标记课时行 + 终点行成对落库（零正文，不入可学列表）。
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, '期末终点', '', '', 2, 1, 0)",
+        )
+        .bind(endpoint_lesson_id.as_str())
+        .bind(module_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_course_endpoints \
+             (endpoint_id, course_id, lesson_id, title, goal_note, declared_at) \
+             VALUES (?, ?, ?, '期末终点', '能独立完成综合题', ?)",
+        )
+        .bind(endpoint_id.as_str())
+        .bind(course_id.as_str())
+        .bind(endpoint_lesson_id.as_str())
         .bind(now)
         .execute(pool)
         .await
@@ -3099,6 +3140,7 @@ async fn ready_set_follows_cross_course_tier_coverage() {
     assert_eq!(graph.recommended.len(), 2);
     assert_eq!(graph.ready_target, crate::learning_graph::READY_TARGET);
     assert_eq!(graph.ready_trigger, crate::learning_graph::READY_TRIGGER);
+    assert!(graph.compass.is_none());
 
     // 教学降档到「会用」：假定「能教」的节点不再就绪。
     sqlx::query(
@@ -3115,11 +3157,98 @@ async fn ready_set_follows_cross_course_tier_coverage() {
     let _ = prep_course;
 }
 
+/// 终点锚 CRUD（服务路径）：add_endpoint 成对落终点行 + 零正文标记课时
+/// 行；图视图列出终点；delete_endpoint 一并清理两行；未知终点 404。
+#[tokio::test]
+async fn endpoint_add_and_delete_roundtrip_cleans_marker_lesson() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let owner = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+
+    let view = service
+        .add_endpoint(
+            &owner,
+            &course,
+            &crate::models::EndpointInput {
+                title: "  能独立建模  ".into(),
+                goal_note: "拿到真实数据也能建模".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(view.title, "能独立建模", "endpoint title is trimmed");
+    assert!(!view.completed, "fresh endpoints are never completed");
+    let endpoints: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_course_endpoints WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(database.pool())
+    .await
+    .unwrap();
+    assert_eq!(endpoints, 2, "fixture endpoint + the new one");
+    let marker: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = ?")
+            .bind(view.lesson_id.as_str())
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+    assert_eq!(marker, 1, "the endpoint marker lesson row exists");
+
+    // 图视图列出两条终点。
+    let detail = service
+        .course_detail(&course, Some(&owner))
+        .await
+        .unwrap();
+    let graph = detail.graph.expect("graph view on a graph course");
+    assert_eq!(graph.endpoints.len(), 2);
+    assert!(
+        graph
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.endpoint_id == view.endpoint_id)
+    );
+
+    // 删除终点连带清理标记课时行。
+    let endpoint = nomifun_common::LearningEndpointId::parse(&view.endpoint_id).unwrap();
+    service
+        .delete_endpoint(&owner, &course, &endpoint)
+        .await
+        .unwrap();
+    let endpoints: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_course_endpoints WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(database.pool())
+    .await
+    .unwrap();
+    assert_eq!(endpoints, 1);
+    let marker: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = ?")
+            .bind(view.lesson_id.as_str())
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+    assert_eq!(marker, 0, "the marker lesson row is cleaned up");
+
+    // 未知终点删除 404。
+    let error = service
+        .delete_endpoint(&owner, &course, &nomifun_common::LearningEndpointId::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)));
+}
+
+/// 轮询等待后台生长落库（后台任务与测试共享 current_thread 运行时，
+/// 每次 await 让出即推进一步；超时则失败）。
 async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
     for _ in 0..500 {
-        // 只等 applied 批：pending 行在生长开始即落库，等它会抢在落库前返回。
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_growth_batches              WHERE course_id = ? AND status = 'applied'",
+            "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
         )
         .bind(course_id)
         .fetch_one(service.pool_for_tests())
@@ -3210,21 +3339,21 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
-    // 同批互不依赖：第二节点只假定既往批次已教的「向量基础」（种子节点 A
-    // 已教到能教档，已教账覆盖）——结构门放行；评审 completer 返回同 JSON，
-    // problems 缺省为空即通过。
+    // 批内自足：极限 随批铸名并由首节点教到「知道」，第二节点假定同档
+    // ——结构门放行；评审 completer 返回同 JSON，problems 缺省为空即通过。
     let batch_json = r#"{
         "nodes": [
-            {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
+            {"title": "用定义计算极限", "purpose": "首批基节点", "minutes": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
-            {"title": "用极限法则求切线", "purpose": "衔接节点", "est": 20,
+            {"title": "用极限法则求切线", "purpose": "衔接节点", "minutes": 20,
              "teaches": [{"name": "求导法则", "tier": "apply"}],
-             "assumes": [{"name": "向量基础", "tier": "know"}]}
+             "assumes": [{"name": "极限", "tier": "know"}]}
         ],
         "mints": [
             {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
             {"canonical": "求导法则", "aliases": [], "definition": ""}
         ],
+        "completed_endpoints": [],
         "note": "首批两节点"
     }"#;
     let completer = ScriptedCompleter::new(batch_json, false);

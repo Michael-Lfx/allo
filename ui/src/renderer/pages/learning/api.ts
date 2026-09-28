@@ -8,6 +8,8 @@ import type {
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
   DueReview,
+  EndpointInput,
+  EndpointUpdateInput,
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
@@ -17,6 +19,8 @@ import type {
   MemoryHealthStats,
   GeneratedLessonActivity,
   LearningGraphGenerationStatus,
+  ProposedEndpointView,
+  ProposeEndpointsRequest,
   Lesson,
   LessonStatus,
   QuestionEntry,
@@ -44,10 +48,17 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
-  // 同步创建：课程落库即返回；知识结构生成与首生长在后台执行（进度经
+  // 同步创建：目标解析与终点提议在请求内完成；首生长在后台执行（进度经
   // WS 的 `learning.course-generation` 推送，状态/取消用下方这对端点）。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
+  // 为学习目标提议终点锚（建课向导第二步；提议失败返回空列表，引导手填）
+  proposeGraphEndpoints: (request: ProposeEndpointsRequest) =>
+    httpRequest<ProposedEndpointView[]>(
+      'POST',
+      `${BASE}/graph/propose-endpoints`,
+      request
+    ),
   // 学习图生成/生长状态/取消：后台运行对外可发现、可取消。
   generationStatus: () =>
     httpRequest<LearningGraphGenerationStatus>(

@@ -759,7 +759,7 @@ impl LessonDraft {
 /// rules, inlined with position-aware messages, plus draft-specific
 /// warnings. DANGER findings block the finish gate.
 fn audit_findings(
-    context: &LessonGenerationContext,
+    _context: &LessonGenerationContext,
     document: Option<&str>,
     estimated_minutes: i64,
     activities: &[ActivityPack],

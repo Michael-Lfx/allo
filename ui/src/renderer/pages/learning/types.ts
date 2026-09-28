@@ -68,6 +68,19 @@ export interface LearningGraphGenerationStatus {
   elapsed_secs: number | null;
 }
 
+/** 终点锚提议请求（建课向导第二步的 AI 提议） */
+export interface ProposeEndpointsRequest {
+  description: string;
+  provider_id?: string;
+  model?: string;
+}
+
+/** AI 提议的一条终点锚 */
+export interface ProposedEndpointView {
+  title: string;
+  goal_note: string;
+}
+
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
  * feedback 是单节重写的可选学习建议（ADR-0007），为空即同分布重生成。 */
 export interface GenerateLessonRequest {
@@ -677,12 +690,10 @@ export interface GraphHistoryView {
   batches: GraphBatchView[];
 }
 
-/** 一个生长批次的出生档案：序号/状态/批注/时刻 + 节点行（含学习者进度）。
- * status 批行状态机：pending 生长进行中（或中断）、applied 已落库、failed 失败 */
+/** 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度） */
 export interface GraphBatchView {
   batch_id: string;
   seq: number;
-  status: 'pending' | 'applied' | 'failed';
   note: string;
   created_at: number;
   nodes: GraphNodeHistoryView[];

@@ -12,20 +12,57 @@ pub(crate) const GRAPH_RECOMMEND_LIMIT: usize = 10;
 /// 花名册/已教账为主，切片只服务撞名预防）。
 const REGISTRY_EXCERPT_LIMIT: usize = 200;
 
-/// 生长修复循环的轮数上限（g4：与结构门面同款 ≤3——首轮 + 至多 2 次带条款
-/// 报告的重裁；形状违约/传输错误同样入轮次预算）。该上限只是成本/超时护栏，
-/// 并非"两次即弃"的语义。
-const GROWTH_MAX_ATTEMPTS: usize = 3;
-
 impl LearningService {
 
-    // ── Course creation（建课 = 学习目标 → 知识结构生成 → 首生长）────────
+    // ── Endpoint proposal（建课向导第二步）───────────────────────────────
+
+    /// 为学习目标提议 1-3 条终点锚（scope 分析 + 单次 LLM 提议）。尽力而
+    /// 为：提议失败返回空列表，向导引导用户手填。
+    pub async fn propose_graph_endpoints(
+        &self,
+        _user_id: &UserId,
+        request: &crate::models::ProposeEndpointsRequest,
+    ) -> Result<Vec<crate::models::ProposedEndpointView>, AppError> {
+        let topic = request.description.trim();
+        if topic.is_empty() {
+            return Err(AppError::BadRequest(
+                "learning graph topic must not be empty".into(),
+            ));
+        }
+        if topic.chars().count() > 200 {
+            return Err(AppError::BadRequest("learning graph topic is too long".into()));
+        }
+        let completer = self.course_completer()?;
+        let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+        let scope = crate::learning_graph::analyze_scope(
+            completer.as_ref(),
+            model_override,
+            topic,
+        )
+        .await;
+        let endpoints = crate::learning_graph::propose_endpoints(
+            completer.as_ref(),
+            model_override,
+            topic,
+            scope.as_ref(),
+        )
+        .await;
+        Ok(endpoints
+            .into_iter()
+            .map(|endpoint| crate::models::ProposedEndpointView {
+                title: endpoint.title,
+                goal_note: endpoint.goal_note,
+            })
+            .collect())
+    }
+
+    // ── Course creation（建课 = 目标 + 终点锚 + 首生长）────────────────────
 
     /// 学习图课程创建入口（`GenerateCourseRequest.course_kind = learning_graph`）：
-    /// 描述即学习目标，程度/基础声明可选（g2 输入最小化）。课程落库后
-    /// **知识结构生成在后台启动**（双产物契约门 → structure_json 快照原子
-    /// 落列，WS structure_* 事件驱动），随后**首生长**接续——接口立即返回
-    /// 课程详情，进度走 WS 与 generation_registry（状态/取消端点共用）。
+    /// 描述即学习目标，`endpoints` 为用户在向导里确认/编辑过的终点锚列表
+    /// （为空时由 AI 提议）。课程与终点锚同步落库，罗盘尽力初画，随后
+    /// **首生长在后台启动**——接口立即返回课程详情，生长进度走 WS 与
+    /// generation_registry（状态/取消端点共用）。
     pub(crate) async fn generate_learning_graph_course(
         &self,
         user_id: &UserId,

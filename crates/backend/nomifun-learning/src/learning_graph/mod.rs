@@ -804,20 +804,20 @@ pub(crate) async fn concept_review(
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     batch: &ProposedBatch,
     context: &CoachContext,
-    candidates: &str,
-) -> ReviewOutcome {
+) -> Vec<ReviewProblem> {
+    #[derive(Deserialize)]
+    struct RawVerdict {
+        #[serde(default)]
+        verdict: String,
+        #[serde(default)]
+        problems: Vec<ReviewProblem>,
+    }
     let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
-    let candidates_block = if candidates.trim().is_empty() {
-        String::new()
-    } else {
-        format!("\n\n【提名候选集（复用裁决的机械面；concept_id 用材料里出现过的真实登记表 id）】\n{candidates}")
-    };
     let user = format!(
-        "{}\n\n【待审批次】\n{batch_json}{candidates_block}",
+        "{}\n\n【待审批次】\n{batch_json}",
         context.render()
     );
-    // JSON 接缝 + thinking ON（g4：全部生成面统一）。
-    let raw = match crate::generation::complete_json_coach(
+    let raw = match crate::generation::complete(
         completer,
         model_override,
         CONCEPT_REVIEW_SYSTEM,
@@ -828,52 +828,17 @@ pub(crate) async fn concept_review(
     .await
     {
         Ok(raw) => raw,
-        Err(_) => return ReviewOutcome::default(),
+        Err(_) => return Vec::new(),
     };
-    // 输出契约（ng.review.*）：verdict 词表 + problems/reuse 形状。评审自身
-    // 不可用（调用失败或违约）→ 保守放行（语义不变：评审不阻断结构合法的
-    // 批次；reuse 随之丢失 = 退化现状）。
-    let Ok(value) = crate::generation::parse_json_object::<serde_json::Value>(&raw) else {
-        return ReviewOutcome::default();
-    };
-    if growth_contract::validate_review(&value)
-        .into_iter()
-        .any(|violation| !violation.warning)
-    {
-        tracing::warn!(
-            raw_head = %raw.chars().take(400).collect::<String>(),
-            "concept review reply violated its contract — degrading to PASS"
-        );
-        return ReviewOutcome::default();
-    }
-    #[derive(Deserialize)]
-    struct Verdict {
-        #[serde(default)]
-        verdict: String,
-        #[serde(default)]
-        problems: Vec<ReviewProblem>,
-        #[serde(default)]
-        reuse: Vec<ReuseRuling>,
-        #[serde(default)]
-        findings: Vec<ReviewFinding>,
-    }
-    match serde_json::from_value::<Verdict>(value) {
-        Ok(verdict) if verdict.verdict == "reject" => ReviewOutcome {
-            problems: verdict.problems.into_iter().take(8).collect(),
-            // reject 也可能附 reuse（模型把近义铸名裁进 reuse、把其余硬伤放进
-            // problems——2026-10-19 真机实录）。裁决由调用方先行消化：能被裁
-            // 决覆盖的问题剔除，剩余才打回；这里丢弃 reuse 会把模型的正确裁
-            // 决白白烧进重裁循环。
-            reuse: verdict.reuse,
-            findings: verdict.findings,
-        },
-        Ok(verdict) => ReviewOutcome {
-            problems: Vec::new(),
-            reuse: verdict.reuse,
-            findings: verdict.findings,
-        },
-        _ => ReviewOutcome::default(),
-    }
+    crate::generation::parse_json_object::<RawVerdict>(&raw)
+        .map(|verdict| {
+            if verdict.verdict == "pass" {
+                Vec::new()
+            } else {
+                verdict.problems.into_iter().take(8).collect()
+            }
+        })
+        .unwrap_or_default()
 }
 
 /// Render the review problems for the redraft prompt.
@@ -1287,11 +1252,11 @@ mod tests {
     }
 
     fn node(title: &str, teaches: Vec<ConceptRefInput>, assumes: Vec<ConceptRefInput>) -> ProposedNode {
-        ProposedNode { title: title.to_owned(), purpose: String::new(), est: Some(20), difficulty: None, teaches, assumes }
+        ProposedNode { title: title.to_owned(), purpose: String::new(), minutes: Some(20), teaches, assumes }
     }
 
     fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
-        ProposedBatch { nodes, mints: Vec::new(), new_aliases: Vec::new(), note: String::new() }
+        ProposedBatch { nodes, mints: Vec::new(), completed_endpoints: Vec::new(), note: String::new() }
     }
 
     #[test]
@@ -1607,10 +1572,10 @@ mod tests {
     /// 被机械归一（可机械判定的不送模型——真机 round 4 死链的引信），
     /// 回包照常装填；语义违规（est 超范围）仍打回，归一不造值。
     #[test]
-    fn parse_coach_reply_normalizes_chinese_tiers_and_string_est() {
+    fn parse_coach_reply_tolerates_string_minutes_and_chinese_tiers() {
         let raw = r#"{
             "nodes": [
-                { "title": "用配方法解方程", "purpose": "p", "est": "15",
+                { "title": "用配方法解方程", "purpose": "p", "minutes": "15",
                   "teaches": [{"name": "配方法", "tier": "会用"}],
                   "assumes": [{"name": "一元二次方程", "tier": "知道"}] }
             ],

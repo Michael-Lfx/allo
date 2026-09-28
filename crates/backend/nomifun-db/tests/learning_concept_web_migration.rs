@@ -306,6 +306,32 @@ async fn migration_067_creates_concept_web_tables() {
     .await;
     assert!(empty.is_err(), "blank canonical must be rejected");
 
+    // 终点锚：course/lesson 引用与完成位。
+    sqlx::query(
+        "INSERT INTO learning_lessons (lesson_id, module_id, title, position, estimated_minutes) \
+         VALUES ('0190f5fe-7c00-7a00-8abc-012345678912', ?, '终点', 99, 1)",
+    )
+    .bind(MODULE_TRAD)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_course_endpoints \
+         (endpoint_id, course_id, lesson_id, title, goal_note, declared_at) \
+         VALUES ('0190f5fe-7c00-7a00-8abc-012345678913', ?, '0190f5fe-7c00-7a00-8abc-012345678912', \
+                 '独立交易', '能独立完成一笔交易', 1000)",
+    )
+    .bind(TRAD_COURSE)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let bad_tier = sqlx::query(
+        "UPDATE learning_course_endpoints SET completed = 2 WHERE endpoint_id = '0190f5fe-7c00-7a00-8abc-012345678913'",
+    )
+    .execute(&pool)
+    .await;
+    assert!(bad_tier.is_err(), "completed must be boolean");
+
     // 概念网：role/tier CHECK 生效。
     let insert_edge = |role: &'static str, tier: &'static str| {
         let pool = pool.clone();
@@ -351,170 +377,13 @@ async fn migration_067_creates_concept_web_tables() {
     .execute(&pool)
     .await;
     assert!(non_array.is_err(), "node_ids_json must be an array");
-}
 
-/// 071（ADR-0010）：终点锚与罗盘整体退役——终点行、标记课时与进度行清空、
-/// 表 DROP、compass 列 DROP；structure_json 快照列落地（NULL = 未生成，
-/// CHECK 只收 JSON 对象）。
-#[tokio::test]
-async fn migration_071_retires_endpoints_compass_and_lands_structure_snapshot() {
-    let pool = setup_legacy_world().await;
-    // 066–070 先导到 067 世界（终点表存在），存量数据就位后再跑 071。
-    for migration in [M066, M067, M068, M069, M070] {
-        sqlx::query(migration).execute(&pool).await.unwrap();
-    }
-
-    // 067 世界的存量终点：一条终点行 + 标记课时 + 其进度行。
-    sqlx::query(
-        "INSERT INTO learning_lessons (lesson_id, module_id, title, position, estimated_minutes) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678912', ?, '终点', 99, 1)",
-    )
-    .bind(MODULE_TRAD)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_course_endpoints \
-         (endpoint_id, course_id, lesson_id, title, goal_note, declared_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678913', ?, '0190f5fe-7c00-7a00-8abc-012345678912', \
-                 '独立交易', '能独立完成一笔交易', 1000)",
-    )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_enrollments (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678917', ?, ?, 1000, 1000)",
-    )
-    .bind(USER_ID)
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_lesson_progress \
-         (enrollment_id, lesson_id, status, started_at, updated_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678917', '0190f5fe-7c00-7a00-8abc-012345678912', \
-                 'in_progress', 1000, 1000)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(M071).execute(&pool).await.unwrap();
-
-    let endpoints_table: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'learning_course_endpoints'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(endpoints_table, 0, "the endpoint table must be dropped");
-
-    let marker_lesson: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = '0190f5fe-7c00-7a00-8abc-012345678912'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(marker_lesson, 0, "the endpoint marker lesson row must go with its table");
-
-    let marker_progress: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_lesson_progress WHERE lesson_id = '0190f5fe-7c00-7a00-8abc-012345678912'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(marker_progress, 0, "marker-lesson progress rows must not outlive the marker");
-
-    let compass_columns: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pragma_table_info('learning_courses') \
-         WHERE name IN ('compass_md', 'compass_updated_at')",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(compass_columns, 0, "compass columns must be dropped");
-
-    let structure_json: Option<String> =
-        sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
+    // 罗盘列存在。
+    let compass: Option<String> =
+        sqlx::query_scalar("SELECT compass_md FROM learning_courses WHERE course_id = ?")
             .bind(TRAD_COURSE)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(structure_json, None, "structure starts ungenerated (Missing)");
-
-    let snapshot = r#"{"goal":"能独立求解","doors":[]}"#;
-    sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
-        .bind(snapshot)
-        .bind(TRAD_COURSE)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let bad_snapshot = sqlx::query("UPDATE learning_courses SET structure_json = 'not json' WHERE course_id = ?")
-        .bind(TRAD_COURSE)
-        .execute(&pool)
-        .await;
-    assert!(bad_snapshot.is_err(), "structure_json must hold a JSON object");
-
-    // 课程本体与学习目标原样保留（终点只是目标语句的派生）。
-    let kept: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE course_id = ?")
-            .bind(TRAD_COURSE)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(kept, 1, "the course row survives the destructive migration");
-}
-
-#[tokio::test]
-async fn migration_068_adds_batch_status_lifecycle() {
-    let pool = setup_legacy_world().await;
-    sqlx::query(M066).execute(&pool).await.unwrap();
-    sqlx::query(M067).execute(&pool).await.unwrap();
-    // 068 之前的批行：无 status 列（067 的默认），068 后应取 'applied'。
-    sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-01234567891b', ?, 1, '[\"x\"]', 1000)",
-    )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(M068).execute(&pool).await.unwrap();
-
-    let applied: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_growth_batches WHERE status = 'applied'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(applied, 1, "pre-existing rows default to applied");
-
-    // pending 行合法（生长开始即落）。
-    sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-012345678918', ?, 3, '[]', 'pending', 1000)",
-    )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // failed 行合法。
-    sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-012345678919', ?, 4, '[]', 'failed', 1000)",
-    )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // 非法：未知状态。
-    let invalid = sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-01234567891a', ?, 5, '[]', 'running', 1000)",
-    )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await;
-    assert!(invalid.is_err(), "unknown status must be rejected");
+    assert_eq!(compass, None, "compass starts empty");
 }
