@@ -365,10 +365,22 @@ export interface EndpointInput {
   goal_note?: string;
 }
 
-/** 终点锚部分编辑输入：undefined = 不改动 */
+/** 终点锚部分编辑输入：undefined = 不改动；completed 用户可置位/重开 */
 export interface EndpointUpdateInput {
   title?: string;
   goal_note?: string;
+  completed?: boolean;
+}
+
+/** R 软闸的一条建议：结构就绪但供给节点已遗忘——建议先复习供给节点 */
+export interface GraphBlockedView {
+  lesson_id: string;
+  title: string;
+  supplier_lesson_id: string;
+  supplier_title: string;
+  /** 供给节点代表预测回忆率（该节点全部复习卡的最小值） */
+  r: number;
+  due_count: number;
 }
 
 /** 图视图（挂在 CourseDetail.graph 下）：终点锚 + 罗盘 + 就绪集与水位。
@@ -380,8 +392,10 @@ export interface LearningGraphView {
   compass: string | null;
   compass_updated_at: number | null;
   endpoints: GraphEndpointView[];
-  /** 下一步推荐学习的节点（就绪集 ≤10） */
+  /** 下一步推荐学习的节点（就绪集 ≤10；被 R 软闸挡住的进 blocked） */
   recommended: string[];
+  /** R 软闸建议（≤3 条，按供给节点回忆率升序） */
+  blocked: GraphBlockedView[];
   /** 当前就绪存量与水位契约（补货目标 7 / 自动触发线 3） */
   ready_count: number;
   ready_target: number;
@@ -395,10 +409,12 @@ export interface GraphHistoryView {
   batches: GraphBatchView[];
 }
 
-/** 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度） */
+/** 一个生长批次的出生档案：序号/状态/批注/时刻 + 节点行（含学习者进度）。
+ * status 批行状态机：pending 生长进行中（或中断）、applied 已落库、failed 失败 */
 export interface GraphBatchView {
   batch_id: string;
   seq: number;
+  status: 'pending' | 'applied' | 'failed';
   note: string;
   created_at: number;
   nodes: GraphNodeHistoryView[];

@@ -2844,8 +2844,9 @@ async fn endpoint_add_and_delete_roundtrip_cleans_marker_lesson() {
 /// 每次 await 让出即推进一步；超时则失败）。
 async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
     for _ in 0..500 {
+        // 只等 applied 批：pending 行在生长开始即落库，等它会抢在落库前返回。
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+            "SELECT COUNT(*) FROM learning_growth_batches              WHERE course_id = ? AND status = 'applied'",
         )
         .bind(course_id)
         .fetch_one(service.pool_for_tests())
@@ -2941,4 +2942,155 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     .await
     .unwrap();
     assert_eq!(generated, 0, "grown nodes start without content");
+}
+
+/// 停摆两臂（ADR-0009 Amendment 1）：全部终点被教练标记完成 → 自动触发
+/// 退出（Ok(false)），手动 force 豁免（Ok(true)）；空图课程同理走臂 1。
+#[tokio::test]
+async fn growth_stall_arms_suppress_auto_but_not_force() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 就绪 2 < 触发线 3：若不停摆，自动触发本应启动。先把终点标完成 → 臂 2。
+    sqlx::query("UPDATE learning_course_endpoints SET completed = 1 WHERE course_id = ?")
+        .bind(course.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let kicked = service
+        .kick_growth(&owner, &course, false, None)
+        .await
+        .unwrap();
+    assert!(!kicked, "all endpoints completed must suppress auto trigger");
+    // 手动 force 豁免停摆（返回 true 即已进入生长管道；无 completer 的失败
+    // 只留日志，不影晌本断言）。
+    let forced = service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    assert!(forced, "manual force must bypass the stall arms");
+
+    // 臂 1：零节点图（无课时无终点）。
+    let (service2, _knowledge2, owner2) = job_test_service().await;
+    let empty_course = nomifun_common::LearningCourseId::new();
+    let module_id = nomifun_common::LearningModuleId::new();
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, created_at, updated_at) \
+         VALUES (?, '空图课', '', 'general', 1, 'learning_graph', '目标', '', ?, ?)",
+    )
+    .bind(empty_course.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(service2.pool_for_tests())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, position) \
+         VALUES (?, ?, '学习图', 0)",
+    )
+    .bind(module_id.as_str())
+    .bind(empty_course.as_str())
+    .execute(service2.pool_for_tests())
+    .await
+    .unwrap();
+    let kicked = service2
+        .kick_growth(&owner2, &empty_course, false, None)
+        .await
+        .unwrap();
+    assert!(!kicked, "empty graph must suppress auto trigger");
+}
+
+/// 空手批（0 节点 + 终点裁决）：pending 行删除不落档案，终点完成位仍生效
+/// ——「裁决终点完成」不需要以落一批节点为代价。
+#[tokio::test]
+async fn growth_idle_batch_applies_verdicts_without_batch_row() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let idle_json = r#"{
+        "nodes": [],
+        "mints": [],
+        "completed_endpoints": [ { "title": "期末终点", "completed": true } ],
+        "note": "无新增，裁决终点完成"
+    }"#;
+    let completer = ScriptedCompleter::new(idle_json, false);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    // 空手批：等终态观察点（裁决生效）出现，再断言不残留批次行。
+    let pool = service.pool_for_tests();
+    let mut completed: i64 = 0;
+    for _ in 0..500 {
+        completed = sqlx::query_scalar(
+            "SELECT completed FROM learning_course_endpoints WHERE course_id = ?",
+        )
+        .bind(course.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if completed == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(completed, 1, "verdict applies even without a batch");
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(course.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    if rows != 0 {
+        let (status, seq, node_ids, note): (String, i64, String, String) = sqlx::query_as(
+            "SELECT status, seq, node_ids_json, note FROM learning_growth_batches WHERE course_id = ?",
+        )
+        .bind(course.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        panic!("debug leftover: status={status} seq={seq} nodes={node_ids} note={note}");
+    }
+    assert_eq!(rows, 0, "idle growth must not leave a batch row behind");
+}
+
+/// 触发接线：完成就绪节点使就绪存量下降 → 自动触发在后台补一批
+/// （pending → applied 全链路）。
+#[tokio::test]
+async fn growth_auto_triggers_on_lesson_completion() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用定义计算极限", "purpose": "后续节点", "minutes": 15,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [ { "canonical": "极限", "aliases": [], "definition": "" } ],
+        "completed_endpoints": [],
+        "note": "完成触发的补货批"
+    }"#;
+    let completer = ScriptedCompleter::new(batch_json, false);
+    *service.course_completer.write().unwrap() = Some(completer);
+    // 完成节点 A（隐式报名）：就绪 2 → 1 < 触发线 3 → 自动生长。
+    let lesson = nomifun_common::LearningLessonId::parse(&lesson_a).unwrap();
+    service
+        .update_lesson_progress(&lesson, &owner, LessonStatus::Completed)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let (status, note): (String, String) = sqlx::query_as(
+        "SELECT status, note FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(course.as_str())
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(status, "applied");
+    assert_eq!(note, "完成触发的补货批");
 }
