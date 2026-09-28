@@ -1169,6 +1169,12 @@
     "generationCanceled": "视频生成已取消",
     "generationTimeout": "视频生成超时",
     "errorTitle": "生成出错",
+    "regenerateFailedPrefix": "重新生成失败",
+    "failure": {
+      "creditsTitle": "积分不足",
+      "creditsHint": "当前积分不足以完成本次生成。点击「购买积分」充值后，请返回首页重新发起生成。",
+      "creditsToast": "积分不足，请充值后再试。"
+    },
     "elapsed": "已用时 {{time}}",
     "status": {
       "queued": "排队中",

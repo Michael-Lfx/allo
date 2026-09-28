@@ -7,6 +7,7 @@
 import React, {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -28,7 +29,10 @@ import {
   FolderOpen,
 } from '@icon-park/react';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
+import { useCredits } from '@renderer/hooks/context/CreditsContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
+import { trackFunnelEvent, trackLowCreditBalance } from '@renderer/utils/analytics/productFunnel';
+import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
 import {
   getGenerationTask,
   createGenerationTask,
@@ -38,7 +42,13 @@ import {
 } from '../videoCanvas/api';
 import { ipcBridge } from '@/common';
 import { rememberVideoGenerationTask } from './routeMemory';
+import { describeClipFailure, formatClipOperationError, type ClipFailureView } from './clipFailure';
 import styles from './ClipResultPage.module.css';
+
+type ClipStatusErrorKey =
+  | 'taskNotFound'
+  | 'generationCanceled'
+  | 'generationTimeout';
 
 const POLL_INTERVAL_MS = 2000;
 const MAX_POLL_ATTEMPTS = 300; // 10 minutes max
@@ -55,12 +65,80 @@ function formatDuration(secs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+function ClipFailurePanel({
+  view,
+  layout,
+  onBack,
+  onRetry,
+  onBilling,
+  backLabel,
+  retryLabel,
+  billingLabel,
+}: {
+  view: ClipFailureView;
+  layout: 'page' | 'panel';
+  onBack?: () => void;
+  onRetry: () => void;
+  onBilling?: () => void;
+  backLabel: string;
+  retryLabel: string;
+  billingLabel: string;
+}) {
+  const billingButton = view.recovery ? (
+    <Button
+      shape='round'
+      type='primary'
+      data-testid='video-failure-open-billing'
+      onClick={onBilling}
+    >
+      {billingLabel}
+    </Button>
+  ) : null;
+
+  if (layout === 'panel') {
+    return (
+      <div className={styles.errorPanel} role='alert'>
+        <div className={styles.errorPanelHeader}>
+          <Error theme='outline' size={18} className={styles.errorBannerIcon} />
+          <h2 className={styles.errorPanelTitle}>{view.title}</h2>
+        </div>
+        <p className={styles.errorPanelMessage}>{view.message}</p>
+        {billingButton ? <div className={styles.errorPanelActions}>{billingButton}</div> : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.errorState} role='alert'>
+      <div className={styles.errorIcon}>
+        <Error theme='outline' size={40} />
+      </div>
+      <h2 className={styles.errorTitle}>{view.title}</h2>
+      <p className={styles.errorMessage}>{view.message}</p>
+      <div className={styles.errorActions}>
+        {onBack ? (
+          <Button shape='round' type='outline' onClick={onBack}>
+            <ArrowLeft theme='outline' size={14} />
+            {backLabel}
+          </Button>
+        ) : null}
+        {billingButton}
+        <Button shape='round' type={view.recovery ? 'outline' : 'primary'} onClick={onRetry}>
+          <Refresh theme='outline' size={14} />
+          {retryLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 const ClipResultPage: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { taskId: urlTaskId } = useParams<{ taskId: string }>();
   const { logout } = useCloudAuth();
+  const { balance } = useCredits();
   const [message, messageHolder] = useArcoMessage();
 
   const taskId = urlTaskId || (location.state as LocationState)?.taskId;
@@ -69,7 +147,10 @@ const ClipResultPage: React.FC = () => {
 
   const [task, setTask] = useState<GenerationTaskView | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [rawError, setRawError] = useState<string | null>(null);
+  const [statusErrorKey, setStatusErrorKey] = useState<ClipStatusErrorKey | null>(
+    null
+  );
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -94,13 +175,14 @@ const ClipResultPage: React.FC = () => {
 
   const fetchTask = useCallback(async () => {
     if (!taskId) {
-      setError(t('videoGeneration.clip.taskNotFound'));
+      setStatusErrorKey('taskNotFound');
+      setRawError(null);
       return true;
     }
     try {
       const result = await getGenerationTask(taskId);
       setTask(result);
-      setError(null);
+      setStatusErrorKey(null);
 
       // Track this clip task in the MRU strip
       const resolvedTitle =
@@ -108,6 +190,7 @@ const ClipResultPage: React.FC = () => {
       rememberVideoGenerationTask(taskId, resolvedTitle);
 
       if (result.status === 'succeeded') {
+        setRawError(null);
         if (result.result_media_id) {
           setVideoUrl(canvasMediaUrl(result.result_media_id));
         }
@@ -115,15 +198,17 @@ const ClipResultPage: React.FC = () => {
       }
 
       if (result.status === 'failed') {
-        setError(result.error || t('videoGeneration.clip.generationFailed'));
+        setRawError(result.error || '');
         return true;
       }
 
       if (result.status === 'canceled') {
-        setError(t('videoGeneration.clip.generationCanceled'));
+        setStatusErrorKey('generationCanceled');
+        setRawError(null);
         return true;
       }
 
+      setRawError(null);
       return false;
     } catch (e: unknown) {
       const err = e as { status?: number; code?: string; message?: string };
@@ -138,10 +223,11 @@ const ClipResultPage: React.FC = () => {
       }
       const errorMessage = (e as globalThis.Error).message ?? String(e);
       console.error('[ClipResultPage] failed to fetch task:', errorMessage);
-      setError(errorMessage);
+      setStatusErrorKey(null);
+      setRawError(errorMessage);
       return true;
     }
-  }, [taskId, logout, navigate, t, title]);
+  }, [taskId, logout, navigate, title]);
 
   // Start timer when task starts running
   useEffect(() => {
@@ -163,7 +249,8 @@ const ClipResultPage: React.FC = () => {
           pollAttemptsRef.current += 1;
           if (pollAttemptsRef.current >= MAX_POLL_ATTEMPTS) {
             if (pollInterval) clearInterval(pollInterval);
-            setError(t('videoGeneration.clip.generationTimeout'));
+            setStatusErrorKey('generationTimeout');
+            setRawError(null);
             return;
           }
           const finished = await fetchTask();
@@ -246,6 +333,57 @@ const ClipResultPage: React.FC = () => {
     navigate('/video-generation?mode=generate');
   }, [navigate]);
 
+  const failureView = useMemo((): ClipFailureView | null => {
+    if (statusErrorKey === 'taskNotFound') {
+      return {
+        credits: false,
+        title: t('videoGeneration.clip.errorTitle'),
+        message: t('videoGeneration.clip.taskNotFound'),
+        recovery: null,
+      };
+    }
+    if (statusErrorKey === 'generationCanceled') {
+      return {
+        credits: false,
+        title: t('videoGeneration.clip.errorTitle'),
+        message: t('videoGeneration.clip.generationCanceled'),
+        recovery: null,
+      };
+    }
+    if (statusErrorKey === 'generationTimeout') {
+      return {
+        credits: false,
+        title: t('videoGeneration.clip.errorTitle'),
+        message: t('videoGeneration.clip.generationTimeout'),
+        recovery: null,
+      };
+    }
+    if (rawError == null) return null;
+    return describeClipFailure(rawError, t);
+  }, [rawError, statusErrorKey, t]);
+
+  const creditsFailKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!failureView?.credits) return;
+    const key = `${taskId ?? 'unknown'}:credits`;
+    if (creditsFailKeyRef.current === key) return;
+    creditsFailKeyRef.current = key;
+    trackLowCreditBalance({ source: 'video_failure_card', balance });
+  }, [balance, failureView?.credits, taskId]);
+
+  const handleOpenBilling = useCallback(() => {
+    if (!failureView?.recovery) return;
+    trackFunnelEvent('prerequisite_resolved', {
+      kind: failureView.recovery.source,
+      source: 'error_recovery',
+      feature: 'video_generation',
+    });
+    void openOfficialWebsiteCredits(undefined, undefined, {
+      source: 'video_failure_card',
+      balance,
+    });
+  }, [balance, failureView]);
+
   const handleRetry = useCallback(async () => {
     if (task?.status === 'succeeded') {
       const promptText = (task.prompt || prompt || '').trim();
@@ -279,18 +417,22 @@ const ClipResultPage: React.FC = () => {
           },
         });
       } catch (err) {
-        message.error(
-          t('videoGeneration.clip.regenerateFailed', {
-            defaultValue: `重新生成失败：${err instanceof globalThis.Error ? err.message : String(err)}`,
-          })
-        );
+        const failure = formatClipOperationError(err, t, {
+          key: 'videoGeneration.clip.regenerateFailedPrefix',
+          defaultValue: '重新生成失败',
+        });
+        message.error(failure.message);
+        if (failure.credits) {
+          trackLowCreditBalance({ source: 'video_launch', balance });
+        }
       } finally {
         setIsRegenerating(false);
       }
       return;
     }
 
-    setError(null);
+    setRawError(null);
+    setStatusErrorKey(null);
     setTask(null);
     setVideoUrl(null);
     setVideoAspect(null);
@@ -299,7 +441,7 @@ const ClipResultPage: React.FC = () => {
     setCurrentTime(0);
     setDuration(0);
     void fetchTask();
-  }, [task, prompt, title, navigate, fetchTask, message, t]);
+  }, [task, prompt, title, navigate, fetchTask, message, t, balance]);
 
   const handleOpenFolder = useCallback(async () => {
     if (!task?.result_media_id) return;
@@ -381,7 +523,6 @@ const ClipResultPage: React.FC = () => {
 
   const isRunning = task?.status === 'queued' || task?.status === 'running';
   const isSucceeded = task?.status === 'succeeded';
-  const isFailed = task?.status === 'failed' || task?.status === 'canceled';
 
   const progressFraction = duration > 0 ? currentTime / duration : 0;
   const bufferedFraction = duration > 0 ? buffered / duration : 0;
@@ -452,34 +593,17 @@ const ClipResultPage: React.FC = () => {
           </div>
         )}
 
-        {error && !task && (
-          <div className={styles.errorState}>
-            <div className={styles.errorIcon}>
-              <Error theme='outline' size={40} />
-            </div>
-            <h2 className={styles.errorTitle}>
-              {t('videoGeneration.clip.errorTitle')}
-            </h2>
-            <p className={styles.errorMessage}>{error}</p>
-            <div className={styles.errorActions}>
-              <Button
-                shape='round'
-                type='outline'
-                onClick={handleBack}
-              >
-                <ArrowLeft theme='outline' size={14} />
-                {t('videoGeneration.clip.back')}
-              </Button>
-              <Button
-                shape='round'
-                type='primary'
-                onClick={() => void handleRetry()}
-              >
-                <Refresh theme='outline' size={14} />
-                {t('videoGeneration.clip.retry')}
-              </Button>
-            </div>
-          </div>
+        {failureView && !task && (
+          <ClipFailurePanel
+            view={failureView}
+            layout='page'
+            onBack={handleBack}
+            onRetry={() => void handleRetry()}
+            onBilling={handleOpenBilling}
+            backLabel={t('videoGeneration.clip.back')}
+            retryLabel={t('videoGeneration.clip.retry')}
+            billingLabel={t('billing.openBilling', { defaultValue: '购买积分' })}
+          />
         )}
 
         {task && (
@@ -625,7 +749,7 @@ const ClipResultPage: React.FC = () => {
                     </button>
                   )}
                 </div>
-              ) : isRunning ? (
+              ) : isRunning && !failureView ? (
                 <div className={styles.videoPlaceholder}>
                   <div className={styles.placeholderSpinner}>
                     <LoadingOne theme='outline' size={32} className={styles.spinning} />
@@ -636,11 +760,16 @@ const ClipResultPage: React.FC = () => {
                     })}
                   </p>
                 </div>
-              ) : isFailed && error ? (
-                <div className={styles.errorBanner}>
-                  <Error theme='outline' size={18} className={styles.errorBannerIcon} />
-                  <span>{error}</span>
-                </div>
+              ) : failureView ? (
+                <ClipFailurePanel
+                  view={failureView}
+                  layout='panel'
+                  onRetry={() => void handleRetry()}
+                  onBilling={handleOpenBilling}
+                  backLabel={t('videoGeneration.clip.back')}
+                  retryLabel={t('videoGeneration.clip.retry')}
+                  billingLabel={t('billing.openBilling', { defaultValue: '购买积分' })}
+                />
               ) : null}
             </div>
 

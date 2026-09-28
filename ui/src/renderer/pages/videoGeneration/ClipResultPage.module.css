@@ -191,14 +191,61 @@
   font-size: 13px;
   color: var(--color-text-3);
   margin: 0;
-  max-width: 400px;
+  max-width: 440px;
+  line-height: 1.6;
 }
 
 .errorActions {
   display: flex;
   gap: 10px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  justify-content: center;
   margin-top: 8px;
+}
+
+.errorPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 18px 20px;
+  background: rgba(var(--danger-6), 0.08);
+  border: 1px solid rgba(var(--danger-6), 0.2);
+  border-radius: 12px;
+}
+
+.errorPanelHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgb(var(--danger-6));
+}
+
+.errorPanelTitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-1);
+  margin: 0;
+}
+
+.errorPanelMessage {
+  font-size: 13px;
+  color: var(--color-text-2);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.errorPanelActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.errorBannerIcon {
+  flex-shrink: 0;
 }
 
 /* ==========================================================================
@@ -495,26 +542,6 @@
 }
 
 /* ==========================================================================
-   Error Banner
-   ========================================================================== */
-
-.errorBanner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 18px;
-  background: rgba(var(--danger-6), 0.08);
-  border: 1px solid rgba(var(--danger-6), 0.2);
-  border-radius: 12px;
-  color: rgb(var(--danger-6));
-  font-size: 13px;
-}
-
-.errorBannerIcon {
-  flex-shrink: 0;
-}
-
-/* ==========================================================================
    Sidebar
    ========================================================================== */
 
@@ -658,7 +685,8 @@
     width: 100%;
   }
 
-  .errorActions button {
+  .errorActions button,
+  .errorPanelActions button {
     width: 100%;
     justify-content: center;
   }

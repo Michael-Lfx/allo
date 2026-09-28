@@ -1169,6 +1169,12 @@
     "generationCanceled": "Video generation canceled",
     "generationTimeout": "Video generation timed out",
     "errorTitle": "Generation Error",
+    "regenerateFailedPrefix": "Could not regenerate",
+    "failure": {
+      "creditsTitle": "Insufficient credits",
+      "creditsHint": "Not enough credits to finish this clip. Click Buy credits to top up, then return home and generate again.",
+      "creditsToast": "Insufficient credits. Top up and try again."
+    },
     "elapsed": "Elapsed: {{time}}",
     "status": {
       "queued": "Queued",
