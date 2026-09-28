@@ -48,9 +48,24 @@ pub struct ImportRequest {
     /// Source revision (git commit / HTTP marker) that produced this snapshot;
     /// internal traceability only.
     pub source_revision: Option<String>,
+    /// Version the **marketplace index** advertises for this entry (`36` D2).
+    ///
+    /// Only the marketplace layer can derive it: `store/list` shows the index's
+    /// `version` for skills and connectors, while a bare `SKILL.md` / `mcp.json`
+    /// entry parses to the placeholder `1.0.0` (`ParsedManifest::version`). Left
+    /// out, a content change on such an entry collides with its own immutable
+    /// snapshot instead of becoming a new version. `None` = keep the historical
+    /// behaviour (use the manifest's own version).
+    pub declared_version: Option<String>,
 }
 
 impl ImportRequest {
+    /// Override the version this import is stored under (`36` D2).
+    pub fn with_declared_version(mut self, version: Option<String>) -> Self {
+        self.declared_version = version;
+        self
+    }
+
     /// Manual import (no marketplace provenance).
     pub fn manual(source_path: PathBuf, source_kind: SourceKind) -> Self {
         Self {
@@ -59,6 +74,7 @@ impl ImportRequest {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         }
     }
 
@@ -75,6 +91,7 @@ impl ImportRequest {
             marketplace_id: Some(marketplace_id),
             entry_name: Some(entry_name),
             source_revision: None,
+            declared_version: None,
         }
     }
 
@@ -92,6 +109,7 @@ impl ImportRequest {
             marketplace_id: Some(marketplace_id),
             entry_name: Some(entry_name),
             source_revision: Some(source_revision),
+            declared_version: None,
         }
     }
 }
@@ -226,15 +244,24 @@ impl ImporterService {
             SourceKind::CodeBuddyPlugin => sanitize_slug(parsed.name()),
             _ => format!("market-{}", sanitize_slug(parsed.name())),
         };
+        // The version this snapshot is identified by (`36` D2). The marketplace
+        // layer knows the entry's advertised version; a bare `SKILL.md` /
+        // `mcp.json` entry parses to the `1.0.0` placeholder, which would make
+        // every content change collide with the snapshot already stored under
+        // that identity. Manual imports keep the manifest's own version.
+        let declared_version = request
+            .declared_version
+            .clone()
+            .unwrap_or_else(|| parsed.version().to_owned());
         let meta = crate::models::SnapshotMeta {
             plugin_id: plugin_id.clone(),
             name: parsed.name().to_owned(),
-            declared_version: parsed.version().to_owned(),
+            declared_version: declared_version.clone(),
             resolved_revision: None,
             source_kind: request.source_kind,
             source_uri: source.display().to_string(), // internal only
         };
-        let mut builder = ComponentBuilder::new(parsed.version().to_owned());
+        let mut builder = ComponentBuilder::new(declared_version);
         let mut agents: Vec<(String, AgentDoc)> = Vec::new();
         // `dependencies` are consumed by the component builder, which only
         // *registers* them; keep a copy for the optional decision below.

@@ -287,8 +287,12 @@ const enUS: Resources = {
     storeUninstallDone: "Uninstalled “{{name}}”",
     storeUninstallFailed: "Uninstall did not fully succeed: some components could not be released — see the error at the top of the page.",
     storeUpdate: "Update available",
-    storeUpdateNote:
-      "This version does not support in-place updates: uninstall and install again to get the version the marketplace offers.",
+    storeUpdateNow: "Update now",
+    storeUpdating: "Updating…",
+    storeUpdateDone: "Updated “{{name}}” from {{from}} to {{to}}",
+    storeUpdateFailed: "Update failed: {{reason}}",
+    storeUpdateBlockedVersion:
+      "The marketplace changed this entry's content without raising its version, so the update cannot be published: raise the version on the market side (or use a new entry name) and retry. Reason: {{reason}}",
     storeFromMarket: "Source: {{market}}",
     storeOpenDetail: "View details",
     storeSnapInstalled: "Installed components: {{count}}",

@@ -17,8 +17,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use nomifun_api_types::{
-    AppServerInstallComponent, AppServerInstallOutcome, AppServerInstallRequest,
-    AppServerInstallResult, AppServerInstallState, AppServerInstallStatus,
+    AppServerInstallComponent, AppServerInstallOutcome, AppServerInstallReplaceResult,
+    AppServerInstallRequest, AppServerInstallResult, AppServerInstallState, AppServerInstallStatus,
 };
 use nomifun_app_server::InstallProvider;
 use nomifun_common::AppError;
@@ -75,6 +75,28 @@ pub trait PresetRegistrar: Send + Sync {
     /// `NotFound` answers `false` (the user deleted it by hand; recreate), any
     /// other failure is reported so the caller can surface it.
     async fn preset_exists(&self, preset_id: &str) -> Result<bool, AppError>;
+
+    /// Refresh an existing Preset **in place** (`36` D1).
+    ///
+    /// An upgrade must not mint a second Preset: the id is what conversations,
+    /// ordering state and any external reference point at, so replacing the row
+    /// would silently break them — the user would see "one expert upgraded"
+    /// where the data says "one vanished, another appeared".
+    ///
+    /// Only the fields a snapshot owns are written (name / description /
+    /// instructions / bound agent / model). Everything else on the Preset —
+    /// skills, tags, knowledge, and the enable state, which lives elsewhere —
+    /// stays exactly as the user left it. The caller passes the id it inherited
+    /// from the previous version, never a name lookup.
+    async fn update_agent_store_preset(
+        &self,
+        preset_id: &str,
+        name: &str,
+        description: Option<&str>,
+        instructions: Option<&str>,
+        agent_id: Option<&str>,
+        model: Option<nomifun_api_types::ModelPreference>,
+    ) -> Result<(), AppError>;
 
     /// Delete a Preset this installer created (uninstall).
     ///
@@ -205,6 +227,46 @@ impl PresetRegistrar for AppServerPresetRegistrar {
         }
     }
 
+    async fn update_agent_store_preset(
+        &self,
+        preset_id: &str,
+        name: &str,
+        description: Option<&str>,
+        instructions: Option<&str>,
+        agent_id: Option<&str>,
+        model: Option<nomifun_api_types::ModelPreference>,
+    ) -> Result<(), AppError> {
+        // Field-for-field the same projection `create_agent_store_preset`
+        // writes, so an upgraded Preset is indistinguishable from a freshly
+        // installed one at the same version. `UpdatePresetRequest` is a patch:
+        // `None` keeps, `Some` overrides — which also means a description the new
+        // version dropped cannot be cleared through this seam (the DTO has no
+        // "set to None" form). Instructions can: they are always written.
+        self.service
+            .update(
+                preset_id,
+                nomifun_api_types::UpdatePresetRequest {
+                    name: Some(name.to_owned()),
+                    description: description.map(str::to_owned),
+                    instructions: Some(instructions.unwrap_or_default().to_owned()),
+                    agent_preferences: Some(
+                        agent_id
+                            .map(|agent_id| {
+                                vec![nomifun_api_types::AgentPreference {
+                                    agent_id: agent_id.to_owned(),
+                                    required: true,
+                                }]
+                            })
+                            .unwrap_or_default(),
+                    ),
+                    model_preferences: Some(model.into_iter().collect()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|_| ())
+    }
+
     async fn delete_preset(&self, preset_id: &str) -> Result<(), AppError> {
         match self.service.delete(preset_id).await {
             // Already gone: the state the caller asked for.
@@ -224,6 +286,45 @@ impl PresetRegistrar for AppServerPresetRegistrar {
             )
             .await?;
         Ok(())
+    }
+}
+
+/// The runtime references a replacement carries over from the snapshot it
+/// supersedes (`36` D1/D5).
+///
+/// A new snapshot's component rows are freshly written, so they know nothing
+/// about the Preset the previous version registered. That recorded id is the
+/// only admissible evidence for upgrading in place: adopting a Preset by *name*
+/// is unsafe, because two snapshots may legitimately declare the same display
+/// name and the second install would silently rebind the component to the other
+/// snapshot's Preset. The caller that owns both snapshots therefore hands it
+/// over explicitly.
+///
+/// Only Presets need it. Connectors are upserted by name, so the new row lands
+/// on the same `mcp_servers` row and the two rows agree without any hint — the
+/// shared-artifact check sees it.
+#[derive(Debug, Default, Clone)]
+struct Handover {
+    /// component id → the Preset id the previous version recorded for it.
+    preset_ids: std::collections::HashMap<String, String>,
+}
+
+impl Handover {
+    /// What the old snapshot's rows recorded, for the components it had
+    /// actually installed.
+    fn from_rows(rows: &[nomifun_db::PluginSnapshotComponentRow]) -> Self {
+        let preset_ids = rows
+            .iter()
+            .filter(|row| row.installed == 1)
+            .filter_map(|row| {
+                recorded_preset_id(Some(row)).map(|id| (row.component_id.clone(), id.to_owned()))
+            })
+            .collect();
+        Self { preset_ids }
+    }
+
+    fn preset_id(&self, component_id: &str) -> Option<&str> {
+        self.preset_ids.get(component_id).map(String::as_str)
     }
 }
 
@@ -353,7 +454,7 @@ impl AppServerInstallProvider {
         if !moved.is_empty() {
             let ids: Vec<&str> = moved.iter().map(String::as_str).collect();
             self.repo
-                .set_components_disabled(&ids, !enabled)
+                .set_components_disabled(snapshot_id, &ids, !enabled)
                 .await
                 .map_err(AppError::from)?;
         }
@@ -362,11 +463,18 @@ impl AppServerInstallProvider {
         status.outcomes = outcomes;
         Ok(status)
     }
-}
 
-#[async_trait]
-impl InstallProvider for AppServerInstallProvider {
-    async fn install(&self, request: AppServerInstallRequest) -> Result<AppServerInstallResult, AppError> {
+    /// The install pipeline, with the runtime references an upgrade inherits
+    /// from the snapshot it supersedes (`36` D1/D5).
+    ///
+    /// `handover` is empty for a standalone install: a component only ever
+    /// adopts another snapshot's Preset / MCP server row when a caller that
+    /// owns both snapshots says so.
+    async fn install_with_handover(
+        &self,
+        request: AppServerInstallRequest,
+        handover: &Handover,
+    ) -> Result<AppServerInstallResult, AppError> {
         let snapshot_id = request.snapshot_id;
         let snapshot = self
             .repo
@@ -483,12 +591,70 @@ impl InstallProvider for AppServerInstallProvider {
         // *name* is unsafe, because two snapshots may legitimately declare the
         // same display name and the second install would silently rebind this
         // component to the other snapshot's Preset.
+        //
+        // There are two admissible sources for that id (`36` D1): this
+        // snapshot's own row (a re-entrant install, which touches nothing) and
+        // the row handed over by the snapshot being replaced (an upgrade, which
+        // refreshes the content in place and keeps the id).
         for component in &components {
             if component.kind != "agent" && component.kind != "team" {
                 continue;
             }
-            if let Some(preset_id) = recorded_preset_id(installed_state.get(&component.component_id)) {
+            let own = recorded_preset_id(installed_state.get(&component.component_id));
+            let inherited = handover.preset_id(&component.component_id);
+            let upgrading_in_place = own.is_none() && inherited.is_some();
+
+            let payload = decode_payload(&component.payload_json);
+            let description = payload.get("description").and_then(|v| v.as_str());
+            let instructions = payload.get("instructions").and_then(|v| v.as_str());
+            let preset_name = format!("agent-store: {}", component.name);
+
+            if let Some(preset_id) = own.or(inherited) {
                 match self.presets.preset_exists(preset_id).await {
+                    Ok(true) if upgrading_in_place => {
+                        // Keep the id — conversations, ordering state and any
+                        // external reference point at it — and write only the
+                        // fields a snapshot owns. The Preset's enable state and
+                        // everything the user added to it stay put.
+                        match self
+                            .presets
+                            .update_agent_store_preset(
+                                preset_id,
+                                &preset_name,
+                                description,
+                                instructions,
+                                Some(NOMI_RUNTIME_AGENT_ID),
+                                None,
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                pending.push(Pending {
+                                    component_id: component.component_id.clone(),
+                                    runtime_type: "preset",
+                                    location: preset_id.to_owned(),
+                                    mcp_server_id: None,
+                                });
+                                // `reused`: this component kept the very same
+                                // Preset row. "This was an upgrade" is carried by
+                                // the store result's `previous_version`.
+                                outcomes.push(ok_outcome(&component.component_id, &component.kind, "reused"));
+                            }
+                            Err(error) => {
+                                warnings.push(format!(
+                                    "preset update failed for {}: {error}",
+                                    component.component_id
+                                ));
+                                skipped.push(component.component_id.clone());
+                                outcomes.push(failed_outcome(
+                                    &component.component_id,
+                                    &component.kind,
+                                    &ComponentFailure::new("preset_update_failed", error.to_string()),
+                                ));
+                            }
+                        }
+                        continue;
+                    }
                     Ok(true) => {
                         pending.push(Pending {
                             component_id: component.component_id.clone(),
@@ -517,10 +683,6 @@ impl InstallProvider for AppServerInstallProvider {
                     }
                 }
             }
-            let payload = decode_payload(&component.payload_json);
-            let description = payload.get("description").and_then(|v| v.as_str());
-            let instructions = payload.get("instructions").and_then(|v| v.as_str());
-            let preset_name = format!("agent-store: {}", component.name);
             match self
                 .presets
                 .create_agent_store_preset(
@@ -671,6 +833,7 @@ impl InstallProvider for AppServerInstallProvider {
         let refs: Vec<ComponentRuntimeRef<'_>> = pending
             .iter()
             .map(|p| ComponentRuntimeRef {
+                snapshot_id: &snapshot_id,
                 component_id: &p.component_id,
                 runtime_type: p.runtime_type,
                 location: &p.location,
@@ -700,6 +863,187 @@ impl InstallProvider for AppServerInstallProvider {
         })
     }
 
+    /// Undo a **partially** installed replacement (`36` D5).
+    ///
+    /// A failed install must not leave the new snapshot as the provenance match:
+    /// `find_snapshot_by_provenance` answers with the newest import, so a
+    /// half-installed new snapshot hides the old one, makes `store/list` report
+    /// the entry as installed at the new version, and turns the next `update`
+    /// into a no-op — with a component nobody can install any more. Releasing
+    /// what the new snapshot did manage to register puts the entry back on the
+    /// old version, which is the state a retry starts from.
+    ///
+    /// Artifacts the old version still owns are never touched: a connector row is
+    /// upserted by name and an in-place Preset upgrade keeps its id, so "release
+    /// the new component" would delete what the old snapshot's row still points
+    /// at. Those components only lose the *new* snapshot's record.
+    ///
+    /// Returns warnings for the caller to surface; a rollback failure is reported,
+    /// never raised, because the caller is already reporting an install failure.
+    async fn rollback_replaced(
+        &self,
+        new_snapshot_id: &str,
+        old_rows: &[nomifun_db::PluginSnapshotComponentRow],
+    ) -> Vec<String> {
+        let new_rows = match self.repo.list_installation_state(Some(new_snapshot_id)).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                return vec![format!(
+                    "could not read the new snapshot's install state to roll it back: {error}"
+                )]
+            }
+        };
+        let retained: std::collections::HashMap<&str, String> = old_rows
+            .iter()
+            .filter(|row| row.installed == 1)
+            .filter_map(|row| shared_artifact_key(row).map(|key| (row.component_id.as_str(), key)))
+            .collect();
+
+        let mut cleared: Vec<String> = Vec::new();
+        let mut warnings = Vec::new();
+        for row in &new_rows {
+            if row.installed != 1 {
+                continue;
+            }
+            match shared_artifact_key(row) {
+                Some(key) if retained.get(row.component_id.as_str()) == Some(&key) => {
+                    cleared.push(row.component_id.clone());
+                }
+                _ => match release_component(&self.installer, &*self.presets, &*self.mcp, row).await {
+                    Ok(()) => cleared.push(row.component_id.clone()),
+                    Err(failure) => warnings.push(format!(
+                        "could not roll back {}: {}",
+                        row.component_id, failure.message
+                    )),
+                },
+            }
+        }
+        if !cleared.is_empty() {
+            let ids: Vec<&str> = cleared.iter().map(String::as_str).collect();
+            if let Err(error) = self.repo.clear_components_installed(new_snapshot_id, &ids).await {
+                warnings.push(format!("could not clear the rolled-back install records: {error}"));
+            }
+        }
+        warnings
+    }
+}
+
+#[async_trait]
+impl InstallProvider for AppServerInstallProvider {
+    async fn install(&self, request: AppServerInstallRequest) -> Result<AppServerInstallResult, AppError> {
+        // A standalone install never adopts another snapshot's runtime
+        // artifacts; only `replace` hands them over (`36` D5).
+        self.install_with_handover(request, &Handover::default()).await
+    }
+
+    async fn replace(
+        &self,
+        old_snapshot_id: &str,
+        new_snapshot_id: &str,
+    ) -> Result<AppServerInstallReplaceResult, AppError> {
+        if old_snapshot_id == new_snapshot_id {
+            // Nothing to replace. Running the release step against the same
+            // snapshot would clear the very records the install just wrote.
+            let install = self
+                .install_with_handover(
+                    AppServerInstallRequest { snapshot_id: new_snapshot_id.to_owned() },
+                    &Handover::default(),
+                )
+                .await?;
+            return Ok(AppServerInstallReplaceResult {
+                install,
+                released_count: 0,
+                release_errors: vec![],
+            });
+        }
+
+        // What the old version already owns, keyed by component id. The recorded
+        // reference — never a name — is the only admissible evidence of "this
+        // component keeps that Preset / MCP server row" (`36` D1): two snapshots
+        // may legitimately declare the same display name.
+        let old_rows = self
+            .repo
+            .list_installation_state(Some(old_snapshot_id))
+            .await
+            .map_err(AppError::from)?;
+        let handover = Handover::from_rows(&old_rows);
+
+        // Install the new version FIRST (`36` D5). Everything below runs only if
+        // that install reported no errors, so a failure leaves the previous
+        // installation intact and usable instead of leaving the user with
+        // nothing.
+        let install = self
+            .install_with_handover(
+                AppServerInstallRequest { snapshot_id: new_snapshot_id.to_owned() },
+                &handover,
+            )
+            .await?;
+
+        if !install.errors.is_empty() {
+            // Nothing of the old installation is touched. The new snapshot is
+            // rolled back so the entry converges back onto the old one: a failed
+            // update must leave something the user can retry, and a half-installed
+            // new snapshot would otherwise become the provenance match and make
+            // the next `update` a no-op.
+            let rolled_back = self.rollback_replaced(new_snapshot_id, &old_rows).await;
+            let mut install = install;
+            install.warnings.extend(rolled_back);
+            return Ok(AppServerInstallReplaceResult {
+                install,
+                released_count: 0,
+                release_errors: vec![],
+            });
+        }
+
+        // What the new snapshot now owns, so a *shared* artifact is never
+        // deleted (a connector's `mcp_servers` row is upserted by name and a
+        // Preset upgraded in place keeps its id — `36` D5).
+        let new_rows = self
+            .repo
+            .list_installation_state(Some(new_snapshot_id))
+            .await
+            .map_err(AppError::from)?;
+        let inherited: std::collections::HashMap<&str, String> = new_rows
+            .iter()
+            .filter(|row| row.installed == 1)
+            .filter_map(|row| shared_artifact_key(row).map(|key| (row.component_id.as_str(), key)))
+            .collect();
+
+        let mut released: Vec<String> = Vec::new();
+        let mut release_errors: Vec<String> = Vec::new();
+        for row in &old_rows {
+            if row.installed != 1 {
+                continue;
+            }
+            match shared_artifact_key(row) {
+                // The new version owns the very same artifact: releasing it
+                // would take out what was just installed. Only the old record
+                // is cleared, below.
+                Some(key) if inherited.get(row.component_id.as_str()) == Some(&key) => {
+                    released.push(row.component_id.clone());
+                }
+                _ => match release_component(&self.installer, &*self.presets, &*self.mcp, row).await {
+                    Ok(()) => released.push(row.component_id.clone()),
+                    Err(failure) => release_errors.push(format!(
+                        "{}: {}",
+                        row.component_id, failure.message
+                    )),
+                },
+            }
+        }
+        if !released.is_empty() {
+            let ids: Vec<&str> = released.iter().map(String::as_str).collect();
+            self.repo
+                .clear_components_installed(old_snapshot_id, &ids)
+                .await
+                .map_err(AppError::from)?;
+        }
+        Ok(AppServerInstallReplaceResult {
+            install,
+            released_count: released.len(),
+            release_errors,
+        })
+    }
     async fn status(&self, snapshot_id: &str) -> Result<AppServerInstallStatus, AppError> {
         let components = self
             .repo
@@ -761,7 +1105,10 @@ impl InstallProvider for AppServerInstallProvider {
         }
         if !released.is_empty() {
             let ids: Vec<&str> = released.iter().map(String::as_str).collect();
-            self.repo.clear_components_installed(&ids).await.map_err(AppError::from)?;
+            self.repo
+                .clear_components_installed(snapshot_id, &ids)
+                .await
+                .map_err(AppError::from)?;
         }
         let errors = outcome_errors(&outcomes);
         if !errors.is_empty() {
@@ -864,6 +1211,30 @@ fn runtime_ref_field<'a>(runtime: &'a serde_json::Value, key: &str) -> Option<&'
         .get(key)
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
+}
+
+/// The runtime artifact a row points at, as an identity two snapshots can share
+/// (`36` D5).
+///
+/// Used on both sides of a replacement: before releasing an old component, and
+/// before rolling back a failed install. A shared key means the artifact is not
+/// exclusively this snapshot's, so deleting it would take out the other
+/// snapshot's registration too:
+///
+/// - `preset` — an in-place upgrade keeps the id (`36` D1);
+/// - `connector` — `add_server` upserts by name and returns the same row id.
+///
+/// Skills are materialized **per snapshot** (`agent-store/<snapshot_id>/<slug>`),
+/// so an old copy is always the old snapshot's alone and has no shared key.
+fn shared_artifact_key(row: &nomifun_db::PluginSnapshotComponentRow) -> Option<String> {
+    let runtime = runtime_ref(row)?;
+    match runtime.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
+        "preset" => recorded_preset_id(Some(row)).map(|id| format!("preset:{id}")),
+        "connector" => {
+            runtime_ref_field(&runtime, "mcp_server_id").map(|id| format!("connector:{id}"))
+        }
+        _ => None,
+    }
 }
 
 /// Release everything one installed component owns at runtime.

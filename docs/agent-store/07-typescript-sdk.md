@@ -32,12 +32,13 @@ SDK 不负责：
 - 保存真实 OAuth Token；
 - 执行本地任意命令；
 - 绕过 App Server 的 Tool Policy、Approval 和权限校验；
-- **发明 wire 上不存在的动词**：安装面**没有更新动词**（不存在
-  `store/update-entry` / `install/update`）。一个待更新条目只被呈现为
-  `store/list` 的 `update_available` **标志**，加上一句显式的「先卸载、再安装
-  一次」提示（`StoreClient.updateHint()` 返回 `uninstall_reinstall`）；
-  `install()` 对**已安装**条目是 no-op（`reused=true`），绝不偷偷升级。
-  store 层永远不会因为看到一个「有新版本」的标志就自行拼一个更新动作；
+- **发明 wire 上不存在的动词**：一个待更新条目只被呈现为 `store/list` 的
+  `update_available` **标志**，升级要显式叫一次 `store.update()`（`store/update-entry`，
+  `fp-12` 加入；`StoreClient.updateHint()` 回答 `update` / `none` / `unknown`）。
+  `install()` 对**已安装**条目仍是 no-op（`reused=true`），绝不偷偷升级——store 层
+  永远不会因为看到一个「有新版本」的标志就自行拼一个更新动作。失败语义由 host 负责：
+  新版本先装、装成功才释放旧的，所以 `update()` 失败时旧安装仍在（`releasedCount === 0`），
+  调用方不必处理「升到一半」的条目；
 - **为宿主管理面提供 typed method**：六个方法（`config/get` · `config/set` ·
   `skill/create` · `skill/update` · `skill/delete` · `skill/copy`）的**类型**
   在 `@flowy-agent-store/protocol` 里，但 `@flowy-agent-store/client` **刻意

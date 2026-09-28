@@ -117,6 +117,14 @@ type PanelKind = "store" | "skill" | "connector" | "agent" | "team";
 // semantic helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * `36` D6: the importer refusing an update because the market changed the
+ * entry's content without raising its version. Matched on the host's own line
+ * (either language) — the refusal is carried in `errors[]`, not in a status the
+ * client can branch on.
+ */
+const DIGEST_CONFLICT = /digest\s*(冲突|conflict)/i;
+
 /** Install / installed / update action attached to a store card. */
 function StoreInstallAction({
   item,
@@ -148,6 +156,8 @@ function StoreInstallAction({
     // `store/install-entry`, which is a documented no-op for an installed entry
     // — and for a pending update it was worse: re-importing would have been a
     // hidden upgrade. `16` §6: no shell control that does nothing when pressed.
+    // The pending update is therefore only *reported* here; the real action is
+    // the drawer's (see `StoreDrawer`), where both versions are on screen.
     const pendingUpdate = item.update_available;
     return (
       <span
@@ -665,6 +675,66 @@ export function CatalogView() {
       setUninstallFor(null);
     }
   }, [client, pushToast, reload, t]);
+
+  const [storeUpdateBusy, setStoreUpdateBusy] = useState<string | null>(null);
+
+  /**
+   * Upgrade one installed store entry to the version its marketplace now
+   * advertises (`store/update-entry`, `36` D3). Same refresh/toast contract as
+   * `runStoreInstall`: re-read the two projections a write can move, then say
+   * what happened — the version pair this time, not only the name.
+   *
+   * A refusal is reported, never dressed up as a success. `36` D6 gives the
+   * digest conflict its own remedy sentence: the market changed the entry's
+   * content without raising the version, so the immutable snapshot (`02` §9)
+   * refuses the import and "try again" is not the answer — raising the version
+   * (or renaming the entry) is.
+   */
+  const runStoreUpdate = useCallback(async (item: StoreItem) => {
+    if (!client) return;
+    setStoreUpdateBusy(item.id);
+    setError(null);
+    try {
+      const outcome = await client.store.update(item);
+      if (!activeRef.current) return;
+      if (!outcome.ok) {
+        const reason = outcome.errors.join("; ");
+        pushToast(
+          "error",
+          DIGEST_CONFLICT.test(reason) ? "catalog.storeUpdateBlockedVersion" : "catalog.storeUpdateFailed",
+          { reason },
+        );
+        // The host only ever releases the previous installation after the new
+        // one landed, so a refused update left the item exactly as it was.
+        return;
+      }
+      reload();
+      const list = await client.listStore();
+      if (!activeRef.current) return;
+      setStoreItems(list.items);
+      // Keep the open drawer's item in sync.
+      setStoreDrawerItem((current) => {
+        if (!current) return current;
+        return list.items.find((candidate) => candidate.id === current.id) ?? current;
+      });
+      pushToast("success", "catalog.storeUpdateDone", {
+        name: item.name,
+        from: outcome.fromVersion ?? item.installed_version ?? item.version,
+        to: outcome.toVersion ?? item.version,
+      });
+    } catch (caught) {
+      // Only a transport/host failure throws; a refused update resolves.
+      if (!activeRef.current) return;
+      const reason = formatError(caught);
+      pushToast(
+        "error",
+        DIGEST_CONFLICT.test(reason) ? "catalog.storeUpdateBlockedVersion" : "catalog.storeUpdateFailed",
+        { reason },
+      );
+    } finally {
+      if (activeRef.current) setStoreUpdateBusy(null);
+    }
+  }, [client, pushToast, reload]);
 
   const closeDrawer = useCallback(() => {
     setDrawer(null);
@@ -1286,6 +1356,8 @@ export function CatalogView() {
                 busy={storeInstallBusy === storeDrawerItem.id}
                 result={storeInstallResult}
                 onInstall={() => void runStoreInstall(storeDrawerItem)}
+                updateBusy={storeUpdateBusy === storeDrawerItem.id}
+                onUpdate={() => void runStoreUpdate(storeDrawerItem)}
                 uninstallBusy={storeUninstallBusy === storeDrawerItem.id}
                 onUninstall={() => setUninstallFor(storeDrawerItem)}
                 rootUrl={client?.serverRootUrl}
@@ -1392,6 +1464,8 @@ function StoreDrawer({
   busy,
   result,
   onInstall,
+  updateBusy,
+  onUpdate,
   onUninstall,
   uninstallBusy,
   rootUrl,
@@ -1400,6 +1474,8 @@ function StoreDrawer({
   busy: boolean;
   result: StoreInstallResult | null;
   onInstall: () => void;
+  updateBusy: boolean;
+  onUpdate: () => void;
   onUninstall: () => void;
   uninstallBusy: boolean;
   rootUrl?: string;
@@ -1473,16 +1549,17 @@ function StoreDrawer({
           </button>
         )}
         {!item.blocked_reason && item.installed && item.update_available && (
-          // There is no update verb on the wire (`store/update-entry` does not
-          // exist). This used to be a button that called install, which returns
-          // `reused` for an installed entry — a control that did nothing. The
-          // note states the path that does work: release it, install again, and
-          // the version-aware re-import picks up what the marketplace offers.
+          // A real upgrade, on the verb the wire grew for it (`store/update-entry`,
+          // `36` D3) — this used to be a note saying "uninstall, then install
+          // again", and before that a button that called install, which returns
+          // `reused` for an installed entry: a control that did nothing.
           <>
             <span className="market-tag is-status is-warn" title={t("catalog.storeUpdate")}>
               {t("catalog.storeUpdate")}
             </span>
-            <span className="settings-row-note">{t("catalog.storeUpdateNote")}</span>
+            <button className="primary-button" type="button" disabled={updateBusy} onClick={onUpdate}>
+              {updateBusy ? t("catalog.storeUpdating") : t("catalog.storeUpdateNow")}
+            </button>
           </>
         )}
         {result && (

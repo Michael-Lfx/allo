@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "fp-11";
+const PROTOCOL_VERSION = "fp-12";
 
 type Verb = "GET" | "POST" | "DELETE";
 
@@ -331,6 +331,11 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
     verb: "POST",
     path: "/store/:marketplace_id/entries/:entry_name/install",
     source: "store_install_entry_route() -> store_install_entry_impl",
+  },
+  "store/update-entry": {
+    verb: "POST",
+    path: "/store/:marketplace_id/entries/:entry_name/update",
+    source: "store_update_entry_route() -> store_update_entry_impl",
   },
 };
 

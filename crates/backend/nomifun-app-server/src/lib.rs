@@ -188,7 +188,16 @@ use tokio::sync::mpsc;
 /// travel only through `connector/credential/set`, the row is created disabled,
 /// and the method sits on the installation-owner-only surface. One method, and it
 /// has an HTTP route, so the documented split moves to `52 / 77`.
-pub const PROTOCOL_VERSION: &str = "fp-11";
+/// **`fp-12` makes upgrading an installed store entry an explicit action**:
+/// `store/update-entry` (`POST /api/app-server/store/{marketplace_id}/entries/{entry_name}/update`)
+/// installs the version the marketplace advertises **over** the installed one —
+/// new first, old released only on success — instead of leaving "uninstall, then
+/// install again" as the only path. `store/install-entry` keeps its
+/// installed-is-a-no-op contract, so installing still never upgrades by surprise,
+/// and the result carries `previous_version` / `previous_snapshot_id` /
+/// `released_count` for the update case (`36` D3/D4). One method, and it has an
+/// HTTP route, so the documented split moves to `53 / 78`.
+pub const PROTOCOL_VERSION: &str = "fp-12";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1395,6 +1404,10 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route(
             "/api/app-server/store/{marketplace_id}/entries/{entry_name}/install",
             post(store_install_entry_route),
+        )
+        .route(
+            "/api/app-server/store/{marketplace_id}/entries/{entry_name}/update",
+            post(store_update_entry_route),
         )
         .with_state(state)
 }
@@ -2663,6 +2676,17 @@ async fn store_install_entry_impl(
         .map_err(AppServerError::from)
 }
 
+async fn store_update_entry_impl(
+    state: &AppServerRouterState,
+    marketplace_id: &str,
+    entry_name: &str,
+) -> Result<AppServerStoreInstallResult, AppServerError> {
+    store_provider(state)?
+        .update_entry(marketplace_id, entry_name)
+        .await
+        .map_err(AppServerError::from)
+}
+
 async fn list_agents_impl(
     state: &AppServerRouterState,
 ) -> Result<Vec<AppServerAgentSummary>, AppServerError> {
@@ -3064,6 +3088,16 @@ async fn store_install_entry_route(
 ) -> Result<Json<AppServerStoreInstallResult>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(store_install_entry_impl(&state, &marketplace_id, &entry_name).await?))
+}
+
+async fn store_update_entry_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path((marketplace_id, entry_name)): Path<(String, String)>,
+) -> Result<Json<AppServerStoreInstallResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(store_update_entry_impl(&state, &marketplace_id, &entry_name).await?))
 }
 
 async fn list_skills_route(
@@ -7557,6 +7591,14 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode store install: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        "store/update-entry" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsStoreEntry>(params)?;
+            let result = store_update_entry_impl(state, &params.marketplace_id, &params.entry_name).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode store update: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         // ---------------- Agent Store Importer (05 §4.4; same impls as the HTTP routes) ----------------
         "import/run" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
@@ -11566,6 +11608,10 @@ model = "mimo-v2.5-free"
                 serde_json::json!({ "marketplace_id": "m1", "cascade": true }),
             ),
             ("store/list", serde_json::json!({})),
+            (
+                "store/update-entry",
+                serde_json::json!({ "marketplace_id": "m1", "entry_name": "formatter" }),
+            ),
         ] {
             let error = dispatch_connection_request(
                 &state,

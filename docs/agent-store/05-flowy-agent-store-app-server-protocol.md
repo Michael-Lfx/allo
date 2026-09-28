@@ -1,7 +1,20 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-11`** —— 2026-09-24 让调用方**把自己的 MCP server 交进来**：新增
+> 指纹：**`fp-12`** —— 2026-09-28 让**升级**成为一个显式动作：新增
+> `store/update-entry`（`POST /api/app-server/store/{marketplace_id}/entries/{entry_name}/update`），
+> 把已安装条目升到市场当前广告的版本。顺序是契约：**先导入并安装新版本，只有这次安装
+> 全部成功才释放旧版本**——失败时旧安装原样保留（`released_count: 0` 是它的机器可读形式），
+> 而不是让用户手里什么都不剩。组件按 `component_id`（`wb-<plugin>-<slug>`，跨版本稳定）
+> 配对：专家的 Preset **原地升级、保 id**，连接器的 `mcp_servers` 行同名 upsert 复用同一行，
+> 技能的产物按快照各自独立。`store/install-entry` 的「已装即 no-op」契约**不变**，所以
+> 安装永远不会偷偷升级；结果新增 `previous_version` / `previous_snapshot_id` /
+> `released_count` 三个字段，仅升级会填（`36` D3/D4）。同批修掉两个前置缺陷：条目版本现在
+> 真的进导入请求（否则技能与连接器的快照被钉在 `1.0.0` 占位版本，`update_available` 永远
+> 为真且内容一改就 digest 冲突，`36` D2），安装态写入按 `(snapshot_id, component_id)` 收窄
+> （`component_id` 跨快照相同，否则释放旧版本会连新版本的安装记录一起清掉，`36` D8）。
+> 计数 `52 / 77` → **`53 / 78`**。
+> 上一值 **`fp-11`**（2026-09-24）让调用方**把自己的 MCP server 交进来**：新增
 > `connector/register`（`POST /api/app-server/connectors`，与 `connector/list` 共用集合路由、
 > 各占一个动词）。这是**自带 server 与 key 的外部开发者**的入口——此前他们只能把 server 打成
 > 市场条目（还要写 `token-schema.json`）才拿得到表单。规则是**模板即声明**：交进来的
@@ -980,6 +993,7 @@ PluginSnapshot 对用户不可见。
 ```text
 GET  /api/app-server/store                                      # store/list（聚合目录）
 POST /api/app-server/store/{marketplace_id}/entries/{entry}/install  # store/install-entry（一键安装）
+POST /api/app-server/store/{marketplace_id}/entries/{entry}/update   # store/update-entry（升级，fp-12）
 GET  /api/app-server/store/{marketplace_id}/entries/{entry}/assets/{*path}  # 条目展示资产（头像等）
 ```
 
@@ -1022,16 +1036,25 @@ items[] {
   声明日期，客户端不得渲染占位。真实市场（普查 2026-09-10）尚未携带该字段，
   因此 WebUI 的「最新」排序在该 kind 一条日期都没有时**不出现**——没有数据的
   排序控件是死控件；
-- `store/install-entry` 幂等且**版本感知**：wire 上**没有**更新动词
-  （`store/update-entry` 不存在），所以客户端唯一的升级路径就是「卸载，再安装
-  一次」。因此：条目**已安装** → 仍是 no-op（`reused=true`）——在这里重新导入
-  等于把「安装」变成一次隐藏的升级；条目**未安装**且快照版本 == 市场当前版本
-  → 装那个快照；条目**未安装**且版本不同（前进或回滚）→ 经
-  `market/entry-import` **重新导入**并装新快照，旧快照保持不可变、历史保留。
-  版本推导收敛为**一个共享 helper**（`entry_live_version`），`store/list` 与
-  `install_entry` 共用，目录与安装器因此不可能各说一套。响应
+- `store/install-entry` 幂等且**版本感知**：条目**已安装** → no-op（`reused=true`）
+  ——在这里重新导入等于把「安装」变成一次隐藏的升级，所以安装永远不会偷偷升级；条目
+  **未安装**且快照版本 == 市场当前版本 → 装那个快照；条目**未安装**且版本不同（前进或
+  回滚）→ 经 `market/entry-import` **重新导入**并装新快照，旧快照保持不可变、历史保留。
+  版本推导收敛为**一个共享 helper**（`entry_live_version`），`store/list`、
+  `install_entry` 与导入面共用，目录与安装器因此不可能各说一套。响应
   `{ snapshot_id, version, installed_count, outcomes[], errors[] }`——`outcomes`
   从安装器转发（§4.5.2），一键商店安装与直接 `install/run` 一样可分支判断；
+- `store/update-entry`（`fp-12` 加入）是**显式升级**，把已安装条目升到 `store/list`
+  当前广告的版本。它**不**在安装面上开洞：安装依旧是「已装即 no-op」，升级要单独叫。
+  顺序即契约：**先导入并安装新版本，只有这次安装无错才释放旧版本**——任何一步失败都保留
+  旧安装（`released_count: 0`）。因此：条目**未安装** → `invalid_request`（不是第二次安装
+  入口）；**已在广告版本** → no-op（`reused=true`）；版本不同 → 导入 → 替换。组件按
+  `component_id` 跨快照配对：**专家原地升级、Preset id 不变**（id 是会话绑定与任何外部
+  引用的锚点），**连接器同名 upsert 复用同一 `mcp_servers` 行**（配置变了会被置为 disabled，
+  这是既有的「配置变更须重测」语义，如实上报），**技能按快照各自一个目录**、旧的删除、解析
+  取最新快照。响应在安装结果上多 `previous_version` / `previous_snapshot_id` /
+  `released_count` 三个字段（仅升级填）。内容改了而市场**没抬版本** → 导入器仍以
+  `digest 冲突` 拒绝，`errors[]` 如实带回，补救在市场侧（`36` D6）；
 - store 资产端点与快照资产端点同一 MIME 白名单与路径穿越校验；**不要求
   App Server 连接头**（`<img>` 标签无法携带，头像/图标是公开展示内容）：
   先按条目目录（`entry_dir`，plugin.json `avatar`）解析，缺失时回退市场根

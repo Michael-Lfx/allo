@@ -119,6 +119,18 @@ export interface StoreOperationOutcome {
   /** Every reported component reached the requested state. */
   ok: boolean;
   /**
+   * The server's own failure lines, verbatim.
+   *
+   * `ok: false` alone is not an answer: the host explains *why* (a digest
+   * conflict means the market changed content without raising the version; a
+   * `preset_update_failed` names the component). Dropping these is what made a
+   * refused import unexplainable in the UI (`18` §11 D10), so they are carried
+   * rather than folded into `ok`.
+   */
+  errors: string[];
+  /** The server's non-fatal notes, verbatim (e.g. a component left disabled). */
+  warnings: string[];
+  /**
    * `undefined` when readiness was not checked. `true` when every component is
    * usable now; `false` when it is not (see `readyIssue`).
    */
@@ -126,6 +138,16 @@ export interface StoreOperationOutcome {
   readyIssue?: StoreReadyIssue;
   /** The component that needs attention, when `readyIssue` is set. */
   readyComponentId?: string;
+  /** `update()` only: the version that was installed before this call. */
+  fromVersion?: string;
+  /** `update()` only: the version now installed. */
+  toVersion?: string;
+  /**
+   * `update()` only: how many components of the replaced snapshot were actually
+   * released. `0` means the previous installation was not touched — an update
+   * that failed, or a no-op.
+   */
+  releasedCount?: number;
 }
 
 /**
@@ -138,6 +160,7 @@ export interface StoreOperationOutcome {
 export interface StoreHost {
   listStore(): Promise<StoreList>;
   installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>;
+  updateStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>;
   getInstallStatus(snapshotId: string): Promise<InstallStatus>;
   disableInstall(snapshotId: string, componentIds: string[]): Promise<InstallStatus>;
   enableInstall(snapshotId: string, componentIds: string[]): Promise<InstallStatus>;
@@ -259,15 +282,46 @@ export class StoreClient {
   /**
    * What a caller can offer for an item's pending update.
    *
-   * `"none"` means there is nothing to do; `"uninstall_reinstall"` means the
-   * entry is installed at a different version and the only path the wire offers
-   * is to release it and install again (the version-aware re-import then picks
-   * up the current version). `"unknown"` is returned rather than guessing when
-   * the item carries no snapshot to release.
+   * `"none"` means there is nothing to do; `"update"` means the entry is
+   * installed at a different version and `update()` is the action that lands it
+   * (`store/update-entry`, `36` D3); `"unknown"` is returned rather than
+   * guessing when the item carries no snapshot to replace.
    */
-  updateHint(item: StoreItem): "none" | "uninstall_reinstall" | "unknown" {
+  updateHint(item: StoreItem): "none" | "update" | "unknown" {
     if (!item.installed || !item.update_available) return "none";
-    return item.snapshot_id ? "uninstall_reinstall" : "unknown";
+    return item.snapshot_id ? "update" : "unknown";
+  }
+
+  /**
+   * Upgrade an installed item to the version its marketplace advertises.
+   *
+   * The host does the ordering: new version installed first, previous one
+   * released only when that succeeded. So a failure resolves `ok: false` with
+   * the previous installation still in place (`releasedCount === 0`) — the
+   * caller never has to reason about a half-upgraded item.
+   *
+   * Refuses before the round trip when there is nothing to replace: an item that
+   * is not installed (`not_installed`) or is already current is not a failure of
+   * *this* call, and `updateHint()` is the way to ask first.
+   */
+  async update(item: StoreItem, options: InstallOptions = {}): Promise<StoreOperationOutcome> {
+    this.assertUsable(item, options.signal);
+    this.requireSnapshot(item);
+    const result = await this.host.updateStoreEntry(item.marketplace_id, item.entry_name);
+    const components = result.outcomes ?? [];
+    const outcome: StoreOperationOutcome = {
+      snapshotId: result.snapshot_id,
+      reused: result.reused,
+      components,
+      ok: result.errors.length === 0 && components.every((component) => component.ok),
+      errors: result.errors,
+      warnings: result.warnings,
+      fromVersion: result.previous_version ?? undefined,
+      toVersion: result.version,
+      releasedCount: result.released_count ?? 0,
+    };
+    if (options.waitForReady === false) return outcome;
+    return this.awaitReady(outcome, options);
   }
 
   /**
@@ -283,6 +337,8 @@ export class StoreClient {
       reused: result.reused,
       components,
       ok: result.errors.length === 0 && components.every((component) => component.ok),
+      errors: result.errors,
+      warnings: result.warnings,
     };
     if (options.waitForReady === false) return outcome;
     return this.awaitReady(outcome, options);
@@ -299,7 +355,7 @@ export class StoreClient {
     const snapshotId = this.requireSnapshot(item);
     const componentIds = options.componentIds ?? (await this.installedComponentIds(snapshotId));
     if (componentIds.length === 0) {
-      return { snapshotId, reused: true, components: [], ok: true };
+      return { snapshotId, reused: true, components: [], ok: true, errors: [], warnings: [] };
     }
     const status = await this.host.uninstallInstall(snapshotId, componentIds);
     return this.outcomeFromStatus(snapshotId, status, false);
@@ -321,7 +377,7 @@ export class StoreClient {
     const snapshotId = this.requireSnapshot(item);
     const componentIds = options.componentIds ?? (await this.installedComponentIds(snapshotId));
     if (componentIds.length === 0) {
-      return { snapshotId, reused: true, components: [], ok: true };
+      return { snapshotId, reused: true, components: [], ok: true, errors: [], warnings: [] };
     }
     const status = enabled
       ? await this.host.enableInstall(snapshotId, componentIds)
@@ -372,6 +428,11 @@ export class StoreClient {
       // A host that predates `outcomes`/`errors` reports neither; with nothing
       // to contradict it, the call succeeded.
       ok: errors.length === 0 && components.every((component) => component.ok),
+      errors,
+      // `AppServerInstallStatus` (uninstall / disable / enable) carries no
+      // `warnings`: those verbs have none to report, so an empty list here means
+      // "this verb does not say", not "the host reported none".
+      warnings: [],
     };
   }
 

@@ -226,11 +226,12 @@ impl IPluginSnapshotRepository for SqlitePluginSnapshotRepository {
                 "UPDATE plugin_snapshot_components SET \
                     installed = 1, disabled = 0, installed_at = ?, preset_id = ?, \
                     runtime_ref = ? \
-                 WHERE component_id = ?",
+                 WHERE snapshot_id = ? AND component_id = ?",
             )
             .bind(installed_at)
             .bind(if iter_ref.runtime_type == "preset" { iter_ref.location } else { "" })
             .bind(runtime_json)
+            .bind(iter_ref.snapshot_id)
             .bind(iter_ref.component_id)
             .execute(&mut *tx)
             .await?;
@@ -241,15 +242,18 @@ impl IPluginSnapshotRepository for SqlitePluginSnapshotRepository {
 
     async fn set_components_disabled(
         &self,
+        snapshot_id: &str,
         component_ids: &[&str],
         disabled: bool,
     ) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
         for component_id in component_ids {
             sqlx::query(
-                "UPDATE plugin_snapshot_components SET disabled = ? WHERE component_id = ?",
+                "UPDATE plugin_snapshot_components SET disabled = ? \
+                 WHERE snapshot_id = ? AND component_id = ?",
             )
             .bind(if disabled { 1_i64 } else { 0_i64 })
+            .bind(snapshot_id)
             .bind(component_id)
             .execute(&mut *tx)
             .await?;
@@ -260,6 +264,7 @@ impl IPluginSnapshotRepository for SqlitePluginSnapshotRepository {
 
     async fn clear_components_installed(
         &self,
+        snapshot_id: &str,
         component_ids: &[&str],
     ) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
@@ -268,8 +273,9 @@ impl IPluginSnapshotRepository for SqlitePluginSnapshotRepository {
                 "UPDATE plugin_snapshot_components SET \
                     installed = 0, disabled = 0, installed_at = NULL, \
                     preset_id = NULL, runtime_ref = NULL \
-                 WHERE component_id = ?",
+                 WHERE snapshot_id = ? AND component_id = ?",
             )
+            .bind(snapshot_id)
             .bind(component_id)
             .execute(&mut *tx)
             .await?;
@@ -511,12 +517,14 @@ mod tests {
         // mark agent installed (skill ref) and team installed (preset ref)
         let refs = [
             ComponentRuntimeRef {
+                snapshot_id: &snapshot_id,
                 component_id: agent_id,
                 runtime_type: "skill",
                 location: "/data/skills/agent-store/software-company",
                 mcp_server_id: None,
             },
             ComponentRuntimeRef {
+                snapshot_id: &snapshot_id,
                 component_id: team_id,
                 runtime_type: "preset",
                 location: "preset-abc",
@@ -535,14 +543,14 @@ mod tests {
         assert_eq!(team.preset_id.as_deref(), Some("preset-abc"));
 
         // disable agent
-        repo.set_components_disabled(&[agent_id], true).await.unwrap();
+        repo.set_components_disabled(&snapshot_id, &[agent_id], true).await.unwrap();
         let disabled = repo.list_installation_state(Some(&snapshot_id)).await.unwrap();
         let agent = disabled.iter().find(|row| row.component_id == agent_id).unwrap();
         assert_eq!(agent.disabled, 1);
         assert_eq!(agent.installed, 1, "disabled keeps installed flag");
 
         // uninstall both (clear state, keep rows)
-        repo.clear_components_installed(&[agent_id, team_id]).await.unwrap();
+        repo.clear_components_installed(&snapshot_id, &[agent_id, team_id]).await.unwrap();
         let cleared = repo.list_installation_state(Some(&snapshot_id)).await.unwrap();
         assert!(cleared.iter().all(|row| row.installed == 0 && row.disabled == 0));
         assert!(cleared.iter().all(|row| row.runtime_ref.is_none() && row.preset_id.is_none()));
@@ -551,5 +559,66 @@ mod tests {
         // global installed projection is empty now
         let global = repo.list_installation_state(None).await.unwrap();
         assert!(global.is_empty());
+    }
+
+    /// `36` D8: a component id (`wb-<plugin>-<slug>`) is shared by **every**
+    /// version of an entry, while the table is unique on
+    /// `(snapshot_id, component_id)`. Every install-state write must therefore
+    /// name the snapshot: the update flow installs the new version *before*
+    /// releasing the old one, so an id-only `UPDATE` would clear (or disable,
+    /// or mark) the record of the other version.
+    #[tokio::test]
+    async fn install_state_writes_are_snapshot_scoped() {
+        let (repo, _db) = setup().await;
+        let old = nomifun_common::generate_id();
+        let new = nomifun_common::generate_id();
+        repo.insert_snapshot_with_components(sample(&old, "digest-old")).await.unwrap();
+        repo.insert_snapshot_with_components(sample(&new, "digest-new")).await.unwrap();
+        let shared = "wb-software-company-software-team-lead";
+
+        // Both versions carry the same component id — that is the whole point.
+        for snapshot in [old.as_str(), new.as_str()] {
+            repo.mark_components_installed(
+                &[ComponentRuntimeRef {
+                    snapshot_id: snapshot,
+                    component_id: shared,
+                    runtime_type: "preset",
+                    location: "preset-shared",
+                    mcp_server_id: None,
+                }],
+                1,
+            )
+            .await
+            .unwrap();
+        }
+        for snapshot in [old.as_str(), new.as_str()] {
+            let rows = repo.list_installation_state(Some(snapshot)).await.unwrap();
+            let row = rows.iter().find(|row| row.component_id == shared).unwrap();
+            assert_eq!(row.installed, 1, "snapshot {snapshot} must be installed");
+        }
+
+        // Disabling the new version leaves the old version's flag alone.
+        repo.set_components_disabled(&new, &[shared], true).await.unwrap();
+        let old_rows = repo.list_installation_state(Some(&old)).await.unwrap();
+        let old_row = old_rows.iter().find(|row| row.component_id == shared).unwrap();
+        assert_eq!(old_row.disabled, 0, "the other snapshot's flag must not move");
+
+        // Releasing the old version must not clear the new version's record.
+        repo.clear_components_installed(&old, &[shared]).await.unwrap();
+        let new_rows = repo.list_installation_state(Some(&new)).await.unwrap();
+        let new_row = new_rows.iter().find(|row| row.component_id == shared).unwrap();
+        assert_eq!(new_row.installed, 1, "the new snapshot's record must survive");
+        assert_eq!(new_row.disabled, 1, "its own disable flag stays as it was set");
+        assert_eq!(new_row.preset_id.as_deref(), Some("preset-shared"));
+        let old_row = repo
+            .list_installation_state(Some(&old))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.component_id == shared)
+            .unwrap();
+        assert_eq!(old_row.installed, 0);
+        assert!(old_row.preset_id.is_none());
+        assert!(old_row.runtime_ref.is_none());
     }
 }

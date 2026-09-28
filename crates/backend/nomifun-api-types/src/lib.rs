@@ -94,6 +94,7 @@ pub use app_server::{
     AppServerImportRequest, AppServerImportResult, AppServerImportSourceKind,
     AppServerImportSummary, AppServerInstallComponent, AppServerInstallOutcome,
     AppServerInstallRequest,
+    AppServerInstallReplaceResult,
     AppServerInstallResult, AppServerInstallState, AppServerInstallStatus,
     AppServerLocalizedText,
     AppServerMarketplaceAddRequest, AppServerMarketplaceDetail, AppServerMarketplaceEntry,

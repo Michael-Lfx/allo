@@ -51,6 +51,7 @@ async fn tc_imp_001_002_software_company_imports_five_agents_and_one_team() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -139,6 +140,7 @@ async fn tc_imp_003_agents_only_never_creates_a_team() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -163,6 +165,7 @@ async fn tc_imp_004_path_traversal_and_absolute_paths_are_blocked() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
             .await
             .unwrap();
@@ -210,6 +213,7 @@ async fn tc_imp_005_symlink_escape_is_rejected() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -248,6 +252,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -263,6 +268,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -279,6 +285,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -288,6 +295,108 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
     assert_eq!(rows_after_conflict.len(), 1, "conflict must never overwrite");
     let saved = repo.get_by_snapshot_id(&first.snapshot_id).await.unwrap().unwrap();
     assert_eq!(saved.content_digest, first.content_digest);
+}
+
+// ---------------------------------------------------------------------------
+// `36` D2: the version a marketplace entry is stored under
+// ---------------------------------------------------------------------------
+
+/// A bare `SKILL.md` entry — the shape every official skills-market entry has
+/// (`skills/<slug>/`, no `.codebuddy-plugin/plugin.json`, no
+/// `.codebuddy-skill/marketplace.json`) — declares no version of its own, so
+/// `ParsedManifest::SingleSkill` answers the `1.0.0` placeholder. That is the
+/// root cause of `18` §11 D9: `store/list` shows the index version while the
+/// snapshot sits at `1.0.0`, so the update flag is permanently on and any
+/// content change collides with the snapshot already stored under `1.0.0`.
+///
+/// The marketplace layer now hands the version in (`36` D2). This pins both
+/// halves: without the override the placeholder stands; with it, the entry's
+/// advertised version is the identity.
+#[tokio::test]
+async fn market_entry_version_overrides_the_manifest_placeholder() {
+    let (service, _temp, repo) = setup().await;
+    let request = || ImportRequest {
+        source_path: fixtures().join("single-skill-dir"),
+        source_kind: SourceKind::WorkBuddySkillMarket,
+        marketplace_id: Some("skills-market".into()),
+        entry_name: Some("single-hello".into()),
+        source_revision: None,
+        declared_version: None,
+    };
+
+    // Historical behaviour: the manifest placeholder wins.
+    let placeholder = service.run_import(&request()).await.unwrap();
+    assert_eq!(placeholder.status, "completed", "{:?}", placeholder.errors);
+    assert_eq!(placeholder.version, "1.0.0");
+
+    // The marketplace's own version is the identity the snapshot gets.
+    let advertised = service
+        .run_import(&request().with_declared_version(Some("1.0.31".into())))
+        .await
+        .unwrap();
+    assert_eq!(advertised.status, "completed", "{:?}", advertised.errors);
+    assert_eq!(advertised.version, "1.0.31");
+    assert_ne!(
+        advertised.snapshot_id, placeholder.snapshot_id,
+        "a different version is a different immutable snapshot"
+    );
+    assert_eq!(repo.list_snapshots(100).await.unwrap().len(), 2);
+
+    // Same version + same digest is still idempotent.
+    let again = service
+        .run_import(&request().with_declared_version(Some("1.0.31".into())))
+        .await
+        .unwrap();
+    assert!(again.reused, "same identity + same digest must reuse");
+    assert_eq!(again.snapshot_id, advertised.snapshot_id);
+    assert_eq!(repo.list_snapshots(100).await.unwrap().len(), 2);
+}
+
+/// The pair that makes an update *possible*: content changed **and** the version
+/// raised is a new snapshot; content changed with the version left alone is
+/// still refused (`36` D6) — immutability is not weakened by the version fix.
+#[tokio::test]
+async fn market_entry_content_change_needs_a_raised_version() {
+    let (service, temp, repo) = setup().await;
+    let entry = temp.path().join("skill-demo");
+    std::fs::create_dir_all(&entry).unwrap();
+    let skill = entry.join("SKILL.md");
+    let write = |body: &str| {
+        std::fs::write(
+            &skill,
+            format!("---\nname: demo\ndescription: demo skill\n---\n{body}\n"),
+        )
+        .unwrap()
+    };
+    let request = |version: &str| ImportRequest {
+        source_path: entry.clone(),
+        source_kind: SourceKind::WorkBuddySkillMarket,
+        marketplace_id: Some("skills-market".into()),
+        entry_name: Some("skill-demo".into()),
+        source_revision: None,
+        declared_version: None,
+    }
+    .with_declared_version(Some(version.into()));
+
+    write("first body");
+    let first = service.run_import(&request("1.0.0")).await.unwrap();
+    assert_eq!(first.status, "completed", "{:?}", first.errors);
+
+    // v1.0.1 with a different body: a new version, not a conflict.
+    write("second body");
+    let second = service.run_import(&request("1.0.1")).await.unwrap();
+    assert_eq!(second.status, "completed", "{:?}", second.errors);
+    assert_ne!(second.snapshot_id, first.snapshot_id);
+    assert_eq!(repo.list_snapshots(100).await.unwrap().len(), 2);
+
+    // Third body, same version: still refused, and the 1.0.1 snapshot is intact.
+    write("third body");
+    let blocked = service.run_import(&request("1.0.1")).await.unwrap();
+    assert_eq!(blocked.status, "blocked", "digest conflict must still block");
+    assert!(!blocked.errors.is_empty());
+    assert_eq!(repo.list_snapshots(100).await.unwrap().len(), 2);
+    let saved = repo.get_by_snapshot_id(&second.snapshot_id).await.unwrap().unwrap();
+    assert_eq!(saved.content_digest, second.content_digest);
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +413,7 @@ async fn tc_imp_007_partial_component_failure_keeps_good_components() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -330,6 +440,7 @@ async fn tc_imp_008_high_risk_components_are_static_imports_only() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -366,6 +477,7 @@ async fn tc_imp_009_credential_values_never_enter_snapshot_or_repository() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -395,6 +507,7 @@ async fn skill_market_imports_skills_with_market_identity() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -420,6 +533,7 @@ async fn mcp_connector_import_preserves_stdio_args_and_env() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -477,6 +591,7 @@ async fn mcp_connector_import_keeps_the_remote_auth_template() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -564,6 +679,7 @@ async fn a_declared_token_schema_becomes_the_credential_form() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -722,6 +838,7 @@ async fn connector_market_imports_connector_entries() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -751,6 +868,7 @@ async fn tc_imp_010_file_path_declarations_and_object_dependencies() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -815,6 +933,7 @@ async fn tc_imp_011_cli_connector_directory_imports_connector_and_skills() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -873,6 +992,7 @@ async fn tc_imp_012_market_frontmatter_compat() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -888,6 +1008,7 @@ async fn tc_imp_012_market_frontmatter_compat() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -911,6 +1032,7 @@ async fn tc_imp_013_author_object_and_string_component_roots() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -937,6 +1059,7 @@ async fn tc_imp_014_single_skill_directory_without_marketplace_json() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -962,6 +1085,7 @@ async fn tc_imp_015_display_metadata_preserved() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -1005,6 +1129,7 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
         .await
         .unwrap();
@@ -1017,6 +1142,7 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
             marketplace_id: None,
             entry_name: None,
             source_revision: None,
+            declared_version: None,
         })
             .await,
         Err(nomifun_importer::ImportError::SourceNotFound)

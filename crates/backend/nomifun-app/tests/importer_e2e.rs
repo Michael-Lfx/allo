@@ -3038,3 +3038,484 @@ async fn importer_registering_a_hand_made_connector_declares_its_own_form() {
         .unwrap();
     assert_eq!(nameless.status(), StatusCode::BAD_REQUEST, "a blank name is refused");
 }
+
+/// `store/update-entry` end to end, across all three kinds (`36` §9).
+///
+/// The shape under test is the ordering: the new version is imported and
+/// installed **first**, and the previous one is released only when that
+/// succeeded. The three kinds differ in what "released" means — an expert keeps
+/// its Preset id, a skill gets a new directory under a new snapshot, a connector
+/// keeps its `mcp_servers` row — so all three are asserted, not just one.
+#[tokio::test]
+async fn importer_store_update_entry_upgrades_all_three_kinds() {
+    /// `(name, id, enabled)` of every Preset the installer created.
+    async fn preset_rows(app: axum::Router, token: &str) -> Vec<(String, String, bool)> {
+        let response = app.oneshot(get_with_token("/api/presets", token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|preset| {
+                preset["name"].as_str().is_some_and(|name| name.starts_with("agent-store: "))
+            })
+            .map(|preset| {
+                (
+                    preset["name"].as_str().unwrap_or_default().to_owned(),
+                    preset["preset_id"].as_str().unwrap_or_default().to_owned(),
+                    preset["enabled"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    }
+
+    /// `(name, id, enabled)` of every registered MCP server.
+    async fn mcp_rows(app: axum::Router, token: &str) -> Vec<(String, String, bool)> {
+        let response = app.oneshot(get_with_token("/api/mcp/servers", token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|server| {
+                (
+                    server["name"].as_str().unwrap_or_default().to_owned(),
+                    server["mcp_server_id"].as_str().unwrap_or_default().to_owned(),
+                    server["enabled"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    }
+
+    async fn store_item(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        entry: &str,
+    ) -> serde_json::Value {
+        let store = app
+            .oneshot(bearer_get("/api/app-server/store", token, csrf, connection_id))
+            .await
+            .unwrap();
+        assert_eq!(store.status(), StatusCode::OK);
+        let json = body_json(store).await;
+        json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["entry_name"] == entry)
+            .unwrap_or_else(|| panic!("entry {entry} missing from the store: {json}"))
+            .clone()
+    }
+
+    async fn store_action(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        marketplace_id: &str,
+        entry: &str,
+        verb: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(bearer_json(
+                "POST",
+                &format!("/api/app-server/store/{marketplace_id}/entries/{entry}/{verb}"),
+                serde_json::json!({}),
+                token,
+                csrf,
+                Some(connection_id),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, body_json(response).await)
+    }
+
+    /// The install state of one snapshot, as `(component_id, installed)` pairs.
+    async fn component_states(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        snapshot_id: &str,
+    ) -> Vec<(String, bool)> {
+        let response = app
+            .oneshot(bearer_get(
+                &format!("/api/app-server/installs/{snapshot_id}"),
+                token,
+                csrf,
+                connection_id,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        json["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|component| {
+                (
+                    component["id"].as_str().unwrap_or_default().to_owned(),
+                    component["state"].as_str() == Some("installed"),
+                )
+            })
+            .collect()
+    }
+
+    const ENTRIES: [&str; 3] = ["expert-demo", "skill-demo", "connector-demo"];
+
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Each kind lives in the market layout that actually produces it: a plugin
+    // market (plugin.json carries the version), a skill market and a connector
+    // market (both advertise the version in their own index — a `SKILL.md` /
+    // `mcp.json` entry has no version of its own, which is exactly `36` D2).
+    let staging = std::env::temp_dir().join(format!("as-update-{}", nomifun_common::generate_id()));
+    let expert_root = staging.join("experts");
+    let skill_root = staging.join("skills");
+    let connector_root = staging.join("connectors");
+    std::fs::create_dir_all(expert_root.join(".codebuddy-plugin")).unwrap();
+    std::fs::create_dir_all(expert_root.join("plugins/expert-demo/.codebuddy-plugin")).unwrap();
+    std::fs::create_dir_all(expert_root.join("plugins/expert-demo/agents")).unwrap();
+    std::fs::create_dir_all(skill_root.join(".codebuddy-skill")).unwrap();
+    std::fs::create_dir_all(skill_root.join("skills/skill-demo")).unwrap();
+    std::fs::create_dir_all(connector_root.join(".codebuddy-connector")).unwrap();
+    std::fs::create_dir_all(connector_root.join("connectors/connector-demo")).unwrap();
+
+    let write_expert_index = || {
+        std::fs::write(
+            expert_root.join(".codebuddy-plugin/marketplace.json"),
+            r#"{
+                "name": "update-experts",
+                "version": "0.1.0",
+                "plugins": [
+                    { "name": "expert-demo", "source": "./plugins/expert-demo" }
+                ]
+            }"#,
+        )
+        .unwrap()
+    };
+    let write_skill_index = |version: &str| {
+        std::fs::write(
+            skill_root.join(".codebuddy-skill/marketplace.json"),
+            format!(
+                r#"{{
+                    "name": "update-skills",
+                    "version": "0.1.0",
+                    "skills": [
+                        {{ "name": "skill-demo", "source": "skill-demo", "version": "{version}" }}
+                    ]
+                }}"#
+            ),
+        )
+        .unwrap()
+    };
+    let write_connector_index = |version: &str| {
+        std::fs::write(
+            connector_root.join(".codebuddy-connector/connectors.json"),
+            format!(
+                r#"{{
+                    "name": "update-connectors",
+                    "connectors": [
+                        {{ "id": "connector-demo", "name_zh": "演示连接器", "version": "{version}" }}
+                    ]
+                }}"#
+            ),
+        )
+        .unwrap()
+    };
+    let write_expert = |version: &str, body: &str| {
+        std::fs::write(
+            expert_root.join("plugins/expert-demo/.codebuddy-plugin/plugin.json"),
+            format!(
+                r#"{{ "name": "expert-demo", "version": "{version}", "agents": ["./agents"] }}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            expert_root.join("plugins/expert-demo/agents/lead.md"),
+            format!("---\nname: lead\ndescription: Lead\n---\n\n{body}\n"),
+        )
+        .unwrap();
+    };
+    let write_skill = |body: &str| {
+        std::fs::write(
+            skill_root.join("skills/skill-demo/SKILL.md"),
+            format!("---\nname: skill-demo\ndescription: Demo skill\n---\n{body}\n"),
+        )
+        .unwrap();
+    };
+    let write_connector = |url: &str| {
+        std::fs::write(
+            connector_root.join("connectors/connector-demo/mcp.json"),
+            format!(
+                r#"{{ "mcpServers": {{ "connector-demo": {{ "type": "http", "url": "{url}" }} }} }}"#
+            ),
+        )
+        .unwrap();
+    };
+
+    write_expert_index();
+    write_skill_index("1.0.0");
+    write_connector_index("1.0.0");
+    write_expert("1.0.0", "First body.");
+    write_skill("first body");
+    write_connector("https://first.example/mcp");
+
+    let mut market_of: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    for (entry, root, name) in [
+        ("expert-demo", &expert_root, "update-experts"),
+        ("skill-demo", &skill_root, "update-skills"),
+        ("connector-demo", &connector_root, "update-connectors"),
+    ] {
+        let add = app
+            .clone()
+            .oneshot(bearer_json(
+                "POST",
+                "/api/app-server/markets",
+                serde_json::json!({
+                    "source_kind": "directory",
+                    "source": root.to_string_lossy(),
+                    "name": name,
+                }),
+                &token,
+                &csrf,
+                Some(&connection_id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(add.status(), StatusCode::OK, "market add must succeed for {entry}");
+        market_of.insert(
+            entry,
+            body_json(add).await["marketplace_id"].as_str().unwrap().to_owned(),
+        );
+    }
+
+    // Update is not a second way to install: an entry nobody installed is refused
+    // before anything is imported.
+    let (status, body) = store_action(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &market_of["expert-demo"],
+        "expert-demo",
+        "update",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "not-installed update must be refused: {body}");
+
+    // Install all three at 1.0.0.
+    for entry in ENTRIES {
+        let (status, body) = store_action(
+            app.clone(),
+            &token,
+            &csrf,
+            &connection_id,
+            &market_of[entry],
+            entry,
+            "install",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "install {entry}: {body}");
+        assert_eq!(body["version"], "1.0.0", "install {entry}: {body}");
+        assert!(body["errors"].as_array().unwrap().is_empty(), "install {entry}: {body}");
+    }
+
+    let presets_before = preset_rows(app.clone(), &token).await;
+    assert_eq!(presets_before.len(), 1, "one expert ⇒ one preset: {presets_before:?}");
+    let expert_preset_id = presets_before[0].1.clone();
+    let connectors_before = mcp_rows(app.clone(), &token).await;
+    let connector_row = connectors_before
+        .iter()
+        .find(|(name, _, _)| name == "connector-demo")
+        .unwrap_or_else(|| panic!("connector row missing: {connectors_before:?}"))
+        .clone();
+
+    let mut old_snapshots: Vec<(String, String)> = Vec::new();
+    for entry in ENTRIES {
+        let item = store_item(app.clone(), &token, &csrf, &connection_id, entry).await;
+        old_snapshots.push((entry.to_owned(), item["snapshot_id"].as_str().unwrap().to_owned()));
+    }
+
+    // The market publishes 1.0.1 with different content in every entry.
+    write_skill_index("1.0.1");
+    write_connector_index("1.0.1");
+    write_expert("1.0.1", "Second body.");
+    write_skill("second body");
+    write_connector("https://second.example/mcp");
+
+    for entry in ENTRIES {
+        let item = store_item(app.clone(), &token, &csrf, &connection_id, entry).await;
+        assert_eq!(item["version"], "1.0.1", "{entry} must advertise the new version: {item}");
+        assert_eq!(item["installed_version"], "1.0.0", "{entry}: {item}");
+        assert_eq!(
+            item["update_available"], true,
+            "{entry} must advertise the pending update: {item}"
+        );
+    }
+
+    // Upgrade. A connector row is left disabled by the upsert (the configuration
+    // changed), which is asserted rather than assumed.
+    for entry in ENTRIES {
+        let (status, body) = store_action(
+            app.clone(),
+            &token,
+            &csrf,
+            &connection_id,
+            &market_of[entry],
+            entry,
+            "update",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "update {entry}: {body}");
+        assert_eq!(body["version"], "1.0.1", "update {entry}: {body}");
+        assert_eq!(body["previous_version"], "1.0.0", "update {entry}: {body}");
+        assert_eq!(body["reused"], false, "update {entry}: {body}");
+        assert!(body["errors"].as_array().unwrap().is_empty(), "update {entry}: {body}");
+        assert_eq!(
+            body["released_count"], 1,
+            "the replaced snapshot's component must be released: {body}"
+        );
+        assert!(
+            body["outcomes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|outcome| outcome["ok"] == true),
+            "update {entry}: {body}"
+        );
+    }
+
+    // Expert: same Preset row, still enabled, still exactly one.
+    let presets_after = preset_rows(app.clone(), &token).await;
+    assert_eq!(
+        presets_after.len(),
+        1,
+        "an upgrade must not mint a second preset: {presets_after:?}"
+    );
+    assert_eq!(
+        presets_after[0].1, expert_preset_id,
+        "the upgrade must keep the preset id: {presets_after:?}"
+    );
+    assert!(presets_after[0].2, "the preset keeps its enable state: {presets_after:?}");
+
+    // Connector: the same `mcp_servers` row, upserted in place — and reported as
+    // disabled because the transport changed (`36` D7).
+    let connectors_after = mcp_rows(app.clone(), &token).await;
+    let connector_after = connectors_after
+        .iter()
+        .find(|(name, _, _)| name == "connector-demo")
+        .unwrap_or_else(|| panic!("connector row missing: {connectors_after:?}"));
+    assert_eq!(
+        connector_after.1, connector_row.1,
+        "an upgrade must reuse the mcp_servers row, not create a second one: {connectors_after:?}"
+    );
+    assert_eq!(connectors_after.len(), connectors_before.len(), "{connectors_after:?}");
+    assert!(
+        !connector_after.2,
+        "a changed transport is left disabled until it is re-probed: {connectors_after:?}"
+    );
+
+    // The replaced snapshots keep their history but no longer claim to be
+    // installed — and the new ones do (`36` D5/D8).
+    for (entry, old_snapshot) in &old_snapshots {
+        let old_states =
+            component_states(app.clone(), &token, &csrf, &connection_id, old_snapshot).await;
+        assert!(
+            old_states.iter().all(|(_, installed)| !installed),
+            "the replaced {entry} snapshot must be released: {old_states:?}"
+        );
+        let item = store_item(app.clone(), &token, &csrf, &connection_id, entry).await;
+        let new_snapshot = item["snapshot_id"].as_str().unwrap().to_owned();
+        assert_ne!(&new_snapshot, old_snapshot, "an upgrade lands on a new snapshot");
+        let new_states =
+            component_states(app.clone(), &token, &csrf, &connection_id, &new_snapshot).await;
+        assert!(
+            new_states.iter().all(|(_, installed)| *installed),
+            "the new {entry} snapshot must be installed: {new_states:?}"
+        );
+    }
+    for entry in ENTRIES {
+        let item = store_item(app.clone(), &token, &csrf, &connection_id, entry).await;
+        assert_eq!(item["update_available"], false, "{entry}: {item}");
+        assert_eq!(item["installed_version"], "1.0.1", "{entry}: {item}");
+    }
+
+    // Idempotent: a second call has nothing to do and says so.
+    let (status, body) = store_action(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &market_of["expert-demo"],
+        "expert-demo",
+        "update",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["reused"], true, "{body}");
+    assert_eq!(body["installed_count"], 0, "{body}");
+
+    // `36` D6: content changed, version left alone. As far as the protocol is
+    // concerned there is no new version to install, so the update is a no-op —
+    // and the installed version stays exactly where it was.
+    write_skill("third body without a version bump");
+    let (status, body) = store_action(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &market_of["skill-demo"],
+        "skill-demo",
+        "update",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["reused"], true, "an unchanged version is nothing to update: {body}");
+    assert!(body["errors"].as_array().unwrap().is_empty(), "{body}");
+    assert_eq!(body["version"], "1.0.1", "nothing may move: {body}");
+    let item = store_item(app.clone(), &token, &csrf, &connection_id, "skill-demo").await;
+    assert_eq!(item["installed_version"], "1.0.1", "{item}");
+    assert_eq!(item["update_available"], false, "{item}");
+
+    // The refusal itself still stands where it belongs — a direct import of the
+    // same content under the same identity — so raising the version for the
+    // snapshot did not weaken immutability.
+    let import = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!(
+                "/api/app-server/markets/{}/entries/skill-demo/import",
+                market_of["skill-demo"]
+            ),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(import.status(), StatusCode::OK);
+    let import = body_json(import).await;
+    assert_eq!(
+        import["status"], "blocked",
+        "same identity + different digest must still be refused: {import}"
+    );
+    assert!(
+        import["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().is_some_and(|text| text.contains("digest"))),
+        "{import}"
+    );
+}

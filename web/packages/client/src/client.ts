@@ -298,4 +298,22 @@ export class AppServerClient {
       entry_name: entryName,
     });
   }
+
+  /**
+   * Upgrade an installed entry to the version its marketplace advertises.
+   *
+   * The host installs the new version before releasing the old one, so a failure
+   * leaves the previous installation usable (`released_count: 0` is the machine
+   * readable form of that). Refused for an entry that is not installed — this is
+   * never a second way to install something.
+   */
+  async updateStoreEntry(
+    marketplaceId: string,
+    entryName: string,
+  ): Promise<StoreInstallResult> {
+    return this.transport.request<StoreInstallResult>("store/update-entry", {
+      marketplace_id: marketplaceId,
+      entry_name: entryName,
+    });
+  }
 }

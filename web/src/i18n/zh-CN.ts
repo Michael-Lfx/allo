@@ -288,7 +288,12 @@ const zhCN = {
     storeUninstallDone: "已卸载「{{name}}」",
     storeUninstallFailed: "卸载未完全成功：部分组件未能释放，详情见页面顶部错误。",
     storeUpdate: "有新版本可用",
-    storeUpdateNote: "当前版本不支持原地升级：卸载后重新安装，即可获取市场中的新版本。",
+    storeUpdateNow: "立即升级",
+    storeUpdating: "升级中…",
+    storeUpdateDone: "已把「{{name}}」从 {{from}} 升级到 {{to}}",
+    storeUpdateFailed: "升级失败：{{reason}}",
+    storeUpdateBlockedVersion:
+      "市场没有抬高条目版本，改动后的内容发布不出去，因此这次升级无法完成；请在市场侧抬高版本（或换用新的条目名）后重试。原因：{{reason}}",
     storeFromMarket: "来源：{{market}}",
     storeOpenDetail: "查看详情",
     storeSnapInstalled: "已安装组件：{{count}}",

@@ -298,6 +298,17 @@
 （`storeUpdate` 由动作改述状态、新增 `storeUpdateNote`、删除孤儿键
 `storeUpdating`）；`16` §5.3 本轮落地记录第 ⑨ 条。
 
+**后续（2026-09-28）：假控件换成了真动词。** `36-store-update-entry.zh.md` 采纳 D3=A
+新增 `store/update-entry`（`fp-12`），于是抽屉里那处说明性元素改回**真按钮**
+（`catalog.storeUpdateNow` / `storeUpdating`），`storeUpdateNote` 这句
+「先卸载再安装」**随之删除**——它描述的那条路不再是唯一路径。卡片的
+`role="note"` 徽标保留（它不是控件，点了也没有任何事发生）。
+D16 的两条立论**仍然成立且更强**：`store/install-entry` 对已装条目依旧是
+no-op（安装永不偷偷升级），`update_available` 依旧只是一个标志、
+**没有**任何一层会因为看到它就自行拼动作——升级必须由用户显式叫
+`store/update-entry`。SDK 的 `updateHint()` 相应从 `"uninstall_reinstall"`
+改为 `"update"`。
+
 ---
 
 ## 附 · 拍板后的连续推进顺序（无需再问）

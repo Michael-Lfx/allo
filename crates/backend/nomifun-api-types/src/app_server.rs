@@ -975,6 +975,27 @@ pub struct AppServerInstallResult {
     pub outcomes: Vec<AppServerInstallOutcome>,
 }
 
+/// Result of replacing one installed snapshot with another (`36` D5).
+///
+/// **Host-internal**: there is no `install/replace` wire verb — the only caller
+/// is `store/update-entry`, which folds this into its own result. Keeping it out
+/// of the protocol is deliberate: "replace" is meaningless to a caller that does
+/// not already own both snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerInstallReplaceResult {
+    /// The new snapshot's install report.
+    pub install: AppServerInstallResult,
+    /// Components of the **old** snapshot that were actually released. Zero
+    /// means the previous installation was not touched — a fact a caller can
+    /// assert on rather than infer (`36` §8).
+    pub released_count: usize,
+    /// Old-snapshot components that could not be released. Their install record
+    /// is kept, exactly as `install/uninstall` does, so a retry still has the
+    /// pointer to the artifact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release_errors: Vec<String>,
+}
+
 /// Install state projection for one snapshot (or empty when not installed).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerInstallStatus {
@@ -1278,15 +1299,20 @@ pub struct AppServerStoreList {
     pub markets_pending: bool,
 }
 
-/// `market install-entry` result: import (when missing) + runtime
-/// registration in one idempotent call.
+/// `market install-entry` / `store/update-entry` result: import (when missing) +
+/// runtime registration in one idempotent call.
+///
+/// The two verbs return the same shape (`36` D4) because nine of their fields
+/// mean exactly the same thing; the three below are the update-only half, and
+/// absence is the honest answer for an install.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerStoreInstallResult {
     pub marketplace_id: String,
     pub entry_name: String,
     pub snapshot_id: String,
     pub version: String,
-    /// `true` when the components were already registered (no-op install).
+    /// `true` when the components were already registered (no-op install), or —
+    /// for an update — when the entry was already at the advertised version.
     pub reused: bool,
     pub installed_count: usize,
     pub warnings: Vec<String>,
@@ -1296,6 +1322,26 @@ pub struct AppServerStoreInstallResult {
     /// host that predates the field — read it as "no detail available".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outcomes: Vec<AppServerInstallOutcome>,
+    /// Version the entry was installed at **before** this call. Only
+    /// `store/update-entry` sets it; absence means "this was an install, there
+    /// was nothing before it".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
+    /// The snapshot that was replaced. Same rule as `previous_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_snapshot_id: Option<String>,
+    /// Components of the replaced snapshot whose runtime artifacts were actually
+    /// released. `0` on an install, on an update that was a no-op, and on an
+    /// update that failed and left the previous installation in place — three
+    /// different reasons for the same honest number.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub released_count: usize,
+}
+
+/// `skip_serializing_if` for the counters above: absent when zero, so an
+/// install's byte shape is unchanged by the update-only fields.
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// One model in the public catalog (`models/list`). The projection carries

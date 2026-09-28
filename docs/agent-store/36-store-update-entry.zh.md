@@ -1,6 +1,8 @@
 # 商店条目的更新（update）能力 · 技术方案
 
-> 状态：**设计定稿，未动工**（2026-09-28）。决策 D1–D8 见 §4，均有取值、替代方案与代价。
+> 状态：**已实施（2026-09-28）**——§9 的 8 步全部落地，`fp-11` → `fp-12`，方法计数
+> `52 / 77` → `53 / 78`；实施期与本文有 4 处差异与 1 处新增，逐条记在 **§12**。
+> 决策 D1–D8 见 §4，均有取值、替代方案与代价。
 > §9 是实施步骤与每步的验收口径；§10 登记实施期必须回头改的既有文档与门禁。
 > 前置：`05-flowy-agent-store-app-server-protocol.md`（协议正文，`store/*`）、
 > `07-typescript-sdk.md`（SDK 方法面）、`18-marketplace-spec.zh.md`（§9.1 安装五动词、§9.2 自动更新边界、
@@ -90,9 +92,15 @@
 4. `ParsedManifest::SingleSkill(_).version()` = **`"1.0.0"`**（`manifest.rs:382`），
    写入 `declared_version`（`import.rs:232`）。
 
-而目录侧的版本来自索引行（`market_fetch.rs:332` 的 `version: item.get("version")`）；
-技能条目拿不到 `index_info`（只在 `kind == "connector"` 时填，`app_server_store.rs:219`），
-所以落到 `entry.version`——真机索引里腾讯文档是 **`"1.0.31"`**。
+而目录侧的版本来自索引行。**实施期发现这一格比本文原先写的更坏**（见 §12 差异 ②）：
+技能条目的 `index_info` 只在 `kind == "connector"` 时才填（`app_server_store.rs:219`），
+**技能市场索引从来没有被读过**——`entry.version` 在目录市场里恒为 `None`
+（`probe_skill_market` 产出的 `ScannedEntry` 根本没有版本字段，`scan_to_entries` 填
+`version: None`），只有 URL 市场走 `probe_url_entries` 才带上行版本。所以技能的
+「目录显示版本」与「快照版本」**都是 `1.0.0`**，`update_available` 恒为假、永远升不了。
+修法因此是**两半**：把技能索引也读出来（`MarketIndex::read` 读
+`.codebuddy-connector/connectors.json` 与 `.codebuddy-skill/marketplace.json` 两张表），
+再让导入请求带上这个版本（D2 的 `declared_version`）。
 
 **结论**：`18` §11 D9 的「skills 自带 manifest 版本，不受影响」**不成立**，D9 的适用面要扩到技能。
 在本方案动工前，任何 update 实现对这两类条目都是空转。
@@ -158,6 +166,10 @@ instructions / agent / model，其它字段（included_skills、tags 等）保�
   `import.rs:232` 改为 `declared_version: request.declared_version.clone().unwrap_or_else(|| parsed.version().to_owned())`。
 - `app_server_marketplace::import_entry` 用**已有的** `entry_live_version(...)` 算出版本后传入
   （它已经持有 `row` / `entry` / 索引，`app_server_marketplace.rs:1100`–`:1186`）。
+- **第二半（实施期补上，见 §12 差异 ②）**：技能侧的市场索引此前根本没被读
+  （`index_info` 只给 connector 填）。所以先有 `MarketIndex::read`（connectors.json +
+  skill marketplace.json 两张表，`entry_facts` 按 kind 取），`entry_live_version`
+  才真的能对技能给出非占位版本——否则这里传进导入请求的仍是 `1.0.0`。
 
 **为什么 A 就够了**：`market/entry-import` 与 `store/install-entry` 都从 `import_entry` 这一个漏斗进入
 （`ImportRequest::from_marketplace*` 只在这一个函数里被调用），所以两条 wire 路径同时变正确。
@@ -219,6 +231,9 @@ SDK 侧因此可以复用同一个 `StoreOperationOutcome`；新开一个 DTO �
 4. install/run 新快照（逐组件）
 5. 新装成功（errors 为空） → 释放旧快照中 installed=1 的组件
 6. 任一步失败 → 旧安装原样保留，errors[] 如实上报，released_count: 0
+   —— 并且**把新快照已经装上的那部分回滚掉**（§12 差异 ①）：不这么做，新快照会成为
+    provenance 匹配项、`store/list` 改口说"已在新版本"，下一次 update 直接 no-op，
+   失败就再也重试不了。
 ```
 
 **连接器的一处例外（必须实现）**：第 5 步释放旧组件时，先比 `mcp_server_id`：
@@ -454,6 +469,8 @@ POST /api/app-server/store/{marketplace_id}/entries/{entry_name}/update
 
 ## 9. 实施步骤与验收
 
+> **8 步均已落地（2026-09-28）**，逐条读数见 §12。下表保留为设计时的验收口径。
+
 | 步 | 内容 | 验证 |
 |---|---|---|
 | 1 | **版本覆盖**（D2）：`ImportRequest.declared_version` + `import_entry` 传值 + builder 同步 | `cargo test -p nomifun-importer`：新增用例钉住「技能市场条目（`SKILL.md`，无 manifest）按传入版本落库，不再钉 1.0.0」「`manual` 导入仍用清单版本」「同身份同 digest 仍 Reuse、不同 digest 仍 Conflict」 |
@@ -501,3 +518,74 @@ POST /api/app-server/store/{marketplace_id}/entries/{entry_name}/update
 4. **旧快照的 GC**：历史行只增不减（§7）。是否需要「保留最近 N 个」是可独立立项的容量问题。
 5. **OAuth 态的跨版本延续**：`oauth_tokens` 按 `server_url` 全宿主唯一（`06`）；升级若换了 URL，
    凭据不会自动迁移——与 `34` §2 的登记同源，不在本方案内。
+
+---
+
+## 12. 实施记录（2026-09-28）
+
+### 12.1 落地的代码与测试
+
+| 文档 §9 的步 | 落地位置 | 读数 |
+| --- | --- | --- |
+| 1 版本覆盖 | `nomifun-importer/src/import.rs`（`ImportRequest::declared_version` + `with_declared_version`）、`nomifun-app/src/app_server_marketplace.rs`（`import_entry` 传 `entry_facts(..).version`） | `cargo test -p nomifun-importer` **25 passed**（含新增 `market_entry_version_overrides_the_manifest_placeholder`、`market_entry_content_change_needs_a_raised_version`） |
+| 2 保 preset id | `PresetRegistrar::update_agent_store_preset` + `AppServerPresetRegistrar` 实现 + `install_with_handover` 的 preset 分支（`handover.preset_id(..)` → 原地 update，action `reused`） | `importer_store_update_entry_upgrades_all_three_kinds`：升级后 preset id **不变**、同名预设**只有一条**、`enabled` 保持 |
+| 3 D8 收窄 | `nomifun-db/src/repository/{plugin_snapshot.rs,sqlite_plugin_snapshot.rs}`：`mark_components_installed` / `set_components_disabled` / `clear_components_installed` 三处全部加 `snapshot_id` 条件（`ComponentRuntimeRef` 新增 `snapshot_id` 字段） | `cargo test -p nomifun-db --lib plugin_snapshot` **8 passed**（含新增 `install_state_writes_are_snapshot_scoped`，它在改前就是红的） |
+| 4 替换 | `InstallProvider::replace` + `AppServerInstallProvider::install_with_handover` / `rollback_replaced` + `Handover` / `shared_artifact_key`（`app_server_installer.rs`） | `importer_store_update_entry_upgrades_all_three_kinds`（三种 kind 各断言一次；`released_count == 1`；旧快照 `installed=0`、新快照 `installed=1`；连接器行 id 不变） |
+| 5 新动词 | `StoreProvider::update_entry`（`app_server_store.rs`）+ `store_update_entry_impl` / `store_update_entry_route` / WS arm（`nomifun-app-server/src/lib.rs`）+ `AppServerStoreInstallResult` 三个新字段 | `check:fingerprint` ✓ `fp-12`（本仓 7 文件 10 处 + 站点 2 处）；`nomifun-app-server` 的能力门用例新增 `store/update-entry` |
+| 6 客户端 | `http-transport.ts` 路由 + `client.updateStoreEntry` + `store.update()` / `updateHint()`（`uninstall_reinstall` → `update`）+ `StoreOperationOutcome` 的 `errors` / `warnings` / `fromVersion` / `toVersion` / `releasedCount` | `cd web && bun run typecheck` ✓、`bun run test` **555 passed**（含 4 条新的 `update` 用例）；路由表计数守卫 `52 / 77` → `53 / 78` |
+| 7 文档 | 本仓 `05`（指纹头 + §4.7 路由/规则）、`07` §1、`18` §9.1/§9.2/§11 D9/D10、`21` D16、`26` §8、本文件与 `README.md` 索引 | 站点两语言 + changelog 另见 §12.3 |
+| 8 WebUI | `web/src/components/CatalogView.tsx` 的 `runStoreUpdate` + 抽屉真按钮；i18n 中英各 5 个新键、删 `storeUpdateNote` | `bun run typecheck` ✓；卡片上的 `role="note"` 徽标保留（非控件，点了无事发生） |
+
+**活体验收脚本尚未新增**（本文件 §9 列的 `verify-store-update-live.ts`）。三种 kind 的端到端
+已在 `nomifun-app/tests/importer_e2e.rs` 的 `importer_store_update_entry_upgrades_all_three_kinds`
+里覆盖（真宿主 + 真 SQLite + 三个临时目录市场），因此它属于"可加可不加"的补充，
+不是这条链路的证据缺口。
+
+### 12.2 与本文设计期的差异（4 处）
+
+① **部分失败时回滚新快照**（D5 第 6 步，本文原只写"旧的原样保留"）。只保留旧的不够：
+`find_snapshot_by_provenance` 取的是**最新**导入（`ORDER BY imported_at DESC`），
+半装的新快照会成为匹配项，`store/list` 于是改口说"已在新版本、无更新"，下一次
+`update` 直接 no-op——失败状态再也退不回来。因此 `rollback_replaced` 把新快照**已经装上**
+的组件释放并清记录，让条目落回旧版本（可以重试的状态）。回滚同样按
+`shared_artifact_key` 判共享：专家那条**原地升级**的 Preset 与旧快照共用一个 id，
+回滚只清新记录的安装位、**不删 Preset**。代价：那种情形下 Preset 的内容已经是新版本的内容
+（id 与启用态完好），版本号仍指向旧的——这是"内容先动、版本未动"的一格，如实记在这里。
+
+② **技能的市场索引此前根本没被读**（§3.2 / D2 的第二半）。本文假设"技能目录已显示索引版本"，
+实测不成立：`index_info` 只给 connector 填，`probe_skill_market` 的 `ScannedEntry` 里
+**没有版本字段**。所以新增 `MarketIndex::read`（connectors.json 的 `id → version` +
+skill marketplace.json 的 `name → version`），`entry_facts` 按 kind 取。
+副作用是**技能条目在目录里的显示版本**也一并修正（此前恒为 `1.0.0`）。
+
+③ **D8 的收窄范围比本文写的大一处**：除 `clear_components_installed` /
+`set_components_disabled` 外，**`mark_components_installed` 有同一缺陷**——它同样只按
+`component_id` 更新，于是"装新快照"这一步会把**旧快照的组件行**一并标记成 `installed=1`。
+三处一起收窄，`ComponentRuntimeRef` 因此多一个 `snapshot_id` 字段。
+实现形态是列表 + 快照 id（`clear_components_installed(snapshot_id, &ids)`），
+不是本文写的单数形态：批量仍在**一个事务**里，收窄 WHERE 就够。
+
+④ **D6 的真实可达性**（本文写"update 如实把 digest 冲突变成 `ok:false`"）。实测更简单：
+走 `store/update-entry` 时"内容变了但版本没抬"是 **no-op**（`existing.version == live`
+在第 2 步就返回 `reused: true` + 警告），协议上根本没有"新版本"可升，因此**碰不到**导入器。
+digest 冲突只在**直接** `market/entry-import`（WebUI 的"仅导入"）时出现，那里照旧拒绝。
+两条路都不动已安装快照，所以结论不变；`ok:false` + `errors[]` 那条路现在由 ④ 的导入面承担。
+
+### 12.3 站点仓
+
+`content/docs/{zh-CN,en-US}/typescript-sdk.md` 两处已改：指纹 `fp-11` → `fp-12`、
+方法计数 `52` → `53 / 78`（站点那两句正被另一条线的"文风规范化"改写中，两页都带未提交改动，
+因此**只改工作区、未提交**——`bun run check:fingerprint` 已按 `fp-12` 变绿）。
+`changelog` §4 的未发布台账与 `upgrade` 页**未改**：站点仓当前有另一会话未提交的 6 个文件
+（含这两页），台账要与版本号一起动，等那批落地后再按 `25-release-runbook.zh.md` 的 S 清单补。
+
+`check:release-sync` 的站点计数 pattern 已改为**并集**
+（`个(?:协议)?方法` / `(?:(?:public HTTP endpoints )?map|Covers) … (?:protocol )?methods`）：
+站点文风规范化把句子改了形，旧 pattern 一处都匹配不上——那种"门禁其实什么都没查"比没有门禁更糟，
+所以加分支而不是替换。改后该门禁只剩一条**既有**红：
+`web/packages/sdk/package.json` 是 `0.1.0-beta.8` 而 `web/packages/protocol/package.json`
+仍是 `0.1.0-beta.7`（另一条线抬高 sdk 未同步 protocol，与本次改动无关）。
+
+**活体脚本**（可选）：§9 列的 `verify-store-update-live.ts` 未新增——三种 kind 的端到端已由
+`nomifun-app/tests/importer_e2e.rs` 的 `importer_store_update_entry_upgrades_all_three_kinds`
+覆盖（真宿主 + 真 SQLite + 三个临时目录市场）。

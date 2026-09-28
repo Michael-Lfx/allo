@@ -14,7 +14,8 @@ use nomifun_api_types::{
     AppServerConnectorCallResult, AppServerConnectorCredential, AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorRegistration, AppServerConnectorStatusView,
     AppServerConnectorSummary, AppServerExpertPack, AppServerImportDetail, AppServerImportRequest,
-    AppServerImportResult, AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
+    AppServerImportResult, AppServerImportSummary, AppServerInstallReplaceResult,
+    AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceEntry, AppServerMarketplaceEntrySnapshot, AppServerMarketplaceRefreshResult,
     AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
@@ -277,6 +278,23 @@ pub trait InstallProvider: Send + Sync {
     /// Install a snapshot: register its components into the runtime.
     async fn install(&self, request: AppServerInstallRequest) -> Result<AppServerInstallResult, AppError>;
 
+    /// Install `new_snapshot_id` **over** `old_snapshot_id` (`36` D5), carrying
+    /// over what the old version's components already own.
+    ///
+    /// Order is the contract, not an implementation detail: the new snapshot is
+    /// imported and installed **first**, and only a fully successful install
+    /// releases the old one. A failure therefore leaves the previous
+    /// installation untouched — a client that called "update" never ends up with
+    /// nothing. Components are paired across the two snapshots by component id
+    /// (`wb-<plugin>-<slug>`, stable across versions).
+    ///
+    /// Not a wire verb: `store/update-entry` is the only caller.
+    async fn replace(
+        &self,
+        old_snapshot_id: &str,
+        new_snapshot_id: &str,
+    ) -> Result<AppServerInstallReplaceResult, AppError>;
+
     /// Current per-component installation state for a snapshot.
     async fn status(&self, snapshot_id: &str) -> Result<AppServerInstallStatus, AppError>;
 
@@ -402,6 +420,20 @@ pub trait StoreProvider: Send + Sync {
     /// their components into the runtime. Idempotent — an already-installed
     /// entry returns the current state.
     async fn install_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerStoreInstallResult, AppError>;
+
+    /// Upgrade an installed entry to the version its marketplace now advertises
+    /// (`36` §5.2).
+    ///
+    /// The new version is imported and installed **first**; only a fully
+    /// successful install releases the old one, so a failure leaves the previous
+    /// installation in place. Idempotent: an entry already at the advertised
+    /// version answers `reused: true` with nothing attempted. An entry that is
+    /// not installed is refused — never installed on the way past.
+    async fn update_entry(
         &self,
         marketplace_id: &str,
         entry_name: &str,
@@ -801,6 +833,18 @@ impl InstallProvider for FakeInstallProvider {
     ) -> Result<AppServerInstallStatus, AppError> {
         Ok(self.status.clone())
     }
+
+    async fn replace(
+        &self,
+        _old_snapshot_id: &str,
+        _new_snapshot_id: &str,
+    ) -> Result<AppServerInstallReplaceResult, AppError> {
+        Ok(AppServerInstallReplaceResult {
+            install: self.install_result.clone(),
+            released_count: 0,
+            release_errors: vec![],
+        })
+    }
 }
 
 /// In-memory marketplace fake: one canned market + canned remove result.
@@ -1157,6 +1201,9 @@ impl FakeStoreProvider {
                 warnings: vec![],
                 errors: vec![],
                 outcomes: vec![],
+                previous_version: None,
+                previous_snapshot_id: None,
+                released_count: 0,
             },
         }
     }
@@ -1182,6 +1229,29 @@ impl StoreProvider for FakeStoreProvider {
         } else {
             Err(AppError::NotFound(format!("entry {entry_name} not found")))
         }
+    }
+
+    async fn update_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerStoreInstallResult, AppError> {
+        let item = self
+            .items
+            .iter()
+            .find(|item| item.marketplace_id == marketplace_id && item.entry_name == entry_name)
+            .ok_or_else(|| AppError::NotFound(format!("entry {entry_name} not found")))?;
+        if !item.installed {
+            return Err(AppError::BadRequest(format!(
+                "entry {entry_name} has no snapshot to update; use store/install-entry"
+            )));
+        }
+        let mut result = self.install_result.clone();
+        result.previous_version = item.installed_version.clone();
+        result.previous_snapshot_id = item.snapshot_id.clone();
+        result.released_count = if item.update_available { 1 } else { 0 };
+        result.reused = !item.update_available;
+        Ok(result)
     }
 }
 

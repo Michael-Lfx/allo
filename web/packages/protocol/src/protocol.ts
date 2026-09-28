@@ -63,7 +63,7 @@
  * faces deliberately never do; both methods are WebSocket-only, so the
  * documented route split becomes `48 / 73` (doc `32`).
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-11";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-12";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -1407,7 +1407,8 @@ export interface StoreInstallResult {
   entry_name: string;
   snapshot_id: string;
   version: string;
-  /** true when the components were already registered (no-op install). */
+  /** true when the components were already registered (no-op install), or — for
+   *  an update — when the entry was already at the advertised version. */
   reused: boolean;
   installed_count: number;
   warnings: string[];
@@ -1416,6 +1417,15 @@ export interface StoreInstallResult {
    *  store install is as branchable as a direct `install/run`. Absent on a host
    *  that predates the field. */
   outcomes?: InstallOutcome[];
+  /** Version the entry was installed at before this call (`store/update-entry`
+   *  only; absent means "this was an install"). */
+  previous_version?: string | null;
+  /** The snapshot that was replaced. Same rule as `previous_version`. */
+  previous_snapshot_id?: string | null;
+  /** Components of the replaced snapshot whose runtime artifacts were actually
+   *  released. `0` on an install, on a no-op update, and when a failed update
+   *  left the previous installation in place. */
+  released_count?: number;
 }
 
 // ---------------------------------------------------------------------------
