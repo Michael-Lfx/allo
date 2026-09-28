@@ -202,6 +202,54 @@ Members: software-product-manager, software-architect,
 - 敏感字段（API Key、Token 等）导入时只建立 schema 与引用，值由用户后续通过安全存储提供；文档统一写作 `[REDACTED]`。
 - **MCP 连接器的 `env`（`mcpServers` → ConnectorDefinition）同口径**：**敏感键**的值只留引用——改写为 `secret:<KEY>`（`17` §6 / `21` D5=C），真值由 `~/.agent-store/config.toml` 的 `[credentials]`（或进程 env）提供，MCP 启动时按引用解析注入；值既不进 Snapshot 也不进 DB 行，缺失时该变量被省略（2026-09-11 收口，`16` R22 / `17` §10 P1）。
 
+### 10.1 连接器条目的凭据声明（连接器市场写法，2026-09-28）
+
+一个连接器条目要让**用户自己填 key / token**，必须写全**三处**。少任何一处都不会报错，只会静默地不生效——这是本节存在的原因：三处的判据分别落在三个不同的读点，任一处漏写都表现为"界面上没有输入口"或"填了但请求里什么都没有"。
+
+| # | 位置 | 写什么 | 漏了会怎样 |
+|---|---|---|---|
+| ① | `.codebuddy-connector/connectors.json` 的该条目行 | `"auth_mode": "token"` | `credential.mode` 由**这一行**决定，**不是**由 `token-schema.json` 是否存在决定。`auth_mode` 为 `server-side`／空／`mcp`／`oneid-token` 时 mode 归 `none`，于是 `status` 恒为 `not_required`：字段即使已声明也不会渲染出入口，UI 既无徽标也无「填入凭据」 |
+| ② | `connectors/<id>/mcp.json` | **落点**：`url`、`headers` 或 `env` 里的 `${KEY}` 引用 | 值仍会存进凭据库，但请求里没有任何位置去解析它 → **"渲染但无效"**：用户填了、`missing` 空了、徽标「已配置」，而请求里什么也没有 |
+| ③ | `connectors/<id>/token-schema.json` | 字段声明 + 表单文案 | 没有表单：`fields` 为空、用户无从输入，`connector/credential/set` 会以 `declares no credential form to fill` 拒绝写入 |
+
+**完整最小例子**（2026-09-28 在真宿主上逐条跑通过的形态，取值照抄即可）：
+
+```jsonc
+// ① .codebuddy-connector/connectors.json —— 该条目行
+{ "id": "acme-mcp", "name": "Acme", "source": "acme-mcp",
+  "auth_mode": "token" }            // token / oauth；其余取值一律归 none
+
+// ② connectors/acme-mcp/mcp.json —— "落点"写在这里
+{ "mcpServers": { "acme-mcp": {
+    "type": "streamableHttp",       // streamableHttp / streamable-http / 省略 → http；sse 保留为 sse
+    "url": "https://mcp.acme.com/mcp",
+    "headers": { "Authorization": "Bearer ${ACME_KEY}" } } } }
+    //                             ^^^^^^^^^^^ 引用名必须与 ③ 的字段 key 一致。
+    //                             `Bearer ` 是模板原文：host **不**按 header 名自动补前缀（§10 后半 / `34` §5.4 规则 5）
+
+// ③ connectors/acme-mcp/token-schema.json —— 表单
+{ "title": "配置 Acme", "title_en": "Configure Acme",
+  "description": "…", "description_en": "…",
+  "docLabel": "如何获取 API Key？", "docLabel_en": "How to get an API Key?",
+  "docUrl": "https://acme.com/keys",
+  "fields": [
+    { "key": "ACME_KEY", "type": "password", "required": true,
+      "label": "API Key", "label_en": "API Key",
+      "placeholder": "…", "placeholder_en": "…",
+      "description": "…", "description_en": "…" } ] }
+    // 绝不写 defaultValue：secret 字段的默认值会在导入期被丢弃并告警（§3.3 第一条）。
+    // 真实市场里存在这种泄漏（例如 cisp-mcp 的 defaultValue 就是一把真 key）。
+```
+
+规则（与解析端一一对应）：
+
+- **命名空间按解析端划分**：`${secret:NAME}`／整值 `secret:NAME` → 凭据库（用户填、按 principal 键控）；`${NAME}` → 连接器自己的 `values`（安装期给定，**不算**凭据，会随 transport 一起可读可导出）。同名跨两个命名空间时按 `secret` 处理。
+- **`env` 上的空字符串值是"待填"**，不是"已配置"：`{"KEY": ""}` 必须换成引用，否则子进程拿到空值并静默失败（市场实例：`weisheng-scrm`）。
+- **字段是不是 secret 由声明决定**：`type: "password"` 权威；`type: "text"` 走更紧的名字谓词（含 `_key` / `token` 等，**不含裸 `api`**）——所以 `API_HOST` 不会被误判成密钥而遮蔽成一个"要用户填"的字段。
+- **stdio 条目的 `env` 用整值引用**（`"API_KEY": "secret:API_KEY"`）；stdio 的 `${NAME}` 解析不到（plain 表为空），不要写。
+- **表单文案属于表单**：`title` / `description` / `docLabel` / `docUrl` 由 host 在 `credential` 块上下发**一次**，不逐字段重复；字段级 `label` / `placeholder` / `description` 各自双语，缺失时按 `localized` 回退（§4.1 / `18` §4.1）。
+- **改内容要能表达新版本**：connector 条目的版本目前从条目自带 manifest 取，而导入请求不带索引里的 `version`——"改了内容 + 抬了索引版本"仍会被不可变快照拒绝。发布前先确认该偏差已修（`18` §11 D9）。
+
 ## 11. 导入结果契约
 
 每次导入必须返回结构化结果，不以“目录复制完成”作为成功标准：
