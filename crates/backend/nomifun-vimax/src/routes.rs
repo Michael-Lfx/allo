@@ -51,6 +51,10 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
             "/api/vimax/sessions/{id}/artifact-replace",
             post(replace_artifact),
         )
+        .route(
+            "/api/vimax/sessions/{id}/shot-packet/ref-upload",
+            post(replace_shot_ref_file),
+        )
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(ARTIFACT_UPLOAD_BODY_LIMIT))
         .with_state(state.clone());
@@ -67,6 +71,32 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route("/api/vimax/sessions/{id}/render", post(render_session))
         .route("/api/vimax/sessions/{id}/status", get(session_status))
         .route("/api/vimax/sessions/{id}/cancel", post(cancel_session))
+        .route("/api/vimax/sessions/{id}/shot-packets", get(list_shot_packets))
+        .route(
+            "/api/vimax/sessions/{id}/shot-packet",
+            get(get_shot_packet).put(put_shot_packet),
+        )
+        .route(
+            "/api/vimax/sessions/{id}/shot-packet/refs",
+            post(replace_shot_ref),
+        )
+        .route(
+            "/api/vimax/sessions/{id}/shot-packet/approve",
+            post(approve_shot),
+        )
+        .route(
+            "/api/vimax/sessions/{id}/shot-packet/retake",
+            post(retake_shot),
+        )
+        .route(
+            "/api/vimax/sessions/{id}/shot-packet/takes/select",
+            post(select_shot_take),
+        )
+        .route(
+            "/api/vimax/sessions/{id}/render-mode",
+            post(set_render_mode),
+        )
+        .route("/api/vimax/sessions/{id}/films", get(list_films).post(select_film))
         .route("/api/vimax/sessions/{id}/export", post(export_session))
         .route("/api/vimax/sessions/{id}/artifacts", get(list_artifacts))
         .route(
@@ -341,6 +371,8 @@ struct RenderBody {
     resolution: Option<String>,
     #[serde(default)]
     fps: Option<u32>,
+    #[serde(default)]
+    render_mode: Option<String>,
 }
 
 async fn render_session(
@@ -359,6 +391,7 @@ async fn render_session(
             body.video_model,
             body.resolution,
             body.fps,
+            body.render_mode,
         )
         .await?;
     Ok(Json(ApiResponse::ok(())))
@@ -379,6 +412,311 @@ async fn cancel_session(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     state.service.cancel(&id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+struct ShotQuery {
+    scene_root: String,
+    shot_idx: i32,
+}
+
+#[derive(Deserialize)]
+struct RenderModeBody {
+    render_mode: String,
+}
+
+#[derive(Deserialize)]
+struct ApproveShotBody {
+    scene_root: String,
+    shot_idx: i32,
+    #[serde(default)]
+    switch_to_continuous: bool,
+}
+
+#[derive(Deserialize)]
+struct RetakeShotBody {
+    scene_root: String,
+    shot_idx: i32,
+    #[serde(default = "default_true")]
+    concat: bool,
+    #[serde(default)]
+    cascade: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+struct SelectTakeBody {
+    scene_root: String,
+    shot_idx: i32,
+    take: u32,
+    #[serde(default = "default_true")]
+    concat: bool,
+}
+
+#[derive(Deserialize)]
+struct SelectFilmBody {
+    version: u32,
+}
+
+#[derive(Deserialize)]
+struct ShotRefJson {
+    scene_root: String,
+    shot_idx: i32,
+    #[serde(default = "default_image_kind")]
+    kind: String,
+    slot: u32,
+    #[serde(default)]
+    unbound: bool,
+    #[serde(default)]
+    remove: bool,
+    #[serde(default)]
+    source_path: Option<String>,
+}
+
+fn default_image_kind() -> String {
+    "image".into()
+}
+
+async fn list_shot_packets(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<nomi_vimax::ShotPacket>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_shot_packets(&id).await?,
+    )))
+}
+
+async fn get_shot_packet(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(q): Query<ShotQuery>,
+) -> Result<Json<ApiResponse<nomi_vimax::ShotPacketView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .get_shot_packet(&id, &q.scene_root, q.shot_idx)
+            .await?,
+    )))
+}
+
+async fn put_shot_packet(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(q): Query<ShotQuery>,
+    Json(patch): Json<nomi_vimax::ShotPacketPatch>,
+) -> Result<Json<ApiResponse<nomi_vimax::ShotPacketView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .put_shot_packet(&id, &q.scene_root, q.shot_idx, patch)
+            .await?,
+    )))
+}
+
+async fn replace_shot_ref(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<ShotRefJson>,
+) -> Result<Json<ApiResponse<nomi_vimax::ShotPacketView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .replace_shot_ref(
+                &id,
+                &body.scene_root,
+                body.shot_idx,
+                &body.kind,
+                body.slot,
+                body.unbound,
+                body.remove,
+                body.source_path,
+                None,
+                None,
+            )
+            .await?,
+    )))
+}
+
+async fn replace_shot_ref_file(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    multipart: Multipart,
+) -> Result<Json<ApiResponse<nomi_vimax::ShotPacketView>>, AppError> {
+    let fields = extract_shot_ref_fields(multipart).await?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .replace_shot_ref(
+                &id,
+                &fields.scene_root,
+                fields.shot_idx,
+                &fields.kind,
+                fields.slot,
+                false,
+                false,
+                None,
+                Some(fields.bytes),
+                fields.filename,
+            )
+            .await?,
+    )))
+}
+
+struct ShotRefUpload {
+    scene_root: String,
+    shot_idx: i32,
+    kind: String,
+    slot: u32,
+    bytes: Vec<u8>,
+    filename: Option<String>,
+}
+
+async fn extract_shot_ref_fields(mut multipart: Multipart) -> Result<ShotRefUpload, AppError> {
+    let mut scene_root = None;
+    let mut shot_idx = None;
+    let mut kind = "image".to_string();
+    let mut slot = None;
+    let mut bytes = None;
+    let mut filename = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "scene_root" => {
+                scene_root = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError::BadRequest(e.to_string()))?,
+                );
+            }
+            "shot_idx" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                shot_idx = Some(
+                    text.trim()
+                        .parse()
+                        .map_err(|_| AppError::BadRequest("invalid shot_idx".into()))?,
+                );
+            }
+            "kind" => {
+                kind = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            }
+            "slot" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                slot = Some(
+                    text.trim()
+                        .parse()
+                        .map_err(|_| AppError::BadRequest("invalid slot".into()))?,
+                );
+            }
+            "file" | "content" => {
+                filename = field.file_name().map(|s| s.to_string());
+                bytes = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| AppError::BadRequest(e.to_string()))?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(ShotRefUpload {
+        scene_root: scene_root.ok_or_else(|| AppError::BadRequest("missing scene_root".into()))?,
+        shot_idx: shot_idx.ok_or_else(|| AppError::BadRequest("missing shot_idx".into()))?,
+        kind,
+        slot: slot.ok_or_else(|| AppError::BadRequest("missing slot".into()))?,
+        bytes: bytes.ok_or_else(|| AppError::BadRequest("missing file".into()))?,
+        filename,
+    })
+}
+
+async fn approve_shot(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<ApproveShotBody>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state
+        .service
+        .approve_shot(&id, &body.scene_root, body.shot_idx, body.switch_to_continuous)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn retake_shot(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<RetakeShotBody>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state
+        .service
+        .retake_shot(&id, &body.scene_root, body.shot_idx, body.concat, body.cascade)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn select_shot_take(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<SelectTakeBody>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state
+        .service
+        .select_shot_take(&id, &body.scene_root, body.shot_idx, body.take, body.concat)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn set_render_mode(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<RenderModeBody>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.set_render_mode(&id, &body.render_mode).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn list_films(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<nomi_vimax::FilmInfo>>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.list_films(&id).await?)))
+}
+
+async fn select_film(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(body): Json<SelectFilmBody>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let path = state.service.select_film(&id, body.version).await?;
+    Ok(Json(ApiResponse::ok(json!({ "final_video": path }))))
 }
 
 async fn list_artifacts(

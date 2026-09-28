@@ -41,6 +41,17 @@ describe('studioStageActiveIndex', () => {
   test('a finished film wins over live status', () => {
     expect(studioStageActiveIndex({ ...base, status: 'planning', hasFinalVideo: true })).toBe(3);
   });
+
+  test('shot review keeps the render phase active', () => {
+    expect(
+      studioStageActiveIndex({
+        ...base,
+        hasStoryboard: true,
+        status: 'awaiting_review',
+        stage: 'shot_awaiting_review',
+      })
+    ).toBe(2);
+  });
 });
 
 describe('buildStudioStageTimeline', () => {

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   activeVideoGenerationTarget,
   resolveStoryboardVideoStatus,
+  storyboardFilmstripBadge,
 } from './storyboardVideoStatus';
 import type { SessionStatus } from './types';
 
@@ -169,5 +170,25 @@ describe('resolveStoryboardVideoStatus', () => {
         target: { shotIndex: 0, sceneIndex: 1 },
       })
     ).toBe('pending');
+  });
+});
+
+describe('storyboardFilmstripBadge', () => {
+  test('marks on-disk video as ready even when packet is still planned', () => {
+    expect(
+      storyboardFilmstripBadge({ runState: 'planned', videoStatus: 'ready' })
+    ).toBe('ready');
+    expect(
+      storyboardFilmstripBadge({ runState: undefined, videoStatus: 'ready' })
+    ).toBe('ready');
+  });
+
+  test('keeps review and stale states ahead of the ready chip', () => {
+    expect(
+      storyboardFilmstripBadge({ runState: 'awaiting_review', videoStatus: 'ready' })
+    ).toBe('awaiting_review');
+    expect(
+      storyboardFilmstripBadge({ runState: 'script_stale', videoStatus: 'ready' })
+    ).toBe('script_stale');
   });
 });

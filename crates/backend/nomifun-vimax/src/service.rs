@@ -295,12 +295,141 @@ impl VimaxApiService {
         video_model: Option<String>,
         resolution: Option<String>,
         fps: Option<u32>,
+        render_mode: Option<String>,
     ) -> Result<(), AppError> {
         self.refresh_backends().await;
         self.inner
-            .render(id, llm_model, image_model, video_model, resolution, fps)
+            .render(
+                id,
+                llm_model,
+                image_model,
+                video_model,
+                resolution,
+                fps,
+                render_mode,
+            )
             .await
             .map_err(map_vimax_err)
+    }
+
+    pub async fn get_shot_packet(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+    ) -> Result<nomi_vimax::ShotPacketView, AppError> {
+        self.inner
+            .get_shot_packet(id, scene_root, shot_idx)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn list_shot_packets(
+        &self,
+        id: &str,
+    ) -> Result<Vec<nomi_vimax::ShotPacket>, AppError> {
+        self.inner.list_shot_packets(id).await.map_err(map_vimax_err)
+    }
+
+    pub async fn put_shot_packet(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        patch: nomi_vimax::ShotPacketPatch,
+    ) -> Result<nomi_vimax::ShotPacketView, AppError> {
+        self.inner
+            .put_shot_packet(id, scene_root, shot_idx, patch)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn replace_shot_ref(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        kind: &str,
+        slot: u32,
+        unbound: bool,
+        remove: bool,
+        source_path: Option<String>,
+        bytes: Option<Vec<u8>>,
+        filename: Option<String>,
+    ) -> Result<nomi_vimax::ShotPacketView, AppError> {
+        self.inner
+            .replace_shot_ref(
+                id,
+                scene_root,
+                shot_idx,
+                kind,
+                slot,
+                unbound,
+                remove,
+                source_path,
+                bytes,
+                filename,
+            )
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn approve_shot(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        switch_to_continuous: bool,
+    ) -> Result<(), AppError> {
+        self.inner
+            .approve_shot(id, scene_root, shot_idx, switch_to_continuous)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn set_render_mode(&self, id: &str, render_mode: &str) -> Result<(), AppError> {
+        self.inner
+            .set_render_mode(id, render_mode)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn retake_shot(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        concat: bool,
+        cascade: bool,
+    ) -> Result<(), AppError> {
+        self.refresh_backends().await;
+        self.inner
+            .retake_shot(id, scene_root, shot_idx, concat, cascade)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn select_shot_take(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        take: u32,
+        concat: bool,
+    ) -> Result<(), AppError> {
+        self.refresh_backends().await;
+        self.inner
+            .select_shot_take(id, scene_root, shot_idx, take, concat)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn list_films(&self, id: &str) -> Result<Vec<nomi_vimax::FilmInfo>, AppError> {
+        self.inner.list_films(id).await.map_err(map_vimax_err)
+    }
+
+    pub async fn select_film(&self, id: &str, version: u32) -> Result<String, AppError> {
+        self.inner.select_film(id, version).await.map_err(map_vimax_err)
     }
 
     pub async fn status(&self, id: &str) -> Result<RenderStatus, AppError> {

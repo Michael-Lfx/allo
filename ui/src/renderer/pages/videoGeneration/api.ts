@@ -37,6 +37,11 @@ import type {
   ArtifactEditResult,
   ImagePromptInfo,
   ActionAssetsInfo,
+  FilmInfo,
+  ShotPacket,
+  ShotPacketPatch,
+  ShotPacketView,
+  VimaxRenderMode,
 } from './types';
 import { isCanvasTvShow } from './workflowKind';
 import { importCanvasTvShow } from '../videoCanvas/api';
@@ -585,12 +590,221 @@ export function isActiveStatus(status: string | null | undefined): boolean {
   return (
     status === 'planning' ||
     status === 'rendering' ||
+    status === 'awaiting_review' ||
     status === 'queued' ||
     status === 'running' ||
     status === 'researching' ||
     status === 'scripting' ||
     status === 'aligning' ||
     status === 'composing'
+  );
+}
+
+function shotPacketQuery(sceneRoot: string, shotIdx: number): string {
+  const params = new URLSearchParams({
+    scene_root: sceneRoot,
+    shot_idx: String(shotIdx),
+  });
+  return params.toString();
+}
+
+export async function listShotPackets(sessionId: string): Promise<ShotPacket[]> {
+  const data = await httpRequest<ShotPacket[]>(
+    'GET',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/shot-packets`
+  );
+  return Array.isArray(data) ? data : [];
+}
+
+export async function getShotPacket(
+  sessionId: string,
+  sceneRoot: string,
+  shotIdx: number
+): Promise<ShotPacketView> {
+  return httpRequest<ShotPacketView>(
+    'GET',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/shot-packet?${shotPacketQuery(sceneRoot, shotIdx)}`
+  );
+}
+
+export async function putShotPacket(
+  sessionId: string,
+  sceneRoot: string,
+  shotIdx: number,
+  patch: ShotPacketPatch
+): Promise<ShotPacketView> {
+  return httpRequest<ShotPacketView>(
+    'PUT',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/shot-packet?${shotPacketQuery(sceneRoot, shotIdx)}`,
+    patch
+  );
+}
+
+export async function replaceShotRef(
+  sessionId: string,
+  body: {
+    scene_root: string;
+    shot_idx: number;
+    kind?: 'image' | 'audio';
+    slot: number;
+    unbound?: boolean;
+    remove?: boolean;
+    source_path?: string | null;
+  }
+): Promise<ShotPacketView> {
+  return httpRequest<ShotPacketView>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/shot-packet/refs`,
+    {
+      scene_root: body.scene_root,
+      shot_idx: body.shot_idx,
+      kind: body.kind ?? 'image',
+      slot: body.slot,
+      unbound: body.unbound ?? false,
+      remove: body.remove ?? false,
+      source_path: body.source_path ?? undefined,
+    }
+  );
+}
+
+export function uploadShotRefFile(
+  sessionId: string,
+  fields: {
+    sceneRoot: string;
+    shotIdx: number;
+    kind?: 'image' | 'audio';
+    slot: number;
+    file: File;
+  },
+  onProgress?: (percent: number) => void
+): Promise<ShotPacketView> {
+  const formData = new FormData();
+  formData.append('scene_root', fields.sceneRoot);
+  formData.append('shot_idx', String(fields.shotIdx));
+  formData.append('kind', fields.kind ?? 'image');
+  formData.append('slot', String(fields.slot));
+  formData.append('file', fields.file);
+
+  return new Promise<ShotPacketView>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(
+      'POST',
+      `${getBaseUrl()}${BASE}/sessions/${encodeURIComponent(sessionId)}/shot-packet/ref-upload`
+    );
+    for (const [name, value] of Object.entries(buildBackendAuthHeaders('POST'))) {
+      xhr.setRequestHeader(name, value);
+    }
+    if (onProgress) {
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      });
+    }
+    xhr.addEventListener('load', () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`Shot ref upload failed: ${xhr.status} ${xhr.statusText}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(xhr.responseText) as unknown;
+        const payload =
+          parsed && typeof parsed === 'object' && 'data' in parsed
+            ? (parsed as { data: ShotPacketView }).data
+            : (parsed as ShotPacketView);
+        if (!payload || typeof payload.shot_idx !== 'number') {
+          reject(new Error('Shot ref upload returned an unexpected payload'));
+          return;
+        }
+        resolve(payload);
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+    xhr.addEventListener('error', () => reject(new Error('Shot ref upload failed')));
+    xhr.send(formData);
+  });
+}
+
+export async function approveShot(
+  sessionId: string,
+  sceneRoot: string,
+  shotIdx: number,
+  switchToContinuous = false
+): Promise<void> {
+  await httpRequest<unknown>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/shot-packet/approve`,
+    {
+      scene_root: sceneRoot,
+      shot_idx: shotIdx,
+      switch_to_continuous: switchToContinuous,
+    }
+  );
+}
+
+export async function retakeShot(
+  sessionId: string,
+  sceneRoot: string,
+  shotIdx: number,
+  opts?: { concat?: boolean; cascade?: boolean }
+): Promise<void> {
+  await httpRequest<unknown>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/shot-packet/retake`,
+    {
+      scene_root: sceneRoot,
+      shot_idx: shotIdx,
+      concat: opts?.concat ?? true,
+      cascade: opts?.cascade ?? false,
+    }
+  );
+}
+
+export async function selectShotTake(
+  sessionId: string,
+  sceneRoot: string,
+  shotIdx: number,
+  take: number,
+  concat = true
+): Promise<void> {
+  await httpRequest<unknown>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/shot-packet/takes/select`,
+    {
+      scene_root: sceneRoot,
+      shot_idx: shotIdx,
+      take,
+      concat,
+    }
+  );
+}
+
+export async function setSessionRenderMode(
+  sessionId: string,
+  renderMode: VimaxRenderMode
+): Promise<void> {
+  await httpRequest<unknown>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/render-mode`,
+    { render_mode: renderMode }
+  );
+}
+
+export async function listFilms(sessionId: string): Promise<FilmInfo[]> {
+  const data = await httpRequest<FilmInfo[]>(
+    'GET',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/films`
+  );
+  return Array.isArray(data) ? data : [];
+}
+
+export async function selectFilm(
+  sessionId: string,
+  version: number
+): Promise<{ final_video: string }> {
+  return httpRequest<{ final_video: string }>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/films`,
+    { version }
   );
 }
 

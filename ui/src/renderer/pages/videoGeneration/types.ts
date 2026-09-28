@@ -8,10 +8,135 @@ export type VimaxRunStatus =
   | 'idle'
   | 'planning'
   | 'rendering'
+  | 'awaiting_review'
   | 'succeeded'
   | 'failed'
   | 'cancelled'
   | 'interrupted';
+
+/** Film render gate: auto-run remaining shots, or pause before each billed clip. */
+export type VimaxRenderMode = 'continuous' | 'shot_review';
+
+export function parseSessionRenderMode(raw?: string | null): VimaxRenderMode | null {
+  const value = raw?.trim();
+  if (value === 'shot_review' || value === 'continuous') return value;
+  return null;
+}
+
+export function resolveSessionRenderMode(raw?: string | null): VimaxRenderMode {
+  return parseSessionRenderMode(raw) ?? 'continuous';
+}
+
+export type ShotRunState =
+  | 'planned'
+  | 'awaiting_review'
+  | 'generating'
+  | 'ready'
+  | 'script_stale'
+  | 'continuity_stale'
+  | 'failed'
+  | 'skipped';
+
+export type ShotRefRole =
+  | 'continuity_last_frame'
+  | 'portrait'
+  | 'environment'
+  | 'prop'
+  | 'custom';
+
+export interface ShotPacketBeat {
+  visual_desc: string;
+  audio_desc: string;
+  cam_idx: number;
+}
+
+export interface ShotRefSlot {
+  slot: number;
+  role: ShotRefRole;
+  label: string;
+  character_id?: string | null;
+  path?: string | null;
+  url?: string | null;
+  unbound: boolean;
+  user_override: boolean;
+}
+
+export interface ShotTakeInfo {
+  take: number;
+  current: boolean;
+  credits?: number | null;
+  video_path: string;
+}
+
+export interface ShotPacket {
+  schema_version: number;
+  scene_root: string;
+  shot_idx: number;
+  location_id: string;
+  cam_idx: number;
+  visual_desc: string;
+  audio_desc: string;
+  beats: ShotPacketBeat[];
+  duration_secs?: number | null;
+  seam: string;
+  image_refs: ShotRefSlot[];
+  audio_refs: ShotRefSlot[];
+  compiled_prompt: string;
+  prompt_override?: string | null;
+  run_state: ShotRunState;
+  user_edited: boolean;
+  current_take?: number | null;
+  take_count: number;
+  error?: string | null;
+  layout?: ShotGraphLayout | null;
+}
+
+export interface ShotGraphPoint {
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+}
+
+export interface ShotGraphViewport {
+  x: number;
+  y: number;
+  k: number;
+}
+
+export interface ShotGraphLayout {
+  viewport?: ShotGraphViewport | null;
+  nodes?: Record<string, ShotGraphPoint>;
+}
+
+export interface ShotPacketView extends ShotPacket {
+  takes: ShotTakeInfo[];
+}
+
+export interface ShotPacketPatch {
+  visual_desc?: string;
+  audio_desc?: string;
+  beats?: ShotPacketBeat[];
+  duration_secs?: number;
+  prompt_override?: string | null;
+  recompile?: boolean;
+  layout?: ShotGraphLayout | null;
+}
+
+export interface PendingShotReview {
+  scene_root: string;
+  shot_idx: number;
+  scene_idx?: number | null;
+  duration_secs: number;
+  image_ref_count: number;
+  audio_ref_count: number;
+}
+
+export interface FilmInfo {
+  version: number;
+  current: boolean;
+  video_path: string;
+}
 
 /** List-row summary from `GET /api/vimax/sessions`. */
 export interface SessionSummary {
@@ -63,6 +188,8 @@ export interface VimaxSession extends SessionSummary {
   credits_consumed?: number | null;
   /** Relative working dir under data_dir/vimax (e.g. `.working_dir/<id>`). */
   working_dir?: string | null;
+  /** `continuous` (default) or `shot_review`. */
+  render_mode?: VimaxRenderMode | string | null;
 }
 
 /** Flowy TV publish / plaza status from Flowy cloud. */
@@ -359,6 +486,7 @@ export interface RenderBody {
   video_model?: string;
   resolution?: string;
   fps?: number;
+  render_mode?: VimaxRenderMode | string;
 }
 
 /** Result of a direct artifact write / replace / prompt update. */
@@ -399,6 +527,9 @@ export interface SessionStatus {
     at?: string;
     metadata?: unknown;
   }>;
+  /** Populated while status is `awaiting_review`. */
+  pending_review?: PendingShotReview | null;
+  render_mode?: VimaxRenderMode | string | null;
 }
 
 /** Artifact tree node from `GET .../artifacts`. */

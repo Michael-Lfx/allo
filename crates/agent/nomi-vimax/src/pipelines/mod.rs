@@ -20,6 +20,7 @@ pub use idea2video::Idea2VideoPipeline;
 pub use novel2video::Novel2VideoPipeline;
 pub use script_film::ScriptFilmPipeline;
 pub use script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
+pub(crate) use script2video::refresh_shot_packet_from_disk;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -48,6 +49,8 @@ pub struct PipelineBackends {
     pub max_reference_audio: usize,
     /// When cancelled, pipelines stop before the next video API call.
     pub cancel: Option<CancellationToken>,
+    /// Shared with the HTTP layer so shot-review can pause a live render job.
+    pub review: Option<std::sync::Arc<crate::shot_packet::ShotReviewBridge>>,
 }
 
 impl PipelineBackends {

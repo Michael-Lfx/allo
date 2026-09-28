@@ -95,6 +95,16 @@ fn requirement_and_style_from_overlay(
     (req, style_s)
 }
 
+fn storyboard_shot_idxs(path: &Path) -> Vec<i32> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<crate::domain::ShotBriefDescription>>(&text)
+        .ok()
+        .map(|board| board.into_iter().map(|row| row.idx).collect())
+        .unwrap_or_default()
+}
+
 fn persist_run_status(index: &SessionIndex, id: &str, st: &RenderStatus) {
     if let Err(e) = index.save_run_status(id, st) {
         tracing::warn!(
@@ -159,6 +169,8 @@ pub struct VimaxService {
     /// Sync mutex so progress callbacks never drop updates via `try_lock`.
     statuses: StdMutex<HashMap<String, RenderStatus>>,
     cancels: Mutex<HashMap<String, CancellationToken>>,
+    /// Live shot-review gates keyed by session id (render job must stay alive).
+    review: Mutex<HashMap<String, Arc<crate::shot_packet::ShotReviewBridge>>>,
     terminal_hook: StdMutex<Option<TerminalTelemetryHook>>,
 }
 
@@ -187,6 +199,7 @@ impl VimaxService {
             flowy: Mutex::new(flowy),
             statuses: StdMutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
+            review: Mutex::new(HashMap::new()),
             terminal_hook: StdMutex::new(None),
         }))
     }
@@ -204,6 +217,12 @@ impl VimaxService {
         for token in &tokens {
             token.cancel();
         }
+        {
+            let mut map = self.review.lock().await;
+            for (_, bridge) in map.drain() {
+                bridge.submit(crate::shot_packet::ShotReviewDecision::Stop);
+            }
+        }
 
         let mut ids: HashSet<String> = HashSet::new();
         let mut emit_interrupt: HashSet<String> = HashSet::new();
@@ -216,7 +235,8 @@ impl VimaxService {
                 if !st.status.is_active() {
                     continue;
                 }
-                let was_rendering = st.status == RunStatus::Rendering;
+                let was_rendering =
+                    st.status == RunStatus::Rendering || st.status == RunStatus::AwaitingReview;
                 st.status = RunStatus::Interrupted;
                 st.message = INTERRUPTED_SUMMARY.into();
                 st.error = None;
@@ -231,7 +251,9 @@ impl VimaxService {
 
         if let Ok(sessions) = self.index.list() {
             for record in sessions {
-                if record.status == RunStatus::Rendering {
+                if record.status == RunStatus::Rendering
+                    || record.status == RunStatus::AwaitingReview
+                {
                     emit_interrupt.insert(record.session_id.clone());
                 }
                 if record.status.is_active() {
@@ -460,6 +482,9 @@ impl VimaxService {
             .unwrap_or_else(|e| e.into_inner());
         let st = live_status(&self.index, &mut map, id);
         overlay_session_record(st, &record, working_abs.clone());
+        if !record.render_mode.is_empty() {
+            st.render_mode = Some(record.render_mode.clone());
+        }
         if st.stage.is_empty() {
             st.stage = record.stage.clone();
         }
@@ -493,6 +518,9 @@ impl VimaxService {
     pub async fn cancel(self: &Arc<Self>, id: &str) -> VimaxResult<()> {
         if let Some(token) = self.cancels.lock().await.get(id) {
             token.cancel();
+        }
+        if let Some(bridge) = self.review.lock().await.get(id) {
+            bridge.submit(crate::shot_packet::ShotReviewDecision::Stop);
         }
         {
             let mut map = self
@@ -662,14 +690,14 @@ impl VimaxService {
 
     async fn ensure_cameo_mutable(&self, id: &str) -> VimaxResult<()> {
         let record = self.index.get(id)?;
-        if matches!(record.status, RunStatus::Planning | RunStatus::Rendering) {
+        if record.status.is_active() {
             return Err(VimaxError::InvalidParams(
                 "cannot modify session inputs while the project is planning or rendering".into(),
             ));
         }
         let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = map.get(id)
-            && matches!(s.status, RunStatus::Planning | RunStatus::Rendering)
+            && s.status.is_active()
         {
             return Err(VimaxError::InvalidParams(
                 "cannot modify session inputs while the project is planning or rendering".into(),
@@ -707,14 +735,14 @@ impl VimaxService {
 
     async fn ensure_not_busy(&self, id: &str) -> VimaxResult<()> {
         let record = self.index.get(id)?;
-        if matches!(record.status, RunStatus::Planning | RunStatus::Rendering) {
+        if record.status.is_active() {
             return Err(VimaxError::InvalidParams(
                 "cannot export while the project is still planning or rendering".into(),
             ));
         }
         let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = map.get(id) {
-            if matches!(s.status, RunStatus::Planning | RunStatus::Rendering) {
+            if s.status.is_active() {
                 return Err(VimaxError::InvalidParams(
                     "cannot export while the project is still planning or rendering".into(),
                 ));
@@ -794,6 +822,7 @@ impl VimaxService {
         video_model: Option<String>,
         resolution: Option<String>,
         fps: Option<u32>,
+        render_mode: Option<String>,
     ) -> VimaxResult<()> {
         if llm_model.is_some()
             || image_model.is_some()
@@ -836,6 +865,29 @@ impl VimaxService {
             }
         }
         self.ensure_idle(id).await?;
+        let mode = {
+            let record = self.index.get(id)?;
+            crate::shot_packet::RenderMode::parse(
+                render_mode
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or(record.render_mode.as_str()),
+            )
+        };
+        let _ = self.index.update_fields(id, |r| {
+            r.render_mode = mode.as_str().to_string();
+        });
+        {
+            let mut map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(st) = map.get_mut(id) {
+                st.render_mode = Some(mode.as_str().to_string());
+            }
+        }
+        let bridge = Arc::new(crate::shot_packet::ShotReviewBridge::new(mode));
+        self.review.lock().await.insert(id.to_string(), bridge);
         let token = CancellationToken::new();
         self.cancels
             .lock()
@@ -939,6 +991,411 @@ impl VimaxService {
         Ok(result)
     }
 
+    fn resolve_scene_dir(&self, id: &str, scene_root: &str) -> VimaxResult<PathBuf> {
+        let rel = scene_root.replace('\\', "/").trim().trim_matches('/').to_string();
+        if rel.is_empty() || rel.contains("..") {
+            return Err(VimaxError::InvalidParams("invalid scene_root".into()));
+        }
+        self.index.artifact_abs_path(id, &rel)
+    }
+
+    async fn ensure_packet_mutable(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+    ) -> VimaxResult<()> {
+        let record = self.index.get(id)?;
+        if record.status == RunStatus::Planning {
+            return Err(VimaxError::InvalidParams(
+                "cannot edit a shot packet while planning".into(),
+            ));
+        }
+        let status = {
+            let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
+            map.get(id).map(|s| s.status)
+        };
+        let pending = {
+            let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
+            map.get(id).and_then(|s| s.pending_review.clone())
+        };
+        if status == Some(RunStatus::Rendering) {
+            return Err(VimaxError::InvalidParams(
+                "cannot edit a shot packet while it is generating".into(),
+            ));
+        }
+        if status == Some(RunStatus::AwaitingReview) {
+            let Some(pending) = pending else {
+                return Err(VimaxError::InvalidParams(
+                    "shot review gate is active but no pending shot is recorded".into(),
+                ));
+            };
+            if pending.scene_root != scene_root || pending.shot_idx != shot_idx {
+                return Err(VimaxError::InvalidParams(
+                    "only the shot waiting for review can be edited right now".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn get_shot_packet(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+    ) -> VimaxResult<crate::shot_packet::ShotPacketView> {
+        let _ = self.index.get(id)?;
+        let scene_dir = self.resolve_scene_dir(id, scene_root)?;
+        let record = self.index.get(id)?;
+        let max_audio = crate::video_quality::max_reference_audio(&record.video_model);
+        let mut packet = crate::pipelines::refresh_shot_packet_from_disk(
+            &scene_dir,
+            shot_idx,
+            max_audio,
+        )
+        .await?;
+        crate::shot_packet::attach_media_urls(id, &mut packet);
+        let session_root = self.index.working_dir(id)?;
+        let takes = crate::shot_packet::list_takes(&session_root, &scene_dir, shot_idx).await;
+        Ok(crate::shot_packet::ShotPacketView { packet, takes })
+    }
+
+    pub async fn list_shot_packets(
+        &self,
+        id: &str,
+    ) -> VimaxResult<Vec<crate::shot_packet::ShotPacket>> {
+        let session_root = self.index.working_dir(id)?;
+        let record = self.index.get(id)?;
+        let work = session_root.join(record.workflow.artifact_root());
+        let scenes = crate::shot_packet::find_scene_dirs(&session_root, &work);
+        let mut out = Vec::new();
+        for scene_dir in scenes {
+            let board_path = scene_dir.join("storyboard.json");
+            let idxs: Vec<i32> = if board_path.is_file() {
+                storyboard_shot_idxs(&board_path)
+            } else {
+                Vec::new()
+            };
+            if idxs.is_empty() {
+                continue;
+            }
+            for shot_idx in idxs {
+                if let Ok(Some(mut packet)) =
+                    crate::shot_packet::load_packet(&scene_dir, shot_idx).await
+                {
+                    crate::shot_packet::refresh_run_state_from_disk(&scene_dir, &mut packet);
+                    crate::shot_packet::attach_media_urls(id, &mut packet);
+                    out.push(packet);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub async fn put_shot_packet(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        patch: crate::shot_packet::ShotPacketPatch,
+    ) -> VimaxResult<crate::shot_packet::ShotPacketView> {
+        self.ensure_packet_mutable(id, scene_root, shot_idx).await?;
+        let scene_dir = self.resolve_scene_dir(id, scene_root)?;
+        let mut packet = crate::shot_packet::load_packet(&scene_dir, shot_idx)
+            .await?
+            .ok_or_else(|| VimaxError::InvalidParams(format!("shot {shot_idx} has no packet")))?;
+        let had_video = crate::media_local::is_usable_video_file(
+            &crate::shot_packet::shot_dir(&scene_dir, shot_idx).join("video.mp4"),
+        );
+        let changed = crate::shot_packet::apply_patch(&mut packet, &patch);
+        if changed.script_changed && had_video {
+            packet.run_state = crate::shot_packet::ShotRunState::ScriptStale;
+        }
+        crate::shot_packet::save_packet(&scene_dir, &packet).await?;
+        let _ = crate::shot_packet::sync_storyboard_row(&scene_dir, &packet).await;
+        if patch.recompile.unwrap_or(true) {
+            return self.get_shot_packet(id, scene_root, shot_idx).await;
+        }
+        crate::shot_packet::attach_media_urls(id, &mut packet);
+        let session_root = self.index.working_dir(id)?;
+        let takes = crate::shot_packet::list_takes(&session_root, &scene_dir, shot_idx).await;
+        Ok(crate::shot_packet::ShotPacketView { packet, takes })
+    }
+
+    pub async fn replace_shot_ref(
+        &self,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        kind: &str,
+        slot: u32,
+        unbound: bool,
+        remove: bool,
+        source_path: Option<String>,
+        bytes: Option<Vec<u8>>,
+        filename: Option<String>,
+    ) -> VimaxResult<crate::shot_packet::ShotPacketView> {
+        self.ensure_packet_mutable(id, scene_root, shot_idx).await?;
+        let scene_dir = self.resolve_scene_dir(id, scene_root)?;
+        let session_root = self.index.working_dir(id)?;
+        let mut packet = crate::shot_packet::load_packet(&scene_dir, shot_idx)
+            .await?
+            .ok_or_else(|| VimaxError::InvalidParams(format!("shot {shot_idx} has no packet")))?;
+        let kind = kind.trim().to_ascii_lowercase();
+        if remove {
+            {
+                let slots = if kind == "audio" {
+                    &mut packet.audio_refs
+                } else {
+                    &mut packet.image_refs
+                };
+                if let Some(index) = slots.iter().position(|item| item.slot == slot) {
+                    if crate::shot_packet::can_drop_ref_slot(&slots[index]) {
+                        slots.remove(index);
+                    } else {
+                        let target = &mut slots[index];
+                        target.unbound = true;
+                        target.path = None;
+                        target.user_override = true;
+                        target.url = None;
+                    }
+                }
+            }
+            packet.user_edited = true;
+            crate::shot_packet::save_packet(&scene_dir, &packet).await?;
+            return self.get_shot_packet(id, scene_root, shot_idx).await;
+        }
+        let (path, unbound_flag) = if unbound {
+            (None, true)
+        } else if let Some(bytes) = bytes {
+            if bytes.len() > crate::artifact_edit::MAX_BINARY_BYTES {
+                return Err(VimaxError::InvalidParams("uploaded file is too large".into()));
+            }
+            let ext = filename
+                .as_deref()
+                .and_then(|n| Path::new(n).extension().and_then(|s| s.to_str()))
+                .unwrap_or(if kind == "audio" { "wav" } else { "png" });
+            let rel = crate::shot_packet::write_user_ref_bytes(
+                &session_root,
+                &scene_dir,
+                shot_idx,
+                &kind,
+                slot,
+                &bytes,
+                ext,
+            )
+            .await?;
+            (Some(rel), false)
+        } else if let Some(src) = source_path {
+            let abs = self.index.artifact_abs_path(id, &src)?;
+            if !abs.is_file() {
+                return Err(VimaxError::InvalidParams("source file not found".into()));
+            }
+            let rel = crate::shot_packet::copy_user_ref_from(
+                &session_root,
+                &scene_dir,
+                shot_idx,
+                &kind,
+                slot,
+                &abs,
+            )
+            .await?;
+            (Some(rel), false)
+        } else {
+            return Err(VimaxError::InvalidParams(
+                "provide file bytes, source_path, or unbound".into(),
+            ));
+        };
+        {
+            let slots = if kind == "audio" {
+                &mut packet.audio_refs
+            } else {
+                &mut packet.image_refs
+            };
+            let index = crate::shot_packet::ensure_ref_slot(slots, slot, kind == "audio")?;
+            let target = &mut slots[index];
+            target.path = path;
+            target.unbound = unbound_flag;
+            target.user_override = true;
+            if unbound_flag {
+                target.url = None;
+            }
+        }
+        packet.user_edited = true;
+        crate::shot_packet::save_packet(&scene_dir, &packet).await?;
+        self.get_shot_packet(id, scene_root, shot_idx).await
+    }
+
+    pub async fn approve_shot(
+        self: &Arc<Self>,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        switch_to_continuous: bool,
+    ) -> VimaxResult<()> {
+        let bridge = self
+            .review
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or_else(|| VimaxError::InvalidParams("no live render is waiting for review".into()))?;
+        let pending = bridge.pending().ok_or_else(|| {
+            VimaxError::InvalidParams("the pipeline is not waiting on a shot".into())
+        })?;
+        if pending.scene_root != scene_root || pending.shot_idx != shot_idx {
+            return Err(VimaxError::InvalidParams(
+                "this shot is not the one waiting for review".into(),
+            ));
+        }
+        if switch_to_continuous {
+            let mode = crate::shot_packet::RenderMode::Continuous;
+            bridge.set_mode(mode);
+            let _ = self.index.update_fields(id, |r| {
+                r.render_mode = mode.as_str().into();
+            });
+            {
+                let mut map = self
+                    .statuses
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(st) = map.get_mut(id) {
+                    st.render_mode = Some(mode.as_str().to_string());
+                }
+            }
+            bridge.submit(crate::shot_packet::ShotReviewDecision::SwitchToContinuous);
+        } else {
+            bridge.submit(crate::shot_packet::ShotReviewDecision::Approve);
+        }
+        Ok(())
+    }
+
+    pub async fn set_render_mode(&self, id: &str, render_mode: &str) -> VimaxResult<()> {
+        let mode = crate::shot_packet::RenderMode::parse(render_mode);
+        let _ = self.index.update_fields(id, |r| {
+            r.render_mode = mode.as_str().to_string();
+        });
+        {
+            let mut map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(st) = map.get_mut(id) {
+                st.render_mode = Some(mode.as_str().to_string());
+            }
+        }
+        if let Some(bridge) = self.review.lock().await.get(id) {
+            let was_review = bridge.mode() == crate::shot_packet::RenderMode::ShotReview;
+            bridge.set_mode(mode);
+            if was_review
+                && mode == crate::shot_packet::RenderMode::Continuous
+                && bridge.pending().is_some()
+            {
+                bridge.submit(crate::shot_packet::ShotReviewDecision::SwitchToContinuous);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn retake_shot(
+        self: &Arc<Self>,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        concat: bool,
+        cascade: bool,
+    ) -> VimaxResult<()> {
+        self.ensure_idle(id).await?;
+        let scene_dir = self.resolve_scene_dir(id, scene_root)?;
+        let session_root = self.index.working_dir(id)?;
+        crate::shot_packet::prepare_retake(&session_root, &scene_dir, shot_idx, cascade).await?;
+        if concat {
+            let record = self.index.get(id)?;
+            let film_root = session_root.join(record.workflow.artifact_root());
+            let film = film_root.join("final_video.mp4");
+            if crate::media_local::is_usable_video_file(&film) {
+                let takes = crate::shot_packet::collect_shot_take_manifest(&film_root).await;
+                let _ = crate::shot_packet::archive_current_film(&session_root, &film_root, takes)
+                    .await;
+                let _ = tokio::fs::remove_file(&film).await;
+            }
+        }
+        let record = self.index.get(id)?;
+        self.render(
+            id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            if record.render_mode.is_empty() {
+                None
+            } else {
+                Some(record.render_mode.clone())
+            },
+        )
+        .await
+    }
+
+    pub async fn select_shot_take(
+        self: &Arc<Self>,
+        id: &str,
+        scene_root: &str,
+        shot_idx: i32,
+        take: u32,
+        concat: bool,
+    ) -> VimaxResult<()> {
+        self.ensure_idle(id).await?;
+        let scene_dir = self.resolve_scene_dir(id, scene_root)?;
+        crate::shot_packet::promote_take(&scene_dir, shot_idx, take).await?;
+        crate::shot_packet::mark_continuity_stale_after(&scene_dir, shot_idx).await?;
+        if let Ok(Some(mut packet)) = crate::shot_packet::load_packet(&scene_dir, shot_idx).await {
+            packet.current_take = Some(take);
+            packet.run_state = crate::shot_packet::ShotRunState::Ready;
+            let _ = crate::shot_packet::save_packet(&scene_dir, &packet).await;
+        }
+        if concat {
+            let session_root = self.index.working_dir(id)?;
+            let record = self.index.get(id)?;
+            let film_root = session_root.join(record.workflow.artifact_root());
+            let scene_final = scene_dir.join("final_video.mp4");
+            let _ = tokio::fs::remove_file(&scene_final).await;
+            let film = film_root.join("final_video.mp4");
+            if crate::media_local::is_usable_video_file(&film) {
+                let takes = crate::shot_packet::collect_shot_take_manifest(&film_root).await;
+                let _ = crate::shot_packet::archive_current_film(&session_root, &film_root, takes)
+                    .await;
+                let _ = tokio::fs::remove_file(&film).await;
+            }
+            self.render(id, None, None, None, None, None, Some("continuous".into()))
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn list_films(&self, id: &str) -> VimaxResult<Vec<crate::shot_packet::FilmInfo>> {
+        let session_root = self.index.working_dir(id)?;
+        let record = self.index.get(id)?;
+        let film_root = session_root.join(record.workflow.artifact_root());
+        Ok(crate::shot_packet::list_films(&session_root, &film_root).await)
+    }
+
+    pub async fn select_film(&self, id: &str, version: u32) -> VimaxResult<String> {
+        self.ensure_idle(id).await?;
+        let session_root = self.index.working_dir(id)?;
+        let record = self.index.get(id)?;
+        let film_root = session_root.join(record.workflow.artifact_root());
+        let dest = crate::shot_packet::promote_film(&film_root, version).await?;
+        let rel = dest
+            .strip_prefix(&session_root)
+            .unwrap_or(&dest)
+            .to_string_lossy()
+            .replace('\\', "/");
+        self.set_final_video(id, Some(rel.clone()))?;
+        Ok(rel)
+    }
+
     fn apply_revise_result(
         &self,
         id: &str,
@@ -962,14 +1419,14 @@ impl VimaxService {
 
     async fn ensure_artifacts_mutable(&self, id: &str) -> VimaxResult<()> {
         let record = self.index.get(id)?;
-        if matches!(record.status, RunStatus::Planning | RunStatus::Rendering) {
+        if record.status.is_active() {
             return Err(VimaxError::InvalidParams(
                 "cannot edit artifacts while the project is planning or rendering".into(),
             ));
         }
         let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = map.get(id)
-            && matches!(s.status, RunStatus::Planning | RunStatus::Rendering)
+            && s.status.is_active()
         {
             return Err(VimaxError::InvalidParams(
                 "cannot edit artifacts while the project is planning or rendering".into(),
@@ -985,7 +1442,7 @@ impl VimaxService {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if let Some(s) = map.get(id)
-            && matches!(s.status, RunStatus::Planning | RunStatus::Rendering)
+            && s.status.is_active()
         {
             return Err(VimaxError::InvalidParams(
                 "session already has an active job".into(),
@@ -1094,6 +1551,7 @@ impl VimaxService {
                 .map(|st| st.status)
         });
         self.cancels.lock().await.remove(id);
+        self.review.lock().await.remove(id);
         if let Some(Some(status)) = emit_status {
             self.emit_film_terminal(id, status);
         }
@@ -1136,6 +1594,7 @@ impl VimaxService {
             clip,
             max_reference_audio,
             cancel,
+            review: self.review.lock().await.get(&record.session_id).cloned(),
         })
     }
 
@@ -1694,6 +2153,35 @@ fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::Progr
             {
                 st.progress = pct.clamp(0.0, 100.0) as f32;
             }
+            if stage == "shot_awaiting_review" {
+                st.status = RunStatus::AwaitingReview;
+                st.pending_review = meta.as_ref().and_then(|m| {
+                    Some(crate::progress::PendingShotReview {
+                        scene_root: m.get("scene_root")?.as_str()?.to_string(),
+                        shot_idx: m.get("shot_idx")?.as_i64()? as i32,
+                        scene_idx: m.get("scene_idx").and_then(|v| v.as_i64()).map(|n| n as i32),
+                        duration_secs: m
+                            .get("duration_secs")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32,
+                        image_ref_count: m
+                            .get("image_ref_count")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize,
+                        audio_ref_count: m
+                            .get("audio_ref_count")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize,
+                    })
+                });
+            } else if st.status == RunStatus::AwaitingReview
+                && (stage.starts_with("video_clip")
+                    || stage == "video_generate"
+                    || stage == "concat_start")
+            {
+                st.status = RunStatus::Rendering;
+                st.pending_review = None;
+            }
             if let Some(total) = session_total {
                 st.credits_consumed = total;
             }
@@ -1705,6 +2193,15 @@ fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::Progr
         let _ = svc.index.update_fields(&id, |r| {
             r.stage = stage.to_string();
             r.summary = message.to_string();
+            if stage == "shot_awaiting_review" {
+                r.status = RunStatus::AwaitingReview;
+            } else if r.status == RunStatus::AwaitingReview
+                && (stage.starts_with("video_clip")
+                    || stage == "video_generate"
+                    || stage == "concat_start")
+            {
+                r.status = RunStatus::Rendering;
+            }
         });
     })
 }

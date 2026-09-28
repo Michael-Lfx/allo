@@ -11,6 +11,7 @@ interface StudioSessionComposerProps {
   stopping?: boolean;
   assetsBlocked?: boolean;
   busyKind?: 'planning' | 'rendering' | null;
+  reviewShotNumber?: number | null;
 }
 
 const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
@@ -21,9 +22,11 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
   stopping,
   assetsBlocked,
   busyKind,
+  reviewShotNumber,
 }) => {
   const { t } = useTranslation();
   const busy = action === 'stop';
+  const reviewing = action === 'approve_shot';
   const showSpinner = Boolean(sending || stopping || busy);
   const disabled = Boolean(assetsBlocked || stopping);
 
@@ -33,13 +36,15 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
       ? t('videoGeneration.agentSession.send.plan', { defaultValue: '开始规划' })
       : action === 'continue'
         ? t('videoGeneration.agentSession.send.continue', { defaultValue: '继续' })
-        : action === 'render' || action === 'none'
-          ? t('videoGeneration.agentSession.send.render', { defaultValue: '生成成片' })
-          : busyKind === 'planning'
-            ? t('videoGeneration.agentSession.action.planning', { defaultValue: '正在规划…' })
-            : busyKind === 'rendering'
-              ? t('videoGeneration.agentSession.action.rendering', { defaultValue: '正在生成成片…' })
-              : t('videoGeneration.agentSession.action.working', { defaultValue: '正在生成…' });
+        : action === 'approve_shot'
+          ? t('videoGeneration.agentSession.send.approve', { defaultValue: '确认生成本镜' })
+          : action === 'render' || action === 'none'
+            ? t('videoGeneration.agentSession.send.render', { defaultValue: '生成成片' })
+            : busyKind === 'planning'
+              ? t('videoGeneration.agentSession.action.planning', { defaultValue: '正在规划…' })
+              : busyKind === 'rendering'
+                ? t('videoGeneration.agentSession.action.rendering', { defaultValue: '正在生成成片…' })
+                : t('videoGeneration.agentSession.action.working', { defaultValue: '正在生成…' });
 
   if (action === 'none' && !assetsBlocked) {
     return (
@@ -55,9 +60,14 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
     ? t('videoGeneration.agentSession.hint.needAssets', {
         defaultValue: '请先在左侧上传角色图和参考视频',
       })
-    : busy
-      ? stopHint
-      : null;
+    : reviewing
+      ? t('videoGeneration.agentSession.hint.reviewWaiting', {
+          number: reviewShotNumber ?? '—',
+          defaultValue: '第 {{number}} 镜等待确认，也可在左侧过审条操作',
+        })
+      : busy
+        ? stopHint
+        : null;
 
   return (
     <div className={styles.composer}>
@@ -69,7 +79,7 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
         aria-busy={showSpinner}
         aria-label={busy ? `${label}，${stopHint}` : label}
         title={busy ? `${label}，${stopHint}` : label}
-        data-testid={busy ? 'studio-session-stop' : 'studio-session-send'}
+        data-testid={busy ? 'studio-session-stop' : reviewing ? 'studio-session-approve' : 'studio-session-send'}
         onClick={() => {
           if (disabled) return;
           if (busy) onStop();

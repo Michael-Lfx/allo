@@ -123,6 +123,7 @@ const RENDER_STAGES = new Set([
   'video_generate',
   'video_continuity',
   'concat_start',
+  'shot_awaiting_review',
 ]);
 
 /** Muxing done — the deliverable exists. */
@@ -200,12 +201,12 @@ export function studioStageActiveIndex(input: StudioStageTimelineInput): number 
 
   if (status === 'succeeded') index = Math.max(index, at('film'));
   if (variant === 'action') {
-    if (status === 'rendering') index = Math.max(index, at('generate'));
+    if (status === 'rendering' || status === 'awaiting_review') index = Math.max(index, at('generate'));
     if (status === 'planning') index = Math.max(index, at('assets'));
     return index;
   }
 
-  if (status === 'rendering') index = Math.max(index, at('render'));
+  if (status === 'rendering' || status === 'awaiting_review') index = Math.max(index, at('render'));
   if (status === 'planning') index = Math.max(index, at('brief'));
   if (hasStoryboard) index = Math.max(index, at('storyboard'));
 
@@ -231,7 +232,10 @@ export function buildStudioStageTimeline(
   const events = input.events ?? [];
   const variant = input.variant ?? 'film';
   const keys = studioStageKeys(variant);
-  const busy = input.status === 'planning' || input.status === 'rendering';
+  const busy =
+    input.status === 'planning' ||
+    input.status === 'rendering' ||
+    input.status === 'awaiting_review';
   const activeIndex = studioStageActiveIndex(input);
 
   const durations: Array<number | null> = keys.map(() => null);

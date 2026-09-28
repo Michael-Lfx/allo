@@ -49,8 +49,21 @@ import {
   listCameos,
   uploadCameo,
   updateSessionTitle,
+  approveShot,
+  listFilms,
+  selectFilm,
+  setSessionRenderMode,
 } from './api';
-import type { ArtifactContent, ArtifactNode, VimaxSession, VimaxWorkflow } from './types';
+import {
+  parseSessionRenderMode,
+  resolveSessionRenderMode,
+  type ArtifactContent,
+  type ArtifactNode,
+  type FilmInfo,
+  type VimaxRenderMode,
+  type VimaxSession,
+  type VimaxWorkflow,
+} from './types';
 import ArtifactTree from './components/ArtifactTree';
 import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
@@ -226,6 +239,8 @@ const WorkspacePage: React.FC = () => {
   const [sessionRatio, setSessionRatio] = useState(loadStudioSessionWidthRatio);
   const [sessionCollapsed, setSessionCollapsed] = useState(loadStudioSessionCollapsed);
   const [storyboardShotCount, setStoryboardShotCount] = useState(0);
+  const [renderMode, setRenderMode] = useState<VimaxRenderMode>('continuous');
+  const [films, setFilms] = useState<FilmInfo[]>([]);
   const sessionWidth = computeStudioSessionWidth(studioShellWidth, sessionRatio);
 
   useLayoutEffect(() => {
@@ -307,6 +322,7 @@ const WorkspacePage: React.FC = () => {
       const s = await getSession(sessionId);
       setSession(s);
       rememberVideoGenerationSession(sessionId, s.title);
+      setRenderMode(resolveSessionRenderMode(s.render_mode));
       setSourceText(s.idea || s.script || s.novel_text || launchDraft?.sourceText || '');
       setRequirement(s.user_requirement || launchDraft?.requirement || '');
       setStyle(s.style?.trim() || launchDraft?.style?.trim() || '');
@@ -390,12 +406,14 @@ const WorkspacePage: React.FC = () => {
         Number(prev.credits_consumed ?? 0) || 0,
         Number(st.credits_consumed ?? 0) || 0
       );
+      const render_mode = parseSessionRenderMode(st.render_mode) ?? prev.render_mode;
       if (
         prev.status === st.status &&
         prev.stage === st.stage &&
         prev.final_video === final_video &&
         prev.cover === cover &&
-        (Number(prev.credits_consumed ?? 0) || 0) === credits_consumed
+        (Number(prev.credits_consumed ?? 0) || 0) === credits_consumed &&
+        prev.render_mode === render_mode
       ) {
         return prev;
       }
@@ -406,6 +424,7 @@ const WorkspacePage: React.FC = () => {
         final_video,
         cover,
         credits_consumed,
+        render_mode,
       };
     });
     if (document.hidden) return;
@@ -645,6 +664,24 @@ const WorkspacePage: React.FC = () => {
     };
   }, [sessionId, statusFlags.coverPath, session?.cover]);
 
+  useEffect(() => {
+    if (!sessionId || !(statusFlags.hasFinalVideo || session?.final_video)) {
+      setFilms([]);
+      return;
+    }
+    let cancelled = false;
+    void listFilms(sessionId)
+      .then((rows) => {
+        if (!cancelled) setFilms(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setFilms([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, statusFlags.hasFinalVideo, statusFlags.finalVideoPath, session?.final_video]);
+
   const handlePlan = useCallback(async () => {
     if (!sessionId || !session) return;
     const trimmed = sourceText.trim();
@@ -845,6 +882,7 @@ const WorkspacePage: React.FC = () => {
         video_model: models.video_model.trim() || undefined,
         resolution: normalizeVideoResolution(models.video_model, resolution),
         fps: normalizeVideoFps(models.video_model, fps),
+        render_mode: isActionImitationWorkflow(session?.workflow) ? undefined : renderMode,
       });
       trackFunnelEvent('render_started', {
         feature: 'video_generation',
@@ -883,6 +921,7 @@ const WorkspacePage: React.FC = () => {
     message,
     t,
     refreshRun,
+    renderMode,
   ]);
 
   const handleCancel = useCallback(async () => {
@@ -902,6 +941,42 @@ const WorkspacePage: React.FC = () => {
       setCancelling(false);
     }
   }, [sessionId, message, t, refreshRun]);
+
+  const handleApproveShot = useCallback(async () => {
+    if (!sessionId) return;
+    const pending = getRunStatusSnapshot()?.pending_review;
+    if (!pending) return;
+    try {
+      await approveShot(sessionId, pending.scene_root, pending.shot_idx, false);
+      await refreshRun();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    }
+  }, [sessionId, message, refreshRun]);
+
+  const handleRenderModeChange = useCallback(
+    async (mode: VimaxRenderMode) => {
+      if (!sessionId || mode === renderMode) return;
+      const previous = renderMode;
+      setRenderMode(mode);
+      setSession((prev) => (prev ? { ...prev, render_mode: mode } : prev));
+      patchRunStatus({ render_mode: mode });
+      try {
+        await setSessionRenderMode(sessionId, mode);
+      } catch (e) {
+        setRenderMode(previous);
+        setSession((prev) => (prev ? { ...prev, render_mode: previous } : prev));
+        patchRunStatus({ render_mode: previous });
+        message.error(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [sessionId, renderMode, message]
+  );
+
+  useEffect(() => {
+    const next = statusFlags.renderMode;
+    if (next) setRenderMode(next);
+  }, [statusFlags.renderMode]);
 
   const handleDelete = useCallback(async () => {
     if (!sessionId || deleting) return;
@@ -1178,6 +1253,25 @@ const WorkspacePage: React.FC = () => {
     }
   }, [message, session?.final_video, sessionId, t]);
 
+  const handleSelectFilm = useCallback(
+    async (version: number) => {
+      if (!sessionId) return;
+      try {
+        const result = await selectFilm(sessionId, version);
+        patchRunStatus({ final_video: result.final_video });
+        setSession((prev) =>
+          prev ? { ...prev, final_video: result.final_video } : prev
+        );
+        await refreshRun();
+        const rows = await listFilms(sessionId);
+        setFilms(rows);
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [sessionId, message, refreshRun]
+  );
+
   const busy = statusFlags.busy || planning || rendering;
   const isAction = isActionImitationWorkflow(session?.workflow);
   const videoCreditsConsumed = resolveSessionCreditsConsumed({
@@ -1190,6 +1284,7 @@ const WorkspacePage: React.FC = () => {
       session?.stage === 'planned' ||
       statusFlags.stagePlanned ||
       statusFlags.status === 'rendering' ||
+      statusFlags.status === 'awaiting_review' ||
       statusFlags.status === 'succeeded' ||
       session?.status === 'succeeded');
   const canRender = isAction
@@ -1317,7 +1412,38 @@ const WorkspacePage: React.FC = () => {
               </p>
             </div>
           </div>
-          <div className='flex items-center gap-4px shrink-0'>
+          <div className='flex items-center gap-10px shrink-0 flex-wrap justify-end'>
+            {!isAction ? (
+              <div className={styles.renderModeCluster}>
+                <span className={styles.renderModeLabel}>
+                  {t('videoGeneration.studio.renderMode', { defaultValue: '出片模式' })}
+                </span>
+                <div
+                  className={styles.renderModeGroup}
+                  role='group'
+                  data-testid='session-render-mode'
+                  aria-label={t('videoGeneration.studio.renderMode', { defaultValue: '出片模式' })}
+                >
+                  <button
+                    type='button'
+                    className={`${styles.renderModeBtn} ${renderMode === 'continuous' ? styles.renderModeBtnActive : ''}`}
+                    aria-pressed={renderMode === 'continuous'}
+                    onClick={() => void handleRenderModeChange('continuous')}
+                  >
+                    {t('videoGeneration.studio.storyboard.renderContinuous', { defaultValue: '连续出片' })}
+                  </button>
+                  <button
+                    type='button'
+                    className={`${styles.renderModeBtn} ${renderMode === 'shot_review' ? styles.renderModeBtnActive : ''}`}
+                    aria-pressed={renderMode === 'shot_review'}
+                    onClick={() => void handleRenderModeChange('shot_review')}
+                  >
+                    {t('videoGeneration.studio.storyboard.renderShotReview', { defaultValue: '逐镜过审' })}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            <div className='flex items-center gap-4px'>
             {sessionCollapsed && !isMobile ? (
               <CanvasChromeButton
                 className='is-icon'
@@ -1389,13 +1515,14 @@ const WorkspacePage: React.FC = () => {
                 <Delete theme='outline' size={14} fill='currentColor' />
               </CanvasChromeButton>
             </Popconfirm>
+            </div>
           </div>
         </div>
       </header>
 
       <div className={styles.studioBody}>
-        <div className={styles.studioMain}>
-          <div className={styles.studioMainInner}>
+        <div className={styles.studioMain} data-studio-main>
+          <div className={`${styles.studioMainInner} ${!isAction && hasStoryboard ? styles.studioMainInnerWide : ''}`}>
         {isAction ? (
           <section className={`${styles.studioPanel} p-16px md:p-20px`}>
             <div className='mb-14px'>
@@ -1544,12 +1671,37 @@ const WorkspacePage: React.FC = () => {
                   })}
                 </div>
               </div>
-              <Button type='primary' onClick={() => void handleRevealFilm()}>
+              <div className='flex flex-wrap items-center gap-8px'>
+                {films.length > 0 ? (
+                  <label className='flex items-center gap-6px text-12px text-[var(--color-text-3)]'>
+                    {t('videoGeneration.studio.storyboard.filmHistory', { defaultValue: '成片历史' })}
+                    <select
+                      className={styles.filmHistorySelect}
+                      data-testid='film-history-select'
+                      value={films.find((film) => film.current)?.version ?? ''}
+                      onChange={(event) => {
+                        const version = Number(event.target.value);
+                        if (Number.isFinite(version)) void handleSelectFilm(version);
+                      }}
+                    >
+                      {films.map((film) => (
+                        <option key={film.version} value={film.version}>
+                          v{film.version}
+                          {film.current
+                            ? ` · ${t('videoGeneration.studio.storyboard.badgeReady', { defaultValue: '已出片' })}`
+                            : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                <Button type='primary' onClick={() => void handleRevealFilm()}>
                 <span className='inline-flex items-center gap-6px'>
                   <FolderOpen theme='outline' size={14} />
                   {t('videoGeneration.studio.reveal', { defaultValue: '打开视频所在位置' })}
                 </span>
               </Button>
+              </div>
             </div>
             <video
               key={finalBlobUrl}
@@ -1587,7 +1739,7 @@ const WorkspacePage: React.FC = () => {
                 <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.storyboard.hint', {
                     defaultValue:
-                      '胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。点击画面描述或台词可展开查看；整表精调仍可打开 Canvas。',
+                      '点选参考或视频节点查看该节点的生成提示词。上一镜尾帧等非生成节点没有提示词。胶片切换镜头，整表增删请打开 Canvas。',
                   })}
                 </p>
               </div>
@@ -1598,6 +1750,8 @@ const WorkspacePage: React.FC = () => {
               focusSceneId={focusSceneId}
               onFocusScene={setFocusSceneId}
               onShotCount={setStoryboardShotCount}
+              imageModel={models.image_model}
+              videoModel={models.video_model}
             />
           </section>
         ) : null}
@@ -1707,6 +1861,22 @@ const WorkspacePage: React.FC = () => {
         ) : null}
           </div>
         </div>
+        {sessionCollapsed && !isMobile ? (
+          <button
+            type='button'
+            className={styles.sessionCollapsedRail}
+            onClick={() => handleSessionCollapsedChange(false)}
+            title={t('videoGeneration.agentSession.expand', { defaultValue: '展开会话' })}
+            aria-label={t('videoGeneration.agentSession.expand', { defaultValue: '展开会话' })}
+          >
+            <span className={styles.sessionCollapsedRailIcon} aria-hidden>
+              <Robot theme='outline' size={16} fill='currentColor' />
+            </span>
+            <span className={styles.sessionCollapsedRailLabel}>
+              {t('videoGeneration.agentSession.railLabel', { defaultValue: '会话' })}
+            </span>
+          </button>
+        ) : null}
         {isMobile || !sessionCollapsed ? (
           <StudioAgentSession
             sessionId={sessionId}
@@ -1735,6 +1905,7 @@ const WorkspacePage: React.FC = () => {
             onRender={() => void handleRender()}
             onCancel={() => void handleCancel()}
             onContinue={handleContinue}
+            onApproveShot={() => void handleApproveShot()}
             onFocusScene={setFocusSceneId}
             onSelectArtifact={developerMode ? setSelectedPath : undefined}
             cameoEpoch={cameoRefreshToken}

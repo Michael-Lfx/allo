@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, StoryboardArtist, VoiceProfileGenerator,
     VoiceReferenceGenerator, bind_location_ids, ensure_film_cover, environment_sluglines_from_dir,
@@ -14,9 +16,16 @@ use crate::drama::{lint_script_promise_coverage, load_drama_engine, pack_split_n
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
 use crate::media_local::SpliceSeam;
-use crate::progress::ProgressCallback;
+use crate::progress::{PendingShotReview, ProgressCallback};
 use crate::session::{
     copy_json_artifact_if_readable, read_json_artifact, write_json_artifact, write_text_artifact,
+};
+use crate::shot_packet::{
+    self, apply_packet_to_shot, archive_live_take, bind_prompt_with_override, continuity_unbound,
+    load_packet, merge_live_audio_refs, merge_live_image_refs, refresh_run_state_from_disk,
+    resolve_audio_slot_paths, resolve_slot_paths, save_packet, slots_from_audio_pairs,
+    slots_from_image_pairs, usable_audio_slots, usable_image_slots, RenderMode, ShotPacket,
+    ShotReviewDecision, ShotRunState,
 };
 use crate::skills::DirectorSpec;
 
@@ -357,6 +366,9 @@ impl Script2VideoPipeline {
             write_json_artifact(&wd.join("storyboard.json"), &synced).await?;
         }
         write_json_artifact(&wd.join("shot_descriptions.json"), &shot_descriptions).await?;
+        let session_root = resolve_session_root(wd);
+        let _ = crate::shot_packet::seed_packets_from_shots(wd, &session_root, &shot_descriptions)
+            .await;
         let mut camera_tree = camera_tree;
         if remap_camera_tree_shot_idxs(&mut camera_tree, &idx_map) {
             write_json_artifact(&wd.join("camera_tree.json"), &camera_tree).await?;
@@ -556,6 +568,12 @@ impl Script2VideoPipeline {
             let seq = media_local::ConcatClip::scene_exits(&refs, &entries, &exits, opening);
             media_local::concat_videos(&seq, &final_path).await?;
             emit(&progress, "concat_done", "场景成片拼接完成");
+            let film_root = resolve_film_root(&self.working_dir);
+            if film_root == self.working_dir {
+                let session = resolve_session_root(&self.working_dir);
+                let takes = crate::shot_packet::collect_shot_take_manifest(&film_root).await;
+                let _ = crate::shot_packet::archive_current_film(&session, &film_root, takes).await;
+            }
         }
         emit(&progress, "render_done", "脚本成片渲染完成");
         Ok(final_path)
@@ -713,6 +731,13 @@ impl Script2VideoPipeline {
         write_json_artifact(&self.working_dir.join("storyboard.json"), &synced).await?;
         write_json_artifact(&aggregate, &packed).await?;
         super::artifact_cache::write_sidecar(&aggregate, plan_fp).await?;
+        let session_root = resolve_session_root(&self.working_dir);
+        let _ = crate::shot_packet::seed_packets_from_shots(
+            &self.working_dir,
+            &session_root,
+            &packed,
+        )
+        .await;
         Ok(packed)
     }
 
@@ -1070,6 +1095,79 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 }
             }
 
+            let session_root = resolve_session_root(&self.working_dir);
+            if let Ok(packet) = refresh_shot_packet(
+                &self.working_dir,
+                shot,
+                characters,
+                registry,
+                world_pairs,
+                style,
+                continuity_first.as_deref(),
+                seam,
+                duration_secs,
+                self.backends.max_reference_audio,
+                true,
+            )
+            .await
+            {
+                let video_exists = media_local::is_usable_video_file(
+                    &self
+                        .working_dir
+                        .join("shots")
+                        .join(shot.idx.to_string())
+                        .join("video.mp4"),
+                );
+                if let Some(bridge) = &self.backends.review {
+                    if bridge.mode() == RenderMode::ShotReview && !video_exists {
+                        let pending = PendingShotReview {
+                            scene_root: packet.scene_root.clone(),
+                            shot_idx: shot.idx,
+                            scene_idx: shot_packet::scene_idx_from_dir(&self.working_dir),
+                            duration_secs,
+                            image_ref_count: usable_image_slots(&packet).len(),
+                            audio_ref_count: usable_audio_slots(&packet).len(),
+                        };
+                        if let Ok(Some(mut p)) = load_packet(&self.working_dir, shot.idx).await {
+                            p.run_state = ShotRunState::AwaitingReview;
+                            let _ = save_packet(&self.working_dir, &p).await;
+                        }
+                        bridge.set_pending(Some(pending.clone()));
+                        emit_meta(
+                            progress,
+                            "shot_awaiting_review",
+                            &format!(
+                                "镜头 {} / {} 待过审",
+                                i + 1,
+                                shots.len()
+                            ),
+                            serde_json::json!({
+                                "shot_idx": shot.idx,
+                                "scene_root": pending.scene_root,
+                                "scene_idx": pending.scene_idx,
+                                "duration_secs": duration_secs,
+                                "image_ref_count": pending.image_ref_count,
+                                "audio_ref_count": pending.audio_ref_count,
+                            }),
+                        );
+                        let cancel = self
+                            .backends
+                            .cancel
+                            .clone()
+                            .unwrap_or_else(CancellationToken::new);
+                        match bridge.wait(&cancel).await? {
+                            ShotReviewDecision::Approve => {}
+                            ShotReviewDecision::SwitchToContinuous => {
+                                bridge.set_mode(RenderMode::Continuous);
+                            }
+                            ShotReviewDecision::Stop => return Err(VimaxError::Cancelled),
+                        }
+                        bridge.set_pending(None);
+                    }
+                }
+                let _ = session_root;
+            }
+
             let shot_started = std::time::Instant::now();
             match self
                 .generate_video_for_shot(
@@ -1174,9 +1272,26 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             return Ok(());
         }
 
-        let continuity_source = continuity_first_frame
-            .filter(|p| media_local::is_usable_image_file(p))
-            .map(|p| p.to_path_buf());
+        let session_root = resolve_session_root(&self.working_dir);
+        let packet = load_packet(&self.working_dir, shot.idx).await.ok().flatten();
+        let mut shot_owned = shot.clone();
+        if let Some(p) = &packet {
+            apply_packet_to_shot(&mut shot_owned, p);
+        }
+        let shot = &shot_owned;
+        let duration_secs = packet
+            .as_ref()
+            .and_then(|p| p.duration_secs)
+            .filter(|s| *s > 0)
+            .unwrap_or(duration_secs);
+
+        let continuity_source = if packet.as_ref().is_some_and(continuity_unbound) {
+            None
+        } else {
+            continuity_first_frame
+                .filter(|p| media_local::is_usable_image_file(p))
+                .map(|p| p.to_path_buf())
+        };
         let using_video_continuity = continuity_source.is_some();
         let seam = if using_video_continuity {
             seam
@@ -1186,7 +1301,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
 
         let continuity_ref = continuity_still_for_seam(seam, continuity_source.as_deref());
         let keep_env = keep_location_plate(seam, shot, prev);
-        let ref_pairs = shot_video_ref_pairs(
+        let mut ref_pairs = shot_video_ref_pairs(
             shot,
             continuity_ref,
             characters,
@@ -1195,6 +1310,17 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             &resolve_film_root(&self.working_dir),
             keep_env,
         );
+        if let Some(p) = &packet {
+            if p.image_refs.iter().any(|s| s.user_override || s.unbound) {
+                let from_packet = resolve_slot_paths(&session_root, &p.image_refs);
+                if !from_packet.is_empty() {
+                    ref_pairs = from_packet
+                        .into_iter()
+                        .filter(|(path, _)| media_local::is_usable_image_file(path))
+                        .collect();
+                }
+            }
+        }
         if keep_env
             && !ref_pairs
                 .iter()
@@ -1222,7 +1348,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
         let ref_paths: Vec<&Path> = ref_pairs.iter().map(|(p, _)| p.as_path()).collect();
         let film_root = resolve_film_root(&self.working_dir);
         // Voice clips invite invented speech on silent shots; only bind when this beat talks.
-        let audio_ref_pairs = if shot_has_spoken_dialogue(shot) {
+        let mut audio_ref_pairs = if shot_has_spoken_dialogue(shot) {
             shot_speaker_voice_refs(
                 shot,
                 characters,
@@ -1233,13 +1359,21 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
         } else {
             Vec::new()
         };
+        if let Some(p) = &packet {
+            if p.audio_refs.iter().any(|s| s.user_override || s.unbound) {
+                audio_ref_pairs = resolve_audio_slot_paths(&session_root, &p.audio_refs)
+                    .into_iter()
+                    .filter(|(_, path)| path.is_file())
+                    .collect();
+            }
+        }
         let use_voice_audio_ref = !audio_ref_pairs.is_empty();
         let audio_bound_names: Vec<&str> =
             audio_ref_pairs.iter().map(|(n, _)| n.as_str()).collect();
         let ref_audio_paths: Vec<&Path> =
             audio_ref_pairs.iter().map(|(_, p)| p.as_path()).collect();
         let aspect_ratio = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
-        let prompt = i2v_motion_prompt(
+        let compiled = i2v_motion_prompt(
             shot,
             characters,
             style,
@@ -1250,6 +1384,12 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             use_voice_audio_ref,
             &audio_bound_names,
             &aspect_ratio,
+        );
+        let prompt = bind_prompt_with_override(
+            &compiled,
+            packet
+                .as_ref()
+                .and_then(|p| p.prompt_override.as_deref()),
         );
         // P0-3: soften risky wording (motion / plot / audio captions) before the
         // first submission so Seedance content filters don't reject the prompt text.
@@ -1551,6 +1691,20 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             99.0,
             serde_json::json!({ "shot_idx": shot.idx }),
         );
+        if let Ok(Some(mut packet)) = load_packet(&self.working_dir, shot.idx).await {
+            packet.run_state = ShotRunState::Ready;
+            packet.error = None;
+            if archive_live_take(
+                &resolve_session_root(&self.working_dir),
+                &self.working_dir,
+                &mut packet,
+            )
+            .await
+            .is_ok()
+            {
+                let _ = save_packet(&self.working_dir, &packet).await;
+            }
+        }
         Ok(())
     }
 }
@@ -1561,6 +1715,189 @@ pub struct PlanArtifacts {
     pub storyboard: Vec<ShotBriefDescription>,
     pub shot_descriptions: Vec<ShotDescription>,
     pub camera_tree: Vec<Camera>,
+}
+
+pub(crate) async fn refresh_shot_packet(
+    scene_dir: &Path,
+    shot: &ShotDescription,
+    characters: &[CharacterInScene],
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    world_pairs: &[(PathBuf, String)],
+    style: &str,
+    continuity: Option<&Path>,
+    seam: SpliceSeam,
+    duration_secs: u32,
+    max_reference_audio: usize,
+    persist: bool,
+) -> VimaxResult<ShotPacket> {
+    let session_root = resolve_session_root(scene_dir);
+    let scene_root = shot_packet::scene_root_rel(&session_root, scene_dir);
+    let mut packet = match load_packet(scene_dir, shot.idx).await? {
+        Some(existing) => existing,
+        None => shot_packet::packet_from_shot(&scene_root, shot),
+    };
+    packet.scene_root = scene_root;
+    packet.shot_idx = shot.idx;
+    if !packet.user_edited {
+        let seeded = shot_packet::packet_from_shot(&packet.scene_root, shot);
+        packet.visual_desc = seeded.visual_desc;
+        packet.audio_desc = seeded.audio_desc;
+        packet.beats = seeded.beats;
+        packet.location_id = seeded.location_id;
+        packet.cam_idx = seeded.cam_idx;
+    }
+    packet.duration_secs = Some(duration_secs);
+    packet.seam = format!("{seam:?}").to_ascii_lowercase();
+
+    let mut shot_owned = shot.clone();
+    apply_packet_to_shot(&mut shot_owned, &packet);
+    let continuity = if continuity_unbound(&packet) {
+        None
+    } else {
+        continuity
+    };
+    let using = continuity.filter(|p| media_local::is_usable_image_file(p));
+    let seam = if using.is_some() { seam } else { SpliceSeam::Cut };
+    let keep_env = keep_location_plate(seam, &shot_owned, None);
+    let film_root = resolve_film_root(scene_dir);
+    let image_pairs = shot_video_ref_pairs(
+        &shot_owned,
+        using,
+        characters,
+        registry,
+        world_pairs,
+        &film_root,
+        keep_env,
+    );
+    merge_live_image_refs(
+        &mut packet,
+        slots_from_image_pairs(&session_root, &image_pairs),
+    );
+    let audio_pairs = if shot_has_spoken_dialogue(&shot_owned) {
+        shot_speaker_voice_refs(
+            &shot_owned,
+            characters,
+            registry,
+            &film_root,
+            max_reference_audio,
+        )
+    } else {
+        Vec::new()
+    };
+    merge_live_audio_refs(
+        &mut packet,
+        slots_from_audio_pairs(&session_root, &audio_pairs),
+    );
+
+    let bound_images = resolve_slot_paths(&session_root, &packet.image_refs)
+        .into_iter()
+        .filter(|(p, _)| media_local::is_usable_image_file(p))
+        .collect::<Vec<_>>();
+    let bound_audio = resolve_audio_slot_paths(&session_root, &packet.audio_refs)
+        .into_iter()
+        .filter(|(_, p)| p.is_file())
+        .collect::<Vec<_>>();
+    let names: Vec<&str> = bound_audio.iter().map(|(n, _)| n.as_str()).collect();
+    let aspect_ratio = crate::aspect::load_aspect_from_dir(scene_dir).await;
+    let scene_bgm = load_scene_bgm_paren(scene_dir).await;
+    let compiled = i2v_motion_prompt(
+        &shot_owned,
+        characters,
+        style,
+        &bound_images,
+        duration_secs,
+        seam,
+        &scene_bgm,
+        !bound_audio.is_empty(),
+        &names,
+        &aspect_ratio,
+    );
+    packet.compiled_prompt = crate::prompt_safety::sanitize_video_prompt(&compiled);
+    refresh_run_state_from_disk(scene_dir, &mut packet);
+    if persist {
+        save_packet(scene_dir, &packet).await?;
+    }
+    Ok(packet)
+}
+
+/// Disk-only refresh for GET packet (no in-flight continuity argument).
+pub(crate) async fn refresh_shot_packet_from_disk(
+    scene_dir: &Path,
+    shot_idx: i32,
+    max_reference_audio: usize,
+) -> VimaxResult<ShotPacket> {
+    let film_root = resolve_film_root(scene_dir);
+    let shot = load_shot_for_packet(scene_dir, shot_idx).await?;
+    let characters: Vec<CharacterInScene> =
+        match read_json_artifact(&scene_dir.join("characters.json")).await {
+            Ok(v) => v,
+            Err(_) => read_json_artifact(&film_root.join("characters.json"))
+                .await
+                .unwrap_or_default(),
+        };
+    let registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
+        read_json_artifact(&film_root.join("character_portraits_registry.json"))
+            .await
+            .unwrap_or_default();
+    let world_reg: crate::agents::WorldAssetRegistry =
+        read_json_artifact(&film_root.join("world_assets_registry.json"))
+            .await
+            .unwrap_or_default();
+    let world_pairs = world_asset_pairs(&world_reg, &film_root);
+    let style = match tokio::fs::read_to_string(film_root.join("style.txt")).await {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => tokio::fs::read_to_string(scene_dir.join("style.txt"))
+            .await
+            .unwrap_or_default(),
+    };
+    let prev_idx = shot_idx.checked_sub(1);
+    let continuity = if let Some(prev) = prev_idx {
+        ensure_shot_video_last_frame(scene_dir, prev, false)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let seam = if prev_idx.is_some() {
+        SpliceSeam::MatchCut
+    } else {
+        SpliceSeam::Cut
+    };
+    let duration = load_packet(scene_dir, shot_idx)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|p| p.duration_secs)
+        .unwrap_or(8);
+    refresh_shot_packet(
+        scene_dir,
+        &shot,
+        &characters,
+        &registry,
+        &world_pairs,
+        &style,
+        continuity.as_deref(),
+        seam,
+        duration,
+        max_reference_audio.max(3),
+        true,
+    )
+    .await
+}
+
+async fn load_shot_for_packet(scene_dir: &Path, shot_idx: i32) -> VimaxResult<ShotDescription> {
+    let per = scene_dir
+        .join("shots")
+        .join(shot_idx.to_string())
+        .join("shot_description.json");
+    if per.is_file() {
+        return read_json_artifact(&per).await;
+    }
+    let all: Vec<ShotDescription> = read_json_artifact(&scene_dir.join("shot_descriptions.json")).await?;
+    all.into_iter()
+        .find(|s| s.idx == shot_idx)
+        .ok_or_else(|| VimaxError::InvalidParams(format!("shot {shot_idx} not found")))
 }
 
 fn portrait_pairs(
@@ -2132,7 +2469,7 @@ async fn ensure_scene_bgm_brief(
     Ok(bgm)
 }
 
-async fn load_scene_bgm_paren(working_dir: &Path) -> String {
+pub(crate) async fn load_scene_bgm_paren(working_dir: &Path) -> String {
     let path = working_dir.join("bgm_brief.txt");
     match tokio::fs::read_to_string(&path).await {
         Ok(s) if !s.trim().is_empty() => crate::planning::format_scene_bgm_paren(&s),
@@ -2274,7 +2611,7 @@ fn prop_duplicates_visible_cast(
     })
 }
 
-fn shot_has_spoken_dialogue(shot: &ShotDescription) -> bool {
+pub(crate) fn shot_has_spoken_dialogue(shot: &ShotDescription) -> bool {
     crate::planning::text_looks_like_dialogue(&shot_audio_source(shot))
         || crate::planning::text_looks_like_dialogue(&shot.motion_desc)
         || crate::planning::text_looks_like_dialogue(&shot.visual_desc)
@@ -2620,7 +2957,7 @@ fn render_lens_audio(
     (line, sfx)
 }
 
-fn i2v_motion_prompt(
+pub(crate) fn i2v_motion_prompt(
     shot: &ShotDescription,
     characters: &[CharacterInScene],
     style: &str,
@@ -2787,7 +3124,7 @@ fn audio_ref_binding_clause(bound: &[&str], use_voice_audio_ref: bool) -> String
 }
 
 /// Up to `max_slots` `reference_audio` clips, speakers in audio first then vis.
-fn shot_speaker_voice_refs(
+pub(crate) fn shot_speaker_voice_refs(
     shot: &ShotDescription,
     characters: &[CharacterInScene],
     registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
@@ -2935,13 +3272,13 @@ fn collapse_ws(s: &str) -> String {
 /// Later shots in the same scene always bind the previous clip's last frame
 /// (set/look lock). Freeze-frame at the join is handled by concat head-trim,
 /// not by omitting this still.
-fn continuity_still_for_seam(_seam: SpliceSeam, still: Option<&Path>) -> Option<&Path> {
+pub(crate) fn continuity_still_for_seam(_seam: SpliceSeam, still: Option<&Path>) -> Option<&Path> {
     still
 }
 
 /// Multi-ref strip for Seedance R2V: last-frame (if any) + in-shot portraits
 /// + the current location plate (unless same-camera resume) + mentioned props.
-fn shot_video_ref_pairs(
+pub(crate) fn shot_video_ref_pairs(
     shot: &ShotDescription,
     continuity: Option<&Path>,
     characters: &[CharacterInScene],
