@@ -1,620 +1,349 @@
-//! Learning-graph feature (beta): decompose a broad learning goal into a
-//! network of LEARNING UNITS linked by task-dependency edges — a complete DAG.
-//! A unit is one human study session, usually within 30 minutes (soft cap); a
-//! genuinely hard single lesson may go up to 60 (hard cap). Unit names are
-//! action sentences ("用配方法解一元二次方程"), never concept nouns or whole
-//! sub-domains ("概率基础" is meaningless as a unit).
+//! Learning-graph growth engine (ADR-0009): a course is never pre-built as a
+//! DAG. It starts from a handful of ENDPOINT ANCHORS (title + a one-line
+//! degree statement, stored as marker lessons) and GROWS one small batch of
+//! nodes at a time whenever the ready stock drops below the trigger level.
 //!
-//! Generation runs EXCLUSIVELY through the agent tool loop
-//! ([`LearningGraphAgentEngine`], implemented in nomifun-ai-agent): a scope
-//! call first resolves the coverage checklist, then the agent builds the
-//! network step by step with the `lg_*` draft tools ([`crate::learning_graph::draft`])
-//! and publishes only through the deterministic audit gate
-//! ([`crate::learning_graph::audit`]). The former one-shot generation +
-//! auto-repair pipeline has been retired; this module keeps the shared
-//! symbolic kernel (normalization, fuzzy reference resolution, cycle
-//! removal, merge), the scope analysis and the audit report renderer the
-//! agent path reuses.
+//! Dependencies live entirely in the CONCEPT WEB: every node declares which
+//! concepts it `teaches` and which it `assumes`, each at a TIER
+//! (know < apply < teach). There are no prerequisite edges and — because the
+//! structural gates reject any batch whose assumptions are not already
+//! covered — no locked state in the UI: a published node is always ready
+//! NOW. Cross-course readiness falls out of the global concept registry.
 //!
-//! Published graphs are persisted by [`crate::service::LearningService`] into
-//! the database (graph course + lesson nodes + prerequisite edges) so the UI
-//! can revisit them without regenerating.
+//! The coach is a SINGLE LLM call (the whole roster + coverage gauge +
+//! compass is injected into the prompt; a growth batch is ≤7 nodes, far too
+//! small to justify the old multi-round draft loop). Deterministic gates
+//! hold the decision power; one repair retry gets the gate report, then an
+//! independent AI concept review runs (advisory-but-blocking once, degraded
+//! to pass when unavailable).
 
 use std::collections::{HashMap, HashSet};
 
-use nomifun_common::{AppError, UserId};
+use nomifun_common::AppError;
 use serde::{Deserialize, Serialize};
 
 use crate::completer::LearningCompleter;
 
-mod audit;
-pub mod draft;
-mod review;
+/// 就绪节点的补货目标：每次生长把就绪存量补到这个数（learnhub 的「7」——
+/// 门与提示词同源的唯一数字，ADR-0009）。
+pub(crate) const READY_TARGET: usize = 7;
 
-pub(crate) use audit::{
-    common_substring_len, derive_suggestions, BLOCK_MIN_SHARED, SEV_DANGER, SEV_INFO, SEV_WARNING,
-};
-pub(crate) use review::{ReviewFinding, needs_review, run_final_review};
+/// 自动触发的水位线：节点完成时检查，就绪存量低于该值才触发生长。
+pub(crate) const READY_TRIGGER: usize = 3;
 
-/// One node in the graph — a LEARNING UNIT: one human study session,
-/// usually within 30 minutes (soft cap), at most 60 for a genuinely hard
-/// single lesson. The name is an action sentence describing what the
-/// learner does in the session ("用配方法解一元二次方程"), never a concept
-/// noun. `min` carries the estimated workload; the audit enforces the caps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LearningGraphNode {
-    pub id: String,
-    pub title: String,
-    /// Estimated study time in minutes (the prompt asks for 5-minute steps
-    /// up to the 30-minute soft cap; the audit warns above 30 and treats
-    /// any value above 60 as a hard-cap violation).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min: Option<u16>,
-    /// Sub-domain group label (legacy field, never set by new graphs).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<String>,
-    /// Why the concept is indispensable ("缺了它不行").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub necessity: Option<String>,
-    /// Group entry-point concept; cross-group references may only point here.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_anchor: Option<bool>,
+/// 单批新增节点上限（提示词与门同源，超过整批拒收）。
+pub(crate) const MAX_BATCH_NODES: usize = 7;
+
+// ── Tiers ──────────────────────────────────────────────────────────────────
+
+/// 概念掌握档位：知道 < 会用 < 能教。DB 与线上均存 locale 无关代码；中文
+/// 展示名（知道/会用/能教）在提示词与 i18n 里各有一份，语义以此处为准。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConceptTier {
+    Know,
+    Apply,
+    Teach,
 }
 
-/// A prerequisite edge: `from` should be mastered before `to`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LearningGraphEdge {
-    pub from: String,
-    pub to: String,
-    /// Why `from` must precede `to` (model-provided, optional).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
+impl ConceptTier {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Know => "know",
+            Self::Apply => "apply",
+            Self::Teach => "teach",
+        }
+    }
 
-/// Deterministic structural audit report attached to a stored graph.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct LearningGraphAudit {
-    /// References the model emitted that no node satisfied — the missing
-    /// concept proxy. Counts unknown references, self loops, duplicates and
-    /// cycle edges dropped during normalization/merge.
-    #[serde(default)]
-    pub ref_drop_count: usize,
-    /// Total prerequisite entries the model emitted, accumulated across the
-    /// initial generation and every repair merge — the drop-rate
-    /// denominator. Persisted so a merged graph keeps an honest rate
-    /// instead of resetting to the last patch batch's own statistics.
-    #[serde(default)]
-    pub raw_ref_count: usize,
-    /// `ref_drop_count` over `raw_ref_count`.
-    #[serde(default)]
-    pub ref_drop_rate: f64,
-    /// Every dropped reference with its reason, so the report is evidence-led.
-    #[serde(default)]
-    pub dropped_edges: Vec<DroppedEdge>,
-    /// Structural findings from deterministic scripts (Stage 3).
-    #[serde(default)]
-    pub findings: Vec<AuditFinding>,
-}
-
-/// One reference the pipeline dropped, with the reason (unknown reference,
-/// self loop, duplicate edge, cycle).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DroppedEdge {
-    pub from: String,
-    pub to: String,
-    pub reason: String,
-}
-
-/// One structural finding. `kind` is a stable machine-readable label the UI
-/// and the repair endpoint key on; `severity` is "info" | "warning" | "danger".
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AuditFinding {
-    pub kind: String,
-    pub severity: String,
-    pub message: String,
-    /// Node ids serving as evidence (possibly empty).
-    #[serde(default)]
-    pub node_ids: Vec<String>,
-}
-
-/// The validated, cycle-free DAG payload shared by storage and API.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LearningGraphData {
-    pub nodes: Vec<LearningGraphNode>,
-    pub edges: Vec<LearningGraphEdge>,
-    #[serde(default)]
-    pub audit: LearningGraphAudit,
-}
-
-/// A stored learning graph as returned to the UI. Courses are installation
-/// global, so unlike the legacy JSON files there is no owner field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LearningGraphRecord {
-    pub id: String,
-    pub topic: String,
-    #[serde(flatten)]
-    pub graph: LearningGraphData,
-    pub created_at: i64,
-}
-
-/// Agent-driven concept graph generation seam — mirrors [`LearningCompleter`]:
-/// the learning crate holds only the trait; the two-loop agent engine is
-/// implemented in nomifun-ai-agent. When injected, `generate_learning_graph`
-/// routes through the agent tool set (draft + `lg_*` tools, audit-gated
-/// publish) instead of the one-shot legacy pipeline, which stays as the
-/// fallback so tests and direct calls keep working unconfigured.
-#[async_trait::async_trait]
-pub trait LearningGraphAgentEngine: Send + Sync {
-    /// Run the two-loop agent generation; returns the published record.
-    async fn generate(
-        &self,
-        user_id: &UserId,
-        topic: &str,
-        model_override: Option<(&str, &str)>,
-    ) -> Result<LearningGraphRecord, AppError>;
-
-    /// 续建一份中断后仍存活的草稿:草稿槽预置后重入生成循环(`lg_start`
-    /// 幂等返回现有草稿,模型从现有网络接着补建),审计门禁与修复循环
-    /// 与全新生成完全一致。
-    async fn resume(
-        &self,
-        user_id: &UserId,
-        draft_id: &str,
-        topic: &str,
-        model_override: Option<(&str, &str)>,
-    ) -> Result<LearningGraphRecord, AppError>;
-}
-
-/// List entry without the full node/edge payload.
-#[derive(Debug, Clone, Serialize)]
-pub struct LearningGraphSummary {
-    pub id: String,
-    pub topic: String,
-    pub node_count: usize,
-    pub edge_count: usize,
-    pub created_at: i64,
-}
-
-impl LearningGraphRecord {
-    pub fn summary(&self) -> LearningGraphSummary {
-        LearningGraphSummary {
-            id: self.id.clone(),
-            topic: self.topic.clone(),
-            node_count: self.graph.nodes.len(),
-            edge_count: self.graph.edges.len(),
-            created_at: self.created_at,
+    pub fn try_from_str(value: &str) -> Option<Self> {
+        match value {
+            "know" => Some(Self::Know),
+            "apply" => Some(Self::Apply),
+            "teach" => Some(Self::Teach),
+            _ => None,
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct GenerateLearningGraphRequest {
-    pub topic: String,
-    #[serde(default)]
-    pub provider_id: Option<nomifun_common::ProviderId>,
-    #[serde(default)]
-    pub model: Option<String>,
-}
+// ── Proposed batch (raw coach output) ──────────────────────────────────────
 
-/// Tolerate `"min": "15"` (or `null`/absence/non-numeric) where the shape
-/// asks for a number; an unusable value becomes `None` rather than failing
-/// the whole reply.
-fn de_min<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum NumOrStr {
-        Num(u16),
-        Str(String),
-    }
-    Ok(match Option::<NumOrStr>::deserialize(deserializer)? {
-        Some(NumOrStr::Num(n)) => Some(n),
-        Some(NumOrStr::Str(s)) => s.trim().parse::<u16>().ok(),
-        None => None,
-    })
-}
-
-// ── Raw model output types ────────────────────────────────────────────────
-
-/// Raw per-unit model output — deliberately symbolic and minimal, the same
-/// shape as a hand-maintained YAML graph: a unit ACTION NAME plus its direct
-/// dependency names plus an optional minute budget. The program derives ids,
-/// edges, and all optional fields, and tolerates the usual LLM habits (a
-/// single string where an array is expected, duplicate names, unknown
-/// references, cycles, non-numeric minutes).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub(crate) struct RawConcept {
-    #[serde(default)]
+/// Coach 声明的一枚概念引用：名字按登记表（canonical 或别名）照抄，档位
+/// 为本节点对该概念的要求/教学档位。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConceptRefInput {
     pub name: String,
-    #[serde(default, deserialize_with = "de_pre_list")]
-    pub pre: Vec<String>,
-    /// Estimated study minutes; tolerated as a number or a digit string.
-    #[serde(default, deserialize_with = "de_min")]
-    pub min: Option<u16>,
+    pub tier: ConceptTier,
 }
 
-/// Tolerate `"pre": "single name"` (or `null`/absence) where the shape asks
-/// for an array.
-fn de_pre_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany {
-        One(String),
-        Many(Vec<String>),
-    }
-    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
-        Some(OneOrMany::One(one)) => vec![one],
-        Some(OneOrMany::Many(many)) => many,
-        None => Vec::new(),
-    })
+/// Coach 提议的一个新节点。名字即标题（动作句），概念引用按名字解析。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposedNode {
+    pub title: String,
+    #[serde(default)]
+    pub purpose: String,
+    /// 学习分钟预算；常规 5–30，极困难最多 60（门放行 1–60）。
+    #[serde(default)]
+    pub minutes: Option<u16>,
+    #[serde(default)]
+    pub teaches: Vec<ConceptRefInput>,
+    #[serde(default)]
+    pub assumes: Vec<ConceptRefInput>,
 }
 
-// ── Shared normalization ───────────────────────────────────────────────────
-
-/// A normalized batch of concepts: legal nodes and edges plus drop
-/// statistics. Used by the generation loop and the repair stage.
-#[derive(Debug, Clone)]
-pub(crate) struct NormalizedBatch {
-    pub nodes: Vec<LearningGraphNode>,
-    /// Edges whose references resolved; may still contain cycles (removed
-    /// by [`finalize_graph`]).
-    pub edges: Vec<LearningGraphEdge>,
-    /// Total prerequisite entries the model emitted (drop-rate denominator).
-    pub raw_refs: usize,
-    /// References dropped during normalization (unknown/self/duplicate).
-    pub dropped: Vec<DroppedEdge>,
-    /// Near-miss references resolved to their unique nearest unit — kept as
-    /// (emitted, resolved) pairs for the diagnosis log.
-    pub fuzzy_resolved: Vec<(String, String)>,
+/// 随批铸名： coach 用到登记表里没有的概念时必须在此注册（canonical+
+/// 别名联合唯一，别名可为空）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConceptMint {
+    pub canonical: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub definition: String,
 }
 
-/// Repair and validate a batch of raw concepts into nodes and legal edges:
-/// - the concept name IS its id and title (symbolic, like a YAML graph);
-/// - drops concepts with an empty name, deduplicates names (first wins);
-/// - drops prerequisite references outside the batch (batch keys are always
-///   allowed) plus `allowed` (repair: existing graph keys), self loops, and
-///   duplicate edges, counting each drop.
-pub(crate) fn normalize_batch(
-    raw: &[RawConcept],
-    allowed: &HashSet<String>,
-) -> NormalizedBatch {
-    let mut seen_names: HashSet<String> = HashSet::new();
-    let mut kept: Vec<bool> = Vec::with_capacity(raw.len());
-    let mut nodes: Vec<LearningGraphNode> = Vec::new();
-    let mut raw_refs = 0usize;
-    for concept in raw {
-        raw_refs += concept.pre.len();
-        let name = concept.name.trim();
-        let is_kept = !name.is_empty() && seen_names.insert(name.to_owned());
-        kept.push(is_kept);
-        if !is_kept {
-            continue;
-        }
-        nodes.push(LearningGraphNode {
-            id: name.to_owned(),
-            title: name.to_owned(),
-            min: concept.min,
-            group: None,
-            necessity: None,
-            is_anchor: None,
+/// 一批生长提案：节点 + 铸名 + 教练裁决完成的终点标题 + 批注。终点完成
+/// 是纯标记（机器从不自动置位，这里置的是教练的裁决）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposedBatch {
+    #[serde(default)]
+    pub nodes: Vec<ProposedNode>,
+    #[serde(default)]
+    pub mints: Vec<ConceptMint>,
+    #[serde(default)]
+    pub completed_endpoints: Vec<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// 确定性结构门的拒绝项：`kind` 是稳定机器标签（测试与修复回灌按它键控）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GateError {
+    pub kind: &'static str,
+    pub message: String,
+}
+
+/// 修复回灌用的全文报告。
+pub fn format_gate_report(errors: &[GateError]) -> String {
+    errors
+        .iter()
+        .map(|error| format!("- [{}] {}", error.kind, error.message))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 概念覆盖账：概念名（canonical，按登记表解析别名后）→ 已教最高档位。
+pub type ConceptCoverage = HashMap<String, ConceptTier>;
+
+/// 结构门（确定性，零模型调用）。任何一条违反 = 整批拒收（不部分落库），
+/// 报告回灌给教练重裁。检查项：
+/// - 批量上限（≤ [`MAX_BATCH_NODES`]）与标题合法性/唯一性；
+/// - 铸名合法：canonical 非空、与登记表（含别名）及批内其他铸名不撞；
+/// - 概念引用可解析：teaches/assumes 的名字必须是登记表现有概念（含别名）
+///   或本批铸名；
+/// - **就绪即发布**：每条 assumes 必须被（全局已教账 ∪ 本批兄弟 teaches）
+///   以不低于所假定档位覆盖——不满足的节点不存在「入库后锁定」，直接打回；
+/// - 终点保护：完成裁决的标题必须是真实终点；节点不得冒用终点标题。
+pub fn validate_batch(
+    batch: &ProposedBatch,
+    coverage: &ConceptCoverage,
+    registry_names: &HashSet<String>,
+    endpoint_titles: &HashSet<String>,
+    existing_titles: &HashSet<String>,
+) -> Vec<GateError> {
+    let mut errors = Vec::new();
+    if batch.nodes.len() > MAX_BATCH_NODES {
+        errors.push(GateError {
+            kind: "batch_too_large",
+            message: format!(
+                "一批最多 {} 个新节点，本批 {} 个——拆批重交",
+                MAX_BATCH_NODES,
+                batch.nodes.len()
+            ),
         });
     }
 
-    let mut seen_edges: HashSet<(String, String)> = HashSet::new();
-    let mut edges: Vec<LearningGraphEdge> = Vec::new();
-    let mut dropped: Vec<DroppedEdge> = Vec::new();
-    let mut fuzzy_resolved: Vec<(String, String)> = Vec::new();
-    for (concept, is_kept) in raw.iter().zip(&kept) {
-        let to = concept.name.trim();
-        if !is_kept || !seen_names.contains(to) {
+    // 批内铸名预备账：canonical → 该概念在本批可引用的名字集合。
+    let mut mint_names: HashSet<String> = HashSet::new();
+    let mut canonicals: Vec<String> = Vec::new();
+    for mint in &batch.mints {
+        let canonical = mint.canonical.trim();
+        if canonical.is_empty() {
+            errors.push(GateError {
+                kind: "mint_invalid",
+                message: "铸名的 canonical 不能为空".into(),
+            });
             continue;
         }
-        for prereq in &concept.pre {
-            let from = prereq.trim();
-            if from.is_empty() {
-                dropped.push(DroppedEdge {
-                    from: from.to_owned(),
-                    to: to.to_owned(),
-                    reason: "empty reference".into(),
+        if registry_names.contains(&canonical.to_lowercase()) {
+            errors.push(GateError {
+                kind: "mint_collision",
+                message: format!("铸名「{canonical}」与概念登记表现有名字冲突"),
+            });
+        }
+        for canonical_before in &canonicals {
+            if canonical_before == &canonical.to_lowercase() {
+                errors.push(GateError {
+                    kind: "mint_collision",
+                    message: format!("批内铸名重复：「{canonical}」"),
+                });
+            }
+        }
+        canonicals.push(canonical.to_lowercase());
+        mint_names.insert(canonical.to_lowercase());
+        for alias in &mint.aliases {
+            let alias = alias.trim();
+            if alias.is_empty() {
+                continue;
+            }
+            if registry_names.contains(&alias.to_lowercase()) || mint_names.contains(&alias.to_lowercase())
+            {
+                errors.push(GateError {
+                    kind: "mint_collision",
+                    message: format!("铸名「{alias}」（{canonical} 的别名）与现有名字冲突"),
+                });
+            }
+            mint_names.insert(alias.to_lowercase());
+        }
+    }
+
+    // 本批兄弟 teaches 账（名字 → 最高档位），供批内自足判定。
+    let mut batch_taught: ConceptCoverage = HashMap::new();
+    for node in &batch.nodes {
+        for concept in &node.teaches {
+            let key = concept.name.trim().to_lowercase();
+            let entry = batch_taught.entry(key).or_insert(concept.tier);
+            if concept.tier > *entry {
+                *entry = concept.tier;
+            }
+        }
+    }
+
+    let mut seen_titles: HashSet<String> = HashSet::new();
+    for node in &batch.nodes {
+        let title = node.title.trim();
+        if title.is_empty() {
+            errors.push(GateError {
+                kind: "node_invalid",
+                message: "节点标题不能为空".into(),
+            });
+            continue;
+        }
+        if title.chars().count() > 80 {
+            errors.push(GateError {
+                kind: "node_invalid",
+                message: format!("节点标题过长（>80 字）：{title}"),
+            });
+        }
+        let key = title.to_lowercase();
+        if !seen_titles.insert(key.clone()) {
+            errors.push(GateError {
+                kind: "title_duplicate",
+                message: format!("批内节点标题重复：{title}"),
+            });
+        }
+        if existing_titles.contains(&key) || endpoint_titles.contains(&key) {
+            errors.push(GateError {
+                kind: "title_duplicate",
+                message: format!("节点标题与课程已有节点/终点重复：{title}"),
+            });
+        }
+        let minutes = node.minutes.unwrap_or(10);
+        if !(1..=60).contains(&minutes) {
+            errors.push(GateError {
+                kind: "node_minutes",
+                message: format!("节点 {title} 的分钟预算必须在 1–60 之间：{minutes}"),
+            });
+        }
+
+        for concept in node.teaches.iter().chain(node.assumes.iter()) {
+            let name = concept.name.trim();
+            if name.is_empty() {
+                errors.push(GateError {
+                    kind: "concept_unresolved",
+                    message: format!("节点 {title} 的概念引用为空"),
                 });
                 continue;
             }
-            // Exact reference first; a near-miss name (one insertion or
-            // deletion away from exactly one defined unit) resolves instead
-            // of dropping — a single dropped reference can orphan a whole
-            // subtree and turn its head into a fake entry point.
-            let resolved = if seen_names.contains(from) || allowed.contains(from) {
-                from.to_owned()
-            } else {
-                match fuzzy_resolve_reference(from, &seen_names, allowed) {
-                    Some(name) => {
-                        fuzzy_resolved.push((from.to_owned(), name.clone()));
-                        name
-                    }
-                    None => {
-                        dropped.push(DroppedEdge {
-                            from: from.to_owned(),
-                            to: to.to_owned(),
-                            reason: "unknown reference".into(),
-                        });
-                        continue;
-                    }
-                }
-            };
-            if resolved == to {
-                dropped.push(DroppedEdge {
-                    from: resolved,
-                    to: to.to_owned(),
-                    reason: "self loop".into(),
+            let key = name.to_lowercase();
+            let resolvable =
+                registry_names.contains(&key) || mint_names.contains(&key) || batch_taught.contains_key(&key);
+            if !resolvable {
+                errors.push(GateError {
+                    kind: "concept_unresolved",
+                    message: format!(
+                        "节点 {title} 引用的概念「{name}」既不在概念登记表，也未随本批铸名——先铸名或改用登记表中的名字"
+                    ),
                 });
-                continue;
             }
-            if !seen_edges.insert((resolved.clone(), to.to_owned())) {
-                dropped.push(DroppedEdge {
-                    from: resolved,
-                    to: to.to_owned(),
-                    reason: "duplicate edge".into(),
+        }
+
+        for assumption in &node.assumes {
+            let key = assumption.name.trim().to_lowercase();
+            let covered = coverage
+                .get(&key)
+                .is_some_and(|taught| *taught >= assumption.tier)
+                || batch_taught
+                    .get(&key)
+                    .is_some_and(|taught| *taught >= assumption.tier);
+            if !covered {
+                errors.push(GateError {
+                    kind: "assumes_uncovered",
+                    message: format!(
+                        "节点 {title} 假定「{name}」到「{assumed}」档位，但没有任何节点（含本批兄弟）教到该档位——{hint}",
+                        name = assumption.name.trim(),
+                        assumed = tier_zh(assumption.tier),
+                        hint = "先补一个教该概念的铺垫节点，或把本节点的假定降档/移除",
+                    ),
                 });
-                continue;
             }
-            edges.push(LearningGraphEdge {
-                from: resolved,
-                to: to.to_owned(),
-                reason: None,
+        }
+    }
+
+    for title in &batch.completed_endpoints {
+        let key = title.trim().to_lowercase();
+        if !endpoint_titles.contains(&key) {
+            errors.push(GateError {
+                kind: "endpoint_unknown",
+                message: format!("完成裁决的终点「{title}」不存在——终点保护：只能裁决已声明的终点"),
             });
         }
     }
-    NormalizedBatch {
-        nodes,
-        edges,
-        raw_refs,
-        dropped,
-        fuzzy_resolved,
+
+    errors
+}
+
+/// 档位的中文显示名（提示词与门消息共用这一份，i18n 另有对应键）。
+pub fn tier_zh(tier: ConceptTier) -> &'static str {
+    match tier {
+        ConceptTier::Know => "知道",
+        ConceptTier::Apply => "会用",
+        ConceptTier::Teach => "能教",
     }
 }
 
-/// Fuzzy reference resolution ceiling: a "pre" entry that missed exact
-/// lookup resolves to a defined unit when it sits within this many
-/// insertions/deletions of EXACTLY ONE candidate. One, not two: a
-/// substitution (一元一次 vs 一元二次) costs two indel steps and must never
-/// resolve — swapped characters usually mark a genuinely different unit,
-/// while a stray function word or a repeated character is a slip.
-const FUZZY_REF_MAX_DISTANCE: usize = 1;
-
-/// Resolve a near-miss "pre" name against the batch keys plus the allowlist:
-/// the unique nearest candidate within [`FUZZY_REF_MAX_DISTANCE`]
-/// insertions/deletions wins; a tie resolves to nothing (the model meant
-/// something between the candidates, and guessing would mis-wire the edge).
-/// Also used by the repair stage to resolve link/reverse/split/merge
-/// endpoints — a repair model copying names out of a 100+-unit list slips
-/// exactly the way the generator does.
-pub(crate) fn fuzzy_resolve_reference(
-    reference: &str,
-    names: &HashSet<String>,
-    allowed: &HashSet<String>,
-) -> Option<String> {
-    let reference: Vec<char> = reference.chars().collect();
-    let mut best: Option<(usize, String)> = None;
-    let mut tie = false;
-    for candidate in names.iter().chain(allowed.iter()) {
-        let distance = indel_distance(&reference, &candidate.chars().collect::<Vec<_>>());
-        if distance > FUZZY_REF_MAX_DISTANCE {
-            continue;
-        }
-        match &best {
-            Some((best_distance, _)) if *best_distance < distance => {}
-            Some((best_distance, best_name)) if best_distance == &distance => {
-                if best_name != candidate {
-                    tie = true;
-                }
-            }
-            _ => {
-                best = Some((distance, candidate.clone()));
-                tie = false;
-            }
-        }
-    }
-    if tie {
-        None
-    } else {
-        best.map(|(_, name)| name)
-    }
-}
-
-/// Insert/delete edit distance (a substitution costs two): the number of
-/// character insertions and deletions turning `a` into `b`.
-fn indel_distance(a: &[char], b: &[char]) -> usize {
-    let mut lcs = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            lcs[i][j] = if a[i - 1] == b[j - 1] {
-                lcs[i - 1][j - 1] + 1
-            } else {
-                lcs[i - 1][j].max(lcs[i][j - 1])
-            };
-        }
-    }
-    a.len() + b.len() - 2 * lcs[a.len()][b.len()]
-}
-
-/// Keep every edge except those that close a cycle: iterative DFS coloring
-/// (white/grey/black) over the prereq direction; an edge into a grey node is
-/// a back edge and is dropped. Returns the kept edges and the dropped ones
-/// (in original order).
-pub(crate) fn remove_cycle_edges(
-    order: &[String],
-    edges: &[(String, String)],
-) -> (Vec<(String, String)>, Vec<(String, String)>) {
-    let index: HashMap<&str, usize> = order
-        .iter()
-        .enumerate()
-        .map(|(position, key)| (key.as_str(), position))
-        .collect();
-    // Reverse adjacency: concept position -> its prerequisites' positions.
-    let mut prereqs: Vec<Vec<usize>> = vec![Vec::new(); order.len()];
-    for (from, to) in edges {
-        if let (Some(&from_pos), Some(&to_pos)) = (index.get(from.as_str()), index.get(to.as_str()))
-        {
-            prereqs[to_pos].push(from_pos);
-        }
-    }
-
-    let mut color = vec![0u8; order.len()]; // 0 white, 1 grey, 2 black
-    let mut dropped_pos: HashSet<(usize, usize)> = HashSet::new();
-    for root in 0..order.len() {
-        if color[root] != 0 {
-            continue;
-        }
-        color[root] = 1;
-        let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
-        while let Some(&(node, cursor)) = stack.last() {
-            if cursor < prereqs[node].len() {
-                let next = prereqs[node][cursor];
-                stack.last_mut().unwrap().1 = cursor + 1;
-                match color[next] {
-                    0 => {
-                        color[next] = 1;
-                        stack.push((next, 0));
-                    }
-                    1 => {
-                        // `next` is an ancestor of `node` in the DFS tree, so
-                        // the original edge next -> node closes a cycle.
-                        dropped_pos.insert((next, node));
-                    }
-                    _ => {}
-                }
-            } else {
-                color[node] = 2;
-                stack.pop();
-            }
-        }
-    }
-    let mut kept = Vec::new();
-    let mut dropped = Vec::new();
-    for (from, to) in edges {
-        match (index.get(from.as_str()), index.get(to.as_str())) {
-            (Some(&from_pos), Some(&to_pos)) if !dropped_pos.contains(&(from_pos, to_pos)) => {
-                kept.push((from.clone(), to.clone()));
-            }
-            _ => dropped.push((from.clone(), to.clone())),
-        }
-    }
-    (kept, dropped)
-}
-
-/// Deterministic final pass shared by every merge path: drop back edges so
-/// the published graph is always a DAG, and fold the drop statistics into a
-/// fresh audit shell (findings are filled by the audit stage).
-fn finalize_graph(
-    nodes: Vec<LearningGraphNode>,
-    edges: Vec<LearningGraphEdge>,
-    mut dropped: Vec<DroppedEdge>,
-    raw_refs: usize,
-) -> LearningGraphData {
-    let order: Vec<String> = nodes.iter().map(|node| node.id.clone()).collect();
-    let edge_pairs: Vec<(String, String)> = edges
-        .iter()
-        .map(|edge| (edge.from.clone(), edge.to.clone()))
-        .collect();
-    let (kept_pairs, cycle_dropped) = remove_cycle_edges(&order, &edge_pairs);
-    let kept: HashSet<(String, String)> = kept_pairs.into_iter().collect();
-    let final_edges = edges
-        .into_iter()
-        .filter(|edge| kept.contains(&(edge.from.clone(), edge.to.clone())))
-        .collect();
-    for (from, to) in cycle_dropped {
-        dropped.push(DroppedEdge {
-            from,
-            to,
-            reason: "cycle".into(),
-        });
-    }
-    let audit = LearningGraphAudit {
-        ref_drop_count: dropped.len(),
-        raw_ref_count: raw_refs,
-        ref_drop_rate: if raw_refs == 0 {
-            0.0
-        } else {
-            dropped.len() as f64 / raw_refs as f64
-        },
-        dropped_edges: dropped,
-        findings: Vec::new(),
-    };
-    LearningGraphData {
-        nodes,
-        edges: final_edges,
-        audit,
-    }
-}
-
-/// Incrementally merge a normalized repair batch into an existing graph:
-/// existing keys win, new edges are unioned, cycles are removed globally, and
-/// the audit drop statistics ACCUMULATE (previous drops stay dropped — a
-/// patch cannot re-add an edge whose endpoint never existed — because the
-/// orphaned-units audit keys on those entries; resetting them would blind
-/// the re-audit to exactly the units the repair was supposed to reconnect).
-pub(crate) fn merge_batch(graph: &LearningGraphData, batch: &NormalizedBatch) -> LearningGraphData {
-    let mut nodes = graph.nodes.clone();
-    let mut node_keys: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
-    for node in &batch.nodes {
-        if node_keys.insert(node.id.as_str()) {
-            nodes.push(node.clone());
-        }
-    }
-    let mut edges = graph.edges.clone();
-    edges.extend(batch.edges.iter().cloned());
-    let mut dropped = graph.audit.dropped_edges.clone();
-    dropped.extend(batch.dropped.iter().cloned());
-    finalize_graph(
-        nodes,
-        edges,
-        dropped,
-        graph.audit.raw_ref_count + batch.raw_refs,
-    )
-}
-
-// ── Scope analysis (pre-generation reference) ──────────────────────────────
+// ── Scope analysis（沿用：目标/基线/范围/大块概念）────────────────────────
 
 /// Scope call: ONE light call that resolves what the goal description
-/// actually covers before the agent builds the network. The output is
-/// REFERENCE material only — a STRICTLY COMPLETE list of large-block concepts
-/// that a complete network must cover (no fixed count: a complex goal gets
-/// more blocks, a simple goal fewer); the agent decomposes each block into
-/// learning units on its own, and the audit re-checks every block against
-/// the final graph. Nothing else (unit-level naming, expected size) is the
-/// scope's job — the audit owns completeness. Failure degrades to a
-/// scope-free draft, never to a hard error.
-///
-/// The prompt is maintained in Chinese, in lockstep with the agent-loop
-/// prompts in nomifun-ai-agent (`GENERATE_AGENT_SYSTEM` / `REPAIR_AGENT_SYSTEM`)
-/// — the Chinese wording is the single source of truth for the semantic
-/// contracts; do not fork new English variants.
-const SCOPE_SYSTEM: &str = r#"你负责在学习目标被拆解为学习单元网络之前，先厘清这个目标到底覆盖什么。
+/// actually covers. The output is REFERENCE material for the coach prompt
+/// and the endpoint proposal; failure degrades to a scope-free start, never
+/// to a hard error.
+const SCOPE_SYSTEM: &str = r#"你负责在学习目标开始生长之前，先厘清这个目标到底覆盖什么。
 只回复一个 JSON 对象，形状如下：
 {
-  "goal": "完成整个学习网络后应达到的最终状态——可检验的能力描述",
+  "goal": "完成整个学习后应达到的最终状态——可检验的能力描述",
   "baseline": "学习者被假定的起点状态",
   "scope": "一句话界定该目标覆盖什么、从哪里开始",
   "blocks": ["大块概念一", "大块概念二"]
 }
 规则：
-- "goal"：明确的学习目标。从学习目标描述中提炼学习者完成整个网络后能做到什么、理解到什么程度——写成可检验的能力陈述，而不是重复用户的原话。
-- "baseline"：用户起点。当学习者基线不明且没有明确要求起点时，一律视作用户对目标相关领域彻底的一无所知——没有任何先备知识、技能与直觉，baseline 就写成这个最朴素的零基状态（从日常经验可触及处描述），绝不能替用户脑补一个"听起来合理"的部分基线；只有用户明确说出自己已具备的知识或技能时，才照实记录。
+- "goal"：明确的学习目标。从学习目标描述中提炼学习者完成后能做到什么、理解到什么程度——写成可检验的能力陈述，而不是重复用户的原话。
+- "baseline"：用户起点。当学习者基线不明且没有明确要求起点时，一律视作用户对目标相关领域彻底的一无所知；只有用户明确说出自己已具备的知识或技能时，才照实记录。
 - "scope"：一句话划清目标的边界——起点、要达到的水平、主题广度，须与 goal 和 baseline 保持一致。
-- "blocks"：该目标真正覆盖的大块概念，按从基础到高级排序，合起来必须铺满从 baseline 到 goal 的整条路径。这是严格完备的覆盖清单——一个完整课程该包含的大块概念都要列入；漏列是最严重的失败，拿不准时把一个大块拆成两个，也不要把两个合并成一个。数量不固定：复杂的目标多列，简单的目标少列。第一块必须落在 baseline 之内——baseline 是零基状态时，第一块就是最基础的大块概念。
+- "blocks"：该目标真正覆盖的大块概念，按从基础到高级排序，合起来必须铺满从 baseline 到 goal 的整条路径。数量不固定：复杂的目标多列，简单的目标少列。
 - 用学习目标的语言书写。
 - 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
 
-/// Resolved scope reference fed into the generation call. `blocks` is
-/// deliberately coarse: large-block concepts the generator decomposes into
-/// final unit names, never exact unit names themselves. `goal`/`baseline`
-/// pin the target state and the assumed starting state (zero-basis by
-/// default — see [`SCOPE_SYSTEM`]); both stay empty on old-shape replies.
+/// Resolved scope reference fed into the coach / endpoint proposal.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ScopeAnalysis {
     pub goal: String,
@@ -623,23 +352,18 @@ pub(crate) struct ScopeAnalysis {
     pub blocks: Vec<String>,
 }
 
-/// Raw scope reply — same tolerant parsing philosophy as [`RawConcept`]: a
-/// bare string where a list is expected, or a missing field, degrades
-/// instead of failing the whole analysis.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(crate) struct RawScope {
+struct RawScope {
     #[serde(default)]
-    pub goal: String,
+    goal: String,
     #[serde(default)]
-    pub baseline: String,
+    baseline: String,
     #[serde(default)]
-    pub scope: String,
-    #[serde(default, deserialize_with = "de_pre_list")]
-    pub blocks: Vec<String>,
+    scope: String,
+    #[serde(default, deserialize_with = "de_string_list")]
+    blocks: Vec<String>,
 }
 
-/// Parse the scope reply; `None` means "no usable scope" and degrades to a
-/// scope-free draft.
 fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
     let parsed = crate::generation::parse_json_object::<RawScope>(raw).ok()?;
     Some(ScopeAnalysis {
@@ -650,10 +374,7 @@ fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
     })
 }
 
-/// One scope call, best-effort: any failure degrades to `None` so the
-/// generation call still runs without a reference (pre-scope behavior).
-/// Also the draft store's scope resolver (`lg_start`). Progress is reported
-/// through the caller's event channel, never through files.
+/// One scope call, best-effort: any failure degrades to `None`.
 pub(crate) async fn analyze_scope(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
@@ -672,328 +393,764 @@ pub(crate) async fn analyze_scope(
     parse_scope_reply(&raw)
 }
 
-/// Render the audit state as a model-readable report: size, dropped
-/// references with their names, and every finding with its evidence.
-/// The draft kernel's `audit_report` builds on it, so it is crate-visible.
-pub(crate) fn format_audit_report(graph: &LearningGraphData) -> String {
-    let mut lines = vec![format!(
-        "Generated graph: {} concepts, {} edges",
-        graph.nodes.len(),
-        graph.edges.len()
-    )];
-    if graph.audit.ref_drop_count > 0 {
-        lines.push(format!(
-            "References dropped: {} ({} of all prerequisites). Every dropped reference is a name \
-             in some \"pre\" list that matches no \"name\" in the reply — either fix the name or \
-             define the concept. Dropped: {}",
-            graph.audit.ref_drop_count,
-            graph.audit.ref_drop_rate,
-            graph
-                .audit
-                .dropped_edges
-                .iter()
-                .map(|edge| format!("{} -> {}", edge.from, edge.to))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    for finding in &graph.audit.findings {
-        lines.push(format!("- [{}] {}", finding.kind, finding.message));
-        if !finding.node_ids.is_empty() {
-            lines.push(format!("  nodes: {}", finding.node_ids.join(", ")));
+// ── Endpoint proposal (course creation) ────────────────────────────────────
+
+/// Coach 提议的一条终点：标题 + 一句程度声明。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposedEndpoint {
+    pub title: String,
+    #[serde(default)]
+    pub goal_note: String,
+}
+
+const ENDPOINT_PROPOSAL_SYSTEM: &str = r#"你负责为一个新的学习目标提议 1-3 条「终点锚」。终点是学习的方向标记：学习者抵达终点时应当具备什么能力。
+只回复一个 JSON 对象，形状如下：
+{
+  "endpoints": [
+    { "title": "终点名（名词短语，如：独立完成一元二次方程的求解）", "goal_note": "一句程度声明：抵达时能做到什么、到什么程度" }
+  ]
+}
+规则：
+- 每条终点必须指向一个可检验的能力状态，而不是「学完某本书」这类过程描述。
+- 目标单一清晰时提议 1 条即可；目标含多个相互独立的努力方向时才拆成多条（最多 3 条）。
+- 终点标题用学习目标的语言书写，20 字以内。
+- 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
+
+/// Propose initial endpoints for a new course (best-effort: failure returns
+/// an empty list — the user types endpoints by hand in the wizard).
+pub(crate) async fn propose_endpoints(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    topic: &str,
+    scope: Option<&ScopeAnalysis>,
+) -> Vec<ProposedEndpoint> {
+    let mut user = format!("学习目标：{topic}");
+    if let Some(scope) = scope {
+        if !scope.goal.is_empty() {
+            user.push_str(&format!("\n\n目标解析：{}", scope.goal));
+        }
+        if !scope.blocks.is_empty() {
+            user.push_str(&format!("（覆盖：{}）", scope.blocks.join("、")));
         }
     }
-    lines.join("\n")
+    let Ok(raw) = crate::generation::complete(
+        completer,
+        model_override,
+        ENDPOINT_PROPOSAL_SYSTEM,
+        &user,
+        crate::generation::LEARNING_GRAPH_SCOPE_MAX_TOKENS,
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    #[derive(Deserialize)]
+    struct RawEndpoints {
+        #[serde(default, deserialize_with = "de_option_list")]
+        endpoints: Vec<RawEndpoint>,
+    }
+    #[derive(Deserialize)]
+    struct RawEndpoint {
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        goal_note: String,
+    }
+    crate::generation::parse_json_object::<RawEndpoints>(&raw)
+        .ok()
+        .map(|parsed| {
+            parsed
+                .endpoints
+                .into_iter()
+                .filter_map(|endpoint| {
+                    let title = endpoint.title.trim().to_owned();
+                    if title.is_empty() {
+                        None
+                    } else {
+                        Some(ProposedEndpoint { title, goal_note: endpoint.goal_note.trim().to_owned() })
+                    }
+                })
+                .take(3)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ── Compass ────────────────────────────────────────────────────────────────
+
+const COMPASS_SYSTEM: &str = r#"你负责为一张正在生长的学习图重画「罗盘」：逐终点展开的剩余路线摘要。
+输入是课程的学习目标与全部终点锚（含每条的程度声明），必要时附当前已教概念的清单。
+输出 Markdown（不写代码块围栏），结构：
+## <终点标题>
+- 一句程度声明的复述（该终点抵达时学习者能做什么）
+- 剩余路线：3-6 条并列能力条目，每条标注需要的档位（知道/会用/能教）；已明显达成的条目标「✓」
+规则：
+- 罗盘是方向标尺，不是完成判据：只描述「还差什么」，不评判学习者。
+- 每条终点一节，标题与终点锚完全一致；不含终点之外的内容。
+- 全文不超过 1200 字。"#;
+
+/// Draw (or redraw) the compass for a course. Failure surfaces as an error —
+/// the compass is regenerated in the background and retried on the next
+/// endpoint change or growth.
+pub(crate) async fn draw_compass(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    goal: &str,
+    endpoints: &[(String, String)],
+    taught_summary: Option<&str>,
+) -> Result<String, AppError> {
+    let mut user = format!("学习目标：{goal}\n\n终点锚：");
+    if endpoints.is_empty() {
+        user.push_str("（暂无）");
+    }
+    for (title, note) in endpoints {
+        user.push_str(&format!("\n- {title}：{note}"));
+    }
+    if let Some(taught) = taught_summary {
+        if !taught.is_empty() {
+            user.push_str(&format!("\n\n已教概念：{taught}"));
+        }
+    }
+    crate::generation::complete(
+        completer,
+        model_override,
+        COMPASS_SYSTEM,
+        &user,
+        crate::generation::COMPASS_MAX_TOKENS,
+    )
+    .await
+}
+
+// ── Coach draft ────────────────────────────────────────────────────────────
+
+/// 教练单次调用的系统提示词。结束条件只有一个数：把就绪补到
+/// [`READY_TARGET`] 个；每批上限 [`MAX_BATCH_NODES`] 个。
+pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不会预先铺好大纲，你按批次让课程「生长」——每次补充少量新节点，让学习者永远有一小批当下就能学的节点。
+只回复一个 JSON 对象，形状如下：
+{
+  "nodes": [
+    {
+      "title": "节点标题（动作句：解/求/证明/推导/构造/比较/应用/辨析…）",
+      "purpose": "一句话说明这个节点练什么、为什么现在学",
+      "minutes": 20,
+      "teaches": [ { "name": "概念名", "tier": "apply" } ],
+      "assumes": [ { "name": "概念名", "tier": "know" } ]
+    }
+  ],
+  "mints": [ { "canonical": "新概念名", "aliases": ["别名"], "definition": "一句话定义" } ],
+  "completed_endpoints": [],
+  "note": "一句话批注：本批为什么长这些节点"
+}
+【档位】
+- know（知道）：能辨认、复述。apply（会用）：能解题、应用。teach（能教）：能讲解、纠错。
+- teaches 标本课把该概念教到什么档位；assumes 标本课假定学习者已把该概念掌握到什么档位。
+- assumes 必须被已教账（或本批兄弟的 teaches）以不低于所假定档位覆盖，否则整批被打回——不存在的「先锁后面再补」。
+【节点纪律】
+- 节点是单次学习会话（动作句），常规 5-30 分钟，极困难最多 60 分钟。
+- 同一主题可螺旋重现（不同深度、不同动作词），标题不得完全相同。
+- 从易到难：新节点优先长在当前就绪前沿的临近难度上，不突兀拔高。
+【概念纪律】
+- 引用的概念名必须照抄登记表/已教账中的既有名字，或随批 mints 铸名；名字撞车即整批被打回。
+- teaches/assumes 宁少勿滥：真正承载本课内容的概念才列入；但 assumes 不得裁剪到失真。
+- mints 只登记真正的新概念；与登记表现有概念同义时改用既有名字。
+【数量契约】
+- 本次生长：把就绪节点补到 7 个。当前就绪 X 个、缺口 7-X 个，则本批新增节点 ≤ 7-X 个且至多 7 个；缺口为 0 时输出空 nodes（或仅裁决终点完成）。
+- 已教概念已铺满某条终点、罗盘显示该终点无剩余路线时，才把终点标题写进 completed_endpoints；拿不准就留空。
+【输出】
+- 只输出 JSON，不要 Markdown 代码块，不要任何解释。note 与 purpose 用中文。"#;
+
+/// Everything the coach needs, rendered once into the opening user message.
+#[derive(Debug, Clone, Default)]
+pub struct CoachContext {
+    /// 学习目标（scope 解析出的 goal，回退课程标题）。
+    pub goal: String,
+    /// 基线/范围参考（scope 解析，可为空）。
+    pub scope_reference: String,
+    /// 罗盘全文（缺罗盘时先重画再生长，因此基本非空）。
+    pub compass: String,
+    /// 花名册行：「状态 | 标题 | 分钟 | teaches(概念@档) | assumes(概念@档)」。
+    pub roster: String,
+    /// 已教概念账（canonical@最高档 的列表）。
+    pub taught_summary: String,
+    /// 逐终点覆盖读数（终点：标题 + 程度声明 + 已覆盖的概念档位足迹）。
+    pub endpoints: String,
+    /// 当前就绪节点数（缺口 = READY_TARGET − ready）。
+    pub ready_count: usize,
+    /// 登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
+    pub registry_excerpt: String,
+}
+
+impl CoachContext {
+    pub(crate) fn render(&self) -> String {
+        let gap = READY_TARGET.saturating_sub(self.ready_count);
+        let mut text = String::new();
+        text.push_str(&format!("【学习目标】\n{}\n", self.goal));
+        if !self.scope_reference.is_empty() {
+            text.push_str(&format!("\n【范围参考】\n{}\n", self.scope_reference));
+        }
+        if !self.compass.is_empty() {
+            text.push_str(&format!("\n【罗盘】\n{}\n", self.compass));
+        }
+        text.push_str(&format!(
+            "\n【当前就绪】{ready} 个（目标 7 个，缺口 {gap} 个）\n",
+            ready = self.ready_count
+        ));
+        text.push_str(&format!("\n【花名册】\n{}\n", if self.roster.is_empty() { "（课程还是空的——本批是第一批，从最基础的铺垫节点起步）" } else { &self.roster }));
+        text.push_str(&format!(
+            "\n【已教概念账】\n{}\n",
+            if self.taught_summary.is_empty() { "（空——第一批节点只能 assume 零基可及的概念，或随批铸名后由兄弟节点教）" } else { &self.taught_summary }
+        ));
+        text.push_str(&format!("\n【终点锚】\n{}\n", if self.endpoints.is_empty() { "（暂无——只长节点，不要裁决任何终点）" } else { &self.endpoints }));
+        if !self.registry_excerpt.is_empty() {
+            text.push_str(&format!("\n【概念登记表（邻近切片，铸名前先查撞名）】\n{}\n", self.registry_excerpt));
+        }
+        text
+    }
+}
+
+/// Tolerant raw batch parse (a single string where an array is expected
+/// degrades to empty, never fails the whole reply).
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RawBatch {
+    #[serde(default)]
+    nodes: Vec<RawNode>,
+    #[serde(default)]
+    mints: Vec<RawMint>,
+    #[serde(default, deserialize_with = "de_string_list")]
+    completed_endpoints: Vec<String>,
+    #[serde(default)]
+    note: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RawNode {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    purpose: String,
+    #[serde(default, deserialize_with = "de_optional_minutes")]
+    minutes: Option<u16>,
+    #[serde(default, deserialize_with = "de_optional_concepts")]
+    teaches: Vec<ConceptRefInput>,
+    #[serde(default, deserialize_with = "de_optional_concepts")]
+    assumes: Vec<ConceptRefInput>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RawMint {
+    #[serde(default)]
+    canonical: String,
+    #[serde(default, deserialize_with = "de_string_list")]
+    aliases: Vec<String>,
+    #[serde(default)]
+    definition: String,
+}
+
+/// Tolerate `"minutes": "15"` / absence / garbage.
+fn de_optional_minutes<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumOrStr {
+        Num(u16),
+        Str(String),
+    }
+    Ok(match Option::<NumOrStr>::deserialize(deserializer)? {
+        Some(NumOrStr::Num(n)) => Some(n),
+        Some(NumOrStr::Str(s)) => s.trim().parse::<u16>().ok(),
+        None => None,
+    })
+}
+
+/// Tolerate a single `{"name","tier"}` object where an array is expected.
+fn de_optional_concepts<'de, D>(deserializer: D) -> Result<Vec<ConceptRefInput>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(RawConceptRef),
+        Many(Vec<RawConceptRef>),
+    }
+    #[derive(Deserialize)]
+    struct RawConceptRef {
+        #[serde(default)]
+        name: String,
+        tier: RawTier,
+    }
+    // Tier arrives in any of the known shapes; an unknown value degrades to
+    // `know` (the lowest bar) rather than failing the batch — the gates
+    // re-check coverage either way.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawTier {
+        Code(String),
+    }
+    fn normalize_tier(raw: &str) -> Option<ConceptTier> {
+        match raw.trim().to_lowercase().as_str() {
+            "know" | "知道" => Some(ConceptTier::Know),
+            "apply" | "会用" => Some(ConceptTier::Apply),
+            "teach" | "能教" => Some(ConceptTier::Teach),
+            _ => None,
+        }
+    }
+    let parsed = match Option::<OneOrMany>::deserialize(deserializer)? {
+        Some(OneOrMany::One(one)) => vec![one],
+        Some(OneOrMany::Many(many)) => many,
+        None => Vec::new(),
+    };
+    Ok(parsed
+        .into_iter()
+        .filter(|reference| !reference.name.trim().is_empty())
+        .map(|reference| {
+            let tier_text = match &reference.tier {
+                RawTier::Code(code) => code.as_str(),
+            };
+            ConceptRefInput {
+                name: reference.name.trim().to_owned(),
+                tier: normalize_tier(tier_text).unwrap_or(ConceptTier::Know),
+            }
+        })
+        .collect())
+}
+
+fn de_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        Some(OneOrMany::One(one)) => vec![one],
+        Some(OneOrMany::Many(many)) => many,
+        None => Vec::new(),
+    })
+}
+
+fn de_option_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// Parse the coach reply; tolerant of the usual model habits. An
+/// unparseable reply is an error (the caller retries once with a repair
+/// prompt, then gives up).
+pub(crate) fn parse_coach_reply(raw: &str) -> Result<ProposedBatch, AppError> {
+    let parsed = crate::generation::parse_json_object::<RawBatch>(raw).map_err(|error| {
+        AppError::Internal(format!("unparseable coach reply: {error}"))
+    })?;
+    let batch = ProposedBatch {
+        nodes: parsed
+            .nodes
+            .into_iter()
+            .filter(|node| !node.title.trim().is_empty())
+            .map(|node| ProposedNode {
+                title: node.title.trim().to_owned(),
+                purpose: node.purpose.trim().to_owned(),
+                minutes: node.minutes,
+                teaches: node.teaches,
+                assumes: node.assumes,
+            })
+            .collect(),
+        mints: parsed
+            .mints
+            .into_iter()
+            .filter(|mint| !mint.canonical.trim().is_empty())
+            .map(|mint| ConceptMint {
+                canonical: mint.canonical.trim().to_owned(),
+                aliases: mint
+                    .aliases
+                    .into_iter()
+                    .map(|alias| alias.trim().to_owned())
+                    .filter(|alias| !alias.is_empty())
+                    .collect(),
+                definition: mint.definition.trim().to_owned(),
+            })
+            .collect(),
+        completed_endpoints: parsed
+            .completed_endpoints
+            .into_iter()
+            .map(|title| title.trim().to_owned())
+            .filter(|title| !title.is_empty())
+            .collect(),
+        note: parsed.note.trim().to_owned(),
+    };
+    Ok(batch)
+}
+
+/// One coach call → a proposed batch.
+pub(crate) async fn coach_draft(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    context: &CoachContext,
+) -> Result<ProposedBatch, AppError> {
+    let raw = crate::generation::complete(
+        completer,
+        model_override,
+        COACH_SYSTEM,
+        &context.render(),
+        crate::generation::COACH_MAX_TOKENS,
+    )
+    .await?;
+    parse_coach_reply(&raw)
+}
+
+/// One repair call: the gate report (or review problems) is the only input
+/// on top of the original context — the coach re-emits the WHOLE batch,
+/// fixed.
+pub(crate) async fn coach_redraft(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    context: &CoachContext,
+    problems: &str,
+) -> Result<ProposedBatch, AppError> {
+    let user = format!(
+        "{}\n\n【上一批被打回，以下问题必须逐条修复后重新输出完整批次】\n{problems}",
+        context.render()
+    );
+    let raw = crate::generation::complete(
+        completer,
+        model_override,
+        COACH_SYSTEM,
+        &user,
+        crate::generation::COACH_MAX_TOKENS,
+    )
+    .await?;
+    parse_coach_reply(&raw)
+}
+
+// ── AI concept review (advisory-but-blocking once) ─────────────────────────
+
+/// 概念评审的一条问题：定位（节点/字段）+ 描述 + 建议。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewProblem {
+    pub node: String,
+    pub field: String,
+    pub issue: String,
+    #[serde(default)]
+    pub advice: String,
+}
+
+const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构门之后对生长批次做最后一次语义兜底审查。只检查结构门查不了的四类问题：
+1. 挂号充分：节点标题/说明里出现的每个领域名词，要么已教、要么被假定、要么随批铸名——不应有凭空冒用却无出处的概念。
+2. 前提足够：assumes 是否真的足以支撑节点内容（缺关键前提 = 打回）。
+3. 切分原子：节点是否是一个可单次完成的学习会话，而非复合大杂烩。
+4. 命名一致：概念名与既有名字是否指同一物（同义不同名应复用既有名）。
+回复严格 JSON：
+- 通过：{ "verdict": "pass" }
+- 打回：{ "verdict": "reject", "problems": [ { "node": "节点标题", "field": "teaches|assumes|mints|title", "issue": "问题描述", "advice": "修改建议" } ] }
+最多 8 条问题，按严重度降序。只输出 JSON，不要任何解释。"#;
+
+/// Run the AI concept review over a gated batch. Any failure (no completer,
+/// call error, unparseable reply) degrades to PASS — the review never blocks
+/// a structurally valid batch when it cannot run.
+pub(crate) async fn concept_review(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    batch: &ProposedBatch,
+    context: &CoachContext,
+) -> Vec<ReviewProblem> {
+    #[derive(Deserialize)]
+    struct RawVerdict {
+        #[serde(default)]
+        verdict: String,
+        #[serde(default)]
+        problems: Vec<ReviewProblem>,
+    }
+    let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
+    let user = format!(
+        "{}\n\n【待审批次】\n{batch_json}",
+        context.render()
+    );
+    let raw = match crate::generation::complete(
+        completer,
+        model_override,
+        CONCEPT_REVIEW_SYSTEM,
+        &user,
+        crate::generation::CONCEPT_REVIEW_MAX_TOKENS,
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(_) => return Vec::new(),
+    };
+    crate::generation::parse_json_object::<RawVerdict>(&raw)
+        .map(|verdict| {
+            if verdict.verdict == "pass" {
+                Vec::new()
+            } else {
+                verdict.problems.into_iter().take(8).collect()
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Render the review problems for the redraft prompt.
+pub fn format_review_problems(problems: &[ReviewProblem]) -> String {
+    problems
+        .iter()
+        .map(|problem| {
+            format!(
+                "- [{field}] {node}: {issue}（建议：{advice}）",
+                field = problem.field,
+                node = problem.node,
+                issue = problem.issue,
+                advice = problem.advice,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ── Ready-set (pure) ───────────────────────────────────────────────────────
+
+/// 生长任务的后台输入包：课程、触发者与可选模型偏好。
+#[derive(Debug, Clone)]
+pub struct GrowthRunner {
+    pub course_id: nomifun_common::LearningCourseId,
+    pub user_id: nomifun_common::UserId,
+    pub model_override: Option<(nomifun_common::ProviderId, String)>,
+}
+
+impl GrowthRunner {
+    pub fn model_override(&self) -> Option<(&nomifun_common::ProviderId, &str)> {
+        self.model_override.as_ref().map(|(provider, model)| (provider, model.as_str()))
+    }
+}
+
+/// One course node as the readiness predicate sees it.
+#[derive(Debug, Clone)]
+pub struct ReadyCandidate {
+    pub lesson_id: String,
+    pub title: String,
+    /// assumes (concept_id, tier) resolved against the registry.
+    pub assumes: Vec<(String, ConceptTier)>,
+    /// True when the learner already satisfied the node (completed/skipped).
+    pub satisfied: bool,
+}
+
+/// Fold the global concept web into the taught ledger: concept_id → highest
+/// tier any lesson (in any course) teaches it at.
+pub fn taught_ledger(
+    teaches: impl IntoIterator<Item = (String, ConceptTier)>,
+) -> ConceptCoverage {
+    let mut ledger: ConceptCoverage = HashMap::new();
+    for (concept_id, tier) in teaches {
+        let entry = ledger.entry(concept_id).or_insert(tier);
+        if tier > *entry {
+            *entry = tier;
+        }
+    }
+    ledger
+}
+
+/// The ready set: unsatisfied candidates whose every assumption is covered
+/// by the (cross-course) taught ledger at the assumed tier or above.
+/// Order follows the input (lesson position), which doubles as the
+/// recommendation order.
+pub fn ready_set(candidates: &[ReadyCandidate], ledger: &ConceptCoverage) -> Vec<String> {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            !candidate.satisfied
+                && candidate.assumes.iter().all(|(concept_id, tier)| {
+                    ledger.get(concept_id).is_some_and(|taught| taught >= tier)
+                })
+        })
+        .map(|candidate| candidate.lesson_id.clone())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn concept(name: &str, pre: &[&str]) -> RawConcept {
-        RawConcept {
-            name: name.to_owned(),
-            pre: pre.iter().map(|s| (*s).to_owned()).collect(),
-            min: None,
-        }
+    fn reference(name: &str, tier: ConceptTier) -> ConceptRefInput {
+        ConceptRefInput { name: name.to_owned(), tier }
+    }
+
+    fn node(title: &str, teaches: Vec<ConceptRefInput>, assumes: Vec<ConceptRefInput>) -> ProposedNode {
+        ProposedNode { title: title.to_owned(), purpose: String::new(), minutes: Some(20), teaches, assumes }
+    }
+
+    fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
+        ProposedBatch { nodes, mints: Vec::new(), completed_endpoints: Vec::new(), note: String::new() }
     }
 
     #[test]
-    fn normalize_batch_dedupes_and_drops_invalid_references() {
-        let allowed: HashSet<String> = HashSet::new();
-        let batch = normalize_batch(
-            &[
-                concept("A", &[]),
-                concept("A", &["B"]), // duplicate name, dropped entirely
-                concept("B", &["A", "missing", "B", "A"]),
-                concept(" ", &[]), // empty name
-                concept("D", &["B"]),
+    fn tier_ordering_is_know_apply_teach() {
+        assert!(ConceptTier::Know < ConceptTier::Apply);
+        assert!(ConceptTier::Apply < ConceptTier::Teach);
+        assert_eq!(ConceptTier::try_from_str("apply"), Some(ConceptTier::Apply));
+        assert_eq!(ConceptTier::try_from_str("nope"), None);
+    }
+
+    #[test]
+    fn validate_batch_passes_a_self_sufficient_batch() {
+        // 因式分解 is minted AND taught by the first node; the second node
+        // assumes it at a tier the sibling covers.
+        let batch = ProposedBatch {
+            nodes: vec![
+                node("用提公因式法化简多项式", vec![reference("因式分解", ConceptTier::Know)], vec![]),
+                node("用公式法解因式分解题", vec![reference("公式法", ConceptTier::Know)], vec![reference("因式分解", ConceptTier::Know)]),
             ],
-            &allowed,
-        );
-        assert_eq!(batch.nodes.len(), 3, "A, B, D (dup A and blank dropped)");
-        assert_eq!(batch.raw_refs, 6, "A emits 1, B emits 4, D emits 1");
-        assert_eq!(
-            batch
-                .edges
-                .iter()
-                .map(|edge| format!("{}->{}", edge.from, edge.to))
-                .collect::<Vec<_>>(),
-            vec!["A->B".to_owned(), "B->D".to_owned()]
-        );
-        assert_eq!(
-            batch.dropped.len(),
-            3,
-            "unknown ref + self loop + duplicate edge"
-        );
-        assert!(batch.dropped.iter().any(|d| d.reason == "unknown reference"));
-        assert!(batch.dropped.iter().any(|d| d.reason == "self loop"));
-        assert!(batch.dropped.iter().any(|d| d.reason == "duplicate edge"));
-        // The concept name IS the id and title (symbolic, YAML-like).
-        assert_eq!(batch.nodes[0].id, "A");
-        assert_eq!(batch.nodes[0].title, "A");
-        assert_eq!(batch.nodes[0].min, None);
+            mints: vec![ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new() }],
+            completed_endpoints: vec![],
+            note: String::new(),
+        };
+        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashSet::new(), &HashSet::new());
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
-    fn normalize_batch_allows_external_references_from_the_allowlist() {
-        let allowed: HashSet<String> = ["anchor".to_owned()].into_iter().collect();
-        let batch = normalize_batch(&[concept("X", &["anchor", "missing"])], &allowed);
-        assert_eq!(batch.edges.len(), 1);
-        assert_eq!(batch.dropped.len(), 1);
-        assert_eq!(batch.dropped[0].reason, "unknown reference");
-        assert_eq!(batch.edges[0].from, "anchor");
+    fn validate_batch_rejects_uncovered_assumption_instead_of_locking() {
+        // 会用-level assumption with only a 知道-level taught coverage: the
+        // gate bounces the whole batch (no locked state may ever publish).
+        // 该概念已在登记表（生产不变量：coverage 内的概念必然已登记），
+        // 唯一打回理由就是假定未被覆盖。
+        let batch = batch_of(vec![node(
+            "应用勾股定理解题",
+            vec![],
+            vec![reference("勾股定理", ConceptTier::Apply)],
+        )]);
+        let mut coverage = ConceptCoverage::new();
+        coverage.insert("勾股定理".to_owned(), ConceptTier::Know);
+        let mut registry = HashSet::new();
+        registry.insert("勾股定理".to_owned());
+        let errors = validate_batch(&batch, &coverage, &registry, &HashSet::new(), &HashSet::new());
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, "assumes_uncovered");
+
+        // Same batch passes when some node teaches the concept to the
+        // assumed tier (batch self-sufficiency).
+        let batch = batch_of(vec![
+            node("推导勾股定理", vec![reference("勾股定理", ConceptTier::Apply)], vec![]),
+            node("应用勾股定理解题", vec![], vec![reference("勾股定理", ConceptTier::Apply)]),
+        ]);
+        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashSet::new(), &HashSet::new());
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
-    fn normalize_batch_resolves_near_miss_references() {
-        // One stray character ("的") against exactly one candidate resolves
-        // instead of dropping — the dropped edge would have orphaned its head
-        // and turned it into a fake entry point.
-        let batch = normalize_batch(
-            &[
-                concept("用导数定义求切线斜率", &[]),
-                concept("用极限理解逼近过程", &["用导数定义求切线斜率的"]),
-            ],
-            &HashSet::new(),
-        );
-        assert_eq!(batch.edges.len(), 1, "the near-miss reference resolves");
-        assert_eq!(batch.edges[0].from, "用导数定义求切线斜率");
-        assert_eq!(
-            batch.fuzzy_resolved,
-            vec![
-                ("用导数定义求切线斜率的".to_owned(), "用导数定义求切线斜率".to_owned())
-            ]
-        );
-        assert!(batch.dropped.is_empty());
-    }
-
-    #[test]
-    fn normalize_batch_never_resolves_a_substitution() {
-        // 解一元一次方程 vs 解一元二次方程: one swapped character, indel
-        // distance 2 — a genuinely different unit, never a fuzzy match.
-        let batch = normalize_batch(
-            &[concept("解一元一次方程", &[]), concept("解应用题", &["解一元二次方程"])],
-            &HashSet::new(),
-        );
-        assert!(batch.edges.is_empty());
-        assert!(batch.fuzzy_resolved.is_empty());
-        assert_eq!(batch.dropped.len(), 1);
-        assert_eq!(batch.dropped[0].reason, "unknown reference");
-    }
-
-    #[test]
-    fn normalize_batch_tolerates_single_string_pre() {
-        let raw = serde_json::from_str::<RawConcept>(
-            r#"{"name": "X", "pre": "A"}"#,
-        )
-        .unwrap();
-        assert_eq!(raw.pre, vec!["A".to_owned()]);
-        let raw = serde_json::from_str::<RawConcept>(r#"{"name": "Y"}"#).unwrap();
-        assert!(raw.pre.is_empty());
-    }
-
-    #[test]
-    fn remove_cycle_edges_keeps_diamonds_and_reports_back_edges() {
-        // a -> b, a -> c, b -> d, c -> d is a diamond (kept); d -> a closes
-        // the cycles d -> a -> b -> d and d -> a -> c -> d. DFS from a finds
-        // both back edges into the grey ancestor a, so a -> b and a -> c are
-        // dropped and the rest is kept.
-        let order = vec!["a", "b", "c", "d", "e"]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>();
-        let edges: Vec<(String, String)> = vec![
-            ("a", "b"),
-            ("a", "c"),
-            ("b", "d"),
-            ("c", "d"),
-            ("d", "a"),
-            ("d", "e"),
-        ]
-        .into_iter()
-        .map(|(from, to)| (from.to_owned(), to.to_owned()))
-        .collect();
-        let (kept, dropped) = remove_cycle_edges(&order, &edges);
-        assert_eq!(kept.len(), 4);
-        assert_eq!(
-            dropped,
-            vec![
-                ("a".to_owned(), "b".to_owned()),
-                ("a".to_owned(), "c".to_owned())
-            ]
-        );
-    }
-
-    #[test]
-    fn finalize_graph_breaks_cycles_and_counts_drops() {
-        // a -> b -> a is a cycle; the back edge is dropped and counted.
-        let graph = finalize_graph(
-            vec![unit("a"), unit("b")],
-            vec![LearningGraphEdge { from: "a".into(), to: "b".into(), reason: None },
-                 LearningGraphEdge { from: "b".into(), to: "a".into(), reason: None }],
-            Vec::new(),
-            2,
-        );
-        assert_eq!(graph.nodes.len(), 2);
-        assert_eq!(graph.edges.len(), 1, "one of the two cycle edges is dropped");
-        assert_eq!(graph.audit.ref_drop_count, 1);
-        assert_eq!(graph.audit.dropped_edges[0].reason, "cycle");
-    }
-
-    fn unit(name: &str) -> LearningGraphNode {
-        LearningGraphNode {
-            id: name.to_owned(),
-            title: name.to_owned(),
-            min: None,
-            group: None,
-            necessity: None,
-            is_anchor: None,
-        }
-    }
-
-    fn graph_of(nodes: &[&str], edges: &[(&str, &str)]) -> LearningGraphData {
-        LearningGraphData {
-            nodes: nodes.iter().map(|name| unit(name)).collect(),
-            edges: edges
-                .iter()
-                .map(|(from, to)| LearningGraphEdge {
-                    from: (*from).to_owned(),
-                    to: (*to).to_owned(),
-                    reason: None,
-                })
-                .collect(),
-            audit: LearningGraphAudit::default(),
-        }
-    }
-
-    #[test]
-    fn merge_batch_keeps_existing_keys_and_recomputes_audit() {
-        let graph = graph_of(&["a", "b"], &[("a", "b")]);
-        let batch = normalize_batch(&[concept("a", &[]), concept("c", &["a"])], &HashSet::new());
-        let merged = merge_batch(&graph, &batch);
-        assert_eq!(merged.nodes.len(), 3);
-        assert!(merged.nodes.iter().any(|node| node.id == "c"));
-        assert_eq!(merged.audit.ref_drop_rate, 0.0);
-    }
-
-    #[test]
-    fn merge_batch_accumulates_drop_statistics() {
-        // b's prerequisite "ghost" is dropped: b is an orphan candidate the
-        // repair is supposed to reconnect. A patch that adds c (no drops of
-        // its own) must NOT wipe that evidence — the re-audit keys on it.
-        let mut graph = graph_of(&["a", "b"], &[("a", "b")]);
-        graph.audit.dropped_edges = vec![DroppedEdge {
-            from: "ghost".into(),
-            to: "b".into(),
-            reason: "unknown reference".into(),
-        }];
-        graph.audit.ref_drop_count = 1;
-        graph.audit.raw_ref_count = 1;
-        graph.audit.ref_drop_rate = 1.0;
-        let allowed: HashSet<String> = ["a".to_owned(), "b".to_owned()]
-            .into_iter()
+    fn validate_batch_enforces_batch_size_title_and_endpoint_protection() {
+        let nodes: Vec<ProposedNode> = (0..8)
+            .map(|index| node(&format!("节点{index}"), vec![], vec![]))
             .collect();
-        let batch = normalize_batch(&[concept("c", &["a"])], &allowed);
-        let merged = merge_batch(&graph, &batch);
-        assert_eq!(merged.audit.ref_drop_count, 1, "the old drop survives");
-        assert_eq!(
-            merged
-                .audit
-                .dropped_edges
-                .iter()
-                .map(|edge| (edge.from.as_str(), edge.to.as_str()))
-                .collect::<Vec<_>>(),
-            vec![("ghost", "b")],
-            "the dropped entry keeps its names for the repair prompt"
+        let errors = validate_batch(
+            &batch_of(nodes),
+            &ConceptCoverage::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
         );
-        assert_eq!(merged.audit.raw_ref_count, 2, "1 old + 1 new reference");
-        assert_eq!(merged.audit.ref_drop_rate, 0.5);
+        assert!(errors.iter().any(|error| error.kind == "batch_too_large"));
+
+        let mut existing = HashSet::new();
+        existing.insert("已有节点".to_owned());
+        let errors = validate_batch(
+            &batch_of(vec![node("已有节点", vec![], vec![])]),
+            &ConceptCoverage::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &existing,
+        );
+        assert!(errors.iter().any(|error| error.kind == "title_duplicate"));
+
+        let mut endpoints = HashSet::new();
+        endpoints.insert("真实终点".to_owned());
+        let mut batch = batch_of(vec![node("真实终点", vec![], vec![])]);
+        batch.completed_endpoints = vec!["不存在的终点".into()];
+        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &endpoints, &HashSet::new());
+        assert!(errors.iter().any(|error| error.kind == "endpoint_unknown"));
+        assert!(errors.iter().any(|error| error.kind == "title_duplicate"));
     }
 
     #[test]
-    fn raw_min_parses_numbers_and_digit_strings_tolerantly() {
-        let raw = serde_json::from_str::<RawConcept>(
-            r#"{"name": "用配方法解一元二次方程", "pre": [], "min": 15}"#,
-        )
-        .unwrap();
-        assert_eq!(raw.min, Some(15));
-        let raw =
-            serde_json::from_str::<RawConcept>(r#"{"name": "X", "min": "20"}"#).unwrap();
-        assert_eq!(raw.min, Some(20));
-        let raw =
-            serde_json::from_str::<RawConcept>(r#"{"name": "Y", "min": "many"}"#).unwrap();
-        assert_eq!(raw.min, None, "non-numeric minutes degrade to None");
-        let raw = serde_json::from_str::<RawConcept>(r#"{"name": "Z"}"#).unwrap();
-        assert_eq!(raw.min, None);
-    }
-
-    // ── scope analysis ─────────────────────────────────────────────────────
-
-    #[test]
-    fn parse_scope_reply_accepts_the_documented_shape() {
-        let raw = r#"{"goal":"能独立解一元二次方程","baseline":"对代数一无所知","scope":"零基础到本科","blocks":["算术","配方法"]}"#;
-        let scope = parse_scope_reply(raw).unwrap();
-        assert_eq!(scope.goal, "能独立解一元二次方程");
-        assert_eq!(scope.baseline, "对代数一无所知");
-        assert_eq!(scope.scope, "零基础到本科");
-        assert_eq!(scope.blocks, vec!["算术", "配方法"]);
+    fn validate_batch_rejects_unresolved_concepts_and_mint_collisions() {
+        let mut registry = HashSet::new();
+        registry.insert("既有概念".to_owned());
+        let batch = ProposedBatch {
+            nodes: vec![node("新节点", vec![reference("既有概念", ConceptTier::Know)], vec![reference("幽灵概念", ConceptTier::Know)])],
+            mints: vec![ConceptMint { canonical: "既有概念".into(), aliases: vec![], definition: String::new() }],
+            completed_endpoints: vec![],
+            note: String::new(),
+        };
+        let errors = validate_batch(&batch, &ConceptCoverage::new(), &registry, &HashSet::new(), &HashSet::new());
+        assert!(errors.iter().any(|error| error.kind == "mint_collision"));
+        assert!(errors.iter().any(|error| error.kind == "concept_unresolved"));
     }
 
     #[test]
-    fn parse_scope_reply_returns_none_for_garbage_degrading_gracefully() {
-        assert!(parse_scope_reply("sure, here is the plan...").is_none());
-        assert!(parse_scope_reply("").is_none());
+    fn ready_set_requires_tier_coverage_and_skips_satisfied_nodes() {
+        let candidates = vec![
+            ReadyCandidate {
+                lesson_id: "uncovered".into(),
+                title: "n1".into(),
+                assumes: vec![("c1".into(), ConceptTier::Apply)],
+                satisfied: false,
+            },
+            ReadyCandidate {
+                lesson_id: "covered".into(),
+                title: "n2".into(),
+                assumes: vec![("c1".into(), ConceptTier::Know)],
+                satisfied: false,
+            },
+            ReadyCandidate {
+                lesson_id: "done".into(),
+                title: "n3".into(),
+                assumes: vec![],
+                satisfied: true,
+            },
+        ];
+        let mut ledger = taught_ledger(vec![("c1".to_owned(), ConceptTier::Know)]);
+        assert_eq!(ready_set(&candidates, &ledger), vec!["covered".to_owned()]);
+        // Cross-course growth: a higher tier taught elsewhere lifts coverage.
+        ledger.insert("c1".to_owned(), ConceptTier::Teach);
+        assert_eq!(
+            ready_set(&candidates, &ledger),
+            vec!["uncovered".to_owned(), "covered".to_owned()]
+        );
     }
 
     #[test]
-    fn parse_scope_reply_tolerates_string_lists_and_missing_fields() {
-        let raw = r#"{"scope":"x","blocks":"算术"}"#;
-        let scope = parse_scope_reply(raw).unwrap();
-        assert_eq!(scope.blocks, vec!["算术"]);
-        // Old-shape replies (no goal/baseline) degrade to empty strings.
-        assert_eq!(scope.goal, "");
-        assert_eq!(scope.baseline, "");
-    }
-
-    #[test]
-    fn legacy_json_without_min_still_deserializes() {
-        // A stored graph may lack min; the field must default so old files
-        // keep loading. (Old level/group-era files are not migrated — the
-        // feature is deliberately incompatible with retired semantics — but
-        // deserialization stays tolerant.)
-        let json = r#"{
-            "id": "01J00000000000000000000000",
-            "user_id": "u",
-            "topic": "math",
-            "nodes": [{"id": "a", "title": "A"}],
-            "edges": [{"from": "a", "to": "b"}],
-            "created_at": 1
+    fn parse_coach_reply_tolerates_string_minutes_and_chinese_tiers() {
+        let raw = r#"{
+            "nodes": [
+                { "title": "用配方法解方程", "purpose": "p", "minutes": "15",
+                  "teaches": [{"name": "配方法", "tier": "会用"}],
+                  "assumes": [{"name": "一元二次方程", "tier": "知道"}] }
+            ],
+            "mints": [],
+            "completed_endpoints": [],
+            "note": "n"
         }"#;
-        let record: LearningGraphRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.graph.nodes[0].min, None);
-        assert_eq!(record.graph.nodes[0].group, None);
-        assert_eq!(record.graph.audit.ref_drop_count, 0);
-        assert!(record.graph.audit.findings.is_empty());
+        let batch = parse_coach_reply(raw).unwrap();
+        assert_eq!(batch.nodes.len(), 1);
+        assert_eq!(batch.nodes[0].minutes, Some(15));
+        assert_eq!(batch.nodes[0].teaches[0].tier, ConceptTier::Apply);
+        assert_eq!(batch.nodes[0].assumes[0].tier, ConceptTier::Know);
+    }
+
+    #[test]
+    fn parse_coach_reply_rejects_garbage() {
+        assert!(parse_coach_reply("sure, here is the plan...").is_err());
+    }
+
+    #[test]
+    fn coach_context_renders_the_gap_contract() {
+        let context = CoachContext { ready_count: 2, ..Default::default() };
+        let rendered = context.render();
+        assert!(rendered.contains("缺口 5 个"), "{rendered}");
+        assert!(rendered.contains("把就绪节点补到 7 个") == false, "the number contract lives in the system prompt");
     }
 }

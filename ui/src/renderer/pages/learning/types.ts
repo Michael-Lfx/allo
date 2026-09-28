@@ -36,7 +36,7 @@ export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archive
 export type CourseKind = 'traditional' | 'learning_graph';
 
 /** 生成课程请求：知识库流与描述流二选一（都传时后端以知识库为准）。
- * 学习图课程只走描述流（描述即学习目标），由后端按 course_kind 分流。 */
+ * 学习图课程只走描述流（描述即学习目标），endpoints 为用户确认过的终点锚。 */
 export interface GenerateCourseRequest {
   course_kind?: CourseKind;
   knowledge_base_id?: string;
@@ -46,14 +46,29 @@ export interface GenerateCourseRequest {
   model?: string;
   /** 讲解风格（课程级）：standard 标准 / socratic 苏格拉底 / feynman 费曼 */
   teaching_style?: TeachingStyle;
+  /** 学习图课程的初始终点锚（为空时由 AI 提议） */
+  endpoints?: EndpointInput[];
 }
 
-/** 学习图生成状态（后台指示条/取消入口的数据源）。生成在 HTTP 请求内同步
- * 执行，创建对话框可以随时关闭——服务端注册表让运行对外可发现、可取消。 */
+/** 学习图生成状态（后台指示条/取消入口的数据源）。创建在请求内完成，
+ * 生长在后台任务执行——注册表让运行对外可发现、可取消。 */
 export interface LearningGraphGenerationStatus {
   running: boolean;
   topic: string | null;
   elapsed_secs: number | null;
+}
+
+/** 终点锚提议请求（建课向导第二步的 AI 提议） */
+export interface ProposeEndpointsRequest {
+  description: string;
+  provider_id?: string;
+  model?: string;
+}
+
+/** AI 提议的一条终点锚 */
+export interface ProposedEndpointView {
+  title: string;
+  goal_note: string;
 }
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
@@ -94,7 +109,6 @@ export interface Activity {
   /** 来源节 key；null = 跨节综合题（通用） */
   section_key: string | null;
   position: number;
-  concepts: string[];
 }
 
 export interface Lesson {
@@ -107,7 +121,6 @@ export interface Lesson {
   estimated_minutes: number;
   source: { path: string; start: number | null; end: number | null } | null;
   status: LessonStatus;
-  concepts: string[];
   activities: Activity[];
   /** 分节正文；空 = 旧课时的单篇 summary（双读回退） */
   sections: Section[];
@@ -121,23 +134,13 @@ export interface LearningModule {
   lessons: Lesson[];
 }
 
-export interface Concept {
-  id: string;
-  key: string;
-  title: string;
-  description: string;
-  prerequisites: string[];
-  mastery: number | null;
-}
-
 export interface CourseDetail {
   course: CourseSummary;
   enrollment_id: string | null;
   modules: LearningModule[];
-  concepts: Concept[];
   next_lesson_id: string | null;
   due_review_count: number;
-  /** 仅 learning_graph 课程携带：图投影 + 下一步推荐节点 */
+  /** 仅 learning_graph 课程携带：终点锚 + 罗盘 + 就绪集（ADR-0009） */
   graph: LearningGraphView | null;
 }
 
@@ -176,8 +179,6 @@ export interface DueReview {
   course_title: string | null;
   module_title: string | null;
   lesson_title: string | null;
-  concept_id: string | null;
-  concept_title: string | null;
   question: ReviewQuestion;
   due_at: number;
   stability_days: number;
@@ -268,8 +269,6 @@ export interface QuestionEntry {
   state: QuestionState;
   course_id: string | null;
   course_title: string | null;
-  concept_id: string | null;
-  concept_title: string | null;
   question_kind: ActivityKind | null;
   prompt: string | null;
   options: string[];
@@ -306,12 +305,11 @@ export interface CreateCustomQuestionRequest {
   options?: string[];
   answer: unknown;
   explanation?: string;
-  concept_id?: string | null;
   /** 填空题的近义干扰项（可选，仅填空题型使用） */
   distractors?: string[];
 }
 
-/** 手动向课时追加练习（4 种题型全支持）；concept_ids 为空时后端绑定课时全部概念 */
+/** 手动向课时追加练习（题型全支持） */
 export interface CreateLessonActivityRequest {
   kind: ActivityKind;
   prompt: string;
@@ -320,7 +318,6 @@ export interface CreateLessonActivityRequest {
   explanation?: string;
   /** 填空题的近义干扰项（可选，仅填空题型使用） */
   distractors?: string[];
-  concept_ids?: string[];
 }
 
 /** AI 生成课时练习草案请求（不落库）；provider_id 与 model 同时传或不传 */
@@ -340,14 +337,6 @@ export interface GeneratedLessonActivity {
   answer: unknown;
   explanation: string;
   distractors: string[];
-  /** 建议绑定的概念（默认课时概念） */
-  concept_ids: string[];
-}
-
-export interface ConceptRef {
-  concept_id: string;
-  title: string;
-  course_title: string | null;
 }
 
 export interface SetTagsRequest {
@@ -355,42 +344,94 @@ export interface SetTagsRequest {
   apply_to_children?: boolean;
 }
 
-// ── 学习图（beta，对应后端 learning_graph 类型） ──────────────────────
+// ── 学习图（beta，概念网 + 生长模型，ADR-0009） ─────────────────────────
 
-/** 图节点：底层课时 + 图坐标（拓扑序 position、层深 depth）+ 学习者进度。
- * 正文不进全图载荷——内容经现有课时接口按需拉取。 */
-export interface GraphNodeView {
+/** 概念掌握档位：知道 < 会用 < 能教 */
+export type ConceptTier = 'know' | 'apply' | 'teach';
+
+/** 终点锚：标题 + 一句程度声明；lesson_id 是它的零正文标记课时行 */
+export interface GraphEndpointView {
+  endpoint_id: string;
   lesson_id: string;
   title: string;
-  summary: string;
-  purpose: string;
-  estimated_minutes: number;
-  generated: boolean;
-  /** 发布时的 Kahn 拓扑序（也是推荐排序键） */
-  position: number;
-  /** 前置层深（零前置为 0），供分层渲染与宏观 LOD 使用 */
-  depth: number;
-  status: LessonStatus;
-  prerequisite_count: number;
+  goal_note: string;
+  completed: boolean;
+  declared_at: number;
 }
 
-/** 前置边：from 应先于 to 被满足（lesson_id 引用） */
-export interface GraphEdgeView {
-  from: string;
-  to: string;
-  reason: string;
+/** 终点锚创建/编辑输入 */
+export interface EndpointInput {
+  title: string;
+  goal_note?: string;
 }
 
-/** 图视图（挂在 CourseDetail.graph 下）：结构投影 + 就绪集推荐（≤10） */
+/** 终点锚部分编辑输入：undefined = 不改动 */
+export interface EndpointUpdateInput {
+  title?: string;
+  goal_note?: string;
+}
+
+/** 图视图（挂在 CourseDetail.graph 下）：终点锚 + 罗盘 + 就绪集与水位。
+ * 没有先修边、没有锁定态——发布即就绪。 */
 export interface LearningGraphView {
   goal: string;
   scope: string;
-  nodes: GraphNodeView[];
-  edges: GraphEdgeView[];
-  /** 下一步推荐学习的节点（就绪集按拓扑序，≤10） */
+  /** 罗盘（逐终点剩余路线摘要），终点变更时重画；null = 尚未画出 */
+  compass: string | null;
+  compass_updated_at: number | null;
+  endpoints: GraphEndpointView[];
+  /** 下一步推荐学习的节点（就绪集 ≤10） */
   recommended: string[];
-  /** 课程行 graph_meta_json 透传（审计快照/生成留档/扩展备注） */
-  meta: Record<string, unknown> | null;
+  /** 当前就绪存量与水位契约（补货目标 7 / 自动触发线 3） */
+  ready_count: number;
+  ready_target: number;
+  ready_trigger: number;
+  /** 是否有生成/生长运行进行中 */
+  growth_running: boolean;
+}
+
+/** 学习记录视图：批次时间线（倒序）——生长史即课程史 */
+export interface GraphHistoryView {
+  batches: GraphBatchView[];
+}
+
+/** 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度） */
+export interface GraphBatchView {
+  batch_id: string;
+  seq: number;
+  note: string;
+  created_at: number;
+  nodes: GraphNodeHistoryView[];
+}
+
+export interface GraphNodeHistoryView {
+  lesson_id: string;
+  title: string;
+  estimated_minutes: number;
+  status: LessonStatus;
+  completed_at: number | null;
+}
+
+/** 概念表行：登记表概念 + 本课程的教/假定引用 + 跨课程来源标注 */
+export interface GraphConceptRowView {
+  concept_id: string;
+  canonical: string;
+  aliases: string[];
+  definition: string;
+  /** 本课程内教/假定该概念的节点（带学习者进度状态） */
+  refs: GraphConceptRefView[];
+  /** 其他还在教该概念的课程标题（跨课程就绪的来源可见性） */
+  other_courses: string[];
+}
+
+export interface GraphConceptRefView {
+  lesson_id: string;
+  title: string;
+  /** teaches | assumes */
+  role: 'teaches' | 'assumes';
+  /** know | apply | teach */
+  tier: ConceptTier;
+  status: LessonStatus;
 }
 
 /** 记忆健康面板：到期预报、卡池状态、真实保留率与预测对照/遗忘曲线 */

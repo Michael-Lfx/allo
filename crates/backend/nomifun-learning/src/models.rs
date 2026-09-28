@@ -1,7 +1,7 @@
 use nomifun_common::{
-    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
-    LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,
-    LearningReviewItemId, ProviderId, TimestampMs,
+    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningCourseId,
+    LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId, ProviderId,
+    TimestampMs,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,8 +17,6 @@ pub struct CoursePack {
     pub source_kb_id: Option<KnowledgeBaseId>,
     #[serde(default = "default_version")]
     pub version: i64,
-    #[serde(default)]
-    pub concepts: Vec<ConceptPack>,
     pub modules: Vec<ModulePack>,
     /// 讲解风格（课程级，ADR-0002）：决定节写作提示词变体；缺省 standard。
     #[serde(default)]
@@ -44,33 +42,43 @@ pub struct GenerateCourseRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub mode: CourseGenerationMode,
-    /// 课程类型（beta）：`learning_graph` 走学习图生成（描述即学习目标），
+    /// 课程类型（beta）：`learning_graph` 走学习图生长（描述即学习目标），
     /// 缺省为传统课程。
     #[serde(default)]
     pub course_kind: CourseKind,
+    /// 学习图课程的初始终点锚（向导里确认/编辑过的列表；为空时由 AI 提议）。
+    #[serde(default)]
+    pub endpoints: Vec<EndpointInput>,
     /// 讲解风格（standard/socratic/feynman）；缺省 standard。
     #[serde(default)]
     pub teaching_style: Option<TeachingStyle>,
 }
 
-/// 续建学习图生成的请求体：全部字段可选——模型缺省走默认解析，草稿由
-/// 服务端按「最近活跃」自行定位（草稿仅在内存存活，TTL 1 小时）。
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ResumeLearningGraphRequest {
+/// 课程生成状态（后台指示条/取消入口的数据源，学习图生长与大纲流共用）。
+/// 生成在 HTTP 请求内同步执行（大纲）或后台任务执行（学习图生长），注册表
+/// 让运行对外可发现、可取消。
+#[derive(Debug, Serialize)]
+pub struct LearningGraphGenerationStatus {
+    pub running: bool,
+    pub topic: Option<String>,
+    pub elapsed_secs: Option<u64>,
+}
+
+/// 终点锚提议请求（建课向导第二步的 AI 提议）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProposeEndpointsRequest {
+    pub description: String,
     #[serde(default)]
     pub provider_id: Option<ProviderId>,
     #[serde(default)]
     pub model: Option<String>,
 }
 
-/// 课程生成状态（后台指示条/取消入口的数据源，学习图与大纲流共用）。生成
-/// 在 HTTP 请求内同步执行，但创建对话框可以随时关闭——注册表让运行对外
-/// 可发现、可取消。
-#[derive(Debug, Serialize)]
-pub struct LearningGraphGenerationStatus {
-    pub running: bool,
-    pub topic: Option<String>,
-    pub elapsed_secs: Option<u64>,
+/// AI 提议的一条终点锚（标题 + 一句程度声明）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProposedEndpointView {
+    pub title: String,
+    pub goal_note: String,
 }
 
 impl GenerateCourseRequest {
@@ -201,16 +209,6 @@ const fn default_version() -> i64 {
     1
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConceptPack {
-    pub key: String,
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub prerequisites: Vec<String>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModulePack {
     pub title: String,
@@ -230,8 +228,6 @@ pub struct LessonPack {
     pub estimated_minutes: i64,
     #[serde(default)]
     pub source: Option<SourceSpan>,
-    #[serde(default)]
-    pub concepts: Vec<String>,
     #[serde(default)]
     pub activities: Vec<ActivityPack>,
     /// 分节正文（ADR-0002）。缺省为空 = 旧导入课程无分节，读取端回退整篇
@@ -796,8 +792,6 @@ pub struct ActivityPack {
     pub answer: Value,
     #[serde(default, deserialize_with = "de_string_or_empty")]
     pub explanation: String,
-    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
-    pub concepts: Vec<String>,
     /// Near-synonym traps for fill_in_blank blanks (or physically adjacent
     /// quantities), forcing fine discrimination. Only fill_in_blank uses it.
     #[serde(default, deserialize_with = "de_vec_string_or_empty")]
@@ -1213,8 +1207,8 @@ impl LessonStatus {
 }
 
 /// 课程目录类型。`traditional` 为模块/课时大纲课程；`learning_graph`
-/// （beta）由 AI 把宽泛学习目标拆解为前置 DAG，课程大纲被
-/// 「下一步推荐学习的节点」取代。
+/// （beta）从多终点锚出发按批次生长，依赖由概念网表达（ADR-0009），
+/// 课程大纲被「下一步推荐学习的节点」取代。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CourseKind {
@@ -1260,47 +1254,107 @@ pub struct CourseSummary {
     pub tags: Vec<String>,
 }
 
-/// 学习图课程视图的一个节点：底层课时（标题/摘要/估计分钟/生成状态）
-/// 加图坐标（拓扑序 position、depth 层深）与学习者进度状态。正文永远
-/// 不进全图载荷——内容经现有课时接口按需拉取。
+/// 学习图课程视图的一条终点锚：标题 + 一句程度声明 + 教练裁决的完成位；
+/// `lesson_id` 是它的零正文标记课时行（不是学习节点，永不出现在可学列表）。
 #[derive(Debug, Clone, Serialize)]
-pub struct GraphNodeView {
+pub struct GraphEndpointView {
+    pub endpoint_id: String,
     pub lesson_id: LearningLessonId,
     pub title: String,
-    pub summary: String,
-    pub purpose: String,
-    pub estimated_minutes: i64,
-    pub generated: bool,
-    /// 发布时的 Kahn 拓扑序（也是推荐排序键）。
-    pub position: i64,
-    /// 前置层深（零前置为 0），供分层渲染与宏观 LOD 使用。
-    pub depth: i64,
-    pub status: LessonStatus,
-    pub prerequisite_count: i64,
+    pub goal_note: String,
+    pub completed: bool,
+    pub declared_at: i64,
 }
 
-/// 学习图课程视图的一条前置边：`from` 应先于 `to` 被满足（lesson_id 引用）。
-#[derive(Debug, Clone, Serialize)]
-pub struct GraphEdgeView {
-    pub from: LearningLessonId,
-    pub to: LearningLessonId,
-    pub reason: String,
+/// 终点锚创建/编辑输入：标题 + 一句程度声明。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndpointInput {
+    pub title: String,
+    #[serde(default)]
+    pub goal_note: String,
 }
 
-/// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：图结构的事实来源
-/// 是 lessons + prerequisites 两张表，这里只做投影；`recommended` 是
-/// 「下一步推荐学习的节点」（≤10，就绪集按拓扑序）。
+/// 终点锚的部分编辑输入：None = 不改动。
+#[derive(Debug, Clone, Deserialize)]
+pub struct EndpointUpdateInput {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub goal_note: Option<String>,
+}
+
+/// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：终点锚 + 罗盘 +
+/// 就绪集推荐与水位读数。没有先修边、没有锁定态——发布即就绪（ADR-0009）；
+/// 节点本体就是模块课时，图视图只承载生长语义。
 #[derive(Debug, Clone, Serialize)]
 pub struct LearningGraphView {
     /// 用户生成图时输入的学习目标。
     pub goal: String,
     /// 学习范围（scope 分析文本）。
     pub scope: String,
-    pub nodes: Vec<GraphNodeView>,
-    pub edges: Vec<GraphEdgeView>,
+    /// 罗盘（逐终点剩余路线摘要），终点变更时重画；None = 尚未画出。
+    pub compass: Option<String>,
+    pub compass_updated_at: Option<i64>,
+    pub endpoints: Vec<GraphEndpointView>,
+    /// 「下一步推荐学习的节点」（就绪集 ≤10，花名册序）。
     pub recommended: Vec<LearningLessonId>,
-    /// 课程行 graph_meta_json 透传（审计快照/生成留档/扩展备注）。
-    pub meta: Option<Value>,
+    /// 当前就绪存量与水位契约（补货目标 7 / 自动触发线 3）。
+    pub ready_count: usize,
+    pub ready_target: usize,
+    pub ready_trigger: usize,
+    /// 是否有生成/生长运行进行中（共享注册表口径）。
+    pub growth_running: bool,
+}
+
+/// 学习记录视图：批次时间线（倒序）——生长史即课程史（ADR-0009）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphHistoryView {
+    pub batches: Vec<GraphBatchView>,
+}
+
+/// 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphBatchView {
+    pub batch_id: String,
+    pub seq: i64,
+    pub note: String,
+    pub created_at: i64,
+    pub nodes: Vec<GraphNodeHistoryView>,
+}
+
+/// 批次内的一个节点行。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphNodeHistoryView {
+    pub lesson_id: LearningLessonId,
+    pub title: String,
+    pub estimated_minutes: i64,
+    pub status: LessonStatus,
+    pub completed_at: Option<i64>,
+}
+
+/// 概念表行：登记表概念 + 本课程的教/假定引用 + 跨课程来源标注。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphConceptRowView {
+    pub concept_id: String,
+    pub canonical: String,
+    pub aliases: Vec<String>,
+    pub definition: String,
+    /// 本课程内教/假定该概念的节点（带学习者进度状态）。
+    pub refs: Vec<GraphConceptRefView>,
+    /// 其他还在教该概念的课程标题（跨课程就绪的来源可见性）。
+    pub other_courses: Vec<String>,
+}
+
+/// 概念表行内的一条引用。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphConceptRefView {
+    pub lesson_id: LearningLessonId,
+    pub title: String,
+    /// teaches | assumes。
+    pub role: String,
+    /// know | apply | teach。
+    pub tier: String,
+    pub status: LessonStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1308,10 +1362,9 @@ pub struct CourseDetail {
     pub course: CourseSummary,
     pub enrollment_id: Option<LearningEnrollmentId>,
     pub modules: Vec<ModuleView>,
-    pub concepts: Vec<ConceptView>,
     pub next_lesson_id: Option<LearningLessonId>,
     pub due_review_count: i64,
-    /// 仅 `learning_graph` 课程携带：图结构 + 下一步推荐节点。
+    /// 仅 `learning_graph` 课程携带：终点锚 + 罗盘 + 就绪集（ADR-0009）。
     pub graph: Option<LearningGraphView>,
 }
 
@@ -1335,7 +1388,6 @@ pub struct LessonView {
     pub generated: bool,
     pub source: Option<SourceSpan>,
     pub status: LessonStatus,
-    pub concepts: Vec<LearningConceptId>,
     pub activities: Vec<ActivityView>,
     /// 分节正文（ADR-0002）。空 = 旧课时的单篇 summary（双读回退）。
     pub sections: Vec<SectionView>,
@@ -1371,7 +1423,6 @@ pub struct ActivityView {
     #[serde(default)]
     pub matches: Vec<String>,
     pub position: i64,
-    pub concepts: Vec<LearningConceptId>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1384,18 +1435,7 @@ pub struct DiagnosticItem {
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticPlan {
     pub course_id: LearningCourseId,
-    pub total_concepts: i64,
     pub items: Vec<DiagnosticItem>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ConceptView {
-    pub id: LearningConceptId,
-    pub key: String,
-    pub title: String,
-    pub description: String,
-    pub prerequisites: Vec<LearningConceptId>,
-    pub mastery: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1452,7 +1492,7 @@ pub struct RateReviewRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewSource {
-    /// Concept-bound review item coming from a course enrollment.
+    /// Review item coming from a course enrollment.
     Course,
     /// Learner-authored custom question with its own schedule.
     Custom,
@@ -1467,8 +1507,6 @@ pub struct DueReview {
     pub course_title: Option<String>,
     pub module_title: Option<String>,
     pub lesson_title: Option<String>,
-    pub concept_id: Option<LearningConceptId>,
-    pub concept_title: Option<String>,
     pub question: ReviewQuestion,
     pub due_at: TimestampMs,
     pub stability_days: f64,
@@ -1676,9 +1714,9 @@ pub struct CalendarStats {
 }
 
 /// One row of the question management table. Course questions come from
-/// objective activities linked to concepts (review item optional: items
-/// only exist after the lesson is completed); custom questions are
-/// learner-authored and always carry their own schedule.
+/// objective activities (review item optional: items only exist after the
+/// lesson is completed); custom questions are learner-authored and always
+/// carry their own schedule.
 #[derive(Debug, Clone, Serialize)]
 pub struct QuestionEntry {
     pub source: ReviewSource,
@@ -1689,8 +1727,6 @@ pub struct QuestionEntry {
     pub state: String,
     pub course_id: Option<LearningCourseId>,
     pub course_title: Option<String>,
-    pub concept_id: Option<LearningConceptId>,
-    pub concept_title: Option<String>,
     pub question_kind: Option<ActivityKind>,
     pub prompt: Option<String>,
     pub options: Vec<String>,
@@ -1735,9 +1771,7 @@ pub struct MarkEditRequest {
 }
 
 /// Learner-authored question. Objective kinds (single choice, true/false,
-/// fill in the blank) are supported; the optional concept links the question
-/// back to an existing concept (including orphaned concepts from deleted
-/// courses).
+/// fill in the blank) are supported; each carries its own FSRS schedule.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateCustomQuestionRequest {
     pub kind: ActivityKind,
@@ -1747,17 +1781,14 @@ pub struct CreateCustomQuestionRequest {
     pub answer: Value,
     #[serde(default)]
     pub explanation: String,
-    #[serde(default)]
-    pub concept_id: Option<LearningConceptId>,
     /// Near-synonym traps for fill_in_blank blanks (optional when the
     /// learner authors the question by hand).
     #[serde(default)]
     pub distractors: Vec<String>,
 }
 
-/// Manually appends an activity to an existing lesson. All four kinds are
-/// accepted; when `concept_ids` is empty the activity binds to every concept
-/// of the lesson, matching course-generation semantics.
+/// Manually appends an activity to an existing lesson. All kinds are
+/// accepted.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateLessonActivityRequest {
     pub kind: ActivityKind,
@@ -1771,8 +1802,6 @@ pub struct CreateLessonActivityRequest {
     /// Near-synonym traps for fill_in_blank blanks; empty for other kinds.
     #[serde(default)]
     pub distractors: Vec<String>,
-    #[serde(default)]
-    pub concept_ids: Vec<LearningConceptId>,
 }
 
 /// Asks the knowledge-backed generator for a single activity draft for an
@@ -1800,18 +1829,6 @@ pub struct GeneratedLessonActivity {
     pub answer: Value,
     pub explanation: String,
     pub distractors: Vec<String>,
-    /// Suggested concept bindings (the lesson's concepts by default).
-    pub concept_ids: Vec<LearningConceptId>,
-}
-
-/// Concept offered in the custom question form: any concept the learner
-/// has enrolled in, plus orphaned concepts still referenced by their
-/// surviving review items.
-#[derive(Debug, Clone, Serialize)]
-pub struct ConceptRef {
-    pub concept_id: LearningConceptId,
-    pub title: String,
-    pub course_title: Option<String>,
 }
 
 /// Replaces the tag set of a course or question. Unknown tag names are

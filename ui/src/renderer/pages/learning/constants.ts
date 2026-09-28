@@ -4,9 +4,6 @@ export const EMPTY_PACK = `{
   "description": "A source-backed starter course",
   "domain": "mathematics",
   "version": 1,
-  "concepts": [
-    { "key": "vector", "title": "Vector", "prerequisites": [] }
-  ],
   "modules": [
     {
       "title": "Foundations",
@@ -14,13 +11,11 @@ export const EMPTY_PACK = `{
         {
           "title": "What is a vector?",
           "estimated_minutes": 10,
-          "concepts": ["vector"],
           "activities": [
             {
               "kind": "true_false",
               "prompt": "A geometric vector has magnitude and direction.",
-              "answer": true,
-              "concepts": ["vector"]
+              "answer": true
             }
           ]
         }

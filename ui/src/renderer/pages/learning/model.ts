@@ -7,17 +7,6 @@ import type { ILearningCourseGenerationEvent, ILearningGenerationToolCall } from
 import type { Activity, LessonStatus, Section } from './types';
 import type { Translate } from './utils';
 
-/** 全部概念掌握的达标线：每个概念的 mastery ≥ 80% 视为「全部掌握」 */
-export const MASTERY_THRESHOLD = 0.8;
-
-/** 课程掌握度判定：无概念不算掌握，任一概念未达标即未全掌握 */
-export function allConceptsMastered(concepts: { mastery: number | null }[]): boolean {
-  return (
-    concepts.length > 0 &&
-    concepts.every((concept) => concept.mastery !== null && concept.mastery >= MASTERY_THRESHOLD)
-  );
-}
-
 /** 课时状态 → Arco Tag 颜色（课程大纲/工作区/学习图详情共用） */
 export const lessonStatusTagColors: Record<LessonStatus, string> = {
   not_started: 'gray',
@@ -25,24 +14,6 @@ export const lessonStatusTagColors: Record<LessonStatus, string> = {
   completed: 'green',
   skipped: 'gray',
 };
-
-/**
- * 学习进度五态色板（Arco 语义 token，随主题切换）：not_started 中性、
- * in_progress 主色、completed 成功绿、skipped 灰（已声明掌握）、
- * recommended 琥珀（下一步推荐）。DAG 节点色条/描边与 MiniMap 共用。
- * 注意：主题体系未导出 warning/primary/success 的 `-6` 色阶变量，必须带
- * 字面 fallback——SVG stroke 的 var() 失效时会 fallback 到初始值 none，
- * 连线直接消失（HTML 属性只是变色，不会消失）。
- */
-export const lessonStatusAccents: Record<LessonStatus, string> = {
-  not_started: 'var(--color-text-4)',
-  in_progress: 'var(--color-primary-6, #165dff)',
-  completed: 'var(--color-success-6, #00b42a)',
-  skipped: 'var(--color-text-3)',
-};
-
-/** 推荐节点的琥珀强调色（与五态色板同源的 fallback 约束） */
-export const RECOMMENDED_ACCENT = 'var(--color-warning-6, #ff7d00)';
 
 // ── Section 状态语义（ADR-0003 前端面）────────────────────────────────
 
@@ -140,24 +111,6 @@ export function canGoToStep(
 }
 
 // ── 学习图前置锁定（DAG 与列表视图共用）──────────────────────────────
-
-/** 解锁 = 不存在任何「未完成且未跳过」的前置（根节点天然解锁）。从边表
- * 推导：完成/跳过集合 ∩ 入边 from，命中即锁定 to。 */
-export function prereqLockedIds(
-  nodes: { lesson_id: string; status: LessonStatus }[],
-  edges: { from: string; to: string }[]
-): Set<string> {
-  const locked = new Set<string>();
-  const satisfied = new Set(
-    nodes
-      .filter((node) => node.status === 'completed' || node.status === 'skipped')
-      .map((node) => node.lesson_id)
-  );
-  for (const edge of edges) {
-    if (!satisfied.has(edge.from)) locked.add(edge.to);
-  }
-  return locked;
-}
 
 // ── 生成阶段折叠（WS 事件流 → 展示态）────────────────────────────────
 

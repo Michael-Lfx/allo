@@ -2,7 +2,7 @@
     use super::course::{recommend_next_lesson, validate_pack};
     use super::progress::evaluate;
     use super::*;
-    use crate::models::{ActivityPack, ConceptPack, LessonPack, ModulePack};
+    use crate::models::{ActivityPack, LessonPack, ModulePack};
     use nomifun_api_types::WebSocketMessage;
     use serde_json::json;
     use std::sync::Mutex;
@@ -76,6 +76,7 @@
             provider_id: None,
             model: None,
             mode: crate::models::CourseGenerationMode::OnDemand,
+            endpoints: Vec::new(),
         }
     }
 
@@ -120,12 +121,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             domain: "mathematics".into(),
             source_kb_id: None,
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "vector".into(),
-                title: "Vector".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![ModulePack {
                 title: "Foundations".into(),
                 description: String::new(),
@@ -135,7 +130,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
-                    concepts: vec!["vector".into()],
                     activities: vec![ActivityPack {
             difficulty: None,
                         kind: ActivityKind::TrueFalse,
@@ -143,7 +137,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         options: Vec::new(),
                         answer: Value::Bool(true),
                         explanation: "That is the geometric definition.".into(),
-                        concepts: vec!["vector".into()],
                     distractors: Vec::new(),
                     tol: None,
                     section_key: None,
@@ -200,20 +193,12 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let user_id = UserId::parse(owner_id).unwrap();
         let service = LearningService::new(database.pool().clone());
 
-        let concept = |key: &str| ConceptPack {
-            key: key.into(),
-            title: key.to_uppercase(),
-            description: String::new(),
-            prerequisites: Vec::new(),
-        };
-        let lesson = |title: &str, purpose: &str, source: Option<SourceSpan>,
-                      concept: &str| LessonPack {
+        let lesson = |title: &str, purpose: &str, source: Option<SourceSpan>| LessonPack {
             title: title.into(),
             summary: String::new(),
             purpose: purpose.into(),
             estimated_minutes: 10,
             source,
-            concepts: vec![concept.into()],
             activities: Vec::new(),
             sections: Vec::new(),
         };
@@ -224,35 +209,32 @@ teaching_style: crate::models::TeachingStyle::Standard,
             domain: "math".into(),
             source_kb_id: None,
             version: 1,
-            concepts: vec![concept("a"), concept("b")],
             modules: vec![
                 ModulePack {
                     title: "模块一".into(),
                     description: String::new(),
                     lessons: vec![
-                        lesson("第一课", "目标一", None, "a"),
+                        lesson("第一课", "目标一", None),
                         lesson("第二课", "目标二", Some(SourceSpan {
                             path: "docs/two.md".into(),
                             start: None,
                             end: None,
-                        }), "a"),
+                        })),
                     ],
                 },
                 ModulePack {
                     title: "模块二".into(),
                     description: String::new(),
                     lessons: vec![
-                        lesson("第三课", "目标三", None, "b"),
-                        lesson("第四课", "目标四", None, "b"),
+                        lesson("第三课", "目标三", None),
+                        lesson("第四课", "目标四", None),
                     ],
                 },
             ],
         };
-        let blueprint_lesson = |title: &str, purpose: &str, source: Option<SourceSpan>,
-                                concept: &str| crate::generation::BlueprintLesson {
+        let blueprint_lesson = |title: &str, purpose: &str, source: Option<SourceSpan>| crate::generation::BlueprintLesson {
             title: title.into(),
             purpose: purpose.into(),
-            concepts: vec![concept.into()],
             source,
         };
         let blueprint_module = |title: &str,
@@ -267,19 +249,18 @@ teaching_style: crate::models::TeachingStyle::Standard,
             description: "两模块两课时".into(),
             domain: "math".into(),
             version: 1,
-            concepts: vec![concept("a"), concept("b")],
             modules: vec![
                 blueprint_module("模块一", vec![
-                    blueprint_lesson("第一课", "目标一", None, "a"),
+                    blueprint_lesson("第一课", "目标一", None),
                     blueprint_lesson("第二课", "目标二", Some(SourceSpan {
                         path: "docs/two.md".into(),
                         start: None,
                         end: None,
-                    }), "a"),
+                    })),
                 ]),
                 blueprint_module("模块二", vec![
-                    blueprint_lesson("第三课", "目标三", None, "b"),
-                    blueprint_lesson("第四课", "目标四", None, "b"),
+                    blueprint_lesson("第三课", "目标三", None),
+                    blueprint_lesson("第四课", "目标四", None),
                 ]),
             ],
         };
@@ -322,25 +303,16 @@ teaching_style: crate::models::TeachingStyle::Standard,
     }
 
     #[test]
-    fn pack_validation_rejects_unknown_concepts() {
+    fn pack_validation_rejects_missing_title_and_empty_modules() {
         let mut pack = valid_pack();
-        pack.modules[0].lessons[0].concepts = vec!["missing".into()];
+        pack.title = "   ".into();
         let error = validate_pack(&pack).unwrap_err();
-        assert!(error.to_string().contains("unknown concept key"));
-    }
+        assert!(error.to_string().contains("title is required"));
 
-    #[test]
-    fn pack_validation_rejects_prerequisite_cycles() {
         let mut pack = valid_pack();
-        pack.concepts.push(ConceptPack {
-            key: "matrix".into(),
-            title: "Matrix".into(),
-            description: String::new(),
-            prerequisites: vec!["vector".into()],
-        });
-        pack.concepts[0].prerequisites = vec!["matrix".into()];
+        pack.modules.clear();
         let error = validate_pack(&pack).unwrap_err();
-        assert!(error.to_string().contains("prerequisite cycle"));
+        assert!(error.to_string().contains("at least one module"));
     }
 
     #[test]
@@ -359,65 +331,55 @@ teaching_style: crate::models::TeachingStyle::Standard,
     }
 
     #[test]
-    fn recommendation_repairs_out_of_order_prerequisites() {
-        let prerequisite_id = LearningConceptId::new();
-        let advanced_id = LearningConceptId::new();
-        let prerequisite_lesson_id = LearningLessonId::new();
-        let advanced_lesson_id = LearningLessonId::new();
-        let lesson = |id: LearningLessonId, title: &str, concept: LearningConceptId| LessonView {
+    fn recommendation_prefers_in_progress_then_first_unsatisfied() {
+        let lesson = |id: LearningLessonId, status: LessonStatus| LessonView {
             id,
-            title: title.into(),
+            title: String::new(),
             summary: String::new(),
             purpose: String::new(),
             position: 0,
             estimated_minutes: 10,
             generated: true,
             source: None,
-            status: LessonStatus::NotStarted,
-            concepts: vec![concept],
+            status,
             activities: Vec::new(),
             sections: Vec::new(),
         };
+        let done_id = LearningLessonId::new();
+        let in_progress_id = LearningLessonId::new();
+        let fresh_id = LearningLessonId::new();
         let modules = vec![ModuleView {
             id: LearningModuleId::new(),
             title: "Module".into(),
             description: String::new(),
             position: 0,
             lessons: vec![
-                lesson(advanced_lesson_id, "Advanced", advanced_id.clone()),
-                lesson(
-                    prerequisite_lesson_id.clone(),
-                    "Prerequisite",
-                    prerequisite_id.clone(),
-                ),
+                lesson(done_id.clone(), LessonStatus::Completed),
+                lesson(in_progress_id.clone(), LessonStatus::InProgress),
+                lesson(fresh_id, LessonStatus::NotStarted),
             ],
         }];
-        let concepts = vec![
-            ConceptView {
-                id: prerequisite_id.clone(),
-                key: "prerequisite".into(),
-                title: "Prerequisite".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-                mastery: None,
-            },
-            ConceptView {
-                id: advanced_id,
-                key: "advanced".into(),
-                title: "Advanced".into(),
-                description: String::new(),
-                prerequisites: vec![prerequisite_id],
-                mastery: None,
-            },
-        ];
-        assert_eq!(
-            recommend_next_lesson(&modules, &concepts),
-            Some(prerequisite_lesson_id)
-        );
+        // 进行中的课时优先于任何后续课时。
+        assert_eq!(recommend_next_lesson(&modules), Some(in_progress_id));
+        // 没有进行中时取第一个未满足（未完成且未跳过）的课时：跳过不计。
+        let skipped_id = LearningLessonId::new();
+        let unsatisfied_id = LearningLessonId::new();
+        let modules = vec![ModuleView {
+            id: LearningModuleId::new(),
+            title: "Module".into(),
+            description: String::new(),
+            position: 0,
+            lessons: vec![
+                lesson(done_id.clone(), LessonStatus::Completed),
+                lesson(skipped_id, LessonStatus::Skipped),
+                lesson(unsatisfied_id.clone(), LessonStatus::NotStarted),
+            ],
+        }];
+        assert_eq!(recommend_next_lesson(&modules), Some(unsatisfied_id));
     }
 
     #[tokio::test]
-    async fn imports_enrolls_and_updates_mastery() {
+    async fn imports_enrolls_and_seeds_review_queue() {
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
             .await
@@ -438,7 +400,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .diagnostic_plan(&course.course.id, &user_id, 10)
             .await
             .unwrap();
-        assert_eq!(diagnostic.total_concepts, 1);
         assert_eq!(diagnostic.items.len(), 1);
         let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
         let lesson_id = detail.modules[0].lessons[0].id.clone();
@@ -455,7 +416,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .course_detail(&course.course.id, Some(&user_id))
             .await
             .unwrap();
-        assert_eq!(detail.concepts[0].mastery, Some(1.0));
         assert_eq!(detail.next_lesson_id, None);
         // Completing the lesson admits its concepts into the review queue
         // (immediately-due seed), but the seed must not count as a review:
@@ -511,8 +471,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let user_id = UserId::parse(owner_id).unwrap();
         let service = LearningService::new(database.pool().clone());
 
-        // One concept shared across two lessons: completing lesson A seeds a
-        // review item for its own question A1, lesson B is never touched.
+        // One lesson with one objective question per lesson: completing
+        // lesson A seeds a review item for its own question A1, lesson B is
+        // never touched.
         let shared = ActivityPack {
                         difficulty: None,
             kind: ActivityKind::TrueFalse,
@@ -520,7 +481,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             options: Vec::new(),
             answer: Value::Bool(true),
             explanation: String::new(),
-            concepts: vec!["shared".into()],
             distractors: Vec::new(),
             tol: None,
             section_key: None,
@@ -532,12 +492,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             domain: "general".into(),
             source_kb_id: None,
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "shared".into(),
-                title: "Shared".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![ModulePack {
                 title: "Module".into(),
                 description: String::new(),
@@ -548,7 +502,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         purpose: String::new(),
                         estimated_minutes: 10,
                         source: None,
-                        concepts: vec!["shared".into()],
                         activities: vec![ActivityPack {
                         difficulty: None,
                             prompt: "A1".into(),
@@ -562,7 +515,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         purpose: String::new(),
                         estimated_minutes: 10,
                         source: None,
-                        concepts: vec!["shared".into()],
                         activities: vec![ActivityPack {
                         difficulty: None,
                             prompt: "A2".into(),
@@ -624,9 +576,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(due[0].question.prompt, "A1");
     }
 
-    /// A reflection-only course with two concepts: the activity targets
-    /// "vector" while the full course list also carries "matrix" — the
-    /// coverage checklist AI grading must evaluate against.
+    /// A reflection-only pack: AI grading is judged against the question and
+    /// the lesson topic (title + summary), never a concept list (ADR-0009).
     fn reflection_pack() -> CoursePack {
         CoursePack {
             title: "Reflective Learning".into(),
@@ -635,20 +586,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             domain: "general".into(),
             source_kb_id: None,
             version: 1,
-            concepts: vec![
-                ConceptPack {
-                    key: "vector".into(),
-                    title: "Vector".into(),
-                    description: "magnitude and direction".into(),
-                    prerequisites: Vec::new(),
-                },
-                ConceptPack {
-                    key: "matrix".into(),
-                    title: "Matrix".into(),
-                    description: "rectangular number grid".into(),
-                    prerequisites: Vec::new(),
-                },
-            ],
             modules: vec![ModulePack {
                 title: "Foundations".into(),
                 description: String::new(),
@@ -658,7 +595,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
-                    concepts: vec!["vector".into(), "matrix".into()],
                     activities: vec![ActivityPack {
             difficulty: None,
                         kind: ActivityKind::Reflection,
@@ -666,7 +602,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         options: Vec::new(),
                         answer: Value::Null,
                         explanation: "A vector has magnitude and direction.".into(),
-                        concepts: vec!["vector".into()],
                     distractors: Vec::new(),
                     tol: None,
                     section_key: None,
@@ -762,22 +697,13 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert!(result.passed);
         assert!(result.feedback.contains("方向正确"));
         assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
-        // The grading prompt carries the answer AND the exercise's linked
-        // concepts (its own lesson's concepts — never other lessons').
+        // The grading prompt carries the answer AND the lesson topic
+        // (title/summary) — never a concept list (ADR-0009).
         let user = completer.last_user.lock().unwrap().clone().unwrap();
         assert!(user.contains("Explain what a vector is."));
         assert!(user.contains("A vector is a quantity"));
-        assert!(user.contains("Vector"));
-        // The AI score feeds the mastery state and the persisted attempt.
-        let (mastery,): (f64,) = sqlx::query_as(
-            "SELECT mastery FROM learning_mastery_states \
-             WHERE enrollment_id = (SELECT enrollment_id FROM learning_enrollments WHERE user_id = ?)",
-        )
-        .bind(user_id.as_str())
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(mastery, 0.75);
+        assert!(user.contains("Vectors"));
+        assert!(user.contains("Lesson topic"));
         let (score, feedback): (f64, String) =
             sqlx::query_as("SELECT score, feedback FROM learning_attempts WHERE activity_id = ?")
                 .bind(activity_id.as_str())
@@ -958,12 +884,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             domain: "mathematics".into(),
             source_kb_id: None,
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "vector".into(),
-                title: "Vector".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![ModulePack {
                 title: "Foundations".into(),
                 description: String::new(),
@@ -973,7 +893,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
-                    concepts: vec!["vector".into()],
                     activities: vec![ActivityPack {
             difficulty: None,
                         kind: ActivityKind::FillInBlank,
@@ -981,7 +900,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         options: Vec::new(),
                         answer: json!(["magnitude"]),
                         explanation: "That is the geometric definition.".into(),
-                        concepts: vec!["vector".into()],
                         distractors: vec!["length".into()],
                         tol: None,
                         section_key: None,
@@ -1115,12 +1033,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             domain: "general".into(),
             source_kb_id: None,
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "vector".into(),
-                title: "Vector".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![ModulePack {
                 title: "Module".into(),
                 description: String::new(),
@@ -1130,7 +1042,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
-                    concepts: vec!["vector".into()],
                     activities: vec![
                         ActivityPack {
                             difficulty: None,
@@ -1143,7 +1054,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             ],
                             answer: json!("magnitude"),
                             explanation: String::new(),
-                            concepts: vec!["vector".into()],
                             distractors: Vec::new(),
                             tol: None,
                             section_key: None,
@@ -1155,7 +1065,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             options: Vec::new(),
                             answer: json!(["magnitude"]),
                             explanation: String::new(),
-                            concepts: vec!["vector".into()],
                             distractors: vec!["length".into()],
                             tol: None,
                             section_key: None,
@@ -1245,7 +1154,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
     }
 
     #[tokio::test]
-    async fn custom_questions_accept_fill_in_blank() {
+    async fn custom_questions_persist_config_and_join_the_review_queue() {
+        // 自建题契约：config 落库、进题库、按同一判卷器判分；填空题走 038
+        // 的三题型宽口径 CHECK（迁移 066 重建必须保留）。
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
             .await
@@ -1253,13 +1164,12 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let user_id = UserId::parse(owner_id).unwrap();
         let service = LearningService::new(database.pool().clone());
         let request = CreateCustomQuestionRequest {
-            kind: ActivityKind::FillInBlank,
-            prompt: "The derivative of position is ___, and it measures the rate of change.".into(),
-            options: Vec::new(),
-            answer: json!(["velocity", "velocity vector"]),
-            explanation: "Velocity is the rate of change of position.".into(),
-            concept_id: None,
-            distractors: vec!["speed".into()],
+            kind: ActivityKind::TrueFalse,
+            prompt: "A vector has magnitude and direction.".into(),
+            options: vec!["true".into(), "false".into()],
+            answer: json!(true),
+            explanation: "That is the geometric definition.".into(),
+            distractors: Vec::new(),
         };
         let question_id = service
             .create_custom_question(&user_id, request)
@@ -1272,11 +1182,11 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .fetch_one(database.pool())
         .await
         .unwrap();
-        assert_eq!(kind, "fill_in_blank");
+        assert_eq!(kind, "true_false");
         let config: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
-        assert_eq!(config.answer, json!(["velocity", "velocity vector"]));
-        assert_eq!(config.distractors, vec!["speed"]);
-        // The custom blank joins the orphan queue due on the next review day
+        assert_eq!(config.answer, json!(true));
+        assert_eq!(config.options, vec!["true", "false"]);
+        // The custom card joins the orphan queue due on the next review day
         // and is graded by the same rule-based evaluator.
         let before_due = service
             .due_reviews(&user_id, 30, &[], true, true, &[])
@@ -1290,24 +1200,45 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .unwrap();
         assert_eq!(due.len(), 1);
         let result = service
-            .answer_custom_review(
-                &question_id,
-                &user_id,
-                Value::String("Velocity Vector".into()),
-                false,
-            )
+            .answer_custom_review(&question_id, &user_id, Value::Bool(true), false)
             .await
             .unwrap();
         assert!(result.correct);
+        // fill_in_blank 自建题在重建后的表上照常落库（066 曾收窄 CHECK，
+        // 会让 038 之后合法的填空题必然 CHECK 失败——回归钉子）。
+        let blank_id = service
+            .create_custom_question(
+                &user_id,
+                CreateCustomQuestionRequest {
+                    kind: ActivityKind::FillInBlank,
+                    prompt: "Fill the blank: a vector has magnitude and ___.".into(),
+                    options: Vec::new(),
+                    answer: json!(["direction"]),
+                    explanation: String::new(),
+                    distractors: vec!["trap".into()],
+                },
+            )
+            .await
+            .unwrap();
+        let (blank_kind, blank_config): (String, String) = sqlx::query_as(
+            "SELECT kind, config_json FROM learning_custom_questions WHERE custom_question_id = ?",
+        )
+        .bind(&blank_id)
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(blank_kind, "fill_in_blank");
+        let blank_config: StoredActivityConfig = serde_json::from_str(&blank_config).unwrap();
+        assert_eq!(blank_config.distractors, vec!["trap".to_owned()]);
         // Payload validation rejects missing blanks, non-array answers and
-        // the reflection kind, mirroring the generated side.
+        // the reflection kind, mirroring the generated side. These rejections
+        // fire before any insert (pure validator checks).
         let invalid = |prompt: &str, answer: Value| CreateCustomQuestionRequest {
             kind: ActivityKind::FillInBlank,
             prompt: prompt.into(),
             options: Vec::new(),
             answer,
             explanation: String::new(),
-            concept_id: None,
             distractors: vec!["trap".into()],
         };
         let error = service
@@ -1329,7 +1260,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     options: Vec::new(),
                     answer: Value::Null,
                     explanation: String::new(),
-                    concept_id: None,
                     distractors: Vec::new(),
                 },
             )
@@ -1379,10 +1309,10 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let now = now_ms();
         sqlx::query(
             "INSERT INTO learning_custom_questions \
-             (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
+             (custom_question_id, user_id, kind, prompt, config_json, \
               due_at, stability_days, difficulty, review_count, lapse_count, \
               last_reviewed_at, created_at, updated_at) \
-             VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', NULL, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
+             VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', ?, 0, 5.0, 0, 0, NULL, ?, ?)",
         )
         .bind(LearningReviewItemId::new().into_string())
         .bind(user_id.as_str())
@@ -1403,10 +1333,10 @@ teaching_style: crate::models::TeachingStyle::Standard,
     ) {
         sqlx::query(
             "INSERT INTO learning_custom_questions \
-             (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
+             (custom_question_id, user_id, kind, prompt, config_json, \
               due_at, stability_days, difficulty, review_count, lapse_count, \
               last_reviewed_at, created_at, updated_at) \
-             VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', NULL, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
+             VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', ?, 0, 5.0, 0, 0, NULL, ?, ?)",
         )
         .bind(LearningReviewItemId::new().into_string())
         .bind(user_id.as_str())
@@ -1816,8 +1746,10 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(stats2.streak, 0);
     }
 
-    /// 学习图课程的最小 DB 夹具：课程行（learning_graph）+ 隐含模块 +
-    /// 两个节点（position 即拓扑序）+ 一条前置边（B 依赖 A）。
+    /// 学习图课程的最小 DB 夹具（ADR-0009 概念网模型）：课程行 +
+    /// 隐含模块 + 两个节点（节点A teaches 概念「向量基础」@teach，节点B
+    /// assumes 同概念 @know——依赖由概念网折叠，没有先修边）+ 一条终点锚
+    /// （标题行 + 零正文标记课时行）+ 概念登记表行。
     async fn seed_graph_course(
         service: &LearningService,
     ) -> (String, String, String) {
@@ -1826,12 +1758,15 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let module_id = nomifun_common::LearningModuleId::new();
         let lesson_a = nomifun_common::LearningLessonId::new();
         let lesson_b = nomifun_common::LearningLessonId::new();
+        let endpoint_id = nomifun_common::LearningEndpointId::new();
+        let endpoint_lesson_id = nomifun_common::LearningLessonId::new();
+        let concept_id = nomifun_common::LearningConceptId::new();
         let now = now_ms();
         sqlx::query(
             "INSERT INTO learning_courses \
              (course_id, title, description, domain, version, course_kind, learning_goal, \
-              learning_scope, graph_meta_json, created_at, updated_at) \
-             VALUES (?, '图课程', '', 'general', 1, 'learning_graph', '学习目标', '', NULL, ?, ?)",
+              learning_scope, created_at, updated_at) \
+             VALUES (?, '图课程', '', 'general', 1, 'learning_graph', '学习目标', '', ?, ?)",
         )
         .bind(course_id.as_str())
         .bind(now)
@@ -1868,13 +1803,54 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .execute(pool)
         .await
         .unwrap();
+        // 概念网：A 教「向量基础」到能教档，B 假定同一概念到知道档。
         sqlx::query(
-            "INSERT INTO learning_graph_prerequisites \
-             (course_id, lesson_id, prerequisite_lesson_id, reason) VALUES (?, ?, ?, '需要先学 A')",
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, '向量基础', '[]', '', ?, ?)",
         )
+        .bind(concept_id.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        for (lesson, role, tier) in [
+            (lesson_a.as_str(), "teaches", "teach"),
+            (lesson_b.as_str(), "assumes", "know"),
+        ] {
+            sqlx::query(
+                "INSERT INTO learning_lesson_concepts \
+                 (lesson_id, concept_id, role, tier) VALUES (?, ?, ?, ?)",
+            )
+            .bind(lesson)
+            .bind(concept_id.as_str())
+            .bind(role)
+            .bind(tier)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        // 一条终点锚：标记课时行 + 终点行成对落库（零正文，不入可学列表）。
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, '期末终点', '', '', 2, 1, 0)",
+        )
+        .bind(endpoint_lesson_id.as_str())
+        .bind(module_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_course_endpoints \
+             (endpoint_id, course_id, lesson_id, title, goal_note, declared_at) \
+             VALUES (?, ?, ?, '期末终点', '能独立完成综合题', ?)",
+        )
+        .bind(endpoint_id.as_str())
         .bind(course_id.as_str())
-        .bind(lesson_b.as_str())
-        .bind(lesson_a.as_str())
+        .bind(endpoint_lesson_id.as_str())
+        .bind(now)
         .execute(pool)
         .await
         .unwrap();
@@ -1885,10 +1861,11 @@ teaching_style: crate::models::TeachingStyle::Standard,
         )
     }
 
-    /// 图课程的目录级删除（不勾“同时删除复习数据”）：前置边必须随课程
-    /// 消失（启动数据契约不容忍孤儿边），课时内容保留供复习体系继续引用。
+    /// 图课程的目录级删除（不勾“同时删除复习数据”）：概念网引用随课时行
+    /// 一并保留（复习体系继续引用），课程行消失即可——ADR-0009 之后不存在
+    /// 会泄漏的前置边表。
     #[tokio::test]
-    async fn graph_course_catalog_delete_clears_edges_but_keeps_lessons() {
+    async fn graph_course_catalog_delete_keeps_lessons_and_concept_web() {
         let (service, _knowledge, owner_id) = job_test_service().await;
         let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
         service
@@ -1900,19 +1877,29 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap();
         let pool = service.pool_for_tests();
-        let edges: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM learning_graph_prerequisites")
-                .fetch_one(pool)
-                .await
-                .unwrap();
-        assert_eq!(edges, 0, "graph edges must not outlive their course");
+        let courses: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(courses, 0, "the catalog row must disappear");
         let lessons: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons")
             .fetch_one(pool)
             .await
             .unwrap();
         assert_eq!(
-            lessons, 2,
-            "reviewable content must survive the catalog delete"
+            lessons, 3,
+            "reviewable content (nodes + endpoint marker) must survive the catalog delete"
+        );
+        let refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_lesson_concepts")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            refs, 2,
+            "concept web refs stay attached to their surviving lessons"
         );
     }
 
@@ -1995,7 +1982,6 @@ fn review_log_test_pack() -> CoursePack {
         domain: "general".into(),
         source_kb_id: None,
         version: 1,
-        concepts: Vec::new(),
         modules: vec![ModulePack {
             title: "Module".into(),
             description: String::new(),
@@ -2005,7 +1991,6 @@ fn review_log_test_pack() -> CoursePack {
                 purpose: String::new(),
                 estimated_minutes: 10,
                 source: None,
-                concepts: Vec::new(),
                 activities: vec![ActivityPack {
                     difficulty: None,
                     kind: ActivityKind::SingleChoice,
@@ -2013,7 +1998,6 @@ fn review_log_test_pack() -> CoursePack {
                     options: vec!["magnitude".into(), "speed".into()],
                     answer: json!("magnitude"),
                     explanation: String::new(),
-                    concepts: Vec::new(),
                     distractors: Vec::new(),
                     tol: None,
                     section_key: None,
@@ -2186,7 +2170,7 @@ async fn due_gate_admits_first_same_day_early_review() {
 async fn custom_review_log_writes_and_gate_blocks_stale_repeats() {
     let (service, user_id) = checkin_test_service().await;
     // 经服务 API 建题，保证 config_json 满足存储契约（不走测试直插）。
-    let card = service
+    let _card = service
         .create_custom_question(
             &user_id,
             CreateCustomQuestionRequest {
@@ -2195,7 +2179,6 @@ async fn custom_review_log_writes_and_gate_blocks_stale_repeats() {
                 options: vec!["true".into(), "false".into()],
                 answer: json!(true),
                 explanation: String::new(),
-                concept_id: None,
                 distractors: Vec::new(),
             },
         )
@@ -2279,10 +2262,10 @@ async fn insert_custom_card(
     let now = now_ms();
     sqlx::query(
         "INSERT INTO learning_custom_questions \
-         (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
+         (custom_question_id, user_id, kind, prompt, config_json, \
           due_at, stability_days, difficulty, review_count, lapse_count, \
           last_reviewed_at, created_at, updated_at) \
-         VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', NULL, ?, ?, ?, 1, 0, ?, ?, ?)",
+         VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', ?, ?, ?, 1, 0, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id.as_str())
@@ -2585,4 +2568,377 @@ async fn manual_section_edit_rejects_practice_blank_and_unknown() {
         )
         .await;
     assert!(matches!(unknown, Err(AppError::NotFound(_))));
+}
+
+// ==== 概念网生长模型（ADR-0009）服务路径测试 ====
+
+/// 就绪判定测试的小夹具：插入一门空学习图课程（课程行 + 隐含模块），
+/// 返回 (course_id, module_id)。
+async fn insert_graph_course_shell(
+    service: &LearningService,
+    title: &str,
+) -> (String, String) {
+    let pool = service.pool_for_tests();
+    let course_id = nomifun_common::LearningCourseId::new();
+    let module_id = nomifun_common::LearningModuleId::new();
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, created_at, updated_at) \
+         VALUES (?, ?, '', 'general', 1, 'learning_graph', ?, '', ?, ?)",
+    )
+    .bind(course_id.as_str())
+    .bind(title)
+    .bind(title)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_modules \
+         (module_id, course_id, title, description, position) VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(module_id.as_str())
+    .bind(course_id.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+    (course_id.into_string(), module_id.into_string())
+}
+
+/// 就绪判定测试的小夹具：铸入登记表概念，返回 concept_id。
+async fn mint_registry_concept(service: &LearningService, canonical: &str) -> String {
+    let concept_id = nomifun_common::LearningConceptId::new().into_string();
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO learning_concept_registry \
+         (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+         VALUES (?, ?, '[]', '', ?, ?)",
+    )
+    .bind(&concept_id)
+    .bind(canonical)
+    .bind(now)
+    .bind(now)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    concept_id
+}
+
+/// 就绪判定测试的小夹具：插入一个学习节点并挂一条概念网边
+/// （role: teaches|assumes，tier: know|apply|teach），返回 lesson_id。
+async fn insert_graph_node_with_ref(
+    service: &LearningService,
+    module_id: &str,
+    title: &str,
+    concept_id: &str,
+    role: &str,
+    tier: &str,
+) -> String {
+    let pool = service.pool_for_tests();
+    let lesson_id = nomifun_common::LearningLessonId::new().into_string();
+    let position: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM learning_lessons WHERE module_id = ?",
+    )
+    .bind(module_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+          content_generated) VALUES (?, ?, ?, '', '', ?, 10, 0)",
+    )
+    .bind(&lesson_id)
+    .bind(module_id)
+    .bind(title)
+    .bind(position)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_lesson_concepts \
+         (lesson_id, concept_id, role, tier) VALUES (?, ?, ?, ?)",
+    )
+    .bind(&lesson_id)
+    .bind(concept_id)
+    .bind(role)
+    .bind(tier)
+    .execute(pool)
+    .await
+    .unwrap();
+    lesson_id
+}
+
+/// 服务路径的就绪判定（ADR-0009）：就绪 = 未开始 ∧ 每条 assumes 被
+/// 跨课程的已教账以不低于假定档位的档位覆盖。A 课程教 X@teach 时 B 的
+/// assumes X@apply/@teach 节点都可学；教学降档到 apply 后，假定 X@teach
+/// 的节点退出就绪集——跨课程 + 档位偏序同时生效。
+#[tokio::test]
+async fn ready_set_follows_cross_course_tier_coverage() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+
+    let (prep_course, prep_module) = insert_graph_course_shell(&service, "准备课").await;
+    let concept_x = mint_registry_concept(&service, "特征值").await;
+    insert_graph_node_with_ref(
+        &service,
+        &prep_module,
+        "教特征值",
+        &concept_x,
+        "teaches",
+        "teach",
+    )
+    .await;
+
+    let (main_course, main_module) = insert_graph_course_shell(&service, "主干课").await;
+    let main_course_id = nomifun_common::LearningCourseId::parse(&main_course).unwrap();
+    let node_apply = insert_graph_node_with_ref(
+        &service,
+        &main_module,
+        "应用特征值",
+        &concept_x,
+        "assumes",
+        "apply",
+    )
+    .await;
+    let node_teach = insert_graph_node_with_ref(
+        &service,
+        &main_module,
+        "讲解特征值",
+        &concept_x,
+        "assumes",
+        "teach",
+    )
+    .await;
+
+    // 跨课程覆盖：准备课在另一门课程里教到「能教」，主干课的两个假定
+    // 节点全部就绪（None = 零进度视角，无 enrollment）。
+    let ready = service.ready_set_for(&main_course_id, None).await.unwrap();
+    assert_eq!(ready.len(), 2);
+    assert!(ready.iter().any(|id| id.as_str() == node_apply));
+    assert!(ready.iter().any(|id| id.as_str() == node_teach));
+
+    // 图视图（course_detail）暴露同一份就绪集与水位契约。
+    let detail = service
+        .course_detail(&main_course_id, Some(&user_id))
+        .await
+        .unwrap();
+    let graph = detail
+        .graph
+        .expect("graph course detail carries the graph view");
+    assert_eq!(graph.ready_count, 2);
+    assert_eq!(graph.recommended.len(), 2);
+    assert_eq!(graph.ready_target, crate::learning_graph::READY_TARGET);
+    assert_eq!(graph.ready_trigger, crate::learning_graph::READY_TRIGGER);
+    assert!(graph.compass.is_none());
+
+    // 教学降档到「会用」：假定「能教」的节点不再就绪。
+    sqlx::query(
+        "UPDATE learning_lesson_concepts SET tier = 'apply' \
+         WHERE role = 'teaches' AND concept_id = ?",
+    )
+    .bind(&concept_x)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    let ready = service.ready_set_for(&main_course_id, None).await.unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].as_str(), node_apply);
+    let _ = prep_course;
+}
+
+/// 终点锚 CRUD（服务路径）：add_endpoint 成对落终点行 + 零正文标记课时
+/// 行；图视图列出终点；delete_endpoint 一并清理两行；未知终点 404。
+#[tokio::test]
+async fn endpoint_add_and_delete_roundtrip_cleans_marker_lesson() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let owner = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+
+    let view = service
+        .add_endpoint(
+            &owner,
+            &course,
+            &crate::models::EndpointInput {
+                title: "  能独立建模  ".into(),
+                goal_note: "拿到真实数据也能建模".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(view.title, "能独立建模", "endpoint title is trimmed");
+    assert!(!view.completed, "fresh endpoints are never completed");
+    let endpoints: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_course_endpoints WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(database.pool())
+    .await
+    .unwrap();
+    assert_eq!(endpoints, 2, "fixture endpoint + the new one");
+    let marker: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = ?")
+            .bind(view.lesson_id.as_str())
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+    assert_eq!(marker, 1, "the endpoint marker lesson row exists");
+
+    // 图视图列出两条终点。
+    let detail = service
+        .course_detail(&course, Some(&owner))
+        .await
+        .unwrap();
+    let graph = detail.graph.expect("graph view on a graph course");
+    assert_eq!(graph.endpoints.len(), 2);
+    assert!(
+        graph
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.endpoint_id == view.endpoint_id)
+    );
+
+    // 删除终点连带清理标记课时行。
+    let endpoint = nomifun_common::LearningEndpointId::parse(&view.endpoint_id).unwrap();
+    service
+        .delete_endpoint(&owner, &course, &endpoint)
+        .await
+        .unwrap();
+    let endpoints: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_course_endpoints WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(database.pool())
+    .await
+    .unwrap();
+    assert_eq!(endpoints, 1);
+    let marker: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = ?")
+            .bind(view.lesson_id.as_str())
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+    assert_eq!(marker, 0, "the marker lesson row is cleaned up");
+
+    // 未知终点删除 404。
+    let error = service
+        .delete_endpoint(&owner, &course, &nomifun_common::LearningEndpointId::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)));
+}
+
+/// 轮询等待后台生长落库（后台任务与测试共享 current_thread 运行时，
+/// 每次 await 让出即推进一步；超时则失败）。
+async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
+    for _ in 0..500 {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+        )
+        .bind(course_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        if count > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("growth batch did not land in time");
+}
+
+/// 生长落库路径（服务级）：scripted completer 让教练起草一个合法批次
+/// （铸名 + 两个批内自足节点），kick_growth 后批次经结构门与概念评审
+/// 落库——登记表、节点、概念网边、批次档案各就各位。
+#[tokio::test]
+async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 批内自足：极限 随批铸名并由首节点教到「知道」，第二节点假定同档
+    // ——结构门放行；评审 completer 返回同 JSON，problems 缺省为空即通过。
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用定义计算极限", "purpose": "首批基节点", "minutes": 15,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "用极限法则求切线", "purpose": "衔接节点", "minutes": 20,
+             "teaches": [{"name": "求导法则", "tier": "apply"}],
+             "assumes": [{"name": "极限", "tier": "know"}]}
+        ],
+        "mints": [
+            {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
+            {"canonical": "求导法则", "aliases": [], "definition": ""}
+        ],
+        "completed_endpoints": [],
+        "note": "首批两节点"
+    }"#;
+    let completer = ScriptedCompleter::new(batch_json, false);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+
+    wait_for_growth_batch(&service, &course_id).await;
+    let pool = service.pool_for_tests();
+    // 登记表：夹具概念 + 本批铸名 2 条。
+    let registry: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(registry, 3);
+    // 节点：夹具 2 节点 + 1 终点标记 + 本批 2 节点。
+    let lessons: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(lessons, 5);
+    // 概念网：夹具 2 条 + 本批 3 条（teaches ×2 + assumes ×1）。
+    let refs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lesson_concepts lc \
+         JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(refs, 5);
+    // 批次档案：seq 从 1 起，批注与本批一致；新节点默认内容未生成。
+    let (seq, note): (i64, String) = sqlx::query_as(
+        "SELECT seq, note FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(seq, 1);
+    assert_eq!(note, "首批两节点");
+    let generated: i64 = sqlx::query_scalar(
+        "SELECT MIN(content_generated) FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id \
+         WHERE m.course_id = ? AND l.position >= 3",
+    )
+    .bind(&course_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(generated, 0, "grown nodes start without content");
 }
