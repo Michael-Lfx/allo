@@ -103,13 +103,53 @@
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
-## 本轮（2026-09-23 实施，**未发版**）
+## 本轮（2026-09-28 发布 `0.1.0-beta.8`）
+
+按 `25-release-runbook.zh.md` 走完整条发布链（S0–S8），三个出口全部完成：
+
+- **npm**：四包同版本 `0.1.0-beta.8`（`protocol` → `client` → `runtime-win32-x64` → `sdk`）；
+  `dist-tags` = `{ beta: 0.1.0-beta.8, latest: 0.1.0-beta.2 }`——**`latest` 有意不动**（预发布不移动
+  它，`25` §3 S8.3）；注册表 `time` 读数 `2026-09-28T10:23:47.656Z`。
+- **GitHub Release**：`v0.1.0-beta.8`（prerelease，`2026-09-28T10:24:54Z`），资产
+  `flowy-agent-store-v0.1.0-beta.8-windows-x86_64.zip`（75,652,542 B）+ `SHA256SUMS.txt`；
+  `release:publish` 的下载回验通过。
+- **站点上线**：站点仓 `fef8b809` 推到 `main`，`CreatePagesDeployment` 触发部署 `dp57gh5h8i64`
+  （EdgeOne 项目 `makers-yjnkgelxhuduo`，`ap-guangzhou`）。
+
+本次内容 = 两条线合流：`34`（连接器用户凭据，第 1–7 步）与 `36`（商店条目更新），加 `35` 的 SDK
+导出。**协议指纹 `fp-8` → `fp-12`**（跨 `fp-9`/`fp-10`/`fp-11`/`fp-12`），方法计数 `73` → `78`，
+HTTP 路由映射 `48` → `53`。破坏性变更与逐版本迁移步骤落在站点 `changelog` §2.1 与 `upgrade` §6.7；
+站点 `changelog` §4 台账**清零并转正**，`upgrade` §2/§3/§8 同步（中英对称，`check:docs-sync` 0 drift）。
+
+1. **商店条目更新（`36`，8 步）**：新增 `store/update-entry`——先装新版本、装成功才释放旧版本，失败
+   保留旧版并回滚新快照；专家原地升级保 Preset id，连接器复用同一 `mcp_servers` 行，技能按快照各自
+   成目录。同批修两个前置缺陷：条目版本进导入请求（技能/连接器此前被钉在 `1.0.0` 占位版本，并补齐
+   技能市场索引的读取）、安装态写入按 `(snapshot_id, component_id)` 收窄。客户端 `store.update()`、
+   `updateHint()` 由 `uninstall_reinstall` 改 `update`、`StoreOperationOutcome` 补 `errors`/`warnings`
+   （`18` D10 收口）；WebUI 抽屉换成真按钮（`21` D16 追记）。
+2. **连接器用户凭据（`34`，1–7 步）与 SDK 导出（`35`）**：实施记录见下节（本轮之前那一轮），本版首次发布。
+3. **发布期补的一处修复**：`to_config_json` 此前无条件写出空的 `values`，会让**每一行既有 HTTP/SSE
+   server** 在下一次保存时被判为「配置变更」（停用 + 清空已探测工具）；现仅非空时写入（`34` §5.3 已记）。
+4. **跨仓事项**：站点仓 `content/release.json` 同步到 `0.1.0-beta.8`（`check:release-sync` 的两仓同值
+   判据）；站点两语言 `typescript-sdk.md` 的指纹与「`53 / 78`」计数与本次一致。
+5. **自检读数**：`check:fingerprint`（`fp-12`，本仓 7 文件 10 处 + 站点 2 文件）/ `check:release-sync`
+   （四包 + 8 pin + 站点 `release.json` 同值，`53 / 78` 两语言同值）/ `check:market`（self-test 17/17）/
+   `web typecheck` + `web test`（555 passed, 1 skipped）/ `cargo test -p nomifun-app-server`（180）/
+   `nomifun-mcp`（267 + 全部集成目标）/ `nomifun-common`（247 + 19）/ `nomifun-db --lib plugin_snapshot`
+   （8）/ `nomifun-importer`（48 + 25）/ 站点 `check:release`（exit 0）—— 全绿。`verify-published-sdk`
+   打印 `VERIFY-OK`（`protocol_version=fp-12`）；`release:pack --expect-sha256` 通过，npm runtime 包内
+   二进制与 S1 产物同一 sha256（`c23bc5e3…`，不变量 4）。**一处既有红**：`importer_e2e` 的
+   `importer_mention_resolves_installed_preset_and_agents_run_gate`（`origin/main` 上 `042ce226b` 的
+   gate 改动所致，`30` §287 有登记），与本轮无关。
+6. **仍未做**：`25` §7 的既有缺口不变——runtime 包只有 Windows x64 一条真实路径、两仓都没有发布 CI、
+   EdgeOne 的 GitHub 自动触发失效需手动调 API 触发。
+
+## 上一轮（2026-09-23 实施，随 `0.1.0-beta.8` 发布）
 
 按 `34-connector-user-credentials.zh.md` 的 §9 顺序实施"连接器用户凭据（key / token 类）"，
 第 1–6 步完成，并加上第 7 步「自带 MCP server」（`connector/register`，`fp-11`）。**指纹已 bump
 到 `fp-11`**（第 4 步上到 `fp-9`，方法计数 `48 / 73` → `51 / 76`；第 5 步把表单文案归位到块上，
-计数不变；第 7 步加一个方法，`52 / 77`），两仓已同步，但**尚未走发版链**——`25` 的清单只在
-真正发版时执行。
+计数不变；第 7 步加一个方法，`52 / 77`），两仓已同步。**已随 `0.1.0-beta.8` 发布**（发版链读数见上节）。
 
 1. **第 1 步（导入 + 解析）**：导入期保留 `headers` / `staticHeaders` 并按拼写表归一传输
    （`sse` 不再被压平成 `http`）；`secret_ref` 增加 `${secret:NAME}` 模板形式；探针 / 调用 /
@@ -148,8 +188,9 @@
    （`52 / 77` 两站点指南同值）/ `web typecheck` + `web test`（551 passed, 1 skipped）/
    `cargo test -p nomifun-app-server`（180）/ `nomifun-app` lib 368 + 连接器凭据 e2e 2 /
    `nomifun-common` 247 / `nomifun-mcp` 266 lib / `nomifun-importer` 48 lib + 23 集成 /
-   站点 `check:docs-sync` 0 drift + `test:docs-sync` 16 —— **全绿**（`check:release-sync` 的版本
-   一项除外：同一条分支上另一条工作线把 `sdk` 包提到 `beta.8` 而 `protocol` 未同步，与本轮无关）。
+   站点 `check:docs-sync` 0 drift + `test:docs-sync` 16 —— **全绿**（当时 `check:release-sync` 的版本
+   一项除外：同一条分支上另一条工作线把 `sdk` 包提到 `beta.8` 而 `protocol` 未同步；该处已由本轮
+   版本锁步补齐，`sdk` + `protocol` + 站点 `release.json` 现在同为 `0.1.0-beta.8`）。
 9. **仍未做**：`connector/unregister`（注册出来的行只能用宿主的 MCP 管理面删）；§9.1 第 5 条的
    `sse` 与"空值待填"两种形态仍由 Rust 层覆盖；与凭据无关但同趟撞到的 `install/uninstall` 后
    重装同内容装出空结果（见文 34 §10）。
