@@ -113,3 +113,4 @@ Thumbs.db
 .codebuddy/
 web/packages/runtime/vendor/
 .edgeone
+.zcodeignore
