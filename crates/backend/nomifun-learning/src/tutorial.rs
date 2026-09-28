@@ -148,7 +148,6 @@ mod tests {
     use nomifun_api_types::WebSocketMessage;
     use nomifun_common::UserId;
     use nomifun_knowledge::KnowledgeService;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     #[derive(Default)]
@@ -214,13 +213,6 @@ mod tests {
         let total_lessons: usize = pack.modules.iter().map(|m| m.lessons.len()).sum();
         assert_eq!(total_lessons, 6);
 
-        let concept_keys: HashSet<&str> = pack
-            .concepts
-            .iter()
-            .map(|concept| concept.key.as_str())
-            .collect();
-        assert_eq!(concept_keys.len(), 6);
-
         for module in &pack.modules {
             for lesson in &module.lessons {
                 // 描述/例子/验证 three required sections appear in order.
@@ -262,16 +254,6 @@ mod tests {
                     lesson.title
                 );
                 for activity in &lesson.activities {
-                    // Every activity binds a concept key from the blueprint.
-                    assert!(
-                        activity
-                            .concepts
-                            .iter()
-                            .all(|key| concept_keys.contains(key.as_str())),
-                        "lesson {} activity {:?} binds an unknown concept",
-                        lesson.title,
-                        activity.prompt
-                    );
                     // Answer formats: single choice picks an option, true/false
                     // is a boolean, reflection carries no answer.
                     activity

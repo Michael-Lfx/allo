@@ -11,24 +11,17 @@ impl LearningService {
         let detail = self.course_detail(course_id, Some(user_id)).await?;
         // course_detail already creates the enrollment on first view, so no
         // explicit join is required before starting a diagnostic.
-        let mut covered_concepts = HashSet::new();
         let mut items = Vec::new();
         let limit = limit.clamp(1, 20) as usize;
-        let total_concepts = detail.concepts.len() as i64;
+        // 纯课时维度（ADR-0009：per-course 概念体系整体下线）：每课时取
+        // 第一道客观题，诊断 = 逐课时抽查，直到凑满 limit。
         'modules: for module in detail.modules {
             for lesson in module.lessons {
-                for activity in lesson.activities {
-                    if activity.kind == ActivityKind::Reflection
-                        || !activity
-                            .concepts
-                            .iter()
-                            .any(|concept| !covered_concepts.contains(concept.as_str()))
-                    {
-                        continue;
-                    }
-                    for concept in &activity.concepts {
-                        covered_concepts.insert(concept.as_str().to_owned());
-                    }
+                if let Some(activity) = lesson
+                    .activities
+                    .into_iter()
+                    .find(|activity| activity.kind != ActivityKind::Reflection)
+                {
                     items.push(DiagnosticItem {
                         lesson_id: lesson.id.clone(),
                         lesson_title: lesson.title.clone(),
@@ -42,7 +35,6 @@ impl LearningService {
         }
         Ok(DiagnosticPlan {
             course_id: course_id.clone(),
-            total_concepts,
             items,
         })
     }

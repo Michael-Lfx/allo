@@ -112,29 +112,6 @@ pub(crate) fn validate_blueprint(
     if blueprint.modules.is_empty() {
         return Err("blueprint has no modules".into());
     }
-    let mut concept_keys = HashSet::new();
-    for concept in &blueprint.concepts {
-        let key = concept.key.trim();
-        if key.is_empty() || concept.title.trim().is_empty() {
-            return Err("concept key and title are required".into());
-        }
-        if !concept_keys.insert(key.to_owned()) {
-            return Err(format!("duplicate concept key: {key}"));
-        }
-        for prerequisite in &concept.prerequisites {
-            if !concept_keys.contains(prerequisite.trim()) {
-                return Err(format!(
-                    "concept {key} references unknown prerequisite {prerequisite}"
-                ));
-            }
-            if prerequisite == key {
-                return Err(format!("concept {key} cannot require itself"));
-            }
-        }
-    }
-    if blueprint_concept_cycle(&blueprint.concepts) {
-        return Err("concept prerequisites form a cycle".into());
-    }
     let source_paths: HashSet<&str> = samples.iter().map(|(path, _)| path.as_str()).collect();
     for module in &blueprint.modules {
         if module.title.trim().is_empty() || module.lessons.is_empty() {
@@ -143,17 +120,6 @@ pub(crate) fn validate_blueprint(
         for lesson in &module.lessons {
             if lesson.title.trim().is_empty() {
                 return Err("lesson title is required".into());
-            }
-            if lesson.concepts.is_empty() {
-                return Err(format!("lesson \"{}\" binds no concept", lesson.title));
-            }
-            for concept in &lesson.concepts {
-                if !concept_keys.contains(concept.trim()) {
-                    return Err(format!(
-                        "lesson \"{}\" references unknown concept {concept}",
-                        lesson.title
-                    ));
-                }
             }
             // kb flow: every lesson must cite an exact sampled file. The
             // description flow has no samples, so no source is required and
@@ -172,32 +138,5 @@ pub(crate) fn validate_blueprint(
         }
     }
     Ok(())
-}
-
-
-/// Cycle detection over the prerequisite graph (Kahn's algorithm: repeatedly
-/// strip concepts whose prerequisites are all gone; leftovers form a cycle).
-fn blueprint_concept_cycle(concepts: &[ConceptPack]) -> bool {
-    let mut remaining: HashSet<&str> = concepts.iter().map(|c| c.key.as_str()).collect();
-    loop {
-        let ready: Vec<&str> = concepts
-            .iter()
-            .filter(|concept| {
-                remaining.contains(concept.key.as_str())
-                    && concept
-                        .prerequisites
-                        .iter()
-                        .all(|prerequisite| !remaining.contains(prerequisite.as_str()))
-            })
-            .map(|concept| concept.key.as_str())
-            .collect();
-        if ready.is_empty() {
-            break;
-        }
-        for key in ready {
-            remaining.remove(key);
-        }
-    }
-    !remaining.is_empty()
 }
 

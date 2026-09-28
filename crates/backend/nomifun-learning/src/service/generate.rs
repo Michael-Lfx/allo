@@ -165,7 +165,6 @@ impl LearningService {
                 Ok(blueprint) => tracing::info!(
                     session,
                     modules = blueprint.modules.len(),
-                    concepts = blueprint.concepts.len(),
                     "course outline engine end"
                 ),
                 Err(error) => tracing::warn!(session, error = %error, "course outline engine failed"),
@@ -212,7 +211,6 @@ impl LearningService {
         tracing::info!(
             session,
             modules = blueprint.modules.len(),
-            concepts = blueprint.concepts.len(),
             "course outline fallback blueprint"
         );
         Ok(blueprint)

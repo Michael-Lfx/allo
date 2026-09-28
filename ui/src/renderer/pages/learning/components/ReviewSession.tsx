@@ -172,11 +172,6 @@ export function ReviewCard({
             </span>
           </>
         )}
-        {review.concept_title !== null && (
-          <Tag size='small' color='arcoblue'>
-            {t('learning.reviewConceptLabel')}: {review.concept_title}
-          </Tag>
-        )}
         {review.r !== null && (
           <Tag size='small' color='green'>
             {t('learning.reviewPredictedRecall', { percent: Math.round(review.r * 100) })}

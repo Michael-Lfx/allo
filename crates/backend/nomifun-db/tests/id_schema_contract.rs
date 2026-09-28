@@ -34,9 +34,11 @@ const UNCONDITIONAL_UUIDV7_BUSINESS_IDS: &[(&str, &str)] = &[
     ("knowledge_bindings", "knowledge_binding_id"),
     ("learning_activities", "activity_id"),
     ("learning_attempts", "attempt_id"),
-    ("learning_concepts", "concept_id"),
+    ("learning_concept_registry", "concept_id"),
+    ("learning_course_endpoints", "endpoint_id"),
     ("learning_courses", "course_id"),
     ("learning_enrollments", "enrollment_id"),
+    ("learning_growth_batches", "batch_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
     ("learning_review_items", "review_item_id"),
@@ -130,10 +132,12 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
 
     // 数字跟着 schema 走，是两侧迁移合并后的显式契约（新增表时应当被刻意改一次），不是
     // 从迁移里推出来的——所以坏掉时说明有人加了表而没更新契约，不是测试需要放宽。
-    // 学习侧:048 学习图:+learning_graph_prerequisites;050 课时分节:
-    // +learning_lesson_sections;052 复习日志:+learning_review_log。
+    // 学习侧:050 课时分节:+learning_lesson_sections;052 复习日志:
+    // +learning_review_log;066 退役 DAG 图与 per-course 概念体系:-5;067
+    // 概念网生长:+learning_concept_registry/+learning_course_endpoints/
+    // +learning_growth_batches。
     // Agent Store 侧:`058` / `059` / `061` 共 4 张。
-    assert_eq!(tables.len(), 117);
+    assert_eq!(tables.len(), 115);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)

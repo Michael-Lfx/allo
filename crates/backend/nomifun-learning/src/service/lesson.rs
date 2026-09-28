@@ -200,13 +200,6 @@ impl LearningService {
             total_lessons,
             next_lesson_title: next_lesson_title.map(str::to_owned),
             purpose: lesson.purpose.clone(),
-            concepts: blueprint
-                .concepts
-                .iter()
-                .filter(|concept| lesson.concepts.contains(&concept.key))
-                .cloned()
-                .collect(),
-            concept_keys: lesson.concepts.clone(),
             excerpt,
             outline_tree: crate::generation::build_outline_tree(
                 &blueprint,
@@ -221,7 +214,8 @@ impl LearningService {
             ),
             // 传统课时永远不走图分支。
             graph: None,
-            forbidden_concepts: crate::generation::forbidden_concepts_text(&blueprint, lesson),
+            // 大纲已无概念契约（ADR-0009）：传统课时没有防超纲黑名单。
+            forbidden_concepts: String::new(),
         };
         self.emit_lesson_event(serde_json::json!({
             "phase": "started",
@@ -327,19 +321,16 @@ impl LearningService {
                 "sections": output.degraded_keys,
             }));
         }
-        let concepts = self.concept_map_for_course(&course_id).await?;
-        self.persist_lesson_output(lesson_id, &output, &concepts, &lesson.concepts)
-            .await?;
+        self.persist_lesson_output(lesson_id, &output).await?;
 
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
     }
 
     /// 学习图课程节点的内容生成（beta）。学习图课程没有蓝图快照：上下文
-    /// 来自课程行（学习目标/学习范围）与前置边表（前置整条路径 + 下游
-    /// 节点），节点与边一次载入后在 Rust 内计算（≤500 节点，不引入 SQL
-    /// 递归 CTE）。只走注入的 agent 引擎——fallback 一次性管线消费
-    /// `&Blueprint`，对图节点不可复用。
+    /// 来自课程行（学习目标/学习范围）与概念网（本课 assumes 的概念由哪些
+    /// 节点跨课程教授 + 下游禁止清单，ADR-0009）。只走注入的 agent 引擎
+    /// ——fallback 一次性管线消费 `&Blueprint`，对图节点不可复用。
     async fn generate_graph_lesson_content(
         &self,
         user_id: &UserId,
@@ -378,7 +369,8 @@ impl LearningService {
             .map_err(internal)?
             .unwrap_or_default();
 
-        // 一次载入全部节点与前置边（≤500 节点），内存算祖先闭包与后代。
+        // 一次载入概念网口径的拓扑上下文（前置 = assumes 的概念与跨课程
+        // 教它的节点；禁止清单 = 下游节点标题）。
         let (prerequisite_path, upcoming_nodes, forbidden_concepts, total_nodes) =
             self.graph_node_topology(course_id, lesson_id).await?;
 
@@ -395,8 +387,6 @@ impl LearningService {
             // 衔接语义由 graph.upcoming_nodes 承担。
             next_lesson_title: None,
             purpose,
-            concepts: Vec::new(),
-            concept_keys: Vec::new(),
             excerpt: None,
             outline_tree: String::new(),
             adjacent_context: String::new(),
@@ -406,7 +396,7 @@ impl LearningService {
                 prerequisite_path,
                 upcoming_nodes,
             }),
-            // 防超纲黑名单：可及后代节点标题清单（graph_node_topology 推导）。
+            // 防超纲黑名单：下游节点标题清单（概念网反查，ADR-0009）。
             forbidden_concepts,
         };
 
@@ -447,143 +437,157 @@ impl LearningService {
             })),
         }
         let output = result?;
-        // 学习图课程没有概念行：空 concept_map + 空 default_keys（audit
-        // 保证活动不携带概念绑定）。
-        self.persist_lesson_output(lesson_id, &output, &HashMap::new(), &[])
-            .await?;
+        self.persist_lesson_output(lesson_id, &output).await?;
 
         let enrollment = self.enrollment_id_for(user_id, course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
     }
 
-    /// 学习图节点的拓扑上下文（节点内容生成与单节重写共用）：一次载入全
-    /// 部节点与前置边（≤500 节点，不引入 SQL 递归 CTE），在 Rust 内计算
-    /// ——前置已教摘要路径、后续节点段、可及后代禁止清单，以及全图节点数。
+    /// 学习图节点的拓扑上下文（节点内容生成与单节重写共用），概念网口径
+    /// （ADR-0009，无先修边）：
+    /// - 前置段 = 本课每条 assumes 的概念（登记表 canonical + definition）
+    ///   + 跨课程教该概念的节点摘要。摘要有两层：节点出生即带的
+    ///   标题（动作句）+ purpose（教练批注，不依赖正文生成），以及已生成
+    ///   节的标题要点（learnhub contextPack §2 的「前置摘要」）；档位本身
+    ///   就是停讲深度的标尺（知道=辨认复述/会用=解题应用/能教=讲解纠错），
+    ///   三者合起来让作者模型在教师节点还没有正文时也知道「教到哪了」。
+    /// - 后续段 = 同课程位于本课之后的节点（按 position，衔接用）；
+    /// - 禁止清单 = assumes 本课 teaches 概念的下游课程节点（标题+purpose，
+    ///   防超纲）；
+    /// - 末位 = 本课程学习节点总数（终点标记课时除外）。
     async fn graph_node_topology(
         &self,
         course_id: &LearningCourseId,
         lesson_id: &LearningLessonId,
     ) -> Result<(String, String, String, usize), AppError> {
-        let node_rows = sqlx::query(
-            "SELECT l.lesson_id, l.title, l.position FROM learning_lessons l \
-             JOIN learning_modules m ON m.module_id = l.module_id \
-             WHERE m.course_id = ? ORDER BY l.position, l.lesson_id",
+        // 1) 本课声明的概念（teaches/assumes，登记表 canonical + 档位 +
+        //    definition——definition 随铸名落库，是零正文场景下的概念摘要）。
+        let declares: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT lc.role, reg.canonical, lc.tier, reg.definition \
+             FROM learning_lesson_concepts lc \
+             JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
+             WHERE lc.lesson_id = ? ORDER BY reg.canonical",
         )
-        .bind(course_id.as_str())
+        .bind(lesson_id.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        let mut nodes: HashMap<String, (i64, String)> = HashMap::with_capacity(node_rows.len());
-        for node in &node_rows {
-            nodes.insert(
-                node.try_get::<String, _>("lesson_id").map_err(internal)?,
-                (
-                    node.try_get::<i64, _>("position").map_err(internal)?,
-                    node.try_get::<String, _>("title").map_err(internal)?,
-                ),
+        let mut teaches: Vec<String> = Vec::new();
+        let mut assumes: Vec<(String, String, String)> = Vec::new();
+        for (role, canonical, tier, definition) in declares {
+            match role.as_str() {
+                "teaches" => teaches.push(canonical),
+                _ => assumes.push((canonical, tier, definition)),
+            }
+        }
+
+        // 2) 前置：每条 assumes 的概念由哪些节点（跨课程）教。
+        //    concept canonical → [(lesson_id, 节点标题, 课程标题, purpose)]。
+        let mut teachers: HashMap<String, Vec<(String, String, String, String)>> = HashMap::new();
+        if !assumes.is_empty() {
+            let mut query = sqlx::QueryBuilder::new(
+                "SELECT reg.canonical, l.lesson_id, l.title, c.title AS course_title, l.purpose \
+                 FROM learning_lesson_concepts lc \
+                 JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 JOIN learning_courses c ON c.course_id = m.course_id \
+                 JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
+                 WHERE lc.role = 'teaches' AND l.lesson_id <> ? AND reg.canonical IN (",
             );
+            let mut separated = query.separated(", ");
+            separated.push_bind(lesson_id.as_str());
+            for (concept, _, _) in &assumes {
+                separated.push_bind(concept);
+            }
+            query.push(") ORDER BY reg.canonical, c.title, l.title");
+            let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
+            for row in rows {
+                let concept: String = row.try_get("canonical").map_err(internal)?;
+                let node_id: String = row.try_get("lesson_id").map_err(internal)?;
+                let title: String = row.try_get("title").map_err(internal)?;
+                let course_title: String = row.try_get("course_title").map_err(internal)?;
+                let purpose: String = row.try_get("purpose").map_err(internal)?;
+                teachers
+                    .entry(concept)
+                    .or_default()
+                    .push((node_id, title, course_title, purpose));
+            }
         }
-        let edge_rows = sqlx::query(
-            "SELECT lesson_id, prerequisite_lesson_id, reason FROM learning_graph_prerequisites \
-             WHERE course_id = ?",
+        // 已生成前置节附「实际教过的节标题+要点」摘要（learnhub contextPack
+        // §2「前置摘要」）：只有名字时模型不知道前置具体教了什么，重讲一遍
+        // 是最高频的失败模式。
+        let teacher_ids: Vec<String> = teachers
+            .values()
+            .flatten()
+            .map(|(id, _, _, _)| id.clone())
+            .collect();
+        let taught = self.taught_sections_for_lessons(&teacher_ids).await?;
+        let prerequisite_path = render_prerequisite_path(&assumes, &teachers, &taught);
+
+        // 3) 后续：同课程位于本课之后的节点（终点标记课时除外），按
+        //    position 升序——衔接参照，不是依赖关系。
+        let upcoming_rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT l.position, l.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? \
+               AND l.position > (SELECT position FROM learning_lessons WHERE lesson_id = ?) \
+               AND l.lesson_id NOT IN \
+                 (SELECT lesson_id FROM learning_course_endpoints WHERE course_id = ?) \
+             ORDER BY l.position, l.lesson_id",
         )
+        .bind(course_id.as_str())
+        .bind(lesson_id.as_str())
         .bind(course_id.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        // 拥有化后再建邻接表，借用不挂在行对象上。
-        let mut edges: Vec<(String, String, String)> = Vec::with_capacity(edge_rows.len());
-        for edge in &edge_rows {
-            edges.push((
-                edge.try_get("lesson_id").map_err(internal)?,
-                edge.try_get("prerequisite_lesson_id").map_err(internal)?,
-                edge.try_get("reason").map_err(internal)?,
-            ));
-        }
-        let mut predecessors: HashMap<&str, Vec<&str>> = HashMap::new();
-        let mut successors: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
-        for (to, from, reason) in &edges {
-            predecessors.entry(to.as_str()).or_default().push(from.as_str());
-            successors
-                .entry(from.as_str())
-                .or_default()
-                .push((to.as_str(), reason.as_str()));
+        let upcoming_nodes = render_upcoming_nodes(&upcoming_rows);
+
+        // 4) 禁止清单：assumes 本课 teaches 概念的下游课程节点（防超纲黑
+        //    名单，ADR-0009 概念网变体；purpose 帮作者知道下游要拿这些概念
+        //    去做什么，从而知道哪些铺垫该留给下游）。
+        let mut forbidden_concepts = String::new();
+        if !teaches.is_empty() {
+            let mut query = sqlx::QueryBuilder::new(
+                "SELECT DISTINCT c.title AS course_title, l.title, l.purpose \
+                 FROM learning_lesson_concepts lc \
+                 JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 JOIN learning_courses c ON c.course_id = m.course_id \
+                 JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
+                 WHERE lc.role = 'assumes' AND l.lesson_id <> ? AND reg.canonical IN (",
+            );
+            let mut separated = query.separated(", ");
+            separated.push_bind(lesson_id.as_str());
+            for concept in &teaches {
+                separated.push_bind(concept);
+            }
+            query.push(") ORDER BY c.title, l.title");
+            let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
+            let mut descendants: Vec<(String, String, String)> = Vec::new();
+            for row in rows {
+                let course_title: String = row.try_get("course_title").map_err(internal)?;
+                let title: String = row.try_get("title").map_err(internal)?;
+                let purpose: String = row.try_get("purpose").map_err(internal)?;
+                descendants.push((course_title, title, purpose));
+            }
+            forbidden_concepts = render_forbidden_descendants(&descendants);
         }
 
-        let target = lesson_id.as_str();
-        // 前置整条路径：沿前驱反向遍历出祖先闭包（发布时已保证无环，
-        // visited 去重兜底防御），按拓扑序渲染，离节点最近者优先保留。
-        let mut ancestors: HashSet<&str> = HashSet::new();
-        let mut stack: Vec<&str> = predecessors.get(target).cloned().unwrap_or_default();
-        while let Some(current) = stack.pop() {
-            if !ancestors.insert(current) {
-                continue;
-            }
-            if let Some(parents) = predecessors.get(current) {
-                stack.extend(parents.iter().copied());
-            }
-        }
-        let mut path: Vec<(i64, &str, &str)> = ancestors
-            .iter()
-            .filter_map(|id| {
-                nodes
-                    .get(*id)
-                    .map(|(position, title)| (*position, title.as_str(), *id))
-            })
-            .collect();
-        path.sort_unstable_by_key(|(position, _, _)| *position);
-        // 前置已教内容摘要（learnhub contextPack §2「前置摘要」）：闭包里
-        // 已生成的课时附上其实际教过的节标题+要点。只有名字时模型不知道前
-        // 置具体教了什么，重讲一遍是最高频的失败模式——摘要是防重复讲授的
-        // 实质机制（未生成的前置仍只给标题）。
-        let ancestor_ids: Vec<String> = ancestors.iter().map(|id| (*id).to_owned()).collect();
-        let taught = self.taught_sections_for_lessons(&ancestor_ids).await?;
-        let prerequisite_path = render_prerequisite_path(&path, &taught);
+        // 5) 本课程学习节点总数（终点标记课时不是学习节点）。
+        let total_nodes: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? AND l.lesson_id NOT IN \
+               (SELECT lesson_id FROM learning_course_endpoints WHERE course_id = ?)",
+        )
+        .bind(course_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
 
-        // 后续节点：直接后继按拓扑序列出（带 reason），可及后代总数沿后继
-        // 正向遍历计数（含直接后继）。
-        let mut direct: Vec<(i64, &str, &str)> = successors
-            .get(target)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(id, reason)| {
-                nodes
-                    .get(id)
-                    .map(|(position, title)| (*position, title.as_str(), reason))
-            })
-            .collect();
-        direct.sort_unstable_by_key(|(position, _, _)| *position);
-        let mut reachable: HashSet<&str> = HashSet::new();
-        let mut stack: Vec<&str> = successors
-            .get(target)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-        while let Some(current) = stack.pop() {
-            if !reachable.insert(current) {
-                continue;
-            }
-            if let Some(children) = successors.get(current) {
-                stack.extend(children.iter().map(|(id, _)| *id));
-            }
-        }
-        let upcoming_nodes = render_upcoming_nodes(&direct, reachable.len());
-
-        // 防超纲黑名单（learnhub「禁止使用的概念」的学习图变体）：可及后
-        // 代节点全集按拓扑位置降序（越靠下游越先列）截前 200。学习图课程
-        // 没有概念表，黑名单的原料就是后代节点标题；前置/后续段落只是软引
-        // 导，明确的「不得出现」清单才是防超纲的实质机制。
-        let mut descendants: Vec<(i64, &str)> = reachable
-            .iter()
-            .filter_map(|id| nodes.get(*id).map(|(position, title)| (*position, title.as_str())))
-            .collect();
-        descendants.sort_unstable_by_key(|(position, _)| std::cmp::Reverse(*position));
-        let forbidden_concepts = render_forbidden_descendants(&descendants);
-
-        Ok((prerequisite_path, upcoming_nodes, forbidden_concepts, nodes.len()))
+        Ok((prerequisite_path, upcoming_nodes, forbidden_concepts, total_nodes.max(0) as usize))
     }
 
     /// 单节重写（迁移 051/ADR-0002 的节级操作语义）：只重写一节正文并原
@@ -872,7 +876,7 @@ impl LearningService {
                     .map(|(_, text)| text.clone())
             })
             .unwrap_or_default();
-        Ok((crate::generation::forbidden_concepts_text(&blueprint, lesson), excerpt))
+        Ok((String::new(), excerpt))
     }
 
     /// 单节落库：正文原地替换（version+1），summary 由全部节重新拼装
@@ -963,15 +967,12 @@ impl LearningService {
     }
 
     /// 生成事务落库尾（传统与学习图两条路径共用）：更新课时行（文档/时长/
-    /// 生成标记）、替换全部活动并绑定概念。`default_keys` 是活动未显式绑定
-    /// 概念时的回退（传统课时 = 整课概念）；学习图节点传空——节点不绑定
-    /// 概念，活动若携带绑定会在空 `concept_map` 上以 unknown key 失败。
+    /// 生成标记）并替换全部活动。概念绑定随 per-course 概念体系整体下线
+    /// （ADR-0009），活动不再携带 concept 绑定。
     async fn persist_lesson_output(
         &self,
         lesson_id: &LearningLessonId,
         output: &LessonOutput,
-        concept_map: &HashMap<String, LearningConceptId>,
-        default_keys: &[String],
     ) -> Result<(), AppError> {
         let now = now_ms();
         let mut transaction = self.pool.begin().await.map_err(internal)?;
@@ -1020,13 +1021,6 @@ impl LearningService {
         .map_err(internal)?;
 
         // Replace any prior partial activities (idempotent re-generation).
-        sqlx::query(
-            "DELETE FROM learning_activity_concepts WHERE activity_id IN (SELECT activity_id FROM learning_activities WHERE lesson_id = ?)",
-        )
-        .bind(lesson_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(internal)?;
         sqlx::query("DELETE FROM learning_activities WHERE lesson_id = ?")
             .bind(lesson_id.as_str())
             .execute(&mut *transaction)
@@ -1063,25 +1057,6 @@ impl LearningService {
             .execute(&mut *transaction)
             .await
             .map_err(internal)?;
-
-            let activity_concepts = if activity.concepts.is_empty() {
-                default_keys
-            } else {
-                activity.concepts.as_slice()
-            };
-            for concept_key in activity_concepts {
-                let concept_id = concept_map.get(concept_key).ok_or_else(|| {
-                    AppError::Internal(format!("unknown concept key {concept_key}"))
-                })?;
-                sqlx::query(
-                    "INSERT INTO learning_activity_concepts (activity_id, concept_id) VALUES (?, ?)",
-                )
-                .bind(activity_id.as_str())
-                .bind(concept_id.as_str())
-                .execute(&mut *transaction)
-                .await
-                .map_err(internal)?;
-            }
         }
         transaction.commit().await.map_err(internal)?;
         Ok(())
@@ -1089,10 +1064,9 @@ impl LearningService {
 
     /// Manually appends an activity to a generated lesson. The lesson must
     /// belong to a course the learner is enrolled in (the enrollment is
-    /// created on demand like every other practice flow). An empty
-    /// `concept_ids` binds the activity to every concept of the lesson;
-    /// when the lesson is already completed, an objective question is also
-    /// admitted to the review queue immediately via the idempotent seeder.
+    /// created on demand like every other practice flow). When the lesson is
+    /// already completed, an objective question is also admitted to the
+    /// review queue immediately via the idempotent seeder.
     pub async fn create_lesson_activity(
         &self,
         user_id: &UserId,
@@ -1140,22 +1114,6 @@ impl LearningService {
         };
         let enrollment: LearningEnrollmentId = parse_id(enrollment_id)?;
 
-        // Concept bindings: an empty list defaults to every concept of the
-        // lesson, matching course-generation semantics.
-        let lesson_concept_ids = self.lesson_concepts(lesson_id).await?;
-        let concept_ids: Vec<LearningConceptId> = if request.concept_ids.is_empty() {
-            lesson_concept_ids.clone()
-        } else {
-            for concept_id in &request.concept_ids {
-                if !lesson_concept_ids.contains(concept_id) {
-                    return Err(AppError::BadRequest(format!(
-                        "concept {concept_id} is not bound to this lesson"
-                    )));
-                }
-            }
-            request.concept_ids.clone()
-        };
-
         let position: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM learning_activities WHERE lesson_id = ?",
         )
@@ -1192,16 +1150,6 @@ impl LearningService {
         .execute(&mut *transaction)
         .await
         .map_err(internal)?;
-        for concept_id in &concept_ids {
-            sqlx::query(
-                "INSERT INTO learning_activity_concepts (activity_id, concept_id) VALUES (?, ?)",
-            )
-            .bind(activity_id.as_str())
-            .bind(concept_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
-        }
         if completed.is_some() && request.kind != ActivityKind::Reflection {
             let now = now_ms();
             let tz_offset_minutes = self.tz_offset_minutes().await;
@@ -1220,10 +1168,10 @@ impl LearningService {
     }
 
     /// Generates ONE additional activity draft for an existing lesson, in the
-    /// learner-chosen kind, grounded in the finished lesson document, its
-    /// cited excerpt, and the lesson's concepts — with every existing
-    /// question listed so the model must cover new ground. The draft is
-    /// returned for preview and nothing is persisted.
+    /// learner-chosen kind, grounded in the finished lesson document and its
+    /// cited excerpt — with every existing question listed so the model must
+    /// cover new ground. The draft is returned for preview and nothing is
+    /// persisted.
     pub async fn generate_lesson_activity(
         &self,
         user_id: &UserId,
@@ -1270,6 +1218,7 @@ impl LearningService {
         let module_title: String = row.try_get("module_title").map_err(internal)?;
         let lesson_title: String = row.try_get("title").map_err(internal)?;
 
+        // 摘录来自大纲快照（kb 流）；没有快照的课程（教程课）摘录为空。
         let snapshot = sqlx::query(
             "SELECT title, blueprint_json, samples_json FROM learning_courses WHERE course_id = ?",
         )
@@ -1280,44 +1229,28 @@ impl LearningService {
         let course_title: String = snapshot.try_get("title").map_err(internal)?;
         let blueprint_json: Option<String> = snapshot.try_get("blueprint_json").map_err(internal)?;
         let samples_json: Option<String> = snapshot.try_get("samples_json").map_err(internal)?;
-
-        // Prefer the outline snapshot when present. Courses imported without
-        // one (e.g. the built-in tutorial) fall back to concepts reconstructed
-        // from the database and an empty excerpt.
-        let (concepts, lesson_concept_keys, excerpt) =
-            if let (Some(blueprint_json), Some(samples_json)) = (blueprint_json, samples_json) {
+        let excerpt = match (blueprint_json, samples_json) {
+            (Some(blueprint_json), Some(samples_json)) => {
                 let blueprint: Blueprint = serde_json::from_str(&blueprint_json).map_err(internal)?;
                 let samples: Vec<(String, String)> =
                     serde_json::from_str(&samples_json).map_err(internal)?;
                 let module_position: i64 = row.try_get("module_position").map_err(internal)?;
                 let lesson_position: i64 = row.try_get("position").map_err(internal)?;
-                let module = blueprint
+                blueprint
                     .modules
                     .get(module_position as usize)
-                    .ok_or_else(|| AppError::Internal("outline module position out of range".into()))?;
-                let lesson = module
-                    .lessons
-                    .get(lesson_position as usize)
-                    .ok_or_else(|| AppError::Internal("outline lesson position out of range".into()))?;
-                let excerpt = lesson
-                    .source
-                    .as_ref()
+                    .and_then(|module| module.lessons.get(lesson_position as usize))
+                    .and_then(|lesson| lesson.source.as_ref())
                     .and_then(|source| {
                         samples
                             .iter()
                             .find(|(path, _)| path == &source.path)
-                            .map(|(_, excerpt)| excerpt.as_str())
+                            .map(|(_, excerpt)| excerpt.clone())
                     })
                     .unwrap_or_default()
-                    .to_string();
-                (blueprint.concepts, lesson.concepts.clone(), excerpt)
-            } else {
-                (
-                    self.course_concepts_from_db(&course_id).await?,
-                    self.lesson_concept_keys(lesson_id).await?,
-                    String::new(),
-                )
-            };
+            }
+            _ => String::new(),
+        };
         let existing_questions = self.existing_lesson_questions(lesson_id).await?;
 
         let completer = self
@@ -1337,8 +1270,6 @@ impl LearningService {
             course_title.trim(),
             module_title.trim(),
             lesson_title.trim(),
-            &concepts,
-            &lesson_concept_keys,
             &summary,
             &excerpt,
             &existing_questions,
@@ -1348,22 +1279,6 @@ impl LearningService {
             AppError::UnprocessableEntity(format!("failed to generate lesson activity: {error}"))
         })?;
 
-        // Suggested bindings: the model's own concept keys when present,
-        // otherwise every concept of the lesson.
-        let concept_ids = if activity.concepts.is_empty() {
-            self.lesson_concepts(lesson_id).await?
-        } else {
-            let concept_map = self.concept_map_for_course(&course_id).await?;
-            let mut ids = Vec::with_capacity(activity.concepts.len());
-            for key in &activity.concepts {
-                let concept_id = concept_map
-                    .get(key)
-                    .ok_or_else(|| AppError::Internal(format!("unknown concept key {key}")))?;
-                ids.push(concept_id.clone());
-            }
-            ids
-        };
-
         Ok(GeneratedLessonActivity {
             kind: activity.kind,
             prompt: activity.prompt,
@@ -1371,52 +1286,7 @@ impl LearningService {
             answer: activity.answer,
             explanation: activity.explanation,
             distractors: activity.distractors,
-            concept_ids,
         })
-    }
-
-    /// Every concept of a course as prompt-ready packs, used when the outline
-    /// snapshot is missing (courses imported without one, e.g. the tutorial).
-    async fn course_concepts_from_db(
-        &self,
-        course_id: &LearningCourseId,
-    ) -> Result<Vec<ConceptPack>, AppError> {
-        let rows = sqlx::query(
-            "SELECT concept_key, title, description FROM learning_concepts \
-             WHERE course_id = ? ORDER BY title",
-        )
-        .bind(course_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        let mut concepts = Vec::with_capacity(rows.len());
-        for row in rows {
-            concepts.push(ConceptPack {
-                key: row.try_get("concept_key").map_err(internal)?,
-                title: row.try_get("title").map_err(internal)?,
-                description: row.try_get("description").map_err(internal)?,
-                prerequisites: Vec::new(),
-            });
-        }
-        Ok(concepts)
-    }
-
-    /// The concept keys bound to a lesson, for the generation prompt when the
-    /// blueprint snapshot is unavailable.
-    async fn lesson_concept_keys(
-        &self,
-        lesson_id: &LearningLessonId,
-    ) -> Result<Vec<String>, AppError> {
-        let keys: Vec<String> = sqlx::query_scalar(
-            "SELECT c.concept_key FROM learning_lesson_concepts lc \
-             JOIN learning_concepts c ON c.concept_id = lc.concept_id \
-             WHERE lc.lesson_id = ? ORDER BY c.concept_key",
-        )
-        .bind(lesson_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(keys)
     }
 
     /// Every question already present in a lesson, ready for the
@@ -1454,84 +1324,105 @@ impl LearningService {
 
 // ── 学习图节点上下文渲染 ────────────────────────────────────────────────────
 
-/// 提示词里前置路径的渲染上限：只保留离节点最近的一段，更早的合并概括
-/// （500 节点级图的祖先闭包可能极长）。
-const GRAPH_PATH_RENDER_LIMIT: usize = 20;
+/// 单个概念在教师节点清单里最多列出的节点数（概念网跨课程，防止清单爆炸）。
+const GRAPH_TEACHERS_PER_CONCEPT: usize = 4;
 
 /// 单个前置课时在摘要里最多列出的已教节数（节清单硬上限 8，取齐即可）。
 const GRAPH_TAUGHT_SECTION_LIMIT: usize = 8;
 
-/// 直接后继的渲染上限：超过时列前 10 个并注明总数。
+/// 后续节点的渲染上限：超过时列前 10 个并注明总数。
 const GRAPH_SUCCESSOR_RENDER_LIMIT: usize = 10;
 
 /// 下游节点禁止清单的条目上限（learnhub 黑名单同款截断）。
 const GRAPH_FORBIDDEN_LIMIT: usize = 200;
 
-/// 前置路径渲染：按拓扑序全局编号；超出上限时只渲染离节点最近的一段，
-/// 更早的合并成概括行。已生成的前置课时在其条目下附「实际教过的节标题+
-/// 要点」摘要（learnhub contextPack §2）——这是防重复讲授的实质机制；
-/// 未生成的前置只给标题。节点内容是共享资产，不标注任何用户进度。
+/// 前置段渲染（概念网口径，ADR-0009）：开头一条档位契约（概念已教到标注
+/// 档位——不要重新讲授，只在需要时按该档位复述或引用；档位即停讲深度的
+/// 标尺），逐条 assumes 概念列出「概念 @档位」+ 登记表 definition + 跨课程
+/// 教它的节点（标题/课程 + 出生即带的 purpose + 已生成节的标题要点摘要）。
+/// 零正文场景（教师节点尚未生成内容）不削弱前置段：purpose 与 definition
+/// 都是出生即有的字段。没有任何节点教的概念按未覆盖兜底提示（正常情况下
+/// 结构门已挡掉这种批次）。空串 = 本课零 assumes（第一批基节点）。
 fn render_prerequisite_path(
-    path: &[(i64, &str, &str)],
+    assumes: &[(String, String, String)],
+    teachers: &HashMap<String, Vec<(String, String, String, String)>>,
     taught: &HashMap<String, Vec<(String, String)>>,
 ) -> String {
-    if path.is_empty() {
+    if assumes.is_empty() {
         return String::new();
     }
-    let mut lines = Vec::new();
-    let start = path.len().saturating_sub(GRAPH_PATH_RENDER_LIMIT);
-    if start > 0 {
-        lines.push(format!(
-            "……（更早还有 {start} 个前置节点，均已掌握，此处省略）"
-        ));
-    }
-    for (offset, (_, title, id)) in path[start..].iter().enumerate() {
-        lines.push(format!("{}. {}", start + offset + 1, title.trim()));
-        if let Some(sections) = taught.get(*id) {
-            for (section_title, points) in sections.iter().take(GRAPH_TAUGHT_SECTION_LIMIT) {
-                let points = points.trim();
-                let summary = if points.is_empty() {
-                    section_title.trim().to_owned()
-                } else {
-                    format!("{}：{points}", section_title.trim())
-                };
-                lines.push(format!("   · {summary}"));
+    let mut lines = vec![
+        "前置契约：以下概念已由其他节点教到标注档位，不要重新讲授，只在必要时按该档位复述或引用。".to_owned(),
+        "（档位标尺：知道=能辨认复述，会用=能解题应用，能教=能讲解纠错——正文深度不得超过标注档位。）".to_owned(),
+    ];
+    for (concept, tier, definition) in assumes {
+        let tier = crate::learning_graph::ConceptTier::try_from_str(tier)
+            .map(crate::learning_graph::tier_zh)
+            .unwrap_or("?");
+        match teachers.get(concept) {
+            None => lines.push(format!(
+                "- {concept}（应已掌握到「{tier}」，但暂无节点教它——不要展开讲授）"
+            )),
+            Some(nodes) => {
+                lines.push(format!("- {concept}（学习者应已掌握到「{tier}」）："));
+                let definition = definition.trim();
+                if !definition.is_empty() {
+                    lines.push(format!("   定义：{definition}"));
+                }
+                for (node_id, title, course_title, purpose) in
+                    nodes.iter().take(GRAPH_TEACHERS_PER_CONCEPT)
+                {
+                    let course = if course_title.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("，课程「{}」", course_title.trim())
+                    };
+                    lines.push(format!("   · {}{course}", title.trim()));
+                    let purpose = purpose.trim();
+                    if !purpose.is_empty() {
+                        lines.push(format!("     本节练什么：{purpose}"));
+                    }
+                    if let Some(sections) = taught.get(node_id) {
+                        for (section_title, points) in
+                            sections.iter().take(GRAPH_TAUGHT_SECTION_LIMIT)
+                        {
+                            let points = points.trim();
+                            let summary = if points.is_empty() {
+                                section_title.trim().to_owned()
+                            } else {
+                                format!("{}：{points}", section_title.trim())
+                            };
+                            lines.push(format!("     · {summary}"));
+                        }
+                    }
+                }
             }
         }
     }
     lines.join("\n")
 }
 
-/// 后续节点渲染：直接后继按拓扑序列出（reason 非空时附注），超出上限
-/// 截断并注明总数；末行总述可及下游规模，供衔接句的分寸参考。
-fn render_upcoming_nodes(direct: &[(i64, &str, &str)], reachable: usize) -> String {
-    if direct.is_empty() {
+/// 后续节点渲染：同课程位于本课之后的节点按 position 升序列出，超出上限
+/// 截断并注明总数——衔接参照（标题即衔接方向），不是依赖关系。
+fn render_upcoming_nodes(upcoming: &[(i64, String)]) -> String {
+    if upcoming.is_empty() {
         return String::new();
     }
     let mut lines = Vec::new();
-    for (_, title, reason) in direct.iter().take(GRAPH_SUCCESSOR_RENDER_LIMIT) {
-        let reason = reason.trim();
-        if reason.is_empty() {
-            lines.push(format!("- {}", title.trim()));
-        } else {
-            lines.push(format!("- {}（{}）", title.trim(), reason));
-        }
+    for (_, title) in upcoming.iter().take(GRAPH_SUCCESSOR_RENDER_LIMIT) {
+        lines.push(format!("- {}", title.trim()));
     }
-    if direct.len() > GRAPH_SUCCESSOR_RENDER_LIMIT {
-        lines.push(format!("……等共 {} 个直接后继", direct.len()));
-    }
-    if reachable > direct.len() {
-        lines.push(format!(
-            "下游共 {reachable} 个节点（含上列直接后继）——保持衔接，不要展开。"
-        ));
+    if upcoming.len() > GRAPH_SUCCESSOR_RENDER_LIMIT {
+        lines.push(format!("……等共 {} 个后续节点", upcoming.len()));
     }
     lines.join("\n")
 }
 
-/// 下游节点禁止清单渲染（learnhub「禁止使用的概念」的学习图变体）：正文
-/// 不得出现这些名称、不得引用其结论。按拓扑位置降序排列（越靠下游越先
-/// 列），超出上限截断并注明总数；空集返回空串（该节点是图的终点）。
-fn render_forbidden_descendants(descendants: &[(i64, &str)]) -> String {
+/// 下游节点禁止清单渲染（防超纲黑名单，ADR-0009 概念网变体）：正文不得
+/// 出现这些名称、不得引用其结论。条目为（课程标题, 节点标题, purpose）——
+/// purpose 让作者知道下游要拿本课概念去做什么，哪些铺垫该留给下游；超出
+/// 上限截断并注明总数；空集返回空串（本课 teaches 的概念没有下游假定）。
+fn render_forbidden_descendants(descendants: &[(String, String, String)]) -> String {
     if descendants.is_empty() {
         return String::new();
     }
@@ -1542,7 +1433,19 @@ fn render_forbidden_descendants(descendants: &[(i64, &str)]) -> String {
     let listed: Vec<String> = descendants
         .iter()
         .take(GRAPH_FORBIDDEN_LIMIT)
-        .map(|(_, title)| format!("- {}", title.trim()))
+        .map(|(course_title, title, purpose)| {
+            let course = if course_title.trim().is_empty() {
+                String::new()
+            } else {
+                format!("（{}）", course_title.trim())
+            };
+            let purpose = purpose.trim();
+            if purpose.is_empty() {
+                format!("- {}{course}", title.trim())
+            } else {
+                format!("- {}{course}——{purpose}", title.trim())
+            }
+        })
         .collect();
     text.push_str(&listed.join("\n"));
     text
@@ -1600,7 +1503,6 @@ pub(super) fn validate_question_payload(
         options: trim_all(options),
         answer: answer.clone(),
         explanation: explanation.to_owned(),
-        concepts: Vec::new(),
         distractors,
         tol: None,
         section_key: None,
@@ -1627,50 +1529,134 @@ pub(super) fn validate_question_payload(
 mod tests {
     use super::*;
 
-    /// 前置路径渲染：已生成的前置附「实际教过的节标题+要点」摘要，未生
-    /// 成的前置只有标题行（learnhub contextPack §2 的前置摘要语义）。
+    /// 前置段渲染（概念网口径，ADR-0009）：逐条 assumes 列「概念（应已掌
+    /// 握到「档位」）」+ 跨课程教它的节点行（标题/课程）+ 已生成节的标题
+    /// 要点摘要；没有任何节点教的概念按未覆盖兜底提示。
     #[test]
     fn prerequisite_path_carries_taught_section_summaries() {
-        let path = vec![
-            (0i64, "什么是衍生品", "lesson-a"),
-            (1i64, "期权的定义与分类", "lesson-b"),
+        let assumes = vec![
+            (
+                "勾股定理".to_owned(),
+                "apply".to_owned(),
+                "直角三角形三边间的平方关系".to_owned(),
+            ),
+            ("相似三角形".to_owned(), "know".to_owned(), String::new()),
         ];
-        let mut taught = HashMap::new();
+        let mut teachers: HashMap<String, Vec<(String, String, String, String)>> = HashMap::new();
+        teachers.insert(
+            "勾股定理".to_owned(),
+            vec![(
+                "lesson-b".to_owned(),
+                "推导勾股定理".to_owned(),
+                "几何基础".to_owned(),
+                "从相似三角形出发证明 a²+b²=c²".to_owned(),
+            )],
+        );
+        let mut taught: HashMap<String, Vec<(String, String)>> = HashMap::new();
         taught.insert(
             "lesson-b".to_owned(),
             vec![
                 (
-                    "概念：期权定义".to_owned(),
-                    "买方持有权利、卖方承担义务".to_owned(),
+                    "概念：勾股定理".to_owned(),
+                    "直角边形两直角边平方和等于斜边平方".to_owned(),
                 ),
-                ("例题：认购与认沽".to_owned(), "四类基本头寸".to_owned()),
+                ("例题：求斜边".to_owned(), "已知两直角边求斜边".to_owned()),
             ],
         );
-        let text = render_prerequisite_path(&path, &taught);
-        assert!(text.contains("1. 什么是衍生品"), "{text}");
-        assert!(text.contains("2. 期权的定义与分类"), "{text}");
-        assert!(text.contains("· 概念：期权定义：买方持有权利、卖方承担义务"), "{text}");
-        assert!(text.contains("· 例题：认购与认沽：四类基本头寸"), "{text}");
-        // 未生成的前置（lesson-a）不产生摘要行：标题行 + 前置的 3 行摘要。
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 4, "{text}");
+        let text = render_prerequisite_path(&assumes, &teachers, &taught);
+        // 档位契约头：不要重新讲授 + 档位即停讲深度标尺。
+        assert!(text.contains("不要重新讲授"), "{text}");
+        assert!(text.contains("能教=能讲解纠错"), "{text}");
+        assert!(
+            text.contains("勾股定理（学习者应已掌握到「会用」）"),
+            "{text}"
+        );
+        // 登记表 definition 随铸名落库，是零正文场景的概念摘要。
+        assert!(text.contains("定义：直角三角形三边间的平方关系"), "{text}");
+        assert!(text.contains("推导勾股定理"), "{text}");
+        assert!(text.contains("课程「几何基础」"), "{text}");
+        // purpose 出生即有：教师节点没有正文也有「练什么」。
+        assert!(text.contains("本节练什么：从相似三角形出发证明"), "{text}");
+        assert!(
+            text.contains("概念：勾股定理：直角边形两直角边平方和等于斜边平方"),
+            "{text}"
+        );
+        assert!(text.contains("例题：求斜边：已知两直角边求斜边"), "{text}");
+        // 无节点教的概念：兜底提示，不展开讲授。
+        assert!(text.contains("相似三角形"), "{text}");
+        assert!(text.contains("暂无节点教它"), "{text}");
     }
 
-    /// 下游禁止清单：非空时附「不得出现/不得引用」约束与总数；空集（终
-    /// 点节点）返回空串，提示词不渲染该段。
+    /// 教师节点零正文（跨课程首学期常态）时前置段不塌缩：definition +
+    /// purpose + 档位契约独立于已生成节摘要成立（learnhub 约束强化口径）。
+    #[test]
+    fn prerequisite_path_survives_ungenerated_teachers() {
+        let assumes = vec![(
+            "因式分解".to_owned(),
+            "apply".to_owned(),
+            "把多项式化成几个整式乘积".to_owned(),
+        )];
+        let mut teachers: HashMap<String, Vec<(String, String, String, String)>> = HashMap::new();
+        teachers.insert(
+            "因式分解".to_owned(),
+            vec![(
+                "lesson-a".to_owned(),
+                "用提公因式法化简多项式".to_owned(),
+                String::new(),
+                "练会观察公因式并提取".to_owned(),
+            )],
+        );
+        let text = render_prerequisite_path(&assumes, &teachers, &HashMap::new());
+        assert!(text.contains("不要重新讲授"), "{text}");
+        assert!(text.contains("定义：把多项式化成几个整式乘积"), "{text}");
+        assert!(text.contains("本节练什么：练会观察公因式并提取"), "{text}");
+        // 零 purpose 的教师也至少有标题行。
+        let mut teachers = teachers;
+        teachers.insert(
+            "因式分解".to_owned(),
+            vec![(
+                "lesson-a".to_owned(),
+                "用提公因式法化简多项式".to_owned(),
+                String::new(),
+                String::new(),
+            )],
+        );
+        let text = render_prerequisite_path(&assumes, &teachers, &HashMap::new());
+        assert!(text.contains("用提公因式法化简多项式"), "{text}");
+        assert!(!text.contains("本节练什么"), "{text}");
+    }
+
+    /// 零 assumes（第一批基节点）不渲染前置段。
+    #[test]
+    fn prerequisite_path_empty_without_assumes() {
+        let text = render_prerequisite_path(&[], &HashMap::new(), &HashMap::new());
+        assert!(text.is_empty());
+    }
+
+    /// 下游禁止清单：非空时附「不得出现/不得引用」约束与总数，purpose 让
+    /// 作者知道下游拿概念做什么；空集（终点节点）返回空串。
     #[test]
     fn forbidden_descendants_render_the_blacklist_contract() {
         assert_eq!(render_forbidden_descendants(&[]), "");
         let titles: Vec<String> = (0..(GRAPH_FORBIDDEN_LIMIT + 5))
             .map(|i| format!("下游单元{i}"))
             .collect();
-        let descendants: Vec<(i64, &str)> =
-            titles.iter().enumerate().map(|(i, title)| (i as i64, title.as_str())).collect();
+        let descendants: Vec<(String, String, String)> = titles
+            .iter()
+            .map(|title| (String::from("几何基础"), title.clone(), String::new()))
+            .collect();
         let text = render_forbidden_descendants(&descendants);
         assert!(text.contains(&format!("共 {} 个", descendants.len())), "{text}");
-        assert!(text.contains("- 下游单元0"));
+        assert!(text.contains("- 下游单元0（几何基础）"), "{text}");
         // 超限截断：只列前 200 条。
         assert!(!text.contains("- 下游单元200"), "{text}");
         assert!(text.contains(format!("- 下游单元{}", GRAPH_FORBIDDEN_LIMIT - 1).as_str()));
+        // 带 purpose 的条目把「下游要做什么」写进黑名单。
+        let text = render_forbidden_descendants(&[(
+            "几何基础".to_owned(),
+            "应用勾股定理解题".to_owned(),
+            "练会已知两边求第三边".to_owned(),
+        )]);
+        assert!(text.contains("——练会已知两边求第三边"), "{text}");
     }
 }
