@@ -44,7 +44,10 @@ impl Tool for WriteStdinTool {
 
     fn description(&self) -> &str {
         "Writes characters to a live exec_command session and returns incremental output.\n\n\
-         - chars defaults to empty, which polls without writing.\n\
+         - chars defaults to empty, which polls without writing. An empty poll waits until the \
+         process exits or yield_time_ms elapses, so pick a yield_time_ms that covers the expected \
+         remaining runtime instead of polling repeatedly.\n\
+         - A non-empty write returns as soon as new output arrives.\n\
          - Send Ctrl-C with chars=\"\\u0003\".\n\
          - To submit a command line to an interactive program, send the line of text in one \
          call, then send the Enter/return key (\"\\r\") as a separate call. A TUI may swallow \
@@ -160,16 +163,17 @@ impl Tool for WriteStdinTool {
             .await;
         }
 
-        let yield_ms = requested_yield_ms(&input, chars.is_empty());
-        let poll = self
-            .supervisor
-            .poll_until_activity(
-                entry.owner(),
-                &entry.session_id(),
-                state.cursor(),
-                Instant::now() + Duration::from_millis(yield_ms),
-            )
-            .await;
+        let empty = chars.is_empty();
+        let deadline = Instant::now() + Duration::from_millis(requested_yield_ms(&input, empty));
+        let poll = if empty {
+            self.supervisor
+                .poll(entry.owner(), &entry.session_id(), state.cursor(), deadline)
+                .await
+        } else {
+            self.supervisor
+                .poll_until_activity(entry.owner(), &entry.session_id(), state.cursor(), deadline)
+                .await
+        };
         let poll = match poll {
             Ok(poll) => poll,
             Err(error) => {
@@ -426,6 +430,27 @@ mod tests {
             .execute(json!({"session_id": id, "chars": "", "yield_time_ms": 5000}))
             .await;
         assert!(output.content.contains("gap_line"), "{}", output.content);
+    }
+
+    #[tokio::test]
+    async fn empty_poll_waits_past_first_output_until_exit() {
+        let (exec, writer, store) = tools();
+        let started = exec
+            .execute(json!({
+                "cmd": pty_test_helper_shell_cmd("emit-twice 800 first_line 1200 second_line 200"),
+                "yield_time_ms": 250
+            }))
+            .await;
+        let id = parse_session_id(&started.content)
+            .unwrap_or_else(|| panic!("session id: {}", started.content));
+        let output = writer
+            .execute(json!({"session_id": id, "chars": "", "yield_time_ms": 10_000}))
+            .await;
+
+        assert!(output.content.contains("first_line"), "{}", output.content);
+        assert!(output.content.contains("second_line"), "{}", output.content);
+        assert!(output.content.contains("exit_code=0"), "{}", output.content);
+        assert!(!store.contains(id));
     }
 
     #[tokio::test]

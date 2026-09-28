@@ -32,7 +32,7 @@ use crate::{
 
 const DEFAULT_YIELD_MS: u64 = 10_000;
 const MIN_YIELD_MS: u64 = 250;
-const MAX_YIELD_MS: u64 = 30_000;
+const MAX_YIELD_MS: u64 = 120_000;
 const TERMINAL_SETTLE_MS: u64 = 25;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const SCRIPT_OUTPUT_MAX_BYTES: usize = 48_000;
@@ -573,13 +573,13 @@ impl Tool for ExecCommandTool {
                 },
                 "yield_time_ms": {
                     "type": "number",
-                    "description": "Command mode only. Milliseconds to wait before yielding. Default 10000, range 250-30000. Alias: `timeout` is also accepted in command mode and mapped to yield_time_ms (clamped)."
+                    "description": "Command mode only. Milliseconds to wait before yielding. Default 10000, range 250-120000. For builds and test suites, set it to cover the expected runtime. Alias: `timeout` is also accepted in command mode and mapped to yield_time_ms (clamped)."
                 },
                 "timeout": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MAX_SCRIPT_TIMEOUT_MS,
-                    "description": "Script mode: hard deadline (ms). Command mode: optional alias for yield_time_ms (clamped to 250-30000)."
+                    "description": "Script mode: hard deadline (ms). Command mode: optional alias for yield_time_ms (clamped to 250-120000)."
                 }
             },
             "oneOf": [
