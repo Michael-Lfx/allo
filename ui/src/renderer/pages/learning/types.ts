@@ -690,10 +690,12 @@ export interface GraphHistoryView {
   batches: GraphBatchView[];
 }
 
-/** 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度） */
+/** 一个生长批次的出生档案：序号/状态/批注/时刻 + 节点行（含学习者进度）。
+ * status 批行状态机：pending 生长进行中（或中断）、applied 已落库、failed 失败 */
 export interface GraphBatchView {
   batch_id: string;
   seq: number;
+  status: 'pending' | 'applied' | 'failed';
   note: string;
   created_at: number;
   nodes: GraphNodeHistoryView[];

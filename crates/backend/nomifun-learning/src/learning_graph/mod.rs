@@ -1660,6 +1660,31 @@ mod tests {
         assert!(parse_coach_reply("sure, here is the plan...").is_err());
     }
 
+    /// 终点裁决的两种容错形状：文档化的 {title, completed} 对象与裸标题
+    /// 字符串（缺字段视为置完成——常见方向）。
+    #[test]
+    fn parse_coach_reply_tolerates_verdict_shapes() {
+        let raw = r#"{
+            "nodes": [],
+            "mints": [],
+            "completed_endpoints": [
+                { "title": "独立交易", "completed": true },
+                { "title": "读懧行情", "completed": false },
+                "裸标题终点"
+            ],
+            "note": ""
+        }"#;
+        let batch = parse_coach_reply(raw).unwrap();
+        assert_eq!(
+            batch.completed_endpoints,
+            vec![
+                EndpointVerdict { title: "独立交易".into(), completed: true },
+                EndpointVerdict { title: "读懧行情".into(), completed: false },
+                EndpointVerdict { title: "裸标题终点".into(), completed: true },
+            ]
+        );
+    }
+
     fn attempt(lesson: &str, day: i64, correct: bool) -> DigestAttempt {
         DigestAttempt { lesson_id: lesson.to_owned(), day, correct }
     }

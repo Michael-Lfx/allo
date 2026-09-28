@@ -1098,9 +1098,10 @@ impl LearningService {
         let _ = self.kick_growth(user_id, &course_id, false, None).await;
     }
 
-    /// 停摆臂（ADR-0010 裁决：只留空图一臂）：课程还没有任何学习节点时
-    /// 自动触发退出（建课瞬间的首生长 force 走，不占自动触发）。生长无
-    /// 自动终态——「课程长完了」不再有机器语义，收尾交给学习者归档。
+    /// 停摆两臂（ADR-0009 Amendment 1）：臂 1 = 空图（无学习节点，建课瞬间
+    /// 由首生长 force 走，不占自动触发）；臂 2 = 课程有终点且全部被教练标记
+    /// 完成。零终点课程第二臂不成立（无裁决即无完成）。返回 true = 自动
+    /// 触发退出。
     async fn growth_stalled(&self, course_id: &LearningCourseId) -> Result<bool, AppError> {
         let learning_nodes: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM learning_lessons l \
@@ -1147,12 +1148,15 @@ impl LearningService {
         // 批行状态机：生长开始即落 pending 行（slot 串行保证此课程此刻
         // 不可能有别的生长在跑，残留的 pending 一律是上次中断 → 转 failed）。
         let pending = self.begin_pending_batch(course_id).await?;
-        let result = self.growth_body(engine, &pending, token.clone()).await;
+        let result = self.growth_body(engine, &pending).await;
         match &result {
             Ok(applied) => {
-                task.finish_done(if applied.idle { "就绪已满，本批无可长方向" } else { "批次已落库" });
                 // 空手批的 pending 行已在 growth_body 内自清；WS 以
                 // outcome=idle 收尾——前端刷新就绪读数即可，无历史噪音。
+                if applied.verdicts > 0 {
+                    // 教练裁决改了完成位：与终点编辑同权，触发罗盘重画。
+                    self.schedule_compass_regen(course_id, &engine.user_id);
+                }
                 self.emit_graph_event(
                     course_id,
                     "growth_completed",
@@ -1168,32 +1172,16 @@ impl LearningService {
             }
             Err(error) => {
                 // 失败留痕：pending 行转 failed，历史时间线可见可重试。
-                // 取消 = 中性终态（growth_cancelled，phase=cancelled），不
-                // 报错误——中断的本批零落库（事务原子），批行如实转 failed。
-                let cancelled = token.is_cancelled()
-                    || error.to_string().contains(crate::service::CANCELLED_MESSAGE);
                 self.fail_pending_batch(&pending.batch_id).await;
-                if cancelled {
-                    task.finish_cancelled();
-                    self.emit_graph_event(
-                        course_id,
-                        "growth_cancelled",
-                        serde_json::json!({
-                            "phase": "cancelled",
-                            "outcome": "cancelled",
-                        }),
-                    );
-                } else {
-                    task.finish_failed(error.to_string());
-                    self.emit_graph_event(
-                        course_id,
-                        "growth_failed",
-                        serde_json::json!({
-                            "phase": "failed",
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
+                let cancelled = self.generation_cancel_requested();
+                self.emit_graph_event(
+                    course_id,
+                    if cancelled { "growth_cancelled" } else { "growth_failed" },
+                    serde_json::json!({
+                        "phase": "failed",
+                        "error": error.to_string(),
+                    }),
+                );
             }
         }
         result.map(|_| ())
@@ -1256,22 +1244,9 @@ impl LearningService {
         &self,
         engine: &crate::learning_graph::GrowthRunner,
         pending: &PendingBatch,
-        token: tokio_util::sync::CancellationToken,
     ) -> Result<GrowthApplied, AppError> {
-        use crate::learning_graph::growth_retry::{
-            AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
-            redraft_guard_violation, should_stop_early,
-        };
         let course_id = &engine.course_id;
-        let inner_completer = self.course_completer()?;
-        // 真取消（三轮 t2）：全部 completer 调用与 token select! 竞速——调用
-        // 前已取消 = 零调用；调用中被取消 = 断 HTTP。批事务原子落库 =
-        // 中断零落库。
-        let cancellation = crate::service::CancellationCompleter::new(
-            inner_completer.as_ref(),
-            token.clone(),
-        );
-        let completer: &dyn LearningCompleter = &cancellation;
+        let completer = self.course_completer()?;
         let model_override = engine
             .model_override
             .as_ref()
@@ -1901,7 +1876,25 @@ impl LearningService {
             .map(render_terrain_doors)
             .unwrap_or_default();
 
+        // 罗盘陈旧读数：重画之后又落了多少个已应用批次。
+        let compass_updated_at: Option<i64> =
+            course.try_get("compass_updated_at").map_err(internal)?;
+        let compass_stale: i64 = match compass_updated_at {
+            Some(at) => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_growth_batches \
+                 WHERE course_id = ? AND status = 'applied' AND created_at > ?",
+            )
+            .bind(course_id.as_str())
+            .bind(at)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(internal)?,
+            None => 0,
+        };
+        let compass_stale_batches = compass_stale as usize;
+
         let ready_count = self.ready_count_for_owner(course_id, &engine.user_id).await?;
+        let endpoints = self.render_endpoint_list(course_id).await?;
         let coverage_gauge = self.render_coverage_gauge(course_id, &engine.user_id).await?;
         // 行为摘要先折（卡点节点要在花名册行上加 ⚑）。
         let digest = self.fold_behavior_digest(course_id, &engine.user_id).await?;
@@ -2057,6 +2050,7 @@ impl LearningService {
              ORDER BY l.position, l.lesson_id",
         )
         .bind(user_value)
+        .bind(course_id.as_str())
         .bind(course_id.as_str())
         .fetch_all(&self.pool)
         .await
@@ -2621,7 +2615,30 @@ impl LearningService {
             note: batch.note.clone(),
             ready_count,
             idle: false,
+            verdicts,
         })
+    }
+
+    /// 应用终点完成裁决（教练双向：置完成或重开）。返回裁决条数。
+    async fn apply_endpoint_verdicts(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        course_id: &LearningCourseId,
+        batch: &crate::learning_graph::ProposedBatch,
+    ) -> Result<usize, AppError> {
+        for verdict in &batch.completed_endpoints {
+            sqlx::query(
+                "UPDATE learning_course_endpoints SET completed = ? \
+                 WHERE course_id = ? AND lower(title) = ?",
+            )
+            .bind(if verdict.completed { 1 } else { 0 })
+            .bind(course_id.as_str())
+            .bind(verdict.title.trim().to_lowercase())
+            .execute(&mut **transaction)
+            .await
+            .map_err(internal)?;
+        }
+        Ok(batch.completed_endpoints.len())
     }
 
     // ── Readiness（就绪集合的读取侧）────────────────────────────────────
@@ -2745,6 +2762,227 @@ impl LearningService {
         self.ready_count_for_owner(course_id, user_id).await
     }
 
+    // ── Endpoints（终点锚 CRUD + 罗盘重画）───────────────────────────────
+
+    pub async fn add_endpoint(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        request: &crate::models::EndpointInput,
+    ) -> Result<crate::models::GraphEndpointView, AppError> {
+        self.require_graph_course(course_id).await?;
+        let title = request.title.trim();
+        if title.is_empty() {
+            return Err(AppError::BadRequest("endpoint title must not be empty".into()));
+        }
+        let module_id: String = sqlx::query_scalar(
+            "SELECT module_id FROM learning_modules WHERE course_id = ? ORDER BY position LIMIT 1",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("course {course_id}")))?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let module: LearningModuleId = LearningModuleId::parse(&module_id)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        let view = insert_endpoint(
+            &mut transaction,
+            course_id,
+            &module,
+            title,
+            request.goal_note.trim(),
+            now_ms(),
+        )
+        .await?;
+        transaction.commit().await.map_err(internal)?;
+        self.schedule_compass_regen(course_id, user_id);
+        Ok(view)
+    }
+
+    pub async fn update_endpoint(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        endpoint_id: &LearningEndpointId,
+        request: &crate::models::EndpointUpdateInput,
+    ) -> Result<(), AppError> {
+        let title_changed = if let Some(title) = request.title.as_deref() {
+            let title = title.trim();
+            if title.is_empty() {
+                return Err(AppError::BadRequest("endpoint title must not be empty".into()));
+            }
+            sqlx::query(
+                "UPDATE learning_course_endpoints SET title = ? \
+                 WHERE endpoint_id = ? AND course_id = ?",
+            )
+            .bind(title)
+            .bind(endpoint_id.as_str())
+            .bind(course_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?
+            .rows_affected()
+                == 1
+        } else {
+            false
+        };
+        let note_changed = if let Some(note) = request.goal_note.as_deref() {
+            sqlx::query(
+                "UPDATE learning_course_endpoints SET goal_note = ? \
+                 WHERE endpoint_id = ? AND course_id = ?",
+            )
+            .bind(note.trim())
+            .bind(endpoint_id.as_str())
+            .bind(course_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?
+            .rows_affected()
+                == 1
+        } else {
+            false
+        };
+        // 完成位切换：用户与教练裁决同权（置完成/重开，ADR-0009 Amendment 1）。
+        let completed_changed = if let Some(completed) = request.completed {
+            sqlx::query(
+                "UPDATE learning_course_endpoints SET completed = ? \
+                 WHERE endpoint_id = ? AND course_id = ?",
+            )
+            .bind(if completed { 1 } else { 0 })
+            .bind(endpoint_id.as_str())
+            .bind(course_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?
+            .rows_affected()
+                == 1
+        } else {
+            false
+        };
+        // 终点标题变化同步到标记课时行（同一标题在课程内唯一）。
+        if title_changed {
+            sqlx::query(
+                "UPDATE learning_lessons SET title = (SELECT title FROM learning_course_endpoints \
+                 WHERE endpoint_id = ?) WHERE lesson_id = (SELECT lesson_id \
+                 FROM learning_course_endpoints WHERE endpoint_id = ?)",
+            )
+            .bind(endpoint_id.as_str())
+            .bind(endpoint_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        }
+        let _ = user_id;
+        if title_changed || note_changed || completed_changed {
+            self.schedule_compass_regen(course_id, user_id);
+        }
+        Ok(())
+    }
+
+    pub async fn delete_endpoint(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        endpoint_id: &LearningEndpointId,
+    ) -> Result<(), AppError> {
+        let lesson_id: Option<String> = sqlx::query_scalar(
+            "SELECT lesson_id FROM learning_course_endpoints WHERE endpoint_id = ? AND course_id = ?",
+        )
+        .bind(endpoint_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let Some(lesson_id) = lesson_id else {
+            return Err(AppError::NotFound(format!("endpoint {endpoint_id}")));
+        };
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        sqlx::query("DELETE FROM learning_lesson_progress WHERE lesson_id = ?")
+            .bind(&lesson_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        sqlx::query("DELETE FROM learning_lessons WHERE lesson_id = ?")
+            .bind(&lesson_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        sqlx::query("DELETE FROM learning_course_endpoints WHERE endpoint_id = ?")
+            .bind(endpoint_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        transaction.commit().await.map_err(internal)?;
+        self.schedule_compass_regen(course_id, user_id);
+        Ok(())
+    }
+
+    /// 手动重画罗盘（UI 罗盘卡的"重画"入口；与终点变更触发的自动重画
+    /// 同管道，ADR-0009 Amendment 1）。
+    pub async fn redraw_graph_compass(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<(), AppError> {
+        self.require_graph_course(course_id).await?;
+        self.regen_compass(course_id, user_id, None).await
+    }
+
+    /// 终点任何变更（增/删/改）都会重画罗盘：后台尽力执行，失败留待下次
+    /// 变更或生长前的兜底重画。
+    pub(crate) fn schedule_compass_regen(&self, course_id: &LearningCourseId, user_id: &UserId) {
+        let service = self.clone();
+        let course = course_id.clone();
+        let owner = user_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = service.regen_compass(&course, &owner, None).await {
+                tracing::warn!(course = course.as_str(), %error, "compass regen failed");
+            }
+        });
+    }
+
+    pub(crate) async fn regen_compass(
+        &self,
+        course_id: &LearningCourseId,
+        _user_id: &UserId,
+        model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<(), AppError> {
+        let completer = self.course_completer()?;
+        let course = sqlx::query(
+            "SELECT title, learning_goal FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("course {course_id}")))?;
+        let title: String = course.try_get("title").map_err(internal)?;
+        let goal: String = course.try_get("learning_goal").map_err(internal)?;
+        let endpoints = self.endpoint_pairs(course_id).await?;
+        let taught = self.render_taught_summary().await?;
+        let taught_summary = if taught.is_empty() { None } else { Some(taught.as_str()) };
+        let compass = crate::learning_graph::draw_compass(
+            completer.as_ref(),
+            model_override,
+            if goal.is_empty() { title.as_str() } else { goal.as_str() },
+            &endpoints,
+            taught_summary,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE learning_courses SET compass_md = ?, compass_updated_at = ? WHERE course_id = ?",
+        )
+        .bind(&compass)
+        .bind(now_ms())
+        .bind(course_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        self.emit_graph_event(course_id, "compass_updated", serde_json::json!({}));
+        Ok(())
+    }
+
     // ── Views（图视图 / 学习记录 / 概念表）───────────────────────────────
 
     /// 知识结构读侧投影（wayfinder 票 t1）：课程不存在或已软删 → 404；
@@ -2816,6 +3054,28 @@ impl LearningService {
         .await
         .map_err(internal)?;
         let goal: String = course.try_get("learning_goal").map_err(internal)?;
+
+        let endpoint_rows = sqlx::query(
+            "SELECT endpoint_id, lesson_id, title, goal_note, completed, declared_at \
+             FROM learning_course_endpoints WHERE course_id = ? ORDER BY declared_at, endpoint_id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let endpoints = endpoint_rows
+            .iter()
+            .map(|row| {
+                Ok(crate::models::GraphEndpointView {
+                    endpoint_id: row.try_get("endpoint_id").map_err(internal)?,
+                    lesson_id: parse_id(row.try_get::<String, _>("lesson_id").map_err(internal)?)?,
+                    title: row.try_get("title").map_err(internal)?,
+                    goal_note: row.try_get("goal_note").map_err(internal)?,
+                    completed: row.try_get::<i64, _>("completed").map_err(internal)? != 0,
+                    declared_at: row.try_get("declared_at").map_err(internal)?,
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
 
         // R 软闸分桶：结构就绪集合不变（ready_count 是水位口径），被挡的
         // 候选从推荐里剔除并出建议（ADR-0009 Amendment 1）。
@@ -3438,6 +3698,20 @@ impl LearningService {
             .join("、"))
     }
 
+    /// 终点锚清单（标题 + 程度声明）；覆盖读数单列
+    /// [`Self::render_coverage_gauge`]。
+    async fn render_endpoint_list(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<String, AppError> {
+        let endpoints = self.endpoint_pairs(course_id).await?;
+        Ok(endpoints
+            .into_iter()
+            .map(|(title, note)| format!("- {title}：{note}"))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
     /// 登记表切片（canonical（别名）一行一个，截断到上限）。
     async fn render_registry_excerpt(&self) -> Result<String, AppError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
@@ -3543,4 +3817,5 @@ pub(crate) struct GrowthApplied {
     pub note: String,
     pub ready_count: usize,
     pub idle: bool,
+    pub verdicts: usize,
 }

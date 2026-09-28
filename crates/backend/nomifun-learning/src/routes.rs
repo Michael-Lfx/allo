@@ -267,6 +267,20 @@ async fn cancel_learning_graph_generation(
     }))))
 }
 
+/// 手动重画罗盘（UI 罗盘卡的"重画"入口）。
+async fn redraw_graph_compass(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    state
+        .service
+        .redraw_graph_compass(&user.id, &course_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
 /// 为学习目标提议终点锚（建课向导第二步的 AI 提议；失败返回空列表）。
 async fn propose_graph_endpoints(
     State(state): State<LearningRouterState>,

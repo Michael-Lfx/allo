@@ -3247,8 +3247,9 @@ async fn endpoint_add_and_delete_roundtrip_cleans_marker_lesson() {
 /// 每次 await 让出即推进一步；超时则失败）。
 async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
     for _ in 0..500 {
+        // 只等 applied 批：pending 行在生长开始即落库，等它会抢在落库前返回。
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+            "SELECT COUNT(*) FROM learning_growth_batches              WHERE course_id = ? AND status = 'applied'",
         )
         .bind(course_id)
         .fetch_one(service.pool_for_tests())
@@ -3803,6 +3804,24 @@ async fn growth_idle_batch_leaves_no_batch_row() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+    assert_eq!(completed, 1, "verdict applies even without a batch");
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(course.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    if rows != 0 {
+        let (status, seq, node_ids, note): (String, i64, String, String) = sqlx::query_as(
+            "SELECT status, seq, node_ids_json, note FROM learning_growth_batches WHERE course_id = ?",
+        )
+        .bind(course.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        panic!("debug leftover: status={status} seq={seq} nodes={node_ids} note={note}");
+    }
     assert_eq!(rows, 0, "idle growth must not leave a batch row behind");
 }
 
@@ -3815,10 +3834,11 @@ async fn growth_auto_triggers_on_lesson_completion() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用定义计算极限", "purpose": "后续节点", "est": 15,
+            {"title": "用定义计算极限", "purpose": "后续节点", "minutes": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []}
         ],
         "mints": [ { "canonical": "极限", "aliases": [], "definition": "" } ],
+        "completed_endpoints": [],
         "note": "完成触发的补货批"
     }"#;
     let completer = ScriptedCompleter::new(batch_json, false);
