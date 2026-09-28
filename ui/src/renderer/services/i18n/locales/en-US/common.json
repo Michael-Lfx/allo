@@ -207,6 +207,7 @@
     "refreshCredits": "Refresh balance",
     "openWebsite": "Open website",
     "editNickname": "Edit nickname",
+    "doubleClickEditNickname": "Double-click to edit nickname",
     "nicknamePlaceholder": "Enter a display name",
     "nicknameSaved": "Nickname updated",
     "nicknameRequired": "Enter a nickname",

@@ -1,9 +1,6 @@
 import { CloseSmall, Puzzle, Robot } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import TaskProfileSelector, {
-  type TaskProfile,
-} from '@/renderer/components/agent/TaskProfileSelector';
 import styles from '../index.module.css';
 
 export interface ComposerEntryStripProps {
@@ -15,11 +12,6 @@ export interface ComposerEntryStripProps {
   /** Opens the shared Skills selector for the current draft. */
   onAdjustSkills?: () => void;
   activeSkillCount?: number;
-  /** Nomi session work mode (office | coding). */
-  taskProfile?: TaskProfile;
-  onTaskProfileChange?: (profile: TaskProfile) => void;
-  /** Hide the work-mode toggle (e.g. non-Nomi engines). */
-  hideTaskProfile?: boolean;
 }
 
 /**
@@ -35,9 +27,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   onFree,
   onAdjustSkills,
   activeSkillCount = 0,
-  taskProfile = 'office',
-  onTaskProfileChange,
-  hideTaskProfile = false,
 }) => {
   const { t } = useTranslation();
 
@@ -53,13 +42,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         return <Robot theme='outline' size={16} fill='currentColor' />;
     }
   };
-
-  const taskProfileSelector = hideTaskProfile ? null : (
-    <TaskProfileSelector
-      initialProfile={taskProfile}
-      onProfileSelect={onTaskProfileChange}
-    />
-  );
 
   const skillButton = onAdjustSkills ? (
     <button
@@ -98,7 +80,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
           <CloseSmall theme='outline' size={14} />
         </button>
         {skillButton}
-        {taskProfileSelector}
       </div>
     );
   }
@@ -115,7 +96,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         <span className={styles.entryButtonText}>{t('guid.entry.usePreset', { defaultValue: 'Use preset' })}</span>
       </button>
       {skillButton}
-      {taskProfileSelector}
     </div>
   );
 };

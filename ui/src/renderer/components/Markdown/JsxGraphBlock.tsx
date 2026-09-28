@@ -9,8 +9,8 @@ import { Message } from '@arco-design/web-react';
 import { Copy, Refresh } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import SyntaxHighlighter, { vs, vs2015 } from './SyntaxHighlighter';
 import { repairFigure } from './figureRepair';
+import ShikiCodeFence from './ShikiCodeFence';
 
 // The jsxgraph package's "exports" map does not expose its CSS, so the
 // minimal .jxgbox rules it needs live in ShadowView's stylesheet instead.
@@ -189,7 +189,6 @@ function JsxGraphBlock({ code, style }: JsxGraphBlockProps) {
     }
   }, [repairing, source, error, t]);
 
-  const codeTheme = currentTheme === 'dark' ? vs2015 : vs;
   const showPreview = viewMode === 'preview' && error === null;
 
   return (
@@ -278,22 +277,7 @@ function JsxGraphBlock({ code, style }: JsxGraphBlockProps) {
                 </button>
               </div>
             )}
-            <SyntaxHighlighter
-              children={source}
-              language='javascript'
-              style={codeTheme}
-              PreTag='div'
-              customStyle={{
-                margin: 0,
-                borderRadius: 0,
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--text-primary)',
-                overflowX: 'auto',
-                maxWidth: '100%',
-              }}
-              codeTagProps={{ style: { color: 'var(--text-primary)' } }}
-            />
+            <ShikiCodeFence content={source} language='javascript' showLineNumbers={false} />
           </div>
         )}
       </div>

@@ -69,9 +69,15 @@ for (const [name, grammar] of Object.entries(languages)) {
   SyntaxHighlighter.registerLanguage(name, grammar);
 }
 
-for (const alias of ['text', 'txt', 'plain', 'mermaid']) {
+for (const alias of ['text', 'txt', 'plain', 'mermaid', 'graphql', 'gql', 'nginx', 'proto', 'protobuf', 'http']) {
   SyntaxHighlighter.registerLanguage(alias, plaintext);
 }
+
+SyntaxHighlighter.registerLanguage('tsx', typescript);
+SyntaxHighlighter.registerLanguage('jsx', javascript);
+SyntaxHighlighter.registerLanguage('html', xml);
+SyntaxHighlighter.registerLanguage('vue', xml);
+SyntaxHighlighter.registerLanguage('toml', ini);
 
 export { default as vs } from 'react-syntax-highlighter/dist/esm/styles/hljs/vs';
 export { default as vs2015 } from 'react-syntax-highlighter/dist/esm/styles/hljs/vs2015';

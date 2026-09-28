@@ -9,7 +9,8 @@ import { diffColors } from '@/renderer/styles/colors';
  * Falls back to stripped trailing newline if parsing fails.
  */
 export const formatCode = (code: string): string => {
-  const content = String(code).replace(/\n$/, '');
+  const raw = String(code);
+  const content = raw.endsWith('\n') ? raw.slice(0, -1) : raw;
   try {
     return JSON.stringify(
       JSON.parse(content),

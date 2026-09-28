@@ -24,15 +24,15 @@ describe('guid phase-one visual sample', () => {
     expect(composerStyles.includes('var(--flowy-focus)')).toBe(true);
   });
 
-  test('organizes task starters and supports reduced motion', () => {
-    expect(styles.includes('grid-template-columns: repeat(3, minmax(0, 1fr))')).toBe(true);
+  test('supports reduced motion on the composer stage', () => {
     expect(styles.includes('@media (prefers-reduced-motion: reduce)')).toBe(true);
-    expect(styles.includes('.guidResourceIntentChip:active')).toBe(true);
-    const hoverStyles = styles.slice(
-      styles.indexOf('.guidResourceIntentChip:hover'),
-      styles.indexOf('.guidResourceIntentChip:active')
+    expect(styles.includes('.guidResourceIntentChip')).toBe(false);
+    expect(styles.includes('guidResourceCards')).toBe(false);
+    const composerHover = styles.slice(
+      styles.indexOf('.guidInputCardWrap:hover'),
+      styles.indexOf('.guidInputInner {')
     );
-    expect(hoverStyles.includes('translateY')).toBe(false);
+    expect(composerHover.includes('translateY')).toBe(false);
   });
 
   test('keeps the workspace picker above body-level conversation overlays', () => {

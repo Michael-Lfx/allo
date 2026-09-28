@@ -6,7 +6,9 @@ describe('displayNameForCodeLanguage', () => {
     expect(displayNameForCodeLanguage('rust')).toBe('Rust');
     expect(displayNameForCodeLanguage('ts')).toBe('TypeScript');
     expect(displayNameForCodeLanguage('typescript')).toBe('TypeScript');
-    expect(displayNameForCodeLanguage('js')).toBe('JavaScript');
+    expect(displayNameForCodeLanguage('tsx')).toBe('TSX');
+    expect(displayNameForCodeLanguage('jsx')).toBe('JSX');
+    expect(displayNameForCodeLanguage('vue')).toBe('Vue');
   });
 
   test('capitalizes unknown languages instead of inventing a filename', () => {

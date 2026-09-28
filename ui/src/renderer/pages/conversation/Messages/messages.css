@@ -1668,7 +1668,16 @@ body[arco-theme='dark'] .message-list-scroll-button[data-has-new='true'][data-vi
 }
 
 .message-copy-toast {
+  position: fixed;
+  top: calc(var(--titlebar-height, 36px) + 20px);
+  left: 50%;
+  z-index: 10000;
+  width: max-content;
+  max-width: 80%;
+  transform: translateX(-50%);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
   animation: message-copy-toast-enter 0.3s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)) both;
+  pointer-events: none;
 }
 
 @keyframes message-copy-toast-enter {

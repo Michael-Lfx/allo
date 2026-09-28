@@ -34,11 +34,12 @@ import type {
 } from '@/renderer/components/chat/ComposerSkillTokenInput';
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
-import GuidResourceCards from './components/GuidResourceCards';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
+import TaskProfileSelector, {
+  type TaskProfile,
+} from '@/renderer/components/agent/TaskProfileSelector';
 import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
-import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
 import {
@@ -68,10 +69,7 @@ import { findChatModelOption } from '@/renderer/utils/model/chatModelPicker';
 import { addRecentWorkspace } from '@/renderer/components/workspace';
 import { trackFunnelEvent, hasFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { markLaunchInteractive } from '@/renderer/utils/analytics/launchTelemetry';
-import {
-  resolveGuidReadiness,
-  type GuidTaskIntentId,
-} from './readiness/guidReadiness';
+import { resolveGuidReadiness } from './readiness/guidReadiness';
 import { ConfigProvider } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Aiming, Paperclip } from '@icon-park/react';
@@ -111,7 +109,7 @@ const GuidPage: React.FC = () => {
   // mirroring the SendBox `.sendbox-panel` containerRef pattern.
   const guidInputCardRef = useRef<HTMLDivElement>(null);
   const addProviderRef = useRef<GuidAddProviderHandle>(null);
-  const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
+  const { activeBorderColor, inactiveBorderColor } = useInputFocusRing();
 
   const localeKey = resolveLocaleKey(i18n.language);
 
@@ -123,7 +121,6 @@ const GuidPage: React.FC = () => {
   const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
     () => configService.get('nomi.collaborationModels') ?? [],
   );
-  const [activeIntentId, setActiveIntentId] = useState<GuidTaskIntentId>('freeform');
   // `/goal` arms the first message as the conversation goal. The state is
   // intentionally command-driven rather than exposed as a persistent toolbar toggle.
   const [goalMode, setGoalMode] = useState(false);
@@ -142,7 +139,7 @@ const GuidPage: React.FC = () => {
     (visible: boolean) => handleChatPopupVisibleChange('strategy', visible),
     [handleChatPopupVisibleChange]
   );
-  const [selectedTaskProfile, setSelectedTaskProfile] = useState<'office' | 'coding'>('office');
+  const [selectedTaskProfile, setSelectedTaskProfile] = useState<TaskProfile>('office');
   const [isHomeAddMenuOpen, setIsHomeAddMenuOpen] = useState(false);
   const [homeAddMenuActiveIndex, setHomeAddMenuActiveIndex] = useState(0);
   const pendingAutoSendRef = useRef(false);
@@ -560,15 +557,19 @@ const GuidPage: React.FC = () => {
     agentSelection.selectedAgent,
   ]);
 
+  const showTaskProfile =
+    agentSelection.selectedAgent === 'nomi' ||
+    agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
+
   const readiness = useMemo(
     () =>
       resolveGuidReadiness({
-        intentId: activeIntentId,
+        intentId: 'freeform',
         hasModel: Boolean(modelSelection.current_model),
         workspaceDir: guidInput.dir,
         needsModelForAgent,
       }),
-    [activeIntentId, guidInput.dir, modelSelection.current_model, needsModelForAgent]
+    [guidInput.dir, modelSelection.current_model, needsModelForAgent]
   );
 
   const handleLinkWorkspace = useCallback(() => {
@@ -1112,32 +1113,14 @@ const GuidPage: React.FC = () => {
               </p>
             </div>
 
-            <GuidResourceCards
-              onStartLocalAgent={guidInput.handleTextareaFocus}
-              hasWorkspace={Boolean(guidInput.dir.trim())}
-              activeIntentId={activeIntentId}
-              onSelectIntent={(intentId) => {
-                setActiveIntentId(intentId);
-                trackFunnelEvent('task_drafted', { intent: intentId });
-                const nextReadiness = resolveGuidReadiness({
-                  intentId,
-                  hasModel: Boolean(modelSelection.current_model),
-                  workspaceDir: guidInput.dir,
-                  needsModelForAgent,
-                });
-                if (nextReadiness.blocker === 'workspace') {
-                  pendingAutoSendRef.current = true;
-                  handleLinkWorkspace();
-                } else if (nextReadiness.blocker === 'model') {
-                  pendingAutoSendRef.current = true;
-                  addProviderRef.current?.open();
-                }
-              }}
-              onSetInput={(text) => {
-                inputSnapshotRef.current = text;
-                guidInput.setInput(text);
-              }}
-            />
+            {showTaskProfile ? (
+              <div className={styles.guidTaskProfile}>
+                <TaskProfileSelector
+                  initialProfile={selectedTaskProfile}
+                  onProfileSelect={setSelectedTaskProfile}
+                />
+              </div>
+            ) : null}
 
             <GuidInputCard
               containerRef={guidInputCardRef}
@@ -1224,14 +1207,6 @@ const GuidPage: React.FC = () => {
                   onFree={() => {
                     agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
                   }}
-                  taskProfile={selectedTaskProfile}
-                  onTaskProfileChange={setSelectedTaskProfile}
-                  hideTaskProfile={
-                    !(
-                      agentSelection.selectedAgent === 'nomi' ||
-                      agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi'
-                    )
-                  }
                 />
               }
             />
@@ -1268,7 +1243,6 @@ const GuidPage: React.FC = () => {
           }}
         />
 
-        <QuickActionButtons inactiveBorderColor={inactiveBorderColor} activeShadow={activeShadow} />
         <GuidAddProviderModal
           ref={addProviderRef}
           onConfigured={(model) => {

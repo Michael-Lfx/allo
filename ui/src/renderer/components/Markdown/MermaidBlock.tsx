@@ -1,14 +1,13 @@
 
 
 import mermaid from 'mermaid';
-import SyntaxHighlighter, { vs, vs2015 } from './SyntaxHighlighter';
-
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Copy, PreviewOpen } from '@icon-park/react';
 import { usePreviewContextOptional } from '@/renderer/pages/conversation/Preview/context/PreviewContext';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import ShikiCodeFence from './ShikiCodeFence';
 
 type MermaidBlockProps = {
   code: string;
@@ -126,7 +125,6 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
     };
   }, [debouncedCode, currentTheme]);
 
-  const codeTheme = currentTheme === 'dark' ? vs2015 : vs;
   const shouldShowLoading = isRendering && preferredViewModeRef.current !== 'source';
   const summary = code
     .split(/\r?\n/)
@@ -229,22 +227,7 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
             <span>{t('preview.loading')}</span>
           </div>
         ) : (
-          <SyntaxHighlighter
-            children={code}
-            language='mermaid'
-            style={codeTheme}
-            PreTag='div'
-            customStyle={{
-              margin: 0,
-              borderRadius: 0,
-              border: 'none',
-              background: 'transparent',
-              color: 'var(--text-primary)',
-              overflowX: 'auto',
-              maxWidth: '100%',
-            }}
-            codeTagProps={{ style: { color: 'var(--text-primary)' } }}
-          />
+          <ShikiCodeFence content={code} language='mermaid' showLineNumbers={false} />
         )}
       </div>
     </div>

@@ -11,8 +11,8 @@ import { Message } from '@arco-design/web-react';
 import { Copy } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import SyntaxHighlighter, { vs, vs2015 } from './SyntaxHighlighter';
 import { repairFigure } from './figureRepair';
+import ShikiCodeFence from './ShikiCodeFence';
 
 type SvgBlockProps = {
   code: string;
@@ -38,18 +38,6 @@ function SvgBlock({ code, style }: SvgBlockProps) {
   // the original fence body for both rendering and the source view.
   const [repairedSource, setRepairedSource] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
-  const [currentTheme, setCurrentTheme] = useState<'light' | 'dark'>(
-    () => (document.documentElement.getAttribute('data-theme') as 'light' | 'dark') || 'light'
-  );
-
-  useEffect(() => {
-    const update = () => {
-      setCurrentTheme((document.documentElement.getAttribute('data-theme') as 'light' | 'dark') || 'light');
-    };
-    const observer = new MutationObserver(update);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    return () => observer.disconnect();
-  }, []);
 
   // Fresh fence content invalidates any earlier repair result.
   useEffect(() => {
@@ -77,8 +65,6 @@ function SvgBlock({ code, style }: SvgBlockProps) {
       setRepairing(false);
     }
   }, [repairing, source, t]);
-
-  const codeTheme = currentTheme === 'dark' ? vs2015 : vs;
 
   return (
     <div className='markdown-figure-block' style={style}>
@@ -153,22 +139,7 @@ function SvgBlock({ code, style }: SvgBlockProps) {
                 </button>
               </div>
             )}
-            <SyntaxHighlighter
-              children={source}
-              language='xml'
-              style={codeTheme}
-              PreTag='div'
-              customStyle={{
-                margin: 0,
-                borderRadius: 0,
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--text-primary)',
-                overflowX: 'auto',
-                maxWidth: '100%',
-              }}
-              codeTagProps={{ style: { color: 'var(--text-primary)' } }}
-            />
+            <ShikiCodeFence content={source} language='xml' showLineNumbers={false} />
           </div>
         )}
       </div>

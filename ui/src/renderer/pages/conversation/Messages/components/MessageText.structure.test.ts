@@ -12,6 +12,25 @@ const typographySource = readFileSync(new URL('../typography.ts', import.meta.ur
 const messagesCss = readFileSync(new URL('../messages.css', import.meta.url), 'utf8');
 
 describe('MessageText process action chrome', () => {
+  test('portals copy success to the viewport top, outside the conversation track', () => {
+    // The conversation column track uses transform + 200% width, so an in-tree
+    // `position:fixed` toast anchors to that track (top-right of the chat pane).
+    // Keep the toast at the top of the window by mounting it on document.body.
+    expect(source.includes('createPortal')).toBe(true);
+    expect(source.includes('showCopyAlert')).toBe(true);
+    expect(source.includes('message-copy-toast')).toBe(true);
+    expect(source.includes('createPortal(')).toBe(true);
+    expect(source.includes('document.body')).toBe(true);
+    expect(source.includes("Message.success(t('messages.copySuccess'))")).toBe(false);
+    const toastRuleStart = messagesCss.indexOf('.message-copy-toast {');
+    expect(toastRuleStart).toBeGreaterThan(-1);
+    const toastRule = messagesCss.slice(toastRuleStart, messagesCss.indexOf('}', toastRuleStart) + 1);
+    expect(toastRule.includes('position: fixed')).toBe(true);
+    expect(toastRule.includes('left: 50%')).toBe(true);
+    expect(toastRule.includes('top: calc(var(--titlebar-height, 36px) + 20px)')).toBe(true);
+    expect(messagesCss.includes('@keyframes message-copy-toast-enter')).toBe(true);
+  });
+
   test('keeps copy, edit, and rollback actions always visible', () => {
     expect(source.includes('hideActions?: boolean')).toBe(true);
     expect(source.includes('const shouldShowActions = !hideActions;')).toBe(true);

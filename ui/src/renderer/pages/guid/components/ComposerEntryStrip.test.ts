@@ -14,8 +14,8 @@ describe('Guid composer entry strip', () => {
     expect(source.includes('activeSkillCount')).toBe(true);
     expect(source.includes('onAdjustSkills')).toBe(true);
     expect(source.includes('Puzzle')).toBe(true);
-    expect(source.includes('TaskProfileSelector')).toBe(true);
-    expect(source.includes('taskProfile')).toBe(true);
+    expect(source.includes('TaskProfileSelector')).toBe(false);
+    expect(source.includes('taskProfile')).toBe(false);
   });
 
   test('uses an icon button to leave a preset without nesting buttons', () => {
