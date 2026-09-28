@@ -222,10 +222,12 @@ impl RoundState {
             return None;
         }
         let mut out = format!(
-            "[resumable round {}/{}] Your previous attempt was cut off by the provider's output \
+            "{}{}/{}] Your previous attempt was cut off by the provider's output \
              token ceiling. That draft has been REMOVED from your context and cannot be continued. \
              The original request is restated as the last user message below.",
-            self.attempt, MAX_ROUND_ATTEMPTS
+            crate::context_contributor::RESUMABLE_SECTION_MARKER,
+            self.attempt,
+            MAX_ROUND_ATTEMPTS
         );
 
         if !self.ledger.steps.is_empty() {
