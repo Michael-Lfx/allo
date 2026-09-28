@@ -20,6 +20,7 @@ const LEGACY_MIGRATIONS: &[&str] = &[
 ];
 const M066: &str = include_str!("../migrations/066_retire_graph_dag_and_concepts.sql");
 const M067: &str = include_str!("../migrations/067_concept_web_growth.sql");
+const M068: &str = include_str!("../migrations/068_growth_batch_status.sql");
 
 const GRAPH_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const TRAD_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
@@ -281,6 +282,7 @@ async fn migration_067_creates_concept_web_tables() {
     let pool = setup_legacy_world().await;
     sqlx::query(M066).execute(&pool).await.unwrap();
     sqlx::query(M067).execute(&pool).await.unwrap();
+    sqlx::query(M068).execute(&pool).await.unwrap();
 
     // 登记表：canonical 必填。
     sqlx::query(
@@ -381,4 +383,55 @@ async fn migration_067_creates_concept_web_tables() {
             .await
             .unwrap();
     assert_eq!(compass, None, "compass starts empty");
+}
+
+#[tokio::test]
+async fn migration_068_adds_batch_status_lifecycle() {
+    let pool = setup_legacy_world().await;
+    sqlx::query(M066).execute(&pool).await.unwrap();
+    sqlx::query(M067).execute(&pool).await.unwrap();
+    // 068 之前的批行：无 status 列（067 的默认），068 后应取 'applied'。
+    sqlx::query(
+        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-01234567891b', ?, 1, '[\"x\"]', 1000)",
+    )
+    .bind(TRAD_COURSE)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(M068).execute(&pool).await.unwrap();
+
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE status = 'applied'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, 1, "pre-existing rows default to applied");
+
+    // pending 行合法（生长开始即落）。
+    sqlx::query(
+        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-012345678918', ?, 3, '[]', 'pending', 1000)",
+    )
+    .bind(TRAD_COURSE)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // failed 行合法。
+    sqlx::query(
+        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-012345678919', ?, 4, '[]', 'failed', 1000)",
+    )
+    .bind(TRAD_COURSE)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 非法：未知状态。
+    let invalid = sqlx::query(
+        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-01234567891a', ?, 5, '[]', 'running', 1000)",
+    )
+    .bind(TRAD_COURSE)
+    .execute(&pool)
+    .await;
+    assert!(invalid.is_err(), "unknown status must be rejected");
 }

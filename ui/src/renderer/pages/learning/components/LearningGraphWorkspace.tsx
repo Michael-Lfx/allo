@@ -11,6 +11,7 @@ import {
   Input,
   Modal,
   Spin,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -128,6 +129,7 @@ const LearningGraphWorkspace: React.FC<{
     endpoint?: GraphEndpointView;
     title: string;
     goalNote: string;
+    completed?: boolean;
   } | null>(null);
 
   const submitEndpoint = useCallback(async () => {
@@ -147,7 +149,11 @@ const LearningGraphWorkspace: React.FC<{
         await learningApi.updateGraphEndpoint(
           detail.course.id,
           endpointEditor.endpoint.endpoint_id,
-          { title, goal_note: endpointEditor.goalNote.trim() }
+          {
+            title,
+            goal_note: endpointEditor.goalNote.trim(),
+            completed: endpointEditor.completed ?? endpointEditor.endpoint.completed,
+          }
         );
       }
       setEndpointEditor(null);
@@ -248,6 +254,7 @@ const LearningGraphWorkspace: React.FC<{
                   endpoint,
                   title: endpoint.title,
                   goalNote: endpoint.goal_note,
+                  completed: endpoint.completed,
                 })
               }
               closable
@@ -289,8 +296,26 @@ const LearningGraphWorkspace: React.FC<{
                 })}
           </Button>
         </div>
+        {/* R 软闸建议条：结构就绪但供给节点已遗忘（ADR-0009 Amendment 1） */}
+        {graph.blocked.map((blocked) => (
+          <Alert
+            key={blocked.lesson_id}
+            type='warning'
+            content={t('learning.learningGraphBlockedAdvice', {
+              title: blocked.title,
+              supplier: blocked.supplier_title,
+              percent: Math.round(blocked.r * 100),
+              due: blocked.due_count,
+            })}
+          />
+        ))}
         {/* 罗盘：默认收起，点击展开（终点变更时后端自动重画） */}
-        <CompassCard compass={graph.compass} updatedAt={graph.compass_updated_at} />
+        <CompassCard
+          courseId={detail.course.id}
+          compass={graph.compass}
+          updatedAt={graph.compass_updated_at}
+          onRedrawn={onRefresh}
+        />
       </div>
 
       <Tabs activeTab={activeTab} onChange={setActiveTab} type='line' className='flex min-h-0 flex-1 flex-col [&_.arco-tabs-content]:flex-1 [&_.arco-tabs-content]:pt-8px'>
@@ -464,6 +489,22 @@ const LearningGraphWorkspace: React.FC<{
               }
             />
           </div>
+          {endpointEditor?.mode === 'edit' && (
+            <div className='flex items-center justify-between gap-8px'>
+              <Text bold className='text-13px'>
+                {t('learning.learningGraphEndpointCompletedToggle')}
+              </Text>
+              <Switch
+                size='small'
+                checked={endpointEditor.completed ?? false}
+                onChange={(value) =>
+                  setEndpointEditor((current) =>
+                    current ? { ...current, completed: value } : current
+                  )
+                }
+              />
+            </div>
+          )}
           <Paragraph className='!mb-0 text-t-secondary'>
             {t('learning.learningGraphEndpointHint')}
           </Paragraph>
@@ -474,14 +515,27 @@ const LearningGraphWorkspace: React.FC<{
   );
 };
 
-/** 罗盘卡：默认收起一行，点击展开全文（终点变更时后端自动重画）。 */
-const CompassCard: React.FC<{ compass: string | null; updatedAt: number | null }> = ({
-  compass,
-  updatedAt,
-}) => {
+/** 罗盘卡：默认收起一行，点击展开全文；展开态可手动重画。 */
+const CompassCard: React.FC<{
+  courseId: string;
+  compass: string | null;
+  updatedAt: number | null;
+  onRedrawn: () => void;
+}> = ({ courseId, compass, updatedAt, onRedrawn }) => {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const [redrawing, setRedrawing] = useState(false);
   const empty = !compass || compass.trim() === '';
+
+  const redraw = async () => {
+    setRedrawing(true);
+    try {
+      await learningApi.redrawGraphCompass(courseId);
+      onRedrawn();
+    } finally {
+      setRedrawing(false);
+    }
+  };
   return (
     <div className='rounded-8px bg-[var(--color-fill-1)] p-8px'>
       <button
@@ -499,9 +553,24 @@ const CompassCard: React.FC<{ compass: string | null; updatedAt: number | null }
             </Text>
           ) : null}
         </Text>
-        <Text type='secondary' className='text-12px'>
-          {expanded ? '▾' : '▸'}
-        </Text>
+        <span className='flex items-center gap-8px'>
+          {expanded && (
+            <Button
+              size='mini'
+              type='text'
+              loading={redrawing}
+              onClick={(event) => {
+                event.stopPropagation();
+                void redraw();
+              }}
+            >
+              {t('learning.learningGraphCompassRedraw')}
+            </Button>
+          )}
+          <Text type='secondary' className='text-12px'>
+            {expanded ? '▾' : '▸'}
+          </Text>
+        </span>
       </button>
       {expanded && (
         <div className='mt-8px'>
@@ -567,6 +636,16 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
             <Text bold className='text-13px'>
               {t('learning.learningGraphBatchLabel', { seq: batch.seq })}
             </Text>
+            {batch.status === 'pending' && (
+              <Tag size='small' color='processing' className='!mx-0'>
+                {t('learning.learningGraphBatchPending')}
+              </Tag>
+            )}
+            {batch.status === 'failed' && (
+              <Tag size='small' color='red' className='!mx-0'>
+                {t('learning.learningGraphBatchFailed')}
+              </Tag>
+            )}
             <Text type='secondary' className='text-11px'>
               {new Date(batch.created_at).toLocaleString()}
             </Text>

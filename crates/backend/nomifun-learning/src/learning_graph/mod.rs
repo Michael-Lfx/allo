@@ -101,8 +101,15 @@ pub struct ConceptMint {
     pub definition: String,
 }
 
-/// 一批生长提案：节点 + 铸名 + 教练裁决完成的终点标题 + 批注。终点完成
-/// 是纯标记（机器从不自动置位，这里置的是教练的裁决）。
+/// 教练对一条终点锚的裁决：置完成或重开（双向，误标可逆——ADR-0009
+/// Amendment 1）。机器只落教练的裁决位，永不自动置位。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointVerdict {
+    pub title: String,
+    pub completed: bool,
+}
+
+/// 一批生长提案：节点 + 铸名 + 教练裁决的终点完成位 + 批注。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProposedBatch {
     #[serde(default)]
@@ -110,7 +117,7 @@ pub struct ProposedBatch {
     #[serde(default)]
     pub mints: Vec<ConceptMint>,
     #[serde(default)]
-    pub completed_endpoints: Vec<String>,
+    pub completed_endpoints: Vec<EndpointVerdict>,
     #[serde(default)]
     pub note: String,
 }
@@ -299,12 +306,15 @@ pub fn validate_batch(
         }
     }
 
-    for title in &batch.completed_endpoints {
-        let key = title.trim().to_lowercase();
+    for verdict in &batch.completed_endpoints {
+        let key = verdict.title.trim().to_lowercase();
         if !endpoint_titles.contains(&key) {
             errors.push(GateError {
                 kind: "endpoint_unknown",
-                message: format!("完成裁决的终点「{title}」不存在——终点保护：只能裁决已声明的终点"),
+                message: format!(
+                    "完成裁决的终点「{title}」不存在——终点保护：只能裁决已声明的终点",
+                    title = verdict.title.trim()
+                ),
             });
         }
     }
@@ -553,9 +563,12 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - 引用的概念名必须照抄登记表/已教账中的既有名字，或随批 mints 铸名；名字撞车即整批被打回。
 - teaches/assumes 宁少勿滥：真正承载本课内容的概念才列入；但 assumes 不得裁剪到失真。
 - mints 只登记真正的新概念；与登记表现有概念同义时改用既有名字。
+【行为信号】
+- 行为摘要给出近窗正确率趋势、卡点节点与真实保留率：生长方向优先回应卡点——在卡点节点附近补铺垫或对比节点，而不是无视它继续铺新域。
+- 但不要为单个卡点堆同质节点：一次至多一个针对性的回应节点。
 【数量契约】
 - 本次生长：把就绪节点补到 7 个。当前就绪 X 个、缺口 7-X 个，则本批新增节点 ≤ 7-X 个且至多 7 个；缺口为 0 时输出空 nodes（或仅裁决终点完成）。
-- 已教概念已铺满某条终点、罗盘显示该终点无剩余路线时，才把终点标题写进 completed_endpoints；拿不准就留空。
+- 终点完成裁决只基于覆盖读数：存量无待办（已学达标+已跳过=全部）才考虑把终点写进 completed_endpoints；已学达标为 0 时零学习证据，绝不构成完成。completed=false 表示重开。拿不准就留空。
 【输出】
 - 只输出 JSON，不要 Markdown 代码块，不要任何解释。note 与 purpose 用中文。"#;
 
@@ -568,12 +581,19 @@ pub struct CoachContext {
     pub scope_reference: String,
     /// 罗盘全文（缺罗盘时先重画再生长，因此基本非空）。
     pub compass: String,
-    /// 花名册行：「状态 | 标题 | 分钟 | teaches(概念@档) | assumes(概念@档)」。
+    /// 罗盘陈旧读数：罗盘重画之后又落了多少批（>0 时附陈旧标记）。
+    pub compass_stale_batches: usize,
+    /// 花名册行：「状态 | 标题 | 分钟 | teaches(概念@档) | assumes(概念@档)」；
+    /// 卡点节点行带 ⚑ 前缀。
     pub roster: String,
     /// 已教概念账（canonical@最高档 的列表）。
     pub taught_summary: String,
-    /// 逐终点覆盖读数（终点：标题 + 程度声明 + 已覆盖的概念档位足迹）。
+    /// 终点锚清单（标题 + 程度声明）。
     pub endpoints: String,
+    /// 覆盖读数（共用存量 met/skipped/pending + 概念档位足迹）。
+    pub coverage_gauge: String,
+    /// 行为摘要（近窗趋势/卡点/保留率；空窗为空串，整块省略）。
+    pub behavior_digest: String,
     /// 当前就绪节点数（缺口 = READY_TARGET − ready）。
     pub ready_count: usize,
     /// 登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
@@ -590,6 +610,12 @@ impl CoachContext {
         }
         if !self.compass.is_empty() {
             text.push_str(&format!("\n【罗盘】\n{}\n", self.compass));
+            if self.compass_stale_batches > 0 {
+                text.push_str(&format!(
+                    "（注意：该罗盘画于 {} 批之前，可能过时——以下方已教概念账与覆盖读数为当前事实源）\n",
+                    self.compass_stale_batches
+                ));
+            }
         }
         text.push_str(&format!(
             "\n【当前就绪】{ready} 个（目标 7 个，缺口 {gap} 个）\n",
@@ -601,6 +627,12 @@ impl CoachContext {
             if self.taught_summary.is_empty() { "（空——第一批节点只能 assume 零基可及的概念，或随批铸名后由兄弟节点教）" } else { &self.taught_summary }
         ));
         text.push_str(&format!("\n【终点锚】\n{}\n", if self.endpoints.is_empty() { "（暂无——只长节点，不要裁决任何终点）" } else { &self.endpoints }));
+        if !self.coverage_gauge.is_empty() {
+            text.push_str(&format!("\n【覆盖读数（存量——完成裁决的依据）】\n{}\n", self.coverage_gauge));
+        }
+        if !self.behavior_digest.is_empty() {
+            text.push_str(&format!("\n【行为摘要】\n{}\n", self.behavior_digest));
+        }
         if !self.registry_excerpt.is_empty() {
             text.push_str(&format!("\n【概念登记表（邻近切片，铸名前先查撞名）】\n{}\n", self.registry_excerpt));
         }
@@ -616,10 +648,50 @@ struct RawBatch {
     nodes: Vec<RawNode>,
     #[serde(default)]
     mints: Vec<RawMint>,
-    #[serde(default, deserialize_with = "de_string_list")]
-    completed_endpoints: Vec<String>,
+    #[serde(default, deserialize_with = "de_endpoint_verdicts")]
+    completed_endpoints: Vec<EndpointVerdict>,
     #[serde(default)]
     note: String,
+}
+
+/// Tolerate the two verdict shapes the model emits: `{"title","completed"}`
+/// objects (documented) or bare title strings (missing field means "mark
+/// complete" — the common direction).
+fn de_endpoint_verdicts<'de, D>(deserializer: D) -> Result<Vec<EndpointVerdict>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawVerdict {
+        Title(String),
+        Full {
+            #[serde(default)]
+            title: String,
+            #[serde(default = "default_completed")]
+            completed: bool,
+        },
+    }
+    fn default_completed() -> bool {
+        true
+    }
+    let parsed = match Option::<Vec<RawVerdict>>::deserialize(deserializer)? {
+        Some(verdicts) => verdicts,
+        None => Vec::new(),
+    };
+    Ok(parsed
+        .into_iter()
+        .filter_map(|verdict| match verdict {
+            RawVerdict::Title(title) => {
+                let title = title.trim().to_owned();
+                (!title.is_empty()).then(|| EndpointVerdict { title, completed: true })
+            }
+            RawVerdict::Full { title, completed } => {
+                let title = title.trim().to_owned();
+                (!title.is_empty()).then(|| EndpointVerdict { title, completed })
+            }
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -777,12 +849,7 @@ pub(crate) fn parse_coach_reply(raw: &str) -> Result<ProposedBatch, AppError> {
                 definition: mint.definition.trim().to_owned(),
             })
             .collect(),
-        completed_endpoints: parsed
-            .completed_endpoints
-            .into_iter()
-            .map(|title| title.trim().to_owned())
-            .filter(|title| !title.is_empty())
-            .collect(),
+        completed_endpoints: parsed.completed_endpoints,
         note: parsed.note.trim().to_owned(),
     };
     Ok(batch)
@@ -971,6 +1038,332 @@ pub fn ready_set(candidates: &[ReadyCandidate], ledger: &ConceptCoverage) -> Vec
         .collect()
 }
 
+// ── Behavior digest & coverage gauge (pure folds, ADR-0009 Amendment 1) ───
+
+/// 行为摘要窗口：最近 7 个学习日或 10 个节点，双满足才收窗（learnhub
+/// DIGEST_WINDOW 同款——窗口太小看不见趋势，太大稀释近期信号）。
+pub const DIGEST_WINDOW_DAYS: usize = 7;
+pub const DIGEST_WINDOW_NODES: usize = 10;
+
+/// 折叠进行为摘要的一次作答（service 侧已联到课时并换算学习日）。
+#[derive(Debug, Clone)]
+pub struct DigestAttempt {
+    pub lesson_id: String,
+    /// 学习日（本地 02:00 翻日的 YYYYMMDD，与复习调度同口径）。
+    pub day: i64,
+    pub correct: bool,
+}
+
+/// 折叠进行为摘要的一次到期推进（真实保留率口径：auto/self 评分，
+/// rating≥2 记成功、1 记失败）。
+#[derive(Debug, Clone, Copy)]
+pub struct DigestPush {
+    pub day: i64,
+    pub passed: bool,
+}
+
+/// 一条卡点节点：窗内答错集中 + 停滞天数。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DigestBlocker {
+    pub lesson_id: String,
+    pub wrong_count: usize,
+    /// 今天距最近一次答对（从未答对则距首次作答）的学习日数。
+    pub stagnant_days: i64,
+}
+
+/// 正确率趋势：前后半窗各至少 2 次作答才出方向，否则样本不足。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AccuracyTrend {
+    Up,
+    Down,
+    Flat,
+    NotEnough,
+}
+
+/// 行为摘要折叠结果（service 渲染进教练上下文）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct BehaviorDigest {
+    pub window_days: usize,
+    pub window_nodes: usize,
+    /// 窗口超过 7 学习日（10 节点条款生效）。
+    pub extended: bool,
+    pub first_half: Option<(usize, f64)>,
+    pub second_half: Option<(usize, f64)>,
+    pub trend: AccuracyTrend,
+    pub blockers: Vec<DigestBlocker>,
+    pub retention: Option<(usize, usize)>,
+}
+
+impl BehaviorDigest {
+    /// 渲染进教练上下文的文本；空窗返回空串（整块省略）。
+    pub fn render(&self, lesson_titles: &HashMap<String, String>) -> String {
+        if self.window_nodes == 0 {
+            return String::new();
+        }
+        let mut lines = Vec::new();
+        let window_note = if self.extended {
+            format!(
+                "窗口：最近 {} 个学习日 / {} 个节点（超出 7 日，双条款生效）",
+                self.window_days, self.window_nodes
+            )
+        } else {
+            format!("窗口：最近 {} 个学习日 / {} 个节点", self.window_days, self.window_nodes)
+        };
+        lines.push(window_note);
+        match (self.first_half, self.second_half, self.trend) {
+            (Some((n1, a1)), Some((n2, a2)), trend) => {
+                let direction = match trend {
+                    AccuracyTrend::Up => "上升",
+                    AccuracyTrend::Down => "下降",
+                    AccuracyTrend::Flat => "持平",
+                    AccuracyTrend::NotEnough => "样本不足",
+                };
+                lines.push(format!(
+                    "- 正确率趋势：{direction}（前半窗 {:.0}%，{} 题 → 后半窗 {:.0}%，{} 题）",
+                    a1 * 100.0,
+                    n1,
+                    a2 * 100.0,
+                    n2
+                ));
+            }
+            _ => lines.push("- 正确率趋势：样本不足".to_owned()),
+        }
+        if self.blockers.is_empty() {
+            lines.push("- 卡点节点：无".to_owned());
+        } else {
+            let items = self
+                .blockers
+                .iter()
+                .map(|blocker| {
+                    let title = lesson_titles
+                        .get(&blocker.lesson_id)
+                        .map(String::as_str)
+                        .unwrap_or(&blocker.lesson_id);
+                    format!(
+                        "「{title}」停滞 {days} 天（窗内答错 {wrong} 次）",
+                        days = blocker.stagnant_days,
+                        wrong = blocker.wrong_count
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            lines.push(format!("- 卡点节点：{items}"));
+        }
+        match self.retention {
+            Some((passes, fails)) if passes + fails > 0 => {
+                let rate = passes as f64 / (passes + fails) as f64;
+                lines.push(format!(
+                    "- 真实保留率：{:.0}%（{} / {} 次到期推进）",
+                    rate * 100.0,
+                    passes,
+                    passes + fails
+                ));
+            }
+            _ => lines.push("- 真实保留率：窗口内无到期推进".to_owned()),
+        }
+        lines.join("\n")
+    }
+}
+
+/// 折叠行为摘要。`stagnation_base` 给出每个课时「停滞从哪天起算」：
+/// 最近一次答对的学习日，从未答对则首次作答日（service 侧全历史查询）。
+/// `today` 是当前学习日。
+pub fn fold_behavior_digest(
+    attempts: &[DigestAttempt],
+    pushes: &[DigestPush],
+    today: i64,
+    stagnation_base: &HashMap<String, i64>,
+) -> BehaviorDigest {
+    // 窗口：学习日降序累计，直到同时满足 7 日且 10 节（learnhub 双条款）。
+    let mut days_desc: Vec<i64> = Vec::new();
+    let mut nodes: HashSet<&str> = HashSet::new();
+    let mut extended = false;
+    let mut day_set: Vec<i64> = attempts.iter().map(|attempt| attempt.day).collect();
+    day_set.sort_unstable();
+    day_set.dedup();
+    day_set.reverse();
+    for &day in &day_set {
+        days_desc.push(day);
+        for attempt in attempts.iter().filter(|attempt| attempt.day == day) {
+            nodes.insert(attempt.lesson_id.as_str());
+        }
+        if days_desc.len() >= DIGEST_WINDOW_DAYS && nodes.len() >= DIGEST_WINDOW_NODES {
+            extended = days_desc.len() > DIGEST_WINDOW_DAYS;
+            break;
+        }
+    }
+    if days_desc.is_empty() {
+        return BehaviorDigest {
+            window_days: 0,
+            window_nodes: 0,
+            extended: false,
+            first_half: None,
+            second_half: None,
+            trend: AccuracyTrend::NotEnough,
+            blockers: Vec::new(),
+            retention: None,
+        };
+    }
+    let window: HashSet<i64> = days_desc.iter().copied().collect();
+    let in_window: Vec<&DigestAttempt> = attempts
+        .iter()
+        .filter(|attempt| window.contains(&attempt.day))
+        .collect();
+
+    // 正确率趋势：按学习日升序对半分窗比较。
+    let mut days_asc = days_desc.clone();
+    days_asc.reverse();
+    let half = days_asc.len() / 2;
+    let (first_days, second_days) = days_asc.split_at(half);
+    let half_accuracy = |days: &[i64]| {
+        let picked: Vec<&DigestAttempt> = in_window
+            .iter()
+            .copied()
+            .filter(|attempt| days.contains(&attempt.day))
+            .collect();
+        let total = picked.len();
+        let correct = picked.iter().filter(|attempt| attempt.correct).count();
+        (
+            total,
+            if total == 0 {
+                0.0
+            } else {
+                correct as f64 / total as f64
+            },
+        )
+    };
+    let (first_half, second_half) = (half_accuracy(first_days), half_accuracy(second_days));
+    let trend = match (first_half, second_half) {
+        ((n1, a1), (n2, a2)) if n1 >= 2 && n2 >= 2 => {
+            if a2 - a1 > 0.05 {
+                AccuracyTrend::Up
+            } else if a1 - a2 > 0.05 {
+                AccuracyTrend::Down
+            } else {
+                AccuracyTrend::Flat
+            }
+        }
+        _ => AccuracyTrend::NotEnough,
+    };
+
+    // 卡点节点：窗内答错计数 + 停滞天数，按错次降序取前 5。
+    let mut wrong_by_lesson: HashMap<&str, usize> = HashMap::new();
+    for attempt in &in_window {
+        if !attempt.correct {
+            *wrong_by_lesson.entry(attempt.lesson_id.as_str()).or_default() += 1;
+        }
+    }
+    let mut blockers: Vec<DigestBlocker> = wrong_by_lesson
+        .into_iter()
+        .map(|(lesson_id, wrong_count)| DigestBlocker {
+            lesson_id: lesson_id.to_owned(),
+            wrong_count,
+            stagnant_days: (today - stagnation_base.get(lesson_id).copied().unwrap_or(today)).max(0),
+        })
+        .collect();
+    blockers.sort_by(|a, b| {
+        b.wrong_count
+            .cmp(&a.wrong_count)
+            .then(b.stagnant_days.cmp(&a.stagnant_days))
+            .then(a.lesson_id.cmp(&b.lesson_id))
+    });
+    blockers.truncate(5);
+
+    // 真实保留率：窗内到期推进的通过占比。
+    let pushes_in_window: Vec<&DigestPush> = pushes
+        .iter()
+        .filter(|push| window.contains(&push.day))
+        .collect();
+    let passes = pushes_in_window.iter().filter(|push| push.passed).count();
+    let retention = if pushes_in_window.is_empty() {
+        None
+    } else {
+        Some((passes, pushes_in_window.len() - passes))
+    };
+
+    BehaviorDigest {
+        window_days: days_desc.len(),
+        window_nodes: nodes.len(),
+        extended,
+        first_half: Some(first_half),
+        second_half: Some(second_half),
+        trend,
+        blockers,
+        retention,
+    }
+}
+
+/// 终点覆盖读数（共用存量，ADR-0009 Amendment 1）：所有终点共用同一份
+/// 「已学达标 / 已跳过 / 未达标」+ 概念档位足迹。完成裁决的决断输入，
+/// 永不自动置位完成。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CoverageReading {
+    pub total: usize,
+    pub met: usize,
+    pub skipped: usize,
+    /// 未达标节点的标题（渲染时截断）。
+    pub pending_titles: Vec<String>,
+    /// 课程已教概念的档位足迹（档位降序，只收非零档）。
+    pub tier_footprint: Vec<(ConceptTier, usize)>,
+}
+
+/// 渲染覆盖读数；存量清空时给出「继续生长 or 标记完成」的决断提示
+/// （learnhub cleared 同款语义——决断输入，非完成判据）。
+pub fn render_coverage_gauge(reading: &CoverageReading) -> String {
+    let pending = reading.total.saturating_sub(reading.met + reading.skipped);
+    let footprint = if reading.tier_footprint.is_empty() {
+        "概念足迹 0 枚".to_owned()
+    } else {
+        let items = reading
+            .tier_footprint
+            .iter()
+            .map(|(tier, count)| format!("{} {}", tier_zh(*tier), count))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        format!(
+            "概念足迹 {} 枚（{items}）",
+            reading.tier_footprint.iter().map(|(_, count)| count).sum::<usize>()
+        )
+    };
+    if pending == 0 {
+        return format!(
+            "存量无待办（已学达标 {}、已跳过 {}；跳过≠学会；{footprint}）——考虑继续生长新节点，或把覆盖了这些内容的终点标记完成（已学达标为 0 时不构成完成证据）。",
+            reading.met, reading.skipped
+        );
+    }
+    let pending_list = if reading.pending_titles.is_empty() {
+        String::new()
+    } else {
+        let titles: Vec<String> = reading
+            .pending_titles
+            .iter()
+            .take(8)
+            .map(|title| format!("「{}」", title.trim()))
+            .collect();
+        let more = reading
+            .pending_titles
+            .len()
+            .saturating_sub(8);
+        if more > 0 {
+            format!("未达标：{} 等 {more} 个", titles.join("、"))
+        } else {
+            format!("未达标：{}", titles.join("、"))
+        }
+    };
+    format!(
+        "存量 {total}：已学达标 {met}、已跳过 {skipped}、未达标 {pending}{list}｜{footprint}",
+        total = reading.total,
+        met = reading.met,
+        skipped = reading.skipped,
+        pending = pending,
+        list = if pending_list.is_empty() {
+            String::new()
+        } else {
+            format!("（{pending_list}）")
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1069,7 +1462,10 @@ mod tests {
         let mut endpoints = HashSet::new();
         endpoints.insert("真实终点".to_owned());
         let mut batch = batch_of(vec![node("真实终点", vec![], vec![])]);
-        batch.completed_endpoints = vec!["不存在的终点".into()];
+        batch.completed_endpoints = vec![EndpointVerdict {
+            title: "不存在的终点".into(),
+            completed: true,
+        }];
         let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &endpoints, &HashSet::new());
         assert!(errors.iter().any(|error| error.kind == "endpoint_unknown"));
         assert!(errors.iter().any(|error| error.kind == "title_duplicate"));
@@ -1144,6 +1540,147 @@ mod tests {
     #[test]
     fn parse_coach_reply_rejects_garbage() {
         assert!(parse_coach_reply("sure, here is the plan...").is_err());
+    }
+
+    /// 终点裁决的两种容错形状：文档化的 {title, completed} 对象与裸标题
+    /// 字符串（缺字段视为置完成——常见方向）。
+    #[test]
+    fn parse_coach_reply_tolerates_verdict_shapes() {
+        let raw = r#"{
+            "nodes": [],
+            "mints": [],
+            "completed_endpoints": [
+                { "title": "独立交易", "completed": true },
+                { "title": "读懧行情", "completed": false },
+                "裸标题终点"
+            ],
+            "note": ""
+        }"#;
+        let batch = parse_coach_reply(raw).unwrap();
+        assert_eq!(
+            batch.completed_endpoints,
+            vec![
+                EndpointVerdict { title: "独立交易".into(), completed: true },
+                EndpointVerdict { title: "读懧行情".into(), completed: false },
+                EndpointVerdict { title: "裸标题终点".into(), completed: true },
+            ]
+        );
+    }
+
+    fn attempt(lesson: &str, day: i64, correct: bool) -> DigestAttempt {
+        DigestAttempt { lesson_id: lesson.to_owned(), day, correct }
+    }
+
+    /// 窗口双条款：7 学习日或 10 节点取大；扩展窗口标 extended。
+    #[test]
+    fn behavior_digest_window_takes_the_larger_clause() {
+        // 5 个学习日、20 个节点 → 节点条款生效，5 日全收。
+        let mut attempts = Vec::new();
+        for day in 1..=5 {
+            for index in 0..4 {
+                attempts.push(attempt(&format!("n{day}-{index}"), day, true));
+            }
+        }
+        let digest = fold_behavior_digest(&attempts, &[], 6, &HashMap::new());
+        assert_eq!(digest.window_nodes, 20);
+        assert_eq!(digest.window_days, 5);
+        assert!(!digest.extended);
+
+        // 12 个学习日、每天 1 个节点 → 日条款先满，第 10 日收窗，extended。
+        let attempts: Vec<DigestAttempt> = (1..=12)
+            .map(|day| attempt(&format!("n{day}"), day, true))
+            .collect();
+        let digest = fold_behavior_digest(&attempts, &[], 13, &HashMap::new());
+        assert_eq!(digest.window_days, 10);
+        assert_eq!(digest.window_nodes, 10);
+        assert!(digest.extended);
+    }
+
+    /// 趋势 + 卡点 + 保留率的主体折叠。
+    #[test]
+    fn behavior_digest_folds_trend_blockers_and_retention() {
+        let mut attempts = Vec::new();
+        // 前半窗（日 1-2）全对，后半窗（日 3-4）全错 → 下降。
+        for day in 1..=2 {
+            for index in 0..5 {
+                attempts.push(attempt(&format!("n{day}-{index}"), day, true));
+            }
+        }
+        for day in 3..=4 {
+            for index in 1..=5 {
+                attempts.push(attempt(&format!("n{day}-{index}"), day, false));
+            }
+        }
+        // 卡点：n3-1 停滞 5 天（最近答对从未发生——基线取首次作答日 3，今天 8）。
+        let digest = fold_behavior_digest(
+            &attempts,
+            &[DigestPush { day: 3, passed: true }, DigestPush { day: 4, passed: false }],
+            8,
+            &HashMap::from([("n3-1".to_owned(), 3)]),
+        );
+        assert_eq!(digest.trend, AccuracyTrend::Down);
+        assert!(digest.blockers.iter().any(|blocker| blocker.lesson_id == "n3-1"));
+        assert_eq!(digest.retention, Some((1, 1)));
+        let rendered = digest.render(&HashMap::new());
+        assert!(rendered.contains("下降"), "{rendered}");
+        assert!(rendered.contains("真实保留率：50%"), "{rendered}");
+        assert!(rendered.contains("停滞 5 天"), "{rendered}");
+    }
+
+    /// 空窗（无作答）渲染为空串，整块省略。
+    #[test]
+    fn behavior_digest_empty_window_renders_empty() {
+        let digest = fold_behavior_digest(&[], &[], 100, &HashMap::new());
+        assert!(digest.render(&HashMap::new()).is_empty());
+    }
+
+    /// 覆盖读数：存量构成 + 档位足迹 + 清空态的决断提示。
+    #[test]
+    fn coverage_gauge_renders_shared_stock_and_cleared_state() {
+        let reading = CoverageReading {
+            total: 12,
+            met: 4,
+            skipped: 2,
+            pending_titles: (0..10).map(|index| format!("节点{index}")).collect(),
+            tier_footprint: vec![(ConceptTier::Apply, 5), (ConceptTier::Know, 3)],
+        };
+        let text = render_coverage_gauge(&reading);
+        assert!(text.contains("存量 12：已学达标 4、已跳过 2、未达标 6"), "{text}");
+        assert!(text.contains("未达标：「节点0」"), "{text}");
+        assert!(text.contains("等 2 个"), "10 个只列 8 个: {text}");
+        assert!(text.contains("会用 5"), "{text}");
+        assert!(text.contains("知道 3"), "{text}");
+
+        let cleared = render_coverage_gauge(&CoverageReading {
+            total: 5,
+            met: 4,
+            skipped: 1,
+            pending_titles: vec![],
+            tier_footprint: vec![],
+        });
+        assert!(cleared.contains("存量无待办"), "{cleared}");
+        assert!(cleared.contains("已学达标为 0 时不构成完成证据"), "{cleared}");
+    }
+
+    /// 罗盘陈旧标记：重画后又落了批时，渲染块附陈旧提示。
+    #[test]
+    fn coach_context_marks_stale_compass() {
+        let fresh = CoachContext {
+            ready_count: 2,
+            compass: "罗盘正文".into(),
+            compass_stale_batches: 0,
+            ..Default::default()
+        };
+        assert!(!fresh.render().contains("可能过时"));
+        let stale = CoachContext {
+            ready_count: 2,
+            compass: "罗盘正文".into(),
+            compass_stale_batches: 3,
+            ..Default::default()
+        };
+        let rendered = stale.render();
+        assert!(rendered.contains("画于 3 批之前"), "{rendered}");
+        assert!(rendered.contains("已教概念账与覆盖读数为当前事实源"), "{rendered}");
     }
 
     #[test]
