@@ -70,6 +70,10 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   const [nicknameDraft, setNicknameDraft] = useState('');
   const [nicknameSaving, setNicknameSaving] = useState(false);
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
+  const accountTooltip = planText ? `${displayName} · ${planText}` : displayName;
+  const doubleClickEditHint = t('common.userMenu.doubleClickEditNickname', {
+    defaultValue: '双击修改昵称',
+  });
 
   useEffect(() => {
     if (!authenticated) setCreditsHovered(false);
@@ -111,6 +115,19 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     const initial = (whoami?.nickname ?? whoami?.username ?? '').trim();
     setNicknameDraft(clipNickname(initial));
     setNicknameModalVisible(true);
+  };
+
+  const handleUsernameClick = (event: React.MouseEvent) => {
+    if (!showEditNickname || event.detail < 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handleUsernameDoubleClick = (event: React.MouseEvent) => {
+    if (!showEditNickname) return;
+    event.preventDefault();
+    event.stopPropagation();
+    handleOpenNickname();
   };
 
   const nicknameErrorMessage = (error: unknown): string => {
@@ -365,7 +382,15 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
       </span>
       {!collapsed && (
         <span className='min-w-0 h-31px flex-1 flex flex-col justify-center gap-1px' data-sider-account-copy>
-          <span className='block h-16px truncate text-12px font-500 leading-16px text-t-primary'>{displayName}</span>
+          <span
+            className='block h-16px truncate text-12px font-500 leading-16px text-t-primary select-none'
+            data-sider-account-name
+            title={showEditNickname ? doubleClickEditHint : undefined}
+            onClick={handleUsernameClick}
+            onDoubleClick={handleUsernameDoubleClick}
+          >
+            {displayName}
+          </span>
           <span
             className={classNames(
               'flex items-center gap-4px h-14px min-w-0',
@@ -410,7 +435,11 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
       >
         <Tooltip
           {...siderTooltipProps}
-          content={planText ? `${displayName} · ${planText}` : displayName}
+          content={
+            showEditNickname && !collapsed
+              ? `${accountTooltip} · ${doubleClickEditHint}`
+              : accountTooltip
+          }
           position='right'
           disabled={creditsHovered}
         >

@@ -207,6 +207,7 @@
     "refreshCredits": "刷新积分余额",
     "openWebsite": "打开官网",
     "editNickname": "修改昵称",
+    "doubleClickEditNickname": "双击修改昵称",
     "nicknamePlaceholder": "输入要展示的名字",
     "nicknameSaved": "昵称已更新",
     "nicknameRequired": "请输入昵称",

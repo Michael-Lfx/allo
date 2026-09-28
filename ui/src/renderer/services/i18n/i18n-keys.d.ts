@@ -1126,6 +1126,7 @@ export type I18nKey =
   | 'common.userMenu.contactSupportWithUnread'
   | 'common.userMenu.creditsBalance'
   | 'common.userMenu.creditsUnavailable'
+  | 'common.userMenu.doubleClickEditNickname'
   | 'common.userMenu.editNickname'
   | 'common.userMenu.language'
   | 'common.userMenu.loadingCredits'
