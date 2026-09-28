@@ -21,6 +21,8 @@ use nomi_types::tool::{ToolDef, ToolImage};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use crate::tool_execution::ToolCallTiming;
+
 pub struct ObservationSession {
     recorder: Arc<ObservationRecorder>,
     ids: Mutex<ObservationIds>,
@@ -197,6 +199,7 @@ impl ObservationSession {
         name: &str,
         is_error: bool,
         result: &str,
+        timing: Option<ToolCallTiming>,
     ) {
         let event_type = if is_error {
             EVENT_TOOL_EXECUTION_FAILED
@@ -208,17 +211,17 @@ impl ObservationSession {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(tool_call_id);
-        observe_with_model_call(
-            self,
-            event_type,
-            json!({
-                "tool_call_id": tool_call_id,
-                "name": name,
-                "is_error": is_error,
-                "result": result,
-            }),
-            parent,
-        );
+        let mut payload = json!({
+            "tool_call_id": tool_call_id,
+            "name": name,
+            "is_error": is_error,
+            "result": result,
+        });
+        if let Some(timing) = timing {
+            payload["duration_ms"] = json!(timing.duration_ms);
+            payload["completed_at_ms"] = json!(timing.completed_at_ms);
+        }
+        observe_with_model_call(self, event_type, payload, parent);
     }
 
     pub fn emit_tool_cancelled(&self, tool_call_id: &str, name: &str) {
@@ -1132,7 +1135,16 @@ mod tests {
         .unwrap();
         while rx.recv().await.is_some() {}
 
-        session.emit_tool_finished("call-echo", "echo", false, "pong");
+        session.emit_tool_finished(
+            "call-echo",
+            "echo",
+            false,
+            "pong",
+            Some(ToolCallTiming {
+                duration_ms: 1234,
+                completed_at_ms: 1_790_000_000_000,
+            }),
+        );
 
         let events = recorder.read_events(Some("c-nested")).unwrap();
         let started = events
@@ -1143,6 +1155,8 @@ mod tests {
             .iter()
             .find(|event| event.event_type == EVENT_TOOL_EXECUTION_COMPLETED)
             .expect("tool completed");
+        assert_eq!(completed.payload["duration_ms"], 1234);
+        assert_eq!(completed.payload["completed_at_ms"], 1_790_000_000_000u64);
         assert_eq!(
             nomi_agent_trace::ids_from_payload(&started.payload)
                 .model_call_id
@@ -1263,7 +1277,7 @@ mod tests {
             },
             Some("retry"),
         );
-        session.emit_tool_finished("tool-1", "bash", false, "ok");
+        session.emit_tool_finished("tool-1", "bash", false, "ok", None);
 
         let events = recorder.read_events(Some("c-rebind")).unwrap();
         let finished = events

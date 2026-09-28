@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -146,6 +146,42 @@ fn tool_name_of_call(call: &ContentBlock) -> &str {
 pub struct ToolCallOutcome {
     pub results: Vec<ContentBlock>,
     pub modifiers: Vec<Option<ContextModifier>>,
+    /// Wall-clock timing of each dispatched call, keyed by `tool_use_id`.
+    /// Gated, denied, and skipped calls never ran and have no entry.
+    pub timings: HashMap<String, ToolCallTiming>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolCallTiming {
+    pub duration_ms: u64,
+    pub completed_at_ms: u64,
+}
+
+async fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, ToolCallTiming) {
+    let started = std::time::Instant::now();
+    let output = future.await;
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let completed_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    (
+        output,
+        ToolCallTiming {
+            duration_ms,
+            completed_at_ms,
+        },
+    )
+}
+
+fn record_timing(
+    timings: &mut HashMap<String, ToolCallTiming>,
+    call: &ContentBlock,
+    timing: ToolCallTiming,
+) {
+    if let ContentBlock::ToolUse { id, .. } = call {
+        timings.insert(id.clone(), timing);
+    }
 }
 
 /// Immutable execution authority captured from the exact tool definitions in
@@ -228,6 +264,7 @@ pub async fn execute_tool_calls_scoped(
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
+    let mut timings = HashMap::new();
     let mut cascade = CascadeHalt::default();
     // Engine-produced calls are already canonical. Preparing again here keeps
     // direct/internal execution paths on the same boundary and guarantees that
@@ -288,7 +325,7 @@ pub async fn execute_tool_calls_scoped(
             let futures: Vec<_> = approved
                 .iter()
                 .map(|(_, prepared)| {
-                    execute_single_with_authority(
+                    timed(execute_single_with_authority(
                         registry,
                         prepared.block(),
                         authority,
@@ -296,11 +333,12 @@ pub async fn execute_tool_calls_scoped(
                         hooks_shared,
                         compaction_level,
                         toon_enabled,
-                    )
+                    ))
                 })
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
-            for ((idx, prepared), outcome) in approved.into_iter().zip(batch_results) {
+            for ((idx, prepared), (outcome, timing)) in approved.into_iter().zip(batch_results) {
+                record_timing(&mut timings, prepared.block(), timing);
                 if block_is_error(&outcome.0) {
                     cascade.note(cascade_policy, prepared.block(), false);
                 }
@@ -355,7 +393,8 @@ pub async fn execute_tool_calls_scoped(
                         let modifier;
                         {
                             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-                            (block, modifier) = execute_single_with_authority(
+                            let timing;
+                            ((block, modifier), timing) = timed(execute_single_with_authority(
                                 registry,
                                 call,
                                 authority,
@@ -363,8 +402,9 @@ pub async fn execute_tool_calls_scoped(
                                 hooks_shared,
                                 compaction_level,
                                 toon_enabled,
-                            )
+                            ))
                             .await;
+                            record_timing(&mut timings, call, timing);
                         }
                         // Merge skill hooks after a successful sequential execution.
                         if !block_is_error(&block) {
@@ -380,7 +420,11 @@ pub async fn execute_tool_calls_scoped(
         }
     }
 
-    Ok(ToolCallOutcome { results, modifiers })
+    Ok(ToolCallOutcome {
+        results,
+        modifiers,
+        timings,
+    })
 }
 
 /// Canonicalize one tool call for execution, borrowing whenever nothing changed.
@@ -957,6 +1001,7 @@ async fn execute_tool_calls_with_approval_timeout(
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
+    let mut timings = HashMap::new();
     let mut cascade = CascadeHalt::default();
     // Keep direct protocol callers on the same canonical boundary as the
     // engine and REPL path. Every later decision, approval payload, hook, and
@@ -1008,7 +1053,7 @@ async fn execute_tool_calls_with_approval_timeout(
             let futures: Vec<_> = pending
                 .iter()
                 .map(|prepared| {
-                    execute_single_with_authority(
+                    timed(execute_single_with_authority(
                         registry,
                         prepared.block(),
                         authority,
@@ -1016,11 +1061,12 @@ async fn execute_tool_calls_with_approval_timeout(
                         hooks_shared,
                         compaction_level,
                         toon_enabled,
-                    )
+                    ))
                 })
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
-            for (prepared, (block, modifier)) in pending.into_iter().zip(batch_results) {
+            for (prepared, ((block, modifier), timing)) in pending.into_iter().zip(batch_results) {
+                record_timing(&mut timings, prepared.block(), timing);
                 if let (
                     ContentBlock::ToolUse { id, name, .. },
                     ContentBlock::ToolResult {
@@ -1175,7 +1221,8 @@ async fn execute_tool_calls_with_approval_timeout(
             let modifier;
             {
                 let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-                (result, modifier) = execute_single_with_authority(
+                let timing;
+                ((result, modifier), timing) = timed(execute_single_with_authority(
                     registry,
                     call,
                     authority,
@@ -1183,8 +1230,9 @@ async fn execute_tool_calls_with_approval_timeout(
                     hooks_shared,
                     compaction_level,
                     toon_enabled,
-                )
+                ))
                 .await;
+                record_timing(&mut timings, call, timing);
             }
 
             if let ContentBlock::ToolResult {
@@ -1218,7 +1266,11 @@ async fn execute_tool_calls_with_approval_timeout(
         }
     }
 
-    Ok(ToolCallOutcome { results, modifiers })
+    Ok(ToolCallOutcome {
+        results,
+        modifiers,
+        timings,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2823,6 +2875,68 @@ mod tests {
         fn category(&self) -> nomi_protocol::events::ToolCategory {
             nomi_protocol::events::ToolCategory::Info
         }
+    }
+
+    struct MockDelayTool;
+    #[async_trait::async_trait]
+    impl Tool for MockDelayTool {
+        fn name(&self) -> &str {
+            "MockDelay"
+        }
+        fn description(&self) -> &str {
+            "sleeps for input.ms milliseconds"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({ "type": "object" })
+        }
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        async fn execute(&self, input: serde_json::Value) -> nomi_types::tool::ToolResult {
+            let ms = input["ms"].as_u64().unwrap_or(0);
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            nomi_types::tool::ToolResult {
+                content: format!("slept {ms}"),
+                is_error: false,
+                images: Vec::new(),
+            }
+        }
+        fn category(&self) -> nomi_protocol::events::ToolCategory {
+            nomi_protocol::events::ToolCategory::Info
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_batch_records_per_call_timing() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockDelayTool));
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
+        let delay_call = |id: &str, ms: u64| ContentBlock::ToolUse {
+            id: id.into(),
+            name: "MockDelay".into(),
+            input: json!({ "ms": ms }),
+            extra: None,
+        };
+
+        let outcome = execute_tool_calls_scoped(
+            &registry,
+            &[delay_call("fast", 10), delay_call("slow", 400)],
+            &ProviderToolAuthority::from_request_tools(&registry.to_tool_defs()),
+            "",
+            &confirmer,
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+
+        let fast = outcome.timings["fast"];
+        let slow = outcome.timings["slow"];
+        assert!(slow.duration_ms >= 400, "{slow:?}");
+        assert!(fast.duration_ms < 300, "{fast:?}");
+        assert!(fast.completed_at_ms < slow.completed_at_ms, "{fast:?} {slow:?}");
     }
 
     #[tokio::test]

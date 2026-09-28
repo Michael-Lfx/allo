@@ -432,11 +432,11 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
                     }
                     EVENT_TOOL_EXECUTION_COMPLETED => {
                         tool.completed = Some(event.payload.clone());
-                        tool.ended_at_ms = Some(event.timestamp_ms);
+                        tool.ended_at_ms = Some(tool_completed_at_ms(event));
                     }
                     EVENT_TOOL_EXECUTION_FAILED => {
                         tool.failed = Some(event.payload.clone());
-                        tool.ended_at_ms = Some(event.timestamp_ms);
+                        tool.ended_at_ms = Some(tool_completed_at_ms(event));
                     }
                     EVENT_TOOL_EXECUTION_CANCELLED => {
                         tool.cancelled = Some(event.payload.clone());
@@ -754,13 +754,19 @@ fn project_timeline(
                 }),
             EVENT_TOOL_EXECUTION_COMPLETED
             | EVENT_TOOL_EXECUTION_FAILED
-            | EVENT_TOOL_EXECUTION_CANCELLED => tool_call_id.as_ref().and_then(|tool_call_id| {
-                model_call_id.as_ref().and_then(|model_call_id| {
-                    tool_starts
-                        .get(&(model_call_id.clone(), tool_call_id.clone()))
-                        .map(|started| event.timestamp_ms.saturating_sub(*started))
-                })
-            }),
+            | EVENT_TOOL_EXECUTION_CANCELLED => event
+                .payload
+                .get("duration_ms")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    tool_call_id.as_ref().and_then(|tool_call_id| {
+                        model_call_id.as_ref().and_then(|model_call_id| {
+                            tool_starts
+                                .get(&(model_call_id.clone(), tool_call_id.clone()))
+                                .map(|started| event.timestamp_ms.saturating_sub(*started))
+                        })
+                    })
+                }),
             EVENT_TURN_END => event
                 .payload
                 .get("elapsed_ms")
@@ -1088,6 +1094,16 @@ fn upsert_tool<'a>(
 
 fn string_field(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
+/// Tool results are observed after the whole batch settles, so the event
+/// timestamp is the batch end. Prefer the per-call completion time.
+fn tool_completed_at_ms(event: &ObservationEvent) -> u64 {
+    event
+        .payload
+        .get("completed_at_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(event.timestamp_ms)
 }
 
 fn tool_status(tool: &ProjectedToolExecution) -> ToolExecutionStatus {
@@ -1501,6 +1517,52 @@ mod tests {
             model_call_id: Some(model_call.into()),
             ..ObservationIds::default()
         }
+    }
+
+    #[test]
+    fn batched_tool_results_use_per_call_completion_timing() {
+        let ids = turn_ids("t-batch", "mc-batch");
+        let started = |seq, id: &str| {
+            event(
+                EVENT_TOOL_EXECUTION_STARTED,
+                seq,
+                ids.clone(),
+                serde_json::json!({ "tool_call_id": id, "name": "Read" }),
+            )
+        };
+        let events = vec![
+            event(EVENT_LLM_REQUEST, 1, ids.clone(), serde_json::json!({ "request": {} })),
+            started(2, "fast"),
+            started(3, "slow"),
+            event(
+                EVENT_TOOL_EXECUTION_COMPLETED,
+                10,
+                ids.clone(),
+                serde_json::json!({ "tool_call_id": "fast", "name": "Read", "duration_ms": 5, "completed_at_ms": 1_007 }),
+            ),
+            event(
+                EVENT_TOOL_EXECUTION_COMPLETED,
+                11,
+                ids.clone(),
+                serde_json::json!({ "tool_call_id": "slow", "name": "exec_command" }),
+            ),
+        ];
+
+        let turn = project_turns(&events).pop().expect("turn");
+        let tools = &turn.model_calls[0].tools;
+        let fast = tools.iter().find(|tool| tool.tool_call_id == "fast").unwrap();
+        let slow = tools.iter().find(|tool| tool.tool_call_id == "slow").unwrap();
+        assert_eq!(fast.ended_at_ms, Some(1_007));
+        assert_eq!(slow.ended_at_ms, Some(1_011));
+
+        let durations: HashMap<_, _> = turn
+            .timeline
+            .iter()
+            .filter(|entry| entry.event_type == EVENT_TOOL_EXECUTION_COMPLETED)
+            .map(|entry| (entry.tool_call_id.clone().unwrap(), entry.duration_ms))
+            .collect();
+        assert_eq!(durations["fast"], Some(5));
+        assert_eq!(durations["slow"], Some(8));
     }
 
     #[test]

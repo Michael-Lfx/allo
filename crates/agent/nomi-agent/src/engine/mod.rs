@@ -24,7 +24,7 @@ use crate::compact::state::CompactState;
 use crate::compact::{auto, emergency, estimate, micro, snip, CompactReason};
 use crate::confirm::ToolConfirmer;
 use crate::tool_execution::{
-    ExecutionControl, ProviderToolAuthority, SKIPPED_AFTER_PRIOR_ERROR,
+    ExecutionControl, ProviderToolAuthority, SKIPPED_AFTER_PRIOR_ERROR, ToolCallTiming,
     execute_tool_calls_scoped, execute_tool_calls_with_approval,
 };
 use crate::output::{
@@ -943,7 +943,12 @@ impl AgentEngine {
         }
     }
 
-    fn observe_tool_calls_finished(&self, tool_calls: &[ContentBlock], results: &[ContentBlock]) {
+    fn observe_tool_calls_finished(
+        &self,
+        tool_calls: &[ContentBlock],
+        results: &[ContentBlock],
+        timings: &HashMap<String, ToolCallTiming>,
+    ) {
         let Some(session) = &self.observation else {
             return;
         };
@@ -964,7 +969,13 @@ impl AgentEngine {
                         _ => None,
                     })
                     .unwrap_or("unknown");
-                session.emit_tool_finished(tool_use_id, name, *is_error, content);
+                session.emit_tool_finished(
+                    tool_use_id,
+                    name,
+                    *is_error,
+                    content,
+                    timings.get(tool_use_id).copied(),
+                );
             }
         }
     }
@@ -3081,7 +3092,7 @@ impl AgentEngine {
             };
             self.kpi_mut()
                 .add_tool_wall_ms(tool_started.elapsed().as_millis() as u64);
-            self.observe_tool_calls_finished(&tool_calls, &outcome.results);
+            self.observe_tool_calls_finished(&tool_calls, &outcome.results, &outcome.timings);
             let confirmed_invalid_argument_call_ids =
                 confirmed_predispatch_schema_invalid_call_ids(
                     &invalid_argument_call_ids,
