@@ -1331,8 +1331,15 @@ fn truncate_result(content: &str, max_bytes: usize, cwd: Option<&std::path::Path
     if content.len() <= max_bytes {
         return content.to_string();
     }
-    let locator = nomi_tools::content_ref::persist_content_reference(content, cwd);
-    let clipped = truncate_middle(content, TruncationBudget::Bytes(max_bytes.saturating_sub(locator.len().saturating_add(16))));
+    // Only advertise a locator when the body actually reached the store,
+    // otherwise the model would page a file that does not exist.
+    let Some(locator) = nomi_tools::content_ref::persist_content_reference(content, cwd) else {
+        return truncate_middle(content, TruncationBudget::Bytes(max_bytes));
+    };
+    let clipped = truncate_middle(
+        content,
+        TruncationBudget::Bytes(max_bytes.saturating_sub(locator.len().saturating_add(16))),
+    );
     format!("{locator}\n{clipped}")
 }
 

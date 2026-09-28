@@ -3833,6 +3833,32 @@ impl AgentEngine {
 
     fn apply_microcompact(&mut self) -> u64 {
         let result = micro::microcompact(&mut self.messages, &self.compact_config);
+        if result.cleared_count > 0 {
+            // Keep the cleared bodies reachable: hand each to the content-ref
+            // store and point the placeholder at it, so the model can page the
+            // output back with ReadContentRef instead of losing it for good.
+            // (Images are not pageable through the text store; the undo log
+            // still restores them when the turn fails.)
+            let cwd = self.workspace_cwd();
+            for body in &result.cleared_bodies {
+                if body.content.is_empty() {
+                    continue;
+                }
+                let Some(locator) = nomi_tools::content_ref::persist_content_reference(
+                    &body.content,
+                    cwd.as_deref(),
+                ) else {
+                    continue;
+                };
+                if let Some(ContentBlock::ToolResult { content, .. }) = self
+                    .messages
+                    .get_mut(body.message_index)
+                    .and_then(|message| message.content.get_mut(body.block_index))
+                {
+                    *content = format!("{} {locator}", micro::CLEARED_TOOL_RESULT);
+                }
+            }
+        }
         self.prefix_rewrite_undo.extend(result.cleared_bodies);
         if result.cleared_count > 0 {
             self.sent_prefix_len = self.messages.len();

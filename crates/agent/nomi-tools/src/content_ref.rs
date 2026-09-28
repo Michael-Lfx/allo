@@ -7,6 +7,7 @@
 //! temp directory so tests and headless callers still get a locator.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -31,33 +32,45 @@ pub fn store_dir(cwd: &Path) -> PathBuf {
 ///
 /// `cwd` should be the session workspace. When `None`, the file is written
 /// under a process temp directory (legacy / test fallback).
-pub fn persist_content_reference(content: &str, cwd: Option<&Path>) -> String {
+///
+/// Returns `None` when the body could not be written: the caller must never
+/// hand the model a locator for a file that does not exist.
+pub fn persist_content_reference(content: &str, cwd: Option<&Path>) -> Option<String> {
     let dir = match cwd {
         Some(cwd) => store_dir(cwd),
         None => std::env::temp_dir().join("nomi-content-refs"),
     };
-    ensure_store_dir(&dir);
+    if !ensure_store_dir(&dir) {
+        return None;
+    }
     let id = content_id(content);
     let path = dir.join(&id);
-    let _ = std::fs::write(&path, content);
+    if std::fs::write(&path, content).is_err() {
+        return None;
+    }
+    // Opportunistic, best-effort GC. The store has no session-end hook, so
+    // bound it here instead of letting `.flowy/content-refs/` grow forever.
+    prune_store(&dir, SystemTime::now());
     let rel = format!("{CONTENT_REFS_REL_DIR}/{id}");
-    format!(
+    Some(format!(
         "[content_ref id={id} bytes={}] Full output is at `{rel}`. \
          Call ReadContentRef with this id (optional offset/limit in bytes) to page it.",
         content.len()
-    )
+    ))
 }
 
-/// Hex id derived from a short prefix hash plus length (stable for identical bodies).
+/// Hex id over the WHOLE body (stable for identical bodies).
+///
+/// A prefix-only hash collided for two oversized outputs that shared their
+/// first 4096 bytes *and* total length, and the store would then serve one
+/// body's bytes under the other's id.
 pub fn content_id(content: &str) -> String {
-    let mut hash = 0u64;
-    for (i, b) in content.as_bytes().iter().take(4096).enumerate() {
-        hash = hash
-            .wrapping_mul(131)
-            .wrapping_add(*b as u64)
-            .wrapping_add(i as u64);
+    // FNV-1a over every byte.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in content.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    hash = hash.wrapping_add(content.len() as u64);
     format!("{hash:016x}")
 }
 
@@ -102,11 +115,53 @@ pub fn read_stored(
     Ok(out)
 }
 
-fn ensure_store_dir(dir: &Path) {
-    let _ = std::fs::create_dir_all(dir);
+/// Create the store directory and its `.gitignore`. Returns false when the
+/// directory cannot be created, so the caller can decline to emit a locator.
+fn ensure_store_dir(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
     let gitignore = dir.join(".gitignore");
     if !gitignore.exists() {
         let _ = std::fs::write(gitignore, "*\n");
+    }
+    true
+}
+
+/// Entries older than this are pruned on the next write.
+pub const CONTENT_REF_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// Hard cap on retained entries; the oldest surplus is evicted first.
+pub const CONTENT_REF_MAX_ENTRIES: usize = 512;
+
+/// Best-effort GC for a content-ref store: drop entries older than
+/// [`CONTENT_REF_TTL_SECS`], then the oldest surplus past
+/// [`CONTENT_REF_MAX_ENTRIES`]. Never fails the caller and never removes the
+/// store's own `.gitignore`.
+pub fn prune_store(dir: &Path, now: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(PathBuf, SystemTime)> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name() != ".gitignore")
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((entry.path(), modified))
+        })
+        .collect();
+    // Newest first, so everything past the cap is the oldest surplus.
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    let ttl = Duration::from_secs(CONTENT_REF_TTL_SECS);
+    for (index, (path, modified)) in files.iter().enumerate() {
+        // A future mtime (clock skew) is treated as fresh, never expired.
+        let expired = now
+            .duration_since(*modified)
+            .map(|age| age > ttl)
+            .unwrap_or(false);
+        if expired || index >= CONTENT_REF_MAX_ENTRIES {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -203,7 +258,8 @@ mod tests {
     #[test]
     fn persist_and_read_roundtrip() {
         let dir = tempdir().unwrap();
-        let locator = persist_content_reference("hello world overflow", Some(dir.path()));
+        let locator = persist_content_reference("hello world overflow", Some(dir.path()))
+            .expect("the body is written under a fresh temp dir");
         assert!(locator.contains("[content_ref id="));
         assert!(locator.contains("ReadContentRef"));
         let id = content_id("hello world overflow");
@@ -223,7 +279,7 @@ mod tests {
     async fn tool_pages_with_offset() {
         let dir = tempdir().unwrap();
         let body = "abcdefghijklmnopqrstuvwxyz";
-        persist_content_reference(body, Some(dir.path()));
+        persist_content_reference(body, Some(dir.path())).expect("body persisted");
         let tool = ReadContentRefTool::new(dir.path().to_path_buf());
         let id = content_id(body);
         let result = tool
@@ -232,5 +288,51 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.content.contains("klmno"));
         assert!(result.content.contains("offset=10"));
+    }
+
+    #[test]
+    fn content_id_covers_the_whole_body() {
+        // Same first 4096 bytes and same length, different tail: the old
+        // prefix-only hash gave both the same id.
+        let head = "x".repeat(4096);
+        let a = format!("{head}AAAA");
+        let b = format!("{head}BBBB");
+        assert_eq!(a.len(), b.len());
+        assert_ne!(content_id(&a), content_id(&b));
+    }
+
+    #[test]
+    fn prune_drops_expired_entries_and_keeps_fresh_ones() {
+        let root = tempdir().unwrap();
+        let dir = store_dir(root.path());
+        assert!(ensure_store_dir(&dir));
+        let fresh = dir.join(content_id("fresh"));
+        let stale = dir.join(content_id("stale"));
+        std::fs::write(&fresh, "fresh").unwrap();
+        std::fs::write(&stale, "stale").unwrap();
+
+        let now = SystemTime::now();
+        let old = now - Duration::from_secs(CONTENT_REF_TTL_SECS + 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        prune_store(&dir, now);
+
+        assert!(fresh.exists(), "a fresh entry survives");
+        assert!(!stale.exists(), "an entry past the TTL is dropped");
+        assert!(dir.join(".gitignore").exists(), "the store keeps its gitignore");
+    }
+
+    #[test]
+    fn persist_reports_failure_instead_of_dangling_a_locator() {
+        let root = tempdir().unwrap();
+        // A regular file where the store directory should be: create_dir_all fails.
+        let blocked = root.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        assert!(persist_content_reference("body", Some(&blocked)).is_none());
     }
 }

@@ -724,7 +724,7 @@ async fn tc_2_6_02_micro_before_auto_execution_order() {
             matches!(
                 b,
                 nomi_types::message::ContentBlock::ToolResult { content, .. }
-                    if content == nomi_agent::compact::micro::CLEARED_TOOL_RESULT
+                    if content.starts_with(nomi_agent::compact::micro::CLEARED_TOOL_RESULT)
             )
         })
         .count();

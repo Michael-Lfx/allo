@@ -296,7 +296,9 @@ fn is_compactable_and_live(
         ..
     } = block
     {
-        if content == CLEARED_TOOL_RESULT {
+        // An annotated placeholder ("[Tool result cleared] [content_ref
+        // id=…]") must not be cleared a second time.
+        if content.starts_with(CLEARED_TOOL_RESULT) {
             return false;
         }
         if let Some(name) = tool_names.get(tool_use_id) {

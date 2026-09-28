@@ -660,7 +660,11 @@ fn microcompact_clears_old_results() {
         .iter()
         .flat_map(|m| &m.content)
         .filter(|b| {
-            matches!(b, ContentBlock::ToolResult { content, .. } if content == "[Tool result cleared]")
+            matches!(
+                b,
+                ContentBlock::ToolResult { content, .. }
+                    if content.starts_with("[Tool result cleared]")
+            )
         })
         .count();
 
@@ -724,7 +728,11 @@ async fn idle_cache_expired_microcompacts_below_watermark() {
         .iter()
         .flat_map(|m| &m.content)
         .filter(|b| {
-            matches!(b, ContentBlock::ToolResult { content, .. } if content == "[Tool result cleared]")
+            matches!(
+                b,
+                ContentBlock::ToolResult { content, .. }
+                    if content.starts_with("[Tool result cleared]")
+            )
         })
         .count();
     assert_eq!(cleared_count, 9);
