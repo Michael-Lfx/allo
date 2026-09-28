@@ -12,6 +12,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { CheckOne, CloseOne, Copy, Edit, Info, Lightning, Loading, Undo } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 import { copyText } from '@/renderer/utils/ui/clipboard';
@@ -387,6 +388,12 @@ const MessageText: React.FC<{
   const conversationContext = useConversationContextSafe();
   const shouldShowActions = !hideActions;
 
+  useEffect(() => {
+    if (!showCopyAlert) return undefined;
+    const timer = window.setTimeout(() => setShowCopyAlert(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [showCopyAlert]);
+
   const turnCreditKey =
     creditTurnId ?? message.turn_id ?? message.msg_id ?? message.message_id;
   const conversationId = conversationContext?.conversation_id;
@@ -514,7 +521,6 @@ const MessageText: React.FC<{
     copyText(textToCopy)
       .then(() => {
         setShowCopyAlert(true);
-        setTimeout(() => setShowCopyAlert(false), 2000);
         if (!isUserMessage) {
           confirmFirstValue({ source: 'copy_answer' });
           markFirstWinCompleted();
@@ -744,16 +750,20 @@ const MessageText: React.FC<{
       ) : null}
     </div>
   ) : null;
-  const copyAlert = showCopyAlert ? (
-    <Alert
-      type='success'
-      content={t('messages.copySuccess')}
-      showIcon
-      className='message-copy-toast fixed top-20px left-50% transform -translate-x-50% z-9999 w-max max-w-[80%]'
-      style={{ boxShadow: '0px 2px 12px rgba(0,0,0,0.12)' }}
-      closable={false}
-    />
-  ) : null;
+
+  const copyAlert =
+    showCopyAlert && typeof document !== 'undefined'
+      ? createPortal(
+          <Alert
+            type='success'
+            content={t('messages.copySuccess')}
+            showIcon
+            className='message-copy-toast'
+            closable={false}
+          />,
+          document.body,
+        )
+      : null;
 
   const extractModal = showExtractModal ? (
     <ExtractPresetModal
