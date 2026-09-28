@@ -284,6 +284,15 @@ i18n 回退链（host 侧实现一次，两个方向都要）：`zh → en → k
 值完全不进传输摘要。4 个 plain 默认值（`qinghu-ai.QINGHU_ENV="prod"`、tdengine 三项）由导入期
 写进声明，运行时据此落进 `values`。
 
+**`values` 为空时不写**（实施期补记）：`to_config_json` 只在 `values` 非空时输出这个键。
+序列化一个空 map 会改写**每一行既有 HTTP/SSE server** 的 `transport_config`，而
+`upsert_server` 把任何配置差异读成"配置变了"——它会写 `enabled = false`、清空已探测的工具、
+把 `last_test_status` 置回 `disconnected`（`nomifun-mcp/src/service.rs:402-417`）。也就是说：
+空 map 若照写，既有 server 下一次被保存（任何走过 upsert 的路径，含市场 install/update）
+都会变成"已停用、需重测"，而用户什么都没改。协议侧的 `McpTransport` 本来就是
+`skip_serializing_if = "HashMap::is_empty"`，存储侧与它对齐；`from_db` 对缺席的 `values`
+按空处理，老行照旧可读。
+
 写入路径要求：原子写、文件权限 600（与 GitHub 官方 token 处理口径一致）；`[credentials]`
 仍不进 `config/get`。**写入后必须同步更新进程内快照**，否则出现"写成功但用不上"
 （进程映射在 `main.rs:344` 只装一次）。
