@@ -67,6 +67,7 @@ import {
   rememberVideoGenerationTask,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
+import { formatClipOperationError } from './clipFailure';
 import type { CanvasProjectMeta, GenerationTaskView } from '../videoCanvas/api';
 import { isStandaloneClipTask, toUpdatedAtMs } from './recentCreations';
 import styles from './index.module.css';
@@ -691,16 +692,19 @@ const VideoGenerationListPage: React.FC = () => {
           navigate('/cloud-login');
           return;
         }
-        message.error(
-          `${t('videoGeneration.create.generateFailed', {
-            defaultValue: '视频生成创建失败',
-          })}: ${cause instanceof Error ? cause.message : String(cause)}`
-        );
+        const failure = formatClipOperationError(cause, t, {
+          key: 'videoGeneration.create.generateFailed',
+          defaultValue: '视频生成创建失败',
+        });
+        message.error(failure.message);
+        if (failure.credits) {
+          trackLowCreditBalance({ source: 'video_launch', balance });
+        }
       } finally {
         setCreating(false);
       }
     },
-    [creating, logout, message, navigate, t]
+    [creating, logout, message, navigate, t, balance]
   );
 
   const handleCreateBriefing = useCallback(
