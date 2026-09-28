@@ -9,8 +9,9 @@ import { Message } from '@arco-design/web-react';
 import { Copy, Refresh } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import SyntaxHighlighter, { vs, vs2015 } from './SyntaxHighlighter';
+import { beautifulUiHighlightStyle } from '@renderer/components/beautifulUi/codeBlock/codeBlockHighlight';
 import { repairFigure } from './figureRepair';
+import SyntaxHighlighter from './SyntaxHighlighter';
 
 // The jsxgraph package's "exports" map does not expose its CSS, so the
 // minimal .jxgbox rules it needs live in ShadowView's stylesheet instead.
@@ -189,7 +190,6 @@ function JsxGraphBlock({ code, style }: JsxGraphBlockProps) {
     }
   }, [repairing, source, error, t]);
 
-  const codeTheme = currentTheme === 'dark' ? vs2015 : vs;
   const showPreview = viewMode === 'preview' && error === null;
 
   return (
@@ -281,7 +281,7 @@ function JsxGraphBlock({ code, style }: JsxGraphBlockProps) {
             <SyntaxHighlighter
               children={source}
               language='javascript'
-              style={codeTheme}
+              style={beautifulUiHighlightStyle}
               PreTag='div'
               customStyle={{
                 margin: 0,
@@ -291,8 +291,9 @@ function JsxGraphBlock({ code, style }: JsxGraphBlockProps) {
                 color: 'var(--text-primary)',
                 overflowX: 'auto',
                 maxWidth: '100%',
+                fontFamily: 'var(--code-font)',
               }}
-              codeTagProps={{ style: { color: 'var(--text-primary)' } }}
+              codeTagProps={{ style: { color: 'var(--text-primary)', fontFamily: 'var(--code-font)' } }}
             />
           </div>
         )}

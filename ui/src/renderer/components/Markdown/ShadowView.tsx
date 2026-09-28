@@ -844,6 +844,17 @@ const ShadowView = ({
           computedStyle.getPropertyValue('--color-primary-6').trim() || theme.Color.PrimaryColor,
         '--color-link-hover':
           computedStyle.getPropertyValue('--color-primary-7').trim() || theme.Color.PrimaryColor,
+        '--code-font': computedStyle.getPropertyValue('--code-font'),
+        '--code-token-text': computedStyle.getPropertyValue('--code-token-text'),
+        '--code-token-keyword': computedStyle.getPropertyValue('--code-token-keyword'),
+        '--code-token-function': computedStyle.getPropertyValue('--code-token-function'),
+        '--code-token-type': computedStyle.getPropertyValue('--code-token-type'),
+        '--code-token-constant': computedStyle.getPropertyValue('--code-token-constant'),
+        '--code-token-string': computedStyle.getPropertyValue('--code-token-string'),
+        '--code-token-comment': computedStyle.getPropertyValue('--code-token-comment'),
+        '--code-token-tag': computedStyle.getPropertyValue('--code-token-tag'),
+        '--code-token-variable': computedStyle.getPropertyValue('--code-token-variable'),
+        '--code-token-punctuation': computedStyle.getPropertyValue('--code-token-punctuation'),
       };
 
       // Remove old style and add new style

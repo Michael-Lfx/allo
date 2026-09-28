@@ -29,6 +29,8 @@ describe('CodeBlock streaming behavior', () => {
     expect(source.includes('node.scrollTop = node.scrollHeight')).toBe(true);
     expect(source.includes('streaming={isStreaming}')).toBe(false);
     expect(source.includes('streaming={false}')).toBe(true);
+    expect(source.includes('useDeferredValue')).toBe(true);
+    expect(source.includes('MemoSyntaxHighlighter')).toBe(true);
   });
 
   test('conversation streaming activates Markdown only after a code fence begins', () => {
@@ -65,5 +67,7 @@ describe('CodeBlock streaming behavior', () => {
     expect(shadowSource.includes('.markdown-code-footer:hover')).toBe(true);
     expect(shadowSource.includes('.markdown-code-footer:active')).toBe(true);
     expect(shadowSource.includes('.markdown-code-footer:focus-visible')).toBe(true);
+    expect(shadowSource.includes("'--code-font'")).toBe(true);
+    expect(shadowSource.includes("'--code-token-keyword'")).toBe(true);
   });
 });

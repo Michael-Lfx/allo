@@ -62,4 +62,13 @@ describe('flowy visual system', () => {
     expect(css.includes('--flowy-panel: var(--bg-1')).toBe(true);
     expect(css.includes('--flowy-raised: var(--color-bg-popup')).toBe(true);
   });
+
+  test('declares GitHub-style code token colors for light and dark', () => {
+    expect(css.includes('--code-font:')).toBe(true);
+    expect(css.includes('--code-token-keyword:')).toBe(true);
+    const darkBlock = css.slice(css.indexOf("[data-theme='dark']"));
+    expect(darkBlock.includes('--code-token-keyword: #ff7b72')).toBe(true);
+    expect(darkBlock.includes('--code-token-function: #d2a8ff')).toBe(true);
+    expect(darkBlock.includes('--code-token-string: #a5d6ff')).toBe(true);
+  });
 });

@@ -1,14 +1,14 @@
 
 
 import mermaid from 'mermaid';
-import SyntaxHighlighter, { vs, vs2015 } from './SyntaxHighlighter';
-
+import { beautifulUiHighlightStyle } from '@renderer/components/beautifulUi/codeBlock/codeBlockHighlight';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Copy, PreviewOpen } from '@icon-park/react';
 import { usePreviewContextOptional } from '@/renderer/pages/conversation/Preview/context/PreviewContext';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import SyntaxHighlighter from './SyntaxHighlighter';
 
 type MermaidBlockProps = {
   code: string;
@@ -126,7 +126,6 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
     };
   }, [debouncedCode, currentTheme]);
 
-  const codeTheme = currentTheme === 'dark' ? vs2015 : vs;
   const shouldShowLoading = isRendering && preferredViewModeRef.current !== 'source';
   const summary = code
     .split(/\r?\n/)
@@ -232,7 +231,7 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
           <SyntaxHighlighter
             children={code}
             language='mermaid'
-            style={codeTheme}
+            style={beautifulUiHighlightStyle}
             PreTag='div'
             customStyle={{
               margin: 0,
@@ -242,8 +241,9 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
               color: 'var(--text-primary)',
               overflowX: 'auto',
               maxWidth: '100%',
+              fontFamily: 'var(--code-font)',
             }}
-            codeTagProps={{ style: { color: 'var(--text-primary)' } }}
+            codeTagProps={{ style: { color: 'var(--text-primary)', fontFamily: 'var(--code-font)' } }}
           />
         )}
       </div>

@@ -1,4 +1,5 @@
 .root {
+  --code-font: var(--flowy-font-mono, 'Cascadia Code', 'JetBrains Mono', 'SF Mono', Consolas, ui-monospace, monospace);
   min-width: 0;
   width: 100%;
   overflow: hidden;
@@ -30,7 +31,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--color-text-1, #1d2129);
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-family: var(--code-font);
   font-size: 12px;
   font-weight: 500;
   line-height: 16px;
@@ -103,9 +104,111 @@
   padding: 10px 12px;
   background: var(--color-fill-1, #f7f8fa);
   color: var(--color-text-2, #4e5969);
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-  font-size: 11.5px;
+  font-family: var(--code-font);
+  font-size: 12.5px;
   line-height: 1.7;
+}
+
+.body code {
+  font-family: inherit;
+}
+
+/* Token colours via class names (useInlineStyles={false}) so expand/collapse
+   does not rebuild a style object for every span. */
+.body :global(.hljs) {
+  color: var(--code-token-text, #1f2328);
+  background: transparent;
+}
+
+.body :global(.hljs-keyword),
+.body :global(.hljs-meta-keyword),
+.body :global(.hljs-selector-tag),
+.body :global(.hljs-template-tag),
+.body :global(.hljs-variable.language_),
+.body :global(.hljs-doctag),
+.body :global(.hljs-operator) {
+  color: var(--code-token-keyword);
+}
+
+.body :global(.hljs-title),
+.body :global(.hljs-title.function_),
+.body :global(.hljs-section) {
+  color: var(--code-token-function);
+}
+
+.body :global(.hljs-section) {
+  font-weight: 600;
+}
+
+.body :global(.hljs-built_in),
+.body :global(.hljs-type),
+.body :global(.hljs-class),
+.body :global(.hljs-title.class_),
+.body :global(.hljs-title.class_.inherited__) {
+  color: var(--code-token-type);
+}
+
+.body :global(.hljs-literal),
+.body :global(.hljs-number),
+.body :global(.hljs-symbol),
+.body :global(.hljs-attr),
+.body :global(.hljs-attribute),
+.body :global(.hljs-selector-id),
+.body :global(.hljs-selector-class),
+.body :global(.hljs-selector-attr),
+.body :global(.hljs-selector-pseudo),
+.body :global(.hljs-property),
+.body :global(.hljs-meta) {
+  color: var(--code-token-constant);
+}
+
+.body :global(.hljs-string),
+.body :global(.hljs-regexp),
+.body :global(.hljs-link) {
+  color: var(--code-token-string);
+}
+
+.body :global(.hljs-link) {
+  text-decoration: underline;
+}
+
+.body :global(.hljs-comment) {
+  color: var(--code-token-comment);
+  font-style: italic;
+}
+
+.body :global(.hljs-quote),
+.body :global(.hljs-name),
+.body :global(.hljs-addition) {
+  color: var(--code-token-tag);
+}
+
+.body :global(.hljs-template-variable),
+.body :global(.hljs-variable),
+.body :global(.hljs-bullet) {
+  color: var(--code-token-variable);
+}
+
+.body :global(.hljs-tag),
+.body :global(.hljs-punctuation) {
+  color: var(--code-token-punctuation);
+}
+
+.body :global(.hljs-subst),
+.body :global(.hljs-params) {
+  color: var(--code-token-text);
+}
+
+.body :global(.hljs-emphasis) {
+  font-style: italic;
+}
+
+.body :global(.hljs-strong) {
+  font-weight: 600;
+}
+
+.body :global(.hljs-deletion) {
+  color: var(--color-danger-6, #f53f3f);
 }
 
 pre.body {

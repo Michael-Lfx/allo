@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import katex from 'katex';
-import React, { useId, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import BeautifulUiCodeBlock from '@renderer/components/beautifulUi/codeBlock/CodeBlock';
 import { beautifulUiHighlightStyle } from '@renderer/components/beautifulUi/codeBlock/codeBlockHighlight';
@@ -11,9 +11,55 @@ import SyntaxHighlighter from './SyntaxHighlighter';
 import { resolveSyntaxLanguage } from './syntaxLanguage';
 
 const PREVIEW_LINES = 3;
-const CODE_LINE_HEIGHT = 20;
+const CODE_LINE_HEIGHT = 21;
 const CODE_PADDING_VERTICAL = 20;
 const COLLAPSED_HEIGHT = PREVIEW_LINES * CODE_LINE_HEIGHT + CODE_PADDING_VERTICAL;
+const EMPTY_DIFF_LINES: string[] = [];
+
+const MemoSyntaxHighlighter = React.memo(SyntaxHighlighter);
+
+const highlighterCustomStyle: React.CSSProperties = {
+  margin: 0,
+  padding: 0,
+  borderRadius: 0,
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--color-text-2, #4e5969)',
+  overflow: 'visible',
+  maxWidth: '100%',
+  minWidth: 0,
+  width: '100%',
+  fontFamily: 'var(--code-font)',
+  fontSize: '12.5px',
+  lineHeight: 1.7,
+  whiteSpace: 'pre-wrap',
+};
+
+const highlighterCodeStyle: React.CSSProperties = {
+  color: 'inherit',
+  background: 'transparent',
+  display: 'block',
+  maxWidth: '100%',
+  minWidth: 0,
+  overflow: 'visible',
+  overflowWrap: 'anywhere',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  fontFamily: 'var(--code-font)',
+  fontSize: '12.5px',
+  lineHeight: 1.7,
+};
+
+const highlighterLineNumberStyle: React.CSSProperties = {
+  minWidth: '20px',
+  paddingRight: '10px',
+  marginRight: 0,
+  color: 'color-mix(in srgb, var(--color-text-3, #86909c) 60%, transparent)',
+  fontSize: '10.5px',
+  lineHeight: 1.86,
+  textAlign: 'right',
+  userSelect: 'none',
+};
 
 const MermaidBlock = React.lazy(() => import('./MermaidBlock'));
 const SvgBlock = React.lazy(() => import('./SvgBlock'));
@@ -28,6 +74,69 @@ type CodeBlockProps = {
   isStreaming?: boolean;
   [key: string]: unknown;
 };
+
+type CodeFenceHighlightProps = {
+  content: string;
+  language: string;
+  isDiff: boolean;
+  isDark: boolean;
+  diffLines: string[];
+};
+
+/** Isolated from expand/collapse chrome so toggling max-height does not rebuild the token tree. */
+const CodeFenceHighlight = React.memo(function CodeFenceHighlight({
+  content,
+  language,
+  isDiff,
+  isDark,
+  diffLines,
+}: CodeFenceHighlightProps) {
+  const lineProps = useCallback(
+    (lineNumber: number) => ({
+      style: {
+        display: 'block' as const,
+        minWidth: 0,
+        ...(isDiff ? getDiffLineStyle(diffLines[lineNumber - 1] || '', isDark) : {}),
+      },
+    }),
+    [diffLines, isDark, isDiff]
+  );
+  const codeTagProps = useMemo(() => ({ style: { ...highlighterCodeStyle } }), []);
+  const fallback = (
+    <div style={highlighterCustomStyle} data-syntax-highlight-fallback>
+      <code style={highlighterCodeStyle}>{content}</code>
+    </div>
+  );
+
+  return (
+    <SyntaxHighlightBoundary fallback={fallback} resetKey={`${language}\u0000${content}`}>
+      <MemoSyntaxHighlighter
+        children={content}
+        language={language}
+        style={beautifulUiHighlightStyle}
+        useInlineStyles={false}
+        showLineNumbers
+        PreTag='div'
+        wrapLongLines
+        wrapLines
+        lineNumberStyle={highlighterLineNumberStyle}
+        lineProps={lineProps}
+        customStyle={highlighterCustomStyle}
+        codeTagProps={codeTagProps}
+      />
+    </SyntaxHighlightBoundary>
+  );
+});
+
+function areCodeBlockPropsEqual(prev: CodeBlockProps, next: CodeBlockProps): boolean {
+  return (
+    prev.children === next.children &&
+    prev.className === next.className &&
+    prev.isStreaming === next.isStreaming &&
+    prev.hiddenCodeCopyButton === next.hiddenCodeCopyButton &&
+    prev.codeStyle === next.codeStyle
+  );
+}
 
 function CodeBlock(props: CodeBlockProps) {
   const { children, className, node: _node, hiddenCodeCopyButton, codeStyle: _c, isStreaming = false, ...rest } = props;
@@ -49,6 +158,29 @@ function CodeBlock(props: CodeBlockProps) {
     return () => observer.disconnect();
   }, []);
 
+  const formattedContent = useMemo(() => formatCode(children), [children]);
+  const deferredContent = useDeferredValue(formattedContent);
+  const highlightContent = isStreaming ? deferredContent : formattedContent;
+  const match = /(?:^|\s)language-([^\s]+)/.exec(className || '');
+  const language = match?.[1] || 'text';
+  const highlightLanguage = resolveSyntaxLanguage(language);
+  const isDiff = highlightLanguage === 'diff';
+  const isDark = currentTheme === 'dark';
+  const diffLines = useMemo(
+    () => (isDiff ? formattedContent.split('\n') : EMPTY_DIFF_LINES),
+    [isDiff, formattedContent]
+  );
+
+  const setContentRef = useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node;
+  }, []);
+
+  useEffect(() => {
+    if (!isStreaming) return;
+    const node = contentRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [highlightContent, isStreaming]);
+
   const toggleExpanded = () => {
     const willCollapse = expanded;
     setExpanded((v) => !v);
@@ -59,8 +191,6 @@ function CodeBlock(props: CodeBlockProps) {
     }
   };
 
-  const match = /(?:^|\s)language-([^\s]+)/.exec(className || '');
-  const language = match?.[1] || 'text';
   const filename = filenameFromFenceNode(props.node);
 
   // KaTeX math blocks
@@ -112,51 +242,12 @@ function CodeBlock(props: CodeBlockProps) {
     );
   }
 
-  const formattedContent = formatCode(children);
-  const highlightLanguage = resolveSyntaxLanguage(language);
-  const isDiff = highlightLanguage === 'diff';
   const totalLines = formattedContent.split('\n').length;
   const canCollapse = totalLines > PREVIEW_LINES;
   const isEffectivelyExpanded = isStreaming || expanded;
-  const diffLines = isDiff ? formattedContent.split('\n') : [];
-  const isDark = currentTheme === 'dark';
 
   const codeContentId = `${blockId}-content`;
   const footerId = `${blockId}-footer`;
-
-  const highlighterCustomStyle: React.CSSProperties = {
-    margin: 0,
-    padding: 0,
-    borderRadius: 0,
-    border: 'none',
-    background: 'transparent',
-    color: 'var(--color-text-2, #4e5969)',
-    overflow: 'visible',
-    maxWidth: '100%',
-    minWidth: 0,
-    width: '100%',
-    fontSize: '11.5px',
-    lineHeight: 1.7,
-    whiteSpace: 'pre-wrap',
-  };
-  const highlighterCodeStyle: React.CSSProperties = {
-    color: 'inherit',
-    background: 'transparent',
-    display: 'block',
-    maxWidth: '100%',
-    minWidth: 0,
-    overflow: 'visible',
-    overflowWrap: 'anywhere',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    fontSize: '11.5px',
-    lineHeight: 1.7,
-  };
-  const plainTextFallback = (
-    <div style={highlighterCustomStyle} data-syntax-highlight-fallback>
-      <code style={{ ...highlighterCodeStyle, whiteSpace: 'pre-wrap' }}>{formattedContent}</code>
-    </div>
-  );
 
   return (
     <div
@@ -196,12 +287,7 @@ function CodeBlock(props: CodeBlockProps) {
         }
         highlighted={
           <div
-            ref={(node) => {
-              contentRef.current = node;
-              if (node && isStreaming) {
-                node.scrollTop = node.scrollHeight;
-              }
-            }}
+            ref={setContentRef}
             id={codeContentId}
             className='markdown-code-content'
             style={{
@@ -210,41 +296,13 @@ function CodeBlock(props: CodeBlockProps) {
               overflowY: isStreaming ? 'auto' : 'clip',
             }}
           >
-            <SyntaxHighlightBoundary
-              fallback={plainTextFallback}
-              resetKey={`${highlightLanguage}\u0000${formattedContent}`}
-            >
-              <SyntaxHighlighter
-                children={formattedContent}
-                language={highlightLanguage}
-                style={beautifulUiHighlightStyle}
-                showLineNumbers
-                PreTag='div'
-                wrapLongLines
-                wrapLines
-                lineNumberStyle={{
-                  minWidth: '20px',
-                  paddingRight: '10px',
-                  marginRight: 0,
-                  color: 'color-mix(in srgb, var(--color-text-3, #86909c) 60%, transparent)',
-                  fontSize: '10.5px',
-                  lineHeight: 1.86,
-                  textAlign: 'right',
-                  userSelect: 'none',
-                }}
-                lineProps={(lineNumber: number) => ({
-                  style: {
-                    display: 'block',
-                    minWidth: 0,
-                    ...(isDiff ? getDiffLineStyle(diffLines[lineNumber - 1] || '', isDark) : {}),
-                  },
-                })}
-                customStyle={highlighterCustomStyle}
-                codeTagProps={{
-                  style: highlighterCodeStyle,
-                }}
-              />
-            </SyntaxHighlightBoundary>
+            <CodeFenceHighlight
+              content={highlightContent}
+              language={highlightLanguage}
+              isDiff={isDiff}
+              isDark={isDark}
+              diffLines={diffLines}
+            />
           </div>
         }
         footer={
@@ -280,4 +338,4 @@ function CodeBlock(props: CodeBlockProps) {
   );
 }
 
-export default CodeBlock;
+export default React.memo(CodeBlock, areCodeBlockPropsEqual);

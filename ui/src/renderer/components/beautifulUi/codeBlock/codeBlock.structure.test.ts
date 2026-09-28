@@ -59,4 +59,16 @@ describe('CodeBlock', () => {
     expect(cssSource.includes('0 0 8px')).toBe(false);
     expect(cssSource.includes('background: var(--color-primary-6')).toBe(true);
   });
+
+  test('uses inherited code font tokens and does not pin light token colors on .root', () => {
+    expect(cssSource.includes('var(--code-font)')).toBe(true);
+    expect(cssRuleFor('.filename').includes('var(--code-font)')).toBe(true);
+    expect(cssRuleFor('.body').includes('var(--code-font)')).toBe(true);
+    expect(cssRuleFor('.body').includes('font-size: 12.5px')).toBe(true);
+    expect(cssRuleFor('.body code').includes('font-family: inherit')).toBe(true);
+    expect(cssRuleFor('.root').includes('--code-token-keyword')).toBe(false);
+    expect(cssSource.includes('var(--font-mono')).toBe(false);
+    expect(cssSource.includes(':global(.hljs-keyword)')).toBe(true);
+    expect(cssSource.includes('color: var(--code-token-keyword)')).toBe(true);
+  });
 });

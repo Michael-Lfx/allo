@@ -19,6 +19,24 @@ describe('Markdown fenced CodeBlock Beautiful UI wrap', () => {
     expect(source.includes("width: 'fit-content'")).toBe(false);
   });
 
+  test('pins highlighter font to --code-font at 12.5px and defers streaming highlight', () => {
+    expect(source.includes("fontFamily: 'var(--code-font)'")).toBe(true);
+    expect(source.includes("fontSize: '12.5px'")).toBe(true);
+    expect(source.includes('useDeferredValue')).toBe(true);
+    expect(source.includes('React.memo')).toBe(true);
+    expect(source.includes('const CODE_LINE_HEIGHT = 21')).toBe(true);
+    expect(source.includes('11.5px')).toBe(false);
+  });
+
+  test('keeps the token tree stable across expand and markdown re-renders', () => {
+    expect(source.includes('useMemo(() => formatCode(children)')).toBe(true);
+    expect(source.includes('const highlightContent = isStreaming ? deferredContent : formattedContent')).toBe(true);
+    expect(source.includes('useInlineStyles={false}')).toBe(true);
+    expect(source.includes('function areCodeBlockPropsEqual')).toBe(true);
+    expect(source.includes('const CodeFenceHighlight = React.memo')).toBe(true);
+    expect(source.includes('React.memo(CodeBlock, areCodeBlockPropsEqual)')).toBe(true);
+  });
+
   test('lazy-loads Mermaid instead of statically importing the diagram runtime', () => {
     expect(source.includes("React.lazy(() => import('./MermaidBlock'))")).toBe(true);
     expect(source.includes("import MermaidBlock from './MermaidBlock'")).toBe(false);
@@ -26,7 +44,7 @@ describe('Markdown fenced CodeBlock Beautiful UI wrap', () => {
 
   test('does not wrap inline code in the Beautiful UI shell', () => {
     const inlineStart = source.indexOf("if (!String(children).includes('\\n'))");
-    const inlineBlock = source.slice(inlineStart, source.indexOf('const isDiff', inlineStart));
+    const inlineBlock = source.slice(inlineStart, source.indexOf('const totalLines', inlineStart));
     expect(inlineStart).toBeGreaterThan(-1);
     expect(inlineBlock.includes('<code')).toBe(true);
     expect(inlineBlock.includes('BeautifulUiCodeBlock')).toBe(false);

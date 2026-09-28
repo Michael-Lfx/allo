@@ -32,4 +32,10 @@ describe('Mermaid Shadow DOM toolbar', () => {
     expect(/from ['"]@\/renderer\/pages\/conversation\/Preview['"]/.test(mermaidSource)).toBe(false);
     expect(mermaidSource.includes("from '@/renderer/pages/conversation/Preview/context/PreviewContext'")).toBe(true);
   });
+
+  test('highlights source with Beautiful UI GitHub tokens instead of vs/vs2015', () => {
+    expect(mermaidSource.includes('beautifulUiHighlightStyle')).toBe(true);
+    expect(mermaidSource.includes("fontFamily: 'var(--code-font)'")).toBe(true);
+    expect(mermaidSource.includes('vs2015')).toBe(false);
+  });
 });
