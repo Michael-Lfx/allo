@@ -432,130 +432,29 @@ const MAX_PROVIDER_REQUEST_IMAGES: usize = 20;
 const MAX_SINGLE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES: usize = MAX_SINGLE_IMAGE_BYTES.div_ceil(3) * 4;
 
-#[derive(Debug, Default, PartialEq, Eq)]
-struct ToolEfficiencyStats {
-    model_turn_attempts: usize,
-    model_turns_with_tools: usize,
-    total_tool_calls: usize,
-    max_calls_in_model_turn: usize,
-    exec_command_script_calls: usize,
-    batch_read_files_requested: usize,
-    error_results: usize,
-    skipped_after_prior_error: usize,
-}
+mod efficiency;
 
-impl ToolEfficiencyStats {
-    fn observe_model_turn_attempt(&mut self) {
-        self.model_turn_attempts = self.model_turn_attempts.saturating_add(1);
-    }
+#[cfg(test)]
+mod restart_tests;
 
-    fn observe_calls(&mut self, _registry: &ToolRegistry, blocks: &[ContentBlock]) {
-        let calls = blocks
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolUse { name, input, .. } => Some((name.as_str(), input)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if calls.is_empty() {
-            return;
-        }
+use efficiency::ToolEfficiencyStats;
 
-        self.model_turns_with_tools = self.model_turns_with_tools.saturating_add(1);
-        self.total_tool_calls = self.total_tool_calls.saturating_add(calls.len());
-        self.max_calls_in_model_turn = self.max_calls_in_model_turn.max(calls.len());
-        for (name, input) in &calls {
-            if *name == "exec_command" && input.get("script").is_some() {
-                self.exec_command_script_calls =
-                    self.exec_command_script_calls.saturating_add(1);
-            }
-            if *name == "Read"
-                && let Some(paths) = input.get("file_paths").and_then(Value::as_array)
-            {
-                self.batch_read_files_requested = self
-                    .batch_read_files_requested
-                    .saturating_add(paths.len());
-            }
-        }
-    }
-
-    fn terminal_dimensions(
-        &self,
-        result: &Result<AgentResult, AgentError>,
-    ) -> (&'static str, &'static str, &'static str, usize) {
-        match result {
-            Ok(result) => (
-                "ok",
-                match result.stop_reason {
-                    StopReason::EndTurn => "end_turn",
-                    StopReason::ToolUse => "tool_use",
-                    StopReason::MaxTokens => "max_tokens",
-                    StopReason::MaxTurns => "max_turns",
-                    StopReason::Refusal => "refusal",
-                },
-                "none",
-                result.turns,
-            ),
-            Err(error) => (
-                "error",
-                "error",
-                match error {
-                    AgentError::ApiError(_) => "api_error",
-                    AgentError::Provider(_) => "provider_error",
-                    AgentError::UserAborted => "user_aborted",
-                    AgentError::ContextTooLong { .. } => "context_too_long",
-                    AgentError::Stagnation(_) => "tool_stagnation",
-                },
-                self.model_turn_attempts,
-            ),
-        }
-    }
-
-    fn observe_results(&mut self, blocks: &[ContentBlock]) {
-        for block in blocks {
-            let ContentBlock::ToolResult {
-                content, is_error, ..
-            } = block
-            else {
-                continue;
-            };
-            if *is_error {
-                self.error_results = self.error_results.saturating_add(1);
-            }
-            if *is_error && content == SKIPPED_AFTER_PRIOR_ERROR {
-                self.skipped_after_prior_error =
-                    self.skipped_after_prior_error.saturating_add(1);
-            }
-        }
-    }
-
-    fn log(
-        &self,
-        session_id: &str,
-        msg_id: &str,
-        result: &Result<AgentResult, AgentError>,
-    ) {
-        let (terminal, stop_reason, error_kind, agent_turns) =
-            self.terminal_dimensions(result);
-        tracing::info!(
-            target: "nomi_agent::tool_efficiency",
-            session_id,
-            msg_id,
-            agent_turns,
-            stop_reason,
-            terminal,
-            error_kind,
-            model_turn_attempts = self.model_turn_attempts,
-            model_turns_with_tools = self.model_turns_with_tools,
-            tool_calls_total = self.total_tool_calls,
-            max_calls_in_model_turn = self.max_calls_in_model_turn,
-            exec_command_script_calls = self.exec_command_script_calls,
-            batch_read_files_requested = self.batch_read_files_requested,
-            tool_error_results = self.error_results,
-            skipped_after_prior_error = self.skipped_after_prior_error,
-            "agent tool efficiency summary"
-        );
-    }
+/// Whether a provider pass that produced no tool calls must be re-attempted
+/// against the original requirement instead of being accepted as a final answer.
+///
+/// This is the single definition of "resumable round". It used to be written out
+/// verbatim at two call sites — the plan-sync pass and the plain empty-call pass
+/// — where a one-sided edit would have silently disabled truncation recovery on
+/// one path while keeping it on the other.
+fn should_restart_round(
+    stop_reason: StopReason,
+    round: &round::RoundState,
+    tools_advertised: bool,
+) -> bool {
+    stop_reason == StopReason::MaxTokens
+        && round.attempt < round::MAX_ROUND_ATTEMPTS
+        && tools_advertised
+        && !round.ledger.cutoff.is_empty()
 }
 
 /// Consecutive turns with the identical tool-call signature that trip the
@@ -1675,7 +1574,12 @@ impl AgentEngine {
             msg_id = %msg_id,
         );
         let mut efficiency = ToolEfficiencyStats::default();
-        let mut safe_messages = self.messages.clone();
+        // Rollback checkpoint: the transcript LENGTH at the last known-good
+        // point, not a copy of it. Every checkpoint used to deep-clone the whole
+        // `Vec<Message>` — base64 images included — once per turn start, once per
+        // completed pass, and once per restart. Messages are only ever appended
+        // between checkpoints, so restoring is a truncate.
+        let mut safe_len = self.messages.len();
         let mut turn_started = false;
         let result = async {
             let result = self
@@ -1684,7 +1588,7 @@ impl AgentEngine {
                     msg_id,
                     source_message_id,
                     &mut efficiency,
-                    &mut safe_messages,
+                    &mut safe_len,
                     &mut turn_started,
                 )
                 .await;
@@ -1705,7 +1609,7 @@ impl AgentEngine {
         // If the host drops this future during non-cooperative cancellation,
         // `abort_current_turn` redacts only unsent images.
             if result.is_err() && turn_started {
-            self.messages = safe_messages;
+            self.rollback_transcript_to(safe_len);
             if matches!(
                 &result,
                 Err(AgentError::Provider(_)
@@ -1736,7 +1640,9 @@ impl AgentEngine {
         msg_id: &str,
         source_message_id: &str,
         efficiency: &mut ToolEfficiencyStats,
-        safe_messages: &mut Vec<Message>,
+        // Transcript length at the last known-good point (see `safe_len` in the
+        // caller): rollback truncates to it instead of restoring a cloned Vec.
+        safe_len: &mut usize,
         turn_started: &mut bool,
     ) -> Result<AgentResult, AgentError> {
         if user_content.is_empty()
@@ -2766,10 +2672,7 @@ impl AgentEngine {
             round.ledger.set_cutoff(std::mem::take(&mut truncated_calls));
 
             if plan_sync_pass && tool_calls.is_empty() {
-                let restart = stop_reason == StopReason::MaxTokens
-                    && round.attempt < round::MAX_ROUND_ATTEMPTS
-                    && tools_advertised
-                    && !round.ledger.cutoff.is_empty();
+                let restart = should_restart_round(stop_reason, &round, tools_advertised);
                 if !restart {
                     if let Some(harness) = self.coding_harness.as_mut() {
                         harness.advance_after_plan_sync();
@@ -2778,7 +2681,7 @@ impl AgentEngine {
                         target: "nomi_agent",
                         "coding harness: plan-sync pass produced no update_plan; continuing to reply pass"
                     );
-                    *safe_messages = self.messages.clone();
+                    *safe_len = self.messages.len();
                     self.persist_session(false);
                     turn += 1;
                     continue;
@@ -2795,12 +2698,12 @@ impl AgentEngine {
                 // machine-observably already happened.
                 //
                 // This runs FIRST inside the block, before `stagnation_guard`
-                // is reset and before `safe_messages` is refreshed, because a
+                // is reset and before the rollback checkpoint is refreshed, because a
                 // truncated pass is not a completed assistant response and the
                 // three continuation hooks below all assume one. The placement
                 // window is exact: after the steering drain further down, the
                 // tail message would be a steering user message and `pop()`
-                // would delete the wrong one; after the `safe_messages`
+                // would delete the wrong one; after the checkpoint
                 // refresh, the rollback floor would still contain the truncated
                 // draft.
                 //
@@ -2824,10 +2727,7 @@ impl AgentEngine {
                 // twice. A prose-only truncation is honestly reported as
                 // retryable `MaxTokens` instead, which is a decision for the user
                 // to spend budget on, not the engine.
-                let restart = stop_reason == StopReason::MaxTokens
-                    && round.attempt < round::MAX_ROUND_ATTEMPTS
-                    && tools_advertised
-                    && !round.ledger.cutoff.is_empty();
+                let restart = should_restart_round(stop_reason, &round, tools_advertised);
                 if restart {
                     // The assistant message pushed just above is the tail, and
                     // nothing between that push and here mutates `self.messages`
@@ -2835,10 +2735,27 @@ impl AgentEngine {
                     // history length, of autocompaction, and of prior rounds.
                     // Only ever an assistant message, so every already-drained
                     // steering interjection stays in the transcript.
-                    let dropped = self.messages.pop().expect(
-                        "the assistant message pushed immediately above is still the tail",
-                    );
-                    debug_assert_eq!(dropped.role, Role::Assistant);
+                    // An invariant, checked rather than asserted: a violation must
+                    // degrade into an honest terminal, never take the process
+                    // down. Only an assistant draft is removable here — anything
+                    // else is the requirement or a steering interjection, and
+                    // deleting one would corrupt the conversation.
+                    if self
+                        .messages
+                        .last()
+                        .is_some_and(|tail| tail.role == Role::Assistant)
+                    {
+                        let dropped = self.messages.pop();
+                        debug_assert_eq!(
+                            dropped.map(|message| message.role),
+                            Some(Role::Assistant)
+                        );
+                    } else {
+                        tracing::error!(
+                            target: "nomi_agent",
+                            "truncation restart: the transcript tail is not this pass's assistant draft"
+                        );
+                    }
                     let dropped_draft_bytes = assistant_text.len();
                     round.begin_attempt();
                     // Already-sent images stay in the prefix. Redact only
@@ -2903,11 +2820,13 @@ impl AgentEngine {
                     // the current response bubble.
                     self.output.emit_output_discarded(
                         &self.current_msg_id,
-                        u32::try_from(round.attempt)
-                            .expect("round attempts are bounded below u32::MAX"),
+                        // Saturating rather than asserting: the counter is bounded
+                        // by MAX_ROUND_ATTEMPTS, and a clamped report is always
+                        // preferable to aborting a turn over a display value.
+                        u32::try_from(round.attempt).unwrap_or(u32::MAX),
                     );
                     // Round N's rollback floor: the requirement, not the draft.
-                    *safe_messages = self.messages.clone();
+                    *safe_len = self.messages.len();
                     self.save_session();
                     tracing::warn!(
                         target: "nomi_agent",
@@ -2932,7 +2851,7 @@ impl AgentEngine {
                 // rollback point; any steering/goal continuation appended below
                 // belongs to the *next* provider pass and must be dropped if that
                 // pass fails.
-                *safe_messages = self.messages.clone();
+                *safe_len = self.messages.len();
                 // Steering interjection (point B): a user message injected
                 // mid-turn extends a would-end turn instead of returning, so
                 // the model incorporates it on the next step. Mirrors the
@@ -3022,7 +2941,8 @@ impl AgentEngine {
                 );
                 let cwd = self.workspace_cwd();
                 self.horizon
-                    .observe_end_turn(&assistant_text, cwd.as_deref(), 0);
+                    .observe_end_turn(&assistant_text, cwd.as_deref(), 0)
+                    .await;
                 self.sync_goal_progress();
                 self.horizon.consume_turn_scoped();
                 let continuation = if skip_goal {
@@ -3099,10 +3019,19 @@ impl AgentEngine {
             let tool_started = Instant::now();
             let mut outcome = if let Some(ref approval_mgr) = self.approval_manager {
                 // JSON stream mode: use protocol-based approval
-                let writer = self
-                    .protocol_writer
-                    .as_ref()
-                    .expect("protocol writer required for approval");
+                // Fail closed. Approval mode with no channel to ask through means
+                // nothing can be approved, and executing unprompted would bypass
+                // the user's gate entirely.
+                let Some(writer) = self.protocol_writer.as_ref() else {
+                    tracing::error!(
+                        target: "nomi_agent",
+                        "approval is enabled but no protocol writer is attached; refusing the tool pass"
+                    );
+                    return Err(AgentError::ApiError(
+                        "tool approval is enabled but the host provided no protocol writer"
+                            .to_string(),
+                    ));
+                };
                 let auto_approve = self.confirmer.lock().unwrap().is_auto_approve();
                 match execute_tool_calls_with_approval(
                     &self.tools,
@@ -3206,6 +3135,17 @@ impl AgentEngine {
                         );
                     }
 
+                    // A result whose ToolUse was never committed has no context to
+                    // render against. Decline to publish it rather than panic: the
+                    // transcript stays valid and the omission is reported.
+                    let Some(context) = tool_call_contexts.get(tool_use_id) else {
+                        tracing::error!(
+                            target: "nomi_agent",
+                            tool_use_id,
+                            "committed tool result has no execution context; not published"
+                        );
+                        continue;
+                    };
                     match self
                         .output
                         .emit_tool_result_with_images_and_context(
@@ -3215,9 +3155,7 @@ impl AgentEngine {
                         *is_error,
                         content,
                         images,
-                        tool_call_contexts.get(tool_use_id).expect(
-                            "every committed ToolUse receives execution context",
-                        ),
+                        context,
                     ) {
                         crate::output::ToolMediaDelivery::Unmanaged => {
                             // Diagnostic screenshots or other binary payloads
@@ -3517,7 +3455,7 @@ impl AgentEngine {
 
             // Coalesced checkpoint after tools — pretty JSON + index wait for
             // EndTurn / user-message durable saves.
-            *safe_messages = self.messages.clone();
+            *safe_len = self.messages.len();
             self.persist_session(false);
             if stagnation_action == crate::loop_guard::StagnationAction::Abort {
                 if let Some(harness) = self.coding_harness.as_mut() {
@@ -3773,7 +3711,13 @@ impl AgentEngine {
         authority
     }
 
-    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
+    /// The tool table as it will be sent, borrowed whenever no local adjustment
+    /// applies.
+    ///
+    /// The estimator needs only a slice, but the frozen-table path used to hand it
+    /// `frozen.clone()`: a full copy of every tool description and schema on every
+    /// `request_token_estimate` call, and a compaction path makes several.
+    fn advertised_tools_ref(&self) -> std::borrow::Cow<'_, [nomi_types::tool::ToolDef]> {
         if self
             .coding_harness
             .as_ref()
@@ -3783,18 +3727,18 @@ impl AgentEngine {
             if let Some(harness) = self.coding_harness.as_ref() {
                 apply_coding_finalize_tool_table(&mut tools, harness);
             }
-            return tools;
+            return std::borrow::Cow::Owned(tools);
         }
         if let Some(frozen) = &self.frozen_provider_tools {
-            return frozen.clone();
+            return std::borrow::Cow::Borrowed(frozen.as_slice());
         }
-        self.live_advertised_tools()
+        std::borrow::Cow::Owned(self.live_advertised_tools())
     }
 
     fn request_token_estimate(&self) -> u64 {
         estimate::estimate_tokens_from_request(
             &self.system_prompt,
-            &self.advertised_tools(),
+            &self.advertised_tools_ref(),
             &self.messages,
             None,
         )
@@ -4036,6 +3980,21 @@ impl AgentEngine {
         self.persist_session(true);
     }
 
+    /// Restore the transcript to the length checkpoint recorded by the turn wrapper.
+    ///
+    /// Messages are only appended between checkpoints, so a rollback is a truncate:
+    /// the checkpoint is a `usize`, not a cloned `Vec<Message>` (which copied the
+    /// whole transcript, base64 images included, on every pass and every restart).
+    ///
+    /// Deliberately does NOT re-expand a transcript that a mid-turn compaction has
+    /// already REPLACED with a shorter one. That compaction was persisted, so
+    /// restoring a longer in-memory transcript would put memory ahead of disk.
+    /// `truncate` is already a no-op when the checkpoint is not below the current
+    /// length, which is exactly that guarantee.
+    fn rollback_transcript_to(&mut self, len: usize) {
+        self.messages.truncate(len);
+    }
+
     fn mark_turn_ended(&mut self) {
         self.compact_state.last_turn_ended_at = Some(chrono::Utc::now());
     }
@@ -4077,7 +4036,13 @@ impl AgentEngine {
         let mut save_err: Option<String> = None;
         let mut index_err: Option<String> = None;
         if let (Some(mgr), Some(session)) = (&self.session_manager, &mut self.current_session) {
-            session.messages = self.messages.clone();
+            // Move the transcript into the persisted session instead of cloning
+            // it. Cloning the whole `Vec<Message>` — base64 images included — on
+            // every checkpoint was the engine's largest steady-state allocation.
+            // The move is O(1) and is undone right after the index update below;
+            // nothing between the two can await or return early, so `self.messages`
+            // is never observable as empty.
+            session.messages = std::mem::take(&mut self.messages);
             session.total_usage = self.total_usage.clone();
             session.activated_deferred_tools = self.tools.session_deferred_tool_identities();
             session.editable_turn = self.editable_turn.clone();
@@ -4094,6 +4059,11 @@ impl AgentEngine {
             if durable && let Err(e) = mgr.update_index_for(session) {
                 index_err = Some(e.to_string());
             }
+
+            // Hand the transcript back to the engine: `session.messages` is drained
+            // rather than cloned, and the session struct is not used past this point
+            // except by the error branches below.
+            self.messages = std::mem::take(&mut session.messages);
         } else {
             return;
         }

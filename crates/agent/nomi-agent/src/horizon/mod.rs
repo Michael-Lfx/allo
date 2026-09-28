@@ -127,7 +127,9 @@ impl HorizonController {
         self.ledger.observe_tools(tools);
     }
 
-    pub fn observe_end_turn(
+    /// The workspace probe inside is async, so this delegates through `await`
+    /// instead of blocking the caller's runtime worker.
+    pub async fn observe_end_turn(
         &mut self,
         assistant_text: &str,
         cwd: Option<&Path>,
@@ -135,6 +137,7 @@ impl HorizonController {
     ) -> bool {
         self.ledger
             .observe_end_turn(assistant_text, cwd, pending_steps)
+            .await
     }
 
     /// Call after `progress()` has been copied onto GoalState for this EndTurn.
@@ -300,14 +303,14 @@ mod tests {
     use super::*;
     use crate::horizon::ledger::ToolObservation;
 
-    #[test]
-    fn idle_streak_pauses_after_two_empty_endturns() {
+    #[tokio::test]
+    async fn idle_streak_pauses_after_two_empty_endturns() {
         let mut h = HorizonController::default();
         h.configure_goal(8, None);
-        h.observe_end_turn("I will keep going.", None, 0);
+        h.observe_end_turn("I will keep going.", None, 0).await;
         let first = h.decide(false, false);
         assert!(first.allow_continue);
-        h.observe_end_turn("I will keep going.", None, 0);
+        h.observe_end_turn("I will keep going.", None, 0).await;
         let second = h.decide(false, false);
         assert_eq!(second.kind, HorizonStopKind::IdleStreak);
         assert!(!second.allow_continue);
@@ -331,8 +334,8 @@ mod tests {
         assert!(!d.pause_goal);
     }
 
-    #[test]
-    fn mutation_keeps_continue_open() {
+    #[tokio::test]
+    async fn mutation_keeps_continue_open() {
         let mut h = HorizonController::default();
         h.configure_goal(8, None);
         h.observe_tools(&[ToolObservation {
@@ -340,15 +343,15 @@ mod tests {
             command: None,
             success: true,
         }]);
-        h.observe_end_turn("wrote the file", None, 0);
+        h.observe_end_turn("wrote the file", None, 0).await;
         h.consume_turn_scoped();
-        h.observe_end_turn("I will keep going.", None, 0);
+        h.observe_end_turn("I will keep going.", None, 0).await;
         h.consume_turn_scoped();
         // One idle EndTurn after real work still continues.
         let d = h.decide(false, false);
         assert!(d.allow_continue);
         assert_eq!(d.kind, HorizonStopKind::Continue);
-        h.observe_end_turn("I will keep going.", None, 0);
+        h.observe_end_turn("I will keep going.", None, 0).await;
         let paused = h.decide(false, false);
         assert_eq!(paused.kind, HorizonStopKind::IdleStreak);
         assert!(paused.pause_goal);

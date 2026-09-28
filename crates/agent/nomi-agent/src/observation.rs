@@ -394,18 +394,123 @@ fn wrap_stream(
     out_rx
 }
 
+/// Append as much of `delta` as the preview budget allows, counting characters once.
+///
+/// The previous version pushed one `char` at a time and re-checked the budget per
+/// character: a branch plus a `String::push` for every character of every stream
+/// delta of every turn — the hottest per-delta path in the engine. The accepted
+/// prefix is now located with one walk and copied with one `push_str`, and the
+/// marker is emitted exactly once, when the budget is first exceeded.
+///
+/// The cut point comes from `char_indices`, so a multi-byte character is never
+/// split.
 fn push_bounded(buf: &mut String, chars: &mut usize, truncated: &mut bool, delta: &str) {
     if *truncated {
         return;
     }
-    for ch in delta.chars() {
-        if *chars >= MAX_PREVIEW_CHARS {
-            buf.push_str("…(truncated)");
-            *truncated = true;
-            return;
-        }
-        buf.push(ch);
-        *chars += 1;
+    let started = Instant::now();
+    let remaining = MAX_PREVIEW_CHARS.saturating_sub(*chars);
+    if remaining == 0 {
+        buf.push_str("…(truncated)");
+        *truncated = true;
+    } else if let Some((offset, _)) = delta.char_indices().nth(remaining) {
+        // `remaining` characters fit; the tail is dropped and announced once.
+        buf.push_str(&delta[..offset]);
+        *chars += remaining;
+        buf.push_str("…(truncated)");
+        *truncated = true;
+    } else {
+        // Everything fits: one copy and one count.
+        buf.push_str(delta);
+        *chars += delta.chars().count();
+    }
+    crate::profiler::record(
+        crate::profiler::HotPath::ObservationAccumulate,
+        started.elapsed(),
+    );
+}
+
+#[cfg(test)]
+mod push_bounded_tests {
+    use super::*;
+
+    /// Everything that fits is kept, and nothing is announced as dropped.
+    #[test]
+    fn a_delta_that_fits_is_appended_whole() {
+        let mut buf = String::new();
+        let mut chars = 0usize;
+        let mut truncated = false;
+        let delta = "x".repeat(MAX_PREVIEW_CHARS);
+
+        push_bounded(&mut buf, &mut chars, &mut truncated, &delta);
+
+        assert_eq!(buf, delta);
+        assert_eq!(chars, MAX_PREVIEW_CHARS);
+        assert!(!truncated, "a delta that exactly fills the budget is complete");
+    }
+
+    /// Only the budgeted prefix survives, the marker appears once, and later
+    /// deltas add nothing.
+    #[test]
+    fn the_prefix_is_kept_and_the_marker_is_emitted_once() {
+        let mut buf = String::new();
+        let mut chars = 0usize;
+        let mut truncated = false;
+        let delta = "y".repeat(MAX_PREVIEW_CHARS + 5);
+
+        push_bounded(&mut buf, &mut chars, &mut truncated, &delta);
+        push_bounded(&mut buf, &mut chars, &mut truncated, "late");
+
+        assert_eq!(chars, MAX_PREVIEW_CHARS);
+        assert!(truncated);
+        assert_eq!(
+            buf.matches("(truncated)").count(),
+            1,
+            "the marker must not repeat: {buf}"
+        );
+        let kept = buf.trim_end_matches("…(truncated)");
+        assert_eq!(kept, "y".repeat(MAX_PREVIEW_CHARS));
+    }
+
+    /// The cut lands on a character boundary, so a wide character is never split
+    /// and the accumulator counts characters rather than bytes.
+    #[test]
+    fn multi_byte_characters_are_never_split() {
+        let mut buf = String::new();
+        let mut chars = 0usize;
+        let mut truncated = false;
+        let delta = "中".repeat(MAX_PREVIEW_CHARS + 3);
+
+        push_bounded(&mut buf, &mut chars, &mut truncated, &delta);
+
+        assert!(truncated);
+        assert_eq!(buf.chars().count(), MAX_PREVIEW_CHARS + "…(truncated)".chars().count());
+        assert_eq!(chars, MAX_PREVIEW_CHARS);
+        assert!(buf.starts_with(&"中".repeat(MAX_PREVIEW_CHARS)));
+    }
+
+    /// Character accounting accumulates across deltas, and the budget is checked
+    /// against the total rather than the last delta.
+    #[test]
+    fn the_budget_is_measured_across_deltas() {
+        let mut buf = String::new();
+        let mut chars = 0usize;
+        let mut truncated = false;
+
+        push_bounded(&mut buf, &mut chars, &mut truncated, &"a".repeat(3));
+        push_bounded(
+            &mut buf,
+            &mut chars,
+            &mut truncated,
+            &"b".repeat(MAX_PREVIEW_CHARS - 3),
+        );
+        assert_eq!(chars, MAX_PREVIEW_CHARS);
+        assert!(!truncated, "the second delta fills the budget exactly");
+
+        push_bounded(&mut buf, &mut chars, &mut truncated, "overflow");
+
+        assert!(truncated);
+        assert_eq!(chars, MAX_PREVIEW_CHARS);
     }
 }
 

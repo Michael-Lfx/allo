@@ -232,19 +232,17 @@ pub async fn execute_tool_calls_scoped(
     // Engine-produced calls are already canonical. Preparing again here keeps
     // direct/internal execution paths on the same boundary and guarantees that
     // confirmation, hooks, category checks, and dispatch all receive one value.
-    let prepared_tool_calls = tool_calls
-        .iter()
-        .map(|call| prepare_call_for_execution(registry, call, authority))
-        .collect::<Vec<_>>();
+    let prepared_tool_calls = prepare_calls(registry, tool_calls, authority);
 
-    for batch in partition(registry, &prepared_tool_calls, authority) {
-        let mut pending = Vec::new();
-        for call in &batch.calls {
+    for batch in partition(registry, &prepared_tool_calls) {
+        let mut pending: Vec<&PreparedCall<'_>> = Vec::new();
+        for prepared in &batch.calls {
+            let call = prepared.block();
             if cascade.should_skip(cascade_policy, call) {
                 results.push(skipped_after_prior_error(call));
                 modifiers.push(None);
             } else {
-                pending.push(*call);
+                pending.push(*prepared);
             }
         }
         if pending.is_empty() {
@@ -260,13 +258,11 @@ pub async fn execute_tool_calls_scoped(
                 std::iter::repeat_with(|| None)
                     .take(pending.len())
                     .collect();
-            for (idx, call) in pending.iter().enumerate() {
-                if let Some(gated) = invocation_gate_result(
-                    registry,
-                    call,
-                    authority,
-                ) {
-                    cascade.note(cascade_policy, call, true);
+            for (idx, prepared) in pending.iter().enumerate() {
+                // The gate already ran for this call in `prepare_calls`; reuse the
+                // rendered refusal rather than re-deriving an identical decision.
+                if let Some(gated) = prepared.gate.clone() {
+                    cascade.note(cascade_policy, prepared.block(), true);
                     completed[idx] = Some((gated, None));
                 }
             }
@@ -275,26 +271,26 @@ pub async fn execute_tool_calls_scoped(
             // Concurrent tools are never SkillTool (is_concurrency_safe=false for Skill),
             // so no skill hooks merging is needed here.
             let mut approved = Vec::new();
-            for (idx, call) in pending.iter().enumerate() {
+            for (idx, prepared) in pending.iter().enumerate() {
                 if completed[idx].is_some() {
                     continue;
                 }
-                match confirm_call(confirmer, call)? {
+                match confirm_call(confirmer, prepared.block())? {
                     Some(denied) => {
-                        cascade.note(cascade_policy, call, true);
+                        cascade.note(cascade_policy, prepared.block(), true);
                         completed[idx] = Some((denied, None));
                     }
-                    None => approved.push((idx, *call)),
+                    None => approved.push((idx, *prepared)),
                 }
             }
             // Reborrow as shared for concurrent execution.
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
             let futures: Vec<_> = approved
                 .iter()
-                .map(|(_, call)| {
+                .map(|(_, prepared)| {
                     execute_single_with_authority(
                         registry,
-                        call,
+                        prepared.block(),
                         authority,
                         execution_scope,
                         hooks_shared,
@@ -304,29 +300,44 @@ pub async fn execute_tool_calls_scoped(
                 })
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
-            for ((idx, call), outcome) in approved.into_iter().zip(batch_results) {
+            for ((idx, prepared), outcome) in approved.into_iter().zip(batch_results) {
                 if block_is_error(&outcome.0) {
-                    cascade.note(cascade_policy, call, false);
+                    cascade.note(cascade_policy, prepared.block(), false);
                 }
                 completed[idx] = Some(outcome);
             }
-            for outcome in completed {
-                let (block, modifier) = outcome.expect("every concurrent call has an outcome");
-                results.push(block);
-                modifiers.push(modifier);
+            for (idx, outcome) in completed.into_iter().enumerate() {
+                match outcome {
+                    Some((block, modifier)) => {
+                        results.push(block);
+                        modifiers.push(modifier);
+                    }
+                    None => {
+                        // Every index is settled by a gate, a denial, or an
+                        // execution. An unsettled one is an internal invariant
+                        // break: answer the call with a paired error result
+                        // (silence would leave an unmatched tool_use in the
+                        // transcript) and keep the turn alive.
+                        tracing::error!(
+                            target: "nomi_agent",
+                            "concurrent tool batch left a call unsettled"
+                        );
+                        results.push(unsettled_call_result(pending[idx].block()));
+                        modifiers.push(None);
+                    }
+                }
             }
         } else {
-            for call in pending {
+            for prepared in pending {
+                let call = prepared.block();
                 if cascade.should_skip(cascade_policy, call) {
                     results.push(skipped_after_prior_error(call));
                     modifiers.push(None);
                     continue;
                 }
-                if let Some(gated) = invocation_gate_result(
-                    registry,
-                    call,
-                    authority,
-                ) {
+                // One cached gate decision for the whole turn: this used to be a
+                // third `invocation_gate_result` call for the same arguments.
+                if let Some(gated) = prepared.gate.clone() {
                     cascade.note(cascade_policy, call, true);
                     results.push(gated);
                     modifiers.push(None);
@@ -372,11 +383,17 @@ pub async fn execute_tool_calls_scoped(
     Ok(ToolCallOutcome { results, modifiers })
 }
 
-fn prepare_call_for_execution(
+/// Canonicalize one tool call for execution, borrowing whenever nothing changed.
+///
+/// The previous version returned an owned `ContentBlock` and deep-cloned the
+/// whole block — arguments, base64 images and all — on every path, including the
+/// three early returns where the value was already correct. The common case is
+/// "the schema rewrote nothing", so the caller's block is handed straight back.
+fn prepare_call_for_execution<'a>(
     registry: &ToolRegistry,
-    call: &ContentBlock,
+    call: &'a ContentBlock,
     authority: &ProviderToolAuthority,
-) -> ContentBlock {
+) -> std::borrow::Cow<'a, ContentBlock> {
     let ContentBlock::ToolUse {
         id,
         name,
@@ -384,19 +401,89 @@ fn prepare_call_for_execution(
         extra,
     } = call
     else {
-        return call.clone();
+        return std::borrow::Cow::Borrowed(call);
     };
     if !authority.advertises(name) || authority.is_deferred(name) || !input.is_object() {
-        return call.clone();
+        return std::borrow::Cow::Borrowed(call);
     }
-    let Ok(input) = registry.prepare_input(name, input.clone()) else {
-        return call.clone();
+    let Ok(prepared) = registry.prepare_input(name, input.clone()) else {
+        return std::borrow::Cow::Borrowed(call);
     };
-    ContentBlock::ToolUse {
+    if prepared == *input {
+        return std::borrow::Cow::Borrowed(call);
+    }
+    std::borrow::Cow::Owned(ContentBlock::ToolUse {
         id: id.clone(),
         name: name.clone(),
-        input,
+        input: prepared,
         extra: extra.clone(),
+    })
+}
+
+/// A tool call after the boundary work that must happen exactly once.
+///
+/// Preparation may rewrite the arguments and the invocation gate can refuse the
+/// call outright. Both used to be recomputed for the same call — the gate in
+/// [`partition`], again at each dispatch site, and a third time in the concurrent
+/// preflight — while preparation deep-cloned the block even when it changed
+/// nothing. Both are computed here, once, and carried to every later stage.
+struct PreparedCall<'a> {
+    /// The canonical block every later stage observes.
+    call: std::borrow::Cow<'a, ContentBlock>,
+    /// The rendered refusal when the call must not run; `None` when it may.
+    gate: Option<ContentBlock>,
+}
+
+impl PreparedCall<'_> {
+    fn block(&self) -> &ContentBlock {
+        self.call.as_ref()
+    }
+
+    /// Whether the invocation gate already refused this call.
+    fn is_gated(&self) -> bool {
+        self.gate.is_some()
+    }
+}
+
+/// Prepare and gate one provider turn's calls, once each.
+fn prepare_calls<'a>(
+    registry: &ToolRegistry,
+    calls: &'a [ContentBlock],
+    authority: &ProviderToolAuthority,
+) -> Vec<PreparedCall<'a>> {
+    calls
+        .iter()
+        .map(|call| {
+            let call = crate::profiler::timed(crate::profiler::HotPath::ToolCallPrepare, || {
+                prepare_call_for_execution(registry, call, authority)
+            });
+            // Gate the PREPARED block: a rewritten argument list is what would run,
+            // and the deferral/advertisement refusal is identical either way.
+            let gate = crate::profiler::timed(crate::profiler::HotPath::ToolGateDecision, || {
+                invocation_gate_result(registry, call.as_ref(), authority)
+            });
+            PreparedCall { call, gate }
+        })
+        .collect()
+}
+
+/// The paired error result for a call the executor could not settle.
+///
+/// Every `ToolUse` must receive exactly one `ToolResult` or the next provider
+/// request is rejected: an unsettled call is answered, never dropped, and never
+/// worth aborting the process over.
+fn unsettled_call_result(call: &ContentBlock) -> ContentBlock {
+    let tool_use_id = match call {
+        ContentBlock::ToolUse { id, .. } => id.clone(),
+        _ => String::new(),
+    };
+    ContentBlock::ToolResult {
+        tool_use_id,
+        content: "The tool call was not settled by the executor and was not run. \
+                  Retry it or choose another approach."
+            .to_string(),
+        is_error: true,
+        images: Vec::new(),
     }
 }
 
@@ -874,32 +961,30 @@ async fn execute_tool_calls_with_approval_timeout(
     // Keep direct protocol callers on the same canonical boundary as the
     // engine and REPL path. Every later decision, approval payload, hook, and
     // dispatch below observes this one schema-validated value.
-    let prepared_tool_calls = tool_calls
-        .iter()
-        .map(|call| prepare_call_for_execution(registry, call, authority))
-        .collect::<Vec<_>>();
+    let prepared_tool_calls = prepare_calls(registry, tool_calls, authority);
     let tool_calls = prepared_tool_calls.as_slice();
 
-    for batch in partition(registry, tool_calls, authority) {
-        let mut pending = Vec::new();
-        for call in &batch.calls {
+    for batch in partition(registry, tool_calls) {
+        let mut pending: Vec<&PreparedCall<'_>> = Vec::new();
+        for prepared in &batch.calls {
+            let call = prepared.block();
             if cascade.should_skip(cascade_policy, call) {
                 let block = emit_skipped_after_prior_error(writer, msg_id, call);
                 results.push(block);
                 modifiers.push(None);
             } else {
-                pending.push(*call);
+                pending.push(*prepared);
             }
         }
         if pending.is_empty() {
             continue;
         }
 
-        let unprompted = pending.iter().all(|call| {
-            invocation_gate_result(registry, call, authority).is_none()
+        let unprompted = pending.iter().all(|prepared| {
+            !prepared.is_gated()
                 && !call_needs_interactive_approval(
                     registry,
-                    call,
+                    prepared.block(),
                     auto_approve,
                     allow_list,
                     approval_manager,
@@ -910,8 +995,8 @@ async fn execute_tool_calls_with_approval_timeout(
         // concurrent partition batch. Desktop used to serialize those because
         // Edit is not is_concurrency_safe, then HaltAfter skipped the sibling.
         if pending.len() > 1 && batch.is_concurrent && unprompted {
-            for call in &pending {
-                if let ContentBlock::ToolUse { id, name, .. } = call {
+            for prepared in &pending {
+                if let ContentBlock::ToolUse { id, name, .. } = prepared.block() {
                     let _ = writer.emit(&ProtocolEvent::ToolRunning {
                         msg_id: msg_id.to_string(),
                         call_id: id.clone(),
@@ -922,10 +1007,10 @@ async fn execute_tool_calls_with_approval_timeout(
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
             let futures: Vec<_> = pending
                 .iter()
-                .map(|call| {
+                .map(|prepared| {
                     execute_single_with_authority(
                         registry,
-                        call,
+                        prepared.block(),
                         authority,
                         msg_id,
                         hooks_shared,
@@ -935,13 +1020,13 @@ async fn execute_tool_calls_with_approval_timeout(
                 })
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
-            for (call, (block, modifier)) in pending.into_iter().zip(batch_results) {
+            for (prepared, (block, modifier)) in pending.into_iter().zip(batch_results) {
                 if let (
                     ContentBlock::ToolUse { id, name, .. },
                     ContentBlock::ToolResult {
                         content, is_error, ..
                     },
-                ) = (call, &block)
+                ) = (prepared.block(), &block)
                 {
                     let status = if *is_error {
                         ToolStatus::Error
@@ -959,7 +1044,7 @@ async fn execute_tool_calls_with_approval_timeout(
                     });
                 }
                 if block_is_error(&block) {
-                    cascade.note(cascade_policy, call, false);
+                    cascade.note(cascade_policy, prepared.block(), false);
                 }
                 results.push(block);
                 modifiers.push(modifier);
@@ -967,7 +1052,8 @@ async fn execute_tool_calls_with_approval_timeout(
             continue;
         }
 
-        for call in pending {
+        for prepared in pending {
+            let call = prepared.block();
             if cascade.should_skip(cascade_policy, call) {
                 let block = emit_skipped_after_prior_error(writer, msg_id, call);
                 results.push(block);
@@ -984,7 +1070,9 @@ async fn execute_tool_calls_with_approval_timeout(
 
             // Fail closed before category/approval evaluation and before emitting
             // ToolRequest or ToolRunning. Emit only the paired error ToolResult.
-            if let Some(gated) = invocation_gate_result(registry, call, authority) {
+            // The decision was already made once in `prepare_calls`; recomputing it
+            // here was the third identical evaluation per call.
+            if let Some(gated) = prepared.gate.clone() {
                 emit_tool_result_event(writer, msg_id, call, &gated);
                 cascade.note(cascade_policy, call, true);
                 results.push(gated);
@@ -1310,22 +1398,23 @@ fn occupancy_conflicts(a: &Occupancy, b: &Occupancy) -> bool {
 
 struct Batch<'a> {
     is_concurrent: bool,
-    calls: Vec<&'a ContentBlock>,
+    calls: Vec<&'a PreparedCall<'a>>,
     occupancy: Vec<Occupancy>,
 }
 
-fn partition<'a>(
-    registry: &ToolRegistry,
-    calls: &'a [ContentBlock],
-    authority: &ProviderToolAuthority,
-) -> Vec<Batch<'a>> {
+/// Group one prepared turn into occupancy-disjoint batches.
+///
+/// The invocation gate is deliberately not evaluated here any more:
+/// [`prepare_calls`] already ran it once per call, so this reads the decision
+/// instead of recomputing an identical one for every call in the turn.
+fn partition<'a>(registry: &ToolRegistry, calls: &'a [PreparedCall<'a>]) -> Vec<Batch<'a>> {
     let mut batches: Vec<Batch<'a>> = Vec::new();
 
-    for call in calls {
-        let ContentBlock::ToolUse { name, input, .. } = call else {
+    for prepared in calls {
+        let ContentBlock::ToolUse { name, input, .. } = prepared.block() else {
             continue;
         };
-        let is_safe = invocation_gate_result(registry, call, authority).is_none()
+        let is_safe = !prepared.is_gated()
             && registry
                 .get(name)
                 .map(|t| t.is_concurrency_safe(input))
@@ -1340,7 +1429,7 @@ fn partition<'a>(
         });
         if can_join {
             if let Some(last) = batches.last_mut() {
-                last.calls.push(call);
+                last.calls.push(prepared);
                 last.occupancy.push(occ);
                 last.is_concurrent = last.calls.len() > 1
                     || last.occupancy.iter().all(|o| !o.exclusive);
@@ -1349,7 +1438,7 @@ fn partition<'a>(
             let is_concurrent = is_safe && !is_exclusive_tool(name);
             batches.push(Batch {
                 is_concurrent,
-                calls: vec![call],
+                calls: vec![prepared],
                 occupancy: vec![occ],
             });
         }
@@ -2419,6 +2508,122 @@ mod tests {
             input: json!({"tasks": [{"name": "would_mutate"}]}),
             extra: None,
         }
+    }
+
+    /// The gate decision is made once per call and carried. `partition` no longer
+    /// receives the authority it would need to recompute it, and each dispatch
+    /// site reads the cached refusal, so a refused call cannot be re-decided
+    /// differently mid-turn.
+    #[test]
+    fn prepare_calls_caches_the_gate_refusal_for_every_call() {
+        let (registry, _calls) = make_registry_with_deferred();
+        let authority = ProviderToolAuthority::from_request_tools(&registry.to_tool_defs());
+
+        let deferred = vec![deferred_call("a")];
+        let prepared = prepare_calls(&registry, &deferred, &authority);
+        assert!(
+            prepared[0].is_gated(),
+            "a deferred call without an activated schema must be refused"
+        );
+        assert!(matches!(
+            prepared[0].gate.as_ref(),
+            Some(ContentBlock::ToolResult { content, is_error: true, .. })
+                if content.contains("deferred")
+        ));
+
+        let admissible = vec![ContentBlock::ToolUse {
+            id: "b".into(),
+            name: "MockNonDeferred".into(),
+            input: json!({"cmd": "ls"}),
+            extra: None,
+        }];
+        let allowed = prepare_calls(&registry, &admissible, &authority);
+        assert!(
+            !allowed[0].is_gated(),
+            "an advertised, non-deferred call must not be refused"
+        );
+        assert!(allowed[0].gate.is_none());
+    }
+
+    /// Preparation borrows the caller's block when the schema rewrote nothing,
+    /// which is the common case: this used to deep-clone arguments and images on
+    /// every call of every turn.
+    #[test]
+    fn prepare_calls_borrows_calls_it_does_not_rewrite() {
+        let (registry, _calls) = make_registry_with_deferred();
+        let authority = ProviderToolAuthority::from_request_tools(&registry.to_tool_defs());
+        let calls = vec![
+            ContentBlock::ToolUse {
+                id: "a".into(),
+                name: "MockNonDeferred".into(),
+                input: json!({"cmd": "ls"}),
+                extra: None,
+            },
+            deferred_call("b"),
+        ];
+
+        let prepared = prepare_calls(&registry, &calls, &authority);
+
+        for (index, entry) in prepared.iter().enumerate() {
+            assert!(
+                matches!(entry.call, std::borrow::Cow::Borrowed(_)),
+                "call {index} was copied even though preparation changed nothing"
+            );
+        }
+        // Borrowed means zero-copy: the very allocation the caller passed in.
+        assert!(
+            std::ptr::eq(prepared[0].block(), &calls[0]),
+            "the canonical block must be the caller's own value, not a copy"
+        );
+        assert!(
+            std::ptr::eq(prepared[1].block(), &calls[1]),
+            "the canonical block must be the caller's own value, not a copy"
+        );
+    }
+
+    /// `partition` reads the cached gate instead of evaluating it again, so a
+    /// refused call is still isolated into its own non-concurrent batch.
+    #[test]
+    fn partition_reads_the_cached_gate_instead_of_re_evaluating_it() {
+        let (registry, _calls) = make_registry_with_deferred();
+        let authority = ProviderToolAuthority::from_request_tools(&registry.to_tool_defs());
+        let calls = vec![deferred_call("a")];
+        let prepared = prepare_calls(&registry, &calls, &authority);
+        assert!(prepared[0].is_gated());
+
+        let batches = partition(&registry, &prepared);
+
+        assert_eq!(batches.len(), 1);
+        assert!(
+            !batches[0].is_concurrent,
+            "a refused call must never run concurrently"
+        );
+        assert!(batches[0].occupancy[0].exclusive);
+    }
+
+    /// An unsettled call must still be answered. An unmatched `tool_use` makes the
+    /// next provider request invalid, so the fallback is a paired error result
+    /// rather than a panic or silence.
+    #[test]
+    fn unsettled_call_result_pairs_the_call_id() {
+        let call = deferred_call("never-settled");
+
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = unsettled_call_result(&call)
+        else {
+            panic!("an unsettled call must be answered with a tool result");
+        };
+
+        assert_eq!(tool_use_id, "never-settled");
+        assert!(
+            is_error,
+            "the call did not run, so the paired result must be an error"
+        );
+        assert!(content.contains("not run"));
     }
 
     #[tokio::test]

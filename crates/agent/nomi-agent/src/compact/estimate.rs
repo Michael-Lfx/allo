@@ -10,6 +10,36 @@ const CHARS_PER_TOKEN_JSON: usize = 3;
 /// compaction triggering early rather than late.
 const TOKENS_PER_IMAGE: usize = 1600;
 
+/// Counts the bytes `serde` writes, discarding the document itself.
+///
+/// `serde_json::to_string(value).len()` allocates the entire serialized document
+/// only to read its length, and this estimator runs over every tool input and
+/// every advertised tool schema on every request. Counting during serialization
+/// yields the same number with no allocation.
+struct JsonByteCounter(usize);
+
+impl std::io::Write for JsonByteCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Byte length of `value` exactly as [`serde_json::to_string`] would render it.
+///
+/// A write into [`JsonByteCounter`] cannot fail, and a `serde_json::Value` is by
+/// construction serializable, so a serialization error can only mean the writer
+/// errored.
+fn json_byte_len(value: &serde_json::Value) -> usize {
+    let mut counter = JsonByteCounter(0);
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
+}
+
 /// Estimate tokens for plain text using the same ratio as message estimation.
 pub fn estimate_tokens_from_text(text: &str) -> u64 {
     (text.len() / CHARS_PER_TOKEN_TEXT) as u64
@@ -25,14 +55,17 @@ pub fn estimate_tokens_from_json_text(text: &str) -> u64 {
 /// Deferred tools only expose a stub description and empty parameters, matching
 /// the OpenAI adapter's request shaping.
 pub fn estimate_tokens_from_tool_def(tool: &ToolDef) -> u64 {
-    let schema_text = if tool.deferred {
-        String::new()
+    // Deferred tools advertise a stub schema, so they contribute no schema tokens.
+    // The schema is counted rather than rendered: materializing it to read its
+    // length allocated the whole document on every request.
+    let schema_tokens = if tool.deferred {
+        0
     } else {
-        serde_json::to_string(&tool.input_schema).unwrap_or_default()
+        (json_byte_len(&tool.input_schema) / CHARS_PER_TOKEN_JSON) as u64
     };
     estimate_tokens_from_text(&tool.name)
         .saturating_add(estimate_tokens_from_text(&tool.description))
-        .saturating_add(estimate_tokens_from_json_text(&schema_text))
+        .saturating_add(schema_tokens)
 }
 
 /// Estimate the total token count for a slice of messages.
@@ -80,8 +113,7 @@ pub fn estimate_tokens_from_message(message: &Message) -> u64 {
                 total_chars += thinking.len();
             }
             ContentBlock::ToolUse { name, input, .. } => {
-                let input_str = input.to_string();
-                json_chars += name.len() + input_str.len();
+                json_chars += name.len() + json_byte_len(input);
             }
             ContentBlock::ToolResult { content, images, .. } => {
                 total_chars += content.len();
@@ -257,5 +289,53 @@ mod tests {
         let full = estimate_tokens_from_request(&system, &tools, &messages, Some(&tail));
         assert_eq!(message_only, 100);
         assert!(full > message_only + 200);
+    }
+
+    /// The counter must agree with the serializer it replaces, byte for byte,
+    /// across every JSON shape the estimator can meet.
+    #[test]
+    fn json_byte_len_matches_the_serializer() {
+        let values = vec![
+            json!(null),
+            json!(true),
+            json!(0),
+            json!(-12_345_678_901_234i64),
+            json!(1.5),
+            json!(""),
+            json!("plain"),
+            json!("quote\" backslash\\ newline\n tab\t"),
+            json!("中文 emoji 🚀"),
+            json!([]),
+            json!([1, "two", null, [3, 4]]),
+            json!({}),
+            json!({"a": 1, "b": [true, false]}),
+        ];
+        for value in values {
+            assert_eq!(
+                json_byte_len(&value),
+                serde_json::to_string(&value).unwrap().len(),
+                "counter must match serde_json for {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_tool_def_counts_no_schema_tokens() {
+        let tool = |deferred: bool| ToolDef {
+            name: "Read".into(),
+            description: "d".repeat(300),
+            input_schema: json!({"type": "object", "properties": {"p": {"type": "string"}}}),
+            deferred,
+        };
+        let description = "d".repeat(300);
+        let full = estimate_tokens_from_tool_def(&tool(false));
+        let stub = estimate_tokens_from_tool_def(&tool(true));
+
+        assert_eq!(
+            stub,
+            estimate_tokens_from_text("Read") + estimate_tokens_from_text(&description),
+            "a deferred tool must count only its name and description"
+        );
+        assert!(stub < full, "a stub schema must not carry schema tokens");
     }
 }
