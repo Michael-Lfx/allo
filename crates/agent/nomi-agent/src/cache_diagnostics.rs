@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn schema_only_change_is_attributed_to_tools() {
         let mut detector = CacheBreakDetector::new();
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -429,7 +429,7 @@ mod tests {
 
         let mut tools = make_tools();
         tools[0].input_schema = json!({"type": "object", "required": ["path"]});
-        detector.record_request("prompt", &tools);
+        record(&mut detector, "prompt", &tools);
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
