@@ -299,7 +299,7 @@ fn grep_description_does_not_say_at_most_matches() {
         "Grep description should not say 'at most 250 matches' (was per-file, not global)"
     );
     assert!(
-        desc.contains("capped at 250 lines"),
+        desc.contains("250 matching lines"),
         "Grep description should accurately describe the 250-line cap"
     );
 }

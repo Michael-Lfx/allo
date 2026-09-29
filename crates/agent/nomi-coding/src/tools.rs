@@ -18,10 +18,8 @@ const CODING_CORE_TOOLS: &[&str] = &[
     "Glob",
     "DirTree",
     "dir_tree",
-    "ToolSearch",
     "Skill",
     "update_plan",
-    "remember",
     "EnterPlanMode",
     "ExitPlanMode",
     "web_search",
@@ -82,6 +80,8 @@ mod tests {
         assert!(advertise_tool(TaskProfile::Coding, "explore_code"));
         assert!(advertise_tool(TaskProfile::Coding, "verify_change"));
         assert!(advertise_tool(TaskProfile::Coding, "research"));
+        assert!(!advertise_tool(TaskProfile::Coding, "remember"));
+        assert!(!advertise_tool(TaskProfile::Coding, "ToolSearch"));
         assert!(advertise_tool(TaskProfile::Office, "Browser"));
         assert!(advertise_tool(TaskProfile::Office, "ApplyPatch"));
         assert!(advertise_tool(TaskProfile::Office, "exec_command"));

@@ -110,6 +110,7 @@ fn make_nomi_config() -> NomiResolvedConfig {
         model: "claude-sonnet-4-20250514".into(),
         base_url: None,
         system_prompt: None,
+        output_language_directive: None,
         output_ceiling: Some(4096),
         max_turns: None,
         context_limit: None,

@@ -132,6 +132,15 @@ fn apply_host_tool_policy(overrides: &mut NomiBuildExtra, policy: &NomiToolPolic
     }
 }
 
+/// Coding sessions are workspace-only: no knowledge bases, extra MCP, or
+/// long-term memory surfaces. Mounts drive both retrieval tools and the
+/// system-prompt knowledge section, so clearing them is the actual isolation.
+fn apply_coding_session_isolation(overrides: &mut NomiBuildExtra) {
+    overrides.knowledge_mounts.clear();
+    overrides.knowledge_writeback = false;
+    overrides.knowledge_channel_write_enabled = false;
+}
+
 fn retarget_resumed_session(session: &mut Session, provider: &str, model: &str) -> bool {
     let changed = session.provider != provider || session.model != model;
     session.provider = provider.to_owned();
@@ -146,9 +155,6 @@ fn persist_repaired_session(manager: &SessionManager, session: &Session) -> Resu
         .map_err(|error| error.to_string())?;
     Ok(())
 }
-
-/// The Flowy cloud catalog is authoritative when it provides a model output
-/// ceiling. All other providers (and uncataloged Flowy models) retain the
 
 /// Keep a user-selected effort only when the active model advertises it.
 /// When the catalog lists levels but the session has no (valid) selection,
@@ -242,6 +248,12 @@ pub(super) async fn build(
         apply_model_only_ceiling(&mut overrides);
     }
 
+    let coding_profile =
+        nomi_agent::TaskProfile::parse(overrides.task_profile.as_deref()).is_coding();
+    if coding_profile {
+        apply_coding_session_isolation(&mut overrides);
+    }
+
     // Merge reusable preset instructions into `system_prompt` (used as
     // `custom_prompt` in Nomi's prompt builder).
     if let Some(rules) = overrides.preset_rules.take() {
@@ -274,7 +286,7 @@ pub(super) async fn build(
     // non-companion work sessions. The persona is never taken
     // over — the system prompt gains exactly one loading notice; memories are
     // injected per turn by a ContextContributor and stay read-only.
-    let summon_config = if is_instance_owner && !is_app_server_chat && !overrides.companion {
+    let summon_config = if is_instance_owner && !is_app_server_chat && !overrides.companion && !coding_profile {
         overrides.summon.clone()
     } else {
         None
@@ -389,11 +401,12 @@ pub(super) async fn build(
     // name is rejected as a duplicate route. Computed here (not just before the
     // registration below) because the *prompt* must describe whichever deployment
     // actually owns the name, and the prompt is assembled a few lines down.
-    let install_embedded_agent_execution = should_install_embedded_agent_execution(
-        has_platform_gateway,
-        is_instance_owner,
-        deps.embedded_agent_execution,
-    );
+    let install_embedded_agent_execution = !coding_profile
+        && should_install_embedded_agent_execution(
+            has_platform_gateway,
+            is_instance_owner,
+            deps.embedded_agent_execution,
+        );
     let delegate_deployment = delegate_deployment(
         has_platform_gateway,
         install_embedded_agent_execution,
@@ -453,6 +466,9 @@ pub(super) async fn build(
         )
         .await;
     }
+    if coding_profile {
+        extra_mcp_servers.clear();
+    }
 
     // Per-surface write policy (spec §3.2 unit 5): companion → direct, external
     // IM channel → disabled (P1; opt-in re-enable is P2), regular chat → the
@@ -485,65 +501,45 @@ pub(super) async fn build(
         nomifun_knowledge::WriteMode::Disabled
     );
 
-    // Knowledge bases: append the mounted-bases section (per-base TOC +
-    // write-back contract) to the system prompt, so nomi-engine sessions
-    // (companion companion threads included) see the same knowledge context the
-    // ACP path gets via its preset_context.
-    overrides.system_prompt = append_knowledge_context(
-        overrides.system_prompt.take(),
-        &overrides,
-        knowledge_write_enabled,
-    );
+    overrides.system_prompt = if coding_profile {
+        overrides.system_prompt.take()
+    } else {
+        append_knowledge_context(
+            overrides.system_prompt.take(),
+            &overrides,
+            knowledge_write_enabled,
+        )
+    };
 
-    // 持久委派提示：**必须描述实际拥有 `nomi_delegate` 这个名字的那个部署**。
-    // 同一个名字下有三种实现，能力完全不同（见 `DelegateDeployment`）：Gateway
-    // 版有 planned + parallel + `nomi_execution_get`；宿主自有持久 facade 版
-    // **只有 planned**（`host_delegate_tool.rs` 的 schema 直接拒绝其它字段）；
-    // 嵌入式版只支持 parallel、不落库，且它自己用工具描述向模型表达。所以这里按
-    // 部署挑提示，而不是按「有没有 gateway」挑——App Server（Store）会话永远没有
-    // gateway，但仍可能有宿主 facade 版，Team 的 Leader 完全依赖它。该策略只影响
-    // 提示，不授予工具能力或改变审批模式。
-    let delegation_hint = match delegate_deployment {
-        DelegateDeployment::Gateway => compose_delegation_hint(
-            overrides.system_prompt.take(),
-            should_inject_delegation_hint(
-                has_platform_gateway,
-                overrides.companion,
-                overrides.channel_platform.is_some(),
+    // 持久委派：未广告的工具名不得出现在系统提示里。嵌入式与 HostFacade 的
+    // `nomi_delegate` 由各自 DESCRIPTION 自描述（HOW 在 schema）。Gateway MCP
+    // 工具的 schema 不由本仓库编写，所以只在 Gateway 部署把合同写进 custom。
+    let delegation_hint = if coding_profile {
+        overrides.system_prompt.take()
+    } else {
+        match delegate_deployment {
+            DelegateDeployment::Gateway => compose_delegation_hint(
+                overrides.system_prompt.take(),
+                should_inject_delegation_hint(
+                    has_platform_gateway,
+                    overrides.companion,
+                    overrides.channel_platform.is_some(),
+                ),
+                overrides.delegation_policy,
             ),
-            overrides.delegation_policy,
-        ),
-        DelegateDeployment::HostFacade => compose_host_delegation_hint(
-            overrides.system_prompt.take(),
-            should_inject_delegation_hint(
-                true,
-                overrides.companion,
-                overrides.channel_platform.is_some(),
-            ),
-            overrides.delegation_policy,
-        ),
-        // Embedded describes itself; `None` has nothing to describe.
-        DelegateDeployment::Embedded | DelegateDeployment::None => overrides.system_prompt.take(),
+            DelegateDeployment::HostFacade
+            | DelegateDeployment::Embedded
+            | DelegateDeployment::None => overrides.system_prompt.take(),
+        }
     };
     overrides.system_prompt = delegation_hint;
 
-    // Every native Nomi session — regular desktop chat, companion, IM
-    // Channel Agent — must think AND reply in the
-    // app's UI language, not a hardcoded one. The persona prompt no longer forces
-    // a language, so it is decided HERE from the live system setting and appended
-    // LAST (so it wins over the English base prompt / any earlier persisted
-    // language line, and the first turn follows the system language). Read live
-    // per build → switching the language takes effect on the next new session.
-    // External ACP/openclaw agents own their own prompts (built elsewhere) and
-    // are intentionally unaffected.
-    {
+    // Language is assembled LAST by `build_system_prompt_with`, not folded into
+    // the custom blob — otherwise coding overlay / media / AGENTS.md overtake it.
+    let language_directive = {
         let lang = read_app_language(&deps.data_dir).await;
-        let directive = output_language_directive(&lang);
-        overrides.system_prompt = Some(match overrides.system_prompt.take() {
-            Some(existing) => format!("{existing}\n\n{directive}"),
-            None => directive.to_owned(),
-        });
-    }
+        Some(output_language_directive(&lang).to_owned())
+    };
 
     if !extra_mcp_servers.is_empty() {
         info!(
@@ -737,9 +733,6 @@ pub(super) async fn build(
     let browser_source_default =
         read_string_pref(&deps, PREF_BROWSER_SOURCE, BROWSER_SOURCE_DEFAULT).await;
 
-    let coding_profile =
-        nomi_agent::TaskProfile::parse(overrides.task_profile.as_deref()).is_coding();
-
     // Coding sessions default computer/browser off unless the session extra
     // explicitly opts in. Global prefs are not mutated.
     let browser_use_enabled = if coding_profile && overrides.browser_use.is_none() {
@@ -914,6 +907,7 @@ pub(super) async fn build(
         model: fields.model.clone(),
         base_url: fields.base_url,
         system_prompt: overrides.system_prompt,
+        output_language_directive: language_directive,
         output_ceiling,
         max_turns: overrides.max_turns,
         context_limit: fields.context_limit.map(|v| v as u64),
@@ -1040,21 +1034,10 @@ pub(super) async fn build(
         .then(|| deps.learning_course.clone())
         .flatten();
 
-    let knowledge_prelude: Option<String> = if overrides.knowledge_mounts.is_empty() {
-        None
-    } else {
-        let names: Vec<&str> = overrides
-            .knowledge_mounts
-            .iter()
-            .map(|m| m.name.as_str())
-            .collect();
-        Some(format!(
-            "[Knowledge bases mounted: {}] Before answering, if this task relates to any of these, \
-             call the knowledge_search tool first and open the matching document. Do not rely on \
-             memory for topics these bases cover.",
-            names.join(", ")
-        ))
-    };
+    // Office knowledge contract is the mounted TOC (system prefix) plus
+    // `knowledge_search` / `knowledge_read` schemas. A first-turn prelude was a
+    // third copy of the same protocol and fought proactive RAG.
+    let knowledge_prelude: Option<String> = None;
 
     let conv_id_for_cron = ctx.conversation_id.clone();
     let owner_id_for_cron = overrides
@@ -1195,6 +1178,7 @@ pub(super) async fn build(
     // name, one owner. A slot that was never installed (or a host without one)
     // registers nothing, which is the same shape as cron/meeting above.
     if is_instance_owner
+        && !coding_profile
         && !install_embedded_agent_execution
         && let (Some(provider), Some(owner_id)) = (
             deps.delegate_sink_provider
@@ -1726,17 +1710,16 @@ pub(crate) fn compose_delegation_hint(
     })
 }
 
-/// Planned-only guidance for a host whose `nomi_delegate` is its own durable
-/// execution facade ([`DelegateDeployment::HostFacade`]).
-///
-/// It deliberately does **not** reuse [`DELEGATION_STANDARD_HINT`]: that text
-/// teaches `strategy=parallel` and `nomi_execution_get`, and this deployment has
-/// neither. Advertising them would produce tool calls rejected by the schema.
+/// Planned-only Chinese contract for HostFacade. Production sessions do not
+/// inject this: the native host-delegate tool description is the contract.
+/// Kept under `cfg(test)` so the wording cannot silently pick up Gateway verbs.
+#[cfg(test)]
 pub(crate) const HOST_DELEGATE_STANDARD_HINT: &str = "需要成体系拆解的复杂、多步目标时，用 `nomi_delegate(strategy=\"planned\", goal=\"…\")` 把目标交给宿主规划：宿主会基于绑定的 Team 模板生成依赖 DAG，并让成员 Agent 分工执行。这个入口只接受 `goal`——成员、并发上限、规划与重规划策略都由宿主与服务端决定，不要尝试在调用里指定它们。发出调用后立刻结束本轮，不要轮询等待，也不要重复调用；规划与执行结果会由宿主写回本会话。简单或单步问题直接作答，无需委派。";
 
 /// Append the host-facade delegation guidance without replacing preset, persona
 /// or knowledge context. Unavailable surfaces and [`DelegationPolicy::Disabled`]
 /// preserve `base` unchanged (same contract as [`compose_delegation_hint`]).
+#[cfg(test)]
 pub(crate) fn compose_host_delegation_hint(
     base: Option<String>,
     available: bool,
@@ -2994,6 +2977,16 @@ mod tests {
         assert!(overrides.knowledge_mounts.is_empty());
         assert!(!overrides.knowledge_writeback && !overrides.knowledge_channel_write_enabled);
         assert!(overrides.goal.is_none());
+    }
+
+    #[test]
+    fn coding_session_isolation_clears_knowledge_mounts() {
+        let mut overrides = fully_opted_in_session();
+        overrides.task_profile = Some("coding".into());
+        apply_coding_session_isolation(&mut overrides);
+        assert!(overrides.knowledge_mounts.is_empty());
+        assert!(!overrides.knowledge_writeback);
+        assert!(!overrides.knowledge_channel_write_enabled);
     }
 
     /// `web` / `plan` / `lsp` are deliberately *not* handled here: the engine owns

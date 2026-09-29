@@ -124,44 +124,61 @@ pub fn build_knowledge_context(
              your work here. Paths below are relative to the workspace root.\n\n\
              ## Retrieval protocol\n\n",
         );
-    } else {
-        out.push_str(
-            "## Knowledge bases (extended knowledge source)\n\
-             The following knowledge bases are mounted into this workspace as markdown \
-             directories — a curated, extended knowledge source for this session.\n\n\
-             Retrieval protocol:\n",
-        );
-    }
-
-    // ── Retrieval protocol (rendered once, not per base) ─────────────
-    if options.has_search_tool {
-        out.push_str(
-            "1. Search first, then answer: when a task or question touches any topic covered \
+        // README is a standalone document: keep the full numbered protocol.
+        if options.has_search_tool {
+            out.push_str(
+                "1. Search first, then answer: when a task or question touches any topic covered \
              below, call the `knowledge_search` tool BEFORE answering from memory. It searches \
              the real base content directly (so it finds matches even when Grep/Glob cannot) and \
              returns ranked `base / path — heading` results, each with an opaque `handle`.\n\
              2. To read a full document, call the `knowledge_read` tool with its `handle` (no path \
              needed). The per-base tables of contents below are a map for browsing when you already \
              know the structure.\n",
-        );
-    } else {
-        out.push_str(
-            "1. Search first, then answer: when a task or question touches any topic covered \
+            );
+        } else {
+            out.push_str(
+                "1. Search first, then answer: when a task or question touches any topic covered \
              below, consult the matching knowledge base BEFORE answering from memory.\n\
              2. Locate documents via each base's table of contents, then read the file. For \
              anything not listed, search the base's mount path with Grep/Glob instead of \
              crawling directories blindly.\n",
-        );
-    }
-    out.push_str(
-        "3. A line like `docs/ — 12 files` summarizes a folder too large to list in full; \
+            );
+        }
+        out.push_str(
+            "3. A line like `docs/ — 12 files` summarizes a folder too large to list in full; \
          explore that folder directly when it looks relevant.\n\
          4. When you cite knowledge in an answer, reference the source file by its relative \
          path inside the mount.\n\
          5. ",
-    );
-    out.push_str(&writeback_contract(options, writeback_eagerness));
-    out.push('\n');
+        );
+        out.push_str(&writeback_contract(options, writeback_eagerness));
+        out.push('\n');
+    } else {
+        // System prefix: mounts/TOC are data. Tool HOW-TO lives on knowledge_search /
+        // knowledge_read schemas — keep a one-paragraph router here.
+        out.push_str(
+            "## Knowledge bases (extended knowledge source)\n\
+             The following knowledge bases are mounted into this workspace as markdown \
+             directories — a curated, extended knowledge source for this session.\n\n\
+             Retrieval protocol: ",
+        );
+        if options.has_search_tool {
+            out.push_str(
+                "when a task touches these bases, call the `knowledge_search` tool first, then \
+`knowledge_read` with a hit's handle. Cite sources by relative path inside the mount. \
+A line like `docs/ — 12 files` summarizes a folder too large to list in full.\n",
+            );
+        } else {
+            out.push_str(
+                "when a task touches these bases, consult the matching base via its table of \
+contents before answering from memory. For anything not listed, search the mount path with \
+Grep/Glob instead of crawling blindly. Cite sources by relative path inside the mount. \
+A line like `docs/ — 12 files` summarizes a folder too large to list in full.\n",
+            );
+        }
+        out.push_str(&writeback_contract(options, writeback_eagerness));
+        out.push('\n');
+    }
 
     // ── Per-base sections ─────────────────────────────────────────────
     if readme {
@@ -429,10 +446,10 @@ mod tests {
 
         // Section heading stays compatible with the historical one.
         assert!(out.starts_with("## Knowledge bases (extended knowledge source)"), "got: {out}");
-        // Retrieval protocol: search-before-answer, Grep/Read guidance,
-        // relative-path citation, abridged-TOC explore hint — rendered once.
+        // Retrieval: short router + TOC. Numbered HOW-TO lives in the README
+        // format and on knowledge_search / knowledge_read schemas.
         assert!(out.contains("Retrieval protocol"), "got: {out}");
-        assert!(out.contains("BEFORE answering"), "got: {out}");
+        assert!(out.contains("before answering"), "got: {out}");
         assert!(out.contains("Grep"), "got: {out}");
         assert!(out.contains("relative path"), "got: {out}");
         assert!(out.contains("summarizes a folder"), "got: {out}");
@@ -519,6 +536,7 @@ mod tests {
         let out = build_knowledge_context(std::slice::from_ref(&m), &opts).unwrap();
         assert!(out.contains("call the `knowledge_search` tool"), "got: {out}");
         assert!(!out.contains("Grep/Glob instead of"), "search variant drops Grep-first wording: {out}");
+        assert!(!out.contains("BEFORE answering"), "prompt section is a router, not the numbered HOW-TO: {out}");
     }
 
     #[test]
@@ -813,7 +831,7 @@ mod tests {
         let out = build_knowledge_context(&[m], &opts).unwrap();
 
         assert!(out.starts_with("# Knowledge bases"), "got: {out}");
-        assert!(out.contains("NomiFun"), "got: {out}");
+        assert!(out.contains("Flowy platform"), "got: {out}");
         // Relative-path baseline disambiguation (paths are workspace-rooted).
         assert!(out.contains("Paths below are relative to the workspace root."), "got: {out}");
         assert!(out.contains("## Retrieval protocol"), "got: {out}");

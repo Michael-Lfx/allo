@@ -475,7 +475,8 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Reads one or more files from the local filesystem. Returns content with line:hash anchors.\n\n\
+        "Reads one or more files from the local filesystem. Returns content with line numbers as `line:hash` anchors.\n\n\
+         ALWAYS use this Read tool for file contents — NEVER cat, head, or tail in Bash.\n\n\
          Usage:\n\
          - Use file_path for one file, or file_paths for several already-known files that need the same slice.\n\
          - Prefer absolute paths; relative paths are resolved against the session working directory.\n\

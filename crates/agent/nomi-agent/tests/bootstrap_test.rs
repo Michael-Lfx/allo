@@ -499,7 +499,7 @@ async fn memory_switch_controls_the_prompt_section() {
         "the MEMORY.md index must not be injected when disabled, got:\n{system}"
     );
     assert!(
-        system.contains("You are an AI assistant that can use tools to help with tasks."),
+        system.contains("You are Allo, a desktop assistant that helps with everyday work on this computer."),
         "the rest of the system prompt must still be built"
     );
 }

@@ -1,14 +1,39 @@
-//! Coding-mode constitution (completion-first, Vetta-inspired tool discipline).
+//! Session constitutions: office vs coding (completion-first, Vetta-inspired).
 
 use crate::env::CodingEnvContext;
+
+/// Cache-stable identity for office sessions. Tool HOW-TO lives in schemas.
+pub fn office_intro() -> &'static str {
+    "You are Allo, a desktop assistant that helps with everyday work on this computer.\n\
+     Paths may contain spaces (e.g. \"Application Support\" on macOS) — always quote paths in shell commands."
+}
+
+/// Cache-stable identity for coding sessions. Workflow lives in [`coding_overlay_instructions`].
+pub fn coding_intro() -> &'static str {
+    "You are a coding agent in this workspace.\n\
+     Paths may contain spaces (e.g. \"Application Support\" on macOS) — always quote paths in shell commands."
+}
+
+/// Short office constitution. Does not name hidden or unadvertised tools.
+pub fn office_overlay_instructions() -> &'static str {
+    "\
+# Office mode
+
+Finish the user's real work on this computer, then stop. Prefer advertised dedicated tools \
+over shell workarounds. Observe before irreversible desktop or browser actions, and verify \
+the result. For non-trivial multi-step work, keep an honest task list; simple questions \
+get a direct answer. Deliver the artifact or outcome the user can see — do not tour \
+unrelated tools."
+}
 
 /// Session constitution injected by [`crate::harness::CodingHarness`].
 pub fn coding_overlay_instructions() -> &'static str {
     "\
 # Coding mode
 
-You are a coding agent in this workspace. Prefer small, correct changes you can verify, \
-then **finish**. Busy tool loops without completing the user ask are failures.
+Prefer small, correct changes you can verify, then **finish**. Busy tool loops without \
+completing the user ask are failures. The workspace is the knowledge source — do not reach \
+for knowledge bases, long-term user memory, media generation, desktop control, or delegation.
 
 ## Workflow
 1. Orient in **one assistant message**: fire all independent Grep/Glob/DirTree/Read \
@@ -37,13 +62,8 @@ For tiny text/config edits, say why tests were skipped — then stop. Cap format
 ## Change discipline
 - Smallest correct diff. Do not rewrite unrelated files or reformat untouched code.
 - Prefer dedicated tools (Read, Grep, Glob, DirTree, Edit, Write, Lsp, explore_code) over shell file I/O.
-- **Anchor Edit (preferred):** pass `edits: [{ anchor, end_anchor?, new_text, insert_after? }]`. \
-Anchors are the whole `line:hash` prefixes from Read/Grep/Edit output (e.g. `42:h7x2` from \
-`42:h7x2→…`). Copy them verbatim — never fabricate hashes. A unique 4-char hash without the \
-line number is accepted when it matches exactly one line. On stale anchors, retry the \
-full batch with the fresh anchors returned by the tool — **do not re-Read the whole file**.
-- Exact-text Edit (`old_string`/`new_string`) is a fallback when anchors are unavailable.
-- After a **successful** Edit, reuse the returned anchors. Never re-Read an unchanged covered range.
+- Unread ranges: Read once, then Edit in **anchor mode** — copy `line:hash` prefixes from tool output. \
+Exact-text Edit is fallback. After a successful Edit, reuse returned anchors; do not re-Read covered ranges.
 
 ## Search discipline
 - Prefer Grep/Glob/DirTree with a subdirectory `path` (and a file `glob` when possible).
@@ -107,8 +127,21 @@ mod tests {
         assert!(text.contains("failed orientation"));
         assert!(text.contains("one time"));
         assert!(!text.contains("Prefer ApplyPatch"));
+        assert!(!text.contains("knowledge_search"));
+        assert!(!text.contains("nomi_delegate"));
         assert!(text.len() > 800);
         assert!(text.len() < 9_000);
+    }
+
+    #[test]
+    fn office_constitution_does_not_name_coding_only_or_hidden_surfaces() {
+        let text = office_overlay_instructions();
+        assert!(text.contains("# Office mode"));
+        assert!(!text.contains("Computer"));
+        assert!(!text.contains("update_plan"));
+        assert!(!text.contains("knowledge_"));
+        assert!(!text.contains("auto memory"));
+        assert!(!text.contains("image_generate"));
     }
 
     #[test]

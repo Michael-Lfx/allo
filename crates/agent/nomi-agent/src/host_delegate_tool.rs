@@ -39,9 +39,11 @@ const DESCRIPTION: &str = concat!(
     "decomposes it into a dependency graph and runs the steps, persisting the ",
     "execution so it survives this turn. Returns an execution_id/status/message ",
     "receipt. End this turn once you have the receipt; the host continues the work ",
-    "and reports the consolidated result back into this conversation, so do not poll. ",
-    "Parallelism, member routing and approval policy come from the bound team ",
-    "template and server policy, not from this request."
+    "and reports the consolidated result back into this conversation, so do not poll ",
+    "or repeat the call. Only `strategy=planned` plus `goal` are accepted — members, ",
+    "concurrency, and re-planning are host-owned. Answer simple or single-step ",
+    "questions directly without delegating. Parallelism, member routing and approval ",
+    "policy come from the bound team template and server policy, not from this request."
 );
 
 /// What the host must provide for a session to expose a host-backed delegate.
@@ -320,6 +322,16 @@ mod tests {
             sink.goals.lock().await.is_empty(),
             "the host must not be asked to start anything for a refused request"
         );
+    }
+
+    #[test]
+    fn description_is_planned_only_and_tells_the_model_not_to_poll() {
+        let desc = DESCRIPTION;
+        assert!(desc.contains("strategy=planned"));
+        assert!(desc.contains("do not poll"));
+        assert!(desc.contains("simple or single-step"));
+        assert!(!desc.contains("strategy=parallel"));
+        assert!(!desc.contains("nomi_execution_get"));
     }
 
     #[test]
