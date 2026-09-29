@@ -102,6 +102,8 @@ pub use app_server::{
     AppServerMarketplaceEntrySnapshot,
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
     AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
+    AppServerMarketSettings, AppServerMarketSettingsPatch, AppServerMarketSweepFailure,
+    AppServerMarketSweepReport,
     AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFile, AppServerSkillFileList,

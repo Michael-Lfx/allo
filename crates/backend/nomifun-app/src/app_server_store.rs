@@ -20,7 +20,10 @@ use nomifun_api_types::{
 };
 use nomifun_app_server::{InstallProvider, MarketplaceProvider, StoreProvider};
 use nomifun_common::AppError;
-use nomifun_db::{IMarketplaceRepository, IPluginSnapshotRepository, PluginMarketplaceRow};
+use nomifun_db::{
+    IMarketplaceRepository, IPluginSnapshotRepository, PluginMarketplaceRow,
+    PluginSnapshotComponentRow,
+};
 use nomifun_importer::{ImporterService, LocalizedText, PluginManifest};
 
 /// Composition-root Store provider: marketplace catalog + provenance install
@@ -697,6 +700,92 @@ impl StoreProvider for AppServerStoreProvider {
             released_count: replaced.released_count,
         })
     }
+
+    /// The sweep's candidate set (doc `37` §3.3, D4–D6).
+    ///
+    /// Built on top of [`Self::list`] on purpose: `installed`,
+    /// `update_available`, `kind` and `blocked_reason` are derived there from one
+    /// set of facts (`entry_facts` + provenance), and a sweep that re-derived
+    /// them would eventually disagree with what the user sees in the catalog.
+    /// The one fact `list` does not project is the component `disabled` flag, so
+    /// it is fetched here per surviving row.
+    async fn auto_update_candidates(
+        &self,
+        marketplace_id: &str,
+        kinds: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        // `[]` means "upgrade nothing" — the pre-`37` sweep behaviour. Bail
+        // before probing every market for a catalog nobody asked for.
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let items = self.list().await?.items;
+        let mut candidates = Vec::new();
+        for item in items {
+            if item.marketplace_id != marketplace_id {
+                continue;
+            }
+            // The row-only clauses first: the `disabled` probe below costs a
+            // second query, so it only runs for a row that could pass.
+            if !auto_update_eligible_from_row(&item, kinds) {
+                continue;
+            }
+            // D6-1: every component the user switched off by hand. An upgrade
+            // would install the new snapshot *enabled*, silently undoing a
+            // deliberate decision — the sweep skips instead of re-enabling.
+            if let Some(snapshot_id) = item.snapshot_id.as_deref() {
+                let components = self
+                    .snapshots
+                    .get_components(snapshot_id)
+                    .await
+                    .map_err(AppError::from)?;
+                if all_components_disabled(&components) {
+                    continue;
+                }
+            }
+            candidates.push(item.entry_name);
+        }
+        Ok(candidates)
+    }
+}
+
+/// The sweep's eligibility clauses that need nothing but the catalog row
+/// (doc `37` §3.3, D4/D5/D6-2/D6-3).
+///
+/// A free function because these are the clauses a user can observe as a
+/// *refusal* ("why did my connector not upgrade?"), and every one of them is
+/// decided from the row `store/list` already shows.
+fn auto_update_eligible_from_row(item: &AppServerStoreItem, kinds: &[String]) -> bool {
+    // D4: only an installed entry has an installation to replace.
+    if !item.installed {
+        return false;
+    }
+    // D6-3: nothing to do while the advertised version *is* the installed one.
+    // (`update_entry` would answer a no-op, and filing that as progress would
+    // make `upgraded` a lie.)
+    if !item.update_available {
+        return false;
+    }
+    // D5: the host's kind whitelist, compared case-insensitively because the
+    // whitelist is operator-written while `list` derives the kind.
+    if !kinds.iter().any(|kind| kind.eq_ignore_ascii_case(&item.kind)) {
+        return false;
+    }
+    // D6-2: the live source already says this entry cannot be installed. An
+    // unattended upgrade must not step over that verdict.
+    if item.blocked_reason.is_some() {
+        return false;
+    }
+    true
+}
+
+/// D6-1: every component of the installed snapshot is switched off by hand.
+///
+/// An empty component list is **not** "all disabled" — a snapshot with no
+/// components has nothing to switch off, and reading it as disabled would make
+/// the sweep skip an entry for a reason the user never expressed.
+fn all_components_disabled(components: &[PluginSnapshotComponentRow]) -> bool {
+    !components.is_empty() && components.iter().all(|row| row.disabled == 1)
 }
 
 /// Derive the item kind from the entry directory shape (plugin.json agent /
@@ -733,5 +822,101 @@ fn derive_kind(source: &std::path::Path, source_kind: &str, manifest: &Option<Pl
         "workbuddy-connector-market" => "connector",
         "workbuddy-skill-market" => "skill",
         _ => "agent",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A catalog row that passes every row-only clause; each test narrows one.
+    fn item() -> AppServerStoreItem {
+        AppServerStoreItem {
+            id: "experts/expert-demo".into(),
+            marketplace_id: "experts".into(),
+            marketplace_name: "experts".into(),
+            entry_name: "expert-demo".into(),
+            kind: "agent".into(),
+            name: "expert-demo".into(),
+            display_name: None,
+            profession: None,
+            description: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
+            published_at: None,
+            avatar_url: None,
+            version: "2.0.0".into(),
+            source_kind: "directory".into(),
+            installed: true,
+            update_available: true,
+            snapshot_id: Some("snap-1".into()),
+            installed_version: Some("1.0.0".into()),
+            blocked_reason: None,
+        }
+    }
+
+    fn component(disabled: i64) -> PluginSnapshotComponentRow {
+        PluginSnapshotComponentRow {
+            id: 1,
+            snapshot_id: "snap-1".into(),
+            component_id: "wb-demo-expert".into(),
+            kind: "agent".into(),
+            name: "expert-demo".into(),
+            relative_path: None,
+            compatibility_json: "{}".into(),
+            payload_json: "{}".into(),
+            installed: 1,
+            disabled,
+            installed_at: None,
+            preset_id: None,
+            runtime_ref: None,
+        }
+    }
+
+    /// Doc `37` §3.3 (D4/D5/D6): the four row-only refusals, one assertion each,
+    /// so a future edit cannot quietly drop one of them.
+    #[test]
+    fn auto_update_row_eligibility_is_the_documented_refusals() {
+        let kinds = vec!["agent".to_owned(), "team".to_owned(), "skill".to_owned()];
+        assert!(auto_update_eligible_from_row(&item(), &kinds), "the happy path");
+
+        // D4: not installed → there is no installation to replace.
+        let mut not_installed = item();
+        not_installed.installed = false;
+        assert!(!auto_update_eligible_from_row(&not_installed, &kinds));
+
+        // D6-3: already at the advertised version → nothing to do.
+        let mut current = item();
+        current.update_available = false;
+        assert!(!auto_update_eligible_from_row(&current, &kinds));
+
+        // D5: connectors are never implicit, and opting in is what enables them.
+        // The comparison is case-insensitive because the whitelist is written by
+        // an operator while the kind is derived.
+        let mut connector = item();
+        connector.kind = "connector".into();
+        assert!(!auto_update_eligible_from_row(&connector, &kinds));
+        assert!(auto_update_eligible_from_row(&connector, &["CONNECTOR".to_owned()]));
+
+        // D6-2: the live source already refused this entry.
+        let mut blocked = item();
+        blocked.blocked_reason = Some("strict entry ships no plugin.json".into());
+        assert!(!auto_update_eligible_from_row(&blocked, &kinds));
+
+        // `[]` refuses everything, which is what makes it mean "refresh the index
+        // only" rather than "upgrade everything".
+        assert!(!auto_update_eligible_from_row(&item(), &[]));
+    }
+
+    /// Doc `37` §3.3 (D6-1): a snapshot whose components are all switched off by
+    /// hand is skipped — and "no components" is not that case.
+    #[test]
+    fn every_component_switched_off_by_hand_skips_the_entry() {
+        assert!(!all_components_disabled(&[]), "no components is not 'all disabled'");
+        assert!(!all_components_disabled(&[component(0)]));
+        assert!(!all_components_disabled(&[component(1), component(0)]));
+        assert!(all_components_disabled(&[component(1)]));
+        assert!(all_components_disabled(&[component(1), component(1)]));
     }
 }

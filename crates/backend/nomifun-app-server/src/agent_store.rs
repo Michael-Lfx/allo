@@ -541,6 +541,24 @@ impl AgentStoreConfig {
     }
 }
 
+/// Every entry kind the background sweep may auto-upgrade, in the order they are
+/// written into the file (doc `37` §3.3, D5).
+///
+/// `connector` is deliberately **last and out of the default set**: upgrading a
+/// connector reruns `upsert_server`, which writes `enabled = false` whenever the
+/// configuration changed (`36` §3.4) — an unattended upgrade would silently
+/// disconnect a connector the user is in the middle of using. The other three
+/// kinds have no such side effect.
+pub const ENTRY_AUTO_UPDATE_KINDS: [&str; 4] = ["agent", "team", "skill", "connector"];
+
+/// The default whitelist: every kind except `connector`.
+pub fn default_entry_auto_update_kinds() -> Vec<String> {
+    ENTRY_AUTO_UPDATE_KINDS[..3]
+        .iter()
+        .map(|kind| (*kind).to_owned())
+        .collect()
+}
+
 /// `[marketplace]` in `~/.agent-store/config.toml`.
 ///
 /// The background auto-update sweep is **off unless a cadence is declared
@@ -553,6 +571,14 @@ pub struct AgentStoreMarketplaceSettings {
     /// Hours between sweeps. Absent or `0` keeps the scheduler off.
     #[serde(default)]
     pub auto_update_interval_hours: Option<u64>,
+    /// Which entry kinds the sweep may upgrade (doc `37` §3.3, D5).
+    ///
+    /// Absent = [`default_entry_auto_update_kinds`]; an explicit empty array =
+    /// upgrade nothing, i.e. the pre-`37` behaviour of "the sweep only refreshes
+    /// the index". The two must stay distinguishable, which is why this is an
+    /// `Option<Vec<String>>` rather than a `Vec` with a default.
+    #[serde(default)]
+    pub entry_auto_update_kinds: Option<Vec<String>>,
 }
 
 impl AgentStoreMarketplaceSettings {
@@ -560,6 +586,13 @@ impl AgentStoreMarketplaceSettings {
     pub fn cadence(&self) -> Option<std::time::Duration> {
         let hours = self.auto_update_interval_hours?;
         (hours > 0).then(|| std::time::Duration::from_secs(hours.saturating_mul(3_600)))
+    }
+
+    /// The effective kind whitelist (absent → the default three, `[]` → empty).
+    pub fn entry_auto_update_kinds(&self) -> Vec<String> {
+        self.entry_auto_update_kinds
+            .clone()
+            .unwrap_or_else(default_entry_auto_update_kinds)
     }
 }
 
@@ -571,6 +604,14 @@ pub struct AgentStoreMarketplace {
     pub source_kind: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    /// Whether the boot registration **fetches** this source (doc `37` §3.1, D1).
+    ///
+    /// Absent = `true`: a live `[default_marketplaces.*]` line has always meant
+    /// "register it *and* download it", and `37` keeps that as the default so no
+    /// existing config changes meaning. `false` registers the row and nothing
+    /// else — the archive waits for an explicit `market/refresh`.
+    #[serde(default)]
+    pub download_on_start: Option<bool>,
 }
 
 impl AgentStoreMarketplace {
@@ -591,6 +632,15 @@ impl AgentStoreMarketplace {
             return None;
         }
         Some((kind, source))
+    }
+
+    /// `download_on_start` with its documented default (doc `37` §3.1, D1).
+    ///
+    /// Absent means `true`: writing a source into the config file has always been
+    /// the request to fetch it at boot, and only an explicit `false` defers the
+    /// archive to an on-demand `market/refresh`.
+    pub fn downloads_on_start(&self) -> bool {
+        self.download_on_start.unwrap_or(true)
     }
 }
 
@@ -706,6 +756,18 @@ impl AgentStoreConfig {
             .unwrap_or(false)
     }
 
+    /// The sweep's effective entry-kind whitelist (doc `37` §3.3, D5).
+    ///
+    /// One accessor rather than two call sites deciding what "absent" means: a
+    /// missing `[marketplace]` table, a missing key and an explicit `[]` are
+    /// three different files, and only the last one means "upgrade nothing".
+    pub fn entry_auto_update_kinds(&self) -> Vec<String> {
+        self.marketplace
+            .as_ref()
+            .map(|marketplace| marketplace.entry_auto_update_kinds())
+            .unwrap_or_else(default_entry_auto_update_kinds)
+    }
+
     /// Minimal-change rewrite of the whitelisted `default_model` key.
     ///
     /// `source` in, `source` out: every other key, every comment and the file's
@@ -792,6 +854,56 @@ impl AgentStoreConfig {
         // `[memory]` exists without the key: insert it as the table's last key,
         // so the table's own header comment and its other keys stay put.
         document["memory"]["distill_enabled"] = toml_edit::value(enabled);
+        Ok(document.to_string())
+    }
+
+    /// Minimal-change rewrite of `[marketplace] auto_update_interval_hours`
+    /// (doc `37` §3.2, D3).
+    ///
+    /// Same contract as [`Self::with_distill_enabled`]: only the named key is
+    /// re-rendered, so the table's own comment, its sibling keys and the rest of
+    /// the file survive byte-for-byte. This is the write half of
+    /// `market/settings-set` — the sweep re-reads the file every tick, so a write
+    /// here is what makes the cadence change hot.
+    ///
+    /// `0` is stored verbatim rather than deleted: [`AgentStoreMarketplaceSettings::cadence`]
+    /// already reads `0` as "off", and deleting the key would lose the fact that
+    /// the operator made a choice.
+    pub fn with_marketplace_cadence(source: &str, hours: u64) -> Result<String, String> {
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+        {
+            let table = ensure_table(&mut document, "marketplace", "[marketplace]")?;
+            set_item_preserving_decor(
+                table,
+                "auto_update_interval_hours",
+                toml_edit::value(i64::try_from(hours).unwrap_or(i64::MAX)),
+            );
+        }
+        Ok(document.to_string())
+    }
+
+    /// Minimal-change rewrite of `[marketplace] entry_auto_update_kinds`
+    /// (doc `37` §3.3, D5).
+    ///
+    /// Same contract as [`Self::with_marketplace_cadence`]. The list is
+    /// canonicalised ([`canonical_entry_kinds`]) so the file and the read view
+    /// always agree on membership and order, and an unknown kind is refused
+    /// instead of being written where the sweep would silently ignore it.
+    pub fn with_entry_auto_update_kinds(source: &str, kinds: &[String]) -> Result<String, String> {
+        let kinds = canonical_entry_kinds(kinds)?;
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+        {
+            let table = ensure_table(&mut document, "marketplace", "[marketplace]")?;
+            set_item_preserving_decor(
+                table,
+                "entry_auto_update_kinds",
+                toml_edit::value(string_array(&kinds)),
+            );
+        }
         Ok(document.to_string())
     }
 
@@ -1265,6 +1377,31 @@ fn canonical_patterns(values: &[String]) -> Result<Vec<String>, String> {
     out.sort();
     out.dedup();
     Ok(out)
+}
+
+/// Canonicalise a written entry-kind whitelist (doc `37` §3.3, D5).
+///
+/// Unknown kinds are **refused** rather than dropped: a typo written into the
+/// file would otherwise be indistinguishable from "the sweep decided not to
+/// upgrade that kind", and the user would have no reading that says why nothing
+/// happened. The output is deduplicated and emitted in
+/// [`ENTRY_AUTO_UPDATE_KINDS`] order, so the file is stable across writes and
+/// `[]` survives as `[]` (the "upgrade nothing" spelling).
+fn canonical_entry_kinds(values: &[String]) -> Result<Vec<String>, String> {
+    for raw in values {
+        let value = raw.trim().to_ascii_lowercase();
+        if !ENTRY_AUTO_UPDATE_KINDS.contains(&value.as_str()) {
+            return Err(format!(
+                "unknown entry kind `{raw}` (expected one of {})",
+                ENTRY_AUTO_UPDATE_KINDS.join(", ")
+            ));
+        }
+    }
+    Ok(ENTRY_AUTO_UPDATE_KINDS
+        .iter()
+        .filter(|kind| values.iter().any(|raw| raw.trim().eq_ignore_ascii_case(kind)))
+        .map(|kind| (*kind).to_owned())
+        .collect())
 }
 
 /// The **write whitelist** for `~/.agent-store/config.toml` (`config/set`).
@@ -2172,6 +2309,127 @@ base_url = "https://example.test/v1"
             six.marketplace.unwrap_or_default().cadence(),
             Some(Duration::from_secs(6 * 3_600))
         );
+    }
+
+    /// Doc `37` §3.1 (D1): the per-source fetch flag is opt-*out*, because a live
+    /// `[default_marketplaces.*]` line has always meant "register and download".
+    #[test]
+    fn download_on_start_defaults_to_true_and_only_an_explicit_false_defers() {
+        let config = AgentStoreConfig::load_from_str(
+            "[default_marketplaces.experts]\nsource_kind = \"zip\"\nsource = \"https://h/experts.zip\"\n\n\
+             [default_marketplaces.skills]\nsource_kind = \"zip\"\nsource = \"https://h/skills.zip\"\n\
+             download_on_start = false\n",
+        );
+
+        let experts = config.default_marketplaces.get("experts").expect("declared");
+        assert!(experts.downloads_on_start(), "absent field keeps the historical default");
+        assert!(experts.download_on_start.is_none(), "and stays distinguishable from `true`");
+
+        let skills = config.default_marketplaces.get("skills").expect("declared");
+        assert!(!skills.downloads_on_start());
+        assert_eq!(skills.download_on_start, Some(false));
+
+        // `resolved()` is unchanged by the new field: a source that defers its
+        // download is still a declared source.
+        assert_eq!(skills.resolved(), Some(("zip".to_owned(), "https://h/skills.zip".to_owned())));
+    }
+
+    /// Doc `37` §3.3 (D5): "no key" and "empty array" are different statements.
+    #[test]
+    fn entry_auto_update_kinds_distinguishes_absent_from_empty() {
+        // No `[marketplace]` table at all.
+        assert_eq!(
+            AgentStoreConfig::load_from_str("").entry_auto_update_kinds(),
+            vec!["agent".to_owned(), "team".to_owned(), "skill".to_owned()]
+        );
+        // Table present, key absent.
+        assert_eq!(
+            AgentStoreConfig::load_from_str("[marketplace]\nauto_update_interval_hours = 6\n")
+                .entry_auto_update_kinds(),
+            vec!["agent".to_owned(), "team".to_owned(), "skill".to_owned()]
+        );
+        // Explicit empty = upgrade nothing (the pre-`37` sweep behaviour).
+        assert!(
+            AgentStoreConfig::load_from_str("[marketplace]\nentry_auto_update_kinds = []\n")
+                .entry_auto_update_kinds()
+                .is_empty()
+        );
+        // Connectors are opt-in, never implicit.
+        assert_eq!(
+            AgentStoreConfig::load_from_str(
+                "[marketplace]\nentry_auto_update_kinds = [\"agent\", \"team\", \"skill\", \"connector\"]\n"
+            )
+            .entry_auto_update_kinds(),
+            vec![
+                "agent".to_owned(),
+                "team".to_owned(),
+                "skill".to_owned(),
+                "connector".to_owned()
+            ]
+        );
+    }
+
+    /// Doc `37` §3.2 (D3): the write half of `market/settings-set` is a
+    /// minimal-change edit — every other key, comment and blank line survives.
+    #[test]
+    fn marketplace_writes_touch_only_the_named_key() {
+        // 1. No `[marketplace]` table: one is appended, the rest of the file is
+        //    untouched (appending a table is the only lossless option).
+        let created = AgentStoreConfig::with_marketplace_cadence(
+            "# allo host config\ndefault_model = \"opencode/mimo-v2.5-free\"\n",
+            6,
+        )
+        .expect("edit");
+        assert!(created.contains("# allo host config"), "{created}");
+        assert!(created.contains("default_model = \"opencode/mimo-v2.5-free\""), "{created}");
+        assert_eq!(
+            AgentStoreConfig::load_from_str(&created)
+                .marketplace
+                .expect("table created")
+                .auto_update_interval_hours,
+            Some(6)
+        );
+
+        // 2. Existing table: the sibling key and its trailing comment survive, and
+        //    the cadence is re-rendered in place.
+        let source = "[marketplace]\n# how often to sweep\nauto_update_interval_hours = 6   # keep this comment\nentry_auto_update_kinds = [\"agent\"]\n";
+        let updated = AgentStoreConfig::with_marketplace_cadence(source, 12).expect("edit");
+        assert_eq!(updated.matches("auto_update_interval_hours").count(), 1, "{updated}");
+        assert!(updated.contains("# how often to sweep"), "{updated}");
+        assert!(updated.contains("auto_update_interval_hours = 12   # keep this comment"), "{updated}");
+        assert!(updated.contains("entry_auto_update_kinds = [\"agent\"]"), "{updated}");
+
+        // 3. The kinds write is the mirror image: it leaves the cadence alone.
+        let kinds = AgentStoreConfig::with_entry_auto_update_kinds(source, &["skill".to_owned()])
+            .expect("edit");
+        assert!(kinds.contains("auto_update_interval_hours = 6   # keep this comment"), "{kinds}");
+        assert!(kinds.contains("entry_auto_update_kinds = [\"skill\"]"), "{kinds}");
+
+        // 4. `[]` writes as `[]` (not as a deleted key) and round-trips as "none".
+        let none = AgentStoreConfig::with_entry_auto_update_kinds(source, &[]).expect("edit");
+        assert!(none.contains("entry_auto_update_kinds = []"), "{none}");
+        assert!(AgentStoreConfig::load_from_str(&none).entry_auto_update_kinds().is_empty());
+
+        // 5. Canonicalisation: case folds and the output follows the documented
+        //    order, so two spellings of the same set produce the same file.
+        let canonical = AgentStoreConfig::with_entry_auto_update_kinds(
+            source,
+            &["SKILL".to_owned(), "agent".to_owned(), "agent".to_owned()],
+        )
+        .expect("edit");
+        assert!(
+            canonical.contains("entry_auto_update_kinds = [\"agent\", \"skill\"]"),
+            "{canonical}"
+        );
+
+        // 6. An unknown kind is a refusal, never a silently-ignored entry.
+        let refused =
+            AgentStoreConfig::with_entry_auto_update_kinds(source, &["agentx".to_owned()]);
+        assert!(refused.is_err(), "{refused:?}");
+
+        // 7. Unparseable input stays a refusal.
+        assert!(AgentStoreConfig::with_marketplace_cadence("not = = toml\n", 6).is_err());
+        assert!(AgentStoreConfig::with_entry_auto_update_kinds("not = = toml\n", &[]).is_err());
     }
 
     #[test]

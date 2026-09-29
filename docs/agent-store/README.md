@@ -333,11 +333,16 @@ flowchart TD
    `cd web && bun run typecheck` exit 0；`bun run test` **555 passed / 1 skipped**；
    `bun run check:fingerprint` 绿（`fp-13`，本仓 10 处 + 站点 2 处）；`bun run check:release-sync`
    绿（`55 / 80` 两语言同值）。
-8. **尚未做（如实登记）**：活体读数（S2 真机零流量启动、S3 写穿回读、S4 空白名单语义）与
-   `bun scripts/smoke.ts` 冒烟未跑；`sweep_official_markets` 的市场枚举+refresh 计数未做端到端
-   单测（cadence 以小时为单位，真机无法在一个可接受的时间内等到一轮），其升级段与过滤规则由
-   `sweep_upgrade_entries`（假 store）与 `auto_update_eligible_from_row` / `all_components_disabled`
-   纯函数单测覆盖；本次未发版。
+8. **活体读数（已跑）**：`cargo build -p agent-store` 的 debug 二进制 + SDK `launchHarness` 驱动，
+   逐条通过——握手 `fp-13`；`download_on_start = false` 只注册不取包且**数据目录零归档**；
+   `AGENT_STORE_MARKET_DOWNLOAD=none` 时注册表与商店**都为空**；`market/settings-set` 写穿
+   `config.toml`（注释逐字存活、未知类型被拒后文件字节不变、**重启后仍在**）；
+   **60s tick 真跑了一轮**：`last_sweep = { refreshed: 1, upgraded: 0, failed: [] }`。
+   `bun scripts/smoke.ts`（mock 端到端）**smoke passed**；`bun run check:market` self-test 17/17。
+9. **尚未做（如实登记）**：**条目自动升级的活体读数**需要一个「装了旧版 → 市场出新版」的官方市场
+   夹具（官方归档由发布侧产出，本地无法构造），由两条纯函数单测 + 假 store 的升级段单测覆盖；
+   `smoke --real` 未跑；本次未发版（npm 四包与站点上线按 `25` runbook 留到发版轮，
+   站点仓 `typescript-sdk.md` 的指纹与计数已改好但未提交）。
 
 
 ## 上一轮（2026-09-28 发布 `0.1.0-beta.8`）

@@ -438,6 +438,24 @@ pub trait StoreProvider: Send + Sync {
         marketplace_id: &str,
         entry_name: &str,
     ) -> Result<AppServerStoreInstallResult, AppError>;
+
+    /// Entries installed from `marketplace_id` that the background sweep may
+    /// auto-upgrade, as entry names (doc `37` §3.3, D4–D6).
+    ///
+    /// A **host-only seam**, deliberately not a wire method: eligibility depends
+    /// on facts the public protocol does not project — the snapshot components'
+    /// `disabled` flag (a component the user switched off by hand must not be
+    /// silently re-enabled by an upgrade) and the source tree's `blocked_reason`.
+    /// Keeping the rule here means the sweep cannot grow a second, weaker filter
+    /// that disagrees with `store/list`.
+    ///
+    /// `kinds` is the host's whitelist; an empty slice means "upgrade nothing"
+    /// and must short-circuit before any catalog work.
+    async fn auto_update_candidates(
+        &self,
+        marketplace_id: &str,
+        kinds: &[String],
+    ) -> Result<Vec<String>, AppError>;
 }
 
 /// Read-side Team catalog (`team/list`, `team/get`, docs/agent-store/05 §4.2).
@@ -1252,6 +1270,31 @@ impl StoreProvider for FakeStoreProvider {
         result.released_count = if item.update_available { 1 } else { 0 };
         result.reused = !item.update_available;
         Ok(result)
+    }
+
+    /// The fake keeps the sweep's rule deliberately trivial (installed + has an
+    /// update + kind whitelisted): the full eligibility rule — `blocked_reason`
+    /// and the component `disabled` flag — lives in the real provider's
+    /// implementation, where those facts exist.
+    async fn auto_update_candidates(
+        &self,
+        marketplace_id: &str,
+        kinds: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .items
+            .iter()
+            .filter(|item| {
+                item.marketplace_id == marketplace_id
+                    && item.installed
+                    && item.update_available
+                    && kinds.iter().any(|kind| kind.eq_ignore_ascii_case(&item.kind))
+            })
+            .map(|item| item.entry_name.clone())
+            .collect())
     }
 }
 

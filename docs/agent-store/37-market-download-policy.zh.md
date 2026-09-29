@@ -1,6 +1,8 @@
 # 市场源的下载与更新策略 · 技术方案
 
-> **状态**：📋 待动工（2026-09-28 核心决策已由用户拍板）  
+> **状态**：✅ **已实施（2026-09-29）**——§6 的 10 步已按顺序落地，`fp-12` → `fp-13`，
+> 方法计数 `53 / 78` → `55 / 80`；实施期的读数、与本文的差异与**尚未做**的部分逐条记在
+> **附录 C**。  
 > **核心原则**：三通道独立 —— **启动下载在配置/环境变量**、**运行期策略走 API 并持久化**、**自动升级随宿主扫掠**。
 
 ---
@@ -259,11 +261,62 @@ entry_auto_update_kinds = ["agent", "team", "skill"]   # 允许自动升级的�
   5. 记录执行时间戳并更新内存中的 last_sweep 报表
 ```
 
+一轮扫掠的两段式交互（谁在读文件、谁在决定准入、谁在动已安装的东西）：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as 调度器 (60s tick)
+    participant F as config.toml
+    participant M as MarketplaceProvider
+    participant P as 市场源 (zip / git / url)
+    participant T as StoreProvider
+    participant R as 运行时产物 (Preset / 技能目录 / mcp_servers)
+
+    S->>F: 每轮重新解析周期与白名单
+    F-->>S: cadence / entry_auto_update_kinds
+    alt 周期为 None 或未到期
+        S-->>S: 本轮跳过，不记 last_sweep
+    else 已到期
+        S->>M: auto_update_targets()
+        M-->>S: 官方源 + 开关为开 + 未移除
+        loop 每个市场
+            S->>M: refresh(marketplace_id)
+            M->>P: HEAD 摘要 / clone / 条件请求
+            P-->>M: revision 与内容
+            M-->>S: changed（未变则零下载）
+            S->>T: auto_update_candidates(marketplace_id, kinds)
+            T-->>S: 已装 + 有新版 + 在白名单 + 未停用 + 未阻塞
+            loop 每个候选条目
+                S->>T: update_entry(marketplace_id, entry_name)
+                T->>R: 先装新版本；成功才释放旧版本
+                R-->>T: 安装结果
+                T-->>S: Ok 计入 upgraded / Err 计入 failed（逐条隔离）
+            end
+        end
+        S->>S: 更新 last_sweep 报表（纯内存）
+    end
+```
+
 ---
 
-## 4. 兼容性与风险评估
+## 4. 关键决策与兼容性
 
-### 4.1 破坏性变更登记（D9）
+### 4.1 决策与权衡矩阵（D1–D9）
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | 启动下载的粒度 | **per-source `download_on_start`（缺省 `true`）** | ❌ 宿主级兜底 `default_download`：多一层优先级，而「写进配置就是明确要求」会被间接值盖住；❌ 直接把默认翻成 `lazy`：对全部现存配置的静默行为变更 |
+| **D2** | 运行期策略的 wire 面 | **新增 `market/settings` + `market/settings-set`** | ❌ 扩 `config/set` 白名单：那是仓库明文标注「最易变、curated client 刻意不给 typed 方法」的一族，SDK 要裸 `transport.request` 才能用 |
+| **D3** | 策略真源与生效方式 | **配置文件为唯一真源；写面写穿；调度器每轮重读** | ❌ 内存态 + 重启生效：与文件长期分叉，且「读回的就是文件」不再成立 |
+| **D4** | 自动升级的粒度 | **市场级（复用 `plugin_marketplaces.auto_update`）** | ❌ 条目级策略表：需要新表 + 迁移，且要额外定义「策略行与安装态解耦」的一致性；市场级零迁移 |
+| **D5** | 可自动升级的条目类型 | **白名单缺省 `["agent","team","skill"]`，连接器显式 opt-in** | ❌ 四类默认全开：连接器升级会因配置变化被置为停用（`36` §3.4），无人值守等于静默掉线 |
+| **D6** | 用户显式决定的优先级 | **手动停用 / `blocked_reason` / 只导入未安装三条硬跳过** | ❌ 一并升级：会替用户撤销「停用」这一决定，并让「源上判定不可装」的条目被硬装 |
+| **D7** | SDK 的控制通道 | **环境变量（`AGENT_STORE_MARKET_DOWNLOAD` / `AGENT_STORE_CONFIG`）** | ❌ CLI 参数：`apps/agent-store` 的 clap 不认后端 flag，子进程会在打印 readiness 前退出（该结论仓库已有注释）；❌ 只靠配置文件：SDK 够不到默认路径那份文件 |
+| **D8** | 扫掠结果的可观测 | **`market/settings` 回读 `last_sweep`（纯内存）** | ❌ 新增 `ServerNotification`：多一个指纹面，而按需再 `store/list` 一次即可 |
+| **D9** | 破坏性行为的登记 | **不加第二道总开关，改在 changelog / upgrade / `18` §9.2 / `36` §2 显式登记** | ❌ `[marketplace] entry_auto_update`（默认关）当第二道门：与 D4 的「打开即生效」矛盾，且 `auto_update`（每市场、默认关）+ cadence（宿主级、默认关）已是两道显式动作；保留为**可回退点**（真机若见误升级，加这道门成本很低） |
+
+### 4.2 破坏性变更登记（D9）
 - **影响场景**：既有用户如果已经在配置文件中配置了 `auto_update_interval_hours`，并且在市场列表中开启了官方市场的 `auto_update` 开关，在升级本版本后，其已安装的专家与技能会在后台**开始被自动升级**（以往旧版本仅刷新市场索引，不碰已安装组件）。
 - **应对方案**：
   1. 在版本升级说明与变更日志中重点突出此行为升级；
@@ -273,9 +326,12 @@ entry_auto_update_kinds = ["agent", "team", "skill"]   # 允许自动升级的�
      entry_auto_update_kinds = []
      ```
 
-### 4.2 第三方市场源限制说明
+### 4.3 第三方市场源限制说明
 - 依据平台既定安全规范，第三方自定义市场源即便设置了 `auto_update`，宿主后台也不会对其进行自动化轮询拉取。
 - SDK 使用者若接入第三方源，应由 SDK 宿主端按需显式调用 `refreshMarketplace()` 和 `updateStoreEntry()` 进行控制。
+- **SDK 场景的额外事实**：`--port 0` spawn 的宿主通常活不过一个 cadence（小时级），所以「自动更新」在
+  SDK 侧应由**调用方自己轮询**：`refreshMarketplace()` 看 `changed` → `checkUpdates()` →
+  `updateStoreEntry()`。宿主扫掠是给长命宿主（WebUI 那个）用的。
 
 ---
 
@@ -328,3 +384,69 @@ entry_auto_update_kinds = ["agent", "team", "skill"]   # 允许自动升级的�
 - **协议指纹版本**：`fp-12` → `fp-13`
 - **方法路由数量**：`53 / 78` → `55 / 80`（新增 `market/settings` 与 `market/settings-set`）
 - **同步要求**：发布前须通过 `bun run check:fingerprint` 及 `bun run check:release-sync` 校验。
+
+---
+
+## 附录 C：实施记录（2026-09-29）
+
+### C.1 自检读数
+
+| 检查 | 读数 |
+|---|---|
+| `cargo test -p nomifun-app-server` | **186 passed / 0 failed**（含新增 3 条：设置读写回环、扫掠升级段隔离、到期判定） |
+| `cargo test -p nomifun-app --lib` | **381 passed / 1 ignored**（含新增 2 条纯函数单测：行级准入四条拒绝、全停用判定） |
+| `cd web && bun run typecheck` | exit 0 |
+| `cd web && bun run test` | **555 passed / 1 skipped** |
+| `bun scripts/smoke.ts`（mock 端到端） | **smoke passed**（含握手携带 `fp-13`） |
+| `bun run check:fingerprint` | 绿：`fp-13` 一致于本仓 7 文件 10 处 + 站点 2 文件 |
+| `bun run check:release-sync` | 绿：`0.1.0-beta.8` 四包 + 8 pin + 站点 `release.json` 同值；`55 / 80` 两语言同值 |
+| `bun run check:market` | 绿：self-test 17/17 |
+| `cargo fmt --check -p nomifun-app-server -p nomifun-app -p nomifun-api-types` | 无输出（已格式化） |
+
+**活体读数**（`cargo build -p agent-store` 的 debug 二进制 + 经 SDK 的 `launchHarness` 驱动；
+脚本是一次性夹具，未入库）：
+
+| 场景 | 读数 |
+|---|---|
+| 握手 | `protocol_version = "fp-13"` |
+| **S2** 声明一条官方 zip 源且 `download_on_start = false` | 该行已注册、`entry_count = 0`、`resolved_revision` 为空，**且数据目录下没有落任何归档**（`agent-store-markets/connectors/live` 不存在） |
+| **S1/`none`** `AGENT_STORE_MARKET_DOWNLOAD=none` | `market/list` 0 行、`store/list` 0 条目（连注册都不做） |
+| **S3** `market/settings` 缺省 | 周期 `null`、白名单 `["agent","team","skill"]`、`sweep_enabled = true`、`last_sweep = null` |
+| **S3** `market/settings-set` 写 `{6, ["connector","AGENT"]}` | 回读 `6` 与 `["agent","connector"]`（规范化序）；`config.toml` 里文件头注释与同键注释**逐字存活**、两个键各出现一次；未知类型被拒后**文件字节不变**；**重启后两值仍在** |
+| **S4 + 真扫掠** | 60s tick 真的跑了一轮：`last_sweep = { at: 1790672169401, refreshed: 1, upgraded: 0, failed: [] }`——刷新走 `HEAD` 短路，`entry_auto_update_kinds = []` 时**零升级** |
+
+### C.2 与本文的差异（逐条）
+
+1. **两个方法不落在 `MarketplaceProvider` trait 上**，而是与 `config/get`·`config/set` 同族，
+   实现在 `nomifun-app-server/src/lib.rs`（`market_settings_view` /
+   `execute_market_settings_set`）。理由：策略的载体是**配置文件路径**，而该路径属路由状态
+   （`agent_store_config_path`），不在市场 provider 手里；为此给 trait 加一个「顺便知道文件在哪」
+   的字段，比把两个读一个 TOML 的处理器放在同族位置更贵。
+2. **准入规则抽成两个纯函数**（`app_server_store.rs` 的 `auto_update_eligible_from_row` 与
+   `all_components_disabled`），而不是写在 `auto_update_candidates` 的循环里。理由：这些子句
+   正是用户能观测到的「为什么它没升级」，抽出来才能逐条钉住；「空组件列表 ≠ 全部停用」这一条
+   也因此有了自己的断言。
+3. **升级段单独抽出**（`lib.rs` 的 `sweep_upgrade_entries`），并让「候选集列举失败」进入
+   `failed` 而不是被 `unwrap_or_default` 吞掉——市场枚举与 refresh 计数留在
+   `sweep_official_markets` 里。
+4. **「关闭」的编码用 `0` 而不是双层 `Option`**：`cadence()` 本来就把 `0` 当关闭，
+   多一层空值语义只会多一个 serde 陷阱；读面因此把 `0`/缺省统一回成 `null`。
+5. **调度器不需要并发互斥锁**（本文 §3.3 时序图里画了「已有扫掠在执行?」这一支）：循环体
+   `await` 整轮扫掠，第二个扫掠在同一任务里不可能并发启动。用户手动 `store/update-entry`
+   与扫掠的窗口内竞态是有界的（版本相同即 no-op），已在代码注释里登记，不加锁。
+6. **`AGENT_STORE_CONFIG` 落成后端 `Cli::agent_store_config` 的一个 `env` 属性**（一行），
+   而不是新增流程：`apps/agent-store` 的 `is_none()` 分支天然让环境变量优先于默认路径。
+7. **启动策略的 `lazy` 与「官方源仍可被扫掠」不冲突但也不叠加**：懒注册的行被刻意钉成
+   `auto_update = 0`（`30` §11.2 第 1 点，本次未改），所以「声明了但没下载」的市场不会在
+   第一个 tick 被扫掠顺带下回来——这正是 S2 活体读数里「零归档」的成因。
+
+### C.3 尚未做（如实登记）
+
+- **条目自动升级的活体读数未做**：要观测一次真实升级，需要一个「装了旧版 → 市场出新版」的
+  官方市场夹具，而官方 zip 归档由发布侧产出、本地无法构造；S5/S6/S7 目前由
+  `sweep_upgrade_entries`（假 store，含失败隔离）与两个纯函数单测（kind 白名单 / 手动停用 /
+  `blocked_reason` / 未安装）覆盖。**已完成的替代读数**是 S4 那一轮真扫掠（`refreshed = 1`、
+  `upgraded = 0`、零失败），它证明调度器、到期判定与读数链路在真机上成立。
+- **`bun scripts/smoke.ts --real`**（对真宿主的 `--real` 模式）未跑；默认（mock）模式已通过。
+- **未发版**：npm 四包与站点上线按 `25` runbook 在发版时执行；站点仓的两处指纹/计数已在本次改好
+  （未提交），`changelog` / `upgrade` 的用户可见条目留给发版那一轮。

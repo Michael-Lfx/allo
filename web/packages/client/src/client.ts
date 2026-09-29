@@ -29,6 +29,8 @@ import {
   type MarketplaceRefreshResult,
   type MarketplaceRemoveResult,
   type MarketplaceSummary,
+  type MarketSettings,
+  type MarketSettingsPatch,
   type StoreInstallResult,
   type StoreList,
 } from "@flowy-agent-store/protocol";
@@ -279,6 +281,27 @@ export class AppServerClient {
       marketplace_id: marketplaceId,
       entry_name: entryName,
     });
+  }
+
+  /**
+   * The host's market policy: sweep cadence, auto-upgrade kind whitelist and the
+   * last sweep's reading (doc `37` §3.2).
+   *
+   * Host-level rather than per-market: it answers "when does the sweep run and
+   * what may it touch", while {@link setMarketplaceAutoUpdate} answers "which
+   * market participates".
+   */
+  async getMarketSettings(): Promise<MarketSettings> {
+    return this.transport.request<MarketSettings>("market/settings", {});
+  }
+
+  /**
+   * Update the host's market policy. An absent field is left alone; the host
+   * writes the value into its `config.toml` and answers with the file re-read,
+   * so a caller can never see an optimistic echo.
+   */
+  async setMarketSettings(patch: MarketSettingsPatch): Promise<MarketSettings> {
+    return this.transport.request<MarketSettings>("market/settings-set", patch);
   }
 
   // --- Store (winget-style unified catalog) --------------------------------

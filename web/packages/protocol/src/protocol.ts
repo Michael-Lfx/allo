@@ -62,8 +62,15 @@
  * shape, but the response carries the Agent Markdown body, which the catalog
  * faces deliberately never do; both methods are WebSocket-only, so the
  * documented route split becomes `48 / 73` (doc `32`).
+ * **`fp-13` adds the market policy face** (doc `37`): `market/settings` reads the
+ * host's effective sweep cadence, auto-upgrade kind whitelist and last-sweep
+ * reading, and `market/settings-set` writes the named keys through to the host's
+ * `config.toml`. The same change makes the background sweep able to upgrade
+ * entries installed from an `auto_update` market (official sources only, and
+ * never a `connector` or a component the user switched off by hand). Both
+ * methods are mapped, so the documented route split becomes `55 / 80`.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-12";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-13";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -1383,6 +1390,81 @@ export interface StoreList {
   /** `true` while the builtin default marketplaces are still registering in the
    *  background (D-SDK-1 ①) — the catalog may be incomplete. */
   markets_pending?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace host policy — `market/settings` · `market/settings-set` (doc 37)
+// ---------------------------------------------------------------------------
+
+/**
+ * The host's effective market policy (doc `37` §3.2, `fp-13`).
+ *
+ * Two different questions, deliberately in one view: *when* the sweep runs
+ * (`auto_update_interval_hours`) and *what it may touch*
+ * (`entry_auto_update_kinds`). Both are read from the host's `config.toml` on
+ * every call — nothing here is an in-memory override.
+ */
+export interface MarketSettings {
+  /**
+   * Sweep cadence in hours. `null` = the background sweep is off.
+   *
+   * `0` is the wire spelling for "turn it off" on the way in
+   * ({@link MarketSettingsPatch}), and reads back as `null`, because the host's
+   * own `cadence()` already treats `0` as off rather than "every tick".
+   */
+  auto_update_interval_hours: number | null;
+  /**
+   * Entry kinds the sweep may auto-upgrade.
+   *
+   * Empty = the sweep only refreshes market indexes (the behaviour before doc
+   * `37`). The default is `["agent", "team", "skill"]`: `"connector"` is never
+   * implicit, because upgrading a connector reruns `upsert_server`, which marks
+   * the server **disabled** whenever its configuration changed — an unattended
+   * upgrade would silently disconnect a connector the user is using (`36` §3.4).
+   */
+  entry_auto_update_kinds: StoreItemKind[];
+  /**
+   * Whether this host actually runs a sweep at all.
+   *
+   * A host with no resolved `config.toml` path (the desktop host) reports
+   * `false` and never sweeps, so a client must not read "the cadence is set" as
+   * "updates will happen".
+   */
+  sweep_enabled: boolean;
+  /** The most recent sweep, or `null` before the first one. In-memory only. */
+  last_sweep: MarketSweepReport | null;
+}
+
+/**
+ * `market/settings-set` patch. An **absent** field means "leave it alone" — the
+ * two fields are independent, so a caller can change the cadence without
+ * restating the whitelist.
+ */
+export interface MarketSettingsPatch {
+  /** Absent = unchanged; `0` = off; `> 0` = hours between sweeps. */
+  auto_update_interval_hours?: number;
+  /** Absent = unchanged; `[]` = upgrade nothing (index refresh only). */
+  entry_auto_update_kinds?: StoreItemKind[];
+}
+
+/** One background sweep's reading (doc `37` §3.2, D8). */
+export interface MarketSweepReport {
+  /** Epoch ms when the sweep finished. */
+  at: number;
+  /** Markets whose index refresh succeeded this round. */
+  refreshed: number;
+  /** Entries actually upgraded. */
+  upgraded: number;
+  /** Entries that were candidates and failed. Never silently dropped. */
+  failed: MarketSweepFailure[];
+}
+
+/** One entry the sweep refused to upgrade, with the host's own reason. */
+export interface MarketSweepFailure {
+  /** `<marketplace_id>/<entry_name>` — the {@link StoreItem.id} spelling. */
+  id: string;
+  /** Server-authored prose (not an i18n key). */
+  error: string;
 }
 
 /** One model in the public catalog (`models/list`, REQ-PAR-05b). Provider

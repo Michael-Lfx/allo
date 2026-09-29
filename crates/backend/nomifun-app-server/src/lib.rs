@@ -86,7 +86,8 @@ use nomifun_api_types::{
     AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
-    AppServerMarketplaceSummary, AppServerModelList,
+    AppServerMarketplaceSummary, AppServerMarketSettings, AppServerMarketSettingsPatch,
+    AppServerMarketSweepFailure, AppServerMarketSweepReport, AppServerModelList,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary,
     AppServerStoreInstallResult,
@@ -197,7 +198,18 @@ use tokio::sync::mpsc;
 /// and the result carries `previous_version` / `previous_snapshot_id` /
 /// `released_count` for the update case (`36` D3/D4). One method, and it has an
 /// HTTP route, so the documented split moves to `53 / 78`.
-pub const PROTOCOL_VERSION: &str = "fp-12";
+/// **`fp-13` makes the market policy readable and writable at runtime, and lets
+/// the sweep upgrade entries** (doc 37): `market/settings`
+/// (`GET /api/app-server/market-settings`) reports the effective sweep cadence,
+/// the auto-upgrade kind whitelist and the last sweep's reading;
+/// `market/settings-set` (`POST`, same path) writes the named keys through to the
+/// host's `config.toml` and answers with the file re-read. The background sweep
+/// no longer means "refresh the index, never touch an installation": with the
+/// whitelist non-empty it also upgrades entries installed from a market whose
+/// `auto_update` is on — official sources only, `connector` excluded unless the
+/// operator opts in, and never for an entry the user disabled by hand. Two
+/// methods, both mapped, so the documented split moves to `55 / 80`.
+pub const PROTOCOL_VERSION: &str = "fp-13";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1399,6 +1411,11 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
             "/api/app-server/markets/{marketplace_id}/entries/{entry_name}/import",
             post(market_entry_import_route),
         )
+        // Host-level market policy (doc 37 §3.2). One path, one verb per method.
+        .route(
+            "/api/app-server/market-settings",
+            get(market_settings_route).post(market_settings_set_route),
+        )
         // Agent Store unified store catalog (winget-style)
         .route("/api/app-server/store", get(store_list_route))
         .route(
@@ -2363,39 +2380,116 @@ fn marketplace_provider(
     })
 }
 
-/// The default-marketplace plan: which sources to register, and whether
-/// registering them includes **fetching** them.
+/// Environment variable that overrides the boot registration policy for **this
+/// process** (doc `37` §3.1, D7).
 ///
-/// Split out because that single boolean is the whole download policy
-/// (`ensure_default_marketplaces`): a source the operator declared is an
-/// explicit request and is fetched; the builtin fallback is registered
-/// unfetched. Kept pure — same argument, same answer — so the rule is pinned
-/// by a test that needs neither a provider nor a database.
-fn default_marketplace_plan(path: &std::path::Path) -> (Vec<(String, String, String)>, bool) {
-    match AgentStoreConfig::load(path) {
-        Ok(config) if !config.default_marketplaces.is_empty() => (
-            config
-                .default_marketplaces
-                .iter()
-                .filter_map(|(id, entry)| {
-                    let (kind, source) = entry.resolved()?;
-                    Some((id.clone(), kind, source))
-                })
-                .collect(),
-            true,
-        ),
-        Ok(_) | Err(_) => (AgentStoreConfig::builtin_default_marketplaces(), false),
+/// It exists because the SDK-spawned host cannot pass backend CLI flags
+/// (`apps/agent-store/src/main.rs`), so the parent environment is the only
+/// channel a launcher has — the same conclusion `NOMI_LOG_LEVEL` already
+/// documents. Process-scoped on purpose: nothing is written to the user's file.
+const ENV_MARKET_DOWNLOAD: &str = "AGENT_STORE_MARKET_DOWNLOAD";
+
+/// The `AGENT_STORE_MARKET_DOWNLOAD` values (doc `37` §3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarketDownloadOverride {
+    /// Register every declared source, fetch none of them.
+    Lazy,
+    /// Fetch every declared source.
+    Eager,
+    /// Register nothing at all: the store starts genuinely empty.
+    None,
+}
+
+impl MarketDownloadOverride {
+    /// Parse the environment value. An unrecognised value is **not** an override
+    /// (rather than a fatal error): a typo in a deployment's environment must
+    /// not take the host down, and the documented spellings are the only ones
+    /// that change behaviour.
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "lazy" => Some(Self::Lazy),
+            "eager" => Some(Self::Eager),
+            "none" => Some(Self::None),
+            _ => None,
+        }
     }
+}
+
+/// One source in the boot registration plan (doc `37` §3.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefaultMarketPlan {
+    id: String,
+    kind: String,
+    source: String,
+    /// `true` fetches the archive at boot; `false` writes the registry row and
+    /// nothing else, leaving the archive to an explicit `market/refresh`.
+    fetch: bool,
+}
+
+/// The default-marketplace plan: which sources to register, and which of them
+/// are **fetched** during boot.
+///
+/// Kept pure — same arguments, same answer — so the whole policy is pinned by a
+/// test that needs neither a provider nor a database. The three inputs are, in
+/// decreasing precedence (doc `37` §3.1):
+///
+/// 1. `override_` (`AGENT_STORE_MARKET_DOWNLOAD`) wins outright;
+/// 2. otherwise a source the operator declared carries its own
+///    `download_on_start` (absent = `true`, the historical "a live line is the
+///    request to download" semantics);
+/// 3. the builtin fallback — no config file, or one that declares no
+///    `default_marketplaces` — is always registered unfetched (doc `30` §11).
+fn default_marketplace_plan(
+    path: &std::path::Path,
+    override_: Option<MarketDownloadOverride>,
+) -> Vec<DefaultMarketPlan> {
+    if override_ == Some(MarketDownloadOverride::None) {
+        // Not "register and skip the download": nothing is registered at all, so
+        // a launcher that wants a silent store does not even get rows for the
+        // official mirrors.
+        return Vec::new();
+    }
+    let declared: Vec<(String, String, String, bool)> = match AgentStoreConfig::load(path) {
+        Ok(config) if !config.default_marketplaces.is_empty() => config
+            .default_marketplaces
+            .iter()
+            .filter_map(|(id, entry)| {
+                let (kind, source) = entry.resolved()?;
+                Some((id.clone(), kind, source, entry.downloads_on_start()))
+            })
+            .collect(),
+        Ok(_) | Err(_) => AgentStoreConfig::builtin_default_marketplaces()
+            .into_iter()
+            .map(|(id, kind, source)| (id, kind, source, false))
+            .collect(),
+    };
+    declared
+        .into_iter()
+        .map(|(id, kind, source, download_on_start)| DefaultMarketPlan {
+            id,
+            kind,
+            source,
+            fetch: match override_ {
+                Some(MarketDownloadOverride::Lazy) => false,
+                Some(MarketDownloadOverride::Eager) => true,
+                // No override, or an unparseable value: the file decides.
+                _ => download_on_start,
+            },
+        })
+        .collect()
 }
 
 /// Register the default marketplace sources for this host. Idempotent (same
 /// source returns the existing row). Failures are non-fatal: a broken default
 /// source is reported as a warning and the rest keeps working.
 ///
-/// **Two classes, deliberately different** (doc 30 / D-SDK-1 ④):
+/// **Two classes, deliberately different** (doc 30 / D-SDK-1 ④), now with a
+/// per-source override on the first one (doc `37` §3.1):
 /// - a source the operator **declared** under `[default_marketplaces.*]` is an
 ///   explicit request, so it is registered *and fetched* here (network reach
-///   bounded by `tokio::time::timeout`);
+///   bounded by `tokio::time::timeout`) — unless that source says
+///   `download_on_start = false`, or `AGENT_STORE_MARKET_DOWNLOAD` overrides the
+///   whole process;
 /// - the **builtin fallback** — no config file, or one that declares no
 ///   `default_marketplaces` — is registered **without fetching**. The three
 ///   official archives are 324 MiB together (289.6 MiB of it `experts` alone),
@@ -2418,12 +2512,23 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) -> bool {
     let Some(path) = state.agent_store_config_path.clone() else {
         return true;
     };
-    // Load the user config. A file that declares sources drives the list *and*
-    // opts into the download; a missing/unreadable file, or one with nothing to
-    // declare, falls back to the builtin mirrors, registered unfetched.
-    let (sources, fetch) = default_marketplace_plan(&path);
+    // Load the user config. A file that declares sources drives the list, and
+    // each source's own `download_on_start` decides whether it is fetched; a
+    // missing/unreadable file, or one with nothing to declare, falls back to the
+    // builtin mirrors, registered unfetched (doc `37` §3.1).
+    let override_ = std::env::var(ENV_MARKET_DOWNLOAD)
+        .ok()
+        .as_deref()
+        .and_then(MarketDownloadOverride::parse);
+    let plan = default_marketplace_plan(&path, override_);
     let mut complete = true;
-    for (marketplace_id, source_kind, source) in sources {
+    for DefaultMarketPlan {
+        id: marketplace_id,
+        kind: source_kind,
+        source,
+        fetch,
+    } in plan
+    {
         // An unknown kind must not be guessed at: `parse` returns `None` and
         // the source is skipped, so a config naming a kind this build does not
         // have is visibly incomplete rather than silently fetched as `url`.
@@ -2439,9 +2544,11 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) -> bool {
             continue;
         };
         if !fetch {
-            // Registry-only: no network, so no timeout and no staging to
-            // reclaim. A failure here is a database failure, and `complete`
-            // stays clear so the next store/market call retries.
+            // Registry-only — either the builtin fallback or a source whose
+            // `download_on_start = false` deferred the archive. No network, so no
+            // timeout and no staging to reclaim. A failure here is a database
+            // failure, and `complete` stays clear so the next store/market call
+            // retries.
             if provider
                 .register_unfetched(&marketplace_id, &marketplace_id, kind.as_str(), &source)
                 .await
@@ -2529,53 +2636,324 @@ pub fn warm_default_marketplaces(state: &AppServerRouterState) {
 static MARKETPLACES_AUTO_UPDATE_STARTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// The declared sweep cadence, or `None` when the host did not opt in.
-fn auto_update_cadence(state: &AppServerRouterState) -> Option<std::time::Duration> {
-    let config = AgentStoreConfig::load(state.agent_store_config_path.as_deref()?).ok()?;
-    config.marketplace?.cadence()
+/// How often the scheduler wakes up to ask whether a sweep is due (doc `37`
+/// §3.3).
+///
+/// Deliberately **not** the cadence: the cadence is re-read from the host config
+/// on every tick (D3), which is what lets `market/settings-set` change it without
+/// a restart. A fixed short tick is the only shape that can do that —
+/// `tokio::time::interval(cadence)` bakes the period in when the task starts.
+const MARKET_SWEEP_TICK: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Largest cadence `market/settings-set` accepts, in hours.
+///
+/// A year: anything longer is indistinguishable from "off", and the envelope
+/// keeps a client from writing a value that overflows
+/// [`AgentStoreMarketplaceSettings::cadence`]'s `saturating_mul`.
+const MAX_MARKET_SWEEP_HOURS: u64 = 24 * 365;
+
+/// The most recent sweep's reading (doc `37` §3.2, D8).
+///
+/// In memory rather than in the file: it is a runtime observation, and a host
+/// that just restarted has not swept. `None` is reported as `last_sweep: null`,
+/// never as a zeroed report — "no sweep yet" and "a sweep found nothing" are
+/// different facts.
+static LAST_MARKET_SWEEP: std::sync::Mutex<Option<AppServerMarketSweepReport>> =
+    std::sync::Mutex::new(None);
+
+/// The policy the scheduler acts on, resolved from the config file.
+struct ResolvedMarketPolicy {
+    cadence: Option<std::time::Duration>,
+    kinds: Vec<String>,
+}
+
+/// Read the host's market policy from the file the scheduler acts on.
+///
+/// `None` when this host resolved **no** config path at boot: the desktop host
+/// keeps `agent_store_config_path` unset, so it registers no default
+/// marketplaces and must not start sweeping either — the same gate
+/// `ensure_default_marketplaces` uses.
+fn resolve_market_policy(state: &AppServerRouterState) -> Option<ResolvedMarketPolicy> {
+    let path = state.agent_store_config_path.as_deref()?;
+    let config = AgentStoreConfig::load(path).ok()?;
+    Some(ResolvedMarketPolicy {
+        cadence: config.marketplace.as_ref().and_then(|table| table.cadence()),
+        kinds: config.entry_auto_update_kinds(),
+    })
+}
+
+/// Whether enough time has passed since the last **completed** sweep.
+///
+/// Derived from the stored report instead of a separate timestamp: two sources
+/// could otherwise disagree (a five-minute-old report next to a due-time that
+/// says otherwise), and the report is the thing the read view shows.
+fn market_sweep_due(cadence: std::time::Duration) -> bool {
+    let last = LAST_MARKET_SWEEP
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|report| report.at));
+    match last {
+        // Nothing swept in this process: due on the next tick. The first tick is
+        // already one `MARKET_SWEEP_TICK` away, so boot traffic stays with the
+        // default-marketplace warm-up instead of racing it.
+        None => true,
+        Some(at) => nomifun_common::now_ms().saturating_sub(at) >= cadence.as_millis() as i64,
+    }
+}
+
+/// One sweep: refresh the eligible market indexes, then upgrade what the host's
+/// kind whitelist allows (doc `37` §3.3, D4–D6).
+///
+/// Failures are per entry and never abort the round — one broken entry must not
+/// stop the other twenty from upgrading, and every failure is reported back
+/// through `last_sweep` rather than swallowed.
+///
+/// A user-triggered `store/update-entry` can run concurrently with this; the
+/// window is bounded and the worst case is a redundant install of a version the
+/// entry already reached (`update_entry` is a no-op once the versions match).
+/// No lock is taken for that: a lock would have to span the whole sweep to
+/// change the outcome, and that is a worse trade than a redundant install.
+async fn sweep_official_markets(
+    state: &AppServerRouterState,
+    kinds: &[String],
+) -> AppServerMarketSweepReport {
+    let mut report = AppServerMarketSweepReport {
+        at: 0,
+        refreshed: 0,
+        upgraded: 0,
+        failed: Vec::new(),
+    };
+    let Ok(provider) = marketplace_provider(state) else {
+        // No marketplace surface: nothing to sweep, but the round is still
+        // recorded (with the finish time) so `last_sweep` is not silently
+        // missing — "we ran and there was nothing" is a reading.
+        report.at = nomifun_common::now_ms();
+        return report;
+    };
+    let store = store_provider(state).ok();
+    let targets = provider.auto_update_targets().await.unwrap_or_default();
+    for marketplace_id in targets {
+        // The ordinary refresh path: the `zip` branch still short-circuits on the
+        // archive digest, so an unchanged market costs one `HEAD` (`18` §5.2).
+        if provider.refresh(&marketplace_id).await.is_ok() {
+            report.refreshed += 1;
+        }
+        // An empty whitelist means "index only" — the behaviour before doc `37`,
+        // kept as an explicit choice rather than as a special case.
+        if kinds.is_empty() {
+            continue;
+        }
+        let Some(store) = store.as_ref() else {
+            continue;
+        };
+        sweep_upgrade_entries(store, &marketplace_id, kinds, &mut report).await;
+    }
+    report.at = nomifun_common::now_ms();
+    report
+}
+
+/// Phase 2 of one sweep: upgrade every entry the store reports as eligible
+/// (doc `37` §3.3, D4–D6), isolating failures per entry.
+///
+/// Eligibility itself lives in the store provider
+/// ([`StoreProvider::auto_update_candidates`]) so the sweep cannot drift from
+/// what `store/list` shows the user; this function only decides *what to do*
+/// with the answer — including reporting a candidate-listing failure rather than
+/// turning it into a silent no-op round.
+async fn sweep_upgrade_entries(
+    store: &Arc<dyn StoreProvider>,
+    marketplace_id: &str,
+    kinds: &[String],
+    report: &mut AppServerMarketSweepReport,
+) {
+    if kinds.is_empty() {
+        // "Upgrade nothing" is a decision, not an accident: don't even ask the
+        // store for candidates.
+        return;
+    }
+    let candidates = match store.auto_update_candidates(marketplace_id, kinds).await {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            // A store-side failure is this market's failure, not the whole
+            // sweep's: the other markets still run, and the reading says so.
+            report.failed.push(AppServerMarketSweepFailure {
+                id: marketplace_id.to_owned(),
+                error: error.to_string(),
+            });
+            return;
+        }
+    };
+    for entry_name in candidates {
+        match store.update_entry(marketplace_id, &entry_name).await {
+            Ok(_) => report.upgraded += 1,
+            // One broken entry must not stop the next twenty.
+            Err(error) => report.failed.push(AppServerMarketSweepFailure {
+                id: format!("{marketplace_id}/{entry_name}"),
+                error: error.to_string(),
+            }),
+        }
+    }
 }
 
 /// Start the background auto-update sweep for official marketplaces
-/// (doc 21 D7 ①).
+/// (doc 21 D7 ①, restructured by doc 37 §3.3).
 ///
-/// Two gates, both deliberate:
-/// 1. `[marketplace] auto_update_interval_hours` must be present in the host
-///    config — the table alone is not consent, and `0` reads as off;
-/// 2. only marketplaces the provider reports as both `auto_update`-on **and**
+/// Three gates, all deliberate:
+/// 1. this host resolved a config path at boot — a host without one (the desktop
+///    host) never sweeps at all;
+/// 2. `[marketplace] auto_update_interval_hours` must be present in that file —
+///    the table alone is not consent, and `0` reads as off;
+/// 3. only marketplaces the provider reports as both `auto_update`-on **and**
 ///    official are swept (`18` §7: V1 never polls third-party sources).
 ///
-/// Every sweep goes through the ordinary `refresh` path, so the revision /
-/// ETag short-circuit in `18` §5.2 still decides whether anything is actually
-/// downloaded. A failing marketplace is skipped for that tick — never retried
-/// in a tight loop, which is what would turn a dead mirror into a hot loop.
+/// Gates 2 and 3 are re-evaluated every tick from the file and the registry, so
+/// `market/settings-set` and `market/auto-update` take effect without a restart.
+/// Every sweep goes through the ordinary `refresh` path, so the revision / ETag
+/// short-circuit in `18` §5.2 still decides whether anything is actually
+/// downloaded. A failing marketplace is skipped for that tick — never retried in
+/// a tight loop, which is what would turn a dead mirror into a hot loop.
 pub fn start_marketplace_auto_update(state: &AppServerRouterState) {
     use std::sync::atomic::Ordering;
     if MARKETPLACES_AUTO_UPDATE_STARTED.swap(true, Ordering::SeqCst) {
-        return; // already sweeping
+        return; // already scheduling
     }
-    let Some(cadence) = auto_update_cadence(state) else {
-        // Leave the guard clear: nothing to run, and a later caller with a
-        // config path still gets its chance.
+    if state.agent_store_config_path.is_none() {
+        // Leave the guard clear: there is no file to read, and a later caller
+        // with a config path still gets its chance.
         MARKETPLACES_AUTO_UPDATE_STARTED.store(false, Ordering::SeqCst);
         return;
-    };
+    }
     let state = state.clone();
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(cadence);
+        let mut ticker = tokio::time::interval(MARKET_SWEEP_TICK);
         // `interval` yields its first tick immediately; skip it so startup
         // traffic stays with the warm-up rather than racing it.
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            let Ok(provider) = marketplace_provider(&state) else {
+            let Some(policy) = resolve_market_policy(&state) else {
                 continue;
             };
-            let targets = provider.auto_update_targets().await.unwrap_or_default();
-            for marketplace_id in targets {
-                let _ = provider.refresh(&marketplace_id).await;
+            // No cadence, no sweep — and nothing is recorded, because no round
+            // actually ran.
+            let Some(cadence) = policy.cadence else {
+                continue;
+            };
+            if !market_sweep_due(cadence) {
+                continue;
+            }
+            // One round at a time by construction: this task awaits the sweep, so
+            // a second one cannot start while the first is in flight.
+            let report = sweep_official_markets(&state, &policy.kinds).await;
+            if let Ok(mut slot) = LAST_MARKET_SWEEP.lock() {
+                *slot = Some(report);
             }
         }
     });
+}
+
+/// `market/settings`: the host's effective market policy (doc `37` §3.2).
+///
+/// A **missing** file is a normal answer (defaults) — never an error, never a
+/// fabricated value. An unreadable or unparseable file *is* an error, for the
+/// same reason `config/get` refuses to hide a broken hand-edit behind a
+/// settings screen that looks healthy.
+///
+/// `0` reads back as `null`: [`AgentStoreMarketplaceSettings::cadence`] already
+/// treats `0` as "off", and reporting `0` hours would render as "sweep every
+/// zero hours" in a client.
+fn market_settings_view(
+    state: &AppServerRouterState,
+) -> Result<AppServerMarketSettings, AppServerError> {
+    let path = agent_store_config_file(state)?;
+    let config = match std::fs::read_to_string(&path) {
+        Ok(source) => AgentStoreConfig::from_source(&source).map_err(|error| {
+            config_unavailable(format!("failed to read {}: {error}", path.display()))
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AgentStoreConfig::default(),
+        Err(error) => {
+            return Err(config_unavailable(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    Ok(AppServerMarketSettings {
+        // The effective cadence, in hours. `cadence()` collapses absent and `0`
+        // into `None`, which is exactly what the view has to say.
+        auto_update_interval_hours: config
+            .marketplace
+            .as_ref()
+            .and_then(|table| table.cadence())
+            .map(|cadence| cadence.as_secs() / 3_600),
+        entry_auto_update_kinds: config.entry_auto_update_kinds(),
+        // Two different questions: "is a cadence set" (above) and "will this host
+        // run it" (here). A host without a config path reports `false`, so a
+        // client can explain why a set cadence does nothing.
+        sweep_enabled: state.agent_store_config_path.is_some(),
+        last_sweep: LAST_MARKET_SWEEP.lock().ok().and_then(|slot| slot.clone()),
+    })
+}
+
+/// `market/settings-set`: validate, write **through** to the config file, then
+/// answer with the file re-read (doc `37` §3.2, D2/D3).
+///
+/// The file is the single source of truth on purpose: the scheduler re-reads it
+/// every tick, so a write here is what makes the change hot, and there is no
+/// in-memory copy that could survive a write it never saw. Like `config/set`,
+/// the edit is minimal — `toml_edit` re-renders only the named keys, so comments
+/// and every other setting survive.
+fn execute_market_settings_set(
+    state: &AppServerRouterState,
+    patch: AppServerMarketSettingsPatch,
+) -> Result<AppServerMarketSettings, AppServerError> {
+    if !patch.names_any_key() {
+        return Err(AppServerError::new(
+            "invalid_request",
+            "market/settings-set needs at least one field (auto_update_interval_hours, entry_auto_update_kinds)",
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    let path = agent_store_config_file(state)?;
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        // A host that never created the file gets one; that is the point of the
+        // write path.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(config_unavailable(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    let mut edited = source;
+    if let Some(hours) = patch.auto_update_interval_hours {
+        if hours > MAX_MARKET_SWEEP_HOURS {
+            return Err(AppServerError::new(
+                "invalid_request",
+                format!(
+                    "auto_update_interval_hours must be 0..={MAX_MARKET_SWEEP_HOURS} \
+                     (0 turns the sweep off)"
+                ),
+                StatusCode::BAD_REQUEST,
+                false,
+            ));
+        }
+        edited = AgentStoreConfig::with_marketplace_cadence(&edited, hours).map_err(|error| {
+            config_unavailable(format!("failed to edit {}: {error}", path.display()))
+        })?;
+    }
+    if let Some(kinds) = patch.entry_auto_update_kinds.as_ref() {
+        // `invalid_request`, not `config_unavailable`: an unknown kind is the
+        // caller's typo, and the file is untouched when it happens.
+        edited = AgentStoreConfig::with_entry_auto_update_kinds(&edited, kinds).map_err(
+            |error| AppServerError::new("invalid_request", error, StatusCode::BAD_REQUEST, false),
+        )?;
+    }
+    write_config_source(&path, &edited)?;
+    market_settings_view(state)
 }
 
 async fn market_add_impl(
@@ -3069,6 +3447,29 @@ async fn market_entry_import_route(
 ) -> Result<Json<AppServerImportResult>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(market_entry_import_impl(&state, &marketplace_id, &entry_name).await?))
+}
+
+/// Host-level market policy (doc `37` §3.2). Not under `/markets/…`: a static
+/// `settings` segment there would shadow `/markets/{marketplace_id}`.
+async fn market_settings_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<AppServerMarketSettings>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(market_settings_view(&state)?))
+}
+
+async fn market_settings_set_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<AppServerMarketSettingsPatch>, JsonRejection>,
+) -> Result<Json<AppServerMarketSettings>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(patch) =
+        body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    Ok(Json(execute_market_settings_set(&state, patch)?))
 }
 
 async fn store_list_route(
@@ -7720,6 +8121,23 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode market entry import: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // Host-level market policy (doc 37 §3.2): the patch *is* the params
+        // object, so there is no wrapper to unwrap.
+        "market/settings" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let settings = market_settings_view(state)?;
+            Ok(ws_response(request_id, serde_json::to_value(settings).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode market settings: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "market/settings-set" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let patch = parse_ws_params::<AppServerMarketSettingsPatch>(params)?;
+            let settings = execute_market_settings_set(state, patch)?;
+            Ok(ws_response(request_id, serde_json::to_value(settings).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode market settings: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         _ => Err(AppServerError::from(ProtocolError::InvalidRequest(
             "unknown App Server method".into(),
         ))),
@@ -9827,22 +10245,31 @@ display_name = "MiMo V2.5 Free"
     /// the operator **declared** is fetched during boot. The three builtin
     /// mirrors are 324 MiB together (`experts` alone is 289.6 MiB), so a host
     /// that declares nothing must register them and download nothing.
+    ///
+    /// Doc `37` §3.1 adds a per-source flag on top, plus the process-scoped
+    /// `AGENT_STORE_MARKET_DOWNLOAD` override — the five branches the S1
+    /// acceptance row names.
     #[test]
     fn only_declared_default_marketplaces_are_fetched_at_boot() {
         let dir = std::env::temp_dir().join(format!("allo-defaults-{}", generate_id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
+        let builtin = |plan: &[DefaultMarketPlan]| -> Vec<(String, String, String)> {
+            plan.iter()
+                .map(|entry| (entry.id.clone(), entry.kind.clone(), entry.source.clone()))
+                .collect()
+        };
 
         // No config file at all: the fresh-install case.
-        let (sources, fetch) = default_marketplace_plan(&dir.join("absent.toml"));
-        assert_eq!(sources, AgentStoreConfig::builtin_default_marketplaces());
-        assert!(!fetch, "a fresh install must not download the official archives");
+        let plan = default_marketplace_plan(&dir.join("absent.toml"), None);
+        assert_eq!(builtin(&plan), AgentStoreConfig::builtin_default_marketplaces());
+        assert!(plan.iter().all(|entry| !entry.fetch), "a fresh install must not download");
 
         // A config file that exists but declares no marketplace: same answer.
         let bare = dir.join("bare.toml");
         std::fs::write(&bare, "[memory]\ndistill_enabled = false\n").expect("bare config");
-        let (sources, fetch) = default_marketplace_plan(&bare);
-        assert_eq!(sources, AgentStoreConfig::builtin_default_marketplaces());
-        assert!(!fetch, "declaring no source must not mean 'download the builtin ones'");
+        let plan = default_marketplace_plan(&bare, None);
+        assert_eq!(builtin(&plan), AgentStoreConfig::builtin_default_marketplaces());
+        assert!(plan.iter().all(|entry| !entry.fetch), "no declared source ≠ download builtins");
 
         // A declared source is an explicit request: registered *and* fetched,
         // and the builtin mirrors do not ride along.
@@ -9853,16 +10280,48 @@ display_name = "MiMo V2.5 Free"
              source = \"/tmp/company-tools\"\n",
         )
         .expect("declared config");
-        let (sources, fetch) = default_marketplace_plan(&declared);
-        assert!(fetch, "declaring a source is the opt-in to downloading it");
+        let plan = default_marketplace_plan(&declared, None);
+        assert!(plan.iter().all(|entry| entry.fetch), "declaring a source is the opt-in");
         assert_eq!(
-            sources,
+            builtin(&plan),
             vec![(
                 "company".to_owned(),
                 "directory".to_owned(),
                 "/tmp/company-tools".to_owned()
             )]
         );
+
+        // Doc `37` §3.1 (D1): `download_on_start = false` defers that source's
+        // archive — and only that source's.
+        let deferred = dir.join("deferred.toml");
+        std::fs::write(
+            &deferred,
+            "[default_marketplaces.experts]\nsource_kind = \"zip\"\n\
+             source = \"https://h/experts.zip\"\ndownload_on_start = false\n\n\
+             [default_marketplaces.skills]\nsource_kind = \"zip\"\nsource = \"https://h/skills.zip\"\n",
+        )
+        .expect("deferred config");
+        let plan = default_marketplace_plan(&deferred, None);
+        assert_eq!(plan.len(), 2, "{plan:?}");
+        assert!(!plan.iter().find(|e| e.id == "experts").expect("experts").fetch);
+        assert!(plan.iter().find(|e| e.id == "skills").expect("skills").fetch);
+
+        // Doc `37` §3.1 (D7): the environment override wins over the file.
+        let forced_lazy = default_marketplace_plan(&deferred, Some(MarketDownloadOverride::Lazy));
+        assert!(forced_lazy.iter().all(|entry| !entry.fetch), "{forced_lazy:?}");
+        let forced_eager = default_marketplace_plan(&deferred, Some(MarketDownloadOverride::Eager));
+        assert!(forced_eager.iter().all(|entry| entry.fetch), "{forced_eager:?}");
+        // `none` registers nothing at all — not even the builtin fallback.
+        assert!(default_marketplace_plan(&deferred, Some(MarketDownloadOverride::None)).is_empty());
+        assert!(default_marketplace_plan(&dir.join("absent.toml"), Some(MarketDownloadOverride::None)).is_empty());
+
+        // The env spellings are the documented three, and a typo is not an
+        // override (it must not silently mean "lazy" *or* abort the boot).
+        assert_eq!(MarketDownloadOverride::parse(" LAZY "), Some(MarketDownloadOverride::Lazy));
+        assert_eq!(MarketDownloadOverride::parse("eager"), Some(MarketDownloadOverride::Eager));
+        assert_eq!(MarketDownloadOverride::parse("none"), Some(MarketDownloadOverride::None));
+        assert_eq!(MarketDownloadOverride::parse("off"), None);
+        assert_eq!(MarketDownloadOverride::parse(""), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -11281,6 +11740,215 @@ model = "mimo-v2.5-free"
         assert_eq!(again, view);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Doc `37` §3.2 (D2/D3): the host-level market policy is readable, writable
+    /// **through** to the file, and the answer is the file re-read. Exercised
+    /// through the WebSocket dispatch, which is also what proves the two arms
+    /// exist — the HTTP routes have their own table in the client package.
+    #[tokio::test]
+    async fn market_settings_round_trip_writes_through_and_refuses_junk() {
+        let dir = config_temp_dir("market-settings");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        // One macro instead of four cloned handles: the four values are borrowed
+        // by every call, and a closure returning a future that borrows its
+        // captures would not compile.
+        macro_rules! call {
+            ($method:expr, $params:expr) => {
+                dispatch_config(&state, &connection, &user, &subscriptions, $method, $params).await
+            };
+        }
+
+        // 1. Nothing declared: the documented defaults. `sweep_enabled` is true
+        //    because this host resolved a config path, and no sweep has run yet.
+        let read = call!("market/settings", serde_json::json!({}))
+            .expect("market/settings");
+        assert_eq!(read["auto_update_interval_hours"], serde_json::json!(null));
+        assert_eq!(
+            read["entry_auto_update_kinds"],
+            serde_json::json!(["agent", "team", "skill"]),
+            "connectors must never be implicit"
+        );
+        assert_eq!(read["sweep_enabled"], serde_json::json!(true));
+        assert_eq!(read["last_sweep"], serde_json::json!(null));
+
+        // 2. Write both keys: the answer is the value the file now holds, in the
+        //    canonical order (not the caller's), and everything else survives.
+        let written = call!(
+            "market/settings-set",
+            serde_json::json!({
+                "auto_update_interval_hours": 6,
+                "entry_auto_update_kinds": ["connector", "AGENT"],
+            })
+        )
+        .expect("market/settings-set");
+        assert_eq!(written["auto_update_interval_hours"], serde_json::json!(6));
+        assert_eq!(
+            written["entry_auto_update_kinds"],
+            serde_json::json!(["agent", "connector"])
+        );
+        let on_disk = std::fs::read_to_string(&path).expect("config on disk");
+        assert!(on_disk.contains("# allo host config — do not reformat"), "{on_disk}");
+        assert!(on_disk.contains("# current pick"), "{on_disk}");
+        assert!(on_disk.contains("api_key = \"sk-live-must-never-reach-the-wire\""), "{on_disk}");
+        assert!(on_disk.contains("[marketplace]"), "{on_disk}");
+        assert!(on_disk.contains("auto_update_interval_hours = 6"), "{on_disk}");
+        assert!(
+            on_disk.contains("entry_auto_update_kinds = [\"agent\", \"connector\"]"),
+            "{on_disk}"
+        );
+
+        // 3. `0` turns the sweep off and reads back as `null` — one convention
+        //    (`cadence()` already treats `0` as off), not two. The kinds write is
+        //    independent and must survive.
+        let off = call!("market/settings-set", serde_json::json!({ "auto_update_interval_hours": 0 }))
+            .expect("turn off");
+        assert_eq!(off["auto_update_interval_hours"], serde_json::json!(null));
+        assert_eq!(off["entry_auto_update_kinds"], serde_json::json!(["agent", "connector"]));
+
+        // 4. `[]` is a value, not an omission: "refresh the index, upgrade
+        //    nothing" — the pre-`37` behaviour, still reachable.
+        let none = call!("market/settings-set", serde_json::json!({ "entry_auto_update_kinds": [] }))
+            .expect("upgrade nothing");
+        assert_eq!(none["entry_auto_update_kinds"], serde_json::json!([]));
+
+        // 5. Refusals: an unknown kind, an out-of-envelope cadence, an empty
+        //    patch and a field outside the whitelist. None of them writes.
+        for body in [
+            serde_json::json!({ "entry_auto_update_kinds": ["agentx"] }),
+            serde_json::json!({ "auto_update_interval_hours": MAX_MARKET_SWEEP_HOURS + 1 }),
+            serde_json::json!({}),
+            serde_json::json!({ "marketplace_id": "experts" }),
+        ] {
+            let refused = call!("market/settings-set", body.clone());
+            assert!(refused.is_err(), "{body} must be refused");
+        }
+        let unchanged = std::fs::read_to_string(&path).expect("config on disk");
+        assert!(unchanged.contains("entry_auto_update_kinds = []"), "{unchanged}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Doc `37` §3.3 (D4–D6): the upgrade phase upgrades what the store reports
+    /// as eligible, isolates a failure to the entry that caused it, and does not
+    /// even ask when the whitelist is empty (`[]` = index refresh only).
+    ///
+    /// The fake store is the *whole* input this phase has, which is the point:
+    /// eligibility itself (kind whitelist, `blocked_reason`, the components'
+    /// `disabled` flag) is the store provider's rule, covered by
+    /// `auto_update_eligible`'s own test.
+    #[tokio::test]
+    async fn sweep_upgrade_phase_isolates_failures_and_honours_an_empty_whitelist() {
+        struct SweepStore {
+            candidates: Vec<String>,
+            failing: Vec<String>,
+        }
+        #[async_trait::async_trait]
+        impl StoreProvider for SweepStore {
+            async fn list(&self) -> Result<AppServerStoreList, nomifun_common::AppError> {
+                unimplemented!("a sweep never lists the catalog")
+            }
+            async fn install_entry(
+                &self,
+                _marketplace_id: &str,
+                _entry_name: &str,
+            ) -> Result<AppServerStoreInstallResult, nomifun_common::AppError> {
+                unimplemented!("a sweep never installs; it only upgrades")
+            }
+            async fn update_entry(
+                &self,
+                marketplace_id: &str,
+                entry_name: &str,
+            ) -> Result<AppServerStoreInstallResult, nomifun_common::AppError> {
+                if self.failing.iter().any(|name| name == entry_name) {
+                    return Err(nomifun_common::AppError::Internal(
+                        "connector exploded".into(),
+                    ));
+                }
+                Ok(AppServerStoreInstallResult {
+                    marketplace_id: marketplace_id.to_owned(),
+                    entry_name: entry_name.to_owned(),
+                    snapshot_id: "snap-new".into(),
+                    version: "2.0.0".into(),
+                    reused: false,
+                    installed_count: 1,
+                    warnings: vec![],
+                    errors: vec![],
+                    outcomes: vec![],
+                    previous_version: Some("1.0.0".into()),
+                    previous_snapshot_id: Some("snap-old".into()),
+                    released_count: 1,
+                })
+            }
+            async fn auto_update_candidates(
+                &self,
+                _marketplace_id: &str,
+                kinds: &[String],
+            ) -> Result<Vec<String>, nomifun_common::AppError> {
+                assert!(
+                    !kinds.is_empty(),
+                    "an empty whitelist must be answered without asking the store"
+                );
+                Ok(self.candidates.clone())
+            }
+        }
+
+        let store: Arc<dyn StoreProvider> = Arc::new(SweepStore {
+            candidates: vec!["alpha".into(), "broken".into(), "beta".into()],
+            failing: vec!["broken".into()],
+        });
+        let mut report = AppServerMarketSweepReport {
+            at: 0,
+            refreshed: 0,
+            upgraded: 0,
+            failed: vec![],
+        };
+
+        // `[]` = "refresh the index, upgrade nothing" (the pre-`37` behaviour):
+        // the fake asserts no candidate request is made.
+        sweep_upgrade_entries(&store, "experts", &[], &mut report).await;
+        assert_eq!(report.upgraded, 0);
+        assert!(report.failed.is_empty(), "{report:?}");
+
+        // A non-empty whitelist: two upgrades land, and the failing entry is
+        // reported by id without stopping the entries after it.
+        sweep_upgrade_entries(&store, "experts", &["agent".to_owned()], &mut report).await;
+        assert_eq!(report.upgraded, 2, "{report:?}");
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].id, "experts/broken", "{report:?}");
+        assert!(report.failed[0].error.contains("connector exploded"), "{report:?}");
+    }
+
+    /// Doc `37` §3.3: the sweep is due immediately when this process has not
+    /// swept yet, and only after the cadence has elapsed once it has.
+    #[test]
+    fn market_sweep_is_due_on_the_first_round_and_then_only_after_the_cadence() {
+        let cadence = std::time::Duration::from_secs(6 * 3_600);
+        *LAST_MARKET_SWEEP.lock().expect("sweep slot") = None;
+        assert!(market_sweep_due(cadence), "nothing has swept in this process yet");
+
+        *LAST_MARKET_SWEEP.lock().expect("sweep slot") = Some(AppServerMarketSweepReport {
+            at: nomifun_common::now_ms(),
+            refreshed: 1,
+            upgraded: 0,
+            failed: vec![],
+        });
+        assert!(!market_sweep_due(cadence), "a round that just finished is not due again");
+
+        *LAST_MARKET_SWEEP.lock().expect("sweep slot") = Some(AppServerMarketSweepReport {
+            at: nomifun_common::now_ms() - (7 * 3_600 * 1_000),
+            refreshed: 1,
+            upgraded: 0,
+            failed: vec![],
+        });
+        assert!(market_sweep_due(cadence), "an old round is due");
+
+        // Leave the slot as found: the reading is process-global, and no other
+        // test should inherit a fabricated sweep.
+        *LAST_MARKET_SWEEP.lock().expect("sweep slot") = None;
     }
 
     #[tokio::test]

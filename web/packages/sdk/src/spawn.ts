@@ -38,14 +38,63 @@ export interface SpawnOptions {
   port?: number;
   /** Extra CLI args appended after the managed ones. */
   extraArgs?: string[];
+  /**
+   * What the spawned host does with its default marketplace sources at boot
+   * (doc `37` §3.1). Sent as `AGENT_STORE_MARKET_DOWNLOAD`.
+   *
+   * - `"lazy"` — register the declared sources and download nothing; the
+   *   archives wait for an explicit `market/refresh` / `refreshMarketplace()`;
+   * - `"none"` — register nothing at all, so `store/list` starts empty;
+   * - `"eager"` — fetch every declared source during boot.
+   *
+   * Omitted = the host's own policy (`download_on_start` per source, default
+   * `true`, so a declared source *is* downloaded unless it says otherwise).
+   * This is a process-scoped override: nothing is written to the user's config.
+   */
+  marketDownload?: "eager" | "lazy" | "none";
+  /**
+   * Config file for this child only (doc `37` §3.1). Sent as
+   * `AGENT_STORE_CONFIG`.
+   *
+   * Without it the host reads the per-user `~/.agent-store/config.toml` — which
+   * a spawned, SDK-owned host should not have to share. The data directory is
+   * independent of this (`dataDir`, always explicit).
+   */
+  configPath?: string;
   /** How long to wait for the readiness line. Defaults to 120s (cold DB init). */
   readyTimeoutMs?: number;
-  /** Extra environment variables, merged over the parent's `process.env`. */
+  /**
+   * Extra environment variables, merged over the parent's `process.env`.
+   *
+   * An entry here **wins over the typed options above** (`marketDownload`,
+   * `configPath`): the raw map is the caller's most specific statement, and
+   * nothing this factory derives should silently overwrite it.
+   */
   env?: Record<string, string | undefined>;
   /** Working directory for the child. Defaults to the parent's cwd. */
   cwd?: string;
   /** Called once when the child exits, for any reason (crash included). */
   onExit?: (info: SpawnExitInfo) => void;
+}
+
+/**
+ * The host-policy environment the typed options above expand to.
+ *
+ * The spawned host cannot be handed backend CLI flags: `apps/agent-store` parses
+ * its own argv (`--host` / `--port` / `--data-dir` / `--no-open`) and has no
+ * `--agent-store-config`, so a flag would make clap exit before the readiness
+ * line. The parent environment is therefore the only channel a launcher has —
+ * the same conclusion `NOMI_LOG_LEVEL` already documents for the log filter.
+ */
+function hostPolicyEnv(options: SpawnOptions): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (options.marketDownload !== undefined) {
+    env["AGENT_STORE_MARKET_DOWNLOAD"] = options.marketDownload;
+  }
+  if (options.configPath !== undefined) {
+    env["AGENT_STORE_CONFIG"] = options.configPath;
+  }
+  return env;
 }
 
 /** How a spawned runtime process ended. */
@@ -75,10 +124,18 @@ export async function spawnAppServer(options: SpawnOptions = {}): Promise<Spawne
   const dataDir = ownedDir ? await mkdtemp(join(tmpdir(), "agent-store-sdk-")) : options.dataDir as string;
   const port = options.port ?? 0;
 
+  // Derived policy first, so an explicit `env` entry wins (see `SpawnOptions.env`).
+  // Kept `undefined` when nothing is set, so an unconfigured spawn keeps the
+  // "no `env` option at all" path it has always had.
+  const policyEnv = { ...hostPolicyEnv(options), ...options.env };
   const { child, exited } = spawnRuntimeChild(
     bin,
     ["--host", "127.0.0.1", "--port", String(port), "--data-dir", dataDir, "--no-open", ...(options.extraArgs ?? [])],
-    options,
+    {
+      ...(Object.keys(policyEnv).length > 0 ? { env: policyEnv } : {}),
+      cwd: options.cwd,
+      onExit: options.onExit,
+    },
   );
 
   const stderrTail: string[] = [];
