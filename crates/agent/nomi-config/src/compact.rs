@@ -57,6 +57,13 @@ pub struct CompactConfig {
     #[serde(default = "default_autocompact_threshold_pct")]
     pub autocompact_threshold_pct: Option<u8>,
 
+    /// Absolute autocompact ceiling in tokens, applied on top of the
+    /// percentage/headroom threshold. Without it a 1M window only folds at
+    /// ~600k, and every request before that resends the whole history.
+    /// `None` or `0` disables the ceiling. Default: 150_000.
+    #[serde(default = "default_autocompact_max_tokens")]
+    pub autocompact_max_tokens: Option<usize>,
+
     /// Idle compact: if the previous user-facing turn ended at least this many
     /// seconds ago, run cheap compaction (snip + microcompact) before the next
     /// provider call. Prefix caches at LLM providers typically expire in
@@ -114,6 +121,7 @@ impl Default for CompactConfig {
             micro_gap_seconds: default_micro_gap_seconds(),
             compactable_tools: default_compactable_tools(),
             autocompact_threshold_pct: default_autocompact_threshold_pct(),
+            autocompact_max_tokens: default_autocompact_max_tokens(),
             idle_compact_seconds: default_idle_compact_seconds(),
             idle_autocompact_pct: default_idle_autocompact_pct(),
             enabled: default_true(),
@@ -191,6 +199,13 @@ fn default_compactable_tools() -> Vec<String> {
         "Glob".into(),
         "Write".into(),
         "Edit".into(),
+        "exec_command".into(),
+        "write_stdin".into(),
+        "DirTree".into(),
+        "Browser".into(),
+        "Computer".into(),
+        "web_search".into(),
+        "web_extract".into(),
     ]
 }
 fn default_true() -> bool {
@@ -199,6 +214,10 @@ fn default_true() -> bool {
 
 fn default_autocompact_threshold_pct() -> Option<u8> {
     Some(60)
+}
+
+fn default_autocompact_max_tokens() -> Option<usize> {
+    Some(150_000)
 }
 
 /// Provider prefix caches commonly live 5–15 minutes. Compact before the next
@@ -293,7 +312,21 @@ mod tests {
         assert_eq!(cfg.idle_autocompact_pct, 25);
         assert_eq!(
             cfg.compactable_tools,
-            vec!["Read", "Bash", "Grep", "Glob", "Write", "Edit"]
+            vec![
+                "Read",
+                "Bash",
+                "Grep",
+                "Glob",
+                "Write",
+                "Edit",
+                "exec_command",
+                "write_stdin",
+                "DirTree",
+                "Browser",
+                "Computer",
+                "web_search",
+                "web_extract",
+            ]
         );
     }
 
@@ -446,6 +479,14 @@ cache_diagnostics = true
         assert_eq!(back.context_window, 100_000);
         assert_eq!(back.output_reserve, 15_000);
         assert_eq!(back.autocompact_buffer, cfg.autocompact_buffer);
+    }
+
+    #[test]
+    fn toml_autocompact_max_tokens_defaults_and_overrides() {
+        let cfg: CompactConfig = toml::from_str("context_window = 1000000").unwrap();
+        assert_eq!(cfg.autocompact_max_tokens, Some(150_000));
+        let off: CompactConfig = toml::from_str("autocompact_max_tokens = 0").unwrap();
+        assert_eq!(off.autocompact_max_tokens, Some(0));
     }
 
     #[test]

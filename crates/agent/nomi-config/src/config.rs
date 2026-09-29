@@ -1713,11 +1713,13 @@ allow_list = ["Read", "Grep", "Glob"]
 # context_window = 128000        # context window size in tokens (Claude: 200000, OpenAI: 128000)
 # output_reserve = 20000         # tokens reserved for output
 # autocompact_buffer = 13000     # buffer below effective window for autocompact trigger
+# autocompact_threshold_pct = 60 # autocompact at this share of the window
+# autocompact_max_tokens = 150000 # absolute autocompact ceiling (0 disables)
 # emergency_buffer = 3000        # tokens from limit for emergency block
 # max_failures = 3               # consecutive failures before circuit-breaker trips
 # micro_keep_recent = 5          # keep N most recent tool results
 # micro_gap_seconds = 3600       # gap threshold for time-based microcompact
-# compactable_tools = ["Read", "Bash", "Grep", "Glob", "Write", "Edit"]
+# compactable_tools = ["Read", "Bash", "Grep", "Glob", "Write", "Edit", "exec_command", "write_stdin", "DirTree", "Browser", "Computer", "web_search", "web_extract"]
 # enabled = true
 
 # File state cache (dedup repeated reads, staleness detection)

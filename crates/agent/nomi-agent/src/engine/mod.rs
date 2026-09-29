@@ -978,6 +978,7 @@ impl AgentEngine {
         tool_calls: &[ContentBlock],
         results: &[ContentBlock],
         timings: &HashMap<String, ToolCallTiming>,
+        round_wall_ms: u64,
     ) {
         let Some(session) = &self.observation else {
             return;
@@ -1005,6 +1006,7 @@ impl AgentEngine {
                     *is_error,
                     content,
                     timings.get(tool_use_id).copied(),
+                    Some(round_wall_ms),
                 );
             }
         }
@@ -3160,9 +3162,14 @@ impl AgentEngine {
                     }
                 }
             };
-            self.kpi_mut()
-                .add_tool_wall_ms(tool_started.elapsed().as_millis() as u64);
-            self.observe_tool_calls_finished(&tool_calls, &outcome.results, &outcome.timings);
+            let round_wall_ms = tool_started.elapsed().as_millis() as u64;
+            self.kpi_mut().add_tool_wall_ms(round_wall_ms);
+            self.observe_tool_calls_finished(
+                &tool_calls,
+                &outcome.results,
+                &outcome.timings,
+                round_wall_ms,
+            );
             let confirmed_invalid_argument_call_ids =
                 confirmed_predispatch_schema_invalid_call_ids(
                     &invalid_argument_call_ids,
@@ -3966,11 +3973,12 @@ impl AgentEngine {
             };
         if should_compact {
             tracing::info!(target: "nomi_agent", last_input_tokens = self.compact_state.last_input_tokens, "context compaction triggered");
-            if let Some(pct) = self.compact_config.autocompact_threshold_pct {
+            if self.compact_config.autocompact_threshold_pct.is_some()
+                || self.compact_config.autocompact_max_tokens.is_some()
+            {
                 self.output.emit_info(&format!(
-                    "Autocompact threshold: {} tokens ({}% of {})",
+                    "Autocompact threshold: {} tokens (context window {})",
                     auto::autocompact_threshold(&self.compact_config),
-                    pct,
                     self.compact_config.context_window
                 ));
             }

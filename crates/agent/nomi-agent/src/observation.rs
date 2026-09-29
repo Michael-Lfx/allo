@@ -17,7 +17,7 @@ use nomi_agent_trace::{
 };
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
-use nomi_types::message::{ContentBlock, Message, StopReason};
+use nomi_types::message::{ContentBlock, Message, StopReason, TokenUsage};
 use nomi_types::tool::{ToolDef, ToolImage};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -72,6 +72,9 @@ pub struct ObservationSession {
     tool_parents: Mutex<HashMap<String, String>>,
     /// Last SessionWorkflow request chain, used to classify prefix-cache breaks.
     last_prefix: Mutex<Option<PrefixChain>>,
+    /// End of the last phase (turn start, model response, tool round), so the
+    /// next `llm/request` can report how long local preparation took.
+    phase_boundary: Mutex<Option<Instant>>,
 }
 
 impl ObservationSession {
@@ -82,7 +85,22 @@ impl ObservationSession {
             last_model_call_id: Mutex::new(None),
             tool_parents: Mutex::new(HashMap::new()),
             last_prefix: Mutex::new(None),
+            phase_boundary: Mutex::new(None),
         })
+    }
+
+    fn mark_phase_boundary(&self) {
+        *self
+            .phase_boundary
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    fn pre_provider_ms(&self) -> Option<u64> {
+        self.phase_boundary
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX))
     }
 
     pub fn recorder(&self) -> &Arc<ObservationRecorder> {
@@ -105,6 +123,7 @@ impl ObservationSession {
             (same_turn, conversation_changed)
         };
         if !same_turn {
+            self.mark_phase_boundary();
             *self
                 .last_model_call_id
                 .lock()
@@ -251,6 +270,7 @@ impl ObservationSession {
         is_error: bool,
         result: &str,
         timing: Option<ToolCallTiming>,
+        round_wall_ms: Option<u64>,
     ) {
         let event_type = if is_error {
             EVENT_TOOL_EXECUTION_FAILED
@@ -272,7 +292,11 @@ impl ObservationSession {
             payload["duration_ms"] = json!(timing.duration_ms);
             payload["completed_at_ms"] = json!(timing.completed_at_ms);
         }
+        if let Some(round_wall_ms) = round_wall_ms {
+            payload["round_wall_ms"] = json!(round_wall_ms);
+        }
         observe_with_model_call(self, event_type, payload, parent);
+        self.mark_phase_boundary();
         self.emit_tool_telemetry(
             tool_call_id,
             name,
@@ -296,6 +320,7 @@ impl ObservationSession {
             }),
             parent,
         );
+        self.mark_phase_boundary();
         self.emit_tool_telemetry(tool_call_id, name, "cancelled", None);
     }
 
@@ -407,6 +432,7 @@ pub async fn stream_llm(
         &request.tools.iter().map(ToolFingerprint::from).collect::<Vec<_>>(),
         &request.messages,
     );
+    let pre_provider_ms = session.pre_provider_ms();
     let request_payload = json!({
         "call_kind": call_kind,
         "observation_scope": scope,
@@ -414,6 +440,7 @@ pub async fn stream_llm(
         "capture": ["truncated", "redacted"],
         "request": llm_request_to_value(request),
         "prefix_fingerprint": prefix_fingerprint,
+        "pre_provider_ms": pre_provider_ms,
     });
     observe_with_model_call(
         &session,
@@ -450,6 +477,7 @@ pub async fn stream_llm(
         scope,
         started,
         Some(model_call_id),
+        provider.input_tokens_include_cache(),
     ))
 }
 
@@ -460,6 +488,7 @@ fn wrap_stream(
     scope: ObservationScope,
     started: Instant,
     model_call_id: Option<String>,
+    input_includes_cache: bool,
 ) -> mpsc::Receiver<LlmEvent> {
     let (tx, out_rx) = mpsc::channel(32);
     tokio::spawn(async move {
@@ -521,9 +550,12 @@ fn wrap_stream(
                 LlmEvent::Done { stop_reason, usage } => Some((
                     stop_reason_name(*stop_reason),
                     serde_json::to_value(usage).ok(),
+                    prompt_cache_split(usage, input_includes_cache),
                     None::<String>,
                 )),
-                LlmEvent::Error(message) => Some(("error", None, Some(message.clone()))),
+                LlmEvent::Error(message) => {
+                    Some(("error", None, None, Some(message.clone())))
+                }
                 _ => None,
             };
             // Deliver to the live consumer first. Compact/judge timeouts drop
@@ -532,7 +564,7 @@ fn wrap_stream(
             if tx.send(event).await.is_err() {
                 return;
             }
-            if let Some((stop_reason, usage, error)) = pending_response {
+            if let Some((stop_reason, usage, prompt_cache, error)) = pending_response {
                 saw_terminal = true;
                 emit_response(
                     &session,
@@ -543,6 +575,7 @@ fn wrap_stream(
                     &tool_use,
                     Some(stop_reason),
                     usage,
+                    prompt_cache,
                     error.as_deref(),
                     started,
                     ttft_ms,
@@ -686,11 +719,13 @@ fn emit_response(
     tool_use: &[Value],
     stop_reason: Option<&str>,
     usage: Option<Value>,
+    prompt_cache: Option<PromptCacheSplit>,
     error: Option<&str>,
     started: Instant,
     ttft_ms: Option<u64>,
     model_call_id: Option<String>,
 ) {
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(0);
     observe_with_model_call(
         session,
         EVENT_LLM_RESPONSE,
@@ -704,11 +739,40 @@ fn emit_response(
             "stop_reason": stop_reason,
             "usage": usage,
             "error": error,
-            "elapsed_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(0),
+            "elapsed_ms": elapsed_ms,
             "ttft_ms": ttft_ms,
+            "generation_ms": ttft_ms.map(|ttft| elapsed_ms.saturating_sub(ttft)),
+            "prompt_tokens": prompt_cache.map(|split| split.prompt_tokens),
+            "cache_hit_ratio": prompt_cache.map(|split| split.cache_hit_ratio),
         }),
         model_call_id,
     );
+    session.mark_phase_boundary();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PromptCacheSplit {
+    prompt_tokens: u64,
+    cache_hit_ratio: f64,
+}
+
+fn prompt_cache_split(usage: &TokenUsage, input_includes_cache: bool) -> Option<PromptCacheSplit> {
+    let prompt_tokens = if input_includes_cache {
+        usage.input_tokens
+    } else {
+        usage
+            .input_tokens
+            .saturating_add(usage.cache_read_tokens)
+            .saturating_add(usage.cache_creation_tokens)
+    };
+    if prompt_tokens == 0 {
+        return None;
+    }
+    let ratio = usage.cache_read_tokens.min(prompt_tokens) as f64 / prompt_tokens as f64;
+    Some(PromptCacheSplit {
+        prompt_tokens,
+        cache_hit_ratio: (ratio * 10_000.0).round() / 10_000.0,
+    })
 }
 
 fn observe_with_model_call(
@@ -1466,6 +1530,7 @@ mod tests {
                 duration_ms: 1234,
                 completed_at_ms: 1_790_000_000_000,
             }),
+            Some(4321),
         );
 
         let events = recorder.read_events(Some("c-nested")).unwrap();
@@ -1479,6 +1544,7 @@ mod tests {
             .expect("tool completed");
         assert_eq!(completed.payload["duration_ms"], 1234);
         assert_eq!(completed.payload["completed_at_ms"], 1_790_000_000_000u64);
+        assert_eq!(completed.payload["round_wall_ms"], 4321);
         assert_eq!(
             nomi_agent_trace::ids_from_payload(&started.payload)
                 .model_call_id
@@ -1599,7 +1665,7 @@ mod tests {
             },
             Some("retry"),
         );
-        session.emit_tool_finished("tool-1", "bash", false, "ok", None);
+        session.emit_tool_finished("tool-1", "bash", false, "ok", None, None);
 
         let events = recorder.read_events(Some("c-rebind")).unwrap();
         let finished = events
@@ -1613,6 +1679,132 @@ mod tests {
             Some(model_call_id.as_str()),
             "continuation bind must not drop in-flight tool parents: {events:?}"
         );
+    }
+
+    struct CachedUsageProvider {
+        input_includes_cache: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for CachedUsageProvider {
+        fn input_tokens_include_cache(&self) -> bool {
+            self.input_includes_cache
+        }
+
+        async fn stream(
+            &self,
+            _: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(async move {
+                tx.send(LlmEvent::TextDelta("hi".into())).await.ok();
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                tx.send(LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                    usage: TokenUsage {
+                        input_tokens: 1000,
+                        output_tokens: 5,
+                        reasoning_tokens: 0,
+                        cache_creation_tokens: 100,
+                        cache_read_tokens: 600,
+                    },
+                })
+                .await
+                .ok();
+            });
+            Ok(rx)
+        }
+    }
+
+    #[test]
+    fn prompt_cache_split_normalizes_both_usage_conventions() {
+        let usage = TokenUsage {
+            input_tokens: 1000,
+            output_tokens: 0,
+            reasoning_tokens: 0,
+            cache_creation_tokens: 100,
+            cache_read_tokens: 600,
+        };
+        assert_eq!(
+            prompt_cache_split(&usage, true),
+            Some(PromptCacheSplit {
+                prompt_tokens: 1000,
+                cache_hit_ratio: 0.6,
+            })
+        );
+        assert_eq!(
+            prompt_cache_split(&usage, false),
+            Some(PromptCacheSplit {
+                prompt_tokens: 1700,
+                cache_hit_ratio: 0.3529,
+            })
+        );
+        assert_eq!(prompt_cache_split(&TokenUsage::default(), true), None);
+    }
+
+    #[tokio::test]
+    async fn llm_events_split_local_prep_first_token_and_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = ObservationSession::new(recorder.clone());
+        session.bind_ids(ObservationIds {
+            conversation_id: Some("c-phase".into()),
+            root_turn_id: Some("t-phase".into()),
+            ..ObservationIds::default()
+        });
+        let request = sample_request("sys", Vec::new(), Vec::new());
+        let provider = CachedUsageProvider {
+            input_includes_cache: false,
+        };
+
+        let mut rx = stream_llm(
+            &provider,
+            &request,
+            Some(Arc::clone(&session)),
+            "turn",
+            ObservationScope::SessionWorkflow,
+        )
+        .await
+        .unwrap();
+        while rx.recv().await.is_some() {}
+        session.emit_tool_finished("tool-1", "bash", false, "ok", None, Some(7));
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let mut rx = stream_llm(
+            &provider,
+            &request,
+            Some(Arc::clone(&session)),
+            "turn",
+            ObservationScope::SessionWorkflow,
+        )
+        .await
+        .unwrap();
+        while rx.recv().await.is_some() {}
+
+        let events = recorder.read_events(Some("c-phase")).unwrap();
+        let requests: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == EVENT_LLM_REQUEST)
+            .collect();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].payload["pre_provider_ms"].is_u64());
+        assert!(
+            requests[1].payload["pre_provider_ms"].as_u64().unwrap() >= 40,
+            "pre-provider time counts from the tool round end: {:?}",
+            requests[1].payload
+        );
+
+        let response = events
+            .iter()
+            .find(|event| event.event_type == EVENT_LLM_RESPONSE)
+            .expect("llm response");
+        let elapsed = response.payload["elapsed_ms"].as_u64().unwrap();
+        let ttft = response.payload["ttft_ms"].as_u64().unwrap();
+        let generation = response.payload["generation_ms"].as_u64().unwrap();
+        assert_eq!(generation, elapsed - ttft);
+        assert!(generation >= 25, "generation spans first token to done: {generation}");
+        assert_eq!(response.payload["prompt_tokens"], 1700);
+        assert_eq!(response.payload["cache_hit_ratio"], 0.3529);
     }
 
     #[test]

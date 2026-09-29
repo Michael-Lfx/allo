@@ -169,10 +169,12 @@ pub struct ProjectedRequestSummary {
     pub messages_omitted: bool,
     #[serde(default)]
     pub tools_omitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_provider_ms: Option<u64>,
 }
 
 /// Counts extracted from a captured `llm/response` before bodies are stripped.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProjectedResponseSummary {
     #[serde(default)]
     pub has_text: bool,
@@ -188,6 +190,12 @@ pub struct ProjectedResponseSummary {
     pub elapsed_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttft_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_hit_ratio: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1189,6 +1197,7 @@ fn request_summary_from_payload(payload: &Value) -> ProjectedRequestSummary {
         system_omitted: envelope_omitted || field_is_omitted(request, "system"),
         messages_omitted: envelope_omitted || field_is_omitted(request, "messages"),
         tools_omitted: envelope_omitted || field_is_omitted(request, "tools"),
+        pre_provider_ms: payload.get("pre_provider_ms").and_then(Value::as_u64),
     }
 }
 
@@ -1224,6 +1233,9 @@ fn response_summary_from_payload(payload: &Value) -> ProjectedResponseSummary {
         tool_use_count: array_len_present(payload.get("tool_use")),
         elapsed_ms: payload.get("elapsed_ms").and_then(Value::as_u64),
         ttft_ms: payload.get("ttft_ms").and_then(Value::as_u64),
+        generation_ms: payload.get("generation_ms").and_then(Value::as_u64),
+        prompt_tokens: payload.get("prompt_tokens").and_then(Value::as_u64),
+        cache_hit_ratio: payload.get("cache_hit_ratio").and_then(Value::as_f64),
         stop_reason: payload
             .get("stop_reason")
             .and_then(Value::as_str)
@@ -1722,7 +1734,8 @@ mod tests {
                             { "role": "assistant", "content": [{ "type": "text", "text": "hi" }] }
                         ],
                         "tools": [{ "name": "bash" }, { "name": "read" }]
-                    }
+                    },
+                    "pre_provider_ms": 12
                 }),
             ),
             event(
@@ -1735,6 +1748,9 @@ mod tests {
                     "tool_use": [{ "name": "bash" }],
                     "elapsed_ms": 1200,
                     "ttft_ms": 80,
+                    "generation_ms": 1120,
+                    "prompt_tokens": 2000,
+                    "cache_hit_ratio": 0.75,
                     "stop_reason": "tool_use"
                 }),
             ),
@@ -1748,12 +1764,16 @@ mod tests {
         assert!(request.has_system);
         assert_eq!(request.message_count, 2);
         assert_eq!(request.tool_definition_count, 2);
+        assert_eq!(request.pre_provider_ms, Some(12));
         let response = call.response_summary.clone().expect("response summary");
         assert!(response.has_text);
         assert!(response.has_thinking);
         assert_eq!(response.tool_use_count, 1);
         assert_eq!(response.elapsed_ms, Some(1200));
         assert_eq!(response.ttft_ms, Some(80));
+        assert_eq!(response.generation_ms, Some(1120));
+        assert_eq!(response.prompt_tokens, Some(2000));
+        assert_eq!(response.cache_hit_ratio, Some(0.75));
         assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
         assert_eq!(response.text_preview.as_deref(), Some("done with the task"));
 
