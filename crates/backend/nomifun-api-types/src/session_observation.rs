@@ -166,6 +166,8 @@ pub struct SessionObservationRequestSummaryDto {
     pub messages_omitted: bool,
     #[serde(default)]
     pub tools_omitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_provider_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -184,6 +186,12 @@ pub struct SessionObservationResponseSummaryDto {
     pub elapsed_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttft_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_hit_ratio: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

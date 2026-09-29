@@ -147,6 +147,12 @@ pub(crate) fn parse_supported_output_range(message: &str) -> Option<u32> {
 pub trait LlmProvider: Send + Sync {
     async fn stream(&self, request: &LlmRequest)
     -> Result<mpsc::Receiver<LlmEvent>, ProviderError>;
+
+    /// Whether `TokenUsage::input_tokens` already counts cache reads and
+    /// writes. Anthropic-protocol providers report the uncached remainder only.
+    fn input_tokens_include_cache(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

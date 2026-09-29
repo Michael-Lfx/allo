@@ -119,6 +119,7 @@ fn request_summary_dto(value: ProjectedRequestSummary) -> SessionObservationRequ
         system_omitted: value.system_omitted,
         messages_omitted: value.messages_omitted,
         tools_omitted: value.tools_omitted,
+        pre_provider_ms: value.pre_provider_ms,
     }
 }
 
@@ -156,6 +157,9 @@ fn response_summary_dto(value: ProjectedResponseSummary) -> SessionObservationRe
         tool_use_count: value.tool_use_count,
         elapsed_ms: value.elapsed_ms,
         ttft_ms: value.ttft_ms,
+        generation_ms: value.generation_ms,
+        prompt_tokens: value.prompt_tokens,
+        cache_hit_ratio: value.cache_hit_ratio,
         stop_reason: value.stop_reason,
         text_preview: value.text_preview,
     }

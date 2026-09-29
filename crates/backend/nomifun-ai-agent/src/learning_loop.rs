@@ -49,6 +49,10 @@ pub(crate) struct CancellableProvider {
 
 #[async_trait::async_trait]
 impl LlmProvider for CancellableProvider {
+    fn input_tokens_include_cache(&self) -> bool {
+        self.inner.input_tokens_include_cache()
+    }
+
     async fn stream(
         &self,
         request: &LlmRequest,
