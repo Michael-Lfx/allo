@@ -80,11 +80,15 @@ impl VertexProvider {
             json!(&request.system)
         };
 
+        let mut messages = anthropic_shared::build_messages(&request.messages, &self.compat);
+        if self.cache_enabled {
+            anthropic_shared::apply_message_cache_breakpoints(&mut messages);
+        }
         let mut body = json!({
             "anthropic_version": "vertex-2023-10-16",
             "max_tokens": max_tokens,
             "system": system,
-            "messages": anthropic_shared::build_messages(&request.messages, &self.compat),
+            "messages": messages,
             "stream": true
         });
 

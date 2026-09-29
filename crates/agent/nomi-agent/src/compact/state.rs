@@ -6,6 +6,19 @@ use nomi_config::compact::CompactConfig;
 /// cache-stable prefix intact. Mirrors Reasonix's `defaultSoftCompactRatio`.
 pub const SOFT_COMPACT_RATIO: f64 = 0.5;
 
+/// Fraction of the context window at which compaction is close enough that
+/// the model should stop opening large new reads. Distinct from
+/// [`SOFT_COMPACT_RATIO`] so a session can hear both warnings once each.
+pub const IMMINENT_COMPACT_RATIO: f64 = 0.8;
+
+/// Host notice injected once per growth cycle when occupancy crosses
+/// [`SOFT_COMPACT_RATIO`].
+pub const SOFT_COMPACT_NOTICE: &str = "Context is about 50% full. Avoid re-reading files you already have, and prefer a short summary over pasting large outputs.";
+
+/// Host notice injected once per growth cycle when occupancy crosses
+/// [`IMMINENT_COMPACT_RATIO`].
+pub const IMMINENT_COMPACT_NOTICE: &str = "Context is about 80% full. Automatic compaction is imminent; finish the current step and avoid opening new large files.";
+
 /// After this many consecutive compactions, auto-compaction is paused to
 /// prevent a re-fire loop (the kept tail alone exceeds the trigger).
 /// Mirrors Reasonix's `consecutiveCompacts >= 2` check.
@@ -35,6 +48,9 @@ pub struct CompactState {
     /// emitted for the current growth cycle. Cleared when tokens drop below
     /// the soft threshold so a new cycle can notify again.
     pub soft_compact_noticed: bool,
+    /// Whether the imminent-compaction notice (80% of window) has already
+    /// been emitted. Cleared when tokens drop below that threshold.
+    pub imminent_compact_noticed: bool,
     /// How many consecutive turns auto-compaction has fired. A healthy
     /// compaction drops the prompt below the trigger, so the next turn
     /// won't compact. Reset to 0 when a turn sits under the trigger.
@@ -56,6 +72,7 @@ impl CompactState {
             last_input_tokens: 0,
             last_provider_input_tokens: 0,
             soft_compact_noticed: false,
+            imminent_compact_noticed: false,
             consecutive_compacts: 0,
             compact_stuck: false,
             last_turn_ended_at: None,
@@ -90,6 +107,35 @@ impl CompactState {
         }
     }
 
+    /// Check if the watermark has crossed the imminent-compaction threshold
+    /// (80% of the context window). Returns true once per growth cycle.
+    pub fn check_imminent_compact(&mut self, config: &CompactConfig) -> bool {
+        let imminent_threshold =
+            (config.context_window as f64 * IMMINENT_COMPACT_RATIO) as u64;
+        if self.last_input_tokens >= imminent_threshold && !self.imminent_compact_noticed {
+            self.imminent_compact_noticed = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Notices the model should see on this pass, in threshold order.
+    ///
+    /// Each notice fires at most once until occupancy falls back under its
+    /// threshold. Callers inject the strings through the trusted host
+    /// resource channel, not the system prompt.
+    pub fn take_pressure_notices(&mut self, config: &CompactConfig) -> Vec<&'static str> {
+        let mut notices = Vec::new();
+        if self.check_soft_compact(config) {
+            notices.push(SOFT_COMPACT_NOTICE);
+        }
+        if self.check_imminent_compact(config) {
+            notices.push(IMMINENT_COMPACT_NOTICE);
+        }
+        notices
+    }
+
     /// Called when a turn sits under the hard trigger — the breathing room a
     /// healthy compaction buys. Clears the stuck latch and the run counter so
     /// a future growth cycle starts fresh.
@@ -116,13 +162,18 @@ impl CompactState {
         self.compact_stuck
     }
 
-    /// Reset the soft-compaction notice when tokens drop below the soft
-    /// threshold, so a new growth cycle can notify again.
+    /// Reset pressure notices when tokens drop below their thresholds, so a
+    /// new growth cycle can notify again.
     pub fn maybe_reset_soft_notice(&mut self, config: &CompactConfig) {
         let soft_threshold =
             (config.context_window as f64 * SOFT_COMPACT_RATIO) as u64;
+        let imminent_threshold =
+            (config.context_window as f64 * IMMINENT_COMPACT_RATIO) as u64;
         if self.last_input_tokens < soft_threshold {
             self.soft_compact_noticed = false;
+        }
+        if self.last_input_tokens < imminent_threshold {
+            self.imminent_compact_noticed = false;
         }
     }
 
@@ -228,6 +279,7 @@ mod tests {
         assert_eq!(a.consecutive_failures, b.consecutive_failures);
         assert_eq!(a.last_input_tokens, b.last_input_tokens);
         assert_eq!(a.soft_compact_noticed, b.soft_compact_noticed);
+        assert_eq!(a.imminent_compact_noticed, b.imminent_compact_noticed);
         assert_eq!(a.consecutive_compacts, b.consecutive_compacts);
         assert_eq!(a.compact_stuck, b.compact_stuck);
         assert_eq!(a.last_turn_ended_at, b.last_turn_ended_at);
@@ -298,6 +350,60 @@ mod tests {
         state.clear_compact_stall();
         assert!(!state.is_compact_stuck());
         assert_eq!(state.consecutive_compacts, 0);
+    }
+
+    #[test]
+    fn pressure_notices_fire_once_at_each_threshold() {
+        let config = CompactConfig {
+            context_window: 200_000,
+            ..Default::default()
+        };
+        let mut state = CompactState::new();
+        state.last_input_tokens = 100_000;
+        assert_eq!(state.take_pressure_notices(&config), vec![SOFT_COMPACT_NOTICE]);
+        assert!(state.take_pressure_notices(&config).is_empty());
+
+        state.last_input_tokens = 160_000;
+        assert_eq!(
+            state.take_pressure_notices(&config),
+            vec![IMMINENT_COMPACT_NOTICE]
+        );
+        assert!(state.take_pressure_notices(&config).is_empty());
+    }
+
+    #[test]
+    fn crossing_both_thresholds_at_once_emits_both_notices() {
+        let config = CompactConfig {
+            context_window: 200_000,
+            ..Default::default()
+        };
+        let mut state = CompactState::new();
+        state.last_input_tokens = 170_000;
+        assert_eq!(
+            state.take_pressure_notices(&config),
+            vec![SOFT_COMPACT_NOTICE, IMMINENT_COMPACT_NOTICE]
+        );
+    }
+
+    #[test]
+    fn imminent_notice_resets_when_tokens_fall_below_eighty_percent() {
+        let config = CompactConfig {
+            context_window: 200_000,
+            ..Default::default()
+        };
+        let mut state = CompactState::new();
+        state.last_input_tokens = 170_000;
+        assert_eq!(
+            state.take_pressure_notices(&config),
+            vec![SOFT_COMPACT_NOTICE, IMMINENT_COMPACT_NOTICE]
+        );
+        state.last_input_tokens = 120_000;
+        state.maybe_reset_soft_notice(&config);
+        assert!(state.soft_compact_noticed);
+        assert!(!state.imminent_compact_noticed);
+        state.last_input_tokens = 170_000;
+        assert!(state.check_imminent_compact(&config));
+        assert!(state.soft_compact_noticed);
     }
 
     #[test]

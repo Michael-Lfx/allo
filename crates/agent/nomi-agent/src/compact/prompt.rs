@@ -19,15 +19,32 @@ pub const COMPACT_SYSTEM_PROMPT: &str = "You are compacting the earlier part of 
 /// Build the 7-section compact prompt that asks the LLM for a next-turn briefing.
 ///
 /// `focus` is optional user-supplied Compact Instructions (e.g. `/compact keep
-/// the API contract`). When present it is prepended so the summarizer
-/// prioritizes those facts.
-pub fn build_compact_prompt(focus: Option<&str>) -> String {
+/// the API contract`). `project_instructions` is the `Compact Instructions`
+/// section of AGENTS.md. Either block is prepended so the summarizer
+/// prioritizes those facts; project instructions come first because they are
+/// standing rules, and the user's focus for this compact follows them.
+pub fn build_compact_prompt(focus: Option<&str>, project_instructions: Option<&str>) -> String {
     let base = format!("{PREAMBLE}\n\n{BODY}\n\n{FORMAT_INSTRUCTIONS}\n\n{REMINDER}");
-    match focus.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(focus) => format!(
-            "Compact Instructions (user-specified focus — prioritize these in the briefing):\n{focus}\n\n{base}"
-        ),
-        None => base,
+    let mut prefix = String::new();
+    if let Some(instructions) = project_instructions.map(str::trim).filter(|s| !s.is_empty()) {
+        prefix.push_str(
+            "Compact Instructions (from AGENTS.md — keep these facts in the briefing):\n",
+        );
+        prefix.push_str(instructions);
+        prefix.push_str("\n\n");
+    }
+    if let Some(focus) = focus.map(str::trim).filter(|s| !s.is_empty()) {
+        prefix.push_str(
+            "Compact Instructions (user-specified focus — prioritize these in the briefing):\n",
+        );
+        prefix.push_str(focus);
+        prefix.push_str("\n\n");
+    }
+    if prefix.is_empty() {
+        base
+    } else {
+        prefix.push_str(&base);
+        prefix
     }
 }
 
@@ -202,7 +219,7 @@ mod tests {
 
     #[test]
     fn prompt_contains_all_seven_sections() {
-        let prompt = build_compact_prompt(None);
+        let prompt = build_compact_prompt(None, None);
         for i in 1..=7 {
             assert!(prompt.contains(&format!("{i}.")), "Missing section {i}");
         }
@@ -212,14 +229,14 @@ mod tests {
 
     #[test]
     fn prompt_forbids_tool_calls() {
-        let prompt = build_compact_prompt(None);
+        let prompt = build_compact_prompt(None, None);
         assert!(prompt.contains("Do NOT call any tools"));
         assert!(prompt.contains("CRITICAL"));
     }
 
     #[test]
     fn prompt_is_next_turn_briefing_without_analysis() {
-        let prompt = build_compact_prompt(None);
+        let prompt = build_compact_prompt(None, None);
         assert!(prompt.contains("<summary>"));
         assert!(!prompt.contains("<analysis>"));
         assert!(prompt.contains("next-turn briefing"));
@@ -230,9 +247,24 @@ mod tests {
 
     #[test]
     fn prompt_prepends_compact_instructions() {
-        let prompt = build_compact_prompt(Some("keep the API contract"));
+        let prompt = build_compact_prompt(Some("keep the API contract"), None);
         assert!(prompt.starts_with("Compact Instructions"));
         assert!(prompt.contains("keep the API contract"));
+        assert!(prompt.contains("Do NOT call any tools"));
+    }
+
+    #[test]
+    fn prompt_puts_project_instructions_ahead_of_user_focus() {
+        let prompt = build_compact_prompt(
+            Some("keep the API contract"),
+            Some("never drop migration steps"),
+        );
+        let project = prompt
+            .find("never drop migration steps")
+            .expect("project instructions");
+        let focus = prompt.find("keep the API contract").expect("user focus");
+        assert!(project < focus);
+        assert!(prompt.contains("from AGENTS.md"));
         assert!(prompt.contains("Do NOT call any tools"));
     }
 

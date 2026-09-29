@@ -985,7 +985,7 @@ fn context_accessors_report_window_and_last_input() {
 }
 
 #[tokio::test]
-async fn provider_tools_stay_frozen_after_live_registry_growth() {
+async fn late_tools_append_without_rewriting_the_frozen_prefix() {
     let provider = Arc::new(RecordingProvider::successful());
     let mut engine = make_engine("freeze-tools");
     engine.provider = provider.clone();
@@ -1003,8 +1003,9 @@ async fn provider_tools_stay_frozen_after_live_registry_growth() {
         .await
         .expect("first turn should succeed");
 
+    // Sorts before "alpha". Appending must not move it into the prefix.
     engine.tools.register(Box::new(ConstantResultTool {
-        name: "beta_late",
+        name: "aardvark_late",
         polling: false,
         category: ToolCategory::Info,
         calls: Arc::clone(&calls),
@@ -1018,12 +1019,14 @@ async fn provider_tools_stay_frozen_after_live_registry_growth() {
 
     let reqs = provider.requests();
     assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[0].tools.len(), 1);
+    assert_eq!(reqs[0].tools[0].name, "alpha");
+    assert_eq!(reqs[1].tools.len(), 2);
     assert_eq!(
-        reqs[0].tools, reqs[1].tools,
-        "mid-session registry growth must not rewrite the advertised tools JSON"
+        reqs[1].tools[0], reqs[0].tools[0],
+        "the already-advertised prefix must stay byte-stable"
     );
-    assert!(reqs[1].tools.iter().any(|tool| tool.name == "alpha"));
-    assert!(!reqs[1].tools.iter().any(|tool| tool.name == "beta_late"));
+    assert_eq!(reqs[1].tools[1].name, "aardvark_late");
 }
 
 #[tokio::test]
@@ -1077,6 +1080,59 @@ async fn system_resource_notice_rides_turn_tail_not_system_prompt() {
     assert!(
         !requests[1].system.contains(SYSTEM_RESOURCE_CONTEXT_HEADER),
         "a consumed notice should not be replayed forever"
+    );
+}
+
+#[tokio::test]
+async fn soft_compact_notice_rides_the_resource_channel_once() {
+    let mut engine = make_engine("soft-compact");
+    let provider = Arc::new(RecordingProvider::successful());
+    engine.provider = provider.clone();
+    engine.system_prompt = "base system".to_owned();
+    // Default window is 128k. 70k is above the 50% notice and under the 60%
+    // autocompact trigger, so the turn is sent with the notice still attached.
+    engine.compact_state.last_input_tokens = 70_000;
+
+    engine
+        .execute_turn("keep going", "msg-soft")
+        .await
+        .expect("soft notice should not compact or fail the turn");
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        !requests[0]
+            .system
+            .contains(crate::compact::state::SOFT_COMPACT_NOTICE),
+        "pressure notices must not mutate the cached system prefix"
+    );
+    let notices_in = |messages: &[nomi_types::message::Message]| {
+        messages
+            .iter()
+            .filter(|message| {
+                message.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::Text { text }
+                            if text.contains(SYSTEM_RESOURCE_CONTEXT_HEADER)
+                                && text.contains(crate::compact::state::SOFT_COMPACT_NOTICE)
+                    )
+                })
+            })
+            .count()
+    };
+    assert_eq!(notices_in(&requests[0].messages), 1);
+
+    engine
+        .execute_turn("still going", "msg-soft-again")
+        .await
+        .unwrap();
+    let again = provider.requests();
+    let second = again.last().expect("second request");
+    assert_eq!(
+        notices_in(&second.messages),
+        1,
+        "the soft notice is emitted once per growth cycle and stays on the earlier turn"
     );
 }
 
@@ -1535,11 +1591,14 @@ fn transcript_with_prior_briefing() -> Vec<nomi_types::message::Message> {
             }],
         ));
     }
+    // The recent tail survives snip, so it is what actually lands in the
+    // foldable region here. Bulk it past `MIN_FOLD_TOKENS` (400) — the
+    // economics gate otherwise declines to spend a summarizer call on it.
     for i in 0..23 {
         messages.push(Message::new(
             Role::Assistant,
             vec![ContentBlock::Text {
-                text: format!("tail-{i}"),
+                text: format!("tail-{i} {}", "y".repeat(400)),
             }],
         ));
     }

@@ -161,3 +161,27 @@ describe('buildContextBreakdownViewModel', () => {
     expect(view?.listSegments.map((segment) => segment.key)).toEqual(['cached', 'fresh']);
   });
 });
+
+describe('context ring tone', () => {
+  function toneAt(percent: number): string | undefined {
+    return buildContextBreakdownViewModel({
+      used: percent,
+      max: 100,
+      cacheReadTokens: 0,
+    })?.tone;
+  }
+
+  test('stays quiet under the soft-compact threshold', () => {
+    expect(toneAt(49)).toBe('rgb(var(--success-6))');
+  });
+
+  test('shifts to attention at 50 percent', () => {
+    expect(toneAt(50)).toBe('var(--flowy-attention)');
+    expect(toneAt(79)).toBe('var(--flowy-attention)');
+  });
+
+  test('warns when compaction is imminent and turns danger near the window', () => {
+    expect(toneAt(80)).toBe('rgb(var(--warning-6))');
+    expect(toneAt(90)).toBe('rgb(var(--danger-6))');
+  });
+});

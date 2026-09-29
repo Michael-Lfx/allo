@@ -33,6 +33,8 @@ pub struct AutocompactRequest<'a> {
     pub force_mechanical: bool,
     pub observation: Option<Arc<ObservationSession>>,
     pub focus: Option<&'a str>,
+    /// Standing Compact Instructions from AGENTS.md, already extracted.
+    pub project_instructions: Option<&'a str>,
     pub trigger: Option<CompactTrigger>,
     pub archive_cwd: Option<&'a Path>,
     pub session_id: Option<&'a str>,
@@ -354,6 +356,21 @@ fn fold_economics(fold: &[Message]) -> bool {
     estimate_tokens_from_messages(fold) >= MIN_FOLD_TOKENS
 }
 
+/// Whether this pass may skip the [`fold_economics`] gate.
+///
+/// Only a forced emergency fold, or one at the high-water force mark, may.
+/// Crossing the ordinary autocompact trigger is *not* itself a reason to fold a
+/// region too small to pay for the summarizer call and the boundary message it
+/// inserts.
+fn force_bypasses_economics(
+    force_mechanical: bool,
+    pre_compact_tokens: u64,
+    config: &CompactConfig,
+) -> bool {
+    force_mechanical
+        || pre_compact_tokens as f64 >= config.context_window as f64 * COMPACT_FORCE_RATIO
+}
+
 // ── Core autocompact ────────────────────────────────────────────────────────
 
 /// Execute autocompact: call LLM to summarize the conversation.
@@ -439,9 +456,7 @@ pub async fn autocompact_with(
     };
 
     let region = &messages[plan.head..plan.start];
-    let force = request.force_mechanical
-        || pre_compact_tokens as f64 >= config.context_window as f64 * COMPACT_FORCE_RATIO
-        || should_autocompact(pre_compact_tokens, config);
+    let force = force_bypasses_economics(request.force_mechanical, pre_compact_tokens, config);
 
     let (kept, fold) = partition_fold(region, config);
     if fold.is_empty() || (!force && !fold_economics(&fold)) {
@@ -483,6 +498,7 @@ pub async fn autocompact_with(
             config,
             request.observation,
             request.focus,
+            request.project_instructions,
         )
         .await
         {
@@ -564,8 +580,9 @@ async fn summarize_with_retry(
     config: &CompactConfig,
     observation: Option<Arc<ObservationSession>>,
     focus: Option<&str>,
+    project_instructions: Option<&str>,
 ) -> Result<String, CompactError> {
-    let prompt = build_compact_prompt(focus);
+    let prompt = build_compact_prompt(focus, project_instructions);
     let mut conv_messages = fold.to_vec();
     // Ensure the conversation starts with a User message for API compatibility
     if conv_messages.first().map(|m| m.role) == Some(Role::Assistant) {
@@ -646,7 +663,7 @@ async fn summarize_with_retry(
                         truncated.push(Message::new(
                             Role::User,
                             vec![ContentBlock::Text {
-                                text: build_compact_prompt(focus),
+                                text: build_compact_prompt(focus, project_instructions),
                             }],
                         ));
                         conv_messages = truncated;
@@ -1340,6 +1357,25 @@ mod tests {
     fn fold_economics_accepts_large_fold() {
         let fold = vec![text_msg(Role::Assistant, &"x".repeat(2000))];
         assert!(fold_economics(&fold));
+    }
+
+    #[test]
+    fn only_an_emergency_or_high_water_fold_bypasses_the_economics_gate() {
+        let config = default_config();
+        let window = config.context_window as u64;
+        let below_force_mark = (window as f64 * COMPACT_FORCE_RATIO) as u64 - 1;
+        assert!(
+            force_bypasses_economics(true, below_force_mark, &config),
+            "an emergency fold ignores the foldable region's size"
+        );
+        assert!(
+            force_bypasses_economics(false, window, &config),
+            "the high-water mark ignores the foldable region's size"
+        );
+        assert!(
+            !force_bypasses_economics(false, below_force_mark, &config),
+            "crossing the ordinary autocompact trigger is not enough on its own"
+        );
     }
 
     #[test]

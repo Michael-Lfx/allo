@@ -86,6 +86,15 @@ pub struct CompactConfig {
     #[serde(default)]
     pub cache_diagnostics: bool,
 
+    /// Model id used for the compaction summarizer.
+    ///
+    /// When unset or blank, the session's own model writes the briefing.
+    /// Set this to a cheaper model on the same provider (for example a Haiku
+    /// id while the session runs Sonnet) so a 60–80k fold does not pay the
+    /// main model's input price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_model: Option<String>,
+
     #[serde(default)]
     pub compaction: nomi_compact::CompactionLevel,
 
@@ -109,9 +118,25 @@ impl Default for CompactConfig {
             idle_autocompact_pct: default_idle_autocompact_pct(),
             enabled: default_true(),
             cache_diagnostics: false,
+            summary_model: None,
             compaction: nomi_compact::CompactionLevel::default(),
             toon: false,
         }
+    }
+}
+
+impl CompactConfig {
+    /// Model that writes the compact briefing.
+    ///
+    /// A configured [`Self::summary_model`] wins when it is non-blank.
+    /// Otherwise the session model is used, so existing configs keep today's
+    /// behavior.
+    pub fn summary_model_or<'a>(&'a self, session_model: &'a str) -> &'a str {
+        self.summary_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .unwrap_or(session_model)
     }
 }
 
@@ -350,6 +375,30 @@ cache_diagnostics = true
 "#;
         let cfg: CompactConfig = toml::from_str(toml_str).unwrap();
         assert!(cfg.cache_diagnostics);
+    }
+
+    #[test]
+    fn summary_model_defaults_to_absent() {
+        let cfg = CompactConfig::default();
+        assert!(cfg.summary_model.is_none());
+        assert_eq!(cfg.summary_model_or("session-model"), "session-model");
+    }
+
+    #[test]
+    fn summary_model_blank_falls_back_to_the_session_model() {
+        let cfg = CompactConfig {
+            summary_model: Some("   ".into()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.summary_model_or("session-model"), "session-model");
+    }
+
+    #[test]
+    fn toml_summary_model_override() {
+        let toml_str = r#"summary_model = "claude-haiku""#;
+        let cfg: CompactConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.summary_model.as_deref(), Some("claude-haiku"));
+        assert_eq!(cfg.summary_model_or("session-model"), "claude-haiku");
     }
 
     #[test]

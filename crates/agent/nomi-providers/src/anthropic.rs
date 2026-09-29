@@ -76,11 +76,15 @@ impl AnthropicProvider {
             json!(&request.system)
         };
 
+        let mut messages = anthropic_shared::build_messages(&request.messages, &self.compat);
+        if self.cache_enabled {
+            anthropic_shared::apply_message_cache_breakpoints(&mut messages);
+        }
         let mut body = json!({
             "model": request.model,
             "max_tokens": max_tokens,
             "system": system,
-            "messages": anthropic_shared::build_messages(&request.messages, &self.compat),
+            "messages": messages,
             "stream": true
         });
 
@@ -241,5 +245,40 @@ mod tests {
         );
         let body = provider.build_request_body(&minimal_request(), false).expect("body");
         assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn cached_request_marks_the_last_user_message() {
+        let provider = AnthropicProvider::new(
+            "test-key",
+            "http://localhost",
+            ProviderCompat::anthropic_defaults(),
+        );
+        let body = provider
+            .build_request_body(&minimal_request(), false)
+            .expect("body");
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn disabled_cache_omits_message_breakpoints() {
+        let provider = AnthropicProvider::new(
+            "test-key",
+            "http://localhost",
+            ProviderCompat::anthropic_defaults(),
+        )
+        .with_cache(false);
+        let body = provider
+            .build_request_body(&minimal_request(), false)
+            .expect("body");
+        assert!(
+            body["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
     }
 }

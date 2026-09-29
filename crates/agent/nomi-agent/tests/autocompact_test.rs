@@ -200,7 +200,7 @@ async fn tc_2_4_07_circuit_breaker_blocks_autocompact() {
 
 #[test]
 fn tc_2_4_08_prompt_contains_all_sections() {
-    let prompt = build_compact_prompt(None);
+    let prompt = build_compact_prompt(None, None);
     for i in 1..=7 {
         assert!(prompt.contains(&format!("{i}.")), "Missing section {i}");
     }
@@ -308,7 +308,7 @@ fn tc_2_4_14_disabled_config_skips() {
 
 #[test]
 fn tc_2_4_15_prompt_forbids_tool_calls() {
-    let prompt = build_compact_prompt(None);
+    let prompt = build_compact_prompt(None, None);
     assert!(prompt.contains("Do NOT call any tools"));
 }
 

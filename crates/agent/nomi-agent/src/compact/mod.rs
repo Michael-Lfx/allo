@@ -15,6 +15,7 @@ pub mod archive;
 pub mod auto;
 pub mod emergency;
 pub mod estimate;
+pub mod instructions;
 pub mod micro;
 pub mod prompt;
 pub mod snip;

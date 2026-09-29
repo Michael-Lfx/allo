@@ -283,6 +283,29 @@ fn sort_tools_by_name(tools: &mut [nomi_types::tool::ToolDef]) {
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
+/// Keep `frozen` as a stable prefix and append tools from `live` whose names
+/// are not already frozen.
+///
+/// Already-frozen definitions are not rewritten, and new tools are not
+/// inserted into the prefix, so the bytes of the already-advertised tool
+/// JSON stay put when a late tool (for example an MCP server) arrives.
+fn append_unfrozen_tools(
+    frozen: &mut Vec<nomi_types::tool::ToolDef>,
+    live: &[nomi_types::tool::ToolDef],
+) {
+    let extra = {
+        let mut known: HashSet<&str> = frozen.iter().map(|tool| tool.name.as_str()).collect();
+        let mut extra = Vec::new();
+        for tool in live {
+            if known.insert(tool.name.as_str()) {
+                extra.push(tool.clone());
+            }
+        }
+        extra
+    };
+    frozen.extend(extra);
+}
+
 fn tool_result_image_payload(messages: &[Message]) -> (usize, usize) {
     let mut count = 0usize;
     let mut bytes = 0usize;
@@ -1780,11 +1803,12 @@ impl AgentEngine {
             // provider with the current conversation.
             self.prune_old_tool_images();
 
-            // Advertise the same harness-allowed table every request so the
-            // tools JSON stays prefix-cache stable. Plan mode refuses writes
-            // at dispatch instead of swapping the table. Forced finalize is an
-            // accepted one-time miss: `SyncPlan` advertises only `update_plan`,
-            // `Reply` advertises nothing.
+            // Advertise a prefix-stable tool table. The first non-empty
+            // advertisement is frozen; tools that show up later are appended,
+            // so the bytes of the already-sent prefix do not move. Plan mode
+            // refuses writes at dispatch instead of swapping the table. Forced
+            // finalize is an accepted one-time miss: `SyncPlan` advertises only
+            // `update_plan`, `Reply` advertises nothing.
             let mut tools = self.provider_tools_for_request();
             let mut tool_authority = self.bind_tool_authority(&tools);
 
@@ -1913,7 +1937,7 @@ impl AgentEngine {
             if let Some(section) = round.take_section() {
                 turn_tail_extras.push(section);
             }
-            let turn_tail =
+            let mut turn_tail =
                 crate::context_contributor::build_turn_tail_context(turn_tail_extras.clone());
 
             let mut overflow_retried = false;
@@ -1933,6 +1957,7 @@ impl AgentEngine {
             let mut turn_usage: TokenUsage;
             let mut done_count: u8;
             let mut request_breakdown;
+            let mut pressure_notices_attached = false;
 
             'provider_attempt: loop {
             crate::context_contributor::persist_turn_tail_context(
@@ -1940,9 +1965,6 @@ impl AgentEngine {
                 turn_tail.clone(),
                 self.sent_prefix_len,
             );
-
-            // Record prompt state for cache diagnostics
-            self.cache_detector.record_request(&system, &tools);
 
             // Capture a raw category estimate for this exact request. After the
             // provider reports input tokens we calibrate it to the occupancy gauge.
@@ -1999,6 +2021,34 @@ impl AgentEngine {
                 }
                 continue 'provider_attempt;
             }
+
+            if !pressure_notices_attached {
+                pressure_notices_attached = true;
+                let notices = self
+                    .compact_state
+                    .take_pressure_notices(&self.compact_config)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
+                if let Some(block) = format_system_resource_context(notices) {
+                    turn_tail_extras.push(block);
+                    turn_tail = crate::context_contributor::build_turn_tail_context(
+                        turn_tail_extras.clone(),
+                    );
+                    crate::context_contributor::persist_turn_tail_context(
+                        &mut self.messages,
+                        turn_tail.clone(),
+                        self.sent_prefix_len,
+                    );
+                }
+            }
+
+            // Record the prompt that is about to be sent, including any
+            // pressure notice attached above. An earlier compact `continue`
+            // has already replaced the transcript, so this snapshot is the
+            // one the provider sees.
+            self.cache_detector
+                .record_request(&system, &tools, &self.messages);
 
             let model = self.model.clone();
             let system_for_request = system.clone();
@@ -3730,14 +3780,29 @@ impl AgentEngine {
             }
             return tools;
         }
-        if let Some(frozen) = &self.frozen_provider_tools {
-            return frozen.clone();
+        self.sync_provider_tool_freeze();
+        self.frozen_provider_tools.clone().unwrap_or_default()
+    }
+
+    /// Freeze the first non-empty advertisement, then append names that were
+    /// not in that prefix. Forced finalize must not call this: its reduced
+    /// table would otherwise become the prefix.
+    fn sync_provider_tool_freeze(&mut self) {
+        if self
+            .coding_harness
+            .as_ref()
+            .is_some_and(|harness| harness.is_forced_finalize())
+        {
+            return;
         }
-        let tools = self.live_advertised_tools();
-        if !tools.is_empty() {
-            self.frozen_provider_tools = Some(tools.clone());
+        let live = self.live_advertised_tools();
+        if let Some(frozen) = &mut self.frozen_provider_tools {
+            append_unfrozen_tools(frozen, &live);
+            return;
         }
-        tools
+        if !live.is_empty() {
+            self.frozen_provider_tools = Some(live);
+        }
     }
 
     fn bind_tool_authority(
@@ -3774,7 +3839,14 @@ impl AgentEngine {
         std::borrow::Cow::Owned(self.live_advertised_tools())
     }
 
-    fn request_token_estimate(&self) -> u64 {
+    fn request_token_estimate(&mut self) -> u64 {
+        if self
+            .coding_harness
+            .as_ref()
+            .is_none_or(|harness| !harness.is_forced_finalize())
+        {
+            self.sync_provider_tool_freeze();
+        }
         estimate::estimate_tokens_from_request(
             &self.system_prompt,
             &self.advertised_tools_ref(),
@@ -3932,16 +4004,24 @@ impl AgentEngine {
         let provider = Arc::clone(&self.provider);
         let cwd = self.workspace_cwd();
         let session_id = self.current_session.as_ref().map(|s| s.id.clone());
+        let summary_model = self
+            .compact_config
+            .summary_model_or(&self.model)
+            .to_string();
+        let project_instructions = cwd
+            .as_deref()
+            .and_then(crate::compact::instructions::load_compact_instructions);
         match auto::autocompact_with(
             provider.as_ref(),
             &self.messages,
-            &self.model,
+            &summary_model,
             &self.compact_config,
             &mut self.compact_state,
             auto::AutocompactRequest {
                 force_mechanical,
                 observation: self.observation.clone(),
                 focus: None,
+                project_instructions: project_instructions.as_deref(),
                 trigger: Some(trigger),
                 archive_cwd: cwd.as_deref(),
                 session_id: session_id.as_deref(),

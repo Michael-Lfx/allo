@@ -33,16 +33,25 @@ impl SlashCommand for CompactCommand {
 
         let pre_tokens = ctx.compact_state.last_input_tokens;
 
+        let summary_model = ctx
+            .compact_config
+            .summary_model_or(ctx.model)
+            .to_string();
+        let project_instructions = ctx
+            .workspace_cwd
+            .as_deref()
+            .and_then(crate::compact::instructions::load_compact_instructions);
         match auto::autocompact_with(
             ctx.provider.as_ref(),
             ctx.messages,
-            ctx.model,
+            &summary_model,
             ctx.compact_config,
             ctx.compact_state,
             auto::AutocompactRequest {
                 force_mechanical: false,
                 observation: ctx.observation.clone(),
                 focus: Some(args.trim()).filter(|s| !s.is_empty()),
+                project_instructions: project_instructions.as_deref(),
                 trigger: Some(CompactTrigger::Manual),
                 archive_cwd: ctx.workspace_cwd.as_deref(),
                 session_id: ctx.session_id.as_deref(),
@@ -293,6 +302,7 @@ mod tests {
 
     struct RecordingProvider {
         last_prompt: std::sync::Mutex<Option<String>>,
+        last_model: std::sync::Mutex<Option<String>>,
     }
 
     #[async_trait::async_trait]
@@ -312,6 +322,7 @@ mod tests {
                 })
                 .unwrap_or_default();
             *self.last_prompt.lock().unwrap() = Some(prompt);
+            *self.last_model.lock().unwrap() = Some(request.model.clone());
             let (tx, rx) = tokio::sync::mpsc::channel(4);
             let _ = tx
                 .try_send(LlmEvent::TextDelta(
@@ -329,6 +340,7 @@ mod tests {
     async fn compact_args_reach_summarizer_prompt() {
         let recorder = Arc::new(RecordingProvider {
             last_prompt: std::sync::Mutex::new(None),
+            last_model: std::sync::Mutex::new(None),
         });
         let provider: Arc<dyn LlmProvider> = recorder.clone();
         let registry = CommandRegistry::new();
@@ -351,7 +363,10 @@ mod tests {
             .collect();
         let mut state = CompactState::new();
         state.last_input_tokens = 50_000;
-        let config = nomi_config::compact::CompactConfig::default();
+        let config = nomi_config::compact::CompactConfig {
+            summary_model: Some("cheap-summarizer".into()),
+            ..nomi_config::compact::CompactConfig::default()
+        };
 
         let mut ctx = CommandContext {
             messages: &mut messages,
@@ -374,6 +389,11 @@ mod tests {
             "summarizer prompt should include Compact Instructions, got: {prompt}"
         );
         assert!(prompt.contains("keep the API contract"));
+        assert_eq!(
+            recorder.last_model.lock().unwrap().as_deref(),
+            Some("cheap-summarizer"),
+            "the summarizer must use compact.summary_model"
+        );
         // A user-issued /compact must not inherit the auto-only
         // "resume without asking the user" continuation.
         let summary = messages
