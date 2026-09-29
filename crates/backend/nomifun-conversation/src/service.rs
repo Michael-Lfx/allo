@@ -10,7 +10,10 @@ use nomifun_ai_agent::capability::{SessionEndContext, SessionEndReason, SessionL
 use nomifun_ai_agent::conversation_title_completer::{ConversationTitleCompleter, clamp_title};
 use nomifun_ai_agent::protocol::events::AgentStreamEvent;
 use nomifun_ai_agent::types::{AgentRuntimeBuildOptions, SendMessageData};
-use nomifun_ai_agent::{AgentRuntimeHandle, AgentRuntimeRegistry, TurnStopReason};
+use nomifun_ai_agent::{
+    AgentRuntimeHandle, AgentRuntimeRegistry, NomiPlainTextTurn, NomiSessionForkMode,
+    NomiSessionForkRequest, TurnStopReason,
+};
 use futures_util::FutureExt;
 use sha2::{Digest, Sha256};
 use std::panic::AssertUnwindSafe;
@@ -559,6 +562,152 @@ pub(crate) fn strip_clone_instance_state(extra: &mut serde_json::Value) {
     ] {
         map.remove(key);
     }
+}
+
+/// `(12) System updates` -> `(12, "System updates")`. The number is the fork
+/// sequence and the remainder is the title that later forks keep sharing.
+fn parse_numbered_fork_title(name: &str) -> Option<(u32, String)> {
+    let rest = name.trim().strip_prefix('(')?;
+    let (number, after) = rest.split_once(')')?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = number.parse::<u32>().ok()?;
+    if number == 0 {
+        return None;
+    }
+    let base = after.strip_prefix(' ').unwrap_or(after).trim().to_owned();
+    Some((number, base))
+}
+
+fn fork_base_title(name: &str) -> String {
+    let trimmed = name.trim();
+    parse_numbered_fork_title(trimmed)
+        .map(|(_, base)| base)
+        .unwrap_or_else(|| trimmed.to_owned())
+}
+
+fn next_fork_title(source_name: &str, existing_names: &[String]) -> String {
+    let base = fork_base_title(source_name);
+    let mut max_number = 0u32;
+    for name in existing_names {
+        if let Some((number, title)) = parse_numbered_fork_title(name)
+            && title == base
+        {
+            max_number = max_number.max(number);
+        }
+    }
+    let next = max_number.saturating_add(1).max(1);
+    if base.is_empty() {
+        format!("({next})")
+    } else {
+        format!("({next}) {base}")
+    }
+}
+
+/// Extra copied onto a forked conversation.
+///
+/// Instance resume state is dropped. A user-chosen workspace path is kept so
+/// the fork continues in the same project directory. Temporary workspace
+/// tokens are not copied; `create` allocates a new directory for those.
+fn prepare_fork_extra(source_extra: &serde_json::Value) -> serde_json::Value {
+    let mut extra = if source_extra.is_object() {
+        source_extra.clone()
+    } else {
+        serde_json::json!({})
+    };
+    let workspace = extra
+        .get("workspace")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned);
+    let keep_workspace = extra.get("is_temporary_workspace").and_then(|value| value.as_bool()) == Some(false)
+        && extra
+            .get(TEMP_WORKSPACE_ID_EXTRA_KEY)
+            .and_then(|value| value.as_str())
+            .is_none_or(|token| token.is_empty())
+        && workspace.as_ref().is_some_and(|path| !path.is_empty());
+    strip_clone_instance_state(&mut extra);
+    if let Some(map) = extra.as_object_mut() {
+        for key in [
+            "desktopGateway",
+            "desktop_gateway",
+            "gateway_mcp_config",
+            "gateway_excluded_tools",
+            "requirement_mcp_config",
+            "knowledge_mcp_config",
+            "open_mcp_config",
+            "computer_mcp_config",
+            "browser_mcp_config",
+            "user_id",
+            "allowed_tools",
+            "knowledge_mounts",
+            "knowledge_writeback",
+            "knowledge_channel_write_enabled",
+            "companion_session",
+            "companion",
+            "companion_id",
+            "channel_platform",
+            "robot_session",
+            "robot_id",
+            "cron_job_id",
+            "cronJobId",
+            "mcp_server_ids",
+            "mcp_servers",
+            "mcp_statuses",
+            "session_mcp_servers",
+            "skills",
+            "summon",
+            "delegation_policy",
+            "execution_model_pool",
+            "decision_policy",
+            "execution_template_id",
+            "agent_cluster_mode",
+            "team_id",
+            "teamId",
+            "enabled_skills",
+            "exclude_builtin_skills",
+            "loaded_skills",
+        ] {
+            map.remove(key);
+        }
+        map.retain(|key, _| !key.starts_with("orchestrator_"));
+        for key in BACKEND_OWNED_LIFECYCLE_EXTRA_KEYS {
+            map.remove(key);
+        }
+        if keep_workspace
+            && let Some(workspace) = workspace
+        {
+            map.insert("workspace".to_owned(), serde_json::Value::String(workspace));
+        }
+    }
+    extra
+}
+
+fn fork_plain_text_turns(messages: &[MessageRow]) -> Vec<NomiPlainTextTurn> {
+    messages
+        .iter()
+        .filter_map(|row| {
+            if row.hidden || row.r#type != "text" {
+                return None;
+            }
+            let value = serde_json::from_str::<serde_json::Value>(&row.content).ok()?;
+            let text = value
+                .get("content")
+                .and_then(|content| content.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            if text.is_empty() {
+                return None;
+            }
+            let is_user = match row.position.as_deref() {
+                Some("right") => true,
+                Some("left") => false,
+                _ => return None,
+            };
+            Some(NomiPlainTextTurn { is_user, text })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7186,6 +7335,189 @@ impl ConversationService {
     ) -> Result<ConversationResponse, AppError> {
         strip_clone_instance_state(&mut req.conversation.extra);
         self.create(user_id, req.conversation).await
+    }
+
+    /// Fork a Nomi conversation through one finished text message.
+    ///
+    /// The new conversation receives that message and everything before it.
+    /// The source conversation, its workspace token, and its session file stay
+    /// unchanged. A fork of the last message copies the engine transcript; a
+    /// fork from an earlier message seeds only the visible user and assistant
+    /// text, because older turns do not have an exact engine checkpoint.
+    #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %conversation_id, message_id = %message_id))]
+    pub async fn fork(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<ConversationResponse, AppError> {
+        let conversation_id = parse_conv_id(conversation_id)?;
+        MessageId::parse(message_id).map_err(|error| {
+            AppError::BadRequest(format!("invalid message_id for conversation fork: {error}"))
+        })?;
+        let row = self
+            .conversation_repo
+            .get(conversation_id)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        self.ensure_not_retained_execution_attempt(user_id, conversation_id)
+            .await?;
+        let source_created_at = row.created_at;
+        let source = row_to_response(row, &self.workspace_root)?;
+        if source.r#type != AgentType::Nomi {
+            return Err(AppError::BadRequest(
+                "Only Nomi conversations can be forked".to_owned(),
+            ));
+        }
+        if source.status == ConversationStatus::Running
+            || self.runtime_registry.has_registered_runtime(conversation_id)
+        {
+            return Err(AppError::Conflict(format!(
+                "Conversation {conversation_id} is running and cannot be forked"
+            )));
+        }
+
+        let messages = self
+            .conversation_repo
+            .list_messages_chronological(conversation_id)
+            .await?;
+        let index = messages
+            .iter()
+            .position(|message| message.message_id == message_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Message {message_id} not found in conversation {conversation_id}"
+                ))
+            })?;
+        let target = &messages[index];
+        if target.r#type != "text" || target.status.as_deref() != Some("finish") {
+            return Err(AppError::BadRequest(
+                "only a finished text message can be forked".to_owned(),
+            ));
+        }
+        let is_tail = index + 1 == messages.len();
+        let prefix = &messages[..=index];
+        let plain_text_turns = fork_plain_text_turns(prefix);
+        let existing_names = self
+            .conversation_repo
+            .list_numbered_fork_names(user_id)
+            .await?;
+        let title = next_fork_title(&source.name, &existing_names);
+
+        let created = self
+            .create_fork_conversation(user_id, &source, title)
+            .await?;
+        let copy_result = self
+            .copy_fork_messages(&created.conversation_id, prefix)
+            .await;
+        let remap = match copy_result {
+            Ok(remap) => remap,
+            Err(error) => {
+                let _ = self.delete(user_id, &created.conversation_id).await;
+                return Err(error);
+            }
+        };
+
+        let cwd = created
+            .extra
+            .get("workspace")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let (provider, model) = match created.model.as_ref().or(source.model.as_ref()) {
+            Some(model) => (
+                model.provider_id.clone(),
+                model.use_model.clone().unwrap_or_else(|| model.model.clone()),
+            ),
+            None => (String::new(), String::new()),
+        };
+        let session_result = self
+            .runtime_registry
+            .fork_persisted_nomi_session(NomiSessionForkRequest {
+                source_conversation_id: conversation_id.to_owned(),
+                source_created_at,
+                target_conversation_id: created.conversation_id.clone(),
+                target_created_at: created.created_at,
+                target_cwd: cwd,
+                provider,
+                model,
+                mode: if is_tail {
+                    NomiSessionForkMode::CopyTranscript
+                } else {
+                    NomiSessionForkMode::PlainText
+                },
+                message_id_remap: remap,
+                plain_text_turns,
+            })
+            .await;
+        if let Err(error) = session_result {
+            let _ = self.delete(user_id, &created.conversation_id).await;
+            return Err(error);
+        }
+
+        info!(
+            source_conversation_id = conversation_id,
+            forked_conversation_id = %created.conversation_id,
+            tail = is_tail,
+            "Forked conversation"
+        );
+        Ok(created)
+    }
+
+    async fn create_fork_conversation(
+        &self,
+        user_id: &str,
+        source: &ConversationResponse,
+        title: String,
+    ) -> Result<ConversationResponse, AppError> {
+        let request = CreateConversationRequest {
+            r#type: AgentType::Nomi,
+            name: Some(title),
+            model: source.model.clone(),
+            source: source.source.or(Some(ConversationSource::Nomifun)),
+            channel_chat_id: None,
+            preset_id: None,
+            preset_overrides: None,
+            delegation_policy: source.delegation_policy.clone(),
+            execution_model_pool: source.execution_model_pool.clone(),
+            decision_policy: source.decision_policy.clone(),
+            execution_template_id: source.execution_template_id.clone(),
+            extra: prepare_fork_extra(&source.extra),
+        };
+        if let Some(snapshot) = source.preset_snapshot.clone() {
+            self.create_from_preset_snapshot(user_id, request, snapshot)
+                .await
+        } else {
+            self.create(user_id, request).await
+        }
+    }
+
+    async fn copy_fork_messages(
+        &self,
+        conversation_id: &str,
+        prefix: &[MessageRow],
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let mut remap = Vec::with_capacity(prefix.len());
+        for row in prefix {
+            let new_id = MessageId::new().into_string();
+            remap.push((row.message_id.clone(), new_id.clone()));
+            self.conversation_repo
+                .insert_message(&MessageRow {
+                    id: 0,
+                    message_id: new_id.clone(),
+                    conversation_id: conversation_id.to_owned(),
+                    msg_id: Some(new_id),
+                    r#type: row.r#type.clone(),
+                    content: row.content.clone(),
+                    position: row.position.clone(),
+                    status: row.status.clone(),
+                    hidden: row.hidden,
+                    created_at: row.created_at,
+                })
+                .await?;
+        }
+        Ok(remap)
     }
 
     /// Reset a terminal conversation to a fresh pending aggregate.

@@ -101,6 +101,17 @@ pub struct CloneConversationRequest {
     pub conversation: CreateConversationRequest,
 }
 
+/// Body for `POST /api/conversations/:id/fork`.
+///
+/// Copies the conversation through the named message into a new Nomi
+/// conversation. The source conversation is not modified.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForkConversationRequest {
+    #[serde(deserialize_with = "crate::serde_util::deserialize_message_id")]
+    pub message_id: String,
+}
+
 /// Body for `POST /api/conversations/:id/messages`.
 ///
 /// `msg_id` is server-generated — clients must not provide one.

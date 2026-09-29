@@ -966,6 +966,12 @@ pub trait IConversationRepository: Send + Sync {
         filters: &ConversationFilters,
     ) -> Result<PaginatedResult<ConversationRow>, DbError>;
 
+    /// Names that already use a `(n) ...` fork prefix, so the next fork can
+    /// pick the following number without loading every conversation row.
+    async fn list_numbered_fork_names(&self, _user_id: &str) -> Result<Vec<String>, DbError> {
+        Ok(Vec::new())
+    }
+
     // ── Extended queries ────────────────────────────────────────────
 
     /// Finds a conversation by source, channel chat ID, and agent type.
@@ -1057,6 +1063,39 @@ pub trait IConversationRepository: Send + Sync {
         page_size: u32,
         order: SortOrder,
     ) -> Result<PaginatedResult<MessageRow>, DbError>;
+
+    /// Every message `get_messages` would return, oldest first.
+    ///
+    /// Fork copies this prefix. The default pages through [`Self::get_messages`]
+    /// so repositories that already implement pagination do not need a second
+    /// query. A page that reports more data but returns no rows stops the loop.
+    async fn list_messages_chronological(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<MessageRow>, DbError> {
+        const PAGE_SIZE: u32 = 500;
+        const MAX_PAGES: u32 = 10_000;
+        let mut page = 1u32;
+        let mut messages = Vec::new();
+        loop {
+            let batch = self
+                .get_messages(conversation_id, page, PAGE_SIZE, SortOrder::Asc)
+                .await?;
+            let batch_len = batch.items.len();
+            let has_more = batch.has_more;
+            messages.extend(batch.items);
+            if !has_more || batch_len == 0 {
+                break;
+            }
+            page = page.saturating_add(1);
+            if page > MAX_PAGES {
+                return Err(DbError::Init(
+                    "conversation transcript exceeded the fork page limit".to_owned(),
+                ));
+            }
+        }
+        Ok(messages)
+    }
 
     /// Keyset (cursor) pagination: returns up to `limit` messages strictly OLDER
     /// than `before` `(created_at, message_id)`, newest-first

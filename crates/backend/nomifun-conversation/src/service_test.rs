@@ -12,8 +12,8 @@ use nomifun_ai_agent::protocol::events::{
 };
 use nomifun_ai_agent::types::{AgentRuntimeBuildOptions, SendMessageData};
 use nomifun_ai_agent::{
-    AgentRuntimeRegistry, AgentSendError, NomiSessionResetOutcome, NomiSessionRewindOutcome,
-    TurnStopReason,
+    AgentRuntimeRegistry, AgentSendError, NomiSessionForkMode, NomiSessionForkOutcome,
+    NomiSessionForkRequest, NomiSessionResetOutcome, NomiSessionRewindOutcome, TurnStopReason,
 };
 
 use crate::response_middleware::{CronCommandResult, CronCreateParams, CronUpdateParams, ICronService};
@@ -1189,6 +1189,18 @@ impl IConversationRepository for MockRepo {
         let items: Vec<_> = matched.into_iter().take(limit).collect();
         let has_more = (total as usize) > limit;
         Ok(PaginatedResult { items, total, has_more })
+    }
+
+    async fn list_numbered_fork_names(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<String>, nomifun_db::DbError> {
+        let rows = self.rows.lock().unwrap();
+        Ok(rows
+            .iter()
+            .filter(|row| row.user_id == user_id && row.name.starts_with('('))
+            .map(|row| row.name.clone())
+            .collect())
     }
 
     async fn find_by_source_and_chat(
@@ -4530,6 +4542,218 @@ async fn clone_without_source_creates_isolated_workspace_and_session_state() {
     assert_eq!(events[0].data["action"], "created");
 }
 
+fn make_fork_service() -> (
+    ConversationService,
+    Arc<MockRepo>,
+    Arc<MockAgentRuntimeRegistry>,
+) {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> = Arc::new(StubAgentMetadataRepo);
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let svc = ConversationService::new(
+        Arc::<str>::from(TEST_USER_1),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry.clone(),
+        repo.clone(),
+        agent_metadata_repo,
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    (svc, repo, runtime_registry)
+}
+
+async fn insert_fork_text(
+    repo: &MockRepo,
+    conversation_id: &str,
+    content: &str,
+    position: &str,
+    created_at: i64,
+) -> String {
+    let message_id = MessageId::new().into_string();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: message_id.clone(),
+        conversation_id: conversation_id.to_owned(),
+        msg_id: Some(message_id.clone()),
+        r#type: "text".to_owned(),
+        content: json!({ "content": content }).to_string(),
+        position: Some(position.to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at,
+    })
+    .await
+    .expect("insert fork message");
+    message_id
+}
+
+#[tokio::test]
+async fn fork_copies_message_prefix_and_leaves_source_unchanged() {
+    let (svc, repo, runtime) = make_fork_service();
+    let mut request = make_nomi_create_req("fork-prefix");
+    request.name = Some("项目讨论".to_owned());
+    let source = svc.create(TEST_USER_1, request).await.unwrap();
+    let first = insert_fork_text(repo.as_ref(), &source.conversation_id, "KEEP_PREFIX", "right", 1_000).await;
+    let _middle = insert_fork_text(repo.as_ref(), &source.conversation_id, "KEEP_ANSWER", "left", 2_000).await;
+    let _later = insert_fork_text(repo.as_ref(), &source.conversation_id, "DROP_SUFFIX", "right", 3_000).await;
+
+    let forked = svc
+        .fork(TEST_USER_1, &source.conversation_id, &first)
+        .await
+        .unwrap();
+
+    assert_ne!(forked.conversation_id, source.conversation_id);
+    assert_eq!(forked.name, "(1) 项目讨论");
+    assert_eq!(runtime.nomi_fork_records(), vec![NomiSessionForkMode::PlainText]);
+
+    let source_messages = svc
+        .list_messages(
+            TEST_USER_1,
+            &source.conversation_id,
+            ListMessagesQuery {
+                page_size: Some(20),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(source_messages.items.len(), 3);
+    assert_eq!(source_messages.items[2].content["content"], "DROP_SUFFIX");
+
+    let forked_messages = svc
+        .list_messages(
+            TEST_USER_1,
+            &forked.conversation_id,
+            ListMessagesQuery {
+                page_size: Some(20),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(forked_messages.items.len(), 1);
+    assert_eq!(forked_messages.items[0].content["content"], "KEEP_PREFIX");
+    assert_ne!(forked_messages.items[0].message_id, first);
+
+    let second = svc
+        .fork(TEST_USER_1, &source.conversation_id, &first)
+        .await
+        .unwrap();
+    assert_eq!(second.name, "(2) 项目讨论");
+
+    let from_numbered = svc
+        .fork(
+            TEST_USER_1,
+            &forked.conversation_id,
+            &forked_messages.items[0].message_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(from_numbered.name, "(3) 项目讨论");
+}
+
+#[tokio::test]
+async fn fork_of_the_last_message_requests_a_transcript_copy() {
+    let (svc, repo, runtime) = make_fork_service();
+    let source = svc
+        .create(TEST_USER_1, make_nomi_create_req("fork-tail"))
+        .await
+        .unwrap();
+    let _first = insert_fork_text(repo.as_ref(), &source.conversation_id, "KEEP_PREFIX", "right", 1_000).await;
+    let last = insert_fork_text(repo.as_ref(), &source.conversation_id, "KEEP_ANSWER", "left", 2_000).await;
+
+    let forked = svc
+        .fork(TEST_USER_1, &source.conversation_id, &last)
+        .await
+        .unwrap();
+    assert_eq!(runtime.nomi_fork_records(), vec![NomiSessionForkMode::CopyTranscript]);
+    let forked_messages = svc
+        .list_messages(
+            TEST_USER_1,
+            &forked.conversation_id,
+            ListMessagesQuery {
+                page_size: Some(20),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(forked_messages.items.len(), 2);
+    assert_eq!(forked_messages.items[1].content["content"], "KEEP_ANSWER");
+}
+
+#[tokio::test]
+async fn fork_unknown_message_is_not_found() {
+    let (svc, _repo, runtime) = make_fork_service();
+    let source = svc
+        .create(TEST_USER_1, make_nomi_create_req("fork-missing"))
+        .await
+        .unwrap();
+    let missing = MessageId::new().into_string();
+    let error = svc
+        .fork(TEST_USER_1, &source.conversation_id, &missing)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+    assert!(runtime.nomi_fork_records().is_empty());
+}
+
+#[tokio::test]
+async fn fork_rejects_a_running_conversation() {
+    let (svc, repo, _runtime) = make_fork_service();
+    let source = svc
+        .create(TEST_USER_1, make_nomi_create_req("fork-running"))
+        .await
+        .unwrap();
+    let message_id = insert_fork_text(repo.as_ref(), &source.conversation_id, "KEEP_PREFIX", "right", 1_000).await;
+    repo.update(
+        &source.conversation_id,
+        &ConversationRowUpdate {
+            status: Some("running".to_owned()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = svc
+        .fork(TEST_USER_1, &source.conversation_id, &message_id)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn fork_keeps_a_user_chosen_workspace() {
+    let (svc, repo, _runtime) = make_fork_service();
+    let custom = std::env::temp_dir()
+        .parent()
+        .expect("temp parent")
+        .join("nomifun-fork-custom-workspace");
+    let request = serde_json::from_value(json!({
+        "type": "nomi",
+        "name": "自定义目录",
+        "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+        "extra": { "workspace": custom }
+    }))
+    .unwrap();
+    let source = svc.create(TEST_USER_1, request).await.unwrap();
+    let message_id = insert_fork_text(repo.as_ref(), &source.conversation_id, "KEEP_PREFIX", "right", 1_000).await;
+    let forked = svc
+        .fork(TEST_USER_1, &source.conversation_id, &message_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        forked.extra["workspace"].as_str(),
+        Some(custom.to_str().expect("workspace path"))
+    );
+    let reloaded = svc.get(TEST_USER_1, &source.conversation_id).await.unwrap();
+    assert_eq!(reloaded.extra["workspace"].as_str(), forked.extra["workspace"].as_str());
+}
+
 // ── Reset tests ───────────────────────────────────────────────────
 
 async fn seed_reset_aggregate(repo: &MockRepo, conversation_id: &str) {
@@ -6001,6 +6225,7 @@ struct MockAgentRuntimeRegistry {
     block_termination_wait: AtomicBool,
     nomi_reset_records: Mutex<Vec<(String, TimestampMs)>>,
     nomi_rewind_records: Mutex<Vec<(String, TimestampMs, String)>>,
+    nomi_fork_records: Mutex<Vec<NomiSessionForkMode>>,
     persisted_nomi_context:
         Mutex<std::collections::HashMap<(String, TimestampMs), Vec<String>>>,
     fail_next_nomi_reset: Mutex<Option<String>>,
@@ -6019,6 +6244,7 @@ impl MockAgentRuntimeRegistry {
             block_termination_wait: AtomicBool::new(false),
             nomi_reset_records: Mutex::new(Vec::new()),
             nomi_rewind_records: Mutex::new(Vec::new()),
+            nomi_fork_records: Mutex::new(Vec::new()),
             persisted_nomi_context: Mutex::new(std::collections::HashMap::new()),
             fail_next_nomi_reset: Mutex::new(None),
         }
@@ -6055,6 +6281,10 @@ impl MockAgentRuntimeRegistry {
 
     fn nomi_rewind_records(&self) -> Vec<(String, TimestampMs, String)> {
         self.nomi_rewind_records.lock().unwrap().clone()
+    }
+
+    fn nomi_fork_records(&self) -> Vec<NomiSessionForkMode> {
+        self.nomi_fork_records.lock().unwrap().clone()
     }
 
     fn build_count(&self) -> usize {
@@ -6264,6 +6494,20 @@ impl AgentRuntimeRegistry for MockAgentRuntimeRegistry {
                 NomiSessionRewindOutcome::AlreadyAbsent,
             )))
         }
+    }
+
+    fn fork_persisted_nomi_session(
+        &self,
+        request: NomiSessionForkRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<NomiSessionForkOutcome, AppError>> + Send>,
+    > {
+        self.nomi_fork_records.lock().unwrap().push(request.mode);
+        let outcome = match request.mode {
+            NomiSessionForkMode::CopyTranscript => NomiSessionForkOutcome::CopiedTranscript,
+            NomiSessionForkMode::PlainText => NomiSessionForkOutcome::SeededPlainText,
+        };
+        Box::pin(std::future::ready(Ok(outcome)))
     }
 
     fn terminate_all(&self) {

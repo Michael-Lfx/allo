@@ -365,9 +365,12 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
           onClick={onRefresh}
         />
       </div>
-      {/* min-h-0 is required: a flex child defaults to min-height:auto, so this
-          list grows with its rows and an ancestor overflow:hidden clips it
-          without a scrollport. The wheel then has nothing to move. */}
+      {/* min-h-0 让这块成为滚动口。分组卡片必须 flex-shrink-0：
+          overflow:hidden 会把自动 min-height 算成 0，默认 flex-shrink:1
+          会把卡片压进视口并裁掉行，滚动高度就和视口一样，滚轮没有可移动的内容。
+          min-h-0 makes this the scrollport. Group cards need flex-shrink-0:
+          overflow:hidden sets their automatic min-height to 0, so the default
+          flex-shrink:1 compresses them into the viewport and clips rows. */}
       <div className='min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-8px flex flex-col gap-10px'>
         {groupedChanges.map((group) => (
           // border-base 曾是这里的边框色，但 theme 的 `base` 键指向 --bg-base（主背景），
@@ -375,7 +378,7 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
           // `border-base` resolved to var(--bg-base) — the page background, not a border.
           <div
             key={group.key}
-            className='border border-solid border-[var(--border-base)] rounded-10px overflow-hidden bg-1'
+            className='flex-shrink-0 border border-solid border-[var(--border-base)] rounded-10px overflow-hidden bg-1'
           >
             <PanelHeader title={group.title} count={group.count} actions={group.headerAction} />
             {group.items.length === 0 ? (

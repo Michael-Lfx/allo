@@ -23,6 +23,51 @@ pub enum NomiSessionRewindOutcome {
     NotRewindable,
 }
 
+/// How a forked conversation should receive its Nomi transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NomiSessionForkMode {
+    /// Duplicate the source transcript, then rebind it to the new conversation.
+    CopyTranscript,
+    /// Write a new transcript that contains only the supplied plain-text turns.
+    PlainText,
+}
+
+/// One visible user or assistant line used when a fork cannot slice the engine
+/// transcript at an exact tool boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NomiPlainTextTurn {
+    pub is_user: bool,
+    pub text: String,
+}
+
+/// Read-only fork of one owned Nomi session into a different conversation file.
+///
+/// The source file is never written. `message_id_remap` rewrites
+/// `editable_turn.source_message_id` on the copy when the copied checkpoint
+/// points at a message that was duplicated into the new conversation.
+#[derive(Debug, Clone)]
+pub struct NomiSessionForkRequest {
+    pub source_conversation_id: String,
+    pub source_created_at: i64,
+    pub target_conversation_id: String,
+    pub target_created_at: i64,
+    pub target_cwd: String,
+    pub provider: String,
+    pub model: String,
+    pub mode: NomiSessionForkMode,
+    pub message_id_remap: Vec<(String, String)>,
+    pub plain_text_turns: Vec<NomiPlainTextTurn>,
+}
+
+/// Result of writing the forked conversation's session file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NomiSessionForkOutcome {
+    /// The source transcript was copied and rebound.
+    CopiedTranscript,
+    /// A new plain-text transcript was written.
+    SeededPlainText,
+}
+
 /// Result of clearing one exact persisted Nomi conversation generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NomiSessionResetOutcome {
@@ -377,6 +422,328 @@ impl NomiSessionPersistence {
 
         Ok(NomiSessionRewindOutcome::Rewound)
     }
+
+    /// Write a session for a forked conversation without modifying the source file.
+    ///
+    /// [`NomiSessionForkMode::CopyTranscript`] duplicates the owned transcript
+    /// when it exists. A missing source file falls back to the plain-text
+    /// turns, which is also what [`NomiSessionForkMode::PlainText`] always writes.
+    pub fn fork_owned_session(
+        &self,
+        request: &NomiSessionForkRequest,
+    ) -> Result<NomiSessionForkOutcome, AppError> {
+        validate_fork_ids(request)?;
+        if request.mode == NomiSessionForkMode::CopyTranscript {
+            if let Some(owned) = load_owned_session(
+                &self.session_directory,
+                &request.source_conversation_id,
+                request.source_created_at,
+            )? {
+                let source_bytes = std::fs::read(&owned.path).map_err(|error| {
+                    io_error("read Nomi session transcript", &owned.path, error)
+                })?;
+                let forked = rebound_copied_session(&owned.session, request);
+                write_new_session(&self.session_directory, owned.index, &forked)?;
+                let after = std::fs::read(&owned.path).map_err(|error| {
+                    io_error("re-read Nomi session transcript", &owned.path, error)
+                })?;
+                if after != source_bytes {
+                    return Err(AppError::Internal(format!(
+                        "Nomi session fork modified the source transcript {}",
+                        owned.path.display()
+                    )));
+                }
+                return Ok(NomiSessionForkOutcome::CopiedTranscript);
+            }
+        }
+
+        let seeded = plain_text_session(request);
+        let index = match std::fs::symlink_metadata(&self.session_directory) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(AppError::Internal(format!(
+                        "Nomi session directory is not a real directory: {}",
+                        self.session_directory.display()
+                    )));
+                }
+                load_optional_index(&self.session_directory.join("index.json"))?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(io_error(
+                    "inspect Nomi session directory",
+                    &self.session_directory,
+                    error,
+                ));
+            }
+        };
+        write_new_session(&self.session_directory, index, &seeded)?;
+        Ok(NomiSessionForkOutcome::SeededPlainText)
+    }
+}
+
+struct OwnedSessionFile {
+    path: PathBuf,
+    session: Session,
+    index: Option<SessionIndex>,
+}
+
+fn validate_fork_ids(request: &NomiSessionForkRequest) -> Result<(), AppError> {
+    ConversationId::parse(&request.source_conversation_id).map_err(|error| {
+        AppError::BadRequest(format!(
+            "invalid source conversation id for Nomi session fork: {error}"
+        ))
+    })?;
+    ConversationId::parse(&request.target_conversation_id).map_err(|error| {
+        AppError::BadRequest(format!(
+            "invalid target conversation id for Nomi session fork: {error}"
+        ))
+    })?;
+    if request.source_conversation_id == request.target_conversation_id {
+        return Err(AppError::BadRequest(
+            "Nomi session fork requires a distinct target conversation".to_owned(),
+        ));
+    }
+    if request.source_created_at <= 0 || request.target_created_at <= 0 {
+        return Err(AppError::BadRequest(
+            "conversation created_at must be positive for Nomi session fork".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn load_owned_session(
+    directory: &Path,
+    conversation_id: &str,
+    conversation_created_at: i64,
+) -> Result<Option<OwnedSessionFile>, AppError> {
+    let directory_metadata = match std::fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error("inspect Nomi session directory", directory, error)),
+    };
+    if directory_metadata.file_type().is_symlink() || !directory_metadata.is_dir() {
+        return Err(AppError::Internal(format!(
+            "Nomi session directory is not a real directory: {}",
+            directory.display()
+        )));
+    }
+
+    let index_path = directory.join("index.json");
+    let index = load_optional_index(&index_path)?;
+    let indexed_matches: Vec<SessionMeta> = index
+        .as_ref()
+        .map(|index| {
+            index
+                .sessions
+                .iter()
+                .filter(|meta| meta.id == conversation_id)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if indexed_matches.len() > 1 {
+        return Err(AppError::Internal(format!(
+            "Nomi session index contains duplicate entries for conversation {conversation_id}"
+        )));
+    }
+
+    let candidates = session_candidates(directory, conversation_id)?;
+    if candidates.len() > 1 {
+        return Err(AppError::Internal(format!(
+            "Nomi session storage contains ambiguous transcript files for conversation {conversation_id}"
+        )));
+    }
+    let Some(path) = candidates.into_iter().next() else {
+        return Ok(None);
+    };
+
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|error| io_error("inspect Nomi session transcript", &path, error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::Internal(format!(
+            "Nomi session transcript is not a real file: {}",
+            path.display()
+        )));
+    }
+
+    let raw = std::fs::read(&path)
+        .map_err(|error| io_error("read Nomi session transcript", &path, error))?;
+    let session: Session = serde_json::from_slice(&raw).map_err(|error| {
+        AppError::Internal(format!(
+            "parse Nomi session transcript {}: {error}",
+            path.display()
+        ))
+    })?;
+    if session.id != conversation_id {
+        return Err(AppError::Internal(format!(
+            "Nomi session transcript {} contains unexpected id {}",
+            path.display(),
+            session.id
+        )));
+    }
+    if let Some(meta) = indexed_matches.first()
+        && meta.created_at != session.created_at
+    {
+        return Err(AppError::Internal(format!(
+            "Nomi session index timestamp does not match transcript for conversation {conversation_id}"
+        )));
+    }
+
+    let expected_owner = conversation_created_at.to_string();
+    if !session_belongs_to(
+        session.owner_token.as_deref(),
+        session.created_at.timestamp_millis(),
+        &expected_owner,
+        conversation_created_at,
+    ) {
+        return Err(AppError::Conflict(format!(
+            "persisted Nomi session does not belong to the current generation of conversation {conversation_id}"
+        )));
+    }
+
+    Ok(Some(OwnedSessionFile {
+        path,
+        session,
+        index,
+    }))
+}
+
+fn rebound_copied_session(source: &Session, request: &NomiSessionForkRequest) -> Session {
+    let mut forked = source.clone();
+    forked.id = request.target_conversation_id.clone();
+    forked.cwd = request.target_cwd.clone();
+    forked.owner_token = Some(request.target_created_at.to_string());
+    let created_at = fork_session_timestamp(request.target_created_at);
+    forked.created_at = created_at;
+    forked.updated_at = created_at;
+    for message in &mut forked.messages {
+        message.provider_round_id = None;
+    }
+    if let Some(checkpoint) = forked.editable_turn.as_mut() {
+        let remapped = request
+            .message_id_remap
+            .iter()
+            .find(|(source_id, _)| source_id == &checkpoint.source_message_id)
+            .map(|(_, target_id)| target_id.clone());
+        match remapped {
+            Some(target_id) => checkpoint.source_message_id = target_id,
+            None => forked.editable_turn = None,
+        }
+    }
+    forked
+}
+
+fn plain_text_session(request: &NomiSessionForkRequest) -> Session {
+    use nomi_types::message::{ContentBlock, Message, Role, TokenUsage};
+
+    let created_at = fork_session_timestamp(request.target_created_at);
+    let messages = request
+        .plain_text_turns
+        .iter()
+        .filter(|turn| !turn.text.trim().is_empty())
+        .map(|turn| {
+            Message::new(
+                if turn.is_user { Role::User } else { Role::Assistant },
+                vec![ContentBlock::Text {
+                    text: turn.text.clone(),
+                }],
+            )
+        })
+        .collect();
+    Session {
+        id: request.target_conversation_id.clone(),
+        created_at,
+        updated_at: created_at,
+        provider: request.provider.clone(),
+        model: request.model.clone(),
+        cwd: request.target_cwd.clone(),
+        total_usage: TokenUsage::default(),
+        messages,
+        owner_token: Some(request.target_created_at.to_string()),
+        activated_deferred_tools: Vec::new(),
+        editable_turn: None,
+        last_turn_ended_at: None,
+    }
+}
+
+fn fork_session_timestamp(target_created_at: i64) -> chrono::DateTime<chrono::Utc> {
+    let now = chrono::Utc::now();
+    match chrono::DateTime::<chrono::Utc>::from_timestamp_millis(target_created_at) {
+        Some(floor) if now < floor => floor,
+        _ => now,
+    }
+}
+
+fn write_new_session(
+    directory: &Path,
+    index: Option<SessionIndex>,
+    session: &Session,
+) -> Result<(), AppError> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(AppError::Internal(format!(
+                    "Nomi session directory is not a real directory: {}",
+                    directory.display()
+                )));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(directory)
+                .map_err(|error| io_error("create Nomi session directory", directory, error))?;
+        }
+        Err(error) => return Err(io_error("inspect Nomi session directory", directory, error)),
+    }
+
+    if index
+        .as_ref()
+        .is_some_and(|index| index.sessions.iter().any(|meta| meta.id == session.id))
+    {
+        return Err(AppError::Conflict(format!(
+            "Nomi session index already contains conversation {}",
+            session.id
+        )));
+    }
+
+    let file_name = format!(
+        "{}_{}.json",
+        session.created_at.format("%Y-%m-%d"),
+        session.id
+    );
+    let path = directory.join(file_name);
+    if path.exists() {
+        return Err(AppError::Conflict(format!(
+            "Nomi session transcript already exists: {}",
+            path.display()
+        )));
+    }
+    save_json_atomic(&path, session)?;
+    upsert_session_meta(&directory.join("index.json"), index, session)
+}
+
+fn upsert_session_meta(
+    index_path: &Path,
+    index: Option<SessionIndex>,
+    session: &Session,
+) -> Result<(), AppError> {
+    let mut index = index.unwrap_or(SessionIndex {
+        sessions: Vec::new(),
+    });
+    let meta = SessionMeta {
+        id: session.id.clone(),
+        created_at: session.created_at,
+        updated_at: session.updated_at,
+        model: session.model.clone(),
+        summary: session_summary(&session.messages),
+        message_count: session.messages.len(),
+    };
+    if let Some(existing) = index.sessions.iter_mut().find(|meta| meta.id == session.id) {
+        *existing = meta;
+    } else {
+        index.sessions.push(meta);
+    }
+    save_json_atomic(index_path, &index)
 }
 
 fn rewind_session_transcript(session: &mut Session, source_message_id: &str) -> bool {
@@ -882,5 +1249,148 @@ mod tests {
             )
             .expect("missing session is already reset");
         assert_eq!(result, NomiSessionResetOutcome::AlreadyAbsent);
+    }
+
+    fn transcript_path(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+        let suffix = format!("_{id}.json");
+        std::fs::read_dir(dir)
+            .expect("list session dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&suffix))
+            })
+            .expect("session transcript")
+    }
+
+    fn fork_base(
+        source_id: &str,
+        source_created_at: i64,
+        mode: NomiSessionForkMode,
+        turns: Vec<NomiPlainTextTurn>,
+        remap: Vec<(String, String)>,
+    ) -> (String, i64, NomiSessionForkRequest) {
+        let target_id = ConversationId::new().into_string();
+        let target_created_at = chrono::Utc::now().timestamp_millis();
+        let request = NomiSessionForkRequest {
+            source_conversation_id: source_id.to_owned(),
+            source_created_at,
+            target_conversation_id: target_id.clone(),
+            target_created_at,
+            target_cwd: "/forked".to_owned(),
+            provider: "openai".to_owned(),
+            model: "model".to_owned(),
+            mode,
+            message_id_remap: remap,
+            plain_text_turns: turns,
+        };
+        (target_id, target_created_at, request)
+    }
+
+    #[test]
+    fn fork_copy_leaves_source_transcript_unchanged() {
+        let root = tempfile::tempdir().expect("temp root");
+        let session_dir = root.path().join("nomi-sessions");
+        let manager = SessionManager::new(session_dir.clone(), 100);
+        let source_id = ConversationId::new().into_string();
+        let owner = chrono::Utc::now().timestamp_millis() - 1_000;
+        let mut session = manager
+            .create("openai", "model", "/source", Some(&source_id))
+            .expect("create source");
+        add_context(&manager, &mut session, "FULL_CONTEXT", owner);
+        session.messages[0].provider_round_id = Some("round-1".to_owned());
+        session.editable_turn = Some(EditableTurnCheckpoint {
+            source_message_id: "old-user".to_owned(),
+            start_len: 0,
+        });
+        manager.save(&session).expect("save source checkpoint");
+        manager
+            .update_index_for(&session)
+            .expect("index source checkpoint");
+
+        let source_path = transcript_path(&session_dir, &source_id);
+        let before = std::fs::read(&source_path).expect("snapshot source");
+        let (target_id, target_created_at, request) = fork_base(
+            &source_id,
+            owner,
+            NomiSessionForkMode::CopyTranscript,
+            Vec::new(),
+            vec![("old-user".to_owned(), "new-user".to_owned())],
+        );
+
+        let outcome = NomiSessionPersistence::new(session_dir.clone())
+            .fork_owned_session(&request)
+            .expect("copy fork");
+        assert_eq!(outcome, NomiSessionForkOutcome::CopiedTranscript);
+        assert_eq!(std::fs::read(&source_path).expect("source after"), before);
+
+        let source = manager.load(&source_id).expect("source still loads");
+        assert_eq!(
+            source.editable_turn.as_ref().map(|turn| turn.source_message_id.as_str()),
+            Some("old-user")
+        );
+        assert_eq!(
+            source.messages[0].provider_round_id.as_deref(),
+            Some("round-1")
+        );
+
+        let forked = manager.load(&target_id).expect("forked session loads");
+        assert_eq!(forked.owner_token.as_deref(), Some(target_created_at.to_string().as_str()));
+        assert_eq!(forked.cwd, "/forked");
+        assert!(forked.messages[0].provider_round_id.is_none());
+        assert_eq!(
+            forked.editable_turn.as_ref().map(|turn| turn.source_message_id.as_str()),
+            Some("new-user")
+        );
+        let blob = serde_json::to_string(&forked).expect("serialize fork");
+        assert!(blob.contains("FULL_CONTEXT"));
+    }
+
+    #[test]
+    fn fork_plain_text_omits_text_after_the_cut() {
+        let root = tempfile::tempdir().expect("temp root");
+        let session_dir = root.path().join("nomi-sessions");
+        let manager = SessionManager::new(session_dir.clone(), 100);
+        let source_id = ConversationId::new().into_string();
+        let owner = chrono::Utc::now().timestamp_millis() - 1_000;
+        let mut session = manager
+            .create("openai", "model", "/source", Some(&source_id))
+            .expect("create source");
+        add_context(&manager, &mut session, "KEEP_PREFIX", owner);
+        session.messages.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: "DROP_SUFFIX".to_owned(),
+            }],
+        ));
+        manager.save(&session).expect("save source with suffix");
+        manager.update_index_for(&session).expect("index source");
+
+        let source_path = transcript_path(&session_dir, &source_id);
+        let before = std::fs::read(&source_path).expect("snapshot source");
+        let (target_id, _, request) = fork_base(
+            &source_id,
+            owner,
+            NomiSessionForkMode::PlainText,
+            vec![NomiPlainTextTurn {
+                is_user: true,
+                text: "KEEP_PREFIX".to_owned(),
+            }],
+            Vec::new(),
+        );
+
+        let outcome = NomiSessionPersistence::new(session_dir)
+            .fork_owned_session(&request)
+            .expect("plain-text fork");
+        assert_eq!(outcome, NomiSessionForkOutcome::SeededPlainText);
+        assert_eq!(std::fs::read(&source_path).expect("source after"), before);
+
+        let forked = manager.load(&target_id).expect("forked session loads");
+        let blob = serde_json::to_string(&forked).expect("serialize fork");
+        assert!(blob.contains("KEEP_PREFIX"));
+        assert!(!blob.contains("DROP_SUFFIX"));
+        assert!(forked.editable_turn.is_none());
     }
 }

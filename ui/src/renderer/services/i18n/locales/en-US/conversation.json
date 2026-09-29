@@ -855,6 +855,12 @@
     "archived": "archived",
     "sidebarBadge": "Companion summoned (skills + selected memories, read-only)"
   },
+  "forkChat": {
+    "action": "Fork chat",
+    "pending": "Forking…",
+    "success": "Forked into a new chat",
+    "failed": "Couldn't fork this chat. Please try again."
+  },
   "editMessage": {
     "action": "Edit",
     "banner": "Editing message — sending will re-run from here",

@@ -20,7 +20,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::nomi_session_persistence::{
-    NomiSessionPersistence, NomiSessionResetOutcome, NomiSessionRewindOutcome,
+    NomiSessionForkOutcome, NomiSessionForkRequest, NomiSessionPersistence, NomiSessionResetOutcome,
+    NomiSessionRewindOutcome,
 };
 use crate::runtime_handle::AgentRuntimeHandle;
 use crate::types::AgentRuntimeBuildOptions;
@@ -191,6 +192,21 @@ pub trait AgentRuntimeRegistry: Send + Sync {
         >,
     > {
         let conversation_id = conversation_id.to_owned();
+        Box::pin(async move {
+            Err(AppError::Internal(format!(
+                "Agent runtime registry has no Nomi session persistence configured for conversation {conversation_id}"
+            )))
+        })
+    }
+
+    /// Write the forked conversation's Nomi transcript. The source file is not modified.
+    fn fork_persisted_nomi_session(
+        &self,
+        request: NomiSessionForkRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<NomiSessionForkOutcome, AppError>> + Send>,
+    > {
+        let conversation_id = request.source_conversation_id.clone();
         Box::pin(async move {
             Err(AppError::Internal(format!(
                 "Agent runtime registry has no Nomi session persistence configured for conversation {conversation_id}"
@@ -1440,6 +1456,42 @@ impl AgentRuntimeRegistry for InMemoryAgentRuntimeRegistry {
                     "Nomi session rewind worker failed for conversation {conversation_id}: {error}"
                 ))
             })?
+        })
+    }
+
+    fn fork_persisted_nomi_session(
+        &self,
+        request: NomiSessionForkRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<NomiSessionForkOutcome, AppError>> + Send>,
+    > {
+        let registry = self.clone();
+        let conversation_id = request.source_conversation_id.clone();
+        Box::pin(async move {
+            let persistence = registry
+                .nomi_session_persistence
+                .clone()
+                .ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "Nomi session persistence is not configured for conversation {conversation_id}"
+                    ))
+                })?;
+
+            let lifecycle_gate = registry.lifecycle_gate(&conversation_id);
+            let _lifecycle = lifecycle_gate.lock().await;
+            if registry.has_registered_runtime(&conversation_id) {
+                return Err(AppError::Conflict(format!(
+                    "Agent runtime for conversation {conversation_id} is still registered; refusing persisted Nomi session fork"
+                )));
+            }
+
+            tokio::task::spawn_blocking(move || persistence.fork_owned_session(&request))
+                .await
+                .map_err(|error| {
+                    AppError::Internal(format!(
+                        "Nomi session fork worker failed for conversation {conversation_id}: {error}"
+                    ))
+                })?
         })
     }
 
