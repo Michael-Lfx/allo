@@ -613,6 +613,31 @@ mod tests {
     }
 
     #[test]
+    fn default_config_folds_shell_session_and_browser_results() {
+        let names = ["exec_command", "write_stdin", "Browser", "Read"];
+        let mut msgs = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            let id = format!("t{i}");
+            msgs.push(assistant_msg(vec![tool_use_block(&id, name)]));
+            msgs.push(user_msg(vec![tool_result_block(&id, &format!("{name}-output"))]));
+        }
+        let config = CompactConfig {
+            micro_keep_recent: 1,
+            ..default_config()
+        };
+
+        let result = microcompact(&mut msgs, &config);
+
+        assert_eq!(result.cleared_count, 3);
+        for idx in [1, 3, 5] {
+            match &msgs[idx].content[0] {
+                ContentBlock::ToolResult { content, .. } => assert_eq!(content, CLEARED_TOOL_RESULT),
+                _ => panic!("expected ToolResult"),
+            }
+        }
+    }
+
+    #[test]
     fn does_not_recleared_already_cleared() {
         let mut msgs = vec![
             assistant_msg(vec![tool_use_block("t1", "Read")]),

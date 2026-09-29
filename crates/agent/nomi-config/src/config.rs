@@ -1719,7 +1719,7 @@ allow_list = ["Read", "Grep", "Glob"]
 # max_failures = 3               # consecutive failures before circuit-breaker trips
 # micro_keep_recent = 5          # keep N most recent tool results
 # micro_gap_seconds = 3600       # gap threshold for time-based microcompact
-# compactable_tools = ["Read", "Bash", "Grep", "Glob", "Write", "Edit"]
+# compactable_tools = ["Read", "Bash", "Grep", "Glob", "Write", "Edit", "exec_command", "write_stdin", "DirTree", "Browser", "Computer", "web_search", "web_extract"]
 # enabled = true
 
 # File state cache (dedup repeated reads, staleness detection)

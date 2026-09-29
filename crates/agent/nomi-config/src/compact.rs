@@ -199,6 +199,13 @@ fn default_compactable_tools() -> Vec<String> {
         "Glob".into(),
         "Write".into(),
         "Edit".into(),
+        "exec_command".into(),
+        "write_stdin".into(),
+        "DirTree".into(),
+        "Browser".into(),
+        "Computer".into(),
+        "web_search".into(),
+        "web_extract".into(),
     ]
 }
 fn default_true() -> bool {
@@ -305,7 +312,21 @@ mod tests {
         assert_eq!(cfg.idle_autocompact_pct, 25);
         assert_eq!(
             cfg.compactable_tools,
-            vec!["Read", "Bash", "Grep", "Glob", "Write", "Edit"]
+            vec![
+                "Read",
+                "Bash",
+                "Grep",
+                "Glob",
+                "Write",
+                "Edit",
+                "exec_command",
+                "write_stdin",
+                "DirTree",
+                "Browser",
+                "Computer",
+                "web_search",
+                "web_extract",
+            ]
         );
     }
 
