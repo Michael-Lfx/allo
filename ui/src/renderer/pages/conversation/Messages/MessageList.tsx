@@ -10,6 +10,8 @@ import type {
 } from '@/common/chat/chatLib';
 import { getMessageBusinessIdentity, isVisibleUserTextMessage } from '@/common/chat/messageVisibility';
 import { normalizeToolMessages } from '@/common/chat/normalizeToolCall';
+import type { ToolPreparingHint } from '@/common/chat/toolPreparing';
+import { addEventListener } from '@/renderer/utils/emitter';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { CHAT_MESSAGE_JUMP_EVENT, type ChatMessageJumpDetail } from '@/renderer/utils/chat/chatMinimapEvents';
 import { CHAT_MESSAGE_ROW_METRICS_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
@@ -886,6 +888,19 @@ const MessageList: React.FC<{
     [conversationContext?.workspace]
   );
   const { t } = useTranslation();
+  const [toolPreparing, setToolPreparing] = useState<ToolPreparingHint | null>(null);
+  const activeConversationId = conversationContext?.conversation_id;
+  useEffect(() => {
+    setToolPreparing(null);
+    if (!activeConversationId) return undefined;
+    return addEventListener('nomi.tool.preparing', ({ conversation_id, hint }) => {
+      if (conversation_id === activeConversationId) setToolPreparing(hint);
+    });
+  }, [activeConversationId]);
+  const isProcessing = conversationContext?.isProcessing === true;
+  useEffect(() => {
+    if (!isProcessing) setToolPreparing(null);
+  }, [isProcessing]);
   const location = useLocation();
   const locationState = (location.state || {}) as ConversationLocationState;
   const targetMessageId = locationState.targetMessageId;
@@ -1153,11 +1168,22 @@ const MessageList: React.FC<{
 
       let label: string;
       let icon: TurnProcessReceiptIcon;
-      if (plan.kind === 'item') {
-        const processItem = tailDisclosure.processItems.find(
-          (candidate) => getProcessedItemAnchorId(candidate) === plan.itemId
-        );
-        if (processItem && 'type' in processItem && processItem.type === 'thinking') {
+      const planItem =
+        plan.kind === 'item'
+          ? tailDisclosure.processItems.find((candidate) => getProcessedItemAnchorId(candidate) === plan.itemId)
+          : undefined;
+      const planItemIsThinking = !!planItem && 'type' in planItem && planItem.type === 'thinking';
+      if (toolPreparing && plan.state === 'running' && (plan.kind !== 'item' || planItemIsThinking)) {
+        const target = toolPreparing.target;
+        const targetLabel =
+          target?.kind === 'path' ? formatFileTargetPreview([target.value], { workspaceRoots }) : target?.value;
+        label = targetLabel
+          ? t('messages.turnLiveStep.preparingToolTarget', { tool: toolPreparing.tool, target: targetLabel })
+          : t('messages.turnLiveStep.preparingTool', { tool: toolPreparing.tool });
+        icon = 'status';
+      } else if (plan.kind === 'item') {
+        const processItem = planItem;
+        if (planItemIsThinking) {
           label = t('messages.processReceipt.thinkingRunning', { defaultValue: 'Thinking' });
           icon = 'thinking';
         } else if (processItem) {
@@ -1320,6 +1346,7 @@ const MessageList: React.FC<{
     conversationContext?.stopNotice,
     processedList,
     t,
+    toolPreparing,
     workspaceRoots,
     hasMoreOlder,
     isMessageListLoading,

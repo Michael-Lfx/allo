@@ -18,7 +18,7 @@ use crate::protocol::events::{
     AgentStatusEventData, AgentStreamEvent, ContextBreakdownData, ErrorEventData, FinishEventData,
     MoaProgressEventData, MoaReferenceEventData, OutputDiscardedEventData, PlanEventData,
     StartEventData, TextEventData, ThinkingEventData, TipType, TipsEventData, ToolCallEventData,
-    ToolCallRetryData, ToolCallStatus, TurnCompletedEventData,
+    ToolCallRetryData, ToolCallStatus, ToolPreparingEventData, TurnCompletedEventData,
 };
 
 pub struct BackendOutputSink {
@@ -1364,6 +1364,22 @@ impl OutputSink for BackendOutputSink {
             }));
     }
 
+    fn emit_tool_preparing(
+        &self,
+        _msg_id: &str,
+        tool_use_id: &str,
+        name: &str,
+        preview: Option<&serde_json::Value>,
+    ) {
+        let _ = self
+            .event_tx
+            .send(AgentStreamEvent::ToolPreparing(ToolPreparingEventData {
+                call_id: tool_use_id.to_owned(),
+                name: name.to_owned(),
+                preview: preview.cloned(),
+            }));
+    }
+
     fn emit_tool_call(&self, tool_use_id: &str, name: &str, input: &str) {
         self.emit_tool_call_with_artifact_identity(tool_use_id, name, name, input);
     }
@@ -2308,6 +2324,22 @@ mod tests {
             }
             other => panic!("Expected AgentStatus, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn emit_tool_preparing_sends_transient_hint_not_a_tool_call() {
+        let (sink, mut rx) = make_sink();
+        let preview = serde_json::json!({ "file_path": "src/main.rs" });
+        sink.emit_tool_preparing("msg-1", "call-write", "Write", Some(&preview));
+        match rx.try_recv().unwrap() {
+            AgentStreamEvent::ToolPreparing(data) => {
+                assert_eq!(data.call_id, "call-write");
+                assert_eq!(data.name, "Write");
+                assert_eq!(data.preview, Some(preview));
+            }
+            other => panic!("Expected ToolPreparing, got {:?}", other),
+        }
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

@@ -91,5 +91,18 @@ describe('turn live step strip', () => {
     expect((zhMessages.turnLiveStep as Record<string, string>).composing).toBe('正在整理回复');
     expect((enMessages.turnLiveStep as Record<string, string>).analyzing).toBeTruthy();
     expect((enMessages.turnLiveStep as Record<string, string>).composing).toBeTruthy();
+    for (const key of ['preparingTool', 'preparingToolTarget']) {
+      const zh = (zhMessages.turnLiveStep as Record<string, string>)[key];
+      const en = (enMessages.turnLiveStep as Record<string, string>)[key];
+      expect(zh?.includes('{{tool}}')).toBe(true);
+      expect(en?.includes('{{tool}}')).toBe(true);
+    }
+    expect((zhMessages.turnLiveStep as Record<string, string>).preparingToolTarget.includes('{{target}}')).toBe(true);
+    expect((enMessages.turnLiveStep as Record<string, string>).preparingToolTarget.includes('{{target}}')).toBe(true);
+  });
+
+  test('uncommitted tool progress only relabels the live step and never adds a row', () => {
+    expect(messageListSource.includes("addEventListener('nomi.tool.preparing'")).toBe(true);
+    expect(messageListSource.includes("t('messages.turnLiveStep.preparingToolTarget'")).toBe(true);
   });
 });

@@ -3565,6 +3565,11 @@ impl StreamRelay {
                             // conversation runtime token total.
                             self.forward_to_websocket(&event);
                         }
+                        AgentStreamEvent::ToolPreparing(_) => {
+                            // Uncommitted tool progress: forward only. No
+                            // durable correlation, row, or tool card.
+                            self.forward_to_websocket(&event);
+                        }
                         _ => {
                             // Never the shared turn id. That id is also this
                             // turn's first thinking segment, and clients key
@@ -3788,6 +3793,7 @@ impl StreamRelay {
             AgentStreamEvent::UsageUpdated(_) => "UsageUpdated",
             AgentStreamEvent::MoaReference(_) => "MoaReference",
             AgentStreamEvent::MoaProgress(_) => "MoaProgress",
+            AgentStreamEvent::ToolPreparing(_) => "ToolPreparing",
             AgentStreamEvent::Finish(_) => "Finish",
             AgentStreamEvent::Error(_) => "Error",
             AgentStreamEvent::System(_) => "System",
@@ -8953,6 +8959,47 @@ mod tests {
         let _ = relay.consume(rx).await;
 
         assert_eq!(runtime_state.take_turn_tokens(&conversation_id), None);
+    }
+
+    #[tokio::test]
+    async fn tool_preparing_is_forwarded_but_never_persisted() {
+        use nomifun_ai_agent::protocol::events::ToolPreparingEventData;
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+        let rx = tx.subscribe();
+        let mut ws = bus.subscribe();
+
+        tx.send(AgentStreamEvent::ToolPreparing(ToolPreparingEventData {
+            call_id: "call-write".into(),
+            name: "Write".into(),
+            preview: Some(json!({ "file_path": "src/main.rs" })),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+        let _ = relay.consume(rx).await;
+
+        let inserts = repo.take_inserts();
+        assert!(
+            inserts.iter().all(|row| !row.content.contains("call-write")),
+            "tool preparing must not be persisted: {inserts:?}"
+        );
+        let mut forwarded = false;
+        while let Ok(event) = ws.try_recv() {
+            forwarded |= event.name == "message.stream"
+                && event.data["type"] == "tool_preparing"
+                && event.data["data"]["preview"]["file_path"] == "src/main.rs";
+        }
+        assert!(forwarded, "tool preparing must reach the websocket");
     }
 
     #[tokio::test]

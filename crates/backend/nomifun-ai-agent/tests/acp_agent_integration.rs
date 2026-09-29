@@ -211,6 +211,7 @@ fn event_type_name(event: &AgentStreamEvent) -> &'static str {
         AgentStreamEvent::UsageUpdated(_) => "UsageUpdated",
         AgentStreamEvent::MoaReference(_) => "MoaReference",
         AgentStreamEvent::MoaProgress(_) => "MoaProgress",
+        AgentStreamEvent::ToolPreparing(_) => "ToolPreparing",
         AgentStreamEvent::Finish(_) => "Finish",
         AgentStreamEvent::Error(_) => "Error",
         AgentStreamEvent::System(_) => "System",

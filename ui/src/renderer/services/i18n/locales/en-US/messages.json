@@ -70,7 +70,9 @@
   },
   "turnLiveStep": {
     "analyzing": "Analyzing the request",
-    "composing": "Composing the reply"
+    "composing": "Composing the reply",
+    "preparingTool": "Preparing {{tool}} call",
+    "preparingToolTarget": "Preparing {{tool}} call: {{target}}"
   },
   "knowledgeWriteback": {
     "started": "Preparing knowledge write-back",

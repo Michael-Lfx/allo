@@ -8,6 +8,7 @@ import type { FileOrFolderItem } from '@/renderer/utils/file/fileTypes';
 import type { PreviewContentType } from '@/common/types/office/preview';
 import type { TokenUsageData, TurnCreditUsageData } from '@/common/config/storage';
 import type { GoalStatusResponse } from '@/common/adapter/ipcBridge';
+import type { ToolPreparingHint } from '@/common/chat/toolPreparing';
 
 export type ReplyQuote = {
   /** Durable message identity used only as quote metadata. */
@@ -22,6 +23,8 @@ interface EventTypes {
   'nomi.selected.file.clear': void;
   'nomi.workspace.refresh': void;
   'nomi.usage.updated': [{ conversation_id: ConversationId; tokenUsage: TokenUsageData }];
+  // Transient: `hint` is null once the call commits, the turn ends, or it fails.
+  'nomi.tool.preparing': [{ conversation_id: ConversationId; hint: ToolPreparingHint | null }];
   'nomi.turn_credits.updated': [
     { conversation_id: ConversationId; turn_id: MessageId; usage: TurnCreditUsageData }
   ];

@@ -70,7 +70,9 @@
   },
   "turnLiveStep": {
     "analyzing": "正在分析需求",
-    "composing": "正在整理回复"
+    "composing": "正在整理回复",
+    "preparingTool": "正在生成 {{tool}} 调用",
+    "preparingToolTarget": "正在生成 {{tool}} 调用：{{target}}"
   },
   "knowledgeWriteback": {
     "started": "正在准备回写知识库",
