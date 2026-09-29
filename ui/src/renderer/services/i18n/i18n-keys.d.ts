@@ -4028,6 +4028,8 @@ export type I18nKey =
   | 'messages.turnDeliverables.viewDiff'
   | 'messages.turnLiveStep.analyzing'
   | 'messages.turnLiveStep.composing'
+  | 'messages.turnLiveStep.preparingTool'
+  | 'messages.turnLiveStep.preparingToolTarget'
   | 'messages.turnProcess.collapseAllThinkingProcess'
   | 'messages.turnProcess.expandAllThinkingProcess'
   | 'messages.turnProcessed'

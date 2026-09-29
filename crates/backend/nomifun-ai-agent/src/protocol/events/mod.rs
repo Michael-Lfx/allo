@@ -75,6 +75,9 @@ pub enum AgentStreamEvent {
     /// MoA fan-out progress (`done` of `total` reference calls finished).
     /// Purely additive: consumers that don't recognise it ignore it.
     MoaProgress(MoaProgressEventData),
+    /// A tool call whose arguments the model is still streaming. Transient
+    /// hint only: never persisted, never a tool card, and it may never run.
+    ToolPreparing(ToolPreparingEventData),
     Finish(FinishEventData),
     Error(ErrorEventData),
     System(serde_json::Value),
@@ -318,6 +321,17 @@ pub struct MoaProgressEventData {
     pub total: u32,
 }
 
+/// Data for the `ToolPreparing` event.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "../../../../ui/src/common/protocolBindings/")]
+pub struct ToolPreparingEventData {
+    pub call_id: String,
+    pub name: String,
+    /// Small, already-parsed argument fields such as `file_path` or `command`.
+    #[ts(type = "Record<string, unknown> | null")]
+    pub preview: Option<serde_json::Value>,
+}
+
 /// Cross-backend normalized "why did the turn end" reason. Deliberately NOT the
 /// ACP SDK's `StopReason` so the shared event type does not couple to ACP
 /// (nomi / openclaw / remote are not ACP); each backend maps its own outcome.
@@ -370,6 +384,7 @@ mod tests {
         export_binding_if_changed::<MoaSlotStatsData>("MoaSlotStatsData.ts");
         export_binding_if_changed::<MoaReferenceEventData>("MoaReferenceEventData.ts");
         export_binding_if_changed::<MoaProgressEventData>("MoaProgressEventData.ts");
+        export_binding_if_changed::<ToolPreparingEventData>("ToolPreparingEventData.ts");
     }
     use agent_client_protocol::schema::{
         ContentBlock as SdkContentBlock, ContentChunk, Diff, ImageContent, PermissionOption,
@@ -2929,6 +2944,14 @@ mod tests {
             (
                 AgentStreamEvent::SessionAssigned(SessionAssignedEventData { session_id: "s".into() }),
                 "session_assigned",
+            ),
+            (
+                AgentStreamEvent::ToolPreparing(ToolPreparingEventData {
+                    call_id: "c".into(),
+                    name: "Write".into(),
+                    preview: None,
+                }),
+                "tool_preparing",
             ),
         ];
         for (event, expected_tag) in cases {

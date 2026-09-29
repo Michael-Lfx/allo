@@ -78,11 +78,20 @@ struct ToolLifecycleRecordingOutput {
     tool_calls: std::sync::atomic::AtomicUsize,
     tool_results: std::sync::atomic::AtomicUsize,
     tool_inputs: Mutex<Vec<Value>>,
+    /// `(tool_use_id, name, Running calls published before this hint)`.
+    preparing: Mutex<Vec<(String, String, usize)>>,
 }
 
 impl OutputSink for ToolLifecycleRecordingOutput {
     fn emit_text_delta(&self, _: &str, _: &str) {}
     fn emit_thinking(&self, _: &str, _: &str) {}
+    fn emit_tool_preparing(&self, _: &str, tool_use_id: &str, name: &str, _: Option<&Value>) {
+        let published = self.tool_calls.load(std::sync::atomic::Ordering::SeqCst);
+        self.preparing
+            .lock()
+            .unwrap()
+            .push((tool_use_id.to_owned(), name.to_owned(), published));
+    }
     fn emit_tool_call(&self, _: &str, _: &str, input: &str) {
         self.tool_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2228,6 +2237,43 @@ async fn unadvertised_tool_delta_is_ignored_without_running_preview() {
         0,
         "an unauthorized preview must never enter the Running preview lifecycle"
     );
+    assert!(
+        output.preparing.lock().unwrap().is_empty(),
+        "an unauthorized preview must not be surfaced as a preparing hint"
+    );
+}
+
+#[tokio::test]
+async fn advertised_tool_delta_surfaces_a_preparing_hint_before_running() {
+    let output = Arc::new(ToolLifecycleRecordingOutput::default());
+    let executed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut engine = make_engine("preparing-hint-model");
+    engine.output = output.clone();
+    engine.tools.register(Box::new(ConstantResultTool {
+        name: "noop",
+        polling: false,
+        category: ToolCategory::Info,
+        calls: Arc::clone(&executed),
+        steer_on_call: None,
+    }));
+    engine.provider = Arc::new(PreviewThenCompleteProvider {
+        turns: std::sync::atomic::AtomicUsize::new(0),
+        preview: ("call-1", "noop"),
+        complete: ("call-1", "noop"),
+    });
+
+    let result = engine
+        .execute_turn("stream the call", "msg-preparing-hint")
+        .await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        *output.preparing.lock().unwrap(),
+        vec![("call-1".to_owned(), "noop".to_owned(), 0)],
+        "the hint precedes the committed Running publication"
+    );
+    assert_eq!(output.tool_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(executed.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -78,6 +78,7 @@ pub fn conversation_routes(state: ConversationRouterState) -> Router {
         )
         .route("/api/conversations/{conversation_id}/steer", post(steer))
         .route("/api/conversations/{conversation_id}/warmup", post(warmup))
+        .route("/api/conversations/{conversation_id}/preconnect", post(preconnect))
         // Confirmation system
         .route(
             "/api/conversations/{conversation_id}/confirmations",
@@ -667,6 +668,18 @@ async fn warmup(
             conversation_id.as_str(),
             &state.runtime_registry,
         )
+        .await?;
+    Ok(Json(ApiResponse::success()))
+}
+
+async fn preconnect(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<ConversationId>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state
+        .service
+        .preconnect(&user.id, conversation_id.as_str(), &state.runtime_registry)
         .await?;
     Ok(Json(ApiResponse::success()))
 }

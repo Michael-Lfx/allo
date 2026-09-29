@@ -7,6 +7,7 @@ import { isToolGroupStatusActive, normalizeToolGroupStatus } from '@/common/chat
 import { extractResponseTextChunk, optionalDisplayText, toDisplayText } from '@/common/chat/displayText';
 import type { IResponseMessage } from '@/common/adapter/ipcBridge';
 import type { MoaProgressEventData } from '@/common/protocolBindings/MoaProgressEventData';
+import { toolPreparingHintFromEvent } from '@/common/chat/toolPreparing';
 import type { TChatConversation, TokenUsageData } from '@/common/config/storage';
 import { uuid } from '@/common/utils';
 import { useAddOrUpdateMessage } from '@/renderer/pages/conversation/Messages/hooks';
@@ -150,6 +151,7 @@ export const useNomiMessage = (
   const [stopNotice, setStopNotice] = useState<{ stoppedAt: number } | null>(null);
   // Current active message ID to filter out events from old requests (prevents aborted request events from interfering with new ones)
   const activeMsgIdRef = useRef<string | null>(null);
+  const toolPreparingShownRef = useRef(false);
   const rootTurnIdRef = useRef<MessageId | null>(null);
   const timingRequestKeyRef = useRef<string | null>(null);
   const presentationRef = useRef(presentation);
@@ -526,6 +528,17 @@ export const useNomiMessage = (
         return;
       }
 
+      if (
+        toolPreparingShownRef.current &&
+        message.type !== 'tool_preparing' &&
+        message.type !== 'usage_updated' &&
+        message.type !== 'turn_completed' &&
+        message.type !== 'config_changed'
+      ) {
+        toolPreparingShownRef.current = false;
+        emitter.emit('nomi.tool.preparing', { conversation_id, hint: null });
+      }
+
       // A fresh idle hydration and an exact active turn_id form the authority
       // boundary for lifecycle state. Late output is still renderable history,
       // but it cannot reopen a completed turn or mutate a newer accepted turn.
@@ -774,6 +787,16 @@ export const useNomiMessage = (
                 defaultValue: 'MoA {{done}}/{{total}}',
               }),
             });
+          }
+          break;
+        case 'tool_preparing':
+          dispatchTurnIfOpen({ type: 'activity' });
+          {
+            const hint = toolPreparingHintFromEvent(message.data);
+            if (hint) {
+              toolPreparingShownRef.current = true;
+              emitter.emit('nomi.tool.preparing', { conversation_id, hint });
+            }
           }
           break;
         case 'config_changed':

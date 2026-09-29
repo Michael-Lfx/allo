@@ -88,6 +88,7 @@ import {
   warmupConversation,
   warmupConversationForPassiveMount,
 } from '@/renderer/pages/conversation/utils/warmupConversation';
+import { preconnectConversation } from '@/renderer/pages/conversation/utils/preconnectConversation';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { allSupportedExts, type FileMetadata } from '@/renderer/services/FileService';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
@@ -421,8 +422,9 @@ const NomiSendBox: React.FC<{
   const handleContentChange = useCallback(
     (val: string) => {
       setContent(val);
+      if (conversation_id && val.trim()) preconnectConversation(conversation_id);
     },
-    [setContent]
+    [conversation_id, setContent]
   );
 
   const [agentWarmed, setAgentWarmed] = useState(false);

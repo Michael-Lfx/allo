@@ -788,9 +788,11 @@ impl ChannelMessageService {
             | AgentStreamEvent::RequestTrace(_)
             | AgentStreamEvent::SlashCommandsUpdated(_)
             | AgentStreamEvent::SessionAssigned(_) => None,
-            // MoA reference/progress events are UI-only auxiliary stream data;
-            // they never surface as channel messages.
-            AgentStreamEvent::MoaReference(_) | AgentStreamEvent::MoaProgress(_) => None,
+            // MoA reference/progress and tool-preparing hints are UI-only
+            // auxiliary stream data; they never surface as channel messages.
+            AgentStreamEvent::MoaReference(_)
+            | AgentStreamEvent::MoaProgress(_)
+            | AgentStreamEvent::ToolPreparing(_) => None,
         }
     }
 

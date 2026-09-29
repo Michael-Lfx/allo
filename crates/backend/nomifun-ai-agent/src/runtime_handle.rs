@@ -513,6 +513,17 @@ impl AgentRuntimeHandle {
         }
     }
 
+    /// Best-effort provider connection warmup before a likely send. Only the
+    /// Nomi native engine talks to the model over this process' HTTP pool.
+    pub fn preconnect(&self) {
+        match self {
+            Self::Nomi(m) => m.preconnect(),
+            Self::Acp(_) | Self::OpenClaw(_) | Self::Nanobot(_) | Self::Remote(_) => {}
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Mock(_) => {}
+        }
+    }
+
     /// Execute a `/goal` action (set / pause / resume / clear / status) on the
     /// running agent. Only the Nomi native engine hosts a goal runtime; every
     /// other variant is an external process without one, so they return a

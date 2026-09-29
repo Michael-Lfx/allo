@@ -1020,6 +1020,17 @@ pub trait OutputSink: Send + Sync {
     /// Surface non-terminal model activity when the provider stream is still
     /// alive but has not produced a new visible event for a short period.
     fn emit_model_activity(&self, _msg_id: &str, _status: &str) {}
+    /// Surface a tool call whose arguments the provider is still streaming.
+    /// Uncommitted and possibly never executed: sinks must treat it as a
+    /// transient hint, never as a tool lifecycle or persisted history.
+    fn emit_tool_preparing(
+        &self,
+        _msg_id: &str,
+        _tool_use_id: &str,
+        _name: &str,
+        _preview: Option<&serde_json::Value>,
+    ) {
+    }
     /// Display tool result.
     fn emit_tool_result(&self, tool_use_id: &str, name: &str, is_error: bool, content: &str);
     /// Deliver inline artifact blocks attached to a tool result. The legacy

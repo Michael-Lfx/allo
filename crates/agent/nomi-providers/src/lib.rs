@@ -13,9 +13,10 @@ pub use billing_turn::{
     with_flowy_billing_turn_id, with_optional_flowy_billing_turn_id,
 };
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;
@@ -693,6 +694,48 @@ pub fn create_provider(config: &Config) -> Arc<dyn LlmProvider> {
     }
 }
 
+const PRECONNECT_MIN_INTERVAL: Duration = Duration::from_secs(30);
+const PRECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn preconnect_target(provider: ProviderType, base_url: &str) -> Option<reqwest::Url> {
+    match provider {
+        ProviderType::Anthropic | ProviderType::OpenAI | ProviderType::OpenAIResponses => {}
+        ProviderType::Bedrock | ProviderType::Vertex => return None,
+    }
+    let url = reqwest::Url::parse(base_url.trim()).ok()?;
+    matches!(url.scheme(), "http" | "https").then_some(url)
+}
+
+fn claim_preconnect_slot(origin: &str, now: Instant) -> bool {
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let mut last = LAST
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match last.get(origin) {
+        Some(at) if now.saturating_duration_since(*at) < PRECONNECT_MIN_INTERVAL => false,
+        _ => {
+            last.insert(origin.to_owned(), now);
+            true
+        }
+    }
+}
+
+/// Open (or refresh) a pooled connection to the provider origin so the next
+/// model request skips the TLS handshake. Best-effort: the response status is
+/// irrelevant and failures are ignored.
+pub async fn preconnect(provider: ProviderType, base_url: &str) {
+    let Some(url) = preconnect_target(provider, base_url) else {
+        return;
+    };
+    if !claim_preconnect_slot(&url.origin().ascii_serialization(), Instant::now()) {
+        return;
+    }
+    if let Err(error) = http_client().head(url).timeout(PRECONNECT_TIMEOUT).send().await {
+        tracing::debug!(%error, "provider preconnect failed");
+    }
+}
+
 #[cfg(test)]
 mod retryable_tests {
     use std::time::Duration;
@@ -1137,5 +1180,97 @@ mod retryable_tests {
         let missing_id = parse_tool_call_arguments("test", "update", "", "{}")
             .expect_err("a call without an id must fail");
         assert!(missing_id.contains("without a call id"));
+    }
+}
+
+#[cfg(test)]
+mod preconnect_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use nomi_config::config::ProviderType;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::{PRECONNECT_MIN_INTERVAL, claim_preconnect_slot, http_client, preconnect, preconnect_target};
+
+    async fn keep_alive_server() -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let (conns, reqs) = (connections.clone(), requests.clone());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                conns.fetch_add(1, Ordering::SeqCst);
+                let reqs = reqs.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        let Ok(n) = socket.read(&mut chunk).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        while let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            buf.drain(..end + 4);
+                            reqs.fetch_add(1, Ordering::SeqCst);
+                            let reply = b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n";
+                            if socket.write_all(reply).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        (base, connections, requests)
+    }
+
+    #[test]
+    fn only_http_origins_of_url_based_protocols_are_preconnected() {
+        assert!(preconnect_target(ProviderType::OpenAI, " https://gw.example/claw ").is_some());
+        assert!(preconnect_target(ProviderType::Anthropic, "http://127.0.0.1:8080").is_some());
+        assert!(preconnect_target(ProviderType::OpenAIResponses, "https://api.openai.com").is_some());
+        assert!(preconnect_target(ProviderType::OpenAI, "").is_none());
+        assert!(preconnect_target(ProviderType::OpenAI, "file:///etc/passwd").is_none());
+        assert!(preconnect_target(ProviderType::Bedrock, "https://bedrock.example").is_none());
+        assert!(preconnect_target(ProviderType::Vertex, "https://vertex.example").is_none());
+    }
+
+    #[test]
+    fn preconnect_is_throttled_per_origin() {
+        let now = Instant::now();
+        let origin = "https://throttle-test.example";
+        assert!(claim_preconnect_slot(origin, now));
+        assert!(!claim_preconnect_slot(origin, now + Duration::from_secs(1)));
+        assert!(claim_preconnect_slot("https://other-throttle-test.example", now));
+        assert!(claim_preconnect_slot(origin, now + PRECONNECT_MIN_INTERVAL));
+    }
+
+    #[tokio::test]
+    async fn preconnected_socket_is_reused_by_the_next_request() {
+        let (base, connections, requests) = keep_alive_server().await;
+
+        preconnect(ProviderType::OpenAI, &base).await;
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+        preconnect(ProviderType::OpenAI, &base).await;
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "a second preconnect within the interval is skipped");
+
+        http_client()
+            .post(format!("{base}/chat/completions"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "the model request must ride the preconnected socket instead of a new handshake"
+        );
     }
 }

@@ -3113,6 +3113,16 @@ impl NomiAgentManager {
     /// never delayed, applies through the shared runtime handle (picked up at
     /// the next natural-termination point), and merely logs on any failure —
     /// the goal keeps running without a contract.
+    /// Warm the provider connection ahead of the user's next send. Uses the
+    /// resolved config snapshot, so it never waits on the engine mutex.
+    pub fn preconnect(&self) {
+        let provider = self.distill_cfg.provider;
+        let base_url = self.distill_cfg.base_url.clone();
+        tokio::spawn(async move {
+            nomi_providers::preconnect(provider, &base_url).await;
+        });
+    }
+
     pub(crate) fn spawn_goal_contract_autodraft(&self) {
         use nomi_agent::goal::state::GoalStatus;
         let Some(rt) = self.goal_runtime_handle() else {

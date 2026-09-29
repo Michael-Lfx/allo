@@ -2329,11 +2329,12 @@ impl AgentEngine {
                             extra,
                         });
                     }
-                    LlmEvent::ToolUseDelta { id, name, input: _ } => {
+                    LlmEvent::ToolUseDelta { id, name, input } => {
                         // Tool progress is uncommitted provider data. Validate
-                        // and reconcile its identity, but never publish a
-                        // Running lifecycle until a complete ToolUse passes its
-                        // full schema at the commit boundary.
+                        // and reconcile its identity and surface it only as a
+                        // transient hint; never publish a Running lifecycle
+                        // until a complete ToolUse passes its full schema at
+                        // the commit boundary.
                         if self
                             .coding_harness
                             .as_ref()
@@ -2404,6 +2405,12 @@ impl AgentEngine {
                             }
                             previewed_tool_calls.insert(id.clone(), name.clone());
                         }
+                        self.output.emit_tool_preparing(
+                            &self.current_msg_id,
+                            &id,
+                            &name,
+                            input.as_ref(),
+                        );
                     }
                     LlmEvent::ThinkingDelta(text) => {
                         self.output.emit_thinking(&text, &self.current_msg_id);
