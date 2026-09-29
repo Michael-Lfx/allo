@@ -95,7 +95,10 @@ fn tool_turn(id: &str, input_tokens: u64) -> Vec<LlmEvent> {
         LlmEvent::ToolUse {
             id: id.to_string(),
             name: "mock_tool".to_string(),
-            input: serde_json::json!({"id": id}),
+            // A real tool call carries a payload (a file body, a patch). Keep
+            // it representative: microcompact never clears a tool_use block, so
+            // this is what the foldable region actually has to pay for.
+            input: serde_json::json!({ "id": id, "payload": "p".repeat(2_000) }),
             extra: None,
         },
         LlmEvent::Done {
@@ -214,7 +217,10 @@ async fn resumed_turn_compacts_before_provider_when_occupancy_exceeds_new_thresh
         config,
         ToolRegistry::new(),
         silent_output(),
-        bulky_resumed_session(20, 1_700),
+        // Snip now keeps short plain turns, so the post-snip estimate is larger.
+        // 2100 chars keeps the refreshed occupancy above the 16k threshold and
+        // under the 19k emergency limit.
+        bulky_resumed_session(20, 2_100),
         std::env::temp_dir(),
     );
     let result = engine
@@ -634,9 +640,11 @@ async fn tc_2_6_02_micro_before_auto_execution_order() {
             //
             // micro_keep_recent = 3 → count threshold = 6.
             // After 7 tool-use turns: 7 > 6 → micro fires.
-            // After turn 6: last_input_tokens = 170k > 120k (60% of 200k) → auto fires.
+            // After turn 6: last_input_tokens = 185k clears the 90% force mark
+            // (180k of 200k), so the fold does not depend on the foldable
+            // region's size — this test is about the wiring, not economics.
             let events = if count < 7 {
-                let input_tokens = if count == 6 { 170_000 } else { 10_000 };
+                let input_tokens = if count == 6 { 185_000 } else { 10_000 };
                 vec![
                     LlmEvent::ToolUse {
                         id: format!("t{count}"),
@@ -721,7 +729,7 @@ async fn tc_2_6_02_micro_before_auto_execution_order() {
             matches!(
                 b,
                 nomi_types::message::ContentBlock::ToolResult { content, .. }
-                    if content == nomi_agent::compact::micro::CLEARED_TOOL_RESULT
+                    if content.starts_with(nomi_agent::compact::micro::CLEARED_TOOL_RESULT)
             )
         })
         .count();
@@ -792,9 +800,11 @@ async fn tc_2_6_e2e_02_micro_and_auto_cooperative() {
             // 7 tool-use turns (count 0-6).  Turn 6 returns high tokens.
             // micro_keep_recent = 3 → count threshold = 6.
             // After 7 tool results: 7 > 6 → micro fires.
-            // After turn 6: last_input_tokens = 170k > 120k (60% of 200k) → auto fires.
+            // After turn 6: last_input_tokens = 185k clears the 90% force mark
+            // (180k of 200k), so the fold does not depend on the foldable
+            // region's size — this test is about the wiring, not economics.
             let events = if count < 7 {
-                let input_tokens = if count == 6 { 170_000 } else { 10_000 };
+                let input_tokens = if count == 6 { 185_000 } else { 10_000 };
                 vec![
                     LlmEvent::ToolUse {
                         id: format!("t{count}"),
@@ -929,7 +939,7 @@ async fn tc_2_6_e2e_03_circuit_breaker_stops_retries() {
                     LlmEvent::Done {
                         stop_reason: StopReason::ToolUse,
                         usage: TokenUsage {
-                            input_tokens: 170_000, // above autocompact threshold
+                            input_tokens: 185_000, // above the 90% force mark
                             output_tokens: 100,
                             ..Default::default()
                         },
@@ -1030,14 +1040,14 @@ async fn tool_loop_does_not_autocompact_below_emergency() {
                     LlmEvent::Done {
                         stop_reason: StopReason::ToolUse,
                         usage: TokenUsage {
-                            input_tokens: 170_000,
+                            input_tokens: 185_000, // above the 90% force mark
                             output_tokens: 50,
                             ..Default::default()
                         },
                     },
                 ]
             } else {
-                text_turn("done", 170_000)
+                text_turn("done", 185_000)
             };
             let (tx, rx) = mpsc::channel(64);
             tokio::spawn(async move {

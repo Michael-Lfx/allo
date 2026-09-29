@@ -190,6 +190,79 @@ fn ensure_message_alternation(messages: &mut Vec<Value>) {
     }
 }
 
+/// Place up to two ephemeral `cache_control` breakpoints on the message list.
+///
+/// Anthropic allows four breakpoints. System and the last tool already use
+/// two, so messages get the remaining pair: the penultimate user-turn
+/// boundary (a stable read point) and the last user message (the write point
+/// for the next request). A user message that is only tool results is the
+/// tail of the current turn, not a turn boundary.
+pub fn apply_message_cache_breakpoints(messages: &mut [Value]) {
+    if messages.is_empty() {
+        return;
+    }
+
+    let boundaries = user_turn_boundaries(messages);
+    let last_user = messages.iter().rposition(|message| message["role"] == "user");
+    // Two or more turns: the penultimate boundary is the stable read point.
+    // A single turn whose tail is tool results has no penultimate boundary,
+    // so the only turn boundary plays that role. A lone user message is just
+    // the write point below.
+    let earlier = if boundaries.len() >= 2 {
+        Some(boundaries[boundaries.len() - 2])
+    } else {
+        boundaries.last().copied()
+    };
+
+    let mut marked = Vec::new();
+    if let Some(index) = earlier
+        && last_user.is_some_and(|last| last != index)
+    {
+        marked.push(index);
+    }
+    if let Some(index) = last_user
+        && !marked.contains(&index)
+    {
+        marked.push(index);
+    }
+    for index in marked {
+        mark_message_cache_breakpoint(&mut messages[index]);
+    }
+}
+
+fn user_turn_boundaries(messages: &[Value]) -> Vec<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| {
+            if message["role"] != "user" || is_tool_result_only(message) {
+                None
+            } else {
+                Some(index)
+            }
+        })
+        .collect()
+}
+
+fn is_tool_result_only(message: &Value) -> bool {
+    let Some(blocks) = message["content"].as_array() else {
+        return false;
+    };
+    !blocks.is_empty() && blocks.iter().all(|block| block["type"] == "tool_result")
+}
+
+fn mark_message_cache_breakpoint(message: &mut Value) {
+    let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let Some(last) = blocks.last_mut() else {
+        return;
+    };
+    if last.get("cache_control").is_none() {
+        last["cache_control"] = json!({ "type": "ephemeral" });
+    }
+}
+
 /// Generate a unique tool ID when missing. UUIDv7 (time-ordered + random) is
 /// collision-free even for ids produced within the same millisecond.
 fn generate_tool_id() -> String {
@@ -933,6 +1006,93 @@ mod tests {
         assert_eq!(content.len(), 1);
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "Hello");
+    }
+
+    fn user_text(text: &str) -> Message {
+        Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        )
+    }
+
+    fn assistant_text(text: &str) -> Message {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        )
+    }
+
+    fn cache_marked_indexes(messages: &[Value]) -> Vec<usize> {
+        messages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, message)| {
+                message["content"]
+                    .as_array()
+                    .and_then(|blocks| blocks.last())
+                    .and_then(|block| block.get("cache_control"))
+                    .map(|_| index)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn message_breakpoints_mark_the_penultimate_turn_and_the_last_user_message() {
+        let messages = vec![
+            user_text("first"),
+            assistant_text("ack"),
+            user_text("second"),
+            assistant_text("ack2"),
+            user_text("third"),
+        ];
+        let mut wire = build_messages(&messages, &default_compat());
+        apply_message_cache_breakpoints(&mut wire);
+        // Turn boundaries are the three user messages at 0, 2, 4.
+        // Penultimate boundary is 2; the last user message is 4.
+        assert_eq!(cache_marked_indexes(&wire), vec![2, 4]);
+        assert_eq!(wire[2]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert!(wire[0]["content"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn message_breakpoints_treat_a_tool_result_tail_as_the_last_user_message() {
+        let messages = vec![
+            user_text("task"),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "toolu_1".into(),
+                    name: "Read".into(),
+                    input: json!({}),
+                    extra: None,
+                }],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "toolu_1".into(),
+                    content: "file body".into(),
+                    is_error: false,
+                    images: vec![],
+                }],
+            ),
+        ];
+        let mut wire = build_messages(&messages, &default_compat());
+        apply_message_cache_breakpoints(&mut wire);
+        // Only one turn boundary (index 0). The last user message is the
+        // tool result, which is a separate write breakpoint.
+        assert_eq!(cache_marked_indexes(&wire), vec![0, 2]);
+    }
+
+    #[test]
+    fn a_single_user_message_gets_one_breakpoint() {
+        let mut wire = build_messages(&[user_text("only")], &default_compat());
+        apply_message_cache_breakpoints(&mut wire);
+        assert_eq!(cache_marked_indexes(&wire), vec![0]);
     }
 
     #[test]

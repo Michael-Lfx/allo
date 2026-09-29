@@ -1428,12 +1428,23 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
     // Since CompactConfig uses serde defaults, a fully-default project config
     // is indistinguishable from "absent". We use project if its context_window
     // differs from the default, otherwise fall back to global.
+    // `summary_model` is overlaid even when the rest of the project compact
+    // block is default, so a project can name a cheaper summarizer without
+    // resetting the global window.
     let compact = if project.compact.context_window != CompactConfig::default().context_window
         || !project.compact.enabled
     {
         project.compact
     } else {
-        global.compact
+        let summary_model = project
+            .compact
+            .summary_model
+            .filter(|model| !model.trim().is_empty());
+        let mut compact = global.compact;
+        if summary_model.is_some() {
+            compact.summary_model = summary_model;
+        }
+        compact
     };
 
     let logging = LoggingConfig::merge(global.logging, project.logging);

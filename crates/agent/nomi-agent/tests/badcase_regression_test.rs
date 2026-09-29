@@ -475,28 +475,40 @@ async fn a_round_that_keeps_truncating_stops_at_three_passes() {
     assert_eq!(result.effects_ok, 0);
     assert_eq!(result.cutoff_state_changing, 3);
 
-    // The complement of the tool-result shape: when the requirement is ALREADY
-    // the tail after the draft is popped, it must not be re-pushed. Each
-    // restart appends one round.rs resumable hint and only the truncated draft
-    // is removed — earlier hints stay in the conversation, so pass N carries
-    // exactly N hints after the requirement (documented current behavior; this
-    // regression guards against a *requirement* stack growing instead).
+    // The complement of the tool-result shape: the requirement must appear
+    // exactly ONCE — a growing stack of copies is the regression this guards.
+    // A restart also delivers exactly ONE resumable hint, the current round's:
+    // prior `[Context]`-only extras are dropped on the restart path and
+    // `RoundState::take_section` is single-use by design, so a model working
+    // normally is never nagged by a superseded restart notice.
     let bodies = responder.bodies.lock().unwrap();
     for (pass, body) in bodies.iter().enumerate() {
         let conversation = restarted_messages(body)
             .into_iter()
             .filter(|m| m["role"] != "system")
             .collect::<Vec<_>>();
+        let expected = if pass == 0 { 1 } else { 2 };
         assert_eq!(
             conversation.len(),
-            pass + 1,
-            "pass {pass} carries the requirement plus one resumable hint per restart: \
+            expected,
+            "pass {pass} carries the requirement plus its own resumable hint: \
              {conversation:?}"
         );
         assert_eq!(conversation[0]["role"], "user");
+        let requirement_copies = conversation
+            .iter()
+            .filter(|m| m["content"].as_str().unwrap_or("").contains("write a.html"))
+            .count();
+        assert_eq!(
+            requirement_copies, 1,
+            "pass {pass} must not stack duplicate requirements: {conversation:?}"
+        );
         for message in conversation.iter().skip(1) {
             let hint = message["content"].as_str().unwrap_or("");
-            assert!(hint.contains("[resumable round"), "restart appends hint: {hint}");
+            assert!(
+                hint.contains(&format!("[resumable round {}/", pass + 1)),
+                "pass {pass} carries its own round's hint: {hint}"
+            );
         }
     }
 }

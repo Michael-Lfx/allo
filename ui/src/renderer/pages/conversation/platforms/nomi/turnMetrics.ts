@@ -165,9 +165,11 @@ export type ContextBreakdownViewModel = {
   summarizedProps?: SummarizedConversationPropertiesView;
 };
 
+/** Ring color follows the compaction pressure thresholds the engine reports. */
 function getUsageTone(pct: number): string {
   if (pct >= 90) return 'rgb(var(--danger-6))';
-  if (pct >= 70) return 'rgb(var(--warning-6))';
+  if (pct >= 80) return 'rgb(var(--warning-6))';
+  if (pct >= 50) return 'var(--flowy-attention)';
   return 'rgb(var(--success-6))';
 }
 

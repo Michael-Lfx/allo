@@ -11,8 +11,8 @@ import { resolveSyntaxLanguage } from './syntaxLanguage';
 
 const PREVIEW_LINES = 3;
 const CODE_LINE_HEIGHT = CODE_LINE_HEIGHT_PX;
-const CODE_PADDING_VERTICAL = 20;
-const COLLAPSED_HEIGHT = PREVIEW_LINES * CODE_LINE_HEIGHT + CODE_PADDING_VERTICAL;
+/** Clip only the line rows. `.body` already has 10px vertical padding outside this box. */
+const COLLAPSED_HEIGHT = PREVIEW_LINES * CODE_LINE_HEIGHT;
 const EMPTY_DIFF_LINES: string[] = [];
 const INLINE_CODE_STYLE: React.CSSProperties = {
   fontFamily: 'var(--code-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)',

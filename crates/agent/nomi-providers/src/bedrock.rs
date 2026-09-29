@@ -70,11 +70,15 @@ impl BedrockProvider {
             json!(&request.system)
         };
 
+        let mut messages = anthropic_shared::build_messages(&request.messages, &self.compat);
+        if self.cache_enabled {
+            anthropic_shared::apply_message_cache_breakpoints(&mut messages);
+        }
         let mut body = json!({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
             "system": system,
-            "messages": anthropic_shared::build_messages(&request.messages, &self.compat)
+            "messages": messages
         });
 
         if !request.tools.is_empty() {

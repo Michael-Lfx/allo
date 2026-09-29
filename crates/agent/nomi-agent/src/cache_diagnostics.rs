@@ -5,6 +5,7 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
+use nomi_types::message::Message;
 use nomi_types::tool::ToolDef;
 
 struct HasherWriter<'a, H: Hasher>(&'a mut H);
@@ -25,6 +26,12 @@ impl<H: Hasher> std::io::Write for HasherWriter<'_, H> {
 struct PromptSnapshot {
     system_hash: u64,
     tools_hash: u64,
+    /// Per-message hashes of the transcript that was about to be sent.
+    ///
+    /// Append-only growth keeps the previous hashes as a prefix. A snip or
+    /// microcompact rewrite changes an earlier hash (or shortens the list),
+    /// which is a different cache break from a server-side TTL expiry.
+    message_hashes: Vec<u64>,
 }
 
 /// Cache token statistics from a single API response.
@@ -60,6 +67,9 @@ pub enum CacheBreakCause {
     /// Compaction replaced the message history — a deliberate cache-reset point.
     /// Mirrors Reasonix's `log_rewrite` change reason.
     Compaction,
+    /// An earlier message was rewritten or removed (snip, microcompact, or
+    /// another in-place edit). Append-only growth is not this cause.
+    MessageHistoryRewritten,
 }
 
 /// Detects prompt cache breaks by comparing consecutive turns.
@@ -100,7 +110,7 @@ impl CacheBreakDetector {
     /// tools but shifts their positions) does not cause a false
     /// `ToolsChanged` cache-break diagnosis. Mirrors Reasonix's
     /// `normalizeToolSchemas`.
-    pub fn record_request(&mut self, system: &str, tools: &[ToolDef]) {
+    pub fn record_request(&mut self, system: &str, tools: &[ToolDef], messages: &[Message]) {
         let mut system_hasher = DefaultHasher::new();
         system.hash(&mut system_hasher);
         let system_hash = system_hasher.finish();
@@ -117,12 +127,14 @@ impl CacheBreakDetector {
             t.deferred.hash(&mut tools_hasher);
         }
         let tools_hash = tools_hasher.finish();
+        let message_hashes = messages.iter().map(hash_message).collect();
 
         // Rotate: current becomes prev, new snapshot becomes current
         self.prev_snapshot = self.current_snapshot.take();
         self.current_snapshot = Some(PromptSnapshot {
             system_hash,
             tools_hash,
+            message_hashes,
         });
     }
 
@@ -199,10 +211,47 @@ impl CacheBreakDetector {
         if prev.tools_hash != current.tools_hash {
             return CacheBreakCause::ToolsChanged;
         }
+        if message_prefix_rewritten(&prev.message_hashes, &current.message_hashes) {
+            return CacheBreakCause::MessageHistoryRewritten;
+        }
 
-        // Hashes match but cache was lost — server-side TTL expiry
+        // Prefix hashes match but cache was lost — server-side TTL expiry.
+        // A longer transcript whose earlier hashes are unchanged is an append,
+        // not a rewrite, so it stays in this bucket.
         CacheBreakCause::TtlExpiry
     }
+}
+
+/// Hash the fields that hit the provider wire. Timestamps and provider round
+/// ids are local metadata and must not look like a cache-prefix rewrite.
+fn hash_message(message: &Message) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    role_label(message.role).hash(&mut hasher);
+    for block in &message.content {
+        serde_json::to_string(block)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn role_label(role: nomi_types::message::Role) -> &'static str {
+    match role {
+        nomi_types::message::Role::User => "user",
+        nomi_types::message::Role::Assistant => "assistant",
+        nomi_types::message::Role::System => "system",
+        nomi_types::message::Role::Tool => "tool",
+    }
+}
+
+/// True when `current` is not `prev` plus an appended tail.
+fn message_prefix_rewritten(prev: &[u64], current: &[u64]) -> bool {
+    if current.len() < prev.len() {
+        return true;
+    }
+    prev.iter()
+        .zip(current.iter())
+        .any(|(previous, next)| previous != next)
 }
 
 impl Default for CacheBreakDetector {
@@ -225,10 +274,23 @@ mod tests {
         }]
     }
 
+    fn record(detector: &mut CacheBreakDetector, system: &str, tools: &[ToolDef]) {
+        detector.record_request(system, tools, &[]);
+    }
+
+    fn text_message(text: &str) -> Message {
+        Message::new(
+            nomi_types::message::Role::User,
+            vec![nomi_types::message::ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        )
+    }
+
     #[test]
     fn first_request_returns_healthy() {
         let mut detector = CacheBreakDetector::new();
-        detector.record_request("system prompt", &make_tools());
+        record(&mut detector, "system prompt", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -244,7 +306,7 @@ mod tests {
         let mut detector = CacheBreakDetector::new();
 
         // Turn 1
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -252,7 +314,7 @@ mod tests {
         });
 
         // Turn 2 — similar cache_read
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 11000,
@@ -269,7 +331,7 @@ mod tests {
         let mut detector = CacheBreakDetector::new();
 
         // Turn 1 — cache established
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -277,7 +339,7 @@ mod tests {
         });
 
         // Turn 2 — cache_read drops to 0
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -294,7 +356,7 @@ mod tests {
         let mut detector = CacheBreakDetector::new();
 
         // Turn 1
-        detector.record_request("prompt v1", &make_tools());
+        record(&mut detector, "prompt v1", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -302,7 +364,7 @@ mod tests {
         });
 
         // Turn 2 — different system prompt
-        detector.record_request("prompt v2", &make_tools());
+        record(&mut detector, "prompt v2", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -324,7 +386,7 @@ mod tests {
         let mut detector = CacheBreakDetector::new();
 
         // Turn 1
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -338,7 +400,7 @@ mod tests {
             input_schema: json!({"type": "object"}),
             deferred: false,
         }];
-        detector.record_request("prompt", &new_tools);
+        record(&mut detector, "prompt", &new_tools);
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -389,7 +451,7 @@ mod tests {
         let mut detector = CacheBreakDetector::new();
 
         // Turn 1
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -397,7 +459,7 @@ mod tests {
         });
 
         // Turn 2 — same prompt and tools but cache lost (TTL expired server-side)
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -419,7 +481,7 @@ mod tests {
         let mut detector = CacheBreakDetector::new();
 
         // Turn 1
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -427,7 +489,7 @@ mod tests {
         });
 
         // Turn 2 — 50% drop in cache_read
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -444,14 +506,14 @@ mod tests {
         // OpenAI never returns cache tokens — both turns have all zeros
         let mut detector = CacheBreakDetector::new();
 
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
         });
 
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -482,7 +544,7 @@ mod tests {
         let mut detector = CacheBreakDetector::new();
 
         // Turn 1 — cache established
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -493,7 +555,7 @@ mod tests {
         detector.notify_compaction();
 
         // Turn 2 — same prompt and tools but cache lost (compaction replaced messages)
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -517,7 +579,7 @@ mod tests {
         let mut detector = CacheBreakDetector::new();
 
         // Turn 1
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -526,7 +588,7 @@ mod tests {
 
         // Compaction + Turn 2 (cache miss attributed to Compaction)
         detector.notify_compaction();
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 0,
@@ -534,7 +596,7 @@ mod tests {
         });
 
         // Turn 3 — same prompt and tools, cache miss again (TTL expiry)
-        detector.record_request("prompt", &make_tools());
+        record(&mut detector, "prompt", &make_tools());
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -585,7 +647,7 @@ mod tests {
         let tools_order_b: Vec<ToolDef> = tools_order_a.iter().rev().cloned().collect();
 
         // Turn 1 — cache established with order A
-        detector.record_request("prompt", &tools_order_a);
+        record(&mut detector, "prompt", &tools_order_a);
         detector.check_response(CacheStats {
             input_tokens: 10000,
             cache_read_tokens: 8000,
@@ -593,7 +655,7 @@ mod tests {
         });
 
         // Turn 2 — same prompt, same tools in different order, full cache hit
-        detector.record_request("prompt", &tools_order_b);
+        record(&mut detector, "prompt", &tools_order_b);
         let diag = detector
             .check_response(CacheStats {
                 input_tokens: 10000,
@@ -608,5 +670,92 @@ mod tests {
             "tool order change should not cause cache break: {:?}",
             diag
         );
+    }
+
+    #[test]
+    fn rewritten_message_is_not_attributed_to_ttl() {
+        let mut detector = CacheBreakDetector::new();
+        let original = text_message("keep the API contract");
+        detector.record_request("prompt", &make_tools(), &[original.clone()]);
+        detector.check_response(CacheStats {
+            input_tokens: 10000,
+            cache_read_tokens: 8000,
+            cache_creation_tokens: 2000,
+        });
+
+        let rewritten = text_message("[Tool result cleared]");
+        detector.record_request("prompt", &make_tools(), &[rewritten]);
+        let diag = detector
+            .check_response(CacheStats {
+                input_tokens: 10000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 10000,
+            })
+            .unwrap();
+
+        match diag {
+            CacheDiagnostic::FullMiss { cause } => {
+                assert_eq!(cause, CacheBreakCause::MessageHistoryRewritten);
+            }
+            other => panic!("expected FullMiss, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn appended_message_stays_ttl_when_the_prefix_is_unchanged() {
+        let mut detector = CacheBreakDetector::new();
+        let first = text_message("keep the API contract");
+        detector.record_request("prompt", &make_tools(), &[first.clone()]);
+        detector.check_response(CacheStats {
+            input_tokens: 10000,
+            cache_read_tokens: 8000,
+            cache_creation_tokens: 2000,
+        });
+
+        let second = text_message("next turn");
+        detector.record_request("prompt", &make_tools(), &[first, second]);
+        let diag = detector
+            .check_response(CacheStats {
+                input_tokens: 12000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 12000,
+            })
+            .unwrap();
+
+        match diag {
+            CacheDiagnostic::FullMiss { cause } => {
+                assert_eq!(cause, CacheBreakCause::TtlExpiry);
+            }
+            other => panic!("expected FullMiss, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shortened_history_is_a_rewrite() {
+        let mut detector = CacheBreakDetector::new();
+        let first = text_message("one");
+        let second = text_message("two");
+        detector.record_request("prompt", &make_tools(), &[first.clone(), second]);
+        detector.check_response(CacheStats {
+            input_tokens: 10000,
+            cache_read_tokens: 8000,
+            cache_creation_tokens: 2000,
+        });
+
+        detector.record_request("prompt", &make_tools(), &[first]);
+        let diag = detector
+            .check_response(CacheStats {
+                input_tokens: 10000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 10000,
+            })
+            .unwrap();
+
+        match diag {
+            CacheDiagnostic::FullMiss { cause } => {
+                assert_eq!(cause, CacheBreakCause::MessageHistoryRewritten);
+            }
+            other => panic!("expected FullMiss, got {other:?}"),
+        }
     }
 }
