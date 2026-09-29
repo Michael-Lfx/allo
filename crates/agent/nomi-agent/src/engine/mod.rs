@@ -3966,11 +3966,12 @@ impl AgentEngine {
             };
         if should_compact {
             tracing::info!(target: "nomi_agent", last_input_tokens = self.compact_state.last_input_tokens, "context compaction triggered");
-            if let Some(pct) = self.compact_config.autocompact_threshold_pct {
+            if self.compact_config.autocompact_threshold_pct.is_some()
+                || self.compact_config.autocompact_max_tokens.is_some()
+            {
                 self.output.emit_info(&format!(
-                    "Autocompact threshold: {} tokens ({}% of {})",
+                    "Autocompact threshold: {} tokens (context window {})",
                     auto::autocompact_threshold(&self.compact_config),
-                    pct,
                     self.compact_config.context_window
                 ));
             }

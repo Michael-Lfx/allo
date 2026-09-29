@@ -95,15 +95,20 @@ pub enum CompactError {
 /// Token threshold at which autocompact triggers.
 ///
 /// When `autocompact_threshold_pct` is set, threshold = context_window * pct / 100.
-/// Otherwise falls back to: `threshold = context_window - output_reserve - autocompact_buffer`
+/// Otherwise falls back to: `threshold = context_window - output_reserve - autocompact_buffer`.
+/// Either result is then capped by `autocompact_max_tokens`.
 pub fn autocompact_threshold(config: &CompactConfig) -> usize {
-    if let Some(pct) = config.autocompact_threshold_pct {
+    let relative = if let Some(pct) = config.autocompact_threshold_pct {
         config.context_window * pct as usize / 100
     } else {
         config
             .context_window
             .saturating_sub(config.output_reserve)
             .saturating_sub(config.autocompact_buffer)
+    };
+    match config.autocompact_max_tokens {
+        Some(cap) if cap > 0 => relative.min(cap),
+        _ => relative,
     }
 }
 
@@ -943,6 +948,7 @@ mod tests {
         let config = CompactConfig {
             context_window: 200_000,
             autocompact_threshold_pct: Some(100),
+            autocompact_max_tokens: None,
             ..default_config()
         };
         assert!(!should_compact_before_turn(199_999, &config));
@@ -1006,11 +1012,45 @@ mod tests {
         let config = CompactConfig {
             context_window: 200_000,
             autocompact_threshold_pct: Some(100),
+            autocompact_max_tokens: None,
             ..default_config()
         };
         // threshold = 200k, provider never reports 200k input_tokens
         assert!(!should_autocompact(199_999, &config));
         assert!(should_autocompact(200_000, &config));
+    }
+
+    #[test]
+    fn absolute_ceiling_caps_large_windows_only() {
+        let million = CompactConfig {
+            context_window: 1_000_000,
+            ..default_config()
+        };
+        assert_eq!(autocompact_threshold(&million), 150_000);
+        assert!(!should_autocompact(149_999, &million));
+        assert!(should_autocompact(150_000, &million));
+        assert!(should_idle_autocompact(150_000, &million));
+
+        assert_eq!(autocompact_threshold(&default_config()), 76_800);
+
+        let headroom = CompactConfig {
+            context_window: 1_000_000,
+            autocompact_threshold_pct: None,
+            ..default_config()
+        };
+        assert_eq!(autocompact_threshold(&headroom), 150_000);
+    }
+
+    #[test]
+    fn absolute_ceiling_can_be_disabled() {
+        for cap in [None, Some(0)] {
+            let config = CompactConfig {
+                context_window: 1_000_000,
+                autocompact_max_tokens: cap,
+                ..default_config()
+            };
+            assert_eq!(autocompact_threshold(&config), 600_000);
+        }
     }
 
     #[test]
