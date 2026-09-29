@@ -182,8 +182,8 @@ const enUS: Resources = {
     actionEmpty: "There is nothing to send.",
     actionNotFound: "The user turn behind this message could not be found.",
     actionNotRetryable: "The server marked this turn as not retryable.",
-    actionMissingKey: "The original idempotency key is no longer held by this session, so resending could execute twice — use Regenerate instead.",
-    actionResendQueued: "Resent with the original idempotency key",
+    actionMissingKey: "The original request key is no longer held by this session, so resending could execute twice — use Regenerate instead.",
+    actionResendQueued: "Resent with the original request key",
     actionRetryQueued: "Retry started",
     actionRegenerateQueued: "Regeneration started",
     actionEditQueued: "Edited message sent as a new turn",
@@ -495,7 +495,7 @@ const enUS: Resources = {
     fieldModel: "Model",
     fieldToolPolicy: "Tool policy",
     fieldSkills: "Skills",
-    agentPermissionIgnored: "The source runtime ignores plugin-level Agent permissionMode/mcpServers; the importer never maps them to grants (02 §5.1).",
+    agentPermissionIgnored: "The source runtime ignores plugin-level Agent permissionMode/mcpServers; the importer does not map them to grants.",
     agentQuickPrompts: "What this expert can do",
     searchSkills: "Search skills by name or source…",
     searchConnectors: "Search connectors…",
@@ -571,7 +571,7 @@ const enUS: Resources = {
     mcpGroup: "MCP servers",
     mcpFileTitle: "Declaration file ~/.agent-store/mcp.json",
     mcpFileDesc:
-      "MCP servers are declared in this file only — settings offers no \"add server\" form; the text itself is read and edited on demand via \"Configure MCP\"",
+      "MCP servers are declared in this file; click \"Configure MCP\" below to view and edit the configuration directly.",
     mcpAdoptionTitle: "Whether this host uses it",
     mcpAdopted:
       "In use: this boot read the declaration, so sessions created afterwards inject the servers above (still bounded by the host's [tools]); edits made after this boot need a host restart",
