@@ -66,6 +66,9 @@ pub use nomi_agent::ssh_backend::{
 pub use nomi_agent::requirement_tools::RequirementSink;
 pub use nomi_agent::SearchProviderBinding;
 pub use nomi_agent::ExtractCoordinatorBinding;
+pub use nomi_agent::{
+    set_observation_telemetry_hook, ObservationTelemetryRecord,
+};
 
 /// Host-selected mode for the private managed extraction fallback.
 ///

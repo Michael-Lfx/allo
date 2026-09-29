@@ -47,6 +47,8 @@ pub use flowy_web::provider::SearchProvider;
 pub use bootstrap::{ExtractCoordinatorBinding, SearchProviderBinding};
 
 pub use knowledge_tools::{KnowledgeHit, KnowledgeReadTool, KnowledgeRetrievalSink, KnowledgeSearchTool};
-pub use observation::{stream_llm, ObservationSession};
+pub use observation::{
+    set_observation_telemetry_hook, stream_llm, ObservationSession, ObservationTelemetryRecord,
+};
 pub use task_profile::TaskProfile;
 pub use nomi_coding;

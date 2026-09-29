@@ -90,6 +90,8 @@ const TELEMETRY_EVENT_NAMES: &[&str] = &[
     "retry_succeeded",
     "abandoned_before_first_token",
     "llm_call_failed",
+    "tool_executed",
+    "llm_request",
     "device_activated",
     "experiment_exposed",
     "provider_degraded",
@@ -275,6 +277,8 @@ fn expected_growth_module(name: &str, feature: Option<&str>) -> &'static str {
             | "abandoned_before_first_token"
             | "answer_completed"
             | "llm_call_failed"
+            | "tool_executed"
+            | "llm_request"
     ) {
         return "conversation";
     }
@@ -542,6 +546,8 @@ mod growth_tests {
             ("low_credit_balance", "commerce"),
             ("first_token", "conversation"),
             ("llm_call_failed", "conversation"),
+            ("tool_executed", "conversation"),
+            ("llm_request", "conversation"),
             ("first_value_confirmed", "conversation"),
             ("kb_grounded", "knowledge"),
             ("device_activated", "platform"),

@@ -3,8 +3,8 @@
 //! Does not change `nomi-providers`. Emit failures only warn (and may write
 //! `observation/gap`); they never abort an agent turn.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use nomi_agent_trace::{
@@ -24,12 +24,54 @@ use tokio::sync::mpsc;
 
 use crate::tool_execution::ToolCallTiming;
 
+const TELEMETRY_EVENT_TOOL_EXECUTED: &str = "tool_executed";
+const TELEMETRY_EVENT_LLM_REQUEST: &str = "llm_request";
+const TELEMETRY_MAX_EVENT_ID: usize = 128;
+const TELEMETRY_MAX_PROP: usize = 256;
+
+/// Summarized observation event for the product telemetry warehouse.
+/// Nested JSONL payloads never leave the machine; only these scalars do.
+#[derive(Debug, Clone)]
+pub struct ObservationTelemetryRecord {
+    pub event_id: String,
+    pub name: String,
+    pub occurred_at: String,
+    pub properties: BTreeMap<String, Value>,
+}
+
+pub type ObservationTelemetryHook =
+    Arc<dyn Fn(ObservationTelemetryRecord) + Send + Sync>;
+
+static OBSERVATION_TELEMETRY_HOOK: OnceLock<ObservationTelemetryHook> = OnceLock::new();
+
+/// Install the cloud uploader. The composition root calls this once at boot.
+pub fn set_observation_telemetry_hook(hook: ObservationTelemetryHook) {
+    if OBSERVATION_TELEMETRY_HOOK.set(hook).is_err() {
+        tracing::warn!("observation telemetry hook already installed");
+    }
+}
+
+fn enqueue_observation_telemetry(record: ObservationTelemetryRecord) {
+    if let Some(hook) = OBSERVATION_TELEMETRY_HOOK.get() {
+        hook(record);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrefixChain {
+    system: String,
+    tools: String,
+    messages: Vec<String>,
+}
+
 pub struct ObservationSession {
     recorder: Arc<ObservationRecorder>,
     ids: Mutex<ObservationIds>,
     last_model_call_id: Mutex<Option<String>>,
     /// `tool_call_id` → the model call that issued the tool, captured at start.
     tool_parents: Mutex<HashMap<String, String>>,
+    /// Last SessionWorkflow request chain, used to classify prefix-cache breaks.
+    last_prefix: Mutex<Option<PrefixChain>>,
 }
 
 impl ObservationSession {
@@ -39,6 +81,7 @@ impl ObservationSession {
             ids: Mutex::new(ObservationIds::default()),
             last_model_call_id: Mutex::new(None),
             tool_parents: Mutex::new(HashMap::new()),
+            last_prefix: Mutex::new(None),
         })
     }
 
@@ -52,13 +95,14 @@ impl ObservationSession {
 
     pub fn bind_ids_with_preview(&self, mut ids: ObservationIds, prompt_preview: Option<&str>) {
         ids.model_call_id = None;
-        let same_turn = {
+        let (same_turn, conversation_changed) = {
             let mut current = self.ids.lock().unwrap_or_else(|e| e.into_inner());
+            let conversation_changed = current.conversation_id != ids.conversation_id;
             let same_turn = current.root_turn_id.is_some()
                 && current.root_turn_id == ids.root_turn_id
                 && current.conversation_id == ids.conversation_id;
             *current = ids;
-            same_turn
+            (same_turn, conversation_changed)
         };
         if !same_turn {
             *self
@@ -69,6 +113,12 @@ impl ObservationSession {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clear();
+        }
+        if conversation_changed {
+            *self
+                .last_prefix
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
         self.emit_turn_start_once(prompt_preview);
     }
@@ -223,6 +273,12 @@ impl ObservationSession {
             payload["completed_at_ms"] = json!(timing.completed_at_ms);
         }
         observe_with_model_call(self, event_type, payload, parent);
+        self.emit_tool_telemetry(
+            tool_call_id,
+            name,
+            if is_error { "failed" } else { "completed" },
+            timing,
+        );
     }
 
     pub fn emit_tool_cancelled(&self, tool_call_id: &str, name: &str) {
@@ -240,6 +296,96 @@ impl ObservationSession {
             }),
             parent,
         );
+        self.emit_tool_telemetry(tool_call_id, name, "cancelled", None);
+    }
+
+    fn emit_tool_telemetry(
+        &self,
+        tool_call_id: &str,
+        name: &str,
+        outcome: &str,
+        timing: Option<ToolCallTiming>,
+    ) {
+        let ids = self.ids();
+        if !observation_telemetry_eligible(&ids) {
+            return;
+        }
+        let tool_call_id = tool_call_id.trim();
+        if tool_call_id.is_empty() {
+            return;
+        }
+        let mut properties = BTreeMap::new();
+        insert_telemetry_str(&mut properties, "feature", "conversation");
+        if let Some(session_id) = nonempty(ids.conversation_id.as_deref()) {
+            insert_telemetry_str(&mut properties, "session_id", session_id);
+        }
+        insert_telemetry_str(&mut properties, "tool_name", name);
+        insert_telemetry_str(&mut properties, "outcome", outcome);
+        if let Some(kind) = nonempty(ids.session_kind.as_deref()) {
+            insert_telemetry_str(&mut properties, "session_kind", kind);
+        }
+        if let Some(timing) = timing {
+            properties.insert("duration_ms".into(), json!(timing.duration_ms));
+        }
+        let occurred_at = timing
+            .map(|timing| rfc3339_millis(timing.completed_at_ms))
+            .unwrap_or_else(rfc3339_now);
+        enqueue_observation_telemetry(ObservationTelemetryRecord {
+            event_id: clip_event_id(format!("obs:tool:{tool_call_id}")),
+            name: TELEMETRY_EVENT_TOOL_EXECUTED.into(),
+            occurred_at,
+            properties,
+        });
+    }
+
+    fn emit_llm_request_telemetry(
+        &self,
+        model_call_id: &str,
+        call_kind: &str,
+        scope: ObservationScope,
+        request: &LlmRequest,
+        fingerprint: &Value,
+    ) {
+        if scope != ObservationScope::SessionWorkflow {
+            return;
+        }
+        let ids = self.ids();
+        if !observation_telemetry_eligible(&ids) {
+            return;
+        }
+        let Some(chain) = parse_prefix_chain(fingerprint) else {
+            return;
+        };
+        let (prefix_break, prefix_break_index) = {
+            let mut last = self
+                .last_prefix
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let classified = classify_prefix_break(last.as_ref(), &chain);
+            *last = Some(chain.clone());
+            classified
+        };
+        let mut properties = BTreeMap::new();
+        insert_telemetry_str(&mut properties, "feature", "conversation");
+        if let Some(session_id) = nonempty(ids.conversation_id.as_deref()) {
+            insert_telemetry_str(&mut properties, "session_id", session_id);
+        }
+        insert_telemetry_str(&mut properties, "llm_model", &request.model);
+        insert_telemetry_str(&mut properties, "system_hash", &chain.system);
+        insert_telemetry_str(&mut properties, "tools_hash", &chain.tools);
+        properties.insert("message_count".into(), json!(chain.messages.len() as i64));
+        insert_telemetry_str(&mut properties, "prefix_break", prefix_break);
+        properties.insert("prefix_break_index".into(), json!(prefix_break_index));
+        insert_telemetry_str(&mut properties, "call_kind", call_kind);
+        if let Some(kind) = nonempty(ids.session_kind.as_deref()) {
+            insert_telemetry_str(&mut properties, "session_kind", kind);
+        }
+        enqueue_observation_telemetry(ObservationTelemetryRecord {
+            event_id: clip_event_id(format!("obs:llm:{model_call_id}")),
+            name: TELEMETRY_EVENT_LLM_REQUEST.into(),
+            occurred_at: rfc3339_now(),
+            properties,
+        });
     }
 }
 
@@ -256,23 +402,31 @@ pub async fn stream_llm(
     };
 
     let model_call_id = session.begin_model_call();
+    let prefix_fingerprint = request_prefix_fingerprint(
+        &request.system,
+        &request.tools.iter().map(ToolFingerprint::from).collect::<Vec<_>>(),
+        &request.messages,
+    );
     let request_payload = json!({
         "call_kind": call_kind,
         "observation_scope": scope,
         "fidelity": "canonical",
         "capture": ["truncated", "redacted"],
         "request": llm_request_to_value(request),
-        "prefix_fingerprint": request_prefix_fingerprint(
-            &request.system,
-            &request.tools.iter().map(ToolFingerprint::from).collect::<Vec<_>>(),
-            &request.messages,
-        ),
+        "prefix_fingerprint": prefix_fingerprint,
     });
     observe_with_model_call(
         &session,
         EVENT_LLM_REQUEST,
         request_payload,
         Some(model_call_id.clone()),
+    );
+    session.emit_llm_request_telemetry(
+        &model_call_id,
+        call_kind,
+        scope,
+        request,
+        &prefix_fingerprint,
     );
 
     let started = Instant::now();
@@ -574,6 +728,96 @@ fn observe_with_model_call(
             }
         }
     }
+}
+
+fn observation_telemetry_eligible(ids: &ObservationIds) -> bool {
+    nonempty(ids.conversation_id.as_deref()).is_some()
+        && nonempty(ids.session_kind.as_deref()) != Some("eval")
+}
+
+fn nonempty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn clip_event_id(mut raw: String) -> String {
+    if raw.len() > TELEMETRY_MAX_EVENT_ID {
+        raw.truncate(TELEMETRY_MAX_EVENT_ID);
+    }
+    raw
+}
+
+fn insert_telemetry_str(properties: &mut BTreeMap<String, Value>, key: &str, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    properties.insert(key.to_string(), json!(clip_chars(trimmed, TELEMETRY_MAX_PROP)));
+}
+
+fn clip_chars(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+fn rfc3339_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn rfc3339_millis(ms: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(i64::try_from(ms).unwrap_or(i64::MAX))
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn parse_prefix_chain(value: &Value) -> Option<PrefixChain> {
+    let system = value.get("system")?.as_str()?.trim().to_string();
+    let tools = value.get("tools")?.as_str()?.trim().to_string();
+    if system.is_empty() && tools.is_empty() && value.get("messages").is_none() {
+        return None;
+    }
+    let messages = value
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(PrefixChain {
+        system,
+        tools,
+        messages,
+    })
+}
+
+fn classify_prefix_break(prev: Option<&PrefixChain>, next: &PrefixChain) -> (&'static str, i64) {
+    let Some(prev) = prev else {
+        return ("first", 0);
+    };
+    if prev.system != next.system {
+        return ("system", 0);
+    }
+    if prev.tools != next.tools {
+        return ("tools", 0);
+    }
+    let shared = prev.messages.len().min(next.messages.len());
+    for index in 0..shared {
+        if prev.messages[index] != next.messages[index] {
+            return ("message", i64::try_from(index).unwrap_or(i64::MAX));
+        }
+    }
+    if prev.messages.len() != next.messages.len() {
+        return ("message", i64::try_from(shared).unwrap_or(i64::MAX));
+    }
+    ("none", 0)
 }
 
 pub(crate) fn llm_request_to_value(request: &LlmRequest) -> Value {
@@ -1369,5 +1613,94 @@ mod tests {
             Some(model_call_id.as_str()),
             "continuation bind must not drop in-flight tool parents: {events:?}"
         );
+    }
+
+    #[test]
+    fn prefix_break_classifies_first_none_system_tools_and_message() {
+        let base = PrefixChain {
+            system: "sys-a".into(),
+            tools: "tools-a".into(),
+            messages: vec!["m0".into(), "m1".into()],
+        };
+        assert_eq!(classify_prefix_break(None, &base), ("first", 0));
+        assert_eq!(classify_prefix_break(Some(&base), &base), ("none", 0));
+        assert_eq!(
+            classify_prefix_break(
+                Some(&base),
+                &PrefixChain {
+                    system: "sys-b".into(),
+                    ..base.clone()
+                }
+            ),
+            ("system", 0)
+        );
+        assert_eq!(
+            classify_prefix_break(
+                Some(&base),
+                &PrefixChain {
+                    tools: "tools-b".into(),
+                    ..base.clone()
+                }
+            ),
+            ("tools", 0)
+        );
+        assert_eq!(
+            classify_prefix_break(
+                Some(&base),
+                &PrefixChain {
+                    messages: vec!["m0".into(), "mX".into()],
+                    ..base.clone()
+                }
+            ),
+            ("message", 1)
+        );
+        assert_eq!(
+            classify_prefix_break(
+                Some(&base),
+                &PrefixChain {
+                    messages: vec!["m0".into(), "m1".into(), "m2".into()],
+                    ..base.clone()
+                }
+            ),
+            ("message", 2)
+        );
+    }
+
+    #[test]
+    fn observation_telemetry_skips_eval_and_missing_conversation() {
+        assert!(!observation_telemetry_eligible(&ObservationIds::default()));
+        assert!(!observation_telemetry_eligible(&ObservationIds {
+            conversation_id: Some("c-eval".into()),
+            session_kind: Some("eval".into()),
+            ..ObservationIds::default()
+        }));
+        assert!(observation_telemetry_eligible(&ObservationIds {
+            conversation_id: Some("c-ok".into()),
+            session_kind: Some("session_dialogue".into()),
+            ..ObservationIds::default()
+        }));
+    }
+
+    #[test]
+    fn parse_prefix_chain_reads_sha256_digest_fields() {
+        let chain = parse_prefix_chain(&json!({
+            "algorithm": "sha256-chain",
+            "system": "aaaaaaaaaaaaaaaa",
+            "tools": "bbbbbbbbbbbbbbbb",
+            "messages": ["cccccccccccccccc"]
+        }))
+        .expect("chain");
+        assert_eq!(chain.system, "aaaaaaaaaaaaaaaa");
+        assert_eq!(chain.tools, "bbbbbbbbbbbbbbbb");
+        assert_eq!(chain.messages, vec!["cccccccccccccccc"]);
+    }
+
+    #[test]
+    fn clip_chars_stays_on_char_boundary() {
+        let raw = "工具名称".repeat(80);
+        let clipped = clip_chars(&raw, TELEMETRY_MAX_PROP);
+        assert!(clipped.len() <= TELEMETRY_MAX_PROP);
+        assert!(raw.is_char_boundary(clipped.len()) || clipped.is_empty());
+        assert_eq!(clipped, &raw[..clipped.len()]);
     }
 }

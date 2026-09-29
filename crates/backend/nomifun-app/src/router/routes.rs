@@ -278,6 +278,7 @@ pub async fn create_router(services: &AppServices) -> Router {
     }
 
     nomifun_cloud::start_cloud_telemetry(services.cloud_service.clone());
+    crate::observation_telemetry::start_observation_telemetry(services.cloud_service.clone());
 
     // Wire the Desktop Gateway MCP deps now that the module services exist.
     // The gateway server itself started inside `AppServices::from_config`
