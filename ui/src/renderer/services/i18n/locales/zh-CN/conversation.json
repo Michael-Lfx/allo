@@ -855,6 +855,12 @@
     "archived": "已归档",
     "sidebarBadge": "已召唤伙伴（技能 + 所选记忆，只读）"
   },
+  "forkChat": {
+    "action": "分叉对话",
+    "pending": "正在分叉…",
+    "success": "已分叉为新对话",
+    "failed": "分叉失败，请稍后重试。"
+  },
   "editMessage": {
     "action": "编辑",
     "banner": "正在编辑消息——发送后将从这里重新生成",

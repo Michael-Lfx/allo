@@ -651,6 +651,13 @@ export const conversation = {
     }),
     fromApiConversation
   ),
+  fork: withResponseMap(
+    httpPost<unknown, { conversation_id: ConversationId; message_id: MessageId }>(
+      (p) => `/api/conversations/${p.conversation_id}/fork`,
+      (p) => ({ message_id: p.message_id })
+    ),
+    fromApiConversation
+  ),
   get: withResponseMap(
     httpGet<unknown, { conversation_id: ConversationId }>(
       (p) => `/api/conversations/${p.conversation_id}`,

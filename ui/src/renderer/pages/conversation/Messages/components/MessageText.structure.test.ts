@@ -31,6 +31,28 @@ describe('MessageText process action chrome', () => {
     expect(messagesCss.includes('@keyframes message-copy-toast-enter')).toBe(true);
   });
 
+  test('offers fork chat on finished Nomi text messages', () => {
+    expect(source.includes("data-testid='message-fork-action'")).toBe(true);
+    expect(source.includes("<BranchOne theme='outline' size='16' fill='currentColor' />")).toBe(true);
+    const forkButtonSource = source.match(/const forkButton = canFork \? \([\s\S]*?<BranchOne /)?.[0] ?? '';
+    expect(forkButtonSource.includes('text-t-primary')).toBe(true);
+    expect(source.includes("conversationContext?.type === 'nomi'")).toBe(true);
+    expect(source.includes("message.status === 'finish'")).toBe(true);
+    expect(source.includes('ipcBridge.conversation.fork')).toBe(true);
+    expect(source.includes("navigate(`/conversation/${created.id}`)")).toBe(true);
+    for (const locale of ['zh-CN', 'en-US']) {
+      const dictionary = readFileSync(
+        new URL(`../../../../services/i18n/locales/${locale}/conversation.json`, import.meta.url),
+        'utf8'
+      );
+      const forkChat = JSON.parse(dictionary).forkChat as Record<string, string>;
+      expect(forkChat.action.length).toBeGreaterThan(0);
+      expect(forkChat.pending.length).toBeGreaterThan(0);
+      expect(forkChat.success.length).toBeGreaterThan(0);
+      expect(forkChat.failed.length).toBeGreaterThan(0);
+    }
+  });
+
   test('keeps copy, edit, and rollback actions always visible', () => {
     expect(source.includes('hideActions?: boolean')).toBe(true);
     expect(source.includes('const shouldShowActions = !hideActions;')).toBe(true);

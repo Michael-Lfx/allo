@@ -6,6 +6,7 @@ use axum::routing::{get, patch, post, put};
 
 use nomifun_api_types::{
     ActiveCountResponse, ApiResponse, ApprovalCheckQuery, ApprovalCheckResponse, CloneConversationRequest,
+    ForkConversationRequest,
     CodingTurnRollbackAvailability, CodingTurnRollbackResponse, ConfirmRequest, ConfirmationListResponse,
     ConversationArtifactListResponse, ConversationArtifactResponse, ConversationListResponse,
     ConversationResponse, CreateConversationRequest, ListConversationsQuery, EditResubmitReceiptState,
@@ -34,6 +35,7 @@ pub fn conversation_routes(state: ConversationRouterState) -> Router {
             get(get_one).patch(update).delete(delete_one),
         )
         .route("/api/conversations/{conversation_id}/reset", post(reset))
+        .route("/api/conversations/{conversation_id}/fork", post(fork_conversation))
         .route("/api/conversations/{conversation_id}/associated", get(associated))
         .route(
             "/api/conversations/{conversation_id}/messages",
@@ -191,6 +193,20 @@ async fn list(
     // 普通会话列表保留 companion 行(前端侧边栏自行过滤),不在此处排除。
     let result = state.service.list(&user.id, query, false).await?;
     Ok(Json(ApiResponse::ok(result)))
+}
+
+async fn fork_conversation(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<ConversationId>,
+    body: Result<Json<ForkConversationRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ApiResponse<ConversationResponse>>), AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let conversation = state
+        .service
+        .fork(&user.id, conversation_id.as_str(), &req.message_id)
+        .await?;
+    Ok((StatusCode::CREATED, Json(ApiResponse::ok(conversation))))
 }
 
 async fn clone(

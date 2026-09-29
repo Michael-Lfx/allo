@@ -4905,6 +4905,16 @@ impl IConversationRepository for SqliteConversationRepository {
         .await?)
     }
 
+    async fn list_numbered_fork_names(&self, user_id: &str) -> Result<Vec<String>, DbError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM conversations WHERE user_id = ? AND substr(name, 1, 1) = '('",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
+    }
+
     // ── Message operations ──────────────────────────────────────────
 
     async fn get_messages(

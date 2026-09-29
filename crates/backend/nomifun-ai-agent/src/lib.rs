@@ -149,6 +149,7 @@ pub use managed_search::ManagedSearchHandle;
 pub use managed_web::ManagedWebHandle;
 pub use conversation_title_completer::{ConversationTitleCompleter, LiveConversationTitleCompleter};
 pub use nomi_session_persistence::{
+    NomiPlainTextTurn, NomiSessionForkMode, NomiSessionForkOutcome, NomiSessionForkRequest,
     NomiSessionPersistence, NomiSessionResetOutcome, NomiSessionRewindOutcome,
 };
 pub use terminal_title_completer::LiveTerminalTitleCompleter;

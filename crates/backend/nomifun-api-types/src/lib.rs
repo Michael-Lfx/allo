@@ -202,7 +202,7 @@ pub use confirmation::{
 };
 pub use connection_test::TestBedrockConnectionRequest;
 pub use conversation::{
-    ActiveCountResponse, CloneConversationRequest, ConversationArtifactKind,
+    ActiveCountResponse, CloneConversationRequest, ForkConversationRequest, ConversationArtifactKind,
     ConversationArtifactListResponse, ConversationArtifactResponse, ConversationArtifactStatus,
     ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
     ConversationResponse, ConversationRuntimeStateKind,

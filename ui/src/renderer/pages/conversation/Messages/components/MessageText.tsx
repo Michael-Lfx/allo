@@ -9,7 +9,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { iconColors } from '@/renderer/styles/colors';
 import { Alert, Button, Modal, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { CheckOne, CloseOne, Copy, Edit, Info, Lightning, Loading, Undo } from '@icon-park/react';
+import { BranchOne, CheckOne, CloseOne, Copy, Edit, Info, Lightning, Loading, Undo } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -33,7 +33,9 @@ import { MESSAGE_BODY_CLASS_NAME, MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIG
 import { parseMessageFileMarker } from './messageFileMarker';
 import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
-import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import { getConversationOrNull, seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
+import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import { useNavigate } from 'react-router-dom';
 import {
   fetchAndPersistTurnCredits,
   peekTurnCredits,
@@ -380,7 +382,9 @@ const MessageText: React.FC<{
     [data, isStreaming, json]
   );
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [showCopyAlert, setShowCopyAlert] = useState(false);
+  const [forking, setForking] = useState(false);
   const isUserMessage = message.position === 'right';
   const isAgentMessage = message.position === 'left' && message.content.agentMessage === true;
   const writebackState = !isUserMessage ? message.content.knowledge_writeback : undefined;
@@ -586,6 +590,64 @@ const MessageText: React.FC<{
     </Tooltip>
   ) : null;
 
+  const canFork =
+    conversationContext?.type === 'nomi' &&
+    conversationContext.readOnly !== true &&
+    conversationContext.isProcessing !== true &&
+    !isStreaming &&
+    message.type === 'text' &&
+    message.status === 'finish' &&
+    editableMessageId != null &&
+    conversationId != null;
+
+  const handleFork = () => {
+    if (!canFork || !conversationId || !editableMessageId || forking) return;
+    setForking(true);
+    void ipcBridge.conversation.fork
+      .invoke({ conversation_id: conversationId, message_id: editableMessageId })
+      .then((created) => {
+        seedConversationCache(created);
+        emitter.emit('chat.history.refresh');
+        Message.success(t('conversation.forkChat.success', { defaultValue: 'Forked into a new chat' }));
+        void navigate(`/conversation/${created.id}`);
+      })
+      .catch((error: unknown) => {
+        const detail = getConversationCreateErrorMessage(error, t);
+        Message.error(
+          detail || t('conversation.forkChat.failed', { defaultValue: "Couldn't fork this chat. Please try again." })
+        );
+      })
+      .finally(() => {
+        setForking(false);
+      });
+  };
+
+  const forkButton = canFork ? (
+    <Tooltip
+      content={
+        forking
+          ? t('conversation.forkChat.pending', { defaultValue: 'Forking…' })
+          : t('conversation.forkChat.action', { defaultValue: 'Fork chat' })
+      }
+    >
+      <button
+        type='button'
+        data-testid='message-fork-action'
+        className='flex h-24px w-24px shrink-0 items-center justify-center rd-6px cursor-pointer text-t-primary hover:bg-3 border-0 bg-transparent disabled:cursor-default disabled:opacity-50'
+        onClick={handleFork}
+        disabled={forking}
+        style={{ lineHeight: 0 }}
+        aria-label={
+          forking
+            ? t('conversation.forkChat.pending', { defaultValue: 'Forking…' })
+            : t('conversation.forkChat.action', { defaultValue: 'Fork chat' })
+        }
+      >
+        <BranchOne theme='outline' size='16' fill='currentColor' />
+      </button>
+    </Tooltip>
+  ) : null;
+
   const copyButton = (
     <Tooltip content={t('common.copy', { defaultValue: 'Copy' })}>
       <button
@@ -715,6 +777,7 @@ const MessageText: React.FC<{
       })}
     >
       {copyButton}
+      {forkButton}
       {extractPresetButton}
       {editButton}
       {codingRollbackButton}
