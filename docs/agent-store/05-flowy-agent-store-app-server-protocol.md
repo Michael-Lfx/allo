@@ -1,7 +1,204 @@
+# allo App Server Protocol 核心架构与公共契约方案（App Server Protocol Specification）
+
+> 状态：现行规范（统一协议 v1，指纹 `fp-13`，55 WS 核心方法 / 80 双端路由端点）  
+> 适用范围：TypeScript SDK、Python SDK、CLI、WebUI、Flowy 宿主及所有外部智能体集成面  
+> 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)  
+> 核心原则：**App Server Protocol 是唯一的公共契约层；抹除一切内部数据库物理主键与私有凭据；所有上层消费端必须通过标准握手、不透明 ID 与单调游标事件流与内核解耦交互。**
+
+---
+
+## 1. 背景与核心价值
+
+在 Allo 架构演进过程中，随着桌面客户端、独立 WebUI、TypeScript SDK、自动化测试 Harness 等多端形态的出现，如果各端直接访问底层 SQLite 数据库、依赖私有 REST 路由或绑定内部执行引擎的 Actor，将导致严重的“实现细节泄漏”与版本脆弱性。
+
+### 1.1 核心价值定位
+App Server Protocol 确立为系统的**唯一公共对外接口面**：
+1. **彻底物理隔离**：外部消费端禁止直连数据库、禁止依赖内部私有 UUIDv7 或数据库行，统一面向**不透明公共 ID（Opaque Public IDs）**与标准化 RPC 信封。
+2. **双模契约同构（Dual-Transport Parity）**：WebSocket 负责长连接双向交互、流式通知与审批推送；HTTP 辅助通道负责单次幂等导入、文件上传及离线请求。双端共用同一套底层 Rust 分发器，杜绝两套行为。
+3. **零凭据过线防御（Zero Credential Leakage）**：API Key、OAuth 访问令牌、物理文件路径严格留在宿主内部；连接器调用走宿主受控代理（`connector/call`），凭据模板按 `${secret:NAME}` 声明式解析。
+4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-13`）守卫协议两端，消解冗余复杂的迁移开销。
+
+---
+
+## 2. 方案全景与架构拓扑
+
+App Server Protocol 将复杂的底层执行与外部多端解耦为清晰的请求分发管线：
+
+```mermaid
+flowchart TD
+    subgraph Clients["协议消费端 (Clients)"]
+        WebUI["WebUI / Desktop Renderer"]
+        TSSDK["@flowy-agent-store/sdk"]
+        CLI["Agent Store CLI / Scripts"]
+    end
+
+    subgraph Transport["传输层绑定 (Transport Layer)"]
+        WS["WebSocket 长连接 (JSON-RPC 2.0 /ws)"]
+        HTTP["HTTP REST 映射端点 (/api/app-server/*)"]
+    end
+
+    subgraph ProtocolGate["协议网关与分发核心 (Protocol Gate)"]
+        Handshake["握手与指纹校验器 (initialize / fp-13)"]
+        AuthContext["租户安全上下文 (LocalPrincipal)"]
+        Dispatcher["唯一分发器 (dispatch_connection_request)"]
+    end
+
+    subgraph Domains["领域能力外观 (Domain Facades)"]
+        Catalog["Catalog 门面 (Agent / Team / Skill / Connector)"]
+        StoreGov["Store & Market 门面 (一键安装 / 显式升级)"]
+        RunEngine["Run & Session 门面 (run/steer / run/plan / events)"]
+        ConnectorProxy["连接器受控代理 (connector/call / credentials)"]
+    end
+
+    subgraph Backend["Allo 核心执行引擎 (Core Runtime)"]
+        RuntimeAdapter["AgentRuntimeAdapter (状态投影 / 脱敏)"]
+        ExecutionEngine["AgentExecutionEngine (真实 DAG 调度)"]
+    end
+
+    Clients <-->|双向事件流| WS
+    Clients -->|无状态请求| HTTP
+    WS --> Handshake
+    HTTP --> Handshake
+    Handshake --> AuthContext --> Dispatcher
+    Dispatcher --> Catalog
+    Dispatcher --> StoreGov
+    Dispatcher --> RunEngine
+    Dispatcher --> ConnectorProxy
+    Catalog & StoreGov & RunEngine & ConnectorProxy --> RuntimeAdapter
+    RuntimeAdapter --> ExecutionEngine
+```
+
+---
+
+## 3. 核心机制详细方案
+
+### 3.1 握手协商与指纹机制 (`initialize` / `fp-13`)
+
+1. **两段式生命周期握手**：
+   - 客户端连接建立后必须首先发起 `initialize` 请求，携带客户端标识与目标协议指纹。
+   - 服务端返回自身服务指纹、授权主体上下文（`auth_context`）及细粒度能力矩阵（`capabilities`）。
+   - 客户端确认后发送 `initialized` 通知，服务端状态机切换至 `Ready`；未就绪前调用业务方法直接返回 `unauthenticated`。
+2. **契约指纹严格校验（Fingerprint Invariant）**：
+   - 摒弃易混淆的日期版本戳，采用单调自增计数器 `fp-<n>`（当前标准为 `fp-13`）。
+   - 服务端与客户端在握手时必须绝对严格相等；任何参数模型、DTO 字段或错误码变动必须递增指纹，版本不匹配返回 `protocol_version_unsupported`，坚决拒绝未知的静默降级。
+3. **独立能力位矩阵（Capabilities Matrix）**：
+   - 细分独立能力标志位：`agents`、`teams`、`skills`、`skill_files`、`connectors`、`connector_calls`、`models`、`approvals`、`artifacts`。
+   - 例如：`skill_files`（读取技能目录附带文件）与 `skills`（目录发现）完全解耦，`connector_calls`（受控工具代理）与 `connectors` 独立声明，便于宿主按安全策略精准赋权。
+
+### 3.2 双模传输与消息信封规范
+
+1. **统一方法语义**：
+   - 所有核心业务方法（导入、安装、市场、商店、Run 调度）在 WebSocket 与 HTTP 两侧同名同参同实现。
+   - WebSocket 采用标准的 JSON-RPC 2.0 信封结构：
+     - 请求携带全局唯一 `id`、`method`、`params`。
+     - 实时流式通知采用 `method: "event"`，携带 `run_id`、全局单调递增 `sequence`、`event_type` 及载荷。
+2. **Opaque ID 与信息安全边界**：
+   - 所有对外暴露的主键（`run_id`、`workspace_id`、`session_id`）均为 UUIDv7 生成的不透明公共标识。
+   - 绝对禁止向客户端透出底层物理文件系统路径、数据库自增 ID、Provider 原始秘钥明文。
+
+### 3.3 软件源与资产一键消费 (Market & Store)
+
+1. **软件源与 Zip 单归档加速**：
+   - 市场支持 `directory`、`github`、`git`、`url` 及 `zip` 归档。
+   - 官方市场全面切为 `zip` 格式（`source_kind: "zip"`），通过单次归档下载结合 `HEAD` ETag 校验替代上万次碎文件请求，原子晋升至 live 目录。
+2. **商店安装与显式升级模型（`fp-12` 规范）**：
+   - **一键安装（`store/install-entry`）**：严格保持“已安装即 No-Op（`reused=true`）”，绝不偷偷升级已安装资产。
+   - **显式升级（`store/update-entry`）**：必须显式调用；顺序即契约——**先导入并安装新版本，仅当新版本全部成功后才释放旧版本**；若新版本安装失败，旧版本完整保留（`released_count: 0`），保障可用性。
+   - **组件级原地升级**：专家 Preset 原地更新且保持 Preset ID 不变（保障会话引用不失效）；连接器 MCP Server 原地更新配置；技能独立快照并指向最新。
+3. **市场策略读面与受控自动升级（`fp-13` 规范）**：
+   - **策略读面（`market/settings` / `market/settings-set`）**：宿主级策略（后台扫掠周期、允许自动升级的条目类型）有独立的强类型端点，写操作**写穿**宿主 `config.toml` 并回读文件，调度器每轮重读文件，因此改动立即生效、无需重启（`37` §3.2）。
+   - **受控自动升级**：市场级 `auto_update` 开关的语义是「**刷新该市场索引 + 自动升级从该市场安装的条目**」。默认**排除连接器**（连接器升级会因配置变化被置为停用，无人值守升级会静默打断正在使用的连接——`36` §3.4），且用户手动停用（组件 `disabled=1`）、源上 `blocked_reason` 非空、只导入未安装的条目一律跳过（`37` §3.3 D5/D6）。
+   - **`[]` 即旧行为**：`entry_auto_update_kinds = []` 表示只刷新索引、不升级任何条目，与 `fp-12` 之前完全一致。
+
+### 3.4 运行时调度与实时事件总线 (Run Engine)
+
+1. **单 Agent 与 TeamRun 差异化收敛**：
+   - `agent/run`：接收目标 Agent 标识、可选覆盖模型、思考等级（`reasoning_effort`）及结构化 Mentions，物化快照并返回异步 Receipt（含 `preset_revision` 与 `content_digest`）。
+   - `team/run`：不接受客户端自由指定 Planning 参数；服务端自动拉起 Leader Conversation，由 Leader 在首轮自动触发 `nomi_delegate(strategy="planned")`，按模板约束展开 DAG 编排，返回全局公共 `run_id`。
+2. **权威快照与增量追平**：
+   - `run/plan`：提供计划修订、执行步骤标题、耗时、Token 消耗、失败归因的**唯一权威结构化快照**。
+   - `run/events`：基于 `after_sequence` 与 `limit` 游标拉取追加事件；断线恢复时客户端先读快照，再用事件追平，保证状态机无缝自愈。
+3. **中途干预与 CAS 审批响应**：
+   - `run/steer`：支持用户在智能体运行中途注入自然语言口头引导。
+   - `run/answer-decision`：承接敏感操作审批回答，严格执行三路 CAS 版本校验（`execution` / `step` / `attempt`），杜绝过期或重复批准。
+
+### 3.5 多轮会话与工作区沙箱 (Conversation & Workspace)
+
+1. **会话粘性模型与上下文控制**：
+   - `conversation/create`：支持绑定受控工作区、预设专家或以团队开场（`team_id`）。
+   - `conversation/send`：支持随轮次指定动态模型、思考等级及技能 Mention；支持附件路径引用。
+   - `conversation/list-changed`：广播会话列表元数据变更（创建、重命名、删除），支持客户端侧栏自动同步。
+2. **工作区目录强制沙箱**：
+   - `workspace/create` 强制执行路径 `canonicalize` 规范化，拦截外部符号链接与目录穿越；
+   - 软注销机制（`workspace/revoke`）在保留物理磁盘与关联历史的前提下将工作区从活跃目录隐藏。
+
+### 3.6 连接器受控代理与凭据模型 (Connector Proxy)
+
+1. **受控代理执行（`connector/call`）**：
+   - 外部调用方仅需传递 `connector_id`、工具名称与参数，连接参数与访问 Token 严格保存在宿主内部，由宿主代为执行 MCP 调用。
+   - 三重门禁防护：宿主策略开关 $\to$ 可选白名单 Glob 匹配 $\to$ 启用状态校验；单次调用超时强制回收子进程。
+2. **模板即声明凭据规范（`fp-9` / `fp-10` / `fp-11`）**：
+   - 连接器配置中出现的 `${secret:NAME}` 自动投影为待填凭据表单；
+   - 密钥写入走独立的 `connector/credential/set`，写入后内存解析，响应中仅回显状态，严禁回传明文 Secret。
+
+---
+
+## 4. 关键架构决策与权衡矩阵
+
+| 决策点 | 备选方案 A | 备选方案 B | 最终决策 | 决策依据与权衡 |
+| :--- | :--- | :--- | :--- | :--- |
+| **版本管理策略** | 语义化版本号（v1.0.0, v1.1.0）多版本共存 | 单一公共协议 v1 + 单调指纹 `fp-<n>` | **方案 B** | 产品未正式发布前维护多个兼容分支会极大拖慢迭代速度；以严格相等的契约指纹守门，杜绝协议字段静默漂移。 |
+| **外部连接器调用** | 将 MCP 连接参数与 Token 直接下发给客户端 | 宿主受控代理执行（`connector/call`） | **方案 B** | 凭据绝对不过线，防止第三方客户端窃取外部服务敏感 Token；调用由宿主审计并受沙箱策略门禁控制。 |
+| **资产升级语义** | 安装接口默认自动覆盖最新版本 | 保持安装 No-Op，引入显式 `store/update-entry` | **方案 B** | 隐式自动升级会导致用户既有工作区行为突变或版本破坏；显式升级且“新装成功才释放旧版”保障了极高可用性。 |
+| **自动升级的范围与粒度（`fp-13`）** | 让后台扫掠顺带升级所有已装条目 | 市场级开关 + 条目类型白名单（默认排除连接器）+ 三条硬跳过 | **方案 B** | 扫掠顺带升级连接器会把「配置变了即停用」的保护变成静默掉线；白名单让 `agent`/`team`/`skill` 自动跟进，而连接器必须由操作者显式勾选（`37` §3.3 D5/D6）。 |
+| **市场策略的真源与生效方式** | 内存态 + 重启生效 | 配置文件为唯一真源，写面写穿文件、调度器每轮重读 | **方案 B** | 内存态会与文件长期分叉（重启即回退）；每轮重读一个 TOML 的成本可忽略，换来「保存即生效」与「读回的就是文件」（`37` §3.2 D3）。 |
+| **计划与步骤展示** | 从流式事件反向组装步骤与标题 | 服务端提供独立的权威快照 `run/plan` | **方案 B** | 流式日志缺乏步骤标题与重规划整体拓扑；权威快照能稳定提供标题、状态及耗时，事件仅作为动向补充。 |
+
+---
+
+## 5. 验收标准与测试用例
+
+### 5.1 协议核心验收标准 (TC-AS-001 ~ TC-AS-013)
+
+| 用例编号 | 模块 | 核心断言 |
+| :--- | :--- | :--- |
+| **TC-AS-001** | 初始化握手 | `initialize` 严格校验 `protocol_version`（指纹）；未握手禁止调用任何业务方法。 |
+| **TC-AS-002** | 目录公共模型 | 目录接口返回标准化公开摘要，不泄露真实文件路径与凭据。 |
+| **TC-AS-003** | 异步 Receipt | `agent/run` 立即返回合法异步 Receipt，包含 Opaque `run_id`，不阻塞等待长任务。 |
+| **TC-AS-004** | TeamRun 编排 | `team/run` 创建 Leader 会话并以公共 `run_id` 驱动 planned DAG 执行。 |
+| **TC-AS-005** | 状态与通知一致 | 断线重连后通过 `run/get` 与 `run/events`（基于游标）完全恢复权威状态。 |
+| **TC-AS-006** | 规范事件生成 | 取消、重试、重规划均产生符合规范的单调递增点号事件。 |
+| **TC-AS-010** | 脱敏与 Opaque ID | 错误响应、流式事件、查询接口全字段扫描，零内部 DB 主键、零路径逃逸。 |
+| **TC-AS-011** | 工作区沙箱 | 符号链接、跨盘穿越或已注销的工作区操作一律返回 `workspace_denied`。 |
+| **TC-AS-012** | 幂等重放控制 | 重复提交相同幂等键返回原 Receipt；篡改参数提交相同 Key 抛出 `idempotency_conflict`。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-12`** —— 2026-09-28 让**升级**成为一个显式动作：新增
+> 指纹：**`fp-13`** —— 2026-09-29 把**市场策略**放上协议面，并让后台扫掠在受控范围内
+> 升级条目。新增两个**有 HTTP 路由**的方法：`market/settings`（`GET /api/app-server/market-settings`）
+> 读宿主级策略，`market/settings-set`（`POST`，同路径）写它。策略的真源是宿主
+> `config.toml`：写面用 `toml_edit` 只改指名的键（注释与其它设置原样存活）并回读文件作答，
+> 调度器每个 tick 重读该文件，所以保存即生效——`market/settings` 报的周期/白名单永远是文件里的值，
+> 外加一个诚实读数 `sweep_enabled`（桌面宿主没有配置文件路径，周期有值也不会跑）与纯内存的
+> `last_sweep`。同批把 `auto_update` 开关的语义从「只刷新索引」扩为「刷新索引 **+** 自动升级
+> 从该市场安装的条目」：默认白名单 `["agent","team","skill"]`——**连接器绝不隐式包含**，因为
+> 连接器升级会因配置变化被置为停用（`36` §3.4），无人值守升级等于静默掉线；用户手动停用
+> （组件 `disabled=1`）、源上 `blocked_reason` 非空、只导入未安装的条目一律跳过；
+> `entry_auto_update_kinds = []` 即回到「只刷新索引」的旧行为。启动侧同时新增 per-source
+> `download_on_start`（缺省 `true`，
+> 保持「写进配置即启动下载」的语义）与两个环境变量通道 `AGENT_STORE_MARKET_DOWNLOAD`
+> （`eager` / `lazy` / `none`，进程级、不写盘）与 `AGENT_STORE_CONFIG`（让 SDK 能指向自己的
+> 配置文件）——方案与代价见 `37-market-download-policy.zh.md`。计数 `53 / 78` → **`55 / 80`**。
+> 上一值 **`fp-12`**（2026-09-28）让**升级**成为一个显式动作：新增
 > `store/update-entry`（`POST /api/app-server/store/{marketplace_id}/entries/{entry_name}/update`），
 > 把已安装条目升到市场当前广告的版本。顺序是契约：**先导入并安装新版本，只有这次安装
 > 全部成功才释放旧版本**——失败时旧安装原样保留（`released_count: 0` 是它的机器可读形式），
@@ -890,6 +1087,7 @@ Store（4.7）把所有源聚合为商店视图；市场自身提供源管理（
 - `github`：GitHub 仓库（`owner/repo`，Phase B）；
 - `git`：任意 Git 仓库（HTTPS/SSH URL 或本地 `.git` 路径，Phase B）；
 - `url`：HTTP(S) `marketplace.json`（Phase B）；
+- `zip`：HTTP(S) 归档，归档根即市场根（`fp-7`，官方三源即此形态，见 §4.6 的获取语义）；
 - `directory`：本地目录（仅开发用；UI 排序在最后）。
 
 能力协商：`capabilities.marketplaces`。
@@ -902,6 +1100,8 @@ POST   /api/app-server/markets/{marketplace_id}/remove          # market/remove�
 POST   /api/app-server/markets/{marketplace_id}/auto-update     # market/auto-update {enabled}
 POST   /api/app-server/markets/{marketplace_id}/refresh         # market/refresh（fetch + 投影重建）
 POST   /api/app-server/markets/{marketplace_id}/entries/{entry}/import  # 条目导入（复用 import 管线）
+GET    /api/app-server/market-settings                    # market/settings（宿主级策略，fp-13）
+POST   /api/app-server/market-settings                    # market/settings-set（写穿 config.toml，fp-13）
 ```
 
 `market/add` 请求体：
@@ -978,8 +1178,36 @@ name / source_kind（directory|external）/ source / version / description / key
   `marketplace_id + entry_name`（远端再附 `resolved_revision`）记为快照 provenance
   （内部溯源，不出现在公共响应）；
 - 市场源路径与条目 `source` 只在服务端解析；公共响应不含绝对路径；
-- `auto-update` 开关仅记录（第三方默认关闭），Phase B 无后台自动刷新任务
-  （手动 `market/refresh` 触发同一 fetch 管线）。
+- `auto-update` 开关的语义（`fp-13` 起）：**刷新该市场索引 + 自动升级从该市场安装的条目**。
+  后台扫掠（R27 已实现，`18` §9.2）按 `[marketplace] auto_update_interval_hours` 轮询，
+  **仅覆盖官方源**（第三方源永不自动拉取）、逐轮走 `refresh` 的摘要短路，并按
+  `entry_auto_update_kinds` 白名单升级条目（默认 `["agent","team","skill"]`，连接器需显式勾选）。
+
+**宿主级市场策略（`market/settings` · `market/settings-set`，`fp-13` 加入）**：
+
+```text
+# market/settings 响应（AppServerMarketSettings）
+{
+  auto_update_interval_hours: number | null,   # 有效扫掠周期（小时）；null = 关闭
+  entry_auto_update_kinds: string[],           # 有效白名单；[] = 只刷新索引
+  sweep_enabled: boolean,                      # 本宿主是否真会跑扫掠（需解析到配置文件）
+  last_sweep: { at, refreshed, upgraded, failed: [{ id, error }] } | null
+}
+
+# market/settings-set 请求（AppServerMarketSettingsPatch；缺省字段 = 不改）
+{ auto_update_interval_hours?: number,          # 0 = 关闭；上限 8760
+  entry_auto_update_kinds?: string[] }          # [] = 不升级任何条目
+```
+
+规则：
+
+- **配置文件是唯一真源**：写面用 `toml_edit` 只改指名的键（注释与其它设置原样存活），
+  随后**回读文件**作答（不做乐观回显）；命中不到文件时按 `config_unavailable` 拒绝；
+- **热生效**：后台调度器每个 tick 重读文件，因此写面即生效，不需要重启；
+- **白名单拒绝未知类型**：`agent|team|skill|connector` 之外的值是 `invalid_request`，
+  文件不动（避免把拼写错误写成「调度器决定不升级它」）；
+- **`sweep_enabled=false` 是诚实读数**：桌面宿主未解析到配置文件，即便周期有值也不会跑扫掠；
+- `last_sweep` 是**纯内存**读数（进程重启即回到 `null`），从不写盘。
 
 ### 4.7 Store（winget 式应用商店，roadmap Phase 2 + Store 扩展）
 
@@ -2011,4 +2239,3 @@ execution/session/attempt ID。事件流 lag 时发送
   6. 三个方法都**没有路径参数**：没有任何请求能指定被读写的文件。
 - 自动化落点：`nomifun-api-types --lib mcp_declarations`（30 例，含 7 例扫描器/拒绝语义）、
   `nomifun-app-server --lib`（123 例）；见 `16` §8.3。
-

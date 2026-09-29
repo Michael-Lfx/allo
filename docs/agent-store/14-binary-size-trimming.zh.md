@@ -1,3 +1,169 @@
+# Agent Store 二进制瘦身：Feature Gate 裁剪 · 技术方案
+
+> **状态**：✅ **代码与编译验证完成**（Windows x86_64 二进制体积优化）  
+> **核心原则**：按需打包与平滑降级 —— **Feature Gate 默认开启保持既有宿主零影响**，**独立 Store 宿主剔除原生重货依赖**，**特性未启用时提供类型安全与显式错误**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+`agent-store.exe` 是 Agent Store 独立分发的轻量级宿主服务。用户在 CLI 或通过 SDK 启动时，期望获得小巧、快速拉起的服务进程。
+
+### 1.2 现状与两大痛点
+在早期构建中，`agent-store.exe` 的 Release 二进制体积高达 **218.7 MiB**：
+
+1. **后端单体全量链接，背负大量无用机器码**  
+   PE 节区实测显示，机器代码（`.text`）占到了 **160.7 MiB**，内嵌静态资产实际仅占 ~6.4 MiB。体积大头主要来源于全量静态链接的 Rust 依赖库。
+2. **打包了与 Store 无关的桌面端专属原生“重货”依赖**  
+   - `aws-sdk-bedrock`：自动生成的 AWS SDK 库，单个 rlib 体积高达 **59.5 MiB**；
+   - `ort` / `ort-sys`：包含预编译的 ONNX Runtime 静态 C++ 运行时，仅用于桌面端的语音端点检测（Silero VAD）；
+   - `nostr` / `bitcoin`：包含 secp256k1 加密库的第三方渠道集成（11.1 MiB）。
+
+### 1.3 裁剪预期对比表
+
+| 依赖模块 | 原体积贡献 | 裁剪手段 | 关停后行为 |
+|---|---|---|---|
+| **AWS Bedrock SDK** | ~59.5 MiB | `bedrock` Feature Gate | 显式返回 `BadRequest("Bedrock is not supported in this build")` |
+| **ONNX Runtime (Silero)** | ~25+ MiB | `silero-vad` Feature Gate | 自动降级为轻量能级检测（`EnergyVad`），零外部二进制依赖 |
+| **Nostr (Bitcoin Crate)** | ~11.1 MiB | 禁用 `nomifun-app` 的 `channel-nostr` | 彻底移除对 secp256k1 的静态链接 |
+| **整体可执行文件体积** | **218.7 MiB** | — | **预计降至 ~150-160 MiB（体积压减 ~25-30%）** |
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 依赖裁剪架构图
+
+通过在顶层与中间层精准引入 Feature Gate，切断 Store 宿主对底层原生二进制重货的依赖传递：
+
+```mermaid
+flowchart TD
+    subgraph CargoWorkspace ["Cargo 依赖树与构建目标"]
+        Desktop["Desktop / Web 宿主\n(全量特性，默认开启)"]
+        StoreHost["agent-store 宿主\n(default-features = false)"]
+    end
+
+    subgraph FeatureGates ["中间层 Feature Gate"]
+        App["nomifun-app (组合根)"]
+        Sys["nomifun-system"]
+        Robot["nomifun-robot"]
+    end
+
+    subgraph HeavyDeps ["原生重货依赖 (裁剪目标)"]
+        Bedrock["aws-sdk-bedrock (59.5MB)"]
+        ORT["ort / ONNX Runtime (静态库)"]
+        Nostr["nostr / bitcoin (secp256k1)"]
+    end
+
+    Desktop -->|开启全量特性| App
+    App --> Sys
+    App --> Robot
+    
+    Sys -->|bedrock 开启| Bedrock
+    Robot -->|silero-vad 开启| ORT
+    App -->|channel-nostr 开启| Nostr
+
+    StoreHost -.->|剥离 feature| Sys
+    StoreHost -.->|剥离 feature| Robot
+    StoreHost -.->|关闭 nostr| App
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **显著缩减体积**：剔除三大无用重货，大幅减轻网络下载与启动冷加载开销。
+2. **零副作用与宿主兼容**：所有 Feature Gate 默认保持开启，确保桌面端（Desktop）与 Web 端的全量功能不受任何破坏。
+3. **类型安全与优雅降级**：特性关闭时，代码结构和类型定义依然无条件保留，路由挂载保持契约一致，仅在内部函数执行时提供受控的显式报错或平滑降级。
+
+#### 明确的非目标
+- **不拆解大型单体 Crate**：本阶段不开展巨型结构体 `AppServices` 的解耦手术，以最低工程代价获取最高收益。
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：`nomifun-system` 引入 `bedrock` Feature
+
+#### 1. Cargo 依赖配置
+```toml
+[features]
+default = ["bedrock"]
+bedrock = ["dep:aws-config", "dep:aws-sdk-bedrock"]
+
+[dependencies]
+aws-config = { workspace = true, optional = true }
+aws-sdk-bedrock = { workspace = true, optional = true }
+```
+
+#### 2. 代码受控降级
+- 路由挂载类型（如 `ConnectionTestRouterState`）无条件保留，确保与上位组合根类型兼容；
+- 当 `bedrock` 关闭时，发起 Bedrock 连接测试或模型获取均返回显式错误：`AppError::BadRequest("Bedrock is not supported in this build")`。
+
+---
+
+### 3.2 模块二：`nomifun-robot` 引入 `silero-vad` Feature
+
+#### 1. Cargo 依赖配置
+```toml
+[features]
+default = ["silero-vad"]
+silero-vad = ["dep:ort"]
+
+[dependencies]
+ort = { workspace = true, optional = true }
+```
+
+#### 2. VAD 算法自动回退
+- 开启时：使用基于 ONNX Runtime 的深度学习语音活动检测模型（Silero VAD）；
+- 关闭时：打印告警日志并自动降级为基于纯算力的轻量能级检测（`EnergyVad`），完全移除对底层 C++ ONNX Runtime 的物理依赖。
+
+---
+
+### 3.3 模块三：Store 宿主精准收敛构建
+
+在 `apps/agent-store/Cargo.toml` 中，通过禁用默认特性并按需显式指定核心模块，排除 Nostr 渠道与两大原生重量级特性：
+
+```toml
+# apps/agent-store/Cargo.toml
+
+[dependencies]
+nomifun-app = { workspace = true, default-features = false, features = [
+  "channel-web",
+  "channel-wecom",
+  # 显式排除 channel-nostr, bedrock, silero-vad
+] }
+```
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **裁剪实施路径** | **基于 Cargo Feature Gate 精准裁剪** | ❌ 彻底重构拆分 Backend Crate：涉及 40+ Crates 的组合根重写，周期长且破坏性极大。 |
+| **D2** | **特性默认值** | **默认开启（Default = ON）** | ❌ 默认关闭：导致桌面端和其他全功能宿主发生破坏性功能丢失。 |
+| **D3** | **关闭期降级语义** | **显式报错 / 优雅降级** | ❌ 直接让代码物理消失（编译期宏消除函数）：导致上层路由组装断裂，编译大面积报错。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **依赖树彻底剥离** | 执行 `cargo tree -p nomifun-app-server` 与 `cargo tree -p agent-store`，输出中完全不包含 `aws-sdk-bedrock` 与 `ort`。 |
+| **S2** | **宿主编译正常通过** | `cargo check -p agent-store` 编译一次性通过，类型断言无异常。 |
+| **S3** | **桌面端零功能回归** | `cargo test -p nomifun-system` 与 `cargo test -p nomifun-robot` 默认特性下单测全部全绿。 |
+| **S4** | **受控报错验证** | 在 Store 宿主中尝试调用 Bedrock 连接探测，系统返回可读的 `Bedrock is not supported in this build` 错误。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Agent Store 二进制瘦身：feature gate 裁剪记录
 
 > 2026-09-04。目标：降低 `agent-store.exe`（Windows x86_64）体积。

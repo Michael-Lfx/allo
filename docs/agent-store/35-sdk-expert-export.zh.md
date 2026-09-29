@@ -1,3 +1,227 @@
+# SDK 导出 Agent / Team 及其 Skills（物化到目录）· 技术方案
+
+> **状态**：✅ **已实施落地**（2026-09-24，代码与全量单测落地，零 wire 变更）  
+> **核心原则**：SDK 纯客户端物化 —— **Wire 层零变更**，**`client` 保持纯净环境无关（无 `node:fs`）**，**`sdk` 提供一手导出与物化 API**，**团队技能按 ID 跨成员去重**，**未安装技能软容错（Dangling 收集）**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+在完成底层专家定义导出协议（`ExpertPack`）后，外部开发者期望通过 TypeScript SDK 能够一行代码导出专家（Agent）、专家团（Team）及其所依赖的全部技能（Skills）到本地物理目录，以便直接运行在外部的智能体 Runtime 中。
+
+### 1.2 现状与两大痛点
+1. **开发者缺乏一手的目录物化工具**  
+   虽然服务端已提供 `agent/export`、`team/export`、`skill/files` 等原子协议接口，但开发者若想在本地得到完整的可运行资产目录，必须自行手写十多行文件遍历、目录创建、Base64 解码与技能拉取代码，开发体验割裂。
+2. **多 Agent 团队的技能与人设结构复杂**  
+   对于包含多个成员的专家团（Team）：
+   - 团队顶层自身没有单独的 Persona 正文，每位成员各有其独立的 Persona；
+   - 团队顶层没有集中声明技能，技能分散在各个成员的 `members[].skills` 中，不同成员经常引用同名或相同 ID 的公共技能（如代码执行工具、浏览器工具）。手写物化极易产生冲突覆盖或遗漏。
+
+### 1.3 核心设计结论
+
+| 维度 | 设计决定 | 说明 |
+|---|---|---|
+| **协议层（Wire）** | **零变更** | 复用既有 `agent/export`、`team/export`、`skill/files`，不变更协议指纹 |
+| **代码落点** | **仅收敛于 `@flowy-agent-store/sdk`** | `packages/client` 严格保持纯净（支持浏览器与裸 Node），**绝不引入 `node:fs`** |
+| **公开 API** | `exportAgent` / `exportTeam` / `materializePack` | 导出定义与落盘物化双重能力 |
+| **团队技能处理** | **跨成员按 ID 严格去重** | 收集全部成员的技能依赖并全局去重，统一物化至根级 `skills/` |
+| **未安装技能** | **软容错收集（Dangling）** | 声明了但本地未安装的技能不中断整体流程，收集并返回警告列表 |
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 端到端物化流程图
+
+```mermaid
+flowchart TD
+    subgraph Caller ["调用方 (外部开发者代码)"]
+        Exec["调用 exportAgent(harness, id, targetDir) 或 exportTeam(...)"]
+    end
+
+    subgraph SDKExportModule ["@flowy-agent-store/sdk (export.ts)"]
+        FetchPack["1. 调用 wire 接口获取 ExpertPack (内存对象)"]
+        
+        subgraph MaterializeEngine ["materializePack 核心物化流水线"]
+            WriteJSON["2. 写入根目录 expert-pack.json"]
+            BranchKind{"是 Agent 还是 Team?"}
+            
+            WriteSinglePersona["3a. 写入根目录 persona.md"]
+            WriteTeamPersonas["3b. 为每位成员写入 members/<id>/persona.md"]
+            
+            CollectSkills["4. 提取技能列表 (Team 遍历所有成员并按 ID 去重)"]
+            
+            subgraph LoopSkills ["5. 遍历技能并拉取文件"]
+                FetchSkillFiles["调用 skill/files 获取清单"]
+                CheckDangling{"技能是否存在?"}
+                FetchSkillFiles --> CheckDangling
+                CheckDangling -->|存在| WriteFiles["流式写入 skills/<name>/..."]
+                CheckDangling -->|缺失| PushDangling["记入 dangling 数组 (软容错)"]
+            end
+        end
+    end
+
+    subgraph OutputDisk ["本地物理目录结构"]
+        OutDir["目标目录\n├── expert-pack.json\n├── persona.md (单专家)\n├── members/ (团队成员人设)\n└── skills/ (去重后的技能集合)"]
+    end
+
+    Exec --> FetchPack
+    FetchPack --> WriteJSON
+    WriteJSON --> BranchKind
+    BranchKind -->|Agent| WriteSinglePersona
+    BranchKind -->|Team| WriteTeamPersonas
+    WriteSinglePersona --> CollectSkills
+    WriteTeamPersonas --> CollectSkills
+    CollectSkills --> LoopSkills
+    WriteFiles --> OutDir
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **开箱即用的交付物**：调用者传入目标路径即可全自动落盘成标准化结构目录。
+2. **多平台纯净性维护**：SDK 具备文件操作能力，而轻量客户端（Client）维持零 Node 核心模块依赖。
+3. **团队拓扑清晰化**：团队各成员的人设分目录独立存放，多技能跨成员自动合并去重。
+
+#### 明确的非目标
+- **不在网络传输中内联技能文件**：技能依然保持引用式拉取，防止服务端单次序列化数十兆冗余数据。
+- **不做破坏性事务回滚**：若磁盘写入中途因磁盘已满等物理故障中断，交由调用方决定清理，不在 SDK 内封装复杂的事务文件锁。
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：公开接口定义
+
+SDK 位于 `web/packages/sdk/src/export.ts`，导出以下核心方法与依赖接口：
+
+```ts
+import type { ExpertPack } from "@flowy-agent-store/protocol";
+
+/**
+ * 最小依赖契约，Harness 实例天然兼容
+ */
+export interface ExportDeps {
+  agents: { export(agentId: string): Promise<ExpertPack> };
+  teams: { export(teamId: string, teamVersion?: string): Promise<ExpertPack> };
+  skills: {
+    files(skillId: string): Promise<{ files: { path: string }[] }>;
+    readFile(skillId: string, path: string): Promise<Uint8Array>;
+  };
+}
+
+export interface MaterializeOptions {
+  /** 写入的目标根目录 */
+  targetDir: string;
+  /** 遇到悬空/未安装技能时的回调 */
+  onDanglingSkill?: (skillId: string, error: unknown) => void;
+}
+
+export interface ExportResult {
+  pack: ExpertPack;
+  targetDir: string;
+  /** 声明了但宿主未安装的技能 ID 列表 */
+  danglingSkills: string[];
+}
+
+/** 导出单 Agent 及其技能到目录 */
+export async function exportAgent(
+  deps: ExportDeps,
+  agentId: string,
+  options: MaterializeOptions
+): Promise<ExportResult>;
+
+/** 导出 Team 及其成员与全部技能到目录 */
+export async function exportTeam(
+  deps: ExportDeps,
+  teamId: string,
+  options: MaterializeOptions
+): Promise<ExportResult>;
+
+/** 将任意已有的内存 ExpertPack 对象物化到本地目录 */
+export async function materializePack(
+  deps: ExportDeps,
+  pack: ExpertPack,
+  options: MaterializeOptions
+): Promise<ExportResult>;
+```
+
+---
+
+### 3.2 模块二：物化规范与文件结构
+
+物化生成的目标目录严格遵循以下规范排布：
+
+#### 单 Agent 目录结构
+```text
+<targetDir>/
+  ├── expert-pack.json          # 完整的 ExpertPack 协议 JSON (含 pack_format)
+  ├── persona.md                # 专家自身完整的 instructions 正文
+  └── skills/
+      └── web-search/           # 技能名称命名的子目录
+          ├── SKILL.md
+          └── scripts/
+```
+
+#### Team 目录结构
+```text
+<targetDir>/
+  ├── expert-pack.json          # 完整的团队定义 (含成员名单与 Leader 标记)
+  ├── members/                  # 各成员的人设正文
+  │   ├── dev-lead/
+  │   │   └── persona.md
+  │   └── test-engineer/
+  │       └── persona.md
+  └── skills/                   # 全局按 ID 去重后的技能集合
+      ├── code-eval/
+      └── git-tools/
+```
+
+---
+
+### 3.3 模块三：关键边界与容错处理
+
+1. **团队技能提取与去重**  
+   团队根级定义中的 `pack.skills` 为空数组。物化逻辑自动深度扫描 `pack.team.members`，汇总每个成员的 `skills` 列表，使用 `Map<skillId, skillRef>` 严格去重后再进行批量下载。
+2. **未安装技能（Dangling）软容错**  
+   在实际场景中，专家包声明的某些技能可能未在本地宿主中安装：
+   - 当调用 `skills.files(skillId)` 报错（如 `NotFound`）时，系统**坚决不中断整个导出任务**；
+   - 捕获该异常并将该 `skillId` 记入结果的 `danglingSkills` 列表中，若配置了 `onDanglingSkill` 回调则触发通知；
+   - 保证核心代码与已安装的技能依然能够顺利物化落地。
+3. **路径穿越防护**  
+   服务端下发的 `file.path` 为技能目录内的 POSIX 相对路径，物化时对其进行严格的根路径规范化解析（`path.resolve`），杜绝恶意构造的 `../` 突破目标目录。
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **代码分包归属** | **放置在 `packages/sdk`** | ❌ 放置在 `packages/client`：引入 `node:fs` 依赖，破坏客户端跨平台和浏览器直接使用的纯净性。 |
+| **D2** | **技能传输形式** | **保持引用，SDK 侧逐个拉取物化** | ❌ 服务端序列化时内联二进制：破坏了 `ExpertPack` 纯元数据契约，导致接口传输数百兆冗余数据。 |
+| **D3** | **缺失技能容错** | **收集到 `danglingSkills`，主流程成功** | ❌ 缺一不可强制报错：用户往往只需要专家的核心人设，某一个辅助工具缺失不应彻底阻断整个资产迁移。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **单 Agent 完整导出** | `expert-pack.json` 与 `persona.md` 正确写入，技能文件逐字节与 `skill/file` 内容一致。 |
+| **S2** | **Team 技能全局去重** | 团队中多位成员声明同一技能时，目标 `skills/` 目录下仅物化一份，无文件覆写冲突。 |
+| **S3** | **Team 成员人设分存** | 团队成员按 ID 正确生成 `members/<id>/persona.md`，内容与各自声明严格吻合。 |
+| **S4** | **Dangling 技能软容错** | 构造包含不存在技能的专家包，导出顺利完成，`danglingSkills` 列表中正确收录缺失的技能 ID。 |
+| **S5** | **零 Wire 指纹影响** | `bun run check:fingerprint` 保持常绿，协议方法计数与接口定义无任何变更。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # SDK 导出 agent / team 与其 skills（写到目录）· 技术方案
 
 > 状态：🔧 **实施中**（代码已落地，读数回写见 §8）。

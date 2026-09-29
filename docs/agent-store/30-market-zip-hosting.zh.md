@@ -1,3 +1,179 @@
+# 市场 Zip 单包托管（ModelScope）· 技术方案
+
+> **状态**：✅ **已实施落地**（2026-09-17，协议指纹 `fp-7`）  
+> **核心原则**：单包高内聚与高效短路 —— **以 Zip 单归档替代万级散文件镜像**，**HEAD 获取内容 SHA256 实现零字节新鲜度探测**，**解压原子晋升保证损坏隔离**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+Agent Store 包含专家（Experts）、技能（Skills）、连接器（Connectors）三大官方市场。早期版本采用“静态站点逐文件托管 + 客户端逐文件镜像拉取”的分发架构。
+
+### 1.2 现状与两大痛点
+随着条目数量迅速增长，原有架构在站点部署和客户端加载两侧均遇到了物理极限：
+
+1. **静态部署产物超限，线上流水线崩溃**  
+   托管平台（EdgeOne）对静态站点产物设有 **20,000 个文件上限**。全量市场展开后的文件总数高达 **22,706 个**（专家 14,714 + 技能 4,634 + 连接器 3,264），导致站点默认构建与自动化发布持续失败。
+2. **客户端首屏网络请求爆炸，启动耗时不可接受**  
+   客户端首次拉取专家市场时，需要连续发起 **14,714 次 HTTP GET 请求**，累计拉取 611.3 MiB 散文件。在高延迟或网络波动环境下，冷启动常逼近 600 秒超时红线，造成极差的用户体验。
+
+### 1.3 核心指标对比表
+
+| 维度 | 旧架构（逐文件整树镜像） | 本方案（Zip 单包托管） | 改善效果 |
+|---|---|---|---|
+| **专家市场首次获取请求数** | 14,714 次 | **1 次** | **请求数降低 99.99%** |
+| **专家市场首次获取传输量** | 611.3 MiB | **289.0 MiB** | **体积压缩 52.7%** |
+| **站点部署产物文件数** | 22,706 个 | **约 742 个** (仅留图标) | **文件数下降 96.7% (部署解红)** |
+| **更新检查开销 (无变动时)** | 多次文件头往返检查 | **1 次轻量 HEAD 请求** (零正文) | **秒级极速校验** |
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 整体流向与生命周期图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as 客户端 (App Server)
+    participant ModelScope as ModelScope 托管平台
+    participant CDN as CDN 节点 (LFS Objects)
+    participant Disk as 本地暂存区 (Staging)
+    participant Live as 生产市场目录 (Live Root)
+
+    Note over Client,ModelScope: 阶段 1: 新鲜度探测 (零字节短路)
+    Client->>ModelScope: HEAD /resolve/master/experts.zip
+    ModelScope-->>Client: 200 OK (响应头返回 X-Linked-Etag = 内容 SHA256)
+    
+    alt 本地 resolved_revision == 远端 SHA256
+        Note over Client: 归档未变动，流程结束 (0 流量消耗)
+    else 归档存在更新 或 本地尚未下载
+        Note over Client,CDN: 阶段 2: 流式拉取与完整性校验
+        Client->>ModelScope: GET /resolve/master/experts.zip
+        ModelScope-->>Client: 302 重定向到 CDN 带签名 URL
+        Client->>CDN: GET (跟随重定向，拉取二进制流)
+        CDN-->>Client: 返回 Zip 归档数据流
+        Client->>Disk: 流式保存为 staging 外的临时文件 temp.zip
+        Client->>Client: 计算本地 temp.zip 的 SHA256，校验与 ETag 一致
+        
+        Note over Client,Live: 阶段 3: 解压、结构检验与原子晋升
+        Client->>Disk: 解压 temp.zip 到 staging 临时目录
+        Client->>Disk: 结构自检 looks_like_market(&staging)
+        alt 校验通过
+            Client->>Live: 原子替换 (promote staging -> live)
+            Client->>Client: 更新 resolved_revision 为新 SHA256，清理 temp.zip
+        else 校验失败 (包损坏)
+            Client->>Disk: 回滚清理 staging，保留现有 last-good 市场目录不变
+        end
+    end
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **解决站点超限**：将官方三大市场迁移至外部存储托管，站点自身仅保留前端页面与目录展示图标（648 张），彻底解除文件上限。
+2. **极速下载与探测**：利用 ModelScope LFS 的 `X-Linked-Etag` 特性，实现单次 HEAD 探测即可完成版本判断；首次下载合并为单次压缩包拉取。
+3. **安全解压与防破坏**：解压过程引入大小与文件数配额防护，解压及检查未通过前绝不影响线上运行的旧版本目录。
+
+#### 明确的非目标
+- **不废弃既有源类型**：系统继续保留 `url`、`github`、`git` 和 `directory` 支持，第三方私有源不受影响。
+- **不执行历史配置自动覆写**：老用户若已有手工写入的旧配置，本批次仅通过文档指引升级，不隐式强制改写配置文件。
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：源类型扩展与 ModelScope 契约
+
+#### 1. 新增 `zip` 源类型
+在数据结构 `AppServerMarketplaceSourceKind` 中新增 `Zip` 枚举（对应字符串 `"zip"`）：
+
+```toml
+# ~/.agent-store/config.toml
+[default_marketplaces.experts]
+source_kind = "zip"
+source = "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/experts.zip"
+```
+
+- **市场根目录约定**：Zip 归档的根目录**即为市场根目录**，解压后的第一层目录即直接包含市场清单文件（如 `.codebuddy-plugin/marketplace.json` 等）。
+
+#### 2. ETag 与内容摘要对齐
+- ModelScope 的大文件通过 Git LFS 托管，当对稳定 URL 发送 `HEAD` 请求时，服务端直接返回响应头 **`X-Linked-Etag`**。
+- 经工程验证，该头的值**严格等于文件内容的标准 SHA256 摘要**。系统将其直接作为数据库中的 `resolved_revision`，省去了额外的元数据版本查询接口。
+
+---
+
+### 3.2 模块二：安全拉取与原子晋升流水线
+
+#### 1. 流式落盘与 302 跟随
+- 下载客户端配置跟随 302 重定向（重定向至 CDN 临时签名下载链接）；
+- 归档下载采用流式写入，存放在 Staging 目录**之外**的独立临时文件中。**归档包本身严禁写入 Staging 目录**，防止其解压后被当做市场条目误晋升至生产目录。
+
+#### 2. 解压预算安全抬高（`ZipExtractionBudget`）
+官方专家市场解压后规模庞大，系统必须显式调整默认的安全防炸弹预算：
+- **文件条目上限**：由默认的 20,000 调整支持至 50,000；
+- **解压总字节上限**：由默认的 256 MiB 提升至 **1024 MiB**（专家市场解压后实测达 611.3 MiB）；
+- **网络超时阈值**：独立设置 HTTP Client 超时时间为 **300 秒**（防止慢速网络中断大包）。
+
+#### 3. 结构校验与原子替换
+- 解压完成后，执行 `looks_like_market` 校验；
+- 校验通过后，通过操作系统的目录重命名（Rename）执行**原子替换（promote）**；若校验失败，则安全触发 `StagingGuard` 清理，确保生产市场服务不发生闪断或处于半损坏状态。
+
+---
+
+### 3.3 模块三：站点产物精简与图标留存
+
+#### 1. 图标本地留存策略
+- 站点部署不再包含任何市场代码与条目正文；
+- **展示图标留存**：前端展示层依赖同源静态资源解析，故站点静态目录中保留且仅保留 648 张条目图标文件，总文件数从 22,706 剧降至约 742 个，彻底解除 EdgeOne Makers 的 20,000 文件上限。
+
+#### 2. 确定性打包脚本（`pack-market-zips.mjs`）
+- 官方发布脚本在打包 Zip 时固定文件修改时间戳（mtime），使用标准 Deflate 算法生成**具有确定性哈希**的 Zip 归档；
+- 每次打包产出内容相同的 Zip 文件其 SHA256 完全一致，确保远端 CDN 缓存命中。
+
+---
+
+## 4. 关键缺陷排查与前置修复
+
+在落地本方案过程中，发现并清除了底层两处严重的隐蔽缺陷：
+
+1. **`looks_like_market` 遗漏插件市场清单**  
+   原探测逻辑中漏掉了 `.codebuddy-plugin/marketplace.json`。然而官方专家市场根目录下**仅包含该特定清单文件**。若不修复，任何专家归档解压后均会被误判为“非法市场”而直接丢弃。已在此前针对性补齐该清单判定。
+2. **数据库 Check 约束放宽（迁移 065）**  
+   SQLite 中 `plugin_marketplaces` 表原本建有 `CHECK (source_kind IN ('directory','github','git','url'))`。引入 `"zip"` 后需通过数据库迁移重建该表，并保证已有的四列拓展字段（`resolved_revision` 等）完整保留。
+
+---
+
+## 5. 核心决策与权衡（D1 ~ D4）
+
+| 编号 | 决策主题 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **发布解红节奏** | **站点解红与 Zip 客户端解析同批交付** | ❌ 先停用市场托管解红：会导致过渡期内用户完全无可用宿主拉取专家市场。 |
+| **D2** | **市场迁移范围** | **专家、技能、连接器三大市场全部迁移** | ❌ 仅迁移超限的专家市场：维护两套异构分发逻辑，增加代码复杂度。 |
+| **D3** | **存量配置迁移** | **仅写文档指引，不自动覆写文件** | ❌ 程序启动时隐式篡改用户 config.toml：破坏用户既有文件内容，违反可预测性原则。 |
+| **D4** | **协议指纹** | **标记为 `fp-7`** | 遵循协议连续性原则对齐。 |
+
+---
+
+## 6. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **HEAD 探测零下载** | 本地已有最新 SHA256 记录时，执行 `market/refresh` 仅产生 1 次 HTTP HEAD 请求，下行数据流量为 0 字节。 |
+| **S2** | **Zip 归档单包拉取** | 首次添加官方 Zip 源时，仅产生 1 次重定向 GET 请求，完整拉取 289MB 压缩包并成功落地。 |
+| **S3** | **SHA256 完整性检验** | 模拟归档文件传输篡改，客户端检测到本地 SHA256 与 `X-Linked-Etag` 不匹配，主动拒绝并安全回滚。 |
+| **S4** | **超限解压与结构验证** | 面对 611MB 大解压包，解压预算顺利放行不报 OOM，解压后正确识别 `.codebuddy-plugin/marketplace.json`。 |
+| **S5** | **站点构建文件数** | 站点流水线执行 `pack:market` 后，产物文件总数严格小于 1,000（实测约 742），部署状态常绿。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 30 · 市场 zip 单包托管（ModelScope）
 
 > 状态：**已落地（2026-09-17）**。本批是 wire 变更（`AppServerMarketplaceSourceKind` 新增枚举值 + `plugin_marketplaces.source_kind` 的 CHECK 放宽），协议指纹随本批 bump 到 **`fp-7`**。三个官方归档已上传到 ModelScope 并通过远端摘要回验（§9.5），客户端对真实归档的端到端见 §9.6。
@@ -479,3 +655,19 @@ doc 30 把「全量镜像」变成「一次请求」之后，**首个请求仍�
 - **下载是「一次性、不回头」**：`auto_update` 初始为 0，点过「下载」的市场**不会**自动进入更新扫掠，
   除非用户再单独打开该开关。这是刻意的（§11.2 第 1 点）。
 
+### 11.5 后续（2026-09-29，doc `37`）：按需下载成为可配置项
+
+§11.2 的默认行为（默认注册只写注册表行、不下载）**不变**，但现在可以被显式声明与进程级覆盖：
+
+- **per-source `download_on_start`**（`[default_marketplaces.<id>]`，缺省 `true`）：缺省保持
+  「写进配置的活行＝启动即取包」；显式 `false` 时该源只写注册行，归档留给显式 `market/refresh`。
+  这让「同一份配置里，这个源启动就下、那个源按需」成为可能——此前只有「整个声明列表下或不下」；
+- **`AGENT_STORE_MARKET_DOWNLOAD=eager|lazy|none`**（进程级、不写盘）：`lazy` 强制全部只注册、
+  `none` 连注册都不做（首屏彻底静默）。这是 SDK 这类「自己 spawn 宿主」的调用方唯一可用的通道
+  （`apps/agent-store` 不接受 `--agent-store-config` 之类的后端 CLI 参数）；
+- **`AGENT_STORE_CONFIG=<path>`**：让该进程读自己那份 `config.toml`——没有它，上面的 per-source
+  字段对 SDK 使用者等于不存在。
+
+§11.4 的「下载是一次性、不回头」也随之可解：`market/auto-update` 与 `market/settings-set`
+可以在运行期打开自动更新，而它的语义已扩为「刷新索引 **+** 自动升级从该市场安装的条目」
+（`18` §9.2）。方案、决策与代价见 `37-market-download-policy.zh.md`。

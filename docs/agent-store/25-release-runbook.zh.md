@@ -1,3 +1,218 @@
+# Agent Store 发版操作手册 (Release Runbook) · 技术方案
+
+> 状态：✅ 现行操作规范（Beta 发版执行依据，覆盖 `0.1.0-beta.N`）；发版流水线实操验证通过
+> 日期：2026-08-26（更新：2026-09-20）
+> 适用范围：Agent Store npm 四包 + 站点仓 GitHub Release 资产 + 官网文档站上线
+> 前置：[`09-release-readiness.md`](file:///c:/workspace/allo/docs/agent-store/09-release-readiness.md)、[`12-sdk-packaging.md`](file:///c:/workspace/allo/docs/agent-store/12-sdk-packaging.md)、[`18-marketplace-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/18-marketplace-spec.zh.md)
+> 一句话原则：**一次发版覆盖 npm 四包、GitHub Release 与站点三大出口，严守 7 条不变量与 S0~S8 顺序流水线，以同一二进制与版本锁步杜绝破损发布**
+
+---
+
+## 1. 背景与核心痛点
+
+Agent Store 包含 Rust 编写的引擎服务端可执行程序、四个互相依赖的 npm 前端/Node SDK 包，以及面向用户的双语文档网站与 GitHub Release 下载包。发版涉及跨仓库协同，面临以下典型痛点：
+
+### 1.1 核心痛点分析
+
+1. **多出口产物不一致（二义性二进制）**：若 npm 运行时包中的 `agent-store.exe` 与 GitHub Release 下载的 ZIP 中的可执行文件是在不同环境下分别编译构建的，会导致两类用户拿到不同行为的底层，排查 Bug 极其困难。
+2. **“先宣称上线，后上传资产”引发 404**：若在 GitHub Release 资产尚未上传完成前就抢先推送站点，会导致官网首页的下载链接直接抛出 404，严重损害产品信誉。
+3. **包依赖顺序与发布时差窗口**：npm 上 `@flowy-agent-store/sdk` 强依赖 `@flowy-agent-store/runtime-win32-x64`。若发布顺序错乱或中间失败，用户在窗口期执行 `npm i` 会静默装成“无二进制”的破损状态。
+4. **注册表 CDN 滞后引发假告警**：npm 刚刚发布完成后，CDN 缓存存在 1~10 分钟的生效延迟。盲目依赖 `npm view` 会误判为发布失败并重复操作，导致版本号污染。
+
+---
+
+## 2. 方案全景与三大出口架构
+
+### 2.1 一次发版的三大出口协同
+
+```mermaid
+flowchart TD
+    subgraph BuildEngine ["1. 统一构建源头 (本仓)"]
+        SRC["Rust 代码 + WebUI 静态包"]
+        EXE["构建唯一二进制: target/release/agent-store.exe<br/>(固定 SHA-256 哈希)"]
+    end
+
+    subgraph OutNPM ["出口一：npm 官方注册表"]
+        N1["@flowy-agent-store/protocol"]
+        N2["@flowy-agent-store/client"]
+        N3["@flowy-agent-store/runtime-win32-x64 (内嵌 EXE)"]
+        N4["@flowy-agent-store/sdk (集成接入套件)"]
+    end
+
+    subgraph OutRelease ["出口二：GitHub Release (站点仓)"]
+        ZIP["flowy-agent-store-v<版本>-windows-x86_64.zip"]
+        SUM["SHA256SUMS.txt (校验清单)"]
+        NOTES["RELEASE_NOTES.md (发行说明)"]
+    end
+
+    subgraph OutSite ["出口三：官网与双语文档站"]
+        SITE["EdgeOne 双语静态站点 (中英结构对称)"]
+        DOCS["API 文档 / 变更日志 / 快速开始"]
+    end
+
+    SRC --> EXE
+    EXE -->|拷贝装配| N3
+    N1 --> N2 --> N3 --> N4
+    EXE -->|打包验证| ZIP
+    EXE -->|生成摘要| SUM
+    ZIP & SUM & NOTES -->|发布预发行| OutRelease
+    OutRelease -->|资产就绪后触发更新| OutSite
+```
+
+### 2.2 三大出口交付定义
+
+| 出口标识 | 交付产物与格式 | 执行载体与脚本 | 成功判据 |
+|---|---|---|---|
+| **出口一: npm** | 4 个同版本号 npm 包（全部挂 `beta` 标签） | `web/scripts/publish-packages.ts` | Canonical Packument 返回最新版本且无 404。 |
+| **出口二: GitHub Release** | ZIP 归档包 + `SHA256SUMS.txt`（标 prerelease） | 站点仓 `scripts/release.mjs` | `bun run release:status` 状态为绿，下载回验通过。 |
+| **出口三: 站点上线** | 官网与双语文档站（预渲染 HTML） | 站点仓手动触发 EdgeOne Makers | 页面正文渲染成功，下载直链真能获取 ZIP。 |
+
+---
+
+## 3. 发版 7 大核心不变量 (Invariants)
+
+发版操作必须严格满足以下 7 条硬性不变量，任一不成立直接终止流程：
+
+| 序号 | 核心不变量 | 违背后的系统后果 | 自动化/机械判据 |
+|---|---|---|---|
+| **1** | **协议指纹全仓处处一致** | 漏改一处会导致 SDK 握手时严格相等校验失败，直接拒绝连接。 | `bun run check:fingerprint` (exit 0) |
+| **2** | **跨仓版本号严格锁步** | 4 个 `package.json`、SDK 内部依赖、平台 Pin 与站点 `release.json` 必须同值。 | `bun run check:release-sync` (exit 0) |
+| **3** | **API 方法计数与路由表精准吻合** | 文档公开承诺的方法数（现行 `48 / 71`）必须与真实 Rust 路由表一致。 | `bun run check:release-sync` (exit 0) |
+| **4** | **同一份 EXE 服务两个出口** | npm runtime 包内的 EXE 必须与 GitHub Release ZIP 内的 EXE 拥有**完全一致的 SHA-256**。 | `release:pack --expect-sha256 <hash>` |
+| **5** | **站点双语文档结构镜像对称** | 中英文档的标题层级、代码块数量、表格列数必须一致，防止单语信息脱落。 | 站点 `bun run check:docs-sync` (exit 0) |
+| **6** | **先有 Release 资产，后有站点宣告** | 严禁颠倒顺序。必须先在 GitHub Release 就绪并完成下载回验，再推站点上线。 | 遵循流水线顺序 (S6 ➔ S7) |
+| **7** | **历史发布事实永不改写** | 已经发布过的版本号、发布日期和 Changelog 条目属于历史不可变事实，写错仅追加更正。 | 人工审计遵守 D10=A 原则 |
+
+---
+
+## 4. 标准有序发版流水线 (S0 ~ S8)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Dev as 开发者 / 发布机
+    participant Repo as 本仓 (allo)
+    participant Site as 站点仓 (agent-store-site)
+    participant NPM as npm 官方源
+    participant GH as GitHub Releases
+    participant Edge as EdgeOne 静态站
+
+    Dev->>Repo: S0: 检查工作树干净度
+    Dev->>Repo: S1: 构建带 static-webui 的唯一 EXE
+    Dev->>Repo: S2: 预演版本锁步 (dry-run)
+    Dev->>Site: S3: 更新 release.json 与中英文档
+    Dev->>Repo: S4: 执行本地与站点两仓门禁校验
+    Dev->>NPM: S5: 顺序发布 4 个 npm 包 (TAG=beta)
+    Dev->>Site: S6: 打包并上传 GitHub Release (--expect-sha256)
+    Site->>GH: 资产就绪并完成远端下载哈希回验
+    Dev->>Edge: S7: 推送代码并手动触发站点构建上线
+    Dev->>Repo: S8: 归档台账，Changelog 正式转正
+```
+
+### S0: 检查环境与工作树
+```powershell
+git -C . status --short                          # 必须干净，无未暂存修改
+git -C ..\agent-store-site status --short         # 站点仓必须干净
+bun install ; bun install --cwd ..\agent-store-site
+```
+
+### S1: 构建唯一的可执行二进制
+```powershell
+# 必须带 static-webui 特性，保证 SPA 资源内嵌
+bun run agent-store:build
+# 记录权威哈希
+Get-FileHash target\release\agent-store.exe -Algorithm SHA256
+```
+
+### S2: 版本锁步预演 (Dry-run)
+```powershell
+$env:DRY_RUN="1"; $env:VERSION="0.1.0-beta.5"; $env:TAG="beta"
+bun web/scripts/publish-packages.ts
+Remove-Item Env:DRY_RUN,Env:VERSION,Env:TAG
+
+# 验证 dry-run 修改仅限于版本与依赖 Pin
+git diff --stat
+bun web/scripts/verify-published-sdk.ts web/packages/runtime/vendor/flowy-agent-store.exe
+```
+
+### S3: 站点版本配置与文档同步
+1. 将站点仓 `content/release.json` 中的 `version` 改为目标版本。
+2. 按照本方案第 5 节的对照清单，同步更新中英双语文档。
+
+### S4: 两端门禁全量校验
+```powershell
+bun run release:check            # 本仓门禁 (Fingerprint, Release-sync, Web 测试)
+bun run release:check:site       # 站点门禁 (Docs-sync, Market-check, TS Check)
+```
+
+### S5: npm 原子顺序发布
+```powershell
+$env:VERSION="0.1.0-beta.5"; $env:TAG="beta"
+# 内部顺序保证: protocol ➔ client ➔ runtime ➔ sdk
+bun web/scripts/publish-packages.ts
+Remove-Item Env:VERSION,Env:TAG
+
+# 验证 Packument 元数据 (注意 CDN 缓存提示)
+npm view @flowy-agent-store/sdk dist-tags versions --json
+```
+
+### S6: GitHub Release 资产发布
+```powershell
+cd ..\agent-store-site
+bun run release:pack -- --exe C:\workspace\allo\target\release\agent-store.exe --expect-sha256 <S1步得到的哈希>
+bun run release:publish          # 创建草稿 ➔ 上传 ➔ 下载回算 SHA256 ➔ 转为正式 Prerelease
+bun run release:status
+```
+
+### S7: 官网发布与多级自检
+```powershell
+git add content/docs content/release.json
+git commit -m "docs(release): 发布 0.1.0-beta.5"
+git push origin main
+```
+- **手动触发构建**：登录 EdgeOne Makers 控制台手动触发本次构建。
+- **发布后自检三部曲**：
+  1. 访问中英文档，断言页面包含预渲染正文而非空白 SPA 壳。
+  2. 执行 `bun run publish:market -- --verify-only` 确认三个市场的 ModelScope 归档摘要一致。
+  3. 真实点击下载直链，确认浏览器能成功下载对应的 Windows ZIP 资产。
+
+### S8: 归档后台账与变更转正
+1. 将 `changelog.md` 中原先挂在“未发布”区域的说明正式转正至已发布版本列表，固定时间戳。
+2. 在 `docs/agent-store/README.md` 顶部的核对记录中登记本轮发布。
+
+---
+
+## 5. 站点文档同步核对清单
+
+| 站点文件路径 | 同步触发场景 | 校验依据与判据 |
+|---|---|---|
+| `content/docs/{zh-CN,en-US}/typescript-sdk.md` | 协议指纹更新 | `bun run check:fingerprint` (exit 0) |
+| 同上文件的方法计数标注 (`48 / 71`) | 路由表方法发生增减 | `bun run check:release-sync` (exit 0) |
+| `content/docs/{zh-CN,en-US}/changelog.md` | 每次发版 | 填入正式发版日志与 JSON 块，清空未发布待办。 |
+| `content/docs/{zh-CN,en-US}/upgrade.md` | 涉及升级与破坏性改动 | 新增当前版本的升级步骤与破坏性变更公告。 |
+| `content/release.json` | 每次发版 | 与 npm 包版本完全一致。 |
+| 全量 Markdown 双语结构 | 任何文档变更 | 站点 `bun run check:docs-sync` (exit 0) |
+
+---
+
+## 6. 异常处置与故障回退方案
+
+| 故障场景 | 影响与表现 | 应急处置与回退策略 |
+|---|---|---|
+| **npm 部分包发布中断** | 例如 `runtime` 已发布但 `sdk` 失败 | 用户侧无感知（旧版 SDK 仍指向旧版 runtime）。直接排查错误后单独补发缺失的包。 |
+| **npm 已全量发布但二进制存在严重缺陷** | 缺陷包已在注册表公开 | **npm 严禁删除已发布版本**。立刻执行 `npm deprecate` 标注弃用，并快速构建修正版本发布为 `beta.N+1`。 |
+| **GitHub Release 上传文件损坏** | 下载回验哈希不匹配 | 若仍处于草稿态，执行 `release:publish --replace-existing` 重传；若已正式发布，通过 `gh release upload --clobber` 覆盖。 |
+| **站点文档发布后显示 404** | 路由缺失或预渲染失败 | 检查新文档是否已在 `react-router.config.ts` 的 `prerender()` 数组中登记，补齐后重新推站。 |
+| **npm CDN 出现短时 404** | 发布后 1~10 分钟内 `npm i` 报 404 | 属于 npm 边缘节点同步延迟的正常物理现象。以 Canonical Packument 元数据为准，切勿误判为失败。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Agent Store 发布流程（npm + agent-store-site）
 
 > 定位：**发一次版的操作手册**——回答「怎么发」，不回答「能不能发」。产品准入（P0 门禁与发布结论等级）见 `09-release-readiness.md`；桌面端 Flowy 的发版见仓库根 `RELEASING.md`；市场树刷新见站点仓 `docs/market-maintenance.md`。三者互不替代。

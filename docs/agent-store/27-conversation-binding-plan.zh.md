@@ -1,3 +1,161 @@
+# 会话绑定：每轮技能 + 会话级专家 / 专家团 · 技术方案
+
+> **状态**：✅ **已实施落地**（2026-09-23，阶段 1 / 2a / 2b 全量落地）  
+> **核心原则**：层次清晰与生命周期正交 —— **“这轮用什么工具”（技能）随每轮 `send` 动态挂载**，**“这个会话是谁”（专家/专家团）在 `create` 会话创建期一次性确定并冻结**，**连接器坚决不做每轮切换**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+在用户与智能体交互过程中，存在两类截然不同的能力绑定需求：
+1. **轻量临时的单轮指导**：例如“针对我本轮给出的代码，利用 `code-review` 技能帮我分析一次”；
+2. **全局人设与协作机制的锚定**：例如“这个会话固定由 `前端开发专家` 或 `全栈专家团` 全程主导”。
+
+### 1.2 现状与两大痛点
+此前系统在能力绑定的输入口设计上存在严重缺失与概念混淆：
+
+1. **底层能力早已支持，但公开协议写死为空**  
+   底层引擎本就具备每轮提示词技能注入通道（`inject_skills`），但在公共的 `conversation/send` 接口上该参数被硬编码为空，导致客户端即使在界面提及了 `@skill` 也无法真正生效。
+2. **缺乏创建指定专家会话的正规入口**  
+   普通聊天会话在创建时默认没有绑定任何 Preset 人设，无法在建立会话之初就绑定特定的专家或专家团，导致会话身份不可控。
+
+### 1.3 核心能力设计矩阵
+
+| 绑定层级 | 绑定对象 | 接入接口 | 生命周期 | 为什么这样设计？ |
+|---|---|---|---|---|
+| **每轮动态 (Per-Turn)** | **技能 (Skill)** | `conversation/send` (`mentions`) | **仅本轮有效** | 技能本质是 Prompt 片段注入，无运行时进程开销，最适合随单条消息动态挂载。 |
+| **会话粘性 (Per-Session)** | **专家 (Agent)** | `conversation/create` (`agent_id`) | **会话全生命周期** | 专家对应唯一的底层 Preset 人设与配置，中途更换等同于更换会话主体。 |
+| **会话粘性 (Per-Session)** | **专家团 (Team)** | `conversation/create` (`team_id`) | **会话全生命周期** | 专家团需要建立队长（Leader）会话并注册 DAG 调度拓扑，必须在创建期完成冻结。 |
+| **禁止动态** | **连接器 (Connector)** | 属于宿主全局工具面 | — | 连接器涉及底层网络连接与 MCP 子进程拉起，无法承受每轮销毁重建的开销（非目标）。 |
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 整体流向与生命周期图
+
+```mermaid
+flowchart TD
+    subgraph CreatePhase ["1. 会话创建阶段 (conversation/create)"]
+        CreateReq["创建请求 (可选 agent_id 或 team_id，互斥)"]
+        CheckAgent{"是否指定 agent_id?"}
+        CheckTeam{"是否指定 team_id?"}
+        
+        CreateReq --> CheckAgent
+        CheckAgent -->|是| BindAgent["绑定专家 Preset 人设\n写入快照与 extra.preset_id"]
+        CheckAgent -->|否| CheckTeam
+        CheckTeam -->|是| BindTeam["构建专家团 Leader 会话\n挂载团队拓扑与编排规则"]
+        CheckTeam -->|否| DefaultSession["创建默认基础会话"]
+        
+        BindAgent --> Freeze["会话身份建立完成 (Post-Creation 冻结不可变)"]
+        BindTeam --> Freeze
+        DefaultSession --> Freeze
+    end
+
+    subgraph SendPhase ["2. 消息交互阶段 (conversation/send)"]
+        SendReq["发送消息请求 (携带 mentions 数组)"]
+        FilterMention{"校验 mentions"}
+        
+        SendReq --> FilterMention
+        FilterMention -->|包含非 skill 类型| Reject["拒绝请求 (400 invalid_request)"]
+        FilterMention -->|仅包含 skill| ResolveSkills["解析并加载对应 Skill 快照"]
+        
+        ResolveSkills --> InjectPrompt["注入本轮 Prompt 上下文 (inject_skills)"]
+        InjectPrompt --> TurnRun["执行本轮模型推理 (单轮生效，轮后自动销毁)"]
+    end
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **每轮技能开箱可用**：`conversation/send` 开放 `mentions` 参数，精准挂载指定技能提示词。
+2. **会话级身份一次性绑定**：`conversation/create` 支持传入互斥的 `agent_id` 或 `team_id`，创建即冻结。
+3. **严格 Fail-Closed 防护**：`send` 阶段若传入非 `skill` 类型的 mention 坚决拒绝，绝不静默吞掉无效参数。
+
+#### 明确的非目标
+- **坚决不做每轮连接器切换**：连接器属于运行时工具底座，不支持随单条消息按轮增删。
+- **不支持会话中途更换专家**：会话创建后 Preset 快照不可变；换人请新开会话。
+
+---
+
+## 3. 详细设计
+
+### 3.1 阶段一：`conversation/send` 每轮挂载技能
+
+#### 1. 协议定义
+复用 `MentionRef` 数据结构（包含 `{ kind, id }`）：
+
+```jsonc
+{
+  "conversation_id": "conv-456",
+  "content": "请分析这段代码的漏洞",
+  "idempotency_key": "idem-002",
+  "mentions": [
+    { "kind": "skill", "id": "code-security-audit" } // 仅支持 skill
+  ]
+}
+```
+
+- **严格类型校验**：在 `conversation/send` 接口上，`mentions` 列表若出现 `kind !== "skill"` 的项，立即返回 `invalid_request`，确保调用方的错误预期尽早暴露。
+- **ID 规范**：`id` 必须使用 `skill/list` 所发布的规范技能名称，由服务端解析为不可变技能快照，随后以 `inject_skills` 注入本轮会话，本轮结束后自动失效。
+
+---
+
+### 3.2 阶段二：`conversation/create` 绑定专家与专家团
+
+#### 1. 协议定义
+在会话创建接口中增加互斥参数：
+
+```jsonc
+{
+  "title": "系统重构讨论",
+  "agent_id": "backend-architect",  // 与 team_id 二选一
+  "team_id": null
+}
+```
+
+#### 2. 专家绑定逻辑（`agent_id`）
+- 校验目标专家已安装且其对应的 Preset 处于启用状态；
+- 将专家的 `preset_id` 与人设提示词一次性绑定至新建的会话中；
+- 会话建立后，身份信息永久固化在会话快照中，后续无需且不支持重复传入。
+
+#### 3. 专家团绑定逻辑（`team_id`）
+- 校验团队完整性（所有成员均已就绪）；
+- 初始化队长（Leader）会话，挂载团队特有的规划（Planner）提示词与协作规则；
+- 赋予会话调用 `nomi_delegate` 工具调度团队成员的能力。
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **每轮挂载范围** | **仅开放技能（Skill）** | ❌ 同时开放连接器：连接器涉及复杂的网络句柄与底层进程，每轮频繁装卸开销巨大。 |
+| **D2** | **专家绑定时机** | **仅在 `conversation/create` 绑定** | ❌ 允许在 `send` 时中途切专家：中途切人设会导致上下文记忆和角色认知严重混乱。 |
+| **D3** | **非技能参数处理** | **显式报错拒绝（Fail-Closed）** | ❌ 静默忽略：客户端以为指定了专家实际并无效果，造成严重假象。 |
+| **D4** | **参数复用模型** | **复用既有 `MentionRef` 结构体** | ❌ 新增专用的 `skills: string[]`：产生多套冗余类型契约，增加 SDK 维护成本。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **单轮技能成功注入** | 在 `send` 中携带 `mentions: [{kind: "skill", id: "audit"}]`，模型收到的 Prompt 成功包含该技能内容。 |
+| **S2** | **非法 Mention 拦截** | 在 `send` 中携带 `kind: "agent"`，请求被直接拦截，返回 `400 invalid_request`。 |
+| **S3** | **专家会话创建** | 传入 `agent_id` 成功创建会话，`conversation/get` 返回结果中包含正确的预设绑定。 |
+| **S4** | **团队会话创建** | 传入 `team_id` 成功创建会话，会话具备 Leader 编排上下文与委派能力。 |
+| **S5** | **互斥性校验** | 同时传入 `agent_id` 与 `team_id`，创建请求被拒绝，返回参数冲突错误。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 会话绑定：每轮技能 + 会话级专家 / 专家团 · 实现方案
 
 > 状态：**🔧 阶段 1 / 2a / 2b 均已落地（2026-09-23），仅剩真机实测**——逐层改动、

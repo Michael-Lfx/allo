@@ -1,3 +1,248 @@
+# Agent Store 总体架构决策 (ADR) · 技术方案
+
+> 状态：🧊 架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4；部分结论已实证）；发布阻断
+> 日期：2026-08-26（修订：2026-09-10 — Team 触发方式改为 Leader 模型调用 `nomi_delegate(strategy=planned)`）
+> 范围：Agent Store / Runtime Platform 的架构边界、组件职责与取舍决策
+> 一句话原则：**allo Runtime 为唯一执行引擎，Versioned App Server Protocol 为唯一公开边界，领域对象与执行驱动分层解耦**
+
+---
+
+## 1. 背景与核心痛点
+
+Agent Store 定位于统一管理专家（Agent）、团队（AgentTeam）、技能（Skill）与连接器（Connector），对外通过 SDK、CLI、MCP 及 Flowy 等宿主提供自动化能力。在推进各端实现前，必须先确立架构边界与核心原则，解决以下关键痛点：
+
+### 1.1 核心痛点分析
+
+1. **执行引擎选型与依赖膨胀痛点**：若采用重量级或多套执行引擎，会导致依赖复杂、跨平台分发困难、资源占用过高。必须锁定单一高能效且自依赖的执行底座。
+2. **术语概念与生命周期混淆**：产品层定义的“专家/智能体（Agent）”与底层引擎的“驱动器（Driver / Runtime Agent）”易被混为一谈。如果两层共享同一 ID 或生命周期，会导致运行时状态混乱、扩展困难。
+3. **公共接口侵入底层实现**：客户端（WebUI、TS/Python SDK、CLI）若直接依赖 allo 内部数据库、GraphQL/私有 WebSocket 或执行级 Session UUID，引擎的任何重构都会导致全线崩溃。
+4. **外部格式直接耦合风险**：直接消费外部 CodeBuddy/WorkBuddy 目录会导致运行时受制于外部不可控的文件变动，且缺少权限沙箱，存在脚本越权风险。
+
+### 1.2 核心术语与三层概念映射
+
+系统严格确立三层映射分工，禁止跨层混淆：
+
+```text
+Agent Store 领域层 (Product Definition)
+  └── AgentDefinition / Preset 配置定义
+        ↓ (Runtime Adapter 解析与快照冻结)
+allo 编排调度层 (Execution Engine)
+  └── ResolvedPresetSnapshot ➔ ExecutionParticipant
+        ↓ (运行时会话与工具绑定)
+nomifun 驱动执行层 (Runtime Driver)
+  └── Claude Code / Codex / LLM Runtime Driver ➔ AgentExecution
+```
+
+| 概念层级 | 核心实体 | 职责与生命周期 |
+|---|---|---|
+| **领域定义层** | `AgentDefinition` | 产品层可复用的专家配置（静态元数据、Persona、Skill 引用、工具策略）。在 allo 中通过 `Preset` 机制承载。 |
+| **执行编排层** | `ExecutionParticipant` / `ResolvedPresetSnapshot` | 运行前冻结的不可变快照，携带参与者编号、过滤后的工具策略与技能快照。 |
+| **运行时驱动层** | `nomifun Runtime Agent / Driver` | 真实的执行实例（如 Claude Code、Codex 驱动），持有内部会话与 Attempt，负责模型调用与工具派发。 |
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 整体分层架构
+
+```mermaid
+flowchart TD
+    subgraph Source ["1. 来源与外部生态"]
+        S1["CodeBuddy / WorkBuddy 插件目录"]
+        S2["Skill / Connector Marketplace (Zip/Git/HTTP)"]
+    end
+
+    subgraph ImporterLayer ["2. 导入与兼容层 (nomifun-importer)"]
+        IMP["路径安全校验 / Digest 计算 / 格式转换"]
+        SNAP["不可变快照 (PluginSnapshot)"]
+        REP["兼容性报告 (CompatibilityReport)"]
+    end
+
+    subgraph CatalogLayer ["3. 资产目录层 (Catalog)"]
+        CAT["Agent / Team / Skill / Connector Catalog (SQLite)"]
+    end
+
+    subgraph AdapterLayer ["4. 运行时适配层 (Runtime Adapter)"]
+        ADAPT["领域对象 ➔ allo Preset / Template 映射"]
+        PC["Planning Context 构造 (Leader 指令 + 脱敏能力摘要)"]
+        SEC["策略交集计算与凭据安全注入"]
+    end
+
+    subgraph EngineLayer ["5. 执行引擎底座 (allo Runtime - Rust)"]
+        ENG["Agent Execution Engine"]
+        PLAN["Planner / DAG Materializer"]
+        EVT["Event Log / State Projector"]
+    end
+
+    subgraph ProtocolLayer ["6. 公共契约边界 (App Server Protocol)"]
+        PROT["Versioned JSON-RPC / WebSocket Protocol (Opaque IDs)"]
+    end
+
+    subgraph Clients ["7. 消费客户端"]
+        C1["TypeScript SDK"]
+        C2["Python SDK"]
+        C3["CLI"]
+        C4["MCP Adapter"]
+        C5["WebUI / Flowy 桌面"]
+    end
+
+    S1 --> IMP
+    S2 --> IMP
+    IMP --> SNAP
+    SNAP --> REP
+    SNAP --> CAT
+    CAT --> ADAPT
+    ADAPT --> PC
+    ADAPT --> SEC
+    PC --> ENG
+    SEC --> ENG
+    ENG --> PLAN
+    ENG --> EVT
+    ENG --> PROT
+    PROT --> C1
+    PROT --> C2
+    PROT --> C3
+    PROT --> C4
+    PROT --> C5
+```
+
+### 2.2 目标与非目标 (Goals & Non-Goals)
+
+- **V1 核心目标**：
+  - 确立 Rust 版 allo 为唯一执行 Runtime，单二进制交付。
+  - Versioned App Server Protocol 作为唯一对外暴露的公共边界，对外使用 Opaque ID。
+  - 实现基于不可变 `PluginSnapshot` 的导入隔离，不直接在运行时消费外部原始目录。
+  - 实现 V1 AgentTeam 最小闭环：固定成员池 + Leader 规划上下文驱动的 `planned` DAG + 局部并行 + 重试/replan。
+  - 建立入站/出站认证严格隔离与凭据安全存储机制。
+- **V1 明确非目标**：
+  - 多租户、集群 HA 与跨机灾备。
+  - 嵌套 AgentTeam、动态增删成员、全局 Mailbox、成员自主认领与直连消息。
+  - 允许外部客户端提供私有 cursor 重放或断线追平（V1 状态直接持久化并可查询，事件通知尽力而为）。
+  - 未确认版权的资源进入公开市场或默认安装包。
+
+---
+
+## 3. 详细设计 (按领域模块内聚)
+
+### 3.1 核心执行底座与对象分层映射 (allo Runtime)
+
+1. **唯一引擎决策**：采用 allo（Rust）作为唯一执行底座。单二进制交付、零额外运行时依赖、低内存 footprint。
+2. **复用已具备的基础设施**：
+   - `AgentExecution` 与 `AgentExecutionTemplate`。
+   - `Planner`、`Plan Materializer` 与 `Participant Router`。
+   - `nomi_delegate(strategy=planned)`：作为可信会话的委派入口及 Team 计划生成入口。
+   - 执行事件序列、审批拦截与运行取消机制。
+3. **映射转换隔离**：
+   - `AgentDefinition` ➔ 映射为不可变的 `Preset/ResolvedPresetSnapshot`。
+   - 运行时驱动（Claude Code、Codex）动态消费该 Snapshot，创建独立的会话 Attempt。
+
+### 3.2 公共兼容边界 (App Server Protocol)
+
+1. **协议层级收敛**：所有客户端（TS/Py SDK、CLI、WebUI、MCP）必须且只能通过 App Server 协议进行交互。
+2. **标识符隔离**：公共 API 一律返回统一分配的 Opaque ID（如 `run_123`），绝不直接泄露 allo 内部数据库的主键、会话 UUID 或私有路径。
+3. **生命周期与交互类型**：
+   - `Request / Response`：同步或即时确认调用。
+   - `Notification`：事件流通知（尽力而为，允许丢失）。
+   - `Server Request`：需要客户端响应的交互（如用户审批 `Approval`）。
+4. **状态查询模型**：Run 的最终状态、Step 状态、Attempt 结果及生成的 Artifact 均完成持久化存储。客户端断线后通过查询恢复视图。
+
+### 3.3 导入与外部包隔离 (PluginSnapshot)
+
+1. **不可变快照隔离**：导入外部插件（CodeBuddy/WorkBuddy）时，必须依次执行：路径防逃逸检查 ➔ 计算内容 Digest ➔ 写入版本化缓存 ➔ 生成不可变 `PluginSnapshot`。
+2. **禁止直接消费**：运行时任何组件严禁直接读取外部来源目录，必须从快照中读取。
+3. **allo Extension 与外部 Plugin 的界限**：
+   - `nomi-extension.json` 是 allo 原生的宿主声明式扩展系统。
+   - CodeBuddy 插件是外部格式包。两者不进行字段级直接混淆，必须经由 Importer 转换为统一的领域对象。
+   - 外部包声明的生命周期钩子（Hook）、LSP、二进制脚本在未通过完整安全沙箱前，默认标记为 `manual-review`，不得自动执行。
+
+### 3.4 Agent Team V1 最小编排闭环 (Leader Planned)
+
+V1 Team Runtime 采用“模式 A”（最小可行实现）：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as 客户端 / WebUI
+    participant AS as App Server
+    participant Adapter as Runtime Adapter
+    participant Leader as Leader Attempt (Session)
+    participant Planner as 内部 Planner
+    participant Workers as 成员 Participants
+
+    Client->>AS: team/run (team_id, goal)
+    AS->>Adapter: 解析 TeamDefinition 并物化固定成员
+    Adapter->>Adapter: 冻结成员快照 (AgentExecutionTemplate)
+    Adapter->>Leader: 创建内部 Leader 会话并绑定 Template
+    Leader->>Leader: 模型调用 nomi_delegate(strategy=planned, goal)
+    Leader->>Planner: 传入 Planning Context (Leader 指令 + 脱敏能力摘要)
+    Planner->>Planner: 生成结构化 DAG (校验依赖/成员路由/并发限制)
+    Planner->>Workers: 调度 ready Step，局部并行执行
+    Workers-->>Adapter: 返回 Step 结果 / Artifact
+    Adapter-->>Client: 推送规范事件与最终汇总结果
+```
+
+- **Leader 角色本质**：`lead_agent_id` 指向规划角色，持有专属的工具调用会话，但不暴露为独立用户会话。
+- **Planning Context 隔离原则**：仅包含 Leader 规划指令、Team 策略及脱敏后的成员能力摘要（名称、角色、特长）。成员的完整 Prompt、真实凭据及内部工具细节严禁泄露至共享 Planning Context 中。
+- **DAG 执行不变量**：依赖满足前不得调度；局部并行受 `max_parallel` 约束；Step 失败支持局部 retry 与 replan，新 Attempt 产生新 ID，历史事件不被覆写。
+
+### 3.5 安全防御与凭据隔离边界
+
+1. **双向认证隔离**：
+   - 入站认证（客户端 ➔ Agent Store）：Localhost WebSocket 建立 `LocalPrincipal` 与 `AuthContext`。
+   - 出站认证（Agent Store ➔ 上游 Connector）：Connector 凭据绑定（`CredentialBinding`）。入站 Token 严禁转发给上游。
+2. **有效权限求交集**：
+   $$\text{Effective Permission} = \text{Caller} \cap \text{Agent} \cap \text{Team} \cap \text{Skill} \cap \text{Connector} \cap \text{Credential Scopes}$$
+   任何层级拒绝即拒绝，模型 Prompt 绝非权限边界。
+3. **凭据安全存储与打码**：凭据仅存放在本地安全存储，对外 API、前端状态、日志及 Prompt 中一律脱敏（`[REDACTED]`）。
+
+---
+
+## 4. 架构决策总表 (AD-01 ~ AD-10)
+
+| 编号 | 决策项 | 最终结论 | 备选方案与取舍依据 |
+|---|---|---|---|
+| **AD-01** | 执行 Runtime 选型 | **锁定 allo Runtime (Rust) 为唯一执行引擎** | 放弃引入 Node.js 或 Python 作为并行执行底座。Rust 具备单文件体积小、常驻资源少、与桌面平台无缝集成的优势，且已有执行管道。 |
+| **AD-02** | 公共兼容边界 | **Versioned App Server Protocol** | 协议作为唯一边界；TS/Py SDK、CLI、WebUI 均为协议客户端。避免客户端直接访问内部 DB 或私有 WebSocket 造成强耦合。 |
+| **AD-03** | allo Extension 定位 | **宿主原生机制，不等同于外部 Plugin** | 外部 Plugin 必须经 Importer 转换为不可变快照，不直接进行 manifest 字段合并。 |
+| **AD-04** | 外部资产消费方式 | **一律通过 Importer 转换并基于快照运行** | 运行时绝不直接读取来源目录，确保版本确定性与文件防篡改。 |
+| **AD-05** | Agent Team V1 范围 | **固定成员 + Leader 规划上下文驱动的 planned DAG** | 暂不实现动态自由成员组、全局 Mailbox 与长期成员会话，聚焦最小可用闭环（顺序/局部并行/重试/replan）。 |
+| **AD-06** | 云端与本地边界 | **云端管 Catalog 分发；本地管执行、凭据与状态** | 绝不在云端托管明文凭据与执行会话，保障端侧数据主权。 |
+| **AD-07** | V1 交付目标 | **完整功能核心（Agent/Team/Skill/Connector + App Server + SDK + Web 集成）** | 聚焦闭环链路跑通，非关键周边能力延后。 |
+| **AD-08** | 企业级特性取舍 | **明确非目标（多租户、HA、企业审批流、全量变体 OAuth）** | 严格控制 Phase 0 与 V1 交付范围，防止发版延期。 |
+| **AD-09** | 凭据管理原则 | **本地安全存储，对外只存引用，日志/状态严格打码** | 凭据永远不得进入 Prompt、日志、事件流或对外 API 响应中。 |
+| **AD-10** | Team 触发方式 | **Leader 模型在内部会话调用 `nomi_delegate(strategy=planned)` 触发服务端 Planner** | 放弃由客户端直接拼装规划参数。成员池、并发与权限来自绑定的 `AgentExecutionTemplate`，不接受模型输入。 |
+
+---
+
+## 5. 验收标准与验证矩阵
+
+### 5.1 验收条件 (Acceptance Criteria)
+
+- **S1 (单 Agent 执行)**：`AgentDefinition` 能正确解析为 `ResolvedPresetSnapshot` 并注入 `ExecutionParticipant`，完成单 Agent 异步执行、状态落盘与结果输出。
+- **S2 (Team 编排闭环)**：`software-company` 团队能物化 5 人固定 Participant 池，Leader 能成功触发 `nomi_delegate(strategy=planned)` 生成 DAG，并完成依赖调度与局部并行。
+- **S3 (失败重试与 Replan)**：Step 失败时能正确触发 Attempt 重试或 Replan，新 Attempt 生成独立 ID，不覆盖历史数据。
+- **S4 (公共边界隔离)**：SDK 与 WebUI 在全流程中无法获取 allo 内部数据库 ID 或私有路径，所有操作通过 App Server Opaque ID 完成。
+- **S5 (凭据安全打码)**：全流程日志、事件流与公共 API 返回值中无明文 Token，敏感字段均为 `[REDACTED]`。
+- **S6 (未完成 Run 状态标记)**：服务意外退出重启后，未完成的 Run 必须如实标记为 `recovery_required` 或 `failed`，严禁伪装为 `completed`。
+
+### 5.2 Phase 0 最小验证顺序 (Verification Ladder)
+
+```text
+1. AgentDefinition ➔ ResolvedPresetSnapshot ➔ allo ExecutionParticipant ➔ Runtime Driver
+2. 单 Agent Run ➔ 规范 Event Log ➔ App Server 协议输出
+3. 未完成 Run 重启检测 ➔ recovery_required 状态落盘
+4. Connector 凭据安全存储 ➔ 传输注入 ➔ 探活 Probe ➔ 401 刷新
+5. Team Leader 绑定 AgentExecutionTemplate ➔ nomi_delegate(planned) ➔ DAG 物化调度
+```
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Agent Store 总体架构决策
 
 > 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；部分结论已实证（详见 `README.md` 索引）；发布阻断

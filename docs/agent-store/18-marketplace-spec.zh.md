@@ -1,3 +1,267 @@
+# 市场规范（兼容层） · 技术方案
+
+> 状态：✅ 现行正文（未正式发版，可改；发版前统一称 v1，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；D1–D10 全部已收编闭环
+> 日期：2026-08-26（更新：2026-09-28）
+> 前置：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`02-codebuddy-workbuddy-import-spec.md`](file:///c:/workspace/allo/docs/agent-store/02-codebuddy-workbuddy-import-spec.md)、[`17-plugin-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/17-plugin-spec.zh.md)、[`30-market-zip-hosting.zh.md`](file:///c:/workspace/allo/docs/agent-store/30-market-zip-hosting.zh.md)、[`36-store-update-entry.zh.md`](file:///c:/workspace/allo/docs/agent-store/36-store-update-entry.zh.md)
+> 一句话原则：**以兼容 CodeBuddy/WorkBuddy 市场布局为基础，远程获取严守原子晋升不污染可用根，官方源 ModelScope Zip 归档直达，本地化原样透传由前端回退，升级先装新后释放旧**
+
+---
+
+## 1. 背景与核心痛点
+
+Agent Store 需要支持从本地目录及多种远程源（Git、HTTP 清单、Zip 归档）聚合专家、技能与连接器资产。在市场管理与同步体系中，必须解决以下核心痛点：
+
+### 1.1 核心痛点分析
+
+1. **远程获取网络开销巨大**：旧有基于 HTTP 的逐文件整树镜像模式，抓取官方专家市场需发起 **14,714 次 HTTP 请求 / 下载 611 MiB**，导致拉取时间过长且极易在中途断连失败。
+2. **下载失败污染线上可用根**：若在已有资产目录上直接就地覆写更新，一旦网络中断或解压异常，会导致原先可用的资产损坏且无法回滚。
+3. **多语言与发布时间语义模糊**：市场清单可能包含 `description_zh`, `description_en` 等异构字段；若在服务端强行做语言判定，无法匹配客户端读者的实时语言设置；发布时间若随意采用本地抓取时间顶替，会导致排序失真。
+4. **升级与安装语义混淆**：若让 `install` 动词暗中执行升级，或者升级时“先删旧版本再装新版本”，一旦新版本安装失败，旧版本已被破坏，用户资产直接损坏。
+
+---
+
+## 2. 方案全景与获取晋升架构
+
+### 2.1 远程源获取与原子晋升流水线
+
+```mermaid
+flowchart TD
+    subgraph MarketSources ["1. 市场源输入类型"]
+        S_DIR["本地目录 (directory)"]
+        S_GIT["Git / GitHub 仓库"]
+        S_URL["HTTP 清单 + _files.txt (url)"]
+        S_ZIP["ModelScope 单 Zip 归档 (zip)"]
+    end
+
+    subgraph FetchPipeline ["2. 远程获取与完整性校验"]
+        HEAD_CHK["HEAD 预探: 读取 X-Linked-Etag (sha256)"]
+        DIFF{"校验 revision 是否变化?"}
+        DOWN["流式下载至 staging 兄弟目录 (防污染)"]
+        UNZIP["安全解压 (nomifun-common::zip_safe / 防 zip-slip)"]
+        VERIFY["looks_like_market 格式合法性断言"]
+    end
+
+    subgraph AtomicPromotion ["3. 隔离与原子晋升 (Atomic Promotion)"]
+        STAGING["独立暂存目录 (staging-*)"]
+        BACKUP["备份当前可用根 (backup-*)"]
+        PROMOTE["原子重命名晋升 (Rename to Live Root)"]
+        CLEAN["成功后清理临时备份与 staging"]
+    end
+
+    subgraph Projection ["4. 注册表投影与商店聚合"]
+        PROJ["重新生成条目投影 (plugin_marketplaces 表)"]
+        STORE["store/list 多市场聚合展示"]
+    end
+
+    S_DIR --> VERIFY
+    S_GIT --> STAGING
+    S_URL --> STAGING
+    S_ZIP --> HEAD_CHK
+    HEAD_CHK --> DIFF
+    DIFF -- 无变化 (304 / ETag相同) --> NOOP["Unchanged (短路退出，不动 Live Root)"]
+    DIFF -- 有变化 --> DOWN
+    DOWN --> UNZIP
+    UNZIP --> STAGING
+    STAGING --> VERIFY
+    VERIFY -- 校验失败 --> ERR["阻断报错，彻底清空 staging，保留原可用根"]
+    VERIFY -- 校验通过 --> BACKUP
+    BACKUP --> PROMOTE
+    PROMOTE --> CLEAN
+    CLEAN --> PROJ
+    PROJ --> STORE
+```
+
+### 2.2 核心目标与非目标 (Goals & Non-Goals)
+
+- **核心目标**：
+  - 支持 `directory`, `github`, `git`, `url`, `zip` 五类市场源。
+  - 官方市场默认采用 Zip 单包托管（ModelScope LFS），请求数从 14,714 降至 1 次。
+  - 获取失败时绝对不触碰当前可用内容根（`last-good root`）。
+  - 本地化变体服务端原样透传，客户端按语言回退链统一消费。
+  - 商店安装保证幂等，升级提供独立动词 `store/update-entry` 并遵循安全三段式。
+- **明确非目标**：
+  - 不定义 Agent Store 原生市场包格式（沿用兼容层格式）。
+  - 不做中心化市场运营审核后台与证书签名信任链。
+  - 后台自动更新扫掠仅刷新市场索引与条目投影，绝不擅自更新用户已安装的快照。
+
+---
+
+## 3. 详细设计 (按模块内聚)
+
+### 3.1 市场类型与目录探测优先级
+
+探测器按以下**严格顺序**扫描根目录，命中即确定市场类型：
+
+```text
+1. .codebuddy-connector/connectors.json   ──▶ connector-market (连接器市场)
+2. .codebuddy-skill/marketplace.json       ──▶ skill-market     (技能市场)
+3. .codebuddy-plugin/marketplace.json      ──▶ plugin-market    (专家插件市场)
+4. .codebuddy-plugin/plugin.json           ──▶ plugin-root      (单插件根)
+5. cli.json                                ──▶ cli-connector    (单 CLI 连接器)
+6. 扫描子目录命中 looks_like_plugin        ──▶ plugin-collection(多插件集合)
+```
+
+- **“像市场”校验清单 (`looks_like_market`)**：远程解压后的根目录必须包含上述 1~5 对应的清单文件之一，否则视为非法市场格式，直接终止晋升。
+
+---
+
+### 3.2 远程源获取与原子晋升规范
+
+| 源类型 | 协议与地址形态 | 核心获取与晋升规则 | 校验与短路机制 |
+|---|---|---|---|
+| `directory` | 本地合法绝对路径 | 直接探测并投影，不走远程获取。 | 路径不存在时直接报错。 |
+| `git` / `github` | Git/SSH 仓库地址 | Clone 至 staging 目录，获取 HEAD commit hash。 | Commit Hash 与上次一致时短路（`Unchanged`）。 |
+| `url` | HTTP(S) 清单地址 | 依赖 `_files.txt` 清单进行分批并发镜像（32 并发 / 15s 超时）。 | 发送 `If-None-Match` 与 `If-Modified-Since`，304 则短路。 |
+| `zip` | ModelScope LFS 稳定下载 URL | `HEAD` 探测获取 `X-Linked-Etag`；流式下载归档；`zip_safe` 解压（预算 20 万文件 / 4 GiB）。 | ETag 与本地相同直接短路，不拉取正文；解压至 staging 兄弟目录后原子晋升。 |
+
+#### 内容摘要统一算法 (`tree_digest`)
+- 系统废除了历史不一致的双套摘要实现，全仓收敛为统一的 `tree_digest`：
+  $$\text{Tree Digest} = \text{SHA256}\left(\sum_{\text{按相对路径排序}} \left(\text{path} + \text{"\n"} + \text{file\_sha256} + \text{"\n"}\right)\right)$$
+- 保证路径敏感、内容敏感且跨平台顺序稳定，绝不依赖操作系统的文件遍历物理顺序。
+
+---
+
+### 3.3 目录镜像规范 (`_files.txt`)
+
+针对 `url` 类型的远程源，服务端必须提供 `{base}/_files.txt`：
+- **格式规范**：UTF-8 编码，每行一个相对于市场根的相对路径，无注释、无空行。
+- **安全约束**：消费端硬性拒绝包含 `..`、以 `/` 开头或带反斜杠的非法路径，杜绝路径穿越。
+- **降级行为**：若远端不存在 `_files.txt`，该市场降级为 `manifest-only` 模式，条目标记为 `external`，不可本地镜像。
+
+---
+
+### 3.4 规范条目模型与本地化回退链
+
+#### 条目基础投影结构
+```json
+{
+  "name": "pdf-toolkit",
+  "source_kind": "workbuddy-skill-market",
+  "source": "skills/pdf-toolkit",
+  "version": "1.2.0",
+  "description": "PDF processing tools",
+  "published_at": "2026-08-20",
+  "localized": {
+    "description_zh": "PDF 处理工具集",
+    "description_en": "PDF processing tools",
+    "tags_zh": ["文档", "办公"],
+    "tags_en": ["documents", "office"]
+  },
+  "snapshot": {
+    "snapshot_id": "snap_01J8K...",
+    "installed_count": 1
+  }
+}
+```
+
+#### 本地化变体采集与客户端回退链
+- 服务端不对语言进行硬编码过滤，仅将以 `_zh` / `_en` 结尾的字符串或字符串数组自动归集到 `localized` 字典中原样透传。
+- **客户端回退优先级**：
+  $$\text{目标字段\_界面语言} \longrightarrow \text{目标字段\_备用语言} \longrightarrow \text{基线单语字段} \longrightarrow \text{空}$$
+- **标签族优先级**：`tags_*` 全面优先于 `legacy_tags_*`，仅当双语 `tags_*` 均缺失时才用 `legacy_tags_*` 兜底。
+
+#### 条目发布时间规则 (`publishedAt`)
+- 仅接受严格的 `YYYY-MM-DD` 格里高利历日历日格式，非法日期（如闰年错误 `2025-02-29` 或包含时间戳）一律安全丢弃。
+- **绝不虚假派生**：严禁用本地导入时间或快照创建时间伪造发布时间；无声明则缺席。WebUI 仅在当前分类有真实日期时才展示“最新”排序选项。
+
+---
+
+### 3.5 注册表命名空间与自动更新扫掠边界
+
+#### 市场唯一标识派生 (`marketplace_id`)
+```text
+输入名称 ➔ 缺失时取目录/仓库名 ➔ 正则过滤保留 [A-Za-z0-9-_] ➔ 连续减号合并 ➔ 空则回退为 "market"
+```
+
+#### 跨市场条目隔离
+多市场并存时，条目标识在公共协议上统一表示为：
+$$\text{Entry Identifier} = \text{\{marketplace\_id\}/\{entry\_name\}}$$
+不同市场内同名条目彼此隔离，不发生碰撞覆盖。
+
+#### 自动更新扫掠核心边界
+- 宿主配置 `[marketplace] auto_update_interval_hours` 启用定时轮询（调度器 60s 一个 tick，
+  每轮重读该配置，因此周期可经 `market/settings-set` 热改）。
+- **轮询范围限定**：仅对官方镜像源且开关为开的市场生效，第三方源严禁后台自动拉取。
+- **扫掠职责**（2026-09-29 `37` 扩围）：**刷新索引 + 自动升级从该市场安装的条目**。
+  可升级的条目类型由 `entry_auto_update_kinds` 收口，缺省 `["agent","team","skill"]`——
+  **连接器默认排除**（升级会因配置变化被置为停用，无人值守等于静默掉线）；白名单为 `[]`
+  即回到「只刷新索引」。用户手动停用、`blocked_reason` 非空、只导入未安装的条目一律跳过；
+  升级顺序仍是「先装新、成功才释放旧」（§9.1）。
+
+---
+
+### 3.6 商店安装与版本升级契约
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as 客户端 / WebUI
+    participant Store as 商店服务 (StoreService)
+    participant Importer as 导入管线 (nomifun-importer)
+    participant Engine as allo 执行引擎
+
+    Note over Client,Store: 场景 A: 首次或重复一键安装 (store/install-entry)
+    Client->>Store: store/install-entry (marketplace_id, entry_name)
+    alt 条目已安装
+        Store-->>Client: 返回 reused=true (幂等 No-op，绝不暗中升级)
+    else 条目未安装
+        Store->>Importer: 重新导入并安装当前版本快照
+        Store-->>Client: 返回安装结果 (outcomes & snapshot_id)
+    end
+
+    Note over Client,Store: 场景 B: 显式条目升级 (store/update-entry)
+    Client->>Store: store/update-entry (marketplace_id, entry_name)
+    Store->>Importer: 1. 导入并物化新版本快照
+    Store->>Engine: 2. 安装新版本组件 (专家原地更新保 preset_id, 连接器复用 mcp_servers 行)
+    alt 新版本安装全部成功
+        Store->>Engine: 3. 释放旧版本快照与旧产物 (released_count > 0)
+        Store-->>Client: 升级成功 (带 previous_version)
+    else 新版本安装部分或全部失败
+        Store->>Store: 4. 回滚新版本已安装部分，旧版本原样保留 (released_count = 0)
+        Store-->>Client: 报告错误，旧版本继续可用可重试
+    end
+```
+
+---
+
+## 4. 市场发布与自动化机器校验
+
+发布者可利用官方自动化脚本验证市场包合规性：
+- 机器 Schema：[`docs/agent-store/schemas/marketplace.schema.json`](file:///c:/workspace/allo/docs/agent-store/schemas/marketplace.schema.json)
+- 发布命令：
+  ```bash
+  # 生成清单与镜像索引，并串行触发机器自检
+  node scripts/serve-agent-store-market.mjs --emit-listings
+  
+  # 执行独立普查与校验
+  node scripts/check-agent-store-market.mjs --market experts=./market/experts
+  ```
+
+---
+
+## 5. 已知偏差治理矩阵 (D1 ~ D10)
+
+| 偏差编号 | 现象与系统影响 | 治理决策与落地实现 | 最终状态 |
+|---|---|---|---|
+| **D1** | `auto_update` 默认值未区分官方与第三方 | 新增 `is_official_source()`，官方镜像源默认 true，第三方默认 false。 | ✅ **已闭环** |
+| **D2** | 导入与目录刷新存在两套 Digest 算法 | 废除旧算法，全仓统一为 `tree_digest` 与 `tree_digest_of_dir`。 | ✅ **已闭环** |
+| **D3** | 真实市场清单包含 `owner` 对象 | Schema 宽容接受 `owner` 对象（同 `author` 格式），避免误判。 | ✅ **已闭环** |
+| **D4** | HTTP 刷新未发送真条件头 `If-Modified-Since` | 增加 DB 迁移持久化原始 ETag / Last-Modified，发送标准条件请求。 | ✅ **已闭环** |
+| **D5** | 清单抓取漏设 15s 请求超时 | `fetch_http_market` 改用全局共享的 `http_client()` 工厂。 | ✅ **已闭环** |
+| **D6** | Manifest-only 下插件条目未标 `external` | 规范订正，明确不同组件在缺少全量镜像时的来源类型标记。 | ✅ **已闭环** |
+| **D7** | 真实市场携带未列入规范的展示字段 | 普查登记未消费字段；收编 `localized` 多语言变体与标签族优先级。 | ✅ **已闭环** |
+| **D8** | `market/get` 响应未挂载安装快照 | 扩展 DTO 增加可选 `snapshot` 字段，联合查询安装态回填。 | ✅ **已闭环** |
+| **D9** | 连接器与技能条目改内容无法发布 (版本钉死) | 导入请求携带 `declared_version`，读取市场索引真实版本，消除假更新。 | ✅ **已闭环** |
+| **D10** | 商店安装/升级丢失服务端报错详情 | `StoreOperationOutcome` 补充 `errors[]` 与 `warnings[]`，支持错误回传。 | ✅ **已闭环** |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 市场规范（兼容层）
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——本规范在发版前只有一个版本（统一称 v1），不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。覆盖范围：目录布局与发现优先级（§3）、条目模型（§4）、获取与晋升不变式（§5）、`_files.txt`（§6）、注册表与命名空间（§7）、发布自检（§8）、客户端契约（§9），以及机器可校验形态（`docs/agent-store/schemas/marketplace.schema.json` + `scripts/check-agent-store-market.mjs`）。
@@ -316,15 +580,27 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 导入侧不读，于是快照永远停在 `1.0.0`：`update_available` 恒为真、内容一改就撞快照
 digest 冲突。现在导入请求带上条目版本，目录与快照说的是同一个版本（§11 D9）。
 
-### 9.2 自动更新扫掠的边界（2026-09-15 订正）
+### 9.2 自动更新扫掠的边界（2026-09-15 订正；2026-09-29 `37` 扩围）
 
 `auto_update` 的后台扫掠**已实现**（§7 表、2026-09-10 批 1 / R27）：宿主
 `config.toml` 声明 `[marketplace] auto_update_interval_hours` 后按该间隔轮询，
 **不声明即关闭**，且只对**官方镜像**源生效（第三方源永不自动拉取，§11 D1）。
 
-必须写明的边界：**扫掠只刷新索引/投影**（重新获取清单、重建条目投影，仍走 §5 的
-条件请求短路），**绝不改动任何已安装快照**——升级已安装条目始终是用户的显式动作
-（§9.1 的 `store/update-entry`）。
+**扩围（2026-09-29，doc `37` §3.3）**：扫掠的职责从「只刷新索引」扩为
+**「刷新索引 + 自动升级从该市场安装的条目」**，因此本节原先那句「绝不改动任何已安装快照」
+**不再成立**，替换为下面三条边界：
+
+1. **粒度是市场，不是全局**：只有 `auto_update` 开关为开的市场参与（且仍限官方源）；
+2. **条目类型白名单**（`entry_auto_update_kinds`，缺省 `["agent","team","skill"]`）——
+   **连接器绝不隐式包含**：其升级会因配置变化被置为停用（`36` §3.4），无人值守升级等于静默掉线，
+   必须由操作者显式勾选；白名单置为 `[]` 即完全回到旧行为（只刷新索引）；
+3. **三条硬跳过**：用户手动停用（组件 `disabled=1`，升级会重新装成启用态、等于替用户撤销决定）、
+   源上 `blocked_reason` 非空、只导入未安装（`store/update-entry` 本就会拒）。
+
+调度器同时从「启动时定死周期」改为「60s tick + 每轮判到期」，周期与白名单因此可经
+`market/settings-set` 热改（写穿 `config.toml`，每轮重读）。逐条失败隔离，读数经
+`market/settings` 的 `last_sweep` 回读。升级动作本身仍是 §9.1 的 `store/update-entry`
+（先装新、成功才释放旧）。
 
 ---
 

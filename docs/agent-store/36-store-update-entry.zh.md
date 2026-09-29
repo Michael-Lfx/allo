@@ -1,5 +1,250 @@
 # 商店条目的更新（update）能力 · 技术方案
 
+> **状态**：✅ **已实施落地**（2026-09-28，协议指纹 `fp-12`，方法数 `53 / 78`）  
+> **核心原则**：原子安全更新 —— **先装新、成功后再释放旧、部分失败则回滚新快照**；专家保 preset_id 原地升级，连接器共享行保护，安装记录严格按快照隔离。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+用户在 Agent Store 中安装了专家（Agent/Team）、技能（Skill）、连接器（Connector）后，当市场发布新版本时，需要能够安全地将已安装条目平滑升级到新版本，而不丢失上下文引用、不破坏运行配置、不残留垃圾产物。
+
+### 1.2 现状与四大痛点
+在引入本方案前，系统在升级链路上存在以下严重缺陷：
+
+1. **协议层缺乏“更新”动词，升级等同于“卸载再安装”**  
+   协议上不存在 `store/update-entry` 接口，客户端若要升级只能先调 `uninstall` 释放旧版本，再调 `install` 安装新版本。一旦后半段失败（如下载中断、校验冲突），用户不仅没装上新版，原本可用的旧版本也已丢失，陷入“两头空”状态。
+2. **版本源数据失真，技能与连接器无法正常升级**  
+   专家条目能正确通过 manifest 识别版本，但技能与连接器在导入时未传递版本参数，被硬编码钉死在 `1.0.0`；且技能市场的清单文件（`marketplace.json`）此前根本未被读取，导致目录中技能与连接器要么永远误报“有新版本”，要么版本永远为 `1.0.0` 无法触发升级。
+3. **专家升级破坏外部引用并产生同名冗余**  
+   专家本质是一条 Preset。旧逻辑在更换快照时会重新生成一个全新的 UUID 作为 `preset_id`，导致会话绑定、排列权重等依赖失效；且由于创建逻辑不按名字去重，直接装新版会残留多条同名的重复预设。
+4. **数据库安装状态未按快照隔离（致命缺陷）**  
+   数据库中清理安装记录的接口仅根据 `component_id`（形如 `wb-<plugin>-<slug>`）操作，未加 `snapshot_id` 过滤。然而跨快照的同名组件其 `component_id` 是完全相同的，导致释放旧快照时会连带清空刚装好的新快照记录，使条目在安装后离奇变为“未安装”。
+
+### 1.3 核心能力对比表
+
+| 维度 | 现状行为 | 本方案方案 |
+|---|---|---|
+| **更新动词** | 无专用动词，只能手动拼卸载+重装 | 新增 `store/update-entry`，服务端保障三段式顺序与失败容灾 |
+| **版本识别** | 技能/连接器快照硬编码为 1.0.0 | 补齐技能索引读取，导入请求传入显式版本，精确展示更新状态 |
+| **专家更新** | 换快照重建 Preset（丢失 ID，留重复预设） | 原地更新现有 Preset 内容，**严格保持 preset_id 不变** |
+| **技能更新** | 目录混乱或串版本 | 按新快照物化独立目录，成功后删除旧快照目录 |
+| **连接器更新** | 同名更新复用同一行，盲删旧行会误删新行 | 按 `mcp_server_id` 判断共享关系，共享时仅解绑不删行；配置变更如实报告停用 |
+| **失败处理** | 旧安装被删，系统处于破坏状态 | 失败坚决保留旧安装；若新快照部分已装则触发回滚，保持旧版可用并支持重试 |
+| **数据库记录** | 全局按 component_id 清除（误伤新快照） | 所有写入/清除严格收窄为 `(snapshot_id, component_id)` |
+
+---
+
+## 2. 方案全景与核心架构
+
+### 2.1 端到端更新流程图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as WebUI / SDK Client
+    participant Store as AppServer Store
+    participant Importer as Importer Layer
+    participant Installer as Installer Layer
+    participant DB as SQLite DB
+
+    Client->>Store: POST /store/{market}/entries/{entry}/update
+    
+    rect rgb(240, 245, 255)
+    Note over Store: 阶段 1: 前置校验与版本判定
+    Store->>DB: 查询当前条目的活跃已安装快照
+    alt 未安装过
+        Store-->>Client: 404 NotFound (要求先走 install-entry)
+    else 已安装且当前版本 == 市场版本
+        Store-->>Client: 200 OK (reused: true, 幂等无操作)
+    end
+    end
+
+    rect rgb(240, 255, 240)
+    Note over Store,Importer: 阶段 2: 导入新快照
+    Store->>Importer: import_entry(带入市场推导的 declared_version)
+    Importer-->>Store: 返回新快照 (NewSnapshot)
+    end
+
+    rect rgb(255, 250, 240)
+    Note over Store,Installer: 阶段 3: 执行替换安装 (先装新 -> 成功后释放旧)
+    Store->>Installer: replace(old_snapshot_id, new_snapshot_id)
+    
+    Installer->>Installer: 1. 按 component_id 配对新旧组件，交接 Handover 凭据
+    Installer->>Installer: 2. 安装新快照各组件 (专家原地更新，连接器同行复用，技能新目录物化)
+    
+    alt 新快照安装出现失败 (Partial Failure)
+        Installer->>Installer: 触发 rollback_replaced (释放新快照已装部分，保留旧快照)
+        Installer-->>Store: 返回错误及失败详情 (released_count: 0)
+        Store-->>Client: 返回失败 (旧安装原样可用，可重试)
+    else 新快照全部安装成功
+        Installer->>Installer: 3. 逐个安全释放旧快照产物 (专家跳过，连接器同行跳过，删除旧技能目录)
+        Installer->>DB: clear_components_installed(old_snapshot_id, &ids)
+        Installer-->>Store: 替换完成 (released_count: N)
+        Store-->>Client: 200 OK (返回 previous_version, released_count)
+    end
+    end
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **原子顺序执行**：严格遵循“先导入 → 装新版 → 成功后释放旧版”顺序，保障任何异常环节不丢失旧安装。
+2. **上下文引用稳定性**：专家升级不改动 `preset_id`，保持会话绑定与历史记录有效。
+3. **精准版本感知**：技能与连接器获得真实市场版本，消除假性更新提示与无谓冲突。
+4. **共享资源防护**：连接器升级共享同一数据库配置行时，避免误删正在接管的配置。
+
+#### 明确的非目标（边界收敛）
+- **后台自动更新已安装条目**：本方案仅提供手动或被动调用的更新动词，不负责后台定时轮询自动更新（后台自动更新策略收敛至 `37-market-download-policy` 方案）。
+- **不做批量更新接口**：不提供 `store/update-all` 协议动词，批量失败回滚语义复杂，由客户端通过循环调用完成。
+- **不通过摘要伪造版本号**：内容有变但市场未提升版本时，坚决拒绝伪造版本，防止版本失序和快照无限膨胀。
+- **不删除旧快照的历史元数据**：遵循快照不可变原则，旧快照在 DB 中仅标记 `installed = 0`，保留溯源审计历史。
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：版本源修正与导入对齐
+
+#### 1. 修复技能与连接器的版本源
+在 `nomifun-importer` 的导入请求中加入可选的声明版本，使调用方能够将市场真实的条目版本传递给导入器：
+
+```rust
+// nomifun-importer/src/import.rs
+pub struct ImportRequest {
+    // ...
+    /// 市场声明的条目版本；None 时回退至清单自带版本
+    pub declared_version: Option<String>,
+}
+```
+
+#### 2. 补齐技能市场索引读取
+在 `nomifun-app` 的 `MarketIndex::read` 中，除连接器的 `connectors.json` 外，同步读取官方技能市场的 `.codebuddy-skill/marketplace.json`。通过 `entry_facts` 提取正确的条目版本，注入导入流程，使技能条目的快照版本与目录显示版本彻底摆脱 `1.0.0` 占位符。
+
+---
+
+### 3.2 模块二：三段式安全更新引擎
+
+更新操作的核心由 `InstallProvider::replace(old_snapshot, new_snapshot)` 承载，分为三步：
+
+#### 第一步：组件配对与上下文交接（Handover）
+- **配对规则**：通过 `component_id`（格式为 `wb-<plugin>-<slug>`）在跨快照间保持一致的特性，将新旧快照中的同名组件一一配对；若组件 ID 变动则按 `(kind, name)` 兜底匹配。
+- **上下文交接**：提取旧组件记录的 `preset_id` 或 `mcp_server_id` 作为 `Handover` 上下文，传递给新组件的安装过程。
+
+#### 第二步：新快照先行安装
+- 遍历新快照组件，利用 Handover 优先进行**原地复用与内容更新**。
+- 若新组件在安装过程中发生任何错误，立即进入**回滚流程**。
+
+#### 第三步：旧产物释放与失败回滚
+- **成功分支**：新快照所有组件均安装成功后，对旧快照标记为 `installed = 1` 的组件执行释放。
+- **部分失败回滚分支（关键防御）**：
+  若新快照部分组件失败，不能仅简单保留旧快照，必须调用 `rollback_replaced` 清除新快照已经装上的部分组件与安装记录。否则该半成品快照会被判定为最新版本，导致条目被卡在无法重试的错误状态。
+
+---
+
+### 3.3 模块三：不同产物类型的差异化升级策略
+
+| 条目类型 | 新组件安装策略 | 旧组件释放策略 | 特殊边界与防护说明 |
+|---|---|---|---|
+| **专家 (Agent/Team)** | 读取 Handover 中的 `preset_id`，调用 `PresetService::update` **原地更新**内容，标记 `reused` | **不执行删除**（因为新旧版本共用同一个 Preset 实体） | 严格保持 preset_id 不变，避免产生同名预设；注意用户手动修改的 instructions 会被新版本覆盖 |
+| **连接器 (Connector)** | 调用 `upsert_server`，同名连接器复用同一 `mcp_servers` 行 | 比较 `mcp_server_id`：<br/>• **若与新组件相同**：仅清数据库关联记录，**绝不调用删除**<br/>• **若不同**：正常调用 remove 删除旧行 | 若配置（URL/Headers）发生变更，系统按安全规范自动置为 `enabled = false`，接口如实向客户端上报 |
+| **技能 (Skill)** | 在新快照独立路径物化目录：<br/>`<skills>/agent-store/<new_snap>/<slug>/` | 删除旧快照物化目录：<br/>`<skills>/agent-store/<old_snap>/<slug>/` | 系统解析优先取最新快照，先装后删实现无缝切换，不留任何空窗期 |
+
+---
+
+### 3.4 模块四：数据库隔离缺陷修复（前置承重墙）
+
+#### 缺陷定位
+在 `plugin_snapshot_components` 表的操作中，组件安装标记的管理原来仅使用 `WHERE component_id = ?`，缺少快照维度限定。
+
+#### 修复收窄
+全面将组件安装态写入函数升级为带快照作用域的联合条件：
+- `clear_components_installed(snapshot_id, &[component_id])`
+- `set_components_disabled(snapshot_id, &[component_id], disabled)`
+- `mark_components_installed(snapshot_id, &[component_id])`
+
+这样新旧快照在交替切换时，写入与清除完全互不干扰，消除了安装记录被误删的系统隐患。
+
+---
+
+### 3.5 模块五：协议接口与客户端封装
+
+#### 1. 协议定义（HTTP / WS）
+- **路径**：`POST /api/app-server/store/{marketplace_id}/entries/{entry_name}/update`
+- **WS 动词**：`"store/update-entry"`
+- **返回结构**：复用并拓展 `AppServerStoreInstallResult`，增加升级专属字段：
+
+```rust
+pub struct AppServerStoreInstallResult {
+    pub marketplace_id: String,
+    pub entry_name: String,
+    pub snapshot_id: String,
+    pub version: String,
+    pub reused: bool,                       // true = 已经在目标版本，无操作
+    pub installed_count: usize,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub outcomes: Vec<ComponentOutcome>,
+    
+    // 升级操作拓展字段 (普通安装时缺省)
+    pub previous_snapshot_id: Option<String>,
+    pub previous_version: Option<String>,
+    pub released_count: usize,             // 被成功释放的旧组件数量
+}
+```
+
+#### 2. SDK 接口定义
+```ts
+// 扩展 Client 与 Store 子客户端
+const outcome = await client.store.update(item);
+// outcome 包含 fromVersion, toVersion, releasedCount 等
+```
+
+#### 3. WebUI 呈现
+- 在条目详情与抽屉中，当检测到 `installed && update_available && !blocked_reason` 时，将原本提示用户“先卸载再安装”的纯文本说明替换为**“立即更新”交互按钮**。
+- 支持展示更新前后的版本变化标签（`旧版本 → 新版本`），并在更新失败时明确呈现具体原因。
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策主题 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **专家升级模式** | **原地更新 Preset 内容，保持 preset_id** | ❌ 重新创建 Preset：会导致会话绑定与历史引用断裂，并残留多条同名预设。 |
+| **D2** | **版本覆盖传递** | **在导入请求中随入显式版本覆盖** | ❌ 导入器内部自行读市场索引：破坏架构分层，导致市场结构知识泄漏进底层导入器。 |
+| **D3** | **协议动词形态** | **新增独立 `store/update-entry` 动词** | ❌ 客户端串联 uninstall+install：存在数据丢失与中间崩溃不可恢复的高风险；<br/>❌ 给 install 加 mode 参数：破坏既有 install“已装即 no-op”的幂等语义。 |
+| **D4** | **返回 DTO 选型** | **拓展现有安装结果结构体** | ❌ 新建完全平行的 UpdateResult：90% 字段重复，增加客户端适配与维护成本。 |
+| **D5** | **执行顺序机制** | **先装新版，验证成功后释放旧版；部分失败则回滚新快照** | ❌ 先删旧版再装新版：在删除旧版后若新版安装失败，系统陷入不可恢复的空状态。 |
+| **D6** | **未抬版本的同名更新** | **版本相同时直接作为幂等成功（reused: true）返回** | ❌ 使用 content_digest 充当临时版本号：破坏语义化版本的可读性与排序逻辑。 |
+| **D7** | **连接器停用状态** | **尊重底层安全停用规则，但如实向客户端上报** | ❌ 升级后强制自动重新启用：破坏了配置变动必须重新探测验证的安全底线。 |
+| **D8** | **安装状态更新收窄** | **数据库 SQL 全面收窄为 (snapshot_id, component_id)** | ❌ 改动 component_id 命名规范（带入版本号）：破坏全仓既有标准格式并引发大面积不兼容。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **版本正确覆盖** | 技能与连接器条目经导入后，快照 `declared_version` 严格等于市场声明版本，彻底告别 `1.0.0` 占位符。 |
+| **S2** | **专家 ID 保持** | 升级专家条目后，系统内同名预设仍仅存在一条，且 `preset_id` 在升级前后完全一致。 |
+| **S3** | **快照状态隔离** | 两份快照包含相同组件时，释放旧快照后，新快照的 `installed` 标志依然为 `1`。 |
+| **S4** | **连接器共享保护** | 升级同名连接器，新旧组件共享相同 `mcp_server_id` 时，旧快照释放不会删除该连接器配置行。 |
+| **S5** | **技能目录切换** | 升级技能后，新快照目录物化完整，旧快照文件目录被彻底清理，无残留孤儿文件。 |
+| **S6** | **失败原子回滚** | 模拟新版本组件安装异常，验证新快照已装组件被自动清理回滚，旧版本安装完好保留且支持后续重试。 |
+| **S7** | **幂等与无版本变动** | 对同一版本连续调用两次 `update_entry`，第二次返回 `reused = true`，不触发重复文件写入或状态翻转。 |
+| **S8** | **协议与客户端对齐** | 协议指纹版本为 `fp-12`，方法计数为 `53 / 78`，前后端单测全量通过。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
+# 商店条目的更新（update）能力 · 技术方案
+
 > 状态：**已实施（2026-09-28）**——§9 的 8 步全部落地，`fp-11` → `fp-12`，方法计数
 > `52 / 77` → `53 / 78`；实施期与本文有 4 处差异与 1 处新增，逐条记在 **§12**。
 > 决策 D1–D8 见 §4，均有取值、替代方案与代价。
@@ -37,8 +282,13 @@
 
 ## 2. 边界（非目标）
 
-- **不做自动升级**。后台扫掠（`18` §9.2）继续只刷新索引，**绝不**改已安装快照；升级始终是用户的显式动作。
-  本方案不引入 `update_policy` / 自动升级开关。
+- **不做自动升级**（**2026-09-29 由 doc `37` 显式推翻，本条不再成立**）。本方案交付时后台扫掠
+  （`18` §9.2）只刷新索引、**绝不**改已安装快照，升级始终是用户的显式动作；doc `37`
+  把扫掠的职责扩为「刷新索引 **+** 自动升级从该市场安装的条目」，并给了三条收口：粒度是**市场级**
+  （复用本方案的 `auto_update` 开关）、类型白名单缺省 `["agent","team","skill"]`
+  （**连接器默认排除**，理由正是本方案 §3.4 的「配置变了即停用」）、用户手动停用 /
+  `blocked_reason` / 只导入未安装三种情况硬跳过；`entry_auto_update_kinds = []` 即回到本条描述的旧行为。
+  `update_policy` 这个字段名仍然没有被引入——策略落在 `[marketplace]` 与市场行上（`37` §3.3）。
 - **不做批量更新动词**。不新增 `store/update-all`：批量的部分失败语义（哪些成功、能否回滚）
   没有便宜的定义；客户端循环 `checkUpdates()` + `update()` 即可（§5.6）。
 - **不做版本回退语义**。「当前版本 < 已装版本」时 `entry_live_version` 仍是权威值，

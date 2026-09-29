@@ -1,3 +1,160 @@
+# Agent Store V1 演进路线图与全景交付技术方案（Evolution Roadmap & Technical Blueprint）
+
+> 状态：架构规划与基线（Phase 0/1/2 核心已落地，正文与最新规划持续同步）  
+> 适用范围：Agent Store 整体生命周期演进、跨层协作边界与里程碑交付判定  
+> 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md)、[`09-release-readiness.md`](file:///c:/workspace/allo/docs/agent-store/09-release-readiness.md)、[`16-sdk-webui-site-priority-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/16-sdk-webui-site-priority-plan.zh.md)  
+> 核心原则：**不以单 Agent PoC 替代工程落地；坚持自底向上关闭 Runtime 门禁，再逐层推进协议、SDK 与 Web 闭环；发版前保持单一现行规范，严守版本不可变冻结与安全隔离。**
+
+---
+
+## 1. 背景与核心价值
+
+Agent Store 项目的根本目标是构建一套面向本地优先（Local-first）自动化与协作环境的智能体资产交易与执行底盘。在项目立项初期，面临从“原型演示”向“工业级生产可用”跨越的重大挑战：
+
+### 1.1 核心价值诉求
+1. **打破烟囱式单体**：将异构的资产规范（CodeBuddy / WorkBuddy）、运行时引擎（allo / nomi）、网络通信（WebSocket / HTTP）与终端展示（WebUI / SDK）解耦为标准的分层架构。
+2. **端到端工程闭环**：贯通从“资产导入 $\to$ 不可变快照 $\to$ 运行时适配 $\to$ 公共协议 $\to$ SDK 消费 $\to$ Web 交互 $\to$ 结果审查”的完整链路。
+3. **分阶段门禁把关（Milestone Gating）**：杜绝“底层未稳、前端先行”的虚假繁荣，确立以实测证据驱动的阶段准出机制。
+
+---
+
+## 2. 方案全景与阶段演进拓扑
+
+系统按 7 个里程碑阶段（Phase 0 至 Phase 6）自底向上稳步推进：
+
+```mermaid
+flowchart TD
+    subgraph P0["Phase 0: 核心基线与 Spike 验证"]
+        P0_1["Runtime Readiness Gate"]
+        P0_2["OAuth 凭据注入与 Probe 验证"]
+        P0_3["单 Agent Run 实测 (TC-RT-001)"]
+    end
+
+    subgraph P1["Phase 1: Importer 与不可变资产库"]
+        P1_1["CodeBuddy/WorkBuddy 导入器"]
+        P1_2["PluginSnapshot 不可变缓存与摘要"]
+        P1_3["三态兼容性评估 (CompatTriple)"]
+    end
+
+    subgraph P2["Phase 2: Runtime Adapter 与 Team 编排"]
+        P2_1["PresetSnapshot 映射与版本冻结"]
+        P2_2["Leader Conversation 栅栏"]
+        P2_3["nomi_delegate(strategy=planned) 调度"]
+    end
+
+    subgraph P3["Phase 3: App Server Protocol 统一契约"]
+        P3_1["JSON-RPC 2.0 /ws 与 HTTP 映射"]
+        P3_2["契约指纹机制 (fp-12)"]
+        P3_3["Opaque Public IDs 全局脱敏"]
+    end
+
+    subgraph P4["Phase 4: TypeScript SDK 封装"]
+        P4_1["Monorepo 多包拆分 (protocol/client/sdk)"]
+        P4_2["回环 WS 进程托管 (launchHarness)"]
+        P4_3["断线重连与游标增量追平"]
+    end
+
+    subgraph P5["Phase 5: WebUI 体验对齐"]
+        P5_1["Codex 交互骨架 (命令面板 / 审批卡)"]
+        P5_2["产物变更审查与 Git 快照对比"]
+        P5_3["计划待办树与状态树联动"]
+    end
+
+    subgraph P6["Phase 6: 安全加固与发布准入"]
+        P6_1["五道发布门禁 (Gate 1 ~ Gate 5)"]
+        P6_2["零凭据明文持久化审计"]
+        P6_3["npm 跨平台多架构原子发布"]
+    end
+
+    P0 --> P1 --> P2 --> P3 --> P4 --> P5 --> P6
+```
+
+---
+
+## 3. 分阶段详细技术方案
+
+### 3.1 Phase 0：核心基线与 Spike 验证（已关闭）
+- **核心目标**：彻底摸清底层执行引擎（allo Runtime）的能力边界与 Actor 归因，避免上层建设建立在松动地基上。
+- **关键技术方案**：
+  - 跑通 `AgentDefinition -> PresetSnapshot -> ExecutionParticipant -> Runtime Driver` 映射链路。
+  - 修复 Actor ID 强校验导致的数据库 500 异常（明确将外部 App Server 用户的执行归因为真实 `user(owner_id)`）。
+  - 在真实模型（mimo-v2.5 等）下验证 `planning → running → completed` 状态流，并确保崩溃后标记为 `recovery_required`。
+
+### 3.2 Phase 1：资产导入与快照持久化（已落地）
+- **核心目标**：实现对外部插件、技能与连接器包的容错解析与不可变固化。
+- **关键技术方案**：
+  - 实现 `nomifun-importer`，将外部压缩包或本地目录物化为带有 SHA-256 树摘要（`content_digest`）的 `PluginSnapshot`。
+  - 构建三维兼容性矩阵（`semantic_status`、`runtime_status`、`distribution_status`），对不支持字段记录 Warn 而不阻断解析。
+  - 敏感凭据执行 `secret:<KEY>` 模板改写，严禁明文入库。
+
+### 3.3 Phase 2：Runtime Adapter 与 Team 调度（已落地）
+- **核心目标**：实现单 Agent 与固定团队的高可靠运行时接入。
+- **关键技术方案**：
+  - **版本不可变冻结**：运行中的 Run 锁定起始时的 `preset_revision` 与 `content_digest`，后台升级不改变已有执行行为。
+  - **Leader 规划编排**：由服务端自动创建 Leader 会话，由 Leader 在首轮自动调用 `nomi_delegate(strategy="planned")`，按模板约束派生 DAG，实现局部并行与步骤等待。
+
+### 3.4 Phase 3：公共 App Server 协议层（已确立）
+- **核心目标**：建立系统唯一对外公开的标准交互界面。
+- **关键技术方案**：
+  - 落地 WebSocket 双工通道与 HTTP 辅助通道，双端方法同名同参。
+  - 引入契约指纹（`fp-<n>`，现行 `fp-12`），严格守卫字段双向对称。
+  - 消除一切内部数据库主键，统一输出 Opaque ID。
+
+### 3.5 Phase 4 & 5：SDK 封装与 WebUI 交互闭环（已闭环）
+- **核心目标**：为外部开发者提供开箱即用的类型化客户端，为用户提供工业级交互体验。
+- **关键技术方案**：
+  - SDK 采用回环 WS 进程托管（`launchHarness`），解决 Node 管道背压卡死，按平台打包预编译运行时。
+  - WebUI 对齐 Codex App 交互骨架，全面交付统一命令面板（`/` 与 `@`）、行内审批卡、中途引导（`run/steer`）、计划待办树、产物变更管理与多标签通知选主。
+
+### 3.6 Phase 6：安全加固与发布准入（推进中）
+- **核心目标**：通过严格的发布门禁审查，保障软件分发质量。
+- **关键技术方案**：
+  - 强制执行 Gate 1 至 Gate 5 门禁判定，包括契约对齐、用例全绿、凭据零泄漏审计与回滚断言。
+  - 通过 npm `optionalDependencies` 平台包安全分发跨平台二进制。
+
+---
+
+## 4. 关键架构决策与权衡矩阵
+
+| 阶段 | 决策事项 | 最终结论 | 决策依据与权衡 |
+| :--- | :--- | :--- | :--- |
+| **Phase 0** | 进程管道模式 | **采用回环 WebSocket 建连** | 规避跨平台 STDIO 管道缓冲死锁风险，复用 Rust 成熟的高性能网络路由。 |
+| **Phase 2** | Team 触发方式 | **Leader 会话调用 `nomi_delegate(strategy=planned)`** | 保持与单 Agent 会话模型的统一性，避免开发两套割裂的底层任务引擎。 |
+| **Phase 3** | 协议演化策略 | **统一单一现行协议 v1，不设 v2 兼容期** | 发版前全线收敛，杜绝多版本维护带来的双倍测试和开发资源浪费。 |
+| **Phase 4** | 二进制分发通道 | **npm `optionalDependencies` 平台独立包** | 消除临时联网下载失败与内网阻断风险，安装体验无缝确定。 |
+
+---
+
+## 5. 验收标准与测试分层
+
+系统遵循金字塔式测试分层体系：
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                 E2E 业务全链路端到端验收                    │
+│      (导入 software-company -> 启动 TeamRun -> 计划树展示)  │
+├─────────────────────────────────────────────────────────────┤
+│                 集成测试 (Integration Tests)                │
+│ (Importer -> Catalog -> Runtime Adapter -> AppServer -> SDK)│
+├─────────────────────────────────────────────────────────────┤
+│                 契约测试 (Contract Tests)                   │
+│   (App Server Initialize / ID 脱敏 / 状态查询一致性 / 幂等) │
+├─────────────────────────────────────────────────────────────┤
+│                 单元测试 (Unit Tests)                       │
+│    (DAG 校验 / 状态机 / 依赖解析 / 格式 Schema / 错误映射)  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **P0 核心用例集合**：包含 `TC-RT-001` 至 `010`、`TC-TEAM-001` 至 `008`、`TC-API-001` 至 `005`、`TC-SEC-001` 至 `003`，所有发布必须达到 **100% PASS**。
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Agent Store V1 Roadmap 与测试验收计划
 
 > 状态：实施路线冻结（Phase 0）；排期待 Spike 校准

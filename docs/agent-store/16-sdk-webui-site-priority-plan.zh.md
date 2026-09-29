@@ -1,3 +1,169 @@
+# Agent Store 全链路工程主计划与优先级方案（SDK / 站点 / 市场 / WebUI 综合方案）
+
+> 状态：工程主计划（34 项总体任务：29 项全部完成，3 项部分完成，2 项延后；统一协议 v1 框架已确立）  
+> 适用范围：`web/packages/*`（SDK）、`web/`（WebUI）、插件市场规范与站点分发全链路  
+> 关联设计：[`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md)、[`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md)、[`11-webui-production-readiness.md`](file:///c:/workspace/allo/docs/agent-store/11-webui-production-readiness.md)、[`12-sdk-packaging.md`](file:///c:/workspace/allo/docs/agent-store/12-sdk-packaging.md)、[`17-plugin-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/17-plugin-spec.zh.md)、[`18-marketplace-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/18-marketplace-spec.zh.md)、[`19-webui-codex-alignment.zh.md`](file:///c:/workspace/allo/docs/agent-store/19-webui-codex-alignment.zh.md)、[`21-open-decisions.zh.md`](file:///c:/workspace/allo/docs/agent-store/21-open-decisions.zh.md)、[`22-webui-productionization.zh.md`](file:///c:/workspace/allo/docs/agent-store/22-webui-productionization.zh.md)  
+> 核心原则：**以开发者和终端用户的任务闭环为纲，先解决阻断性真实缺陷，再落地核心交互体验；坚守统一协议 v1 原则，不设虚拟 v2 与过渡期包袱；杜绝无真实数据流的假开关。**
+
+---
+
+## 1. 方案背景与核心宗旨
+
+在完成单 Agent 核心生命周期（P0）与四链路资产闭环（专家、专家团、技能、连接器）后，项目面临四个维度的工程落地诉求：
+1. **SDK 生产级可靠性与开发者第一触点（方向一）**：修复进程背压冻结、补齐传输层与游标自愈，同步更新站点真实文档。
+2. **规范化治理与格式校验（方向二）**：确立 CodeBuddy/WorkBuddy 兼容层规范（`17`/`18`），引入 CI 自动化校验 Schema，杜绝明文凭据泄漏。
+3. **WebUI 工业级体验对齐（方向三）**：对齐 Codex App 交互骨架，打通命令面板、实时引导、计划树、产物变更管理与审批流。
+4. **底层安全与协议词汇收口（方向四）**：推进生产化硬指标（正式认证、CSRF、限流）及与 Codex app-server 概念的内部对齐。
+
+---
+
+## 2. 方案全景与四大方向收敛拓扑
+
+四大工程方向由高优先级向长效治理层层推进，共同汇聚至 Agent Store 稳定交付版本：
+
+```mermaid
+flowchart TD
+    subgraph D1["方向一: SDK 加固与站点触点 (P0 / P1)"]
+        A1["A1: 进程背压排空与退出回调"]
+        A2["A2: 传输层超时、重连与监听清理"]
+        A3["A3: 双向游标追平与解码器下沉"]
+        C1["C1-C5: 事实硬伤修正与开发者文档"]
+    end
+
+    subgraph D2["方向二: 插件与市场规范工程化 (高优先级)"]
+        D1Spec["D1: 插件规范 17 与市场规范 18"]
+        D2Schema["D2: JSON Schema 校验与 CI 门禁"]
+        SecR22["R22: 凭据 secret:KEY 模板改写"]
+        DepGuards["R23/R24: 依赖解析与条目级阻断"]
+    end
+
+    subgraph D3["方向三: WebUI 体验对齐 (P0 / P1)"]
+        W1["W1/W1b: 统一命令面板 (/ 与 @)"]
+        W2["W2: 行内审批卡与 CAS 控制"]
+        W3["W3: 实时引导 run/steer"]
+        W4W6["W4/W6: 计划待办树与状态派生树"]
+        W5["W5: 产物文件与 Git 快照对比回退"]
+    end
+
+    subgraph D4["方向四: 生产化硬指标与长效收敛"]
+        SecA2["A2: 正式认证与短期令牌管理"]
+        GovSec["CSP / CSRF / 配额与限流"]
+        WP5["WP-5: Codex 概念映射内部对齐"]
+    end
+
+    D1 --> Converge["Agent Store 稳定生产发布<br/>(v1 闭环 / npm 跨平台 / 任务闭环)"]
+    D2 --> Converge
+    D3 --> Converge
+    D4 -.->|长效演进| Converge
+```
+
+---
+
+## 3. 四大方向详细技术方案
+
+### 3.1 方向一：SDK 工业级加固与开发者触点
+
+1. **子进程生命周期与管道背压防护（A1）**：
+   - 彻底重构 `spawn.ts` 的输出流管理，捕获就绪行后启动持续排空循环或转接至用户日志流，杜绝 Node.js 64KB 缓冲区打满导致服务端被物理冻结的致命缺陷。
+   - 暴露结构化 `onExit` 回调与 `exited` Promise，当底层 Rust 二进制异常退出时立即通知上层，禁止抛出假超时。
+2. **连接健壮性与多标签通知协调（A2, W8）**：
+   - `Transport.close()` 严格清理挂起的 Promise、清空事件监听器、隔离陈旧 Socket。
+   - 引入带有指数退避与抖动的自动重连机制，重连后自动发送 `rearm()` 重订阅会话与活跃 Run，并以游标重放追平断线窗口。
+   - 多标签通知根据 D4=A 决策选主，桌面弹窗与声音提示单点触发，杜绝多标签并发骚扰。
+3. **传输同构与包拆分（A3, A4, A5）**：
+   - 下沉通用 `HttpTransport`，使 SDK 支持轻量级无状态 HTTP 调用；
+   - 补齐 `package.json` 的 `engines: { node: ">=18" }`、`sideEffects: false`，完成三包双构建（ESM/CJS）。
+4. **站点真实性修正与文档配对同步（C0 至 C5）**：
+   - 彻底修复下载页面在非 Windows 环境下的 404 错误与虚假平台承诺，声明目前生产发布仅支持 Windows x64，其余平台提示构建中。
+   - 建立文档与 SDK 接口变更的配对更新机制（C0 规则），严禁文档滞后于发布代码。
+
+### 3.2 方向二：插件与市场规范工程化
+
+1. **确立 CodeBuddy/WorkBuddy 兼容层规范（D1）**：
+   - 在 [`17-plugin-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/17-plugin-spec.zh.md) 与 [`18-marketplace-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/18-marketplace-spec.zh.md) 中完整定义源类型、清单解析优先级、`_files.txt` 清单格式及原子晋升规则。
+   - 明确当前阶段为兼容层，保护现有资产生态平滑迁移。
+2. **机器可校验 Schema 与自动化 CI 门禁（D2）**：
+   - 输出 `plugin.schema.json` 与 `marketplace.schema.json`；
+   - 研发 `check-agent-store-market.mjs` 校验脚本并接入聚合门禁 `bun run check`，在构建与发布期对真实市场进行全量字段普查与违规阻断。
+3. **零凭据明文持久化（R22 安全收敛）**：
+   - 导入插件时，所有敏感配置（如环境变量中的 API Key）统一自动改写为 `${secret:KEY}` 模板，严禁落入明文快照库。
+   - 运行时按需从宿主受控凭据库注入，绝不流向前端渲染层。
+4. **依赖关系严格检查与条目阻断（R23, R24）**：
+   - 落地 SemVer 依赖解析器，在插件导入期与加载期校验宿主环境与组件依赖；通过 `[import].strict_dependencies` 提供安全开关。
+
+### 3.3 方向三：WebUI 体验对齐与任务闭环
+
+全面落地 [`19-webui-codex-alignment.zh.md`](file:///c:/workspace/allo/docs/agent-store/19-webui-codex-alignment.zh.md) 规划的四大层级：
+1. **第 1 层 交互骨架**：
+   - **统一命令面板（W1/W1b）**：打通 `/` 命令与 `@` 提及，保持草稿文本与底层结构化 Mentions 双向同步，完美支持中文输入法。
+   - **审批卡（W2）**：承接敏感操作审批请求，三路 CAS 并发控制，防范重复或超时提交。
+   - **实时引导（W3）**：支持在任务运行中提交口头引导（`run/steer`），先读版本再校验。
+   - **计划与待办树（W4）**：基于 `run/plan` 权威快照呈现步骤标题、耗时与成员归属，与状态树建立双向平滑锚点互跳。
+2. **第 2 层 审查体系**：
+   - **产物文件面板（W5）**：绑定会话工作区，提供文件预览、下载与评论引用；结合宿主 Git 快照服务实现单文件接受（Stage）与回退（Discard）。
+   - **运行状态树（W6）**：通过 `run-tree.ts` 聚合多步与重试链路，将底层原始 JSON 降级为收起调试面板。
+3. **第 3 层 会话与反馈**：
+   - **多轨幂等操作（W7）**：未决消息复用原 Key，失败重试、编辑与重新生成生成新 Key。
+   - **用量与费用核算（W9）**：接入 models.dev 权威费率，逐轮统计 Token 并在上下文占用 $\ge 80\%$ 时主动提示。
+4. **第 4 层 输入与配置**：
+   - **附件上传沙箱（W10）**：本地拖拽与剪贴板图片安全写入当前会话物理工作区，以路径引用参与对话。
+   - **真实设置持久化（W11）**：收敛假开关，直接读写 `~/.agent-store/config.toml`。
+
+### 3.4 方向四：生产化硬指标与长效治理
+
+1. **安全基准演进**：
+   - 推进正式认证与短期令牌管理（A2 已落地），为 WebSocket 注入 TTL 校验；
+   - 持续落实 Origin / CSP / CSRF 校验防御与租户级频次限制。
+2. **协议词汇内部对齐（WP-5 架构指导）**：
+   - 坚持 v1 内部概念重构，保持 `run`（执行聚合）与 `conversation`（多轮线程）的语义清晰，不对齐 STDIO 传输。
+
+---
+
+## 4. 关键工程决策与权衡矩阵
+
+| 决策编号 | 事项 | 决策结论 | 核心依据与权衡 |
+| :--- | :--- | :--- | :--- |
+| **Q1 / A6** | 跨平台分发矩阵 | **暂仅支持 Windows x64** | 集中资源保障核心用户群体；避免无外部需求时徒增跨平台 CI 与机器维护成本。 |
+| **Q2 / C5** | 站点托管与部署 | **暂缓自定义域名，统一经 GitHub Releases 分发** | 外部网络与 DNS 权属未就绪，通过官方 Releases 提供权威安装包安全性更高。 |
+| **Q3 / W10** | 附件输入选型 | **采用会话工作区沙箱路径引用** | 避免引入全局复杂文件托管服务，复用既有工作区目录树权限守卫。 |
+| **Q6 / W11** | 设置写入目标 | **统一写入 `~/.agent-store/config.toml`** | 杜绝假开关，以真实文件为唯一事实源，写后服务端重读回显。 |
+| **Q7 / T14** | 市场自动更新 | **官方市场默认开启，第三方市场默认关闭** | 遵循最小特权原则，防止第三方市场静默更新引入不安全代码。 |
+| **D1 / D6** | 协议版本策略 | **统一确立为单一协议 v1，不设 v2 迁移包袱** | 发版前全线收敛重构，避免双版本并行带来的双倍测试与开发浪费。 |
+
+---
+
+## 5. 任务总表与验收标准总结 (R1 ~ R34)
+
+工程主计划共归纳 34 项原子任务（R1 至 R34），当前状态如下：
+
+### 5.1 状态分类汇总
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ 34 项总体任务执行状态分布                                   │
+├────────────────────────────────┬────────────────────────────┤
+│ ✅ 全部完成 (29 项)             │ R1-R5, R8-R15, R17-R31, R34│
+│ 🟡 部分完成 (3 项，缺口已登记) │ R6 (站点机制), R16 (设置), │
+│                                │ R33 (方向四安全启动)        │
+│ ⏸ 明确延后 (2 项，卡外部条件)  │ R7 (自定义域名), R32 (镜像) │
+└────────────────────────────────┴────────────────────────────┘
+```
+
+### 5.2 核心完成项验收指标
+
+- **SDK 健壮性（R1, R2, R3）**：合成子进程写入超 1MB 日志无任何背压卡死，真机 3 轮多轮交互流畅完成；`HttpTransport` 成功覆盖 45+ 映射接口。
+- **WebUI 核心骨架（R8 ~ R15, R19, R20）**：审批卡通过三路 CAS 守门；`run/steer` 成功注入口头引导；计划待办树与状态树平滑互跳；产物变更通过 Git 快照实现安全回退；拖拽文件安全上传并转换为路径引用。
+- **安全与规范收口（R22, R23, R24）**：插件明文凭据 100% 转换为 `secret:<KEY>` 模板；真实市场经 `check:market` 校验达到 `3 markets, 0 error`。
+- **编译与代码整洁度（R34）**：整仓 `cargo check --tests --workspace` 与 `bun run typecheck` 均实现 **Exit 0（0 Error）**。
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # SDK / 站点 / 插件市场 / WebUI：方向与执行计划
 
 > 状态：计划（2026-09-09）。**先定方向与验收口径，不含实现**。

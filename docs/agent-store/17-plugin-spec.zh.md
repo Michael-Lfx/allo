@@ -1,3 +1,190 @@
+# 插件规范（兼容层） · 技术方案
+
+> 状态：✅ 现行正文（未正式发版，可改；发版前统一称 v1，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；P1/P2/P3/P4 均已落地
+> 日期：2026-08-26（更新：2026-09-11）
+> 前置：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`02-codebuddy-workbuddy-import-spec.md`](file:///c:/workspace/allo/docs/agent-store/02-codebuddy-workbuddy-import-spec.md)、[`03-codebuddy-compatibility-matrix.md`](file:///c:/workspace/allo/docs/agent-store/03-codebuddy-compatibility-matrix.md)
+> 一句话原则：**以兼容吸收既有生态为首要目标，对来源格式只做安全归一化与快照封装；外部脚本一律零执行，敏感键自动改写为引用，机器校验守护格式底线**
+
+---
+
+## 1. 背景与核心痛点
+
+CodeBuddy 与 WorkBuddy 生态积累了大量现存的专家与工具包。若直接强行推行全新的私有格式，会导致既有生态资产无法平滑迁移。引入兼容层规范的核心痛点在于：
+
+### 1.1 核心痛点分析
+
+1. **格式多样与语法松散**：外部生态包由不同作者在不同历史时期编写，存在单目录、市场包、插件包等不同布局；部分文件存在 Windows CRLF 换行、非严格 YAML、字段形状多变（如字符串与数组混用）等现实瑕疵。
+2. **缺乏机器可校验的形式化约束**：仅依靠口头约定或非结构化文档，开发者与测试工具无法通过自动化脚本快速判断插件包是否合规。
+3. **明文凭据与任意脚本执行威胁**：外部包中的 MCP 配置可能直接硬编码了开发者个人的明文 API Key，包内的生命周期钩子（Hooks）试图在导入期执行系统 Shell 命令。
+4. **依赖语义混乱**：缺乏标准 SemVer 范围解析，或者未对缺少 Manifest 的破损条目进行显式拦截，导致装上后运行时报错。
+
+---
+
+## 2. 方案全景与兼容模型
+
+### 2.1 兼容层归一化模型
+
+```mermaid
+flowchart TD
+    subgraph ExternalEcosystem ["外部生态包 (CodeBuddy / WorkBuddy)"]
+        F1[".codebuddy-plugin/plugin.json (插件包)"]
+        F2[".codebuddy-skill/marketplace.json (技能市场)"]
+        F3["skills/<slug>/SKILL.md (单技能目录)"]
+        F4[".codebuddy-connector/connectors.json (连接器市场)"]
+        F5["connectors/<id>/cli.json (CLI 连接器)"]
+    end
+
+    subgraph NormalizationPipeline ["兼容层归一化管道 (nomifun-importer)"]
+        CHK["路径防逃逸与格式合法性校验"]
+        SCHEMA["机器校验: plugin.schema.json"]
+        TOLERANT["宽容解析: CRLF 归一化 / 宽松 YAML / 字段形状归一"]
+        SECRETS["凭据脱敏: 敏感 env 键改写为 secret:<KEY>"]
+        DEP_CHK["依赖检查: SemVer 区间判定 + strict 校验"]
+    end
+
+    subgraph CanonicalOutputs ["标准输出 (Agent Store 原生资产)"]
+        SNAP["不可变快照: PluginSnapshot (带 SHA-256 树摘要)"]
+        DEFS["标准领域对象: Agent / Team / Skill / Connector / Schema"]
+        COMPAT["兼容性报告: CompatibilityReport (三态评估)"]
+    end
+
+    F1 & F2 & F3 & F4 & F5 --> CHK
+    CHK --> SCHEMA
+    SCHEMA --> TOLERANT
+    TOLERANT --> SECRETS
+    SECRETS --> DEP_CHK
+    DEP_CHK --> SNAP
+    DEP_CHK --> DEFS
+    DEP_CHK --> COMPAT
+```
+
+### 2.2 核心目标与非目标 (Goals & Non-Goals)
+
+- **核心目标**：
+  - 稳定兼容吸收 CodeBuddy/WorkBuddy 既有五类资产结构。
+  - 确立 `name` 为唯一必需字段，其余字段明确默认值。
+  - 建立自动化机器校验机制（`plugin.schema.json`）。
+  - 导入期零代码执行，敏感环境变量自动替换为受控安全引用。
+- **明确非目标**：
+  - V1 不定义私有原生插件格式（先专注兼容层）。
+  - 不在导入期执行插件携带的 `bin/` 脚本或外部 Hook。
+  - 不支持无 `plugin.json` 且未配置清单合成的非标准条目。
+
+---
+
+## 3. 详细设计 (按领域模块内聚)
+
+### 3.1 兼容包识别路径布局
+
+| 路径定位 | 结构含义与适用场景 | 必需级别 |
+|---|---|---|
+| `.codebuddy-plugin/plugin.json` | 独立插件清单（插件根目录即插件包） | 插件型必需 |
+| `.codebuddy-plugin/marketplace.json` | 专家市场清单（条目分布在 `plugins/<id>/`） | 专家市场必需 |
+| `.codebuddy-skill/marketplace.json` | 技能市场清单（条目分布在 `skills/<slug>/`） | 技能市场必需 |
+| `skills/<slug>/SKILL.md` | 单技能目录（无市场清单） | 单技能必需 |
+| `.codebuddy-connector/connectors.json` | 连接器市场清单（条目分布在 `connectors/`） | 连接器市场必需 |
+| `connectors/<id>/cli.json` | 单 CLI 连接器定义文件 | 单 CLI 必需 |
+| `agents/*.md` | 专家 Markdown 定义（Frontmatter + 正文） | 可选组件 |
+| `hooks/` / `commands/` | 兼容源保留位（静态导入，不启用执行） | 可选组件 |
+
+---
+
+### 3.2 清单字段模型与宽容解析规则
+
+三类清单中，**`name` 是全网唯一必填字段**（为空即触发 `MissingIdentity` 阻断）；其余字段均具备明确的默认行为：
+
+| 字段名称 | 必需 | 预期类型 | 默认值 | 归一化与处理策略 |
+|---|---|---|---|---|
+| `name` | ✅ | `string` | — | 唯一必填项；参与派生稳定组件 ID；空白直接阻断。 |
+| `version` | — | `string` | `"1.0.0"` | 记录为声明版本 `declared_version`。 |
+| `description` | — | `string` | `""` | 基础文本说明，用于展示。 |
+| `author` | — | `string \| {name, email}` | `""` | 宽容处理：对象形式归一化为 `"Name <email>"` 字符串。 |
+| `agents` / `skills` / `commands` | — | `string \| string[]` | `[]` | 宽容处理：单字符串路径（`"./agents/"`）自动转为数组。 |
+| `mcpServers` | — | `object` | `{}` | 解析为 ConnectorDefinition；敏感 env 自动脱敏改写。 |
+| `userConfig` | — | `object` | `{}` | 配置 Schema 映射为 CredentialSchema；敏感项仅存引用。 |
+| `dependencies` | — | `array \| object` | `[]` | 宽容处理：按类型分组的对象 `{connectors: [...]}` 展开为带 `group` 标记的条目。 |
+| `teamInfo` | — | `object` | 无 | WorkBuddy 团队扩展 ➔ 映射为 `AgentTeamDefinition`。 |
+| `displayName` / `profession` / `avatar` | — | `string \| object` | 无 | 界面展示元数据，完全保真透传；头像文件随快照复制。 |
+| `quickPrompts` / `tags` | — | `localized[]` | `[]` | 双语数组完整保留，用于前端快捷动作展示。 |
+
+#### 宽容解析容错机制 (Tolerant Parsing)
+- **CRLF 归一化**：解析前强制转换 Windows 行尾，杜绝跨平台 Digest 计算不一致。
+- **宽松 YAML 回退**：针对包含裸冒号、内嵌 JSON 字符串的非标 Frontmatter，标准解析失败后自动降级到行级正则提取，确保核心元数据不丢失。
+- **同名消歧**：当插件内 Agent 与 Skill 同名时，Skill 自动追加 `-skill` 后缀。
+
+---
+
+### 3.3 真实市场已出现但未消费字段治理
+
+通过对真实市场数据的普查（Census），以下字段在兼容源中真实存在，系统采取**保真透传但不消费（宽容忽略）**策略：
+
+| 字段名称 | 出现频率与场景 | 现状与处理策略 |
+|---|---|---|
+| `plugin` | experts 市场内 7 个插件清单 | 透传元数据，不参与功能映射。 |
+| `members` | 3 个团队插件清单 | 透传；团队结构严格以 `teamInfo` 为准。 |
+| `license` / `homepage` / `repository` | 少量开源插件清单 | 仅存入快照 Provenance，供展示与合规审计。 |
+| `distribution` / `settings` | 个别定制化插件清单 | 透传；不影响标准运行时调度。 |
+
+---
+
+### 3.4 凭据安全改写与沙箱隔离 (`secret:<KEY>`)
+
+1. **导入期零执行铁律**：导入仅进行磁盘文件复制与结构化解析，禁止唤起任何外部脚本或二进制解释器。
+2. **敏感环境变量自动脱敏改写**：
+   - 当检测到 MCP 连接器的 `env` 中存在敏感键（键名包含 `api`, `token`, `secret`, `key`, `password` 等）时，导入器在生成快照前自动将其值改写为受控引用：
+     $$\text{值} \longrightarrow \text{"secret:<KEY>"}$$
+   - 真实 Token 绝不落库、不写入快照 JSON；运行时启动 MCP 进程时，由宿主进程内存中的 `[credentials]` 字典按引用替换注入。如果缺少对应凭据，该变量直接被省略（Fail-Closed）。
+
+---
+
+### 3.5 依赖与冲突规则
+
+- **依赖表示**：支持纯字符串（`"plugin-a"`）或带版本约束的对象（`{"name": "plugin-a", "version": "^1.2.0"}`）。
+- **SemVer 范围解析**：支持裸版本（精确）、`^`（次版本兼容）与 `~`（修订版本兼容）。
+- **双层依赖阻断与逃生口**：
+  - 导入层与扩展加载层均具备严格依赖检查能力。
+  - 系统提供全局逃生配置：`~/.agent-store/config.toml` 中的 `[import].strict_dependencies = false`（默认关，保留宽松历史行为；设为 true 时不可满足强依赖直接阻断安装）。
+- **市场条目 `strict` 约束**：
+  - 市场条目声明 `strict=true` 时，来源目录必须自带 `.codebuddy-plugin/plugin.json`，缺失时条目在列表可见但标记 `blocked` 且不可安装。
+
+---
+
+## 4. 机器可校验架构与验收口径
+
+本规范的正式机器可校验契约落地于：
+- Schema 定义：[`docs/agent-store/schemas/plugin.schema.json`](file:///c:/workspace/allo/docs/agent-store/schemas/plugin.schema.json)
+- 自动化校验脚本：`scripts/check-agent-store-market.mjs`
+
+### 4.1 自动化校验验收命令
+
+```bash
+# 1. 对官方三大市场执行全量合规校验 (断言 0 errors)
+node scripts/check-agent-store-market.mjs --market experts=./market/experts --market skills=./market/skills
+
+# 2. 运行 Schema 自测 (断言非法测试样本被精确定位并拦截)
+node scripts/check-agent-store-market.mjs --self-test
+```
+
+---
+
+## 5. 已知偏差与实现状态总表 (P1 ~ P5)
+
+| 编号 | 偏差现象与风险 | 修复证据与实施落点 | 最终状态 |
+|---|---|---|---|
+| **P1** | MCP 连接器 `env` 明文写入快照 | `nomifun-importer` 自动改写为 `secret:<KEY>` 引用；装配期动态注入；真实值仅在内存。 | ✅ **已闭环** |
+| **P2** | 数组形式裸字符串依赖丢失名称 | 新增 `normalize_dependency`，支持裸字符串与分组对象双向解析。 | ✅ **已修复** |
+| **P3** | 依赖 SemVer 范围检查未闭环 | 导入层与 Extension 加载层引入 `semver::VersionReq`；配置 `strict_dependencies` 统一受控。 | ✅ **已闭环** |
+| **P4** | 市场条目 `strict=true` 未强制阻断 | `app_server_marketplace` 增加判定，缺失清单时条目展示阻断原因且禁止安装。 | ✅ **已闭环** |
+| **P5** | `strict=false` 时条目代替清单未实现 | 历史行为跳过无清单条目，反向清单合成涉及架构扩充，列入后续专项。 | ⏸ **未实现 (单独立项)** |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 插件规范（兼容层）
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——本规范在发版前只有一个版本（统一称 v1），不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。覆盖范围：字段表（§3）、组件映射（§4）、版本/溯源/幂等（§5）、权限与安全边界（§6）、依赖与冲突（§7），以及机器可校验形态（`docs/agent-store/schemas/plugin.schema.json` + `scripts/check-agent-store-market.mjs`）。

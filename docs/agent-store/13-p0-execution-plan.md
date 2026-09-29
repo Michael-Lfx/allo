@@ -1,3 +1,160 @@
+# Agent Store P0 核心收尾与运行时门禁工程方案（Execution Plan & Quality Gates）
+
+> 状态：工程规范（P0 阶段已全部关闭并验收，证据就绪）  
+> 适用范围：`nomifun-app-server`、`nomifun-agent-execution`、`web/packages/*` 与全链路集成测试  
+> 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`09-release-readiness.md`](file:///c:/workspace/allo/docs/agent-store/09-release-readiness.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)、[`12-sdk-packaging.md`](file:///c:/workspace/allo/docs/agent-store/12-sdk-packaging.md)  
+> 核心原则：**以真实 Rust 二进制与端到端状态机为基准，严格落地版本不可变冻结、崩溃安全自愈与零凭据泄漏，不以 Mock 替代真实链路。**
+
+---
+
+## 1. 背景与核心目标
+
+Phase 0（P0）是 Agent Store 从概念验证迈向工程生产化的核心地基阶段。在 P0 启动前，系统存在单 Agent 运行状态落库异常（Actor ID 校验失败）、多实例进程崩溃后状态伪造为成功、SDK 与 WebUI 重复维护两套异构客户端等工程隐患。
+
+### 1.1 核心目标
+1. **闭环单 Agent 真实生命周期（P0-A）**：在真实模型（mimo-v2.5 等）接入下，完成 `planning → running → completed` 正常链路，支持优雅取消（Cancel CAS）、版本不可变冻结与公共协议层脱敏。
+2. **崩溃自愈与事件一致性（P0-B）**：模拟进程强杀（Kill -9）重启，验证底层事件完整保留、未决 Attempt 安全收敛至 `recovery_required`、服务端全局序列号绝对单调无缺口。
+3. **协议层与连接器安全验证（P0-C/D）**：完成请求级幂等重放验证与 OAuth 连接器隔离测试。
+4. **SDK 与 WebUI 统一契约（工作包 D）**：共用 `@flowy-agent-store/client`，补齐工效包（REQ-PAR-05：`run/steer`、`models/list`、`TurnResult`、`ConversationHandle`、`withRetry`）。
+
+### 1.2 明确非目标
+- 不在 P0 阶段过早介入 Team planned DAG 复杂编排（留至 Phase 2 Team Spike）；
+- 不做 STDIO 双工通道重构（保持回环 WS 传输）；
+- 暂缓 Python SDK，集中资源保障 TypeScript 生态交付。
+
+---
+
+## 2. 方案全景与门禁收敛拓扑
+
+整个 P0 收尾与门禁验证流程由 4 大工作包并行推进，汇聚于 P0 发布门禁判定矩阵：
+
+```mermaid
+flowchart TD
+    subgraph WP_A["工作包 A: P0-A 核心生命周期"]
+        T1["TC-RT-004: 取消 CAS 状态机"]
+        T2["TC-RT-002: 快照与版本不可变冻结"]
+        T3["TC-RT-010: 全字段脱敏与 Opaque ID 审计"]
+    end
+
+    subgraph WP_B["工作包 B: P0-B 崩溃与事件序"]
+        T4["TC-RT-005: 崩溃强杀自愈 (recovery_required)"]
+        T5["TC-RT-006: 事件序单调递增无缺口"]
+    end
+
+    subgraph WP_C["工作包 C: P0-C/D 幂等与安全"]
+        T6["TC-API-002/003: 幂等重放与终态一致性"]
+        T7["TC-OAUTH-*: 连接器 OAuth 鉴权沙箱隔离"]
+    end
+
+    subgraph WP_D["工作包 D: SDK/WebUI 统一抽象"]
+        P1["REQ-PAR-05a: run/steer 中途干预"]
+        P2["REQ-PAR-05b: models/list 脱敏模型枚举"]
+        P3["REQ-PAR-05c/d/e: TurnResult / ConversationHandle / withRetry"]
+    end
+
+    WP_A --> GatePass{"P0 门禁全面校验<br/>(18/18 PASS + 10/10 PASS)"}
+    WP_B --> GatePass
+    WP_C --> GatePass
+    WP_D --> GatePass
+    GatePass --> ExitSuccess["Phase 0 正式关闭<br/>解锁 Phase 2 Team Spike 立项"]
+```
+
+---
+
+## 3. 详细技术方案
+
+### 3.1 工作包 A：核心生命周期与规范化（P0-A）
+
+1. **取消状态机与 CAS 乐观并发控制（TC-RT-004）**：
+   - 客户端调用 `run/cancel` 时，服务端通过 CAS（比较 `expected_version`）执行状态迁移。
+   - 运行中任务从 `running` 进入 `cancel-accepted`，最终收敛至终态 `cancelled`，版本号相对取消前严格递增（$v_{n} \to v_{n+1}$）。
+   - 彻底杜绝取消请求直接硬改终态的伪造行为，若底层 Attempt 无法安全中断，按契约返回无法取消的结构化错误。
+2. **定义版本与快照不可变冻结（TC-RT-002）**：
+   - 在 Run 创建时通过 `create_for_app_server` 解析并物化 `PresetSnapshot`，生成不可变内容摘要 `content_digest`（SHA-256）与 `preset_revision`。
+   - 在 Run 执行中途，即使用户在后台重新发布该 Agent 的更高版本（如升级到 v9.9.9），已启动的 Run 及其轮询接口（`run/get`、`run/result`）严格锁定原有快照版本，确保历史可复现。
+3. **全局脱敏与 Opaque ID 规范化审计（TC-RT-010）**：
+   - 严格审查 `nomifun-app-server` 所有出参，抹除一切内部数据库主键（如 UUIDv7 原始字符串）、文件系统物理绝对路径、模型 Provider API Key 明文。
+   - 统一对外暴露不透明 Public ID（`run_id`、`session_id`）与点号命名的标准化事件枚举（`run.started`、`attempt.updated` 等）。
+
+### 3.2 工作包 B：崩溃持久化自愈与单调事件流（P0-B）
+
+1. **硬杀崩溃恢复与安全收敛（TC-RT-005）**：
+   - 在测试用例中通过 `SIGKILL` 强杀正在执行任务的 `agent-store` 进程。
+   - 进程重启后，恢复调度器（`scheduler`）扫描数据库中处于未决状态（`running`）的 Run。
+   - 调度器执行 `reconcile_recovered_attempt`，当无法严格证明当前 Attempt 的外部副作用安全性时，将其收敛为 `review_blocked`（原因：`process_restart`），对外将 Run 状态投影为 `recovery_required`，坚决不向客户端伪装为 `completed`。
+2. **事件序列单调递增与去重（TC-RT-006）**：
+   - 服务端为每个 Run 产生的事件分配物理单调递增的全局序列号 `sequence`（从 1 起算）。
+   - 崩溃强杀前持久化的事件完整保留，重启后新增事件的 `sequence` 在旧值基础上继续递增，整体事件流严格保持无空隙（Gapless）且单调上升。
+
+### 3.3 工作包 C：幂等控制与连接器安全（P0-C/D）
+
+1. **请求指纹与幂等冲突检测（TC-API-002/003）**：
+   - 客户端携带 `idempotency_key` 调用 `agent/run`。
+   - 若相同的 `idempotency_key` 提交相同参数，服务端返回既有 `run_id` 与异步 Receipt；若携带相同 Key 但修改了请求内容（例如变更了 Goal），服务端返回 `idempotency_conflict` 错误。
+2. **OAuth 运行时沙箱（TC-OAUTH-*）**：
+   - 外部连接器 OAuth 授权凭据采用专用安全表加密存储，与用户 Session 物理隔离。
+   - 接入外部工具调用时，由服务端通过凭据模板在内存中注入，绝不流向渲染前端。
+
+### 3.4 工作包 D：SDK 与 WebUI 统一工效包（REQ-PAR-05）
+
+1. **`run/steer` 中途干预（REQ-PAR-05a）**：
+   - 基于底层的 `engine.steer_step`，向 App Server 暴露 `run/steer {run_id, text}`，将用户输入路由到当前活跃 Attempt，实现运行中交互式引导。
+2. **`models/list` 脱敏模型目录（REQ-PAR-05b）**：
+   - 统一由服务端 `ProviderService` 向 SDK 与 WebUI 投影可用模型元数据清单（包含 context window、能力标签），不暴露鉴权细节。
+3. **高阶封装抽象（REQ-PAR-05c/d/e）**：
+   - **`TurnResult`**：从流式事件自动聚合响应正文文本、Token 消耗统计（`context.usage`）及产物文件列表。
+   - **`ConversationHandle`**：提供类似 Codex Thread 的多轮对话会话句柄，内置消息发送与结果等待原语。
+   - **`withRetry`**：在 Client 层内置可恢复错误（网络抖动、429 超限）的指数退避重试机制。
+
+---
+
+## 4. 关键决策与权衡矩阵
+
+| 决策点 | 备选方案 A | 备选方案 B | 最终决策 | 决策依据与权衡 |
+| :--- | :--- | :--- | :--- | :--- |
+| **崩溃恢复语义** | 重启后自动续跑未完成的 Attempt | 标记为 `recovery_required` 等待人工介入 | **方案 B** | 智能体涉及外部文件修改、API 调用等不可逆副作用，在缺乏绝对幂等保证前盲目重试会引发二次灾难；标为待恢复符合安全第一原则。 |
+| **Cancel 状态迁移** | 收到取消请求立即强写 DB 终态 | 走 CAS 并发校验，由 Attempt 异步响应终态 | **方案 B** | 强写 DB 会导致底层线程与 DB 状态脱节，造成孤儿执行或事件乱序。 |
+| **SDK 进程托管接口** | 暴露底层子进程 PID 与 SIGKILL 接口 | 仅暴露标准 `close()` 优雅关闭接口 | **方案 B** | 保持 SDK 接口纯洁性与跨平台稳定性；破坏性崩溃测试作为独立测试脚本自持进程，不污染正式 SDK 面。 |
+| **版本递进断言** | 断言取消后版本绝对值 > 1 | 断言相对取消前版本严格递增（v0 $\to$ v1） | **方案 B** | 底层数据库主表初始化版本从 0 起算，断言绝对值大于 1 会在初次操作时误报。 |
+
+---
+
+## 5. 验收标准与测试用例全集
+
+### 5.1 单 Agent 运行时用例 (TC-RT-001 ~ 010)
+
+| 用例编号 | 等级 | 操作与场景 | 核心断言 |
+| :--- | :--- | :--- | :--- |
+| **TC-RT-001** | P0 | `agent/run` 异步执行 | 返回合法异步 receipt；任务经历 `planning → running → completed`；结果与事件完整。 |
+| **TC-RT-002** | P0 | 运行中升级 Agent 版本 | 运行中任务严格锁定原 `preset_revision` 与 `content_digest`；不混淆 Preset ID 与 Agent ID。 |
+| **TC-RT-003** | P0 | 多源策略权限交集 | Caller、Agent、Connector 策略冲突时取交集；越权操作返回 `policy_denied`。 |
+| **TC-RT-004** | P1 | 运行中调用 `run/cancel` | 状态平滑过渡至 `cancelled`，版本号严格递增；绝不伪造终态。 |
+| **TC-RT-005** | P0 | 运行中模拟进程强杀重启 | 历史事件完整保留；未决任务收敛为 `recovery_required`，绝不冒充 `completed`。 |
+| **TC-RT-006** | P0 | 崩溃重启后事件序列校验 | 崩溃前后的所有事件全局 `sequence` 严格单调递增，无任何缺口或乱序。 |
+| **TC-RT-009** | P0 | Runtime Readiness Gate | 未经 Adapter 验证的 Preset 组合禁止进入可运行 Catalog。 |
+| **TC-RT-010** | P0 | 公共事件与错误脱敏 | 全字段扫描零内部数据库 ID、零凭据泄露，统一对外输出点号规范事件。 |
+
+### 5.2 AgentTeam 运行时用例 (TC-TEAM-001 ~ 009)
+
+| 用例编号 | 等级 | 操作与场景 | 核心断言 |
+| :--- | :--- | :--- | :--- |
+| **TC-TEAM-001** | P0 | 启动 TeamRun | 生成固定 Participant 池与模板；Prompt 严格隔离，不向 Leader 混入成员私有指令。 |
+| **TC-TEAM-002** | P0 | 触发 planned DAG 调度 | Leader 必须且仅能通过 `nomi_delegate(strategy=planned)` 发起规划，模板驱动执行。 |
+| **TC-TEAM-003** | P0 | 依赖时序控制 (A $\to$ B $\to$ C) | 调度器严格按拓扑序执行，前序任务未完成前禁止执行后续节点。 |
+| **TC-TEAM-004** | P0 | 局部并行与并发限制 | 无依赖节点并行调度，全局并发数受 `max_parallel` 刚性约束。 |
+| **TC-TEAM-005** | P0 | 节点失败局部重试 | 失败仅重试当前 Attempt，生成新尝试，旧 Attempt 历史保留。 |
+| **TC-TEAM-006** | P0 | 规划失败触发 Replan | 生成新的 Plan Revision，保留历史计划以供回溯。 |
+| **TC-TEAM-007** | P0 | 迟到事件隔离 | 隔离旧 Attempt 的过期事件，不得覆盖当前新 Attempt 的状态。 |
+| **TC-TEAM-008** | P0 | Planning 上下文隔离 | 规划上下文仅包含脱敏能力摘要，私有凭据与工具细节严禁泄露给协同方。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # P0 收尾与 SDK/Web 对齐执行方案
 
 > 日期：2026-09-04
