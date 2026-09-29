@@ -1,8 +1,9 @@
 //! User-visible stripping of the `<nomi-mem-citation>` protocol block.
 //!
-//! The model is instructed ([`crate::prompt::CITATION_CONTRACT`]) to append
-//! this block so the backend can bump memory-file usage stats. The block is
-//! not part of the answer: sinks and renderers must hide it.
+//! The `remember` tool description (and [`crate::prompt::CITATION_CONTRACT`])
+//! tell the model to append this block so the backend can bump memory-file
+//! usage stats. The block is not part of the answer: sinks and renderers
+//! must hide it.
 
 /// Opening tag of the memory-citation protocol block.
 pub const CITATION_OPEN: &str = "<nomi-mem-citation>";

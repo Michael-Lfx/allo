@@ -61,7 +61,10 @@ pub use progress::{
 pub use failure::{ToolFailureClass, failure_nudge, failure_nudge_if_useful, skip_failure_nudge};
 pub use metrics::HarnessKpi;
 pub use plan_artifact::PlanArtifact;
-pub use prompt::{CODING_SYSTEM_PREFIX_MARKER, coding_overlay_instructions, coding_turn_tail};
+pub use prompt::{
+    CODING_SYSTEM_PREFIX_MARKER, coding_intro, coding_overlay_instructions, coding_turn_tail,
+    office_intro, office_overlay_instructions,
+};
 pub use read_repeat::{
     CODING_READ_REPEAT_HARD_STOP, CODING_READ_REPEAT_NUDGE, CODING_UNCHANGED_STUB_NUDGE,
     ReadRepeatAction, ReadRepeatTracker, normalize_read_path,

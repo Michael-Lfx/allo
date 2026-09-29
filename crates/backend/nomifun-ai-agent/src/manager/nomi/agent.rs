@@ -830,7 +830,10 @@ impl NomiAgentManager {
         // bootstrap for the prompt section and `remember` (threaded through
         // `NomiResolvedConfig`), so all four consumers of "built-in memory"
         // agree by construction rather than by independent file reads.
-        let memory_enabled = config_extra.memory_enabled;
+        let task_profile =
+            nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref());
+        let coding_profile = task_profile.is_coding();
+        let memory_enabled = config_extra.memory_enabled && !coding_profile;
         let distill_dir: Option<PathBuf> = if companion_sink.is_some() || !memory_enabled {
             None
         } else {
@@ -918,14 +921,9 @@ impl NomiAgentManager {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| config_extra.session_directory.clone());
         let gateway_config = nomi_config::load_config(Some(&gateway_data_dir)).unwrap_or_default();
-        if nomi_config::flowy_media_exposed(&gateway_config) {
-            let hint = nomi_media::gateway_media_system_hint(gateway_config.media.workflows.enabled);
-            let merged = match config.system_prompt.as_deref() {
-                Some(existing) if !existing.trim().is_empty() => format!("{existing}\n\n{hint}"),
-                _ => hint,
-            };
-            config.system_prompt = Some(merged);
-        }
+        // Media WHEN/HOW lives on registered tool schemas (`image_generate` today).
+        // Do not inject `gateway_media_system_hint`: it named workflow tools that
+        // `wire_flowy_media` no longer registers.
 
         // Session-level opt-in for desktop/browser automation tools. The
         // bootstrap registers them only when these flags are set.
@@ -1001,10 +999,14 @@ impl NomiAgentManager {
 
         // News briefing tools talk to the same file-backed engine as /api/briefing.
         // Allow-list before bootstrap so Default mode does not park on approval.
-        config.tools.allow_list.extend([
-            "briefing_create".to_owned(),
-            "briefing_status".to_owned(),
-        ]);
+        // Coding sessions do not register briefing tools — keep the allow-list
+        // in lockstep so unadvertised names never leak into the session policy.
+        if !coding_profile {
+            config.tools.allow_list.extend([
+                "briefing_create".to_owned(),
+                "briefing_status".to_owned(),
+            ]);
+        }
 
         // Companion memory tools only touch the companion's own memory.db — never
         // user files — so they skip the approval gate in every session mode
@@ -1116,9 +1118,9 @@ impl NomiAgentManager {
                 config_extra.install_embedded_agent_execution,
             )
             .approval_manager(approval_manager.clone())
-            .coding_boundary(
-                nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref()).is_coding(),
-            )
+            .coding_boundary(coding_profile)
+            .task_profile(task_profile)
+            .language_directive(config_extra.output_language_directive.clone())
             .memory_enabled(memory_enabled)
             .mcp_oauth_refresher(host_wiring.mcp_oauth_refresher.clone())
             .observation(Arc::clone(&observation));
@@ -1201,9 +1203,7 @@ impl NomiAgentManager {
         // chat models. Must land before the first turn so every LlmRequest
         // carries `reasoning_effort` when the catalog advertises levels.
         engine.set_initial_reasoning_effort(config_extra.reasoning_effort.clone());
-        let task_profile =
-            nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref());
-        if task_profile.is_coding() {
+        if coding_profile {
             let cwd = std::path::PathBuf::from(&workspace);
             let write_root = config_extra
                 .write_root
@@ -1324,20 +1324,25 @@ impl NomiAgentManager {
         }
         // Capture a handle for proactive RAG before the sink/ids are consumed
         // by tool registration below (only when bound bases make search valid).
-        let knowledge_auto_rag = knowledge_retrieval_sink
-            .as_ref()
-            .filter(|_| should_register_knowledge_search(true, &knowledge_kb_ids))
-            .map(|s| (s.clone(), knowledge_kb_ids.clone()));
-        if let Some(sink) = knowledge_retrieval_sink {
-            if should_register_knowledge_search(true, &knowledge_kb_ids) {
-                engine
-                    .registry_mut()
-                    .register(Box::new(KnowledgeSearchTool::new(sink.clone(), knowledge_kb_ids.clone())));
-                engine
-                    .registry_mut()
-                    .register(Box::new(KnowledgeReadTool::new(sink, knowledge_kb_ids)));
-                debug!(conversation_id = %conversation_id, "Registered knowledge_search + knowledge_read tools");
-            }
+        let knowledge_auto_rag = if coding_profile {
+            None
+        } else {
+            knowledge_retrieval_sink
+                .as_ref()
+                .filter(|_| should_register_knowledge_search(true, &knowledge_kb_ids))
+                .map(|s| (s.clone(), knowledge_kb_ids.clone()))
+        };
+        if !coding_profile
+            && let Some(sink) = knowledge_retrieval_sink
+            && should_register_knowledge_search(true, &knowledge_kb_ids)
+        {
+            engine
+                .registry_mut()
+                .register(Box::new(KnowledgeSearchTool::new(sink.clone(), knowledge_kb_ids.clone())));
+            engine
+                .registry_mut()
+                .register(Box::new(KnowledgeReadTool::new(sink, knowledge_kb_ids)));
+            debug!(conversation_id = %conversation_id, "Registered knowledge_search + knowledge_read tools");
         }
         // Native learning_generate_course + learning_course_status: registered
         // when a course-generation sink is wired (factory gates on owner
@@ -1397,7 +1402,7 @@ impl NomiAgentManager {
         // Host policy: the Flowy media family is the one domain that is neither a
         // sink nor a tool name — it is wired from the host `config.toml` `[media]`
         // table right here, so the domain switch has to gate it at this call.
-        if config_extra.tool_policy.domains.media {
+        if !coding_profile && config_extra.tool_policy.domains.media {
             let media_wired = nomi_media::wire_flowy_media(
                 engine.registry_mut(),
                 &gateway_config,
@@ -1413,7 +1418,9 @@ impl NomiAgentManager {
                 );
             }
         }
-        if nomi_briefing::wire_briefing_tools(engine.registry_mut(), &gateway_data_dir) {
+        if !coding_profile
+            && nomi_briefing::wire_briefing_tools(engine.registry_mut(), &gateway_data_dir)
+        {
             debug!(
                 conversation_id = %conversation_id,
                 "Registered briefing_create + briefing_status tools"
@@ -4224,6 +4231,7 @@ mod tests {
             model: "claude-sonnet-4-20250514".into(),
             base_url: None,
             system_prompt: None,
+            output_language_directive: None,
             output_ceiling: Some(4096),
             max_turns: None,
             context_limit: None,

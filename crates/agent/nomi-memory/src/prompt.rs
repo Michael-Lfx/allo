@@ -22,7 +22,7 @@ const DISPLAY_NAME: &str = "auto memory";
 /// Guidance appended to the memory directory prompt line so the model
 /// doesn't waste turns on `ls` / `mkdir -p` before writing.
 const DIR_EXISTS_GUIDANCE: &str = "This directory already exists \u{2014} \
-    write to it directly with the Write tool \
+    add entries with the `remember` tool \
     (do not run mkdir or check for its existence).";
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ can have a complete picture of who the user is, how they'd like to collaborate \
 with you, what behaviors to avoid or repeat, and the context behind the work \
 the user gives you.
 
-If the user explicitly asks you to remember something, save it immediately. \
+If the user explicitly asks you to remember something, call `remember` immediately. \
 If they ask you to forget something, find and remove the relevant entry.
 
 Memory types: user, feedback, project, reference. Each memory is a Markdown file \
@@ -155,6 +155,16 @@ mod tests {
     fn minimal_prompt_contains_dir_exists_guidance() {
         let result = build_memory_prompt_minimal(Path::new("/test/memory"));
         assert!(result.contains("already exists"));
+        assert!(result.contains("`remember`"));
+    }
+
+    #[test]
+    fn minimal_prompt_omits_citation_xml() {
+        let result = build_memory_prompt_minimal(Path::new("/test/memory"));
+        assert!(
+            !result.contains("<nomi-mem-citation>"),
+            "citation HOW-TO belongs on the remember tool, not the memory index"
+        );
     }
 
     #[test]

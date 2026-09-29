@@ -200,17 +200,12 @@ fn tool_call_efficiency_guidance_routes_batches_without_removing_checkpoints() {
 
     for required in [
         "file_paths",
-        "ApplyPatch",
-        "deterministic",
-        "exec_command script mode",
-        "intermediate result",
-        "meaningful milestone",
+        "does not reduce the number of tool calls",
+        "Do not repeat",
+        "hard checkpoint",
     ] {
         assert!(result.contains(required), "missing efficiency rule: {required}");
     }
-    assert!(result.contains("does not reduce the number of tool calls"));
-    assert!(result.contains("Do not repeat"));
-    assert!(result.contains("individual tool call"));
 }
 
 // ---------------------------------------------------------------------------
@@ -257,8 +252,8 @@ fn tc_4_3_05_order_after_intro_before_custom() {
     );
 
     let intro_pos = result
-        .find("You are an AI assistant")
-        .expect("intro should contain the assistant identity line");
+        .find("You are Allo")
+        .expect("intro should contain the office identity line");
     let guidance_pos = result
         .find("# Using your tools")
         .expect("tool guidance section should exist");
@@ -379,7 +374,7 @@ fn tc_4_3_07_all_sections_coexist() {
     );
 
     // All sections should exist
-    assert!(result.contains("You are an AI assistant"), "intro should exist");
+    assert!(result.contains("You are Allo"), "intro should exist");
     assert!(
         result.contains("# Using your tools"),
         "tool guidance should exist"
@@ -402,7 +397,7 @@ fn tc_4_3_07_all_sections_coexist() {
     );
 
     // Verify ordering: intro < guidance < custom < agents.md < memory < skills
-    let intro_pos = result.find("You are an AI assistant").unwrap();
+    let intro_pos = result.find("You are Allo").unwrap();
     let guidance_pos = result.find("# Using your tools").unwrap();
     let custom_pos = result.find("CUSTOM_COEXIST").unwrap();
     let agents_pos = result.find("PROJECT_RULES_COEXIST").unwrap();
@@ -480,7 +475,7 @@ fn restricted_allowlist_omits_generic_tool_guidance() {
         "the step brief must still be present"
     );
     assert!(
-        result.contains("You are an AI assistant that can use tools to help with tasks."),
+        result.contains("You are Allo, a desktop assistant that helps with everyday work on this computer."),
         "the intro must still be present"
     );
 }
@@ -503,7 +498,7 @@ fn unrestricted_session_still_includes_generic_tool_guidance() {
         "full sessions must keep the generic tool-guidance block"
     );
     assert!(
-        result.contains("with Bash"),
-        "full sessions must keep Bash verification guidance"
+        result.contains("Bash"),
+        "full sessions must keep dedicated-tool vs Bash routing"
     );
 }

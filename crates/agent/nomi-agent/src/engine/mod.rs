@@ -1221,12 +1221,7 @@ impl AgentEngine {
             return;
         }
         let overlay = nomi_coding::coding_overlay_instructions();
-        if self.system_prompt.is_empty() {
-            self.system_prompt = overlay.to_string();
-        } else {
-            self.system_prompt.push_str("\n\n");
-            self.system_prompt.push_str(overlay);
-        }
+        crate::prompt_graph::insert_before_language_section(&mut self.system_prompt, overlay);
     }
 
     fn strip_coding_system_prefix(&mut self) {

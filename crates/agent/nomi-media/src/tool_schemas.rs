@@ -145,7 +145,7 @@ pub fn flowy_image_generate_schema() -> ToolSchema {
 
     tool_schema(
         "image_generate",
-        "Generate an image via Flowy cloud API. Returns standardized assets with MEDIA: local path when save_locally is enabled. Response includes user_prompt_block with the exact API prompt — quote it in your reply.",
+        "Generate an image via Flowy cloud API. Write a rich scene prompt (subject, materials, lighting, composition, mood) — never a vague one-liner. Returns standardized assets with MEDIA: local path when save_locally is enabled. Response includes user_prompt_block with the exact API prompt — quote it in your reply.",
         JsonSchema::object(props, vec!["prompt".into()]),
     )
 }

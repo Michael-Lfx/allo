@@ -1,9 +1,17 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use nomi_memory::prompt::{CITATION_CONTRACT, build_memory_prompt_minimal};
+use nomi_coding::{
+    TaskProfile, coding_intro, coding_overlay_instructions, office_intro, office_overlay_instructions,
+};
+use nomi_memory::prompt::build_memory_prompt_minimal;
 use nomi_skills::prompt::format_skills_within_budget;
 use nomi_skills::types::SkillMetadata;
+
+pub use crate::prompt_graph::{
+    AdvertisedToolSet, SessionToolSurface, SystemPromptInput, advertised_tools_for_session,
+    insert_before_language_section, skills_for_profile, tool_usage_guidance,
+};
 
 /// Session-scoped cache for system prompt sections.
 ///
@@ -25,6 +33,10 @@ pub struct SystemPromptCache {
     pub(crate) last_toon_enabled: bool,
     /// Track last browser_enabled value to detect changes.
     pub(crate) last_browser_enabled: bool,
+    last_profile: TaskProfile,
+    last_advertised: String,
+    last_has_deferred: bool,
+    last_language: String,
     /// When true, skip the unrestricted `# Using your tools` block.
     /// Restricted sessions (`read_only` / `read_shell` allowlists) set this so
     /// the model is not told about Bash and other tools it cannot call.
@@ -38,6 +50,10 @@ impl SystemPromptCache {
             joined: None,
             last_toon_enabled: false,
             last_browser_enabled: false,
+            last_profile: TaskProfile::Office,
+            last_advertised: String::new(),
+            last_has_deferred: false,
+            last_language: String::new(),
             omit_generic_tool_guidance: false,
         }
     }
@@ -85,99 +101,6 @@ impl Default for SystemPromptCache {
     }
 }
 
-/// Return the tool-usage guidance section for the system prompt.
-///
-/// This section teaches the model when to prefer dedicated tools over Bash,
-/// how to handle parallel vs sequential calls, and cross-tool best practices.
-/// Intentionally redundant with individual tool descriptions — the dual
-/// placement ensures the model follows the rules regardless of attention span.
-fn tool_usage_guidance() -> String {
-    let mut s = String::from(
-        "\
-# Using your tools
- - Do NOT use Bash when a dedicated tool is available. Using dedicated tools \
-allows the user to better understand and review your work:
-   - File listing/search: Glob on every operating system (not shell-specific listing commands such as ls, dir, Get-ChildItem, or find). When asked what files are in the current directory or workspace, use Glob with \"*\" for top-level files or \"**/*\" recursively before saying there are no files.
-   - Content search: Grep (not grep or rg)
-   - Read files: Read (not cat, head, or tail)
-   - Edit files: Edit (not sed or awk)
-   - Write files: Write (not echo redirection or cat with heredoc)
- - Public URL reading: when `web_extract` is available and the user gives a public HTTP(S) URL \
-and asks for its content, use `web_extract` directly, including direct PDF and JavaScript-shell \
-URLs. Do not use Browser or Bash/Python/exec_command merely to read or parse that public URL. \
-Use Browser for interactive or rendered actions, and shell/Python for local files or after \
-`web_extract` genuinely fails. For an explicit request to download or save the original file, \
-follow the appropriate file or artifact workflow instead of using `web_extract`.
- - You can call multiple tools in a single response. If there are no \
-dependencies between them, make all independent, concurrency-safe calls in parallel. \
-This reduces model round trips and latency, but it does not reduce the number of tool calls. \
-If one call depends on a previous result or changes shared state, run them sequentially. \
-Do not repeat an unchanged file read, identical search query, or state check when the result \
-already in context is sufficient.
- - When several already-known files need the same slice, use one Read call with file_paths \
-instead of separate Read calls or a shell reader. This preserves the native read-before-edit cache.
- - Prefer Edit over Write for modifying existing files — Edit sends only \
-the diff, which is easier to review.
- - Read each unread range once before the first Edit of that range. Prefer Edit \
-anchor mode: copy `line:hash` prefixes from Read/Grep output into \
-`edits:[{anchor, new_text, ...}]`. After a successful Edit, reuse the returned \
-anchors — do not re-Read covered ranges or the whole file.
- - When ApplyPatch is available (non-coding profiles), prefer one ApplyPatch call when one logical edit spans multiple files.
- - Prefer DirTree or Glob for directory orientation over shell `find`/`ls` tours.
- - When exec_command script mode is available, use it for a deterministic, homogeneous, local, non-interactive batch \
-that needs no intermediate result, approval, or model decision. A script must validate \
-preconditions, stop with a non-zero exit on dependent-operation failure, bound its output, and \
-print a concise summary. Keep separate calls for state-dependent work and for browser, UI, MCP, \
-external-system, destructive, or approval-sensitive actions. Never use a script to bypass a \
-dedicated tool or read-before-edit protection.
- - Some tools are deferred — only their names are visible. Before calling \
-a deferred tool, call ToolSearch, wait for its result, then invoke the tool in a subsequent \
-model turn after its full schema has been activated.
- - When update_plan is available, use it for non-trivial multi-step work and synchronize it at each meaningful milestone, \
-not after each individual tool call or internal sub-step. Use a few user-relevant phases. At a \
-milestone transition, send one full snapshot that marks the previous milestone completed and the \
-next in_progress. Do not send an unchanged snapshot. Before the final response, complete remaining \
-plan steps or replace the plan to match the user's real ask, then send a final all-completed \
-update_plan snapshot when the work is done. Plan steps name work you DO (read, write, run, \
-check); they are never the answer itself — \"explain/provide/summarize X\" is your reply, not a \
-step, so when only that kind of step is left, write the reply and close the plan in one \
-all-completed snapshot instead of re-planning. A new snapshot must follow real progress (a step \
-you actually completed, or a course change the user asked for): never send one that only rewords \
-or re-splits the steps still open.
- - After changing code, verify before reporting done: run the project's build \
-and tests (or the narrowest verification command that exercises your change) with Bash, and \
-fix what you broke. Don't claim something works that you haven't run.",
-    );
-    s.push_str(
-        "\n - Treat every tool or command error as a hard checkpoint. Do not run \
-dependent follow-up steps after a failure until you inspect the result and decide whether to \
-retry, increase the timeout, change strategy, or verify the required state another way. \
-For installs, dependency downloads, builds, migrations, servers, and other long-running \
-commands, choose a generous explicit timeout or, when available, use exec_command/write_stdin so you can poll \
-without killing the process.",
-    );
-    // Windows-only: launching GUI apps/URLs via `cmd /c start` is unreliable — the
-    // `start` builtin mis-parses the target as a window title and pops a blocking
-    // "Windows cannot find 'X'" dialog. Steer toward the Computer tool's reliable
-    // `launch` action (ShellExecute) when computer-use is enabled.
-    #[cfg(target_os = "windows")]
-    {
-        s.push_str(
-            "\n - On Windows, the Bash and exec_command tools run commands through PowerShell \
-when shell-only work is necessary. They do not use cmd.exe or Unix bash. Use PowerShell syntax: `Get-ChildItem`, `Get-Content`, `Set-Location`, \
-`$env:NAME`, and `;` for sequential commands. If cmd.exe syntax is truly required, wrap it \
-explicitly as `cmd /C \"...\"`.",
-        );
-        s.push_str(
-            "\n - To open an application, URL, file, or folder on Windows, use the Computer \
-tool's `launch` action when it is available — do NOT run `cmd /c start`, `Start-Process`, or \
-`explorer` in Bash to launch GUI apps or URLs. `cmd /c start` mis-parses the target as a window \
-title and pops a blocking \"Windows cannot find\" dialog that hangs the command.",
-        );
-    }
-    s
-}
-
 /// Return the browser-use preset nudge for the system prompt.
 ///
 /// Intentionally a single sentence (默认①, 省 token): it only points the model at
@@ -199,26 +122,8 @@ interactively. Do not ask the user for permission to browse. After each Browser 
 navigation or interaction run `observe` for fresh refs before acting again."
 }
 
-/// Build the **cache-stable** system prompt from config and environment.
-///
-/// This prompt is the cache-stable prefix — it must stay byte-stable across
-/// turns so DeepSeek's automatic prefix cache stays warm. Dynamic content
-/// (current date, plan mode instructions, RAG/memory injections from
-/// ContextContributor) is NOT included here; it rides the turn tail instead
-/// (prepended to the last user message in `engine.rs`).
-///
-/// Sections are assembled in this order:
-/// 1. Base intro (role, path quoting) — NO model name, working directory, or date
-/// 2. Tool usage guidance (dedicated tools, parallel calls, etc.)
-/// 3. Custom prompt (user config)
-/// 4. AGENTS.md (project instructions)
-/// 5. Memory system prompt (behavioral instructions + MEMORY.md content)
-/// 6. Skills reminder (available skills listing)
-///
-/// Session-permanent sections (intro, tool guidance, custom prompt, AGENTS.md)
-/// are cached in `cache.sections` and reused across calls. The `joined` field
-/// caches the final concatenated result; it is returned on subsequent calls
-/// unless toon_enabled or browser_enabled has changed.
+/// Office-default wrapper. Production sessions should call
+/// [`build_system_prompt_with`] so the routing table matches advertised tools.
 #[allow(clippy::too_many_arguments)]
 pub fn build_system_prompt(
     cache: &mut SystemPromptCache,
@@ -230,47 +135,94 @@ pub fn build_system_prompt(
     toon_enabled: bool,
     browser_enabled: bool,
 ) -> String {
-    // Fast path: return cached joined result if nothing changed
+    build_system_prompt_with(
+        cache,
+        SystemPromptInput::office_defaults(
+            custom_prompt,
+            cwd,
+            skills,
+            context_window_tokens,
+            memory_dir,
+            toon_enabled,
+            browser_enabled,
+        ),
+    )
+}
+
+/// Build the **cache-stable** system prompt from typed inputs.
+///
+/// Order: intro → constitution → clipped tool routing → browser (if advertised)
+/// → custom → AGENTS.md → memory (office only) → toon → skills → environment
+/// → language LAST.
+///
+/// Dynamic content (date, plan mode, RAG) is NOT included here; it rides the
+/// turn tail. This prefix must stay byte-stable across turns.
+pub fn build_system_prompt_with(
+    cache: &mut SystemPromptCache,
+    input: SystemPromptInput<'_>,
+) -> String {
+    let advertised_fp = input.advertised.fingerprint();
+    let lang_fp = input.language_directive.unwrap_or("").to_string();
+
     if let Some(ref joined) = cache.joined
-        && cache.last_toon_enabled == toon_enabled
-        && cache.last_browser_enabled == browser_enabled
+        && cache.last_toon_enabled == input.toon_enabled
+        && cache.last_browser_enabled == input.browser_enabled
+        && cache.last_profile == input.profile
+        && cache.last_advertised == advertised_fp
+        && cache.last_has_deferred == input.has_deferred_tools
+        && cache.last_language == lang_fp
     {
         return joined.clone();
     }
 
+    if cache.last_profile != input.profile || cache.last_advertised != advertised_fp {
+        cache.sections.remove("intro");
+        cache.sections.remove("constitution");
+        cache.sections.remove("tool_guidance");
+        cache.sections.remove("skills");
+        cache.sections.remove("browser_preset");
+        cache.joined = None;
+    }
+    if cache.last_has_deferred != input.has_deferred_tools {
+        cache.sections.remove("tool_guidance");
+        cache.joined = None;
+    }
+
     let mut parts = Vec::new();
 
-    // Section: intro (session permanent). Deliberately EXCLUDES the working
-    // directory and current date: those are volatile (cwd varies per conversation,
-    // date per day) and live in the `environment` section at the very END, so this
-    // large stable core (persona → tools → memory → skills) forms a reusable cache
-    // prefix across conversations/days. Domestic OpenAI-compatible providers do
-    // automatic prefix caching, so a per-conversation cwd or a daily date at the
-    // FRONT would defeat prefix reuse on every new chat's first token.
+    // Intro excludes cwd and date so the stable core is a reusable cache prefix.
     let intro = cache.sections.entry("intro").or_insert_with(|| {
-        format!(
-            "You are an AI assistant that can use tools to help with tasks.\n\
-             Paths may contain spaces (e.g. \"Application Support\" on macOS) — always quote paths in shell commands."
-        )
+        if input.profile.is_coding() {
+            coding_intro().to_string()
+        } else {
+            office_intro().to_string()
+        }
     });
     parts.push(intro.clone());
 
-    // Section: tool guidance (session permanent). Restricted allowlists omit
-    // this block: it names Bash and other tools that were not advertised.
+    let constitution = cache.sections.entry("constitution").or_insert_with(|| {
+        if input.profile.is_coding() {
+            coding_overlay_instructions().to_string()
+        } else {
+            office_overlay_instructions().to_string()
+        }
+    });
+    if !constitution.is_empty() {
+        parts.push(constitution.clone());
+    }
+
     if !cache.omit_generic_tool_guidance {
+        let advertised = &input.advertised;
+        let has_deferred = input.has_deferred_tools;
         let guidance = cache
             .sections
             .entry("tool_guidance")
-            .or_insert_with(tool_usage_guidance);
+            .or_insert_with(|| tool_usage_guidance(advertised, has_deferred));
         parts.push(guidance.clone());
     }
 
-    // Section: browser-use preset (session permanent once enabled). Feature-gated
-    // at compile time + runtime `browser_enabled` flag (= config.tools.browser.enabled,
-    // threaded from bootstrap). A single nudge — detailed action semantics are carried
-    // by BrowserTool::DESCRIPTION (默认①, 省 token).
     #[cfg(feature = "browser-use")]
-    if browser_enabled {
+    if input.browser_enabled && input.advertised.contains("Browser") {
         let browser_section = cache
             .sections
             .entry("browser_preset")
@@ -278,8 +230,7 @@ pub fn build_system_prompt(
         parts.push(browser_section.clone());
     }
 
-    // Section: custom prompt (session permanent)
-    if let Some(custom) = custom_prompt {
+    if let Some(custom) = input.custom_prompt {
         let custom_cached = cache
             .sections
             .entry("custom")
@@ -287,28 +238,25 @@ pub fn build_system_prompt(
         parts.push(custom_cached.clone());
     }
 
-    // Section: AGENTS.md (session permanent, resolved once by bootstrap)
     if let Some(agents_section) = cache.sections.get("agents_md")
         && !agents_section.is_empty()
     {
         parts.push(agents_section.clone());
     }
 
-    // Section: memory (cached, event-invalidated)
-    // Uses the minimal prompt to save ~2,500 tokens — omits the full type
-    // taxonomy and examples; MINIMAL_RULES covers the essentials.
-    if let Some(dir) = memory_dir {
-        let memory_section = cache
-            .sections
-            .entry("memory")
-            .or_insert_with(|| format!("{}\n\n{CITATION_CONTRACT}", build_memory_prompt_minimal(dir)));
+    if !input.profile.is_coding()
+        && let Some(dir) = input.memory_dir
+    {
+        let memory_section = cache.sections.entry("memory").or_insert_with(|| {
+            // Index + path are data. Citation HOW-TO lives on the `remember` schema.
+            build_memory_prompt_minimal(dir)
+        });
         if !memory_section.is_empty() {
             parts.push(memory_section.clone());
         }
     }
 
-    // Section: TOON format instructions (session permanent once enabled)
-    if toon_enabled {
+    if input.toon_enabled {
         let toon_section = cache
             .sections
             .entry("toon")
@@ -316,16 +264,10 @@ pub fn build_system_prompt(
         parts.push(toon_section.clone());
     }
 
-    // Section: skills (cached, event-invalidated)
-    let visible_skills: Vec<SkillMetadata> = skills
-        .iter()
-        .filter(|s| !s.disable_model_invocation)
-        .cloned()
-        .collect();
-
+    let visible_skills = skills_for_profile(input.profile, input.skills);
     if !visible_skills.is_empty() {
         let skills_section = cache.sections.entry("skills").or_insert_with(|| {
-            let listing = format_skills_within_budget(&visible_skills, context_window_tokens);
+            let listing = format_skills_within_budget(&visible_skills, input.context_window_tokens);
             if listing.is_empty() {
                 String::new()
             } else {
@@ -339,20 +281,24 @@ pub fn build_system_prompt(
         }
     }
 
-    // Section: environment (working directory) — placed LAST so the stable
-    // core above stays a reusable cache prefix (see the intro note). The
-    // current date is deliberately excluded: it is volatile per day and rides
-    // the turn tail instead (injected by the engine) so this section stays
-    // byte-stable across days within one session's cwd.
-    let env_section = cache.sections.entry("environment").or_insert_with(|| {
-        format!("Working directory: \"{cwd}\"")
-    });
+    let env_section = cache
+        .sections
+        .entry("environment")
+        .or_insert_with(|| format!("Working directory: \"{}\"", input.cwd));
     parts.push(env_section.clone());
+
+    if let Some(directive) = input.language_directive.filter(|s| !s.trim().is_empty()) {
+        parts.push(directive.to_string());
+    }
 
     let joined = parts.join("\n\n");
     cache.joined = Some(joined.clone());
-    cache.last_toon_enabled = toon_enabled;
-    cache.last_browser_enabled = browser_enabled;
+    cache.last_toon_enabled = input.toon_enabled;
+    cache.last_browser_enabled = input.browser_enabled;
+    cache.last_profile = input.profile;
+    cache.last_advertised = advertised_fp;
+    cache.last_has_deferred = input.has_deferred_tools;
+    cache.last_language = lang_fp;
     joined
 }
 
@@ -776,6 +722,10 @@ mod tests {
             result.contains("user_role.md"),
             "should contain MEMORY.md content"
         );
+        assert!(
+            !result.contains("<nomi-mem-citation>"),
+            "citation HOW-TO belongs on the remember schema, not the system prefix"
+        );
     }
 
     #[test]
@@ -1046,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_guidance_contains_update_plan_progress_and_verification_rules() {
+    fn tool_guidance_leaves_update_plan_how_to_in_the_schema() {
         let result = build_system_prompt(
             &mut SystemPromptCache::new(),
             None,
@@ -1058,40 +1008,16 @@ mod tests {
             false,
         );
         assert!(
-            result.contains("update_plan"),
-            "tool guidance should mention update_plan progress tracking"
+            !result.contains("final all-completed update_plan"),
+            "long update_plan HOW-TO belongs in the tool schema, not the system prompt"
         );
         assert!(
-            result.contains("final all-completed update_plan"),
-            "tool guidance should require a final completed plan update"
+            !result.contains("never the answer itself"),
+            "plan-step semantics belong in the update_plan schema"
         );
         assert!(
-            result.contains("verification"),
-            "tool guidance should require verification before finalizing"
-        );
-    }
-
-    /// 回归：计划步骤写成「交付物本身」时，模型会为了「计划全完成」反复重规划
-    /// （现场：chat 里「提供日程安排/给出建议」这类步骤永远收不了尾，一轮空转数次）。
-    #[test]
-    fn tool_guidance_forbids_planning_the_answer_itself() {
-        let result = build_system_prompt(
-            &mut SystemPromptCache::new(),
-            None,
-            "/tmp",
-            &[],
-            None,
-            None,
-            false,
-            false,
-        );
-        assert!(
-            result.contains("never the answer itself"),
-            "tool guidance must say a deliverable is not a plan step"
-        );
-        assert!(
-            result.contains("only rewords"),
-            "tool guidance must say a reworded snapshot is not progress"
+            result.contains("hard checkpoint"),
+            "short routing still requires a failure checkpoint"
         );
     }
 
@@ -1107,7 +1033,7 @@ mod tests {
             false,
             false,
         );
-        let intro_pos = result.find("You are an AI assistant").unwrap();
+        let intro_pos = result.find("You are Allo").unwrap();
         let guidance_pos = result.find("# Using your tools").unwrap();
         let custom_pos = result.find("CUSTOM_MARKER_43").unwrap();
         assert!(
@@ -1163,8 +1089,8 @@ mod tests {
 
     #[test]
     fn tool_guidance_contains_deferred_instruction() {
-        let result = build_system_prompt(
-            &mut SystemPromptCache::new(),
+        let mut cache = SystemPromptCache::new();
+        let mut input = SystemPromptInput::office_defaults(
             None,
             "/tmp",
             &[],
@@ -1173,6 +1099,8 @@ mod tests {
             false,
             false,
         );
+        input.has_deferred_tools = true;
+        let result = build_system_prompt_with(&mut cache, input);
         assert!(
             result.contains("deferred"),
             "tool guidance should mention deferred tools"
@@ -1580,5 +1508,115 @@ mod tests {
             after.as_bytes(),
             "system prompt must be byte-identical before and after /compact"
         );
+    }
+
+    #[test]
+    fn office_prompt_uses_office_constitution_and_omits_coding_overlay() {
+        let result = build_system_prompt(
+            &mut SystemPromptCache::new(),
+            None,
+            "/tmp",
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        assert!(result.contains("You are Allo, a desktop assistant"));
+        assert!(result.contains("# Office mode"));
+        assert!(!result.contains("# Coding mode"));
+        assert!(!result.contains("knowledge_search"));
+        assert!(!result.contains("nomi_delegate"));
+        assert!(!result.contains("image_generate"));
+        assert!(!result.contains("media_workflow"));
+        assert!(!result.contains("ApplyPatch"));
+        assert!(!result.contains("nomi-mem-citation"));
+    }
+
+    #[test]
+    fn coding_prompt_closes_office_surfaces_and_keeps_language_last() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mem_dir = tmp.path().join("memory");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+        std::fs::write(mem_dir.join("MEMORY.md"), "- [X](x.md) — note\n").unwrap();
+
+        let advertised = advertised_tools_for_session(
+            TaskProfile::Coding,
+            &SessionToolSurface {
+                computer: true,
+                browser: true,
+                web: true,
+                memory: true,
+                ssh: false,
+                lsp: true,
+                has_deferred: true,
+                allowlist: Vec::new(),
+            },
+        );
+        let result = build_system_prompt_with(
+            &mut SystemPromptCache::new(),
+            SystemPromptInput {
+                custom_prompt: Some("persona blob"),
+                cwd: "/ws",
+                skills: &[],
+                context_window_tokens: None,
+                memory_dir: Some(&mem_dir),
+                toon_enabled: false,
+                browser_enabled: true,
+                profile: TaskProfile::Coding,
+                advertised,
+                language_directive: Some("【输出语言】请用中文"),
+                has_deferred_tools: true,
+            },
+        );
+
+        assert!(result.contains("You are a coding agent"));
+        assert!(result.contains("# Coding mode"));
+        assert!(result.contains("persona blob"));
+        assert!(!result.contains("# Office mode"));
+        assert!(!result.contains("auto memory"));
+        assert!(!result.contains("knowledge_search"));
+        assert!(!result.contains("nomi_delegate"));
+        assert!(!result.contains("image_generate"));
+        assert!(!result.contains("Computer"));
+        assert!(!result.contains("ToolSearch"));
+        assert!(!result.contains("remember"));
+        assert!(!result.contains("[Browsing the web]"));
+
+        let coding = result.find("# Coding mode").unwrap();
+        let lang = result.find("【输出语言】").unwrap();
+        let env = result.find("Working directory").unwrap();
+        assert!(coding < env);
+        assert!(env < lang, "language directive must be last");
+    }
+
+    #[test]
+    fn coding_prompt_keeps_project_skills_and_drops_user_skills() {
+        let project = make_test_skill("repo-skill", "Project skill", false, false);
+        let mut project = project;
+        project.source = SkillSource::Project;
+        let user = make_test_skill("user-skill", "User skill", false, false);
+        let bundled = make_test_skill("bundled-skill", "Bundled skill", true, false);
+
+        let advertised = AdvertisedToolSet::from_names(["Read", "Skill"]);
+        let result = build_system_prompt_with(
+            &mut SystemPromptCache::new(),
+            SystemPromptInput {
+                custom_prompt: None,
+                cwd: "/ws",
+                skills: &[project, user, bundled],
+                context_window_tokens: None,
+                memory_dir: None,
+                toon_enabled: false,
+                browser_enabled: false,
+                profile: TaskProfile::Coding,
+                advertised,
+                language_directive: None,
+                has_deferred_tools: false,
+            },
+        );
+        assert!(result.contains("repo-skill"));
+        assert!(!result.contains("user-skill"));
+        assert!(!result.contains("bundled-skill"));
     }
 }

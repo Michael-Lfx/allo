@@ -59,7 +59,15 @@ impl Tool for RememberTool {
          Use when you learn something worth keeping about this project or the user — e.g. \
          'this project uses pnpm, not npm', 'always run cargo test before committing', a \
          coding convention, or a correction the user made. Do NOT store secrets, credentials, \
-         or transient details. Keep each memory to one focused fact."
+         or transient details. Keep each memory to one focused fact.\n\
+         Types: user (who they are / how they work), feedback (corrections and preferences), \
+         project (repo/stack facts), reference (pointers to files or docs).\n\
+         After an answer that used stored memory files, append a citation block the host strips \
+         before the user sees it:\n\
+         <nomi-mem-citation>\n\
+         user_role.md|note=[one-line how this shaped the answer]\n\
+         </nomi-mem-citation>\n\
+         One line per cited file. Omit the block entirely when no stored memory was used."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -71,7 +79,9 @@ impl Tool for RememberTool {
                 "type": {
                     "type": "string",
                     "enum": ["user", "feedback", "project", "reference"],
-                    "description": "Memory type (default: project)"
+                    "description": "Memory type (default: project). user = identity/working style; \
+                     feedback = corrections and preferences; project = repo/stack facts; \
+                     reference = pointers to files or docs."
                 }
             },
             "required": ["title", "content"]

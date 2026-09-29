@@ -461,6 +461,12 @@ pub struct AgentBootstrap {
     /// When true (coding profile), file tools use CODING_BOUNDARY rejection
     /// copy and Bash refuses known broad/dangerous scans. Not an OS sandbox.
     coding_boundary: bool,
+    /// Session work mode. Drives intro, constitution, advertised-tool clipping,
+    /// and which skills/memory sections are emitted.
+    task_profile: crate::task_profile::TaskProfile,
+    /// Output-language directive placed last in the cache-stable prefix so it
+    /// wins over the English intro and any coding overlay.
+    language_directive: Option<String>,
     observation: Option<Arc<crate::observation::ObservationSession>>,
     /// Host-provided OAuth token refresher for remote MCP servers. When a
     /// tool request is rejected with 401, the MCP manager refreshes the token
@@ -507,6 +513,8 @@ impl AgentBootstrap {
             browser_lane_client: None,
             ssh_session: None,
             coding_boundary: false,
+            task_profile: crate::task_profile::TaskProfile::Office,
+            language_directive: None,
             observation: None,
             mcp_oauth_refresher: None,
             memory_enabled: true,
@@ -640,6 +648,16 @@ impl AgentBootstrap {
     /// (structured `CODING_BOUNDARY:` errors; no OS sandbox escalate).
     pub fn coding_boundary(mut self, enabled: bool) -> Self {
         self.coding_boundary = enabled;
+        self
+    }
+
+    pub fn task_profile(mut self, profile: crate::task_profile::TaskProfile) -> Self {
+        self.task_profile = profile;
+        self
+    }
+
+    pub fn language_directive(mut self, directive: Option<String>) -> Self {
+        self.language_directive = directive;
         self
     }
 
@@ -934,15 +952,34 @@ impl AgentBootstrap {
                     .to_string(),
             );
         }
-        let system_prompt = crate::context::build_system_prompt(
+        let advertised = crate::prompt_graph::advertised_tools_for_session(
+            self.task_profile,
+            &crate::prompt_graph::SessionToolSurface {
+                computer: self.config.tools.computer.enabled,
+                browser: self.config.tools.browser.enabled,
+                web: self.config.tools.web.enabled,
+                memory: memory_dir.is_some() && !self.task_profile.is_coding(),
+                ssh: ssh_backend.is_some(),
+                lsp: !self.config.tools.lsp_servers.is_empty() && ssh_backend.is_none(),
+                has_deferred: has_mcp && !self.task_profile.is_coding(),
+                allowlist: self.config.tools.builtin_allowlist.clone(),
+            },
+        );
+        let system_prompt = crate::context::build_system_prompt_with(
             &mut prompt_cache,
-            self.config.system_prompt.as_deref(),
-            cwd,
-            &skills,
-            Some(self.config.compact.context_window),
-            memory_dir.as_deref(),
-            self.config.compact.toon,
-            self.config.tools.browser.enabled,
+            crate::context::SystemPromptInput {
+                custom_prompt: self.config.system_prompt.as_deref(),
+                cwd,
+                skills: &skills,
+                context_window_tokens: Some(self.config.compact.context_window),
+                memory_dir: memory_dir.as_deref(),
+                toon_enabled: self.config.compact.toon,
+                browser_enabled: self.config.tools.browser.enabled,
+                profile: self.task_profile,
+                advertised,
+                language_directive: self.language_directive.as_deref(),
+                has_deferred_tools: has_mcp && !self.task_profile.is_coding(),
+            },
         );
         self.config.system_prompt = Some(system_prompt);
 

@@ -213,8 +213,11 @@ pub struct NomiResolvedConfig {
     pub model: String,
     /// Provider base URL.
     pub base_url: Option<String>,
-    /// System prompt override.
+    /// System prompt override (persona / preset / knowledge — not language).
     pub system_prompt: Option<String>,
+    /// Output-language directive placed last in the cache-stable system prompt
+    /// so it wins over the English intro and any coding overlay.
+    pub output_language_directive: Option<String>,
     /// Capability-declared output ceiling. `None` means omit it where the
     /// protocol permits; required protocols fail before a turn starts.
     pub output_ceiling: Option<u32>,

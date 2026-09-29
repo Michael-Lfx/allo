@@ -219,6 +219,7 @@ impl ProviderHealthCheckService {
                 "You are a provider health probe. Reply with exactly OK and do not use tools."
                     .into(),
             ),
+            output_language_directive: None,
             output_ceiling: Some(16),
             max_turns: Some(1),
             context_limit: None,
@@ -713,6 +714,7 @@ mod tests {
             model: "gpt-test".to_owned(),
             base_url: Some("https://api.openai.com".to_owned()),
             system_prompt: Some("Reply with exactly OK.".to_owned()),
+            output_language_directive: None,
             output_ceiling: Some(16),
             max_turns: Some(1),
             context_limit: None,
@@ -816,6 +818,7 @@ mod tests {
             model: "gpt-test".to_owned(),
             base_url: Some("https://api.openai.com".to_owned()),
             system_prompt: None,
+            output_language_directive: None,
             output_ceiling: Some(16),
             max_turns: Some(1),
             context_limit: None,
