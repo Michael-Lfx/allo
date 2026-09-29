@@ -14450,6 +14450,25 @@ impl ConversationService {
     /// view. Navigation is read-only: only a never-started, transcript-empty
     /// pending conversation may construct a cold runtime.
     #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %conversation_id))]
+    /// Warm the model connection of an already-live runtime. Never builds or
+    /// recycles a runtime and never touches turn admission.
+    pub async fn preconnect(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+    ) -> Result<(), AppError> {
+        self.conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .filter(|r| r.user_id == user_id)
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        if let Some(runtime) = runtime_registry.get_runtime(conversation_id) {
+            runtime.preconnect();
+        }
+        Ok(())
+    }
+
     pub async fn warmup_for_view(
         &self,
         user_id: &str,

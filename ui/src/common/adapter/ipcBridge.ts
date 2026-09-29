@@ -690,6 +690,11 @@ export const conversation = {
   ),
   reset: httpPost<void, IResetConversationParams>((p) => `/api/conversations/${p.conversation_id}/reset`),
   warmup: httpPost<void, { conversation_id: ConversationId }>((p) => `/api/conversations/${p.conversation_id}/warmup`),
+  preconnect: httpPost<void, { conversation_id: ConversationId }>(
+    (p) => `/api/conversations/${p.conversation_id}/preconnect`,
+    () => undefined,
+    { silentStatuses: [404] }
+  ),
   stop: httpPost<void, { conversation_id: ConversationId }>((p) => `/api/conversations/${p.conversation_id}/cancel`),
   clearContext: httpPost<void, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/clear-context`

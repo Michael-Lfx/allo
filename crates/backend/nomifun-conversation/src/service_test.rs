@@ -17817,6 +17817,24 @@ async fn list_confirmations_wrong_user() {
 }
 
 #[tokio::test]
+async fn preconnect_never_builds_a_runtime_and_checks_ownership() {
+    let (svc, _broadcaster, _repo, _runtime_registry) = make_service();
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+
+    let conv = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    svc.preconnect(TEST_USER_1, &conv.conversation_id, &runtime_registry)
+        .await
+        .unwrap();
+    assert!(runtime_registry.get_runtime(&conv.conversation_id).is_none());
+
+    let err = svc
+        .preconnect(TEST_USER_2, &conv.conversation_id, &runtime_registry)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::NotFound(_)));
+}
+
+#[tokio::test]
 async fn confirm_removes_confirmation_and_broadcasts() {
     let (svc, broadcaster, _repo, _runtime_registry) = make_service();
     let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
