@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { Headset } from '@icon-park/react';
 import classNames from 'classnames';
+import { navRowProps } from './navRowProps';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 
 interface SiderCustomerServiceEntryProps {
@@ -38,6 +39,7 @@ const SiderCustomerServiceEntry: React.FC<SiderCustomerServiceEntryProps> = ({
             'w-full h-34px flex items-center justify-center cursor-pointer transition-colors rd-8px text-t-primary',
             isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
+          {...navRowProps(onClick, title)}
           onClick={onClick}
         >
           <Headset
@@ -60,7 +62,8 @@ const SiderCustomerServiceEntry: React.FC<SiderCustomerServiceEntryProps> = ({
           isMobile && 'sider-action-btn-mobile',
           isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
         )}
-        onClick={onClick}
+        {...navRowProps(onClick, title)}
+          onClick={onClick}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
           <Headset theme='outline' size='16' fill='currentColor' className='block leading-none' style={{ lineHeight: 0 }} />

@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { Puzzle } from '@icon-park/react';
 import classNames from 'classnames';
+import { navRowProps } from './navRowProps';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 
 interface SiderSkillsEntryProps {
@@ -41,6 +42,7 @@ const SiderSkillsEntry: React.FC<SiderSkillsEntryProps> = ({
             'w-full h-34px flex items-center justify-center cursor-pointer transition-colors rd-8px text-t-primary',
             isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
+          {...navRowProps(onClick, label)}
           onClick={onClick}
         >
           {icon(20)}
@@ -57,7 +59,8 @@ const SiderSkillsEntry: React.FC<SiderSkillsEntryProps> = ({
           isMobile && 'sider-action-btn-mobile',
           isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
         )}
-        onClick={onClick}
+        {...navRowProps(onClick, label)}
+          onClick={onClick}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>{icon(16)}</span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>

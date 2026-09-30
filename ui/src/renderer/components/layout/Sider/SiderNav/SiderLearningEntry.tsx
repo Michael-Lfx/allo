@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { BookOpen } from '@icon-park/react';
 import classNames from 'classnames';
+import { navRowProps } from './navRowProps';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
@@ -85,6 +86,7 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
           isMobile && 'sider-action-btn-mobile',
           isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
         )}
+        {...navRowProps(onClick, label)}
         onClick={onClick}
         onPointerEnter={() => prefetchLearningPage()}
         aria-current={isActive ? 'page' : undefined}
