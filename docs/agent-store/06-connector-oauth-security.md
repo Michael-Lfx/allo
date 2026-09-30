@@ -1,3 +1,263 @@
+# Connector、OAuth 与安全模型 · 技术方案
+
+> 状态：🧊 架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4；OAuth 链路已实证，见附录）；发布阻断
+> 日期：2026-08-26（更新：2026-09-28）
+> 前置：[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`02-codebuddy-workbuddy-import-spec.md`](file:///c:/workspace/allo/docs/agent-store/02-codebuddy-workbuddy-import-spec.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md)
+> 一句话原则：**入站与出站认证严格物理隔离，有效权限求交集，连接器凭据只进安全存储，传输期自动注入与单次刷新重试，真实 Token 永不出境**
+
+---
+
+## 1. 背景与核心痛点
+
+连接器（Connector）是 Agent Store 与真实外部系统（GitHub、飞书、企业内网 MCP、数据库等）交互的桥梁，具有高度的副作用与数据访问权限。在缺乏强安全模型时，系统面临以下严峻威胁：
+
+### 1.1 核心痛点分析
+
+1. **双向认证混淆与 Token 伪造**：容易把“调用方访问 Agent Store 的身份凭证（入站认证）”与“Agent Store 访问外部 GitHub 等上游系统的密钥（出站认证）”混为一谈，甚至将用户的入站 Token 直接转发给第三方服务，引发灾难性泄密。
+2. **凭据随处漫游与日志泄露**：API Key 或 OAuth Access Token 经常被随手拼入 Prompt、写进调试日志、存入数据库明文字段或推送到前端 UI，导致系统完全失去凭据防线。
+3. **虚假连通性与“刷新惊群”**：很多系统把“OAuth 网页登录成功”等同于“连接器就绪可用”，而在调用时因缺乏 Token 注入导致 401 失败；或者在多个工具并发调用 401 时发起数十次重复刷新，导致上游 IdP 封禁凭据。
+4. **CLI 与 STDIO 进程逃逸风险**：如果把连接器简单做成外部 Shell 代理，模型可拼接并执行 `rm -rf` 或恶意反弹 Shell 命令，直接威胁宿主系统安全。
+
+---
+
+## 2. 方案全景与安全模型
+
+### 2.1 整体安全防线架构
+
+```mermaid
+flowchart TD
+    subgraph Inbound ["1. 入站调用鉴权 (Inbound)"]
+        CLIENT["调用方 (WebUI / SDK / CLI)"]
+        LOCAL_WS["Localhost WebSocket (LocalPrincipal)"]
+        AUTH_CTX["AuthContext (授予最小 Scope)"]
+    end
+
+    subgraph CoreEngine ["2. 核心执行与权限交集 (Core Engine)"]
+        INTERSECT["有效权限交集计算:<br/>Caller ∩ Agent ∩ Team ∩ Skill ∩ Connector ∩ Credential"]
+        POLICY_GATE{"是否有写/破坏性副作用?"}
+        APPROVAL["触发用户审批流 (Approval Card)"]
+    end
+
+    subgraph SecurityStorage ["3. 密钥安全存储与隔离"]
+        VAULT["本地安全存储 (OS Keychain / Secret File)"]
+        BINDING["CredentialBinding (只存引用，无明文)"]
+    end
+
+    subgraph Outbound ["4. 出站连接与令牌注入 (Outbound)"]
+        CP["Credential Provider (请求时按引用实时注入)"]
+        LOCK["401 互斥并发刷新锁 (Refresh Mutex)"]
+        TRANS["受控传输层 (Remote MCP / Stdio / Controlled CLI)"]
+        UPSTREAM["外部服务 (GitHub / 飞书 / 企业 API)"]
+    end
+
+    CLIENT --> LOCAL_WS
+    LOCAL_WS --> AUTH_CTX
+    AUTH_CTX --> INTERSECT
+    INTERSECT --> POLICY_GATE
+    POLICY_GATE -- 高风险 --> APPROVAL
+    APPROVAL -- 批准 --> CP
+    POLICY_GATE -- 低风险 --> CP
+    VAULT --> BINDING
+    BINDING --> CP
+    CP --> TRANS
+    TRANS --> UPSTREAM
+    UPSTREAM -- 401 Unauthorized --> LOCK
+    LOCK -- 单次刷新重试 --> TRANS
+```
+
+### 2.2 四大不可动摇的安全原则
+
+1. **双向 OAuth 物理隔离**：
+   - 入站认证（谁在调 Agent Store）与出站认证（Agent Store 凭什么访问上游）绝对分离。入站 Token 严禁转发给上游，两端使用独立的 Principal、Issuer 和 Scopes。
+2. **有效权限求交集**：
+   $$\text{Effective Permission} = \text{Caller} \cap \text{Agent} \cap \text{Team} \cap \text{Skill} \cap \text{Connector} \cap \text{Credential Scopes}$$
+   任意层级拒绝即拒绝。LLM Prompt 绝非权限防线。
+3. **高危副作用默认审批**：
+   - 涉及发送消息、修改代码、删除数据、部署发布、支付或工作区外写入等操作，默认触发 `Approval` 机制，必须由用户显式确认。
+4. **真实凭据绝对隐形 (`[REDACTED]`)**：
+   - 真实 Token / API Key 严禁出现在 Prompt、Tool Result、日志、Event Data、前端状态或公共 API 响应中，统一显式脱敏为 `[REDACTED]`。
+
+---
+
+## 3. 详细设计 (按领域内聚)
+
+### 3.1 Connector 统一形态与工具命名空间
+
+系统支持五类受控连接器形态：
+1. `remote-mcp`：基于 Streamable HTTP / SSE 的标准 MCP 服务。
+2. `stdio-mcp`：受控本地子进程，通过标准输入输出交互。
+3. `cli`：受控本地命令行工具（严格参数 Schema 白名单）。
+4. `http-api`：受控结构化 REST/JSON API 适配器。
+5. `composite`：多步骤复合能力。
+
+#### 工具命名空间隔离规则
+所有通过 Connector 暴露的工具，必须带上全局唯一的命名空间前缀：
+```text
+connector__<connector_slug>__<tool_name>
+例如：
+connector__github__create_pull_request
+connector__feishu__send_card_message
+```
+底层原始工具名仅在内部由 Adapter 维护，模型与调用方只能感知命名空间后的工具。
+
+---
+
+### 3.2 凭据声明与绑定隔离模型
+
+```text
+CredentialSchema (声明需要什么)
+  └── id, connector_id, fields: [{name, kind, required, sensitive}]
+        ↓ (用户在受控表单填入或 OAuth 回调)
+CredentialBinding (运行时具体主体对具体连接器的授权绑定)
+  └── principal_id + connector_id + issuer + resource_server + scopes[]
+        └── credential_ref (指向 OS 安全密钥库的引用，绝非明文)
+```
+
+- **严禁单键索引**：禁止仅用 `server_url` 作为凭据查找键，必须由 `principal_id + connector_id + issuer + scopes` 联合键控，支持多租户与多账号切换。
+
+---
+
+### 3.3 标准 OAuth 流程与自动刷新重试机制
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Adapter as MCP Runtime Adapter
+    participant Mutex as 刷新互斥锁 (Refresh Mutex)
+    participant Vault as 安全存储 (Credential Vault)
+    participant Upstream as 上游外部服务 (IdP / MCP Server)
+
+    Adapter->>Vault: 请求有效 Token (通过 credential_ref)
+    Vault-->>Adapter: 返回当前 access_token
+    Adapter->>Upstream: 发起请求 (Authorization: Bearer <token>)
+    alt 请求成功 (200 OK)
+        Upstream-->>Adapter: 返回工具执行结果
+    else 遇到 401 Unauthorized
+        Adapter->>Mutex: 申请当前 Connector/Principal 的刷新锁
+        Note over Mutex: 并发请求排队等待，避免同时向 IdP 发起多次刷新
+        Mutex->>Upstream: 发送 refresh_token 交换新 access_token
+        alt 刷新成功
+            Upstream-->>Mutex: 返回新 access_token & new refresh_token
+            Mutex->>Vault: 更新安全存储中的凭据
+            Mutex-->>Adapter: 释放锁并下发新 Token
+            Adapter->>Upstream: 一次性重试原请求 (Retry with new Token)
+            Upstream-->>Adapter: 重试成功返回结果
+        else 刷新失败 (Token 已注销/过期)
+            Mutex-->>Adapter: 报错 Token 无效
+            Adapter->>Adapter: 状态跃迁至 reauthorization_required
+            Adapter-->>Adapter: 拒绝后续未授权调用，提示用户重新登录
+        end
+    end
+```
+
+#### OAuth 实施关键要件
+1. **支持标准 PKCE Loopback 子集**：V1 严格支持 Authorization Code + PKCE S256 + Localhost Loopback 回调。复杂公网 Relay、非标准自定义 URI Scheme 列入 `unsupported-auth`。
+2. **401 互斥锁与单次重试**：并发请求下通过刷新互斥锁排队，只向上游 IdP 发起一次刷新操作；401 后只允许重试一次，失败立即将连接器状态降级为 `reauthorization_required`，坚决不陷入无限死循环。
+3. **真实探活门禁 (Probe Gate)**：OAuth 授权完成只代表 `authenticated`，必须由 Adapter 发起一次真实的工具列表探测（`list_tools` 或健康检查 Probe），探测通过后方可跃迁至 `connected`。
+
+---
+
+### 3.4 连接器精细化八态生命周期
+
+连接器的真实可用性必须通过细分状态明确传达，禁止简单的二元判断：
+
+```mermaid
+stateDiagram-v2
+    [*] --> not_installed
+    not_installed --> installed : 导入快照
+    installed --> configured : 用户配置参数 / URL
+    configured --> authorization_required : 需要凭据或授权
+    authorization_required --> authorizing : 用户发起授权流程
+    authorizing --> authenticated : Token 入库校验成功
+    authenticated --> connecting : 正在发起真实握手
+    connecting --> connected : 真实探活 Probe 成功
+    connected --> degraded : 偶发网络超时 / 部分探活失败
+    connected --> error : 上游服务宕机
+    connected --> reauthorization_required : 401 且刷新失败
+    reauthorization_required --> authorizing : 用户重新授权
+    connected --> [*] : 用户登出 / 卸载
+```
+
+---
+
+### 3.5 受控 CLI 与 STDIO 进程沙箱
+
+#### 1. CLI Connector 受控模型
+- 严禁拼接任意 Shell 字符串；参数必须经过 Strict JSON Schema 校验，并通过标准 `argv` 数组直接传给 `execve`。
+- 执行命令严格限制在白名单（如仅允许 `git status`、`gh pr view`），禁用通配符与管道重定向。
+- 强制注入受控工作区，环境变量通过显式白名单过滤，超时强制 SIGKILL 回收。
+
+#### 2. STDIO MCP 进程隔离
+- 子进程使用独立的非阻塞管道通信，子进程崩溃或管道破裂时立即置连接器为 `error`，停止派发工具调用。
+- 子进程 STDERR 经过脱敏后归档至系统审计日志，严禁直接暴露原始环境。
+
+---
+
+### 3.6 安全审计事件字典 (15 类规范审计)
+
+所有涉及外部连接、凭据流转与工具调用的行为，均必须产生规范脱敏审计事件：
+
+```text
+connector.installed            connector.configured
+connector.auth.started         connector.auth.completed       connector.auth.failed
+connector.connected            connector.disconnected
+connector.tool.listed          connector.tool.call.started     connector.tool.call.completed
+connector.tool.call.denied     connector.token.refresh.failed  connector.process.timeout
+approval.requested             approval.resolved
+```
+
+#### 审计事件存储最小模型
+```json
+{
+  "audit_id": "aud_01J8K...",
+  "principal_id": "usr_local_admin",
+  "connector_id": "conn_github",
+  "tool_name": "connector__github__merge_pull_request",
+  "policy_decision": "approved",
+  "argument_summary": "{\"pr\": 102, \"merge_method\": \"squash\"}",
+  "run_id": "run_01J8K...",
+  "created_at": "2026-08-26T14:00:00Z"
+}
+```
+
+---
+
+## 4. 核心安全决策与发布准入门禁 (Release Gates)
+
+连接器与 OAuth 模块发版前必须全部通过以下 7 项硬性门禁：
+1. **远程 MCP 探活闭环**：至少一个标准远程 MCP Connector 完整通过握手、工具发现、调用与断线恢复。
+2. **OAuth 全流程打通**：至少一个 OAuth Connector 跑通 PKCE 授权、安全存储、请求注入、401 刷新与探活。
+3. **凭据泄露零容忍扫描**：自动化代码与日志扫描无任何明文 Secret，全量数据为 `[REDACTED]`。
+4. **命名空间前缀化验证**：所有公开工具强制带有 `connector__` 前缀，未在白名单的工具调用被硬拦截。
+5. **CLI / STDIO 沙箱验证**：命令覆盖、路径越界、环境变量注入等攻击载荷被完全阻断。
+6. **脱敏审计可查**：审计记录完整留存，无原始明文参数泄露。
+7. **复杂 OAuth 明确标记**：不支持的 Relay 等流程如实标记为 `unsupported-auth`，禁止误入默认安装流。
+
+---
+
+## 5. 验收测试用例 (TC-SEC / TC-OAUTH / TC-CONN)
+
+| 用例编号 | 场景与断言要点 | 验证等级 |
+|---|---|---|
+| **TC-SEC-001** | 入站 Token 不被转发出站 | 模拟传入调用方入站 Bearer Token，断言发送给上游 MCP 的请求不含该 Token。 | P0 |
+| **TC-SEC-002** | 有效权限求交集 | 构造 Caller 具有而 Connector 拒绝的权限，断言最终工具调用被拦截。 | P0 |
+| **TC-SEC-003** | 工具命名空间隔离 | 断言公开暴露的工具一律带有 `connector__<slug>__` 前缀，未在 allowlist 的工具无法被调用。 | P0 |
+| **TC-OAUTH-001** | 标准 PKCE Loopback 流程 | 验证 state 校验、PKCE S256 交换成功，最终进入 `authenticated` 状态。 | P0 |
+| **TC-OAUTH-002** | 凭据绝对隔离与脱敏 | 验证 Token 绝不进入 Renderer、Prompt、Tool Result、Event 或 SDK 响应。 | P0 |
+| **TC-OAUTH-003** | 请求时注入与 401 刷新重试 | 模拟 401 响应，验证互斥刷新锁生效，自动刷新成功并仅重试一次。 | P0 |
+| **TC-OAUTH-004** | 刷新失败跃迁与告警 | 模拟刷新 Token 失效，断言连接器立即跃迁为 `reauthorization_required`。 | P0 |
+| **TC-CONN-001** | 探活门禁阻断假成功 | 配置存在但网络探活失败时，断言状态绝不显示为 `connected`。 | P0 |
+| **TC-CLI-001** | CLI 任意命令与参数拦截 | 试图传入 `; rm -rf /` 或越界路径，断言被 Schema 校验直接拒绝，不启动子进程。 | P0 |
+| **TC-STDIO-001** | STDIO 崩溃隔离 | 强杀 STDIO 子进程，断言系统捕获异常并置连接器为 error，后续调用安全熔断。 | P0 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Connector、OAuth 与安全模型
 
 > 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；OAuth 链路已实证（本文件 §12）；发布阻断

@@ -199,12 +199,20 @@ pub struct Cli {
     /// Agent-store config file (`~/.agent-store/config.toml` convention).
     /// When set, the host's default marketplaces are registered before the
     /// first store/market call: sources declared under
-    /// `[default_marketplaces.*]` are registered *and downloaded*, while the
-    /// builtin fallback (no such table) is registered unfetched and waits for
-    /// an explicit `market/refresh`. The `nomifun-web` host defaults it to
+    /// `[default_marketplaces.*]` are registered and — unless the source says
+    /// `download_on_start = false` — downloaded, while the builtin fallback (no
+    /// such table) is registered unfetched and waits for an explicit
+    /// `market/refresh`. The `nomifun-web` host defaults it to
     /// `~/.agent-store/config.toml` when unset; other hosts keep `None`
     /// (no default-marketplace registration at all).
-    #[arg(long)]
+    ///
+    /// Env contract: `--agent-store-config` > `AGENT_STORE_CONFIG` >
+    /// per-host default. The environment spelling exists for launchers
+    /// (`@flowy-agent-store/sdk`) that spawn the host as a child and cannot pass
+    /// backend CLI flags — the same channel `NOMI_LOG_LEVEL` documents. It only
+    /// moves the *config file*: the data directory stays the caller's
+    /// `--data-dir`.
+    #[arg(long, env = "AGENT_STORE_CONFIG")]
     pub agent_store_config: Option<PathBuf>,
 
     /// Adopt the agent-store config file's `[tools]` table as this host's

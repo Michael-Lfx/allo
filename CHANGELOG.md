@@ -21,6 +21,10 @@ at a high level rather than a complete commit log.
 - A connector authorization that an authorization server throttles (`slow_down`) now waits instead of retrying at once: the next attempt is refused with the remaining wait, and repeated throttles back off up to 15 minutes.
 - Installing a connector no longer probes it on every readiness poll (one real connection per 5s instead of one per 400ms — up to ~10 connections and ~20 token requests per install before), and the SDK's `connectors.waitForAuth` reports why an authorization did not finish.
 - Connectors that need a key or token keep the auth headers their marketplace declares (and their `sse` transport), and a credential the URL carries is substituted before the request; a probe that finds a credential missing says which key to fill instead of sending the literal `secret:NAME`.
+- A default marketplace source can defer its boot download with `download_on_start = false` (one key per `[default_marketplaces.<id>]`, default unchanged), and a launcher that spawns the host can force the whole process with `AGENT_STORE_MARKET_DOWNLOAD=eager|lazy|none` or point it at its own file with `AGENT_STORE_CONFIG`.
+- The Agent Store host's market policy — how often the background sweep runs and which entry kinds it may upgrade — is readable and changeable while the host runs (`market/settings` / `market/settings-set`, written through to `config.toml`), so the interval no longer needs a restart.
+- The background sweep can now upgrade the entries installed from a market whose auto-update switch is on, together with the index refresh it already did. Connectors stay excluded unless that kind is opted in (an upgrade re-runs `upsert_server`, which disables a server whose configuration changed), and an entry you switched off by hand, one carrying a blocked reason, or one that was never installed is never touched; `entry_auto_update_kinds = []` restores the index-only behaviour.
+- Protocol fingerprint `fp-12` → `fp-13` (the App Server rejects a mismatched client outright, so SDK and host must be updated together).
 
 
 ## v1.3.2 - 2026-09-11

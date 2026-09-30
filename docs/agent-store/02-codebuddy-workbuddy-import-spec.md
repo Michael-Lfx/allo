@@ -1,3 +1,286 @@
+# CodeBuddy / WorkBuddy 导入与安装规范 · 技术方案
+
+> 状态：✅ 已实现（`nomifun-importer`，Phase 1 & Phase 2 阶段 B 全部落地）；市场源获取与运行时真实安装已贯通
+> 日期：2026-08-26（更新：2026-09-28）
+> 前置：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`03-codebuddy-compatibility-matrix.md`](file:///c:/workspace/allo/docs/agent-store/03-codebuddy-compatibility-matrix.md)
+> 一句话原则：**导入期只做安全复制与不可变快照归一化，严禁执行外部代码与逃逸路径，连接器凭据三处声明缺一不可，安装/卸载保证运行时真实回收与幂等**
+
+---
+
+## 1. 背景与核心痛点
+
+Agent Store 需要无缝兼容并安全吸收外部生态（CodeBuddy / WorkBuddy）中的大量成熟资产（专家、技能、连接器）。在实现导入与安装全流程时，必须解决以下核心痛点：
+
+### 1.1 核心痛点分析
+
+1. **来源格式异构且缺乏严格规范**：外部资源存在多种形态（独立插件包、技能市场目录、单 Skill 目录、CLI 连接器目录等）。部分市场清单甚至存在 CRLF 行尾、非严格 YAML（内嵌未加引号的冒号或 JSON）、缺少 version 等非标准现象，极易引发解析崩溃。
+2. **严重的路径穿越与任意代码执行安全隐患**：外部插件包可能包含 `../` 越界路径、恶意符号链接，或者携带可执行二进制（`bin/`）与生命周期钩子（`hooks/hooks.json`）。如果在导入期直接执行外部命令，攻击者可完全接管宿主系统。
+3. **连接器凭据“配置了但无效”的配置陷阱**：连接器若需用户填入 API Key/Token，必须在三个完全独立的文件中同时完成声明（`connectors.json` 声明模式、`mcp.json` 声明引用落点、`token-schema.json` 声明表单）。任何一处遗漏都会导致无错误静默失效，排查成本极高。
+4. **假卸载与脏产物残留**：旧实现容易把“卸载”仅做成数据库标志位翻转，而未真正清理磁盘上的物化目录、Preset 与 MCP 服务器行；再次安装或升级时还会引发组件 ID 冲突。
+
+---
+
+## 2. 方案全景与管线架构
+
+### 2.1 导入、安装与运行时生命周期全景
+
+```mermaid
+flowchart TD
+    subgraph Sources ["1. 来源发现与获取"]
+        S_LOCAL["本地目录 (Plugin / Skill / Connector / CLI)"]
+        S_REMOTE["远程市场 (Git 克隆 / HTTP 条件下载 / Zip 单包)"]
+    end
+
+    subgraph Security ["2. 导入安全沙箱 (nomifun-importer)"]
+        CHK_PATH["路径安全校验 (拒绝 ../ 越界与外部软链接)"]
+        CHK_DIGEST["计算 SHA-256 树摘要 (防冲突与幂等判定)"]
+        CACHE["复制到不可变版本化缓存目录"]
+    end
+
+    subgraph Normalization ["3. 资产标准化与三态评估"]
+        PARSE["宽容解析 (归一化 CRLF / 容错 YAML / 提取 Frontmatter)"]
+        SNAP["生成不可变 PluginSnapshot"]
+        DEFS["生成标准定义 (Agent / Team / Skill / Connector / Schema)"]
+        COMPAT["推导三态兼容性报告 (CompatTriple)"]
+    end
+
+    subgraph Installation ["4. 运行时真实安装与状态机"]
+        REG["注册到 SQLite 数据库 (plugin_snapshots 表)"]
+        INST["install/run 触发真实物理物化:"]
+        INST_1["- Skill: 物理拷贝到 {skills}/agent-store/{snapshot}/{slug}/"]
+        INST_2["- Agent/Team: 调用 PresetService 创建 Preset"]
+        INST_3["- Connector: upsert 写入 mcp_servers 行"]
+        STATE["状态跃迁: not-installed ➔ installed ➔ disabled"]
+        UNINST["uninstall: 真正删除物理目录、Preset 与 mcp_servers 行"]
+    end
+
+    S_LOCAL --> CHK_PATH
+    S_REMOTE --> CHK_PATH
+    CHK_PATH --> CHK_DIGEST
+    CHK_DIGEST --> CACHE
+    CACHE --> PARSE
+    PARSE --> SNAP
+    SNAP --> DEFS
+    DEFS --> COMPAT
+    COMPAT --> REG
+    REG --> INST
+    INST --> INST_1 & INST_2 & INST_3
+    INST_1 & INST_2 & INST_3 --> STATE
+    STATE --> UNINST
+```
+
+### 2.2 核心目标与非目标 (Goals & Non-Goals)
+
+- **核心目标**：
+  - 支持本地目录、GitHub/Git、HTTP 及 Zip 格式的插件、技能与连接器安全导入。
+  - 导入期零脚本执行，完全阻断外部符号链接逃逸与目录穿越。
+  - 生成带内容哈希的不可变快照（`PluginSnapshot`），重复导入严格幂等。
+  - 运行时安装与卸载必须“做真事”：真正物化物理文件、真正创建/删除 Preset 与 MCP 数据库行。
+- **明确非目标**：
+  - 导入期不执行任何 `bin/` 脚本、LSP 进程或 Hook 命令。
+  - 不在导入期处理用户真实明文凭据，仅建立 `CredentialSchema` 结构描述。
+  - 导入期不拼接团队 Prompt，Team 的编排模板保留到运行时动态物化。
+
+---
+
+## 3. 详细设计 (按模块内聚)
+
+### 3.1 来源分类与支持矩阵
+
+| 来源类型标识 (`source_kind`) | 识别特征文件与目录布局 | 产出核心对象 | 身份与版本默认规则 |
+|---|---|---|---|
+| `codebuddy-plugin` | `.codebuddy-plugin/plugin.json` + `agents/`、`skills/` 等 | `PluginSnapshot` (全量组件) | `name` 为插件身份；缺少 `version` 时默认 `1.0.0`。 |
+| `workbuddy-skill-market` | `.codebuddy-skill/marketplace.json` + `skills/<slug>/` | `SkillDefinition` 清单 | 取清单 `name`；单目录（含 `SKILL.md`）身份取目录名。 |
+| `workbuddy-connector-market` | `.codebuddy-connector/connectors.json` + `connectors/<slug>/` | `ConnectorDefinition` + `CredentialSchema` | 取清单内条目 `id` 与 `auth_mode`。 |
+| `workbuddy-cli-connector` | `connectors/<id>/cli.json` + `skills/<slug>/SKILL.md` | `ConnectorDefinition` (cli) + 附随 `SkillDefinition` | `cli.json` 缺名时取目录名作为身份。 |
+| 远程源 (`git` / `url` / `zip`) | Git 仓库 / HTTP 清单 / ModelScope LFS 单 Zip 包 | 远程市场抓取晋升为快照 | 走 Staging 临时解压校验 ➔ 原子晋升为缓存。 |
+
+---
+
+### 3.2 导入安全校验与解析流水线
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as 调用方 / WebUI
+    participant Importer as 导入管线 (nomifun-importer)
+    participant FS as 本地不可变缓存
+    participant DB as SQLite 数据库
+
+    Caller->>Importer: 请求导入 (source_path / source_uri)
+    Importer->>Importer: 1. 路径防逃逸校验 (必须相对路径，禁止 ../ 逃逸)
+    Importer->>Importer: 2. 符号链接校验 (unix 软链接指向快照外部直接阻断)
+    Importer->>Importer: 3. 计算来源目录 SHA-256 树摘要
+    Importer->>DB: 4. 检查是否存在同身份同 Digest 快照?
+    alt 存在相同快照 (幂等)
+        DB-->>Importer: 返回已存在 snapshot_id
+        Importer-->>Caller: completed (reused=true)
+    else 存在同身份但不同 Digest (版本冲突)
+        Importer-->>Caller: blocked (digest_conflict)
+    else 新快照
+        Importer->>FS: 5. 受控复制源文件至不可变存储
+        Importer->>Importer: 6. 宽容解析 Frontmatter (CRLF 归一化 / 容错 YAML)
+        Importer->>Importer: 7. 组件标准化映射与生成三态报告
+        Importer->>DB: 8. 写入 plugin_snapshots 及组件表
+        Importer-->>Caller: completed (返回 snapshot_id 与 CompatibilityReport)
+    end
+```
+
+#### 关键解析容错特性
+- **CRLF 透明归一化**：自动将 Windows `\r\n` 转为 `\n`，杜绝因行尾差异引发哈希波动。
+- **宽松 YAML 解析回退**：若标准严格 YAML 解析失败（如市场文件中未加引号的冒号、内嵌 JSON 字符串），自动回退到行级正则提取顶层 `name`, `description`, `version`，确保组件身份不丢失。
+- **路径变量映射**：`${CODEBUDDY_PLUGIN_ROOT}` 自动重写为 `${AGENT_STORE_PLUGIN_ROOT}`，完全沙箱化。
+
+---
+
+### 3.3 组件标准化映射规则
+
+```text
+来源文件结构                         Agent Store 标准化对象
+agents/*.md                 ───▶    AgentDefinition (结构化 frontmatter + persona)
+skills/*/SKILL.md           ───▶    SkillDefinition (保留正文、脚本与 $ARGUMENTS)
+commands/*.md               ───▶    CommandDefinition (用户可调用命令 plugin:command)
+.mcp.json / mcpServers      ───▶    ConnectorDefinition (命名空间化 connector__*)
+hooks/hooks.json            ───▶    LifecycleHookDefinition (标记 manual-review，静止执行)
+.lsp.json                   ───▶    LspDefinition (元数据保留，不包装为 MCP)
+userConfig / token-schema   ───▶    CredentialSchema (仅声明字段，敏感项存引用)
+teamInfo (WorkBuddy 扩展)   ───▶    AgentTeamDefinition (固定成员池与 Leader 绑定)
+```
+
+- **同名消歧**：当插件内 Agent 与 Skill 同名时（如 `aihot`），Skill 自动追加 `-skill` 后缀（`aihot-skill`），绝不覆盖丢弃。
+- **前端展示元数据完整保真**：`plugin.json` 中的 `displayName`, `profession`, `tags`, `quickPrompts`, `avatar` 等完整映射并随快照持久化，通过受控资产端点提供访问。
+
+---
+
+### 3.4 连接器凭据“三处必须写全”铁律 (关键设计)
+
+市场连接器若需用户自行填写 API Key 或 Token，**必须在三个完全独立的文件中同时写全**。漏写任何一处均会导致静默失效：
+
+| 序号 | 必须配置的文件位置 | 填写内容规范 | 遗漏后的故障表现与后果 |
+|---|---|---|---|
+| **① 模式声明** | `.codebuddy-connector/connectors.json` 对应条目 | `"auth_mode": "token"` | `auth_mode` 若写错或为空，`mode` 归为 `none`，状态恒为 `not_required`。**UI 既无徽标也无输入表单**。 |
+| **② 模板落点** | `connectors/<id>/mcp.json` | 传输参数中的模板引用：`"headers": {"Authorization": "Bearer ${ACME_KEY}"}` | 值能存入凭据库，但请求发送时没有任何位置去解析注入。表现为：**UI 提示已配置，但实际网络请求无凭据**。 |
+| **③ 表单定义** | `connectors/<id>/token-schema.json` | 字段声明与文案：`"fields": [{"key": "ACME_KEY", "type": "password", "required": true}]` | 没有表单字段，客户端写入凭据时会被服务端以 `declares no credential form to fill` 直接报错拒绝。 |
+
+#### 官方标准最小示例 (可直接套用)
+
+```jsonc
+// ① .codebuddy-connector/connectors.json (条目行声明)
+{
+  "id": "acme-mcp",
+  "name": "Acme Service",
+  "auth_mode": "token"
+}
+
+// ② connectors/acme-mcp/mcp.json (传输模板与引用落点)
+{
+  "mcpServers": {
+    "acme-mcp": {
+      "type": "streamableHttp",
+      "url": "https://mcp.acme.com/v1",
+      "headers": {
+        "Authorization": "Bearer ${ACME_KEY}" // 模板占位符，宿主不会自动补 Bearer 前缀
+      }
+    }
+  }
+}
+
+// ③ connectors/acme-mcp/token-schema.json (前端动态表单定义)
+{
+  "title": "配置 Acme 连接器",
+  "title_en": "Configure Acme Connector",
+  "docLabel": "获取 API Key",
+  "docUrl": "https://acme.com/keys",
+  "fields": [
+    {
+      "key": "ACME_KEY",
+      "type": "password",
+      "required": true,
+      "label": "API Key",
+      "description": "请输入平台提供的访问令牌"
+    }
+  ]
+}
+```
+
+---
+
+### 3.5 真实安装与运行时状态机
+
+组件生命周期严格遵循四状态转换，安装与卸载必须操作物理产物：
+
+```mermaid
+stateDiagram-v2
+    [*] --> not_installed
+    not_installed --> installed : install/run (物理物化产物)
+    installed --> disabled : disable (翻转运行时状态位，保留产物)
+    disabled --> installed : enable (恢复运行时状态位)
+    installed --> not_installed : uninstall (彻底删除物理产物)
+    disabled --> not_installed : uninstall (彻底删除物理产物)
+```
+
+#### 真实物理操作与回收保证
+1. **Skill 真实物化与清理**：
+   - 安装：物理拷贝至 `{skills_root}/agent-store/{snapshot_id}/{slug}/`。
+   - 卸载：彻底删除该目录。若为该快照最后一个技能，连同快照目录一并清除。
+2. **Agent / Team 真实注册与删除**：
+   - 安装：调用 `PresetService` 生成专属 Preset 并记录 `preset_id`。
+   - 卸载：通过 `PresetService::delete` 完全注销 Preset，避免重装时生成重复预设。
+3. **Connector 真实同步与回收**：
+   - 安装：upsert 写入 `mcp_servers` 数据库行，记录服务配置。
+   - 卸载：按记录的 `mcp_server_id` 真实删除数据库行。
+4. **操作幂等与失败保护**：
+   - 重复卸载已不存在的产物算成功（`ok: true`）。
+   - 若某组件物理删除失败，**该组件强制保留 `installed=1`**，确保用户重试时仍可定位残留产物。
+
+---
+
+## 4. 核心阻断与部分失败规则
+
+### 4.1 整个快照阻断安装条件 (Hard Block)
+
+- Manifest 缺失必需的身份标识字段（如 `name` 为空）。
+- 检测到 `../` 路径遍历逃逸，或指向快照目录外部的恶意符号链接。
+- 同一来源身份与声明版本提交了不同的内容 Digest（防覆写冲突）。
+- 市场条目声明 `strict=true`，但来源目录未自带 `.codebuddy-plugin/plugin.json`。
+- 声明了版本范围的必需强依赖无法被解析满足。
+
+### 4.2 部分失败与降级容错条件 (Completed with Warnings)
+
+- 单个 Agent 或 Skill 文件格式损坏：该损坏组件标记失败，其余合法组件正常导入。
+- 连接器缺少用户凭据：标记 `compatible-with-adapter`，等待用户填入凭据，不阻断插件入库。
+- 发现 Hook、LSP 或外部脚本：生成标准化对象并存入数据库，但标记为 `manual-review`，运行时默认静止。
+
+---
+
+## 5. 验收测试矩阵 (TC-IMP & TC-INS)
+
+| 测试用例编号 | 测试目标与场景 | 核心断言与通过条件 |
+|---|---|---|
+| **TC-IMP-001** | 导入合法 Plugin | 生成不可变快照与 Digest，状态为 `completed`。 |
+| **TC-IMP-002** | 导入 `software-company` | 成功物化 5 个 Agent 与 1 个 Team，Leader 与成员引用准确。 |
+| **TC-IMP-003** | 纯 agents 目录不生成 Team | 仅含 `agents/` 无 teamInfo 时，仅产出 Agent 列表，不生成 Team。 |
+| **TC-IMP-004** | 路径遍历拦截 | 输入 `../` 或绝对路径时，状态直接置为 `blocked`，错误信息脱敏。 |
+| **TC-IMP-005** | 符号链接逃逸拦截 | 包含指向宿主目录的外部软链接时，直接拒绝导入并阻断。 |
+| **TC-IMP-006** | Digest 冲突拦截 | 同版本不同哈希时拒绝覆盖并报错；相同哈希返回 `reused=true`。 |
+| **TC-IMP-007** | 部分组件损坏容错 | 单文件损坏返回 `completed-with-warnings`，其余组件正常可用。 |
+| **TC-IMP-008** | 高风险组件静态化 | 导入 Hook/Scripts 时仅存元数据，断言导入期无子进程执行。 |
+| **TC-IMP-009** | 凭据安全模型校验 | 导入 userConfig 时只产出 Schema，凭据默认值不进入数据库与日志。 |
+| **TC-IMP-010~014** | 市场复杂格式兼容 | 验证 CRLF 换行、容错 YAML、单 Skill 目录及 CLI 目录的稳健解析。 |
+| **TC-INS-001** | 运行时真实安装 | `install/run` 成功物化 Skill 磁盘目录，创建 Preset 与 MCP 记录。 |
+| **TC-INS-002** | 状态机与物理清理 | 验证 `disable` 翻转状态位，`uninstall` 真正彻底删除物理文件与数据行。 |
+| **TC-INS-004** | 市场级联卸载 | 移除市场时级联物理删除关联的已安装组件，断言产物彻底消失。 |
+| **TC-INS-007** | Composer @Mention 注入 | 验证聊天输入框提及的 Agent/Skill/Connector 正确注入执行参数。 |
+| **TC-INS-008** | 商店版本感知升级 | 验证商店一键安装具备版本感知，升级遵循“先卸载再装新版本”契约。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # CodeBuddy / WorkBuddy 导入规范
 
 > 状态：✅ 已实现（nomifun-importer，2026-08 迭代落地 Phase 1）；市场来源（GitHub/Git/HTTP）与导入后运行时激活留待后续

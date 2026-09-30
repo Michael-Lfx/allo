@@ -1219,6 +1219,18 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .market-remove-list { margin: 0 0 4px; padding: 10px 12px 10px 26px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); color: var(--ink-strong); font-size: 12px; line-height: 1.7; }
 .market-remove-list-title { list-style: none; margin-left: -14px; color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: .05em; }
 
+/* ── doc 37: host-level market policy (cadence + auto-upgrade kinds) ── */
+.market-policy { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); padding: 12px; }
+.market-policy-head { display: flex; align-items: center; gap: 12px; }
+.market-policy-title { flex: 1; min-width: 0; color: var(--ink-strong); font-size: 12.5px; font-weight: 620; }
+.market-policy-hint { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.6; }
+.market-policy-warning { margin: 0; border: 1px solid var(--destructive-border); border-radius: 9px; background: var(--destructive-soft); color: var(--destructive); padding: 7px 10px; font-size: 11.5px; line-height: 1.6; }
+.market-policy-field { display: flex; flex-direction: column; gap: 6px; }
+.market-policy-field > label { color: var(--muted-light); font-size: 11.5px; letter-spacing: .02em; }
+.market-policy-field .market-input { flex: 0 0 auto; max-width: 160px; }
+.market-policy-kinds { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.market-policy-kind { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-strong); font-size: 12.5px; }
+
 /* Full-screen frosted-glass loading dialog while connecting to the backend */
 .loading-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; background: rgba(255, 255, 255, .34); backdrop-filter: blur(16px) saturate(1.2); -webkit-backdrop-filter: blur(16px) saturate(1.2); }
 [data-theme="dark"] .loading-backdrop { background: rgba(0, 0, 0, .4); }

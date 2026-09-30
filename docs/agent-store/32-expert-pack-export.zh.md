@@ -1,3 +1,286 @@
+# 专家 / 专家团导出给外部 Runtime（ExpertPack）· 技术方案
+
+> **状态**：✅ **已实施落地**（2026-09-24，协议指纹 `fp-8`，方法数 `48 / 73`）  
+> **核心原则**：可移植定义而非执行语义 —— **导出完整 Persona、模型偏好与构件声明**，**编排逻辑交由外部 Runtime 自行实现**，**产物确定性（无时间戳）**，**导出闸门默认开启**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+Agent Store 中沉淀了大量的专家（Agent）与专家团（Team）资产。外部 Agent Runtime（例如独立运行的 Python / Node 智能体引擎、自研编排系统）期望能够复用 Store 中的专家能力，将其直接导入外部循环中运行。
+
+### 1.2 现状与三大痛点
+在引入本方案前，系统在资产导出与外部 Runtime 适配上存在明显断点：
+
+1. **公开目录面刻意隐藏人设正文，缺乏导出通道**  
+   既有的 `agent/get`、`agent/list`、`team/get` 接口专供商店前端卡片浏览与交互呈现，出于网络带宽与分层隔离考虑，**明文禁止下发完整的 Instructions（Persona 正文）**。外部系统无法通过常规查询接口获取到完整的专家提示词。
+2. **缺乏标准化的可移植规格**  
+   专家在系统内部本质是以运行时 Preset 形式绑定的，内部包含大量特定引擎的运行时 ID、私有状态。外部系统无法直接理解这些内部结构，急需一份与引擎解耦、结构清晰的导出协议（`ExpertPack`）。
+3. **执行语义边界容易混淆**  
+   专家团（Team）不仅包含成员名单，在内部还深度依赖 Planner、DAG 调度器、角色委派工具（`nomi_delegate`）等高级编排系统。若不在规范中严格划定责任边界，外部 Runtime 容易误以为导出的数据包含了“全自动编排调度器”，导致集成期望失真。
+
+### 1.3 核心能力矩阵
+
+| 维度 | 现状行为 | 本方案方案 |
+|---|---|---|
+| **获取专家摘要** | `agent/get` / `team/get`（无人设正文） | 保持不变，专用于商店呈现 |
+| **获取完整定义** | 无法获取 | 新增 `agent/export` 与 `team/export`，返回 `ExpertPack` |
+| **技能文件交付** | 无法批量导出 | 导出技能名称与引用，配合 `skill/files` 统一按需读取 |
+| **连接器凭据** | 凭据属于宿主私有资产 | **坚决不导出凭据**，仅导出连接器元数据与启用状态 |
+| **团队编排执行** | 依赖平台内置 Planner | **只导出拓扑意图与名单**，调度执行由外部 Runtime 自行负责（R1~R11 规范） |
+| **格式与版本** | 易与协议指纹混淆 | 产物采用独立的 `pack_format: 1` 契约，与协议指纹解耦 |
+
+---
+
+## 2. 方案全景与核心架构
+
+### 2.1 端到端导出与物化全景图
+
+```mermaid
+flowchart TD
+    subgraph Client ["外部 Runtime / 调用端"]
+        Requester["调用者 (SDK / WebSocket Client)"]
+        Consumer["外部 Agent 循环 (执行 R1~R11 职责)"]
+        LocalDisk["本地物化目录 (expert-pack.json + persona.md)"]
+    end
+
+    subgraph HostAppServer ["Flowy App Server 宿主"]
+        Gate{"检查 expert_export 策略闸门<br/>(默认开启，支持 deny 减项)"}
+        Router["协议处理器 (agent/export, team/export)"]
+        Seam["ExpertPackProvider"]
+        
+        DB[("本地 SQLite 快照库")]
+        PresetSvc["PresetService (读取模型配置)"]
+    end
+
+    Requester -->|WS 请求 agent/export 或 team/export| Gate
+    Gate -->|策略允许| Router
+    Gate -->|策略拒绝| Deny["返回 policy_denied"]
+    
+    Router --> Seam
+    Seam -->|提取完整 Instructions 正文| DB
+    Seam -->|解析模型声明与偏好| PresetSvc
+    Seam -->|校验团队成员完整性 (整包原子性)| DB
+    
+    Seam -->|返回确定性 ExpertPack (无时间戳)| Requester
+    
+    Requester -->|按需调用 skill/files| SkillAPI["读取 Skill 文件内容"]
+    SkillAPI --> LocalDisk
+    Requester -->|通过 SDK materializePack 或本地写盘| LocalDisk
+    
+    LocalDisk --> Consumer
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **完整提取人设正文**：为外部调用方提供唯一的正文字体出口，完整获取 Markdown 人设与提示词。
+2. **字节级确定性输出**：导出产物去除时间戳，确保同一快照在未变动时连续导出结果**逐字节完全一致**，天然支持 `content_digest` 缓存。
+3. **团队原子性保障**：导出专家团时递归展开全部成员；若有任何一个成员未安装，则**整包明确拒绝**，绝不产出残缺包。
+4. **明确的外部运行时职责清单**：输出权威的 R1~R11 规范，指导外部 Runtime 正确实现依赖校验与调度。
+
+#### 明确的非目标（边界收敛）
+- **绝不导出执行语义**：不包含服务端的 Planner 规划逻辑、DAG 执行引擎或角色委派运行时代码。
+- **不污染既有目录接口**：`agent/get` 与 `agent/list` 坚决不追加正文字段，防止商店浏览面体积爆炸。
+- **绝不导出连接器敏感凭据**：导出包内仅含 `{id, name, enabled}`，绝不泄露 URL、Headers、Token 等敏感信息。
+- **不内联技能全部二进制内容**：技能以名称引用存在，防止单次导出拉取数百兆市场大包；正文按需通过 `skill/files` 读取。
+- **服务端不做写盘物化**：服务端仅通过只读协议返回数据，不提供调用宿主文件系统写盘的接口，彻底杜绝路径穿越与越权写漏洞。
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：`ExpertPack` 格式定义与数据映射
+
+#### 1. 结构契约（`AppServerExpertPack`）
+产物版本使用 `pack_format: 1` 独立标识，不随内部协议指纹 `fp-n` 频繁变动：
+
+```rust
+// nomifun-api-types/src/app_server.rs
+
+pub struct AppServerExpertPack {
+    pub pack_format: u32,                       // 固定为 1，独立于协议版本
+    pub kind: String,                           // "agent" | "team"
+    pub id: String,                             // 专家或团队 ID
+    pub version: String,
+    pub name: String,
+    pub display_name: Option<LocalizedString>,
+    pub description: Option<String>,
+    
+    // 核心正文定义
+    pub persona: AppServerExpertPersona,
+    pub model: AppServerExpertModel,
+    pub skills: Vec<AppServerExpertSkillRef>,
+    pub connectors: Vec<AppServerExpertConnectorRef>,
+    pub tool_policy: AppServerExpertToolPolicy,
+    
+    // 团队独有属性 (仅 kind == "team" 时存在)
+    pub team: Option<AppServerExpertTeamPack>,
+    
+    // 溯源与运行环境绑定标识
+    pub provenance: AppServerExpertProvenance,
+    pub runtime_binding: AppServerExpertRuntimeBinding,
+}
+
+pub struct AppServerExpertPersona {
+    /// 完整人设 Markdown 正文 (唯一正文出口)
+    pub instructions: String,
+    pub memory: Option<String>,
+    pub background: Option<String>,
+}
+
+pub struct AppServerExpertModel {
+    pub declared: Option<String>,               // 清单中的原始声明模型
+    pub resolved: Option<ModelReference>,       // 解析出的具体 provider/model
+    pub effort: Option<String>,                 // 思考等级 (reasoning_effort)
+    pub max_turns: Option<u32>,
+}
+
+pub struct AppServerExpertTeamPack {
+    pub lead_agent_id: String,
+    pub member_agent_ids: Vec<String>,
+    pub planner_policy: String,
+    pub routing_constraints: Vec<String>,
+    /// 递归展开的全部成员定义，队长（Leader）严格置于首位
+    pub members: Vec<AppServerExpertPack>,
+}
+```
+
+#### 2. 字段映射与刻意排除项
+- **确定性保证**：去除所有导出时间戳（`exported_at`），保证相同状态下两次导出 JSON 字节完全相同。
+- **排除呈现层元数据**：`avatar_url`（宿主本地相对路径在外部无效）、`quick_prompts`、`tags` 等纯 UI 标签不进包。
+- **排除内部 ID**：内部运行期实例 ID（如 `resolved_agent_id`）不导出，避免诱导外部产生依赖。
+- **连接器列表**：专家（Agent）的 `connectors` 恒为空数组（专家本身不声明连接器权限）；团队（Team）的 `connectors` 仅提取该团自身已安装且启用的连接器。
+
+---
+
+### 3.2 模块二：策略闸门控制（`[expert_export]`）
+
+#### 1. 策略配置与规则
+导出能力遵循 **“默认开启的减项表”** 原则（与 `[tools]` 策略同族，采用 Fail-Open 语义）：
+
+```toml
+# ~/.agent-store/config.toml
+
+[expert_export]
+enabled = true          # 缺省为 true；设为 false 则全量关闭导出
+deny = []               # 减项黑名单：配置禁止导出的 agent_id 或 team_id
+```
+
+- **环境变量覆盖**：支持通过 `AGENT_STORE_EXPERT_EXPORT` 环境变量整体注入 JSON 配置。
+- **容错设计**：若配置文件损坏或格式异常，系统视为“未减项”继续保持开启，不因为配置小瑕疵导致导出中断。
+
+#### 2. 权限与能力位分工
+- **能力位 `expert_export`**：握手时下发，表示宿主是否挂载了导出 Provider（Seam 是否接通），不反映即时策略。
+- **即时策略拦截**：若配置了 `enabled = false` 或命中 `deny` 列表，请求时准确返回错误码 `policy_denied`。
+
+---
+
+### 3.3 模块三：协议端点与团队原子性
+
+#### 1. 协议动词定义（纯 WebSocket 绑定）
+由于 Agent 与 Team 的目录查询方法均无 HTTP 映射，导出接口保持同构，**仅提供 WebSocket 协议动词**：
+- `agent/export { agent_id: "..." }`
+- `team/export { team_id: "...", team_version?: "..." }`
+
+#### 2. 团队整包失败机制（All-or-Nothing）
+导出团队时，系统递归加载各成员。若发现其中任一成员未在宿主安装：
+- **坚决拒绝导出**，立即返回 `agent_not_installed` 错误码；
+- 错误信息在 `details` 中**明确指名缺失的具体成员 ID**，防止外部拿到缺少角色的残缺定义。
+
+---
+
+### 3.4 模块四：客户端 SDK 与物化支持
+
+#### 1. SDK 接口定义（`web/packages/sdk`）
+SDK 提供上层助手方法，实现定义拉取与物理目录物化：
+
+```ts
+import { exportAgent, exportTeam, materializePack } from "@flowy/agent-store-sdk";
+
+// 1. 获取纯内存定义包
+const pack = await harness.agents.export(agentId);
+
+// 2. 将定义包及所引用的技能物理物化到本地目录
+await materializePack(pack, {
+  targetDir: "./my-agents/dev-lead",
+  client: harness.client, // 自动拉取引用的技能文件
+  onDanglingSkill: (skillId) => console.warn(`技能缺失: ${skillId}`)
+});
+```
+
+#### 2. 物化目录规范
+物化后的标准物理目录结构如下：
+```text
+my-agents/dev-lead/
+  ├── expert-pack.json      # 原始导出契约数据 (包含 pack_format)
+  ├── persona.md            # 完整人设 instructions 内容
+  └── skills/               # 引用的全部技能目录
+      └── hello-tool/
+          ├── SKILL.md
+          └── scripts/
+```
+
+---
+
+## 4. 外部 Runtime 必须实现的职责清单（R1 ~ R11）
+
+外部 Runtime 在消费 `ExpertPack` 时，**必须自行在代码中保证以下 11 项运行期语义**，导出包数据本身不含以下能力：
+
+| 规范编号 | 责任主题 | 外部 Runtime 必须自行实现的行为 | 不实现的后果 |
+|---|---|---|---|
+| **R1** | **前置状态检查** | 编排前必须检查成员是否存在且处于可用状态。 | 任务分配给不存在的幽灵成员导致崩溃。 |
+| **R2** | **固定成员池** | 严格锁定 `member_agent_ids`，禁止 LLM 在执行过程中动态增删成员。 | 模型自行制造虚假成员导致越权。 |
+| **R3** | **路由约束强制生效** | 解析 `routing_constraints` 并转化为可执行的代码规则；无法支持者明确拒绝。 | 成员角色越界，产出假协同。 |
+| **R4** | **DAG 规划执行** | 外部 Runtime 必须实现自身的 Planner 规划器或工作流编排循环。 | 无法形成团队，仅相当于单人设对话。 |
+| **R5** | **调度状态不变量** | 自行实现步骤依赖、最大并发度（`max_parallel`）限制、重试与失败处理。 | 并发执行失控，重试或取消语义失效。 |
+| **R6** | **模型映射与解析** | 将包内的 `declared` 与 `resolved` 模型映射到外部自身支持的模型服务。 | 成员因模型无法识别而启动失败。 |
+| **R7** | **连接器依赖接入** | 根据 `{id, name, enabled}` 建立连接器代理或配置等价工具。 | 专家因缺失工具导致任务中断。 |
+| **R8** | **技能动态挂载** | 读取技能文件，按自身引擎规则注入系统提示词或工具箱。 | 专家携带的技能完全不生效。 |
+| **R9** | **权限与策略计算** | 权限必须由 Runtime 代码强制判定，绝不能仅凭 Persona 文本中的约束提示。 | 把提示词口头说明当安全边界导致漏洞。 |
+| **R10** | **运行级参数覆盖** | 支持调用级传入的 `model` 和思考等级覆盖 Preset 默认值。 | 无法对单次会话执行精细控制。 |
+| **R11** | **事件与产物标准** | 外部定义自己的 Run Step 事件循环与 Artifact 存储产物规范。 | 外部监控与上层消费链路无法解析结果。 |
+
+---
+
+## 5. 核心决策与权衡（D1 ~ D9）
+
+| 编号 | 决策主题 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **方法粒度** | **拆分为 `agent/export` 与 `team/export`** | ❌ 单一 `expert/export`：在 wire 层引入不必要的判别联合体。 |
+| **D2** | **团队展开** | **递归展开全部成员，缺一即整包失败** | ❌ 仅返回成员 ID 列表：外部需要发起大量往返请求，且容易拼装出残缺团队。 |
+| **D3** | **技能关联** | **引用关联（名称），按需拉取文件** | ❌ 全量内联技能二进制：导出包动辄几十兆，造成严重带宽浪费与数据冗余。 |
+| **D4** | **连接器暴露** | **仅导出元数据，凭据永不出宿主** | ❌ 导出完整传输配置与凭据：严重破坏平台安全边界。 |
+| **D5** | **安全闸门** | **默认开启的减项表（Fail-Open）** | ❌ 默认关闭（Fail-Closed）：调用方本身拥有宿主访问权，默认关闭增加无谓阻碍。 |
+| **D6** | **版本契约** | **产物版本 `pack_format: 1` 独立于指纹** | ❌ 绑定协议指纹 `fp-n`：内部接口的细微变动会无谓破坏外部产物格式。 |
+| **D7** | **输出确定性** | **不包含导出时间戳，确保字节级幂等** | ❌ 包含导出时间戳：导致相同状态的多次导出 hash 漂移，无法作为缓存键。 |
+| **D8** | **服务端物化** | **服务端只读，物化由客户端 SDK 负责** | ❌ 服务端提供写盘接口：引入路径穿越与文件越权覆写风险。 |
+| **D9** | **编排器提供** | **外部自行负责，提供 R1~R11 规范约束** | ❌ 提供通用参考编排器：增加巨大的跨平台兼容与维护负担。 |
+
+---
+
+## 6. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **EX-001** | **能力位正确识别** | 握手握手响应中 `capabilities.expert_export == true`。 |
+| **EX-002** | **正文完整性保真** | `agent/get` 中不含人设正文，而 `agent/export` 包含完整的 Instructions，与磁盘 Markdown 逐字相等。 |
+| **EX-003** | **导出确定性断言** | 对同一专家连续调用两次导出，返回的 JSON 字符串**逐字节完全一致**。 |
+| **EX-004** | **技能引用有效性** | 导出的技能为名称与 ID，通过 `skill/files` 可精确读取到对应的实际技能文件内容。 |
+| **EX-005** | **团队展开与顺序** | 导出团队时，Leader 严格排在 `members[0]`，成员属性完整展开。 |
+| **EX-006** | **团队缺成员拒绝** | 当团队成员之一被卸载后调用 `team/export`，请求返回 `agent_not_installed` 且指名该成员。 |
+| **EX-007** | **策略闸门拦截** | 配置 `[expert_export] enabled = false` 或将 ID 加入 `deny` 列表后，调用返回 `policy_denied`。 |
+| **EX-008** | **SDK 物理物化** | 使用 `materializePack` 成功在目标路径生成规范目录，包含完整的 JSON、Markdown 及 Skill 文件。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 32 · 专家 / 专家团导出给外部 runtime（ExpertPack）· 实现方案
 
 > 状态：📋 **待动工**（方向与五个分叉均已拍板，2026-09-24，见 §1.1）。拍板内容：走 **B · 导出式**——

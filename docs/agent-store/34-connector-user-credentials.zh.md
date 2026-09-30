@@ -1,3 +1,233 @@
+# 连接器用户凭据（Key / Token 类）· 技术方案
+
+> **状态**：✅ **核心阶段已实施落地**（2026-09-24，第 1–7 步落地，协议指纹 `fp-11`，方法数 `52 / 77`）  
+> **核心原则**：安全隔离与统一解析 —— **值永不回传/永不入库**，**Secret 与 Plain 严格分流存储**，**按 Principal 命名空间隔离**，**运行时单一入口模板化解析**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+在 Agent Store 的众多连接器（MCP Connector）中，除 Stdio 进程类和少数 OAuth 类连接器外，大量 HTTP/SSE 连接器需要用户输入 API Key、Token 或配置环境变量（如 `Authorization: Bearer ${API_KEY}` 或 `?token=${TOKEN}`）。系统需要支持用户在 WebUI 或 SDK 中录入凭据，并在运行时安全地将凭据注入连接器请求中。
+
+### 1.2 现状与四大痛点
+在引入本方案前，连接器凭据链路存在严重的机制断裂与安全缺陷：
+
+1. **导入期静默丢弃认证模板**  
+   旧导入器在导入连接器时，仅保留了基础的 `url`，将所有带有动态占位符的 `headers`、`staticHeaders` 全部抛弃，并将所有 `sse` 传输粗暴降级为 `http`。导致大量连接器安装后因缺乏请求头认证而彻底失效。
+2. **认证方式推导错误，误判 OAuth 授权**  
+   系统此前根据传输类型粗暴推导认证模式（凡是 HTTP/SSE 一律判定为 `oauth`），导致需要填写 Key 的连接器在界面上均错误显示为“授权登录”，用户完全没有输入 Key/Token 的入口。
+3. **缺乏内嵌模板替换能力，运行时解析断裂**  
+   系统仅支持整值替换语法（`secret:NAME`），不支持形如 `Bearer ${API_KEY}` 的复合模板；且解析代码散落在各处，甚至在某些路径上会将 `secret:NAME` 字面量作为明文外发。
+4. **共享宿主下的凭据互见与串号风险**  
+   凭据全部平铺存储在 `~/.agent-store/config.toml` 的 `[credentials]` 表中，缺乏用户身份命名空间，多用户共享宿主时存在凭据越权与污染风险。
+
+### 1.3 核心能力对比表
+
+| 维度 | 现状行为 | 本方案方案 |
+|---|---|---|
+| **导入完整性** | 丢弃 headers/staticHeaders，sse 压平为 http | 完整保留传输模板（headers/env/url），规范化保留 sse/http/stdio |
+| **认证模式识别** | 简单按传输类型粗暴推导（误判为 oauth） | 严格对齐市场声明模式（`token` / `oauth` / `none`），精准渲染表单 |
+| **模板语法** | 仅支持整值 `secret:NAME` 替换 | 统一支持 `${secret:NAME}` 与 `${NAME}` 复合子串替换 |
+| **存储策略** | 全部平铺于宿主凭据库，明文/敏感混杂 | **敏感值与普通值分流**：Secret 进凭据库（按 Principal 隔离），Plain 进连接器配置 |
+| **安全底线** | 无凭据时可能空跑或发出字面量 | **严格 Fail-Closed**：缺凭据立即阻断请求，协议与日志绝不暴露 Secret 明文 |
+| **第三方 Server** | 必须打包成完整市场条目才能配置 | 新增 `connector/register` 支持“模板即声明”，自带 Server 直接注册凭据 |
+
+---
+
+## 2. 方案全景与安全不变量
+
+### 2.1 端到端凭据生命周期架构图
+
+```mermaid
+flowchart TD
+    subgraph ImportPhase ["1. 导入与注册阶段 (Import / Register)"]
+        MarketPkg["市场连接器包 (mcp.json + token-schema.json)"]
+        CustomPkg["自带 Server (connector/register)"]
+        
+        MarketPkg -->|导入解析| Norm["归一化处理器"]
+        CustomPkg -->|模板即声明| Norm
+        
+        Norm --> Snap["生成 Snapshot / 注册 Server\n(保留 headers/url 模板原文 + 生成 CredentialSchema)"]
+        Norm --> SecDrop["丢弃默认 Secret 默认值 (防泄露)"]
+    end
+
+    subgraph ClientPhase ["2. 协议与交互阶段 (Client / UI)"]
+        Snap -->|connector/credential/get| SchemaOut["下发 CredentialSchema 结构\n(包含字段元数据，仅 missing 键名，绝不含值)"]
+        SchemaOut --> FormUI["WebUI 驱动动态表单 / SDK 调用"]
+        FormUI -->|connector/credential/set| Splitter["分流处理器"]
+    end
+
+    subgraph StoragePhase ["3. 分流存储阶段 (Storage)"]
+        Splitter -->|Secret 敏感字段| Vault["config.toml [credentials]\n键名: <principal_id>:<KEY> (单向写入)"]
+        Splitter -->|Plain 普通字段| Config["mcp_servers.transport_config.values\n保存普通环境变量/端口等"]
+    end
+
+    subgraph RuntimePhase ["4. 运行时解析执行阶段 (Execution)"]
+        Request["发起连接探测 (test) 或工具调用 (call)"] --> Resolver["统一解析器 resolve_transport(principal)"]
+        Vault -->|读取 Secret| Resolver
+        Config -->|读取 Plain| Resolver
+        
+        Resolver --> CheckFail{"是否存在未满足的必填凭据?"}
+        CheckFail -->|是 (Fail-Closed)| Abort["阻断请求并返回 MCP_MISSING_CREDENTIAL (422)"]
+        CheckFail -->|否| Inject["内存中完成子串替换，组装真实 Header / Query / Env"]
+        Inject --> Dispatch["安全外发网络请求 / 拉起 Stdio 子进程"]
+    end
+```
+
+### 2.2 三条核心安全不变量
+
+1. **值永不越界（Zero-Leakage）**  
+   Secret 敏感值绝不持久化进快照数据库、绝不打入运行日志、协议响应仅回传键名与缺失状态（`missing: [...]`），任何读接口永不回显真实 Secret。
+2. **严格 Fail-Closed 阻断**  
+   若连接器所需凭据未配置或解析失败，坚决阻断外发网络调用，立即返回标准错误码 `MCP_MISSING_CREDENTIAL`，严禁外发未解析的 `secret:NAME` 或 `${...}` 字面量。
+3. **占位与注入模型同构**  
+   无论是用户填写的 API Key，还是内部 OAuth Token，底层传输配置一律以统一的模板语法表达，在调用发起前夕于内存中由同一解析引擎完成替换。
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：模板保留与导入归一
+
+#### 1. 完整保留传输模板
+彻底修复导入阶段的信息丢失问题：
+- 在 `nomifun-importer` 中完整提取 `headers`、`staticHeaders`、`env` 与 `url` 结构，原样写入快照；
+- 传输类型按市场声明规范映射为 `http`、`sse` 或 `stdio`，停止将 `sse` 错误抹平为 `http` 的逻辑。
+
+#### 2. 表单声明归一（`CredentialSchema`）
+读取 `token-schema.json` 并归一化为标准的平台级组件结构：
+- **表单级属性**：包含标题（`title`）、描述（`description`）、密钥获取指南文档链接（`doc_url` / `doc_label`），且均支持双语回退（`zh` / `en`）；
+- **字段级属性**：包含字段键名（`key`）、类型（`kind: secret | plain`）、是否必填（`required`）、展示标签（`label`）、占位提示（`placeholder`）等。
+
+#### 3. 敏感字段判定与默认值安全丢弃
+- **类型判定权威**：市场声明中 `type: "password"` 的字段权威判定为 `secret`；`type: "text"` 字段仅在名称明确匹配敏感命名规则时判为 `secret`，其余判为 `plain`。
+- **默认值丢弃防泄露**：针对市场包中可能错误内置的 Secret 默认值（如硬编码密钥），导入期强制丢弃并记录告警，阻断敏感默认值进入生产数据库。
+
+---
+
+### 3.2 模块二：分流存储与按主体键控
+
+#### 1. Secret 与 Plain 严格分流存储
+- **Secret 敏感值**：单向持久化至 `~/.agent-store/config.toml` 的 `[credentials]` 表中，使用 `toml_edit` 保持文件原有结构与注释。
+- **Plain 普通值**：保存于对应连接器的 `mcp_servers.transport_config.values` 字典中（如服务端口、环境名等非敏感参数），支持回显与表单预填。
+
+#### 2. 基于 Principal 的命名空间隔离
+为彻底解决多用户/多会话场景下的凭据串号风险，凭据键名实施主体命名空间化：
+- **存储键名格式**：`<principal_id>:<KEY>`；
+- **读取解析优先级**：
+  ```text
+  1. 调用者自身身份专属键: <principal_id>:<KEY>
+  2. 宿主所有者专属键 (回退兼容): <owner_id>:<KEY>
+  3. 宿主环境变量兜底 (只读兼容)
+  ```
+- **平滑迁移**：系统启动或明确所有者时，自动将历史无前缀的裸键一次性迁移为 `<owner_id>:<KEY>`，消除共享泄漏隐患。
+
+---
+
+### 3.3 模块三：协议契约与接口设计
+
+#### 1. 协议对象 `credential` 结构
+在连接器详情中增加统一的 `credential` 块（WebUI 与 SDK 统一使用）：
+
+```rust
+pub struct ConnectorCredentialView {
+    /// 认证模式：none | oauth | token
+    pub mode: String,
+    /// 当前凭据配置状态：not_required | requires_input | configured | error
+    pub status: String,
+    /// 缺失的必填键名列表 (例如 ["API_KEY"])
+    pub missing: Vec<String>,
+    pub title: LocalizedString,
+    pub description: LocalizedString,
+    pub doc_url: Option<LocalizedString>,
+    pub doc_label: Option<LocalizedString>,
+    /// 表单字段元数据列表 (绝不包含 secret 值)
+    pub fields: Vec<CredentialFieldView>,
+}
+
+pub struct CredentialFieldView {
+    pub key: String,
+    pub kind: String,                      // "secret" | "plain"
+    pub required: bool,
+    pub label: LocalizedString,
+    pub placeholder: Option<LocalizedString>,
+    pub description: Option<LocalizedString>,
+    pub value: Option<String>,             // 仅 plain 类型有值，secret 恒缺省
+}
+```
+
+#### 2. 管理接口定义
+
+| 接口名称 | HTTP Method / 路径 | 请求参数 | 说明 |
+|---|---|---|---|
+| `connector/credential/get` | `POST /api/app-server/connectors/{id}/credentials/get` | `{ connector_id }` | 查询凭据表单元数据与缺失状态 |
+| `connector/credential/set` | `POST /api/app-server/connectors/{id}/credentials/set` | `{ connector_id, values: { KEY: "..." } }` | 批量录入凭据，成功后自动清除认证错误标记 |
+| `connector/credential/clear` | `POST /api/app-server/connectors/{id}/credentials/clear` | `{ connector_id, keys?: ["KEY"] }` | 清除已配置的凭据 |
+| `connector/register` | `POST /api/app-server/connectors` | `{ name, transport }` | 自带 Server 注册接口（模板即声明） |
+
+#### 3. “模板即声明”：第三方 Server 注册（`connector/register`）
+为支持开发者快速接入私有 MCP Server，无需经过市场打包和 schema 编写，直接通过 `connector/register` 提交带有占位符的 `transport` 配置：
+- 扫描 URL、Headers 与 Env 中的占位符：
+  * `${secret:NAME}` 或 `secret:NAME` 自动派生为 `secret` 必填字段；
+  * `${NAME}` 自动派生为 `plain` 配置字段；
+- 接口自动返回该 Server 派生出的 `credential` 表单，随即可通过 `credential/set` 进行安全配置。
+
+---
+
+### 3.4 模块四：运行时单一解析引擎
+
+#### 1. 统一解析入口 `resolve_transport`
+消除各路径自行解析引用的分叉逻辑，统一收拢为单一执行函数：
+
+```rust
+pub fn resolve_transport(
+    transport: &McpTransport,
+    principal: Option<&str>
+) -> Result<ResolvedTransport, TransportResolveError>
+```
+
+#### 2. 占位符解析规则
+- **子串替换**：支持复合模板解析，对包含 `${secret:NAME}` 和 `${NAME}` 的字符串执行精准子串替换（例如 `Bearer ${secret:API_KEY}` 替换为 `Bearer sk-xxxx`）；
+- **全落点覆盖**：同时支持 HTTP Headers、URL Query 参数以及 Stdio 进程的环境变量（Env）；
+- **Fail-Closed 保护**：只要有一个必填字段无法从凭据库或环境变量中解析，解析器立刻中止并返回缺失的键名列表，严防未脱敏字面量流出。
+
+---
+
+## 4. 核心决策与权衡（D1 ~ D6）
+
+| 编号 | 决策主题 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **存储数据隔离** | **基于 `<principal_id>:KEY` 进行隔离** | ❌ 全局单一键值存储：多用户共享宿主或多人调用时将导致严重的凭据越权与污染。 |
+| **D2** | **数据存储分流** | **Secret 单向入凭据库，Plain 入连接器配置** | ❌ 全部存入凭据库：导致非敏感的 URL/端口也变成不可见不可导出的盲盒；<br/>❌ 全部存入连接器配置：导致敏感密钥明文进数据库，带来巨大泄露风险。 |
+| **D3** | **多语言处理层** | **服务端统一归一并成对下发双语结构** | ❌ 客户端 SPA 本地硬编码：市场连接器的文案动态多变，SPA 静态字典无法维护。 |
+| **D4** | **跨连接器凭据引用** | **v1 版本坚决不做跨连接器凭据共享** | ❌ 允许从其他连接器继承 Token：引入复杂的拓扑依赖与生命周期级联风险。 |
+| **D5** | **套餐与环境过滤** | **仅映射自托管与云托管模式，丢弃套餐规则** | ❌ 在本地方案中引入商业版套餐判定引擎：过度设计且脱离实际运行架构。 |
+| **D6** | **CLI 类型连接器** | **v1 优先聚焦并覆盖全部 MCP 连接器** | ❌ 同时支持复杂的本地 CLI 脚本执行：引入代码执行安全风险，需独立立项评估。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **导入完整性验证** | 带有占位符的 Headers/URL/Env 在导入后完整保留在快照中；SSE 连接器类型正确保留，未被篡改为 HTTP。 |
+| **S2** | **Secret 默认值防护** | 含有 Secret 默认值的市场包在导入后，默认值被正确剔除并记录警告日志，数据库中无明文残留。 |
+| **S3** | **凭据单向录入与查询** | 调用 `credential/set` 录入密钥，回包与 `credential/get` 仅能看到键名元数据，值字段严格缺席。 |
+| **S4** | **复合模板解析** | 请求头 `Authorization: Bearer ${secret:KEY}` 能被正确解析为真实 Token 外发，无语法残留。 |
+| **S5** | **Fail-Closed 阻断** | 当必填凭据缺失时，网络请求或子进程拉起被立即拦截，返回 `MCP_MISSING_CREDENTIAL (422)`。 |
+| **S6** | **主体命名空间隔离** | 两个不同的 Principal 分别录入同名 KEY，在运行时各自获取自身的凭据值，互不干扰。 |
+| **S7** | **自带 Server 注册** | 提交包含 `${secret:KEY}` 的第三方 Server 配置，接口成功注册并自动生成对应的凭据填报表单。 |
+| **S8** | **协议与全链路对齐** | 协议指纹版本为 `fp-11`，方法计数为 `52 / 77`，前后端单测与文档同步校验全量通过。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 连接器用户凭据（key / token 类）· 技术方案
 
 > 状态：**设计定稿；第 1–7 步已实施**（2026-09-24）。决策 D1–D6 见 §4，均有取值与代价。

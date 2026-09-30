@@ -1,3 +1,171 @@
+# SDK 入口的形状与命名（`launchHarness` / `Harness`）· 技术方案
+
+> **状态**：✅ **已实施落地**（2026-09-18，方案 B 委托模式落地，零 wire 变更）  
+> **核心原则**：工效优先与心智统一 —— **返回值即调用入口（消除多余一跳）**，**清晰区分调用主体与客户端身份声明**，**主对象内聚生命周期控制**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+在 TypeScript SDK（`@flowy-agent-store/sdk`）中，开发者通过启动本地服务子进程并建立客户端连接来操作 Agent Store。
+
+### 1.2 现状与两大痛点
+在早期设计中，SDK 启动函数存在严重的心智模型错位：
+
+1. **“Client” 一词三义，产生严重歧义**  
+   在一个代码片段中，`client` 同时指代了三件完全不同的东西：
+   - 身份声明参数：`launchClient({ client: { name, version } })`（传入的 `ClientInfo` 结构）；
+   - 外层包装容器：`const session = await launchClient(...)`；
+   - 真实调用入口：`session.client.conversations.create(...)`。
+2. **函数名声称返回 Client，实际返回外壳（多一跳调用）**  
+   若开发者按直觉编写 `const client = await launchClient(...)`，得到的却是一个仅包含包装属性的外壳对象，无法在其上直接访问 `.conversations`、`.agents` 等子客户端，必须写成 `client.client.*`，极为别扭。
+
+### 1.3 改造前后体验对比
+
+```ts
+// ❌ 改造前：概念混乱，调用必须多一跳
+const session = await launchClient({ client: { name: "my-app", version: "1.0.0" } });
+await session.client.conversations.create(...);
+session.close();
+
+// ✅ 改造后 (本方案)：概念清晰，返回值即全功能入口
+const harness = await launchHarness({ clientInfo: { name: "my-app", version: "1.0.0" } });
+await harness.conversations.create(...); // 直接调用全量客户端方法
+await harness.close();                   // 生命周期直接挂载在主对象上
+```
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 外部标杆对照（业界主流实践）
+
+对比 OpenAI Codex 与 Moonshot Kimi Code 的 SDK 设计，优秀方案均具备一致特征：**启动函数直接返回具备完整调用能力的主对象，且生命周期由该对象统一接管**：
+
+| 维度 | OpenAI Codex (Python) | Kimi Code (Node) | 本方案 (`Harness`) |
+|---|---|---|---|
+| **启动方法** | `Codex(config)` | `createKimiHarness(...)` | `launchHarness(...)` |
+| **主对象角色** | 全局调用主入口 | 全局调用主入口 | 全局调用主入口 (继承 Client) |
+| **调用链层级** | `codex.thread_start(...)` | `harness.createSession(...)` | `harness.conversations.create(...)` |
+| **生命周期** | 上下文管理器 `__exit__` | `harness.close()` | `harness.close()` |
+| **身份参数** | `config` | `identity` | `clientInfo` (消除歧义) |
+
+### 2.2 架构设计与委托模型
+
+`Harness` 采用复合委托设计，既能作为全功能的 `AppServerClient` 访问全量 RPC 业务方法，又内聚了底层子进程服务器生命周期：
+
+```mermaid
+classDiagram
+    class Harness {
+        +SpawnedServer server
+        +ClientInfo clientInfo
+        +InitializeResult initializeResult
+        +ConversationClient conversations
+        +AgentClient agents
+        +TeamClient teams
+        +SkillClient skills
+        +ConnectorClient connectors
+        +StoreClient store
+        +close() Promise~void~
+    }
+
+    class AppServerClient {
+        +conversations
+        +agents
+        +teams
+        +skills
+        +connectors
+        +store
+    }
+
+    class SpawnedServer {
+        +readiness
+        +dataDir
+        +close()
+    }
+
+    Harness ..|> AppServerClient : 委托实现全部能力
+    Harness --> SpawnedServer : 管理宿主进程生命周期
+```
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：类型与接口契约
+
+新接口收拢于 `web/packages/sdk/src/index.ts`：
+
+```ts
+import type { AppServerClient, ClientInfo, InitializeResult } from "@flowy-agent-store/client";
+import type { SpawnedServer, SpawnOptions } from "./spawn.js";
+
+/** 启动参数配置 */
+export interface LaunchOptions extends SpawnOptions {
+  /** 调用方身份声明 (消除 client 参数名歧义) */
+  clientInfo?: ClientInfo;
+}
+
+/**
+ * 测试/控制线束主对象
+ * 既拥有 AppServerClient 的全部子业务客户端，又持有底层 Server 生命周期
+ */
+export interface Harness extends AppServerClient {
+  /** 底层拉起的子进程控制柄 */
+  readonly server: SpawnedServer;
+  /** 服务端初始化返回的元数据 */
+  readonly initializeResult: InitializeResult;
+  /** 关闭客户端连接并安全退出底层子进程服务 */
+  close(): Promise<void>;
+}
+
+/** 启动全套 App Server 宿主并建立就绪连接 */
+export async function launchHarness(options: LaunchOptions = {}): Promise<Harness>;
+```
+
+---
+
+### 3.2 模块二：委托代理与双通道生命周期释放
+
+#### 1. 扁平化属性委托
+`launchHarness` 内部实例化底层 `AppServerClient` 和 `SpawnedServer` 后，通过属性委托直接将 9 个子客户端（`conversations`、`agents`、`teams`、`skills`、`connectors`、`store` 等）提升至 `Harness` 顶层，彻底省去中间的 `.client` 一级跳转。
+
+#### 2. 安全退出（Graceful Shutdown）
+调用 `harness.close()` 时，系统自动按序执行双重清理：
+1. 断开与宿主的客户端传输管道（关闭 HTTP Keep-Alive 或断开 WebSocket 连接）；
+2. 向底层子进程发送退出信号并等待其安全终结，释放临时数据目录锁。
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **命名选型** | **命名为 `launchHarness` / `Harness`** | ❌ 命名为 `launchClient` / `Client`：Client 无法准确描述“进程控制 + 协议客户端”的复合概念。 |
+| **D2** | **参数去重** | **将身份参数更名为 `clientInfo`** | ❌ 保留 `client: { name }`：同一段代码中持续产生“两个 client 不是一回事”的理解障碍。 |
+| **D3** | **对象架构模式** | **复合委托模式（返回值即 Client）** | ❌ 维持包装模式（返回 `{ server, client }`）：强迫开发者每次调用都进行解构或多写一层属性访问。 |
+| **D4** | **协议指纹联动** | **纯前端 SDK 重构，不变更协议指纹** | ❌ 提升协议指纹：本次完全属于客户端人体工程学优化，服务端 wire 契约未作任何变动。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **直接接口调用** | 验证通过 `harness.conversations.list()` 能够直接执行，无需访问中间嵌套属性。 |
+| **S2** | **身份声明透传** | 传入 `clientInfo: { name: "test-runner" }`，在服务端能够准确识别该调用端身份。 |
+| **S3** | **双重生命周期退出** | 执行 `await harness.close()` 后，网络连接断开且对应子进程退出码为 0，临时目录锁正确释放。 |
+| **S4** | **兼容性测试** | 现有的全量 SDK 端到端测试（`smoke.ts`、`readiness.test.ts`）在改用新入口后全绿通过。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 31 · SDK 入口的形状与命名（设计记录 · 待决）
 
 > 状态：✅ **已实现**（2026-09-18，方案 B + 改名）——入口形状已重构（`web/packages/sdk/src/index.ts`），随后 API 改名为 `launchHarness` / `Harness`（见 §10）；读数与两个实现期才发现的约束见 §9，§2 / §4 记录的是**改造前**的事实。

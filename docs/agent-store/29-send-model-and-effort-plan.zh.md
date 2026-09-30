@@ -1,5 +1,220 @@
 # 随调用指定模型与思考等级（`conversation/send` · `agent/run`）· 技术方案
 
+> **状态**：✅ **已实施落地**（2026-09-23，协议指纹 `fp-6`）  
+> **核心原则**：粘性生效与安全防护 —— **从本轮起生效（粘性覆写）**，**严格前置忙检查（防误杀正在运行的 Runtime）**，**差异判定（防冗余广播）**，**免迁移快照承载**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+在日常对话交互与智能体独立执行中，用户和调用端经常需要临时为某一轮任务指定更强大的模型或提高思考深度（Reasoning Effort，如切换至 `high` 深度思考模式），以应对复杂的编码、数学推理或架构设计任务。
+
+### 1.2 现状与三大痛点
+在引入本方案前，系统在调用时指定模型参数存在以下核心障碍：
+
+1. **调用参数与会话设置脱节**  
+   `conversation/send` 发送消息接口不支持携带模型参数，模型与思考等级属于会话级静态属性，若要更改必须先发起一次独立的 `conversation/update` 请求，调用链繁琐。
+2. **`agent/run` 缺乏显式指定途径**  
+   独立专家执行接口 `agent/run` 仅能被动使用专家预设自带的模型或宿主默认回退模型，外部调用方完全无法指定临时模型或思考等级。
+3. **思考等级“只写不读”，调用方无法感知真实状态**  
+   会话数据结构中的 `ConversationView` 仅回显了 `model`，完全缺失了 `reasoning_effort` 字段。调用方即便配置了思考等级，在回读和界面呈现上也无法验证其是否真正生效。
+
+### 1.3 核心能力对比表
+
+| 维度 | 现状行为 | 本方案方案 |
+|---|---|---|
+| **`conversation/send` 指定模型** | 不支持（只能预先单独调用 update） | 新增可选 `model` 参数，发送时自动粘性更新 |
+| **`conversation/send` 指定思考等级** | 不支持 | 新增可选 `reasoning_effort`（`low` / `medium` / `high` / `xhigh`） |
+| **生效语义** | — | **粘性生效（Sticky）**：从本轮起生效，后续轮次默认沿用该配置 |
+| **`agent/run` 参数覆盖** | 仅按 Preset 自带模型或宿主默认运行 | 支持显式传入 `model` 与 `reasoning_effort`，优先级最高 |
+| **`agent/run` 存储承载** | 无字段承载思考等级 | 存入 `ResolvedPresetSnapshot.reasoning_effort` JSON 字段，**零数据库迁移** |
+| **会话状态回读** | 思考等级“只写不读” | `ConversationView` 新增 `reasoning_effort` 投影，实现读写对称 |
+
+---
+
+## 2. 方案全景与核心架构
+
+### 2.1 运行时生命周期与粘性生效时序图
+
+在当前架构中，LLM 运行时在轮次准入（Turn Admission）时按需构建。变更模型需要彻底销毁旧运行时（`ConfigurationChanged`），而变更思考等级则触发软回收（`request_turn_boundary_recycle`）。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Caller as 客户端 / WebUI
+    participant API as App Server 路由层
+    participant Svc as ConversationService
+    participant Reg as RuntimeRegistry
+    participant Engine as LLM 引擎层
+
+    Caller->>API: POST conversation/send (带 model / effort)
+    
+    rect rgb(255, 240, 240)
+    Note over API,Svc: 阶段 1: 严格前置准入校验 (防误杀)
+    API->>API: 1. 基础校验 (正文非空、附件路径、Mention 校验)
+    API->>API: 2. 忙状态检查 (若 status==running 或 is_processing)
+    opt 会话处于忙状态
+        API-->>Caller: 409 Conflict (严禁中途销毁正在运行的会话)
+    end
+    end
+
+    rect rgb(240, 250, 255)
+    Note over API,Svc: 阶段 2: 差异判定与粘性持久化
+    API->>API: 3. 比对新传入的值与数据库现值
+    opt 存在真实差异
+        API->>Svc: 调用 update(model, reasoning_effort)
+        Svc->>Svc: 写入会话行 (持久化)
+        alt 变更了模型
+            Svc->>Reg: terminate_runtime_with_proof (销毁旧空闲运行时)
+        else 仅变更了思考等级
+            Svc->>Reg: request_turn_boundary_recycle (标记轮次边界软回收)
+        end
+    end
+    end
+
+    rect rgb(240, 255, 240)
+    Note over API,Engine: 阶段 3: 本轮消息发送与新运行时构建
+    API->>Svc: send_message_with_idempotency_key(...)
+    Svc->>Reg: 轮次准入：检查软回收标记并按最新会话配置构建运行时
+    Reg->>Engine: 挂载新模型与目标 reasoning_effort
+    Engine-->>Caller: 开启本轮流式推理输出
+    end
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **统一粘性语义**：消息发送附带的参数直接写穿会话配置，作为本轮及后续轮次的新基线，语义明确且符合用户直觉。
+2. **绝不破坏运行中任务**：若会话正处于处理中（`is_processing`），强行切换模型会引发底层 Runtime 强制拆毁导致当前轮次崩溃；系统必须坚决前置返回 `409 Conflict`。
+3. **消除无效写入与事件风暴**：传入值与当前值相同时，绝不执行无谓的数据库更新与 `conversation.listChanged` 广播。
+
+#### 明确的非目标
+- **不做真·单轮临时覆写（Per-turn Pure Override）**：运行时并非每轮重建，实现“本轮覆写、下轮自动还原”需要底层进行双重销毁重建，复杂度与抖动代价过高。
+- **不修改团队 Leader 初始开场逻辑**：团队 Leader 会话创建时依然沿用既有模型，但在会话开始后的后续轮次中完全支持通过本方案修改。
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：`conversation/send` 严谨接线流程
+
+#### 1. 协议定义
+在 `conversation/send` 请求体中以纯加法方式拓展两个可选字段：
+
+```json
+{
+  "conversation_id": "conv-123",
+  "content": "请优化这段算法",
+  "idempotency_key": "idem-abc-001",
+  "model": {
+    "provider_id": "openai",
+    "model": "gpt-5-turbo"
+  },
+  "reasoning_effort": "high"
+}
+```
+
+- **空缺兼容**：不传字段时与既有接口完全一致，老客户端无缝兼容。
+- **词表校验**：`reasoning_effort` 仅接受 `low`、`medium`、`high`、`xhigh`（空串表示不指定），非法值直接拒绝（`invalid_request`）。
+
+#### 2. 服务端九步防坑执行时序
+为防止出现“消息未发出但模型被改掉”或“中途杀掉在跑任务”的隐患，服务端处理顺序被严格固化：
+1. **基础正文校验**（空串拦截）；
+2. **会话归属验证**（确保会话存在）；
+3. **附件与 Mention 前置解析**（若附件越界提前拦截，不产生副作用）；
+4. **模型与等级参数解析**（纯内存验证与模型注册，不写库）；
+5. **参数空值早退**（若均未携带新参数，直接跳至第 8 步）；
+6. **忙状态双重阻断（关键防御）**：
+   - 检查 `status == running`（防持久化运行态冲突）；
+   - 检查 `runtime.is_processing`（防本地活跃任务被粗暴拆毁）；
+   - 任一为真则立即返回 `409 Conflict`，**严禁写库**；
+7. **差异判定与精准 Update**：
+   - 比对传入参数与数据库记录，仅在值确实发生变化时才调用 `service.update()` 更新数据库并触发运行时变更标记；
+8. **执行标准消息发送流水线**（`send_message_with_idempotency_key`）。
+
+---
+
+### 3.2 模块二：`agent/run` 显式覆盖（免迁移）
+
+#### 1. 协议拓展
+```json
+{
+  "agent_id": "expert-code-refactor",
+  "goal": "重构底层网络模块",
+  "model": { "provider_id": "anthropic", "model": "claude-3-7-sonnet" },
+  "reasoning_effort": "high"
+}
+```
+
+#### 2. 模型生效优先级链
+`agent/run` 执行时的模型解析严格确立三级梯队：
+```text
+调用时显式指定 (显式参数)  >  Preset 预设自带模型  >  宿主全局默认模型 (Default Fallback)
+```
+
+#### 3. 免数据库迁移的思考等级承载
+由于执行聚合表（`agent_executions`）结构严格收敛且无扩展字段，思考等级巧妙持久化至：
+- **存储位置**：`ResolvedPresetSnapshot.reasoning_effort`（属于组件快照中已有的 JSON 字典列）；
+- **执行映射**：执行器拉起尝试会话（Attempt Session）时，直接从该快照中提取并注入会话的 `extra.reasoning_effort`，**实现零数据库 Schema 迁移**。
+
+---
+
+### 3.3 模块三：可观测性补齐（`ConversationView`）
+
+#### 1. 读写对称设计
+在会话投影结构体 `ConversationView` 中补齐字段：
+
+```rust
+pub struct ConversationView {
+    pub id: String,
+    pub title: String,
+    pub model: Option<ConversationModelRef>,
+    /// 新增：当前会话生效的思考等级 (纯投影自 extra)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    // ...
+}
+```
+
+#### 2. 工程价值
+- **粘性可验证**：调用端在执行 `send` 后，通过 `conversation/get` 或列表更新通知能即时看到 `reasoning_effort` 的变化；
+- **前端联动**：WebUI 顶部的思考等级选择器可以直接与会话当前状态实现精准单向绑定。
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **生命周期模式** | **粘性覆盖（从本轮起持续生效）** | ❌ 纯单轮覆写：运行时需在单轮前后经历两次强制拆解重建，严重影响性能与响应延迟。 |
+| **D2** | **状态更新通道** | **复用既有 `service.update()` 核心 Seam** | ❌ 新增一套专供 send 使用的写模型通道：容易造成校验逻辑与事件广播漂移分叉。 |
+| **D3** | **忙状态处理** | **返回 `409 Conflict` 且不触碰数据库** | ❌ 沿用 update 的静默强拆逻辑：导致用户正在生成的长篇回答被强行截断，数据丢失。 |
+| **D4** | **`agent/run` 存储** | **复用 `ResolvedPresetSnapshot` JSON 列** | ❌ 增加数据库列与数据迁移：改动底表承重结构，发布风险大。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **SM-001** | **参数缺省兼容** | `send` 不传 `model` 和 `reasoning_effort` 时，请求正常发出，无多余数据库写操作。 |
+| **SM-002** | **模型参数粘性生效** | 带新模型发送消息后，会话记录更新为新模型，且后续常规调用默认在该新模型下运行。 |
+| **SM-003** | **思考等级读写一致** | 带 `reasoning_effort: "high"` 发送后，`conversation/get` 能准确读回 `"high"`。 |
+| **SM-004** | **忙状态安全拦截** | 会话处于 `is_processing` 状态时发送带新参数请求，系统返回 `409 Conflict`，当前任务不被中断。 |
+| **SM-005** | **`agent/run` 优先级** | 显式传入的模型能够无条件覆盖 Preset 预设模型，并在执行 Attempt 中真实生效。 |
+| **SM-006** | **免迁移平滑回退** | `ResolvedPresetSnapshot` 能正常序列化/反序列化 `reasoning_effort`，旧历史记录反序列化不报错。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
+# 随调用指定模型与思考等级（`conversation/send` · `agent/run`）· 技术方案
+
 > 状态：**✅ 已落地（2026-09-23 起草、定稿并实施）**——两条口径按拍板执行：**粘性（从本轮起生效）**，
 > 且 **`agent/run` 同批纳入**；指纹 `fp-5` → **`fp-6`**。逐层改动、门禁读数、真机读数（`SM-001`–`SM-010`）
 > 与 4 处实现期偏差见 §10.1；实施前评审改掉的两处（UI 不改行为 + 加 `ConversationView.reasoning_effort`、

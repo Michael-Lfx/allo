@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "fp-12";
+const PROTOCOL_VERSION = "fp-13";
 
 type Verb = "GET" | "POST" | "DELETE";
 
@@ -323,6 +323,20 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
     verb: "POST",
     path: "/markets/:marketplace_id/entries/:entry_name/import",
     source: "market_entry_import_route() -> market_entry_import_impl",
+  },
+  // Host-level market policy (doc 37 §3.2). Deliberately NOT `/markets/settings`:
+  // a static segment there would shadow `/markets/:marketplace_id`, so a market
+  // whose id is literally `settings` would become unreachable.
+  "market/settings": {
+    verb: "GET",
+    path: "/market-settings",
+    source: "market_settings_route() -> market_settings_impl",
+  },
+  "market/settings-set": {
+    verb: "POST",
+    path: "/market-settings",
+    body: ["auto_update_interval_hours", "entry_auto_update_kinds"],
+    source: "market_settings_set_route() -> market_settings_set_impl",
   },
 
   // -- unified store --------------------------------------------------------

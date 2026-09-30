@@ -1,3 +1,297 @@
+# allo Runtime Adapter 规格 · 技术方案
+
+> 状态：🧊 架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4；Runtime Adapter 单 Agent 已实证）；发布阻断
+> 日期：2026-08-26（修订：2026-09-10 — Team 触发方式改为 Leader 模型调用 `nomi_delegate(strategy=planned)`）
+> 前置：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)
+> 一句话原则：**Runtime Adapter 负责将 Agent Store 领域模型精准映射至 allo 执行引擎内部基础设施，严密隔离内部 Session UUID 与数据库主键，保证对外行为稳定且无凭据泄漏**
+
+---
+
+## 1. 背景与核心痛点
+
+Agent Store 的上层是标准化、平台无关的领域资产（Agent, Team, Skill, Connector），而底层是高性能、单二进制的 allo Rust 运行时引擎。两者不能直接强耦合。引入 Runtime Adapter 的核心痛点在于：
+
+### 1.1 核心痛点分析
+
+1. **直接暴露内部引擎结构的脆弱性**：若让外部协议或领域模型直接感知 allo 的内部 Session、Attempt UUID 或数据库模型，底层引擎每次优化或表重构都会引发外部破坏性变更。
+2. **提示词组装失控与权限漂移**：外部导入的 Markdown 经常把角色设定、工具列表与约束指令混杂在一起。若直接拼入全局 Prompt，LLM 极易发生越权，必须由适配器进行严格的“结构化分段装配”。
+3. **团队规划入口与调度紊乱**：Team 执行涉及多角色协作，若由外部客户端直接生成计划，客户端权限过大；若完全由模型自由发挥，计划结构不可控。必须通过 Leader 会话与 `nomi_delegate(strategy=planned)` 在受控的 Planning Context 下生成合法 DAG。
+4. **异常退出与伪完成状态**：进程崩溃或网络中断时，若简单将未完成任务标记为成功或丢弃状态，会导致用户数据丢失。必须在重启时统一置为 `recovery_required`。
+
+---
+
+## 2. 方案全景与映射架构
+
+### 2.1 运行时映射流转全景
+
+```mermaid
+flowchart TD
+    subgraph Domain ["领域资产层 (Store Domain)"]
+        PS["PluginSnapshot"]
+        AD["AgentDefinition"]
+        TD["AgentTeamDefinition"]
+        SD["SkillDefinition"]
+        CD["ConnectorDefinition"]
+    end
+
+    subgraph Adapter ["Runtime Adapter 适配层"]
+        VAL["创建前 8 项严格校验"]
+        PRS["解析并冻结 ResolvedPresetSnapshot"]
+        TPL["物化 AgentExecutionTemplate (固定成员池)"]
+        PC["构造 Planning Context (Leader 指令 + 脱敏摘要)"]
+        SEC["有效策略求交集 (Caller ∩ Agent ∩ Tool)"]
+    end
+
+    subgraph AlloEngine ["allo 执行引擎底层"]
+        SESS["Leader/Member 会话 (Conversation/Attempt)"]
+        PLN["Planner / DAG Materializer"]
+        STEP["Step 调度器 (依赖拓扑 + 局部并行)"]
+        EVT["内部 Event Log (Sequence)"]
+    end
+
+    subgraph PublicBoundary ["公共边界 (App Server Protocol)"]
+        NORM["事件归一化 (Event Normalizer)"]
+        PUB_RUN["Run / TeamRun (Opaque ID)"]
+        PUB_EVT["规范事件流 (run.*, step.*, attempt.*)"]
+        PUB_ART["受控 Artifact (Hash & Relative Path)"]
+    end
+
+    PS --> AD & TD & SD & CD
+    AD & TD & SD & CD --> VAL
+    VAL --> PRS & TPL & SEC
+    PRS & TPL & SEC --> PC
+    PC --> SESS
+    SESS --> PLN
+    PLN --> STEP
+    STEP --> EVT
+    EVT --> NORM
+    NORM --> PUB_RUN & PUB_EVT & PUB_ART
+```
+
+### 2.2 目标与非目标 (Goals & Non-Goals)
+
+- **核心目标**：
+  - 将 Agent/Team/Skill/Connector 规范映射到 allo 的 Preset、Skill、MCP 与 Template。
+  - V1 完整支持单 Agent Run 及固定成员 TeamRun（planned DAG、局部并行、重试、replan）。
+  - 实现严格的分段 Persona 拼装，执行前进行 8 步安全校验。
+  - 统一事件规范化，屏蔽内部实现细节。
+- **明确非目标**：
+  - 不支持第二个运行时引擎。
+  - 运行时不直接读取外部未转换的原始文件。
+  - 不支持动态增删成员、嵌套 Team 或全局 Mailbox。
+  - 状态迁移和权限判定由代码强制保证，不交由 LLM 自行决定。
+
+---
+
+## 3. 详细设计 (按模块内聚)
+
+### 3.1 实体映射核心总表
+
+| Agent Store 领域对象 | allo 内部对应实体 | 映射与转换规则 |
+|---|---|---|
+| **AgentDefinition** | `Preset` / `ResolvedPresetSnapshot` + `ExecutionParticipant` | 先解析为不可变 Preset 快照；实际 Runtime Driver 单独选择，创建 Attempt 执行。 |
+| **SkillDefinition** | `allo Skill` / Skill 引用 | 运行前校验文件路径在不可变快照内，版本精准匹配。 |
+| **ConnectorDefinition** | `MCP Config` / Connector Runtime | 工具名统一加上命名空间前缀 `connector__<slug>__<tool>` 并通过策略过滤。 |
+| **AgentTeamDefinition** | `AgentExecutionTemplate` | 冻结固定成员角色、模型、技能与工具策略快照；禁止外部运行时动态增删。 |
+| **TeamRun** | `AgentExecution` + `Planning Context` | 由 Leader 触发 `nomi_delegate(strategy=planned)` 生成 DAG；Leader 会话非用户可见。 |
+| **Step** | `Execution Step` | 依据依赖关系拓扑与 `participant_index` 严格映射并调度。 |
+| **Attempt** | `Attempt` / `Conversation Execution` | 对外透出全新且唯一的 Opaque `attempt_id`。 |
+| **Event** | `Allo Event/Sequence` ➔ `Canonical Event` | 内部私有事件序列归一化为平台标准事件字典，过滤底层探测细节。 |
+| **Artifact** | `Artifact Reference` | 文件物理保存在受控 workspace/artifact store，对外仅暴露摘要与相对定位。 |
+
+### 3.2 单 Agent 运行时执行链路
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as 客户端 / WebUI
+    participant AS as App Server
+    participant Adapter as Runtime Adapter
+    participant Engine as allo Engine (Driver)
+
+    Client->>AS: agent/run (agent_id, input)
+    AS->>Adapter: 触发单 Agent 启动校验
+    Adapter->>Adapter: 1. 执行前 8 项严格安全校验
+    Adapter->>Adapter: 2. 分段组装 Persona (Identity/Skills/Tools/Workspace)
+    Adapter->>Adapter: 3. 解析并冻结 ResolvedPresetSnapshot
+    Adapter->>Engine: 创建内部 Conversation & 写入 ExecutionParticipant
+    Adapter->>AS: 返回公共 Opaque run_id
+    Engine->>Engine: 启动模型与工具执行循环
+    Engine-->>Adapter: 发送引擎内部执行事件
+    Adapter->>Adapter: 归一化为 Canonical Event 并记录持久化投影
+    Adapter-->>AS: 推送规范事件 (run.started, tool.call.*, run.completed)
+    AS-->>Client: 通知客户端
+```
+
+#### 3.2.1 创建前 8 项严格安全校验流水线
+
+Run 创建必须依次通过以下判定，任一失败立即返回结构化错误，禁止创建未就绪 Run：
+1. **定义存在性**：`AgentDefinition` 存在且版本状态处于 `enabled`。
+2. **快照一致性**：能成功解析为 `ResolvedPresetSnapshot`，且 Digest 与 Catalog 记录完全一致。
+3. **技能有效性**：所有引用的 `skill_refs` 存在、版本吻合且物理文件全部落在受控快照内。
+4. **连接器就绪**：所有 `connector_refs` 已安装，工具策略与命名空间可成功解析。
+5. **凭据绑定满足**：`CredentialBinding` 存在，且授权范围（Scopes）覆盖所需工具。
+6. **工作区隔离**：目标 `workspace_id` 已登记且路径合法，严格禁止 `../` 目录逃逸。
+7. **有效权限非空**：调用方策略与 Agent/Skill/Connector 策略交集非空。
+8. **驱动能力匹配**：选定的模型和底座能力满足定义声明的最低要求。
+
+#### 3.2.2 结构化分段 Persona 组装
+
+严禁将未经验证的 Markdown 字符串全量直接注入全局 system prompt。适配器必须按如下固定顺序分段组装：
+
+```text
+[Section 1: Agent Identity]     -> 专家名称、唯一标识与核心定位
+[Section 2: Role / Persona]      -> 角色人设、领域知识与专业口吻
+[Section 3: Bound Skills]        -> 已绑定的原子技能清单与触发说明
+[Section 4: Allowed Tools]       -> 命名空间化后的受控工具清单 (connector__*)
+[Section 5: Workspace Policy]    -> 允许读写的工作区路径与文件操作安全边界
+[Section 6: Current Task]        -> 当前用户请求输入与上下文
+[Section 7: Output Contract]     -> 结构化输出要求与约束规范
+```
+
+---
+
+### 3.3 Agent Team V1 编排流 (Leader Planned)
+
+#### 3.3.1 固定成员物化机制
+
+- 导入期只产出 `AgentTeamDefinition`，绝不在导入期生成 allo 的 `AgentExecutionTemplate`。
+- `AgentExecutionTemplate` 必须在 **TeamRun 创建时** 由 Runtime Adapter 动态生成并永久冻结：
+  1. 解析 `lead_agent_id` 与全部 `member_agent_ids`。
+  2. 分别为 Leader 和每个成员冻结独立的 `ResolvedPresetSnapshot` 与工具策略。
+  3. 构建固定参与者池（Participant Pool）。
+
+#### 3.3.2 Leader Planned 编排全流程
+
+```mermaid
+flowchart TD
+    TR["TeamRun 创建"] --> MAT["物化固定 Participant 池 (冻结成员快照)"]
+    MAT --> LDR["创建 Leader 会话并绑定 AgentExecutionTemplate"]
+    LDR --> CALL["Leader 调用 nomi_delegate(strategy=planned, goal)"]
+    CALL --> CTX["构造 Planning Context (Leader 指令 + 脱敏能力摘要 + Team 策略)"]
+    CTX --> PLAN["Planner/LlmPlanProducer 生成结构化 DAG"]
+    PLAN --> VAL["校验依赖、成员路由、并发上限与工具策略"]
+    VAL --> STEPS["物化 Step (pending 状态)"]
+    STEPS --> SCHED["调度 ready Step (依赖满足且并发未达上限)"]
+    SCHED --> EXEC["成员 Attempt 执行"]
+    EXEC --> CHECK{执行结果}
+    CHECK -- 成功 --> COMP["收集 Artifact，更新状态"]
+    CHECK -- 失败 --> RETRY{允许重试或Replan?}
+    RETRY -- 重试 --> NEW_ATT["创建新 Attempt (旧 Attempt 作废)"]
+    RETRY -- Replan --> REPL["Planner 生成新 Plan Revision"]
+    RETRY -- 终态失败 --> FAIL["TeamRun 失败，落盘终态"]
+    COMP --> ALL{全部 Step 完成?}
+    ALL -- 否 --> SCHED
+    ALL -- 是 --> FINISH["TeamRun 成功完成"]
+```
+
+- **Planning Context 隔离保证**：仅下发经过脱敏的成员能力摘要（名称、角色、描述、专长领域）。各成员完整的 Prompt 与凭据绝不泄露到共享规划上下文。
+- **调度不变量**：
+  - Step 依赖必须闭环指向本 TeamRun 内的前序 Step。
+  - 只有当前序依赖全部成功（或标记跳过）时，Step 才能跃迁至 `ready`。
+  - `max_parallel` 严格取 Team、调用方与系统策略的最小值。
+  - 发生 Retry 时必须生成全新 Attempt ID，迟到的旧 Attempt 写入直接拒绝。
+
+---
+
+### 3.4 事件与产物归一化 (Event & Artifact Normalization)
+
+#### 3.4.1 规范化事件字典
+
+适配器将底层的细碎调用事件映射为 18 个规范事件，屏蔽底层实现波动：
+
+```text
+run.started          run.paused          run.completed       run.failed          run.cancelled
+plan.created         plan.revised
+step.ready           step.started        step.completed      step.failed
+attempt.started      attempt.completed   attempt.failed
+tool.call.started    tool.call.completed
+approval.required    artifact.created
+```
+
+每个规范事件信封统一包含：`event_id`, `stream_id` (run_id), `resource_type`, `resource_id`, `type`, `timestamp`, `data`。
+
+#### 3.4.2 受控 Artifact 模型
+
+执行产物对外绝不暴露物理文件绝对路径或主机目录：
+
+```json
+{
+  "artifact_id": "art_1024",
+  "run_id": "run_9001",
+  "name": "architecture-report.pdf",
+  "media_type": "application/pdf",
+  "size": 24580,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "workspace_relative_path": "dist/architecture-report.pdf",
+  "created_at": "2026-08-26T10:30:00Z"
+}
+```
+
+---
+
+### 3.5 错误模型与异常恢复策略
+
+#### 3.5.1 标准错误分类
+
+适配器统一对外输出 11 类明确错误码：
+`invalid_definition`, `policy_denied`, `credential_unavailable`, `workspace_denied`, `runtime_unavailable`, `plan_invalid`, `step_dependency_invalid`, `participant_unavailable`, `attempt_stale`, `cancelled`, `internal_error`。
+
+#### 3.5.2 崩溃恢复与重启保护
+
+- **事实来源**：底层的 Event Log 是事实来源，Run / Step / Attempt 的投影状态用于快速查询。
+- **重启状态判定**：
+  - 进程意外退出并重启后，系统执行扫描。已持久化终态保持不变。
+  - 处于 `queued` 或 `running` 状态且无法证明已被原子完成的 Run，一律标记为 `recovery_required` 或 `failed`。
+  - **严禁掩盖**：绝不允许将异常退出的进程伪装为 `completed`。
+
+---
+
+## 4. 运行准入等级 (Readiness Gate)
+
+资产必须依次通过四个阶段才能进入生产运行：
+
+```text
+model-defined (模型定义就绪)
+      ↓
+adapter-defined (适配层映射完成)
+      ↓
+runtime-verified (底座执行验证通过)
+      ↓
+release-eligible (准入发布)
+```
+
+`runtime-verified` 的最低前置断言：
+1. `AgentDefinition` 能无损解析为不可变 `ResolvedPresetSnapshot`。
+2. 快照能绑定至 `ExecutionParticipant`，且真实 Runtime Driver 能顺利拉起执行会话。
+3. 单 Agent 异步 Run 能完整产生 `started` 与 `completed/failed` 事件与结果。
+4. 全链路事件能被适配器完整规范化，无私有字段泄露。
+
+---
+
+## 5. 验收测试用例 (TC-RA-001 ~ TC-RA-010)
+
+| 用例编号 | 测试目标 | 验证与断言方法 |
+|---|---|---|
+| **TC-RA-001** | 单 Agent 执行映射 | 验证 `AgentDefinition` 解析为 Preset 快照，Runtime Driver 跑通单 Agent 并输出结果。 |
+| **TC-RA-002** | 技能与连接器加载 | 验证运行前 8 步校验成功加载绑定的 Skill 与 MCP Connector，非法路径被阻断。 |
+| **TC-RA-003** | Team 参与者池物化 | 验证 `software-company` 正确解析并物化 5 人固定 Participant 池。 |
+| **TC-RA-004** | Leader 规划 DAG 生成 | 验证 Planning Context 驱动 Planner 生成顺序 DAG，各节点绑定正确 Participant。 |
+| **TC-RA-005** | DAG 依赖与局部并行 | 验证两个独立 Step 能并行执行，强依赖 Step 严格等待前序完成。 |
+| **TC-RA-006** | 失败重试隔离 | 验证 Step 失败后创建全新的 Attempt 实例进行重试，旧 Attempt 自动作废。 |
+| **TC-RA-007** | QA 失败 Replan | 验证 QA 验收失败后触发 Replan，生成修复 Step 与回归 Step 组成的修正 DAG。 |
+| **TC-RA-008** | 迟到事件防污染 | 验证已取消或失效旧 Attempt 返回的迟到事件被引擎安全丢弃，不污染最新状态。 |
+| **TC-RA-009** | 重启异常标记 | 模拟引擎中途崩溃退出，重启后未完成 Run 被正确置为 `recovery_required`。 |
+| **TC-RA-010** | 敏感信息隔离 | 检查公共事件流、返回值与日志，断言无 allo 内部 ID、物理绝对路径与明文凭据。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # allo Runtime Adapter 规格
 
 > 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；Runtime Adapter 单 Agent 已实证；发布阻断

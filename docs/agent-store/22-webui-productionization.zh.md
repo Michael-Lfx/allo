@@ -1,3 +1,168 @@
+# WebUI / App Server 生产化方案 (Productionization) · 技术方案
+
+> 状态：📋 专项立项实施中（A 组安全类动工中，以 A2 令牌管理为起点）；各组严格执行“不做假保护”红线
+> 日期：2026-09-11
+> 前置：[`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md)、[`06-connector-oauth-security.md`](file:///c:/workspace/allo/docs/agent-store/06-connector-oauth-security.md)、[`16-sdk-webui-site-priority-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/16-sdk-webui-site-priority-plan.zh.md)
+> 一句话原则：**以真实安全拦截、权威可观测性与严谨协议对齐为核心，坚决杜绝“只记录不拦截”的假保护，宁缺毋滥**
+
+---
+
+## 1. 背景与核心痛点
+
+Agent Store 完成前期功能闭环验证后，必须从“原型可用”走向“生产就绪（Production-ready）”。在深入生产环境时，必须解决以下结构性问题：
+
+### 1.1 核心痛点分析
+
+1. **“假保护”比没有保护更危险**：若安全类（CSRF/Origin 校验）或配额限流类功能做成“仅记录日志但不阻断请求”，调用方会误以为系统具备安全防护，实质上任何恶意网页均可跨站发包攻击。
+2. **连接令牌无生命周期治理**：开发期的 App Server 连接凭证常采用内存明文 UUID，缺乏过期时间（TTL）、缺乏主动吊销机制，一旦凭证泄露将永久有效。
+3. **调用链追踪断层**：一次前端操作在“宿主后端日志”、“App Server 响应”与“前端错误提示”中没有统一的全局 Request ID 串联，导致排查线上故障时如同大海捞针。
+4. **健康检查名不副实**：仅提供一个简单的 `ping` 返回 200，无法反映底层 SQLite 数据库是否锁死、数据目录是否不可写等真实健康状况。
+
+---
+
+## 2. 方案全景与四组条目拓扑
+
+### 2.1 生产化四大专项领域
+
+```mermaid
+flowchart TD
+    subgraph GroupA ["A 组：安全加固类 (先行基石)"]
+        A2["A2 · 正式认证与令牌生命周期 (TTL / 滑窗续期 / 登出吊销)"]
+        A1["A1 · Origin 白名单 / CSP 响应头 / CSRF 防御"]
+        A3["A3 · 配额管理与限流 (按 Principal 独立隔离桶)"]
+    end
+
+    subgraph GroupB ["B 组：系统可观测性"]
+        B1["B1 · 全链路统一 Request ID 注入与错误回溯"]
+        B2["B2 · 依赖驱动型健康检查 (Liveness vs. Readiness)"]
+    end
+
+    subgraph GroupC ["C 组：核心功能增强"]
+        C1["C1 · 资源软归档与回收站机制 (不删物理文件)"]
+        C2["C2 · 批量操作原子状态报告 (逐条反馈成功/失败)"]
+        C3["C3 · 资源级只读/不可写形式化标识 (writable 字段)"]
+        C4["C4 · 工作区重命名与会话稳定绑定"]
+    end
+
+    subgraph GroupD ["D 组：协议概念与命名对齐"]
+        D1["D1 · thread / turn / item 契约统一重命名 (WP-5)"]
+    end
+
+    A2 --> A1 & A3
+    A2 & B1 --> GroupC
+    D1 -.-> |协议前置依赖| GroupA & GroupB & GroupC
+```
+
+### 2.2 核心开发红线 (Strict Non-Negotiable Lines)
+
+1. **坚决不做假保护**：安全类与配额类机制必须具备“硬性拒绝并返回结构化 4xx 错误”的能力。若只能做到“打日志记录”，必须明确标注未完成，绝不上线。
+2. **拒绝空壳开关**：`capabilities.*` 中声明的特性必须精准映射到后端真实执行代码；未实现的能力保持 `false`，绝不在界面上放置不可用的占位控件。
+3. **先定身份再定来源**：A1（Origin 校验）与 A3（配额限流）必须严格依赖 A2（正式认证体系），杜绝在未建立可靠主体身份前引入全局模糊限流。
+
+---
+
+## 3. 详细设计 (按组别内聚)
+
+### 3.1 A 组：安全加固体系
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as 客户端 (Web / SDK)
+    participant Auth as 认证与会话网关 (A2)
+    participant OriginGuard as Origin / CSRF 校验器 (A1)
+    participant RateLimiter as 限流配额桶 (A3)
+    participant Handler as 业务处理器 (App Server)
+
+    Client->>Auth: 请求建立连接 / 调用业务 API (携带 Token)
+    alt 令牌已过期
+        Auth-->>Client: 返回 401 token_expired (指示客户端静默刷新)
+    else 令牌无效或已吊销
+        Auth-->>Client: 返回 401 unauthenticated (强制重新登录)
+    else 令牌合法
+        Auth->>Auth: 滑窗续期连接 TTL (默认 12h)
+        Auth->>OriginGuard: 校验请求 Origin
+        alt 非白名单 Origin 写操作
+            OriginGuard-->>Client: 返回 403 policy_denied (拒绝跨站写入)
+        else Origin 合法
+            OriginGuard->>RateLimiter: 检查当前 Principal 配额
+            alt 请求频率超限
+                RateLimiter-->>Client: 返回 429 quota_exceeded (带 Retry-After 提示)
+            else 配额充足
+                RateLimiter->>Handler: 放行调用并执行业务逻辑
+                Handler-->>Client: 返回成功结果
+            end
+        end
+    end
+```
+
+#### A2 · 正式认证与令牌生命周期管理 (核心落地规格)
+- **闲置 TTL 与滑窗续期**：每个 App Server 连接记录创建时间与过期时间。默认闲置 TTL 为 **12 小时**，每次接收到合法业务调用时自动顺延过期时刻。
+- **错误码明确区分**：
+  - 令牌超时过期 ➔ 返回 `token_expired`（401，`retryable=true`），驱动客户端自动续期。
+  - 令牌伪造、不存在或已被吊销 ➔ 返回 `unauthenticated`（401，`retryable=false`）。
+- **登出即时全局吊销**：用户在宿主端发起 `/logout` 时，触发 `SessionRevocationSink` 钩子，立即吊销该 `user_id` 下属的全部活跃 App Server 连接（包含已建立的 WebSocket 长连接）。
+- **敏感信息零落盘与脱敏**：连接 Token 绝不写入系统日志，自动化测试强制断言日志脱敏。
+
+#### A1 · Origin 校验与 CSP 响应头
+- 非白名单域名的写操作（POST / WS 写入动词）一律硬性拦截，返回明确错误码。
+- 宿主自身渲染页面强制注入严格的 `Content-Security-Policy` 响应头，阻止内嵌恶意脚本。
+
+#### A3 · 细粒度配额管理
+- 限流与配额按 `principal_id` 独立建桶，严禁采用可能造成不同用户互相干扰的“全局共享单一令牌桶”。
+
+---
+
+### 3.2 B 组：系统可观测性与真实健康检查
+
+#### B1 · 全链路统一 Request ID
+- 服务端为每个请求分配唯一的 `request_id`（基于 UUIDv7），贯穿整个调用生命周期：
+  $$\text{Client Request} \longrightarrow \text{App Server Log} \longrightarrow \text{Response Header} \longrightarrow \text{WebUI Error Toast}$$
+- 用户在前台遭遇报错时，弹窗直接展示该 ID，支持运维人员在后台日志中一键精确定位。
+
+#### B2 · 依赖驱动型真实健康检查 (Liveness vs. Readiness)
+- **Liveness 端点（免认证）**：仅检查进程基础事件循环与内存状态。
+- **Readiness 端点（需鉴权）**：真实执行数据库轻量探测、工作区存储目录可写性检查。任一关键依赖不可用时，状态立即转为 `unhealthy`。
+
+---
+
+### 3.3 C 组：核心功能增强
+
+| 功能条目 | 核心能力定义 | 边界与设计红线 |
+|---|---|---|
+| **C1 软归档与回收站** | 资产或会话归档后从默认列表隐藏，但保留底层文件；支持独立查询与一键恢复。 | 归档决不物理删除文件；删除操作保持显式不可逆。 |
+| **C2 批量操作反馈** | 支持多选条目批量启用/禁用/删除；响应体中逐条回报各组件执行结果（成功/失败/跳过及原因）。 | 拒绝“部分失败却返回整体 200”的不透明行为；不支持跨组件复杂分布式事务。 |
+| **C3 只读与不可写标识** | 资源模型正式扩展 `writable` 布尔字段，协议侧直接表达可操作性。 | 规则一处定义，严禁前后端分别硬编码鉴权逻辑；越权写入统一定义为 `policy_denied`。 |
+| **C4 工作区安全重命名** | 允许用户修改工作区展示名称；系统内部仅更新别名映射，底层工作区物理目录保持不变。 | 绝不修改物理路径，防止断开历史任务与产物链接。 |
+
+---
+
+### 3.4 D 组：协议词汇与概念统一对齐 (WP-5)
+
+- 将 App Server 协议中的早期术语统一收敛为标准概念模型：
+  $$\text{Session} \longrightarrow \text{Thread}, \quad \text{Exchange} \longrightarrow \text{Turn}, \quad \text{Message/ToolCall} \longrightarrow \text{Item}$$
+- **一次性切换，不设遗留兼容层**：发版前严格统一，SDK 与站点文档同步推进，避免长期维护两套命名增加认知负荷。
+
+---
+
+## 4. 验收测试用例 (以 A2 专项为例)
+
+| 用例编号 | 验证场景与输入 | 预期可观察断言 |
+|---|---|---|
+| **TC-PRD-A2-001** | 令牌自然超时过期 | 注入小 TTL（如 100ms）连接，等待超时后调用 API，断言返回 `token_expired`。 |
+| **TC-PRD-A2-002** | 活跃连接滑窗续期 | 在 TTL 内连续调用业务方法，断言连接成功续期，未被过早中断。 |
+| **TC-PRD-A2-003** | 登出即时吊销 | 调用宿主 `/logout` 注销身份，原长连接再次发送消息立即被拒并返回 `unauthenticated`。 |
+| **TC-PRD-A2-004** | 多用户连接隔离 | 吊销 User A 的连接，断言 User B 的并发连接不受任何影响，业务继续正常执行。 |
+| **TC-PRD-A2-005** | 日志脱敏验证 | 扫描服务端执行全过程日志，断言无任何连接 Token 明文输出。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # WebUI / App Server 生产化：立项页（A 组动工中）
 
 > 状态：**立项页（2026-09-11）**。本页只做两件事：把 `16` §5.2 里 R33 那一行（方向四 11 项 + WP-5 协议词汇与概念对齐）拆成**可验收条目**，并把「不做假保护」写成红线。

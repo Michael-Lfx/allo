@@ -1,3 +1,222 @@
+# 外部 Agent 使用已安装 Skill / MCP · 技术方案
+
+> **状态**：✅ **阶段 1 与阶段 2 均已实施落地**（阶段 1 技能读面落地，阶段 2 MCP 调用代理与 Stdio 会话池落地）  
+> **核心原则**：凭据不出宿主与文件安全沙箱 —— **完整文件安全下发（防路径穿越）**，**宿主代理转发 MCP 调用（Token 永不跨界）**，**Stdio 连接复用（会话池化）**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+外部开发者在自己的代码循环中实现了独立的智能体（External Agent），希望通过 TypeScript SDK 或 App Server 协议复用 Flowy Agent Store 中已安装的技能（Skill）与连接器（MCP Connector）资产。
+
+### 1.2 现状与两大痛点
+此前系统仅面向内部 Nomi 引擎提供构件支持，外部智能体在对接时遭遇物理阻断：
+
+1. **已安装技能正文被截断，附属文件不可见**  
+   原有的 `skill/get` 接口专供前端轻量卡片浏览，正文被强制截断在 1200 字符以内；而技能目录中的参考文档、Python 辅助脚本（`scripts/`）、提示词模板等附属文件完全没有读取出口。
+2. **连接器配置与凭据私有，外部无法直接建立连接**  
+   已安装的 MCP 连接器包含私有的认证凭据（API Key / OAuth Token）与复杂的本地拉起环境。直接向外部暴露连接参数（`connector/export`）等同于凭据泄露；若不暴露，外部智能体又无法使用这些已安装的工具。
+
+### 1.3 核心能力设计矩阵
+
+| 能力分类 | 现状行为 | 本方案方案 | 落地状态 |
+|---|---|---|---|
+| **技能完整清单与正文** | 仅返回 ≤1200 字符摘要，无附属文件 | **阶段 1：新增文件读面**（`skill/files` + `skill/file`） | ✅ 已落地 |
+| **连接器工具调用** | 外部无从调用，凭据不可导出 | **阶段 2：新增调用代理**（`connector/call`） | ✅ 已落地 |
+| **Stdio 进程开销** | 每次调用重新拉起进程（耗时 ~586ms） | **引入 Stdio 会话池**，复用活跃子进程（耗时降至 ~3ms） | ✅ 已落地 |
+| **凭据安全性** | 方案争论（导出 vs 代理） | **凭据坚决不出宿主**，由宿主代为组装并完成网络请求 | ✅ 铁律固化 |
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 端到端双阶段架构图
+
+```mermaid
+flowchart TD
+    subgraph ExternalAgent ["外部开发者智能体 (External Agent / SDK)"]
+        ClientCode["开发者业务代码"]
+    end
+
+    subgraph HostAppServer ["Flowy App Server 宿主"]
+        Router["协议路由层 (App Server Router)"]
+        
+        subgraph Phase1 ["阶段 1: Skill 文件安全读面"]
+            SkillProv["SkillFileProvider"]
+            PathCheck{"路径安全校验<br/>(防目录逃逸)"}
+            SkillDisk[("技能安装目录<br/>SKILL.md + 附属文件")]
+        end
+        
+        subgraph Phase2 ["阶段 2: Connector 工具调用代理"]
+            ProxyGate{"策略门禁<br/>(connector_proxy & enabled)"}
+            InjectAuth["宿主注入安全凭据<br/>(Secret / OAuth Token)"]
+            Pool["Stdio 会话复用池<br/>(McpToolCallPool)"]
+        end
+    end
+
+    subgraph UpstreamMCP ["上游 MCP 工具端点"]
+        StdioProc["本地 Stdio 长活子进程"]
+        HttpServer["外部 HTTP / SSE MCP 服务"]
+    end
+
+    %% 阶段 1: 技能文件安全读取链路
+    ClientCode -->|"1. skill/files 或 skill/file 请求"| Router
+    Router -->|"分发读取请求"| SkillProv
+    SkillProv --> PathCheck
+    PathCheck -->|"通过校验"| SkillDisk
+    SkillDisk -.->|"读取原始文件字节"| SkillProv
+    SkillProv -.->|"经路由层下发"| Router
+    Router -.->|"下发文件二进制内容"| ClientCode
+
+    %% 阶段 2: 连接器工具调用代理链路
+    ClientCode -->|"2. connector/call(name, args)"| Router
+    Router -->|"分发代理调用"| ProxyGate
+    ProxyGate -->|"策略放行"| InjectAuth
+    InjectAuth -->|"本地管道通信"| Pool
+    Pool -->|"复用长活进程"| StdioProc
+    InjectAuth -->|"组装认证头请求"| HttpServer
+
+    StdioProc -.->|"管道输出结果"| Pool
+    Pool -.-> InjectAuth
+    HttpServer -.->|"网络响应结果"| InjectAuth
+    InjectAuth -.->|"脱敏并提取 content"| Router
+    Router -.->|"返回标准工具执行结果"| ClientCode
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **完整技能获取**：提供目录结构与文件逐字节读取能力，支持外部智能体完整解析复杂技能。
+2. **安全代理调用**：外部仅需传递参数即可执行工具，网络凭据在宿主内闭环注入。
+3. **低延迟执行**：通过连接池技术消除本地 Stdio 进程反复冷启动的巨大延迟。
+
+#### 明确的非目标
+- **绝不导出凭据与原始指令**：禁止导出包含私有 Token 或本地绝对路径的连接器元数据。
+- **服务端不执行脚本**：技能目录中的 `scripts/` 文件仅作字节分发，宿主服务端坚决不代为执行。
+
+---
+
+## 3. 详细设计
+
+### 3.1 阶段一：Skill 文件读面
+
+#### 1. 协议定义
+新增两个文件读取接口：
+- `skill/files { skill_id }`：返回该技能目录下的全部相对文件清单与文件摘要；
+- `skill/file { skill_id, path }`：读取指定相对路径的文件原始字节（HTTP 传输支持原始流，WS 传输支持 Base64）。
+
+```rust
+// nomifun-api-types/src/app_server.rs
+pub struct AppServerSkillFileList {
+    pub skill_id: String,
+    pub files: Vec<AppServerSkillFile>,     // 排序后的相对文件清单
+    pub content_digest: String,             // 该技能目录的独立树摘要
+    pub truncated: bool,
+}
+
+pub struct AppServerSkillFile {
+    pub path: String,                       // POSIX 相对路径
+    pub size: u64,
+    pub digest: String,                     // 单文件 SHA256
+}
+```
+
+#### 2. 安全沙箱与防路径穿越（Anti-Traversal）
+服务端严格校验请求路径：
+- 解析相对路径并与技能根目录进行 `canonicalize` 规整；
+- 必须满足 `resolved_path.starts_with(canonical_base)`，坚决拒绝包含 `../` 的越权逃逸请求。
+
+---
+
+### 3.2 阶段二：MCP 工具调用代理（`connector/call`）
+
+#### 1. 协议定义
+外部智能体直接发起工具调用请求：
+
+```jsonc
+// POST /api/app-server/connectors/{connector_id}/call
+{
+  "connector_id": "conn-github",
+  "tool_name": "create_issue",
+  "arguments": {
+    "title": "Bug Report",
+    "body": "Found an issue"
+  }
+}
+```
+
+#### 2. 宿主安全代理流程
+1. **策略门禁**：检查 `[connector_proxy]` 策略配置与连接器 `enabled` 状态；
+2. **凭据注入**：宿主自动从凭据库提取对应的 Token 或请求头，完成协议封装；
+3. **转发调用**：向目标 MCP 端点发起标准 JSON-RPC `tools/call` 请求；
+4. **结果回传**：仅透传工具执行结果的内容（`content`），绝不附带任何内部认证头或网络配置。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Agent as 外部智能体 (External Agent)
+    participant Host as App Server 宿主
+    participant Pool as Stdio 会话池 (McpToolCallPool)
+    participant MCP as 上游 MCP 进程/服务
+
+    Agent->>Host: connector/call(connector_id, tool_name, arguments)
+    activate Host
+    Host->>Host: 校验 [connector_proxy] 门禁 & 连接器启用状态
+    Host->>Host: 从安全凭据库提取 Secret / OAuth Token
+    
+    alt 本地 Stdio 连接器
+        Host->>Pool: 获取/复用活跃子进程连接
+        Pool->>MCP: 发送 JSON-RPC tools/call (匿名管道)
+        MCP-->>Pool: 返回工具输出 stdout
+        Pool-->>Host: 交付执行结果
+    else 远程 HTTP / SSE 连接器
+        Host->>MCP: 发送 HTTP POST (注入 Authorization 头)
+        MCP-->>Host: 返回 HTTP 响应
+    end
+
+    Host->>Host: 脱敏过滤：剥离内部凭据与连接元数据，仅保留 content
+    Host-->>Agent: 返回规范工具结果 ToolCallResult
+    deactivate Host
+```
+
+
+#### 3. Stdio 会话池化（性能飞跃）
+针对命令行 Stdio 连接器，构建 `McpToolCallPool` 会话池：
+- **空闲复用**：保留已启动的活跃子进程，会话空转 5 分钟后自动回收；
+- **故障隔离**：遇到进程崩溃或管道断裂自动移出池子；
+- **效果**：单次调用延迟从 **586ms 骤降至 3ms**。
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **MCP 接入架构** | **宿主代理调用（`connector/call`）** | ❌ 导出连接参数（`connector/export`）：导致敏感凭据出宿主，严重破坏平台安全模型。 |
+| **D2** | **Skill 读取粒度** | **独立文件系统读面** | ❌ 拓展现有 `skill/get` 返回全文：导致目录列表与卡片渲染时传输体积过大。 |
+| **D3** | **Stdio 生命周期** | **引入长活会话池复用** | ❌ 每次调用单次拉起子进程：每次产生几百毫秒的冷启动开销，模型连续调用时卡顿严重。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **技能清单枚举** | 调用 `skill/files` 成功列出包含 `SKILL.md` 及子目录下脚本文件的完整清单。 |
+| **S2** | **防路径穿越拦截** | 尝试读取 `path: "../../config.toml"`，系统立即拦截并返回 `invalid_request`。 |
+| **S3** | **代理调用成功** | 通过 `connector/call` 成功调用 Stdio 与 HTTP 连接器工具，正确拿到输出正文。 |
+| **S4** | **零凭据泄露反例** | 断言调用响应、服务日志与审计事件中，绝对不含任何 Token 或 Authorization 头。 |
+| **S5** | **Stdio 会话复用** | 连续发起两次工具调用，第二次调用耗时显著低于首次，复用现有活跃进程。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 外部 Agent 使用已安装 Skill / MCP · 实现方案
 
 > 状态：**两个阶段均已落地（阶段 1 2026-09-20 / 阶段 2 2026-09-21）**，阶段 2 的 stdio 会话

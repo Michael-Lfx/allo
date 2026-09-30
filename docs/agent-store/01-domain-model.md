@@ -1,3 +1,261 @@
+# Agent Store 领域模型 (Domain Model) · 技术方案
+
+> 状态：🧊 架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；领域模型待 Runtime 验证；发布阻断
+> 日期：2026-08-26
+> 前置：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)
+> 一句话原则：**统一产品资产定义与运行时实体边界，严守三层对象映射，所有对外标识 Opaque，敏感凭据永不出境**
+
+---
+
+## 1. 背景与核心痛点
+
+Agent Store 需要支撑专家、技能、连接器和团队的导入、分发、编排与多端集成。若缺乏严格形式化的领域模型，系统会出现以下严重质量问题：
+
+### 1.1 核心痛点分析
+
+1. **三层概念混淆**：把产品层的“专家配置（AgentDefinition）”直接当作底层的“执行驱动（Driver / Runtime Agent）”，导致配置修改与运行时实例生命周期强耦合，无法做版本快照与历史回溯。
+2. **快照可变性与环境漂移**：运行时直接依赖磁盘外部目录或可变的资产库，导致同一版本在不同时间、不同设备上执行行为不一致。
+3. **实体边界侵入与 ID 污染**：allo 内部生成的自增 ID、UUID 或底层 Session UUID 泄漏到上层客户端，破坏了 SDK 和 WebUI 的协议稳定性。
+4. **团队协作模型过于发散**：若在 V1 直接引入未经验证的复杂 Mailbox 或动态自主认领任务，会导致状态机爆炸且无法闭环。必须收敛为结构化 DAG 与严格的 Step/Attempt 执行单元。
+
+---
+
+## 2. 方案全景与领域模型拓扑
+
+### 2.1 核心实体关系拓扑
+
+```mermaid
+classDiagram
+    class PluginSnapshot {
+        +String snapshot_id
+        +String content_digest
+        +String source_kind
+        +Provenance provenance
+        +CompatibilityReport report
+    }
+
+    class AgentDefinition {
+        +String id
+        +String version
+        +String persona
+        +ToolPolicy tool_policy
+        +List~String~ skill_refs
+        +List~String~ connector_refs
+    }
+
+    class AgentTeamDefinition {
+        +String id
+        +String lead_agent_id
+        +List~String~ member_agent_ids
+        +PlannerPolicy planner_policy
+        +WorkflowLimits workflow_limits
+    }
+
+    class SkillDefinition {
+        +String id
+        +String mode
+        +String instructions_ref
+        +List~String~ required_connectors
+    }
+
+    class ConnectorDefinition {
+        +String id
+        +String kind
+        +String auth_mode
+        +ToolFilter tool_filter
+        +String credential_schema_ref
+    }
+
+    class CredentialSchema {
+        +String id
+        +List~Field~ fields
+        +OAuthMeta oauth_meta
+    }
+
+    class Run {
+        +String id (Opaque)
+        +String kind
+        +RunStatus status
+        +String target_ref
+    }
+
+    class Step {
+        +String id
+        +String plan_revision_id
+        +String participant_ref
+        +StepStatus status
+        +List~String~ depends_on
+    }
+
+    class Attempt {
+        +String id (Opaque)
+        +String step_ref
+        +AttemptStatus status
+        +String result_ref
+    }
+
+    class Event {
+        +String event_id
+        +String stream_id
+        +Int sequence
+        +String type
+        +Json data
+    }
+
+    PluginSnapshot --> AgentDefinition : 包含定义
+    PluginSnapshot --> AgentTeamDefinition : 包含定义
+    PluginSnapshot --> SkillDefinition : 包含定义
+    PluginSnapshot --> ConnectorDefinition : 包含定义
+    ConnectorDefinition --> CredentialSchema : 引用凭据格式
+    AgentTeamDefinition --> AgentDefinition : 引用 Leader & Members
+    AgentDefinition --> SkillDefinition : 绑定技能
+    AgentDefinition --> ConnectorDefinition : 绑定连接器
+
+    Run --> Step : 包含执行计划节点
+    Step --> Attempt : 产生单次执行尝试
+    Run ..> Event : 产生事件流
+```
+
+### 2.2 三层对象映射规范
+
+```text
+[产品定义层] Agent Store: AgentDefinition
+       │
+       ▼ (由 Runtime Adapter 解析、绑定并冻结)
+[编排快照层] allo Runtime: ResolvedPresetSnapshot ➔ ExecutionParticipant
+       │
+       ▼ (由底层引擎加载执行)
+[驱动执行层] nomifun Engine: Runtime Driver (Claude Code / Codex) ➔ AgentExecution
+```
+
+- **严禁反向污染**：产品层 `AgentDefinition` 决不能持有底层驱动句柄或临时 Attempt 状态；底层驱动也决不能直接篡改产品层资产。
+
+---
+
+## 3. 核心定义层模型 (资产对象)
+
+### 3.1 资产定义对象规范
+
+| 实体名称 | 核心字段 | 设计约束与安全规则 |
+|---|---|---|
+| **AgentDefinition** | `id`, `version`, `name`, `persona`, `model_profile`, `skill_refs`, `connector_refs`, `tool_policy`, `turn_budget` | Persona 严禁写入全局未经隔离的 Prompt，运行时分段组装；引用的 Skill/Connector 必须是已导入且合法的资产。 |
+| **AgentTeamDefinition** | `id`, `version`, `lead_agent_id`, `member_agent_ids`, `shared_skill_refs`, `planner_policy`, `routing_constraints`, `workflow_limits` | 固定成员池；`lead_agent_id` 承担规划；V1 协调策略固定为 `leader_planned`；禁止嵌套 Team。 |
+| **SkillDefinition** | `id`, `version`, `mode` (client-instructions / store-agent / store-workflow), `instructions_ref`, `required_connectors` | 纯指令类技能不暴露内部私有 Prompt；随附的脚本/可执行文件默认不执行，只解析不落地外部 shell。 |
+| **ConnectorDefinition** | `id`, `version`, `kind` (remote-mcp / stdio-mcp / cli / http-api), `transport`, `tool_filter`, `auth_mode`, `credential_schema` | 工具必须采用命名空间 `connector__<slug>__<tool>` 暴露；敏感操作必须受 Tool Policy 与审批约束。 |
+| **CredentialSchema** | `id`, `fields` (key, type, required, sensitive), `oauth_meta` | 仅声明凭据表单字段结构；绝不保存真实明文凭据；敏感字段一律只进本地安全存储。 |
+
+### 3.2 来源不可变快照 (PluginSnapshot)
+
+`PluginSnapshot` 是外部资源（如 CodeBuddy 插件包、市场 ZIP 等）导入后生成的**唯一、不可变、版本化**镜像：
+- **快照完整性**：包含 `content_digest`（SHA-256）与物化根路径 `materialized_root`。
+- **环境隔离**：所有路径变量统一映射（如 `${PLUGIN_ROOT}` ➔ `${AGENT_STORE_PLUGIN_ROOT}`），杜绝 `../` 目录逃逸。
+- **只读保证**：快照一旦生成即冻结，运行时所有组件只读快照内容，不得再次读取外部来源目录。
+
+---
+
+## 4. 运行时模型与生命周期 (Execution Model)
+
+### 4.1 Run 与 TeamRun
+
+- **公共标识**：`Run.id` 一律为服务端生成的 Opaque ID，用于跨 SDK、WebUI 传递。
+- **TeamRun 特有派生属性**：
+  - `lead_agent_ref`：指派的 Leader 角色引用。
+  - `planning_context_digest`：规划上下文摘要哈希，供复现审计。
+  - `member_participant_refs`：固定成员参与者列表。
+  - `current_plan_revision_id`：当前活跃的 DAG 规划版本。
+- **Planning Context 隔离红线**：
+  - 仅包含：Leader 规划指令 + Team 目标 + 脱敏成员能力摘要 + 路由与并发限制。
+  - 严禁包含：成员私有 Prompt、内部真实 Token、未经授权的外部工具细节。
+
+### 4.2 Step 与 Attempt (V1 正式执行单元)
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> ready : 依赖全部成功
+    ready --> in_progress : 调度执行
+    in_progress --> completed : 执行成功
+    in_progress --> failed : 执行失败
+    in_progress --> cancelled : 用户取消
+
+    state AttemptState {
+        [*] --> created
+        created --> running
+        running --> completed
+        running --> failed
+        running --> cancelled
+        running --> stale : 超时或被新Attempt替代
+    }
+```
+
+- **Step**：DAG 中的独立执行节点，定义了角色绑定、依赖列表与执行 Prompt。
+- **Attempt**：Step 的单次执行尝试，具备唯一的 Opaque `attempt_id`。
+  - **重试机制**：每次重试必须创建全新的 `Attempt` 实例，严禁复用旧 Attempt ID。
+  - **迟到事件丢弃**：已结束或失效的旧 Attempt 产生的迟到事件必须被引擎丢弃，不得篡改当前已生效的 Step 终态。
+
+### 4.3 规范事件模型 (Canonical Event)
+
+所有状态迁移必须产生规范事件，并按单调递增的序列号写入内部 Event Log：
+
+```json
+{
+  "event_id": "evt_1001",
+  "stream_id": "run_9001",
+  "sequence": 42,
+  "resource_type": "step",
+  "resource_id": "step_02",
+  "type": "step.completed",
+  "timestamp": "2026-08-26T10:00:00Z",
+  "data": {
+    "output_artifact_refs": ["art_501"]
+  }
+}
+```
+
+- **事实来源**：Event Log 为内部事实来源，状态投影器（State Projector）据此构建 Run / Step / Attempt 读取模型。
+- **重放边界**：V1 不向外部客户端暴露底层 Cursor，只向客户端提供一致的查询结果，避免客户端承担复杂的追平负担。
+
+### 4.4 核心状态机矩阵
+
+| 状态类别 | 完整合法状态枚举 | 终态定义 (不可逆) |
+|---|---|---|
+| **DefinitionStatus** | `draft` ➔ `imported` ➔ `validated` ➔ `enabled` ➔ `disabled` ➔ `superseded` | `superseded` |
+| **RunStatus** | `queued` ➔ `starting` ➔ `running` ➔ `paused` ➔ (`completed` \| `failed` \| `cancelled` \| `recovery_required`) | `completed`, `failed`, `cancelled` |
+| **StepStatus** | `pending` ➔ `ready` ➔ `in_progress` ➔ (`completed` \| `failed` \| `cancelled`) | `completed`, `failed`, `cancelled` |
+| **AttemptStatus** | `created` ➔ `running` ➔ (`completed` \| `failed` \| `cancelled` \| `stale`) | `completed`, `failed`, `cancelled`, `stale` |
+
+---
+
+## 5. 关键边界与混淆辨析
+
+| 混淆对象对 | 正确概念界定与架构边界 |
+|---|---|
+| **Agent Store Agent vs. Preset** | `AgentDefinition` 是产品层声明式专家定义；在 allo 中通过 `Preset` 机制物理承载，属于配置静态快照，非运行时驱动。 |
+| **Runtime Agent vs. Store Agent** | `nomifun Runtime Agent`（如 Claude Code / Codex Driver）是执行实例，持有会话、 Attempt 并驱动 LLM；绝不可与 Store Agent 互换 ID。 |
+| **Agent vs. Sub-agent** | Sub-agent 是一次执行任务内动态分流出的执行单元（对应内部 Step/Attempt），不是可持久化复用的 `AgentDefinition`。 |
+| **AgentTeamDefinition vs. AgentExecutionTemplate** | 前者是产品级团队资产定义；后者是运行时适配层在创建 TeamRun 时物化的固定参与者静态快照。 |
+| **Skill vs. Connector** | Skill 是“流程与方法（How to do）”；Connector 是“系统边界与通信信道（What to access）”。Skill 可声明依赖 Connector。 |
+| **PluginSnapshot vs. Runtime Definition** | Snapshot 是外部包导入后的不可变原样存储；Runtime Definition 是经过类型转换、安全过滤后的可执行规范对象。 |
+| **来源 Slug vs. 业务 ID** | 外部资产的 slug（如 `product-manager`）仅作为来源参考，系统内部统一映射为前缀化稳定 ID（如 `wb-plugin-product-manager`）。 |
+
+---
+
+## 6. 一致性规则 (DoD) 与验证
+
+1. **统一模型先行**：任何进入 App Server、SDK 或 WebUI 的新概念，必须先在领域模型中完成定义。
+2. **标识符绝对遮蔽**：对外公共 API 严禁透出任何 allo 内部主键、文件路径或数据库序列号。
+3. **零明文凭据**：所有对外接口、日志、前端状态中涉及密钥字段，一律返回 `[REDACTED]` 或纯占位符。
+4. **透明化降级**：对于不支持的来源特性（如未受控的外部 Hook），必须如实标记为 `manual-review` 或 `unsupported`，绝不允许静默丢弃。
+5. **适配层单向依赖**：领域模型与底层引擎模型之间严格单向转换，严禁在领域模型中引入 allo 内部 Rust Crate 的专用数据结构。
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Agent Store 领域模型
 
 > 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；领域模型待 Runtime 验证；发布阻断

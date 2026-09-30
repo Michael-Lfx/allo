@@ -27,7 +27,10 @@ import type {
   MarketplaceDetail,
   MarketplaceSourceKind,
   MarketplaceSummary,
+  MarketSettings,
+  MarketSettingsPatch,
   StoreItem,
+  StoreItemKind,
 } from "../../lib/protocol";
 import { DialogShell } from "../dialogs/DialogShell";
 import { InitialBadge, MetaRow, marketKindLabel } from "./shared";
@@ -44,6 +47,19 @@ import { InitialBadge, MetaRow, marketKindLabel } from "./shared";
 function isUnfetched(market: MarketplaceSummary): boolean {
   return !market.resolved_revision;
 }
+
+/** The four entry kinds the sweep can be told to upgrade, in write order (doc 37). */
+const POLICY_KINDS: StoreItemKind[] = ["agent", "team", "skill", "connector"];
+
+const POLICY_KIND_LABELS: Record<StoreItemKind, string> = {
+  agent: "catalog.marketKindAgent",
+  team: "catalog.marketKindTeam",
+  skill: "catalog.marketKindSkill",
+  connector: "catalog.marketKindConnector",
+};
+
+/** `market/settings-set` accepts `0..=8760`; mirrored here so the UI fails first. */
+const MAX_CADENCE_HOURS = 8760;
 
 export function MarketSourcesPanel() {
   const { t } = useTranslation();
@@ -66,6 +82,12 @@ export function MarketSourcesPanel() {
   const [storeInstallBusy, setStoreInstallBusy] = useState<string | null>(null);
   /** True while the builtin marketplaces are still registering (D-SDK-1 ①). */
   const [storePending, setStorePending] = useState(false);
+  /** Host-level market policy (`market/settings`, doc 37 §3.2); null = not read. */
+  const [policy, setPolicy] = useState<MarketSettings | null>(null);
+  /** Cadence as typed: `""` means "off", so the field can be cleared. */
+  const [policyHours, setPolicyHours] = useState("");
+  const [policyKinds, setPolicyKinds] = useState<StoreItemKind[]>([]);
+  const [policyBusy, setPolicyBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const activeRef = useRef(true);
@@ -73,6 +95,17 @@ export function MarketSourcesPanel() {
   const reportError = (caught: unknown) => {
     setError(formatError(caught) + (isRetryableError(caught) ? t("common.retryable") : ""));
   };
+
+  /** Adopt a server-returned policy: the response is the file re-read, not an echo. */
+  const applyPolicy = useCallback((settings: MarketSettings) => {
+    setPolicy(settings);
+    setPolicyHours(
+      settings.auto_update_interval_hours === null
+        ? ""
+        : String(settings.auto_update_interval_hours),
+    );
+    setPolicyKinds(settings.entry_auto_update_kinds);
+  }, []);
 
   useEffect(() => {
     activeRef.current = true;
@@ -82,15 +115,18 @@ export function MarketSourcesPanel() {
   }, []);
 
   // useEffect必要性：宿主文件与市场注册表都在 React 之外（经 WebSocket 的
-  // market/list 与 store/list）；目的：面板挂载时读一次注册表，并为条目安装按钮
-  // 取一份 store/list 投影。未采用 ahooks：请求经 useAppStore 的 client，且需要在
-  // 卸载后丢弃结果（activeRef），useRequest 的缓存与自动重试都不是这里要的语义；
-  // 「挂载时读一次」也无法用 useMemo/事件处理器表达。
+  // market/list、store/list 与 market/settings）；目的：面板挂载时读一次注册表、
+  // 为条目安装按钮取一份 store/list 投影，并读一次宿主级策略。未采用 ahooks：请求经
+  // useAppStore 的 client，且需要在卸载后丢弃结果（activeRef），useRequest 的缓存与
+  // 自动重试都不是这里要的语义；「挂载时读一次」也无法用 useMemo/事件处理器表达。
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       if (!client) {
-        if (!cancelled) setMarkets(null);
+        if (!cancelled) {
+          setMarkets(null);
+          setPolicy(null);
+        }
         return;
       }
       try {
@@ -106,12 +142,56 @@ export function MarketSourcesPanel() {
         setMarkets([]);
         setError(formatError(caught) + (isRetryableError(caught) ? t("common.retryable") : ""));
       }
+      // The policy is read separately, not in the `Promise.all` above: an
+      // unparseable `config.toml` must report itself without blanking the
+      // registry the user came here to manage (`market/settings` refuses to
+      // answer with fabricated defaults, unlike the registry).
+      try {
+        const settings = await client.getMarketSettings();
+        if (cancelled) return;
+        applyPolicy(settings);
+      } catch (caught) {
+        if (cancelled) return;
+        setError(formatError(caught) + (isRetryableError(caught) ? t("common.retryable") : ""));
+      }
     };
     void load();
     return () => {
       cancelled = true;
     };
-  }, [client, t]);
+  }, [client, t, applyPolicy]);
+
+  /**
+   * Save the host policy (doc `37` §3.2). Both fields are always sent: the form
+   * shows their full state, so "unchanged" and "explicitly emptied" are the same
+   * intent here — and `[]` is a meaningful value (upgrade nothing).
+   */
+  const savePolicy = useCallback(async () => {
+    if (!client || !policy) return;
+    const raw = policyHours.trim();
+    const hours = raw === "" ? 0 : Number(raw);
+    if (!Number.isInteger(hours) || hours < 0 || hours > MAX_CADENCE_HOURS) {
+      setError(t("catalog.marketCadenceInvalid"));
+      return;
+    }
+    setPolicyBusy(true);
+    setError(null);
+    try {
+      const patch: MarketSettingsPatch = {
+        auto_update_interval_hours: hours,
+        entry_auto_update_kinds: policyKinds,
+      };
+      const updated = await client.setMarketSettings(patch);
+      if (!activeRef.current) return;
+      applyPolicy(updated);
+      pushToast("success", "catalog.marketPolicySaved");
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setPolicyBusy(false);
+    }
+  }, [client, policy, policyHours, policyKinds, pushToast, t, applyPolicy]);
 
   const addMarket = useCallback(async () => {
     if (!client) return;
@@ -317,6 +397,92 @@ export function MarketSourcesPanel() {
       )}
 
       <div className="market-market-panel">
+        {/* Host-level policy (doc 37 §3.2, D2/D3): the sweep cadence and the
+            auto-upgrade kind whitelist. Saving writes *through* to the host's
+            `config.toml` — the scheduler re-reads that file every tick, so this
+            save is the whole "apply" step and needs no restart. */}
+        {policy && (
+          <div className="market-policy">
+            <div className="market-policy-head">
+              <span className="market-policy-title">{t("catalog.marketPolicyHeading")}</span>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={policyBusy}
+                onClick={() => void savePolicy()}
+              >
+                {policyBusy ? t("catalog.marketPolicySaving") : t("catalog.marketPolicySave")}
+              </button>
+            </div>
+            <p className="market-policy-hint">{t("catalog.marketPolicyHint")}</p>
+            {/* "A cadence is set" and "this host will run it" are different
+                facts: the desktop host has no config path, so it never sweeps. */}
+            {!policy.sweep_enabled && (
+              <p className="market-pending-note">{t("catalog.marketPolicySweepOff")}</p>
+            )}
+            <div className="market-policy-field">
+              <label htmlFor="market-policy-cadence">{t("catalog.marketCadenceLabel")}</label>
+              <input
+                className="market-input"
+                id="market-policy-cadence"
+                type="number"
+                min={0}
+                max={MAX_CADENCE_HOURS}
+                step={1}
+                placeholder={t("catalog.marketCadencePlaceholder")}
+                value={policyHours}
+                onChange={(event) => setPolicyHours(event.target.value)}
+              />
+            </div>
+            <div className="market-policy-field">
+              <span className="market-policy-title">{t("catalog.marketKindsLabel")}</span>
+              <div className="market-policy-kinds">
+                {POLICY_KINDS.map((kind) => (
+                  <label className="market-policy-kind" key={kind}>
+                    <input
+                      type="checkbox"
+                      checked={policyKinds.includes(kind)}
+                      onChange={(event) =>
+                        setPolicyKinds((current) =>
+                          event.target.checked
+                            ? [...current, kind]
+                            : current.filter((value) => value !== kind),
+                        )
+                      }
+                    />
+                    <span>{t(POLICY_KIND_LABELS[kind])}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="market-policy-hint">{t("catalog.marketKindsHint")}</p>
+              {/* The connector warning is contextual, not a blanket note: it only
+                  matters once the operator has opted that kind in (doc 37 D5). */}
+              {policyKinds.includes("connector") && (
+                <p className="market-policy-warning">{t("catalog.marketConnectorWarning")}</p>
+              )}
+            </div>
+            <p className="market-policy-hint">
+              {policy.last_sweep
+                ? t("catalog.marketSweepSummary", {
+                    time: new Date(policy.last_sweep.at).toLocaleString(),
+                    refreshed: policy.last_sweep.refreshed,
+                    upgraded: policy.last_sweep.upgraded,
+                    failed: policy.last_sweep.failed.length,
+                  })
+                : t("catalog.marketSweepNever")}
+            </p>
+            {policy.last_sweep && policy.last_sweep.failed.length > 0 && (
+              <ul className="market-remove-list">
+                <li className="market-remove-list-title">{t("catalog.marketSweepFailedLabel")}</li>
+                {policy.last_sweep.failed.map((failure) => (
+                  <li key={failure.id}>
+                    {failure.id} — {failure.error}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
         <div className="market-import-form">
           <label htmlFor="market-path">{t("catalog.marketSource")}</label>
           <div className="market-import-row">
@@ -438,6 +604,10 @@ export function MarketSourcesPanel() {
                 </button>
               </div>
             </div>
+            {/* The switch used to mean "refresh this index periodically". Since
+                doc 37 it also upgrades what was installed from this market, so
+                the scope is stated where the switch is, not in a tooltip. */}
+            <p className="market-policy-hint">{t("catalog.marketAutoUpdateScope")}</p>
             {/* W13: only the registry fields the wire actually carries —
                 `revision` / last-checked are absent from the summary type
                 (deviation D-W13-1). */}

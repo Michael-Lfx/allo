@@ -101,9 +101,7 @@ Ask first before touching these:
   [BUILD_RELEASE.zh-CN.md](BUILD_RELEASE.zh-CN.md).
 - **No in-tree mock data or fake balances in production code** — never
   hardcode mock balances, fake account states, bypass tokens, or test defaults
-  into production Contexts (`*Context.tsx`), hooks, or runtime state. UI
-  previews must use isolated sandbox files, test pages, or temporary HTML
-  artifacts, never in-tree production fallbacks.
+  into production Contexts (`*Context.tsx`), hooks, or runtime state.
 
 ## Coding Conventions
 
@@ -114,132 +112,58 @@ Ask first before touching these:
   `bun run check:theme`.
 - HTTP DTOs belong in `nomifun-api-types`.
 - Commit messages: Conventional Commits style (`feat:`, `fix:`, `docs:`, etc.).
-- **Zero mock contamination in production runtime**: PR submission requires
-  strict self-audit to ensure no `mock*`, `__setMock*`, or hardcoded asset
-  balances exist in production code paths. Changes to core billing, credits,
-  and auth contexts must be kept in minimal, dedicated PRs rather than mixed
-  into general UI styling.
-- **i18n parity and dual-theme safety** — every user-visible string lands in
-  both `zh-CN` and `en-US`, and every visual works in both light and dark
-  modes. The full rules and verification steps live in § Frontend Quality Red
-  Lines below.
+- **Technical proposals & design docs** — must follow
+  [docs/contributing/technical-solution-standard.zh.md](docs/contributing/technical-solution-standard.zh.md)
+  (Two-tier model: readable architecture upfront + complete verbatim historical
+  reference archive in appendix; Mermaid syntax safety; zero content deletion in
+  `git diff`).
 
-## Frontend Quality Red Lines (Lessons Learned)
+## Frontend Quality Red Lines
 
-Three recurring quality issues have led to explicit repository red lines:
+Full retrospective analysis, issues, and boundaries live in [docs/contributing/frontend-quality-red-lines.zh.md](docs/contributing/frontend-quality-red-lines.zh.md) ([EN](docs/contributing/frontend-quality-red-lines.md)).
 
 1. **Zero Mock Contamination in Production Runtime**:
-   - **The Issue**: Hardcoding mock balances, fake accounts, or test states into
-     production contexts or hooks to preview UI states pollutes user accounts
-     and leaks into release builds.
-   - **The Rule**: Never hardcode mock balances, fake account states, bypass
-     tokens, or test defaults into production Contexts (`*Context.tsx`), hooks,
-     or runtime state. UI previews must use isolated sandbox files, test pages,
-     or temporary HTML artifacts, never in-tree production fallbacks.
-   - **The Boundary**: Changes to billing, credits, and auth contexts must be
-     kept in minimal, dedicated PRs rather than mixed into styling or feature PRs.
-
+   - Never hardcode mock balances, fake account states, bypass tokens, or test defaults into production Contexts (`*Context.tsx`), hooks, or runtime state. UI previews must use isolated sandbox files or test pages, never in-tree production fallbacks.
+   - Changes to billing, credits, and auth contexts must be kept in minimal, dedicated PRs rather than mixed into general UI styling or feature PRs.
 2. **Full i18n Coverage & Zero Fallback Leakage**:
-   - **The Issue**: Using `t('key', { defaultValue: '中文' })` while omitting
-     the key from `en-US.json` (or `zh-CN.json`). In the omitted locale,
-     i18next silently falls back to `defaultValue`, leaking untranslated Chinese
-     to English users.
-   - **The Rule**: Every single user-visible string — buttons, pills, tooltips,
-     popovers, badges, aria-labels, titles, and error toasts — must be declared
-     symmetrically in both `zh-CN` and `en-US` locale dictionaries
-     (`ui/src/renderer/services/i18n/locales/`).
-   - **Verification**: Run `bun run gen:i18n` to update `i18n-keys.d.ts`, verify
-     with `bun run check:i18n`, and add dual-locale assertions in accompanying
-     unit tests.
-
+   - Every single user-visible string (buttons, pills, tooltips, popovers, badges, aria-labels, titles, error toasts) must be declared symmetrically in both `zh-CN` and `en-US` locale dictionaries (`ui/src/renderer/services/i18n/locales/`).
+   - Verification: run `bun run gen:i18n` to update `i18n-keys.d.ts`, verify with `bun run check:i18n`, and add dual-locale assertions in accompanying unit tests.
 3. **Dual-Theme (Light & Dark) Compatibility & CSS Completeness**:
-   - **The Issue**: Hardcoding absolute colors (e.g. `#fff`, `#000`) causes
-     invisible text or poor contrast when switching themes. Incomplete UnoCSS
-     border utilities (e.g. `border-t` without `border-t-solid`) fail to render
-     borders and violate dead-css rules.
-   - **The Rule**: Every UI component must adapt cleanly to both Light and Dark
-     modes. Always use semantic design tokens (`text-t-primary`, `text-t-secondary`,
-     `bg-fill-1`, `var(--border-base)`, `var(--flowy-attention)`).
-     Directional border width classes like `border-t` or `border-b` must be
-     accompanied by explicit style classes (e.g. `border-t-solid`).
-   - **The Boundary**: Creative visuals and new colors are welcome — express
-     them as theme-aware values (define a new theme token, or use a `var()`
-     whose fallback stays legible in both modes), never as a hardcoded value
-     tuned for one theme. A hardcoded color that keeps its contrast in both
-     modes (e.g. white text on a saturated accent button) is fine.
-   - **Verification**: Visually verify both modes, run `bun run check:theme`, and
-     ensure `bun run check` / `bun run check:dead-css` passes without warnings.
-
+   - Every UI component must adapt cleanly to both Light and Dark modes using semantic design tokens (`text-t-primary`, `bg-fill-1`, `var(--border-base)`, `var(--flowy-attention)`).
+   - Directional border width classes like `border-t` or `border-b` must be accompanied by explicit style classes (e.g. `border-t-solid`).
+   - Verification: visually inspect both themes, run `bun run check:theme`, and ensure `bun run check:dead-css` passes without warnings.
 
 ## Git Workflow: Branch Off `origin/main`, Rebase, Then PR
 
-**Never commit to `main`.** Not on the local branch, and not by pushing it. Every
-change — including a one-line documentation fix — goes through a branch and a
-pull request.
+Full background and prevented pitfalls live in [docs/contributing/git-workflow.zh.md](docs/contributing/git-workflow.zh.md) ([EN](docs/contributing/git-workflow.md)).
 
-1. **Start from the remote, not from your local `main`.** `git fetch origin`,
-   then `git checkout -b <branch> origin/main`. A stale local `main` is the most
-   common cause of a branch that cannot be merged without a merge commit.
-2. **Commit on the branch.** Conventional Commits (see § Coding Conventions) and
-   human attribution (see § Git Attribution Must Identify a Human).
-3. **Before opening the PR, catch up by rebasing.** `git fetch origin` and
-   `git rebase origin/main`, so the branch stays linear and carries no merge
-   commits. Rebase again if the PR sits open while `main` moves.
-4. **Push the branch, open the PR, wait for CI, merge.** Do not merge a PR whose
-   required checks are red or still pending.
-5. **After the merge**, `git checkout main && git pull --ff-only`.
+**Never commit to `main`.** Not on local branch, not by pushing. Every change goes through a branch and a pull request.
 
-**A branch created from `origin/main` inherits it as its upstream**, so a bare
-`git push` on that branch can target `main`. Push explicitly
-(`git push -u origin <branch>`) or `git branch --unset-upstream` first.
+1. **Start from remote, not local `main`**: `git fetch origin && git checkout -b <branch> origin/main`.
+2. **Commit on the branch**: Conventional Commits style and strictly human attribution.
+3. **Catch up by rebasing before PR**: `git fetch origin && git rebase origin/main` to keep history strictly linear.
+4. **Push, PR, wait for CI, merge**: `git push -u origin <branch>`. Never merge red or pending CI.
+5. **After merge**: `git checkout main && git pull --ff-only`.
 
-**What this prevents** — all three have happened here, all three were avoidable:
-
-- A branch built on a stale `main` later needs `git merge origin/main`, which
-  puts `Merge remote-tracking branch 'origin/main'` commits into the branch — and
-  if `main` moves between that merge and the push, **a second, identical merge
-  commit** appears. Rebasing produces neither.
-- Pushing a local `main` that is ahead of `origin/main` publishes whatever is
-  sitting on it — possibly someone else's unreviewed or breaking work — with no
-  PR, no review and no CI gate on the change itself.
-- If commits are already stranded on an unpushed local `main`, **ask the owner
-  what to do with them**; never publish them on their behalf.
-
-Do not resolve divergence by merging into `main`, and never force-push `main`
-without explicit owner approval.
+Do not resolve divergence by merging into `main`, and never force-push `main` without explicit owner approval.
 
 ## Git Attribution Must Identify a Human
 
-This is a repository-local rule for `nomifun-tauri`. Do not change any
-developer's global Git identity or global Git configuration to enforce it, and
-do not apply it to unrelated repositories.
+Every commit must attribute the work to the responsible human developer. AI tools may assist, but must never appear as author, committer, co-author, or credited contributor.
 
-Every commit must attribute the work to the responsible human developer. AI
-tools may assist with a change, but they must never appear as the author,
-committer, co-author, or other credited contributor.
-
-- Never use an AI model, AI product, vendor, bot, or agent identity in the Git
-  author or committer name/email. Prohibited identities include, but are not
-  limited to, Claude, Codex, GPT, ChatGPT, Gemini, Copilot, OpenAI, and
-  Anthropic.
-- Never add AI-credit trailers or equivalent attribution to a commit message,
-  including `Co-authored-by`, `Generated-by`, `Assisted-by`, or similar lines.
-  Technical references to an AI model or product remain allowed when they are
-  genuinely part of the change being described.
-- After cloning this repository, run `bun run setup:git-hooks` to enable the
-  repository-local attribution checks. Never bypass those checks with
-  `--no-verify`.
-- Preserve the known human author and committer when amending or rewriting
-  history. If the responsible human cannot be determined, use
-  `RiKa0-0 <2206491416@qq.com>` as both author and committer.
-- Before committing, amending, rebasing, cherry-picking, or pushing rewritten
-  history, inspect the affected commits and verify that their author,
-  committer, and attribution trailers comply with this rule.
+- Never use an AI model, AI product, vendor, bot, or agent identity in Git author/committer (Claude, Codex, GPT, ChatGPT, Gemini, Copilot, OpenAI, Anthropic, etc.).
+- Never add AI-credit trailers to commit messages (`Co-authored-by`, `Generated-by`, `Assisted-by`).
+- Run `bun run setup:git-hooks` to enable repository-local attribution checks. Never bypass with `--no-verify`.
+- Preserve known human author/committer when amending history. If responsible human cannot be determined, use `RiKa0-0 <2206491416@qq.com>` as fallback author and committer.
+- Inspect affected commits (`git log -n 5`) before pushing to verify compliance.
 
 ## Deeper Links
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — full contribution contract and PR checklist
 - [docs/contributing/project-structure.md](docs/contributing/project-structure.md) — authoritative repo map
+- [docs/contributing/technical-solution-standard.zh.md](docs/contributing/technical-solution-standard.zh.md) ([EN](docs/contributing/technical-solution-standard.md)) — technical solution writing specification & Mermaid standard
+- [docs/contributing/frontend-quality-red-lines.zh.md](docs/contributing/frontend-quality-red-lines.zh.md) ([EN](docs/contributing/frontend-quality-red-lines.md)) — frontend quality red lines & retrospectives
+- [docs/contributing/git-workflow.zh.md](docs/contributing/git-workflow.zh.md) ([EN](docs/contributing/git-workflow.md)) — git branching, rebase, and attribution guide
 - [docs/architecture/overview.md](docs/architecture/overview.md) — two-host model and request flow
 - [docs/architecture/backend-crates.md](docs/architecture/backend-crates.md) — backend crate ownership
 - [docs/architecture/agent-engine.md](docs/architecture/agent-engine.md) — agent engine crates

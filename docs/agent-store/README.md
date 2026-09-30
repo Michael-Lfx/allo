@@ -1,3 +1,195 @@
+# Agent Store 体系全景与工程文档导航总览（Master Documentation Portal）
+
+> 状态：导航总览（全目录 42 份核心方案已全面完成标准化重构）  
+> 当前版本：`0.1.0-beta.8` | 协议契约指纹：`fp-13` | 核心方法计数：55 WebSocket 专属方法 / 80 双端映射端点  
+> 核心原则：**系统唯一的执行底盘为 Allo；所有对外接口收敛至 App Server Protocol v1；运行时严格保证版本不可变冻结与零凭据泄漏；所有技术方案均配备清晰架构图、决策矩阵与历史底稿归档。**
+
+---
+
+## 1. 体系全景与架构地图
+
+Agent Store 是一套本地优先（Local-first）的自动化智能体资产交易、管理与协同调度底座。整个工程技术文档体系涵盖从“底层执行适配”到“顶层多端消费”的 5 大逻辑域：
+
+```mermaid
+flowchart TD
+    subgraph D1["1. 核心架构基线"]
+        A00["00-架构决策"]
+        A01["01-领域模型"]
+        A04["04-运行时适配器"]
+        A05["05-AppServer协议"]
+        A06["06-OAuth与安全"]
+        A07["07-TypeScript SDK"]
+        A08["08-Web集成"]
+        A10["10-公共契约"]
+    end
+
+    subgraph D2["2. 资产与市场规范"]
+        A02["02-导入器规格"]
+        A03["03-兼容性矩阵"]
+        A17["17-插件规范"]
+        A18["18-市场规范"]
+        A30["30-市场Zip托管"]
+        A36["36-商店条目更新"]
+        A37["37-市场下载策略"]
+    end
+
+    subgraph D3["3. 客户端与交互体验"]
+        A11["11-WebUI生产就绪"]
+        A12["12-SDK封装方案"]
+        A19["19-Codex体验对齐"]
+        A22["22-WebUI生产化立项"]
+        A28["28-输入区连接器开关"]
+        A31["31-SDK入口命名"]
+        A35["35-SDK导出助手"]
+    end
+
+    subgraph D4["4. 研发计划与工程门禁"]
+        A09["09-发布准入门禁"]
+        A13["13-P0收尾执行计划"]
+        A15["15-四链路与词汇对齐"]
+        A16["16-全链路主计划"]
+        A21["21-开放决策书"]
+        A23["23-兼容报告实现"]
+        A25["25-发布操作手册"]
+        ATC["test-cases-测试总索引"]
+    end
+
+    subgraph D5["5. 扩展集成与系统安全"]
+        A14["14-二进制瘦身"]
+        A20["20-工具注入策略"]
+        A24["24-外部Agent访问"]
+        A26["26-工具签名与授权"]
+        A27["27-会话绑定方案"]
+        A29["29-随调用指定模型"]
+        A32["32-专家导出规范"]
+        A33["33-内置记忆总开关"]
+        A34["34-连接器用户凭据"]
+    end
+
+    D1 --> D2
+    D2 --> D4
+    D1 --> D3
+    D3 --> D4
+    D1 --> D5
+    D5 --> D4
+```
+
+---
+
+## 2. 结构化文档索引矩阵
+
+### 2.1 核心架构基线（Foundation Baselines）
+奠定系统整体边界、领域实体、通信协议与安全核心机制。
+
+| 文档编号与标题 | 核心技术要点 | 现行状态 |
+| :--- | :--- | :--- |
+| [`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md) | 系统 5 层拓扑、AD-01~10 核心决策、Phase 0 验证阶梯 | 🧊 核心基线 |
+| [`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md) | 实体拓扑 ER 图、三层映射状态机、资源生命周期收敛 | 🧊 核心基线 |
+| [`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md) | 8 步装配流水线、分段提示词注入、Leader planned DAG 编排 | 🧊 核心基线 |
+| [`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md) | 统一协议 v1、双模传输（WS/HTTP）、`fp-12` 指纹、53 核心方法 | ✅ 现行规范 |
+| [`06-connector-oauth-security.md`](file:///c:/workspace/allo/docs/agent-store/06-connector-oauth-security.md) | 进出站双向鉴权隔离、401 互斥静默刷新、STDIO 沙箱 | 🧊 核心基线 |
+| [`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md) | Monorepo 多包拓扑、WS 握手状态机、`launchHarness` 进程托管 | ✅ 现行规范 |
+| [`08-flowy-web-integration.md`](file:///c:/workspace/allo/docs/agent-store/08-flowy-web-integration.md) | 主进程/渲染进程安全边界、弱通知+权威重读同步模型 | 🧊 核心基线 |
+| [`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md) | 全局公共单一事实源、点号事件字典、稳定错误码闭集 | 🧊 核心基线 |
+
+### 2.2 资产与市场规范（Assets & Marketplaces）
+规范外部插件包格式、市场清单探测、单包归档分发与原地升级机制。
+
+| 文档编号与标题 | 核心技术要点 | 现行状态 |
+| :--- | :--- | :--- |
+| [`02-codebuddy-workbuddy-import-spec.md`](file:///c:/workspace/allo/docs/agent-store/02-codebuddy-workbuddy-import-spec.md) | 导入管道时序图、“三处必填”安全凭据、物理产物卸载释放 | ✅ 已实现 |
+| [`03-codebuddy-compatibility-matrix.md`](file:///c:/workspace/allo/docs/agent-store/03-codebuddy-compatibility-matrix.md) | `CompatTriple` 三维推导、组件降级矩阵、兼容性升级断言 | ✅ 规则落地 |
+| [`17-plugin-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/17-plugin-spec.zh.md) | 容错解析流水线、敏感环境变量 `secret:<KEY>` 自动改写 | ✅ 现行规范 |
+| [`18-marketplace-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/18-marketplace-spec.zh.md) | 市场源清单校验、原子晋升机制、本地化降级回退链 | ✅ 现行规范 |
+| [`30-market-zip-hosting.zh.md`](file:///c:/workspace/allo/docs/agent-store/30-market-zip-hosting.zh.md) | ModelScope Zip 单归档托管、HEAD ETag 预检、百兆级下载加速 | ✅ 已落地 |
+| [`36-store-update-entry.zh.md`](file:///c:/workspace/allo/docs/agent-store/36-store-update-entry.zh.md) | `store/update-entry` 动词、“先装新后放旧”安全升级、保 ID 原地更新 | ✅ 已实施 |
+| [`37-market-download-policy.zh.md`](file:///c:/workspace/allo/docs/agent-store/37-market-download-policy.zh.md) | 启动/运行/更新三通道解耦、写穿 `config.toml`、连接器排除防停用 | 📋 待动工 |
+
+### 2.3 客户端与交互体验（Client & WebUI）
+提供面向终端用户的高阶交互体验与开箱即用的类型化 SDK。
+
+| 文档编号与标题 | 核心技术要点 | 现行状态 |
+| :--- | :--- | :--- |
+| [`11-webui-production-readiness.md`](file:///c:/workspace/allo/docs/agent-store/11-webui-production-readiness.md) | 生产化差距清单、`HttpOnly` Cookie 交换、多标签 Broadcast 总线 | 📋 设计规范 |
+| [`12-sdk-packaging.md`](file:///c:/workspace/allo/docs/agent-store/12-sdk-packaging.md) | npm 跨平台 `optionalDependencies` 原生分发、回环 WS 进程绑定 | 🔧 推进中 |
+| [`19-webui-codex-alignment.zh.md`](file:///c:/workspace/allo/docs/agent-store/19-webui-codex-alignment.zh.md) | Codex 交互骨架 4 层体系、命令面板、审批卡、计划树、Git 快照回退 | ✅ 关键闭环 |
+| [`22-webui-productionization.zh.md`](file:///c:/workspace/allo/docs/agent-store/22-webui-productionization.zh.md) | 四组生产化路线（安全/可观测/功能/协议对齐）、杜绝假保护红线 | 📋 已立项 |
+| [`28-webui-composer-connector-switch-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/28-webui-composer-connector-switch-plan.zh.md) | 连接器退出 `@` 提及、输入区抽屉式开关、行内 OAuth 发起 | ✅ 已落地 |
+| [`31-sdk-entry-shape.zh.md`](file:///c:/workspace/allo/docs/agent-store/31-sdk-entry-shape.zh.md) | SDK 入口命名重构（`launchHarness` / `Harness`）、零额外中转 | ✅ 已实现 |
+| [`35-sdk-expert-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/35-sdk-expert-export.zh.md) | SDK 目录导出 API（`exportAgent` / `exportTeam` / `materializePack`） | 🔧 实施中 |
+
+### 2.4 研发计划与工程门禁（Engineering Gates & Runbooks）
+提供全生命周期的里程碑进度、实测证据、质量门禁与发布操作规范。
+
+| 文档编号与标题 | 核心技术要点 | 现行状态 |
+| :--- | :--- | :--- |
+| [`09-release-readiness.md`](file:///c:/workspace/allo/docs/agent-store/09-release-readiness.md) | Gate 1~5 五级准入硬指标、9 份发布证据束清单、不可逆回滚断言 | 📋 门禁规范 |
+| [`13-p0-execution-plan.md`](file:///c:/workspace/allo/docs/agent-store/13-p0-execution-plan.md) | P0-A/B/C/D 四大工作包、真实生命周期闭环、崩溃强杀安全自愈 | ✅ P0 已关闭 |
+| [`15-store-chain-and-protocol-vnext-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/15-store-chain-and-protocol-vnext-plan.zh.md) | 四链路端到端闭环（专家/团/技能/连接器）、6 大核心断点彻底修复 | ✅ 四链全绿 |
+| [`16-sdk-webui-site-priority-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/16-sdk-webui-site-priority-plan.zh.md) | 34 项任务全貌（29 项完成/3 项部分/2 项延后）、四大工程方向主轴 | 🔧 核心已成 |
+| [`21-open-decisions.zh.md`](file:///c:/workspace/allo/docs/agent-store/21-open-decisions.zh.md) | D1~D17 主决策全矩阵、分批次推进状态、D-TEST-1 编译门归零 | ✅ 决策全闭环 |
+| [`23-compatibility-report-implementation.zh.md`](file:///c:/workspace/allo/docs/agent-store/23-compatibility-report-implementation.zh.md) | `CompatTriple` 代码实现、最差语义快照汇聚算法、降级阻断 | ✅ 已落地 |
+| [`25-release-runbook.zh.md`](file:///c:/workspace/allo/docs/agent-store/25-release-runbook.zh.md) | S0~S8 全流程发布操作手册、三大发布出口、7 项机械不变式断言 | ✅ 现行手册 |
+| [`agent-store-v1-test-cases.md`](file:///c:/workspace/allo/docs/agent-store/agent-store-v1-test-cases.md) | 全局测试公共口径、环境元数据标准、TC 归属总索引 | 🧊 测试总纲 |
+
+### 2.5 扩展集成与系统安全（Integration & Security）
+提供跨环境工具注入、外部智能体受控代理与用户凭据安全机制。
+
+| 文档编号与标题 | 核心技术要点 | 现行状态 |
+| :--- | :--- | :--- |
+| [`14-binary-size-trimming.zh.md`](file:///c:/workspace/allo/docs/agent-store/14-binary-size-trimming.zh.md) | 二进制构建瘦身方案、Feature Gate 条件裁剪、产物体积预算守卫 | 🔧 验证中 |
+| [`20-tool-injection-policy.zh.md`](file:///c:/workspace/allo/docs/agent-store/20-tool-injection-policy.zh.md) | Store 会话工具注入策略、三级 `config.toml [tools]` 优先级、Step 1~9 | ✅ 已落地 |
+| [`24-external-agent-skill-and-mcp-access.zh.md`](file:///c:/workspace/allo/docs/agent-store/24-external-agent-skill-and-mcp-access.zh.md) | 外部 Agent 技能目录读取（`skill/files`）、连接器受控代理调用（`connector/call`） | 🔧 阶段 1 完成 |
+| [`26-connector-schema-and-grant-policy.zh.md`](file:///c:/workspace/allo/docs/agent-store/26-connector-schema-and-grant-policy.zh.md) | 工具参数 Schema 上线、授权粒度由逐工具上移至连接器、解决盲签 | ✅ 已落地 |
+| [`27-conversation-binding-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/27-conversation-binding-plan.zh.md) | 每轮技能挂载（`conversation/send`）、会话级专家与团开场（`conversation/create`） | ✅ 主体落地 |
+| [`29-send-model-and-effort-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/29-send-model-and-effort-plan.zh.md) | 随轮次指定模型与思考等级、粘性生效模型、`fp-6` 升级 | ✅ 已落地 |
+| [`32-expert-pack-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/32-expert-pack-export.zh.md) | 专家与专家团可移植定义导出（`ExpertPack`）、R1~R11 接入责任清单 | ✅ 已实施 |
+| [`33-memory-master-switch.zh.md`](file:///c:/workspace/allo/docs/agent-store/33-memory-master-switch.zh.md) | 内置记忆系统总开关 `[memory] enabled`、四面同步关闭防御 | ✅ 已实现 |
+| [`34-connector-user-credentials.zh.md`](file:///c:/workspace/allo/docs/agent-store/34-connector-user-credentials.zh.md) | 用户 Key/Token 输入表单、Per-principal 命名空间隔离、自带 Server 注册 | ✅ 已实施 |
+
+### 2.6 早期历史总纲（Historical Foundations）
+作为项目早期立项时的总设计与路线纲要，历史正文已全部规整归档至文末附录，保留追溯价值。
+
+| 文档名称 | 历史角色与现行指针 | 状态 |
+| :--- | :--- | :--- |
+| [`agent-store-v1-roadmap.md`](file:///c:/workspace/allo/docs/agent-store/agent-store-v1-roadmap.md) | 早期演进路线与测试计划（现行规划详见 `16` 与 `25`） | 🗄️ 历史底稿 |
+| [`开发计划.md`](file:///c:/workspace/allo/docs/agent-store/开发计划.md) | 早期研发实施总纲（现行细则详见 `13` 与 `16`） | 🗄️ 历史底稿 |
+| [`技术方案.md`](file:///c:/workspace/allo/docs/agent-store/技术方案.md) | 早期技术方案总览（现行架构详见 `00`、`04`、`05`） | 🗄️ 历史底稿 |
+
+---
+
+## 3. 快速入门与阅读导航路径
+
+针对不同研发职责与角色的推荐阅读路线：
+
+- **新入组核心研发人员**：
+  先读 [`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md) 理解边界 $\to$ 读 [`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md) 掌握实体 $\to$ 读 [`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md) 了解内核装配 $\to$ 读 [`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md) 掌握公共契约。
+- **WebUI 前端与交互开发**：
+  先读 [`19-webui-codex-alignment.zh.md`](file:///c:/workspace/allo/docs/agent-store/19-webui-codex-alignment.zh.md) 明确 4 层交互骨架 $\to$ 读 [`28-webui-composer-connector-switch-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/28-webui-composer-connector-switch-plan.zh.md) 了解连接器抽屉 $\to$ 读 [`11-webui-production-readiness.md`](file:///c:/workspace/allo/docs/agent-store/11-webui-production-readiness.md) 掌握多标签状态管理。
+- **外部智能体与 SDK 集成方**：
+  先读 [`12-sdk-packaging.md`](file:///c:/workspace/allo/docs/agent-store/12-sdk-packaging.md) 了解平台包分发 $\to$ 读 [`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md) 查阅客户端 API $\to$ 读 [`32-expert-pack-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/32-expert-pack-export.zh.md) 查阅跨引擎导出。
+- **发布运维与质量管理**：
+  先读 [`25-release-runbook.zh.md`](file:///c:/workspace/allo/docs/agent-store/25-release-runbook.zh.md) 掌握 S0~S8 发布步骤 $\to$ 读 [`09-release-readiness.md`](file:///c:/workspace/allo/docs/agent-store/09-release-readiness.md) 校验 Gate 1~5 门禁 $\to$ 读 [`agent-store-v1-test-cases.md`](file:///c:/workspace/allo/docs/agent-store/agent-store-v1-test-cases.md) 校验测试覆盖。
+
+---
+
+## 4. 系统核心架构不变量（Architectural Invariants）
+
+在修改或扩展系统任何模块时，必须无条件遵循以下不可触碰的红线：
+1. **单一执行引擎**：Allo/Nomi 是唯一的底层智能体执行底盘，严禁引入第二个割裂的执行器。
+2. **完全 Opaque ID 体系**：禁止向外部公共层（SDK/WebUI/CLI）泄漏任何底层数据库自增主键、私有表名或系统物理绝对路径，所有公共标识严格为 UUIDv7。
+3. **零凭据明文持久化**：外部连接器 Token、API Key、OAuth 密钥必须按 `${secret:KEY}` 模板化，仅由宿主受控代理在内存中按需解析，严禁写入快照表、流式事件或终端响应。
+4. **统一单一协议 v1**：正式发版前全线收敛重构，以 `fp-<n>` 契约指纹严格防范接口漂移，不制造虚拟 v2 与冗长的迁移过渡期包袱。
+5. **杜绝假保护与假开关**：UI 呈现的任何配置项或操作按钮，底层必须具备真实的回写通道与服务端验证支持。
+
+---
+
+## 附录：历次发版记录与历史变更底稿 (Historical Release Notes & Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Agent Store 文档索引
 
 > 最后核对：2026-09-28（**商店条目更新（update）能力（doc 36）**：新增 `store/update-entry`（`POST /api/app-server/store/{marketplace_id}/entries/{entry}/update`）——**先导入并安装新版本，只有这次安装全部成功才释放旧版本**，失败时旧安装原样保留（`released_count: 0`），部分失败还会把新快照已装上的部分回滚，让条目落回可重试的旧版本；组件按 `component_id`（`wb-<plugin>-<slug>`，跨版本稳定）配对，专家**原地升级、Preset id 不变**（`PresetService::update`），连接器同名 upsert **复用同一 `mcp_servers` 行**（配置变了会被置为 disabled 直到重新探测，如实上报），技能按快照各自成目录、旧的删除；结果新增 `previous_version` / `previous_snapshot_id` / `released_count`（仅升级填）；`store/install-entry` 的「已装即 no-op」契约不变，安装永不偷偷升级。**同批修两个前置缺陷**：① 条目版本真进导入请求（`ImportRequest::declared_version`）——技能与连接器条目没有自带版本，此前快照被钉在 `1.0.0` 占位版本，`update_available` 恒为真且内容一改就撞 digest 冲突，顺带补上**此前根本没被读的技能市场索引**（`MarketIndex::read` 读 connectors.json + skill marketplace.json）；② 安装态写入按 `(snapshot_id, component_id)` 收窄（`mark_components_installed` / `set_components_disabled` / `clear_components_installed` 三处）——`component_id` 跨快照相同，不收窄则释放旧版本会把新版本的安装记录一起清掉（该缺陷在 `install/uninstall` 上此前已可达）。客户端 `store.update()` + `updateHint()` 由 `uninstall_reinstall` 改为 `update`，`StoreOperationOutcome` 补 `errors[]` / `warnings[]`（`18` §11 D10 收口）；WebUI 抽屉里那处说明改成真按钮（`21` D16 追记）；**指纹 `fp-11` → `fp-12`**（本仓 7 文件 10 处 + 站点 2 处，方法计数 `52 / 77` → `53 / 78`；`check:release-sync` 的站点计数 pattern 改为并集以兼容站点正在进行的文风规范化）；2026-09-17（**市场源改为 zip 单包托管（doc 30）**：`AppServerMarketplaceSourceKind` 新增 `zip`——一个归档、**归档根即市场根**；官方三个市场（experts/skills/connectors）从本站 `/source/<market>/…` 的逐文件托管迁到 ModelScope 归档，`experts` 首次获取由 14,714 个请求 / 611.3 MiB 降为 1 个请求 / 289.0 MiB，站点产物 22,706 → 约 742 个文件（只留 648 张目录页图标，`HOSTED_DEFAULT` 清空）；客户端用 `HEAD` 的 `X-Linked-Etag`（**内容 sha256**）判新旧并校验完整性、归档流式落盘且**不进入 staging**、解压走 `nomifun-common::zip_safe`（预算显式抬高：默认 256 MiB 装不下 611 MiB）；**指纹 bump 到 `fp-7`**（本仓 7 文件 10 处 + 站点 2 处，方法计数不变仍 `48 / 71`）；**顺带修掉两个真缺陷**——`looks_like_market` 漏了 `.codebuddy-plugin/marketplace.json`（官方 experts 市场根**只有**这一个清单，该布局的 github/git/zip 远程源一律被判「不像市场」），`plugin_marketplaces.source_kind` 的 CHECK 未含新值（迁移 `059` 重建表，带上 056/057 新增列）；`lib.rs` 里把未知 kind 静默当成 `url` 的 `_ =>` 兜底改为显式 `parse` + 跳过并告警；老用户 `config.toml` 迁移**只写文档不自动改写**；**三个归档已上传 ModelScope 并通过远端摘要回验**（`--verify-only` 三绿），客户端对真实归档的端到端见 `30` §9.6）；2026-09-15（**安装面五动词「做真事」：`install/run` 可重入（同快照不产生第二个 Preset）、`uninstall` 真正释放产物（skill 目录 / Preset / `mcp_servers` 行，已不在算成功、失败保留 `installed=1`）、`disable`/`enable` 真正移动运行时状态（skill 例外＝目录标记 `skill_disable_flag_only`）、新增结构化 `outcomes`（`action` 八值 + 稳定 `code` 闭集）、`store/install-entry` 版本感知（升级只有「卸载再安装」一条路）、client 新增 `store` 子客户端（20 例）、宿主管理面类型搬进 `protocol`、商店假「更新」控件已摘除；**协议指纹 bump 到 `2026-09-15`**（现有 DTO 加字段，8 处代码/夹具 + 2 处站点文档，方法计数不变）**；同日：**`agent/run` 加稳定码 `preset_disabled`、`team/run` 加 `agent_disabled`（点名成员，检查在 `resolve_team_members` 每次运行、先于 Connector 栅栏）**；2026-09-14：**`20` §9.5 + `16` §5.3：`config/get.mcp` 新增 `adopted`（宿主是否真的把这批声明注入会话——`servers` 描述文件、`adopted` 描述宿主），设置页据此分出「使用中 / 未使用 / 无法判断」三态；**协议指纹 bump 到 `2026-09-14`**（8 处代码/夹具 + 2 处站点文档，方法计数不变）**；同日：**`16` R16 追记 · 消息渲染：设置页三个错误字段改判别式联合 `ConfigMessage`，宿主散文不再过 `t()`（i18next 的 `looksLikeObjectPath` 会把 `mcp.json is not valid JSON: …` 截成冒号后半段）**；2026-09-13：**`16` R16 追记 + `20` §9.4：设置页新增只读 `mcp` 分区渲染 `config/get.mcp`（nav 三→四；该批零协议变更）；同日上一轮：`20` §7.9.1–§7.9.3/§9.4 补齐参考实现文档里的全部可选字段（`cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools`）并把 `headers` 的 `secret:NAME` 语义在三条装配路径收敛为一个函数；server 级工具过滤在注册**之前**裁剪；**无协议变更**，指纹保持 `2026-09-13`**；再上一轮 2026-09-12：**`21` D14 + `20` §7.9/§9.3：Agent Store 支持 Kimi 式 `~/.agent-store/mcp.json` 声明 MCP（用户级、纯内存注入、不投影进 `mcp_servers`），协议指纹 bump 到 `2026-09-13`**；更早 2026-09-11：新增 `22-webui-productionization.zh.md`；`16` C 档二次复核改判；**版本框架订正：发版前只有一个版本，统一称 v1，见 `16` §7 决策 4**；引用/口径统一 + 证据与 `TC-*` 正文并入编号文档；**`20` 重构：工具面表达层定为 `~/.agent-store/config.toml [tools]`，新增 `16` §7 决策 5**；**`20` Step 7 全部落地：`team/run` + Team 层委派放行，协议指纹 bump 到 `2026-09-12`**）
@@ -103,7 +295,57 @@
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
-## 本轮（2026-09-28 发布 `0.1.0-beta.8`）
+## 本轮（2026-09-29 实施 `37`，尚未发版）
+
+按 `37-market-download-policy.zh.md` 把「下载 / 更新 / 自动」拆成三条互不覆盖的通道，并落地：
+
+1. **启动通道（配置 + 环境变量）**：`[default_marketplaces.<id>]` 新增 per-source
+   `download_on_start`（缺省 `true`，保持「写进配置即启动下载」的旧语义，`false` 时只写注册行、
+   归档留给显式 `market/refresh`）；新增 `AGENT_STORE_MARKET_DOWNLOAD=eager|lazy|none`
+   （进程级覆盖，`none` 连注册都不做）与 `AGENT_STORE_CONFIG=<path>`（SDK 可指向自己的配置文件——
+   这是 per-source 字段对 SDK 使用者可用的前提）。`default_marketplace_plan` 改为
+   `(&Path, Option<MarketDownloadOverride>) -> Vec<DefaultMarketPlan>` 纯函数，
+   五种组合全在单测里。
+2. **运行期通道（`fp-13` 新增两个方法）**：`market/settings`（读）与 `market/settings-set`（写）
+   走 `/api/app-server/market-settings`（刻意避开 `/markets/{marketplace_id}` 的静态段遮蔽）。
+   真源是 `~/.agent-store/config.toml`：写面用 `toml_edit` 只改指名键并**回读文件**作答，
+   调度器每轮重读文件，故保存即生效；未知条目类型、超范围周期、空补丁、白名单外字段一律
+   `invalid_request` 且文件不动；`0` 是「关闭」的写法，读回是 `null`。
+3. **扫掠通道（受控自动升级）**：市场级 `auto_update` 的语义从「只刷新索引」扩为
+   **「刷新索引 + 自动升级从该市场安装的条目」**（`18` §9.2 的口径同步订正）。默认白名单
+   `["agent","team","skill"]`——**连接器绝不隐式包含**（其升级会因配置变化被置为停用，
+   无人值守等于静默掉线，`36` §3.4）；用户手动停用（组件 `disabled=1`）、
+   `blocked_reason` 非空、只导入未安装三种情况硬跳过；`entry_auto_update_kinds = []`
+   即回到旧行为。调度器从「`interval(cadence)` 启动时定死」改为「60s tick + 每轮判到期」，
+   周期因此可热改（`tokio::time::interval` 无法在运行期改周期，这是必须重构的原因）。
+   新读数 `last_sweep { at, refreshed, upgraded, failed[] }` 随读面返回（纯内存，不写盘）。
+4. **SDK 与 WebUI**：`packages/client` 新增 `getMarketSettings` / `setMarketSettings`；
+   `packages/sdk` 的 `SpawnOptions` 新增 `marketDownload` / `configPath`（映射为上面两个环境变量，
+   显式 `env` 仍优先）；设置 →「市场源」新增宿主级策略卡片（周期、条目类型多选、连接器警告、
+   上次扫掠读数与失败明细），中英双语键齐备。
+5. **指纹与跨仓**：`fp-12` → **`fp-13`**，方法计数 `53 / 78` → **`55 / 80`**；
+   本仓 7 文件 10 处 + 站点 2 文件全部更新，两语言 `typescript-sdk.md` 的指纹与计数同值。
+6. **文档**：新增本文档索引行与 `37` 全文；`05`（头部指纹、§3.3 新增一节、§4 决策表两行、
+   §4.6 市场源/路由/策略规格、归档新增 fp-13 段）、`18` §9.2、`30` §11、`36` §2、`21` D7、
+   `16` R16 同步订正。
+7. **自检读数**：`cargo test -p nomifun-app-server` **186 passed**；`cargo test -p nomifun-app --lib`
+   **381 passed / 1 ignored**（含 `app_server_store` 的两条新纯函数单测）；
+   `cd web && bun run typecheck` exit 0；`bun run test` **555 passed / 1 skipped**；
+   `bun run check:fingerprint` 绿（`fp-13`，本仓 10 处 + 站点 2 处）；`bun run check:release-sync`
+   绿（`55 / 80` 两语言同值）。
+8. **活体读数（已跑）**：`cargo build -p agent-store` 的 debug 二进制 + SDK `launchHarness` 驱动，
+   逐条通过——握手 `fp-13`；`download_on_start = false` 只注册不取包且**数据目录零归档**；
+   `AGENT_STORE_MARKET_DOWNLOAD=none` 时注册表与商店**都为空**；`market/settings-set` 写穿
+   `config.toml`（注释逐字存活、未知类型被拒后文件字节不变、**重启后仍在**）；
+   **60s tick 真跑了一轮**：`last_sweep = { refreshed: 1, upgraded: 0, failed: [] }`。
+   `bun scripts/smoke.ts`（mock 端到端）**smoke passed**；`bun run check:market` self-test 17/17。
+9. **尚未做（如实登记）**：**条目自动升级的活体读数**需要一个「装了旧版 → 市场出新版」的官方市场
+   夹具（官方归档由发布侧产出，本地无法构造），由两条纯函数单测 + 假 store 的升级段单测覆盖；
+   `smoke --real` 未跑；本次未发版（npm 四包与站点上线按 `25` runbook 留到发版轮，
+   站点仓 `typescript-sdk.md` 的指纹与计数已改好但未提交）。
+
+
+## 上一轮（2026-09-28 发布 `0.1.0-beta.8`）
 
 按 `25-release-runbook.zh.md` 走完整条发布链（S0–S8），三个出口全部完成：
 
@@ -585,4 +827,3 @@ ModelScope 的 `HEAD` 只给 `X-Linked-Etag`，不给 `Content-Length`），而 
    `cargo check -p nomifun-app-server --tests`、`-p nomifun-app --tests -p agent-store` 均 exit 0。
    **未做**：`web/` 那个面板至今没有渲染测试（它读 zustand client 并在 mount 时取数，现有多是
    prop 驱动的静态渲染），因此「未下载 → 下载按钮」这一映射没有自动化用例，只有 `tsc` + 人工。
-

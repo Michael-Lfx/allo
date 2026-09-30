@@ -1,3 +1,173 @@
+# 内置记忆总开关 `[memory] enabled` · 技术方案
+
+> **状态**：✅ **已实现落地**（2026-09-20，零 wire 变更，协议指纹保持不变）  
+> **核心原则**：四面一体停用 —— **一个布尔开关控制四个子系统面**，**按值透传防并发污染**，**Fail-Open 默认开启**，**宿主精准采纳**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+平台的内置记忆系统包含提示词上下文注入、`remember` 工具调用、轮后异步蒸馏以及记忆引用回写四大功能面。此前，系统仅提供了一个子项开关 `distill_enabled`（用于控制是否在每轮对话后发起额外的模型调用执行记忆提取，耗时约 6~15 秒）。
+
+### 1.2 现状与两大痛点
+1. **缺乏子系统级的总闸门**  
+   `distill_enabled` 仅能关闭蒸馏，无法彻底关闭内置记忆。用户若希望在特定场景（如严苛的排障环境、私有安全隔离或轻量无状态测试）下完全停用记忆能力，系统无能为力。
+2. **多面状态容易分叉与漂移**  
+   记忆系统的四个面跨越了两个核心底层模块：提示词注入与工具注册位于引擎层（`nomi-agent`），而蒸馏与引用回写位于后端管理层（`nomifun-ai-agent`）。若各模块自行读取配置或依赖全局静态变量，在并发会话与自动化测试中极易出现状态冲突与环境污染。
+
+### 1.3 核心开关矩阵对比
+
+| 开关组合 | 提示词段落注入 | `remember` 工具注册 | 轮后异步蒸馏 | 引用回写与计数 | 适用场景 |
+|---|---|---|---|---|---|
+| `enabled=true`<br/>`distill_enabled=true` | ✅ 注入 | ✅ 注册 | ✅ 发起蒸馏 (耗时 6~15s) | ✅ 回写 | **默认状态**：全功能开启 |
+| `enabled=true`<br/>`distill_enabled=false` | ✅ 注入 | ✅ 注册 | ❌ **跳过蒸馏** | ✅ 回写 | **快速交互**：保留记忆检索但消除轮次尾巴延迟 |
+| **`enabled=false`**<br/>(任意 distill 值) | ❌ **全停** | ❌ **全停** | ❌ **全停** | ❌ **全停** | **彻底禁用**：无状态隔离、轻量运行与故障排查 |
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 整体透传架构图
+
+系统采用 **“宿主启动读取一次，按值逐级透传”** 的设计模式，杜绝引擎层反向依赖服务端配置，同时避免使用进程级全局变量导致并发污染：
+
+```mermaid
+flowchart TD
+    subgraph ConfigLayer ["1. 配置文件层"]
+        File["~/.agent-store/config.toml\n[memory]\nenabled = false"]
+    end
+
+    subgraph HostLayer ["2. 宿主服务装配层 (App Server)"]
+        AdoptCheck{"宿主是否声明采纳?\n(--adopt-store-tool-policy)"}
+        File --> AdoptCheck
+        AdoptCheck -->|仅 apps/agent-store 采纳| ReadVal["解析为 memory_enabled: bool"]
+        AdoptCheck -->|web / desktop 不采纳| DefaultTrue["保持默认 true (Fail-Open)"]
+        
+        ReadVal --> Factory["放入依赖对象 AgentFactoryDeps"]
+        DefaultTrue --> Factory
+    end
+
+    subgraph DispatchLayer ["3. 会话构建解析层"]
+        Factory --> NomiConfig["注入 NomiResolvedConfig.memory_enabled"]
+    end
+
+    subgraph FacetsLayer ["4. 四大功能面统一阻断"]
+        NomiConfig --> EngineDir["收敛为 memory_dir = None"]
+        NomiConfig --> BackendDir["收敛为 distill_dir = None"]
+        
+        EngineDir --> F1["面 1: 系统提示词不包含记忆上下文"]
+        EngineDir --> F2["面 2: remember 工具不注册到会话"]
+        BackendDir --> F3["面 3: 对话结束后不触发异步蒸馏任务"]
+        BackendDir --> F4["面 4: 响应输出不回写引用计数与标记"]
+    end
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **真正的四面同步**：`enabled = false` 时四个面同时关闭，不存在任何部分生效的中间态。
+2. **纯值依赖与环境隔离**：配置值作为不可变字段伴随工厂和会话解析传递，保证并发测试与多会话环境零串扰。
+3. **安全容错与零破坏**：配置文件缺失、损坏或语法错误时一律 **Fail-Open** 维持开启；关闭仅影响运行期解析，**绝不物理删除**磁盘已有记忆数据。
+
+#### 明确的非目标
+- **不提供前端 WebUI 开关**：总开关定位为运维与宿主部署级配置，不开放界面交互与动态热改，避免制造未落地的“假开关”。
+- **不进入 `config/set` 写入白名单**：防止外部请求随意停用平台核心认知底座。
+- **不影响伙伴记忆库**：独立于伙伴伴侣人格数据（`shared/memory.db`），仅作用于内置文件型记忆系统。
+
+---
+
+## 3. 详细设计
+
+### 3.1 配置文件规范与排他性声明
+
+#### 1. TOML 配置形状
+开关置于 `~/.agent-store/config.toml` 文件中：
+
+```toml
+# ~/.agent-store/config.toml
+
+[memory]
+enabled = false           # 关掉内置记忆系统全部四个面（缺省为 true）
+distill_enabled = false   # 仅关掉轮后记忆蒸馏（缺省为 true）
+```
+
+#### 2. 重要排他说明（配置命名澄清）
+- **唯一真源**：仅认准 TOML 格式的 `~/.agent-store/config.toml`。
+- **排除项**：运行环境可能存在的 `<data-dir>/config.yaml` 属于网关与云端登录配置，与记忆系统无关。
+
+---
+
+### 3.2 宿主采纳位与 Fail-Open 容错
+
+#### 1. 宿主作用域隔离（`adopt` 门禁）
+由于同一份 `~/.agent-store/config.toml` 可能被多个不同角色的宿主读取，系统通过 `--adopt-store-tool-policy` 启动参数作为采纳开关：
+- 仅 `apps/agent-store` 专用宿主将 `adopt` 置为 `true` 并采纳 `[memory]` 设置；
+- 独立 Web 宿主及桌面宿主（Tauri）均忽略该配置（`adopt = false`），避免运维调试时误伤其他共存服务。
+
+#### 2. 容错规则（Fail-Open）
+- 配置文件缺失、语法错误、或未显式声明 `enabled` 字段时，逻辑统一解析为 `true`。
+- 保证系统在异常情况下优先提供完整服务能力，不因配置小错误使智能体失去上下文记忆。
+
+---
+
+### 3.3 四大消费面的门控实现
+
+四大消费面均巧妙地收敛为核心目录路径的 `Option` 判定，无需增加冗余逻辑通道：
+
+```rust
+// 1. 引擎层 (nomi-agent)：收敛为 memory_dir
+let memory_dir = if self.memory_enabled {
+    nomi_memory::paths::auto_memory_dir(cwd_path)
+} else {
+    None // 停用面 1（提示词段落）与 面 2（remember 工具）
+};
+
+// 2. 后端层 (nomifun-ai-agent)：收敛为 distill_dir
+let distill_dir = if !config_extra.memory_enabled {
+    None // 停用面 3（蒸馏 Task 拉起）与 面 4（引用回写）
+} else {
+    auto_memory_dir(cwd_path)
+};
+```
+
+- **面 1（提示词段落）**：`memory_dir` 为 `None` 时，系统提示词直接跳过记忆目录扫描，模型对历史记忆完全无感。
+- **面 2（`remember` 工具）**：当且仅当 `memory_dir` 为 `Some` 时才向模型注册 `remember` 工具，关闭时模型工具箱中无此工具。
+- **面 3（轮后记忆蒸馏）**：对话完成后，仅在 `distill_dir` 存在时才拉起蒸馏子任务，关闭后彻底消除 6~15 秒的额外模型请求延迟。
+- **面 4（引用回写）**：输出流沉降层仅在 `distill_dir` 存在时才解析 `<nomi-mem-citation>` 标签并累加命中权重，关闭后不做任何写盘。
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **配置结构选型** | **保持 `[memory]` 表结构加 `enabled` 键** | ❌ 做成标量 `memory = false`：破坏 TOML 表扩展性，后续无法平滑新增模型或路径覆写配置。 |
+| **D2** | **状态传递机制** | **启动期单次读取，按值注入依赖** | ❌ 进程级全局变量（Atomic/Mutex）：导致并发会话互相污染，且单元测试并行执行时产生伪失败。 |
+| **D3** | **配置容错策略** | **Fail-Open（错误保持开启）** | ❌ Fail-Closed：记忆属于核心服务能力，因文件 typo 导致能力静默下线是不可接受的严重故障。 |
+| **D4** | **数据清理边界** | **开关只管逻辑解析，绝不删除磁盘文件** | ❌ 关掉时自动归档或删除历史记忆文件：产生不可逆的数据破坏，违背配置开关的幂等可逆原则。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **默认与缺省开启** | 缺失配置文件或留空 `[memory]` 表时，`memory_enabled()` 恒返回 `true`。 |
+| **S2** | **两键独立性验证** | `enabled=false` 时，无论 `distill_enabled` 配何值，四大功能面均全停。 |
+| **S3** | **宿主采纳隔离** | 在 `adopt = false` 的宿主上即便文件写了 `false`，内部仍保持 `true`。 |
+| **S4** | **Fail-Open 验证** | 配置文件损坏或存在非法语法时，系统保持启动并回退为开启状态。 |
+| **S5** | **Prompt 与工具阻断** | `enabled=false` 时，`tool_names()` 中不包含 `remember`，系统 Prompt 不含记忆段。 |
+| **S6** | **蒸馏与回写阻断** | `enabled=false` 时，对话结束后的蒸馏子任务不被拉起，输出流不进行计数回写。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 33 · 内置记忆总开关 `[memory] enabled` · 实现方案
 
 > 状态：✅ **已实现**（2026-09-20）。代码落地 + 测试锁定，读数见 §9；**未提交**（工作树变更）。

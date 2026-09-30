@@ -1,3 +1,218 @@
+# Agent Store TypeScript SDK 规格 · 技术方案
+
+> 状态：✅ 现行正文（未正式发版，可改；发版前统一称 v1，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；包主体已实现（见 `12-sdk-packaging.md`）
+> 日期：2026-08-26（更新：2026-09-15）
+> 前置：[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md)、[`06-connector-oauth-security.md`](file:///c:/workspace/allo/docs/agent-store/06-connector-oauth-security.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)
+> 一句话原则：**作为 Versioned App Server Protocol 的类型安全客户端，严禁直接依赖 allo 内部数据库与私有结构，不私自发明 Wire 动词，严密隔离敏感凭据**
+
+---
+
+## 1. 背景与核心痛点
+
+TypeScript SDK 是上层应用（如 WebUI、Flowy 桌面端、Node.js 自动化脚本）对接 Agent Store 的主要通道。在设计与实现 SDK 时，必须解决以下核心痛点：
+
+### 1.1 核心痛点分析
+
+1. **客户端反向绑定内部实现**：若 SDK 直接依赖 allo 内部的数据库表名、内部会话 UUID 或私有路径，底层引擎重构将导致所有下游应用瘫痪。SDK 必须且只能依赖版本化的 App Server Protocol。
+2. **事件流不可靠性与状态不一致**：长连接下的推送通知可能存在丢包、乱序或重连断层。若客户端将本地推流事件当作唯一事实来源，将引发严重的 UI 状态漂移。必须确立“通知触发刷新，终态权威回填”的消费原则。
+3. **客户端私自扩展与概念侵入**：例如客户端看到 `update_available` 标志后，自行拼凑“先删后装”逻辑并伪装成单一更新动词；或者将易变不稳定的宿主底层配置文件操作暴露为强类型 API，导致兼容性负担不可控。
+4. **多环境适配复杂度**：Node.js、Electron 主进程与浏览器 Web 环境在传输层（WebSocket / IPC / Fetch）与凭据安全边界上差异显著，必须进行清晰的包分层。
+
+---
+
+## 2. 方案全景与架构拓扑
+
+### 2.1 SDK 分层与依赖架构
+
+```mermaid
+flowchart TD
+    subgraph MonorepoPackages ["SDK Monorepo 拆分设计"]
+        P_PROT["@flowy-agent-store/protocol<br/>(纯 TypeScript 类型定义 / 零运行时依赖)"]
+        P_CLI["@flowy-agent-store/client<br/>(领域客户端封装 / 状态机 / 事件聚合)"]
+        P_SDK["@flowy-agent-store/sdk<br/>(Node.js / Electron 接入 / launchHarness / 传输实现)"]
+        P_WEB["@flowy-agent-store/browser / react<br/>(预留: 浏览器环境传输与 Hooks)"]
+    end
+
+    subgraph WireProtocol ["App Server Protocol (v1)"]
+        W_WS["WebSocket (Localhost: RPC + Notification)"]
+        W_HTTP["HTTP (受控资产下载 / 静态导入)"]
+    end
+
+    subgraph BackendEngine ["allo Runtime (Rust)"]
+        APP_SRV["App Server 协议网关"]
+    end
+
+    P_PROT --> P_CLI
+    P_CLI --> P_SDK
+    P_CLI --> P_WEB
+    P_SDK --> W_WS
+    P_SDK --> W_HTTP
+    W_WS --> APP_SRV
+    W_HTTP --> APP_SRV
+```
+
+### 2.2 核心目标与非目标 (Goals & Non-Goals)
+
+- **核心目标**：
+  - 提供纯 TypeScript 类型定义的 `@flowy-agent-store/protocol`。
+  - 提供具备连接管理、重连、幂等生成与错误转换的 `AppServerClient`。
+  - 提供多轮对话句柄 `ConversationHandle` 与单次运行句柄 `AgentRunHandle`。
+  - 通过 `launchHarness` 实现开箱即用，单步直达 Client。
+- **明确非目标**：
+  - SDK 不保存、不处理上游 OAuth 的真实明文 Token。
+  - SDK 不在协议上发明虚假更新动词，升级调用必须对应真实 Wire 语义。
+  - SDK 对易变的宿主本地配置面（`config/get`、`skill/create` 等）仅暴露协议类型，刻意不提供 typed method，保持访问透明与稳定性边界。
+
+---
+
+## 3. 详细设计 (按领域模块内聚)
+
+### 3.1 核心包分工规范
+
+| 包名 | 职责定位 | 包含内容与依赖约束 |
+|---|---|---|
+| `@flowy-agent-store/protocol` | 协议契约类型基石 | 包含 Request / Response / Notification / ErrorCode 结构定义；禁止依赖 Node、DOM 或外部运行库。 |
+| `@flowy-agent-store/client` | 领域业务客户端 | 包含 `AgentClient`, `TeamClient`, `SkillClient`, `ConnectorClient`, `RunClient`, `StoreClient` 等；处理业务逻辑与事件聚合。 |
+| `@flowy-agent-store/sdk` | 官方开箱套件 | 默认携带 Node/Electron 的 `WebSocketTransport` 与 `launchHarness`；提供一键初始化与进程托管。 |
+
+---
+
+### 3.2 传输抽象与初始化握手
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as 宿主应用 (App)
+    participant Client as AppServerClient
+    participant Trans as Transport (WebSocket)
+    participant Server as App Server (Rust)
+
+    App->>Client: initialize()
+    Client->>Trans: connect()
+    Trans-->>Client: 连接建立完成
+    Client->>Trans: request("initialize", { clientInfo, capabilities })
+    Trans->>Server: 发送 initialize 请求
+    Server-->>Trans: 返回 InitializeResult (协议版本 / capabilities)
+    Trans-->>Client: 返回结果
+    Client->>Client: 校验协议指纹与版本兼容性
+    Client->>Trans: notify("initialized")
+    Client-->>App: 初始化成功 (isReady = true)
+```
+
+#### Transport 统一契约
+```ts
+export interface Transport {
+  connect(): Promise<void>;
+  request<T>(method: string, params: unknown): Promise<T>;
+  notify(method: string, params: unknown): Promise<void>;
+  onNotification(listener: (message: unknown) => void): () => void;
+  close(): Promise<void>;
+}
+```
+
+---
+
+### 3.3 资产与连接器客户端 (Catalog & Connectors)
+
+#### 1. 专家与团队导出 (`export()`)
+- `agents.export(id)` / `teams.export(id)`：返回便携式 `ExpertPack`。这是**唯一携带 Persona 正文的通道**（`get` 方法刻意省略 Persona 正文以减轻网络开销）。
+- 导出的只是静态配置定义，不含底层运行时执行语义；外部运行时必须自行实现调度。
+
+#### 2. 连接器动态凭据与免市场注册 (`register()`)
+- `credentials(id)` / `setCredentials(id, values)`：填入用户专属 API Key / Token。响应中敏感字段一律脱敏，永不返回明文 Secret。
+- `register(registration)`：支持开发者自带 MCP 配置文件直连注册，**模板即声明**（`${secret:KEY}` 自动转换为凭据输入表单），无需在官方市场建立索引条目。
+
+---
+
+### 3.4 执行与交互句柄 (Run & Conversation)
+
+#### 1. 单次执行句柄 (`AgentRunHandle`)
+```ts
+const handle = await launchRun(client.runs, {
+  agentId: "wb-software-company-software-engineer",
+  goal: "修复认证模块的 Token 刷新漏洞",
+  mentions: ["skill:git-tools"]
+});
+
+// 1. 流式响应事件循环
+for await (const event of handle) {
+  console.log(`[${event.type}]`, event.data);
+}
+
+// 2. 等待最终聚合结果 (权威回填)
+const result = await handle.finished;
+console.log("执行状态:", result.status);
+console.log("最终摘要:", result.final_response);
+```
+
+#### 2. 多轮长对话句柄 (`ConversationHandle`)
+- 提供类似 Codex-Thread 的会话模型：通过 `open()` 创建并订阅，通过 `send()` 发送多轮轮次。
+- 发送前自动安装事件收集器，`send()` 承诺阻塞直到当前轮次完成（`turn.status === "completed"`），并完成结果权威回填。
+
+---
+
+### 3.5 商店生命周期状态机 (`StoreClient`)
+
+SDK 向上封装了安装五动词，对外提供面向业务的状态机调用：
+
+```mermaid
+flowchart LR
+    A["store.list() / search()"] --> B["store.install(item, { waitForReady })"]
+    B --> C["安装真实物理物化完成"]
+    C --> D{"是否需凭据?"}
+    D -- 是 --> E["返回 readyIssue: authorization_required<br/>(提示用户填入凭据)"]
+    D -- 否 --> F["探活通过 ➔ 就绪可用"]
+    C --> G["store.uninstall(item) ➔ 物理产物彻底删除"]
+    C --> H["store.setEnabled(item, false) ➔ 运行时停用"]
+```
+
+- **安装幂等保障**：对已安装的条目再次调用 `install()` 直接返回 `reused=true`，绝不在安装中暗中升级。
+- **条目升级语义**：调用 `store.update()` 时，底层遵循“先安装新版本快照，验证成功后再释放旧版本”原则；若新版本安装失败，旧版本原样保留，绝不让用户处于“升到一半”的破损状态。
+
+---
+
+### 3.6 边界控制与稳定性红线
+
+1. **易变配置方法不提供 Typed Wrapper**：宿主配置面（`config/get`、`config/set`、`skill/create` 等）随时可能随平台底层配置调整而演变。SDK 在 `@flowy-agent-store/protocol` 中提供其类型，但在 Client 上不提供强类型方法。开发者若需调用，需显式使用 `transport.request(...)`，以此建立清晰的稳定性防线。
+2. **严防凭据出境**：SDK 在任何方法、拦截器或控制台调试日志中，严禁打印或缓存从服务端拉取的敏感 Token。
+
+---
+
+## 4. 异常处理与事件对齐准则
+
+### 4.1 弱保证事件流与权威拉取
+
+```mermaid
+flowchart TD
+    EVT["WebSocket 收到规范事件通知 (Notification)"] --> DEDUP["按 event_id 执行客户端去重"]
+    DEDUP --> UI["触发本地 UI 预刷新"]
+    EVT_ERR["网络断开 / 重连触发"] --> PULL["主动调用 runs.get(run_id) 权威查询"]
+    PULL --> MERGE["以服务端最新权威数据覆盖本地视图"]
+```
+
+- **消费原则**：WebSocket 通知仅作为即时刷新的“弱信号”。一旦发生断线重连，SDK 绝不发起历史事件重放请求，而是直接通过 `get()` 和 `result()` 拉取权威快照完成同步。
+
+---
+
+## 5. 验收测试用例 (TC-SDK)
+
+| 用例编号 | 测试目标与场景 | 核心断言与通过条件 |
+|---|---|---|
+| **TC-SDK-001** | AppServerClient 初始化 | 验证 WebSocket 连接建立、Initialize 握手、协议版本校验成功后进入 `ready` 状态。 |
+| **TC-SDK-002** | Catalog 读取与类型映射 | 验证 `agents.list()`、`connectors.list()` 能够正确反序列化为带有完整字段的 Typed 页面。 |
+| **TC-SDK-003** | 异步 Run 触发与句柄等待 | 验证 `launchRun` 启动任务，流式输出事件，最终通过 `handle.finished` 拿到完整的 `TurnResult`。 |
+| **TC-SDK-004** | 商店安装与真实就绪检测 | 验证 `store.install(item, { waitForReady: true })` 能在物化完成且探测通过后返回 `ready: true`。 |
+| **TC-SDK-005** | 凭据单向写入与打码 | 验证 `setCredentials` 成功写入，回包中的敏感字段值为 `[REDACTED]` 或空，不含明文密钥。 |
+| **TC-SDK-006** | 断线重连与状态同步 | 模拟网络中断，验证 SDK 自动重连后通过权威接口拉取状态，未完成任务无脏状态残留。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Agent Store TypeScript SDK 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议与 SDK 在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；包主体已实现（见 `12-sdk-packaging.md`）

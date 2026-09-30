@@ -1,3 +1,183 @@
+# CodeBuddy / WorkBuddy 兼容性矩阵 · 技术方案
+
+> 状态：✅ 状态推导规则已实现（`nomifun-importer/src/compat.rs`）；运行验收与状态升级仍需 Gate 3/Phase 2 验证
+> 日期：2026-08-26
+> 前置：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`02-codebuddy-workbuddy-import-spec.md`](file:///c:/workspace/allo/docs/agent-store/02-codebuddy-workbuddy-import-spec.md)
+> 一句话原则：**导入规范管“怎么解析”，本矩阵管“解析后能否运行”；严禁将“可解析”误判为“已就绪”，通过三维状态严守运行时安全准入红线**
+
+---
+
+## 1. 背景与核心痛点
+
+导入器完成对外部插件包（CodeBuddy/WorkBuddy）的解析与转换后，并不意味着这些组件可以直接安全地投入生产运行。需要建立兼容性矩阵的核心原因在于：
+
+### 1.1 核心痛点分析
+
+1. **“能解析”被误当作“能运行”**：以往系统容易混淆语法解析和运行时能力支持。例如解析了 Hook 或 LSP 的配置，就误以为运行时已具备沙箱托管能力，导致高危脚本在未受控环境下执行。
+2. **缺乏多维度的状态刻画**：一个组件可能在语义上可完全映射，但在当前 Rust 引擎中尚未进行端到端跑通，或者因为版权合规问题不能对外分发。单一的“兼容/不兼容”二元状态无法指导实际交付。
+3. **团队与权限语义的虚标风险**：外部插件可能声明复杂的团队自治、Mailbox 或动态权限继承。若未经审查就宣称完全支持，会导致用户对系统可靠性产生误解。
+
+---
+
+## 2. 方案全景与三维状态模型
+
+### 2.1 三维状态评估体系 (`CompatTriple`)
+
+为精确刻画资产状态，系统确立三维独立判定模型，禁止互相替代：
+
+```mermaid
+flowchart TD
+    subgraph Triple ["三维兼容性状态评估 (CompatTriple)"]
+        S["1. 语义状态 (semantic_status)<br/>语法和模型能否映射"]
+        R["2. 运行状态 (runtime_status)<br/>引擎与适配器是否验证"]
+        D["3. 分发状态 (distribution_status)<br/>合规与发布安全范围"]
+    end
+
+    S --> |推导规则| AGG["快照级聚合 (取最差语义)"]
+    R --> |升级门禁| GATE["Runtime Readiness Gate"]
+    D --> |版权覆盖| PUB["市场分发与安装决策"]
+
+    subgraph States ["状态取值"]
+        S --- S_VAL["compatible<br/>compatible-with-adapter<br/>manual-review<br/>unsupported<br/>pending-legal-review"]
+        R --- R_VAL["not-verified<br/>adapter-verified<br/>runtime-verified<br/>release-eligible"]
+        D --- D_VAL["local-only<br/>installable<br/>public"]
+    end
+```
+
+### 2.2 状态定义矩阵
+
+| 状态类别 | 状态取值 | 核心含义与准入条件 |
+|---|---|---|
+| **semantic_status** | `compatible` | 字段完整，能够无损映射为 Agent Store 原生领域对象并直接承载。 |
+| | `compatible-with-adapter` | 语义可完整保留，但需要经过 Runtime Adapter 进行结构转换、命名空间隔离或代理转发。 |
+| | `manual-review` | 涉及高风险操作（如外部 Hook 脚本、本地 CLI 执行），必须经过人工审计与安全配置后方可启用。 |
+| | `unsupported` | 目标系统无承载机制，或与当前架构原则冲突（如嵌套 Team、复杂公网 OAuth Relay）。 |
+| | `pending-legal-review` | 版权归属或商业分发授权尚未明确，严禁进入公开市场或默认安装包。 |
+| **runtime_status** | `not-verified` | 初始状态，代码尚未在真实环境中执行验证。 |
+| | `adapter-verified` | 适配层数据转换与单元测试通过。 |
+| | `runtime-verified` | 在底层 allo 引擎中完成真实 Agent/Team 执行、事件收集与产物生成。 |
+| | `release-eligible` | 满足所有发版阻断条件，准许集成发布。 |
+| **distribution_status**| `local-only` | 仅限本地测试或当前开发机可见。 |
+| | `installable` | 允许用户在受控的私有/桌面环境主动安装。 |
+| | `public` | 允许在官方公共商店上架并面向全部用户分发。 |
+
+---
+
+## 3. 详细设计：组件兼容总矩阵
+
+### 3.1 核心组件兼容性与降级策略
+
+| 来源组件 | 来源特征文件/字段 | 映射标准化对象 | allo 底座目标 | 语义状态 | 降级与安全策略 | 潜在风险 |
+|---|---|---|---|---|---|---|
+| **单 Agent** | `agents/*.md` (frontmatter + 正文) | `AgentDefinition` | `Preset` ➔ `ExecutionParticipant` | `compatible-with-adapter` | 解析为不可变快照，由 Runtime Driver 执行。 | 底座驱动注册与工具链路需单独实证。 |
+| **插件内 Agent** | 同上（位于插件内） | `AgentDefinition` | 同上 | `compatible-with-adapter` | 继承插件级 Skill 与 MCP 工具代理。 | 同上。 |
+| **Agent 级 MCP / 权限声明** | `agents/*.md` 的 `mcpServers` / `permissionMode` | 不映射为独立权限 | 不注入 | `ignored-by-source-runtime` | 来源平台官方明确忽略此字段，仅记录为忽略原因码。 | 避免误判 Agent 自带未授权连接器。 |
+| **Agent Team** | `teamInfo` (leadAgent, memberAgents) | `AgentTeamDefinition` | `AgentExecutionTemplate` + Planning Context | `compatible-with-adapter` (V1 最小) | 固定成员 + Leader 触发 planned DAG 规划；局部并行与重试。 | 暂不支持 Mailbox 与动态自治。 |
+| **嵌套 Team** | 来源声明嵌套 Team | 不生成 | 不支持 | `unsupported` | 导入期显式报错拦截，绝不静默接受。 | 来源平台自身亦不支持。 |
+| **Team 权限继承** | 声明成员继承 Leader 权限 | 策略记录 | 运行时有效权限交集 | `manual-review` | 不将 Prompt 作为授权，运行时求交集固化。 | 权限穿透与越权访问风险。 |
+| **Skill (技能)** | `skills/*/SKILL.md` (`$ARGUMENTS`) | `SkillDefinition` | Skill 服务与指令渲染 | `compatible` (主体) | 指令与模板完整保留；内部脚本默认禁止自动执行。 | 脚本可能包含恶意命令。 |
+| **Command** | `commands/*.md` | `CommandDefinition` | `plugin:command` 可调用定义 | `compatible-with-adapter` | 映射为前台可调用 Prompt 或参数化技能。 | 无宿主时退化为纯文本提示。 |
+| **Hook (生命周期)** | `hooks/hooks.json` (事件与 action) | `LifecycleHookDefinition` | 独立 Hook 运行时 (未落地) | `manual-review` (V1 默认不执行) | 仅做静态导入与语法校验，运行时严禁执行。 | 外部命令以宿主权限静默执行。 |
+| **MCP Connector** | `.mcp.json` / `mcpServers` | `ConnectorDefinition` | MCP Config / Client 运行时 | `compatible-with-adapter` | 强制工具命名空间 `connector__<slug>__<tool>`。 | 凭据泄露与未受控工具调用。 |
+| **标准 OAuth** | Discovery / PKCE / Loopback | `CredentialSchema` | OAuth 服务 | `compatible-with-adapter` | 登录 ➔ 存储 ➔ 传输注入 ➔ 401 刷新全链路受控。 | 注入阶段需真实环境探活。 |
+| **复杂 OAuth** | Relay / 固定回调 / 非标准端点 | 记录 `unsupported-auth` | 不启用 | `unsupported` | 标记原因码，阻断安装。 | 授权劫持与私钥泄露。 |
+| **CLI Connector** | `connectors/<id>/cli.json` | `ConnectorDefinition` (cli) | 受控 CLI 适配器 | `manual-review` | 需命令白名单、工作区沙箱与参数 Schema 校验。 | 任意 Shell 命令注入。 |
+| **LSP** | `.lsp.json` | `LspDefinition` | 语言服务器进程托管 | `manual-review` (元数据级) | 仅保留配置描述，不包装为普通 MCP 工具。 | 孤儿进程与内存占用失控。 |
+| **userConfig** | 配置表单声明与密钥字段 | `CredentialSchema` | `CredentialBinding` | `compatible-with-adapter` | 敏感项只存本地安全存储，对外一律 `[REDACTED]`。 | 凭据明文泄露。 |
+| **路径变量** | `${CODEBUDDY_PLUGIN_ROOT}` 等 | 映射为 `${AGENT_STORE_*}` | 快照相对定位 | `compatible` | 相对快照寻址，绝对路径与 `../` 越界告警阻断。 | 目录遍历逃逸。 |
+| **Dependencies** | `{name, version, marketplace}` | `PluginDependency` | 插件依赖解析器 | `compatible-with-adapter` | 跨市场依赖默认禁止，仅放行白名单。 | 恶意供应链依赖投毒。 |
+| **静态资源** | `themes/ settings/ monitors/` | 元数据保留 | 无宿主支持 | `unsupported` (V1) | 仅留存原始元数据，不提供运行时能力。 | 无运行时安全风险。 |
+
+---
+
+## 4. 运行等级分类与管理策略
+
+```mermaid
+graph TD
+    subgraph Tier1 ["第一梯队：目标主链路 (Runtime Gate 验证后可运行)"]
+        T1_1["单 Agent 专家"]
+        T1_2["纯指令型 Skill"]
+        T1_3["标准 MCP Connector (命名空间化)"]
+        T1_4["标准 Loopback OAuth"]
+        T1_5["userConfig 凭据模型"]
+    end
+
+    subgraph Tier2 ["第二梯队：需适配运行 (需 Adapter 特殊封装)"]
+        T2_1["Team V1 最小闭环 (Leader Planned)"]
+        T2_2["受控 CLI Connector (白名单)"]
+        T2_3["Command 提示调用"]
+    end
+
+    subgraph Tier3 ["第三梯队：需人工审查 (V1 默认不自动执行)"]
+        T3_1["Hook 生命周期脚本"]
+        T3_2["LSP 进程托管"]
+        T3_3["bin/ scripts 自动执行"]
+        T3_4["Team 权限自动继承"]
+    end
+
+    subgraph Tier4 ["第四梯队：明确不支持 (Block / Unsupported)"]
+        T4_1["嵌套 Team"]
+        T4_2["复杂公网 Relay OAuth"]
+        T4_3["未确认版权资源 (pending-legal-review)"]
+        T4_4["全局 Mailbox 与动态自治"]
+    end
+```
+
+---
+
+## 5. allo 底座复用与能力差距核对
+
+| allo 引擎基础设施 | 源码现状 | 对兼容性矩阵的影响与约束 |
+|---|---|---|
+| **Extension Registry** | 具备声明式 Manifest 与生命周期扩展 | 作为宿主底层扩展，不直接吞外部 CodeBuddy Manifest。 |
+| **Preset 解析链路** | 完整具备 `ResolvedPresetSnapshot` 机制 | 成为 `AgentDefinition` 的物理承载基础。 |
+| **Skill 解析服务** | 具备 frontmatter 与正文解析 | 纯指令类 Skill 可直接标记为 `compatible`。 |
+| **Hook 机制** | 仅具备内置生命周期钩子，无事件沙箱 | 外部 Hook 脚本无法安全隔离，必须标记 `manual-review` 并默认停用。 |
+| **OAuth 凭据存储** | 具备安全存储与刷新机制，注入待实证 | OAuth 状态定为 `compatible-with-adapter`，需验证传输注入。 |
+| **AgentExecutionTemplate** | 具备多参与者模板与快照机制 | 完美承载 V1 Team 的固定成员池。 |
+| **nomi_delegate (planned)** | 具备 DAG 规划与依赖调度基础设施 | 选定为 Team V1 的唯一计划触发入口，Leader 模型由此调起。 |
+| **事件流与审批流** | 具备持久化 Sequence、游标与审批拦截 | 事件模型高度可复用，对外只需进行 Opaque 归一化。 |
+
+---
+
+## 6. 状态升级与门禁校验规则
+
+兼容性状态决不能仅凭静态文件存在或语法解析成功就自动升级。组件从 `compatible-with-adapter` 或 `manual-review` 升级至 `compatible`，必须满足以下严苛的验收条件：
+
+```mermaid
+flowchart LR
+    A["组件导入完成<br/>(初始推导状态)"] --> B{"是否有破坏性变动?<br/>(Digest 改变)"}
+    B -- 是 --> A
+    B -- 否 --> C{"满足升级验收条件?<br/>(真实跑通测试用例)"}
+    C -- 否 --> D["保持原状态<br/>(拒绝晋级)"]
+    C -- 是 --> E["写入升级证据记录<br/>(升级状态生效)"]
+```
+
+### 6.1 升级验收条件清单
+
+1. **单 Agent 晋级**：`AgentDefinition` 能成功解析为不可变快照，写入 `ExecutionParticipant`，且真实 Runtime Driver 完成一次包含开始、事件与结果的完整异步 Run。
+2. **Skill 晋级**：SKILL.md、附随引用与参数能在真实 Prompt 中加载生效，文件路径完全落在快照沙箱内，无未声明的外部网络依赖。
+3. **Agent Team 晋级**：固定成员池物化成功，Leader 驱动 Planner 生成合法 DAG，依赖调度与局部并行在真实模型下跑通，Step 失败后重试与 Replan 机制闭环。
+4. **MCP Connector 晋级**：工具自动发现、命名空间前缀化、白名单过滤及受控调用全流程通过。
+5. **OAuth 晋级**：真实服务下的登录授权、凭据安全入库、请求自动注入、401 令牌刷新及重试全链路探活通过。
+
+### 6.2 升级证据审计记录要求
+
+每次状态升级必须在系统中记录不可篡改的审计条目：
+- `component_id`：组件规范标识符。
+- `old_status` / `new_status`：状态跃迁前后取值。
+- `verified_at`：通过验证的精确时间戳。
+- `verification_case_ids`：对应的测试用例编号（如 `TC-RT-001`）。
+- `evidence`：包含输入输出 Digest、日志片段及事件序列的证据凭证。
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # CodeBuddy / WorkBuddy 兼容性矩阵
 
 > 状态：✅ 状态推导规则已实现（nomifun-importer/src/compat.rs）；运行验收与状态升级仍需 Gate 3/Phase 2 验证

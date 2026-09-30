@@ -1,3 +1,191 @@
+# 兼容性三维报告实现规格 (Compatibility Report Implementation) · 技术方案
+
+> 状态：✅ 核心推导与聚合已落地（`nomifun-importer`）；代码与规格双向对齐
+> 日期：2026-09-11
+> 前置：[`03-codebuddy-compatibility-matrix.md`](file:///c:/workspace/allo/docs/agent-store/03-codebuddy-compatibility-matrix.md)
+> 一句话原则：**组件级独立生成 CompatTriple 三维元组，快照级按最差语义单向聚合，运行与分发两轴严守未经验证边界，拒绝虚标运行就绪度**
+
+---
+
+## 1. 背景与核心痛点
+
+[`03-codebuddy-compatibility-matrix.md`](file:///c:/workspace/allo/docs/agent-store/03-codebuddy-compatibility-matrix.md) 定义了兼容性的高层三维模型理论。但在代码工程落地时，如果缺乏严密的实现规格，会导致以下质量隐患：
+
+### 1.1 核心痛点分析
+
+1. **“机制上可桥接”被客户端误判为“已实测能跑”**：例如解析出一个 `agent` 组件时标记为 `compatible_with_adapter`，前端若不结合运行态，极易直接给用户展示“就绪绿色徽标”，而底层引擎尚未真正完成该 Agent 的端到端测试。
+2. **整包快照就绪度被局部高估**：一个插件包可能包含 10 个完美的 Skill，但携带了 1 个危险且未受控的外部 Hook。若不遵循“最差语义聚合”，该插件会被误判为安全可用。
+3. **推导状态无法持久化与复算**：导入结果若只保存在内存中，前端刷新后状态即丢失；若数据库存储格式非标准化，跨语言/跨客户端反序列化极易出错。
+
+---
+
+## 2. 方案全景与推导架构
+
+### 2.1 三维评估推导与投影全流程
+
+```mermaid
+flowchart TD
+    subgraph ImportPhase ["1. 导入解析期 (nomifun-importer)"]
+        PARSE["解析单个组件 (Skill / Agent / Team / Hook / Connector)"]
+        DERIVE["compat.rs 执行组件级推导 (带运行时参数校验)"]
+        TRIPLE["生成组件级 CompatTriple"]
+    end
+
+    subgraph AggregationPhase ["2. 快照聚合与持久化"]
+        AGG["snapshot_aggregate 执行最差语义聚合"]
+        SNAP_TRIPLE["生成快照级 CompatTriple (取最差语义)"]
+        DB_JSON["序列化为 JSON 写入 plugin_snapshots 表 (compatibility_json)"]
+    end
+
+    subgraph ProjectionPhase ["3. 协议投影与展示 (nomifun-app-server)"]
+        DECODE["decode_triple 反序列化 DB 记录"]
+        MAP["semantic_status() 映射为 AppServerCompatibilityStatus 枚举"]
+        PUBLIC_DTO["下发 AppServerCompatibilityTriple 供 UI 渲染三态徽标"]
+    end
+
+    PARSE --> DERIVE
+    DERIVE --> TRIPLE
+    TRIPLE --> AGG
+    AGG --> SNAP_TRIPLE
+    TRIPLE & SNAP_TRIPLE --> DB_JSON
+    DB_JSON --> DECODE
+    DECODE --> MAP
+    MAP --> PUBLIC_DTO
+```
+
+---
+
+## 3. 详细设计 (按模块内聚)
+
+### 3.1 核心数据结构与取词约束
+
+Rust 核心结构体定义于 `crates/backend/nomifun-importer/src/models.rs`：
+
+```rust
+pub struct CompatTriple {
+    pub semantic_status: String,     // 语义轴：结构和模型能否映射进系统
+    pub runtime_status: String,      // 运行轴：底座与适配器是否完成真实执行验证
+    pub distribution_status: String, // 分发轴：是否具备合规分发许可
+    pub reasons: Vec<String>,        // 稳定的短横线原因码清单
+}
+```
+
+#### 状态取值词表与常量收敛
+- **语义状态 (`semantic_status`)**：`compatible`, `compatible_with_adapter`, `manual_review`, `unsupported`, `pending_legal_review`。
+- **运行状态 (`runtime_status`)**：`not-verified` ➔ `adapter-verified` ➔ `runtime-verified` ➔ `release-eligible`。
+- **分发状态 (`distribution_status`)**：`local-only`（V1 阶段恒为此值，禁止对外公开发布）。
+- **稳定原因码 (`reasons`)**：
+  - `ignored-by-source-runtime`：来源平台官方明确忽略的字段（如插件 Agent 的 `mcpServers`）。
+  - `unsupported-auth`：复杂或未受支持的认证流程。
+
+---
+
+### 3.2 组件级推导逻辑规范
+
+所有组件推导统一调用受保护的 `triple()` 构造函数，该函数**强制固定**：
+$$\text{runtime\_status} = \text{"not-verified"}, \quad \text{distribution\_status} = \text{"local-only"}$$
+
+```rust
+fn triple(semantic_status: &str, reasons: Vec<String>) -> CompatTriple {
+    CompatTriple {
+        semantic_status: semantic_status.to_owned(),
+        runtime_status: RUNTIME_NOT_VERIFIED.to_owned(),
+        distribution_status: DIST_LOCAL_ONLY.to_owned(),
+        reasons,
+    }
+}
+```
+
+#### 各组件推导行为矩阵
+
+| 组件类型 (`kind`) | 推导函数签名 | 推导得出的 `semantic_status` | 核心判定逻辑与理由代码 (`reasons`) |
+|---|---|---|---|
+| `skill` | `skill()` | `compatible` | 唯一开箱原生支持。Markdown 指令与模板完整保留；内部脚本默认关闭。 |
+| `agent` | `agent(has_ignored_permission_fields)` | `compatible_with_adapter` | 需由 Preset 适配承载；若检测到 `mcpServers` 注入原因码 `ignored-by-source-runtime`。 |
+| `team` | `team(all_members_resolved)` | 成员全部解析 ➔ `compatible_with_adapter`<br/>成员缺失 ➔ `manual_review` | 固定成员由 AgentExecutionTemplate 承载；成员未解析必须人工介入审查。 |
+| `command` | `command()` | `compatible_with_adapter` | 转换为用户可调用的 Prompt/Skill 契约。 |
+| `connector` | `connector()` | `compatible_with_adapter` | 强制进行工具命名空间隔离，运行时校验凭据。 |
+| `credential` | `credential()` | `compatible_with_adapter` | 导入期仅建立 Schema 结构，敏感数据只存引用。 |
+| `dependency` | `dependency()` | `compatible_with_adapter` | 跨市场依赖默认禁止，需显式白名单放行。 |
+| `hook` | `hook()` | `manual_review` | 外部生命周期脚本未经沙箱隔离，默认静止执行。 |
+| `lsp` | `lsp()` | `manual_review` | 进程托管能力尚未闭环，仅保留元数据。 |
+| `script` | `script()` | `manual_review` | 导入期严禁执行外部二进制或 Shell 命令。 |
+
+---
+
+### 3.3 快照级“最差语义”单向聚合算法
+
+整张快照的综合评价取所有组件中“最差”的语义状态，**只降不升**：
+
+$$\text{优先级：} \text{manual\_review} > \text{unsupported} > \text{compatible\_with\_adapter} > \text{compatible}$$
+
+```rust
+pub fn snapshot_aggregate(components: &[Component]) -> CompatTriple {
+    let mut semantic = "compatible".to_owned();
+    for component in components {
+        match component.compatibility.semantic_status.as_str() {
+            "manual_review" => semantic = "manual_review".to_owned(),
+            "unsupported" if semantic != "manual_review" => semantic = "unsupported".to_owned(),
+            "compatible_with_adapter" if semantic == "compatible" => {
+                semantic = "compatible_with_adapter".to_owned()
+            }
+            _ => {}
+        }
+    }
+    // 原因码去重并截断保留最多 8 条
+    reasons.truncate(8);
+    triple(&semantic, reasons)
+}
+```
+
+- **聚合表现**：全为 Skill ➔ `compatible`；一旦混入 1 个 Hook ➔ 整包降级为 `manual_review`。
+
+---
+
+### 3.4 持久化与公共协议投影流
+
+1. **数据库存储**：组件级与快照级三维元组序列化为 JSON，落入 SQLite `plugin_snapshots` 表的 `compatibility_json` 列。
+2. **协议 DTO 转换**：`nomifun-importer` 通过 `to_public_triple()` 转换为 `nomifun_api_types::AppServerCompatibilityTriple`。
+3. **前端枚举映射**：`nomifun-app` 通过 `semantic_status()` 映射为强类型枚举 `AppServerCompatibilityStatus`，下发给 WebUI 渲染徽标：
+   ```rust
+   match triple.semantic_status.as_str() {
+       "compatible"              => Compatible,
+       "compatible_with_adapter" => CompatibleWithAdapter,
+       "manual_review"           => ManualReview,
+       "unsupported"             => Unsupported,
+       "pending_legal_review"    => PendingLegalReview,
+       _                         => Unsupported,
+   }
+   ```
+
+---
+
+## 4. 实现期硬约束 (防踩坑指南)
+
+1. **导入期两轴恒定不变**：在导入阶段，`runtime_status` 恒为 `not-verified`，`distribution_status` 恒为 `local-only`。导入器自身绝不推进运行与分发两轴的升级。
+2. **`compatible_with_adapter` 绝不等于已验证可用**：该状态仅说明架构上有适配桥梁，端到端可用性必须依赖真实执行测试（Runtime Gate）。
+3. **聚合算法仅作用于语义轴**：快照级聚合只对 `semantic_status` 求最差值，运行态与分发态在快照级依然保持默认未验证状态。
+4. **异常回退兜底**：反序列化损坏的旧数据时，系统强制安全降级回退为 `unsupported / not-verified / local-only`，防止脏数据引发 Panic。
+
+---
+
+## 5. 组件扩展标准化 SOP (5 步清单)
+
+若未来需接入新的资产组件类型，严格按以下步骤扩展：
+1. **常量定义**：在 `nomifun-importer/src/models.rs` 中新增 `KIND_*` 常量。
+2. **推导实现**：在 `compat.rs` 中编写 `fn <kind>() -> CompatTriple`，必须通过 `triple()` 构造。
+3. **聚合覆盖**：在 `snapshot_aggregate` 的 `match` 中确认该状态落在正确的降级优先级阶梯中。
+4. **协议映射**：在 `app_server_importer.rs` 的 `semantic_status()` 中补充分支映射。
+5. **单元测试回归**：在 `compat_tests.rs` 中增加单测，断言矩阵推导与最差聚合行为符合预期。
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # 兼容性三维报告 · 实现总结
 
 > 状态：实现落地记录（与 `03-codebuddy-compatibility-matrix.md` 配套；03 是规格，本文是代码落地）

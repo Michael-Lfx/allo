@@ -1196,6 +1196,82 @@ pub struct AppServerMarketplaceRefreshResult {
     pub warnings: Vec<String>,
 }
 
+/// `market/settings`: the host's **effective** market policy (doc `37` §3.2).
+///
+/// Two independent questions in one view: *when* the background sweep runs
+/// (`auto_update_interval_hours`) and *what it may touch*
+/// (`entry_auto_update_kinds`). Both are read from the host's `config.toml` on
+/// every call — there is no in-memory override layer to disagree with the file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketSettings {
+    /// Sweep cadence in hours. `None` = the background sweep is off.
+    pub auto_update_interval_hours: Option<u64>,
+    /// Entry kinds the sweep may auto-upgrade (`agent` / `team` / `skill` /
+    /// `connector`). **Empty = upgrade nothing**, i.e. the sweep only refreshes
+    /// market indexes, which is the behaviour before doc `37`. `connector` is
+    /// never implicit (see [`AppServerMarketSettingsPatch`]).
+    pub entry_auto_update_kinds: Vec<String>,
+    /// Whether this host runs a sweep at all. A host with no resolved config
+    /// path (the desktop host) reports `false` and never sweeps, so a client
+    /// must not read "a cadence is set" as "updates will happen".
+    pub sweep_enabled: bool,
+    /// The most recent sweep, or `None` before the first one. **In memory only**
+    /// — it is a runtime reading, not configuration, so it never round-trips
+    /// through the file.
+    pub last_sweep: Option<AppServerMarketSweepReport>,
+}
+
+/// `market/settings-set` patch (doc `37` §3.2, D2/D3).
+///
+/// Every field is `Option` so a patch rewrites exactly the keys it names
+/// (宁缺毋滥): the two are independent, and an absent one leaves the file
+/// untouched. `deny_unknown_fields` keeps a typo a hard refusal instead of a
+/// silently dropped field — the same boundary `AgentStoreConfigPatch` draws.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppServerMarketSettingsPatch {
+    /// Absent = unchanged; `0` = off; `> 0` = hours between sweeps. `0` is the
+    /// off spelling because the host's own `cadence()` already reads `0` that
+    /// way — one convention, not two.
+    #[serde(default)]
+    pub auto_update_interval_hours: Option<u64>,
+    /// Absent = unchanged; `[]` = upgrade nothing. Members are validated against
+    /// the four entry kinds and refused otherwise, so a typo cannot masquerade
+    /// as "the sweep decided not to touch that kind".
+    #[serde(default)]
+    pub entry_auto_update_kinds: Option<Vec<String>>,
+}
+
+impl AppServerMarketSettingsPatch {
+    /// True when the request named at least one field.
+    pub fn names_any_key(&self) -> bool {
+        self.auto_update_interval_hours.is_some() || self.entry_auto_update_kinds.is_some()
+    }
+}
+
+/// One background sweep's reading (doc `37` §3.2, D8).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketSweepReport {
+    /// Epoch ms when the sweep finished (the same clock as `added_at`).
+    pub at: i64,
+    /// Markets whose index refresh succeeded this round.
+    pub refreshed: u32,
+    /// Entries actually upgraded.
+    pub upgraded: u32,
+    /// Candidates that failed. Never silently dropped: an unattended upgrade
+    /// that keeps failing has to leave a reading behind.
+    pub failed: Vec<AppServerMarketSweepFailure>,
+}
+
+/// One entry a sweep refused to upgrade, with the host's own reason.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketSweepFailure {
+    /// `<marketplace_id>/<entry_name>` — the [`AppServerStoreItem::id`] spelling.
+    pub id: String,
+    /// Server-authored prose (not an i18n key).
+    pub error: String,
+}
+
 // ---------------------------------------------------------------------------
 // Store (winget-style aggregated catalog over all enabled marketplaces)
 // ---------------------------------------------------------------------------

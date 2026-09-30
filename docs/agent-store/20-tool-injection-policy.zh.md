@@ -1,3 +1,169 @@
+# Agent Store 工具注入策略（Tool Injection Policy）· 技术方案
+
+> **状态**：✅ **已实施落地**（2026-09-11 重构落地，Step 1–7 全部合入）  
+> **核心原则**：最小必要特权与确定性减项 —— **以 `~/.agent-store/config.toml [tools]` 为唯一宿主策略真源**，**仅保留工作区沙箱与扩展构件核心工具**，**坚决剥离宿主控制类与业务专属 Sink**，**采用“只做减项”模型杜绝 MCP 工具被误杀**。
+
+---
+
+## 1. 背景与核心痛点
+
+### 1.1 业务背景
+Agent Store 创建的会话（包括普通智能体对话与 `team/run` 团队编排）运行在宿主底座之上。引擎底层具备数十种原生系统工具（如代码补全 LSP、浏览器自动化、屏幕控制、媒体合成等）。
+
+### 1.2 现状与三大痛点
+在确立本策略前，工具链注入存在边界混乱与安全越权隐患：
+
+1. **三份配置文件并存，工具策略无从归属**  
+   系统内同时存在用户全局配置（`~/.config/nomi/`）、工作区配置（`<workspace>/.nomi.toml`）与 Store 专属配置（`~/.agent-store/config.toml`）。缺乏明确的权威归属，导致 Store 专用会话无法独立受控。
+2. **非受限宿主级工具泛滥，存在安全越界风险**  
+   若不加限制地注入 `Computer`（屏幕/鼠标控制）、`Browser`（浏览器自动化）、`Lsp`（全系统代码分析）以及云端媒体生成等专用 Sink，Store 智能体极易产生非预期的外部副作用。
+3. **白名单陷阱导致 MCP 工具被全盘误杀**  
+   若采用粗暴的“内置工具白名单”机制，后续用户动态安装的第三方 MCP 连接器工具由于不在静态白名单内，会被系统全盘连带拦截，导致连接器彻底失效。
+
+### 1.3 核心能力设计矩阵
+
+| 工具分类 | 代表工具 | 处置动作 | 策略理由 |
+|---|---|---|---|
+| **基础文件与沙箱执行** | `Read`, `Write`, `Grep`, `Glob`, `Bash` | **保留** | 智能体编程与任务处理的基础底座，严格受限于工作区目录沙箱。 |
+| **技能与连接器扩展** | `Skill`, `Connector (MCP Tools)`, `ToolSearch` | **保留** | Agent Store 的核心价值资产；`ToolSearch` 支持延迟探测加载。 |
+| **团队协同与规划** | `update_plan`, `nomi_delegate` | **保留** | 支撑专家团协作与 DAG 规划任务必不可少的调度入口。 |
+| **宿主控制与自动化** | `Computer`, `Browser`, `Lsp` | **坚决关闭** | 避免脱离用户监管直接操纵操作系统或发起外网自动化冲浪。 |
+| **特定业务专属 Sink** | Media（绘图/视频）、Insights、Companion 记忆 | **坚决关闭** | 属于特定业务线私有逻辑，不进入开放智能体通用会话。 |
+
+---
+
+## 2. 方案全景与架构设计
+
+### 2.1 工具注入六层分层过滤流水线
+
+```mermaid
+flowchart TD
+    subgraph L1_Assembly ["L1 组装层 (AgentFactoryDeps)"]
+        Deps["根据部署宿主初始化依赖对象\n(关闭 Media/Insights/Companion 等未挂载 Sink)"]
+    end
+
+    subgraph L2_Factory ["L2 工厂层 (factory/nomi.rs)"]
+        Authority["解析权限边界与运行时类型\n(确立基础工作区 write_root)"]
+    end
+
+    subgraph L3_Manager ["L3 管理层 (manager/nomi/agent.rs)"]
+        ConfigRead["读取 ~/.agent-store/config.toml [tools]\n解析 enabled / disabled 策略"]
+    end
+
+    subgraph L4_Bootstrap ["L4 引导层 (bootstrap.rs)"]
+        Registry["填充 ToolRegistry 底座\n(内置工具 + MCP 代理 + 延迟加载桩)"]
+        SubtractiveFilter["执行减项过滤 (retain_named)\n剔除 disabled 列表中的工具"]
+    end
+
+    subgraph L5_Dynamic ["L5 动态补齐层"]
+        ExtraTools["挂载运行时必需的 update_plan 与团队 delegate"]
+    end
+
+    subgraph L6_Runtime ["L6 运行期沙箱约束"]
+        Execution["进入模型对话循环 (工作区路径守卫 + 审批名单)"]
+    end
+
+    Deps --> Authority
+    Authority --> ConfigRead
+    ConfigRead --> Registry
+    Registry --> SubtractiveFilter
+    SubtractiveFilter --> ExtraTools
+    ExtraTools --> Execution
+```
+
+### 2.2 目标与非目标
+
+#### 核心目标
+1. **单一策略真源**：以 `~/.agent-store/config.toml` 的 `[tools]` 段作为 Store 会话工具策略的唯一权威管理面。
+2. **纯粹的减项模型**：采用“允许默认基础工具，仅声明禁止项（Subtractive）”模式，保证动态安装的 MCP 工具开箱即用。
+3. **消除宿主交叉污染**：通过启动参数隔离，确保针对 Store 宿主的工具策略不误伤共存的独立桌面端或云端环境。
+
+#### 明确的非目标
+- **不替代运行期沙箱隔离**：本策略负责“注入哪些工具”，不替代底层的路径穿越检查与执行审批机制。
+
+---
+
+## 3. 详细设计
+
+### 3.1 模块一：配置结构与唯一真源
+
+#### 1. 配置文件规范
+Store 专属策略声明于 `~/.agent-store/config.toml`：
+
+```toml
+# ~/.agent-store/config.toml
+
+[tools]
+# 减项排除列表 (支持名称与 MCP Glob 模式)
+disabled = [
+  "Computer",
+  "Browser",
+  "Lsp",
+  "mcp__dangerous_*__*"
+]
+
+# 免审批自动放行清单
+allow_list = ["Read", "Grep", "Glob"]
+```
+
+#### 2. 宿主位防污染隔离（`adopt` 门禁）
+由于用户可能在同一机器上同时运行桌面版 Flowy 与独立的 `agent-store` 服务：
+- 系统引入 `--adopt-store-tool-policy` 启动标记，**仅在 `agent-store` 专用宿主进程上将其置为 `true`**；
+- 桌面端及其他服务即便读取到同一配置文件，也坚决不采纳该策略，消除跨宿主配置污染。
+
+---
+
+### 3.2 模块二：工具保留与剥离落地矩阵
+
+#### 1. 基础保留清单（严格收敛至工作区沙箱）
+- **文件操作**：`Read`、`Write`、`Grep`、`Glob`（工作目录严格锚定在会话指定工作区内，禁止逃逸）；
+- **执行命令**：`Bash`（受限于工作区与系统调用边界）；
+- **构件与技能**：`Skill`、`ToolSearch`（支持大规模 MCP 工具的轻量化延迟检索与加载）；
+- **协同支撑**：`update_plan`（用于维护任务进度与思考步骤）。
+
+#### 2. 必须剥离的能力落地手法
+- **未挂载 Sink 彻底断开**：在 `AgentFactoryDeps` 依赖组装阶段，直接将 `media_sink`、`insights_sink`、`companion_sink` 置为 `None`，从物理内存对象级别杜绝此类工具被创建。
+- **配置黑名单物理剔除**：在引导层（Bootstrap）填充 `ToolRegistry` 后，立即按照 `disabled` 配置执行 `retain_named` 过滤，确保模型工具定义列表中无残留。
+
+---
+
+### 3.3 模块三：特例工具 `nomi_delegate` 的团队保留
+
+在多 Agent 协同体系中，团队（Team）的 Leader 必须依靠 `nomi_delegate` 工具将子任务派发给指定的专家成员：
+- **坚决保留**：`nomi_delegate` 作为团队规划的核心枢纽，在会话中必须予以放行；
+- **实现收敛**：关闭旧版本仅支持简单并发的 embedded 实现，全面收敛至由服务端统一调度的协同架构，确保状态机流转可追溯。
+
+---
+
+## 4. 核心决策与权衡
+
+| 编号 | 决策点 | 选定方案 | 放弃的替代方案与理由 |
+|---|---|---|---|
+| **D1** | **策略模型设计** | **采用“只做减项（Subtractive）”模型** | ❌ 采用全量白名单模型：动态安装的 MCP 工具其名称无法提前预知，白名单会导致所有连接器无法使用。 |
+| **D2** | **配置真源归属** | **锚定于 `~/.agent-store/config.toml`** | ❌ 放在全局 `~/.config/nomi`：与桌面版设置耦合；<br/>❌ 放在工作区目录：分散在各个会话目录，无法集中统一管理。 |
+| **D3** | **宿主控制类处置** | **一律默认剥离（禁用）** | ❌ 默认放开并依赖模型自律：屏幕截图与桌面控制对后台无头智能体风险极大，必须物理禁用。 |
+| **D4** | **协同委派工具** | **保留并收敛为服务端统一调度** | ❌ 全盘移除 delegate：导致专家团（Team）完全无法执行子任务委派，丧失协同能力。 |
+
+---
+
+## 5. 验收标准与测试矩阵
+
+| 编号 | 验证场景 | 断言标准与验收口径 |
+|---|---|---|
+| **S1** | **基线工具完整就绪** | 会话初始化后，`tool_names()` 包含 `Read`、`Write`、`Grep`、`Glob` 等基础沙箱工具。 |
+| **S2** | **禁用工具物理剔除** | 会话初始化后，`Computer`、`Browser`、`Lsp` 绝对不出现在模型的注册工具列表中。 |
+| **S3** | **MCP 通配符减项** | 配置 `disabled = ["mcp__test__*"]` 后，对应前缀的连接器工具被精确过滤，其余 MCP 工具正常保留。 |
+| **S4** | **宿主隔离生效** | 在未开启 `adopt` 标记的宿主中，`[tools]` 中的 `disabled` 项不被采纳，保持宿主自身原生能力。 |
+| **S5** | **团队委派可用** | 运行专家团任务时，Leader 能够正常触发 `nomi_delegate`，任务顺利派发给下游专家。 |
+
+---
+
+## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)
+
+> **归档说明**：以下完整保留重构前的原始技术底稿、历次讨论与历史记录全文，供历史追溯、协议字段详细对照与技术审计。
+
+---
+
 # Agent Store 工具注入策略（Tool Injection Policy）
 
 > 状态：设计规格 + 落地记录（2026-09-11 重构并实施；Step 1–7 已落地，逐批记录见 §9.1／§9.2／§9.2.1／§9.2.2；**未覆盖项**亦在各批登记）
