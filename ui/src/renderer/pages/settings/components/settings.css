@@ -117,7 +117,7 @@
 }
 
 .flowy-settings-row__control--field {
-  width: clamp(220px, 30cqi, 360px);
+  width: clamp(220px, 30cqi, 280px);
 }
 
 .flowy-settings-row__control--actions {
@@ -126,7 +126,7 @@
 }
 
 .flowy-settings-row__control--compound {
-  width: clamp(280px, 40cqi, 440px);
+  width: clamp(220px, 40cqi, 280px);
 }
 
 .flowy-settings-row__control--compound .arco-radio-group {
@@ -251,7 +251,7 @@
   background: var(--flowy-raised);
   box-shadow: var(--flowy-shadow-structure);
   padding: 10px 12px;
-  animation: flowy-settings-action-bar-enter var(--flowy-motion-state) var(--flowy-ease-enter);
+  animation: flowy-settings-action-bar-enter var(--flowy-motion-base) var(--flowy-ease-enter);
 }
 
 .flowy-settings-action-bar .arco-btn {
@@ -290,7 +290,10 @@
   height: 2px;
   border-radius: 999px;
   background: var(--flowy-selected-fg);
-  transition: transform var(--flowy-motion-state) var(--flowy-ease-move);
+  transform-origin: left center;
+  /* Arco writes inline left/width. Transitioning only transform lets those
+     snap; a driver may then move the bar with translateX + scaleX. */
+  transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
 }
 
 .flowy-settings-tabs .arco-tabs-header-title:focus-visible {

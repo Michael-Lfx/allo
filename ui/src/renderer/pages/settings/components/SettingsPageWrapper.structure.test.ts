@@ -25,7 +25,9 @@ describe('SettingsPageWrapper layout contract', () => {
       styles.indexOf('.flowy-settings-tabs .arco-tabs-header-ink {'),
       styles.indexOf('.flowy-settings-tabs .arco-tabs-header-title:focus-visible')
     );
-    expect(inkStyles).toContain('transition: transform');
+    expect(inkStyles).toContain('transition: transform var(--flowy-motion-base)');
+    expect(inkStyles).toContain('transform-origin: left center');
     expect(inkStyles).not.toContain('width var(--flowy-motion-state)');
+    expect(inkStyles).not.toMatch(/transition:[^;]*\b(left|width)\b/);
   });
 });

@@ -26,6 +26,7 @@ import '@arco-design/web-react/dist/css/arco.css';
 import enUS from '@arco-design/web-react/es/locale/en-US';
 import zhCN from '@arco-design/web-react/es/locale/zh-CN';
 import { useTranslation } from 'react-i18next';
+import { MotionConfig } from 'motion/react';
 
 // Styles
 import 'uno.css';
@@ -125,7 +126,11 @@ const AppProviders: React.FC<PropsWithChildren> = ({ children }) =>
           React.createElement(
             SupportChatProvider,
             null,
-            React.createElement(FeedbackProvider, null, children)
+            React.createElement(
+              FeedbackProvider,
+              null,
+              React.createElement(MotionConfig, { reducedMotion: 'user' }, children)
+            )
           )
         )
       )

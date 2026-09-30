@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { App as AntApp, ConfigProvider, Spin } from 'antd';
 import { Button } from '@arco-design/web-react';
 import { QueryClientProvider } from '@tanstack/react-query';
+import { MotionConfig } from 'motion/react';
 import CanvasProjectPage from '@oc/pages/canvas/project';
 import { hydrateCanvasProjectFromServer, syncCanvasProjectToServer } from './lib/ocBridge';
 import { hydrateCanvasProjectExtras } from './lib/canvasProjectShare';
@@ -214,6 +215,7 @@ const VideoCanvasProjectPage: React.FC = () => {
       <QueryClientProvider client={videoCanvasQueryClient}>
         <ConfigProvider theme={getVideoCanvasAntTheme(colorTheme === 'dark')} getPopupContainer={getOcPortalHost}>
           <AntApp>
+            <MotionConfig reducedMotion='user'>
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
               <VimaxProvenanceBar projectId={canvasId} />
               {modelCatalogFailed ? (
@@ -230,6 +232,7 @@ const VideoCanvasProjectPage: React.FC = () => {
               ) : null}
               <CanvasProjectPage modelCatalogReady={modelCatalogReady} />
             </div>
+            </MotionConfig>
           </AntApp>
         </ConfigProvider>
       </QueryClientProvider>

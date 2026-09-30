@@ -50,6 +50,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
       className={`${styles.entryButton} ${styles.entryButtonInteractive} ${activeSkillCount > 0 ? styles.entryButtonActive : ''}`}
       onClick={onAdjustSkills}
       aria-label={t('guid.entry.adjustSkills', { defaultValue: 'Adjust Skills' })}
+      title={t('guid.entry.adjustSkills', { defaultValue: 'Adjust Skills' })}
     >
       <Puzzle theme='outline' size={15} fill='currentColor' />
       <span className={styles.entryButtonText}>{t('guid.entry.skills', { defaultValue: 'Skills' })}</span>
@@ -64,7 +65,10 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   if (isPresetAgent) {
     return (
       <div className={styles.entryStrip}>
-        <span className={`${styles.entryButton} ${styles.entryButtonActive} ${styles.entryPersonaButton}`}>
+        <span
+          className={`${styles.entryButton} ${styles.entryButtonActive} ${styles.entryPersonaButton}`}
+          title={presetLabel || t('guid.entry.usePreset', { defaultValue: 'Use preset' })}
+        >
           <span className={styles.entryAvatar}>{renderAvatar()}</span>
           <span className={styles.entryButtonText}>
             {presetLabel || t('guid.entry.usePreset', { defaultValue: 'Use preset' })}
@@ -91,6 +95,8 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         data-button-shape='pill'
         className={`${styles.entryButton} ${styles.entryButtonInteractive}`}
         onClick={onChoosePreset}
+        aria-label={t('guid.entry.usePreset', { defaultValue: 'Use preset' })}
+        title={t('guid.entry.usePreset', { defaultValue: 'Use preset' })}
       >
         <Robot theme='outline' size={15} fill='currentColor' />
         <span className={styles.entryButtonText}>{t('guid.entry.usePreset', { defaultValue: 'Use preset' })}</span>

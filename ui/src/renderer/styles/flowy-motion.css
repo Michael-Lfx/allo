@@ -160,4 +160,17 @@
   .flowy-task-step-active {
     transition: none !important;
   }
+
+  /*
+   * Global fallback. One frame, no loops. Covers Tailwind/Uno `animate-spin`
+   * and `animate-pulse`, plus page-local infinite animations that never opted
+   * into this media query. Fill-mode animations settle on their end state.
+   */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }

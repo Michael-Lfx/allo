@@ -66,10 +66,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
         console.warn('[ExtractPreset] Failed to fetch skill catalog:', err);
       }
 
-      // 2. Visual breathing delay allowing all 3 forging steps to smoothly complete
-      await new Promise((resolve) => setTimeout(resolve, 1400));
-
-      // 3. Build structured extraction draft
+      // 2. Build structured extraction draft (no artificial delay: navigation never waits on animation)
       const draft: PresetDraftData = buildPresetExtractionDraft({
         messageText,
         userQuestion,
@@ -78,7 +75,7 @@ const ExtractPresetModal: React.FC<ExtractPresetModalProps> = ({
         availableSkills,
       });
 
-      // 4. Close modal and navigate to preset editor drawer
+      // 3. Close modal and navigate to preset editor drawer
       onCancel();
       setGuidance('');
       Message.success(

@@ -1455,8 +1455,7 @@ button.turn-process-trace__row:focus-visible {
 }
 
 .message-list-scroll-button[data-status='generating'] .message-list-scroll-button__radar {
-  border: 1.5px solid var(--color-primary, #165dff);
-  animation: message-scroll-radar-ring 2.2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  animation: none;
 }
 
 .message-list-scroll-button__icon {
@@ -1503,7 +1502,7 @@ button.turn-process-trace__row:focus-visible {
   line-height: 1;
   text-align: center;
   pointer-events: none;
-  animation: message-scroll-badge-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: message-scroll-badge-in var(--flowy-motion-fast) var(--flowy-ease-enter) both;
 }
 
 .message-list-scroll-button__badge:empty {
@@ -1536,42 +1535,6 @@ button.turn-process-trace__row:focus-visible {
   }
 }
 
-@keyframes message-scroll-radar-ring {
-  0% {
-    transform: scale(1);
-    opacity: 0.8;
-  }
-  50% {
-    transform: scale(1.4);
-    opacity: 0.3;
-  }
-  100% {
-    transform: scale(1.68);
-    opacity: 0;
-  }
-}
-
-@keyframes message-scroll-generating-bob {
-  0%, 100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(1.5px);
-  }
-}
-
-@keyframes message-scroll-dot-pulse {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-    box-shadow: 0 0 6px color-mix(in srgb, var(--color-danger, #f53f3f) 60%, transparent);
-  }
-  50% {
-    opacity: 0.5;
-    transform: scale(0.85);
-    box-shadow: 0 0 2px color-mix(in srgb, var(--color-danger, #f53f3f) 20%, transparent);
-  }
-}
 
 .message-list-scroll-button[data-visible='true']:hover {
   background: color-mix(in srgb, var(--bg-elevated, #ffffff) 94%, transparent);

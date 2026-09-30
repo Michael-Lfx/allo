@@ -70,7 +70,13 @@
   background: var(--flowy-panel);
   box-shadow: var(--flowy-shadow-structure) !important;
   border-right: 1px solid var(--flowy-border-subtle);
-  transition: width 240ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+/* Arco animates sider width. That reflows the conversation pane every frame.
+   Width snaps; labels fade in flowy-motion.css / base.css instead.
+   Mobile still slides with an inline transform transition, which wins here. */
+.arco-layout-sider.layout-sider {
+  transition: none;
 }
 
 .sidebar-toggle-icon__caret {
@@ -204,8 +210,6 @@
 .flowy-disclosure-content {
   display: grid !important;
   grid-template-rows: 0fr;
-  will-change: grid-template-rows;
-  transition: grid-template-rows 220ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 
 .flowy-disclosure-content[data-disclosure-phase='open'] {
@@ -221,8 +225,8 @@
   min-height: 0;
   overflow: hidden;
   transition:
-    opacity 180ms cubic-bezier(0.25, 1, 0.5, 1),
-    transform 200ms cubic-bezier(0.25, 1, 0.5, 1);
+    opacity var(--flowy-motion-base) var(--flowy-ease-enter),
+    transform var(--flowy-motion-base) var(--flowy-ease-move);
 }
 
 .flowy-disclosure-content[data-disclosure-phase='entering'] > *,
@@ -299,21 +303,10 @@
   color: #fff;
   cursor: pointer;
   box-shadow: 0 3px 8px rgba(var(--primary-6), 0.2);
-  animation: sidebar-update-arrive 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: sidebar-update-arrive var(--flowy-motion-slow) var(--flowy-ease-move);
   transition:
-    transform 150ms ease,
-    background-color 150ms ease,
-    box-shadow 150ms ease;
-}
-
-.sidebar-update-button::before {
-  position: absolute;
-  inset: -2px;
-  border: 1px solid rgba(var(--primary-6), 0.24);
-  border-radius: inherit;
-  content: '';
-  pointer-events: none;
-  animation: sidebar-update-attention 2.8s ease-out infinite;
+    transform var(--flowy-motion-fast) var(--flowy-ease-move),
+    background-color var(--flowy-motion-fast) var(--flowy-ease-enter);
 }
 
 .sidebar-update-button:hover {
@@ -342,22 +335,6 @@
   }
 }
 
-@keyframes sidebar-update-attention {
-  0%,
-  72%,
-  100% {
-    opacity: 0;
-    transform: scale(0.88);
-  }
-  78% {
-    opacity: 0.6;
-  }
-  94% {
-    opacity: 0;
-    transform: scale(1.22);
-  }
-}
-
 .layout-sider-content {
   flex: 1 !important;
   min-height: 0 !important;
@@ -377,18 +354,15 @@
 /* Sidebar item transitions (shared by chat-history and settings-sider) */
 .chat-history__item,
 .settings-sider__item {
-  transition:
-    padding 0.2s ease,
-    margin 0.2s ease,
-    background-color 0.2s ease;
+  transition: background-color var(--flowy-motion-fast) var(--flowy-ease-enter);
 }
 
 .chat-history__item-name,
 .chat-history__item-editor,
 .settings-sider__item-label {
   transition:
-    opacity 0.25s ease,
-    transform 0.25s ease;
+    opacity var(--flowy-motion-fast) var(--flowy-ease-enter),
+    transform var(--flowy-motion-fast) var(--flowy-ease-move);
   transform-origin: left center;
 }
 
@@ -409,11 +383,7 @@
 
 .chat-history__placeholder,
 .chat-history__section {
-  transition:
-    opacity 0.3s ease,
-    max-height 0.3s ease,
-    margin 0.3s ease,
-    padding 0.3s ease;
+  transition: opacity var(--flowy-motion-fast) var(--flowy-ease-exit);
 }
 
 .chat-history__placeholder {

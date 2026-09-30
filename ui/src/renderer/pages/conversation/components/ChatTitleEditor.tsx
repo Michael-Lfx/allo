@@ -61,7 +61,7 @@ const ChatTitleEditor: React.FC<ChatTitleEditorProps> = ({
   return (
     <div
       className={classNames(
-        'group flex min-w-0 max-w-full items-center rounded-12px border border-solid border-transparent transition-all duration-180',
+        'group flex min-w-0 max-w-full items-center rounded-12px border border-solid border-transparent transition-[background-color,border-color,box-shadow] duration-180 motion-reduce:transition-none',
         editingTitle
           ? 'bg-fill-2 border-[var(--color-fill-3)] shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
           : 'hover:bg-fill-2 hover:border-[var(--color-fill-3)] hover:shadow-[0_1px_2px_rgba(15,23,42,0.06)] focus-within:bg-fill-2 focus-within:border-[var(--color-fill-3)] focus-within:shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
@@ -130,7 +130,7 @@ const ChatTitleEditor: React.FC<ChatTitleEditorProps> = ({
         )}
       </div>
       {!editingTitle && (
-        <div className='w-0 flex items-center overflow-hidden opacity-0 transition-all duration-180 group-hover:w-40px group-hover:opacity-100 group-focus-within:w-40px group-focus-within:opacity-100'>
+        <div className='w-40px shrink-0 flex items-center overflow-hidden opacity-0 translate-x-4px pointer-events-none transition-[opacity,transform] duration-120 motion-reduce:transition-none motion-reduce:translate-x-0 group-hover:opacity-100 group-hover:translate-x-0 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:translate-x-0 group-focus-within:pointer-events-auto'>
           <span className='h-16px w-1px shrink-0 rounded-full bg-[color:color-mix(in_srgb,var(--color-text-4)_44%,transparent)]' />
           <div className='ml-4px mr-4px flex items-center justify-center'>
             <ConversationTitleMinimap conversation_id={conversation_id} />
