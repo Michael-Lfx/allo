@@ -35,7 +35,7 @@ describe('turn process state', () => {
     ).toBe('canceled');
   });
 
-  test('keeps the root error failed while classifying barrier-skipped commands as canceled', () => {
+  test('keeps the root error failed while barrier-skipped commands never read as a user stop', () => {
     const skipped = {
       type: 'tool_call',
       content: {
@@ -58,8 +58,9 @@ describe('turn process state', () => {
       },
     } as any;
 
-    expect(getToolMessagesProcessState([skipped])).toBe('canceled');
+    expect(getToolMessagesProcessState([skipped])).toBe('completed');
     expect(getToolMessagesProcessState([failedKnowledgeRead, skipped])).toBe('failed');
+    expect(getProcessItemState(skipped)).toBe('completed');
   });
 
   test('maps local invalid-argument rejection to not executed while keeping real failures failed', () => {
