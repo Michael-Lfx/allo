@@ -27,8 +27,8 @@ describe('SiderCreditsBubble structure and integration', () => {
     expect(bubbleSource.includes('sider-credits-bubble--collapsed')).toBe(true);
   });
 
-  test('triggers openOfficialWebsiteCredits on top up action', () => {
-    expect(bubbleSource.includes('openOfficialWebsiteCredits')).toBe(true);
+  test('opens the in-app billing page on top up action', () => {
+    expect(bubbleSource.includes('openInAppBilling(navigate')).toBe(true);
     expect(bubbleSource.includes("source: 'sider'")).toBe(true);
   });
 

@@ -18,7 +18,7 @@ import { useUserStore } from "@oc/stores/use-user-store";
 import type { CanvasMediaPerformanceMode } from "@oc/types/canvas";
 import { CanvasShortcutsModal } from "./canvas-shortcuts-modal";
 import { VIDEO_CANVAS_LIBRARY_PATH } from "@renderer/pages/videoCanvas/routes";
-import { openOfficialWebsiteCredits } from "@renderer/utils/openOfficialWebsiteCredits";
+import { openInAppBilling } from "@renderer/utils/openInAppBilling";
 
 type CanvasTopBarProps = {
     title: string;
@@ -233,7 +233,7 @@ export function CanvasTopBar({
                             style={{ color: theme.node.text }}
                             title={canvasT("videoCanvas.chrome.credits", "查看积分明细")}
                             onClick={() => {
-                                void openOfficialWebsiteCredits(undefined, undefined, {
+                                openInAppBilling(navigate, {
                                     source: 'canvas_credits',
                                 });
                             }}

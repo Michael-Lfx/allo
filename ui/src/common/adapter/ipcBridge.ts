@@ -7729,6 +7729,113 @@ export interface ICloudWebsiteEntry {
   url: string;
 }
 
+export type ICloudBillingItemType = 'plan' | 'pack';
+export type ICloudBillingPlanPeriod = 'MONTH' | 'HALF_YEAR' | 'YEAR';
+/** Catalog currency; CNY is paid with WeChat Pay, USD with Airwallex (same as the website). */
+export type ICloudBillingCurrency = 'USD' | 'CNY';
+export type ICloudBillingPayChannel = 'wechatpay' | 'airwallex';
+
+export interface ICloudBillingPlan {
+  id: number;
+  code?: string;
+  planPeriod?: string;
+  name?: string;
+  nameEn?: string;
+  description?: string;
+  descriptionEn?: string;
+  currency?: string;
+  currentPriceCent?: number;
+  originalPriceCent?: number;
+  grantPoints?: number;
+  durationDays?: number;
+  durationMonths?: number;
+  isHot?: boolean;
+  isCurrent?: boolean;
+  benefitList?: string[];
+  benefitListEn?: string[];
+}
+
+export interface ICloudBillingCreditPack {
+  id: number;
+  code?: string;
+  name?: string;
+  nameEn?: string;
+  description?: string;
+  descriptionEn?: string;
+  currency?: string;
+  priceCent?: number;
+  points?: number;
+  validDays?: number;
+}
+
+export interface ICloudBillingCoupon {
+  id: number;
+  title?: string;
+  currency?: string;
+  discountCent?: number;
+  applicableItemTypes?: string;
+  status?: string;
+  expiresAt?: string;
+}
+
+export interface ICloudBillingCouponList {
+  list: ICloudBillingCoupon[];
+}
+
+export interface ICloudBillingPaymentChannel {
+  code: string;
+  name?: string;
+}
+
+export interface ICloudBillingCreateOrderRequest {
+  itemType: ICloudBillingItemType;
+  itemId: number;
+  payChannel: ICloudBillingPayChannel;
+  idempotencyKey: string;
+  couponId?: number;
+  planPeriod?: ICloudBillingPlanPeriod;
+}
+
+export interface ICloudBillingPaymentInfo {
+  channel?: string;
+  channelName?: string;
+  paymentIntentId?: string;
+  clientSecret?: string;
+  intentId?: string;
+  id?: string;
+  currency?: string;
+  /** WeChat Pay Native QR payload. */
+  codeUrl?: string;
+}
+
+export interface ICloudBillingOrder {
+  id?: number;
+  orderNo?: string;
+  itemType?: string;
+  itemId?: number;
+  title?: string;
+  titleEn?: string;
+  currency?: string;
+  amountCent?: number;
+  status?: string;
+  payChannel?: string;
+  expiresAt?: string;
+  paidAt?: string;
+  payment?: ICloudBillingPaymentInfo;
+  paymentIntentId?: string;
+  clientSecret?: string;
+  payCodeUrl?: string;
+}
+
+export interface ICloudBillingAirwallexSession {
+  paymentIntentId?: string;
+  clientSecret?: string;
+  intentId?: string;
+  id?: string;
+  currency?: string;
+  status?: string;
+}
+
 export interface ICloudLoginStartResponse {
   pendingId: string;
   method: string;
@@ -7797,6 +7904,41 @@ export const cloud = {
   ),
   /** Re-fetch Flowy chat catalog into the local builtin provider (soft no-op if not logged in). */
   syncModels: httpPost<ICloudSyncModelsResponse, void>('/api/cloud/sync-models'),
+  listPlans: httpGet<ICloudBillingPlan[], { currency: ICloudBillingCurrency }>(
+    (p) => `/api/cloud/plans?currency=${encodeURIComponent(p.currency)}`
+  ),
+  listCreditPacks: httpGet<ICloudBillingCreditPack[], { currency: ICloudBillingCurrency }>(
+    (p) => `/api/cloud/credit-packs?currency=${encodeURIComponent(p.currency)}`
+  ),
+  listCoupons: httpGet<ICloudBillingCouponList, { itemType?: ICloudBillingItemType }>((p) => {
+    const itemType = p?.itemType?.trim();
+    if (!itemType) return '/api/cloud/coupons';
+    return `/api/cloud/coupons?itemType=${encodeURIComponent(itemType)}`;
+  }),
+  listPaymentChannels: httpGet<
+    ICloudBillingPaymentChannel[],
+    { itemType: ICloudBillingItemType; itemId: number; planPeriod?: string }
+  >((p) => {
+    const params = new URLSearchParams({
+      itemType: p.itemType,
+      itemId: String(p.itemId),
+    });
+    if (p.planPeriod) params.set('planPeriod', p.planPeriod);
+    return `/api/cloud/payment-channels?${params.toString()}`;
+  }),
+  createOrder: httpPost<ICloudBillingOrder, ICloudBillingCreateOrderRequest>('/api/cloud/orders'),
+  getOrderByNo: httpGet<ICloudBillingOrder, { orderNo: string }>(
+    (p) => `/api/cloud/orders/by-order-no?orderNo=${encodeURIComponent(p.orderNo)}`
+  ),
+  initAirwallex: httpPost<ICloudBillingAirwallexSession, { orderNo: string }>(
+    (p) => `/api/cloud/orders/${encodeURIComponent(p.orderNo)}/airwallex/init`,
+    () => ({})
+  ),
+  /** Unified pay entry; WeChat Pay orders return a Native QR `codeUrl`. */
+  payOrder: httpPost<ICloudBillingPaymentInfo, { orderNo: string }>(
+    (p) => `/api/cloud/orders/${encodeURIComponent(p.orderNo)}/pay`,
+    () => ({})
+  ),
 };
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { Attention, PlayOne, Robot, User } from '@icon-park/react';
 import { useCredits } from '@renderer/hooks/context/CreditsContext';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
-import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
+import { openInAppBilling } from '@renderer/utils/openInAppBilling';
 import { getArtifact } from '../api';
 import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
@@ -407,6 +408,7 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
   onOpenMedia,
 }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { balance } = useCredits();
   const [expanded, setExpanded] = useState(false);
   const isUser = item.role === 'user';
@@ -447,7 +449,7 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
                     source: 'error_recovery',
                     feature: 'video_generation',
                   });
-                  void openOfficialWebsiteCredits(undefined, undefined, {
+                  openInAppBilling(navigate, {
                     source: 'video_failure_card',
                     balance,
                   });

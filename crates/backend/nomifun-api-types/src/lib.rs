@@ -10,6 +10,7 @@ mod agent_execution_template;
 mod auth;
 mod channel;
 mod cloud;
+mod cloud_billing;
 mod cloud_im;
 mod campaign;
 mod tv_show;
@@ -169,6 +170,12 @@ pub use cloud::{
     UpdateCloudServerSettingsRequest,
     VideoGrowthEvent, VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse,
     VideoGrowthMetricsResponse,
+};
+pub use cloud_billing::{
+    normalize_cloud_billing_pay_channel, CloudBillingAirwallexSession, CloudBillingCoupon,
+    CloudBillingCouponList, CloudBillingCreateOrderRequest, CloudBillingCreditPack,
+    CloudBillingCurrency, CloudBillingOrder, CloudBillingPaymentChannel, CloudBillingPaymentInfo,
+    CloudBillingPlan, CLOUD_BILLING_CHANNEL_AIRWALLEX, CLOUD_BILLING_CHANNEL_WECHATPAY,
 };
 pub use cloud_im::{
     CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,

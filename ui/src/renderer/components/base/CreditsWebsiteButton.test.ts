@@ -21,11 +21,9 @@ describe('credits website button', () => {
     expect(componentSource.includes('Refresh')).toBe(false);
   });
 
-  test('opens the official website credits tab instead of an in-app billing route', () => {
-    expect(componentSource.includes('openOfficialWebsiteCredits')).toBe(true);
-    expect(componentSource.includes("navigate('/billing')") || componentSource.includes('navigate(BILLING_PATH)')).toBe(
-      false
-    );
+  test('opens the in-app billing route instead of the official website', () => {
+    expect(componentSource.includes('openInAppBilling(navigate')).toBe(true);
+    expect(componentSource.includes('openOfficialWebsiteCredits')).toBe(false);
   });
 
   test('keeps the cart icon optically aligned with the balance number', () => {
@@ -52,8 +50,8 @@ describe('credits website button', () => {
     expect(siderUserMenuSource.includes('CreditsRefreshButton')).toBe(false);
   });
 
-  test('does not register an in-app billing route', () => {
-    expect(routerSource.includes('BillingPage')).toBe(false);
-    expect(routerSource.includes("path='/billing'")).toBe(false);
+  test('registers the hidden in-app billing route', () => {
+    expect(routerSource.includes('BillingPage')).toBe(true);
+    expect(routerSource.includes("path='/billing'")).toBe(true);
   });
 });

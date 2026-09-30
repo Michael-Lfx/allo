@@ -6,11 +6,12 @@
 
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { Attention, CloseSmall } from '@icon-park/react';
 import classNames from 'classnames';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
-import { openOfficialWebsiteCredits } from '@/renderer/utils/openOfficialWebsiteCredits';
+import { openInAppBilling } from '@/renderer/utils/openInAppBilling';
 import {
   resolveCreditsBubbleState,
   isCreditsBubbleDismissed,
@@ -25,6 +26,7 @@ export interface SiderCreditsBubbleProps {
 
 const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMobile = false }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
   const { whoami } = useCloudAuth();
   const [dismissedState, setDismissedState] = useState<CreditsBubbleState | null>(null);
@@ -65,7 +67,7 @@ const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMo
 
   const handleTopUp = (event: React.MouseEvent) => {
     event.stopPropagation();
-    void openOfficialWebsiteCredits(undefined, undefined, {
+    openInAppBilling(navigate, {
       source: 'sider',
       balance,
     });

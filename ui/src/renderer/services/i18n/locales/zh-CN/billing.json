@@ -1,4 +1,70 @@
 {
+  "title": "购买",
+  "description": "在此购买套餐或积分包。人民币使用微信支付，美元使用空中云汇支付页。",
   "openBilling": "购买积分",
-  "openFailed": "无法打开官网购买页。"
+  "openFailed": "无法打开官网购买页。",
+  "currency": {
+    "label": "支付币种",
+    "usd": "美元 USD",
+    "cny": "人民币 CNY",
+    "usdHint": "美元价格，跳转空中云汇支付页（可切换其他货币）",
+    "cnyHint": "人民币价格，使用微信扫码支付"
+  },
+  "channel": {
+    "wechatpay": "微信支付",
+    "airwallex": "空中云汇"
+  },
+  "catalog": {
+    "plans": "个人套餐",
+    "packs": "积分包",
+    "periodMonth": "月付",
+    "periodHalfYear": "半年",
+    "periodYear": "年付",
+    "current": "当前套餐",
+    "freeIncluded": "免费",
+    "emptyPlans": "当前币种没有可用的套餐。",
+    "emptyPacks": "当前套餐没有可购买的积分包。",
+    "loadError": "目录加载失败。",
+    "retry": "重试",
+    "credits": "{{count}} 积分",
+    "select": "选择"
+  },
+  "confirm": {
+    "title": "确认订单",
+    "item": "商品",
+    "amount": "金额",
+    "payMethod": "支付方式",
+    "coupon": "优惠券",
+    "noCoupon": "不使用优惠券",
+    "estimatedTotal": "预估合计",
+    "back": "返回",
+    "pay": "去支付",
+    "channelMissing": "该商品暂不支持空中云汇支付。",
+    "wechatMissing": "该商品暂不支持微信支付。"
+  },
+  "pay": {
+    "initError": "无法开始支付。",
+    "failed": "支付未完成。",
+    "retry": "重试"
+  },
+  "hosted": {
+    "title": "空中云汇支付",
+    "opened": "已在浏览器中打开空中云汇支付页，请在该页面完成支付。",
+    "currencyHint": "支付页支持切换为其他货币付款。",
+    "waiting": "支付完成后这里会自动更新…",
+    "reopen": "重新打开支付页",
+    "openError": "无法在浏览器中打开支付页。"
+  },
+  "wechat": {
+    "title": "微信扫码支付",
+    "qrLabel": "微信支付二维码",
+    "scanHint": "请使用微信扫一扫完成支付",
+    "waiting": "等待支付完成…",
+    "initError": "无法生成微信支付二维码。"
+  },
+  "success": {
+    "title": "支付成功",
+    "description": "积分余额稍后会更新。",
+    "done": "完成"
+  }
 }

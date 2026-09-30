@@ -17,8 +17,10 @@ use crate::session::ServerSession;
 use nomifun_api_types::{
     AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
     CloudImConversation, CloudImLogUploadResponse, CloudImMessage, CloudImMessageList,
-    CloudImSendMessageRequest, VideoGrowthEventBatchRequest,
-    VideoGrowthEventBatchResponse,
+    CloudImSendMessageRequest, CloudBillingAirwallexSession, CloudBillingCouponList,
+    CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingCurrency,
+    CloudBillingOrder, CloudBillingPaymentChannel, CloudBillingPaymentInfo, CloudBillingPlan,
+    VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse,
 };
 use nomifun_common::AppError;
 
@@ -314,6 +316,103 @@ impl CloudService {
                 crate::website::WebsiteLanding::from_query(landing),
             ),
         })
+    }
+
+    pub async fn list_billing_plans(
+        &self,
+        currency: CloudBillingCurrency,
+    ) -> Result<Vec<CloudBillingPlan>, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        let channel = self.gateway_config().server.channel;
+        client
+            .list_billing_plans(&session, &channel, currency)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn list_billing_credit_packs(
+        &self,
+        currency: CloudBillingCurrency,
+    ) -> Result<Vec<CloudBillingCreditPack>, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .list_billing_credit_packs(&session, currency)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn list_billing_coupons(
+        &self,
+        item_type: Option<&str>,
+    ) -> Result<CloudBillingCouponList, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        match client.list_billing_coupons(&session, item_type).await {
+            Ok(list) => Ok(list),
+            Err(ServerClientError::AuthRequired(msg)) => Err(AppError::Unauthorized(msg)),
+            Err(ServerClientError::Api { code, msg }) if code == 401 || code == 403 => {
+                Err(AppError::Unauthorized(msg))
+            }
+            Err(_) => Ok(CloudBillingCouponList { list: Vec::new() }),
+        }
+    }
+
+    pub async fn list_billing_payment_channels(
+        &self,
+        item_type: &str,
+        item_id: i64,
+        plan_period: Option<&str>,
+    ) -> Result<Vec<CloudBillingPaymentChannel>, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .list_billing_payment_channels(&session, item_type, item_id, plan_period)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    /// `request.pay_channel` must already be validated (`wechatpay` / `airwallex`).
+    pub async fn create_billing_order(
+        &self,
+        request: CloudBillingCreateOrderRequest,
+    ) -> Result<CloudBillingOrder, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .create_billing_order(&session, &request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn get_billing_order_by_no(
+        &self,
+        order_no: &str,
+    ) -> Result<CloudBillingOrder, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .get_billing_order_by_no(&session, order_no)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn init_billing_airwallex(
+        &self,
+        order_no: &str,
+    ) -> Result<CloudBillingAirwallexSession, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .init_billing_airwallex(&session, order_no)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    /// Unified pay entry (WeChat Pay returns a Native QR `codeUrl`).
+    pub async fn pay_billing_order(
+        &self,
+        order_no: &str,
+    ) -> Result<CloudBillingPaymentInfo, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .pay_billing_order(&session, order_no)
+            .await
+            .map_err(map_im_client_error)
     }
 
     pub async fn upload_video_growth_events(

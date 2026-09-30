@@ -68,6 +68,7 @@ const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSet
 const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/CloudLoginSettings'));
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
+const BillingPage = React.lazy(() => import('@renderer/pages/billing'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
 const ColorLabPage = React.lazy(() => import('@renderer/pages/colorLab'));
@@ -386,6 +387,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/scheduled/:cron_job_id' element={withRouteFallback(TaskDetailPage)} />
           <Route path='/meeting' element={withRouteFallback(MeetingPage)} />
           <Route path='/meeting/:sessionId' element={withRouteFallback(MeetingDetailPage)} />
+          {/* Hidden in-app checkout (credits top-up); not listed in any nav surface. */}
+          <Route path='/billing' element={withRouteFallback(BillingPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}
           <Route path='/requirements' element={withRouteFallback(RequirementsLayout)}>
             <Route index element={withRouteFallback(WorkspacePage)} />
