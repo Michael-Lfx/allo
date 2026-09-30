@@ -249,6 +249,12 @@
   animation: participant-question-pulse 1.6s ease-in-out infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .questionIcon {
+    animation: none;
+  }
+}
+
 .questionBody {
   display: flex;
   flex-direction: column;

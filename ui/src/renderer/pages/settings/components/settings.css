@@ -251,7 +251,7 @@
   background: var(--flowy-raised);
   box-shadow: var(--flowy-shadow-structure);
   padding: 10px 12px;
-  animation: flowy-settings-action-bar-enter var(--flowy-motion-state) var(--flowy-ease-enter);
+  animation: flowy-settings-action-bar-enter var(--flowy-motion-base) var(--flowy-ease-enter);
 }
 
 .flowy-settings-action-bar .arco-btn {
@@ -290,7 +290,7 @@
   height: 2px;
   border-radius: 999px;
   background: var(--flowy-selected-fg);
-  transition: transform var(--flowy-motion-state) var(--flowy-ease-move);
+  transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
 }
 
 .flowy-settings-tabs .arco-tabs-header-title:focus-visible {

@@ -83,7 +83,7 @@
 }
 
 .completion-toast__action--primary {
-  color: var(--primary-6, #1677ff);
+  color: rgb(var(--primary-6));
   font-weight: 600;
 }
 

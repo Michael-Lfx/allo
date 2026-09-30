@@ -160,4 +160,19 @@
   .flowy-task-step-active {
     transition: none !important;
   }
+
+  /*
+   * Global fallback for looping / attention animations that live outside this
+   * file. Spinners (`animate-spin`, `.loading`) are intentionally kept: they
+   * are the only signal that work is in progress.
+   */
+  .animate-pulse,
+  .animate-ping,
+  .bg-animate,
+  .badge-breathing .arco-badge-status-dot,
+  .speech-input-feedback--processing .speech-input-feedback__bar,
+  .pill-marquee-track,
+  .credits-shake {
+    animation: none !important;
+  }
 }
