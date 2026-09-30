@@ -5,7 +5,7 @@
  */
 
 import type { IMessageAcpToolCall, IMessageToolCall, IMessageToolGroup, TMessage } from '@/common/chat/chatLib';
-import { normalizeToolMessages } from '@/common/chat/normalizeToolCall';
+import { normalizeToolMessages, USER_STOP_INTERRUPT_REASON } from '@/common/chat/normalizeToolCall';
 import type { TurnDisclosureProcessState } from './turnDisclosureModel';
 
 type ToolProcessMessage = IMessageToolGroup | IMessageAcpToolCall | IMessageToolCall;
@@ -45,7 +45,12 @@ export const getToolMessagesProcessState = (messages: ToolProcessMessage[]): Tur
     if (tool.skipped) return 'completed';
     if (tool.nonFatalFailure) return 'completed';
     if (tool.status === 'error') return 'failed';
-    if (tool.status === 'canceled') return 'canceled';
+    if (tool.status === 'canceled') {
+      // Only a recorded user stop paints the turn canceled; a soft close by
+      // max_tokens, end_turn, channel_closed, ... is not something the user did.
+      const systemInterrupt = tool.interruptReason && tool.interruptReason !== USER_STOP_INTERRUPT_REASON;
+      return systemInterrupt ? 'completed' : 'canceled';
+    }
     return 'completed';
   });
 

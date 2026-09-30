@@ -79,6 +79,30 @@ describe('normalizeToolCall', () => {
     expect(result?.status).toBe('canceled');
   });
 
+  it('exposes the recorded interrupt reason of a turn-closed tool', () => {
+    const closed = (reason: string) =>
+      normalizeToolCall({
+        type: 'tool_call',
+        content: {
+          call_id: `tc-${reason}`,
+          name: 'Browser',
+          status: 'error',
+          args: {},
+          output: `The turn ended before this tool completed: ${reason}`,
+        },
+      } as any);
+
+    expect(closed('cancelled')?.interruptReason).toBe('cancelled');
+    expect(closed('max_tokens')?.interruptReason).toBe('max_tokens');
+    expect(closed('channel_closed')?.status).toBe('canceled');
+    expect(
+      normalizeToolCall({
+        type: 'tool_call',
+        content: { call_id: 'tc-plain', name: 'Bash', status: 'error', args: {}, output: 'boom' },
+      } as any)?.interruptReason
+    ).toBeUndefined();
+  });
+
   it('keeps real Browser navigation failures as error', () => {
     const result = normalizeToolCall({
       type: 'tool_call',

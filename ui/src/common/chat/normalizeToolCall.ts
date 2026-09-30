@@ -24,6 +24,8 @@ export interface NormalizedToolCall {
   skipped?: boolean;
   /** The runtime rejected the call before dispatching it to the tool. */
   notExecutedReason?: NormalizedToolNotExecutedReason;
+  /** Stop reason the runtime recorded when it closed this tool with the turn; `cancelled` is the only user stop. */
+  interruptReason?: string;
   description?: string;
   input?: string;
   output?: string;
@@ -300,7 +302,17 @@ export function normalizeAcpToolCall(message: IMessageAcpToolCall): NormalizedTo
 
 /** Soft close when the turn ended before the tool finished (not a tool fault). */
 function isTurnInterruptedToolOutput(output?: string): boolean {
-  return typeof output === 'string' && output.startsWith('The turn ended before this tool completed:');
+  return typeof output === 'string' && output.startsWith(turnInterruptedOutputPrefix);
+}
+
+const turnInterruptedOutputPrefix = 'The turn ended before this tool completed:';
+
+export const USER_STOP_INTERRUPT_REASON = 'cancelled';
+
+function parseTurnInterruptReason(output?: string): string | undefined {
+  if (!isTurnInterruptedToolOutput(output)) return undefined;
+  const reason = /^\S+/.exec((output as string).slice(turnInterruptedOutputPrefix.length).trimStart());
+  return reason?.[0];
 }
 
 function normalizeToolCallStatus(status?: unknown, output?: string): NormalizedToolStatus {
@@ -354,7 +366,7 @@ const directProbeToolTitles = new Set(['read', 'glob', 'grep', 'search', 'find']
 const isExplicitProbeMiss = (name: unknown, output: unknown): boolean => {
   const toolName = toDisplayText(name).trim().toLowerCase();
   const text = toDisplayText(output).trim();
-  if (!text || text.startsWith('The turn ended before this tool completed:')) return false;
+  if (!text || text.startsWith(turnInterruptedOutputPrefix)) return false;
 
   if (toolName === 'read') {
     return (
@@ -423,6 +435,7 @@ export function normalizeToolCall(message: IMessageToolCall): NormalizedToolCall
       : undefined;
   const skipped = isSkippedAfterPriorError(status, output);
   const invalidArgumentsNotExecuted = isInvalidArgumentsNotExecuted(name, status, output);
+  const interruptReason = parseTurnInterruptReason(output);
 
   return {
     key: toDisplayText(call_id),
@@ -433,6 +446,7 @@ export function normalizeToolCall(message: IMessageToolCall): NormalizedToolCall
         : normalizeToolCallStatus(status, output),
     ...(skipped ? { skipped: true } : {}),
     ...(invalidArgumentsNotExecuted ? { notExecutedReason: 'invalid_arguments' as const } : {}),
+    ...(interruptReason ? { interruptReason } : {}),
     ...(isOrdinaryShellExit(name, status, output) || isOrdinaryDirectProbeFailure(name, status, output)
       ? { nonFatalFailure: true }
       : {}),
