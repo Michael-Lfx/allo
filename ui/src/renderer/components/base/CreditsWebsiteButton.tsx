@@ -2,9 +2,10 @@ import { ShoppingCart } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { resolveCreditsBubbleState } from '@/renderer/utils/credits/creditsBubbleModel';
-import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
+import { openInAppBilling } from '@renderer/utils/openInAppBilling';
 
 type CreditsWebsiteButtonProps = {
   /** xs = 侧栏底部（14px 紧凑内联图标）；sm = 18px 独立方块；md = 22px 设置页 */
@@ -14,7 +15,7 @@ type CreditsWebsiteButtonProps = {
 };
 
 /**
-  * 积分余额旁的充值/购买按钮：打开官网积分增值 tab（带云 JWT 自动登录）。
+  * 积分余额旁的充值/购买按钮：进入应用内结账页（人民币微信支付 / 美元空中云汇）。
   * 视觉层级根据当前积分状态（正常、低额度预警、已耗尽）动态响应。
   */
 const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
@@ -23,6 +24,7 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
   className,
 }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const credits = useCredits();
   const { balance } = credits;
   const label = t('billing.openBilling');
@@ -30,7 +32,7 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
   const bubbleState = resolveCreditsBubbleState(credits);
 
   const openBilling = () => {
-    void openOfficialWebsiteCredits(undefined, undefined, { source: 'sider', balance });
+    openInAppBilling(navigate, { source: 'sider', balance });
   };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {

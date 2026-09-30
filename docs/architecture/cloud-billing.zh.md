@@ -5,7 +5,7 @@
 
 [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) 是"远程 LLM 服务器客户端"：
 只做云登录与 OpenAI 兼容推理网关调用，agent 逻辑全部留在本地。它是云登录、
-云端模型目录、积分消费与官网购买入口三件事的后端支点。
+云端模型目录、积分消费与应用内购买（微信支付 / 空中云汇代理）三件事的后端支点。
 
 ## 双身份车道
 
@@ -48,11 +48,25 @@
   `GET /api/media/credits`（余额）、`POST .../checkin`（按时区每日打卡）、
   `GET .../usage-by-turn`（每回合 prompt/completion/cache token 与积分明细）；
   前端 `CreditsContext` 消费，未登录云时按回合芯片隐藏。
-- **购买积分**（花钱买）：侧栏购物车、对话错误卡、视频失败卡走
-  `GET /api/cloud/website-entry?landing=credits`，由 Rust 拼出官网
-  `{website}/?tab=credits&token=&language=#pricing`（FlowyClaw 首页「积分增值」
-  tab，同一套云 JWT），前端 `openOfficialWebsiteCredits` 再 `openExternalUrl`。
-  云 JWT 不下发渲染进程。应用内不再托管 Airwallex `/billing` 结账页。
+- **购买积分**（花钱买）：侧栏购物车 / 积分气泡、对话错误卡、视频失败卡、画布积分按钮
+  统一走 `openInAppBilling(navigate, { source, balance })`，进入隐藏路由 `#/billing`
+  （不出现在任何导航面）。支付渠道与 FlowyClaw 官网海外站对齐：**按币种一一对应**。
+
+  | 展示/下单币种 | 目录 | 支付渠道 | 应用内形态 |
+  | --- | --- | --- | --- |
+  | USD（默认） | `GET /plans?currency=USD` + `/creditPacks/available?currency=USD` | `airwallex`（空中云汇） | 与官网同一个空中云汇托管支付页（HPP，支持「用另一种货币支付」）：`redirectToCheckout({ disableAutoRedirect: true })` 取 URL，校验为 `checkout(-demo).airwallex.com` 后用系统浏览器打开，应用内轮询订单 |
+  | CNY | 同上，`currency=CNY` | `wechatpay`（微信支付） | 页内 Native 二维码（`codeUrl`），出码即轮询订单 |
+
+  本地代理路由（均套 `auth_middleware`，云 JWT 只在 Rust 侧）：
+  `GET /api/cloud/plans|credit-packs?currency=`、`GET /api/cloud/coupons`、
+  `GET /api/cloud/payment-channels`、`POST /api/cloud/orders`（`payChannel` 仅接受
+  `wechatpay` / `airwallex`）、`GET /api/cloud/orders/by-order-no`、
+  `POST /api/cloud/orders/{orderNo}/airwallex/init`、`POST /api/cloud/orders/{orderNo}/pay`
+  （统一支付入口，微信单兜底取 `codeUrl`）。下单前先查 `paymentChannels`，该 SKU 不含
+  对应渠道时 fail closed。两种币种目录并行预拉，切换即时；币种选择存 `sessionStorage`
+  （`flowy.billing.currency`）。支付 `PAID` 后刷新 `CreditsContext`。
+  `GET /api/cloud/website-entry?landing=credits` 与 `openOfficialWebsiteCredits`
+  保留为官网兜底，当前没有入口调用。
 
 ## 第一方产品遥测（增长仓）
 
@@ -81,7 +95,7 @@ PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使�
 - **启动体验**：`app_launch_auth_ready` → `app_launch_config_ready` → `app_launch_interactive` / `app_launch_completed`（`total_ms` / `cold_start`）；失败走 `app_launch_failed`。启动热路径只记内存时间戳，funnel/outbox/HTTP 经 `scheduleDeferred`（≥2.5s + idle）再落盘上报
 - **WAVU**：安装内首次 `first_value_confirmed`（用户确认，不是首 token）。视频会话另按 `session_id` 记 `value_confirmed`
 - **回合体验**：`message_submitted` → `message_accepted`（`accept_ms`）→ `first_token`（`ttft_ms`）→ `turn_idle`（`total_ms` / `outcome`）。中断看 `abandoned_before_first_token`，失败看 `turn_idle.outcome=failed` 与 `llm_call_failed`
-- **计费漏斗**：应用内观测余额触底（`low_credit_balance`，按 UTC 日和 `source` 去重，带 `balance`）和打开官网积分页（`billing_catalog_viewed` 的 `source` + `balance`）。`website-entry` 失败记 `billing_catalog_open_failed`，用来和「没点入口」分开。`billing_pay_*` 名称已放行，支付发生在官网，客户端不伪造支付成功
+- **计费漏斗**：应用内观测余额触底（`low_credit_balance`，按 UTC 日和 `source` 去重，带 `balance`）→ 打开应用内结账页（`billing_catalog_viewed` 的 `source` + `balance`）→ `billing_checkout_started`（`item_type` / `currency`）→ `billing_pay_started` / `billing_pay_succeeded` / `billing_pay_failed`（带 `pay_channel`）。成功只在轮询到云端订单 `PAID` 后记录，客户端不伪造支付成功。官网兜底入口失败仍记 `billing_catalog_open_failed`
 - **留存**：客户端不发 `d1_retained` / `d7_retained`（名称已放行，避免再造伪标记）。D1/D7/D30 按首次 `device_activated` 或首次 `app_opened` 在仓内回看。`film_d7_rate` 仍是窗口内成功，不是该回看
 - **实验**：`experiment_exposed` 每个安装对 launchpad 变体只发一次；`launchpad_variant` 同时留在后续事件属性里
 - **功能采用**：当天新增的到达率看 `home_viewed.feature`（`guid` / `video_generation` / `knowledge` / `conversation` / `canvas` / `scheduled` / `model_hub`）。做成率用已有终态：对话 `turn_idle` 且 `feature=conversation`、`outcome=completed`；视频 `film_succeeded`；知识库 `kb_created` 或 `kb_grounded`。按这两个率排序，不按点击次数。

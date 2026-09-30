@@ -3,14 +3,17 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, State};
 use axum::routing::{get, post, put};
 use serde::Deserialize;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use nomifun_api_types::{
     AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityRunRequest, AgentQualityPromotedItem,
-    ApiResponse, CloudDeviceActivationRetryResponse,
+    ApiResponse, CloudBillingAirwallexSession, CloudBillingCouponList,
+    CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingCurrency,
+    CloudBillingOrder, CloudBillingPaymentChannel, CloudBillingPaymentInfo, CloudBillingPlan,
+    CloudDeviceActivationRetryResponse,
     CloudDeviceActivationStatusResponse, CloudImAttachmentPayload, CloudImConversation,
     CloudImLogUploadResponse, CloudImMessage, CloudImMessageList, CloudImSendMessageRequest,
     CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
@@ -197,6 +200,17 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
             "/api/cloud/growth/video/events",
             post(upload_video_growth_events),
         )
+        .route("/api/cloud/plans", get(list_billing_plans))
+        .route("/api/cloud/credit-packs", get(list_billing_credit_packs))
+        .route("/api/cloud/coupons", get(list_billing_coupons))
+        .route("/api/cloud/payment-channels", get(list_billing_payment_channels))
+        .route("/api/cloud/orders", post(create_billing_order))
+        .route("/api/cloud/orders/by-order-no", get(get_billing_order_by_no))
+        .route(
+            "/api/cloud/orders/{order_no}/airwallex/init",
+            post(init_billing_airwallex),
+        )
+        .route("/api/cloud/orders/{order_no}/pay", post(pay_billing_order))
         .route("/api/cloud/im/conversation", get(get_im_conversation))
         .route(
             "/api/cloud/im/messages",
@@ -644,6 +658,185 @@ async fn website_entry(
             .service
             .website_entry(query.language.as_deref(), query.landing.as_deref())
             .await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingCatalogQuery {
+    currency: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingCouponsQuery {
+    item_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingPaymentChannelsQuery {
+    item_type: String,
+    item_id: i64,
+    plan_period: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingOrderByNoQuery {
+    order_no: String,
+}
+
+fn validate_billing_item_type(item_type: &str) -> Result<&str, AppError> {
+    match item_type.trim() {
+        "plan" | "pack" => Ok(item_type.trim()),
+        _ => Err(AppError::BadRequest(
+            "itemType must be plan or pack".into(),
+        )),
+    }
+}
+
+fn validate_order_no(order_no: &str) -> Result<&str, AppError> {
+    let trimmed = order_no.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return Err(AppError::BadRequest("orderNo is invalid".into()));
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(AppError::BadRequest("orderNo is invalid".into()));
+    }
+    Ok(trimmed)
+}
+
+fn validate_create_order(
+    mut request: CloudBillingCreateOrderRequest,
+) -> Result<CloudBillingCreateOrderRequest, AppError> {
+    request.item_type = validate_billing_item_type(&request.item_type)?.to_string();
+    if request.item_id <= 0 {
+        return Err(AppError::BadRequest("itemId must be positive".into()));
+    }
+    let key = request.idempotency_key.trim();
+    if key.is_empty() || key.len() > 128 {
+        return Err(AppError::BadRequest("idempotencyKey is invalid".into()));
+    }
+    request.idempotency_key = key.to_string();
+    // Same channel set as the website's overseas checkout: CNY → WeChat Pay, USD → Airwallex.
+    request.pay_channel = nomifun_api_types::normalize_cloud_billing_pay_channel(&request.pay_channel)
+        .ok_or_else(|| AppError::BadRequest("payChannel must be wechatpay or airwallex".into()))?
+        .to_string();
+    if let Some(coupon_id) = request.coupon_id {
+        if coupon_id <= 0 {
+            return Err(AppError::BadRequest("couponId must be positive".into()));
+        }
+    }
+    if let Some(period) = request.plan_period.as_mut() {
+        let normalized = period.trim().to_uppercase();
+        if !matches!(normalized.as_str(), "MONTH" | "HALF_YEAR" | "YEAR") {
+            return Err(AppError::BadRequest("planPeriod is invalid".into()));
+        }
+        *period = normalized;
+    }
+    Ok(request)
+}
+
+async fn list_billing_plans(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<BillingCatalogQuery>,
+) -> Result<Json<ApiResponse<Vec<CloudBillingPlan>>>, AppError> {
+    let currency = CloudBillingCurrency::from_query(query.currency.as_deref());
+    Ok(Json(ApiResponse::ok(state.service.list_billing_plans(currency).await?)))
+}
+
+async fn list_billing_credit_packs(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<BillingCatalogQuery>,
+) -> Result<Json<ApiResponse<Vec<CloudBillingCreditPack>>>, AppError> {
+    let currency = CloudBillingCurrency::from_query(query.currency.as_deref());
+    Ok(Json(ApiResponse::ok(
+        state.service.list_billing_credit_packs(currency).await?,
+    )))
+}
+
+async fn list_billing_coupons(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<BillingCouponsQuery>,
+) -> Result<Json<ApiResponse<CloudBillingCouponList>>, AppError> {
+    let item_type = query
+        .item_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(item_type) = item_type {
+        validate_billing_item_type(item_type)?;
+    }
+    Ok(Json(ApiResponse::ok(
+        state.service.list_billing_coupons(item_type).await?,
+    )))
+}
+
+async fn list_billing_payment_channels(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<BillingPaymentChannelsQuery>,
+) -> Result<Json<ApiResponse<Vec<CloudBillingPaymentChannel>>>, AppError> {
+    let item_type = validate_billing_item_type(&query.item_type)?;
+    if query.item_id <= 0 {
+        return Err(AppError::BadRequest("itemId must be positive".into()));
+    }
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_billing_payment_channels(item_type, query.item_id, query.plan_period.as_deref())
+            .await?,
+    )))
+}
+
+async fn create_billing_order(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(request): Json<CloudBillingCreateOrderRequest>,
+) -> Result<Json<ApiResponse<CloudBillingOrder>>, AppError> {
+    let request = validate_create_order(request)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.create_billing_order(request).await?,
+    )))
+}
+
+async fn get_billing_order_by_no(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<BillingOrderByNoQuery>,
+) -> Result<Json<ApiResponse<CloudBillingOrder>>, AppError> {
+    let order_no = validate_order_no(&query.order_no)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.get_billing_order_by_no(order_no).await?,
+    )))
+}
+
+async fn init_billing_airwallex(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(order_no): Path<String>,
+) -> Result<Json<ApiResponse<CloudBillingAirwallexSession>>, AppError> {
+    let order_no = validate_order_no(&order_no)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.init_billing_airwallex(order_no).await?,
+    )))
+}
+
+async fn pay_billing_order(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(order_no): Path<String>,
+) -> Result<Json<ApiResponse<CloudBillingPaymentInfo>>, AppError> {
+    let order_no = validate_order_no(&order_no)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.pay_billing_order(order_no).await?,
     )))
 }
 
@@ -1129,5 +1322,38 @@ mod tests {
         };
 
         assert!(validate_send_im_message(request).is_err());
+    }
+
+    fn billing_order(pay_channel: &str) -> CloudBillingCreateOrderRequest {
+        CloudBillingCreateOrderRequest {
+            item_type: " plan ".into(),
+            item_id: 7,
+            pay_channel: pay_channel.into(),
+            idempotency_key: " attempt-1 ".into(),
+            coupon_id: None,
+            plan_period: Some("month".into()),
+        }
+    }
+
+    #[test]
+    fn create_order_accepts_wechatpay_and_airwallex_only() {
+        let wechat = validate_create_order(billing_order(" WeChatPay ")).unwrap();
+        assert_eq!(wechat.pay_channel, "wechatpay");
+        assert_eq!(wechat.item_type, "plan");
+        assert_eq!(wechat.idempotency_key, "attempt-1");
+        assert_eq!(wechat.plan_period.as_deref(), Some("MONTH"));
+
+        let airwallex = validate_create_order(billing_order("airwallex")).unwrap();
+        assert_eq!(airwallex.pay_channel, "airwallex");
+
+        assert!(validate_create_order(billing_order("credit_card")).is_err());
+        assert!(validate_create_order(billing_order("")).is_err());
+    }
+
+    #[test]
+    fn billing_order_no_rejects_path_injection() {
+        assert_eq!(validate_order_no(" OPK1-a_b ").unwrap(), "OPK1-a_b");
+        assert!(validate_order_no("../orders").is_err());
+        assert!(validate_order_no("").is_err());
     }
 }

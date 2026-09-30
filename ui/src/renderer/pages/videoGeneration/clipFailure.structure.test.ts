@@ -11,11 +11,11 @@ describe('clip result failure surface', () => {
     expect(page.includes('formatClipOperationError')).toBe(true);
   });
 
-  test('credits failures open the official website credits tab', () => {
+  test('credits failures open the in-app billing page', () => {
     const page = source('./ClipResultPage.tsx');
     const css = source('./ClipResultPage.module.css');
     expect(page.includes("data-testid='video-failure-open-billing'")).toBe(true);
-    expect(page.includes('openOfficialWebsiteCredits')).toBe(true);
+    expect(page.includes('openInAppBilling(navigate')).toBe(true);
     expect(page.includes("source: 'video_failure_card'")).toBe(true);
     expect(page.includes("feature: 'video_generation'")).toBe(true);
     expect(page.includes("t('billing.openBilling'")).toBe(true);

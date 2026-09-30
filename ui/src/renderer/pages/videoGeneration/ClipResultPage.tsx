@@ -32,7 +32,7 @@ import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCredits } from '@renderer/hooks/context/CreditsContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { trackFunnelEvent, trackLowCreditBalance } from '@renderer/utils/analytics/productFunnel';
-import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
+import { openInAppBilling } from '@renderer/utils/openInAppBilling';
 import {
   getGenerationTask,
   createGenerationTask,
@@ -378,11 +378,11 @@ const ClipResultPage: React.FC = () => {
       source: 'error_recovery',
       feature: 'video_generation',
     });
-    void openOfficialWebsiteCredits(undefined, undefined, {
+    openInAppBilling(navigate, {
       source: 'video_failure_card',
       balance,
     });
-  }, [balance, failureView]);
+  }, [balance, failureView, navigate]);
 
   const handleRetry = useCallback(async () => {
     if (task?.status === 'succeeded') {

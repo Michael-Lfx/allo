@@ -29,7 +29,7 @@ import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography'
 import { useNavigate } from 'react-router-dom';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { trackFunnelEvent, trackLowCreditBalance } from '@/renderer/utils/analytics/productFunnel';
-import { openOfficialWebsiteCredits } from '@renderer/utils/openOfficialWebsiteCredits';
+import { openInAppBilling } from '@renderer/utils/openInAppBilling';
 import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
 import {
   buildAgentErrorDiagnostic,
@@ -394,7 +394,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                           });
                           switch (recoveryAction.source) {
                             case 'open_billing':
-                              void openOfficialWebsiteCredits(undefined, undefined, {
+                              openInAppBilling(navigate, {
                                 source: 'conversation_error_card',
                                 balance,
                               });

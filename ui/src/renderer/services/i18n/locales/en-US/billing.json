@@ -1,4 +1,70 @@
 {
+  "title": "Purchase",
+  "description": "Buy a plan or credit pack. CNY is paid with WeChat Pay; USD is paid on the Airwallex checkout page.",
   "openBilling": "Buy credits",
-  "openFailed": "Could not open the website checkout."
+  "openFailed": "Could not open the website checkout.",
+  "currency": {
+    "label": "Payment currency",
+    "usd": "USD",
+    "cny": "CNY",
+    "usdHint": "Prices in USD, paid on the Airwallex checkout page (other currencies available)",
+    "cnyHint": "Prices in CNY, paid by scanning a WeChat Pay QR code"
+  },
+  "channel": {
+    "wechatpay": "WeChat Pay",
+    "airwallex": "Airwallex"
+  },
+  "catalog": {
+    "plans": "Personal plans",
+    "packs": "Credit packs",
+    "periodMonth": "Monthly",
+    "periodHalfYear": "Half-year",
+    "periodYear": "Yearly",
+    "current": "Current plan",
+    "freeIncluded": "Free",
+    "emptyPlans": "No plans are available in this currency.",
+    "emptyPacks": "No credit packs are available for your current plan.",
+    "loadError": "Could not load the catalog.",
+    "retry": "Retry",
+    "credits": "{{count}} credits",
+    "select": "Select"
+  },
+  "confirm": {
+    "title": "Confirm order",
+    "item": "Item",
+    "amount": "Amount",
+    "payMethod": "Payment method",
+    "coupon": "Coupon",
+    "noCoupon": "No coupon",
+    "estimatedTotal": "Estimated total",
+    "back": "Back",
+    "pay": "Pay",
+    "channelMissing": "Airwallex is not available for this item.",
+    "wechatMissing": "WeChat Pay is not available for this item."
+  },
+  "pay": {
+    "initError": "Could not start the payment.",
+    "failed": "Payment was not completed.",
+    "retry": "Retry"
+  },
+  "hosted": {
+    "title": "Pay with Airwallex",
+    "opened": "The Airwallex checkout page is open in your browser. Finish the payment there.",
+    "currencyHint": "You can switch to another currency on the checkout page.",
+    "waiting": "This page updates automatically once you've paid…",
+    "reopen": "Reopen checkout page",
+    "openError": "Could not open the checkout page in your browser."
+  },
+  "wechat": {
+    "title": "Pay with WeChat",
+    "qrLabel": "WeChat Pay QR code",
+    "scanHint": "Scan the QR code with WeChat to pay",
+    "waiting": "Waiting for payment…",
+    "initError": "Could not create the WeChat Pay QR code."
+  },
+  "success": {
+    "title": "Payment successful",
+    "description": "Your credit balance will update shortly.",
+    "done": "Done"
+  }
 }
