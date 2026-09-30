@@ -183,5 +183,15 @@ export default defineConfig({
       ...aouColors,
       ...componentColors,
     },
+    duration: {
+      fast: 'var(--flowy-motion-fast)',
+      base: 'var(--flowy-motion-base)',
+      slow: 'var(--flowy-motion-slow)',
+    },
+    easing: {
+      enter: 'var(--flowy-ease-enter)',
+      exit: 'var(--flowy-ease-exit)',
+      move: 'var(--flowy-ease-move)',
+    },
   },
 });

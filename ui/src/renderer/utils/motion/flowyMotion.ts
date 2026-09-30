@@ -1,6 +1,6 @@
 
 
-import type { Transition } from 'framer-motion';
+import type { Transition } from 'motion/react';
 
 export const FLOWY_MOTION_MS = {
   fast: 120,

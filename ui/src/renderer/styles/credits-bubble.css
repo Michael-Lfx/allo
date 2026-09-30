@@ -59,12 +59,9 @@
   color: var(--text-primary);
   user-select: none;
   pointer-events: auto;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   transition:
-    background-color 160ms ease,
-    border-color 160ms ease,
-    box-shadow 160ms ease;
+    background-color var(--flowy-motion-base) var(--flowy-ease-enter),
+    border-color var(--flowy-motion-base) var(--flowy-ease-enter);
 }
 
 /* Low Credits Warning State (Amber Palette) */

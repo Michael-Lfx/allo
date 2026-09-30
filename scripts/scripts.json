@@ -129,6 +129,7 @@
     "typecheck":     { "group": "check", "desc": "前端 TypeScript 类型检查（tsc --noEmit）" },
     "check:i18n":    { "group": "check", "desc": "校验 i18n 类型与 locale 键是否一致" },
     "check:theme":   { "group": "check", "desc": "校验预设 CSS 主题契约" },
+    "check:motion":  { "group": "check", "desc": "校验动效 token、侧栏宽度过渡、减弱动效兜底与市场卡片 hover" },
     "check:icons":   { "group": "check", "desc": "校验 @icon-park/react 导入禁别名/禁命名空间（别名会被图标包装插件改写成非法代码，tsc 抓不到）" },
     "check:css-scope": { "group": "check", "desc": "校验画布子系统 CSS 全部挂在 .oc-root 作用域（禁裸 :root/html/body/*、禁全量 tailwind 与全局 antd reset）" },
     "check:dead-css": { "group": "check", "desc": "扫描 CSS 工具类死代码（check-dead-css-utilities.mjs）" },

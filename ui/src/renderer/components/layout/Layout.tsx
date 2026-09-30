@@ -33,6 +33,7 @@ import {
 } from '@renderer/utils/theme/themeControlContract';
 import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
+import { FLOWY_MOTION_MS } from '@renderer/utils/motion/flowyMotion';
 import AppChromeShortcutsHost from '@renderer/components/layout/AppChromeShortcutsHost';
 import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShortcuts';
 import { useActiveConversationRouteSync } from '@renderer/hooks/ui/useActiveConversationRouteSync';
@@ -141,6 +142,8 @@ const Layout: React.FC<{
 }> = ({ sider, onSessionClick: _onSessionClick, children }) => {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
+  const [siderLabelsIn, setSiderLabelsIn] = useState(false);
+  const wasSiderCollapsedRef = useRef(false);
   const [railWidth, setRailWidth] = useState<number>(() => readStoredRailWidth());
   const [isMobile, setIsMobile] = useState(false);
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
@@ -159,6 +162,20 @@ const Layout: React.FC<{
   const navigate = useNavigate();
   useConversationShortcuts({ navigate });
   const location = useLocation();
+
+  useEffect(() => {
+    const wasCollapsed = wasSiderCollapsedRef.current;
+    wasSiderCollapsedRef.current = collapsed;
+    if (!wasCollapsed || collapsed) {
+      setSiderLabelsIn(false);
+      return undefined;
+    }
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    if (reduceMotion) return undefined;
+    setSiderLabelsIn(true);
+    const timer = window.setTimeout(() => setSiderLabelsIn(false), FLOWY_MOTION_MS.fast);
+    return () => window.clearTimeout(timer);
+  }, [collapsed]);
 
   useEffect(() => {
     let alive = true;
@@ -653,6 +670,7 @@ const Layout: React.FC<{
                   width={siderWidth}
                   className={classNames('!bg-2 layout-sider', {
                     collapsed: collapsed,
+                    'sider-labels-in': siderLabelsIn,
                   })}
                   style={siderStyle}
                 >
