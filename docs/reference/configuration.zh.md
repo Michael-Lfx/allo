@@ -211,6 +211,36 @@ const harness = await launchHarness({
 每次后端启动还会把**日志目录与生效级别**写成日志文件的第一行，因此抓到
 的日志本身就能说明这次运行记录到了什么。
 
+### Agent Store 宿主：读哪个配置文件，以及市场在启动时做什么
+
+还有两个环境变量出于同一个理由存在——被拉起的宿主收不到后端命令行参数。
+**所有解析后端 CLI 的宿主**（`agent-store`、`nomifun-web`、桌面壳）都会读它们；
+独立 `agent-store` 宿主本来就会给这两个设置填默认值。
+
+| 变量 | 作用 |
+| --- | --- |
+| `AGENT_STORE_CONFIG` | **本进程**要读的 `config.toml` 绝对路径。只有显式 `--agent-store-config` 能盖过它。不设时各宿主保留自己的默认（`agent-store` / `nomifun-web` 是 `~/.agent-store/config.toml`；桌面壳**完全不注册**默认市场）。 |
+| `AGENT_STORE_MARKET_DOWNLOAD` | `eager` \| `lazy` \| `none`——**所有**默认市场源的启动策略，盖过各源自己的 `download_on_start`。`lazy` 只注册不取包；`none` 连注册都不做。仅作用于本进程：**不写文件**。 |
+
+```ts
+const harness = await launchHarness({
+  client: { name: "my-app", version: "1.0.0" },
+  configPath: "./my-config.toml", // → AGENT_STORE_CONFIG
+  marketDownload: "lazy",        // → AGENT_STORE_MARKET_DOWNLOAD
+});
+```
+
+`AGENT_STORE_CONFIG` 是「让拉起方能使用 per-source
+`[default_marketplaces.<id>] download_on_start`」的前提。它本身也是一个开关：
+在**本来解析不到配置文件**的宿主（桌面壳）上，把它指向一个文件就等于为该进程
+打开了默认市场注册**与**后台自动更新扫掠——也就是独立 `agent-store` 宿主默认所处的
+状态。除非这正是你要的，否则不要设置它。
+
+策略本身（`[marketplace] auto_update_interval_hours`、`entry_auto_update_kinds`）与
+运行期读写面（`market/settings` · `market/settings-set`）见 Agent Store 文档：
+`docs/agent-store/37-market-download-policy.zh.md` 与
+`docs/agent-store/18-marketplace-spec.zh.md` §9.2。
+
 ## 另见
 
 - [Web 服务部署](../guides/web-server-deployment.md) —— 用 Docker、

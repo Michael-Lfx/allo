@@ -159,6 +159,27 @@ const harness = await launchHarness({
 
 Every backend run also logs its log directory and effective level as the first line of the file, so a captured log states what it was able to record.
 
+### Agent Store host: which config file, and what the marketplace does at boot
+
+Two more environment variables exist for the same reason — a spawned host cannot receive backend CLI flags. They are read by every host that parses the backend CLI (`agent-store`, `nomifun-web`, the desktop shell), and the standalone `agent-store` host sets both defaults anyway.
+
+| Variable | Effect |
+| --- | --- |
+| `AGENT_STORE_CONFIG` | Absolute path of the `config.toml` **this process** reads. Outranked only by an explicit `--agent-store-config`. Without it, each host keeps its own default (`~/.agent-store/config.toml` for `agent-store` / `nomifun-web`; no default-marketplace registration at all for the desktop shell). |
+| `AGENT_STORE_MARKET_DOWNLOAD` | `eager` \| `lazy` \| `none` — the boot policy for **every** default marketplace source, overriding each source's own `download_on_start`. `lazy` registers them without fetching; `none` registers nothing at all. Process-scoped: nothing is written to the file. |
+
+```ts
+const harness = await launchHarness({
+  client: { name: "my-app", version: "1.0.0" },
+  configPath: "./my-config.toml", // → AGENT_STORE_CONFIG
+  marketDownload: "lazy",        // → AGENT_STORE_MARKET_DOWNLOAD
+});
+```
+
+`AGENT_STORE_CONFIG` is what makes a per-source `[default_marketplaces.<id>] download_on_start` usable from a launcher at all. It is also a switch in its own right: on a host that otherwise resolves **no** config path (the desktop shell), pointing this variable at a file is what enables default-marketplace registration *and* the background auto-update sweep for that process — the state the standalone `agent-store` host is in by default. Leave it unset unless that is what you want.
+
+For the policy itself (`[marketplace] auto_update_interval_hours`, `entry_auto_update_kinds`) and the runtime read/write face (`market/settings` · `market/settings-set`), see the Agent Store docs: `docs/agent-store/37-market-download-policy.zh.md` and `docs/agent-store/18-marketplace-spec.zh.md` §9.2.
+
 ## See also
 
 - [Web Server Deployment](../guides/web-server-deployment.md) — running `nomifun-web` with Docker, systemd, Caddy.
