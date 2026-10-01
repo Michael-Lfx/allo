@@ -4,6 +4,7 @@ pub mod terminal;
 
 use crossterm::execute;
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+use crate::cache_diagnostics::CacheReuseStats;
 use nomi_types::context_usage::ContextUsageBreakdown;
 use nomi_types::tool::ToolImage;
 use std::io::{self, Write};
@@ -978,6 +979,7 @@ pub struct ContextUsageSnapshot {
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub elapsed_ms: i64,
+    pub cache_reuse: Option<CacheReuseStats>,
     pub breakdown: Option<ContextUsageBreakdown>,
 }
 

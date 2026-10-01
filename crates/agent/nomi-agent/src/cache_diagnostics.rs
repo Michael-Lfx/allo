@@ -42,6 +42,19 @@ pub struct CacheStats {
     pub cache_creation_tokens: u64,
 }
 
+/// Prompt-cache reuse measured over provider rounds.
+///
+/// The first round after a cold start can never hit the cache, so the `warm_*`
+/// sums leave it out of the denominator. `last_round_*` is the most recent
+/// round regardless.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheReuseStats {
+    pub last_round_input_tokens: u64,
+    pub last_round_cache_read_tokens: u64,
+    pub warm_input_tokens: u64,
+    pub warm_cache_read_tokens: u64,
+}
+
 /// Diagnostic result after comparing two consecutive turns.
 #[derive(Debug, Clone)]
 pub enum CacheDiagnostic {
@@ -84,6 +97,8 @@ pub struct CacheBreakDetector {
     /// so a cache miss right after compaction is attributed correctly instead
     /// of falling through to `TtlExpiry`.
     compaction_pending: bool,
+    rounds_seen: u64,
+    reuse: CacheReuseStats,
 }
 
 impl CacheBreakDetector {
@@ -93,6 +108,29 @@ impl CacheBreakDetector {
             current_snapshot: None,
             prev_stats: None,
             compaction_pending: false,
+            rounds_seen: 0,
+            reuse: CacheReuseStats::default(),
+        }
+    }
+
+    /// Reuse statistics, or `None` before the first provider round.
+    pub fn reuse_stats(&self) -> Option<CacheReuseStats> {
+        (self.rounds_seen > 0).then_some(self.reuse)
+    }
+
+    fn record_reuse(&mut self, stats: &CacheStats) {
+        self.rounds_seen += 1;
+        self.reuse.last_round_input_tokens = stats.input_tokens;
+        self.reuse.last_round_cache_read_tokens = stats.cache_read_tokens;
+        if self.rounds_seen > 1 {
+            self.reuse.warm_input_tokens = self
+                .reuse
+                .warm_input_tokens
+                .saturating_add(stats.input_tokens);
+            self.reuse.warm_cache_read_tokens = self
+                .reuse
+                .warm_cache_read_tokens
+                .saturating_add(stats.cache_read_tokens);
         }
     }
 
@@ -142,6 +180,7 @@ impl CacheBreakDetector {
     ///
     /// Returns `None` if no snapshot was recorded before the call.
     pub fn check_response(&mut self, stats: CacheStats) -> Option<CacheDiagnostic> {
+        self.record_reuse(&stats);
         let current = self.current_snapshot.clone()?;
         let diagnostic = self.compute_diagnostic(&current, &stats);
         self.prev_stats = Some(stats);
@@ -285,6 +324,33 @@ mod tests {
                 text: text.to_string(),
             }],
         )
+    }
+
+    #[test]
+    fn reuse_stats_exclude_the_cold_first_round_from_the_warm_sums() {
+        let mut detector = CacheBreakDetector::new();
+        assert_eq!(detector.reuse_stats(), None);
+
+        let mut round = |input: u64, read: u64| {
+            record(&mut detector, "system prompt", &make_tools());
+            detector.check_response(CacheStats {
+                input_tokens: input,
+                cache_read_tokens: read,
+                cache_creation_tokens: 0,
+            });
+            detector.reuse_stats().unwrap()
+        };
+
+        let cold = round(10_000, 0);
+        assert_eq!(cold.last_round_input_tokens, 10_000);
+        assert_eq!(cold.warm_input_tokens, 0);
+
+        round(12_000, 8_000);
+        let warm = round(14_000, 8_000);
+        assert_eq!(warm.last_round_input_tokens, 14_000);
+        assert_eq!(warm.last_round_cache_read_tokens, 8_000);
+        assert_eq!(warm.warm_input_tokens, 26_000);
+        assert_eq!(warm.warm_cache_read_tokens, 16_000);
     }
 
     #[test]

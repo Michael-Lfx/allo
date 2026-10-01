@@ -81,8 +81,10 @@ fn list_candidates(
         if !is_support_log_filename(&name) {
             continue;
         }
-        let meta = entry
-            .metadata()
+        // `DirEntry::metadata` reuses the directory-enumeration record on
+        // Windows, whose size and mtime lag behind a log the running process
+        // still holds open for writing. Stat the path to read live values.
+        let meta = std::fs::metadata(&path)
             .map_err(|e| AppError::Internal(format!("stat '{}': {e}", path.display())))?;
         let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         if modified < min_mtime {
@@ -531,6 +533,19 @@ mod tests {
         let modified = SystemTime::now() - age;
         let file = File::options().write(true).open(&path).unwrap();
         file.set_modified(modified).unwrap();
+    }
+
+    #[test]
+    fn candidate_size_tracks_a_log_the_process_still_holds_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut live = File::create(dir.path().join("2026-09-30.nomi.log")).unwrap();
+        live.write_all(&[b'a'; 4096]).unwrap();
+        live.flush().unwrap();
+
+        let candidates = list_candidates(dir.path(), SystemTime::now(), MAX_AGE_DAYS).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].size, 4096);
     }
 
     #[test]

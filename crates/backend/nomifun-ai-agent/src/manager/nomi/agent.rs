@@ -2100,6 +2100,9 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 // absorbing Finished state before the real `Finish` below.
                 let context_tokens = engine.context_tokens();
                 let context_window = engine.context_window();
+                let cache_reuse = engine
+                    .cache_reuse()
+                    .map(crate::protocol::events::CacheReuseData::from);
                 let context_breakdown = engine
                     .context_breakdown()
                     .map(crate::protocol::events::ContextBreakdownData::from);
@@ -2123,6 +2126,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     stop_reason: Some(stop_reason),
                     context_breakdown,
                     moa,
+                    cache_reuse,
                 }));
                 let observation_end = (
                     observation_status_from_stop(stop_reason),

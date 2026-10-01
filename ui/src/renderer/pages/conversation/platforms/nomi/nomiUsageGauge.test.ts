@@ -36,7 +36,20 @@ describe('tokenUsageFromMetricsPayload', () => {
       context_window: 200000,
       context_breakdown: undefined,
       moa: null,
+      cache_reuse: null,
     });
+  });
+
+  test('passes the backend cache_reuse block through untouched', () => {
+    const cacheReuse = {
+      last_round_input_tokens: 100,
+      last_round_cache_read_tokens: 80,
+      warm_input_tokens: 60,
+      warm_cache_read_tokens: 40,
+    };
+    expect(tokenUsageFromMetricsPayload({ input_tokens: 100, cache_reuse: cacheReuse })?.cache_reuse).toEqual(
+      cacheReuse
+    );
   });
 
   test('rejects non-objects', () => {

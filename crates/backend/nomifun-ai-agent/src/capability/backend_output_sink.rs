@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 
 use crate::artifact_store::{ArtifactKind, ArtifactStore, PersistedArtifact};
 use crate::protocol::events::{
-    AgentStatusEventData, AgentStreamEvent, ContextBreakdownData, ErrorEventData, FinishEventData,
+    AgentStatusEventData, AgentStreamEvent, CacheReuseData, ContextBreakdownData, ErrorEventData, FinishEventData,
     MoaProgressEventData, MoaReferenceEventData, OutputDiscardedEventData, PlanEventData,
     StartEventData, TextEventData, ThinkingEventData, TipType, TipsEventData, ToolCallEventData,
     ToolCallRetryData, ToolCallStatus, ToolPreparingEventData, TurnCompletedEventData,
@@ -1915,6 +1915,7 @@ impl OutputSink for BackendOutputSink {
                 stop_reason: None,
                 context_breakdown: snapshot.breakdown.as_ref().map(ContextBreakdownData::from),
                 moa: None,
+                cache_reuse: snapshot.cache_reuse.map(CacheReuseData::from),
             }));
     }
 
@@ -2507,6 +2508,7 @@ mod tests {
 
     #[test]
     fn emit_context_usage_sends_usage_updated_without_stop_reason() {
+        use nomi_agent::cache_diagnostics::CacheReuseStats;
         use nomi_types::context_usage::ContextUsageBreakdown;
 
         let (sink, mut rx) = make_sink();
@@ -2518,6 +2520,12 @@ mod tests {
             cache_creation_tokens: 10,
             cache_read_tokens: 80,
             elapsed_ms: 1500,
+            cache_reuse: Some(CacheReuseStats {
+                last_round_input_tokens: 120,
+                last_round_cache_read_tokens: 80,
+                warm_input_tokens: 90,
+                warm_cache_read_tokens: 60,
+            }),
             breakdown: Some(ContextUsageBreakdown {
                 conversation: 900,
                 ..Default::default()
@@ -2533,6 +2541,9 @@ mod tests {
                 assert!(data.stop_reason.is_none());
                 assert!(data.moa.is_none());
                 assert_eq!(data.context_breakdown.unwrap().conversation, 900);
+                let reuse = data.cache_reuse.unwrap();
+                assert_eq!(reuse.last_round_cache_read_tokens, 80);
+                assert_eq!(reuse.warm_input_tokens, 90);
             }
             other => panic!("Expected UsageUpdated, got {other:?}"),
         }

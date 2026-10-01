@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
+import type { CacheReuseData } from '@/common/protocolBindings/CacheReuseData';
+
 import {
   buildContextBreakdownViewModel,
-  calculateCacheHitRatePercent,
+  calculateCacheReusePercent,
+  calculateCacheReuseSummary,
   calculateContextUsagePercent,
   calculateContextUsageSegments,
   CONTEXT_USAGE_CATEGORY_ORDER,
@@ -69,11 +72,45 @@ describe('calculateContextUsagePercent', () => {
   });
 });
 
-describe('calculateCacheHitRatePercent', () => {
-  test('derives cache hit rate from readable usage counters', () => {
-    expect(calculateCacheHitRatePercent({ inputTokens: 10_000, cacheReadTokens: 8_000 })).toBe(80);
-    expect(calculateCacheHitRatePercent({ inputTokens: 0, cacheReadTokens: 8_000 })).toBeNull();
-    expect(calculateCacheHitRatePercent({ inputTokens: 12_000 })).toBe(0);
+describe('calculateCacheReuseSummary', () => {
+  const reuse = (overrides: Partial<CacheReuseData>): CacheReuseData => ({
+    last_round_input_tokens: 0,
+    last_round_cache_read_tokens: 0,
+    warm_input_tokens: 0,
+    warm_cache_read_tokens: 0,
+    ...overrides,
+  });
+
+  test('reports the latest round and the warm session separately', () => {
+    const summary = calculateCacheReuseSummary({
+      cacheReuse: reuse({
+        last_round_input_tokens: 10_000,
+        last_round_cache_read_tokens: 8_000,
+        warm_input_tokens: 40_000,
+        warm_cache_read_tokens: 20_000,
+      }),
+    });
+    expect(summary).toEqual({ latestPercent: 80, sessionPercent: 50 });
+  });
+
+  test('leaves both values empty while only the cold first round exists', () => {
+    const summary = calculateCacheReuseSummary({
+      cacheReuse: reuse({ last_round_input_tokens: 10_000, last_round_cache_read_tokens: 0 }),
+    });
+    expect(summary).toEqual({ latestPercent: null, sessionPercent: null });
+  });
+
+  test('falls back to the cumulative ratio for payloads without cache_reuse', () => {
+    const summary = calculateCacheReuseSummary({ inputTokens: 10_000, cacheReadTokens: 8_000 });
+    expect(summary).toEqual({ latestPercent: null, sessionPercent: 80 });
+  });
+});
+
+describe('calculateCacheReusePercent', () => {
+  test('derives prompt-cache reuse from readable usage counters', () => {
+    expect(calculateCacheReusePercent({ inputTokens: 10_000, cacheReadTokens: 8_000 })).toBe(80);
+    expect(calculateCacheReusePercent({ inputTokens: 0, cacheReadTokens: 8_000 })).toBeNull();
+    expect(calculateCacheReusePercent({ inputTokens: 12_000 })).toBe(0);
   });
 });
 

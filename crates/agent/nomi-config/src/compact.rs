@@ -87,10 +87,12 @@ pub struct CompactConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Enable prompt cache diagnostics output to user.
-    /// When true, cache hit/miss info is shown via OutputSink.
-    /// Default: false.
-    #[serde(default)]
+    /// Emit a per-round prompt-cache reuse INFO line via the OutputSink.
+    ///
+    /// On by default so a session's cache behaviour is observable without
+    /// opt-in. Informational only, never an error: a full miss is a benign TTL
+    /// lapse, not a failed turn (see `cache_diagnostic_message`).
+    #[serde(default = "default_true")]
     pub cache_diagnostics: bool,
 
     /// Model id used for the compaction summarizer.
@@ -125,7 +127,7 @@ impl Default for CompactConfig {
             idle_compact_seconds: default_idle_compact_seconds(),
             idle_autocompact_pct: default_idle_autocompact_pct(),
             enabled: default_true(),
-            cache_diagnostics: false,
+            cache_diagnostics: true,
             summary_model: None,
             compaction: nomi_compact::CompactionLevel::default(),
             toon: false,
@@ -396,8 +398,14 @@ context_window = 128000
     }
 
     #[test]
-    fn cache_diagnostics_defaults_to_false() {
+    fn cache_diagnostics_defaults_to_true() {
         let cfg = CompactConfig::default();
+        assert!(cfg.cache_diagnostics);
+    }
+
+    #[test]
+    fn cache_diagnostics_can_be_disabled() {
+        let cfg: CompactConfig = toml::from_str("cache_diagnostics = false").unwrap();
         assert!(!cfg.cache_diagnostics);
     }
 

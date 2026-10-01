@@ -22,9 +22,9 @@ const CONTEXT_PREFIX: &str = "[Context]";
 
 pub const COVERAGE_RETAINED_OBSERVATION_HISTORY: &str = "retained_observation_history";
 
-/// Observation-layer token view. Provider `TokenUsage.input_tokens` is not
-/// uniform (OpenAI folds cache into input; Anthropic does not), so this copies
-/// raw fields and never invents `input_uncached` or sums cache into input.
+/// Observation-layer token view. Built-in providers normalize
+/// `TokenUsage.input_tokens` to the whole prompt (fresh + cache read + cache
+/// write); this copies the raw fields and never invents `input_uncached`.
 pub type NormalizedObservationUsage = ProjectedTokenUsage;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,6 +70,27 @@ pub enum SystemPromptState {
     Unchanged,
     Changed,
     Unavailable,
+}
+
+/// How a request relates to the previous agent request's cacheable prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrefixReuseState {
+    First,
+    Replayed,
+    SystemChanged,
+    ToolsChanged,
+    MessagesRewritten,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedPrefixReuse {
+    pub state: PrefixReuseState,
+    /// Index of the first message whose prefix hash differs from the previous
+    /// request. Only set for `messages_rewritten`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_divergent_message: Option<u32>,
 }
 
 /// Lightweight event metadata for the detail timeline. Payloads stay on the
@@ -228,6 +249,8 @@ pub struct ProjectedModelCall {
     pub request_message_view: Option<ProjectedRequestMessageView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_state: Option<SystemPromptState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_reuse: Option<ProjectedPrefixReuse>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_summary: Option<ProjectedResponseSummary>,
     #[serde(default)]
@@ -673,6 +696,7 @@ fn upsert_call<'a>(calls: &'a mut Vec<ProjectedModelCall>, model_call_id: &str) 
         request_summary: None,
         request_message_view: None,
         system_prompt_state: None,
+        prefix_reuse: None,
         response_summary: None,
         tools: Vec::new(),
     });
@@ -851,6 +875,7 @@ fn populate_request_metadata(calls: &mut [ProjectedModelCall]) {
     // Auxiliary calls can be interleaved with workflow calls. They have their
     // own context and must not become the baseline for the next agent request.
     let mut previous_agent_messages: Option<Value> = None;
+    let mut previous_fingerprint: Option<Value> = None;
     let mut system_baseline: Option<Value> = None;
     let mut agent_call_seen = false;
 
@@ -877,6 +902,17 @@ fn populate_request_metadata(calls: &mut [ProjectedModelCall]) {
             .filter(|messages| !value_is_omitted(messages))
             .cloned();
 
+        let fingerprint = request_payload.get("prefix_fingerprint").filter(|value| value.is_object());
+        call.prefix_reuse = Some(if agent_call_seen {
+            prefix_reuse(previous_fingerprint.as_ref(), fingerprint)
+        } else {
+            ProjectedPrefixReuse {
+                state: PrefixReuseState::First,
+                first_divergent_message: None,
+            }
+        });
+        previous_fingerprint = fingerprint.cloned();
+
         let system = comparable_system_value(request);
         if !agent_call_seen {
             agent_call_seen = true;
@@ -889,6 +925,36 @@ fn populate_request_metadata(calls: &mut [ProjectedModelCall]) {
                 _ => SystemPromptState::Unavailable,
             });
         }
+    }
+}
+
+fn prefix_reuse(previous: Option<&Value>, current: Option<&Value>) -> ProjectedPrefixReuse {
+    let state_only = |state| ProjectedPrefixReuse {
+        state,
+        first_divergent_message: None,
+    };
+    let (Some(previous), Some(current)) = (previous, current) else {
+        return state_only(PrefixReuseState::Unavailable);
+    };
+    if previous.get("system") != current.get("system") {
+        return state_only(PrefixReuseState::SystemChanged);
+    }
+    if previous.get("tools") != current.get("tools") {
+        return state_only(PrefixReuseState::ToolsChanged);
+    }
+    let (Some(previous), Some(current)) = (
+        previous.get("messages").and_then(Value::as_array),
+        current.get("messages").and_then(Value::as_array),
+    ) else {
+        return state_only(PrefixReuseState::Unavailable);
+    };
+    let shared = previous.iter().zip(current).take_while(|(left, right)| left == right).count();
+    if shared == previous.len() {
+        return state_only(PrefixReuseState::Replayed);
+    }
+    ProjectedPrefixReuse {
+        state: PrefixReuseState::MessagesRewritten,
+        first_divergent_message: Some(shared as u32),
     }
 }
 
@@ -2574,6 +2640,37 @@ mod tests {
             Some(RequestMessageViewMode::Full)
         );
         assert_eq!(calls[1].system_prompt_state, Some(SystemPromptState::Unchanged));
+    }
+
+    #[test]
+    fn prefix_reuse_reports_the_first_divergent_message() {
+        let tools: Vec<Value> = vec![serde_json::json!({ "name": "Read" })];
+        let request = |seq: u64, call: &str, system: &str, messages: &[&str]| {
+            event(
+                EVENT_LLM_REQUEST,
+                seq,
+                turn_ids("t1", call),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "system": system, "messages": messages },
+                    "prefix_fingerprint": crate::request_prefix_fingerprint(system, &tools, messages),
+                }),
+            )
+        };
+        let events = vec![
+            request(1, "mc1", "sys", &["a", "b"]),
+            request(2, "mc2", "sys", &["a", "b", "c"]),
+            request(3, "mc3", "sys", &["a", "B", "c", "d"]),
+            request(4, "mc4", "sys2", &["a", "B", "c", "d"]),
+        ];
+
+        let calls = &project_turns(&events)[0].model_calls;
+        let reuse = |index: usize| calls[index].prefix_reuse.unwrap();
+        assert_eq!(reuse(0).state, PrefixReuseState::First);
+        assert_eq!(reuse(1).state, PrefixReuseState::Replayed);
+        assert_eq!(reuse(2).state, PrefixReuseState::MessagesRewritten);
+        assert_eq!(reuse(2).first_divergent_message, Some(1));
+        assert_eq!(reuse(3).state, PrefixReuseState::SystemChanged);
     }
 
     #[test]

@@ -5,6 +5,7 @@
  */
 
 import type { ProviderModelResponse } from '@/common/types/provider/providerModel';
+import type { CacheReuseData } from '@/common/protocolBindings/CacheReuseData';
 import type { MoaTurnStatsData } from '@/common/protocolBindings/MoaTurnStatsData';
 import type { ModelTask } from '@/common/protocolBindings/ModelTask';
 import type { ModelTrait } from '@/common/protocolBindings/ModelTrait';
@@ -139,6 +140,8 @@ export interface TokenUsageData {
   /** MoA reference fan-out stats for the last turn (nomi turn_completed
    * carries it); null/absent when the turn had no fan-out. */
   moa?: MoaTurnStatsData | null;
+  /** Prompt-cache reuse for the latest provider round and the warm session. */
+  cache_reuse?: CacheReuseData | null;
 }
 
 /** Persisted Flowy cloud credit usage for one agent turn (keyed by turnId). */

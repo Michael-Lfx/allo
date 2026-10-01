@@ -35,7 +35,31 @@ describe('turn process state', () => {
     ).toBe('canceled');
   });
 
-  test('keeps the root error failed while classifying barrier-skipped commands as canceled', () => {
+  test('only a recorded user stop marks a turn-closed tool as canceled', () => {
+    const closedBy = (reason: string) =>
+      ({
+        type: 'tool_call',
+        content: {
+          call_id: `call-${reason}`,
+          name: 'Browser',
+          status: 'error',
+          args: {},
+          output: `The turn ended before this tool completed: ${reason}`,
+        },
+      }) as any;
+
+    expect(getToolMessagesProcessState([closedBy('cancelled')])).toBe('canceled');
+    for (const reason of ['end_turn', 'max_tokens', 'max_turn_requests', 'channel_closed', 'error', 'finish']) {
+      expect(getToolMessagesProcessState([closedBy(reason)])).toBe('completed');
+    }
+    expect(
+      getToolMessagesProcessState([
+        { type: 'tool_call', content: { call_id: 'call-plain', name: 'Browser', args: {}, status: 'canceled' } } as any,
+      ])
+    ).toBe('canceled');
+  });
+
+  test('keeps the root error failed while barrier-skipped commands never read as a user stop', () => {
     const skipped = {
       type: 'tool_call',
       content: {
@@ -58,8 +82,9 @@ describe('turn process state', () => {
       },
     } as any;
 
-    expect(getToolMessagesProcessState([skipped])).toBe('canceled');
+    expect(getToolMessagesProcessState([skipped])).toBe('completed');
     expect(getToolMessagesProcessState([failedKnowledgeRead, skipped])).toBe('failed');
+    expect(getProcessItemState(skipped)).toBe('completed');
   });
 
   test('maps local invalid-argument rejection to not executed while keeping real failures failed', () => {

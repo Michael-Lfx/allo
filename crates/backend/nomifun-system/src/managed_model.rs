@@ -1616,6 +1616,7 @@ fn normalized_cost_usage(json: &Value) -> Option<Value> {
             .saturating_add(cache_read_tokens)
             .saturating_add(output_tokens),
         "prompt_cache_hit_tokens": cache_read_tokens,
+        "prompt_cache_miss_tokens": input_tokens,
         "completion_tokens_details": {
             "reasoning_tokens": reasoning_tokens
         }
@@ -2069,6 +2070,7 @@ mod tests {
         assert_eq!(usage["usage"]["prompt_tokens"], 60);
         assert_eq!(usage["usage"]["completion_tokens"], 8);
         assert_eq!(usage["usage"]["prompt_cache_hit_tokens"], 192);
+        assert_eq!(usage["usage"]["prompt_cache_miss_tokens"], 60);
         assert_eq!(usage["usage"]["total_tokens"], 260);
         assert!(usage.get("cost").is_none());
         assert!(usage.get("normalizedUsage").is_none());

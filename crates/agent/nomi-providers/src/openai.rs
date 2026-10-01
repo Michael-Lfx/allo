@@ -1579,17 +1579,26 @@ fn update_stream_usage(json: &Value, state: &mut StreamState) -> Result<(), Stri
     };
 
     let base_prompt = optional_usage_u64(usage, "prompt_tokens")?.unwrap_or(state.input_tokens);
+    // Some gateways (DeepSeek/Flowy Cloud) report the miss side explicitly.
+    // It is authoritative, so prefer it for the non-cached input; `hit + miss`
+    // then equals the true prompt size.
+    let prompt_cache_miss = optional_usage_u64(usage, "prompt_cache_miss_tokens")?;
     let cache_hit = optional_usage_u64(usage, "prompt_cache_hit_tokens")?.unwrap_or(0);
     // DeepSeek reports `prompt_tokens` as the full input (hit + miss) and
     // `prompt_cache_hit_tokens` as a breakdown. Adding them double-counts
-    // cache hits and reports ~50% on a 99% prefix. Only add when hit is
-    // larger than prompt_tokens, which is the miss-only gateway shape.
-    state.input_tokens = if cache_hit > base_prompt {
-        base_prompt.checked_add(cache_hit).ok_or_else(|| {
+    // cache hits. Only add when hit is larger than prompt_tokens (the
+    // miss-only gateway shape without an explicit miss field), and never when
+    // `prompt_cache_miss_tokens` already gives us the split.
+    state.input_tokens = match prompt_cache_miss {
+        // An explicit miss side is authoritative: the true prompt is hit + miss
+        // whatever shape `prompt_tokens` took (full input or miss-only).
+        Some(miss) => miss.checked_add(cache_hit).ok_or_else(|| {
             "OpenAI-compatible provider returned overflowing prompt token usage".to_string()
-        })?
-    } else {
-        base_prompt
+        })?,
+        None if cache_hit > base_prompt => base_prompt.checked_add(cache_hit).ok_or_else(|| {
+            "OpenAI-compatible provider returned overflowing prompt token usage".to_string()
+        })?,
+        None => base_prompt,
     };
     state.output_tokens =
         optional_usage_u64(usage, "completion_tokens")?.unwrap_or(state.output_tokens);
@@ -4008,6 +4017,17 @@ mod tests {
         assert_eq!(state.input_tokens, 1_000_000);
         assert_eq!(state.cache_read_tokens, 999_500);
         assert_eq!(state.output_tokens, 100);
+    }
+
+    #[test]
+    fn usage_explicit_miss_is_authoritative_when_hit_is_smaller_than_miss() {
+        let mut state = StreamState::new();
+
+        let chunk = r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20000,"completion_tokens":10,"prompt_cache_hit_tokens":7900,"prompt_cache_miss_tokens":20000}}"#;
+        let _ = parse_sse_chunk(chunk, &mut state, false);
+
+        assert_eq!(state.input_tokens, 27_900);
+        assert_eq!(state.cache_read_tokens, 7_900);
     }
 
     #[test]

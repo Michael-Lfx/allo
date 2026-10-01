@@ -33,6 +33,7 @@ pub use project::{
     project_turn_by_id, project_turns, strip_projected_turn_payloads,
     NormalizedObservationUsage, ObservationSummary, ObservationSummaryFold, ProjectedGap,
     ObservationTimelineEvent, ProjectedModelCall, ProjectedRequestMessageView,
+    PrefixReuseState, ProjectedPrefixReuse,
     ProjectedRequestSummary, ProjectedResponseSummary, ProjectedTokenUsage, ProjectedToolExecution,
     ProjectedTurn, RequestMessageViewMode, SystemPromptState, ToolExecutionStatus,
     COVERAGE_RETAINED_OBSERVATION_HISTORY,

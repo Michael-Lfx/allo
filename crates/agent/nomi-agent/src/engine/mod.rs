@@ -19,7 +19,7 @@ use nomi_types::skill_types::{ContextModifier, PlanModeTransition, effort_to_str
 use serde_json::Value;
 use tracing::Instrument;
 
-use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
+use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheReuseStats, CacheStats};
 use crate::compact::state::CompactState;
 use crate::compact::{auto, emergency, estimate, micro, snip, CompactReason};
 use crate::confirm::ToolConfirmer;
@@ -38,8 +38,9 @@ use crate::session::{EditableTurnCheckpoint, Session, SessionManager};
 /// Decide how a prompt-cache-break diagnostic should surface to the user.
 /// Returns the info-level message to emit, or `None` to stay silent.
 ///
-/// All diagnostics — including a `FullMiss` — are gated behind the opt-in
-/// `cache_diagnostics` flag and are INFO, never errors. A full miss is not a
+/// All diagnostics — including a `FullMiss` — are gated behind the
+/// `cache_diagnostics` flag and are INFO, never errors. A `Healthy` 0% reading
+/// is a cold start or a provider without caching and stays silent. A full miss is not a
 /// failure: the prompt cache merely lapsed, most often a benign server-side TTL
 /// expiry during the idle gap between turns (e.g. between AutoWork tasks).
 /// Emitting it as an error previously made the AutoWork runner treat a
@@ -51,10 +52,11 @@ fn cache_diagnostic_message(diag: &CacheDiagnostic, diagnostics_enabled: bool) -
     Some(match diag {
         CacheDiagnostic::FullMiss { cause } => format!("Cache full miss: {cause:?}"),
         CacheDiagnostic::PartialMiss { hit_rate, cause } => {
-            format!("Cache: {:.0}% hit rate (cause: {cause:?})", hit_rate * 100.0)
+            format!("Cache reuse: {:.0}% of prompt (cause: {cause:?})", hit_rate * 100.0)
         }
+        CacheDiagnostic::Healthy { hit_rate } if *hit_rate <= 0.0 => return None,
         CacheDiagnostic::Healthy { hit_rate } => {
-            format!("Cache: {:.0}% hit rate", hit_rate * 100.0)
+            format!("Cache reuse: {:.0}% of prompt", hit_rate * 100.0)
         }
     })
 }
@@ -1084,6 +1086,12 @@ impl AgentEngine {
         self.compact_config.context_window as u64
     }
 
+    /// Prompt-cache reuse over this engine's provider rounds; `None` before
+    /// the first round.
+    pub fn cache_reuse(&self) -> Option<CacheReuseStats> {
+        self.cache_detector.reuse_stats()
+    }
+
     fn emit_live_context_usage(&self, turn_started_at: Instant) {
         let elapsed_ms = i64::try_from(turn_started_at.elapsed().as_millis()).unwrap_or(i64::MAX);
         self.output.emit_context_usage(&ContextUsageSnapshot {
@@ -1094,6 +1102,7 @@ impl AgentEngine {
             cache_creation_tokens: self.total_usage.cache_creation_tokens,
             cache_read_tokens: self.total_usage.cache_read_tokens,
             elapsed_ms,
+            cache_reuse: self.cache_reuse(),
             breakdown: self.context_breakdown().cloned(),
         });
     }
@@ -2667,7 +2676,6 @@ impl AgentEngine {
 
             request_breakdown.calibrate_to(effective_watermark);
             self.last_context_breakdown = Some(request_breakdown);
-            self.emit_live_context_usage(turn_started_at);
 
             // Cache break detection
             let cache_stats = CacheStats {
@@ -2684,6 +2692,7 @@ impl AgentEngine {
                     self.output.emit_info(&msg);
                 }
             }
+            self.emit_live_context_usage(turn_started_at);
 
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
             if !thinking_text.is_empty() || thinking_signature.is_some() {
@@ -4481,6 +4490,7 @@ impl AgentEngine {
         self.sent_prefix_len = 0;
         self.compact_state = CompactState::new();
         self.total_usage = TokenUsage::default();
+        self.cache_detector = CacheBreakDetector::new();
         self.save_session();
     }
 

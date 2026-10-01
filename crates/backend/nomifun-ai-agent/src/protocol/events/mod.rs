@@ -3,6 +3,7 @@ pub mod session_updates;
 pub mod tool_call;
 pub mod translate;
 
+use nomi_agent::cache_diagnostics::CacheReuseStats;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -226,6 +227,32 @@ impl From<&nomi_types::context_usage::ContextUsageBreakdown> for ContextBreakdow
     }
 }
 
+/// Prompt-cache reuse over provider rounds. Token counts are whole-prompt
+/// (fresh + cached). `warm_*` leave out the cold first round of a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../../ui/src/common/protocolBindings/")]
+pub struct CacheReuseData {
+    #[ts(type = "number")]
+    pub last_round_input_tokens: u64,
+    #[ts(type = "number")]
+    pub last_round_cache_read_tokens: u64,
+    #[ts(type = "number")]
+    pub warm_input_tokens: u64,
+    #[ts(type = "number")]
+    pub warm_cache_read_tokens: u64,
+}
+
+impl From<CacheReuseStats> for CacheReuseData {
+    fn from(value: CacheReuseStats) -> Self {
+        Self {
+            last_round_input_tokens: value.last_round_input_tokens,
+            last_round_cache_read_tokens: value.last_round_cache_read_tokens,
+            warm_input_tokens: value.warm_input_tokens,
+            warm_cache_read_tokens: value.warm_cache_read_tokens,
+        }
+    }
+}
+
 /// Data for the `TurnCompleted` event — aggregate metrics for one turn.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export_to = "../../../../ui/src/common/protocolBindings/")]
@@ -264,6 +291,10 @@ pub struct TurnCompletedEventData {
     /// wire shape to before this field existed for old consumers).
     #[serde(default)]
     pub moa: Option<MoaTurnStatsData>,
+    /// Prompt-cache reuse for the latest provider round and the warm session.
+    /// `None` before the first round or from producers that do not track it.
+    #[serde(default)]
+    pub cache_reuse: Option<CacheReuseData>,
 }
 
 /// Per-turn Mixture-of-Agents aggregate: one entry per reference slot that
@@ -2818,8 +2849,15 @@ mod tests {
                 }],
                 total_cost_usd: Some(0.0033),
             }),
+            cache_reuse: Some(CacheReuseData {
+                last_round_input_tokens: 500,
+                last_round_cache_read_tokens: 380,
+                warm_input_tokens: 400,
+                warm_cache_read_tokens: 300,
+            }),
         });
         let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["data"]["cache_reuse"]["warm_cache_read_tokens"], 300);
         assert_eq!(json["type"], "turn_completed");
         assert_eq!(json["data"]["elapsed_ms"], 1234);
         assert_eq!(json["data"]["input_tokens"], 500);
