@@ -120,6 +120,19 @@ export interface RequestMessageView {
 
 export type SystemPromptState = 'first' | 'unchanged' | 'changed' | 'unavailable';
 
+export type PrefixReuseState =
+  | 'first'
+  | 'replayed'
+  | 'system_changed'
+  | 'tools_changed'
+  | 'messages_rewritten'
+  | 'unavailable';
+
+export interface PrefixReuse {
+  state: PrefixReuseState;
+  first_divergent_message?: number | null;
+}
+
 export interface ObservationTimelineEvent {
   event_seq: number;
   event_type: string;
@@ -148,6 +161,7 @@ export interface ProjectedModelCall {
   request_summary?: ProjectedRequestSummary | null;
   request_message_view?: RequestMessageView | null;
   system_prompt_state?: SystemPromptState | null;
+  prefix_reuse?: PrefixReuse | null;
   response_summary?: ProjectedResponseSummary | null;
   tools: ProjectedToolExecution[];
 }

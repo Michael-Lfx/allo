@@ -350,8 +350,8 @@ pub use shell::{
 pub use session_observation::{
     ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
     SessionObservationEventDto, SessionObservationExportDto, SessionObservationExportTurnDto,
-    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestMessageViewDto,
-    SessionObservationRequestSummaryDto, SessionObservationResponseSummaryDto,
+    SessionObservationGapDto, SessionObservationListDto, SessionObservationPrefixReuseDto,
+    SessionObservationRequestMessageViewDto, SessionObservationRequestSummaryDto, SessionObservationResponseSummaryDto,
     SessionObservationTimelineEventDto, SessionObservationTokenUsageDto, SessionObservationToolDto,
     SessionObservationTurnDto,
 };

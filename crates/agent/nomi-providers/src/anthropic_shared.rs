@@ -779,8 +779,14 @@ pub fn parse_sse_data(event_type: &str, data: &str, state: &mut StreamState) -> 
                     .as_u64()
                     .unwrap_or(state.output_tokens);
             }
+            // Anthropic reports `input_tokens` as the uncached remainder only;
+            // cache reads and writes are separate counters. Normalize to the
+            // whole prompt so the reuse ratio matches OpenAI-compatible providers.
             let usage = TokenUsage {
-                input_tokens: state.input_tokens,
+                input_tokens: state
+                    .input_tokens
+                    .saturating_add(state.cache_read_tokens)
+                    .saturating_add(state.cache_creation_tokens),
                 output_tokens: state.output_tokens,
                 reasoning_tokens: 0,
                 cache_creation_tokens: state.cache_creation_tokens,
@@ -1949,6 +1955,38 @@ mod tests {
             event,
             LlmEvent::ToolUse { .. } | LlmEvent::Done { .. }
         )));
+    }
+
+    #[tokio::test]
+    async fn usage_normalizes_input_to_the_whole_prompt() {
+        let body = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":200,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":800}}}\n\n",
+            "event: message_delta\n",
+            "data: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(body.to_string())
+                .unwrap(),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+        let _ = process_sse_stream(response, &tx).await;
+        drop(tx);
+        let mut usage = None;
+        while let Some(event) = rx.recv().await {
+            if let LlmEvent::Done { usage: done_usage, .. } = event {
+                usage = Some(done_usage);
+            }
+        }
+        let usage = usage.expect("a terminal Done with usage");
+        assert_eq!(usage.input_tokens, 1_100);
+        assert_eq!(usage.cache_creation_tokens, 100);
+        assert_eq!(usage.cache_read_tokens, 800);
     }
 
     #[tokio::test]

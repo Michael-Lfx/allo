@@ -27,6 +27,9 @@ fn healthy_and_partial_are_gated_by_the_flag() {
     assert_eq!(cache_diagnostic_message(&healthy, false), None);
     assert!(cache_diagnostic_message(&healthy, true).is_some());
 
+    let cold = CacheDiagnostic::Healthy { hit_rate: 0.0 };
+    assert_eq!(cache_diagnostic_message(&cold, true), None);
+
     let partial = CacheDiagnostic::PartialMiss { hit_rate: 0.5, cause: CacheBreakCause::TtlExpiry };
     assert_eq!(cache_diagnostic_message(&partial, false), None);
     assert!(cache_diagnostic_message(&partial, true).is_some());

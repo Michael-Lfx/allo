@@ -16,7 +16,7 @@ import {
 } from './mountedCapabilities';
 import { recalledNomiUsage } from './nomiUsageGauge';
 import {
-  calculateCacheHitRatePercent,
+  calculateCacheReuseSummary,
   calculateContextUsagePercent,
   calculateContextUsageSegments,
   formatPercent,
@@ -250,7 +250,8 @@ const NomiSessionMetricsPanel: React.FC<{ conversation: TChatConversation }> = (
     contextWindow: usage?.context_window,
     cacheReadTokens: usage?.cache_read_tokens,
   });
-  const cachePercent = calculateCacheHitRatePercent({
+  const cacheReuse = calculateCacheReuseSummary({
+    cacheReuse: usage?.cache_reuse,
     inputTokens: usage?.input_tokens,
     cacheReadTokens: usage?.cache_read_tokens,
   });
@@ -398,9 +399,11 @@ const NomiSessionMetricsPanel: React.FC<{ conversation: TChatConversation }> = (
                 caption={formatFullNumber(usageData.output_tokens)}
               />
               <MetricTile
-                label={t('conversation.sessionMetrics.cacheHitRate')}
-                value={formatPercent(cachePercent)}
-                caption={t('conversation.sessionMetrics.cacheHitCaption')}
+                label={t('conversation.sessionMetrics.cacheReuseRate')}
+                value={formatPercent(cacheReuse.latestPercent)}
+                caption={t('conversation.sessionMetrics.cacheReuseCaption', {
+                  percent: formatPercent(cacheReuse.sessionPercent),
+                })}
                 icon={<Lightning theme='outline' size='14' />}
               />
             </div>

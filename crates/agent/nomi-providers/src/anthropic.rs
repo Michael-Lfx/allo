@@ -139,10 +139,6 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
-    fn input_tokens_include_cache(&self) -> bool {
-        false
-    }
-
     async fn stream(
         &self,
         request: &LlmRequest,

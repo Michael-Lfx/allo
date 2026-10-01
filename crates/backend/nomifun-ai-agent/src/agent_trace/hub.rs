@@ -7,7 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nomifun_api_types::{
     ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
     SessionObservationEventDto, SessionObservationExportDto, SessionObservationExportTurnDto,
-    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestMessageViewDto,
+    SessionObservationGapDto, SessionObservationListDto, SessionObservationPrefixReuseDto,
+    SessionObservationRequestMessageViewDto,
     SessionObservationRequestSummaryDto, SessionObservationResponseSummaryDto,
     SessionObservationTimelineEventDto, SessionObservationTokenUsageDto,
     SessionObservationToolDto, SessionObservationTurnDto,
@@ -16,8 +17,8 @@ use nomifun_db::IClientPreferenceRepository;
 use nomi_agent_trace::{
     project_call_detail, project_turn_by_id, project_turns, strip_projected_turn_payloads,
     ExecutionStatus, Integrity, ObservationEvent, ObservationRecorder, ObservationScope,
-    ObservationSummary, ObservationTimelineEvent, ProjectedGap, ProjectedModelCall,
-    ProjectedRequestMessageView, ProjectedRequestSummary, ProjectedResponseSummary,
+    ObservationSummary, ObservationTimelineEvent, PrefixReuseState, ProjectedGap, ProjectedModelCall,
+    ProjectedPrefixReuse, ProjectedRequestMessageView, ProjectedRequestSummary, ProjectedResponseSummary,
     ProjectedTokenUsage, ProjectedToolExecution, ProjectedTurn, RecorderError, RecorderHealth,
     RecorderHealthStatus, RequestMessageViewMode, SystemPromptState, ToolExecutionStatus,
     COVERAGE_RETAINED_OBSERVATION_HISTORY, SCHEMA_VERSION,
@@ -138,6 +139,21 @@ fn request_message_view_dto(
     }
 }
 
+fn prefix_reuse_dto(value: ProjectedPrefixReuse) -> SessionObservationPrefixReuseDto {
+    let state = match value.state {
+        PrefixReuseState::First => "first",
+        PrefixReuseState::Replayed => "replayed",
+        PrefixReuseState::SystemChanged => "system_changed",
+        PrefixReuseState::ToolsChanged => "tools_changed",
+        PrefixReuseState::MessagesRewritten => "messages_rewritten",
+        PrefixReuseState::Unavailable => "unavailable",
+    };
+    SessionObservationPrefixReuseDto {
+        state: state.to_owned(),
+        first_divergent_message: value.first_divergent_message,
+    }
+}
+
 fn system_prompt_state_string(value: SystemPromptState) -> String {
     match value {
         SystemPromptState::First => "first",
@@ -221,6 +237,7 @@ fn call_dto(value: ProjectedModelCall) -> SessionObservationCallDto {
         request_summary: value.request_summary.map(request_summary_dto),
         request_message_view: value.request_message_view.map(request_message_view_dto),
         system_prompt_state: value.system_prompt_state.map(system_prompt_state_string),
+        prefix_reuse: value.prefix_reuse.map(prefix_reuse_dto),
         response_summary: value.response_summary.map(response_summary_dto),
         tools: value.tools.into_iter().map(tool_dto).collect(),
     }
@@ -792,6 +809,7 @@ mod tests {
             request_summary: None,
             request_message_view: None,
             system_prompt_state: None,
+            prefix_reuse: None,
             response_summary: None,
             tools: Vec::new(),
         }

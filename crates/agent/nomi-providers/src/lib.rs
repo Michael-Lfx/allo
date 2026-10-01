@@ -149,7 +149,8 @@ pub trait LlmProvider: Send + Sync {
     -> Result<mpsc::Receiver<LlmEvent>, ProviderError>;
 
     /// Whether `TokenUsage::input_tokens` already counts cache reads and
-    /// writes. Anthropic-protocol providers report the uncached remainder only.
+    /// writes. Every built-in provider normalizes to the whole prompt, so this
+    /// is true unless a custom provider reports the uncached remainder only.
     fn input_tokens_include_cache(&self) -> bool {
         true
     }

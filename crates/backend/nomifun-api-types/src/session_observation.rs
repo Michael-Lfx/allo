@@ -106,9 +106,18 @@ pub struct SessionObservationCallDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_reuse: Option<SessionObservationPrefixReuseDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_summary: Option<SessionObservationResponseSummaryDto>,
     #[serde(default)]
     pub tools: Vec<SessionObservationToolDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionObservationPrefixReuseDto {
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_divergent_message: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -42,23 +42,33 @@ fn curve_config() -> nomi_config::config::Config {
     config
 }
 
+/// Simulated gateway: every request reports the bytes it replayed from the
+/// previous request as `cache_read_tokens`, optionally capped to model a gateway
+/// that can only cache a fixed head.
 struct CurveProvider {
     requests: Mutex<Vec<LlmRequest>>,
     remaining_tool_rounds: AtomicUsize,
+    cache_cap_bytes: Option<usize>,
 }
 
 impl CurveProvider {
     fn dialogue() -> Arc<Self> {
-        Arc::new(Self {
-            requests: Mutex::new(Vec::new()),
-            remaining_tool_rounds: AtomicUsize::new(0),
-        })
+        Self::new(0, None)
     }
 
     fn tool_loop(rounds: usize) -> Arc<Self> {
+        Self::new(rounds, None)
+    }
+
+    fn head_capped_dialogue(cap_bytes: usize) -> Arc<Self> {
+        Self::new(0, Some(cap_bytes))
+    }
+
+    fn new(tool_rounds: usize, cache_cap_bytes: Option<usize>) -> Arc<Self> {
         Arc::new(Self {
             requests: Mutex::new(Vec::new()),
-            remaining_tool_rounds: AtomicUsize::new(rounds),
+            remaining_tool_rounds: AtomicUsize::new(tool_rounds),
+            cache_cap_bytes,
         })
     }
 
@@ -73,10 +83,17 @@ impl LlmProvider for CurveProvider {
         &self,
         request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-        let idx = {
+        let (idx, usage) = {
             let mut requests = self.requests.lock().unwrap();
+            let replayed = requests.last().map_or(0, payload_bytes);
             requests.push(request.clone());
-            requests.len()
+            let cache_read = self.cache_cap_bytes.map_or(replayed, |cap| replayed.min(cap));
+            let usage = TokenUsage {
+                input_tokens: payload_bytes(request) as u64,
+                cache_read_tokens: cache_read as u64,
+                ..TokenUsage::default()
+            };
+            (requests.len(), usage)
         };
         let emit_tool = self
             .remaining_tool_rounds
@@ -96,7 +113,7 @@ impl LlmProvider for CurveProvider {
                 },
                 LlmEvent::Done {
                     stop_reason: StopReason::ToolUse,
-                    usage: TokenUsage::default(),
+                    usage,
                 },
             ]
         } else {
@@ -105,7 +122,7 @@ impl LlmProvider for CurveProvider {
                 LlmEvent::TextDelta("Done.".to_string()),
                 LlmEvent::Done {
                     stop_reason: StopReason::EndTurn,
-                    usage: TokenUsage::default(),
+                    usage,
                 },
             ]
         };
@@ -208,9 +225,35 @@ fn assert_tail_hit(rates: &[u32], label: &str) {
     );
 }
 
-#[tokio::test]
-async fn plain_dialogue_prefix_equals_prior_request() {
-    let provider = CurveProvider::dialogue();
+fn head_bytes(request: &LlmRequest) -> usize {
+    let mut head = request.clone();
+    head.messages.clear();
+    payload_bytes(&head)
+}
+
+fn assert_engine_reports_gateway_usage(engine: &AgentEngine, requests: &[LlmRequest], label: &str) {
+    let reuse = engine
+        .cache_reuse()
+        .unwrap_or_else(|| panic!("{label}: engine recorded no provider usage"));
+    let last = requests.len() - 1;
+    assert_eq!(
+        reuse.last_round_input_tokens,
+        payload_bytes(&requests[last]) as u64,
+        "{label}: engine must report the gateway's prompt size for the last round"
+    );
+    assert_eq!(
+        reuse.last_round_cache_read_tokens,
+        payload_bytes(&requests[last - 1]) as u64,
+        "{label}: last-round cache read must equal the previous request in full"
+    );
+    let warm_pct = reuse.warm_cache_read_tokens * 100 / reuse.warm_input_tokens.max(1);
+    assert!(
+        warm_pct >= u64::from(MIN_TAIL_HIT_PCT),
+        "{label}: warm cache reuse {warm_pct}% < {MIN_TAIL_HIT_PCT}%"
+    );
+}
+
+async fn run_dialogue(provider: &Arc<CurveProvider>) -> AgentEngine {
     let mut engine = AgentEngine::new_with_provider(
         provider.clone(),
         curve_config(),
@@ -218,18 +261,51 @@ async fn plain_dialogue_prefix_equals_prior_request() {
         silent_output(),
         std::env::temp_dir(),
     );
-
     for turn in 0..DIALOGUE_TURNS {
         engine
             .execute_turn(&user_payload(turn), &format!("msg-{turn}"))
             .await
             .unwrap_or_else(|err| panic!("dialogue turn {turn} failed: {err:?}"));
     }
+    engine
+}
+
+#[tokio::test]
+async fn head_only_gateway_caps_reported_reuse_at_the_head_size() {
+    let probe = CurveProvider::dialogue();
+    run_dialogue(&probe).await;
+    let head = head_bytes(&probe.recorded()[0]);
+    assert!(head > 0, "the invariant head (system + tools) must not be empty");
+
+    let provider = CurveProvider::head_capped_dialogue(head);
+    let engine = run_dialogue(&provider).await;
+
+    let requests = provider.recorded();
+    let reuse = engine.cache_reuse().expect("engine recorded usage");
+    assert_eq!(
+        reuse.last_round_cache_read_tokens, head as u64,
+        "a head-only gateway must cache exactly the head and nothing of the conversation"
+    );
+    assert!(
+        reuse.last_round_input_tokens > reuse.last_round_cache_read_tokens,
+        "the conversation body must show up as uncached prompt"
+    );
+    assert!(
+        requests.len() >= 2 && reuse.warm_cache_read_tokens <= head as u64 * (requests.len() as u64 - 1),
+        "reported reuse can never exceed the head size per warm round"
+    );
+}
+
+#[tokio::test]
+async fn plain_dialogue_prefix_equals_prior_request() {
+    let provider = CurveProvider::dialogue();
+    let engine = run_dialogue(&provider).await;
 
     let requests = provider.recorded();
     assert_eq!(requests.len(), DIALOGUE_TURNS);
     let rates = hit_curve(&requests);
     assert_tail_hit(&rates, "plain-dialogue");
+    assert_engine_reports_gateway_usage(&engine, &requests, "plain-dialogue");
 }
 
 #[tokio::test]
@@ -264,4 +340,5 @@ async fn tool_loop_prefix_equals_prior_request() {
     );
     let rates = hit_curve(&requests);
     assert_tail_hit(&rates, "tool-loop");
+    assert_engine_reports_gateway_usage(&engine, &requests, "tool-loop");
 }

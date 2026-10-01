@@ -4,6 +4,8 @@
  * formatting rules are unit-testable in isolation.
  */
 
+import type { CacheReuseData } from '@/common/protocolBindings/CacheReuseData';
+
 /**
  * Compact token count: `942`, `1.2k`, `2.3m`. One decimal place at each
  * magnitude so the chip stays narrow while still conveying scale.
@@ -59,7 +61,7 @@ export function calculateContextUsagePercent(used?: number, max?: number): numbe
   return Math.min(100, Math.max(0, Math.round((used / max) * 100)));
 }
 
-export function calculateCacheHitRatePercent({
+export function calculateCacheReusePercent({
   inputTokens,
   cacheReadTokens = 0,
 }: {
@@ -70,6 +72,47 @@ export function calculateCacheHitRatePercent({
     return null;
   }
   return Math.max(0, Math.round((cacheReadTokens / inputTokens) * 100));
+}
+
+export type CacheReuseSummary = {
+  latestPercent: number | null;
+  sessionPercent: number | null;
+};
+
+/**
+ * The first provider round of a session cannot hit the cache, so `warm_*`
+ * leaves it out. When no warm round exists yet the latest round is the cold
+ * one and both values stay empty. Payloads persisted before `cache_reuse`
+ * existed fall back to the cumulative ratio.
+ */
+export function calculateCacheReuseSummary({
+  cacheReuse,
+  inputTokens,
+  cacheReadTokens,
+}: {
+  cacheReuse?: CacheReuseData | null;
+  inputTokens?: number;
+  cacheReadTokens?: number;
+}): CacheReuseSummary {
+  if (!cacheReuse) {
+    return {
+      latestPercent: null,
+      sessionPercent: calculateCacheReusePercent({ inputTokens, cacheReadTokens }),
+    };
+  }
+  if (cacheReuse.warm_input_tokens <= 0) {
+    return { latestPercent: null, sessionPercent: null };
+  }
+  return {
+    latestPercent: calculateCacheReusePercent({
+      inputTokens: cacheReuse.last_round_input_tokens,
+      cacheReadTokens: cacheReuse.last_round_cache_read_tokens,
+    }),
+    sessionPercent: calculateCacheReusePercent({
+      inputTokens: cacheReuse.warm_input_tokens,
+      cacheReadTokens: cacheReuse.warm_cache_read_tokens,
+    }),
+  };
 }
 
 export function formatPercent(percent: number | null | undefined): string {

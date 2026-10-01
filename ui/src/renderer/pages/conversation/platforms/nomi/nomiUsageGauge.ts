@@ -5,6 +5,7 @@
  */
 
 import type { TokenUsageData } from '@/common/config/storage';
+import type { CacheReuseData } from '@/common/protocolBindings/CacheReuseData';
 import type { MoaTurnStatsData } from '@/common/protocolBindings/MoaTurnStatsData';
 import type { ConversationId } from '@/common/types/ids';
 
@@ -48,6 +49,7 @@ export function tokenUsageFromMetricsPayload(metrics: unknown): TokenUsageData |
     context_window?: number;
     context_breakdown?: TokenUsageData['context_breakdown'];
     moa?: MoaTurnStatsData | null;
+    cache_reuse?: CacheReuseData | null;
   };
   const inputTokens = validTokenCount(payload.input_tokens);
   const outputTokens = validTokenCount(payload.output_tokens);
@@ -68,5 +70,6 @@ export function tokenUsageFromMetricsPayload(metrics: unknown): TokenUsageData |
     context_window: validTokenCount(payload.context_window),
     context_breakdown: payload.context_breakdown,
     moa: payload.moa ?? null,
+    cache_reuse: payload.cache_reuse ?? null,
   };
 }

@@ -264,10 +264,6 @@ impl VertexProvider {
 
 #[async_trait]
 impl LlmProvider for VertexProvider {
-    fn input_tokens_include_cache(&self) -> bool {
-        false
-    }
-
     async fn stream(
         &self,
         request: &LlmRequest,
