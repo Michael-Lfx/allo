@@ -17,7 +17,8 @@
     "imageSaveLocally": "本地保存图像",
     "videoSaveLocally": "本地保存视频",
     "workflowsEnabled": "启用工作流",
-    "saved": "媒体设置已保存"
+    "saved": "媒体设置已保存",
+    "videoAspectRatio": "默认视频比例"
   },
   "history": {
     "title": "工作流历史",

@@ -17,7 +17,8 @@
     "imageSaveLocally": "Save images locally",
     "videoSaveLocally": "Save videos locally",
     "workflowsEnabled": "Enable workflows",
-    "saved": "Media settings saved"
+    "saved": "Media settings saved",
+    "videoAspectRatio": "Default Video Aspect Ratio"
   },
   "history": {
     "title": "Workflow history",
