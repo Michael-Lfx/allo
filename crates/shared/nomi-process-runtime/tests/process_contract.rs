@@ -952,6 +952,82 @@ async fn windows_powershell_flattens_redirected_native_stderr() {
 
 #[cfg(windows)]
 #[tokio::test]
+async fn windows_powershell_script_delivery_preserves_source_and_hides_transport_variable() {
+    let large_script = format!(
+        "{}Write-Output 'large-script-token'",
+        "# padding line keeping the script large\n".repeat(600)
+    );
+    assert!(large_script.len() > 20_000);
+    for (name, script, expected) in [
+        (
+            "here-string",
+            "$text = @'\nline with 'apostrophe' and \"quotes\"\n'@\nWrite-Output $text.Trim()"
+                .to_owned(),
+            "line with 'apostrophe' and \"quotes\"",
+        ),
+        (
+            "unicode",
+            "Write-Output 'héllo-中文-token'".to_owned(),
+            "héllo-中文-token",
+        ),
+        (
+            "variable hidden from script",
+            "Write-Output ('hidden=' + [string]($null -eq $env:NOMIFUN_PS_SCRIPT))".to_owned(),
+            "hidden=True",
+        ),
+        (
+            "variable hidden from children",
+            "cmd /c \"if defined NOMIFUN_PS_SCRIPT (echo leaked) else (echo clean)\"".to_owned(),
+            "clean",
+        ),
+        ("large script", large_script, "large-script-token"),
+    ] {
+        let mut process = request(helper_binary(), Vec::<OsString>::new());
+        process.command = CommandSpec::Shell {
+            shell: ShellKind::PowerShell,
+            script,
+        };
+        process.transport = Transport::Pipe;
+
+        let supervisor = ProcessSupervisor::new(SupervisorConfig::default());
+        let handle = supervisor
+            .start(process)
+            .await
+            .unwrap_or_else(|error| panic!("{name}: script failed to start: {error}"));
+        let outcome = wait_for_terminal(&supervisor, &handle).await;
+        let ProcessOutcome::Exited { code, output, .. } = outcome else {
+            panic!("{name}: script should exit: {outcome:?}");
+        };
+        let text = output.text();
+        assert_eq!(code, Some(0), "{name}: {text:?}");
+        assert!(text.contains(expected), "{name}: expected {expected:?} in {text:?}");
+        assert!(!text.contains("leaked"), "{name}: {text:?}");
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_powershell_pty_receives_script_from_environment() {
+    let mut process = request(helper_binary(), Vec::<OsString>::new());
+    process.command = CommandSpec::Shell {
+        shell: ShellKind::PowerShell,
+        script: "Write-Output 'pty-script-token'".into(),
+    };
+    process.transport = Transport::Pty { cols: 120, rows: 30 };
+
+    let supervisor = ProcessSupervisor::new(SupervisorConfig::default());
+    let handle = supervisor.start(process).await.expect("script should start");
+    let outcome = wait_for_terminal(&supervisor, &handle).await;
+    let ProcessOutcome::Exited { code, output, .. } = outcome else {
+        panic!("script should exit: {outcome:?}");
+    };
+    let text = output.text();
+    assert_eq!(code, Some(0), "{text:?}");
+    assert!(text.contains("pty-script-token"), "{text:?}");
+}
+
+#[cfg(windows)]
+#[tokio::test]
 async fn windows_powershell_parser_errors_are_returned_on_pty() {
     let script = r#"Write-Output "$_ exists=$(-not [string]::IsNullOrEmpty((Test-Path $_))""#;
     let mut process = request(helper_binary(), Vec::<OsString>::new());

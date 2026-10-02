@@ -2484,16 +2484,23 @@ struct PreparedCommand {
 
 impl PreparedCommand {
     fn new(request: &NormalizedProcessRequest) -> Result<Self, ProcessError> {
-        let (program, args) = command_argv(&request.command)?;
-        let application = encode_nul_terminated(&program, "program")?;
-        let command_line = encode_command_line(&program, &args)?;
+        let argv = command_argv(&request.command)?;
+        let application = encode_nul_terminated(&argv.program, "program")?;
+        let command_line = encode_command_line(&argv.program, &argv.args)?;
         let cwd = encode_nul_terminated(request.cwd.as_os_str(), "working directory").map_err(
             |error| ProcessError::InvalidWorkingDirectory {
                 path: request.cwd.clone(),
                 reason: error.to_string(),
             },
         )?;
-        let environment = encode_environment(&request.env)?;
+        let environment = match argv.script_env {
+            Some((key, value)) => {
+                let mut overrides = request.env.clone();
+                overrides.insert(key, value);
+                encode_environment(&overrides)?
+            }
+            None => encode_environment(&request.env)?,
+        };
         Ok(Self {
             application,
             command_line,
@@ -2503,34 +2510,55 @@ impl PreparedCommand {
     }
 }
 
-fn command_argv(spec: &CommandSpec) -> Result<(OsString, Vec<OsString>), ProcessError> {
+struct ShellArgv {
+    program: OsString,
+    args: Vec<OsString>,
+    script_env: Option<(OsString, OsString)>,
+}
+
+fn command_argv(spec: &CommandSpec) -> Result<ShellArgv, ProcessError> {
     match spec {
-        CommandSpec::Program { program, args } => Ok((program.clone(), args.clone())),
+        CommandSpec::Program { program, args } => Ok(ShellArgv {
+            program: program.clone(),
+            args: args.clone(),
+            script_env: None,
+        }),
         CommandSpec::Shell {
             shell: ShellKind::PowerShell,
             script,
-        } => Ok((
-            powershell_executable()?,
-            vec![
-                OsString::from("-NoLogo"),
-                OsString::from("-NoProfile"),
-                OsString::from("-NonInteractive"),
-                // Belt-and-suspenders with CREATE_NO_WINDOW: some hosts still
-                // flash a console without an explicit hidden window style.
-                OsString::from("-WindowStyle"),
-                OsString::from("Hidden"),
-                OsString::from("-ExecutionPolicy"),
-                OsString::from("Bypass"),
-                OsString::from("-Command"),
-                OsString::from(powershell_payload(script)),
-            ],
-        )),
+        } => {
+            if script.encode_utf16().count() > MAX_POWERSHELL_SCRIPT_UNITS {
+                return Err(invalid_command(
+                    "PowerShell script exceeds 32,767 UTF-16 code units",
+                ));
+            }
+            Ok(ShellArgv {
+                program: powershell_executable()?,
+                args: vec![
+                    OsString::from("-NoLogo"),
+                    OsString::from("-NoProfile"),
+                    OsString::from("-NonInteractive"),
+                    // Belt-and-suspenders with CREATE_NO_WINDOW: some hosts still
+                    // flash a console without an explicit hidden window style.
+                    OsString::from("-WindowStyle"),
+                    OsString::from("Hidden"),
+                    OsString::from("-ExecutionPolicy"),
+                    OsString::from("Bypass"),
+                    OsString::from("-Command"),
+                    OsString::from(POWERSHELL_WRAPPER),
+                ],
+                script_env: Some((
+                    OsString::from(POWERSHELL_SCRIPT_ENV),
+                    OsString::from(script),
+                )),
+            })
+        }
         CommandSpec::Shell {
             shell: ShellKind::PowerShellLiteral,
             script,
-        } => Ok((
-            powershell_executable()?,
-            vec![
+        } => Ok(ShellArgv {
+            program: powershell_executable()?,
+            args: vec![
                 OsString::from("-NoLogo"),
                 OsString::from("-NoProfile"),
                 OsString::from("-NonInteractive"),
@@ -2541,7 +2569,8 @@ fn command_argv(spec: &CommandSpec) -> Result<(OsString, Vec<OsString>), Process
                 OsString::from("-Command"),
                 OsString::from(script),
             ],
-        )),
+            script_env: None,
+        }),
         CommandSpec::Shell {
             shell: ShellKind::Posix,
             ..
@@ -2591,81 +2620,84 @@ fn powershell_executable() -> Result<OsString, ProcessError> {
     Ok(executable.into_os_string())
 }
 
-fn powershell_payload(script: &str) -> String {
-    // Embed the agent script as UTF-8 base64 and compile it with
-    // [scriptblock]::Create inside try/catch. Interpolating the source into
-    // `-Command` made ParserErrors fail the whole wrapper before catch ran,
-    // so ConPTY often returned only terminal reset sequences.
-    //
-    // Status checks are appended into the same Create'd scriptblock. Invoking a
-    // Create'd block with `& $block` alone leaves `$?` true after native
-    // failures (e.g. `cmd /c exit 7`); keeping the checks in-source preserves
-    // the previous exit-code semantics.
-    //
-    // Cmdlet failures stay fail-fast through `-ErrorAction Stop` as a default
-    // parameter, not through `$ErrorActionPreference`: Windows PowerShell 5.1
-    // turns every stderr line of a native command redirected with `2>&1` into
-    // a terminating error under the 'Stop' preference, which aborted
-    // successful `git fetch ... 2>&1` runs and skipped the rest of the script.
-    // Those stderr lines are flattened to plain text below so the model sees the
-    // message rather than a decorated NativeCommandError block.
-    //
-    // When the last statement is a pipeline ending in a cmdlet
-    // (`git log | Select-Object -First 3`), an upstream exit code of -1 is not
-    // a failure: PowerShell terminates the native process with that code once
-    // the cmdlet stops reading. Genuine upstream codes (`cargo test 2>&1 |
-    // Select-Object -Last 30` exiting 101) still propagate.
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-
-    let encoded = STANDARD.encode(script.as_bytes());
-    format!(
-        "$ErrorActionPreference = 'Continue'\n\
-         $PSDefaultParameterValues['*:ErrorAction'] = 'Stop'\n\
-         [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)\n\
-         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n\
-         $OutputEncoding = [Console]::OutputEncoding\n\
-         $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'\n\
-         $global:LASTEXITCODE = $null\n\
-         try {{\n\
-         $nomifunScript = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded}'))\n\
-         $nomifunPipeTail = $false\n\
-         try {{\n\
-         $nomifunEnd = [scriptblock]::Create($nomifunScript).Ast.EndBlock\n\
-         $nomifunLast = $nomifunEnd.Statements[$nomifunEnd.Statements.Count - 1]\n\
-         if ($nomifunLast -is [System.Management.Automation.Language.PipelineAst] -and $nomifunLast.PipelineElements.Count -gt 1) {{\n\
-         $nomifunTail = $nomifunLast.PipelineElements[$nomifunLast.PipelineElements.Count - 1]\n\
-         $nomifunTailName = if ($nomifunTail -is [System.Management.Automation.Language.CommandAst]) {{ $nomifunTail.GetCommandName() }}\n\
-         if ($nomifunTailName -and (Get-Command $nomifunTailName -CommandType Alias,Cmdlet,Function -ErrorAction Ignore)) {{ $nomifunPipeTail = $true }}\n\
-         }}\n\
-         }} catch {{ $nomifunPipeTail = $false }}\n\
-         $nomifunScript = $nomifunScript + @'\n\
-\n\
-$nomifunSucceeded = $?\n\
-$nomifunLastExitCode = $global:LASTEXITCODE\n\
-if ($nomifunPipeTail -and $nomifunLastExitCode -eq -1) {{ $nomifunSucceeded = $true }}\n\
-if ($null -ne $nomifunLastExitCode -and -not $nomifunSucceeded) {{ exit $nomifunLastExitCode }}\n\
-if (-not $nomifunSucceeded) {{ exit 1 }}\n\
-'@\n\
-         $nomifunBlock = [scriptblock]::Create($nomifunScript)\n\
-         & $nomifunBlock | ForEach-Object {{ if ($_ -is [System.Management.Automation.ErrorRecord] -and $_.FullyQualifiedErrorId -like 'NativeCommandError*') {{ $_.Exception.Message }} else {{ $_ }} }} | Out-Default\n\
-         [Console]::Out.Flush()\n\
-         [Console]::Error.Flush()\n\
-         }} catch {{\n\
-         $nomifunMessage = $_.Exception.Message\n\
-         if ($null -ne $_.Exception.ErrorRecord -and $_.Exception.ErrorRecord.InvocationInfo.PositionMessage) {{\n\
-           $nomifunMessage = $nomifunMessage + [Environment]::NewLine + $_.Exception.ErrorRecord.InvocationInfo.PositionMessage\n\
-         }} elseif ($_.InvocationInfo.PositionMessage) {{\n\
-           $nomifunMessage = $nomifunMessage + [Environment]::NewLine + $_.InvocationInfo.PositionMessage\n\
-         }}\n\
-         $nomifunLine = 'PowerShell error: ' + $nomifunMessage\n\
-         [Console]::Out.WriteLine($nomifunLine)\n\
-         [Console]::Error.WriteLine($nomifunLine)\n\
-         [Console]::Out.Flush()\n\
-         [Console]::Error.Flush()\n\
-         exit 1\n\
-         }}"
-    )
+// The agent script travels in a private environment variable and the
+// `-Command` text stays byte-identical for every call. Windows Defender's
+// behavior monitor hashes the (large, unsigned) parent image once per
+// powershell child whose command line carries a base64-decoding loader, which
+// cost ~1.3 s of spawn latency per call; a constant command line avoids it.
+//
+// The script is compiled with [scriptblock]::Create inside try/catch.
+// Interpolating the source into `-Command` made ParserErrors fail the whole
+// wrapper before catch ran, so ConPTY often returned only terminal reset
+// sequences.
+//
+// Status checks are appended into the same Create'd scriptblock. Invoking a
+// Create'd block with `& $block` alone leaves `$?` true after native failures
+// (e.g. `cmd /c exit 7`); keeping the checks in-source preserves the previous
+// exit-code semantics.
+//
+// Cmdlet failures stay fail-fast through `-ErrorAction Stop` as a default
+// parameter, not through `$ErrorActionPreference`: Windows PowerShell 5.1
+// turns every stderr line of a native command redirected with `2>&1` into a
+// terminating error under the 'Stop' preference, which aborted successful
+// `git fetch ... 2>&1` runs and skipped the rest of the script. Those stderr
+// lines are flattened to plain text so the model sees the message rather than
+// a decorated NativeCommandError block.
+//
+// When the last statement is a pipeline ending in a cmdlet
+// (`git log | Select-Object -First 3`), an upstream exit code of -1 is not a
+// failure: PowerShell terminates the native process with that code once the
+// cmdlet stops reading. Genuine upstream codes (`cargo test 2>&1 |
+// Select-Object -Last 30` exiting 101) still propagate.
+const POWERSHELL_SCRIPT_ENV: &str = "NOMIFUN_PS_SCRIPT";
+const MAX_POWERSHELL_SCRIPT_UNITS: usize = 32_767;
+const POWERSHELL_WRAPPER: &str = r#"$ErrorActionPreference = 'Continue'
+$PSDefaultParameterValues['*:ErrorAction'] = 'Stop'
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
+$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+$global:LASTEXITCODE = $null
+try {
+$nomifunScript = $env:NOMIFUN_PS_SCRIPT
+Remove-Item Env:NOMIFUN_PS_SCRIPT -ErrorAction Ignore
+if ([string]::IsNullOrEmpty($nomifunScript)) { throw 'the PowerShell script was not delivered to the wrapper' }
+$nomifunPipeTail = $false
+try {
+$nomifunEnd = [scriptblock]::Create($nomifunScript).Ast.EndBlock
+$nomifunLast = $nomifunEnd.Statements[$nomifunEnd.Statements.Count - 1]
+if ($nomifunLast -is [System.Management.Automation.Language.PipelineAst] -and $nomifunLast.PipelineElements.Count -gt 1) {
+$nomifunTail = $nomifunLast.PipelineElements[$nomifunLast.PipelineElements.Count - 1]
+$nomifunTailName = if ($nomifunTail -is [System.Management.Automation.Language.CommandAst]) { $nomifunTail.GetCommandName() }
+if ($nomifunTailName -and (Get-Command $nomifunTailName -CommandType Alias,Cmdlet,Function -ErrorAction Ignore)) { $nomifunPipeTail = $true }
 }
+} catch { $nomifunPipeTail = $false }
+$nomifunScript = $nomifunScript + @'
+
+$nomifunSucceeded = $?
+$nomifunLastExitCode = $global:LASTEXITCODE
+if ($nomifunPipeTail -and $nomifunLastExitCode -eq -1) { $nomifunSucceeded = $true }
+if ($null -ne $nomifunLastExitCode -and -not $nomifunSucceeded) { exit $nomifunLastExitCode }
+if (-not $nomifunSucceeded) { exit 1 }
+'@
+$nomifunBlock = [scriptblock]::Create($nomifunScript)
+& $nomifunBlock | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord] -and $_.FullyQualifiedErrorId -like 'NativeCommandError*') { $_.Exception.Message } else { $_ } } | Out-Default
+[Console]::Out.Flush()
+[Console]::Error.Flush()
+} catch {
+$nomifunMessage = $_.Exception.Message
+if ($null -ne $_.Exception.ErrorRecord -and $_.Exception.ErrorRecord.InvocationInfo.PositionMessage) {
+  $nomifunMessage = $nomifunMessage + [Environment]::NewLine + $_.Exception.ErrorRecord.InvocationInfo.PositionMessage
+} elseif ($_.InvocationInfo.PositionMessage) {
+  $nomifunMessage = $nomifunMessage + [Environment]::NewLine + $_.InvocationInfo.PositionMessage
+}
+$nomifunLine = 'PowerShell error: ' + $nomifunMessage
+[Console]::Out.WriteLine($nomifunLine)
+[Console]::Error.WriteLine($nomifunLine)
+[Console]::Out.Flush()
+[Console]::Error.Flush()
+exit 1
+}"#;
 
 fn encode_command_line(program: &OsStr, args: &[OsString]) -> Result<Vec<u16>, ProcessError> {
     let mut command_line = Vec::new();
@@ -3473,40 +3505,122 @@ mod tests {
     #[test]
     fn literal_powershell_kind_does_not_rewrite_script_source() {
         let script = "param($Name)\n#requires -Version 5\nWrite-Output $Name";
-        let (_, args) = command_argv(&CommandSpec::Shell {
+        let argv = command_argv(&CommandSpec::Shell {
             shell: ShellKind::PowerShellLiteral,
             script: script.to_owned(),
         })
         .expect("trusted PowerShell should resolve");
 
-        assert_eq!(args.last(), Some(&OsString::from(script)));
-        assert!(!args.last().unwrap().to_string_lossy().contains("ErrorActionPreference"));
+        assert_eq!(argv.args.last(), Some(&OsString::from(script)));
+        assert!(argv.script_env.is_none());
+        assert!(
+            !argv
+                .args
+                .last()
+                .unwrap()
+                .to_string_lossy()
+                .contains("ErrorActionPreference")
+        );
+    }
+
+    fn powershell_argv(script: &str) -> ShellArgv {
+        command_argv(&CommandSpec::Shell {
+            shell: ShellKind::PowerShell,
+            script: script.to_owned(),
+        })
+        .expect("trusted PowerShell should resolve")
     }
 
     #[test]
-    fn powershell_payload_base64_embeds_script_instead_of_interpolating_source() {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
-
+    fn powershell_script_travels_in_environment_not_in_command_line() {
         let script = r#"Write-Output "$_ = $($env:TEMP)"; Set-Content "$env:TEMP\x" ($a -join "`n")"#;
-        let payload = powershell_payload(script);
-        let encoded = STANDARD.encode(script.as_bytes());
+        let argv = powershell_argv(script);
 
+        assert_eq!(
+            argv.script_env,
+            Some((
+                OsString::from(POWERSHELL_SCRIPT_ENV),
+                OsString::from(script)
+            ))
+        );
+        let wrapper = argv.args.last().unwrap().to_string_lossy().into_owned();
+        assert_eq!(wrapper, POWERSHELL_WRAPPER);
         assert!(
-            payload.contains(&format!("FromBase64String('{encoded}')")),
-            "payload must embed the script as base64: {payload}"
+            !wrapper.contains(script),
+            "raw agent source must not be interpolated into -Command: {wrapper}"
         );
         assert!(
-            payload.contains("[scriptblock]::Create($nomifunScript)"),
-            "payload must compile via ScriptBlock.Create so ParserErrors are catchable: {payload}"
+            wrapper.contains(&format!("$env:{POWERSHELL_SCRIPT_ENV}")),
+            "wrapper must read the script from {POWERSHELL_SCRIPT_ENV}: {wrapper}"
         );
         assert!(
-            !payload.contains(script),
-            "raw agent source must not be interpolated into -Command: {payload}"
+            wrapper.contains(&format!("Remove-Item Env:{POWERSHELL_SCRIPT_ENV}")),
+            "wrapper must drop the variable so grandchildren never inherit it: {wrapper}"
         );
         assert!(
-            payload.contains("PowerShell error:"),
-            "catch path must emit a stable error prefix: {payload}"
+            wrapper.contains("IsNullOrEmpty($nomifunScript)) { throw"),
+            "a missing script variable must fail loudly instead of running only the status tail: {wrapper}"
         );
+        assert!(
+            wrapper.contains("[scriptblock]::Create($nomifunScript)"),
+            "wrapper must compile via ScriptBlock.Create so ParserErrors are catchable: {wrapper}"
+        );
+        assert!(
+            wrapper.contains("PowerShell error:"),
+            "catch path must emit a stable error prefix: {wrapper}"
+        );
+    }
+
+    #[test]
+    fn powershell_command_line_is_identical_across_scripts() {
+        let first = powershell_argv("Write-Output 1");
+        let second = powershell_argv("Get-ChildItem -Recurse | Select-Object -First 3\nexit 4");
+
+        assert_eq!(first.program, second.program);
+        assert_eq!(first.args, second.args);
+        assert!(!POWERSHELL_WRAPPER.contains("FromBase64String"));
+        assert!(!POWERSHELL_WRAPPER.contains("-EncodedCommand"));
+    }
+
+    #[test]
+    fn powershell_script_over_the_unit_limit_is_rejected() {
+        let script = "a".repeat(MAX_POWERSHELL_SCRIPT_UNITS + 1);
+        let error = command_argv(&CommandSpec::Shell {
+            shell: ShellKind::PowerShell,
+            script,
+        })
+        .err()
+        .expect("oversized script must be rejected");
+        assert!(error.to_string().contains("32,767"), "{error}");
+
+        let boundary = "a".repeat(MAX_POWERSHELL_SCRIPT_UNITS);
+        assert!(
+            command_argv(&CommandSpec::Shell {
+                shell: ShellKind::PowerShell,
+                script: boundary,
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn prepared_command_carries_script_in_environment_block() {
+        let mut request = program_request(OsString::from("unused"), &[]);
+        request.command = CommandSpec::Shell {
+            shell: ShellKind::PowerShell,
+            script: "Write-Output 'héllo 世界'".to_owned(),
+        };
+        request
+            .env
+            .insert(OsString::from("CALLER_VAR"), OsString::from("kept"));
+
+        let prepared = PreparedCommand::new(&request).expect("request should prepare");
+        let command_line = decode_wide(&prepared.command_line);
+        let entries = environment_entries(&prepared.environment);
+
+        assert!(!command_line.contains("héllo"));
+        assert!(entries.contains(&"NOMIFUN_PS_SCRIPT=Write-Output 'héllo 世界'".to_owned()));
+        assert!(entries.contains(&"CALLER_VAR=kept".to_owned()));
     }
 
     #[test]
