@@ -19,6 +19,11 @@ export interface TurnDisclosureInputItem {
   processState?: TurnDisclosureProcessState;
   running?: boolean;
   sourceMessageIds?: MessageId[];
+  /**
+   * Assistant rows that are status/info tips (`status`) must not win over
+   * model text. Omitted or `answer` keeps last-assistant-wins.
+   */
+  assistantKind?: 'answer' | 'status';
 }
 
 export type TurnDisclosureOutputItem =
@@ -180,6 +185,22 @@ const getProcessStartAt = (entry: TurnDisclosureInputItem): number => entry.proc
 
 const getProcessEndAt = (entry: TurnDisclosureInputItem): number => entry.processEndedAt ?? entry.createdAt;
 
+const isAnswerAssistant = (entry: TurnDisclosureInputItem): boolean => entry.assistantKind !== 'status';
+
+const shouldReplaceFinalAssistant = (
+  current: TurnDisclosureInputItem | undefined,
+  next: TurnDisclosureInputItem
+): boolean => {
+  if (!current) return true;
+  const currentIsAnswer = isAnswerAssistant(current);
+  const nextIsAnswer = isAnswerAssistant(next);
+  if (nextIsAnswer !== currentIsAnswer) return nextIsAnswer;
+  // Live rows are arrival-ordered and a delayed older text can be appended
+  // after the real final answer. Choose by authoritative message time;
+  // `>=` intentionally lets the later observation break timestamp ties.
+  return next.createdAt >= current.createdAt;
+};
+
 /**
  * Turn-level banner state (「处理失败 / 已处理 / …」).
  *
@@ -263,8 +284,9 @@ function buildSegmentOutput(
   if (!turnId) return segment.map((entry) => ({ type: 'item', id: entry.id }));
 
   // A delayed event from another turn can split one logical turn into several
-  // segments. Only the last assistant row across the whole turn is final
-  // answer content; earlier assistant rows remain part of the process trace.
+  // segments. Only the last answer-kind assistant row across the whole turn is
+  // final answer content; earlier assistant rows and later status tips remain
+  // part of the process trace.
   const finalAssistantIndex = finalAssistantForTurn
     ? segment.findIndex((entry) => entry === finalAssistantForTurn)
     : -1;
@@ -434,10 +456,7 @@ export function buildTurnDisclosureItems(
     }
     if (item.turnId && item.role === 'assistant') {
       const currentFinal = finalAssistantByTurn.get(item.turnId);
-      // Live rows are arrival-ordered and a delayed older text can be appended
-      // after the real final answer. Choose by authoritative message time;
-      // `>=` intentionally lets the later observation break timestamp ties.
-      if (!currentFinal || item.createdAt >= currentFinal.createdAt) {
+      if (shouldReplaceFinalAssistant(currentFinal, item)) {
         finalAssistantByTurn.set(item.turnId, item);
       }
     }

@@ -105,6 +105,50 @@ describe('buildTurnDisclosureItems', () => {
     ]);
   });
 
+  test('keeps the model text as the final answer when a later status tip arrives', () => {
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('tool', 'process', { createdAt: 2000 }),
+        item('answer', 'assistant', { createdAt: 3000 }),
+        item('cache-tip', 'assistant', { createdAt: 4000, assistantKind: 'status' }),
+      ],
+      { tailClosed: true }
+    );
+
+    expect(result.map((entry) => (entry.type === 'item' ? entry.id : entry.id))).toEqual([
+      'user',
+      DISCLOSURE_1,
+      'answer',
+    ]);
+    const disclosure = result.find((entry) => entry.type === 'turn_disclosure');
+    expect(disclosure?.type).toBe('turn_disclosure');
+    if (disclosure?.type !== 'turn_disclosure') return;
+    expect(disclosure.processItemIds).toEqual(['tool', 'cache-tip']);
+    expect(disclosure.endAt).toBe(3000);
+  });
+
+  test('keeps a status-only assistant tip as the visible answer when the turn has no model text', () => {
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('tool', 'process', { createdAt: 2000 }),
+        item('cleared', 'assistant', { createdAt: 3000, assistantKind: 'status' }),
+      ],
+      { tailClosed: true }
+    );
+
+    expect(result.map((entry) => (entry.type === 'item' ? entry.id : entry.id))).toEqual([
+      'user',
+      DISCLOSURE_1,
+      'cleared',
+    ]);
+    const disclosure = result.find((entry) => entry.type === 'turn_disclosure');
+    expect(disclosure?.type).toBe('turn_disclosure');
+    if (disclosure?.type !== 'turn_disclosure') return;
+    expect(disclosure.processItemIds).toEqual(['tool']);
+  });
+
   test('renders unfinished running process steps as a live turn disclosure before the final answer exists', () => {
     const result = buildTurnDisclosureItems([
       item('user', 'user', { createdAt: 1000 }),
