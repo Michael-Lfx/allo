@@ -314,7 +314,9 @@ const getProcessedItemRole = (item: IRenderableItem): TurnDisclosureInputItem['r
       // Terminal/provider errors must stay as first-class MessageTips (human
       // title + retry). Folding them into the process receipt buries recovery.
       if (item.content.type === 'error') return 'other';
-      // Context-compaction tips are process receipts. Other tips stay assistant.
+      // Context-compaction tips are process receipts. Other tips stay assistant
+      // so a tip-only turn still has a visible answer; MessageList marks them
+      // assistantKind=status so they cannot steal the model text slot.
       if (isContextCompressionTip(item)) return 'process';
       return 'assistant';
     case 'thinking':
@@ -1063,6 +1065,10 @@ const MessageList: React.FC<{
         processStartedAt: getProcessedItemProcessStartedAt(item),
         processEndedAt: getProcessedItemProcessEndedAt(item),
         sourceMessageIds: getProcessedItemSourceMessageIds(item),
+        // Success/info tips stay role=assistant so a tip-only turn (e.g. /clear)
+        // still has a visible answer, but they must not outrank model text.
+        assistantKind:
+          role === 'assistant' && 'type' in item && item.type === 'tips' ? 'status' : undefined,
       };
     });
     const modelInput = assignTurnIdsFromUserRequests(rawModelInput, {

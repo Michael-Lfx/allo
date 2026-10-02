@@ -124,6 +124,7 @@ describe('MessageList turn completion disclosure structure', () => {
     expect(roleSource.includes('isContextCompressionTip(item)')).toBe(true);
     expect(roleSource.includes("return 'process';")).toBe(true);
     expect(roleSource.includes("return 'assistant';")).toBe(true);
+    expect(source.includes("item.type === 'tips' ? 'status'")).toBe(true);
   });
 
   test('renders barrier-skipped receipt summaries with dedicated copy', () => {

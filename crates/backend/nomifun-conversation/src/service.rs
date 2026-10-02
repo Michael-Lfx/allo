@@ -7341,9 +7341,10 @@ impl ConversationService {
     ///
     /// The new conversation receives that message and everything before it.
     /// The source conversation, its workspace token, and its session file stay
-    /// unchanged. A fork of the last message copies the engine transcript; a
-    /// fork from an earlier message seeds only the visible user and assistant
-    /// text, because older turns do not have an exact engine checkpoint.
+    /// unchanged. An idle keep-alive runtime on the source is left registered.
+    /// A fork of the last message copies the engine transcript; a fork from an
+    /// earlier message seeds only the visible user and assistant text, because
+    /// older turns do not have an exact engine checkpoint.
     #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %conversation_id, message_id = %message_id))]
     pub async fn fork(
         &self,
@@ -7370,8 +7371,11 @@ impl ConversationService {
                 "Only Nomi conversations can be forked".to_owned(),
             ));
         }
+        // A finished turn commonly leaves an idle keep-alive runtime cached.
+        // That is not "running": the frontend already treats it as idle, and
+        // fork only reads the source transcript into a new conversation file.
         if source.status == ConversationStatus::Running
-            || self.runtime_registry.has_registered_runtime(conversation_id)
+            || self.runtime_state.has_active_turn(conversation_id)
         {
             return Err(AppError::Conflict(format!(
                 "Conversation {conversation_id} is running and cannot be forked"
