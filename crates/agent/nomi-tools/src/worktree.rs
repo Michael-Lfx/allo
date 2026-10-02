@@ -860,6 +860,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         git(&["init", "-q"], p);
+        git(&["config", "core.autocrlf", "false"], p);
         git(&["config", "user.email", "t@t"], p);
         git(&["config", "user.name", "t"], p);
         std::fs::write(p.join("a.txt"), "original\n").unwrap();
@@ -1190,6 +1191,7 @@ mod tests {
     fn unborn_git_repository_can_still_form_an_isolation_baseline() {
         let repo = tempfile::tempdir().unwrap();
         git(&["init", "-q"], repo.path());
+        git(&["config", "core.autocrlf", "false"], repo.path());
         std::fs::write(repo.path().join("first.txt"), "unborn source\n").unwrap();
         let source_index = source_index_path(repo.path()).unwrap();
         assert!(!source_index.exists());
