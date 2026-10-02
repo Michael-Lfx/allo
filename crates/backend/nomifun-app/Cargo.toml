@@ -320,7 +320,7 @@ reqwest.workspace = true
 url.workspace = true
 # Marketplace remote-source fetch layer (git clone materialization).
 git2.workspace = true
-rmcp = { version = "2.0", features = ["server", "transport-io", "schemars"] }
+rmcp = { version = "3.5", features = ["server", "transport-io", "schemars"] }
 anyhow.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
