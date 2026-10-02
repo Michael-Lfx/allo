@@ -38,6 +38,7 @@ fn apply_anchor_edits(content: &str, ops: &[AnchorEditOp]) -> Result<(String, us
     let ends_with_newline = content.ends_with('\n');
 
     struct Resolved {
+        index: usize,
         start: usize, // 0-based inclusive
         end: usize,   // 0-based inclusive
         new_text: String,
@@ -122,6 +123,7 @@ fn apply_anchor_edits(content: &str, ops: &[AnchorEditOp]) -> Result<(String, us
         };
 
         resolved.push(Resolved {
+            index: i,
             start: start_line - 1,
             end: end_line - 1,
             new_text: op.new_text.clone(),
@@ -137,6 +139,29 @@ fn apply_anchor_edits(content: &str, ops: &[AnchorEditOp]) -> Result<(String, us
             ops.len(),
             stale_reports.join("\n\n")
         ));
+    }
+
+    // Bottom-up application below is only correct for disjoint ranges: an edit
+    // that shrinks or grows the file shifts every line an overlapping edit
+    // still points at, which silently deletes unrelated lines.
+    let mut by_position: Vec<&Resolved> = resolved.iter().collect();
+    by_position.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
+    for pair in by_position.windows(2) {
+        let (first, second) = (pair[0], pair[1]);
+        if second.start <= first.end {
+            return Err(format!(
+                "Anchor edit rejected — edits[{}] (lines {}-{}) and edits[{}] (lines {}-{}) overlap; \
+                 NO changes were made. Merge them into one edit, or use non-overlapping lines. \
+                 Fresh anchors:\n{}",
+                first.index,
+                first.start + 1,
+                first.end + 1,
+                second.index,
+                second.start + 1,
+                second.end + 1,
+                render_anchor_region(&lines, second.start + 1, 3)
+            ));
+        }
     }
 
     // Apply bottom-up so indices stay valid.
@@ -1245,6 +1270,68 @@ mod tests {
         assert!(result.content.contains("Fresh anchors"));
         let body = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(body, "alpha\nBETA\ngamma\n");
+    }
+
+    #[tokio::test]
+    async fn anchor_mode_rejects_overlapping_edits_without_touching_the_file() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("overlap.txt");
+        let original = "l1\nl2\nl3\nl4\nl5\n";
+        std::fs::write(&file_path, original).unwrap();
+        let cache = make_cache();
+        simulate_read(&cache, &file_path);
+        let hash = |line: &str| crate::anchors::anchor_line_hash(line);
+
+        let tool = EditTool::new(Some(cache));
+        let result = tool
+            .execute(json!({
+                "file_path": file_path.to_str().unwrap(),
+                "edits": [
+                    {"anchor": format!("3:{}", hash("l3")), "new_text": ""},
+                    {
+                        "anchor": format!("2:{}", hash("l2")),
+                        "end_anchor": format!("4:{}", hash("l4")),
+                        "new_text": "X"
+                    }
+                ]
+            }))
+            .await;
+
+        assert!(result.is_error, "{}", result.content);
+        assert!(result.content.contains("overlap"), "{}", result.content);
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn anchor_mode_applies_disjoint_edits_in_one_call() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("disjoint.txt");
+        std::fs::write(&file_path, "l1\nl2\nl3\nl4\nl5\n").unwrap();
+        let cache = make_cache();
+        simulate_read(&cache, &file_path);
+        let hash = |line: &str| crate::anchors::anchor_line_hash(line);
+
+        let tool = EditTool::new(Some(cache));
+        let result = tool
+            .execute(json!({
+                "file_path": file_path.to_str().unwrap(),
+                "edits": [
+                    {"anchor": format!("1:{}", hash("l1")), "new_text": ""},
+                    {
+                        "anchor": format!("3:{}", hash("l3")),
+                        "end_anchor": format!("4:{}", hash("l4")),
+                        "new_text": "X"
+                    },
+                    {"anchor": format!("5:{}", hash("l5")), "new_text": "tail", "insert_after": true}
+                ]
+            }))
+            .await;
+
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "l2\nX\nl5\ntail\n"
+        );
     }
 
     #[tokio::test]

@@ -853,6 +853,11 @@ async fn windows_powershell_preserves_final_native_and_pipeline_status() {
         ("Write-Output before; cmd /c exit 7", 7),
         ("Get-DefinitelyMissingNomifunCommand", 1),
         ("Write-Error bad -ErrorAction Continue", 1),
+        ("cmd /c exit 7 | Select-Object -Last 1", 7),
+        ("cmd /c \"for /l %i in (1,1,200000) do @echo %i\" | Select-Object -First 1", 0),
+        ("cmd /c \"echo warn 1>&2 & exit 0\" 2>&1; Write-Output after", 0),
+        ("cmd /c \"echo warn 1>&2 & exit 3\" 2>&1", 3),
+        ("Get-Item definitely-missing-nomifun-path; Write-Output unreachable", 1),
     ] {
         let mut process = request(helper_binary(), Vec::<OsString>::new());
         process.command = CommandSpec::Shell {
@@ -890,6 +895,11 @@ async fn windows_powershell_pipe_transport_captures_stdout_and_cmdlet_output() {
         ),
         ("Write-Output 'flowy-中文测试-unicode-token'", 0, &["flowy-中文测试-unicode-token"][..]),
         ("Write-Output 'partial-output-token'; cmd /c exit 7", 7, &["partial-output-token"][..]),
+        (
+            "cmd /c \"echo flowy-stderr-token 1>&2\" 2>&1; Write-Output 'flowy-after-token'",
+            0,
+            &["flowy-stderr-token", "flowy-after-token"][..],
+        ),
     ] {
         let mut process = request(helper_binary(), Vec::<OsString>::new());
         process.command = CommandSpec::Shell {
@@ -916,6 +926,28 @@ async fn windows_powershell_pipe_transport_captures_stdout_and_cmdlet_output() {
             rest = &rest[index + marker.len()..];
         }
     }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_powershell_flattens_redirected_native_stderr() {
+    let mut process = request(helper_binary(), Vec::<OsString>::new());
+    process.command = CommandSpec::Shell {
+        shell: ShellKind::PowerShell,
+        script: "cmd /c \"echo flowy-stderr-token 1>&2\" 2>&1".into(),
+    };
+    process.transport = Transport::Pipe;
+    let supervisor = ProcessSupervisor::new(SupervisorConfig::default());
+    let handle = supervisor.start(process).await.expect("script should start");
+    let outcome = wait_for_terminal(&supervisor, &handle).await;
+    let ProcessOutcome::Exited { code, output, .. } = outcome else {
+        panic!("script should exit: {outcome:?}");
+    };
+    assert_eq!(code, Some(0));
+    let text = output.text();
+    assert!(text.contains("flowy-stderr-token"), "{text:?}");
+    assert!(!text.contains("NativeCommandError"), "{text:?}");
+    assert!(!text.contains("CategoryInfo"), "{text:?}");
 }
 
 #[cfg(windows)]

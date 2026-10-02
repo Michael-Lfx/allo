@@ -2601,11 +2601,26 @@ fn powershell_payload(script: &str) -> String {
     // Create'd block with `& $block` alone leaves `$?` true after native
     // failures (e.g. `cmd /c exit 7`); keeping the checks in-source preserves
     // the previous exit-code semantics.
+    //
+    // Cmdlet failures stay fail-fast through `-ErrorAction Stop` as a default
+    // parameter, not through `$ErrorActionPreference`: Windows PowerShell 5.1
+    // turns every stderr line of a native command redirected with `2>&1` into
+    // a terminating error under the 'Stop' preference, which aborted
+    // successful `git fetch ... 2>&1` runs and skipped the rest of the script.
+    // Those stderr lines are flattened to plain text below so the model sees the
+    // message rather than a decorated NativeCommandError block.
+    //
+    // When the last statement is a pipeline ending in a cmdlet
+    // (`git log | Select-Object -First 3`), an upstream exit code of -1 is not
+    // a failure: PowerShell terminates the native process with that code once
+    // the cmdlet stops reading. Genuine upstream codes (`cargo test 2>&1 |
+    // Select-Object -Last 30` exiting 101) still propagate.
     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     let encoded = STANDARD.encode(script.as_bytes());
     format!(
-        "$ErrorActionPreference = 'Stop'\n\
+        "$ErrorActionPreference = 'Continue'\n\
+         $PSDefaultParameterValues['*:ErrorAction'] = 'Stop'\n\
          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)\n\
          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n\
          $OutputEncoding = [Console]::OutputEncoding\n\
@@ -2613,15 +2628,26 @@ fn powershell_payload(script: &str) -> String {
          $global:LASTEXITCODE = $null\n\
          try {{\n\
          $nomifunScript = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded}'))\n\
+         $nomifunPipeTail = $false\n\
+         try {{\n\
+         $nomifunEnd = [scriptblock]::Create($nomifunScript).Ast.EndBlock\n\
+         $nomifunLast = $nomifunEnd.Statements[$nomifunEnd.Statements.Count - 1]\n\
+         if ($nomifunLast -is [System.Management.Automation.Language.PipelineAst] -and $nomifunLast.PipelineElements.Count -gt 1) {{\n\
+         $nomifunTail = $nomifunLast.PipelineElements[$nomifunLast.PipelineElements.Count - 1]\n\
+         $nomifunTailName = if ($nomifunTail -is [System.Management.Automation.Language.CommandAst]) {{ $nomifunTail.GetCommandName() }}\n\
+         if ($nomifunTailName -and (Get-Command $nomifunTailName -CommandType Alias,Cmdlet,Function -ErrorAction Ignore)) {{ $nomifunPipeTail = $true }}\n\
+         }}\n\
+         }} catch {{ $nomifunPipeTail = $false }}\n\
          $nomifunScript = $nomifunScript + @'\n\
 \n\
 $nomifunSucceeded = $?\n\
 $nomifunLastExitCode = $global:LASTEXITCODE\n\
+if ($nomifunPipeTail -and $nomifunLastExitCode -eq -1) {{ $nomifunSucceeded = $true }}\n\
 if ($null -ne $nomifunLastExitCode -and -not $nomifunSucceeded) {{ exit $nomifunLastExitCode }}\n\
 if (-not $nomifunSucceeded) {{ exit 1 }}\n\
 '@\n\
          $nomifunBlock = [scriptblock]::Create($nomifunScript)\n\
-         & $nomifunBlock | Out-Default\n\
+         & $nomifunBlock | ForEach-Object {{ if ($_ -is [System.Management.Automation.ErrorRecord] -and $_.FullyQualifiedErrorId -like 'NativeCommandError*') {{ $_.Exception.Message }} else {{ $_ }} }} | Out-Default\n\
          [Console]::Out.Flush()\n\
          [Console]::Error.Flush()\n\
          }} catch {{\n\
