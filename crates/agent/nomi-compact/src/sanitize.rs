@@ -14,6 +14,7 @@ pub fn collapse_cr_lines(text: &str) -> String {
         if !result.is_empty() {
             result.push('\n');
         }
+        let line = line.trim_end_matches('\r');
         if let Some(last) = line.rsplit('\r').next() {
             result.push_str(last);
         }
@@ -102,6 +103,24 @@ mod tests {
     fn collapse_cr_overwrites() {
         let input = "Downloading... 10%\rDownloading... 50%\rDownloading... 100%\nDone.";
         assert_eq!(collapse_cr_lines(input), "Downloading... 100%\nDone.");
+    }
+
+    #[test]
+    fn collapse_cr_keeps_crlf_lines() {
+        let input = "hello\r\nworld\r\n";
+        assert_eq!(collapse_cr_lines(input), "hello\nworld\n");
+    }
+
+    #[test]
+    fn collapse_cr_overwrites_before_crlf() {
+        let input = "10%\r50%\r100%\r\nDone.\r\n";
+        assert_eq!(collapse_cr_lines(input), "100%\nDone.\n");
+    }
+
+    #[test]
+    fn sanitize_keeps_crlf_output() {
+        let input = "A-pipeline\r\nB-console-out\r\n";
+        assert_eq!(sanitize(input), "A-pipeline\nB-console-out");
     }
 
     #[test]

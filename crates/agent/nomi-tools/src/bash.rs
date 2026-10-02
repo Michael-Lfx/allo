@@ -7,8 +7,8 @@ use std::{
 
 use async_trait::async_trait;
 use nomi_process_runtime::{
-    CapabilityPolicy, CleanupReport, CommandSpec, ProcessError, ProcessOutcome,
-    ProcessOwner, ProcessPolicy, OutputCursor, OutputSnapshot, OutputStream, PollResult,
+    CapabilityPolicy, CommandSpec, ProcessError, ProcessOutcome,
+    ProcessOwner, ProcessPolicy, OutputCursor, OutputSnapshot, PollResult,
     ProcessSupervisor, ShellKind, normalize_request,
 };
 use nomi_protocol::events::ToolCategory;
@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::{
     Tool,
+    process_render::{NO_OUTPUT, append_cleanup, outcome_summary, render_output},
     windows_shell::{shell_transport, validate_shell_script},
 };
 
@@ -147,7 +148,7 @@ impl BashTool {
                         "Command supervision failed: {error}\nCleanup outcome: {}",
                         cleanup
                             .as_ref()
-                            .map(format_outcome_summary)
+                            .map(outcome_summary)
                             .unwrap_or_else(|cleanup_error| cleanup_error.to_string())
                     ),
                     is_error: true,
@@ -170,7 +171,7 @@ impl BashTool {
                             content: format!(
                                 "Command timed out after {timeout_ms}ms.\n{COMMAND_TIMEOUT_GUIDANCE}\n\
                                  Partial output:\n{}\nCleanup failed: {error}",
-                                render_output(&output)
+                                render_output(&output, None)
                             ),
                             is_error: true,
                             images: Vec::new(),
@@ -418,7 +419,7 @@ fn render_timeout(
         ProcessOutcome::Exited { output, .. }
         | ProcessOutcome::Cancelled { output, .. }
         | ProcessOutcome::TimedOut { output, .. } => {
-            (Some(output), format_outcome_summary(&outcome))
+            (Some(output), outcome_summary(&outcome))
         }
         ProcessOutcome::Lost { output, .. } => {
             let output = if output.chunks.is_empty() && output.dropped_bytes == 0 {
@@ -426,15 +427,15 @@ fn render_timeout(
             } else {
                 Some(output)
             };
-            (output, format_outcome_summary(&outcome))
+            (output, outcome_summary(&outcome))
         }
         ProcessOutcome::SpawnFailed(_) => {
-            (partial.as_ref(), format_outcome_summary(&outcome))
+            (partial.as_ref(), outcome_summary(&outcome))
         }
     };
     let mut content = format!(
         "Command timed out after {timeout_ms}ms.\n{COMMAND_TIMEOUT_GUIDANCE}\nPartial output:\n{}",
-        output.map(render_output).unwrap_or_else(|| "OUTPUT:\n".to_owned())
+        output.map(|snapshot| render_output(snapshot, None)).unwrap_or_else(|| NO_OUTPUT.to_owned())
     );
     if !summary.is_empty() {
         content.push_str("\nCleanup outcome: ");
@@ -461,7 +462,7 @@ fn render_outcome(outcome: ProcessOutcome) -> ToolResult {
                 content.push_str(&format!("\nSignal: {signal}"));
             }
             content.push('\n');
-            content.push_str(&render_output(&output));
+            content.push_str(&render_output(&output, None));
             append_cleanup(&mut content, &cleanup);
             ToolResult {
                 content,
@@ -470,7 +471,7 @@ fn render_outcome(outcome: ProcessOutcome) -> ToolResult {
             }
         }
         ProcessOutcome::Cancelled { output, cleanup } => {
-            let mut content = format!("Command was cancelled.\n{}", render_output(&output));
+            let mut content = format!("Command was cancelled.\n{}", render_output(&output, None));
             append_cleanup(&mut content, &cleanup);
             ToolResult {
                 content,
@@ -481,7 +482,7 @@ fn render_outcome(outcome: ProcessOutcome) -> ToolResult {
         ProcessOutcome::TimedOut { output, cleanup } => {
             let mut content = format!(
                 "Command timed out.\n{COMMAND_TIMEOUT_GUIDANCE}\n{}",
-                render_output(&output)
+                render_output(&output, None)
             );
             append_cleanup(&mut content, &cleanup);
             ToolResult {
@@ -499,7 +500,7 @@ fn render_outcome(outcome: ProcessOutcome) -> ToolResult {
                 "Command cleanup is unproven (pid={}, state={:?}). Do not blindly retry.\n{}",
                 last_known.pid,
                 last_known.state,
-                render_output(&output)
+                render_output(&output, None)
             );
             append_cleanup(&mut content, &cleanup);
             ToolResult {
@@ -513,131 +514,6 @@ fn render_outcome(outcome: ProcessOutcome) -> ToolResult {
             is_error: true,
             images: Vec::new(),
         },
-    }
-}
-
-fn render_output(output: &OutputSnapshot) -> String {
-    let mut chunks = output.chunks.iter().collect::<Vec<_>>();
-    chunks.sort_by_key(|chunk| chunk.seq);
-    let mut rendered = String::new();
-    let mut current_stream = None;
-    for chunk in chunks {
-        if current_stream != Some(chunk.stream) {
-            if !rendered.is_empty() && !rendered.ends_with('\n') {
-                rendered.push('\n');
-            }
-            rendered.push_str(match chunk.stream {
-                OutputStream::Stdout => "STDOUT:\n",
-                OutputStream::Stderr => "STDERR:\n",
-                OutputStream::Pty => "PTY:\n",
-            });
-            current_stream = Some(chunk.stream);
-        }
-        rendered.push_str(&strip_ansi_sequences(&chunk.text));
-    }
-    if rendered.is_empty() {
-        rendered.push_str("OUTPUT:\n");
-    }
-    if output.dropped_bytes > 0
-        || output.encoding.decode_errors > 0
-        || output.encoding.source_encoding != "utf-8"
-    {
-        if !rendered.ends_with('\n') {
-            rendered.push('\n');
-        }
-        rendered.push_str(&format!(
-            "[output metadata: dropped_bytes={}, source_encoding={}, decode_errors={}]",
-            output.dropped_bytes,
-            output.encoding.source_encoding,
-            output.encoding.decode_errors
-        ));
-    }
-    rendered
-}
-
-fn strip_ansi_sequences(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            out.push(ch);
-            continue;
-        }
-
-        let Some(kind) = chars.next() else {
-            break;
-        };
-        match kind {
-            '[' => {
-                for c in chars.by_ref() {
-                    let code = c as u32;
-                    if (0x40..=0x7E).contains(&code) {
-                        break;
-                    }
-                }
-            }
-            ']' => {
-                let mut saw_esc = false;
-                for c in chars.by_ref() {
-                    if c == '\u{7}' {
-                        break;
-                    }
-                    if saw_esc && c == '\\' {
-                        break;
-                    }
-                    saw_esc = c == '\u{1b}';
-                }
-            }
-            _ => {
-                let mut code = kind as u32;
-                if !(0x40..=0x7E).contains(&code) {
-                    for c in chars.by_ref() {
-                        code = c as u32;
-                        if (0x40..=0x7E).contains(&code) {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    out
-}
-
-fn append_cleanup(content: &mut String, cleanup: &CleanupReport) {
-    if cleanup.errors.is_empty() {
-        return;
-    }
-    content.push_str("\nCleanup diagnostics: ");
-    content.push_str(&cleanup.errors.join("; "));
-}
-
-fn format_outcome_summary(outcome: &ProcessOutcome) -> String {
-    match outcome {
-        ProcessOutcome::Exited { code, signal, .. } => {
-            format!("exited code={code:?} signal={signal:?}")
-        }
-        ProcessOutcome::Cancelled { cleanup, .. } => {
-            format!("cancelled reaped={}", cleanup.reaped)
-        }
-        ProcessOutcome::TimedOut { cleanup, .. } => {
-            format!("timed_out reaped={}", cleanup.reaped)
-        }
-        ProcessOutcome::Lost {
-            last_known,
-            cleanup,
-            ..
-        } => format!(
-            "lost pid={} reaped={} errors={}",
-            last_known.pid,
-            cleanup.reaped,
-            cleanup.errors.join("; ")
-        ),
-        ProcessOutcome::SpawnFailed(failure) => {
-            format!("spawn_failed {}: {}", failure.code, failure.message)
-        }
     }
 }
 
@@ -655,7 +531,7 @@ mod tests {
     #[cfg(windows)]
     use crate::test_support::pty_test_helper_bin;
     use crate::test_support::pty_test_helper_shell_cmd;
-    use nomi_process_runtime::{SandboxPolicy, SupervisorConfig};
+    use nomi_process_runtime::{CleanupReport, OutputStream, SandboxPolicy, SupervisorConfig};
     use serde_json::json;
     use std::path::Path;
 
@@ -889,25 +765,14 @@ mod tests {
         assert!(result.content.contains("cleanup-tail"), "{}", result.content);
     }
 
-    #[test]
-    fn render_output_strips_ansi_control_sequences() {
-        let snapshot = OutputSnapshot {
-            chunks: vec![nomi_process_runtime::OutputChunk {
-                seq: 1,
-                start: 0,
-                stream: OutputStream::Pty,
-                bytes: Vec::new(),
-                text: "\u{1b}[?9001h\u{1b}[?25lhello\u{1b}]0;title\u{7}\u{1b}[?25h".to_string(),
-            }],
-            next_cursor: OutputCursor::new(0),
-            retained_bytes: 0,
-            dropped_bytes: 0,
-            encoding: nomi_process_runtime::EncodingMetadata::default(),
-        };
-
-        let rendered = render_output(&snapshot);
-        assert!(rendered.contains("PTY:\nhello"), "{rendered}");
-        assert!(!rendered.contains("\u{1b}"), "{rendered}");
+    #[tokio::test]
+    async fn execute_silent_command_reports_no_output() {
+        let command = if cfg!(windows) { "$null = 1" } else { "true" };
+        let result = tool(std::env::temp_dir())
+            .execute(json!({"command": command}))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("(no output)"), "{}", result.content);
     }
 
     #[tokio::test]

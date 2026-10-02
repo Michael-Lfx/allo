@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 
 use crate::{
     Tool,
-    exec_command::{render_output, render_terminal_with_missed, transport_label},
+    exec_command::{render_terminal_with_missed, transport_label},
+    process_render::render_output,
     process_store::ProcessStore,
 };
 

@@ -16,7 +16,7 @@ use std::{
 use async_trait::async_trait;
 use nomi_process_runtime::{
     CapabilityPolicy, CommandSpec, ProcessError, ProcessOutcome, ProcessOwner,
-    ProcessPolicy, OutputSnapshot, OutputStream, PollResult, ProcessSupervisor, ShellKind,
+    ProcessPolicy, OutputSnapshot, PollResult, ProcessSupervisor, ShellKind,
     Transport, normalize_request,
 };
 use nomi_protocol::events::ToolCategory;
@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::{
     Tool,
+    process_render::{append_cleanup, outcome_summary, render_output},
     process_store::{NumericSessionBinding, ProcessStore, missed_bytes},
     windows_shell::{shell_transport, validate_shell_script},
 };
@@ -999,50 +1000,6 @@ fn requested_workdir(input: &Value, default: &Path) -> Result<PathBuf, &'static 
     }
 }
 
-pub(crate) fn render_output(
-    output: &OutputSnapshot,
-    missed_bytes: Option<u64>,
-) -> String {
-    let mut chunks = output.chunks.iter().collect::<Vec<_>>();
-    chunks.sort_by_key(|chunk| chunk.seq);
-    let mut rendered = String::new();
-    let mut current_stream = None;
-    for chunk in chunks {
-        if current_stream != Some(chunk.stream) {
-            if !rendered.is_empty() && !rendered.ends_with('\n') {
-                rendered.push('\n');
-            }
-            rendered.push_str(match chunk.stream {
-                OutputStream::Stdout => "STDOUT:\n",
-                OutputStream::Stderr => "STDERR:\n",
-                OutputStream::Pty => "PTY:\n",
-            });
-            current_stream = Some(chunk.stream);
-        }
-        rendered.push_str(&chunk.text);
-    }
-    if rendered.is_empty() {
-        rendered.push_str("OUTPUT:\n");
-    }
-    let missed_bytes = missed_bytes.unwrap_or(0);
-    if missed_bytes > 0
-        || output.dropped_bytes > 0
-        || output.encoding.decode_errors > 0
-        || output.encoding.source_encoding != "utf-8"
-    {
-        if !rendered.ends_with('\n') {
-            rendered.push('\n');
-        }
-        rendered.push_str(&format!(
-            "[output metadata: missed_bytes={missed_bytes}, dropped_bytes={}, source_encoding={}, decode_errors={}]",
-            output.dropped_bytes,
-            output.encoding.source_encoding,
-            output.encoding.decode_errors
-        ));
-    }
-    rendered
-}
-
 pub(crate) fn render_terminal(
     outcome: ProcessOutcome,
     transport: Transport,
@@ -1125,40 +1082,6 @@ pub(crate) fn transport_label(transport: Transport) -> &'static str {
     }
 }
 
-pub(crate) fn outcome_summary(outcome: &ProcessOutcome) -> String {
-    match outcome {
-        ProcessOutcome::Exited { code, signal, .. } => {
-            format!("exited code={code:?} signal={signal:?}")
-        }
-        ProcessOutcome::Cancelled { cleanup, .. } => {
-            format!("cancelled reaped={}", cleanup.reaped)
-        }
-        ProcessOutcome::TimedOut { cleanup, .. } => {
-            format!("timed_out reaped={}", cleanup.reaped)
-        }
-        ProcessOutcome::Lost {
-            last_known,
-            cleanup,
-            ..
-        } => format!(
-            "lost pid={} reaped={} errors={}",
-            last_known.pid,
-            cleanup.reaped,
-            cleanup.errors.join("; ")
-        ),
-        ProcessOutcome::SpawnFailed(failure) => {
-            format!("spawn_failed {}: {}", failure.code, failure.message)
-        }
-    }
-}
-
-fn append_cleanup(content: &mut String, cleanup: &nomi_process_runtime::CleanupReport) {
-    if !cleanup.errors.is_empty() {
-        content.push_str("\ncleanup diagnostics: ");
-        content.push_str(&cleanup.errors.join("; "));
-    }
-}
-
 fn process_error(operation: &str, error: ProcessError) -> ToolResult {
     ToolResult::error(format!(
         "exec_command: {operation} failed: {error} ({})",
@@ -1212,6 +1135,7 @@ impl Drop for StartedSessionGuard {
 mod tests {
     use super::*;
     use crate::test_support::pty_test_helper_shell_cmd;
+    use nomi_process_runtime::OutputStream;
 
     fn tool(cwd: PathBuf) -> (ExecCommandTool, Arc<ProcessStore>) {
         let supervisor = ProcessSupervisor::new(nomi_process_runtime::SupervisorConfig::default());

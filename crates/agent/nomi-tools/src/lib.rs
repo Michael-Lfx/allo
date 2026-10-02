@@ -14,6 +14,7 @@ pub mod output_truncation;
 pub mod path_guard;
 #[cfg(test)]
 pub mod persistent_shell;
+mod process_render;
 pub mod process_store;
 #[cfg(test)]
 pub mod pty;
