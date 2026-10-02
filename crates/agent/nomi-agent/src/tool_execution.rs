@@ -16,8 +16,9 @@ use nomi_types::skill_types::ContextModifier;
 use nomi_types::tool::{ToolDef, ToolResult};
 
 use nomi_tools::{
-    MAX_PROVIDER_TOOL_OUTPUT_BYTES, ToolExecutionContext, TruncationBudget, registry::ToolRegistry,
-    truncate_middle,
+    MAX_PROVIDER_TOOL_OUTPUT_BYTES, ToolExecutionContext, TruncationBudget,
+    phase_trace::{self, PhaseClock, ToolPhase},
+    registry::ToolRegistry, truncate_middle,
 };
 
 pub(crate) const SKIPPED_AFTER_PRIOR_ERROR: &str = "\
@@ -151,12 +152,16 @@ pub struct ToolCallOutcome {
     pub timings: HashMap<String, ToolCallTiming>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallTiming {
     pub duration_ms: u64,
     pub duration_us: u64,
     pub started_at_ms: u64,
     pub completed_at_ms: u64,
+    /// Named time slices in recording order. `bash.*` slices run inside
+    /// `tool.execute`; the rest are sequential, and time they do not cover is
+    /// untracked.
+    pub phases: Vec<ToolPhase>,
 }
 
 fn wall_clock_ms() -> u64 {
@@ -169,7 +174,7 @@ fn wall_clock_ms() -> u64 {
 async fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, ToolCallTiming) {
     let started_at_ms = wall_clock_ms();
     let started = std::time::Instant::now();
-    let output = future.await;
+    let (output, phases) = phase_trace::collect(Box::pin(future)).await;
     let elapsed = started.elapsed();
     let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
     let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
@@ -181,6 +186,7 @@ async fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, ToolCallT
             duration_us,
             started_at_ms,
             completed_at_ms,
+            phases,
         },
     )
 }
@@ -800,6 +806,7 @@ async fn execute_single_without_deadline(
     };
 
     let start = std::time::Instant::now();
+    let mut clock = PhaseClock::start();
     tracing::info!(target: "nomi_agent", tool = %name, call_id = %id, "tool execution started");
 
     // Run pre-tool-use hooks
@@ -817,6 +824,7 @@ async fn execute_single_without_deadline(
         );
     }
 
+    clock.mark("hooks.pre");
     let (result, modifier) = match registry.get(name) {
         Some(tool) => {
             let max_size = tool.max_result_size().min(MAX_PROVIDER_TOOL_OUTPUT_BYTES);
@@ -854,6 +862,7 @@ async fn execute_single_without_deadline(
                     ))
                 }
             };
+            clock.mark("tool.execute");
             let modifier = if r.is_error {
                 None
             } else {
@@ -871,6 +880,7 @@ async fn execute_single_without_deadline(
             } else {
                 content
             };
+            clock.mark("tool.post_process");
             (
                 ToolResult {
                     content,
@@ -895,6 +905,7 @@ async fn execute_single_without_deadline(
             tracing::info!(target: "nomi_agent", hook_message = %msg, "post-tool-use hook output");
         }
     }
+    clock.mark("hooks.post");
 
     let duration_ms = start.elapsed().as_millis() as u64;
     tracing::info!(target: "nomi_agent", duration_ms, success = !result.is_error, "tool execution completed");
@@ -2950,11 +2961,23 @@ mod tests {
         .await
         .unwrap();
 
-        let fast = outcome.timings["fast"];
-        let slow = outcome.timings["slow"];
+        let fast = &outcome.timings["fast"];
+        let slow = &outcome.timings["slow"];
         assert!(slow.duration_ms >= 400, "{slow:?}");
         assert!(fast.duration_ms < 300, "{fast:?}");
         assert!(fast.completed_at_ms < slow.completed_at_ms, "{fast:?} {slow:?}");
+
+        for timing in [fast, slow] {
+            let names: Vec<_> = timing.phases.iter().map(|phase| phase.name).collect();
+            assert_eq!(
+                names,
+                ["hooks.pre", "tool.execute", "tool.post_process", "hooks.post"]
+            );
+        }
+        let slow_execute = slow.phases.iter().find(|p| p.name == "tool.execute").unwrap();
+        let fast_execute = fast.phases.iter().find(|p| p.name == "tool.execute").unwrap();
+        assert!(slow_execute.micros >= 400_000, "{slow:?}");
+        assert!(fast_execute.micros < 300_000, "{fast:?}");
     }
 
     #[tokio::test]

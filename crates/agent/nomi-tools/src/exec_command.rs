@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::{
     Tool,
+    phase_trace::PhaseClock,
     process_render::{append_cleanup, outcome_summary, render_output},
     process_store::{NumericSessionBinding, ProcessStore, missed_bytes},
     windows_shell::{shell_transport, validate_shell_script},
@@ -647,6 +648,7 @@ impl Tool for ExecCommandTool {
             mode,
         } = invocation;
         let mut mode = mode;
+        let mut clock = PhaseClock::start();
         let started_at = Instant::now();
         let deadline = match &mode {
             InvocationMode::Command { .. } => None,
@@ -704,6 +706,7 @@ impl Tool for ExecCommandTool {
             Ok(request) => request,
             Err(error) => return process_error("prepare", error),
         };
+        clock.mark("exec.prepare");
         let handle = match self.supervisor.start(request).await {
             Ok(handle) => handle,
             Err(error) => {
@@ -715,6 +718,7 @@ impl Tool for ExecCommandTool {
                 return process_error("start", error);
             }
         };
+        clock.mark("exec.spawn");
         let guard = StartedSessionGuard::new(
             Arc::clone(&self.supervisor),
             handle.owner.clone(),
@@ -722,8 +726,11 @@ impl Tool for ExecCommandTool {
         );
         match mode {
             InvocationMode::Command { yield_ms } => {
-                self.execute_legacy_started(handle, transport, yield_ms, guard)
-                    .await
+                let result = self
+                    .execute_legacy_started(handle, transport, yield_ms, guard)
+                    .await;
+                clock.mark("exec.wait");
+                result
             }
             InvocationMode::Script {
                 language,
@@ -739,7 +746,9 @@ impl Tool for ExecCommandTool {
                     started_at,
                     deadline: deadline.expect("script mode always has a deadline"),
                 };
-                self.execute_script_started(handle, context, guard).await
+                let result = self.execute_script_started(handle, context, guard).await;
+                clock.mark("exec.wait");
+                result
             }
         }
     }
@@ -1205,6 +1214,21 @@ mod tests {
         assert!(!result.is_error, "{}", result.content);
         assert!(result.content.contains("exit_code=0"));
         assert!(parse_session_id(&result.content).is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_records_process_phases_when_a_sink_is_installed() {
+        let (tool, _) = tool(std::env::current_dir().unwrap());
+
+        let (result, phases) = crate::phase_trace::collect(tool.execute(json!({
+            "cmd": pty_test_helper_shell_cmd("exit 0"),
+            "yield_time_ms": 3000
+        })))
+        .await;
+
+        assert!(!result.is_error, "{}", result.content);
+        let names: Vec<_> = phases.iter().map(|phase| phase.name).collect();
+        assert_eq!(names, ["exec.prepare", "exec.spawn", "exec.wait"]);
     }
 
     #[tokio::test]

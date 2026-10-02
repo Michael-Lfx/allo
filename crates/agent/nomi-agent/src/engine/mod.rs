@@ -1007,7 +1007,7 @@ impl AgentEngine {
                     name,
                     *is_error,
                     content,
-                    timings.get(tool_use_id).copied(),
+                    timings.get(tool_use_id).cloned(),
                     Some(round_wall_ms),
                 );
             }

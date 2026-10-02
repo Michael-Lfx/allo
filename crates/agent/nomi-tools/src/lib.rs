@@ -12,6 +12,7 @@ pub mod handler_tool;
 pub mod lsp;
 pub mod output_truncation;
 pub mod path_guard;
+pub mod phase_trace;
 #[cfg(test)]
 pub mod persistent_shell;
 mod process_render;

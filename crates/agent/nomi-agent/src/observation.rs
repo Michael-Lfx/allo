@@ -323,14 +323,22 @@ impl ObservationSession {
                     duration_us: duration_ms.saturating_mul(1000),
                     started_at_ms,
                     completed_at_ms,
+                    phases: Vec::new(),
                 });
             }
         }
-        if let Some(timing) = timing {
+        if let Some(timing) = &timing {
             payload["duration_ms"] = json!(timing.duration_ms);
             payload["duration_us"] = json!(timing.duration_us);
             payload["started_at_ms"] = json!(timing.started_at_ms);
             payload["completed_at_ms"] = json!(timing.completed_at_ms);
+            if !timing.phases.is_empty() {
+                payload["phases"] = timing
+                    .phases
+                    .iter()
+                    .map(|phase| json!({ "name": phase.name, "us": phase.micros }))
+                    .collect();
+            }
         }
         if let Some(round_wall_ms) = round_wall_ms {
             payload["round_wall_ms"] = json!(round_wall_ms);
@@ -488,11 +496,12 @@ impl ObservationSession {
         if let Some(kind) = nonempty(ids.session_kind.as_deref()) {
             insert_telemetry_str(&mut properties, "session_kind", kind);
         }
-        if let Some(timing) = timing {
+        if let Some(timing) = &timing {
             properties.insert("duration_ms".into(), json!(timing.duration_ms));
             properties.insert("duration_us".into(), json!(timing.duration_us));
         }
         let occurred_at = timing
+            .as_ref()
             .map(|timing| rfc3339_millis(timing.completed_at_ms))
             .unwrap_or_else(rfc3339_now);
         enqueue_observation_telemetry(ObservationTelemetryRecord {
@@ -1645,6 +1654,10 @@ mod tests {
                 duration_us: 1_234_000,
                 started_at_ms: 1_790_000_000_000 - 1234,
                 completed_at_ms: 1_790_000_000_000,
+                phases: vec![
+                    nomi_tools::phase_trace::ToolPhase { name: "tool.execute", micros: 1_200_000 },
+                    nomi_tools::phase_trace::ToolPhase { name: "bash.spawn", micros: 900_000 },
+                ],
             }),
             Some(4321),
         );
@@ -1662,6 +1675,13 @@ mod tests {
         assert_eq!(completed.payload["duration_us"], 1_234_000);
         assert_eq!(completed.payload["completed_at_ms"], 1_790_000_000_000u64);
         assert_eq!(completed.payload["round_wall_ms"], 4321);
+        assert_eq!(
+            completed.payload["phases"],
+            json!([
+                { "name": "tool.execute", "us": 1_200_000 },
+                { "name": "bash.spawn", "us": 900_000 },
+            ])
+        );
         assert_eq!(
             nomi_agent_trace::ids_from_payload(&started.payload)
                 .model_call_id

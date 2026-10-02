@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::{
     Tool,
+    phase_trace::PhaseClock,
     process_render::{NO_OUTPUT, append_cleanup, outcome_summary, render_output},
     windows_shell::{shell_transport, validate_shell_script},
 };
@@ -61,6 +62,7 @@ impl BashTool {
         self
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_supervised(
         supervisor: Arc<ProcessSupervisor>,
         cwd: PathBuf,
@@ -69,6 +71,7 @@ impl BashTool {
         command: String,
         timeout_ms: u64,
         cancelled: CancellationToken,
+        mut clock: PhaseClock,
     ) -> ToolResult {
         let started_at = Instant::now();
         let deadline = started_at
@@ -98,6 +101,7 @@ impl BashTool {
             Ok(request) => request,
             Err(error) => return process_error_result("Failed to prepare command", error),
         };
+        clock.mark("bash.prepare");
         let start = supervisor.start(request);
         tokio::pin!(start);
         let handle = tokio::select! {
@@ -117,6 +121,7 @@ impl BashTool {
                 Err(error) => return process_error_result("Failed to execute command", error),
             }
         };
+        clock.mark("bash.spawn");
         let mut session_guard =
             SessionCancelOnDrop::new(Arc::clone(&supervisor), handle.owner.clone(), handle.session_id);
 
@@ -157,10 +162,13 @@ impl BashTool {
             }
         };
 
+        clock.mark("bash.wait");
         match poll {
             PollResult::Finished(outcome) => {
                 session_guard.disarm();
-                render_outcome(outcome)
+                let rendered = render_outcome(outcome);
+                clock.mark("bash.render");
+                rendered
             }
             PollResult::Running { output, .. } => {
                 let outcome = match supervisor.timeout(&handle.owner, &handle.session_id).await {
@@ -290,6 +298,7 @@ impl Tool for BashTool {
             command.to_owned(),
             timeout_ms,
             cancelled,
+            PhaseClock::start(),
         ));
         let result = match worker.await {
             Ok(result) => result,
@@ -773,6 +782,22 @@ mod tests {
             .await;
         assert!(!result.is_error, "{}", result.content);
         assert!(result.content.contains("(no output)"), "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn execute_records_process_phases_when_a_sink_is_installed() {
+        let command = if cfg!(windows) { "$null = 1" } else { "true" };
+        let tool = tool(std::env::temp_dir());
+
+        let (result, phases) =
+            crate::phase_trace::collect(tool.execute(json!({"command": command}))).await;
+
+        assert!(!result.is_error, "{}", result.content);
+        let names: Vec<_> = phases.iter().map(|phase| phase.name).collect();
+        assert_eq!(
+            names,
+            ["bash.prepare", "bash.spawn", "bash.wait", "bash.render"]
+        );
     }
 
     #[tokio::test]
