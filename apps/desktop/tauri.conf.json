@@ -37,6 +37,10 @@
         "template": "windows/nsis/installer.nsi",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": false,
+        "installerIcon": "icons/nsis-installer.ico",
+        "uninstallerIcon": "icons/nsis-installer.ico",
+        "sidebarImage": "icons/nsis-sidebar.bmp",
+        "headerImage": "icons/nsis-header.bmp",
         "customLanguageFiles": {
           "English": "windows/nsis/English.nsh",
           "SimpChinese": "windows/nsis/SimpChinese.nsh"

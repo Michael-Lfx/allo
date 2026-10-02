@@ -4,6 +4,8 @@
 ; - DirectML: detect DMLCreateDevice1 / file version; if missing, download
 ;   Microsoft.AI.DirectML from nuget.org into $INSTDIR (side-by-side with exe)
 ;   via curl/PowerShell (not NSISdl — TLS timeouts on nuget.org).
+; - Branding: installer/uninstaller icon and sidebar/header bitmaps come from the
+;   bundle config (icons/nsis-*.{ico,bmp}, generated from icons/logo.svg).
 ; Re-diff when upgrading @tauri-apps/cli.
 Unicode true
 ManifestDPIAware true
