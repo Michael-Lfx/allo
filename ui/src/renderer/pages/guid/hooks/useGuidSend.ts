@@ -31,6 +31,7 @@ import type {
   PendingConversationStage,
 } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+import { useComposerDraftStore, GUID_DRAFT_KEY } from '@/renderer/stores/composerDraftStore';
 import { hasGuidInitialPayload, planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
 import { persistGuidInitialMessageHandoff } from './guidInitialMessageHandoff';
 import { guidTransitionMark, guidTransitionStart } from './guidTransitionTiming';
@@ -216,6 +217,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     attachPending,
   } = deps;
   const sendingRef = useRef(false);
+  const clearComposerDraft = useComposerDraftStore((state) => state.clearDraft);
 
   const handleSend = useCallback(async () => {
     const isCustomWorkspace = !!dir;
@@ -727,6 +729,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
           setMentionActiveIndex(0);
           setFiles([]);
           setDir('');
+          // Send accepted: drop the persisted draft so it cannot rehydrate on
+          // the next mount. Failed sends leave it intact for retry.
+          clearComposerDraft(GUID_DRAFT_KEY);
           if (initialSkillIds.length > 0) onInitialSkillsSent?.();
           // Navigation dispatched: arm the reveal handshake — the overlay stays
           // up until the destination commits the first bubble (or the timeout).
@@ -771,6 +776,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     onNeedWorkspace,
     readinessReady,
     readinessBlocker,
+    clearComposerDraft,
   ]);
 
   // Calculate button disabled state

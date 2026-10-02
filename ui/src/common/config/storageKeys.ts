@@ -21,4 +21,10 @@ export const STORAGE_KEYS = {
 
   /** Language preference / 语言偏好 */
   LANGUAGE: 'nomifun_language',
+
+  /** Nomi work mode preference / Nomi 工作模式偏好 */
+  TASK_PROFILE: 'nomifun:task-profile',
+
+  /** Cross-module composer draft snapshots / 跨模块输入草稿快照 */
+  COMPOSER_DRAFTS: 'nomifun:composer-drafts',
 } as const;

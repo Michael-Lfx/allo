@@ -35,9 +35,8 @@ import type {
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
-import TaskProfileSelector, {
-  type TaskProfile,
-} from '@/renderer/components/agent/TaskProfileSelector';
+import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector';
+import { useTaskProfileStore } from '@/renderer/stores/taskProfileStore';
 import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
@@ -139,7 +138,7 @@ const GuidPage: React.FC = () => {
     (visible: boolean) => handleChatPopupVisibleChange('strategy', visible),
     [handleChatPopupVisibleChange]
   );
-  const [selectedTaskProfile, setSelectedTaskProfile] = useState<TaskProfile>('office');
+  const taskProfile = useTaskProfileStore((state) => state.taskProfile);
   const [isHomeAddMenuOpen, setIsHomeAddMenuOpen] = useState(false);
   const [homeAddMenuActiveIndex, setHomeAddMenuActiveIndex] = useState(0);
   const pendingAutoSendRef = useRef(false);
@@ -614,7 +613,7 @@ const GuidPage: React.FC = () => {
     selectedAcpModel: agentSelection.selectedAcpModel,
     current_model: modelSelection.current_model,
     reasoningEffort: effectiveReasoningEffort,
-    taskProfile: selectedTaskProfile,
+    taskProfile,
 
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
@@ -1115,10 +1114,7 @@ const GuidPage: React.FC = () => {
 
             {showTaskProfile ? (
               <div className={styles.guidTaskProfile}>
-                <TaskProfileSelector
-                  initialProfile={selectedTaskProfile}
-                  onProfileSelect={setSelectedTaskProfile}
-                />
+                <TaskProfileSelector />
               </div>
             ) : null}
 

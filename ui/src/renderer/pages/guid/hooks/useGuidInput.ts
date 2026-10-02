@@ -1,12 +1,21 @@
 
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import { useDragUpload } from '@/renderer/hooks/file/useDragUpload';
 import { usePasteService } from '@/renderer/hooks/file/usePasteService';
 import { allSupportedExts, type FileMetadata } from '@/renderer/services/FileService';
 import { MAX_IMAGE_ATTACHMENTS, admitImageAttachments } from '@/renderer/utils/file/imageAttachments';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { useCallback, useEffect, useState } from 'react';
+import { GUID_DRAFT_KEY, useComposerDraftStore } from '@/renderer/stores/composerDraftStore';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+/** Debounce window for persisting the Guid composer draft while typing. */
+const DRAFT_PERSIST_DEBOUNCE_MS = 500;
 
 export type GuidInputResult = {
   input: string;
@@ -39,12 +48,18 @@ type UseGuidInputOptions = {
 
 /**
  * Hook that manages input state, file handling, and drag/paste for the Guid page.
+ *
+ * The composer snapshot (text + attachments + workspace) is persisted to the
+ * app-global composer draft store so it survives navigation between modules and
+ * app restarts. It is cleared only after an accepted send (see useGuidSend); a
+ * failed send keeps the draft intact so the user can retry.
  */
 export const useGuidInput = ({ locationState, containerRef }: UseGuidInputOptions): GuidInputResult => {
   const { t } = useTranslation();
-  const [input, setInput] = useState('');
-  const [files, setFiles] = useState<string[]>([]);
-  const [dir, setDir] = useState<string>('');
+  const setDraft = useComposerDraftStore((state) => state.setDraft);
+  const [input, setInput] = useState(() => useComposerDraftStore.getState().drafts[GUID_DRAFT_KEY]?.text ?? '');
+  const [files, setFiles] = useState<string[]>(() => useComposerDraftStore.getState().drafts[GUID_DRAFT_KEY]?.files ?? []);
+  const [dir, setDir] = useState<string>(() => useComposerDraftStore.getState().drafts[GUID_DRAFT_KEY]?.dir ?? '');
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -54,6 +69,30 @@ export const useGuidInput = ({ locationState, containerRef }: UseGuidInputOption
       setDir(locationState.workspace);
     }
   }, [locationState]);
+
+  // Mirror the live snapshot for debounced + unmount persistence. The local
+  // state stays the single source of truth for the controlled inputs so the
+  // existing setInput(prev => …) call sites keep working unchanged.
+  const latestDraftRef = useRef({ input, files, dir });
+  latestDraftRef.current = { input, files, dir };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDraft(GUID_DRAFT_KEY, { text: input, files, dir });
+    }, DRAFT_PERSIST_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [input, files, dir, setDraft]);
+
+  // Flush any pending change on unmount (route change / navigate to a session)
+  // so recent typing is not lost between the debounce windows. An empty
+  // snapshot normalizes to a delete, which is how an accepted send clears it.
+  useEffect(
+    () => () => {
+      const snapshot = latestDraftRef.current;
+      useComposerDraftStore.getState().setDraft(GUID_DRAFT_KEY, snapshot);
+    },
+    []
+  );
 
   const appendFilesWithinImageLimit = useCallback(
     (candidatePaths: string[]) => {
