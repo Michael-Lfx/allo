@@ -3777,6 +3777,7 @@ export type I18nKey =
   | 'media.settings.provider'
   | 'media.settings.saved'
   | 'media.settings.selectModel'
+  | 'media.settings.videoAspectRatio'
   | 'media.settings.videoDuration'
   | 'media.settings.videoModel'
   | 'media.settings.videoSaveLocally'
