@@ -4727,6 +4727,57 @@ async fn fork_rejects_a_running_conversation() {
 }
 
 #[tokio::test]
+async fn fork_allows_an_idle_cached_runtime() {
+    let (svc, repo, runtime) = make_fork_service();
+    let source = svc
+        .create(TEST_USER_1, make_nomi_create_req("fork-idle-runtime"))
+        .await
+        .unwrap();
+    let message_id =
+        insert_fork_text(repo.as_ref(), &source.conversation_id, "KEEP_PREFIX", "right", 1_000).await;
+    runtime.insert_agent(
+        &source.conversation_id,
+        AgentRuntimeHandle::Mock(Arc::new(MockAgent::new(&source.conversation_id))),
+    );
+
+    let forked = svc
+        .fork(TEST_USER_1, &source.conversation_id, &message_id)
+        .await
+        .expect("an idle keep-alive runtime must not block fork");
+
+    assert_ne!(forked.conversation_id, source.conversation_id);
+    assert_eq!(
+        runtime.nomi_fork_records(),
+        vec![NomiSessionForkMode::CopyTranscript]
+    );
+    assert!(
+        runtime.get_runtime(&source.conversation_id).is_some(),
+        "fork must leave the source keep-alive runtime registered"
+    );
+}
+
+#[tokio::test]
+async fn fork_rejects_when_a_turn_owner_is_active() {
+    let (svc, repo, _runtime) = make_fork_service();
+    let source = svc
+        .create(TEST_USER_1, make_nomi_create_req("fork-active-turn"))
+        .await
+        .unwrap();
+    let message_id =
+        insert_fork_text(repo.as_ref(), &source.conversation_id, "KEEP_PREFIX", "right", 1_000).await;
+    let _turn = svc
+        .runtime_state()
+        .try_acquire_turn(&source.conversation_id)
+        .unwrap();
+
+    let error = svc
+        .fork(TEST_USER_1, &source.conversation_id, &message_id)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
+}
+
+#[tokio::test]
 async fn fork_keeps_a_user_chosen_workspace() {
     let (svc, repo, _runtime) = make_fork_service();
     let custom = std::env::temp_dir()

@@ -1479,11 +1479,10 @@ impl AgentRuntimeRegistry for InMemoryAgentRuntimeRegistry {
 
             let lifecycle_gate = registry.lifecycle_gate(&conversation_id);
             let _lifecycle = lifecycle_gate.lock().await;
-            if registry.has_registered_runtime(&conversation_id) {
-                return Err(AppError::Conflict(format!(
-                    "Agent runtime for conversation {conversation_id} is still registered; refusing persisted Nomi session fork"
-                )));
-            }
+            // Fork writes a distinct target conversation file and never mutates
+            // the source transcript. Reset/rewind refuse a registered runtime
+            // because they rewrite the file that runtime still owns; fork must
+            // not, or a just-finished keep-alive session cannot be forked.
 
             tokio::task::spawn_blocking(move || persistence.fork_owned_session(&request))
                 .await
@@ -1658,6 +1657,7 @@ impl OnConversationDelete for NomiSessionFilesCascade {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nomi_session_persistence::NomiSessionForkMode;
     use crate::runtime_handle::{AgentRuntimeControl, MockAgentRuntime};
     use crate::protocol::events::AgentStreamEvent;
     use crate::types::SendMessageData;
@@ -2219,6 +2219,71 @@ mod tests {
                 .expect("fresh loader")
                 .messages
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_nomi_fork_copies_while_idle_runtime_is_cached() {
+        let root = tempfile::tempdir().expect("temp root");
+        let session_directory = root.path().join("nomi-sessions");
+        let manager = SessionManager::new(session_directory.clone(), 100);
+        let source_id = nomifun_common::ConversationId::new().into_string();
+        let source_created_at = now_ms() - 1_000;
+        let mut session = manager
+            .create("openai", "model", "/workspace", Some(&source_id))
+            .expect("create persisted session");
+        session.owner_token = Some(source_created_at.to_string());
+        session.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "keep-alive source".to_owned(),
+            }],
+        ));
+        manager.save(&session).expect("save persisted context");
+        manager
+            .update_index_for(&session)
+            .expect("index persisted context");
+
+        let registry = make_registry().with_nomi_session_directory(session_directory.clone());
+        registry
+            .get_or_create_runtime(&source_id, make_runtime_options(&source_id))
+            .await
+            .expect("register idle keep-alive runtime");
+
+        let target_id = nomifun_common::ConversationId::new().into_string();
+        let target_created_at = now_ms();
+        let outcome = registry
+            .fork_persisted_nomi_session(NomiSessionForkRequest {
+                source_conversation_id: source_id.clone(),
+                source_created_at,
+                target_conversation_id: target_id.clone(),
+                target_created_at,
+                target_cwd: "/forked".to_owned(),
+                provider: "openai".to_owned(),
+                model: "model".to_owned(),
+                mode: NomiSessionForkMode::CopyTranscript,
+                message_id_remap: Vec::new(),
+                plain_text_turns: Vec::new(),
+            })
+            .await
+            .expect("idle cached runtime must not block a read-only session fork");
+        assert_eq!(outcome, NomiSessionForkOutcome::CopiedTranscript);
+        assert!(registry.has_registered_runtime(&source_id));
+        assert_eq!(
+            manager
+                .load(&source_id)
+                .expect("source still loads")
+                .messages
+                .len(),
+            1
+        );
+        assert_eq!(
+            manager
+                .load(&target_id)
+                .expect("forked session loads")
+                .messages
+                .len(),
+            1
         );
     }
 
