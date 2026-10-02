@@ -18,6 +18,7 @@ pub mod factory;
 pub mod goal_bridge;
 pub(crate) mod goal_probe;
 pub(crate) mod idle_scanner;
+pub(crate) mod shutdown_signal;
 pub mod auxiliary_provider;
 pub mod extraction_scanner;
 pub mod knowledge_completer;

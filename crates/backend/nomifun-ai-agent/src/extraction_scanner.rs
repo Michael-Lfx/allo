@@ -6,6 +6,7 @@ use std::time::Duration;
 use tracing::{debug, info};
 
 use crate::capability::proactive_extraction::ProactiveSessionExtractor;
+use crate::shutdown_signal::shutdown_requested;
 
 const DEFAULT_SCAN_INTERVAL_SECS: u64 = 60;
 
@@ -37,11 +38,9 @@ pub fn start_session_extraction_scanner(
                 _ = interval.tick() => {
                     scan_idle_sessions(&extractor, &message_counts).await;
                 }
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() {
-                        info!("Session extraction scanner received shutdown signal");
-                        break;
-                    }
+                () = shutdown_requested(&mut shutdown) => {
+                    info!("Session extraction scanner received shutdown signal");
+                    break;
                 }
             }
         }

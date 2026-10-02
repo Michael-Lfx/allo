@@ -5,6 +5,7 @@ use nomifun_common::ErrorChain;
 use tracing::{debug, error, info};
 
 use crate::runtime_registry::AgentRuntimeRegistry;
+use crate::shutdown_signal::shutdown_requested;
 
 /// Default idle timeout for ACP agents (5 minutes).
 const DEFAULT_IDLE_TIMEOUT_SECS: i64 = 5 * 60;
@@ -40,11 +41,9 @@ pub fn start_idle_scanner(
                 _ = interval.tick() => {
                     scan_and_cleanup(&runtime_state_registry, threshold*1000);
                 }
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() {
-                        info!("Idle scanner received shutdown signal");
-                        break;
-                    }
+                () = shutdown_requested(&mut shutdown) => {
+                    info!("Idle scanner received shutdown signal");
+                    break;
                 }
             }
         }
