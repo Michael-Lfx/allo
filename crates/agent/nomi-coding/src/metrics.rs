@@ -6,6 +6,8 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use serde::Serialize;
+
 /// Per-root-request harness telemetry.
 #[derive(Debug, Clone)]
 pub struct HarnessKpi {
@@ -119,6 +121,33 @@ impl HarnessKpi {
         }
     }
 
+    pub fn unique_read_count(&self) -> usize {
+        self.unique_read_keys.len()
+    }
+
+    pub fn reread_count(&self) -> usize {
+        self.reread_keys.len()
+    }
+
+    pub fn snapshot_counters(&self) -> HarnessKpiCounters {
+        HarnessKpiCounters {
+            tools_this_assistant_turn: self.tools_this_assistant_turn,
+            assistant_turns_with_tools: self.assistant_turns_with_tools,
+            total_tool_calls: self.total_tool_calls,
+            recon_only_turns: self.recon_only_turns,
+            serial_recon_turns: self.serial_recon_turns,
+            unique_read_keys: self.unique_read_count(),
+            reread_keys: self.reread_count(),
+            unique_path_reread_rate: self.unique_path_reread_rate(),
+            time_to_first_edit_ms: self.time_to_first_edit_ms,
+            verify_before_end: self.verify_before_end,
+            contributor_ms: self.contributor_ms,
+            checkpoint_ms: self.checkpoint_ms,
+            ttft_ms: self.ttft_ms,
+            tool_wall_ms: self.tool_wall_ms,
+        }
+    }
+
     pub fn summary_line(&self) -> String {
         format!(
             "harness_kpi tools_per_turn={} turns_with_tools={} total_tools={} \
@@ -142,6 +171,46 @@ impl HarnessKpi {
             self.tool_wall_ms,
         )
     }
+}
+
+/// Serializable KPI block for session observation (`harness/progress`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct HarnessKpiCounters {
+    pub tools_this_assistant_turn: usize,
+    pub assistant_turns_with_tools: usize,
+    pub total_tool_calls: usize,
+    pub recon_only_turns: usize,
+    pub serial_recon_turns: usize,
+    pub unique_read_keys: usize,
+    pub reread_keys: usize,
+    pub unique_path_reread_rate: f32,
+    pub time_to_first_edit_ms: Option<u64>,
+    pub verify_before_end: bool,
+    pub contributor_ms: u64,
+    pub checkpoint_ms: u64,
+    pub ttft_ms: Option<u64>,
+    pub tool_wall_ms: u64,
+}
+
+/// Progress-guard counters paired with KPI for one observation sample.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct HarnessProgressCounters {
+    pub explore_only_turns: usize,
+    pub recon_turns_total: usize,
+    pub serial_recon_turns: usize,
+    pub failed_turns: usize,
+    pub mutated_files: bool,
+    pub verified_after_mutation: bool,
+    pub force_allow_finish: bool,
+    pub plan_mode_turns: usize,
+    pub needs_verification_before_finish: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct HarnessProfilerSnapshot {
+    pub progress: HarnessProgressCounters,
+    pub kpi: HarnessKpiCounters,
+    pub verify_fail_streak: usize,
 }
 
 #[cfg(test)]

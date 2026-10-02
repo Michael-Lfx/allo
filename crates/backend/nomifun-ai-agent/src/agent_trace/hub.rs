@@ -14,6 +14,10 @@ use nomifun_api_types::{
     SessionObservationToolDto, SessionObservationTurnDto,
 };
 use nomifun_db::IClientPreferenceRepository;
+use nomi_agent::conversation_observation_session;
+use nomi_agent::observation::ObservationSession;
+use nomi_agent::SessionAuxiliaryObserver;
+use nomi_auxiliary::{AuxiliaryLlmObservation, AuxiliaryObservationContext};
 use nomi_agent_trace::{
     project_call_detail, project_turn_by_id, project_turns, strip_projected_turn_payloads,
     ExecutionStatus, Integrity, ObservationEvent, ObservationRecorder, ObservationScope,
@@ -384,6 +388,26 @@ impl AgentTraceHub {
 
     pub fn observation_recorder(&self) -> Arc<ObservationRecorder> {
         Arc::clone(&self.recorder)
+    }
+
+    /// Shared observation session for one conversation (main + auxiliary JSONL).
+    pub fn conversation_observation_session(&self, conversation_id: &str) -> Arc<ObservationSession> {
+        conversation_observation_session(Arc::clone(&self.recorder), conversation_id)
+    }
+
+    /// Observer bundle for session-end POI / resolution auxiliary LLM calls.
+    pub fn session_auxiliary_observation(
+        &self,
+        conversation_id: &str,
+    ) -> AuxiliaryLlmObservation {
+        let session = self.conversation_observation_session(conversation_id);
+        AuxiliaryLlmObservation {
+            observer: SessionAuxiliaryObserver::session_auxiliary(session),
+            context: AuxiliaryObservationContext {
+                conversation_id: Some(conversation_id.to_string()),
+                session_kind: Some("session_dialogue".to_string()),
+            },
+        }
     }
 
     /// Best-effort delete of one conversation's observation JSONL.

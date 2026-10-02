@@ -14,6 +14,7 @@ pub use hub::{
 };
 pub use prefs::{DEVELOPER_MODE_PREF_KEY, developer_mode_enabled};
 
+pub use nomi_agent::observation::ObservationSession;
 pub use nomi_agent_trace::{
     ObservationIds, ObservationRecorder, ProjectedTurn, classify_session_kind, is_session_dialogue,
 };

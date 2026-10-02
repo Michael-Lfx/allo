@@ -8,16 +8,19 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use nomi_agent_trace::{
-    capture_borrowed, omitted_binary_payload, redact_preview, request_prefix_fingerprint,
+    capture_borrowed, omitted_binary_payload, redact_capture, redact_preview,
+    request_prefix_fingerprint,
     ExecutionStatus, ObservationEvent,
     ObservationIds, ObservationRecorder, ObservationScope, RecorderError, EVENT_LLM_REQUEST,
     EVENT_LLM_RESPONSE, EVENT_OBSERVATION_GAP, EVENT_TOOL_EXECUTION_CANCELLED,
     EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
-    EVENT_TURN_END, EVENT_TURN_START, MAX_PREVIEW_CHARS, OMITTED_REASON_INPUT_SCHEMA,
+    EVENT_HARNESS_FINISH, EVENT_HARNESS_HARD_STOP, EVENT_HARNESS_NUDGE, EVENT_HARNESS_PROFILE,
+    EVENT_HARNESS_PROGRESS, EVENT_HARNESS_RESET, EVENT_TURN_END, EVENT_TURN_START,
+    MAX_PREVIEW_CHARS, OMITTED_REASON_INPUT_SCHEMA,
 };
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
-use nomi_types::message::{ContentBlock, Message, StopReason, TokenUsage};
+use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use nomi_types::tool::{ToolDef, ToolImage};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -70,6 +73,8 @@ pub struct ObservationSession {
     last_model_call_id: Mutex<Option<String>>,
     /// `tool_call_id` → the model call that issued the tool, captured at start.
     tool_parents: Mutex<HashMap<String, String>>,
+    /// Wall-clock start for tools that finish without an execution timing entry.
+    tool_started_at: Mutex<HashMap<String, u64>>,
     /// Last SessionWorkflow request chain, used to classify prefix-cache breaks.
     last_prefix: Mutex<Option<PrefixChain>>,
     /// End of the last phase (turn start, model response, tool round), so the
@@ -84,9 +89,17 @@ impl ObservationSession {
             ids: Mutex::new(ObservationIds::default()),
             last_model_call_id: Mutex::new(None),
             tool_parents: Mutex::new(HashMap::new()),
+            tool_started_at: Mutex::new(HashMap::new()),
             last_prefix: Mutex::new(None),
             phase_boundary: Mutex::new(None),
         })
+    }
+
+    fn wall_clock_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0)
     }
 
     fn mark_phase_boundary(&self) {
@@ -251,6 +264,11 @@ impl ObservationSession {
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(tool_call_id.to_owned(), model_call_id);
         }
+        let started_at_ms = Self::wall_clock_ms();
+        self.tool_started_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tool_call_id.to_owned(), started_at_ms);
         observe_with_model_call(
             self,
             EVENT_TOOL_EXECUTION_STARTED,
@@ -258,6 +276,7 @@ impl ObservationSession {
                 "tool_call_id": tool_call_id,
                 "name": name,
                 "arguments": arguments,
+                "started_at_ms": started_at_ms,
             }),
             parent,
         );
@@ -288,8 +307,29 @@ impl ObservationSession {
             "is_error": is_error,
             "result": result,
         });
+        let mut timing = timing;
+        {
+            let mut starts = self
+                .tool_started_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if timing.is_some() {
+                starts.remove(tool_call_id);
+            } else if let Some(started_at_ms) = starts.remove(tool_call_id) {
+                let completed_at_ms = Self::wall_clock_ms();
+                let duration_ms = completed_at_ms.saturating_sub(started_at_ms);
+                timing = Some(ToolCallTiming {
+                    duration_ms,
+                    duration_us: duration_ms.saturating_mul(1000),
+                    started_at_ms,
+                    completed_at_ms,
+                });
+            }
+        }
         if let Some(timing) = timing {
             payload["duration_ms"] = json!(timing.duration_ms);
+            payload["duration_us"] = json!(timing.duration_us);
+            payload["started_at_ms"] = json!(timing.started_at_ms);
             payload["completed_at_ms"] = json!(timing.completed_at_ms);
         }
         if let Some(round_wall_ms) = round_wall_ms {
@@ -306,6 +346,10 @@ impl ObservationSession {
     }
 
     pub fn emit_tool_cancelled(&self, tool_call_id: &str, name: &str) {
+        self.tool_started_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(tool_call_id);
         let parent = self
             .tool_parents
             .lock()
@@ -322,6 +366,101 @@ impl ObservationSession {
         );
         self.mark_phase_boundary();
         self.emit_tool_telemetry(tool_call_id, name, "cancelled", None);
+    }
+
+    pub fn emit_harness_profile(
+        &self,
+        profile: &str,
+        active: bool,
+        config: Option<Value>,
+    ) {
+        let mut payload = json!({
+            "profile": profile,
+            "active": active,
+        });
+        if let Some(config) = config {
+            payload["config"] = config;
+        }
+        let _ = self.emit(EVENT_HARNESS_PROFILE, payload);
+    }
+
+    pub fn emit_harness_reset(&self, profile: &str, reason: &str) {
+        let _ = self.emit(
+            EVENT_HARNESS_RESET,
+            json!({
+                "profile": profile,
+                "reason": reason,
+            }),
+        );
+    }
+
+    pub fn emit_harness_progress(
+        &self,
+        profile: &str,
+        progress_action: &str,
+        recon_only: bool,
+        parent_tool_count: usize,
+        counters: Value,
+    ) {
+        let _ = self.emit(
+            EVENT_HARNESS_PROGRESS,
+            json!({
+                "profile": profile,
+                "progress_action": progress_action,
+                "recon_only": recon_only,
+                "parent_tool_count": parent_tool_count,
+                "counters": counters,
+            }),
+        );
+    }
+
+    pub fn emit_harness_nudge(
+        &self,
+        profile: &str,
+        source: &str,
+        text: &str,
+        hard_stop: bool,
+    ) {
+        let preview = redact_preview(text);
+        let _ = self.emit(
+            EVENT_HARNESS_NUDGE,
+            json!({
+                "profile": profile,
+                "source": source,
+                "text_preview": preview,
+                "hard_stop": hard_stop,
+            }),
+        );
+    }
+
+    pub fn emit_harness_hard_stop(&self, profile: &str, reason: &str, counters: Value) {
+        let preview = redact_preview(reason);
+        let _ = self.emit(
+            EVENT_HARNESS_HARD_STOP,
+            json!({
+                "profile": profile,
+                "reason_preview": preview,
+                "counters": counters,
+            }),
+        );
+    }
+
+    pub fn emit_harness_finish(
+        &self,
+        profile: &str,
+        decision: &str,
+        counters: Value,
+        nudge_preview: Option<&str>,
+    ) {
+        let mut payload = json!({
+            "profile": profile,
+            "decision": decision,
+            "counters": counters,
+        });
+        if let Some(text) = nudge_preview {
+            payload["nudge_preview"] = json!(redact_preview(text));
+        }
+        let _ = self.emit(EVENT_HARNESS_FINISH, payload);
     }
 
     fn emit_tool_telemetry(
@@ -351,6 +490,7 @@ impl ObservationSession {
         }
         if let Some(timing) = timing {
             properties.insert("duration_ms".into(), json!(timing.duration_ms));
+            properties.insert("duration_us".into(), json!(timing.duration_us));
         }
         let occurred_at = timing
             .map(|timing| rfc3339_millis(timing.completed_at_ms))
@@ -437,7 +577,7 @@ pub async fn stream_llm(
         "call_kind": call_kind,
         "observation_scope": scope,
         "fidelity": "canonical",
-        "capture": ["truncated", "redacted"],
+        "capture": ["redacted"],
         "request": llm_request_to_value(request),
         "prefix_fingerprint": prefix_fingerprint,
         "pre_provider_ms": pre_provider_ms,
@@ -494,11 +634,7 @@ fn wrap_stream(
     tokio::spawn(async move {
         let mut ttft_ms: Option<u64> = None;
         let mut text = String::new();
-        let mut text_chars = 0usize;
-        let mut text_truncated = false;
         let mut thinking = String::new();
-        let mut thinking_chars = 0usize;
-        let mut thinking_truncated = false;
         let mut tool_use: Vec<Value> = Vec::new();
         let mut saw_terminal = false;
 
@@ -516,20 +652,10 @@ fn wrap_stream(
             }
             match &event {
                 LlmEvent::TextDelta(delta) => {
-                    push_bounded(
-                        &mut text,
-                        &mut text_chars,
-                        &mut text_truncated,
-                        delta,
-                    );
+                    append_stream_capture(&mut text, delta);
                 }
                 LlmEvent::ThinkingDelta(delta) => {
-                    push_bounded(
-                        &mut thinking,
-                        &mut thinking_chars,
-                        &mut thinking_truncated,
-                        delta,
-                    );
+                    append_stream_capture(&mut thinking, delta);
                 }
                 LlmEvent::ToolUse {
                     id,
@@ -590,124 +716,111 @@ fn wrap_stream(
     out_rx
 }
 
-/// Append as much of `delta` as the preview budget allows, counting characters once.
-///
-/// The previous version pushed one `char` at a time and re-checked the budget per
-/// character: a branch plus a `String::push` for every character of every stream
-/// delta of every turn — the hottest per-delta path in the engine. The accepted
-/// prefix is now located with one walk and copied with one `push_str`, and the
-/// marker is emitted exactly once, when the budget is first exceeded.
-///
-/// The cut point comes from `char_indices`, so a multi-byte character is never
-/// split.
-fn push_bounded(buf: &mut String, chars: &mut usize, truncated: &mut bool, delta: &str) {
-    if *truncated {
-        return;
-    }
+fn append_stream_capture(buf: &mut String, delta: &str) {
     let started = Instant::now();
-    let remaining = MAX_PREVIEW_CHARS.saturating_sub(*chars);
-    if remaining == 0 {
-        buf.push_str("…(truncated)");
-        *truncated = true;
-    } else if let Some((offset, _)) = delta.char_indices().nth(remaining) {
-        // `remaining` characters fit; the tail is dropped and announced once.
-        buf.push_str(&delta[..offset]);
-        *chars += remaining;
-        buf.push_str("…(truncated)");
-        *truncated = true;
-    } else {
-        // Everything fits: one copy and one count.
-        buf.push_str(delta);
-        *chars += delta.chars().count();
-    }
+    buf.push_str(delta);
     crate::profiler::record(
         crate::profiler::HotPath::ObservationAccumulate,
         started.elapsed(),
     );
 }
 
-#[cfg(test)]
-mod push_bounded_tests {
-    use super::*;
-
-    /// Everything that fits is kept, and nothing is announced as dropped.
-    #[test]
-    fn a_delta_that_fits_is_appended_whole() {
-        let mut buf = String::new();
-        let mut chars = 0usize;
-        let mut truncated = false;
-        let delta = "x".repeat(MAX_PREVIEW_CHARS);
-
-        push_bounded(&mut buf, &mut chars, &mut truncated, &delta);
-
-        assert_eq!(buf, delta);
-        assert_eq!(chars, MAX_PREVIEW_CHARS);
-        assert!(!truncated, "a delta that exactly fills the budget is complete");
+/// Build a minimal canonical request for side-model / auxiliary chat completions.
+pub fn messages_to_llm_request(model: &str, messages: &[Message]) -> LlmRequest {
+    let mut system = String::new();
+    let mut out = Vec::new();
+    for message in messages {
+        if message.role == Role::System && system.is_empty() {
+            for block in &message.content {
+                if let ContentBlock::Text { text } = block {
+                    system = text.clone();
+                }
+            }
+            continue;
+        }
+        out.push(message.clone());
     }
-
-    /// Only the budgeted prefix survives, the marker appears once, and later
-    /// deltas add nothing.
-    #[test]
-    fn the_prefix_is_kept_and_the_marker_is_emitted_once() {
-        let mut buf = String::new();
-        let mut chars = 0usize;
-        let mut truncated = false;
-        let delta = "y".repeat(MAX_PREVIEW_CHARS + 5);
-
-        push_bounded(&mut buf, &mut chars, &mut truncated, &delta);
-        push_bounded(&mut buf, &mut chars, &mut truncated, "late");
-
-        assert_eq!(chars, MAX_PREVIEW_CHARS);
-        assert!(truncated);
-        assert_eq!(
-            buf.matches("(truncated)").count(),
-            1,
-            "the marker must not repeat: {buf}"
-        );
-        let kept = buf.trim_end_matches("…(truncated)");
-        assert_eq!(kept, "y".repeat(MAX_PREVIEW_CHARS));
+    LlmRequest {
+        model: model.to_string(),
+        system,
+        messages: out,
+        tools: Vec::new(),
+        max_tokens: None,
+        thinking: None,
+        reasoning_effort: None,
+        temperature: None,
+        retain_provider_round: false,
     }
+}
 
-    /// The cut lands on a character boundary, so a wide character is never split
-    /// and the accumulator counts characters rather than bytes.
-    #[test]
-    fn multi_byte_characters_are_never_split() {
-        let mut buf = String::new();
-        let mut chars = 0usize;
-        let mut truncated = false;
-        let delta = "中".repeat(MAX_PREVIEW_CHARS + 3);
+/// Record `llm/request` for a non-streaming chat completion.
+pub fn begin_chat_llm(
+    session: &ObservationSession,
+    call_kind: &str,
+    scope: ObservationScope,
+    request: &LlmRequest,
+) -> String {
+    let model_call_id = session.begin_model_call();
+    let prefix_fingerprint = request_prefix_fingerprint(
+        &request.system,
+        &request.tools.iter().map(ToolFingerprint::from).collect::<Vec<_>>(),
+        &request.messages,
+    );
+    let pre_provider_ms = session.pre_provider_ms();
+    observe_with_model_call(
+        session,
+        EVENT_LLM_REQUEST,
+        json!({
+            "call_kind": call_kind,
+            "observation_scope": scope,
+            "fidelity": "canonical",
+            "capture": ["redacted"],
+            "request": llm_request_to_value(request),
+            "prefix_fingerprint": prefix_fingerprint,
+            "pre_provider_ms": pre_provider_ms,
+            "observation_type": "generation",
+        }),
+        Some(model_call_id.clone()),
+    );
+    session.emit_llm_request_telemetry(
+        &model_call_id,
+        call_kind,
+        scope,
+        request,
+        &prefix_fingerprint,
+    );
+    model_call_id
+}
 
-        push_bounded(&mut buf, &mut chars, &mut truncated, &delta);
-
-        assert!(truncated);
-        assert_eq!(buf.chars().count(), MAX_PREVIEW_CHARS + "…(truncated)".chars().count());
-        assert_eq!(chars, MAX_PREVIEW_CHARS);
-        assert!(buf.starts_with(&"中".repeat(MAX_PREVIEW_CHARS)));
-    }
-
-    /// Character accounting accumulates across deltas, and the budget is checked
-    /// against the total rather than the last delta.
-    #[test]
-    fn the_budget_is_measured_across_deltas() {
-        let mut buf = String::new();
-        let mut chars = 0usize;
-        let mut truncated = false;
-
-        push_bounded(&mut buf, &mut chars, &mut truncated, &"a".repeat(3));
-        push_bounded(
-            &mut buf,
-            &mut chars,
-            &mut truncated,
-            &"b".repeat(MAX_PREVIEW_CHARS - 3),
-        );
-        assert_eq!(chars, MAX_PREVIEW_CHARS);
-        assert!(!truncated, "the second delta fills the budget exactly");
-
-        push_bounded(&mut buf, &mut chars, &mut truncated, "overflow");
-
-        assert!(truncated);
-        assert_eq!(chars, MAX_PREVIEW_CHARS);
-    }
+/// Record `llm/response` for a non-streaming chat completion.
+pub fn finish_chat_llm(
+    session: &ObservationSession,
+    model_call_id: &str,
+    call_kind: &str,
+    scope: ObservationScope,
+    text: &str,
+    elapsed_ms: u64,
+    error: Option<&str>,
+) {
+    observe_with_model_call(
+        session,
+        EVENT_LLM_RESPONSE,
+        json!({
+            "call_kind": call_kind,
+            "observation_scope": scope,
+            "fidelity": "canonical",
+            "text": redact_capture(text),
+            "thinking": "",
+            "tool_use": [],
+            "stop_reason": if error.is_some() { Value::Null } else { json!("end_turn") },
+            "usage": Value::Null,
+            "error": error,
+            "elapsed_ms": elapsed_ms,
+            "observation_type": "generation",
+        }),
+        Some(model_call_id.to_string()),
+    );
+    session.mark_phase_boundary();
 }
 
 fn emit_response(
@@ -733,8 +846,8 @@ fn emit_response(
             "call_kind": call_kind,
             "observation_scope": scope,
             "fidelity": "canonical",
-            "text": text,
-            "thinking": thinking,
+            "text": redact_capture(text),
+            "thinking": redact_capture(thinking),
             "tool_use": tool_use,
             "stop_reason": stop_reason,
             "usage": usage,
@@ -887,7 +1000,7 @@ fn classify_prefix_break(prev: Option<&PrefixChain>, next: &PrefixChain) -> (&'s
 pub(crate) fn llm_request_to_value(request: &LlmRequest) -> Value {
     json!({
         "model": request.model,
-        "system": redact_preview(&request.system),
+        "system": redact_capture(&request.system),
         "messages": request.messages.iter().map(observation_message).collect::<Vec<_>>(),
         "tools": request.tools.iter().map(observation_tool).collect::<Vec<_>>(),
         "max_tokens": request.max_tokens,
@@ -926,7 +1039,7 @@ impl<'a> From<&'a ToolDef> for ToolFingerprint<'a> {
 fn observation_tool(tool: &ToolDef) -> Value {
     json!({
         "name": tool.name,
-        "description": redact_preview(&tool.description),
+        "description": redact_capture(&tool.description),
         "input_schema": json!({
             "omitted_reason": OMITTED_REASON_INPUT_SCHEMA,
         }),
@@ -957,7 +1070,7 @@ fn observation_content_block(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text } => json!({
             "type": "text",
-            "text": redact_preview(text),
+            "text": redact_capture(text),
         }),
         ContentBlock::ToolUse {
             id,
@@ -985,7 +1098,7 @@ fn observation_content_block(block: &ContentBlock) -> Value {
             let mut object = json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
-                "content": redact_preview(content),
+                "content": redact_capture(content),
                 "is_error": is_error,
             });
             if !images.is_empty() {
@@ -1001,10 +1114,10 @@ fn observation_content_block(block: &ContentBlock) -> Value {
         } => {
             let mut object = json!({
                 "type": "thinking",
-                "thinking": redact_preview(thinking),
+                "thinking": redact_capture(thinking),
             });
             if let Some(signature) = signature {
-                object["signature"] = Value::String(redact_preview(signature));
+                object["signature"] = Value::String(redact_capture(signature));
             }
             object
         }
@@ -1124,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn llm_request_to_value_truncates_system_and_tool_result_without_mutating_live() {
+    fn llm_request_to_value_preserves_full_system_and_tool_result_without_mutating_live() {
         let long_system = "S".repeat(MAX_PREVIEW_CHARS + 50);
         let long_result = "R".repeat(MAX_PREVIEW_CHARS + 80);
         let request = sample_request(
@@ -1150,14 +1263,15 @@ mod tests {
         );
         let value = llm_request_to_value(&request);
         let system = value["system"].as_str().expect("system");
-        assert!(system.contains("…(truncated)"));
-        assert!(system.chars().count() < request.system.chars().count());
+        assert!(!system.contains("…(truncated)"));
+        assert_eq!(system.chars().count(), request.system.chars().count());
         assert_eq!(request.system, long_system);
 
         let content = value["messages"][1]["content"][0]["content"]
             .as_str()
             .expect("tool result");
-        assert!(content.contains("…(truncated)"));
+        assert!(!content.contains("…(truncated)"));
+        assert_eq!(content.chars().count(), long_result.chars().count());
         match &request.messages[1].content[0] {
             ContentBlock::ToolResult { content, .. } => {
                 assert_eq!(content.as_str(), long_result);
@@ -1308,8 +1422,8 @@ mod tests {
             .expect("llm/request")
             .payload;
         assert!(
-            !payload["request"]["messages"].is_array(),
-            "fixture must exceed the event size budget"
+            payload["request"]["messages"].is_array(),
+            "full request messages should be retained in observation"
         );
         let expected = request_prefix_fingerprint(
             &request.system,
@@ -1343,7 +1457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrap_stream_bounds_observation_text_without_clipping_live_events() {
+    async fn wrap_stream_records_full_observation_text_without_clipping_live_events() {
         let dir = tempfile::tempdir().unwrap();
         let recorder = ObservationRecorder::isolated(dir.path());
         recorder.set_enabled(true);
@@ -1392,8 +1506,8 @@ mod tests {
             .find(|event| event.event_type == EVENT_LLM_RESPONSE)
             .expect("llm/response");
         let text = response.payload["text"].as_str().expect("text");
-        assert!(text.contains("…(truncated)"));
-        assert!(text.chars().count() < live_chars);
+        assert!(!text.contains("…(truncated)"));
+        assert_eq!(text.chars().count(), live_chars);
     }
 
     struct HandshakeDoneProvider {
@@ -1528,6 +1642,8 @@ mod tests {
             "pong",
             Some(ToolCallTiming {
                 duration_ms: 1234,
+                duration_us: 1_234_000,
+                started_at_ms: 1_790_000_000_000 - 1234,
                 completed_at_ms: 1_790_000_000_000,
             }),
             Some(4321),
@@ -1543,6 +1659,7 @@ mod tests {
             .find(|event| event.event_type == EVENT_TOOL_EXECUTION_COMPLETED)
             .expect("tool completed");
         assert_eq!(completed.payload["duration_ms"], 1234);
+        assert_eq!(completed.payload["duration_us"], 1_234_000);
         assert_eq!(completed.payload["completed_at_ms"], 1_790_000_000_000u64);
         assert_eq!(completed.payload["round_wall_ms"], 4321);
         assert_eq!(
@@ -1894,5 +2011,45 @@ mod tests {
         assert!(clipped.len() <= TELEMETRY_MAX_PROP);
         assert!(raw.is_char_boundary(clipped.len()) || clipped.is_empty());
         assert_eq!(clipped, &raw[..clipped.len()]);
+    }
+
+    #[test]
+    fn tool_finished_without_timing_uses_started_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = ObservationSession::new(recorder.clone());
+        session.bind_ids(ObservationIds {
+            conversation_id: Some("c-timing".into()),
+            root_turn_id: Some("t-timing".into()),
+            ..Default::default()
+        });
+        session.emit_tool_started("call-read", "Read", &json!({ "file_path": "a.rs" }));
+        session.emit_tool_finished("call-read", "Read", false, "ok", None, None);
+        let events = recorder.read_events(Some("c-timing")).unwrap();
+        let completed = events
+            .iter()
+            .find(|e| e.event_type == EVENT_TOOL_EXECUTION_COMPLETED)
+            .expect("completed");
+        assert!(completed.payload.get("started_at_ms").is_some());
+        assert!(completed.payload.get("duration_ms").is_some());
+        assert!(completed.payload.get("duration_us").is_some());
+    }
+
+    #[test]
+    fn harness_profile_event_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = ObservationSession::new(recorder.clone());
+        session.bind_ids(ObservationIds {
+            conversation_id: Some("c-harness".into()),
+            ..Default::default()
+        });
+        session.emit_harness_profile("office", false, None);
+        let events = recorder.read_events(Some("c-harness")).unwrap();
+        assert_eq!(events[0].event_type, EVENT_HARNESS_PROFILE);
+        assert_eq!(events[0].payload["profile"], "office");
+        assert_eq!(events[0].payload["active"], false);
     }
 }

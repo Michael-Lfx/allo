@@ -8,7 +8,9 @@ mod error;
 mod task;
 
 pub use client::{
-    AuxiliaryClient, AuxiliaryClientBuilder, AuxiliaryRequest, AuxiliaryResponse, ChatLlmProvider,
+    AuxiliaryClient, AuxiliaryClientBuilder, AuxiliaryLlmObservation, AuxiliaryLlmObserver,
+    AuxiliaryObservationContext,
+    AuxiliaryRequest, AuxiliaryResponse, ChatLlmProvider,
     text_message,
 };
 pub use error::{AuxiliaryError, AuxiliaryResult};

@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use nomi_auxiliary::{AuxiliaryClient, AuxiliaryRequest, AuxiliaryTask, text_message};
+use nomi_auxiliary::{
+    AuxiliaryClient, AuxiliaryLlmObservation, AuxiliaryRequest, AuxiliaryTask, text_message,
+};
 use nomi_types::message::Role;
 use tracing::debug;
 
@@ -50,6 +52,7 @@ pub async fn extract_signals_from_transcript_llm(
     auxiliary: &AuxiliaryClient,
     user_transcript: &str,
     existing_topic_labels: &[String],
+    observation: Option<&AuxiliaryLlmObservation>,
 ) -> Vec<InterestSignal> {
     let trimmed = user_transcript.trim();
     if trimmed.is_empty() {
@@ -80,7 +83,7 @@ pub async fn extract_signals_from_transcript_llm(
         "Extract durable user interest topics from these user messages only.{existing_block}\n\n{body}"
     );
 
-    let request = AuxiliaryRequest::new(
+    let mut request = AuxiliaryRequest::new(
         AuxiliaryTask::Custom(INTEREST_LLM_TASK.to_string()),
         vec![
             text_message(Role::System, interest_llm_system_prompt()),
@@ -90,6 +93,10 @@ pub async fn extract_signals_from_transcript_llm(
     .with_temperature(0.15)
     .with_max_tokens(1200)
     .with_timeout(Duration::from_secs(90));
+    request.observation_call_kind = Some("poi_extract".to_string());
+    if let Some(observe) = observation {
+        request = request.with_observation(observe.observer.clone(), observe.context.clone());
+    }
 
     match auxiliary.call(request).await {
         Ok(resp) => {
@@ -133,6 +140,7 @@ pub async fn generate_starters_for_topic_llm(
     auxiliary: &AuxiliaryClient,
     topic: &InterestTopic,
     count: usize,
+    observation: Option<&AuxiliaryLlmObservation>,
 ) -> Vec<String> {
     let count = count.clamp(2, 6);
     let tags = if topic.tags.is_empty() {
@@ -147,7 +155,7 @@ pub async fn generate_starters_for_topic_llm(
         tags
     );
 
-    let request = AuxiliaryRequest::new(
+    let mut request = AuxiliaryRequest::new(
         AuxiliaryTask::Custom(INTEREST_STARTER_LLM_TASK.to_string()),
         vec![
             text_message(Role::System, starter_llm_system_prompt(count)),
@@ -157,6 +165,10 @@ pub async fn generate_starters_for_topic_llm(
     .with_temperature(0.55)
     .with_max_tokens(500)
     .with_timeout(Duration::from_secs(60));
+    request.observation_call_kind = Some("poi_starter".to_string());
+    if let Some(observe) = observation {
+        request = request.with_observation(observe.observer.clone(), observe.context.clone());
+    }
 
     match auxiliary.call(request).await {
         Ok(resp) => {

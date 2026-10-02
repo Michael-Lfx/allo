@@ -20,7 +20,12 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
     format!("{truncated}…(truncated)")
 }
 
-/// Redact secrets then truncate to [`MAX_PREVIEW_CHARS`].
+/// Redact secrets without truncating (observation JSONL write path).
+pub fn redact_capture(s: &str) -> String {
+    redact_secrets(s).into_owned()
+}
+
+/// Redact secrets then truncate to [`MAX_PREVIEW_CHARS`] (UI / timeline previews).
 pub fn redact_preview(s: &str) -> String {
     let redacted = redact_secrets(s);
     truncate_chars(redacted.as_ref(), MAX_PREVIEW_CHARS)
@@ -202,6 +207,14 @@ mod tests {
         assert_eq!(out["n"], json!(42));
         assert_eq!(out["arr"][1], json!(1));
         assert_eq!(out["arr"][2], json!(true));
+    }
+
+    #[test]
+    fn redact_capture_preserves_long_strings() {
+        let long = "x".repeat(MAX_PREVIEW_CHARS + 100);
+        let out = redact_capture(&long);
+        assert_eq!(out.chars().count(), long.chars().count());
+        assert!(!out.contains("…(truncated)"));
     }
 
     #[test]

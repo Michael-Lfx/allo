@@ -915,6 +915,13 @@ pub fn build_conversation_state(
         services.encryption_key,
         services.data_dir.clone(),
     ));
+    let agent_trace_hub = Arc::new(nomifun_ai_agent::AgentTraceHub::new(
+        services.data_dir.clone(),
+        Some(Arc::new(SqliteClientPreferenceRepository::new(
+            services.database.pool().clone(),
+        )) as Arc<dyn nomifun_db::IClientPreferenceRepository>),
+    ));
+    conversation_service.with_agent_trace_hub(agent_trace_hub.clone());
     let conv_for_loader = conversation_service.clone();
     let message_loader: nomifun_ai_agent::capability::MessageLoader =
         Arc::new(move |session_id: String| {
@@ -927,16 +934,10 @@ pub fn build_conversation_state(
             services.insights_service.clone(),
             Some(auxiliary_factory),
             message_loader,
+            Some(agent_trace_hub.clone()),
         ),
     );
     conversation_service.with_session_lifecycle(session_lifecycle.clone());
-    let agent_trace_hub = Arc::new(nomifun_ai_agent::AgentTraceHub::new(
-        services.data_dir.clone(),
-        Some(Arc::new(SqliteClientPreferenceRepository::new(
-            services.database.pool().clone(),
-        )) as Arc<dyn nomifun_db::IClientPreferenceRepository>),
-    ));
-    conversation_service.with_agent_trace_hub(agent_trace_hub.clone());
     ConversationRouterState {
         service: conversation_service,
         runtime_registry: services.agent_runtime_registry.clone(),

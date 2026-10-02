@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nomi_config::{InsightsContributionConfig, InterestConfig};
-use nomi_auxiliary::AuxiliaryClient;
+use nomi_auxiliary::{AuxiliaryClient, AuxiliaryLlmObservation};
 use nomi_poi::{
     InterestSignal, InterestStore, apply_signal_batch, collect_starter_topic_ids,
     extract_signals_from_messages, extract_signals_from_transcript_llm,
@@ -30,6 +30,7 @@ pub fn spawn_session_end_pipeline(
     messages: Vec<serde_json::Value>,
     buffered: Vec<InterestSignal>,
     auxiliary: Option<Arc<AuxiliaryClient>>,
+    observation: Option<AuxiliaryLlmObservation>,
 ) {
     if !interest_cfg.enabled && !insights_cfg.enabled {
         return;
@@ -50,6 +51,7 @@ pub fn spawn_session_end_pipeline(
                 &messages,
                 buffered,
                 auxiliary.as_ref(),
+                observation.as_ref(),
             )
             .await;
         }
@@ -91,6 +93,7 @@ pub fn spawn_session_end_pipeline(
             &session_id,
             &messages,
             auxiliary.as_ref(),
+            observation.as_ref(),
         )
         .await;
         if packages.is_empty() {
@@ -116,6 +119,7 @@ async fn run_poi_ingest(
     messages: &[serde_json::Value],
     buffered: Vec<InterestSignal>,
     auxiliary: Option<&Arc<AuxiliaryClient>>,
+    observation: Option<&AuxiliaryLlmObservation>,
 ) {
     let db_path = data_dir.join("interest.db");
     let Ok(store) = InterestStore::open(&db_path, config.clone()) else {
@@ -135,8 +139,13 @@ async fn run_poi_ingest(
             } else {
                 llm_attempted = true;
                 let existing_labels = store.top_labels_for_llm(5).unwrap_or_default();
-                let llm_signals =
-                    extract_signals_from_transcript_llm(aux, &transcript, &existing_labels).await;
+                let llm_signals = extract_signals_from_transcript_llm(
+                    aux,
+                    &transcript,
+                    &existing_labels,
+                    observation,
+                )
+                .await;
                 let llm_n = llm_signals.len();
                 all_signals.extend(llm_signals);
                 info!(
@@ -225,7 +234,7 @@ async fn run_poi_ingest(
     // Reuse the ingest connection and await inline — nested spawn + reopen was
     // racing / silently skipping after upstream merges on Windows.
     let store = std::sync::Arc::new(std::sync::Mutex::new(store));
-    generate_starters_with_store(store, config, &starter_ids, aux).await;
+    generate_starters_with_store(store, config, &starter_ids, aux, observation).await;
 }
 
 fn skip_work_package(data_dir: &Path, reason: &str, detail: &str) {
@@ -240,6 +249,7 @@ async fn build_work_packages(
     session_id: &str,
     messages: &[serde_json::Value],
     auxiliary: Option<&Arc<AuxiliaryClient>>,
+    observation: Option<&AuxiliaryLlmObservation>,
 ) -> Vec<WorkPackageBuildInput> {
     let skill_summary = drain_session_skills(data_dir, session_id);
     info!(
@@ -286,7 +296,8 @@ async fn build_work_packages(
         return Vec::new();
     };
 
-    let resolution = resolve_session_verdict(insights_cfg, auxiliary, messages, &signals).await;
+    let resolution =
+        resolve_session_verdict(insights_cfg, auxiliary, messages, &signals, observation).await;
     let domain_poi = candidate_to_poi(&candidate);
     info!(
         session_id,

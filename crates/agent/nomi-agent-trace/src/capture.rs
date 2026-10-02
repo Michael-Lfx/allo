@@ -5,13 +5,12 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::redact::{
-    bulky_placeholder, event_size_limit_placeholder, is_sensitive_key, redact_preview,
-    should_omit_bulky, OMITTED_REASON_EVENT_SIZE_LIMIT,
+    event_size_limit_placeholder, is_sensitive_key, redact_capture, OMITTED_REASON_EVENT_SIZE_LIMIT,
 };
 
 pub const OMITTED_REASON_BINARY_PAYLOAD: &str = "binary_payload";
-/// Hard cap on one captured event after string/media rewrite. 128 KiB × 128 ≈ 16 MiB.
-pub const MAX_EVENT_BYTES: usize = 128 * 1024;
+/// Hard cap on one captured event after string/media rewrite (full LLM payloads).
+pub const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Known large fields omitted first when the captured envelope exceeds [`MAX_EVENT_BYTES`].
 const SIZE_OMIT_PATHS: &[&[&str]] = &[
@@ -29,18 +28,17 @@ const SIZE_OMIT_PATHS: &[&[&str]] = &[
 ];
 
 /// Walk a canonical request (or any JSON payload): rewrite media to metadata,
-/// then redact secrets and truncate strings.
+/// then redact secrets (full string bodies).
 pub fn capture_canonical_request(value: Value) -> Value {
     capture_borrowed(&value)
 }
 
 /// Same capture rules as [`capture_canonical_request`], without taking ownership
-/// of the source tree. Large strings are truncated into a new tree; they are
-/// not cloned first.
+/// of the source tree.
 pub fn capture_borrowed(value: &Value) -> Value {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
-        Value::String(s) => Value::String(redact_preview(s)),
+        Value::String(s) => Value::String(redact_capture(s)),
         Value::Array(items) => Value::Array(items.iter().map(capture_borrowed).collect()),
         Value::Object(map) => capture_borrowed_object(map),
     }
@@ -214,10 +212,6 @@ fn capture_borrowed_object(map: &Map<String, Value>) -> Value {
             out.insert(key.clone(), value.clone());
             continue;
         }
-        if should_omit_bulky(key, value) {
-            out.insert(key.clone(), bulky_placeholder(value));
-            continue;
-        }
         let captured = if is_sensitive_key(key) {
             match value {
                 Value::String(_) => Value::String("[REDACTED_SECRET]".to_owned()),
@@ -340,15 +334,16 @@ mod tests {
     }
 
     #[test]
-    fn long_strings_are_truncated() {
+    fn long_strings_are_preserved_in_capture() {
         let long = "x".repeat(MAX_PREVIEW_CHARS + 40);
         let out = capture_canonical_request(json!({ "note": long }));
         let note = out["note"].as_str().unwrap();
-        assert!(note.contains("…(truncated)"));
+        assert_eq!(note.chars().count(), long.chars().count());
+        assert!(!note.contains("…(truncated)"));
     }
 
     #[test]
-    fn capture_borrowed_truncates_and_omits_bulky_without_mutating_source() {
+    fn capture_borrowed_preserves_bulky_fields_without_mutating_source() {
         let long = "x".repeat(MAX_PREVIEW_CHARS + 40);
         let bulky = "y".repeat(10_000);
         let value = json!({
@@ -357,16 +352,10 @@ mod tests {
             "path": "a.py"
         });
         let out = capture_borrowed(&value);
-        let note = out["note"].as_str().unwrap();
-        assert!(note.contains("…(truncated)"));
-        assert_eq!(out["content"], "[10000 omitted]");
+        assert_eq!(out["note"].as_str().unwrap().chars().count(), long.chars().count());
+        assert_eq!(out["content"].as_str().unwrap(), bulky);
         assert_eq!(out["path"], "a.py");
-        assert_eq!(
-            value["note"].as_str().unwrap().chars().count(),
-            MAX_PREVIEW_CHARS + 40
-        );
-        assert_eq!(value["content"].as_str().unwrap().len(), 10_000);
-        assert!(!out.to_string().contains(&"y".repeat(32)));
+        assert_eq!(value["content"].as_str().unwrap(), bulky);
     }
 
     fn tool_schema(description_chars: usize, property_count: usize) -> Value {
@@ -419,8 +408,8 @@ mod tests {
             max > 64 * 1024,
             "coding-agent fixture P95/max must exceed 64 KiB so the default stays 128 KiB; p50={p50} max={max} sizes={sizes:?}"
         );
-        assert_eq!(MAX_EVENT_BYTES, 128 * 1024);
         assert!(p50 < MAX_EVENT_BYTES);
+        assert!(max < MAX_EVENT_BYTES);
     }
 
     #[test]

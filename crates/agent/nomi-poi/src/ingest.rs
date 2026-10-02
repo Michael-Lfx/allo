@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use nomi_config::InterestConfig;
-use nomi_auxiliary::AuxiliaryClient;
+use nomi_auxiliary::{AuxiliaryClient, AuxiliaryLlmObservation};
 use serde_json::Value;
 use tracing::info;
 
@@ -59,6 +59,7 @@ pub fn spawn_session_end_ingest(
     messages: Vec<Value>,
     buffered: Vec<InterestSignal>,
     auxiliary: Option<Arc<AuxiliaryClient>>,
+    observation: Option<AuxiliaryLlmObservation>,
 ) {
     if !config.enabled {
         return;
@@ -78,7 +79,13 @@ pub fn spawn_session_end_ingest(
                     .and_then(|g| g.top_labels_for_llm(5).ok())
                     .unwrap_or_default();
                 all_signals.extend(
-                    extract_signals_from_transcript_llm(aux, &transcript, &existing_labels).await,
+                    extract_signals_from_transcript_llm(
+                        aux,
+                        &transcript,
+                        &existing_labels,
+                        observation.as_ref(),
+                    )
+                    .await,
                 );
             } else {
                 tracing::debug!(
@@ -133,7 +140,8 @@ pub fn spawn_session_end_ingest(
             return;
         };
         // Await in this task (reuse the same store) — avoids nested spawn + reopen races.
-        generate_starters_with_store(store, &config, &starter_ids, &aux).await;
+        generate_starters_with_store(store, &config, &starter_ids, &aux, observation.as_ref())
+            .await;
     });
 }
 

@@ -19,6 +19,12 @@ pub const EVENT_OBSERVATION_GAP: &str = "observation/gap";
 pub const EVENT_TURN_START: &str = "turn/start";
 pub const EVENT_TURN_END: &str = "turn/end";
 pub const EVENT_HORIZON_DECISION: &str = "horizon/decision";
+pub const EVENT_HARNESS_PROFILE: &str = "harness/profile";
+pub const EVENT_HARNESS_RESET: &str = "harness/reset";
+pub const EVENT_HARNESS_PROGRESS: &str = "harness/progress";
+pub const EVENT_HARNESS_NUDGE: &str = "harness/nudge";
+pub const EVENT_HARNESS_HARD_STOP: &str = "harness/hard_stop";
+pub const EVENT_HARNESS_FINISH: &str = "harness/finish";
 
 /// Fallback `event_seq` boundary when no conversation / execution / turn is bound.
 pub const PROCESS_BOUNDARY_ID: &str = "process";
@@ -212,7 +218,7 @@ mod tests {
                     "model_call_id": "mc1"
                 },
                 "fidelity": "canonical",
-                "capture": ["truncated", "redacted"],
+                "capture": ["redacted"],
                 "request": { "model": "test", "system": "hi" }
             }),
         )

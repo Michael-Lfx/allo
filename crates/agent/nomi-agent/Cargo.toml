@@ -28,6 +28,7 @@ nomi-memory.workspace    = true
 nomi-compact.workspace   = true
 nomi-redact.workspace    = true
 nomi-agent-trace.workspace = true
+nomi-auxiliary.workspace = true
 flowy-web.workspace      = true
 nomi-process-runtime.workspace = true
 nomifun-common.workspace = true

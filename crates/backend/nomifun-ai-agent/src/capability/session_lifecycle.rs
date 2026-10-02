@@ -98,15 +98,18 @@ impl SessionLifecycleCoordinator {
         insights_service: Arc<InsightsService>,
         auxiliary_factory: Option<Arc<AuxiliaryClientFactory>>,
         message_loader: MessageLoader,
+        agent_trace_hub: Option<Arc<crate::agent_trace::AgentTraceHub>>,
     ) -> Self {
-        let extractor = Arc::new(
-            ProactiveSessionExtractor::new(
-                poi_service.clone(),
-                insights_service.clone(),
-                auxiliary_factory,
-            )
-            .with_message_loader(message_loader),
-        );
+        let mut extractor = ProactiveSessionExtractor::new(
+            poi_service.clone(),
+            insights_service.clone(),
+            auxiliary_factory,
+        )
+        .with_message_loader(message_loader);
+        if let Some(hub) = agent_trace_hub {
+            extractor = extractor.with_agent_trace_hub(hub);
+        }
+        let extractor = Arc::new(extractor);
         Self::builder()
             .insights_data_dir(insights_service.data_dir().to_path_buf())
             .extractor(extractor.clone())

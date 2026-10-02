@@ -13,6 +13,13 @@ use tracing::{info, warn};
 use crate::factory::provider_config::{
     one_shot_completion_title, resolve_provider_config, user_message, TitleResponseChannel,
 };
+use nomi_auxiliary::text_message;
+use nomi_types::message::Role;
+use nomi_agent::{
+    begin_chat_llm, finish_chat_llm, messages_to_llm_request, CALL_KIND_CONVERSATION_TITLE,
+    ObservationSession,
+};
+use nomi_agent_trace::ObservationScope;
 use nomi_config::config::Config;
 
 /// Output ceiling for the single title request.
@@ -68,6 +75,7 @@ pub trait ConversationTitleCompleter: Send + Sync {
         &self,
         content: &str,
         candidates: &[ProviderWithModel],
+        observation_session: Option<Arc<ObservationSession>>,
     ) -> Result<ConversationTitleResult, AppError>;
 }
 
@@ -93,15 +101,48 @@ impl LiveConversationTitleCompleter {
         cfg: &Config,
         system: &str,
         user_content: &str,
+        observation_session: Option<&Arc<ObservationSession>>,
     ) -> Result<NormalizedTitle, AppError> {
         let wrapped_user_content = format!("<user_message>\n{}\n</user_message>", user_content);
-        let completion = one_shot_completion_title(
-            cfg,
-            system,
-            vec![user_message(&wrapped_user_content)],
-            TITLE_MAX_TOKENS,
-        )
-        .await?;
+        let messages = vec![
+            text_message(Role::System, system),
+            user_message(&wrapped_user_content),
+        ];
+        let model_call_id = observation_session.map(|session| {
+            let request = messages_to_llm_request(&cfg.model, &messages);
+            begin_chat_llm(
+                session,
+                CALL_KIND_CONVERSATION_TITLE,
+                ObservationScope::SessionAuxiliary,
+                &request,
+            )
+        });
+        let llm_started = Instant::now();
+        let completion = one_shot_completion_title(cfg, system, messages, TITLE_MAX_TOKENS).await;
+        let elapsed_ms = llm_started.elapsed().as_millis() as u64;
+        if let (Some(session), Some(call_id)) = (observation_session, model_call_id.as_deref()) {
+            match &completion {
+                Ok(done) => finish_chat_llm(
+                    session,
+                    call_id,
+                    CALL_KIND_CONVERSATION_TITLE,
+                    ObservationScope::SessionAuxiliary,
+                    &done.output,
+                    elapsed_ms,
+                    None,
+                ),
+                Err(error) => finish_chat_llm(
+                    session,
+                    call_id,
+                    CALL_KIND_CONVERSATION_TITLE,
+                    ObservationScope::SessionAuxiliary,
+                    "",
+                    elapsed_ms,
+                    Some(error.error_code()),
+                ),
+            }
+        }
+        let completion = completion?;
         let response_chars = completion.output.chars().count();
         let title = if completion.channel == TitleResponseChannel::ReasoningFallback {
             normalize_reasoning_output(&completion.output)
@@ -592,6 +633,7 @@ impl ConversationTitleCompleter for LiveConversationTitleCompleter {
         &self,
         content: &str,
         candidates: &[ProviderWithModel],
+        observation_session: Option<Arc<ObservationSession>>,
     ) -> Result<ConversationTitleResult, AppError> {
         let system = Self::title_system_for(content);
         for (candidate_index, candidate) in candidates.iter().enumerate() {
@@ -640,7 +682,10 @@ impl ConversationTitleCompleter for LiveConversationTitleCompleter {
                 outcome = "llm_started",
                 "conversation auto-title: single LLM request started"
             );
-            match self.call_and_normalize(&cfg, system, content).await {
+            match self
+                .call_and_normalize(&cfg, system, content, observation_session.as_ref())
+                .await
+            {
                 Ok(result) if !result.title.is_empty() => {
                     if result.channel == TitleResponseChannel::ReasoningFallback {
                         info!(

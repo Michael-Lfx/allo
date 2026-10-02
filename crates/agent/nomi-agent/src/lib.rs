@@ -21,6 +21,7 @@ pub mod knowledge_tools;
 pub mod learning_tools;
 pub mod loop_guard;
 pub mod moa;
+pub mod auxiliary_observation;
 pub mod observation;
 pub mod tool_execution;
 pub mod output;
@@ -47,8 +48,13 @@ pub use flowy_web::provider::SearchProvider;
 pub use bootstrap::{ExtractCoordinatorBinding, SearchProviderBinding};
 
 pub use knowledge_tools::{KnowledgeHit, KnowledgeReadTool, KnowledgeRetrievalSink, KnowledgeSearchTool};
+pub use auxiliary_observation::{
+    conversation_observation_session, CALL_KIND_CONVERSATION_TITLE, CALL_KIND_POI_EXTRACT,
+    CALL_KIND_POI_STARTER, CALL_KIND_RESOLUTION, SessionAuxiliaryObserver,
+};
 pub use observation::{
-    set_observation_telemetry_hook, stream_llm, ObservationSession, ObservationTelemetryRecord,
+    begin_chat_llm, finish_chat_llm, messages_to_llm_request, set_observation_telemetry_hook,
+    stream_llm, ObservationSession, ObservationTelemetryRecord,
 };
 pub use task_profile::TaskProfile;
 pub use nomi_coding;

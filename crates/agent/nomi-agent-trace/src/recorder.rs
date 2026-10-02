@@ -2909,12 +2909,16 @@ mod tests {
                 })
             })
             .collect();
+        let bulk = "x".repeat(MAX_EVENT_BYTES + 512 * 1024);
         json!({
             "call_kind": "agent_turn",
             "request": {
                 "model": "coding-agent",
                 "system": "sys",
-                "messages": [{ "role": "user", "content": "hi" }],
+                "messages": [{
+                    "role": "user",
+                    "content": [{ "type": "text", "text": bulk }]
+                }],
                 "tools": tools
             }
         })

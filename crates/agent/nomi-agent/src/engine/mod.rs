@@ -16,7 +16,7 @@ use nomi_types::message::{
     ContentBlock, Message, Role, StopReason, TokenUsage, clear_provider_round_ids,
 };
 use nomi_types::skill_types::{ContextModifier, PlanModeTransition, effort_to_string};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tracing::Instrument;
 
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheReuseStats, CacheStats};
@@ -1216,12 +1216,14 @@ impl AgentEngine {
         let harness = nomi_coding::CodingHarness::new(env, config);
         self.apply_coding_compact_overrides(harness.compact_overrides());
         self.coding_harness = Some(harness);
+        self.emit_harness_profile_state();
     }
 
     pub fn clear_coding_harness(&mut self) {
         self.strip_coding_system_prefix();
         self.coding_harness = None;
         self.compact_config = self.compact_config_base.clone();
+        self.emit_harness_profile_state();
     }
 
     fn ensure_coding_system_prefix(&mut self) {
@@ -1428,6 +1430,76 @@ impl AgentEngine {
                 nomi_agent_trace::EVENT_HORIZON_DECISION,
                 self.horizon.observation_payload(decision),
             );
+        }
+    }
+
+    fn harness_profile_label(&self) -> &'static str {
+        if self.coding_harness.is_some() {
+            "coding"
+        } else {
+            "office"
+        }
+    }
+
+    fn emit_harness_profile_state(&self) {
+        if let Some(obs) = self.observation.as_ref() {
+            let config = self
+                .coding_harness
+                .as_ref()
+                .and_then(|h| serde_json::to_value(h.config()).ok());
+            obs.emit_harness_profile(
+                self.harness_profile_label(),
+                self.coding_harness.is_some(),
+                config,
+            );
+        }
+    }
+
+    fn emit_harness_progress_coding(&self, nudge: &nomi_coding::ToolTurnNudge) {
+        if let Some(obs) = self.observation.as_ref() {
+            let counters = serde_json::to_value(&nudge.profiler).unwrap_or_else(|_| json!({}));
+            obs.emit_harness_progress(
+                "coding",
+                nomi_coding::progress_action_label(nudge.progress_action),
+                nudge.recon_only,
+                nudge.parent_tool_count,
+                counters,
+            );
+        }
+    }
+
+    fn office_harness_counters(&self) -> Value {
+        json!({
+            "profiler": self.harness_runtime.kpi.snapshot_counters(),
+            "office": {
+                "mutated": self.harness_runtime.office_mutated,
+                "side_effect": self.harness_runtime.office_side_effect,
+                "verified": self.harness_runtime.office_verified,
+                "nudge_sent": self.harness_runtime.office_nudge_sent,
+            }
+        })
+    }
+
+    fn emit_harness_progress_office(&self, recon_only: bool, parent_tool_count: usize) {
+        if let Some(obs) = self.observation.as_ref() {
+            obs.emit_harness_progress(
+                "office",
+                "continue",
+                recon_only,
+                parent_tool_count,
+                self.office_harness_counters(),
+            );
+        }
+    }
+
+    fn emit_harness_nudge_logged(
+        &self,
+        source: &str,
+        text: &str,
+        hard_stop: bool,
+    ) {
+        if let Some(obs) = self.observation.as_ref() {
+            obs.emit_harness_nudge(self.harness_profile_label(), source, text, hard_stop);
         }
     }
 
@@ -1751,6 +1823,9 @@ impl AgentEngine {
         self.approve_pending_plan();
         if let Some(harness) = self.coding_harness.as_mut() {
             harness.reset_for_user_request();
+        }
+        if let Some(obs) = self.observation.as_ref() {
+            obs.emit_harness_reset(self.harness_profile_label(), "user_request");
         }
         self.current_msg_id = msg_id.to_string();
         self.output.emit_stream_start(msg_id);
@@ -2995,6 +3070,7 @@ impl AgentEngine {
                     && !self.harness_runtime.office_nudge_sent
                 {
                     self.harness_runtime.office_nudge_sent = true;
+                    self.emit_harness_nudge_logged("office_evidence", OFFICE_EVIDENCE_NUDGE, false);
                     self.messages.push(Message::now(
                         Role::User,
                         vec![ContentBlock::Text {
@@ -3006,9 +3082,29 @@ impl AgentEngine {
                     continue;
                 }
                 if let Some(harness) = self.coding_harness.as_mut() {
-                    match harness.on_natural_end() {
+                    let finish = harness.on_natural_end();
+                    if let Some(obs) = self.observation.as_ref() {
+                        let counters =
+                            serde_json::to_value(harness.profiler_snapshot()).unwrap_or_else(|_| {
+                                json!({})
+                            });
+                        let nudge_preview = match &finish {
+                            nomi_coding::FinishDecision::ContinueWithNudge { nudge } => {
+                                Some(nudge.as_str())
+                            }
+                            nomi_coding::FinishDecision::Allow => None,
+                        };
+                        obs.emit_harness_finish(
+                            "coding",
+                            nomi_coding::finish_decision_label(&finish),
+                            counters,
+                            nudge_preview,
+                        );
+                    }
+                    match finish {
                         nomi_coding::FinishDecision::Allow => {}
                         nomi_coding::FinishDecision::ContinueWithNudge { nudge } => {
+                            self.emit_harness_nudge_logged("finish_gate", &nudge, false);
                             self.messages.push(Message::now(
                                 Role::User,
                                 vec![ContentBlock::Text { text: nudge }],
@@ -3467,11 +3563,17 @@ impl AgentEngine {
                         limit,
                     });
                 }
-                if let Some(harness) = self.coding_harness.as_mut() {
-                    let nudge = harness.after_tool_turn(&outcomes);
+                let nudge = self
+                    .coding_harness
+                    .as_mut()
+                    .map(|harness| harness.after_tool_turn(&outcomes));
+                if let Some(nudge) = nudge {
+                    self.emit_harness_progress_coding(&nudge);
                     coding_nudge_texts = nudge.texts;
                     coding_hard_stop = nudge.hard_stop;
-                    if harness.allows_update_plan_on_finalize() {
+                    if let Some(harness) = self.coding_harness.as_mut()
+                        && harness.allows_update_plan_on_finalize()
+                    {
                         harness.advance_after_plan_sync();
                     }
                 }
@@ -3507,6 +3609,9 @@ impl AgentEngine {
                 stagnation_action = crate::loop_guard::StagnationAction::Continue;
                 coding_nudge_texts.clear();
                 coding_hard_stop = None;
+                if let Some(obs) = self.observation.as_ref() {
+                    obs.emit_harness_reset(self.harness_profile_label(), "steer");
+                }
             }
 
             let mut tool_result_blocks = outcome.results;
@@ -3516,6 +3621,11 @@ impl AgentEngine {
                     tracing::warn!(
                         target: "nomi_agent",
                         "loop-stagnation guard fired after {STAGNATION_THRESHOLD} no-progress tool turns — injecting corrective nudge"
+                    );
+                    self.emit_harness_nudge_logged(
+                        "stagnation",
+                        crate::loop_guard::STAGNATION_NUDGE,
+                        false,
                     );
                     tool_result_blocks.push(ContentBlock::Text {
                         text: crate::loop_guard::STAGNATION_NUDGE.to_string(),
@@ -3537,6 +3647,7 @@ impl AgentEngine {
                     nudge = %text,
                     "coding harness: injecting tool-turn nudge"
                 );
+                self.emit_harness_nudge_logged("tool_turn", &text, false);
                 tool_result_blocks.push(ContentBlock::Text { text });
             }
             // Steering interjection (point A): append any queued steer messages
@@ -3570,6 +3681,15 @@ impl AgentEngine {
                     // EndTurn reopen a recon tour.
                     harness.begin_forced_finalize(reason.clone());
                 }
+                if let Some(obs) = self.observation.as_ref() {
+                    let counters = self
+                        .coding_harness
+                        .as_ref()
+                        .and_then(|h| serde_json::to_value(h.profiler_snapshot()).ok())
+                        .unwrap_or_else(|| json!({}));
+                    obs.emit_harness_hard_stop("coding", &reason, counters);
+                }
+                self.emit_harness_nudge_logged("hard_stop", &reason, true);
                 tracing::warn!(
                     target: "nomi_agent",
                     %reason,
@@ -4407,6 +4527,19 @@ impl AgentEngine {
                     .observe_read_key(&format!("{path}#{offset}:{limit}"));
             }
         }
+        let parent_tool_count = tool_calls.len();
+        let mut recon_only = !tool_calls.is_empty();
+        for call in tool_calls {
+            let ContentBlock::ToolUse { name, input, .. } = call else {
+                recon_only = false;
+                continue;
+            };
+            let command = nomi_coding::shell_command_from_input(input);
+            if !nomi_coding::is_recon_tool(name, command.as_deref()) {
+                recon_only = false;
+            }
+        }
+        self.emit_harness_progress_office(recon_only, parent_tool_count);
     }
 
     /// Returns the estimated tokens released, for the watermark refresh.

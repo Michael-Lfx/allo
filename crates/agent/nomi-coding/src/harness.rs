@@ -27,7 +27,7 @@ use crate::tools::advertise_tool;
 use crate::verify::{is_mutating_tool, looks_like_verification_command};
 
 use crate::failure::failure_nudge_if_useful;
-use crate::metrics::HarnessKpi;
+use crate::metrics::{HarnessKpi, HarnessProfilerSnapshot};
 use crate::plan_artifact::PlanArtifact;
 use crate::working_set::WorkingSet;
 use serde::{Deserialize, Serialize};
@@ -249,8 +249,15 @@ pub enum FinishDecision {
     ContinueWithNudge { nudge: String },
 }
 
+pub fn finish_decision_label(decision: &FinishDecision) -> &'static str {
+    match decision {
+        FinishDecision::Allow => "allow",
+        FinishDecision::ContinueWithNudge { .. } => "continue_with_nudge",
+    }
+}
+
 /// Policy after a completed tool batch.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolTurnNudge {
     pub texts: Vec<String>,
     /// When set, the engine must stop the tool loop after appending texts and
@@ -258,6 +265,10 @@ pub struct ToolTurnNudge {
     /// tools), ending as a normal `EndTurn` — never as
     /// [`nomi_agent::AgentError::Stagnation`].
     pub hard_stop: Option<String>,
+    pub progress_action: CodingProgressAction,
+    pub profiler: HarnessProfilerSnapshot,
+    pub recon_only: bool,
+    pub parent_tool_count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -537,6 +548,14 @@ impl CodingHarness {
         &mut self.kpi
     }
 
+    pub fn profiler_snapshot(&self) -> HarnessProfilerSnapshot {
+        HarnessProfilerSnapshot {
+            progress: self.progress.snapshot_counters(),
+            kpi: self.kpi.snapshot_counters(),
+            verify_fail_streak: self.verify_fail_streak,
+        }
+    }
+
     pub fn working_set(&self) -> &WorkingSet {
         &self.working_set
     }
@@ -807,7 +826,14 @@ impl CodingHarness {
             // from before_provider_turn only set the flag — check texts.
         }
 
-        ToolTurnNudge { texts, hard_stop }
+        ToolTurnNudge {
+            texts,
+            hard_stop,
+            progress_action: action,
+            profiler: self.profiler_snapshot(),
+            recon_only,
+            parent_tool_count,
+        }
     }
 
     pub fn classify_tool_success(

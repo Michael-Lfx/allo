@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use nomi_config::InsightsContributionConfig;
 use crate::types::ResolutionPayload;
-use nomi_auxiliary::AuxiliaryClient;
+use nomi_auxiliary::{AuxiliaryClient, AuxiliaryLlmObservation};
 use nomi_poi::{is_poi_synthetic_user_text, message_text_from_value};
 use tracing::{debug, warn};
 
@@ -229,6 +229,7 @@ pub async fn resolve_session_verdict(
     auxiliary: Option<&Arc<AuxiliaryClient>>,
     messages: &[serde_json::Value],
     signals: &SessionSignals,
+    observation: Option<&AuxiliaryLlmObservation>,
 ) -> ResolutionPayload {
     let rules = fuse_verdict(signals);
 
@@ -252,7 +253,8 @@ pub async fn resolve_session_verdict(
         return rules;
     }
 
-    let llm_payload = infer_resolution_from_transcript_llm(aux, &transcript, signals).await;
+    let llm_payload =
+        infer_resolution_from_transcript_llm(aux, &transcript, signals, observation).await;
     match mode.as_str() {
         "llm" => llm_payload.unwrap_or(rules),
         _ => merge_resolution_hybrid(signals, &rules, llm_payload.as_ref()),

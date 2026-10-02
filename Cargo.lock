@@ -6333,6 +6333,7 @@ dependencies = [
  "is-terminal",
  "mockall",
  "nomi-agent-trace",
+ "nomi-auxiliary",
  "nomi-browser",
  "nomi-coding",
  "nomi-compact",

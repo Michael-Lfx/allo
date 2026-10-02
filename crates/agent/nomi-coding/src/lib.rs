@@ -42,7 +42,8 @@ pub use finalize::{
     sanitize_user_facing_reply,
 };
 pub use harness::{
-    CodingConfig, CodingHarness, CompactPolicyOverrides, FinishDecision, ToolCallOutcome,
+    CodingConfig, CodingHarness, CompactPolicyOverrides, FinishDecision, finish_decision_label,
+    ToolCallOutcome,
     ToolSuccessFlags, ToolTurnNudge, VerificationMode,
 };
 pub use patch::{
@@ -56,10 +57,13 @@ pub use progress::{
     CODING_PLAN_TIMEOUT_NUDGE, CODING_SERIAL_RECON_HARD_STOP, CODING_SERIAL_RECON_NUDGE,
     CODING_STALE_PLAN_NUDGE, CODING_VERIFY_NUDGE, PLAN_STALE_MUTATION_THRESHOLD,
     CodingProgressAction, CodingProgressGuard, ExploreBudgetKind, ProgressObserveParams,
-    explore_budget_nudge_text, explore_hard_stop_text, is_explore_tool, is_recon_tool,
+    explore_budget_kind_label, explore_budget_nudge_text, explore_hard_stop_text, is_explore_tool,
+    is_recon_tool, progress_action_label,
 };
 pub use failure::{ToolFailureClass, failure_nudge, failure_nudge_if_useful, skip_failure_nudge};
-pub use metrics::HarnessKpi;
+pub use metrics::{
+    HarnessKpi, HarnessKpiCounters, HarnessProfilerSnapshot, HarnessProgressCounters,
+};
 pub use plan_artifact::PlanArtifact;
 pub use prompt::{
     CODING_SYSTEM_PREFIX_MARKER, coding_intro, coding_overlay_instructions, coding_turn_tail,

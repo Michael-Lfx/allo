@@ -8,6 +8,7 @@
 
 use std::collections::HashSet;
 
+use crate::metrics::HarnessProgressCounters;
 use crate::verify::{looks_like_progress_command, looks_like_verification_command};
 
 /// Tools that count as exploration (not file mutation / verify).
@@ -363,6 +364,52 @@ impl CodingProgressGuard {
 
     pub fn plan_mode_turns(&self) -> usize {
         self.plan_mode_turns
+    }
+
+    pub fn failed_turns(&self) -> usize {
+        self.failed_turns
+    }
+
+    pub fn snapshot_counters(&self) -> HarnessProgressCounters {
+        HarnessProgressCounters {
+            explore_only_turns: self.explore_only_turns,
+            recon_turns_total: self.recon_turns_total,
+            serial_recon_turns: self.serial_recon_turns,
+            failed_turns: self.failed_turns,
+            mutated_files: self.mutated_files,
+            verified_after_mutation: self.verified_after_mutation,
+            force_allow_finish: self.force_allow_finish,
+            plan_mode_turns: self.plan_mode_turns,
+            needs_verification_before_finish: self.needs_verification_before_finish(),
+        }
+    }
+}
+
+pub fn explore_budget_kind_label(kind: ExploreBudgetKind) -> &'static str {
+    match kind {
+        ExploreBudgetKind::ConsecutiveTour => "consecutive_tour",
+        ExploreBudgetKind::SerialRoundTrip => "serial_round_trip",
+        ExploreBudgetKind::LifetimeRecon => "lifetime_recon",
+    }
+}
+
+pub fn progress_action_label(action: CodingProgressAction) -> &'static str {
+    match action {
+        CodingProgressAction::Continue => "continue",
+        CodingProgressAction::NudgeExplore => "nudge_explore",
+        CodingProgressAction::NudgeExploreBudget(kind) => match kind {
+            ExploreBudgetKind::ConsecutiveTour => "nudge_explore_budget_consecutive_tour",
+            ExploreBudgetKind::SerialRoundTrip => "nudge_explore_budget_serial_round_trip",
+            ExploreBudgetKind::LifetimeRecon => "nudge_explore_budget_lifetime_recon",
+        },
+        CodingProgressAction::HardStopExplore(kind) => match kind {
+            ExploreBudgetKind::ConsecutiveTour => "hard_stop_explore_consecutive_tour",
+            ExploreBudgetKind::SerialRoundTrip => "hard_stop_explore_serial_round_trip",
+            ExploreBudgetKind::LifetimeRecon => "hard_stop_explore_lifetime_recon",
+        },
+        CodingProgressAction::NudgePlanTimeout => "nudge_plan_timeout",
+        CodingProgressAction::HardStopPlanTimeout => "hard_stop_plan_timeout",
+        CodingProgressAction::NudgeVerify => "nudge_verify",
     }
 }
 

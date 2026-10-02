@@ -7,6 +7,8 @@ use nomi_auxiliary::AuxiliaryClient;
 use nomi_config::InterestConfig;
 use tracing::{debug, info, warn};
 
+use nomi_auxiliary::AuxiliaryLlmObservation;
+
 use super::llm::generate_starters_for_topic_llm;
 use super::store::InterestStore;
 use super::types::TopicStatus;
@@ -82,7 +84,7 @@ pub fn spawn_starters_for_topics_with_store(
         return;
     };
     tokio::spawn(async move {
-        generate_starters_with_store(store, &config, &topic_ids, &aux).await;
+        generate_starters_with_store(store, &config, &topic_ids, &aux, None).await;
     });
 }
 
@@ -105,7 +107,7 @@ pub async fn generate_starters_for_topics(
         return;
     };
     let store = Arc::new(Mutex::new(store));
-    generate_starters_with_store(store, config, topic_ids, auxiliary).await;
+    generate_starters_with_store(store, config, topic_ids, auxiliary, None).await;
 }
 
 /// Generate starters using an already-open store (same connection as ingest when possible).
@@ -114,6 +116,7 @@ pub async fn generate_starters_with_store(
     config: &InterestConfig,
     topic_ids: &[String],
     auxiliary: &AuxiliaryClient,
+    observation: Option<&AuxiliaryLlmObservation>,
 ) {
     if !config.enabled || !config.starter_enabled || topic_ids.is_empty() {
         return;
@@ -180,7 +183,8 @@ pub async fn generate_starters_with_store(
             }
         };
 
-        let prompts = generate_starters_for_topic_llm(auxiliary, &topic, per_topic).await;
+        let prompts =
+            generate_starters_for_topic_llm(auxiliary, &topic, per_topic, observation).await;
         if prompts.is_empty() {
             warn!(
                 topic_id = %topic_id,

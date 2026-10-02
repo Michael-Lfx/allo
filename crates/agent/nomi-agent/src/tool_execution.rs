@@ -154,21 +154,32 @@ pub struct ToolCallOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolCallTiming {
     pub duration_ms: u64,
+    pub duration_us: u64,
+    pub started_at_ms: u64,
     pub completed_at_ms: u64,
 }
 
-async fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, ToolCallTiming) {
-    let started = std::time::Instant::now();
-    let output = future.await;
-    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let completed_at_ms = std::time::SystemTime::now()
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+async fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, ToolCallTiming) {
+    let started_at_ms = wall_clock_ms();
+    let started = std::time::Instant::now();
+    let output = future.await;
+    let elapsed = started.elapsed();
+    let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    let completed_at_ms = wall_clock_ms();
     (
         output,
         ToolCallTiming {
             duration_ms,
+            duration_us,
+            started_at_ms,
             completed_at_ms,
         },
     )

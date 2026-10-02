@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use nomi_auxiliary::{AuxiliaryClient, AuxiliaryRequest, AuxiliaryTask, text_message};
+use nomi_auxiliary::{
+    AuxiliaryClient, AuxiliaryLlmObservation, AuxiliaryRequest, AuxiliaryTask, text_message,
+};
 use nomi_types::message::Role;
 use crate::types::{ResolutionPayload, validate_signal_codes, ALLOWED_SIGNAL_CODES};
 use nomi_poi::{is_poi_synthetic_user_text, message_text_from_value};
@@ -88,6 +90,7 @@ pub async fn infer_resolution_from_transcript_llm(
     auxiliary: &AuxiliaryClient,
     transcript: &str,
     signals: &SessionSignals,
+    observation: Option<&AuxiliaryLlmObservation>,
 ) -> Option<ResolutionPayload> {
     let body = if transcript.chars().count() > MAX_TRANSCRIPT_CHARS {
         format!(
@@ -126,7 +129,7 @@ pub async fn infer_resolution_from_transcript_llm(
     let user =
         format!("Label resolution for this agent session transcript.\n\n{hints}\n\n---\n\n{body}");
 
-    let request = AuxiliaryRequest::new(
+    let mut request = AuxiliaryRequest::new(
         AuxiliaryTask::Custom(RESOLUTION_LLM_TASK.to_string()),
         vec![
             text_message(Role::System, resolution_llm_system_prompt()),
@@ -136,6 +139,10 @@ pub async fn infer_resolution_from_transcript_llm(
     .with_temperature(0.1)
     .with_max_tokens(800)
     .with_timeout(Duration::from_secs(60));
+    request.observation_call_kind = Some("resolution".to_string());
+    if let Some(observe) = observation {
+        request = request.with_observation(observe.observer.clone(), observe.context.clone());
+    }
 
     match auxiliary.call(request).await {
         Ok(resp) => {

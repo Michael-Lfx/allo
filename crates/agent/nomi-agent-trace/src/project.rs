@@ -788,8 +788,10 @@ fn project_timeline(
             | EVENT_TOOL_EXECUTION_FAILED
             | EVENT_TOOL_EXECUTION_CANCELLED => event
                 .payload
-                .get("duration_ms")
+                .get("duration_us")
                 .and_then(Value::as_u64)
+                .map(|us| us / 1000)
+                .or_else(|| event.payload.get("duration_ms").and_then(Value::as_u64))
                 .or_else(|| {
                     tool_call_id.as_ref().and_then(|tool_call_id| {
                         model_call_id.as_ref().and_then(|model_call_id| {

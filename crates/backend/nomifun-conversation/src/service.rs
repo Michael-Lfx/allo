@@ -15896,9 +15896,12 @@ impl ConversationService {
             return;
         }
 
+        let observation_session = self
+            .current_agent_trace_hub()
+            .map(|hub| hub.conversation_observation_session(conversation_id));
         let result = match tokio::time::timeout(
             TITLE_TASK_TIMEOUT,
-            completer.summarize(&user_snippet, &candidates),
+            completer.summarize(&user_snippet, &candidates, observation_session),
         )
         .await
         {

@@ -16,6 +16,7 @@ use nomifun_poi::PoiService;
 use serde_json::Value;
 use tracing::info;
 
+use crate::agent_trace::AgentTraceHub;
 use crate::auxiliary_provider::{
     resolve_poi_llm_model, try_build_auxiliary_client_for_poi, AuxiliaryClientFactory,
 };
@@ -48,6 +49,7 @@ pub struct ProactiveSessionExtractor {
     poi_service: Arc<PoiService>,
     insights_service: Arc<InsightsService>,
     auxiliary_factory: Option<Arc<AuxiliaryClientFactory>>,
+    agent_trace_hub: Option<Arc<AgentTraceHub>>,
     message_loader: Option<MessageLoader>,
     sessions: RwLock<HashMap<String, ActiveSessionState>>,
 }
@@ -62,9 +64,15 @@ impl ProactiveSessionExtractor {
             poi_service,
             insights_service,
             auxiliary_factory,
+            agent_trace_hub: None,
             message_loader: None,
             sessions: RwLock::new(HashMap::new()),
         }
+    }
+
+    pub fn with_agent_trace_hub(mut self, hub: Arc<AgentTraceHub>) -> Self {
+        self.agent_trace_hub = Some(hub);
+        self
     }
 
     pub fn with_message_loader(mut self, loader: MessageLoader) -> Self {
@@ -272,6 +280,11 @@ impl ProactiveSessionExtractor {
             None => None,
         };
 
+        let auxiliary_observation = self
+            .agent_trace_hub
+            .as_ref()
+            .map(|hub| hub.session_auxiliary_observation(session_id));
+
         let message_count = messages.len();
         info!(
             session_id = %session_id,
@@ -296,6 +309,7 @@ impl ProactiveSessionExtractor {
                 messages.clone(),
                 buffered,
                 auxiliary.clone(),
+                auxiliary_observation.clone(),
             );
         }
 
@@ -310,6 +324,7 @@ impl ProactiveSessionExtractor {
                 messages,
                 Vec::new(),
                 auxiliary,
+                auxiliary_observation,
             );
         }
 

@@ -49,6 +49,9 @@ impl ConversationTitleCompleter for FakeTitleCompleter {
         &self,
         content: &str,
         _candidates: &[ProviderWithModel],
+        _observation_session: Option<
+            std::sync::Arc<nomifun_ai_agent::agent_trace::ObservationSession>,
+        >,
     ) -> Result<ConversationTitleResult, AppError> {
         let mut calls = self.calls.lock().unwrap();
         let index = calls.len();

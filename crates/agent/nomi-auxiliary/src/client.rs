@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use nomi_types::message::{ContentBlock, Message, Role};
@@ -19,7 +19,42 @@ pub trait ChatLlmProvider: Send + Sync {
     ) -> Result<String, String>;
 }
 
+/// Observer + conversation binding for one auxiliary request batch.
+#[derive(Clone)]
+pub struct AuxiliaryLlmObservation {
+    pub observer: Arc<dyn AuxiliaryLlmObserver>,
+    pub context: AuxiliaryObservationContext,
+}
+
+/// Conversation binding for auxiliary LLM observation (same JSONL file as the main agent).
 #[derive(Debug, Clone, Default)]
+pub struct AuxiliaryObservationContext {
+    pub conversation_id: Option<String>,
+    pub session_kind: Option<String>,
+}
+
+/// Records non-streaming auxiliary LLM calls into session observation.
+pub trait AuxiliaryLlmObserver: Send + Sync {
+    fn on_llm_request(
+        &self,
+        ctx: &AuxiliaryObservationContext,
+        call_kind: &str,
+        observation_scope: &str,
+        model: &str,
+        messages: &[Message],
+    ) -> String;
+
+    fn on_llm_response(
+        &self,
+        model_call_id: &str,
+        call_kind: &str,
+        text: &str,
+        elapsed_ms: u64,
+        error: Option<&str>,
+    );
+}
+
+#[derive(Clone, Default)]
 pub struct AuxiliaryRequest {
     pub task: Option<AuxiliaryTask>,
     pub messages: Vec<Message>,
@@ -28,6 +63,30 @@ pub struct AuxiliaryRequest {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub timeout: Option<Duration>,
+    pub observation: Option<Arc<dyn AuxiliaryLlmObserver>>,
+    pub observation_context: AuxiliaryObservationContext,
+    /// When set, overrides task-derived `call_kind` in observation events.
+    pub observation_call_kind: Option<String>,
+}
+
+impl std::fmt::Debug for AuxiliaryRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuxiliaryRequest")
+            .field("task", &self.task)
+            .field("messages", &self.messages)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("timeout", &self.timeout)
+            .field(
+                "observation",
+                &self.observation.as_ref().map(|_| "AuxiliaryLlmObserver"),
+            )
+            .field("observation_context", &self.observation_context)
+            .field("observation_call_kind", &self.observation_call_kind)
+            .finish()
+    }
 }
 
 impl AuxiliaryRequest {
@@ -52,6 +111,40 @@ impl AuxiliaryRequest {
     pub fn with_timeout(mut self, d: Duration) -> Self {
         self.timeout = Some(d);
         self
+    }
+
+    pub fn with_observation(
+        mut self,
+        observer: Arc<dyn AuxiliaryLlmObserver>,
+        context: AuxiliaryObservationContext,
+    ) -> Self {
+        self.observation = Some(observer);
+        self.observation_context = context;
+        self
+    }
+
+    fn observation_call_kind(&self) -> String {
+        if let Some(kind) = &self.observation_call_kind {
+            return kind.clone();
+        }
+        match &self.task {
+            Some(AuxiliaryTask::Custom(name)) => name.clone(),
+            Some(task) => task.as_key().to_string(),
+            None => "auxiliary".to_string(),
+        }
+    }
+
+    fn observation_scope_key(&self) -> &'static str {
+        if self
+            .observation_context
+            .conversation_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty())
+        {
+            "session_auxiliary"
+        } else {
+            "process_diagnostic"
+        }
     }
 }
 
@@ -159,6 +252,19 @@ impl AuxiliaryClient {
                 }
             });
 
+        let model_label = model.unwrap_or("auto");
+        let observation_call_kind = request.observation_call_kind();
+        let model_call_id = request.observation.as_ref().map(|observer| {
+            observer.on_llm_request(
+                &request.observation_context,
+                &observation_call_kind,
+                request.observation_scope_key(),
+                model_label,
+                &request.messages,
+            )
+        });
+
+        let started = Instant::now();
         let fut = self.provider.chat_completion(
             &request.messages,
             request.max_tokens,
@@ -169,17 +275,42 @@ impl AuxiliaryClient {
         let text = match timeout(wall, fut).await {
             Ok(Ok(text)) => text,
             Ok(Err(reason)) => {
+                if let (Some(observer), Some(id)) = (&request.observation, model_call_id.as_deref())
+                {
+                    let elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    observer.on_llm_response(id, &observation_call_kind, "", elapsed_ms, Some(&reason));
+                }
                 return Err(AuxiliaryError::Llm {
                     provider: self.label.clone(),
                     reason,
                 });
             }
-            Err(_) => return Err(AuxiliaryError::Timeout(wall)),
+            Err(_) => {
+                if let (Some(observer), Some(id)) = (&request.observation, model_call_id.as_deref())
+                {
+                    let elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    observer.on_llm_response(
+                        id,
+                        &observation_call_kind,
+                        "",
+                        elapsed_ms,
+                        Some("timeout"),
+                    );
+                }
+                return Err(AuxiliaryError::Timeout(wall));
+            }
         };
+
+        if let (Some(observer), Some(id)) = (&request.observation, model_call_id.as_deref()) {
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            observer.on_llm_response(id, &observation_call_kind, &text, elapsed_ms, None);
+        }
 
         Ok(AuxiliaryResponse {
             provider_label: self.label.clone(),
-            model: model.unwrap_or("auto").to_string(),
+            model: model_label.to_string(),
             text,
         })
     }
