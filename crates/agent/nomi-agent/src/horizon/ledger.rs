@@ -254,7 +254,7 @@ async fn git_fingerprint(cwd: &Path) -> Option<u64> {
         return None;
     }
     let started = Instant::now();
-    let output = tokio::process::Command::new("git")
+    let output = nomi_process_runtime::hidden_command("git")
         .args(["status", "--porcelain=v2", "--branch"])
         .current_dir(cwd)
         .output()

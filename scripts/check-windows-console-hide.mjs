@@ -26,6 +26,7 @@ const GUARDED = {
   shellConfig: 'crates/agent/nomi-config/src/shell.rs',
   ffmpegHw: 'crates/agent/nomi-config/src/ffmpeg_hw.rs',
   shell: 'crates/agent/nomi-tools/src/windows_shell.rs',
+  horizonLedger: 'crates/agent/nomi-agent/src/horizon/ledger.rs',
 };
 
 const LOCAL_HIDE_RE = /CREATE_NO_WINDOW|creation_flags\s*\(\s*0x0800_?0000\s*\)/;
@@ -109,6 +110,7 @@ export function checkAll(sources = {
   shellConfig: readRel(GUARDED.shellConfig),
   ffmpegHw: readRel(GUARDED.ffmpegHw),
   shell: readRel(GUARDED.shell),
+  horizonLedger: readRel(GUARDED.horizonLedger),
 }) {
   return [
     ...checkRuntimeOwnsHide(sources.runtime).map((p) => `${RUNTIME_HIDE}: ${p}`),
@@ -131,6 +133,9 @@ export function checkAll(sources = {
     ),
     ...checkShellTransportSource(sources.shell).map(
       (p) => `${GUARDED.shell}: ${p}`,
+    ),
+    ...checkCallSiteUsesRuntime(sources.horizonLedger).map(
+      (p) => `${GUARDED.horizonLedger}: ${p}`,
     ),
   ];
 }
