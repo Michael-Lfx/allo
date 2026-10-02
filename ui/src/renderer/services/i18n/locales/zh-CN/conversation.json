@@ -494,7 +494,7 @@
     "switchedToAgent": "已切换到 {{agent}}",
     "switchAgentFailed": "切换 Agent 失败",
     "speech": {
-      "recordTooltip": "开始语音输入",
+      "recordTooltip": "点击或按住Ctrl M开始说话",
       "pickFileTooltip": "选择音频文件",
       "stopTooltip": "停止录音",
       "processing": "正在转写音频...",

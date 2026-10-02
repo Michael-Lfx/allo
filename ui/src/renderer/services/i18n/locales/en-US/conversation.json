@@ -494,7 +494,7 @@
     "switchedToAgent": "Switched to {{agent}}",
     "switchAgentFailed": "Failed to switch agent",
     "speech": {
-      "recordTooltip": "Start voice input",
+      "recordTooltip": "Click or hold Ctrl M to ditate",
       "pickFileTooltip": "Select an audio file",
       "stopTooltip": "Stop recording",
       "processing": "Transcribing audio...",
