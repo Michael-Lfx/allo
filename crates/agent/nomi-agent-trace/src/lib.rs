@@ -4,6 +4,7 @@
 //! This crate is intentionally agent-layer only — it does **not** depend on
 //! `nomi-agent` or any `nomifun-*` backend crate.
 
+mod build_info;
 mod capture;
 mod event;
 mod fingerprint;
@@ -16,6 +17,7 @@ mod session;
 /// Shared major schema version for observation events and eval alignment.
 pub const SCHEMA_VERSION: u32 = 1;
 
+pub use build_info::{build_info, set_build_info, BuildInfo};
 pub use capture::{
     capture_and_size_cap, capture_borrowed, capture_canonical_request, omitted_binary_payload,
     MAX_EVENT_BYTES, OMITTED_REASON_BINARY_PAYLOAD,

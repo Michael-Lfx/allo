@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::build_info::BuildInfo;
 use crate::project::ProjectedTurn;
 
 pub const REPRO_SCHEMA_VERSION: u32 = 1;
@@ -25,8 +26,13 @@ pub struct ReproBundle {
 pub struct ReproEnvironment {
     pub os: String,
     pub arch: String,
+    /// Version of the binary that exported this bundle, which is not
+    /// necessarily the one that recorded the turn; see `recorded`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Build identity stamped on the recorded turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded: Option<BuildInfo>,
 }
 
 impl ReproBundle {
@@ -41,6 +47,7 @@ impl ReproBundle {
                 os: std::env::consts::OS.to_string(),
                 arch: std::env::consts::ARCH.to_string(),
                 app_version: option_env!("CARGO_PKG_VERSION").map(String::from),
+                recorded: turn.build.clone(),
             },
             turn: turn.clone(),
         }
@@ -85,11 +92,33 @@ mod tests {
             max_event_seq: 10,
             has_turn_start: true,
             has_turn_end: true,
+            build: None,
             gap_count: 0,
             timeline: Vec::new(),
             model_calls: Vec::new(),
             gaps: Vec::new(),
         }
+    }
+
+    #[test]
+    fn repro_bundle_keeps_the_recorded_build_through_sanitizing() {
+        let mut turn = dummy_turn();
+        let recorded = BuildInfo::for_host(
+            "1.5.2",
+            Some("0123456789ab"),
+            Some(false),
+            Some("release"),
+            Some("1790000000"),
+        );
+        turn.build = Some(recorded.clone());
+
+        let json = ReproBundle::from_projected_turn(&turn)
+            .to_sanitized_json()
+            .unwrap();
+        let parsed = ReproBundle::from_json(&json).unwrap();
+
+        assert_eq!(parsed.environment.recorded, Some(recorded));
+        assert!(json.contains("0123456789ab"), "{json}");
     }
 
     #[test]

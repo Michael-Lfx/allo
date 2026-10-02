@@ -357,7 +357,7 @@ pub use shell::{
     TEXT_TO_SPEECH_PREFERENCE_KEY, TextToSpeechConfig, ToolType, TtsApiRequest,
 };
 pub use session_observation::{
-    ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
+    ObservationSummaryDto, RecorderHealthDto, SessionObservationBuildDto, SessionObservationCallDto,
     SessionObservationEventDto, SessionObservationExportDto, SessionObservationExportTurnDto,
     SessionObservationGapDto, SessionObservationListDto, SessionObservationPrefixReuseDto,
     SessionObservationRequestMessageViewDto, SessionObservationRequestSummaryDto, SessionObservationResponseSummaryDto,

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::build_info::BuildInfo;
 use crate::event::{
     ids_from_payload, ExecutionStatus, Integrity, ObservationEvent, ObservationIds,
     ObservationScope,
@@ -166,6 +167,10 @@ pub struct ProjectedTurn {
     pub has_turn_start: bool,
     #[serde(default)]
     pub has_turn_end: bool,
+    /// Identity of the binary that recorded this turn; absent for traces
+    /// written before builds were stamped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildInfo>,
     pub gap_count: u32,
     #[serde(default)]
     pub timeline: Vec<ObservationTimelineEvent>,
@@ -373,6 +378,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
     let mut turn_end_elapsed_ms: Option<u64> = None;
     let mut turn_end_error: Option<String> = None;
     let mut turn_start_preview: Option<String> = None;
+    let mut turn_build: Option<BuildInfo> = None;
     let mut latest_request: Option<&ObservationEvent> = None;
     let mut started_at_ms = events.first().map(|event| event.timestamp_ms);
     let mut ended_at_ms = events.last().map(|event| event.timestamp_ms);
@@ -388,6 +394,12 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
                 if turn_start_preview.is_none() {
                     turn_start_preview = string_field(&event.payload, "prompt_preview")
                         .filter(|preview| !preview.trim().is_empty());
+                }
+                if turn_build.is_none() {
+                    turn_build = event
+                        .payload
+                        .get("build")
+                        .and_then(|build| serde_json::from_value(build.clone()).ok());
                 }
             }
             EVENT_TURN_END => {
@@ -567,6 +579,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
         max_event_seq,
         has_turn_start,
         has_turn_end,
+        build: turn_build,
         gap_count: gaps.len() as u32,
         timeline,
         model_calls: calls,
@@ -2017,6 +2030,30 @@ mod tests {
         assert_eq!(turns[0].model_calls[0].status, ExecutionStatus::Interrupted);
         assert!(turns[0].interrupted);
         assert_eq!(turns[0].integrity, Integrity::Degraded);
+    }
+
+    #[test]
+    fn turn_start_build_is_projected_and_absent_for_older_traces() {
+        let stamped = event(
+            EVENT_TURN_START,
+            1,
+            turn_ids("t1", "mc1"),
+            serde_json::json!({
+                "prompt_preview": "hi",
+                "build": { "app_version": "1.5.3", "git_sha": "0123456789ab", "os": "windows", "arch": "x86_64" }
+            }),
+        );
+        let legacy = event(
+            EVENT_TURN_START,
+            1,
+            turn_ids("t2", "mc2"),
+            serde_json::json!({ "prompt_preview": "hi" }),
+        );
+
+        let stamped_build = project_turns(&[stamped])[0].build.clone().expect("build");
+        assert_eq!(stamped_build.app_version, "1.5.3");
+        assert_eq!(stamped_build.git_sha.as_deref(), Some("0123456789ab"));
+        assert!(project_turns(&[legacy])[0].build.is_none());
     }
 
     #[test]

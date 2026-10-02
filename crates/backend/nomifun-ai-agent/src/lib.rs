@@ -90,7 +90,7 @@ pub use agent_eval::{
     EvalQualityReport, EvalQualitySink, EvalSessionBridge, OpenEvalCaseSession, RecordEvalCaseTurn,
 };
 pub use agent_trace::{
-    AgentTraceHub, ObservationIds, ObservationRecorder, ProjectedTurn, SessionObservationList,
+    AgentTraceHub, BuildInfo, set_build_info, ObservationIds, ObservationRecorder, ProjectedTurn, SessionObservationList,
     TraceApiError, session_observation_call_dto, session_observation_list_dto,
     session_observation_turn_dto, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT,
     DEVELOPER_MODE_PREF_KEY, MAX_SESSION_OBSERVATION_LIST_LIMIT, classify_session_kind,

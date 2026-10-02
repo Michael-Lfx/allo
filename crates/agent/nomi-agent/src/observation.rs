@@ -167,7 +167,7 @@ impl ObservationSession {
         observe_with_model_call(
             self,
             EVENT_TURN_START,
-            json!({ "prompt_preview": preview }),
+            json!({ "prompt_preview": preview, "build": nomi_agent_trace::build_info() }),
             None,
         );
     }
@@ -1762,6 +1762,10 @@ mod tests {
         assert_eq!(starts.len(), 1, "failover rebuild must not emit a second turn/start: {events:?}");
         assert_eq!(ends.len(), 1, "failover rebuild must not emit a second turn/end: {events:?}");
         assert_eq!(starts[0].payload["prompt_preview"], "raw user message");
+        assert_eq!(
+            starts[0].payload["build"]["app_version"],
+            env!("CARGO_PKG_VERSION")
+        );
         assert_eq!(ends[0].payload["status"], "completed");
         assert_eq!(ends[0].payload["elapsed_ms"], 11);
 

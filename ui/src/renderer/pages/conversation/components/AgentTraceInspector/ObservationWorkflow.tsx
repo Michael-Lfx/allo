@@ -39,6 +39,8 @@ import {
 } from './ObservationTimeline';
 import ObservationJsonTree from './ObservationJsonTree';
 import ObservationFailureInspector from './ObservationFailureInspector';
+import ToolPhaseBreakdown from './ToolPhaseBreakdown';
+import { formatBuildBrief, formatBuildFull } from './buildInfo';
 import {
   asRecord,
   canonicalRequestFromPayload,
@@ -622,6 +624,7 @@ function ToolInspector({ tool }: { tool: ProjectedToolExecution }) {
   const finished = asRecord(tool.completed ?? tool.failed ?? tool.cancelled);
   return (
     <>
+      <ToolPhaseBreakdown tool={tool} />
       <div className='session-logs-inspector__grid'>
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectArguments')}
@@ -1064,6 +1067,8 @@ const ObservationWorkflow: React.FC<ObservationWorkflowProps> = ({
   const elapsed = formatDurationMs(turn.elapsed_ms);
   const started = formatClock(turn.started_at_ms);
   const status = turn.status;
+  const dirtyLabel = t('conversation.agentTrace.buildDirty');
+  const buildFull = turn.build ? formatBuildFull(turn.build, dirtyLabel) : '';
 
   const selectInspect = useCallback(
     (next: InspectTarget | null) => {
@@ -1147,6 +1152,11 @@ const ObservationWorkflow: React.FC<ObservationWorkflowProps> = ({
           <span>{t('conversation.agentTrace.modelCallCount', { count: turn.model_calls.length })}</span>
           <span>{t('conversation.agentTrace.toolCallCount', { count: toolCount })}</span>
           {status ? <span>{t('conversation.agentTrace.status_' + status)}</span> : null}
+          {turn.build ? (
+            <span className='session-logs-turn-meta__build' title={buildFull}>
+              {formatBuildBrief(turn.build, dirtyLabel)}
+            </span>
+          ) : null}
           <button
             type='button'
             className={idsOpen ? 'session-logs-identity-toggle is-open' : 'session-logs-identity-toggle'}
@@ -1192,6 +1202,11 @@ const ObservationWorkflow: React.FC<ObservationWorkflowProps> = ({
               label={t('conversation.agentTrace.sessionKind')}
               value={turn.session_kind ?? '-'}
               copyable={false}
+            />
+            <MetaRow
+              label={t('conversation.agentTrace.buildInfo')}
+              value={buildFull || t('conversation.agentTrace.buildUnrecorded')}
+              copyable={Boolean(buildFull)}
             />
           </div>
         ) : null}

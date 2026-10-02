@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nomifun_api_types::{
-    ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
+    ObservationSummaryDto, RecorderHealthDto, SessionObservationBuildDto, SessionObservationCallDto,
     SessionObservationEventDto, SessionObservationExportDto, SessionObservationExportTurnDto,
     SessionObservationGapDto, SessionObservationListDto, SessionObservationPrefixReuseDto,
     SessionObservationRequestMessageViewDto,
@@ -247,6 +247,18 @@ fn call_dto(value: ProjectedModelCall) -> SessionObservationCallDto {
     }
 }
 
+fn build_dto(value: nomi_agent_trace::BuildInfo) -> SessionObservationBuildDto {
+    SessionObservationBuildDto {
+        app_version: value.app_version,
+        git_sha: value.git_sha,
+        git_dirty: value.git_dirty,
+        profile: value.profile,
+        build_time: value.build_time,
+        os: value.os,
+        arch: value.arch,
+    }
+}
+
 fn turn_dto(value: ProjectedTurn) -> SessionObservationTurnDto {
     SessionObservationTurnDto {
         root_turn_id: value.root_turn_id,
@@ -268,6 +280,7 @@ fn turn_dto(value: ProjectedTurn) -> SessionObservationTurnDto {
         max_event_seq: value.max_event_seq,
         has_turn_start: value.has_turn_start,
         has_turn_end: value.has_turn_end,
+        build: value.build.map(build_dto),
         gap_count: value.gap_count,
         timeline: value.timeline.into_iter().map(timeline_event_dto).collect(),
         model_calls: value.model_calls.into_iter().map(call_dto).collect(),
@@ -876,6 +889,13 @@ mod tests {
                 max_event_seq: 4,
                 has_turn_start: true,
                 has_turn_end: true,
+                build: Some(nomi_agent_trace::BuildInfo::for_host(
+                    "1.5.3",
+                    Some("0123456789ab"),
+                    Some(true),
+                    Some("release"),
+                    None,
+                )),
                 gap_count: 1,
                 timeline: vec![],
                 model_calls: vec![empty_call("call-1")],
@@ -888,6 +908,10 @@ mod tests {
         assert_eq!(json["turns"][0]["status"], "interrupted");
         assert_eq!(json["turns"][0]["prompt_preview"], "66");
         assert_eq!(json["turns"][0]["prompt_preview_context_only"], false);
+        assert_eq!(json["turns"][0]["build"]["app_version"], "1.5.3");
+        assert_eq!(json["turns"][0]["build"]["git_sha"], "0123456789ab");
+        assert_eq!(json["turns"][0]["build"]["git_dirty"], true);
+        assert!(json["turns"][0]["build"].get("build_time").is_none());
         assert_eq!(json["turns"][0]["model_calls"][0]["status"], "running");
     }
 

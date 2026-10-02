@@ -166,6 +166,16 @@ export interface ProjectedModelCall {
   tools: ProjectedToolExecution[];
 }
 
+export interface ObservationBuildInfo {
+  app_version: string;
+  git_sha?: string | null;
+  git_dirty?: boolean | null;
+  profile?: string | null;
+  build_time?: string | null;
+  os: string;
+  arch: string;
+}
+
 /** Projection from `GET /api/debug/session-observations`. */
 export interface ProjectedTurn {
   root_turn_id: string;
@@ -187,6 +197,7 @@ export interface ProjectedTurn {
   max_event_seq?: number;
   has_turn_start?: boolean;
   has_turn_end?: boolean;
+  build?: ObservationBuildInfo | null;
   gap_count: number;
   timeline: ObservationTimelineEvent[];
   model_calls: ProjectedModelCall[];

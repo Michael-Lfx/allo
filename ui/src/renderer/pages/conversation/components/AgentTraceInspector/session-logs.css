@@ -409,6 +409,11 @@
   font-variant-numeric: tabular-nums;
 }
 
+.session-logs-turn-meta__build {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  color: var(--color-text-3);
+}
+
 .session-logs-identity-toggle {
   margin-left: auto;
   display: inline-flex;
@@ -1397,6 +1402,79 @@ button.session-logs-tile:disabled:hover {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
+}
+
+.session-logs-phases {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-logs-phases__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--color-text-3);
+}
+
+.session-logs-phases__total {
+  color: var(--color-text-1);
+}
+
+.session-logs-phases__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session-logs-phases__row {
+  display: grid;
+  grid-template-columns: minmax(96px, 148px) minmax(0, 1fr) 52px;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-logs-phases__row.is-nested .session-logs-phases__name {
+  padding-left: 12px;
+  color: var(--color-text-3);
+}
+
+.session-logs-phases__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-2);
+}
+
+.session-logs-phases__track {
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--color-fill-2);
+}
+
+.session-logs-phases__bar {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: rgb(var(--primary-6));
+}
+
+.session-logs-phases__row.is-nested .session-logs-phases__bar {
+  background: color-mix(in srgb, rgb(var(--primary-6)) 55%, var(--color-fill-3));
+}
+
+.session-logs-phases__value {
+  text-align: right;
+  color: var(--color-text-2);
 }
 
 .session-logs-json-tree {

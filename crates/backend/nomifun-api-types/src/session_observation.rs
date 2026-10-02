@@ -70,6 +70,8 @@ pub struct SessionObservationTurnDto {
     pub has_turn_start: bool,
     #[serde(default)]
     pub has_turn_end: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<SessionObservationBuildDto>,
     pub gap_count: u32,
     #[serde(default)]
     pub timeline: Vec<SessionObservationTimelineEventDto>,
@@ -77,6 +79,22 @@ pub struct SessionObservationTurnDto {
     pub model_calls: Vec<SessionObservationCallDto>,
     #[serde(default)]
     pub gaps: Vec<SessionObservationGapDto>,
+}
+
+/// Identity of the binary that recorded a turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionObservationBuildDto {
+    pub app_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_dirty: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_time: Option<String>,
+    pub os: String,
+    pub arch: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

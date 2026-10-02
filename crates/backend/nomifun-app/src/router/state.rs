@@ -803,6 +803,39 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
 }
 
 /// Build the default `ConversationRouterState` from application services.
+fn stamp_trace_build_info() {
+    nomifun_ai_agent::set_build_info(trace_build_info());
+}
+
+fn trace_build_info() -> nomifun_ai_agent::BuildInfo {
+    let known = |value: &'static str| (value != "unknown").then_some(value);
+    nomifun_ai_agent::BuildInfo::for_host(
+        env!("CARGO_PKG_VERSION"),
+        known(env!("FLOWY_GIT_SHA")),
+        known(env!("FLOWY_GIT_DIRTY")).map(|dirty| dirty == "true"),
+        known(env!("FLOWY_BUILD_PROFILE")),
+        known(env!("BUILD_TIME")).filter(|stamp| *stamp != "0"),
+    )
+}
+
+#[cfg(test)]
+mod build_info_tests {
+    use super::trace_build_info;
+
+    #[test]
+    fn trace_build_info_identifies_the_source_this_binary_was_built_from() {
+        let info = trace_build_info();
+
+        assert_eq!(info.app_version, env!("CARGO_PKG_VERSION"));
+        let sha = info.git_sha.expect("tests run inside a git checkout");
+        assert!(
+            sha.len() == 12 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{sha}"
+        );
+        assert!(info.git_dirty.is_some());
+    }
+}
+
 pub fn build_conversation_state(
     services: &AppServices,
     cron_service: Option<Arc<nomifun_cron::service::CronService>>,
@@ -915,6 +948,7 @@ pub fn build_conversation_state(
         services.encryption_key,
         services.data_dir.clone(),
     ));
+    stamp_trace_build_info();
     let agent_trace_hub = Arc::new(nomifun_ai_agent::AgentTraceHub::new(
         services.data_dir.clone(),
         Some(Arc::new(SqliteClientPreferenceRepository::new(
