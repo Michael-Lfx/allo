@@ -47,6 +47,18 @@ impl ToolFailureClass {
         Self::Other
     }
 
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Schema => "schema",
+            Self::NotFound => "not_found",
+            Self::Timeout => "timeout",
+            Self::Permission => "permission",
+            Self::StaleAnchor => "stale_anchor",
+            Self::VerifyFail => "verify_fail",
+            Self::Other => "other",
+        }
+    }
+
     pub fn recommended_action(self) -> &'static str {
         match self {
             Self::Schema => {
@@ -85,6 +97,7 @@ fn looks_like_not_found(name: &str, lower: &str) -> bool {
         || lower.contains("cannot find the path")
         || lower.contains("file not found")
         || lower.contains("directory not found")
+        || lower.contains("not an existing directory")
     {
         return true;
     }
@@ -103,6 +116,11 @@ fn looks_like_timeout(lower: &str) -> bool {
 /// than it helps. The original tool result is still in the transcript.
 pub fn skip_failure_nudge(name: &str, error: &str) -> bool {
     if name.eq_ignore_ascii_case("write_stdin") && error.contains("unknown or finished session_id")
+    {
+        return true;
+    }
+    if matches!(name, "Glob" | "Grep" | "DirTree")
+        && ToolFailureClass::from_tool(name, error) == ToolFailureClass::NotFound
     {
         return true;
     }
@@ -212,5 +230,46 @@ mod tests {
     fn empty_bash_capture_still_nudges() {
         let err = "Exit code: 1\nSTDOUT:\n\nSTDERR:\n\n";
         assert!(!skip_failure_nudge("Bash", err));
+    }
+
+    #[test]
+    fn search_path_that_is_not_a_directory_is_not_found() {
+        let err = "Search path is not an existing directory: C:\\work\\docs\\explainers";
+        for tool in ["Glob", "Grep", "DirTree", "Read"] {
+            assert_eq!(ToolFailureClass::from_tool(tool, err), ToolFailureClass::NotFound, "{tool}");
+        }
+    }
+
+    #[test]
+    fn probing_a_missing_path_with_search_tools_does_not_nudge() {
+        let missing = "Search path is not an existing directory: /work/docs";
+        assert!(skip_failure_nudge("Glob", missing));
+        assert!(failure_nudge_if_useful("Glob", missing).is_none());
+        assert!(failure_nudge_if_useful("Grep", "No such file or directory").is_none());
+        assert!(failure_nudge_if_useful("DirTree", "Directory not found: /x").is_none());
+    }
+
+    #[test]
+    fn missing_file_for_read_and_other_search_failures_still_nudge() {
+        assert!(failure_nudge_if_useful("Read", "File not found: src/a.rs").is_some());
+        assert!(failure_nudge_if_useful("Glob", "Missing required parameter: pattern").is_some());
+        assert!(failure_nudge_if_useful("Glob", "Invalid glob pattern: [bad").is_some());
+        assert!(failure_nudge_if_useful("Glob", "Glob walk failed: join error").is_some());
+    }
+
+    #[test]
+    fn labels_are_stable_snake_case() {
+        let labels = [
+            (ToolFailureClass::Schema, "schema"),
+            (ToolFailureClass::NotFound, "not_found"),
+            (ToolFailureClass::Timeout, "timeout"),
+            (ToolFailureClass::Permission, "permission"),
+            (ToolFailureClass::StaleAnchor, "stale_anchor"),
+            (ToolFailureClass::VerifyFail, "verify_fail"),
+            (ToolFailureClass::Other, "other"),
+        ];
+        for (class, label) in labels {
+            assert_eq!(class.label(), label);
+        }
     }
 }

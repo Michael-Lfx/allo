@@ -42,9 +42,9 @@ pub use finalize::{
     sanitize_user_facing_reply,
 };
 pub use harness::{
-    CodingConfig, CodingHarness, CompactPolicyOverrides, FinishDecision, finish_decision_label,
-    ToolCallOutcome,
-    ToolSuccessFlags, ToolTurnNudge, VerificationMode,
+    CodingConfig, CodingHarness, CompactPolicyOverrides, FinishDecision, FinishGateFacts,
+    FinishReason, NudgeMeta, ToolCallOutcome, ToolSuccessFlags, ToolTurnNudge, VerificationMode,
+    finish_decision_label,
 };
 pub use patch::{
     PatchFileOp, PatchHunk, PatchParseError, ParsedPatch, looks_like_freeform_patch,

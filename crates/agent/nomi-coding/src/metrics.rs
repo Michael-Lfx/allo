@@ -32,6 +32,9 @@ pub struct HarnessKpi {
     pub checkpoint_ms: u64,
     pub ttft_ms: Option<u64>,
     pub tool_wall_ms: u64,
+    /// Failed tool results whose recovery nudge was withheld because the
+    /// failure is a normal probe outcome (for example a Glob that matched nothing).
+    pub failure_nudges_suppressed: usize,
     request_started: Instant,
 }
 
@@ -52,6 +55,7 @@ impl Default for HarnessKpi {
             checkpoint_ms: 0,
             ttft_ms: None,
             tool_wall_ms: 0,
+            failure_nudges_suppressed: 0,
             request_started: Instant::now(),
         }
     }
@@ -115,6 +119,10 @@ impl HarnessKpi {
         self.tool_wall_ms = self.tool_wall_ms.saturating_add(ms);
     }
 
+    pub fn observe_failure_nudge_suppressed(&mut self) {
+        self.failure_nudges_suppressed = self.failure_nudges_suppressed.saturating_add(1);
+    }
+
     pub fn note_ttft_ms(&mut self, ms: u64) {
         if self.ttft_ms.is_none() {
             self.ttft_ms = Some(ms);
@@ -145,6 +153,7 @@ impl HarnessKpi {
             checkpoint_ms: self.checkpoint_ms,
             ttft_ms: self.ttft_ms,
             tool_wall_ms: self.tool_wall_ms,
+            failure_nudges_suppressed: self.failure_nudges_suppressed,
         }
     }
 
@@ -190,6 +199,7 @@ pub struct HarnessKpiCounters {
     pub checkpoint_ms: u64,
     pub ttft_ms: Option<u64>,
     pub tool_wall_ms: u64,
+    pub failure_nudges_suppressed: usize,
 }
 
 /// Progress-guard counters paired with KPI for one observation sample.

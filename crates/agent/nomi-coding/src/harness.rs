@@ -14,11 +14,13 @@ use crate::profile::TaskProfile;
 use crate::progress::{
     CODING_EXPLORE_NUDGE, CODING_PLAN_HARD_STOP, CODING_PLAN_TIMEOUT_NUDGE, CODING_STALE_PLAN_NUDGE,
     CODING_VERIFY_NUDGE, PLAN_STALE_MUTATION_THRESHOLD, CodingProgressAction, CodingProgressGuard,
-    ProgressObserveParams, explore_budget_nudge_text, explore_hard_stop_text, is_recon_tool,
+    ProgressObserveParams, explore_budget_kind_label, explore_budget_nudge_text,
+    explore_hard_stop_text, is_recon_tool,
 };
 use crate::read_repeat::{
     CODING_READ_REPEAT_HARD_STOP, CODING_READ_REPEAT_NUDGE, CODING_UNCHANGED_STUB_NUDGE,
     DEFAULT_READ_REPEAT_HARD, DEFAULT_READ_REPEAT_SOFT, ReadRepeatAction, ReadRepeatTracker,
+    normalize_read_path,
 };
 use crate::todo_continuation::{
     parse_plan_update_content, PlanSnapshot, TodoContinuationMode, TodoContinuationTracker,
@@ -26,7 +28,7 @@ use crate::todo_continuation::{
 use crate::tools::advertise_tool;
 use crate::verify::{is_mutating_tool, looks_like_verification_command};
 
-use crate::failure::failure_nudge_if_useful;
+use crate::failure::{ToolFailureClass, failure_nudge_if_useful};
 use crate::metrics::{HarnessKpi, HarnessProfilerSnapshot};
 use crate::plan_artifact::PlanArtifact;
 use crate::working_set::WorkingSet;
@@ -43,6 +45,16 @@ pub enum VerificationMode {
     #[default]
     HardGate,
     Off,
+}
+
+impl VerificationMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SoftHint => "soft_hint",
+            Self::HardGate => "hard_gate",
+            Self::Off => "off",
+        }
+    }
 }
 
 /// Tunables for the coding harness. Defaults bias toward finishing work.
@@ -256,10 +268,82 @@ pub fn finish_decision_label(decision: &FinishDecision) -> &'static str {
     }
 }
 
+/// Which branch of the natural-end policy produced a [`FinishDecision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishReason {
+    Clean,
+    /// Files were changed and never verified, and the verify nudge was already
+    /// spent (or the mode does not gate): the turn ends unverified.
+    UnverifiedEnd,
+    ForcedAllow,
+    TrivialMutation,
+    VerifyGate,
+    VerifyBudgetExhausted,
+    TodoContinuation,
+    TodoBudgetExhausted,
+}
+
+impl FinishReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::UnverifiedEnd => "unverified_end",
+            Self::ForcedAllow => "forced_allow",
+            Self::TrivialMutation => "trivial_mutation",
+            Self::VerifyGate => "verify_gate",
+            Self::VerifyBudgetExhausted => "verify_budget_exhausted",
+            Self::TodoContinuation => "todo_continuation",
+            Self::TodoBudgetExhausted => "todo_budget_exhausted",
+        }
+    }
+}
+
+/// State the natural-end policy looked at, recorded with each finish decision
+/// so a threshold can be tuned from field data instead of guesses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FinishGateFacts {
+    pub reason: &'static str,
+    pub verification_mode: &'static str,
+    pub needs_verification: bool,
+    pub mutated_files: bool,
+    pub verified_after_mutation: bool,
+    pub trivial_mutation: bool,
+    pub trivial_mutation_ext: Option<String>,
+}
+
+/// Classification of one injected nudge, kept next to its text so observation
+/// does not have to parse prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NudgeMeta {
+    pub kind: &'static str,
+    pub detail: Option<String>,
+    pub tool: Option<String>,
+}
+
+impl NudgeMeta {
+    fn kind(kind: &'static str) -> Self {
+        Self {
+            kind,
+            detail: None,
+            tool: None,
+        }
+    }
+
+    fn detailed(kind: &'static str, detail: &str) -> Self {
+        Self {
+            kind,
+            detail: Some(detail.to_owned()),
+            tool: None,
+        }
+    }
+}
+
 /// Policy after a completed tool batch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolTurnNudge {
     pub texts: Vec<String>,
+    /// One entry per `texts` entry, same order.
+    pub metas: Vec<NudgeMeta>,
     /// When set, the engine must stop the tool loop after appending texts and
     /// run forced finalize: `SyncPlan` (keep `update_plan`) then `Reply` (no
     /// tools), ending as a normal `EndTurn` — never as
@@ -298,7 +382,10 @@ pub struct CodingHarness {
     kpi: HarnessKpi,
     plan_artifact: Option<PlanArtifact>,
     verify_fail_streak: usize,
-    trivial_mutation: bool,
+    /// Extension of the single file the last mutation batch touched, when that
+    /// batch counts as trivial (see `trivial_mutation_ext`).
+    trivial_mutation_ext: Option<String>,
+    last_finish_gate: Option<FinishGateFacts>,
     constitution_sent_this_request: bool,
     /// When set, the next provider turn is a policy stop. `SyncPlan` still
     /// advertises `update_plan`; `Reply` advertises no tools.
@@ -325,7 +412,8 @@ impl CodingHarness {
             kpi: HarnessKpi::default(),
             plan_artifact: None,
             verify_fail_streak: 0,
-            trivial_mutation: false,
+            trivial_mutation_ext: None,
+            last_finish_gate: None,
             constitution_sent_this_request: false,
             forced_finalize: None,
             mutations_since_plan: 0,
@@ -358,7 +446,8 @@ impl CodingHarness {
         self.kpi.reset_for_user_request();
         self.plan_artifact = None;
         self.verify_fail_streak = 0;
-        self.trivial_mutation = false;
+        self.trivial_mutation_ext = None;
+        self.last_finish_gate = None;
         self.continuations = ContinuationBudget::new(self.config.max_system_continuations);
         self.constitution_sent_this_request = false;
         self.forced_finalize = None;
@@ -372,7 +461,7 @@ impl CodingHarness {
         self.read_repeat.reset();
         self.working_set.reset();
         self.verify_fail_streak = 0;
-        self.trivial_mutation = false;
+        self.trivial_mutation_ext = None;
     }
 
     /// Schedule a graceful finish.
@@ -566,15 +655,47 @@ impl CodingHarness {
 
     /// Natural EndTurn policy: verify gate → todo continuation → budget.
     pub fn on_natural_end(&mut self) -> FinishDecision {
+        let inputs = self.finish_gate_inputs(FinishReason::Clean);
+        let (decision, reason) = self.decide_natural_end();
+        self.last_finish_gate = Some(FinishGateFacts {
+            reason: reason.label(),
+            ..inputs
+        });
+        decision
+    }
+
+    /// What the last [`Self::on_natural_end`] call looked at (captured before
+    /// the decision consumed any nudge latch) and why it decided as it did.
+    pub fn finish_gate_facts(&self) -> FinishGateFacts {
+        self.last_finish_gate
+            .clone()
+            .unwrap_or_else(|| self.finish_gate_inputs(FinishReason::Clean))
+    }
+
+    fn finish_gate_inputs(&self, reason: FinishReason) -> FinishGateFacts {
+        let progress = self.progress.snapshot_counters();
+        FinishGateFacts {
+            reason: reason.label(),
+            verification_mode: self.config.verification.label(),
+            needs_verification: progress.needs_verification_before_finish,
+            mutated_files: progress.mutated_files,
+            verified_after_mutation: progress.verified_after_mutation,
+            trivial_mutation: self.trivial_mutation_ext.is_some(),
+            trivial_mutation_ext: self.trivial_mutation_ext.clone(),
+        }
+    }
+
+    fn decide_natural_end(&mut self) -> (FinishDecision, FinishReason) {
         if self.progress.force_allow_finish() {
             self.progress.clear_force_allow_finish();
-            return FinishDecision::Allow;
+            return (FinishDecision::Allow, FinishReason::ForcedAllow);
         }
 
         // Narrow gate: single trivial text/config file, model already explained skip.
-        if self.trivial_mutation && self.progress.needs_verification_before_finish() {
+        if self.trivial_mutation_ext.is_some() && self.progress.needs_verification_before_finish()
+        {
             self.kpi.verify_before_end = false;
-            return FinishDecision::Allow;
+            return (FinishDecision::Allow, FinishReason::TrivialMutation);
         }
 
         // EvidenceRequired (HardGate) verify (one continuation if budget remains).
@@ -583,25 +704,36 @@ impl CodingHarness {
         {
             if self.continuations.try_consume() {
                 self.progress.mark_verification_nudge_sent();
-                return FinishDecision::ContinueWithNudge {
-                    nudge: CODING_VERIFY_NUDGE.to_string(),
-                };
+                return (
+                    FinishDecision::ContinueWithNudge {
+                        nudge: CODING_VERIFY_NUDGE.to_string(),
+                    },
+                    FinishReason::VerifyGate,
+                );
             }
             // Budget exhausted — do not loop; EndTurn is incomplete (KPI flag).
             self.kpi.verify_before_end = false;
-            return FinishDecision::Allow;
+            return (FinishDecision::Allow, FinishReason::VerifyBudgetExhausted);
         }
 
         // Todo / plan continuation (unlocked: one nudge per signature).
         if let Some(nudge) = self.todo.continuation_nudge() {
             if self.continuations.try_consume() {
-                return FinishDecision::ContinueWithNudge { nudge };
+                return (
+                    FinishDecision::ContinueWithNudge { nudge },
+                    FinishReason::TodoContinuation,
+                );
             }
             // Budget exhausted — allow EndTurn (pending plan stays in last tool result).
-            return FinishDecision::Allow;
+            return (FinishDecision::Allow, FinishReason::TodoBudgetExhausted);
         }
 
-        FinishDecision::Allow
+        let progress = self.progress.snapshot_counters();
+        if progress.mutated_files && !progress.verified_after_mutation {
+            return (FinishDecision::Allow, FinishReason::UnverifiedEnd);
+        }
+
+        (FinishDecision::Allow, FinishReason::Clean)
     }
 
     /// Observe a completed tool batch.
@@ -614,7 +746,7 @@ impl CodingHarness {
         let mut mutation_count = 0usize;
         let mut edit_action = EditConvergeAction::None;
         let mut hard_stop: Option<String> = None;
-        let mut texts: Vec<String> = Vec::new();
+        let mut nudges = NudgeBatch::default();
 
         for o in outcomes {
             tool_names.insert(o.name.clone());
@@ -646,10 +778,20 @@ impl CodingHarness {
             }
 
             if !o.success {
-                if let Some(err) = o.error_content.as_deref()
-                    && let Some(nudge) = failure_nudge_if_useful(&o.name, err)
-                {
-                    texts.push(nudge);
+                if let Some(err) = o.error_content.as_deref() {
+                    match failure_nudge_if_useful(&o.name, err) {
+                        Some(nudge) => nudges.push(
+                            NudgeMeta {
+                                kind: "tool_failure",
+                                detail: Some(
+                                    ToolFailureClass::from_tool(&o.name, err).label().to_owned(),
+                                ),
+                                tool: Some(o.name.clone()),
+                            },
+                            nudge,
+                        ),
+                        None => self.kpi.observe_failure_nudge_suppressed(),
+                    }
                 }
                 if matches!(o.name.as_str(), "Bash" | "exec_command")
                     && o.command.as_deref().is_some_and(looks_like_verification_command)
@@ -672,7 +814,7 @@ impl CodingHarness {
                     self.working_set.record_read(path, offset, limit.min(10_000), 10_000, None);
                     self.kpi.observe_read_key(&format!(
                         "{}#{}:{}",
-                        path,
+                        normalize_read_path(path),
                         offset,
                         o.limit.map(|n| n.to_string()).unwrap_or_else(|| "end".into())
                     ));
@@ -687,13 +829,22 @@ impl CodingHarness {
                 ) {
                     ReadRepeatAction::None => {}
                     ReadRepeatAction::SoftNudge => {
-                        texts.push(CODING_READ_REPEAT_NUDGE.to_string());
+                        nudges.push(
+                            NudgeMeta::detailed("read_repeat", "soft"),
+                            CODING_READ_REPEAT_NUDGE,
+                        );
                     }
                     ReadRepeatAction::UnchangedStubNudge => {
-                        texts.push(CODING_UNCHANGED_STUB_NUDGE.to_string());
+                        nudges.push(
+                            NudgeMeta::kind("read_unchanged_stub"),
+                            CODING_UNCHANGED_STUB_NUDGE,
+                        );
                     }
                     ReadRepeatAction::HardStop => {
-                        texts.push(CODING_READ_REPEAT_HARD_STOP.to_string());
+                        nudges.push(
+                            NudgeMeta::detailed("read_repeat", "hard"),
+                            CODING_READ_REPEAT_HARD_STOP,
+                        );
                         hard_stop = Some(CODING_READ_REPEAT_HARD_STOP.to_string());
                         self.progress.mark_force_allow_finish();
                     }
@@ -736,7 +887,11 @@ impl CodingHarness {
             self.verify_fail_streak = 0;
             self.kpi.verify_before_end = true;
         }
-        self.trivial_mutation = had_file_mutation && is_trivial_mutation_batch(outcomes);
+        self.trivial_mutation_ext = if had_file_mutation {
+            trivial_mutation_ext(outcomes)
+        } else {
+            None
+        };
 
         if had_file_mutation {
             // A successful edit means prior Reads served their purpose — reset
@@ -764,29 +919,37 @@ impl CodingHarness {
 
         match action {
             CodingProgressAction::Continue | CodingProgressAction::NudgeVerify => {}
-            CodingProgressAction::NudgeExplore => texts.push(CODING_EXPLORE_NUDGE.to_string()),
-            CodingProgressAction::NudgeExploreBudget(kind) => {
-                texts.push(explore_budget_nudge_text(kind).to_string())
+            CodingProgressAction::NudgeExplore => {
+                nudges.push(NudgeMeta::kind("explore"), CODING_EXPLORE_NUDGE)
             }
+            CodingProgressAction::NudgeExploreBudget(kind) => nudges.push(
+                NudgeMeta::detailed("explore_budget", explore_budget_kind_label(kind)),
+                explore_budget_nudge_text(kind),
+            ),
             CodingProgressAction::HardStopExplore(kind) => {
                 let text = explore_hard_stop_text(kind).to_string();
-                texts.push(text.clone());
+                nudges.push(
+                    NudgeMeta::detailed("explore_hard_stop", explore_budget_kind_label(kind)),
+                    text.clone(),
+                );
                 hard_stop = Some(text);
             }
             CodingProgressAction::NudgePlanTimeout => {
-                texts.push(CODING_PLAN_TIMEOUT_NUDGE.to_string())
+                nudges.push(NudgeMeta::kind("plan_timeout"), CODING_PLAN_TIMEOUT_NUDGE)
             }
             CodingProgressAction::HardStopPlanTimeout => {
-                texts.push(CODING_PLAN_HARD_STOP.to_string());
+                nudges.push(NudgeMeta::kind("plan_hard_stop"), CODING_PLAN_HARD_STOP);
                 hard_stop = Some(CODING_PLAN_HARD_STOP.to_string());
             }
         }
 
         match edit_action {
             EditConvergeAction::None => {}
-            EditConvergeAction::SoftNudge => texts.push(CODING_EDIT_CONVERGE_NUDGE.to_string()),
+            EditConvergeAction::SoftNudge => {
+                nudges.push(NudgeMeta::kind("edit_converge"), CODING_EDIT_CONVERGE_NUDGE)
+            }
             EditConvergeAction::HardStop => {
-                texts.push(CODING_EDIT_HARD_STOP.to_string());
+                nudges.push(NudgeMeta::kind("edit_hard_stop"), CODING_EDIT_HARD_STOP);
                 hard_stop = Some(CODING_EDIT_HARD_STOP.to_string());
                 self.progress.mark_force_allow_finish();
             }
@@ -799,7 +962,7 @@ impl CodingHarness {
             && self.progress.needs_verification_before_finish()
         {
             self.progress.mark_verification_nudge_sent();
-            texts.push(CODING_VERIFY_NUDGE.to_string());
+            nudges.push(NudgeMeta::kind("verify_hint"), CODING_VERIFY_NUDGE);
         }
 
         if had_plan_update {
@@ -816,7 +979,7 @@ impl CodingHarness {
                 && self.mutations_since_plan >= PLAN_STALE_MUTATION_THRESHOLD
             {
                 self.stale_plan_nudge_sent = true;
-                texts.push(CODING_STALE_PLAN_NUDGE.to_string());
+                nudges.push(NudgeMeta::kind("stale_plan"), CODING_STALE_PLAN_NUDGE);
             }
         }
 
@@ -827,7 +990,8 @@ impl CodingHarness {
         }
 
         ToolTurnNudge {
-            texts,
+            texts: nudges.texts,
+            metas: nudges.metas,
             hard_stop,
             progress_action: action,
             profiler: self.profiler_snapshot(),
@@ -884,7 +1048,9 @@ fn recon_turn_facts(outcomes: &[ToolCallOutcome]) -> (bool, usize) {
     (recon_only, parent.len())
 }
 
-fn is_trivial_mutation_batch(outcomes: &[ToolCallOutcome]) -> bool {
+/// Extension of the one file a mutation batch touched, when that file is a
+/// text/config type exempt from the verification gate.
+fn trivial_mutation_ext(outcomes: &[ToolCallOutcome]) -> Option<String> {
     let mut edited = Vec::new();
     for o in outcomes {
         if o.success && matches!(o.name.as_str(), "Edit" | "Write") {
@@ -893,17 +1059,32 @@ fn is_trivial_mutation_batch(outcomes: &[ToolCallOutcome]) -> bool {
             }
         }
         if o.success && o.name == "ApplyPatch" {
-            return false;
+            return None;
         }
     }
     if edited.len() != 1 {
-        return false;
+        return None;
     }
     let path = edited[0].to_ascii_lowercase();
+    let (_, ext) = path.rsplit_once('.')?;
     matches!(
-        path.rsplit_once('.').map(|(_, ext)| ext),
-        Some("md" | "txt" | "json" | "toml" | "yml" | "yaml" | "lock" | "svg" | "css" | "html" | "xml")
+        ext,
+        "md" | "txt" | "json" | "toml" | "yml" | "yaml" | "lock" | "svg" | "css" | "html" | "xml"
     )
+    .then(|| ext.to_owned())
+}
+
+#[derive(Default)]
+struct NudgeBatch {
+    texts: Vec<String>,
+    metas: Vec<NudgeMeta>,
+}
+
+impl NudgeBatch {
+    fn push(&mut self, meta: NudgeMeta, text: impl Into<String>) {
+        self.texts.push(text.into());
+        self.metas.push(meta);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1428,5 +1609,234 @@ mod tests {
             "got texts: {:?}",
             nudge.texts
         );
+    }
+
+    fn failed(name: &str, err: &str) -> ToolCallOutcome {
+        ToolCallOutcome {
+            name: name.into(),
+            success: false,
+            error_content: Some(err.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn failed_glob_probe_is_counted_but_not_nudged() {
+        let mut h = CodingHarness::with_defaults(None);
+        let nudge = h.after_tool_turn(&[failed(
+            "Glob",
+            "Error: path 'C:/work/missing' is not an existing directory",
+        )]);
+        assert!(nudge.texts.is_empty(), "got texts: {:?}", nudge.texts);
+        assert!(nudge.metas.is_empty());
+        assert_eq!(nudge.profiler.kpi.failure_nudges_suppressed, 1);
+        assert_eq!(h.profiler_snapshot().kpi.failure_nudges_suppressed, 1);
+    }
+
+    #[test]
+    fn failed_read_of_missing_file_still_nudges_with_class_and_tool() {
+        let mut h = CodingHarness::with_defaults(None);
+        let nudge = h.after_tool_turn(&[failed("Read", "No such file or directory: src/gone.rs")]);
+        assert_eq!(nudge.texts.len(), 1);
+        assert_eq!(
+            nudge.metas,
+            vec![NudgeMeta {
+                kind: "tool_failure",
+                detail: Some("not_found".into()),
+                tool: Some("Read".into()),
+            }]
+        );
+        assert_eq!(nudge.profiler.kpi.failure_nudges_suppressed, 0);
+    }
+
+    #[test]
+    fn nudge_metas_stay_aligned_with_texts() {
+        let mut h = CodingHarness::with_defaults(None);
+        let read = |path: &str| ToolCallOutcome {
+            name: "Read".into(),
+            success: true,
+            file_path: Some(path.into()),
+            result_content: Some("1:abcd→body".into()),
+            ..Default::default()
+        };
+        let _ = h.after_tool_turn(&[read("src/a.rs")]);
+        let soft = h.after_tool_turn(&[read("./src/a.rs"), failed("Read", "No such file: x")]);
+        assert_eq!(soft.texts.len(), soft.metas.len());
+        let kinds: Vec<_> = soft.metas.iter().map(|m| m.kind).collect();
+        assert_eq!(kinds, vec!["read_repeat", "tool_failure"]);
+        assert_eq!(soft.metas[0].detail.as_deref(), Some("soft"));
+        assert_eq!(soft.metas[1].tool.as_deref(), Some("Read"));
+        let hard = h.after_tool_turn(&[read("src/a.rs")]);
+        assert_eq!(hard.texts.len(), hard.metas.len());
+        assert_eq!(hard.metas[0].kind, "read_repeat");
+        assert_eq!(hard.metas[0].detail.as_deref(), Some("hard"));
+        assert!(hard.hard_stop.is_some());
+    }
+
+    #[test]
+    fn explore_nudges_carry_their_budget_kind() {
+        let mut h = CodingHarness::new(
+            None,
+            CodingConfig {
+                explore_budget: 2,
+                explore_hard_stop: 3,
+                serial_recon_budget: 20,
+                serial_recon_hard_stop: 20,
+                recon_lifetime_budget: 20,
+                recon_lifetime_hard_stop: 20,
+                read_repeat_soft: 20,
+                read_repeat_hard: 20,
+                ..Default::default()
+            },
+        );
+        let distinct = |n: usize| ToolCallOutcome {
+            name: "Read".into(),
+            success: true,
+            file_path: Some(format!("src/f{n}.rs")),
+            result_content: Some("1:x".into()),
+            ..Default::default()
+        };
+        let mut metas = Vec::new();
+        for n in 0..3 {
+            metas.extend(h.after_tool_turn(&[distinct(n)]).metas);
+        }
+        assert!(
+            metas
+                .iter()
+                .any(|m| m.kind == "explore_hard_stop"
+                    && m.detail.as_deref() == Some("consecutive_tour")),
+            "got metas: {metas:?}"
+        );
+    }
+
+    #[test]
+    fn finish_gate_facts_name_the_branch_that_decided() {
+        let mut h = CodingHarness::with_defaults(None);
+        let _ = h.after_tool_turn(&[edit_ok()]);
+        assert!(matches!(
+            h.on_natural_end(),
+            FinishDecision::ContinueWithNudge { .. }
+        ));
+        let gate = h.finish_gate_facts();
+        assert_eq!(gate.reason, "verify_gate");
+        assert_eq!(gate.verification_mode, "hard_gate");
+        assert!(gate.needs_verification);
+        assert!(gate.mutated_files);
+        assert!(!gate.verified_after_mutation);
+        assert!(!gate.trivial_mutation);
+
+        assert_eq!(h.on_natural_end(), FinishDecision::Allow);
+        let spent = h.finish_gate_facts();
+        assert_eq!(spent.reason, "unverified_end");
+        assert!(spent.mutated_files);
+        assert!(!spent.verified_after_mutation);
+        assert!(!spent.needs_verification);
+    }
+
+    #[test]
+    fn finish_gate_facts_report_an_exhausted_continuation_budget() {
+        let mut h = CodingHarness::new(
+            None,
+            CodingConfig {
+                max_system_continuations: 1,
+                ..Default::default()
+            },
+        );
+        let _ = h.after_tool_turn(&[edit_ok()]);
+        assert!(matches!(
+            h.on_natural_end(),
+            FinishDecision::ContinueWithNudge { .. }
+        ));
+        let _ = h.after_tool_turn(&[edit_ok()]);
+        assert_eq!(h.on_natural_end(), FinishDecision::Allow);
+        let gate = h.finish_gate_facts();
+        assert_eq!(gate.reason, "verify_budget_exhausted");
+        assert!(gate.needs_verification);
+    }
+
+    #[test]
+    fn finish_gate_facts_record_a_verified_end_as_clean() {
+        let mut h = CodingHarness::with_defaults(None);
+        let _ = h.after_tool_turn(&[
+            edit_ok(),
+            ToolCallOutcome {
+                name: "Bash".into(),
+                success: true,
+                command: Some("cargo test -p nomi-coding".into()),
+                ..Default::default()
+            },
+        ]);
+        assert_eq!(h.on_natural_end(), FinishDecision::Allow);
+        let gate = h.finish_gate_facts();
+        assert_eq!(gate.reason, "clean");
+        assert!(gate.verified_after_mutation);
+    }
+
+    #[test]
+    fn finish_gate_facts_report_the_trivial_extension() {
+        let mut h = CodingHarness::with_defaults(None);
+        let _ = h.after_tool_turn(&[ToolCallOutcome {
+            name: "Write".into(),
+            success: true,
+            file_path: Some("docs/Notes.MD".into()),
+            ..Default::default()
+        }]);
+        assert_eq!(h.on_natural_end(), FinishDecision::Allow);
+        let gate = h.finish_gate_facts();
+        assert_eq!(gate.reason, "trivial_mutation");
+        assert!(gate.trivial_mutation);
+        assert_eq!(gate.trivial_mutation_ext.as_deref(), Some("md"));
+    }
+
+    #[test]
+    fn finish_gate_facts_clean_without_any_mutation() {
+        let mut h = CodingHarness::with_defaults(None);
+        let _ = h.after_tool_turn(&[read_ok()]);
+        assert_eq!(h.on_natural_end(), FinishDecision::Allow);
+        let gate = h.finish_gate_facts();
+        assert_eq!(gate.reason, "clean");
+        assert!(!gate.mutated_files);
+        assert!(!gate.needs_verification);
+    }
+
+    #[test]
+    fn finish_gate_facts_follow_the_next_user_request() {
+        let mut h = CodingHarness::with_defaults(None);
+        let _ = h.after_tool_turn(&[edit_ok()]);
+        let _ = h.on_natural_end();
+        h.reset_for_user_request();
+        let gate = h.finish_gate_facts();
+        assert_eq!(gate.reason, "clean");
+        assert!(!gate.mutated_files);
+    }
+
+    #[test]
+    fn kpi_read_key_ignores_path_spelling() {
+        let mut h = CodingHarness::new(
+            None,
+            CodingConfig {
+                read_repeat_soft: 20,
+                read_repeat_hard: 20,
+                explore_budget: 20,
+                explore_hard_stop: 20,
+                serial_recon_budget: 20,
+                serial_recon_hard_stop: 20,
+                recon_lifetime_budget: 20,
+                recon_lifetime_hard_stop: 20,
+                ..Default::default()
+            },
+        );
+        let read = |path: &str| ToolCallOutcome {
+            name: "Read".into(),
+            success: true,
+            file_path: Some(path.into()),
+            result_content: Some("1:x".into()),
+            ..Default::default()
+        };
+        let _ = h.after_tool_turn(&[read("C:\\Work\\src\\a.rs")]);
+        let _ = h.after_tool_turn(&[read("c:/work/src/a.rs")]);
+        let kpi = h.profiler_snapshot().kpi;
+        assert_eq!(kpi.unique_read_keys, 1);
+        assert_eq!(kpi.reread_keys, 1);
     }
 }

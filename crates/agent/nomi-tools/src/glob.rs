@@ -9,9 +9,16 @@ use serde_json::{Value, json};
 use nomi_protocol::events::ToolCategory;
 use nomi_types::tool::{JsonSchema, ToolResult};
 
-use crate::Tool;
+use crate::{
+    Tool,
+    phase_trace::{self, AttrValue},
+};
 
 const MAX_RESULTS: usize = 100;
+
+/// Upper bound on the alternatives one pattern may expand to, so a product of
+/// brace groups cannot make the per-entry match cost explode.
+const MAX_BRACE_ALTERNATIVES: usize = 64;
 
 /// Hard stop on visited entries so Glob cannot hang on enormous trees. Ignored
 /// directories are pruned before descent, so this only trips on genuinely
@@ -58,36 +65,146 @@ fn literal_dir_prefix(pattern: &str) -> Option<String> {
     Some(literal.join("/"))
 }
 
-fn glob_matches(pattern: &str, relative: &str) -> bool {
-    let pattern = pattern.replace('\\', "/");
-    let relative = relative.replace('\\', "/");
-    // Patterns without a path segment (`*.rs`, `Cargo.toml`) are root-only.
-    // The `glob` crate otherwise lets `*` consume `/` on Windows.
-    if !pattern.contains('/') && !pattern.contains("**") {
-        if relative.contains('/') {
-            return false;
+/// Splits the first `{a,b}` group of `pattern` into its surrounding text and
+/// options. A brace pair without a top-level comma (`{id}`) is literal, as in
+/// shell brace expansion, and so is anything inside a `[...]` class.
+fn split_first_brace_group(pattern: &str) -> Option<(&str, Vec<&str>, &str)> {
+    let bytes = pattern.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'[' => {
+                index = pattern[index..]
+                    .find(']')
+                    .map_or(bytes.len(), |close| index + close + 1);
+            }
+            b'{' => {
+                let mut depth = 0usize;
+                let mut option_start = index + 1;
+                let mut options = Vec::new();
+                let mut close = None;
+                for (offset, byte) in bytes[index..].iter().enumerate() {
+                    let at = index + offset;
+                    match byte {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                options.push(&pattern[option_start..at]);
+                                close = Some(at);
+                                break;
+                            }
+                        }
+                        b',' if depth == 1 => {
+                            options.push(&pattern[option_start..at]);
+                            option_start = at + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                match close {
+                    Some(close) if options.len() > 1 => {
+                        return Some((&pattern[..index], options, &pattern[close + 1..]));
+                    }
+                    _ => index += 1,
+                }
+            }
+            _ => index += 1,
         }
-        return glob::Pattern::new(&pattern)
-            .ok()
-            .is_some_and(|matcher| matcher.matches(&relative));
     }
-    let Ok(matcher) = glob::Pattern::new(&pattern) else {
-        return false;
-    };
-    if matcher.matches(&relative) {
-        return true;
+    None
+}
+
+/// Expands every comma-separated brace group, nested ones included. `None`
+/// when the expansion would exceed [`MAX_BRACE_ALTERNATIVES`].
+fn expand_braces(pattern: &str) -> Option<Vec<String>> {
+    let mut pending = vec![pattern.to_owned()];
+    let mut expanded = Vec::new();
+    while let Some(candidate) = pending.pop() {
+        match split_first_brace_group(&candidate) {
+            None => expanded.push(candidate),
+            Some((head, options, tail)) => {
+                pending.extend(
+                    options
+                        .into_iter()
+                        .map(|option| format!("{head}{option}{tail}")),
+                );
+            }
+        }
+        if pending.len() + expanded.len() > MAX_BRACE_ALTERNATIVES {
+            return None;
+        }
     }
-    let Some(rest) = pattern.strip_prefix("**/") else {
-        return false;
-    };
-    let Ok(inner) = glob::Pattern::new(rest) else {
-        return false;
-    };
-    inner.matches(&relative)
-        || relative
-            .rsplit('/')
-            .next()
-            .is_some_and(|name| inner.matches(name))
+    Some(expanded)
+}
+
+struct Alternative {
+    root_only: bool,
+    full: glob::Pattern,
+    after_leading_globstar: Option<glob::Pattern>,
+}
+
+impl Alternative {
+    fn new(pattern: &str) -> Result<Self, String> {
+        let full = glob::Pattern::new(pattern)
+            .map_err(|_| format!("Invalid glob pattern: {pattern}"))?;
+        Ok(Self {
+            // Patterns without a path segment (`*.rs`, `Cargo.toml`) are
+            // root-only. The `glob` crate otherwise lets `*` consume `/` on
+            // Windows.
+            root_only: !pattern.contains('/') && !pattern.contains("**"),
+            full,
+            after_leading_globstar: pattern
+                .strip_prefix("**/")
+                .and_then(|rest| glob::Pattern::new(rest).ok()),
+        })
+    }
+
+    fn matches(&self, relative: &str) -> bool {
+        if self.root_only {
+            return !relative.contains('/') && self.full.matches(relative);
+        }
+        if self.full.matches(relative) {
+            return true;
+        }
+        let Some(inner) = &self.after_leading_globstar else {
+            return false;
+        };
+        inner.matches(relative)
+            || relative
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| inner.matches(name))
+    }
+}
+
+struct GlobMatcher {
+    alternatives: Vec<Alternative>,
+}
+
+impl GlobMatcher {
+    fn new(pattern: &str) -> Result<Self, String> {
+        let pattern = pattern.replace('\\', "/");
+        let expanded = expand_braces(&pattern).ok_or_else(|| {
+            format!("Glob pattern expands to more than {MAX_BRACE_ALTERNATIVES} alternatives: {pattern}")
+        })?;
+        let alternatives = expanded
+            .iter()
+            .map(|alternative| Alternative::new(alternative))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { alternatives })
+    }
+
+    fn alternative_count(&self) -> usize {
+        self.alternatives.len()
+    }
+
+    fn matches(&self, relative: &str) -> bool {
+        let relative = relative.replace('\\', "/");
+        self.alternatives
+            .iter()
+            .any(|alternative| alternative.matches(&relative))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -97,16 +214,27 @@ enum WalkStop {
     TimeLimit,
 }
 
+impl WalkStop {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::EntryLimit => "entry_limit",
+            Self::TimeLimit => "time_limit",
+        }
+    }
+}
+
 struct WalkOutcome {
     matches: Vec<(SystemTime, String)>,
     stop: WalkStop,
+    walked: usize,
     heaviest_top_level: Option<(String, usize)>,
 }
 
 fn collect_matches(
     root: &Path,
     walk_root: &Path,
-    pattern: &str,
+    matcher: &GlobMatcher,
     max_walked: usize,
 ) -> WalkOutcome {
     let started = Instant::now();
@@ -143,7 +271,7 @@ fn collect_matches(
         if !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;
         }
-        if !glob_matches(pattern, &relative) {
+        if !matcher.matches(&relative) {
             continue;
         }
         let mtime = entry
@@ -158,8 +286,13 @@ fn collect_matches(
     WalkOutcome {
         matches,
         stop,
+        walked,
         heaviest_top_level,
     }
+}
+
+fn note_outcome(outcome: &'static str) {
+    phase_trace::record_attr("glob.outcome", AttrValue::Label(outcome));
 }
 
 fn stop_hint(outcome: &WalkOutcome) -> String {
@@ -210,7 +343,7 @@ impl Tool for GlobTool {
 
     fn description(&self) -> &str {
         "Fast OS-agnostic file pattern matching tool that works with any codebase size.\n\n\
-         - Supports glob patterns like \"**/*.rs\" or \"src/**/*.ts\".\n\
+         - Supports glob patterns like \"**/*.rs\" or \"src/**/*.ts\", including brace alternation such as \"**/*.{ts,tsx}\".\n\
          - Returns matching file paths sorted by modification time (newest first).\n\
          - Returns at most 100 results. Only returns files, not directories.\n\
          - Respects .gitignore, and always skips .git, node_modules, target and __pycache__. Files in ignored \
@@ -257,20 +390,35 @@ impl Tool for GlobTool {
         tracing::debug!(cwd = %self.cwd.display(), resolved_root = %root_path.display(), pattern = %pattern, "GlobTool scanning");
 
         let pattern = pattern.replace('\\', "/");
-        if glob::Pattern::new(&pattern).is_err() {
-            return error_result(format!("Invalid glob pattern: {pattern}"));
-        }
+        let matcher = match GlobMatcher::new(&pattern) {
+            Ok(matcher) => matcher,
+            Err(message) => {
+                note_outcome("bad_pattern");
+                return error_result(message);
+            }
+        };
+        phase_trace::record_attr(
+            "glob.alternatives",
+            AttrValue::count(matcher.alternative_count()),
+        );
         if !root_path.is_dir() {
+            note_outcome("root_missing");
             return error_result(format!(
                 "Search path is not an existing directory: {}",
                 root_path.display()
             ));
         }
 
-        let walk_root = match literal_dir_prefix(&pattern) {
+        let literal_prefix = literal_dir_prefix(&pattern);
+        phase_trace::record_attr(
+            "glob.prefix_narrowed",
+            AttrValue::Bool(literal_prefix.is_some()),
+        );
+        let walk_root = match literal_prefix {
             Some(prefix) => {
                 let candidate = root_path.join(&prefix);
                 if !candidate.is_dir() {
+                    note_outcome("prefix_missing");
                     return ok_result(format!(
                         "No files matched the pattern: directory `{prefix}` does not exist under {}",
                         root_path.display()
@@ -281,23 +429,33 @@ impl Tool for GlobTool {
             None => root_path.clone(),
         };
 
-        let walk_pattern = pattern.clone();
         let walk_base = root_path.clone();
         let outcome = match tokio::task::spawn_blocking(move || {
-            collect_matches(&walk_base, &walk_root, &walk_pattern, MAX_WALKED)
+            collect_matches(&walk_base, &walk_root, &matcher, MAX_WALKED)
         })
         .await
         {
             Ok(outcome) => outcome,
-            Err(error) => return error_result(format!("Glob walk failed: {error}")),
+            Err(error) => {
+                note_outcome("walk_failed");
+                return error_result(format!("Glob walk failed: {error}"));
+            }
         };
 
         let hint = stop_hint(&outcome);
         let total_matched = outcome.matches.len();
+        phase_trace::record_attr("glob.walked", AttrValue::count(outcome.walked));
+        phase_trace::record_attr("glob.matched", AttrValue::count(total_matched));
+        phase_trace::record_attr(
+            "glob.returned",
+            AttrValue::count(total_matched.min(MAX_RESULTS)),
+        );
+        phase_trace::record_attr("glob.walk_stop", AttrValue::Label(outcome.stop.label()));
         let mut files = outcome.matches;
         files.sort_by_key(|file| std::cmp::Reverse(file.0));
 
         if files.is_empty() {
+            note_outcome("empty");
             return ok_result(if hint.is_empty() {
                 "No files matched the pattern".to_string()
             } else {
@@ -305,6 +463,11 @@ impl Tool for GlobTool {
             });
         }
 
+        note_outcome(if total_matched > MAX_RESULTS {
+            "capped"
+        } else {
+            "matched"
+        });
         files.truncate(MAX_RESULTS);
         let mut result: Vec<String> = files.into_iter().map(|(_, path)| path).collect();
         if total_matched > MAX_RESULTS {
@@ -635,7 +798,8 @@ mod tests {
         }
         fs::write(base.join("small").join("a.log"), "x").unwrap();
 
-        let outcome = collect_matches(base, base, "**/*.nothing", 20);
+        let matcher = GlobMatcher::new("**/*.nothing").unwrap();
+        let outcome = collect_matches(base, base, &matcher, 20);
 
         assert!(outcome.stop == WalkStop::EntryLimit);
         assert_eq!(outcome.heaviest_top_level.as_ref().map(|(name, _)| name.as_str()), Some("big"));
@@ -654,11 +818,205 @@ mod tests {
         assert_eq!(literal_dir_prefix("src/{a,b}/*.rs").as_deref(), Some("src"));
     }
 
+    fn matches(pattern: &str, relative: &str) -> bool {
+        GlobMatcher::new(pattern).unwrap().matches(relative)
+    }
+
     #[test]
     fn glob_matches_starstar_at_root() {
-        assert!(glob_matches("**/*.txt", "root.txt"));
-        assert!(glob_matches("**/*.txt", "a/b.txt"));
-        assert!(!glob_matches("*.txt", "a/b.txt"));
-        assert!(glob_matches("**/icons.generated.ts", "apps/desktop/icons.generated.ts"));
+        assert!(matches("**/*.txt", "root.txt"));
+        assert!(matches("**/*.txt", "a/b.txt"));
+        assert!(!matches("*.txt", "a/b.txt"));
+        assert!(matches("**/icons.generated.ts", "apps/desktop/icons.generated.ts"));
+    }
+
+    fn expanded(pattern: &str) -> Vec<String> {
+        let mut out = expand_braces(pattern).expect("within the alternative cap");
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn expand_braces_covers_flat_nested_and_repeated_groups() {
+        assert_eq!(expanded("*.rs"), vec!["*.rs"]);
+        assert_eq!(expanded("*.{ts,tsx}"), vec!["*.ts", "*.tsx"]);
+        assert_eq!(expanded("{a,b{1,2}}.txt"), vec!["a.txt", "b1.txt", "b2.txt"]);
+        assert_eq!(
+            expanded("{x,y}/{1,2}"),
+            vec!["x/1", "x/2", "y/1", "y/2"]
+        );
+    }
+
+    #[test]
+    fn expand_braces_keeps_commaless_and_unbalanced_braces_literal() {
+        assert_eq!(expanded("{id}.json"), vec!["{id}.json"]);
+        assert_eq!(expanded("{a,b"), vec!["{a,b"]);
+        assert_eq!(expanded("a}b"), vec!["a}b"]);
+        assert_eq!(expanded("[{a,b}]"), vec!["[{a,b}]"]);
+        assert_eq!(expanded("{id}.{ts,js}"), vec!["{id}.js", "{id}.ts"]);
+    }
+
+    #[test]
+    fn expand_braces_refuses_to_blow_up() {
+        let pattern = "{a,b}".repeat(7);
+        assert!(expand_braces(&pattern).is_none());
+        assert!(expand_braces(&"{a,b}".repeat(6)).is_some());
+    }
+
+    #[test]
+    fn matcher_applies_every_brace_alternative_with_the_original_rules() {
+        let pattern = "**/{CHANGELOG*,RELEASE*,*.md}";
+        assert!(matches(pattern, "CHANGELOG.md"));
+        assert!(matches(pattern, "RELEASE_NOTES.txt"));
+        assert!(matches(pattern, "docs/guide.md"));
+        assert!(matches(pattern, "a/b/CHANGELOG"));
+        assert!(!matches(pattern, "src/main.rs"));
+        assert!(matches("*.{rs,toml}", "Cargo.toml"));
+        assert!(!matches("*.{rs,toml}", "sub/Cargo.toml"));
+    }
+
+    #[tokio::test]
+    async fn brace_alternation_finds_files_that_a_literal_reading_missed() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        fs::create_dir_all(base.join("docs")).unwrap();
+        fs::create_dir_all(base.join("src")).unwrap();
+        fs::write(base.join("CHANGELOG.md"), "x").unwrap();
+        fs::write(base.join("RELEASE_NOTES.txt"), "x").unwrap();
+        fs::write(base.join("docs").join("guide.md"), "x").unwrap();
+        fs::write(base.join("src").join("main.rs"), "x").unwrap();
+
+        let result = run_glob("**/{CHANGELOG*,RELEASE*,*.md}", base.to_str().unwrap()).await;
+
+        assert!(!result.is_error, "{}", result.content);
+        let mut listed = lines(&result);
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            vec!["CHANGELOG.md", "RELEASE_NOTES.txt", "docs/guide.md"],
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn brace_group_in_a_directory_segment_keeps_the_literal_prefix_walk() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        for name in ["a", "b", "c"] {
+            fs::create_dir_all(base.join("src").join(name)).unwrap();
+            fs::write(base.join("src").join(name).join("m.rs"), "x").unwrap();
+        }
+
+        let result = run_glob("src/{a,b}/*.rs", base.to_str().unwrap()).await;
+
+        let mut listed = lines(&result);
+        listed.sort_unstable();
+        assert_eq!(listed, vec!["src/a/m.rs", "src/b/m.rs"], "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn literal_braces_in_file_names_still_match() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        fs::write(base.join("{id}.json"), "x").unwrap();
+
+        let result = run_glob("{id}.json", base.to_str().unwrap()).await;
+
+        assert_eq!(lines(&result), vec!["{id}.json"], "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn runaway_brace_expansion_is_a_clear_error() {
+        let dir = tempdir().unwrap();
+
+        let result = run_glob(&"{a,b}".repeat(7), dir.path().to_str().unwrap()).await;
+
+        assert!(result.is_error, "{}", result.content);
+        assert!(result.content.contains("expands to more than"), "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn invalid_alternative_names_the_expanded_pattern() {
+        let dir = tempdir().unwrap();
+
+        let result = run_glob("{ok,[bad}", dir.path().to_str().unwrap()).await;
+
+        assert!(result.is_error, "{}", result.content);
+        assert!(result.content.contains("Invalid glob pattern"), "{}", result.content);
+    }
+
+    async fn run_glob_traced(pattern: &str, path: &str) -> (ToolResult, phase_trace::ToolTrace) {
+        let tool = GlobTool::new(PathBuf::from(path));
+        phase_trace::collect_trace(tool.execute(json!({ "pattern": pattern, "path": path }))).await
+    }
+
+    fn attr(trace: &phase_trace::ToolTrace, key: &str) -> Option<AttrValue> {
+        trace
+            .attrs
+            .iter()
+            .find(|attr| attr.key == key)
+            .map(|attr| attr.value)
+    }
+
+    #[tokio::test]
+    async fn trace_reports_match_counts_and_a_completed_walk() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        fs::create_dir_all(base.join("src")).unwrap();
+        fs::write(base.join("src").join("a.ts"), "x").unwrap();
+        fs::write(base.join("src").join("b.tsx"), "x").unwrap();
+        fs::write(base.join("src").join("c.rs"), "x").unwrap();
+
+        let (result, trace) = run_glob_traced("src/*.{ts,tsx}", base.to_str().unwrap()).await;
+
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(attr(&trace, "glob.outcome"), Some(AttrValue::Label("matched")));
+        assert_eq!(attr(&trace, "glob.matched"), Some(AttrValue::Int(2)));
+        assert_eq!(attr(&trace, "glob.returned"), Some(AttrValue::Int(2)));
+        assert_eq!(attr(&trace, "glob.alternatives"), Some(AttrValue::Int(2)));
+        assert_eq!(attr(&trace, "glob.prefix_narrowed"), Some(AttrValue::Bool(true)));
+        assert_eq!(attr(&trace, "glob.walk_stop"), Some(AttrValue::Label("completed")));
+        assert!(matches!(attr(&trace, "glob.walked"), Some(AttrValue::Int(n)) if n >= 4));
+    }
+
+    #[tokio::test]
+    async fn trace_separates_empty_results_from_a_missing_prefix_and_root() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        fs::write(base.join("a.txt"), "x").unwrap();
+
+        let (_, empty) = run_glob_traced("*.rs", base.to_str().unwrap()).await;
+        assert_eq!(attr(&empty, "glob.outcome"), Some(AttrValue::Label("empty")));
+        assert_eq!(attr(&empty, "glob.matched"), Some(AttrValue::Int(0)));
+
+        let (_, prefix) = run_glob_traced("nope/**/*.rs", base.to_str().unwrap()).await;
+        assert_eq!(attr(&prefix, "glob.outcome"), Some(AttrValue::Label("prefix_missing")));
+        assert_eq!(attr(&prefix, "glob.matched"), None);
+
+        let missing_root = base.join("absent");
+        let (result, root) = run_glob_traced("*.rs", missing_root.to_str().unwrap()).await;
+        assert!(result.is_error);
+        assert_eq!(attr(&root, "glob.outcome"), Some(AttrValue::Label("root_missing")));
+
+        let (result, bad) = run_glob_traced("[", base.to_str().unwrap()).await;
+        assert!(result.is_error);
+        assert_eq!(attr(&bad, "glob.outcome"), Some(AttrValue::Label("bad_pattern")));
+    }
+
+    #[tokio::test]
+    async fn trace_distinguishes_capped_results() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let n = MAX_RESULTS + 3;
+        for i in 0..n {
+            fs::write(base.join(format!("f{i}.rs")), "x").unwrap();
+        }
+
+        let (_, trace) = run_glob_traced("*.rs", base.to_str().unwrap()).await;
+
+        assert_eq!(attr(&trace, "glob.outcome"), Some(AttrValue::Label("capped")));
+        assert_eq!(attr(&trace, "glob.matched"), Some(AttrValue::count(n)));
+        assert_eq!(attr(&trace, "glob.returned"), Some(AttrValue::count(MAX_RESULTS)));
     }
 }
