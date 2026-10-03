@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use nomi_config::ServerConfig;
 use nomi_config::compat::ProviderCompat;
 use nomi_providers::openai::OpenAIProvider;
-use nomi_providers::{LlmProvider, ProviderError};
+use nomi_providers::{LlmProvider, ProviderError, WireFacts};
 use nomi_types::llm::{LlmEvent, LlmRequest};
 use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
@@ -78,12 +78,7 @@ impl ServerLlmProvider {
             })?;
 
         let base = self.config.effective_llm_base_url();
-        let mut compat = ProviderCompat::default();
-        compat.supports_image = Some(true);
-        // Mirror JWT into legacy `token` and enable X-Flowy-Turn-Id injection
-        // when a billing turn is scoped (same contract as flowy-cloud provider).
-        compat.mirror_bearer_header = Some("token".to_string());
-        Ok(OpenAIProvider::new(&token, &base, compat))
+        Ok(OpenAIProvider::new(&token, &base, gateway_compat()))
     }
 
     async fn resolve_model(&self, model: Option<&str>) -> String {
@@ -95,8 +90,22 @@ impl ServerLlmProvider {
     }
 }
 
+fn gateway_compat() -> ProviderCompat {
+    let mut compat = ProviderCompat::default();
+    compat.supports_image = Some(true);
+    // Mirror JWT into legacy `token` and enable X-Flowy-Turn-Id injection
+    // when a billing turn is scoped (same contract as flowy-cloud provider).
+    compat.mirror_bearer_header = Some("token".to_string());
+    compat
+}
+
 #[async_trait]
 impl LlmProvider for ServerLlmProvider {
+    fn describe_request(&self, request: &LlmRequest) -> Option<WireFacts> {
+        OpenAIProvider::new("", &self.config.effective_llm_base_url(), gateway_compat())
+            .describe_request(request)
+    }
+
     async fn stream(
         &self,
         request: &LlmRequest,

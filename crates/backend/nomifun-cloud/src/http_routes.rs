@@ -95,6 +95,10 @@ const TELEMETRY_EVENT_NAMES: &[&str] = &[
     "llm_call_failed",
     "tool_executed",
     "llm_request",
+    "llm_response",
+    "harness_nudge",
+    "harness_finish",
+    "agent_turn_summary",
     "device_activated",
     "experiment_exposed",
     "provider_degraded",
@@ -293,6 +297,10 @@ fn expected_growth_module(name: &str, feature: Option<&str>) -> &'static str {
             | "llm_call_failed"
             | "tool_executed"
             | "llm_request"
+            | "llm_response"
+            | "harness_nudge"
+            | "harness_finish"
+            | "agent_turn_summary"
     ) {
         return "conversation";
     }
@@ -562,6 +570,10 @@ mod growth_tests {
             ("llm_call_failed", "conversation"),
             ("tool_executed", "conversation"),
             ("llm_request", "conversation"),
+            ("llm_response", "conversation"),
+            ("harness_nudge", "conversation"),
+            ("harness_finish", "conversation"),
+            ("agent_turn_summary", "conversation"),
             ("first_value_confirmed", "conversation"),
             ("kb_grounded", "knowledge"),
             ("device_activated", "platform"),
