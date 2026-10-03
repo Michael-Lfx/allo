@@ -1,7 +1,6 @@
 //! Detect repeated Read of the same path (the common "busy but not finishing" loop).
 
 use std::collections::HashMap;
-use std::path::{Component, Path};
 
 /// Soft nudge after this many successful Reads of the same path in one request.
 pub const DEFAULT_READ_REPEAT_SOFT: usize = 2;
@@ -20,28 +19,90 @@ pub const CODING_UNCHANGED_STUB_NUDGE: &str = "Coding: a Read returned \"File un
 read\". That means the earlier tool_result is still authoritative — do **not** Read again. Edit \
 with the anchors/text you already have, or stop.";
 
-/// Normalize path strings so `./a.rs` and `a.rs` collide.
+/// Comparison key for a path string: separators unified to `/`, `.` and `..`
+/// resolved, drive/UNC/root preserved, ASCII case folded. `./a.rs`, `a.rs` and
+/// `A.RS` collide; `C:\a.rs` and `D:\a.rs` do not.
+///
+/// Pure string logic so a Windows-style path from the model compares the same
+/// way on every host.
 pub fn normalize_read_path(raw: &str) -> String {
-    let path = Path::new(raw);
-    let mut parts = Vec::new();
-    for c in path.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                parts.pop();
+    canonical_path(raw, true)
+}
+
+/// Same canonical form as [`normalize_read_path`] but keeping the spelling the
+/// model used, for text shown back to it.
+pub(crate) fn display_read_path(raw: &str) -> String {
+    canonical_path(raw, false)
+}
+
+fn canonical_path(raw: &str, fold_case: bool) -> String {
+    let unified = raw.trim().replace('\\', "/");
+    let (root, rest) = split_root(&unified);
+    let anchored = root.ends_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in rest.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|last| *last != "..") {
+                    parts.pop();
+                } else if !anchored {
+                    parts.push("..");
+                }
             }
-            Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
-            Component::RootDir | Component::Prefix(_) => {
-                // Keep absolute/drive markers as a single leading token.
-                parts.clear();
-                parts.push(c.as_os_str().to_string_lossy().into_owned());
-            }
+            other => parts.push(other),
         }
     }
-    if parts.is_empty() {
-        raw.replace('\\', "/").to_ascii_lowercase()
+    let joined = format!("{root}{}", parts.join("/"));
+    let canonical = if joined.is_empty() { unified } else { joined };
+    if fold_case {
+        canonical.to_ascii_lowercase()
     } else {
-        parts.join("/").to_ascii_lowercase()
+        canonical
+    }
+}
+
+fn split_root(unified: &str) -> (String, &str) {
+    let mut path = unified;
+    if let Some(verbatim) = path
+        .strip_prefix("//?/")
+        .or_else(|| path.strip_prefix("//./"))
+    {
+        path = verbatim;
+        if path
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case("unc/"))
+        {
+            return unc_root(&path[4..]);
+        }
+    } else if let Some(unc) = path.strip_prefix("//")
+        && !unc.starts_with('/')
+    {
+        return unc_root(unc);
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let (drive, rest) = path.split_at(2);
+        return match rest.strip_prefix('/') {
+            Some(rest) => (format!("{drive}/"), rest),
+            None => (drive.to_string(), rest),
+        };
+    }
+    match path.strip_prefix('/') {
+        Some(rest) => ("/".to_string(), rest),
+        None => (String::new(), path),
+    }
+}
+
+fn unc_root(after_slashes: &str) -> (String, &str) {
+    let mut fields = after_slashes.splitn(3, '/');
+    let host = fields.next().unwrap_or("");
+    let share = fields.next().unwrap_or("");
+    let rest = fields.next().unwrap_or("");
+    if share.is_empty() {
+        (format!("//{host}/"), rest)
+    } else {
+        (format!("//{host}/{share}/"), rest)
     }
 }
 
@@ -205,5 +266,110 @@ mod tests {
             ReadRepeatAction::None
         );
         assert_eq!(t.count_for_range("a.rs", Some(0), Some(50)), 1);
+    }
+
+    #[test]
+    fn windows_absolute_path_keeps_drive_and_unifies_spellings() {
+        let canonical = "c:/users/admin/docs/readme.md";
+        for spelling in [
+            "C:\\Users\\Admin\\Docs\\README.md",
+            "c:/users/admin/docs/readme.md",
+            "C:/Users/Admin/./Docs/README.md",
+            "C:\\Users\\Admin\\Docs\\sub\\..\\README.md",
+            "  C:/Users/Admin/Docs/README.md ",
+        ] {
+            assert_eq!(normalize_read_path(spelling), canonical, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn different_drives_do_not_collide() {
+        assert_ne!(normalize_read_path("C:\\a.rs"), normalize_read_path("D:\\a.rs"));
+        assert_ne!(normalize_read_path("C:\\a.rs"), normalize_read_path("a.rs"));
+    }
+
+    #[test]
+    fn posix_absolute_path_has_a_single_root_slash() {
+        assert_eq!(normalize_read_path("/home/u/a.rs"), "/home/u/a.rs");
+        assert_eq!(normalize_read_path("/home/u/../v/a.rs"), "/home/v/a.rs");
+        assert_ne!(normalize_read_path("/a.rs"), normalize_read_path("a.rs"));
+    }
+
+    #[test]
+    fn unc_and_verbatim_paths_are_recognised() {
+        assert_eq!(
+            normalize_read_path("\\\\Srv\\Share\\dir\\a.rs"),
+            "//srv/share/dir/a.rs"
+        );
+        assert_eq!(
+            normalize_read_path("\\\\?\\C:\\x\\a.rs"),
+            normalize_read_path("C:/x/a.rs")
+        );
+        assert_eq!(
+            normalize_read_path("\\\\?\\UNC\\srv\\share\\a.rs"),
+            normalize_read_path("//srv/share/a.rs")
+        );
+    }
+
+    #[test]
+    fn parent_segments_never_escape_an_anchored_root() {
+        assert_eq!(normalize_read_path("C:/../a.rs"), "c:/a.rs");
+        assert_eq!(normalize_read_path("/../a.rs"), "/a.rs");
+    }
+
+    #[test]
+    fn leading_parent_segments_of_relative_paths_are_kept() {
+        assert_eq!(normalize_read_path("../a.rs"), "../a.rs");
+        assert_eq!(normalize_read_path("a/../../b.rs"), "../b.rs");
+        assert_ne!(normalize_read_path("../a.rs"), normalize_read_path("a.rs"));
+    }
+
+    #[test]
+    fn degenerate_inputs_do_not_panic() {
+        for raw in ["", ".", "..", "/", "C:", "C:\\", "//", "\\\\?\\", "\\\\server", "é:/x"] {
+            let _ = normalize_read_path(raw);
+            let _ = display_read_path(raw);
+        }
+        assert_eq!(normalize_read_path(""), "");
+        assert_eq!(normalize_read_path("."), ".");
+    }
+
+    #[test]
+    fn display_path_keeps_the_spelling_but_not_the_separators() {
+        assert_eq!(
+            display_read_path("C:\\Users\\Admin\\Docs\\README.md"),
+            "C:/Users/Admin/Docs/README.md"
+        );
+        assert_eq!(display_read_path("./Src/Main.rs"), "Src/Main.rs");
+    }
+
+    #[test]
+    fn repeated_reads_of_a_windows_absolute_path_escalate() {
+        let mut t = ReadRepeatTracker::default();
+        assert_eq!(
+            t.observe_read(Some("C:\\work\\docs\\a.md"), Some("content"), 2, 3),
+            ReadRepeatAction::None
+        );
+        assert_eq!(
+            t.observe_read(Some("c:/work/docs/A.md"), Some("content"), 2, 3),
+            ReadRepeatAction::SoftNudge
+        );
+        assert_eq!(
+            t.observe_read(Some("C:/work/./docs/a.md"), Some("content"), 2, 3),
+            ReadRepeatAction::HardStop
+        );
+    }
+
+    #[test]
+    fn same_name_on_different_drives_is_not_a_repeat() {
+        let mut t = ReadRepeatTracker::default();
+        assert_eq!(
+            t.observe_read(Some("C:\\a.rs"), Some("x"), 2, 3),
+            ReadRepeatAction::None
+        );
+        assert_eq!(
+            t.observe_read(Some("D:\\a.rs"), Some("x"), 2, 3),
+            ReadRepeatAction::None
+        );
     }
 }

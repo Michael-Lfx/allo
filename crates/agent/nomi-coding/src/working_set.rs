@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::read_repeat::normalize_read_path;
+use crate::read_repeat::{display_read_path, normalize_read_path};
 
 /// Inclusive 1-based line range, or 0-based slice converted at record time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,8 +114,8 @@ impl WorkingSet {
     ) {
         let key = normalize_read_path(path);
         let span = LineSpan::from_offset_limit(offset, limit, total_lines);
-        let entry = self.entries.entry(key.clone()).or_insert_with(|| WorkingSetEntry {
-            path: key,
+        let entry = self.entries.entry(key).or_insert_with(|| WorkingSetEntry {
+            path: display_read_path(path),
             mtime_ms,
             covered: Vec::new(),
             last_anchor: None,
@@ -129,8 +129,8 @@ impl WorkingSet {
 
     pub fn record_edit(&mut self, path: &str, anchor: Option<&str>) {
         let key = normalize_read_path(path);
-        let entry = self.entries.entry(key.clone()).or_insert_with(|| WorkingSetEntry {
-            path: key,
+        let entry = self.entries.entry(key).or_insert_with(|| WorkingSetEntry {
+            path: display_read_path(path),
             mtime_ms: None,
             covered: Vec::new(),
             last_anchor: None,
@@ -240,5 +240,37 @@ mod tests {
         assert!(block.contains("lib.rs"));
         assert!(block.contains("last_anchor=12:h7x2"));
         assert!(block.contains("edited"));
+    }
+
+    #[test]
+    fn index_shows_windows_absolute_path_with_drive_and_original_case() {
+        let mut set = WorkingSet::default();
+        set.record_read("C:\\Users\\Admin\\Docs\\README.md", 0, 30, 30, Some(1));
+        let block = set.index_block();
+        assert!(
+            block.contains("- C:/Users/Admin/Docs/README.md covered=[0-30]"),
+            "{block}"
+        );
+        assert!(!block.contains("\\/"), "{block}");
+    }
+
+    #[test]
+    fn spellings_of_one_file_share_an_entry_and_keep_the_first_display() {
+        let mut set = WorkingSet::default();
+        set.record_read("C:\\Work\\A.md", 0, 10, 40, Some(1));
+        set.record_read("c:/work/./a.md", 10, 10, 40, Some(1));
+        set.record_edit("C:/WORK/a.md", None);
+
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.edited_paths(), vec!["C:/Work/A.md"]);
+        assert!(set.covers_range("c:/work/a.md", 0, 20, 40, Some(1)));
+    }
+
+    #[test]
+    fn same_name_on_different_drives_stays_two_entries() {
+        let mut set = WorkingSet::default();
+        set.record_read("C:\\a.md", 0, 10, 10, None);
+        set.record_read("D:\\a.md", 0, 10, 10, None);
+        assert_eq!(set.len(), 2);
     }
 }
