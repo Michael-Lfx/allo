@@ -88,10 +88,7 @@ pub fn build_turn_tail_context(contributions: Vec<String>) -> Option<String> {
     }
 }
 
-/// Marker prepended to persisted turn-tail context. Reserved: the engine
-/// injects it, traces/UI strip it, and prefix-cache compares treat it as
-/// controller metadata rather than user text.
-pub const TURN_TAIL_CONTEXT_PREFIX: &str = "[Context]\n";
+pub use nomi_types::message::TURN_TAIL_CONTEXT_PREFIX;
 
 /// Marker opening the resumable-restart restatement that
 /// [`crate::round::RoundState::take_section`] renders into the turn tail.

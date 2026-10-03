@@ -21,6 +21,11 @@ use crate::{LlmProvider, ProviderError};
 /// payload and exhaust the process before terminal validation runs.
 const MAX_STRUCTURED_TOOL_CALLS_PER_TURN: usize = 128;
 
+/// Private key that tags the wire `user` message built from the internal
+/// message that opens the current user turn. Set by `build_messages` and
+/// stripped by `drop_prior_turn_reasoning`, so it never reaches the provider.
+const TURN_START_MARKER: &str = "__nomi_turn_start";
+
 pub struct OpenAIProvider {
     api_keys: Vec<String>,
     current_api_key: AtomicUsize,
@@ -112,7 +117,13 @@ impl OpenAIProvider {
             }));
         }
 
-        for msg in messages {
+        let turn_start = compat
+            .drop_prior_turn_reasoning()
+            .then(|| messages.iter().rposition(Message::starts_user_turn))
+            .flatten();
+
+        for (index, msg) in messages.iter().enumerate() {
+            let wire_start = result.len();
             match msg.role {
                 Role::User => {
                     // Check if this contains tool results
@@ -365,6 +376,9 @@ impl OpenAIProvider {
                         }
                     }
                 }
+            }
+            if turn_start == Some(index) && result.len() > wire_start {
+                result[wire_start][TURN_START_MARKER] = json!(true);
             }
         }
 
@@ -672,13 +686,18 @@ fn append_string_field(curr: &mut Value, next: &mut Value, key: &str) {
 }
 
 fn drop_prior_turn_reasoning(messages: &mut [Value], require_reasoning_content: bool) {
-    let Some(last_user) = messages
+    let turn_start = messages
         .iter()
-        .rposition(|m| m["role"].as_str() == Some("user"))
-    else {
+        .position(|m| m.get(TURN_START_MARKER).is_some());
+    for msg in messages.iter_mut() {
+        if let Some(obj) = msg.as_object_mut() {
+            obj.remove(TURN_START_MARKER);
+        }
+    }
+    let Some(turn_start) = turn_start else {
         return;
     };
-    for msg in &mut messages[..last_user] {
+    for msg in &mut messages[..turn_start] {
         if msg["role"].as_str() != Some("assistant") {
             continue;
         }
@@ -3501,6 +3520,244 @@ mod tests {
                 Some("current".to_owned())
             ]
         );
+    }
+
+    fn context_text() -> ContentBlock {
+        ContentBlock::Text {
+            text: format!("{}date: today", nomi_types::message::TURN_TAIL_CONTEXT_PREFIX),
+        }
+    }
+
+    fn user_prompt(text: &str) -> Message {
+        Message::new(
+            Role::User,
+            vec![context_text(), ContentBlock::Text { text: text.into() }],
+        )
+    }
+
+    fn context_carrier(id: &str, images: Vec<nomi_types::tool::ToolImage>) -> Message {
+        Message::new(
+            Role::User,
+            vec![
+                context_text(),
+                ContentBlock::ToolResult {
+                    tool_use_id: id.into(),
+                    content: "contents".into(),
+                    is_error: false,
+                    images,
+                },
+            ],
+        )
+    }
+
+    fn reasoning_call(reasoning: &str, id: &str) -> Message {
+        Message::new(
+            Role::Assistant,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: reasoning.into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "read".into(),
+                    input: json!({"path": "README.md"}),
+                    extra: None,
+                },
+            ],
+        )
+    }
+
+    fn two_turn_history_with_context_carriers() -> Vec<Message> {
+        vec![
+            user_prompt("first"),
+            reasoning_call("old-a", "call_1"),
+            context_carrier("call_1", Vec::new()),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        thinking: "old-b".into(),
+                        signature: None,
+                    },
+                    ContentBlock::Text { text: "done".into() },
+                ],
+            ),
+            user_prompt("second"),
+            reasoning_call("cur-a", "call_2"),
+            context_carrier("call_2", Vec::new()),
+            reasoning_call("cur-b", "call_3"),
+            context_carrier("call_3", Vec::new()),
+        ]
+    }
+
+    fn reasoning_compat() -> ProviderCompat {
+        let mut compat = openai_compat();
+        compat.drop_prior_turn_reasoning = Some(true);
+        compat.merge_assistant_messages = Some(true);
+        compat.clean_orphan_tool_calls = Some(true);
+        compat.dedup_tool_results = Some(true);
+        compat
+    }
+
+    #[test]
+    fn tool_loop_reasoning_survives_context_blocks_on_carriers() {
+        let out = OpenAIProvider::build_messages(
+            &two_turn_history_with_context_carriers(),
+            "",
+            &reasoning_compat(),
+            false,
+        );
+
+        let roles: Vec<&str> = out.iter().filter_map(|m| m["role"].as_str()).collect();
+        assert_eq!(
+            roles,
+            [
+                "user", "assistant", "tool", "user", "assistant", "user", "assistant", "tool",
+                "user", "assistant", "tool", "user"
+            ],
+            "every carrier must still expand to a tool message plus a trailing user message"
+        );
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![None, None, Some("cur-a".to_owned()), Some("cur-b".to_owned())]
+        );
+    }
+
+    #[test]
+    fn placeholder_reasoning_is_limited_to_prior_turns_with_context_carriers() {
+        let out = OpenAIProvider::build_messages(
+            &two_turn_history_with_context_carriers(),
+            "",
+            &reasoning_compat(),
+            true,
+        );
+
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![
+                Some(" ".to_owned()),
+                Some(" ".to_owned()),
+                Some("cur-a".to_owned()),
+                Some("cur-b".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn context_only_user_message_inside_a_loop_does_not_end_the_turn() {
+        let mut history = two_turn_history_with_context_carriers();
+        history.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: format!("{}plan mode on", nomi_types::message::TURN_TAIL_CONTEXT_PREFIX),
+            }],
+        ));
+        history.push(reasoning_call("cur-c", "call_4"));
+        history.push(context_carrier("call_4", Vec::new()));
+
+        let out = OpenAIProvider::build_messages(&history, "", &reasoning_compat(), false);
+
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![
+                None,
+                None,
+                Some("cur-a".to_owned()),
+                Some("cur-b".to_owned()),
+                Some("cur-c".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_images_inside_a_loop_do_not_end_the_turn() {
+        let compat = reasoning_compat();
+        let screenshot = nomi_types::tool::ToolImage {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        let history = vec![
+            user_prompt("look at the screen"),
+            reasoning_call("shot", "call_1"),
+            context_carrier("call_1", vec![screenshot]),
+            reasoning_call("after-shot", "call_2"),
+            context_carrier("call_2", Vec::new()),
+        ];
+
+        let out = OpenAIProvider::build_messages(&history, "", &compat, false);
+
+        assert!(
+            out.iter().any(|m| {
+                m["role"] == "user"
+                    && m["content"]
+                        .as_array()
+                        .is_some_and(|parts| parts.iter().any(|p| p["type"] == "image_url"))
+            }),
+            "the tool screenshot must reach the wire as a user message"
+        );
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![Some("shot".to_owned()), Some("after-shot".to_owned())]
+        );
+    }
+
+    #[test]
+    fn steering_message_starts_a_new_reasoning_turn() {
+        let history = vec![
+            user_prompt("start"),
+            reasoning_call("before-steer", "call_1"),
+            context_carrier("call_1", Vec::new()),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "actually use the other file".into(),
+                }],
+            ),
+            reasoning_call("after-steer", "call_2"),
+            context_carrier("call_2", Vec::new()),
+        ];
+
+        let out = OpenAIProvider::build_messages(&history, "", &reasoning_compat(), false);
+
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![None, Some("after-steer".to_owned())]
+        );
+    }
+
+    #[test]
+    fn history_without_a_user_turn_keeps_all_reasoning() {
+        let history = vec![
+            reasoning_call("a", "call_1"),
+            context_carrier("call_1", Vec::new()),
+            reasoning_call("b", "call_2"),
+        ];
+
+        let out = OpenAIProvider::build_messages(&history, "", &reasoning_compat(), false);
+
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![Some("a".to_owned()), Some("b".to_owned())]
+        );
+    }
+
+    #[test]
+    fn turn_start_marker_never_reaches_the_wire() {
+        for enabled in [true, false] {
+            let mut compat = openai_compat();
+            compat.drop_prior_turn_reasoning = Some(enabled);
+            let out = OpenAIProvider::build_messages(
+                &two_turn_history_with_context_carriers(),
+                "sys",
+                &compat,
+                false,
+            );
+            assert!(
+                out.iter().all(|m| m.get(TURN_START_MARKER).is_none()),
+                "marker leaked with drop_prior_turn_reasoning={enabled}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -6,6 +6,11 @@ use serde_json::Value;
 /// Unique identifier for a tool call
 pub type ToolUseId = String;
 
+/// Marker prepended to persisted turn-tail context. Reserved: the engine
+/// injects it, traces/UI strip it, and prefix-cache compares treat it as
+/// controller metadata rather than user text.
+pub const TURN_TAIL_CONTEXT_PREFIX: &str = "[Context]\n";
+
 /// A single content block within a message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -95,6 +100,28 @@ impl Message {
             timestamp: Some(Utc::now()),
             provider_round_id: None,
         }
+    }
+
+    /// Whether this message opens a user turn: a user message carrying real
+    /// user content (text or an image) that is neither a tool-result carrier
+    /// nor a message that only holds persisted `[Context]` extras.
+    ///
+    /// Provider adapters decide turn boundaries from this, never from the wire
+    /// roles they emit, because a carrier is split into `tool` messages plus a
+    /// trailing `user` message that is not a turn start.
+    pub fn starts_user_turn(&self) -> bool {
+        self.role == Role::User
+            && !self
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+            && self.content.iter().any(|block| match block {
+                ContentBlock::Text { text } => {
+                    !text.starts_with(TURN_TAIL_CONTEXT_PREFIX) && !text.trim().is_empty()
+                }
+                ContentBlock::Image { .. } => true,
+                _ => false,
+            })
     }
 }
 
@@ -573,6 +600,82 @@ mod tests {
         match &msg.content[0] {
             ContentBlock::Text { text } => assert_eq!(text, "hi"),
             _ => panic!("expected Text variant"),
+        }
+    }
+
+    fn text_block(text: &str) -> ContentBlock {
+        ContentBlock::Text { text: text.into() }
+    }
+
+    fn context_block(body: &str) -> ContentBlock {
+        text_block(&format!("{TURN_TAIL_CONTEXT_PREFIX}{body}"))
+    }
+
+    fn tool_result_block(id: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: "ok".into(),
+            is_error: false,
+            images: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn plain_user_text_starts_a_turn() {
+        assert!(Message::new(Role::User, vec![text_block("fix the bug")]).starts_user_turn());
+    }
+
+    #[test]
+    fn context_block_followed_by_prompt_still_starts_a_turn() {
+        let message = Message::new(
+            Role::User,
+            vec![context_block("date: today"), text_block("fix the bug")],
+        );
+        assert!(message.starts_user_turn());
+    }
+
+    #[test]
+    fn image_only_user_message_starts_a_turn() {
+        let message = Message::new(
+            Role::User,
+            vec![ContentBlock::Image {
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+        );
+        assert!(message.starts_user_turn());
+    }
+
+    #[test]
+    fn tool_result_carrier_never_starts_a_turn() {
+        let carrier = Message::new(
+            Role::User,
+            vec![
+                context_block("date: today"),
+                tool_result_block("call_1"),
+                text_block("loop guard nudge"),
+            ],
+        );
+        assert!(!carrier.starts_user_turn());
+        assert!(!Message::new(Role::User, vec![tool_result_block("call_1")]).starts_user_turn());
+    }
+
+    #[test]
+    fn context_only_user_message_does_not_start_a_turn() {
+        let message = Message::new(Role::User, vec![context_block("date: today")]);
+        assert!(!message.starts_user_turn());
+    }
+
+    #[test]
+    fn blank_user_text_does_not_start_a_turn() {
+        assert!(!Message::new(Role::User, vec![text_block("  \n")]).starts_user_turn());
+        assert!(!Message::new(Role::User, Vec::new()).starts_user_turn());
+    }
+
+    #[test]
+    fn non_user_roles_never_start_a_turn() {
+        for role in [Role::Assistant, Role::System, Role::Tool] {
+            assert!(!Message::new(role, vec![text_block("text")]).starts_user_turn());
         }
     }
 }
