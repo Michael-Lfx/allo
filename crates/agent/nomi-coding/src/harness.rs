@@ -349,6 +349,8 @@ pub struct ToolTurnNudge {
     /// tools), ending as a normal `EndTurn` — never as
     /// [`nomi_agent::AgentError::Stagnation`].
     pub hard_stop: Option<String>,
+    /// Which rule produced `hard_stop`; set exactly when `hard_stop` is.
+    pub hard_stop_meta: Option<NudgeMeta>,
     pub progress_action: CodingProgressAction,
     pub profiler: HarnessProfilerSnapshot,
     pub recon_only: bool,
@@ -745,7 +747,7 @@ impl CodingHarness {
         let mut had_plan_update = false;
         let mut mutation_count = 0usize;
         let mut edit_action = EditConvergeAction::None;
-        let mut hard_stop: Option<String> = None;
+        let mut hard_stop: Option<(String, NudgeMeta)> = None;
         let mut nudges = NudgeBatch::default();
 
         for o in outcomes {
@@ -798,9 +800,12 @@ impl CodingHarness {
                 {
                     self.verify_fail_streak = self.verify_fail_streak.saturating_add(1);
                     if self.verify_fail_streak >= self.config.verify_retry_cap {
-                        hard_stop = Some(format!(
-                            "Coding verify-retry cap ({}): stop retrying the same test/format command. Report the failure.",
-                            self.config.verify_retry_cap
+                        hard_stop = Some((
+                            format!(
+                                "Coding verify-retry cap ({}): stop retrying the same test/format command. Report the failure.",
+                                self.config.verify_retry_cap
+                            ),
+                            NudgeMeta::kind("verify_retry_cap"),
                         ));
                         self.progress.mark_force_allow_finish();
                     }
@@ -845,7 +850,10 @@ impl CodingHarness {
                             NudgeMeta::detailed("read_repeat", "hard"),
                             CODING_READ_REPEAT_HARD_STOP,
                         );
-                        hard_stop = Some(CODING_READ_REPEAT_HARD_STOP.to_string());
+                        hard_stop = Some((
+                            CODING_READ_REPEAT_HARD_STOP.to_string(),
+                            NudgeMeta::detailed("read_repeat", "hard"),
+                        ));
                         self.progress.mark_force_allow_finish();
                     }
                 }
@@ -928,18 +936,19 @@ impl CodingHarness {
             ),
             CodingProgressAction::HardStopExplore(kind) => {
                 let text = explore_hard_stop_text(kind).to_string();
-                nudges.push(
-                    NudgeMeta::detailed("explore_hard_stop", explore_budget_kind_label(kind)),
-                    text.clone(),
-                );
-                hard_stop = Some(text);
+                let meta = NudgeMeta::detailed("explore_hard_stop", explore_budget_kind_label(kind));
+                nudges.push(meta.clone(), text.clone());
+                hard_stop = Some((text, meta));
             }
             CodingProgressAction::NudgePlanTimeout => {
                 nudges.push(NudgeMeta::kind("plan_timeout"), CODING_PLAN_TIMEOUT_NUDGE)
             }
             CodingProgressAction::HardStopPlanTimeout => {
                 nudges.push(NudgeMeta::kind("plan_hard_stop"), CODING_PLAN_HARD_STOP);
-                hard_stop = Some(CODING_PLAN_HARD_STOP.to_string());
+                hard_stop = Some((
+                    CODING_PLAN_HARD_STOP.to_string(),
+                    NudgeMeta::kind("plan_hard_stop"),
+                ));
             }
         }
 
@@ -950,7 +959,10 @@ impl CodingHarness {
             }
             EditConvergeAction::HardStop => {
                 nudges.push(NudgeMeta::kind("edit_hard_stop"), CODING_EDIT_HARD_STOP);
-                hard_stop = Some(CODING_EDIT_HARD_STOP.to_string());
+                hard_stop = Some((
+                    CODING_EDIT_HARD_STOP.to_string(),
+                    NudgeMeta::kind("edit_hard_stop"),
+                ));
                 self.progress.mark_force_allow_finish();
             }
         }
@@ -989,10 +1001,16 @@ impl CodingHarness {
             // from before_provider_turn only set the flag — check texts.
         }
 
+        let (hard_stop, hard_stop_meta) = match hard_stop {
+            Some((reason, meta)) => (Some(reason), Some(meta)),
+            None => (None, None),
+        };
+
         ToolTurnNudge {
             texts: nudges.texts,
             metas: nudges.metas,
             hard_stop,
+            hard_stop_meta,
             progress_action: action,
             profiler: self.profiler_snapshot(),
             recon_only,
@@ -1671,6 +1689,47 @@ mod tests {
         assert_eq!(hard.metas[0].kind, "read_repeat");
         assert_eq!(hard.metas[0].detail.as_deref(), Some("hard"));
         assert!(hard.hard_stop.is_some());
+        let meta = hard.hard_stop_meta.expect("hard stop is classified");
+        assert_eq!(meta.kind, "read_repeat");
+        assert_eq!(meta.detail.as_deref(), Some("hard"));
+        assert!(soft.hard_stop_meta.is_none());
+    }
+
+    #[test]
+    fn hard_stop_meta_names_the_rule_that_fired() {
+        let mut edit = CodingHarness::new(
+            None,
+            CodingConfig {
+                edit_fail_converge: 2,
+                edit_fail_hard_extra: 1,
+                ..Default::default()
+            },
+        );
+        let err = "old_string not found";
+        let _ = edit.after_tool_turn(&[edit_fail("a.rs", err)]);
+        let _ = edit.after_tool_turn(&[edit_fail("a.rs", err)]);
+        let hard = edit.after_tool_turn(&[edit_fail("a.rs", err)]);
+        assert_eq!(hard.hard_stop_meta.map(|m| m.kind), Some("edit_hard_stop"));
+
+        let mut verify = CodingHarness::new(
+            None,
+            CodingConfig {
+                verify_retry_cap: 2,
+                ..Default::default()
+            },
+        );
+        let failing_test = || ToolCallOutcome {
+            name: "Bash".into(),
+            success: false,
+            command: Some("cargo test".into()),
+            error_content: Some("test failed".into()),
+            ..Default::default()
+        };
+        let first = verify.after_tool_turn(&[failing_test()]);
+        assert!(first.hard_stop.is_none() && first.hard_stop_meta.is_none());
+        let second = verify.after_tool_turn(&[failing_test()]);
+        assert!(second.hard_stop.is_some());
+        assert_eq!(second.hard_stop_meta.map(|m| m.kind), Some("verify_retry_cap"));
     }
 
     #[test]

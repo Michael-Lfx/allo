@@ -16,7 +16,7 @@ use nomi_agent_trace::{
     EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
     EVENT_HARNESS_FINISH, EVENT_HARNESS_HARD_STOP, EVENT_HARNESS_NUDGE, EVENT_HARNESS_PROFILE,
     EVENT_HARNESS_PROGRESS, EVENT_HARNESS_RESET, EVENT_TURN_END, EVENT_TURN_START,
-    MAX_PREVIEW_CHARS, OMITTED_REASON_INPUT_SCHEMA,
+    OMITTED_REASON_INPUT_SCHEMA,
 };
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
@@ -25,12 +25,16 @@ use nomi_types::tool::{ToolDef, ToolImage};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use nomi_coding::FinishGateFacts;
+use nomi_providers::WireFacts;
+
+use crate::telemetry::{
+    self, FinishFacts, HarnessView, HistoryFacts, LlmRequestFacts, LlmResponseFacts, NudgeFacts,
+    ToolFacts, TurnStats, TurnSummaryFacts,
+};
 use crate::tool_execution::ToolCallTiming;
 
-const TELEMETRY_EVENT_TOOL_EXECUTED: &str = "tool_executed";
-const TELEMETRY_EVENT_LLM_REQUEST: &str = "llm_request";
 const TELEMETRY_MAX_EVENT_ID: usize = 128;
-const TELEMETRY_MAX_PROP: usize = 256;
 
 /// Summarized observation event for the product telemetry warehouse.
 /// Nested JSONL payloads never leave the machine; only these scalars do.
@@ -80,6 +84,10 @@ pub struct ObservationSession {
     /// End of the last phase (turn start, model response, tool round), so the
     /// next `llm/request` can report how long local preparation took.
     phase_boundary: Mutex<Option<Instant>>,
+    /// Replaces the process-wide telemetry hook for this session when set.
+    telemetry_sink: Mutex<Option<ObservationTelemetryHook>>,
+    /// Totals for the running root turn, reported when the turn ends.
+    turn_stats: Mutex<TurnStats>,
 }
 
 impl ObservationSession {
@@ -92,7 +100,42 @@ impl ObservationSession {
             tool_started_at: Mutex::new(HashMap::new()),
             last_prefix: Mutex::new(None),
             phase_boundary: Mutex::new(None),
+            telemetry_sink: Mutex::new(None),
+            turn_stats: Mutex::new(TurnStats::default()),
         })
+    }
+
+    /// Route this session's telemetry records to `sink` instead of the
+    /// process-wide hook. `None` restores the process-wide hook.
+    pub fn set_telemetry_sink(&self, sink: Option<ObservationTelemetryHook>) {
+        *self
+            .telemetry_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = sink;
+    }
+
+    fn telemetry_sink(&self) -> Option<ObservationTelemetryHook> {
+        self.telemetry_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// True when a record built now would reach a consumer.
+    fn telemetry_wanted(&self, ids: &ObservationIds) -> bool {
+        observation_telemetry_eligible(ids)
+            && (self.telemetry_sink().is_some() || OBSERVATION_TELEMETRY_HOOK.get().is_some())
+    }
+
+    fn enqueue_telemetry(&self, record: ObservationTelemetryRecord) {
+        match self.telemetry_sink() {
+            Some(sink) => sink(record),
+            None => enqueue_observation_telemetry(record),
+        }
+    }
+
+    fn update_stats(&self, update: impl FnOnce(&mut TurnStats)) {
+        update(&mut self.turn_stats.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     fn wall_clock_ms() -> u64 {
@@ -145,6 +188,7 @@ impl ObservationSession {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clear();
+            self.update_stats(|stats| *stats = TurnStats::default());
         }
         if conversation_changed {
             *self
@@ -187,6 +231,11 @@ impl ObservationSession {
         let redacted_error = error.map(|e| {
             nomi_agent_trace::truncate_chars(&redact_preview(e), 1000)
         });
+        let stats = self
+            .turn_stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         observe_with_model_call(
             self,
             EVENT_TURN_END,
@@ -196,8 +245,19 @@ impl ObservationSession {
                 "stop_reason": stop_reason,
                 "usage": usage,
                 "error": redacted_error,
+                "summary": stats.to_value(),
             }),
             None,
+        );
+        let status_label = serde_json::to_value(status)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned));
+        self.emit_turn_summary_telemetry(
+            &ids,
+            status_label.as_deref(),
+            elapsed_ms,
+            stop_reason,
+            &stats,
         );
     }
 
@@ -301,12 +361,18 @@ impl ObservationSession {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(tool_call_id);
+        let error_class =
+            is_error.then(|| nomi_coding::ToolFailureClass::from_tool(name, result).label());
         let mut payload = json!({
             "tool_call_id": tool_call_id,
             "name": name,
             "is_error": is_error,
             "result": result,
+            "result_bytes": result.len(),
         });
+        if let Some(error_class) = error_class {
+            payload["error_class"] = json!(error_class);
+        }
         let mut timing = timing;
         {
             let mut starts = self
@@ -324,6 +390,7 @@ impl ObservationSession {
                     started_at_ms,
                     completed_at_ms,
                     phases: Vec::new(),
+                    attrs: Vec::new(),
                 });
             }
         }
@@ -339,17 +406,34 @@ impl ObservationSession {
                     .map(|phase| json!({ "name": phase.name, "us": phase.micros }))
                     .collect();
             }
+            if let Some(attrs) = telemetry::tool_attrs_value(&timing.attrs) {
+                payload["attrs"] = attrs;
+            }
         }
         if let Some(round_wall_ms) = round_wall_ms {
             payload["round_wall_ms"] = json!(round_wall_ms);
         }
-        observe_with_model_call(self, event_type, payload, parent);
+        observe_with_model_call(self, event_type, payload, parent.clone());
         self.mark_phase_boundary();
+        self.update_stats(|stats| {
+            stats.tool_calls += 1;
+            if is_error {
+                stats.tool_errors += 1;
+            }
+            if let Some(timing) = &timing {
+                stats.tool_wall_ms = stats.tool_wall_ms.saturating_add(timing.duration_ms);
+            }
+        });
         self.emit_tool_telemetry(
             tool_call_id,
-            name,
-            if is_error { "failed" } else { "completed" },
-            timing,
+            &ToolFacts {
+                name,
+                outcome: if is_error { "failed" } else { "completed" },
+                model_call_id: parent.as_deref(),
+                result_bytes: Some(result.len()),
+                error_class,
+                timing: timing.as_ref(),
+            },
         );
     }
 
@@ -370,10 +454,20 @@ impl ObservationSession {
                 "tool_call_id": tool_call_id,
                 "name": name,
             }),
-            parent,
+            parent.clone(),
         );
         self.mark_phase_boundary();
-        self.emit_tool_telemetry(tool_call_id, name, "cancelled", None);
+        self.emit_tool_telemetry(
+            tool_call_id,
+            &ToolFacts {
+                name,
+                outcome: "cancelled",
+                model_call_id: parent.as_deref(),
+                result_bytes: None,
+                error_class: None,
+                timing: None,
+            },
+        );
     }
 
     pub fn emit_harness_profile(
@@ -410,6 +504,9 @@ impl ObservationSession {
         parent_tool_count: usize,
         counters: Value,
     ) {
+        if let Some(view) = HarnessView::from_counters(&counters) {
+            self.update_stats(|stats| stats.harness = Some(view));
+        }
         let _ = self.emit(
             EVENT_HARNESS_PROGRESS,
             json!({
@@ -428,6 +525,7 @@ impl ObservationSession {
         source: &str,
         text: &str,
         hard_stop: bool,
+        info: NudgeInfo<'_>,
     ) {
         let preview = redact_preview(text);
         let _ = self.emit(
@@ -437,8 +535,40 @@ impl ObservationSession {
                 "source": source,
                 "text_preview": preview,
                 "hard_stop": hard_stop,
+                "kind": info.kind,
+                "detail": info.detail,
+                "tool": info.tool,
             }),
         );
+        let turn_nudge_index = self
+            .turn_stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .note_nudge(info.kind, hard_stop);
+        let ids = self.ids();
+        if !self.telemetry_wanted(&ids) {
+            return;
+        }
+        let model_call_id = self.last_model_call_id();
+        self.enqueue_telemetry(ObservationTelemetryRecord {
+            event_id: clip_event_id(format!("obs:nudge:{}", uuid::Uuid::now_v7())),
+            name: telemetry::EVENT_HARNESS_NUDGE.into(),
+            occurred_at: rfc3339_now(),
+            properties: telemetry::harness_nudge_props(
+                &ids,
+                &NudgeFacts {
+                    profile,
+                    source,
+                    kind: info.kind,
+                    detail: info.detail,
+                    tool: info.tool,
+                    hard_stop,
+                    text_chars: text.chars().count(),
+                    model_call_id: model_call_id.as_deref(),
+                    turn_nudge_index,
+                },
+            ),
+        });
     }
 
     pub fn emit_harness_hard_stop(&self, profile: &str, reason: &str, counters: Value) {
@@ -459,6 +589,7 @@ impl ObservationSession {
         decision: &str,
         counters: Value,
         nudge_preview: Option<&str>,
+        gate: Option<&FinishGateFacts>,
     ) {
         let mut payload = json!({
             "profile": profile,
@@ -468,47 +599,53 @@ impl ObservationSession {
         if let Some(text) = nudge_preview {
             payload["nudge_preview"] = json!(redact_preview(text));
         }
+        if let Some(gate) = gate {
+            payload["gate"] = serde_json::to_value(gate).unwrap_or(Value::Null);
+        }
         let _ = self.emit(EVENT_HARNESS_FINISH, payload);
+        if nudge_preview.is_some() {
+            self.update_stats(|stats| stats.finish_blocks += 1);
+        }
+        let ids = self.ids();
+        if !self.telemetry_wanted(&ids) {
+            return;
+        }
+        let model_call_id = self.last_model_call_id();
+        self.enqueue_telemetry(ObservationTelemetryRecord {
+            event_id: clip_event_id(format!("obs:finish:{}", uuid::Uuid::now_v7())),
+            name: telemetry::EVENT_HARNESS_FINISH.into(),
+            occurred_at: rfc3339_now(),
+            properties: telemetry::harness_finish_props(
+                &ids,
+                &FinishFacts {
+                    profile,
+                    decision,
+                    gate,
+                    nudge_chars: nudge_preview.map(|text| text.chars().count()),
+                    model_call_id: model_call_id.as_deref(),
+                },
+            ),
+        });
     }
 
-    fn emit_tool_telemetry(
-        &self,
-        tool_call_id: &str,
-        name: &str,
-        outcome: &str,
-        timing: Option<ToolCallTiming>,
-    ) {
+    fn emit_tool_telemetry(&self, tool_call_id: &str, facts: &ToolFacts<'_>) {
         let ids = self.ids();
-        if !observation_telemetry_eligible(&ids) {
+        if !self.telemetry_wanted(&ids) {
             return;
         }
         let tool_call_id = tool_call_id.trim();
         if tool_call_id.is_empty() {
             return;
         }
-        let mut properties = BTreeMap::new();
-        insert_telemetry_str(&mut properties, "feature", "conversation");
-        if let Some(session_id) = nonempty(ids.conversation_id.as_deref()) {
-            insert_telemetry_str(&mut properties, "session_id", session_id);
-        }
-        insert_telemetry_str(&mut properties, "tool_name", name);
-        insert_telemetry_str(&mut properties, "outcome", outcome);
-        if let Some(kind) = nonempty(ids.session_kind.as_deref()) {
-            insert_telemetry_str(&mut properties, "session_kind", kind);
-        }
-        if let Some(timing) = &timing {
-            properties.insert("duration_ms".into(), json!(timing.duration_ms));
-            properties.insert("duration_us".into(), json!(timing.duration_us));
-        }
-        let occurred_at = timing
-            .as_ref()
+        let occurred_at = facts
+            .timing
             .map(|timing| rfc3339_millis(timing.completed_at_ms))
             .unwrap_or_else(rfc3339_now);
-        enqueue_observation_telemetry(ObservationTelemetryRecord {
+        self.enqueue_telemetry(ObservationTelemetryRecord {
             event_id: clip_event_id(format!("obs:tool:{tool_call_id}")),
-            name: TELEMETRY_EVENT_TOOL_EXECUTED.into(),
+            name: telemetry::EVENT_TOOL_EXECUTED.into(),
             occurred_at,
-            properties,
+            properties: telemetry::tool_executed_props(&ids, facts),
         });
     }
 
@@ -519,12 +656,14 @@ impl ObservationSession {
         scope: ObservationScope,
         request: &LlmRequest,
         fingerprint: &Value,
+        history: &HistoryFacts,
+        wire: Option<&WireFacts>,
     ) {
         if scope != ObservationScope::SessionWorkflow {
             return;
         }
         let ids = self.ids();
-        if !observation_telemetry_eligible(&ids) {
+        if !self.telemetry_wanted(&ids) {
             return;
         }
         let Some(chain) = parse_prefix_chain(fingerprint) else {
@@ -539,27 +678,149 @@ impl ObservationSession {
             *last = Some(chain.clone());
             classified
         };
-        let mut properties = BTreeMap::new();
-        insert_telemetry_str(&mut properties, "feature", "conversation");
-        if let Some(session_id) = nonempty(ids.conversation_id.as_deref()) {
-            insert_telemetry_str(&mut properties, "session_id", session_id);
-        }
-        insert_telemetry_str(&mut properties, "llm_model", &request.model);
-        insert_telemetry_str(&mut properties, "system_hash", &chain.system);
-        insert_telemetry_str(&mut properties, "tools_hash", &chain.tools);
-        properties.insert("message_count".into(), json!(chain.messages.len() as i64));
-        insert_telemetry_str(&mut properties, "prefix_break", prefix_break);
-        properties.insert("prefix_break_index".into(), json!(prefix_break_index));
-        insert_telemetry_str(&mut properties, "call_kind", call_kind);
-        if let Some(kind) = nonempty(ids.session_kind.as_deref()) {
-            insert_telemetry_str(&mut properties, "session_kind", kind);
-        }
-        enqueue_observation_telemetry(ObservationTelemetryRecord {
+        self.enqueue_telemetry(ObservationTelemetryRecord {
             event_id: clip_event_id(format!("obs:llm:{model_call_id}")),
-            name: TELEMETRY_EVENT_LLM_REQUEST.into(),
+            name: telemetry::EVENT_LLM_REQUEST.into(),
             occurred_at: rfc3339_now(),
-            properties,
+            properties: telemetry::llm_request_props(
+                &ids,
+                &LlmRequestFacts {
+                    model_call_id,
+                    call_kind,
+                    request,
+                    system_hash: &chain.system,
+                    tools_hash: &chain.tools,
+                    message_count: chain.messages.len(),
+                    prefix_break,
+                    prefix_break_index,
+                    history,
+                    wire,
+                },
+            ),
         });
+    }
+
+    fn emit_llm_response_telemetry(&self, scope: ObservationScope, facts: &LlmResponseFacts<'_>) {
+        if scope != ObservationScope::SessionWorkflow {
+            return;
+        }
+        let ids = self.ids();
+        if !self.telemetry_wanted(&ids) {
+            return;
+        }
+        self.enqueue_telemetry(ObservationTelemetryRecord {
+            event_id: clip_event_id(format!("obs:llm_response:{}", facts.model_call_id)),
+            name: telemetry::EVENT_LLM_RESPONSE.into(),
+            occurred_at: rfc3339_now(),
+            properties: telemetry::llm_response_props(&ids, facts),
+        });
+    }
+
+    fn emit_turn_summary_telemetry(
+        &self,
+        ids: &ObservationIds,
+        status: Option<&str>,
+        elapsed_ms: u64,
+        stop_reason: Option<&str>,
+        stats: &TurnStats,
+    ) {
+        if !self.telemetry_wanted(ids) {
+            return;
+        }
+        let Some(turn_id) = nonempty(ids.root_turn_id.as_deref()) else {
+            return;
+        };
+        self.enqueue_telemetry(ObservationTelemetryRecord {
+            event_id: clip_event_id(format!("obs:turn:{turn_id}")),
+            name: telemetry::EVENT_TURN_SUMMARY.into(),
+            occurred_at: rfc3339_now(),
+            properties: telemetry::turn_summary_props(
+                ids,
+                &TurnSummaryFacts {
+                    status,
+                    stop_reason,
+                    elapsed_ms,
+                    stats,
+                },
+            ),
+        });
+    }
+
+    /// Wire-level facts for a workflow request, built only when something
+    /// will consume them.
+    fn wire_facts(
+        &self,
+        provider: &dyn LlmProvider,
+        request: &LlmRequest,
+        scope: ObservationScope,
+    ) -> Option<WireFacts> {
+        if scope != ObservationScope::SessionWorkflow {
+            return None;
+        }
+        let wanted = self.recorder.is_enabled() || self.telemetry_wanted(&self.ids());
+        wanted.then(|| provider.describe_request(request)).flatten()
+    }
+
+    fn note_request(
+        &self,
+        scope: ObservationScope,
+        history: &HistoryFacts,
+        wire: Option<&WireFacts>,
+    ) {
+        if scope != ObservationScope::SessionWorkflow {
+            return;
+        }
+        let dropped = wire.is_some_and(|wire| telemetry::reasoning_dropped(history, wire) > 0);
+        if dropped {
+            self.update_stats(|stats| stats.reasoning_dropped_calls += 1);
+        }
+    }
+
+    fn note_response(&self, scope: ObservationScope, capture: &ResponseCapture<'_>) {
+        if scope != ObservationScope::SessionWorkflow {
+            return;
+        }
+        let thinking_chars = capture.thinking.chars().count() as u64;
+        self.update_stats(|stats| {
+            stats.model_calls += 1;
+            if capture.error.is_some() {
+                stats.model_errors += 1;
+            }
+            stats.llm_wall_ms = stats.llm_wall_ms.saturating_add(capture.elapsed_ms);
+            stats.thinking_chars = stats.thinking_chars.saturating_add(thinking_chars);
+            if let Some(split) = capture.prompt_cache {
+                stats.prompt_tokens = stats.prompt_tokens.saturating_add(split.prompt_tokens);
+            }
+            if let Some(usage) = &capture.usage {
+                stats.output_tokens = stats.output_tokens.saturating_add(usage.output_tokens);
+                stats.reasoning_tokens =
+                    stats.reasoning_tokens.saturating_add(usage.reasoning_tokens);
+                stats.cache_read_tokens =
+                    stats.cache_read_tokens.saturating_add(usage.cache_read_tokens);
+                stats.cache_creation_tokens = stats
+                    .cache_creation_tokens
+                    .saturating_add(usage.cache_creation_tokens);
+            }
+        });
+    }
+}
+
+/// Classification of a harness nudge, recorded next to its text.
+#[derive(Debug, Clone, Copy)]
+pub struct NudgeInfo<'a> {
+    pub kind: &'a str,
+    pub detail: Option<&'a str>,
+    pub tool: Option<&'a str>,
+}
+
+impl<'a> NudgeInfo<'a> {
+    /// A nudge with no finer classification than where it came from.
+    pub fn source(kind: &'a str) -> Self {
+        Self {
+            kind,
+            detail: None,
+            tool: None,
+        }
     }
 }
 
@@ -582,6 +843,9 @@ pub async fn stream_llm(
         &request.messages,
     );
     let pre_provider_ms = session.pre_provider_ms();
+    let history = HistoryFacts::of(&request.messages);
+    let wire = session.wire_facts(provider, request, scope);
+    session.note_request(scope, &history, wire.as_ref());
     let request_payload = json!({
         "call_kind": call_kind,
         "observation_scope": scope,
@@ -590,6 +854,7 @@ pub async fn stream_llm(
         "request": llm_request_to_value(request),
         "prefix_fingerprint": prefix_fingerprint,
         "pre_provider_ms": pre_provider_ms,
+        "request_facts": telemetry::request_facts_value(&history, wire.as_ref()),
     });
     observe_with_model_call(
         &session,
@@ -603,6 +868,8 @@ pub async fn stream_llm(
         scope,
         request,
         &prefix_fingerprint,
+        &history,
+        wire.as_ref(),
     );
 
     let started = Instant::now();
@@ -622,22 +889,32 @@ pub async fn stream_llm(
     Ok(wrap_stream(
         rx,
         session,
-        call_kind.to_owned(),
-        scope,
+        StreamMeta {
+            call_kind: call_kind.to_owned(),
+            model: request.model.clone(),
+            scope,
+            model_call_id: Some(model_call_id),
+            pre_provider_ms,
+            input_includes_cache: provider.input_tokens_include_cache(),
+        },
         started,
-        Some(model_call_id),
-        provider.input_tokens_include_cache(),
     ))
+}
+
+struct StreamMeta {
+    call_kind: String,
+    model: String,
+    scope: ObservationScope,
+    model_call_id: Option<String>,
+    pre_provider_ms: Option<u64>,
+    input_includes_cache: bool,
 }
 
 fn wrap_stream(
     mut rx: mpsc::Receiver<LlmEvent>,
     session: Arc<ObservationSession>,
-    call_kind: String,
-    scope: ObservationScope,
+    meta: StreamMeta,
     started: Instant,
-    model_call_id: Option<String>,
-    input_includes_cache: bool,
 ) -> mpsc::Receiver<LlmEvent> {
     let (tx, out_rx) = mpsc::channel(32);
     tokio::spawn(async move {
@@ -681,41 +958,43 @@ fn wrap_stream(
                 }
                 _ => {}
             }
-            let pending_response = match &event {
-                LlmEvent::Done { stop_reason, usage } => Some((
-                    stop_reason_name(*stop_reason),
-                    serde_json::to_value(usage).ok(),
-                    prompt_cache_split(usage, input_includes_cache),
-                    None::<String>,
-                )),
-                LlmEvent::Error(message) => {
-                    Some(("error", None, None, Some(message.clone())))
-                }
+            let capture = match &event {
+                LlmEvent::Done { stop_reason, usage } => Some(ResponseCapture {
+                    text: &text,
+                    thinking: &thinking,
+                    tool_use: &tool_use,
+                    stop_reason: Some(stop_reason_name(*stop_reason)),
+                    usage: Some(usage.clone()),
+                    prompt_cache: prompt_cache_split(usage, meta.input_includes_cache),
+                    error: None,
+                    elapsed_ms: elapsed_millis(started),
+                    ttft_ms,
+                }),
+                LlmEvent::Error(message) => Some(ResponseCapture {
+                    text: &text,
+                    thinking: &thinking,
+                    tool_use: &tool_use,
+                    stop_reason: Some("error"),
+                    usage: None,
+                    prompt_cache: None,
+                    error: Some(message.clone()),
+                    elapsed_ms: elapsed_millis(started),
+                    ttft_ms,
+                }),
                 _ => None,
             };
+            if let Some(capture) = &capture {
+                session.note_response(meta.scope, capture);
+            }
             // Deliver to the live consumer first. Compact/judge timeouts drop
             // this receiver; recording a complete llm/response after that
             // would mark an abandoned call as intact.
             if tx.send(event).await.is_err() {
                 return;
             }
-            if let Some((stop_reason, usage, prompt_cache, error)) = pending_response {
+            if let Some(capture) = &capture {
                 saw_terminal = true;
-                emit_response(
-                    &session,
-                    &call_kind,
-                    scope,
-                    &text,
-                    &thinking,
-                    &tool_use,
-                    Some(stop_reason),
-                    usage,
-                    prompt_cache,
-                    error.as_deref(),
-                    started,
-                    ttft_ms,
-                    model_call_id.clone(),
-                );
+                emit_response(&session, &meta, capture);
             }
         }
         if !saw_terminal {
@@ -776,6 +1055,8 @@ pub fn begin_chat_llm(
         &request.messages,
     );
     let pre_provider_ms = session.pre_provider_ms();
+    let history = HistoryFacts::of(&request.messages);
+    session.note_request(scope, &history, None);
     observe_with_model_call(
         session,
         EVENT_LLM_REQUEST,
@@ -787,6 +1068,7 @@ pub fn begin_chat_llm(
             "request": llm_request_to_value(request),
             "prefix_fingerprint": prefix_fingerprint,
             "pre_provider_ms": pre_provider_ms,
+            "request_facts": telemetry::request_facts_value(&history, None),
             "observation_type": "generation",
         }),
         Some(model_call_id.clone()),
@@ -797,6 +1079,8 @@ pub fn begin_chat_llm(
         scope,
         request,
         &prefix_fingerprint,
+        &history,
+        None,
     );
     model_call_id
 }
@@ -832,44 +1116,69 @@ pub fn finish_chat_llm(
     session.mark_phase_boundary();
 }
 
-fn emit_response(
-    session: &ObservationSession,
-    call_kind: &str,
-    scope: ObservationScope,
-    text: &str,
-    thinking: &str,
-    tool_use: &[Value],
-    stop_reason: Option<&str>,
-    usage: Option<Value>,
+struct ResponseCapture<'a> {
+    text: &'a str,
+    thinking: &'a str,
+    tool_use: &'a [Value],
+    stop_reason: Option<&'static str>,
+    usage: Option<TokenUsage>,
     prompt_cache: Option<PromptCacheSplit>,
-    error: Option<&str>,
-    started: Instant,
+    error: Option<String>,
+    elapsed_ms: u64,
     ttft_ms: Option<u64>,
-    model_call_id: Option<String>,
-) {
-    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(0);
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(0)
+}
+
+fn emit_response(session: &ObservationSession, meta: &StreamMeta, capture: &ResponseCapture<'_>) {
+    let elapsed_ms = capture.elapsed_ms;
+    let ttft_ms = capture.ttft_ms;
+    let prompt_cache = capture.prompt_cache;
     observe_with_model_call(
         session,
         EVENT_LLM_RESPONSE,
         json!({
-            "call_kind": call_kind,
-            "observation_scope": scope,
+            "call_kind": meta.call_kind,
+            "observation_scope": meta.scope,
             "fidelity": "canonical",
-            "text": redact_capture(text),
-            "thinking": redact_capture(thinking),
-            "tool_use": tool_use,
-            "stop_reason": stop_reason,
-            "usage": usage,
-            "error": error,
+            "text": redact_capture(capture.text),
+            "thinking": redact_capture(capture.thinking),
+            "tool_use": capture.tool_use,
+            "stop_reason": capture.stop_reason,
+            "usage": capture.usage.as_ref().and_then(|usage| serde_json::to_value(usage).ok()),
+            "error": capture.error,
             "elapsed_ms": elapsed_ms,
             "ttft_ms": ttft_ms,
             "generation_ms": ttft_ms.map(|ttft| elapsed_ms.saturating_sub(ttft)),
             "prompt_tokens": prompt_cache.map(|split| split.prompt_tokens),
             "cache_hit_ratio": prompt_cache.map(|split| split.cache_hit_ratio),
         }),
-        model_call_id,
+        meta.model_call_id.clone(),
     );
     session.mark_phase_boundary();
+    if let Some(model_call_id) = meta.model_call_id.as_deref() {
+        session.emit_llm_response_telemetry(
+            meta.scope,
+            &LlmResponseFacts {
+                model_call_id,
+                call_kind: &meta.call_kind,
+                model: &meta.model,
+                stop_reason: capture.stop_reason,
+                error: capture.error.as_deref(),
+                elapsed_ms,
+                ttft_ms,
+                pre_provider_ms: meta.pre_provider_ms,
+                usage: capture.usage.as_ref(),
+                prompt_tokens: prompt_cache.map(|split| split.prompt_tokens),
+                cache_hit_ratio: prompt_cache.map(|split| split.cache_hit_ratio),
+                text_chars: capture.text.chars().count(),
+                thinking_chars: capture.thinking.chars().count(),
+                tool_use_count: capture.tool_use.len(),
+            },
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -930,25 +1239,6 @@ fn clip_event_id(mut raw: String) -> String {
         raw.truncate(TELEMETRY_MAX_EVENT_ID);
     }
     raw
-}
-
-fn insert_telemetry_str(properties: &mut BTreeMap<String, Value>, key: &str, value: &str) {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    properties.insert(key.to_string(), json!(clip_chars(trimmed, TELEMETRY_MAX_PROP)));
-}
-
-fn clip_chars(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_string()
 }
 
 fn rfc3339_now() -> String {
@@ -1160,7 +1450,7 @@ mod tests {
     use super::*;
     use nomi_agent_trace::{
         ExecutionStatus, EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE, EVENT_TOOL_EXECUTION_COMPLETED,
-        EVENT_TOOL_EXECUTION_STARTED, EVENT_TURN_END, EVENT_TURN_START,
+        EVENT_TOOL_EXECUTION_STARTED, EVENT_TURN_END, EVENT_TURN_START, MAX_PREVIEW_CHARS,
     };
     use nomi_types::message::{Message, Role, TokenUsage};
     use serde_json::json;
@@ -1658,6 +1948,7 @@ mod tests {
                     nomi_tools::phase_trace::ToolPhase { name: "tool.execute", micros: 1_200_000 },
                     nomi_tools::phase_trace::ToolPhase { name: "bash.spawn", micros: 900_000 },
                 ],
+                attrs: Vec::new(),
             }),
             Some(4321),
         );
@@ -2029,15 +2320,6 @@ mod tests {
     }
 
     #[test]
-    fn clip_chars_stays_on_char_boundary() {
-        let raw = "工具名称".repeat(80);
-        let clipped = clip_chars(&raw, TELEMETRY_MAX_PROP);
-        assert!(clipped.len() <= TELEMETRY_MAX_PROP);
-        assert!(raw.is_char_boundary(clipped.len()) || clipped.is_empty());
-        assert_eq!(clipped, &raw[..clipped.len()]);
-    }
-
-    #[test]
     fn tool_finished_without_timing_uses_started_at() {
         let dir = tempfile::tempdir().unwrap();
         let recorder = ObservationRecorder::isolated(dir.path());
@@ -2075,5 +2357,510 @@ mod tests {
         assert_eq!(events[0].event_type, EVENT_HARNESS_PROFILE);
         assert_eq!(events[0].payload["profile"], "office");
         assert_eq!(events[0].payload["active"], false);
+    }
+
+    type Captured = Arc<Mutex<Vec<ObservationTelemetryRecord>>>;
+
+    fn dialogue_ids(turn: &str) -> ObservationIds {
+        ObservationIds {
+            conversation_id: Some("c-tel".into()),
+            root_turn_id: Some(turn.into()),
+            session_kind: Some("session_dialogue".into()),
+            ..ObservationIds::default()
+        }
+    }
+
+    fn capturing_session(
+        recorder: Arc<ObservationRecorder>,
+        ids: ObservationIds,
+    ) -> (Arc<ObservationSession>, Captured) {
+        let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        let session = ObservationSession::new(recorder);
+        session.set_telemetry_sink(Some(Arc::new(move |record| {
+            sink.lock().unwrap().push(record);
+        })));
+        session.bind_ids(ids);
+        (session, captured)
+    }
+
+    fn captured_named(captured: &Captured, name: &str) -> Vec<ObservationTelemetryRecord> {
+        captured
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| record.name == name)
+            .cloned()
+            .collect()
+    }
+
+    fn assert_uploadable(record: &ObservationTelemetryRecord) {
+        assert!(record.event_id.len() <= 128, "{}", record.event_id);
+        assert!(
+            record.properties.len() <= 24,
+            "{}: {} properties",
+            record.name,
+            record.properties.len()
+        );
+        for (key, value) in &record.properties {
+            assert!(key.len() <= 64, "key too long: {key}");
+            match value {
+                Value::String(text) => assert!(text.len() <= 256, "{key} too long"),
+                Value::Number(_) | Value::Bool(_) => {}
+                other => panic!("{}: non-scalar property {key}: {other:?}", record.name),
+            }
+        }
+    }
+
+    struct WireProvider {
+        wire: WireFacts,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for WireProvider {
+        fn describe_request(&self, _: &LlmRequest) -> Option<WireFacts> {
+            Some(self.wire.clone())
+        }
+
+        async fn stream(
+            &self,
+            _: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            let (tx, rx) = mpsc::channel(8);
+            tx.send(LlmEvent::ThinkingDelta("ponder".into())).await.ok();
+            if self.fail {
+                tx.send(LlmEvent::Error("API error 429: slow down for secret-token".into()))
+                    .await
+                    .ok();
+            } else {
+                tx.send(LlmEvent::TextDelta("hello".into())).await.ok();
+                tx.send(LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                    usage: TokenUsage {
+                        input_tokens: 1000,
+                        output_tokens: 50,
+                        reasoning_tokens: 20,
+                        cache_creation_tokens: 100,
+                        cache_read_tokens: 600,
+                    },
+                })
+                .await
+                .ok();
+            }
+            Ok(rx)
+        }
+    }
+
+    fn placeholder_wire() -> WireFacts {
+        WireFacts {
+            protocol: "openai_chat",
+            messages: 3,
+            bytes: 900,
+            assistant_messages: 1,
+            tool_messages: 0,
+            reasoning_kept: 0,
+            reasoning_placeholders: 1,
+            drop_prior_turn_reasoning: true,
+            require_reasoning_content: true,
+        }
+    }
+
+    fn reasoning_history() -> Vec<Message> {
+        vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "first".into() }],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        thinking: "plan".into(),
+                        signature: None,
+                    },
+                    ContentBlock::Text { text: "done".into() },
+                ],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "second".into() }],
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn workflow_call_reports_request_and_response_telemetry() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let (session, captured) = capturing_session(recorder.clone(), dialogue_ids("t-1"));
+        let provider = WireProvider {
+            wire: placeholder_wire(),
+            fail: false,
+        };
+        let request = sample_request("sys", reasoning_history(), Vec::new());
+
+        let mut rx = stream_llm(
+            &provider,
+            &request,
+            Some(Arc::clone(&session)),
+            "turn",
+            ObservationScope::SessionWorkflow,
+        )
+        .await
+        .unwrap();
+        while rx.recv().await.is_some() {}
+
+        let requests = captured_named(&captured, "llm_request");
+        assert_eq!(requests.len(), 1);
+        let props = &requests[0].properties;
+        assert_eq!(props["turn_id"], json!("t-1"));
+        assert_eq!(props["call_kind"], json!("turn"));
+        assert_eq!(props["hist_reasoning_msgs"], json!(1));
+        assert_eq!(props["wire_reasoning_kept"], json!(0));
+        assert_eq!(props["wire_reasoning_placeholders"], json!(1));
+        assert_eq!(props["wire_drop_prior_reasoning"], json!(true));
+        assert_eq!(props["reasoning_dropped"], json!(1));
+        assert_eq!(props["wire_bytes"], json!(900));
+
+        let responses = captured_named(&captured, "llm_response");
+        assert_eq!(responses.len(), 1);
+        let props = &responses[0].properties;
+        assert_eq!(props["model_call_id"], requests[0].properties["model_call_id"]);
+        assert_eq!(props["outcome"], json!("ok"));
+        assert_eq!(props["stop_reason"], json!("end_turn"));
+        assert_eq!(props["prompt_tokens"], json!(1000));
+        assert_eq!(props["cache_hit_ratio"], json!(0.6));
+        assert_eq!(props["cache_read_tokens"], json!(600));
+        assert_eq!(props["cache_creation_tokens"], json!(100));
+        assert_eq!(props["output_tokens"], json!(50));
+        assert_eq!(props["reasoning_tokens"], json!(20));
+        assert_eq!(props["thinking_chars"], json!(6));
+        assert_eq!(props["text_chars"], json!(5));
+        assert_eq!(props["tool_use_count"], json!(0));
+        for record in captured.lock().unwrap().iter() {
+            assert_uploadable(record);
+        }
+
+        let events = recorder.read_events(Some("c-tel")).unwrap();
+        let local = events
+            .iter()
+            .find(|event| event.event_type == EVENT_LLM_REQUEST)
+            .expect("llm request");
+        assert_eq!(local.payload["request_facts"]["history"]["reasoning_messages"], 1);
+        assert_eq!(local.payload["request_facts"]["wire"]["reasoning_dropped"], 1);
+        assert_eq!(local.payload["request_facts"]["wire"]["reasoning_placeholders"], 1);
+    }
+
+    #[tokio::test]
+    async fn failed_stream_reports_an_error_class_without_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        let (session, captured) = capturing_session(recorder, dialogue_ids("t-err"));
+        let provider = WireProvider {
+            wire: placeholder_wire(),
+            fail: true,
+        };
+        let request = sample_request("sys", reasoning_history(), Vec::new());
+
+        let mut rx = stream_llm(
+            &provider,
+            &request,
+            Some(Arc::clone(&session)),
+            "turn",
+            ObservationScope::SessionWorkflow,
+        )
+        .await
+        .unwrap();
+        while rx.recv().await.is_some() {}
+
+        let responses = captured_named(&captured, "llm_response");
+        assert_eq!(responses.len(), 1);
+        let props = &responses[0].properties;
+        assert_eq!(props["outcome"], json!("error"));
+        assert_eq!(props["error_class"], json!("rate_limited"));
+        assert!(
+            !serde_json::to_string(props).unwrap().contains("secret-token"),
+            "provider message must not leave the machine: {props:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auxiliary_calls_stay_out_of_cloud_telemetry_and_turn_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        let (session, captured) = capturing_session(recorder, dialogue_ids("t-aux"));
+        let provider = WireProvider {
+            wire: placeholder_wire(),
+            fail: false,
+        };
+        let request = sample_request("sys", reasoning_history(), Vec::new());
+
+        let mut rx = stream_llm(
+            &provider,
+            &request,
+            Some(Arc::clone(&session)),
+            "compact",
+            ObservationScope::SessionAuxiliary,
+        )
+        .await
+        .unwrap();
+        while rx.recv().await.is_some() {}
+        session.emit_turn_end(ExecutionStatus::Completed, 5, Some("end_turn"), None, None);
+
+        assert!(captured_named(&captured, "llm_request").is_empty());
+        assert!(captured_named(&captured, "llm_response").is_empty());
+        let summaries = captured_named(&captured, "agent_turn_summary");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].properties["model_calls"], json!(0));
+    }
+
+    #[test]
+    fn tool_calls_report_outcome_error_class_result_size_and_tool_attrs() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let (session, captured) = capturing_session(recorder.clone(), dialogue_ids("t-tool"));
+
+        session.emit_tool_started("call-glob", "Glob", &json!({ "pattern": "src/**/*.{rs,toml}" }));
+        session.emit_tool_finished(
+            "call-glob",
+            "Glob",
+            true,
+            "No such file: src",
+            Some(ToolCallTiming {
+                duration_ms: 12,
+                duration_us: 12_000,
+                started_at_ms: 1_790_000_000_000 - 12,
+                completed_at_ms: 1_790_000_000_000,
+                phases: Vec::new(),
+                attrs: vec![nomi_tools::phase_trace::ToolAttr {
+                    key: "glob.outcome",
+                    value: nomi_tools::phase_trace::AttrValue::Label("root_missing"),
+                }],
+            }),
+            None,
+        );
+        session.emit_tool_started("call-cancel", "Bash", &json!({ "command": "sleep 9" }));
+        session.emit_tool_cancelled("call-cancel", "Bash");
+
+        let tools = captured_named(&captured, "tool_executed");
+        assert_eq!(tools.len(), 2);
+        let failed = &tools[0].properties;
+        assert_eq!(failed["tool_name"], json!("Glob"));
+        assert_eq!(failed["outcome"], json!("failed"));
+        assert_eq!(failed["error_class"], json!("not_found"));
+        assert_eq!(failed["result_bytes"], json!("No such file: src".len()));
+        assert_eq!(failed["glob_outcome"], json!("root_missing"));
+        assert_eq!(failed["duration_ms"], json!(12));
+        assert_eq!(tools[1].properties["outcome"], json!("cancelled"));
+        assert!(tools[1].properties.get("error_class").is_none());
+        for record in &tools {
+            assert_uploadable(record);
+        }
+
+        let events = recorder.read_events(Some("c-tel")).unwrap();
+        let local = events
+            .iter()
+            .find(|event| event.event_type == EVENT_TOOL_EXECUTION_FAILED)
+            .expect("tool failed");
+        assert_eq!(local.payload["error_class"], "not_found");
+        assert_eq!(local.payload["result_bytes"], "No such file: src".len());
+        assert_eq!(local.payload["attrs"]["glob.outcome"], "root_missing");
+    }
+
+    #[test]
+    fn nudges_and_finish_decisions_are_classified_locally_and_in_the_cloud() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let (session, captured) = capturing_session(recorder.clone(), dialogue_ids("t-nudge"));
+
+        session.emit_harness_nudge(
+            "coding",
+            "tool_turn",
+            "The file does not exist; list the directory first.",
+            false,
+            NudgeInfo {
+                kind: "tool_failure",
+                detail: Some("not_found"),
+                tool: Some("Read"),
+            },
+        );
+        session.emit_harness_nudge(
+            "coding",
+            "hard_stop",
+            "stop reading",
+            true,
+            NudgeInfo {
+                kind: "hard_stop",
+                detail: Some("read_repeat"),
+                tool: None,
+            },
+        );
+        let gate = FinishGateFacts {
+            reason: "verify_gate",
+            verification_mode: "hard_gate",
+            needs_verification: true,
+            mutated_files: true,
+            verified_after_mutation: false,
+            trivial_mutation: false,
+            trivial_mutation_ext: None,
+        };
+        session.emit_harness_finish(
+            "coding",
+            "continue_with_nudge",
+            json!({}),
+            Some("run the tests before finishing"),
+            Some(&gate),
+        );
+
+        let nudges = captured_named(&captured, "harness_nudge");
+        assert_eq!(nudges.len(), 2);
+        assert_eq!(nudges[0].properties["nudge_kind"], json!("tool_failure"));
+        assert_eq!(nudges[0].properties["nudge_detail"], json!("not_found"));
+        assert_eq!(nudges[0].properties["nudge_tool"], json!("Read"));
+        assert_eq!(nudges[0].properties["turn_nudge_index"], json!(1));
+        assert_eq!(nudges[1].properties["hard_stop"], json!(true));
+        assert_eq!(nudges[1].properties["turn_nudge_index"], json!(1));
+        assert_ne!(nudges[0].event_id, nudges[1].event_id);
+
+        let finishes = captured_named(&captured, "harness_finish");
+        assert_eq!(finishes.len(), 1);
+        let props = &finishes[0].properties;
+        assert_eq!(props["decision"], json!("continue_with_nudge"));
+        assert_eq!(props["reason"], json!("verify_gate"));
+        assert_eq!(props["verification_mode"], json!("hard_gate"));
+        assert_eq!(props["needs_verification"], json!(true));
+        assert_eq!(props["verified_after_mutation"], json!(false));
+        for record in captured.lock().unwrap().iter() {
+            assert_uploadable(record);
+        }
+
+        let events = recorder.read_events(Some("c-tel")).unwrap();
+        let nudge = events
+            .iter()
+            .find(|event| event.event_type == EVENT_HARNESS_NUDGE)
+            .expect("harness nudge");
+        assert_eq!(nudge.payload["kind"], "tool_failure");
+        assert_eq!(nudge.payload["detail"], "not_found");
+        assert_eq!(nudge.payload["tool"], "Read");
+        let finish = events
+            .iter()
+            .find(|event| event.event_type == EVENT_HARNESS_FINISH)
+            .expect("harness finish");
+        assert_eq!(finish.payload["gate"]["reason"], "verify_gate");
+        assert_eq!(finish.payload["gate"]["needs_verification"], true);
+    }
+
+    #[tokio::test]
+    async fn turn_summary_folds_the_turn_and_resets_for_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let (session, captured) = capturing_session(recorder.clone(), dialogue_ids("t-1"));
+        let provider = WireProvider {
+            wire: placeholder_wire(),
+            fail: false,
+        };
+        let request = sample_request("sys", reasoning_history(), Vec::new());
+
+        let mut rx = stream_llm(
+            &provider,
+            &request,
+            Some(Arc::clone(&session)),
+            "turn",
+            ObservationScope::SessionWorkflow,
+        )
+        .await
+        .unwrap();
+        while rx.recv().await.is_some() {}
+        session.emit_tool_started("call-1", "Read", &json!({ "file_path": "a.rs" }));
+        session.emit_tool_finished("call-1", "Read", true, "No such file: a.rs", None, None);
+        session.emit_harness_progress(
+            "coding",
+            "continue",
+            false,
+            1,
+            json!({ "kpi": {
+                "unique_path_reread_rate": 0.25,
+                "recon_only_turns": 2,
+                "serial_recon_turns": 1,
+                "time_to_first_edit_ms": 4200,
+                "verify_before_end": false,
+                "failure_nudges_suppressed": 3,
+            } }),
+        );
+        session.emit_harness_nudge(
+            "coding",
+            "tool_turn",
+            "nudge text",
+            false,
+            NudgeInfo::source("tool_failure"),
+        );
+        session.emit_harness_finish("coding", "continue_with_nudge", json!({}), Some("again"), None);
+        session.emit_turn_end(ExecutionStatus::Completed, 1234, Some("end_turn"), None, None);
+
+        let summaries = captured_named(&captured, "agent_turn_summary");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].event_id, "obs:turn:t-1");
+        assert_uploadable(&summaries[0]);
+        let props = &summaries[0].properties;
+        assert_eq!(props["status"], json!("completed"));
+        assert_eq!(props["stop_reason"], json!("end_turn"));
+        assert_eq!(props["elapsed_ms"], json!(1234));
+        assert_eq!(props["model_calls"], json!(1));
+        assert_eq!(props["tool_calls"], json!(1));
+        assert_eq!(props["tool_errors"], json!(1));
+        assert_eq!(props["nudges"], json!(1));
+        assert_eq!(props["finish_blocks"], json!(1));
+        assert_eq!(props["prompt_tokens"], json!(1000));
+        assert_eq!(props["output_tokens"], json!(50));
+        assert_eq!(props["cache_read_tokens"], json!(600));
+        assert_eq!(props["thinking_chars"], json!(6));
+        assert_eq!(props["reread_rate"], json!(0.25));
+        assert_eq!(props["recon_only_turns"], json!(2));
+        assert_eq!(props["time_to_first_edit_ms"], json!(4200));
+        assert_eq!(props["verify_before_end"], json!(false));
+        assert_eq!(props["failure_nudges_suppressed"], json!(3));
+
+        let events = recorder.read_events(Some("c-tel")).unwrap();
+        let local = events
+            .iter()
+            .find(|event| event.event_type == EVENT_TURN_END)
+            .expect("turn end");
+        assert_eq!(local.payload["summary"]["model_calls"], 1);
+        assert_eq!(local.payload["summary"]["reasoning_dropped_calls"], 1);
+        assert_eq!(local.payload["summary"]["nudges_by_kind"]["tool_failure"], 1);
+
+        session.bind_ids(dialogue_ids("t-2"));
+        session.emit_turn_end(ExecutionStatus::Completed, 9, Some("end_turn"), None, None);
+        let summaries = captured_named(&captured, "agent_turn_summary");
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[1].event_id, "obs:turn:t-2");
+        assert_eq!(summaries[1].properties["model_calls"], json!(0));
+        assert_eq!(summaries[1].properties["tool_calls"], json!(0));
+        assert!(summaries[1].properties.get("reread_rate").is_none());
+    }
+
+    #[test]
+    fn eval_sessions_emit_no_cloud_telemetry() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        let (session, captured) = capturing_session(
+            recorder,
+            ObservationIds {
+                session_kind: Some("eval".into()),
+                ..dialogue_ids("t-eval")
+            },
+        );
+
+        session.emit_tool_started("call-1", "Read", &json!({}));
+        session.emit_tool_finished("call-1", "Read", false, "ok", None, None);
+        session.emit_harness_nudge("coding", "tool_turn", "x", false, NudgeInfo::source("x"));
+        session.emit_turn_end(ExecutionStatus::Completed, 1, None, None, None);
+
+        assert!(captured.lock().unwrap().is_empty());
     }
 }

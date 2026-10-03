@@ -40,6 +40,7 @@ mod local_agent_invocation;
 mod local_delegation_progress;
 mod local_delegate_tool;
 mod isolated_subagent;
+mod telemetry;
 
 // Re-export the skills crate so existing callers (nomi-cli, tests) can use
 // `nomi_agent::skills::` without changing their import paths.
@@ -54,7 +55,7 @@ pub use auxiliary_observation::{
 };
 pub use observation::{
     begin_chat_llm, finish_chat_llm, messages_to_llm_request, set_observation_telemetry_hook,
-    stream_llm, ObservationSession, ObservationTelemetryRecord,
+    stream_llm, NudgeInfo, ObservationSession, ObservationTelemetryRecord,
 };
 pub use task_profile::TaskProfile;
 pub use nomi_coding;

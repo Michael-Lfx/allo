@@ -17,7 +17,7 @@ use nomi_types::tool::{ToolDef, ToolResult};
 
 use nomi_tools::{
     MAX_PROVIDER_TOOL_OUTPUT_BYTES, ToolExecutionContext, TruncationBudget,
-    phase_trace::{self, PhaseClock, ToolPhase},
+    phase_trace::{self, PhaseClock, ToolAttr, ToolPhase},
     registry::ToolRegistry, truncate_middle,
 };
 
@@ -162,6 +162,9 @@ pub struct ToolCallTiming {
     /// `tool.execute`; the rest are sequential, and time they do not cover is
     /// untracked.
     pub phases: Vec<ToolPhase>,
+    /// Scalar facts the tool recorded about its own run (for example how many
+    /// files a search matched).
+    pub attrs: Vec<ToolAttr>,
 }
 
 fn wall_clock_ms() -> u64 {
@@ -174,7 +177,7 @@ fn wall_clock_ms() -> u64 {
 async fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, ToolCallTiming) {
     let started_at_ms = wall_clock_ms();
     let started = std::time::Instant::now();
-    let (output, phases) = phase_trace::collect(Box::pin(future)).await;
+    let (output, trace) = phase_trace::collect_trace(Box::pin(future)).await;
     let elapsed = started.elapsed();
     let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
     let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
@@ -186,7 +189,8 @@ async fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, ToolCallT
             duration_us,
             started_at_ms,
             completed_at_ms,
-            phases,
+            phases: trace.phases,
+            attrs: trace.attrs,
         },
     )
 }
@@ -2978,6 +2982,72 @@ mod tests {
         let fast_execute = fast.phases.iter().find(|p| p.name == "tool.execute").unwrap();
         assert!(slow_execute.micros >= 400_000, "{slow:?}");
         assert!(fast_execute.micros < 300_000, "{fast:?}");
+    }
+
+    struct MockAttrTool;
+    #[async_trait::async_trait]
+    impl Tool for MockAttrTool {
+        fn name(&self) -> &str {
+            "MockAttr"
+        }
+        fn description(&self) -> &str {
+            "records an attr about its own run"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({ "type": "object" })
+        }
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        async fn execute(&self, input: serde_json::Value) -> nomi_types::tool::ToolResult {
+            let hits = input["hits"].as_u64().unwrap_or(0) as usize;
+            phase_trace::record_attr("mock.hits", phase_trace::AttrValue::count(hits));
+            nomi_types::tool::ToolResult {
+                content: "ok".into(),
+                is_error: false,
+                images: Vec::new(),
+            }
+        }
+        fn category(&self) -> nomi_protocol::events::ToolCategory {
+            nomi_protocol::events::ToolCategory::Info
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_calls_keep_their_own_tool_attrs() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockAttrTool));
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
+        let attr_call = |id: &str, hits: u64| ContentBlock::ToolUse {
+            id: id.into(),
+            name: "MockAttr".into(),
+            input: json!({ "hits": hits }),
+            extra: None,
+        };
+
+        let outcome = execute_tool_calls_scoped(
+            &registry,
+            &[attr_call("a", 3), attr_call("b", 9)],
+            &ProviderToolAuthority::from_request_tools(&registry.to_tool_defs()),
+            "",
+            &confirmer,
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+
+        let attr = |id: &str| {
+            outcome.timings[id]
+                .attrs
+                .iter()
+                .find(|attr| attr.key == "mock.hits")
+                .map(|attr| attr.value)
+        };
+        assert_eq!(attr("a"), Some(phase_trace::AttrValue::Int(3)));
+        assert_eq!(attr("b"), Some(phase_trace::AttrValue::Int(9)));
     }
 
     #[tokio::test]

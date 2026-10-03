@@ -23,6 +23,7 @@ use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheReuseSt
 use crate::compact::state::CompactState;
 use crate::compact::{auto, emergency, estimate, micro, snip, CompactReason};
 use crate::confirm::ToolConfirmer;
+use crate::observation::NudgeInfo;
 use crate::tool_execution::{
     ExecutionControl, ProviderToolAuthority, SKIPPED_AFTER_PRIOR_ERROR, ToolCallTiming,
     execute_tool_calls_scoped, execute_tool_calls_with_approval,
@@ -1497,9 +1498,10 @@ impl AgentEngine {
         source: &str,
         text: &str,
         hard_stop: bool,
+        info: NudgeInfo<'_>,
     ) {
         if let Some(obs) = self.observation.as_ref() {
-            obs.emit_harness_nudge(self.harness_profile_label(), source, text, hard_stop);
+            obs.emit_harness_nudge(self.harness_profile_label(), source, text, hard_stop, info);
         }
     }
 
@@ -3070,7 +3072,12 @@ impl AgentEngine {
                     && !self.harness_runtime.office_nudge_sent
                 {
                     self.harness_runtime.office_nudge_sent = true;
-                    self.emit_harness_nudge_logged("office_evidence", OFFICE_EVIDENCE_NUDGE, false);
+                    self.emit_harness_nudge_logged(
+                        "office_evidence",
+                        OFFICE_EVIDENCE_NUDGE,
+                        false,
+                        NudgeInfo::source("office_evidence"),
+                    );
                     self.messages.push(Message::now(
                         Role::User,
                         vec![ContentBlock::Text {
@@ -3083,6 +3090,7 @@ impl AgentEngine {
                 }
                 if let Some(harness) = self.coding_harness.as_mut() {
                     let finish = harness.on_natural_end();
+                    let gate = harness.finish_gate_facts();
                     if let Some(obs) = self.observation.as_ref() {
                         let counters =
                             serde_json::to_value(harness.profiler_snapshot()).unwrap_or_else(|_| {
@@ -3099,12 +3107,22 @@ impl AgentEngine {
                             nomi_coding::finish_decision_label(&finish),
                             counters,
                             nudge_preview,
+                            Some(&gate),
                         );
                     }
                     match finish {
                         nomi_coding::FinishDecision::Allow => {}
                         nomi_coding::FinishDecision::ContinueWithNudge { nudge } => {
-                            self.emit_harness_nudge_logged("finish_gate", &nudge, false);
+                            self.emit_harness_nudge_logged(
+                                "finish_gate",
+                                &nudge,
+                                false,
+                                NudgeInfo {
+                                    kind: "finish_gate",
+                                    detail: Some(gate.reason),
+                                    tool: None,
+                                },
+                            );
                             self.messages.push(Message::now(
                                 Role::User,
                                 vec![ContentBlock::Text { text: nudge }],
@@ -3519,8 +3537,9 @@ impl AgentEngine {
                 .stagnation_guard
                 .observe(outcome_signature, all_tool_results_failed);
 
-            let mut coding_nudge_texts: Vec<String> = Vec::new();
+            let mut coding_nudges: Vec<(String, nomi_coding::NudgeMeta)> = Vec::new();
             let mut coding_hard_stop: Option<String> = None;
+            let mut coding_hard_stop_meta: Option<nomi_coding::NudgeMeta> = None;
             if self.coding_harness.is_some() {
                 let mut outcomes: Vec<nomi_coding::ToolCallOutcome> = Vec::new();
                 for call in &tool_calls {
@@ -3569,8 +3588,9 @@ impl AgentEngine {
                     .map(|harness| harness.after_tool_turn(&outcomes));
                 if let Some(nudge) = nudge {
                     self.emit_harness_progress_coding(&nudge);
-                    coding_nudge_texts = nudge.texts;
+                    coding_nudges = nudge.texts.into_iter().zip(nudge.metas).collect();
                     coding_hard_stop = nudge.hard_stop;
+                    coding_hard_stop_meta = nudge.hard_stop_meta;
                     if let Some(harness) = self.coding_harness.as_mut()
                         && harness.allows_update_plan_on_finalize()
                     {
@@ -3607,8 +3627,9 @@ impl AgentEngine {
                 }
                 tool_retry_tracker.clear();
                 stagnation_action = crate::loop_guard::StagnationAction::Continue;
-                coding_nudge_texts.clear();
+                coding_nudges.clear();
                 coding_hard_stop = None;
+                coding_hard_stop_meta = None;
                 if let Some(obs) = self.observation.as_ref() {
                     obs.emit_harness_reset(self.harness_profile_label(), "steer");
                 }
@@ -3626,6 +3647,7 @@ impl AgentEngine {
                         "stagnation",
                         crate::loop_guard::STAGNATION_NUDGE,
                         false,
+                        NudgeInfo::source("stagnation"),
                     );
                     tool_result_blocks.push(ContentBlock::Text {
                         text: crate::loop_guard::STAGNATION_NUDGE.to_string(),
@@ -3641,13 +3663,22 @@ impl AgentEngine {
                     });
                 }
             }
-            for text in coding_nudge_texts {
+            for (text, meta) in coding_nudges {
                 tracing::warn!(
                     target: "nomi_agent",
                     nudge = %text,
                     "coding harness: injecting tool-turn nudge"
                 );
-                self.emit_harness_nudge_logged("tool_turn", &text, false);
+                self.emit_harness_nudge_logged(
+                    "tool_turn",
+                    &text,
+                    false,
+                    NudgeInfo {
+                        kind: meta.kind,
+                        detail: meta.detail.as_deref(),
+                        tool: meta.tool.as_deref(),
+                    },
+                );
                 tool_result_blocks.push(ContentBlock::Text { text });
             }
             // Steering interjection (point A): append any queued steer messages
@@ -3689,7 +3720,16 @@ impl AgentEngine {
                         .unwrap_or_else(|| json!({}));
                     obs.emit_harness_hard_stop("coding", &reason, counters);
                 }
-                self.emit_harness_nudge_logged("hard_stop", &reason, true);
+                self.emit_harness_nudge_logged(
+                    "hard_stop",
+                    &reason,
+                    true,
+                    NudgeInfo {
+                        kind: "hard_stop",
+                        detail: coding_hard_stop_meta.as_ref().map(|meta| meta.kind),
+                        tool: None,
+                    },
+                );
                 tracing::warn!(
                     target: "nomi_agent",
                     %reason,
