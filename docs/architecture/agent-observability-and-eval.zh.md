@@ -146,6 +146,40 @@ cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
 
 操作手册见 [`evaluation/README.md`](../../crates/agent/nomi-agent-eval/evaluation/README.md)。
 
+## 产品遥测（云端事件）
+
+本地 JSONL 保留完整 payload；上云的记录只含标量：计数、字节数、耗时、不透明 id 和封闭集合标签。提示词、工具参数、工具输出、文件路径、provider 错误原文都不进入云端记录。构造逻辑在 `nomi-agent::telemetry`，由 `ObservationSession` 在对应观测点触发，`nomifun-app::observation_telemetry` 批量上传。
+
+上传约束：每条记录至多 24 个属性，仅标量；字符串 ≤ 256 字节，键 ≤ 64 字节，`event_id` ≤ 128 字节。缺 `conversation_id` 或 `session_kind=eval` 的会话不上报；`llm_request` / `llm_response` 只上报 `SessionWorkflow` 调用，压缩、标题、judge 等辅助调用不上报。队列上限 500 条（满则丢最旧并记 warn），每 5 秒最多发 4 批 × 50 条；上传失败的批次回队列头部重试，连续失败 3 次则丢弃该批；服务端按 `event_id` 去重；服务端返回 `rejected > 0` 时本机记 warn。
+
+所有事件带公共属性 `feature=conversation`、`session_id`、`session_kind`、`turn_id`。
+
+| 事件 | 触发点 | `event_id` | 属性 |
+| --- | --- | --- | --- |
+| `llm_request` | 每次主流程模型请求 | `obs:llm:{model_call_id}` | `llm_model` `system_hash` `tools_hash` `message_count` `prefix_break` `prefix_break_index` `call_kind` `model_call_id` `tool_count` `loop_depth` `hist_reasoning_msgs` `hist_tool_results`；provider 实现 `describe_request` 时另有 `wire_reasoning_kept` `wire_reasoning_placeholders` `wire_drop_prior_reasoning` `wire_bytes` `reasoning_dropped`；`thinking` `reasoning_effort` `max_tokens` |
+| `llm_response` | 每次主流程模型响应终态 | `obs:llm_response:{model_call_id}` | `model_call_id` `call_kind` `llm_model` `outcome`（ok/error）`stop_reason` `error_class`（rate_limited/auth/timeout/context_overflow/network/server_error/…）`elapsed_ms` `ttft_ms` `generation_ms` `pre_provider_ms` `prompt_tokens` `output_tokens` `reasoning_tokens` `cache_read_tokens` `cache_creation_tokens` `cache_hit_ratio` `text_chars` `thinking_chars` `tool_use_count` |
+| `tool_executed` | 每次工具终态 | `obs:tool:{tool_call_id}` | `tool_name` `outcome`（completed/failed/cancelled）`duration_ms` `duration_us` `model_call_id` `result_bytes` `error_class`（schema/not_found/timeout/permission/stale_anchor/verify_fail/other）`slowest_phase` `slowest_phase_ms`，以及工具自报的 attrs（键中 `.` 换成 `_`） |
+| `harness_nudge` | 每条注入模型的纠偏文本，以及每次 hard-stop | `obs:nudge:{uuid}` | `profile` `source` `nudge_kind` `nudge_detail` `nudge_tool` `hard_stop` `text_chars` `model_call_id` `turn_nudge_index` |
+| `harness_finish` | 每次自然结束的门禁判定 | `obs:finish:{uuid}` | `profile` `decision` `reason` `verification_mode` `needs_verification` `mutated_files` `verified_after_mutation` `trivial_mutation` `trivial_mutation_ext` `nudge_chars` `model_call_id` |
+| `agent_turn_summary` | 每个用户回合结束 | `obs:turn:{root_turn_id}` | `status` `stop_reason` `elapsed_ms` `model_calls` `tool_calls` `tool_errors` `nudges` `finish_blocks` `prompt_tokens` `output_tokens` `cache_read_tokens` `thinking_chars` `llm_wall_ms` `tool_wall_ms` `reread_rate` `recon_only_turns` `serial_recon_turns` `time_to_first_edit_ms` `verify_before_end` `failure_nudges_suppressed` |
+
+标签取值：
+
+- `nudge_kind`：`tool_failure`（`nudge_detail` 为失败类别，`nudge_tool` 为工具名）、`read_repeat`（soft/hard）、`read_unchanged_stub`、`explore`、`explore_budget`（detail 为预算类型）、`explore_hard_stop`、`plan_timeout`、`plan_hard_stop`、`edit_converge`、`edit_hard_stop`、`verify_hint`、`stale_plan`、`finish_gate`（detail 为门禁原因）、`stagnation`、`office_evidence`、`hard_stop`（detail 为触发规则，含 `verify_retry_cap`）。`hard_stop` 记录与同回合已注入的文本重复，`agent_turn_summary.nudges` 不重复计数。
+- `harness_finish.reason`：`clean` `unverified_end` `forced_allow` `trivial_mutation` `verify_gate` `verify_budget_exhausted` `todo_continuation` `todo_budget_exhausted`。
+- Glob 的 attrs：`glob_outcome`（bad_pattern/root_missing/prefix_missing/walk_failed/empty/capped/matched）`glob_alternatives` `glob_prefix_narrowed` `glob_walked` `glob_matched` `glob_returned` `glob_walk_stop`。
+
+本地 JSONL 另有不受 24 属性限制的明细：`llm/request.request_facts`（`history` 与 `wire` 计数）、工具终态的 `result_bytes` / `error_class` / `attrs`、`harness/nudge` 的 `kind` / `detail` / `tool`、`harness/finish.gate`、`turn/end.summary`（含 `nudges_by_kind`、`hard_stops`、`reasoning_dropped_calls`）。
+
+排查入口：
+
+- 推理内容被丢弃：`llm_request` 中 `reasoning_dropped > 0`，同时看 `wire_reasoning_placeholders` 与 `wire_drop_prior_reasoning`。
+- Glob 空结果与失败：`tool_executed` 按 `glob_outcome` 分组。
+- 强制收尾来源：`harness_nudge` 中 `hard_stop=true` 按 `nudge_detail` 分组。
+- 结束门禁松紧：`harness_finish.reason` 分布与 `agent_turn_summary.finish_blocks`。
+
+已知缺口：辅助调用（压缩、标题、judge）的 usage 不计入回合总量；`describe_request` 目前只覆盖 OpenAI 兼容协议与云端网关，Anthropic / Bedrock / Vertex / Responses 不带 `wire_*` 属性；新增事件名需要云端事件目录同步放行，未放行时服务端会计入 `rejected`。
+
 ## 关系
 
 | 能力 | 面向 | 是否依赖 LLM |
