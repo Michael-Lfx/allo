@@ -14,7 +14,7 @@ use nomi_types::tool::{ToolDef, truncate_deferred_description};
 
 use crate::anthropic_shared::StreamOutcome;
 use crate::failed_sse_capture::{FailedSseCapture, FailedSseCaptureContext};
-use crate::{LlmProvider, ProviderError};
+use crate::{LlmProvider, ProviderError, WireFacts};
 
 /// Bound sparse provider indices before they reach `Vec` growth. A malformed
 /// OpenAI-compatible stream can otherwise request an enormous index in a tiny
@@ -685,6 +685,32 @@ fn append_string_field(curr: &mut Value, next: &mut Value, key: &str) {
     }
 }
 
+fn wire_facts(messages: &[Value], compat: &ProviderCompat) -> WireFacts {
+    let mut facts = WireFacts {
+        protocol: "openai_chat",
+        messages: messages.len(),
+        bytes: serde_json::to_vec(messages).map_or(0, |bytes| bytes.len()),
+        drop_prior_turn_reasoning: compat.drop_prior_turn_reasoning(),
+        require_reasoning_content: compat.require_reasoning_content(),
+        ..WireFacts::default()
+    };
+    for message in messages {
+        match message["role"].as_str() {
+            Some("assistant") => {
+                facts.assistant_messages += 1;
+                match message.get("reasoning_content").and_then(Value::as_str) {
+                    Some(text) if !text.trim().is_empty() => facts.reasoning_kept += 1,
+                    Some(_) => facts.reasoning_placeholders += 1,
+                    None => {}
+                }
+            }
+            Some("tool") => facts.tool_messages += 1,
+            _ => {}
+        }
+    }
+    facts
+}
+
 fn drop_prior_turn_reasoning(messages: &mut [Value], require_reasoning_content: bool) {
     let turn_start = messages
         .iter()
@@ -892,6 +918,16 @@ impl StreamState {
 
 #[async_trait]
 impl LlmProvider for OpenAIProvider {
+    fn describe_request(&self, request: &LlmRequest) -> Option<WireFacts> {
+        let messages = Self::build_messages(
+            &request.messages,
+            &request.system,
+            &self.compat,
+            self.compat.require_reasoning_content(),
+        );
+        Some(wire_facts(&messages, &self.compat))
+    }
+
     async fn stream(
         &self,
         request: &LlmRequest,
@@ -3758,6 +3794,66 @@ mod tests {
                 "marker leaked with drop_prior_turn_reasoning={enabled}"
             );
         }
+    }
+
+    fn described(compat: ProviderCompat, history: Vec<Message>) -> WireFacts {
+        let provider = OpenAIProvider::new("key", "http://127.0.0.1:9", compat);
+        let mut request = simple_request();
+        request.messages = history;
+        provider
+            .describe_request(&request)
+            .expect("the OpenAI provider exposes its wire format")
+    }
+
+    #[test]
+    fn describe_request_reports_kept_reasoning_when_nothing_is_dropped() {
+        let facts = described(openai_compat(), two_turn_history_with_context_carriers());
+
+        assert_eq!(facts.protocol, "openai_chat");
+        assert_eq!(facts.reasoning_kept, 4);
+        assert_eq!(facts.reasoning_placeholders, 0);
+        assert!(!facts.drop_prior_turn_reasoning);
+        assert!(facts.bytes > 0);
+    }
+
+    #[test]
+    fn describe_request_reports_dropped_prior_turn_reasoning_as_placeholders() {
+        let mut compat = reasoning_compat();
+        compat.require_reasoning_content = Some(true);
+
+        let facts = described(compat, two_turn_history_with_context_carriers());
+
+        assert_eq!(facts.reasoning_kept, 2, "only the current turn keeps reasoning");
+        assert_eq!(facts.reasoning_placeholders, 2);
+        assert!(facts.drop_prior_turn_reasoning);
+        assert!(facts.require_reasoning_content);
+        assert_eq!(facts.assistant_messages, 4);
+        assert_eq!(facts.tool_messages, 3);
+    }
+
+    #[test]
+    fn describe_request_without_required_reasoning_has_no_placeholders() {
+        let facts = described(reasoning_compat(), two_turn_history_with_context_carriers());
+
+        assert_eq!(facts.reasoning_kept, 2);
+        assert_eq!(facts.reasoning_placeholders, 0);
+        assert!(!facts.require_reasoning_content);
+    }
+
+    #[test]
+    fn describe_request_matches_the_message_count_sent_on_the_wire() {
+        let compat = reasoning_compat();
+        let history = two_turn_history_with_context_carriers();
+        let wire = OpenAIProvider::build_messages(&history, "sys", &compat, false);
+        let provider = OpenAIProvider::new("key", "http://127.0.0.1:9", compat);
+        let mut request = simple_request();
+        request.system = "sys".into();
+        request.messages = history;
+
+        let facts = provider.describe_request(&request).unwrap();
+
+        assert_eq!(facts.messages, wire.len());
+        assert_eq!(facts.bytes, serde_json::to_vec(&wire).unwrap().len());
     }
 
     #[tokio::test]

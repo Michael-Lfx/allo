@@ -142,6 +142,26 @@ pub(crate) fn parse_supported_output_range(message: &str) -> Option<u32> {
     Some(upper_bound)
 }
 
+/// What a provider actually put on the wire for a canonical request, reduced
+/// to counts. Observation uses it to tell how the provider-specific rewrite
+/// (for example reasoning replay rules) changed what the model saw. It never
+/// carries message text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct WireFacts {
+    pub protocol: &'static str,
+    pub messages: usize,
+    pub bytes: usize,
+    pub assistant_messages: usize,
+    pub tool_messages: usize,
+    /// Assistant messages that carry real (non-placeholder) reasoning content.
+    pub reasoning_kept: usize,
+    /// Assistant messages that carry only the blank placeholder some gateways
+    /// require in place of reasoning content.
+    pub reasoning_placeholders: usize,
+    pub drop_prior_turn_reasoning: bool,
+    pub require_reasoning_content: bool,
+}
+
 /// Unified interface for LLM API providers
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -153,6 +173,12 @@ pub trait LlmProvider: Send + Sync {
     /// is true unless a custom provider reports the uncached remainder only.
     fn input_tokens_include_cache(&self) -> bool {
         true
+    }
+
+    /// Describe the wire request `stream` would build, for observation only.
+    /// `None` when the provider does not expose its wire format.
+    fn describe_request(&self, _request: &LlmRequest) -> Option<WireFacts> {
+        None
     }
 }
 
