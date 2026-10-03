@@ -95,6 +95,9 @@ impl ServerClientError {
                 body,
                 ..
             } => AppError::BadRequest(truncate_diag(&body)),
+            Self::Http(msg) if is_timeout_failure(&msg) => {
+                AppError::Timeout(truncate_diag(&msg))
+            }
             other => AppError::BadGateway(truncate_diag(&other.to_string())),
         }
     }
@@ -116,6 +119,11 @@ fn is_auth_failure_message(msg: &str) -> bool {
                 || lower.contains("invalid")
                 || lower.contains("missing")
                 || lower.contains("revoked")))
+}
+
+fn is_timeout_failure(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("timeout") || lower.contains("timed out") || lower.contains("time out")
 }
 
 fn truncate_diag(message: &str) -> String {
@@ -182,5 +190,23 @@ mod tests {
             msg: "page must be positive".into(),
         };
         assert_eq!(status_of(err), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn transport_failures_are_bad_gateway_not_internal() {
+        let err = ServerClientError::Http(
+            "error sending request for url (https://server.flowyaipc.com/claw/user/doLoginByEmail): error trying to connect".into(),
+        );
+        let app = err.into_app_error();
+        assert_eq!(app.status_code(), StatusCode::BAD_GATEWAY);
+        assert_eq!(app.error_code(), "BAD_GATEWAY");
+    }
+
+    #[test]
+    fn timeout_failures_map_to_timeout_code() {
+        let err = ServerClientError::Http("operation timed out".into());
+        let app = err.into_app_error();
+        assert_eq!(app.status_code(), StatusCode::BAD_GATEWAY);
+        assert_eq!(app.error_code(), "TIMEOUT");
     }
 }

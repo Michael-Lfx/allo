@@ -132,7 +132,7 @@ impl CloudService {
         let pending = mgr
             .start_login(login_method)
             .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            .map_err(ServerClientError::into_app_error)?;
         let pending_id = uuid::Uuid::new_v4().to_string();
         let expires_at = pending.expires_at.map(|t| t.to_rfc3339());
         let message = pending.message.clone();
@@ -170,7 +170,7 @@ impl CloudService {
         let result = mgr
             .continue_login(&pending, auth_input)
             .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            .map_err(ServerClientError::into_app_error)?;
 
         match result {
             AuthPollResult::Pending(next) => {

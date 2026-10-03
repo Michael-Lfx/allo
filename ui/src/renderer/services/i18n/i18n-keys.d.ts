@@ -740,6 +740,7 @@ export type I18nKey =
   | 'cloudLogin.device.version'
   | 'cloudLogin.errors.invalidCode'
   | 'cloudLogin.errors.network'
+  | 'cloudLogin.errors.sendNetwork'
   | 'cloudLogin.errors.sessionExpired'
   | 'cloudLogin.errors.unknown'
   | 'cloudLogin.errors.verificationUnavailable'

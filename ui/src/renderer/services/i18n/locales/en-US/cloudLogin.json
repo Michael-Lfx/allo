@@ -56,6 +56,7 @@
   "errors": {
     "unknown": "Sign-in failed. Please try again.",
     "network": "Connection issue. Your code is still valid to retry.",
+    "sendNetwork": "Connection issue. Try sending the code again.",
     "invalidCode": "That code didn’t work. Try again.",
     "sessionExpired": "This code has expired. Request a new one to continue.",
     "verificationUnavailable": "Unable to verify right now. Try again shortly."

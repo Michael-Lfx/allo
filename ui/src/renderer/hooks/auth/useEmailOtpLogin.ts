@@ -133,8 +133,8 @@ export const classifyOtpVerificationError = (error: unknown): OtpFailureKind => 
   }
   if (
     [502, 504].includes(status ?? 0)
-    || /timeout|timed\s*out|gateway|network|connection|fetch|offline|abort|load\s+failed/i.test(text)
     || /timeout|gateway|unavailable/i.test(code)
+    || /timeout|timed\s*out|gateway|network|connection|connect(?:ing|ed)?|fetch|offline|abort|load\s+failed|error sending request|tls|http\/?2|reset|dns|unreachable/i.test(text)
   ) {
     return 'transport';
   }
@@ -146,6 +146,13 @@ export const getOtpRecoveryAction = (failureKind: OtpFailureKind | null): OtpRec
   if (failureKind === 'session-expired' || failureKind === 'verification-failed') return 'resend-code';
   return null;
 };
+
+const getSendFailureMessage = (
+  failureKind: OtpFailureKind | null,
+  t: ReturnType<typeof useTranslation>['t']
+) => failureKind === 'transport'
+  ? t('cloudLogin.errors.sendNetwork')
+  : t('cloudLogin.errors.unknown');
 
 const getVerificationFailureMessage = (
   failureKind: OtpFailureKind,
@@ -165,7 +172,14 @@ export const isTerminalLoginFailureResponse = (
   response: ICloudLoginContinueResponse
 ): response is Extract<ICloudLoginContinueResponse, { status: 'failed' }> => response.status === 'failed';
 
-const isEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+const recoverIfAlreadyLoggedIn = async () => {
+  try {
+    const whoami = await ipcBridge.cloud.whoami.invoke();
+    return Boolean(whoami?.authenticated);
+  } catch {
+    return false;
+  }
+};
 
 export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLoginOptions = {}) => {
   const { t } = useTranslation();
@@ -294,11 +308,13 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
       }
       setState((previous) => ({ ...previous, phase: 'email', failureKind: 'unknown', message: t('cloudLogin.errors.unknown') }));
       return false;
-    } catch {
+    } catch (error) {
+      const failureKind = classifyOtpVerificationError(error);
       updateState(generation, (previous) => ({
         ...previous,
         phase: 'email',
-        message: t('cloudLogin.errors.network'),
+        failureKind,
+        message: getSendFailureMessage(failureKind, t),
       }));
       return false;
     }
@@ -369,6 +385,12 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
       }));
       return false;
     } catch (error) {
+      if (await recoverIfAlreadyLoggedIn()) {
+        if (!isCurrent(generation)) return false;
+        setState((previous) => ({ ...previous, code: '', phase: 'success', failureKind: null, message: t('cloudLogin.login.successRedirect') }));
+        await onSuccessRef.current?.();
+        return true;
+      }
       const failureKind = classifyOtpVerificationError(error);
       updateState(generation, (previous) => failureKind === 'transport'
         ? {
@@ -559,8 +581,3 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
 };
 
 export default useEmailOtpLogin;
-/**
- * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */

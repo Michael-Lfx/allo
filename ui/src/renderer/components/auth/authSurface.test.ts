@@ -97,6 +97,13 @@ describe('Flowy auth surface contract', () => {
 
   test('keeps verification errors short and prevents orphan glyph wrapping', () => {
     expect(zhCloudLocale).toContain('"invalidCode": "验证码不正确，请重试"');
+    expect(zhCloudLocale).toContain('"network": "网络连接异常，当前验证码仍可重试"');
+    expect(zhCloudLocale).toContain('"sendNetwork": "网络连接异常，请稍后重试发送验证码"');
+    expect(enCloudLocale).toContain('"network": "Connection issue. Your code is still valid to retry."');
+    expect(enCloudLocale).toContain('"sendNetwork": "Connection issue. Try sending the code again."');
+    expect(otpHookSource).toContain('getSendFailureMessage');
+    expect(otpHookSource).toContain('recoverIfAlreadyLoggedIn');
+    expect(otpHookSource).toContain("t('cloudLogin.errors.sendNetwork')");
     expect(zhCloudLocale).toContain('"verificationUnavailable": "暂时无法确认，请稍后重试"');
     expect(enCloudLocale).toContain('"invalidCode": "That code didn’t work. Try again."');
     expect(enCloudLocale).toContain('"verificationUnavailable": "Unable to verify right now. Try again shortly."');
@@ -156,6 +163,8 @@ describe('Flowy auth surface contract', () => {
     expect(classifyOtpVerificationError(backendError(400, '验证码不正确', 'LEGACY_BAD_REQUEST'))).toBe('invalid-code');
     expect(classifyOtpVerificationError(backendError(502, 'upstream unavailable'))).toBe('transport');
     expect(classifyOtpVerificationError(new Error('Failed to fetch'))).toBe('transport');
+    expect(classifyOtpVerificationError(backendError(500, 'error trying to connect'))).toBe('transport');
+    expect(classifyOtpVerificationError(backendError(500, 'error sending request for url'))).toBe('transport');
     expect(classifyOtpVerificationError(backendError(500, 'unclassified backend failure'))).toBe('unknown');
     expect(classifyOtpVerificationError(backendError(410, 'otp session expired'))).toBe('session-expired');
     expect(classifyOtpVerificationError(backendError(429, 'too many attempts'))).toBe('session-expired');

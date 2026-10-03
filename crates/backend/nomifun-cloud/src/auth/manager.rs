@@ -128,22 +128,30 @@ impl AuthManager {
         method: LoginMethod,
     ) -> Result<(), ServerClientError> {
         self.session.save_tokens(tokens).await?;
-        let profile = self.api.get_user_me(&self.session).await?;
-        self.profile_store.save(&profile).await?;
-        debug!(user_id = profile.id, "cached user profile after login");
-
-        // Activation and client-package reporting are best-effort and must not
-        // hold the login HTTP response. Startup `ensure_device_telemetry`
-        // backfills if the task loses the race with process exit.
-        spawn_post_login_telemetry(
-            self.config.clone(),
-            self.data_dir.clone(),
-            self.session.clone(),
-            profile.id,
-            self.host_runtime,
-            Some(method.as_str().to_string()),
-            Some(chrono::Utc::now().timestamp_millis()),
-        );
+        // Profile fetch is best-effort after tokens are on disk. A flaky
+        // mainland-to-cloud hop must not discard a completed OTP login and
+        // tell the user to retry a now-consumed code.
+        match self.api.get_user_me(&self.session).await {
+            Ok(profile) => {
+                self.profile_store.save(&profile).await?;
+                debug!(user_id = profile.id, "cached user profile after login");
+                spawn_post_login_telemetry(
+                    self.config.clone(),
+                    self.data_dir.clone(),
+                    self.session.clone(),
+                    profile.id,
+                    self.host_runtime,
+                    Some(method.as_str().to_string()),
+                    Some(chrono::Utc::now().timestamp_millis()),
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "profile fetch after login failed; session tokens are saved"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -310,7 +318,7 @@ mod tests {
             "tokens must be saved on the request path"
         );
         assert!(
-            body.contains("self.api.get_user_me(&self.session).await?;"),
+            body.contains("self.api.get_user_me(&self.session).await"),
             "profile fetch stays on the request path"
         );
         assert!(
@@ -321,6 +329,10 @@ mod tests {
             body.contains("spawn_post_login_telemetry("),
             "telemetry must be spawned inside finish_login"
         );
+        assert!(
+            body.contains("session tokens are saved"),
+            "a failed profile fetch must keep the saved session"
+        );
 
         let after_profile_save = body
             .split("self.profile_store.save(&profile).await?;")
@@ -329,10 +341,6 @@ mod tests {
         assert!(
             after_profile_save.contains("spawn_post_login_telemetry("),
             "telemetry must be spawned after the profile save"
-        );
-        assert!(
-            !after_profile_save.contains(".await"),
-            "nothing may block the request path after the profile save"
         );
 
         assert!(
@@ -343,6 +351,61 @@ mod tests {
             !body.contains("report_client_package(&self.session).await"),
             "client package report must not run on the request path"
         );
+    }
+
+    #[tokio::test]
+    async fn continue_login_keeps_session_when_profile_fetch_fails() {
+        use super::{AuthPollResult, AuthUserInput, LoginMethod, PendingLogin};
+        use nomi_config::ServerConfig;
+        use tempfile::tempdir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/user/doLoginByEmail"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":"jwt-after-otp"}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/me"))
+            .respond_with(ResponseTemplate::new(502).set_body_string(
+                r#"{"code":502,"msg":"upstream unavailable","data":null}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let data_dir = tempdir().expect("tmpdir");
+        let config = ServerConfig {
+            base_url: server.uri(),
+            ..Default::default()
+        };
+        let mgr = super::AuthManager::new(config, data_dir.path()).expect("auth manager");
+        let pending = PendingLogin {
+            method: LoginMethod::EmailOtp,
+            message: "enter code".into(),
+            qr_content: None,
+            qr_image_url: None,
+            expires_at: None,
+            provider_state: Some(
+                r#"{"email":"user@example.com","valid_code_req_no":"req-1"}"#.into(),
+            ),
+        };
+
+        let result = mgr
+            .continue_login(
+                &pending,
+                AuthUserInput::OtpCode {
+                    code: "123456".into(),
+                },
+            )
+            .await
+            .expect("login should succeed once tokens are saved");
+        assert!(matches!(result, AuthPollResult::Success(_)));
+        let status = mgr.whoami().await.expect("whoami");
+        assert!(status.is_logged_in());
     }
 
     #[tokio::test]

@@ -17,17 +17,49 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 const CLIENT_VERSION_HEADER: &str = "x-client-version";
 const LEGACY_TOKEN_HEADER: &str = "token";
 const FLOWY_TURN_ID_HEADER: &str = "x-flowy-turn-id";
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP2_KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 /// Process-wide `reqwest::Client` so every transport shares one connection pool.
 /// `HttpTransport` instances are rebuilt per request by callers, and a fresh
 /// `Client` would force a new TCP+TLS handshake every time.
 static SHARED_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+static HTTP1_FALLBACK_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+
+fn build_flowy_client(http1_only: bool) -> Result<Client, String> {
+    let mut builder = Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .tcp_nodelay(true)
+        .pool_idle_timeout(Duration::from_secs(30));
+    if http1_only {
+        builder = builder.http1_only();
+    } else {
+        builder = builder
+            .http2_keep_alive_interval(HTTP2_KEEP_ALIVE)
+            .http2_keep_alive_timeout(Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true);
+    }
+    nomifun_net::proxy::apply_detected_proxy(builder)
+        .build()
+        .map_err(|e| e.to_string())
+}
 
 fn shared_client() -> Result<Client, ServerClientError> {
     SHARED_CLIENT
-        .get_or_init(|| Client::builder().build().map_err(|e| e.to_string()))
+        .get_or_init(|| build_flowy_client(false))
         .clone()
         .map_err(|e| ServerClientError::Http(format!("build client: {e}")))
+}
+
+fn shared_http1_client() -> Result<Client, ServerClientError> {
+    HTTP1_FALLBACK_CLIENT
+        .get_or_init(|| build_flowy_client(true))
+        .clone()
+        .map_err(|e| ServerClientError::Http(format!("build HTTP/1.1 client: {e}")))
+}
+
+fn is_retryable_transport(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request()
 }
 
 /// Dedicated client for OSS presigned PUT.
@@ -40,12 +72,14 @@ static OSS_PUT_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 fn oss_put_client() -> Result<Client, ServerClientError> {
     OSS_PUT_CLIENT
         .get_or_init(|| {
-            Client::builder()
-                .connect_timeout(Duration::from_secs(20))
-                .tcp_nodelay(true)
-                .pool_max_idle_per_host(0)
-                .build()
-                .map_err(|e| e.to_string())
+            nomifun_net::proxy::apply_detected_proxy(
+                Client::builder()
+                    .connect_timeout(Duration::from_secs(20))
+                    .tcp_nodelay(true)
+                    .pool_max_idle_per_host(0),
+            )
+            .build()
+            .map_err(|e| e.to_string())
         })
         .clone()
         .map_err(|e| ServerClientError::Http(format!("build OSS client: {e}")))
@@ -184,10 +218,18 @@ impl HttpTransport {
         debug!(%method, %url, request_id = %request_id, "server http request");
 
         let mut attempt = 0u32;
+        let mut fallback_http1 = false;
         loop {
             attempt += 1;
-            let mut builder = self
-                .client
+            // First try the pooled client (HTTP/2 when the peer offers it). A
+            // transport error retries over HTTP/1.1: mainland middleboxes and
+            // some local proxies stall or reset h2 after ALPN.
+            let client = if fallback_http1 {
+                shared_http1_client()?
+            } else {
+                self.client.clone()
+            };
+            let mut builder = client
                 .request(method.clone(), &url)
                 .timeout(self.timeout)
                 .headers(headers.clone());
@@ -207,8 +249,9 @@ impl HttpTransport {
                     }
                     return Ok(resp);
                 }
-                Err(err) if err.is_timeout() || err.is_connect() || err.is_request() => {
-                    if attempt < 3 {
+                Err(err) if is_retryable_transport(&err) => {
+                    if attempt < 2 {
+                        fallback_http1 = true;
                         let delay = Duration::from_millis(250 * 2u64.pow(attempt - 1));
                         tokio::time::sleep(delay).await;
                         continue;
@@ -376,5 +419,14 @@ mod tests {
             transport.resolve_url("/user/me"),
             format!("{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/user/me")
         );
+    }
+
+    #[test]
+    fn flowy_clients_honor_system_proxy_and_http1_fallback() {
+        let source = include_str!("transport.rs");
+        assert!(source.contains("apply_detected_proxy"));
+        assert!(source.contains("http1_only"));
+        assert!(source.contains("CONNECT_TIMEOUT"));
+        assert!(source.contains("fallback_http1"));
     }
 }

@@ -56,6 +56,7 @@
   "errors": {
     "unknown": "登录失败，请稍后再试",
     "network": "网络连接异常，当前验证码仍可重试",
+    "sendNetwork": "网络连接异常，请稍后重试发送验证码",
     "invalidCode": "验证码不正确，请重试",
     "sessionExpired": "验证码已过期，请重新获取",
     "verificationUnavailable": "暂时无法确认，请稍后重试"
