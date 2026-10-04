@@ -1246,11 +1246,6 @@ fn catalog_model_base(model: &str) -> &str {
         .unwrap_or(model)
 }
 
-#[allow(dead_code)]
-fn is_preferred_image_analysis_model(model: &str) -> bool {
-    image_analysis_model_priority(model) == 3
-}
-
 /// Image analysis model priority ranking:
 /// 3: DeepSeek Vision (deepseek-v4-flash-vision, deepseek-vl, etc.) - top priority (fast, low-cost)
 /// 2: MiniMax Vision (MiniMax-M3, etc.) - secondary priority
@@ -2708,12 +2703,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preferred_image_analysis_model_matches_flowy_catalog_id() {
-        assert!(is_preferred_image_analysis_model("MiniMax-M3"));
-        assert!(is_preferred_image_analysis_model("AIPC-Minimax-M3"));
-        assert!(is_preferred_image_analysis_model("aipc-minimax-m3"));
-        assert!(!is_preferred_image_analysis_model("AIPC-GPT5.5"));
-        assert!(!is_preferred_image_analysis_model("MiniMax-M2.7"));
+    fn image_analysis_priority_ranks_deepseek_over_minimax_over_kimi() {
+        assert_eq!(image_analysis_model_priority("deepseek-v4-flash-vision"), 3);
+        assert_eq!(image_analysis_model_priority("AIPC-DeepSeek-VL2"), 3);
+        assert_eq!(image_analysis_model_priority("MiniMax-M3"), 2);
+        assert_eq!(image_analysis_model_priority("AIPC-Minimax-M3"), 2);
+        assert_eq!(image_analysis_model_priority("aipc-minimax-m3"), 2);
+        assert_eq!(image_analysis_model_priority("kimi-k2.5"), 1);
+        assert_eq!(image_analysis_model_priority("moonshot-v1-vision"), 1);
+        assert_eq!(image_analysis_model_priority("AIPC-GPT5.5"), 0);
+        assert_eq!(image_analysis_model_priority("deepseek-chat"), 0);
     }
 
     #[test]

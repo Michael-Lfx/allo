@@ -27,7 +27,8 @@ use nomifun_gateway::{Registry, Surface};
 use nomifun_common::{LoopbackCapabilityError, LoopbackSessionKind};
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ListToolsResult,
+    PaginatedRequestParams, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer, ServiceExt};
 use rmcp::transport;
@@ -269,21 +270,17 @@ impl ServerHandler for GatewayStdioServer {
             .into_iter()
             .map(|spec| Tool::new(spec.name, spec.description, Arc::new(spec.input_schema)))
             .collect();
-        Ok(ListToolsResult {
-            tools,
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let claims = self.require_operation(GATEWAY_CALL_TOOL_OPERATION).await?;
         if let Some(blocked) = Self::blocked_tool_message(&claims, &request.name) {
-            return Ok(build_tool_result(ForwardToolOutcome::Error(blocked)));
+            return Ok(build_tool_result(ForwardToolOutcome::Error(blocked)).into());
         }
         let execution_hint = Self::execution_operation_hint(&request)?;
         let idempotency_key =
@@ -292,7 +289,7 @@ impl ServerHandler for GatewayStdioServer {
         let result = self
             .forward_tool(&request.name, &args, &idempotency_key)
             .await;
-        Ok(build_tool_result(result))
+        Ok(build_tool_result(result).into())
     }
 }
 
@@ -389,7 +386,7 @@ mod tests {
 
     #[test]
     fn execution_operation_hint_rejects_non_string_or_illegal_metadata() {
-        use rmcp::model::Meta;
+        use rmcp::model::RequestMetaObject;
 
         for value in [
             serde_json::Value::Bool(true),
@@ -401,7 +398,7 @@ mod tests {
             meta.insert(EXECUTION_OPERATION_META_KEY.to_owned(), value);
             let mut request =
                 CallToolRequestParams::new("nomi_send_to_conversation");
-            request.meta = Some(Meta(meta));
+            request.meta = Some(RequestMetaObject::from(meta));
             assert!(GatewayStdioServer::execution_operation_hint(&request).is_err());
         }
     }

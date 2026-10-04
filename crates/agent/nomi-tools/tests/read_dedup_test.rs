@@ -8,8 +8,8 @@ use std::sync::{Arc, RwLock};
 use serde_json::json;
 
 use nomi_config::file_cache::FileCacheConfig;
-use nomi_tools::Tool;
 use nomi_tools::file_cache::FileStateCache;
+use nomi_tools::{ANCHOR_SEPARATOR, Tool, anchor_line_hash};
 use nomi_tools::read::ReadTool;
 
 fn make_cache() -> Arc<RwLock<FileStateCache>> {
@@ -23,7 +23,7 @@ fn make_cache() -> Arc<RwLock<FileStateCache>> {
 
 const UNCHANGED_MARKER: &str = "File unchanged since last read";
 
-/// TC-5.3-01: First read returns full content with line numbers.
+/// TC-5.3-01: First read returns full content with line anchors.
 #[tokio::test]
 async fn tc_5_3_01_first_read_returns_full_content() {
     let dir = tempfile::tempdir().unwrap();
@@ -37,9 +37,14 @@ async fn tc_5_3_01_first_read_returns_full_content() {
     let result = tool.execute(input).await;
 
     assert!(!result.is_error);
-    assert!(result.content.contains("1\tfn main()"));
-    assert!(result.content.contains("2\t    println!"));
-    assert!(result.content.contains("3\t}"));
+    for (number, line) in [(1, "fn main() {"), (2, "    println!(\"hello\");"), (3, "}")] {
+        let anchored = format!("{number}:{}{ANCHOR_SEPARATOR}{line}", anchor_line_hash(line));
+        assert!(
+            result.content.contains(&anchored),
+            "missing {anchored:?} in {:?}",
+            result.content
+        );
+    }
     assert!(
         !result.content.contains(UNCHANGED_MARKER),
         "First read must not return the unchanged stub"

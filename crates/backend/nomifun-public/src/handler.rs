@@ -18,8 +18,8 @@ use nomifun_gateway::{CallerCtx, GatewayDeps, Registry, Surface};
 use nomifun_browser_platform::BrowserOperationKind;
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 
@@ -168,9 +168,9 @@ async fn attach_remote_browser_identity(
 }
 
 impl ServerHandler for RemoteMcpHandler {
-    fn get_info(&self) -> ServerInfo {
-        // ServerInfo is #[non_exhaustive] — build from Default then set fields.
-        let mut info = ServerInfo::default();
+    fn get_info(&self) -> ServerConfig {
+        // ServerConfig is #[non_exhaustive] — build from Default then set fields.
+        let mut info = ServerConfig::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.instructions = Some(
             "Flowy external companion. These tools drive the Flowy platform \
@@ -202,14 +202,22 @@ impl ServerHandler for RemoteMcpHandler {
             .into_iter()
             .map(|spec| Tool::new(spec.name, spec.description, Arc::new(spec.input_schema)))
             .collect();
-        Ok(ListToolsResult {
-            tools,
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        self.call_remote_tool(request, ctx)
+            .await
+            .map(CallToolResponse::from)
+    }
+}
+
+impl RemoteMcpHandler {
+    async fn call_remote_tool(
         &self,
         request: CallToolRequestParams,
         ctx: RequestContext<RoleServer>,

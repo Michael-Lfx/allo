@@ -20,7 +20,8 @@ use russh::keys::ssh_key::certificate::CertType;
 #[cfg(unix)]
 use russh::keys::{Algorithm, PublicKey};
 use russh::keys::{
-    Certificate, HashAlg, PrivateKey, PrivateKeyWithHashAlg, decode_secret_key,
+    Certificate, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate,
+    decode_secret_key,
 };
 
 use crate::credential::{Auth, SshCredential};
@@ -102,13 +103,16 @@ impl client::Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // known_hosts pins keys, never CAs: a host certificate is matched by the
+        // key it carries, which is also OpenSSH's fallback without @cert-authority.
+        let server_public_key = server_public_key.public_key();
         let fingerprint = server_public_key.fingerprint(HashAlg::Sha256).to_string();
         self.state.lock().unwrap().fingerprint = Some(fingerprint.clone());
 
         let path = self.policy.known_hosts_path();
-        match russh::keys::check_known_hosts_path(&self.host, self.port, server_public_key, path) {
+        match russh::keys::check_known_hosts_path(&self.host, self.port, &server_public_key, path) {
             Ok(true) => Ok(true), // known and matches
             Ok(false) => {
                 // Unknown host.
@@ -116,7 +120,7 @@ impl client::Handler for ClientHandler {
                     russh::keys::known_hosts::learn_known_hosts_path(
                         &self.host,
                         self.port,
-                        server_public_key,
+                        &server_public_key,
                         path,
                     )
                     .map_err(|e| SshError::Protocol(e.to_string()))?;

@@ -524,10 +524,13 @@ impl Tool for ExecCommandTool {
     fn description(&self) -> &str {
         "Runs either one shell command or one bounded, non-interactive shell/Python script through \
          the shared process supervisor. Command mode may return a numeric session_id for ongoing interaction.\n\n\
-         In command mode, the command is executed by the platform shell. On Windows this is PowerShell \
-         (use PowerShell syntax such as Get-ChildItem, $env:NAME, and ';' for sequencing; \
-         run cmd /C \"...\" explicitly when cmd.exe syntax is required). On macOS/Linux this \
-         is POSIX sh. Separate Windows consoles and GUI launches are rejected; use the dedicated launch tool.\n\n\
+         In command mode, the command is executed by the platform shell. On Windows this is \
+         Windows PowerShell 5.1: the cmd or shell-script string runs directly through that host. \
+         Do not prefix it with powershell.exe or pwsh. Do not assume PowerShell 7-only syntax \
+         such as ??, ??=, ?:, &&, or ||. Use PowerShell 5.1 syntax such as Get-ChildItem, \
+         $env:NAME, and ';' for sequencing; run cmd /C \"...\" explicitly when cmd.exe syntax \
+         is required. On macOS/Linux this is POSIX sh. Separate Windows consoles and GUI \
+         launches are rejected; use the dedicated launch tool.\n\n\
          Script mode requires script, language (shell or python), and a hard timeout in milliseconds. \
          It is for deterministic, homogeneous local batches that need no intermediate model decision \
          or approval. On Windows, both modes always use a hidden pipe transport (no console window); \
@@ -1785,6 +1788,9 @@ mod tests {
         assert!(description.contains("Get-ChildItem"));
         assert!(description.contains("$env:NAME"));
         assert!(description.contains("cmd /C"));
+        assert!(description.contains("Windows PowerShell 5.1"));
+        assert!(description.contains("Do not prefix it with powershell.exe"));
+        assert!(description.contains("PowerShell 7-only syntax"));
         assert!(description.contains("On Windows, shell commands always use a hidden pipe transport"));
         assert!(description.contains("tty=false uses separate stdout/stderr pipe streams"));
         assert!(description.contains("Separate Windows consoles and GUI launches are rejected"));

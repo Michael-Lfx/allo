@@ -933,18 +933,14 @@ impl rmcp::ServerHandler for BrowserStdioServer {
             .into_iter()
             .filter(|tool| claims.allows(&tool.name))
             .collect();
-        Ok(rmcp::model::ListToolsResult {
-            tools,
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(rmcp::model::ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         self.client
             .access_for(&request.name)
             .await

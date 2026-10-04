@@ -201,7 +201,7 @@ impl Tool for BashTool {
 
     fn description(&self) -> &str {
         if cfg!(windows) {
-            "Executes a PowerShell command and returns its output. The tool is still named Bash for compatibility, but on Windows the command is run by powershell.exe, not cmd.exe or Unix bash.\n\n\
+            "Executes a PowerShell command and returns its output. The tool is still named Bash for compatibility, but on Windows the command string is executed directly by Windows PowerShell 5.1, not cmd.exe, Unix bash, or pwsh.\n\n\
              IMPORTANT: Do NOT use Bash when a dedicated tool is available:\n\
              - File listing/search: use the OS-agnostic Glob tool on every operating system (not shell-specific listing commands such as ls, dir, Get-ChildItem, or find). For the current directory, use Glob with \"*\" for top-level files or \"**/*\" recursively.\n\
              - Content search: use Grep (not grep or rg)\n\
@@ -209,7 +209,7 @@ impl Tool for BashTool {
              - Edit files: use Edit (not sed or awk)\n\
              - Write files: use Write (not echo redirection or cat with heredoc)\n\n\
              # Instructions\n\
-             - For shell-only work, use PowerShell syntax: Get-ChildItem, Get-Content, Set-Location, $env:NAME, and ';' for sequencing. Run cmd /C \"...\" explicitly only when cmd.exe syntax is required.\n\
+             - For shell-only work, write Windows PowerShell 5.1 syntax: Get-ChildItem, Get-Content, Set-Location, $env:NAME, and ';' for sequencing. Do not prefix the command with powershell.exe or pwsh; that double-wraps the 5.1 host and expands variables too early. Do not assume PowerShell 7-only syntax such as ??, ??=, ?:, &&, or ||. Run cmd /C \"...\" explicitly only when cmd.exe syntax is required.\n\
              - Do not use start, Start-Process, or cmd /K. This tool rejects separate Windows consoles and GUI launches; use the Computer launch action instead.\n\
              - Use absolute paths to avoid working directory confusion.\n\
              - Validate browser behavior with the Browser tool. Do not emulate DOM, AudioContext, canvas, or other Web APIs in a long inline `node -e` command.\n\
@@ -550,6 +550,19 @@ mod tests {
             cwd.clone(),
             CapabilityPolicy::local_owner(cwd),
         )
+    }
+
+    #[test]
+    fn windows_description_states_powershell_51_contract() {
+        let tool = tool(std::env::temp_dir());
+        let description = tool.description();
+        if cfg!(windows) {
+            assert!(description.contains("Windows PowerShell 5.1"));
+            assert!(description.contains("Do not prefix the command with powershell.exe"));
+            assert!(description.contains("PowerShell 7-only syntax such as ??"));
+        } else {
+            assert!(!description.contains("Windows PowerShell 5.1"));
+        }
     }
 
     #[tokio::test]

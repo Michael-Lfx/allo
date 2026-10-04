@@ -5330,17 +5330,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prep_failure_emits_observation_turn_end() {
-        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
-        let mut agent = make_agent_with_provider(provider);
+    async fn missing_image_attachment_degrades_and_the_turn_still_emits_turn_end() {
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![LlmEvent::Done {
+            stop_reason: StopReason::EndTurn,
+            usage: Default::default(),
+        }]]));
+        let mut agent = make_agent_with_provider(provider.clone());
         let dir = tempfile::tempdir().unwrap();
         let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
         recorder.set_enabled(true);
         let session = nomi_agent::ObservationSession::new(recorder.clone());
         session.bind_ids(crate::ObservationIds {
             conversation_id: Some("conv-auto-continue".into()),
-            msg_id: Some("prep-fail".into()),
-            root_turn_id: Some("prep-fail".into()),
+            msg_id: Some("missing-image".into()),
+            root_turn_id: Some("missing-image".into()),
             ..crate::ObservationIds::default()
         });
         {
@@ -5350,25 +5353,36 @@ mod tests {
         agent.observation = Some(Arc::clone(&session));
 
         let missing = dir.path().join("missing.png");
-        let result = agent
+        agent
             .send_message(SendMessageData {
                 content: "hello".into(),
-                msg_id: "prep-fail".into(),
+                msg_id: "missing-image".into(),
                 source_message_id: Some("user-msg".into()),
                 files: vec![missing.to_string_lossy().into_owned()],
                 inject_skills: Vec::new(),
                 loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
-            .await;
-        assert!(result.is_err(), "missing image attachment must fail prepare");
+            .await
+            .expect("an unreadable attachment degrades instead of failing the turn");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].messages.iter().any(|message| message.content.iter().any(|block| matches!(
+                block,
+                ContentBlock::Text { text } if text.contains("could not be loaded")
+            ))),
+            "the provider must be told the attachment was unreadable: {:?}",
+            requests[0].messages
+        );
 
         let events = recorder.read_events(Some("conv-auto-continue")).unwrap();
         assert!(
             events
                 .iter()
                 .any(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END),
-            "direct prep failure must emit turn/end, got {events:?}"
+            "a degraded turn must still emit turn/end, got {events:?}"
         );
     }
 

@@ -297,7 +297,7 @@ impl rmcp::ServerHandler for KnowledgeStdioServer {
     // instructions): the initialize result is the only guidance channel
     // every MCP host surfaces to the model — claude injects it into context,
     // codex renders it as the tool namespace description.
-    fn get_info(&self) -> rmcp::model::ServerInfo {
+    fn get_info(&self) -> rmcp::model::ServerConfig {
         server_info_with_instructions(self.instructions.clone())
     }
 
@@ -317,18 +317,14 @@ impl rmcp::ServerHandler for KnowledgeStdioServer {
             .into_iter()
             .filter(|tool| claims.allows(&tool.name))
             .collect();
-        Ok(rmcp::model::ListToolsResult {
-            tools,
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(rmcp::model::ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         self.client
             .access_for(&request.name)
             .await
@@ -347,8 +343,8 @@ fn capability_request_error(error: String) -> rmcp::ErrorData {
 
 /// The `initialize` result: tools capability + optional mount instructions.
 /// Kept as a free function so tests can pin the shape without a live client.
-fn server_info_with_instructions(instructions: Option<String>) -> rmcp::model::ServerInfo {
-    let mut info = rmcp::model::ServerInfo::new(
+fn server_info_with_instructions(instructions: Option<String>) -> rmcp::model::ServerConfig {
+    let mut info = rmcp::model::ServerConfig::new(
         rmcp::model::ServerCapabilities::builder()
             .enable_tools()
             .build(),
