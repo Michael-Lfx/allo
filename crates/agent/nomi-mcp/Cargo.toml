@@ -12,6 +12,7 @@ nomi-protocol.workspace = true
 nomi-tools.workspace    = true
 nomi-config.workspace   = true
 nomi-process-runtime.workspace = true
+nomifun-net.workspace = true
 
 tracing.workspace     = true
 tokio.workspace       = true

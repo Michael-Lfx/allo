@@ -4,6 +4,8 @@ use reqwest::Client;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
+use crate::plugins::util::build_http_client;
+
 use super::api::WeixinApi;
 use super::types::{SseDoneEvent, SseErrorEvent, SseQrEvent};
 
@@ -103,7 +105,7 @@ pub fn weixin_login_stream() -> mpsc::Receiver<WeixinLoginEvent> {
 
 /// Internal login flow that drives the SSE event sequence.
 async fn login_flow(tx: mpsc::Sender<WeixinLoginEvent>) {
-    let client = match Client::builder().timeout(Duration::from_secs(40)).build() {
+    let client = match build_http_client(Client::builder().timeout(Duration::from_secs(40))) {
         Ok(c) => c,
         Err(e) => {
             let _ = tx

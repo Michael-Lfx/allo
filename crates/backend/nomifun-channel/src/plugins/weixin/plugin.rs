@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 use crate::constants::{WEIXIN_MAX_RETRIES, WEIXIN_POLL_TIMEOUT, WEIXIN_RETRY_DELAY};
 use crate::error::ChannelError;
 use crate::plugin::{ChannelPlugin, PluginCallbacks, SharedPluginStatus, mark_error_on_unexpected_exit};
+use crate::plugins::util::build_http_client;
 use crate::types::{
     BotInfo, MessageContentType, PluginConfig, PluginStatus, PluginType, UnifiedIncomingMessage, UnifiedMessageContent,
     UnifiedOutgoingMessage, UnifiedUser,
@@ -92,10 +93,10 @@ impl ChannelPlugin for WeixinPlugin {
             .and_then(|v| v.as_str())
             .unwrap_or(DEFAULT_BASE_URL);
 
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(WEIXIN_POLL_TIMEOUT.as_secs() + 10))
-            .build()
-            .map_err(|e| {
+        let http_client = build_http_client(
+            Client::builder().timeout(Duration::from_secs(WEIXIN_POLL_TIMEOUT.as_secs() + 10)),
+        )
+        .map_err(|e| {
                 self.status.set(PluginStatus::Error);
                 self.last_error = Some(format!("HTTP client init failed: {e}"));
                 ChannelError::ConnectionFailed(format!("HTTP client init failed: {e}"))

@@ -195,10 +195,11 @@ pub struct RemoteMcpPeer {
 
 impl RemoteMcpPeer {
     pub fn new(endpoint: impl Into<String>) -> Result<Self, McpPeerError> {
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| McpPeerError::Network(error.to_string()))?;
+        let client = nomifun_net::proxy::apply_detected_proxy(
+            Client::builder().redirect(reqwest::redirect::Policy::none()),
+        )
+        .build()
+        .map_err(|error| McpPeerError::Network(error.to_string()))?;
         Ok(Self {
             endpoint: endpoint.into(),
             client,

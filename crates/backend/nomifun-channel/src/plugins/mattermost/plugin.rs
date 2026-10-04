@@ -24,7 +24,7 @@ use tracing::{debug, error, info, warn};
 use crate::constants::{MATTERMOST_MESSAGE_LIMIT, RECONNECT_MAX_ATTEMPTS, RECONNECT_MAX_DELAY};
 use crate::error::ChannelError;
 use crate::plugin::{ChannelPlugin, PluginCallbacks, SharedPluginStatus, mark_error_on_unexpected_exit};
-use crate::plugins::util::{backoff_delay, truncate_message};
+use crate::plugins::util::{backoff_delay, build_http_client, truncate_message};
 use crate::types::{
     BotInfo, MessageContentType, PluginConfig, PluginStatus, PluginType,
     UnifiedIncomingMessage, UnifiedMessageContent, UnifiedOutgoingMessage, UnifiedUser,
@@ -105,10 +105,7 @@ impl ChannelPlugin for MattermostPlugin {
             })?
             .to_owned();
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| {
+        let client = build_http_client(Client::builder().timeout(Duration::from_secs(30))).map_err(|e| {
                 self.status.set(PluginStatus::Error);
                 self.last_error = Some(format!("HTTP client init failed: {e}"));
                 ChannelError::ConnectionFailed(format!("HTTP client init failed: {e}"))

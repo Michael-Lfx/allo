@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 nomifun-common.workspace = true
+nomifun-net.workspace = true
 nomi-types.workspace   = true
 nomi-compact.workspace = true
 nomi-process-runtime.workspace = true

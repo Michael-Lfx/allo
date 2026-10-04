@@ -43,6 +43,7 @@ pub mod callback;
     feature = "telegram",
     feature = "lark",
     feature = "dingtalk",
+    feature = "weixin",
     feature = "wecom",
     feature = "discord",
     feature = "matrix",

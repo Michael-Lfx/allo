@@ -30,6 +30,7 @@ nomifun-app = { workspace = true, features = [
     "computer-use", "browser-use", "managed-search",
 ] }
 nomifun-common.workspace = true
+nomifun-net.workspace = true
 nomifun-runtime.workspace = true
 clap.workspace = true
 iana-time-zone = "0.1"

@@ -208,11 +208,13 @@ pub async fn ensure_ffmpeg(quiet: bool) -> Result<PathBuf, FfmpegInstallError> {
         );
     }
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(300))
-        .user_agent("allo/dep-install")
-        .build()
-        .map_err(|e| FfmpegInstallError::Download(e.to_string()))?;
+    let client = nomifun_net::proxy::apply_detected_proxy(
+        Client::builder()
+            .timeout(Duration::from_secs(300))
+            .user_agent("allo/dep-install"),
+    )
+    .build()
+    .map_err(|e| FfmpegInstallError::Download(e.to_string()))?;
 
     let urls: Vec<&str> = mirrors.iter().map(|m| m.url).collect();
     let start_idx = match pick_fastest_url(&client, &urls).await {

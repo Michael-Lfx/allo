@@ -10,7 +10,7 @@ use crate::constants::{RECONNECT_MAX_ATTEMPTS, RECONNECT_MAX_DELAY, TELEGRAM_MES
 use crate::error::ChannelError;
 use crate::plugin::{ChannelPlugin, PluginCallbacks, SharedPluginStatus, mark_error_on_unexpected_exit};
 use crate::plugins::callback::{format_callback_data, parse_callback_data};
-use crate::plugins::util::{backoff_delay, truncate_message};
+use crate::plugins::util::{backoff_delay, build_http_client, truncate_message};
 use crate::types::{
     ActionContext, BotInfo, MessageContentType, ParseMode, PluginConfig, PluginStatus,
     PluginType, UnifiedAction, UnifiedAttachment, UnifiedIncomingMessage, UnifiedMessageContent,
@@ -81,14 +81,14 @@ impl ChannelPlugin for TelegramPlugin {
                 ChannelError::InvalidConfig("Missing Telegram bot token".into())
             })?;
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(POLL_TIMEOUT as u64 + 10))
-            .build()
-            .map_err(|e| {
-                self.status.set(PluginStatus::Error);
-                self.last_error = Some(format!("HTTP client init failed: {e}"));
-                ChannelError::ConnectionFailed(format!("HTTP client init failed: {e}"))
-            })?;
+        let client = build_http_client(
+            Client::builder().timeout(Duration::from_secs(POLL_TIMEOUT as u64 + 10)),
+        )
+        .map_err(|e| {
+            self.status.set(PluginStatus::Error);
+            self.last_error = Some(format!("HTTP client init failed: {e}"));
+            ChannelError::ConnectionFailed(format!("HTTP client init failed: {e}"))
+        })?;
 
         let api = Arc::new(TelegramApi::new(client, token));
 

@@ -2,6 +2,25 @@
 
 use std::time::Duration;
 
+/// Build an outbound channel HTTP client that honors the OS / env proxy.
+#[cfg(any(
+    feature = "telegram",
+    feature = "lark",
+    feature = "dingtalk",
+    feature = "weixin",
+    feature = "discord",
+    feature = "matrix",
+    feature = "mattermost",
+    feature = "slack",
+    feature = "twitch",
+    feature = "qqbot"
+))]
+pub(crate) fn build_http_client(
+    builder: reqwest::ClientBuilder,
+) -> Result<reqwest::Client, reqwest::Error> {
+    nomifun_net::proxy::apply_detected_proxy(builder).build()
+}
+
 /// Exponential reconnect backoff: `2^attempt` seconds, capped at `cap`.
 pub(crate) fn backoff_delay(attempt: u32, cap: Duration) -> Duration {
     let secs = 2u64.saturating_pow(attempt).min(cap.as_secs());

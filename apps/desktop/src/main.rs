@@ -715,10 +715,12 @@ async fn select_ota_artifact_url(
     };
     let folder = ota_mirrors::channel_folder_from_url(url_str).unwrap_or_else(ota_mirrors::host_channel);
     let candidates = ota_mirrors::candidate_artifact_urls(version, folder, &filename);
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .user_agent("flowy-ota-probe")
-        .build()
+    let Ok(client) = nomifun_net::proxy::apply_detected_proxy(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .user_agent("flowy-ota-probe"),
+    )
+    .build()
     else {
         return (download_url.clone(), ota_mirrors::OtaHost::from_url(url_str).map(|h| h.cdn_host().to_owned()));
     };

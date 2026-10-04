@@ -15,11 +15,13 @@ const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) fn bounded_http_client() -> Result<reqwest::Client, McpError> {
-    reqwest::Client::builder()
-        .connect_timeout(HTTP_CONNECT_TIMEOUT)
-        .read_timeout(HTTP_READ_TIMEOUT)
-        .build()
-        .map_err(|error| McpError::Transport(format!("failed to build bounded MCP HTTP client: {error}")))
+    nomifun_net::proxy::apply_detected_proxy(
+        reqwest::Client::builder()
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            .read_timeout(HTTP_READ_TIMEOUT),
+    )
+    .build()
+    .map_err(|error| McpError::Transport(format!("failed to build bounded MCP HTTP client: {error}")))
 }
 
 /// Find the next SSE event boundary (blank line) in `buf`, returning

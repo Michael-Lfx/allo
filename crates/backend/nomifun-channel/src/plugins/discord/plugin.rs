@@ -14,7 +14,7 @@ use tracing::info;
 use crate::constants::DISCORD_MESSAGE_LIMIT;
 use crate::error::ChannelError;
 use crate::plugin::{ChannelPlugin, PluginCallbacks, SharedPluginStatus};
-use crate::plugins::util::truncate_message;
+use crate::plugins::util::{build_http_client, truncate_message};
 use crate::plugins::callback::format_callback_data;
 use crate::types::{BotInfo, PluginConfig, PluginStatus, PluginType, UnifiedOutgoingMessage};
 
@@ -78,10 +78,7 @@ impl ChannelPlugin for DiscordPlugin {
             })?
             .to_string();
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| {
+        let client = build_http_client(Client::builder().timeout(Duration::from_secs(30))).map_err(|e| {
                 self.status.set(PluginStatus::Error);
                 self.last_error = Some(format!("HTTP client init failed: {e}"));
                 ChannelError::ConnectionFailed(format!("HTTP client init failed: {e}"))
