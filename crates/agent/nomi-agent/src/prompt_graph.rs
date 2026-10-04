@@ -357,10 +357,11 @@ without killing the process.",
     {
         if advertised.contains("Bash") || advertised.contains("exec_command") {
             s.push_str(
-                "\n - On Windows, the Bash and exec_command tools run commands through PowerShell \
-when shell-only work is necessary. They do not use cmd.exe or Unix bash. Use PowerShell syntax: `Get-ChildItem`, `Get-Content`, `Set-Location`, \
-`$env:NAME`, and `;` for sequential commands. If cmd.exe syntax is truly required, wrap it \
-explicitly as `cmd /C \"...\"`.",
+                "\n - On Windows, the Bash and exec_command tools run commands through Windows PowerShell 5.1 \
+when shell-only work is necessary. They do not use cmd.exe, Unix bash, or pwsh. Do not prefix the command \
+with powershell.exe or pwsh. Write Windows PowerShell 5.1 syntax: `Get-ChildItem`, `Get-Content`, `Set-Location`, \
+`$env:NAME`, and `;` for sequential commands. Do not assume PowerShell 7-only syntax such as `??`, `??=`, `?:`, `&&`, or `||`. \
+If cmd.exe syntax is truly required, wrap it explicitly as `cmd /C \"...\"`.",
             );
         }
         if advertised.contains("Computer") {
@@ -415,6 +416,19 @@ mod tests {
         assert!(text.contains("Read"));
         assert!(text.contains("parallel"));
         assert!(text.contains("hard checkpoint"));
+    }
+
+    #[test]
+    fn windows_guidance_states_powershell_51_contract() {
+        let set = AdvertisedToolSet::from_names(["Bash", "exec_command"]);
+        let text = tool_usage_guidance(&set, false);
+        if cfg!(windows) {
+            assert!(text.contains("Windows PowerShell 5.1"));
+            assert!(text.contains("Do not prefix the command"));
+            assert!(text.contains("PowerShell 7-only syntax"));
+        } else {
+            assert!(!text.contains("Windows PowerShell 5.1"));
+        }
     }
 
     #[test]
