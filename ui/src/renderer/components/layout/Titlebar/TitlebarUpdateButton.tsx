@@ -21,9 +21,9 @@ interface TitlebarUpdateButtonProps {
 }
 
 /** Small badge dot shown when a newer signed release is available. */
-const UpdateBadge: React.FC = () => (
+const UpdateBadge: React.FC<{ ready?: boolean }> = ({ ready }) => (
   <span
-    className='absolute rounded-full bg-red-500 ring-2 ring-[var(--color-bg-2)]'
+    className={`absolute rounded-full ring-2 ring-[var(--color-bg-2)] ${ready ? 'bg-emerald-500' : 'bg-red-500'}`}
     style={{ width: 7, height: 7, top: -1, right: -1 }}
     aria-hidden='true'
   />
@@ -39,8 +39,9 @@ const UpdateBadge: React.FC = () => (
 const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, strokeWidth, className }) => {
   const { t } = useTranslation();
   const availability = useUpdateAvailability();
-  const hasUpdate = availability.available;
+  const hasUpdate = availability.available || availability.readyToInstall;
   const latestVersion = availability.version ?? null;
+  const readyToInstall = availability.readyToInstall;
 
   const openUpdateModal = useCallback(() => {
     window.dispatchEvent(new CustomEvent('nomifun-open-update-modal', { detail: { source: 'titlebar' } }));
@@ -48,7 +49,9 @@ const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, s
 
   if (!isDesktopShell() || !hasUpdate) return null;
 
-  const tooltip = t('update.titlebarUpdateAvailable', { version: latestVersion ?? '' });
+  const tooltip = readyToInstall
+    ? t('update.titlebarReadyToInstall', { version: latestVersion ?? '' })
+    : t('update.titlebarUpdateAvailable', { version: latestVersion ?? '' });
 
   return (
     <InstantHoverTooltip
@@ -66,7 +69,7 @@ const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, s
         data-tauri-no-drag
       >
         <Download theme='outline' size={iconSize} fill='currentColor' strokeWidth={strokeWidth} />
-        <UpdateBadge />
+        <UpdateBadge ready={readyToInstall} />
       </button>
     </InstantHoverTooltip>
   );

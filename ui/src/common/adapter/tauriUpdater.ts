@@ -33,6 +33,7 @@ import {
   type TauriUpdatePackageStatus,
 } from './tauriShell';
 import { installUpdateWithPreflight } from './tauriUpdateInstall';
+import { observeNativeDownload } from './tauriUpdateObserver';
 
 export interface TauriUpdateInfo {
   version: string;
@@ -169,6 +170,38 @@ export async function tauriUpdateCurrentVersion(): Promise<string> {
  * Installation later consumes this exact retained package without downloading.
  */
 export async function tauriUpdateDownload(emit: (s: AutoUpdateStatus) => void): Promise<void> {
+  localDownloadActive = true;
+  try {
+    await runNativeDownload(emit);
+  } finally {
+    localDownloadActive = false;
+  }
+}
+
+let localDownloadActive = false;
+let nativeObserver: Promise<void> | null = null;
+
+/**
+ * Follow a native download this renderer did not start (the Rust task survives a
+ * webview reload, its progress channel does not). Single-flight; a no-op while
+ * this renderer owns a download or outside the desktop shell.
+ */
+export function tauriUpdateObserveNativeDownload(emit: (s: AutoUpdateStatus) => void): Promise<void> {
+  if (nativeObserver) return nativeObserver;
+  const run = observeNativeDownload({
+    readStatus: tauriUpdatePackageSnapshot,
+    isLocalDownloadActive: () => localDownloadActive,
+    emit,
+  })
+    .catch(() => {})
+    .finally(() => {
+      nativeObserver = null;
+    });
+  nativeObserver = run;
+  return run;
+}
+
+async function runNativeDownload(emit: (s: AutoUpdateStatus) => void): Promise<void> {
   if (!isTauriRuntime()) throw new Error('Updater is unavailable outside the desktop shell');
   if (!pendingUpdate) await tauriUpdateCheck(true);
   if (!pendingUpdate) throw new Error('No update available to download');

@@ -413,6 +413,33 @@ struct UpdatePackageStatus {
     state: &'static str,
     /// The version the active state refers to. Only `ready` means installable.
     version: Option<String>,
+    /// Bytes received / expected by the running download; 0 outside `downloading`.
+    /// Lets a renderer that did not start the download (e.g. after a webview
+    /// reload) observe real progress and completion by polling.
+    transferred: u64,
+    total: u64,
+}
+
+/// Byte counters of the running download, written by the download task and read
+/// by `update_package_status`.
+#[derive(Default)]
+struct DownloadProgressCounters {
+    transferred: std::sync::atomic::AtomicU64,
+    total: std::sync::atomic::AtomicU64,
+}
+
+impl DownloadProgressCounters {
+    fn reset(&self) {
+        self.transferred.store(0, Ordering::Relaxed);
+        self.total.store(0, Ordering::Relaxed);
+    }
+
+    fn record(&self, chunk_length: u64, content_length: Option<u64>) {
+        self.transferred.fetch_add(chunk_length, Ordering::Relaxed);
+        if let Some(total) = content_length {
+            self.total.store(total, Ordering::Relaxed);
+        }
+    }
 }
 
 enum DownloadedUpdateSlot<T> {
@@ -424,12 +451,14 @@ enum DownloadedUpdateSlot<T> {
 
 struct DownloadedUpdateCache<T> {
     slot: Mutex<DownloadedUpdateSlot<T>>,
+    progress: Arc<DownloadProgressCounters>,
 }
 
 impl<T> Default for DownloadedUpdateCache<T> {
     fn default() -> Self {
         Self {
             slot: Mutex::new(DownloadedUpdateSlot::Empty),
+            progress: Arc::new(DownloadProgressCounters::default()),
         }
     }
 }
@@ -508,6 +537,7 @@ impl<T> DownloadedUpdateCache<T> {
             DownloadedUpdateSlot::Ready { version: ready, .. } => Some(ready.clone()),
             _ => None,
         };
+        self.progress.reset();
         *slot = DownloadedUpdateSlot::Downloading {
             version: version.to_owned(),
         };
@@ -521,24 +551,30 @@ impl<T> DownloadedUpdateCache<T> {
     /// so the renderer can poll it to decide whether to offer "install".
     fn status(&self) -> UpdatePackageStatus {
         let slot = self.slot.lock().unwrap_or_else(|poison| poison.into_inner());
+        let idle = |state: &'static str, version: Option<String>| UpdatePackageStatus {
+            state,
+            version,
+            transferred: 0,
+            total: 0,
+        };
         match &*slot {
-            DownloadedUpdateSlot::Empty => UpdatePackageStatus {
-                state: "empty",
-                version: None,
-            },
+            DownloadedUpdateSlot::Empty => idle("empty", None),
             DownloadedUpdateSlot::Downloading { version } => UpdatePackageStatus {
                 state: "downloading",
                 version: Some(version.clone()),
+                transferred: self.progress.transferred.load(Ordering::Relaxed),
+                total: self.progress.total.load(Ordering::Relaxed),
             },
-            DownloadedUpdateSlot::Ready { version, .. } => UpdatePackageStatus {
-                state: "ready",
-                version: Some(version.clone()),
-            },
-            DownloadedUpdateSlot::Installing { version } => UpdatePackageStatus {
-                state: "installing",
-                version: Some(version.clone()),
-            },
+            DownloadedUpdateSlot::Ready { version, .. } => idle("ready", Some(version.clone())),
+            DownloadedUpdateSlot::Installing { version } => {
+                idle("installing", Some(version.clone()))
+            }
         }
+    }
+
+    /// Counters the download task feeds while the slot is `Downloading`.
+    fn progress_counters(&self) -> Arc<DownloadProgressCounters> {
+        Arc::clone(&self.progress)
     }
 
     fn cancel_download(&self, version: &str) {
@@ -882,10 +918,12 @@ async fn download_update(
         let observed_length = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let observed_length_tail = Arc::clone(&observed_length);
         let mut last_sent = Instant::now();
+        let progress_counters = downloaded.progress_counters();
         let bytes = update
             .download(
                 move |chunk_length, content_length| {
                     use std::sync::atomic::Ordering;
+                    progress_counters.record(chunk_length as u64, content_length);
                     if let Some(total) = content_length {
                         observed_length.store(total, Ordering::Relaxed);
                     }
@@ -3651,6 +3689,54 @@ mod tests {
         let ready = cache.status();
         assert_eq!(ready.state, "ready");
         assert_eq!(ready.version.as_deref(), Some("0.4.2"));
+    }
+
+    #[test]
+    fn status_exposes_download_progress_so_a_reloaded_renderer_can_observe_it() {
+        let cache = DownloadedUpdateCache::<&str>::default();
+        let counters = cache.progress_counters();
+
+        cache.begin_download("0.4.2", |_| 0).unwrap();
+        counters.record(400, Some(1000));
+        counters.record(250, None);
+        let downloading = cache.status();
+        assert_eq!(downloading.state, "downloading");
+        assert_eq!(downloading.transferred, 650);
+        assert_eq!(downloading.total, 1000);
+
+        cache.finish_download("0.4.2", "bytes").unwrap();
+        let ready = cache.status();
+        assert_eq!((ready.transferred, ready.total), (0, 0));
+    }
+
+    #[test]
+    fn a_new_download_starts_from_zero_progress() {
+        let cache = DownloadedUpdateCache::<&str>::default();
+        let counters = cache.progress_counters();
+
+        cache.begin_download("0.4.2", |_| 0).unwrap();
+        counters.record(900, Some(1000));
+        cache.cancel_download("0.4.2");
+        assert_eq!(cache.status().state, "empty");
+
+        cache.begin_download("0.4.2", |_| 0).unwrap();
+        let retry = cache.status();
+        assert_eq!((retry.transferred, retry.total), (0, 0));
+    }
+
+    #[test]
+    fn a_download_that_fails_after_its_owner_vanished_releases_the_slot() {
+        let cache = DownloadedUpdateCache::<&str>::default();
+        cache.begin_download("0.4.2", |_| 0).unwrap();
+        assert!(cache.begin_download("0.4.2", |_| 0).is_err());
+
+        cache.cancel_download("0.4.2");
+
+        assert_eq!(cache.status().state, "empty");
+        assert!(matches!(
+            cache.begin_download("0.4.2", |_| 0),
+            Ok(BeginUpdateDownload::Start)
+        ));
     }
 
     #[test]

@@ -41,6 +41,7 @@ import { isDesktopShell } from '@renderer/utils/platform';
 import { tauriUpdateCurrentVersion } from '@/common/adapter/tauriUpdater';
 import { trackUpdateCheckCompleted } from '@/renderer/utils/analytics/updateTelemetry';
 import { scheduleDeferred } from '@/renderer/utils/scheduleDeferred';
+import { maybeAutoDownloadUpdate } from '@/renderer/utils/update/updateAutoDownload';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
 import SidebarToggleIcon from '@renderer/components/layout/Sider/SidebarToggleIcon';
@@ -84,6 +85,9 @@ const useDebug = () => {
 };
 
 const UpdateModal = React.lazy(() => import('@/renderer/components/settings/UpdateModal'));
+
+/** Delay after launch before the update package is fetched in the background. */
+const UPDATE_BACKGROUND_DOWNLOAD_DELAY_MS = 5 * 60 * 1000;
 
 /** How often a long-running desktop session re-checks ModelScope for OTA. */
 const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -443,6 +447,7 @@ const Layout: React.FC<{
     let inFlight = false;
     let modalTimer: number | null = null;
     let intervalId: number | null = null;
+    let backgroundTimer: number | null = null;
 
     const runCheck = async (source: 'startup' | 'interval') => {
       if (cancelled || inFlight) return;
@@ -515,11 +520,32 @@ const Layout: React.FC<{
       void runCheck('interval');
     }, UPDATE_CHECK_INTERVAL_MS);
 
+    let backgroundDue = false;
+    const kickBackgroundDownload = () => {
+      if (backgroundDue) void maybeAutoDownloadUpdate();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') kickBackgroundDownload();
+    };
+    backgroundTimer = window.setTimeout(() => {
+      backgroundDue = true;
+      void maybeAutoDownloadUpdate();
+    }, UPDATE_BACKGROUND_DOWNLOAD_DELAY_MS);
+    window.addEventListener('focus', kickBackgroundDownload);
+    window.addEventListener('online', kickBackgroundDownload);
+    window.addEventListener(UPDATE_AVAILABLE_EVENT, kickBackgroundDownload);
+    document.addEventListener('visibilitychange', onVisibility);
+
     return () => {
       cancelled = true;
       cancelDefer();
       if (intervalId != null) window.clearInterval(intervalId);
       if (modalTimer != null) window.clearTimeout(modalTimer);
+      if (backgroundTimer != null) window.clearTimeout(backgroundTimer);
+      window.removeEventListener('focus', kickBackgroundDownload);
+      window.removeEventListener('online', kickBackgroundDownload);
+      window.removeEventListener(UPDATE_AVAILABLE_EVENT, kickBackgroundDownload);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 

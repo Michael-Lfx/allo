@@ -222,6 +222,9 @@ export interface TauriUpdatePackageStatus {
   state: TauriUpdatePackageState;
   /** The version the active state refers to; only `ready` means installable. */
   version: string | null;
+  /** Bytes received / expected by the running download; 0 outside `downloading`. */
+  transferred: number;
+  total: number;
 }
 
 /**

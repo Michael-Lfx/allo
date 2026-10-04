@@ -52,6 +52,7 @@ import {
   tauriUpdateCheck,
   tauriUpdateCurrentVersion,
   tauriUpdateDownload,
+  tauriUpdateObserveNativeDownload,
   tauriUpdatePackageSnapshot,
   tauriUpdateInstallAndRelaunch,
 } from './tauriUpdater';
@@ -1358,6 +1359,9 @@ export const autoUpdate = {
     try {
       const info = await tauriUpdateCheck(true);
       const snapshot = await tauriUpdatePackageSnapshot();
+      if (snapshot?.state === 'downloading') {
+        void tauriUpdateObserveNativeDownload((s) => autoUpdateStatusEmitter.emit(s));
+      }
       const slot = {
         retainedVersion: snapshot?.state === 'ready' ? (snapshot.version ?? null) : null,
         packageState: snapshot?.state ?? null,

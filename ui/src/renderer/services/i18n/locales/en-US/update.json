@@ -41,5 +41,6 @@
   "showInFolder": "Show in folder",
   "openFile": "Open file",
   "errorTitle": "Update failed",
-  "titlebarUpdateAvailable": "Version {{version}} available — click to update"
+  "titlebarUpdateAvailable": "Version {{version}} available — click to update",
+  "titlebarReadyToInstall": "Version {{version}} downloaded — click to install"
 }

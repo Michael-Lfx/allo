@@ -14,6 +14,7 @@ export type UpdateTelemetrySource =
   | 'about'
   | 'menu'
   | 'modal'
+  | 'background'
   | 'unknown';
 
 export type UpdateCheckStatus = 'available' | 'up_to_date' | 'failed';
@@ -121,6 +122,7 @@ export function normalizeUpdateTelemetrySource(raw?: string | null): UpdateTelem
     case 'about':
     case 'menu':
     case 'modal':
+    case 'background':
       return raw;
     default:
       return 'unknown';
@@ -277,6 +279,59 @@ export function trackUpdateDownloadFailed(props: {
         duration_ms: durationMs,
         bytes: bytesTransferred,
       }),
+    })
+  );
+}
+
+/**
+ * Background auto-download progress checkpoint (25/50/75/100%). A dedicated
+ * event (rather than only the terminal started/succeeded pair) so a download
+ * that STALLS mid-transfer is visible instead of only its start.
+ */
+export function trackUpdateDownloadProgress(props: {
+  source: UpdateTelemetrySource;
+  from_version?: string | null;
+  to_version?: string | null;
+  percent: number;
+  elapsed_ms: number;
+  bytes_total?: number | null;
+}): FunnelEvent {
+  return trackFunnelEvent(
+    'update_download_progress',
+    baseProps({
+      source: props.source,
+      from_version: normalizeVersion(props.from_version),
+      to_version: normalizeVersion(props.to_version),
+      percent: Math.max(0, Math.min(100, Math.round(props.percent))),
+      elapsed_ms: Math.max(0, Math.round(props.elapsed_ms)),
+      bytes_total: nonNegInt(props.bytes_total),
+      download_trigger: 'auto',
+    })
+  );
+}
+
+/**
+ * The user acted on a download that was ALREADY running or already finished —
+ * the direct measure of the UX this flow exists to fix. `trigger` distinguishes
+ * attaching to a live transfer from landing on a completed one.
+ */
+export function trackUpdateInstallPrompted(props: {
+  source: UpdateTelemetrySource;
+  from_version?: string | null;
+  to_version?: string | null;
+  surface: string;
+  trigger: 'attached' | 'ready';
+  ready_age_ms?: number | null;
+}): FunnelEvent {
+  return trackFunnelEvent(
+    'update_install_prompted',
+    baseProps({
+      source: props.source,
+      from_version: normalizeVersion(props.from_version),
+      to_version: normalizeVersion(props.to_version),
+      surface: props.surface,
+      trigger: props.trigger,
+      ready_age_ms: nonNegInt(props.ready_age_ms),
     })
   );
 }

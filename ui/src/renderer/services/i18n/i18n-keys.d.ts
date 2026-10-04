@@ -7416,6 +7416,7 @@ export type I18nKey =
   | 'update.readyToInstallDesc'
   | 'update.releaseFeedUnavailable'
   | 'update.showInFolder'
+  | 'update.titlebarReadyToInstall'
   | 'update.titlebarUpdateAvailable'
   | 'update.upToDateTitle'
   | 'update.updateNow'

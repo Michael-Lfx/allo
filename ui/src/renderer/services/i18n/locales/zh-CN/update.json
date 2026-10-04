@@ -41,5 +41,6 @@
   "showInFolder": "在文件夹中显示",
   "openFile": "打开文件",
   "errorTitle": "更新失败",
-  "titlebarUpdateAvailable": "有新版本 {{version}}，点击更新"
+  "titlebarUpdateAvailable": "有新版本 {{version}}，点击更新",
+  "titlebarReadyToInstall": "新版本 {{version}} 已下载，点击安装"
 }

@@ -56,6 +56,8 @@ export type FunnelEventName =
   | 'update_download_started'
   | 'update_download_succeeded'
   | 'update_download_failed'
+  | 'update_download_progress'
+  | 'update_install_prompted'
   | 'update_install_started'
   | 'update_install_failed'
   | 'update_install_blocked'

@@ -27,11 +27,13 @@ import {
   trackUpdateDownloadFailed,
   trackUpdateDownloadStarted,
   trackUpdateDownloadSucceeded,
+  trackUpdateInstallPrompted,
   trackUpdateInstallFailed,
   trackUpdateInstallStarted,
   trackUpdatePromptShown,
   type UpdateTelemetrySource,
 } from '@/renderer/utils/analytics/updateTelemetry';
+import { isBackgroundDownload } from '@/renderer/utils/update/updateAutoDownload';
 
 type UpdateStatus =
   | 'checking'
@@ -189,6 +191,13 @@ const UpdateModal: React.FC = () => {
             downloadRequestedRef.current = true;
             downloadVersionRef.current = res.data.packageVersion ?? null;
             downloadStartedAtRef.current = performance.now();
+            trackUpdateInstallPrompted({
+              source,
+              from_version: fromVersion,
+              to_version: res.data.updateInfo.version,
+              surface: 'modal',
+              trigger: 'attached',
+            });
           }
           trackUpdateCheckCompleted({
             source,
@@ -207,6 +216,13 @@ const UpdateModal: React.FC = () => {
                 from_version: fromVersion,
                 to_version: toVersion,
                 already_ready: true,
+              });
+              trackUpdateInstallPrompted({
+                source,
+                from_version: fromVersion,
+                to_version: toVersion,
+                surface: 'modal',
+                trigger: 'ready',
               });
             }
           }
@@ -291,6 +307,13 @@ const UpdateModal: React.FC = () => {
           downloadRequestedRef.current = true;
           downloadVersionRef.current = packageVersion;
           downloadStartedAtRef.current = performance.now();
+          trackUpdateInstallPrompted({
+            source,
+            from_version: fromVersion,
+            to_version: autoUpdateVersion,
+            surface: 'modal',
+            trigger: 'attached',
+          });
         }
         trackUpdateCheckCompleted({
           source,
@@ -308,6 +331,13 @@ const UpdateModal: React.FC = () => {
               from_version: fromVersion,
               to_version: availableVersion,
               already_ready: true,
+            });
+            trackUpdateInstallPrompted({
+              source,
+              from_version: fromVersion,
+              to_version: availableVersion,
+              surface: 'modal',
+              trigger: 'ready',
             });
           }
         }
@@ -604,7 +634,11 @@ const UpdateModal: React.FC = () => {
           downloadRequestedRef.current = false;
           {
             const toVersion = evt.version || downloadVersionRef.current || '';
-            if (toVersion && downloadSucceededForVersionRef.current !== toVersion) {
+            if (
+              toVersion &&
+              downloadSucceededForVersionRef.current !== toVersion &&
+              !isBackgroundDownload(toVersion)
+            ) {
               downloadSucceededForVersionRef.current = toVersion;
               trackUpdateDownloadSucceeded({
                 source: telemetrySourceRef.current,
@@ -636,7 +670,10 @@ const UpdateModal: React.FC = () => {
           }
           break;
         case 'error':
-          if (downloadStartedAtRef.current != null) {
+          if (
+            downloadStartedAtRef.current != null &&
+            !isBackgroundDownload(evt.version || downloadVersionRef.current)
+          ) {
             trackUpdateDownloadFailed({
               source: telemetrySourceRef.current,
               duration_ms: performance.now() - downloadStartedAtRef.current,
@@ -647,8 +684,8 @@ const UpdateModal: React.FC = () => {
               peak_bps: peakBpsRef.current || null,
               error: evt.error || 'download_failed',
             });
-            downloadStartedAtRef.current = null;
           }
+          downloadStartedAtRef.current = null;
           setStatus('error');
           setErrorMsg(evt.error || t('update.downloadFailed'));
           break;
