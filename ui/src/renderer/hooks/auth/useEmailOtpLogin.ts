@@ -172,6 +172,8 @@ export const isTerminalLoginFailureResponse = (
   response: ICloudLoginContinueResponse
 ): response is Extract<ICloudLoginContinueResponse, { status: 'failed' }> => response.status === 'failed';
 
+const isEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
 const recoverIfAlreadyLoggedIn = async () => {
   try {
     const whoami = await ipcBridge.cloud.whoami.invoke();

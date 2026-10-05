@@ -73,6 +73,11 @@ describe('Flowy auth surface contract', () => {
     expect(settingsSource).toContain('flowy-settings-auth__action-slot');
   });
 
+  test('keeps the email validator defined for send and resend paths', () => {
+    expect(otpHookSource).toMatch(/^const isEmail = /m);
+    expect(otpHookSource.match(/isEmail\(/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
   test('changing the email starts a fresh cooldown window', () => {
     expect(otpHookSource).toContain('const changeEmail');
     expect(otpHookSource).toMatch(/const changeEmail[\s\S]{0,600}cooldown: 0/);
