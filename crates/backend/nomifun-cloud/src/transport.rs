@@ -8,7 +8,7 @@ use reqwest::header::{
     AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
 use reqwest::{Client, Method, Response};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::ServerClientError;
 use crate::session::ServerSession;
@@ -17,7 +17,7 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 const CLIENT_VERSION_HEADER: &str = "x-client-version";
 const LEGACY_TOKEN_HEADER: &str = "token";
 const FLOWY_TURN_ID_HEADER: &str = "x-flowy-turn-id";
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const HTTP2_KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 /// Process-wide `reqwest::Client` so every transport shares one connection pool.
@@ -60,6 +60,28 @@ fn shared_http1_client() -> Result<Client, ServerClientError> {
 
 fn is_retryable_transport(err: &reqwest::Error) -> bool {
     err.is_timeout() || err.is_connect() || err.is_request()
+}
+
+fn describe_transport_error(err: &reqwest::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if parts.last() != Some(&text) {
+            parts.push(text);
+        }
+        source = cause.source();
+    }
+    let kind = if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connect"
+    } else if err.is_request() {
+        "request"
+    } else {
+        "other"
+    };
+    format!("{} [kind={kind}]", parts.join(": "))
 }
 
 /// Dedicated client for OSS presigned PUT.
@@ -250,15 +272,23 @@ impl HttpTransport {
                     return Ok(resp);
                 }
                 Err(err) if is_retryable_transport(&err) => {
-                    if attempt < 2 {
+                    let detail = describe_transport_error(&err);
+                    warn!(
+                        host = %request_host(&url),
+                        attempt,
+                        http1_fallback = fallback_http1,
+                        error = %detail,
+                        "server http transport failure"
+                    );
+                    if attempt < 3 {
                         fallback_http1 = true;
                         let delay = Duration::from_millis(250 * 2u64.pow(attempt - 1));
                         tokio::time::sleep(delay).await;
                         continue;
                     }
-                    return Err(ServerClientError::Http(err.to_string()));
+                    return Err(ServerClientError::Http(detail));
                 }
-                Err(err) => return Err(ServerClientError::Http(err.to_string())),
+                Err(err) => return Err(ServerClientError::Http(describe_transport_error(&err))),
             }
         }
     }
@@ -419,6 +449,25 @@ mod tests {
             transport.resolve_url("/user/me"),
             format!("{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/user/me")
         );
+    }
+
+    #[tokio::test]
+    async fn transport_error_description_includes_cause_chain_and_kind() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let err = Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap_err();
+        let text = describe_transport_error(&err);
+        assert!(text.contains("[kind=connect]"), "{text}");
+        assert!(text.matches(": ").count() >= 1, "{text}");
+        assert!(is_retryable_transport(&err));
     }
 
     #[test]
