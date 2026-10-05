@@ -77,7 +77,8 @@ async fn collect_toolless_text_response(
             }
             LlmEvent::ToolUse { .. }
             | LlmEvent::ToolUseDelta { .. }
-            | LlmEvent::ToolUseTruncated { .. } => {
+            | LlmEvent::ToolUseTruncated { .. }
+            | LlmEvent::ToolUseMalformed { .. } => {
                 return Err(format!(
                     "{context} provider emitted a tool call for a tool-less request"
                 ));
@@ -127,6 +128,7 @@ impl nomi_browser::extract::ExtractModel for SessionExtractModel {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
         let rx = crate::observation::stream_llm(
             self.provider.as_ref(),
@@ -188,6 +190,7 @@ impl SessionVisualLocator {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
 
         let rx = crate::observation::stream_llm(

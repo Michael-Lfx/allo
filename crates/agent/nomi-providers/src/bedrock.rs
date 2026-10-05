@@ -715,6 +715,7 @@ mod tests {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
 
         let body = provider.build_request_body(&request).unwrap();
@@ -739,6 +740,7 @@ mod tests {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         }
     }
 

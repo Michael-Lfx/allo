@@ -139,6 +139,7 @@ async fn tool_loop(
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
         let mut rx = provider
             .stream(&request)
@@ -176,7 +177,7 @@ async fn tool_loop(
                 LlmEvent::Done { stop_reason, .. } => {
                     terminal = Some(stop_reason);
                 }
-                LlmEvent::Error(message) => {
+                LlmEvent::Error(message) | LlmEvent::ToolUseMalformed { error: message, .. } => {
                     return Err(AppError::BadGateway(format!("LLM stream error: {message}")));
                 }
                 LlmEvent::ProviderRoundId(_) => {

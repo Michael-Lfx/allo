@@ -171,6 +171,7 @@ impl MoaRunner {
                 reasoning_effort: None,
                 temperature: slot.temperature,
                 retain_provider_round: false,
+                isolate_malformed_tool_calls: false,
             };
             let semaphore = Arc::clone(&semaphore);
             let billing_turn_id = billing_turn_id.clone();

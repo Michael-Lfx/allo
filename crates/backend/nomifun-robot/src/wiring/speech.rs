@@ -303,6 +303,7 @@ async fn one_shot_vision(
         thinking: None,
         reasoning_effort: None,
         retain_provider_round: false,
+        isolate_malformed_tool_calls: false,
     };
 
     // Anthropic-platform rows speak the anthropic wire shape; everything else in

@@ -400,6 +400,17 @@ pub fn is_context_overflow_text(text: &str) -> bool {
     SIGNALS.iter().any(|signal| lower.contains(signal))
 }
 
+/// Classify a streaming error string as a rejected tool-call argument payload.
+///
+/// [`parse_tool_call_arguments`] fails closed: when it rejects a payload the
+/// provider turn produced no executable tool call, so replaying the identical
+/// request is safe. This is the single classifier for that contract.
+pub fn is_malformed_tool_arguments_text(text: &str) -> bool {
+    text.contains("malformed JSON arguments")
+        || text.contains("malformed double-encoded JSON arguments")
+        || text.contains("non-object arguments for tool")
+}
+
 /// Split the stored provider credential into individual API keys.
 ///
 /// Provider settings persist multiple credentials as a comma-separated string;
@@ -778,7 +789,7 @@ mod retryable_tests {
         INITIAL_REQUEST_DEADLINE, is_api_key_rotation_error, parse_api_keys,
         parse_retry_after_ms, parse_supported_output_range, parse_tool_call_arguments,
         send_with_deadline, MAX_DOUBLE_ENCODED_TOOL_ARGUMENT_BYTES,
-        is_context_overflow_text,
+        is_context_overflow_text, is_malformed_tool_arguments_text,
     };
 
     #[test]
@@ -1213,6 +1224,35 @@ mod retryable_tests {
         let missing_id = parse_tool_call_arguments("test", "update", "", "{}")
             .expect_err("a call without an id must fail");
         assert!(missing_id.contains("without a call id"));
+    }
+
+    #[test]
+    fn replay_classifier_matches_exactly_the_argument_rejections() {
+        let unquoted = parse_tool_call_arguments(
+            "test",
+            "Read",
+            "call_1",
+            r#"{"file_paths": C:/a/b.ts}"#,
+        )
+        .expect_err("unquoted value is malformed");
+        let double = serde_json::to_string("{not json").unwrap();
+        let double_encoded = parse_tool_call_arguments("test", "Read", "call_2", &double)
+            .expect_err("bad double-encoded payload is malformed");
+        let non_object = parse_tool_call_arguments("test", "Read", "call_3", "[]")
+            .expect_err("array is not an object");
+        for error in [unquoted, double_encoded, non_object] {
+            assert!(is_malformed_tool_arguments_text(&error), "{error}");
+        }
+
+        let missing_name = parse_tool_call_arguments("test", " ", "call_4", "{}").unwrap_err();
+        let missing_id = parse_tool_call_arguments("test", "Read", "", "{}").unwrap_err();
+        for error in [
+            missing_name,
+            missing_id,
+            "API error 429: slow down".to_owned(),
+        ] {
+            assert!(!is_malformed_tool_arguments_text(&error), "{error}");
+        }
     }
 }
 

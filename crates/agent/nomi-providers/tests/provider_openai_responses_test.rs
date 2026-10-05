@@ -27,6 +27,7 @@ fn request(retain_provider_round: bool) -> LlmRequest {
         reasoning_effort: Some("high".into()),
         temperature: None,
         retain_provider_round,
+        isolate_malformed_tool_calls: false,
     }
 }
 

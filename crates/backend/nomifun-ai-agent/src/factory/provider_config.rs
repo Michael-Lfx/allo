@@ -571,6 +571,7 @@ pub async fn one_shot_completion_no_thinking_text_or_reasoning(
         reasoning_effort: None,
         temperature: None,
         retain_provider_round: false,
+        isolate_malformed_tool_calls: false,
     };
 
     let rx = provider
@@ -602,6 +603,7 @@ pub async fn one_shot_completion_title(
         reasoning_effort: None,
         temperature: None,
         retain_provider_round: false,
+        isolate_malformed_tool_calls: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -630,6 +632,7 @@ pub async fn streaming_completion(
         reasoning_effort: None,
         temperature: None,
         retain_provider_round: false,
+        isolate_malformed_tool_calls: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -659,6 +662,7 @@ pub async fn streaming_completion_no_thinking(
         reasoning_effort: None,
         temperature: None,
         retain_provider_round: false,
+        isolate_malformed_tool_calls: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -694,6 +698,7 @@ pub async fn streaming_completion_kinded(
         reasoning_effort: None,
         temperature: None,
         retain_provider_round: false,
+        isolate_malformed_tool_calls: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -727,6 +732,7 @@ pub async fn streaming_completion_text_or_reasoning(
         reasoning_effort: None,
         temperature: None,
         retain_provider_round: false,
+        isolate_malformed_tool_calls: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -772,7 +778,8 @@ async fn drain_text_response_with(
             LlmEvent::ThinkingDelta(_) | LlmEvent::ThinkingSignature(_) => {}
             LlmEvent::ToolUse { .. }
             | LlmEvent::ToolUseDelta { .. }
-            | LlmEvent::ToolUseTruncated { .. } => {
+            | LlmEvent::ToolUseTruncated { .. }
+            | LlmEvent::ToolUseMalformed { .. } => {
                 return Err(AppError::BadGateway(
                     "LLM stream protocol violation: tool output was emitted for a tool-free one-shot request"
                         .into(),
@@ -893,7 +900,8 @@ async fn drain_text_or_reasoning(
             LlmEvent::ThinkingSignature(_) => {}
             LlmEvent::ToolUse { .. }
             | LlmEvent::ToolUseDelta { .. }
-            | LlmEvent::ToolUseTruncated { .. } => {
+            | LlmEvent::ToolUseTruncated { .. }
+            | LlmEvent::ToolUseMalformed { .. } => {
                 return Err(AppError::BadGateway(
                     "LLM stream protocol violation: tool output was emitted for a tool-free planner request"
                         .into(),

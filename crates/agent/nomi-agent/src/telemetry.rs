@@ -691,6 +691,7 @@ mod tests {
             reasoning_effort: Some("high".into()),
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         }
     }
 

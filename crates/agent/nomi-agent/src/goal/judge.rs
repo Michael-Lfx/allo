@@ -363,6 +363,7 @@ impl GoalJudgeClient for ProviderJudgeClient {
             reasoning_effort: None,
             temperature: Some(0.0),
                 retain_provider_round: false,
+                isolate_malformed_tool_calls: false,
         };
 
         let collected = tokio::time::timeout(Duration::from_secs(JUDGE_TIMEOUT_SECS), async {

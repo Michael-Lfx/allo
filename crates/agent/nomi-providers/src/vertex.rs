@@ -411,6 +411,7 @@ mod tests {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         }
     }
 
@@ -427,6 +428,7 @@ mod tests {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
 
         let error = provider.build_request_body(&request).unwrap_err();

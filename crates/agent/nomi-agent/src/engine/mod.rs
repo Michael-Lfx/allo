@@ -80,6 +80,10 @@ const STREAM_IDLE_ACTIVITY_AFTER: Duration = Duration::from_millis(1_200);
 /// mid-stream dispatch is not used because `ToolRegistry` is not `'static`.
 const MAX_PROVIDER_TURN_TOOL_CALLS: usize = 128;
 const MAX_PROVIDER_ROUND_ID_BYTES: usize = 512;
+/// Replays of one provider turn after the model emitted unparseable tool
+/// arguments. Each replay is an independent sample, so the cap bounds cost when
+/// a gateway is systematically broken.
+const MAX_MALFORMED_ARGUMENT_REPLAYS: usize = 3;
 
 #[derive(Debug, Clone)]
 struct InvalidArgumentRetryCandidate {
@@ -2024,6 +2028,7 @@ impl AgentEngine {
                 crate::context_contributor::build_turn_tail_context(turn_tail_extras.clone());
 
             let mut overflow_retried = false;
+            let mut malformed_argument_replays: usize = 0;
             let mut assistant_text = String::new();
             let mut thinking_text = String::new();
             let mut thinking_signature: Option<String>;
@@ -2152,6 +2157,7 @@ impl AgentEngine {
                     reasoning_effort,
                     temperature: None,
                     retain_provider_round,
+                    isolate_malformed_tool_calls: true,
                 },
                 slot: &mut self.messages,
             };
@@ -2187,6 +2193,7 @@ impl AgentEngine {
             thinking_signature = None;
             provider_round_id = None;
             tool_calls = Vec::new();
+            tool_authority.clear_malformed_calls();
             previewed_tool_calls = BTreeMap::new();
             warned_unadvertised_progress = HashSet::new();
             stop_reason = StopReason::EndTurn;
@@ -2202,6 +2209,7 @@ impl AgentEngine {
             let mut idle_activity_active = false;
             let mut first_token_logged = false;
             let mut stream_overflow = false;
+            let mut stream_malformed_arguments = false;
             loop {
                 let event = tokio::time::timeout(STREAM_IDLE_ACTIVITY_AFTER, rx.recv()).await;
                 let event = match event {
@@ -2221,6 +2229,27 @@ impl AgentEngine {
                     idle_activity_active = false;
                 }
                 let Some(event) = event else { break };
+                // A call with rejected arguments goes through the same identity
+                // and authority checks as any other call. It carries an empty
+                // placeholder input that is never executed: the invocation gate
+                // answers it from `tool_authority` with the provider's error.
+                let (event, mut malformed_error) = match event {
+                    LlmEvent::ToolUseMalformed {
+                        id,
+                        name,
+                        error,
+                        extra,
+                    } => (
+                        LlmEvent::ToolUse {
+                            id,
+                            name,
+                            input: serde_json::json!({}),
+                            extra,
+                        },
+                        Some(error),
+                    ),
+                    other => (other, None),
+                };
                 if done_count != 0 {
                     // Done is the provider-turn commit point. Accepting any
                     // later event would make terminal reason validation depend
@@ -2382,7 +2411,17 @@ impl AgentEngine {
                         // hooks, and dispatch. Whole-object strings were rejected
                         // above; unknown fields and invalid union branches remain
                         // strict validation failures.
-                        let input = if tool_authority.is_deferred(&name) {
+                        let input = if let Some(error) = malformed_error.take() {
+                            tracing::warn!(
+                                target: "nomi_agent",
+                                tool_use_id = %id,
+                                tool = %name,
+                                error = %error,
+                                "provider tool call arguments were rejected; the call will be answered with an error result"
+                            );
+                            tool_authority.record_malformed_call(id.clone(), error);
+                            input
+                        } else if tool_authority.is_deferred(&name) {
                             input
                         } else {
                             let original = input;
@@ -2500,6 +2539,13 @@ impl AgentEngine {
                             input.as_ref(),
                         );
                     }
+                    LlmEvent::ToolUseMalformed { .. } => {
+                        efficiency.observe_calls(&self.tools, &tool_calls);
+                        return Err(AgentError::ApiError(
+                            "provider stream protocol violation: unnormalized malformed tool call"
+                                .to_string(),
+                        ));
+                    }
                     LlmEvent::ThinkingDelta(text) => {
                         self.output.emit_thinking(&text, &self.current_msg_id);
                         thinking_text.push_str(&text);
@@ -2602,6 +2648,28 @@ impl AgentEngine {
                             stream_overflow = true;
                             break;
                         }
+                        // A rejected tool-argument payload is fail-closed in
+                        // the provider: the pass committed no tool call, so
+                        // replaying the identical request is safe. Replay only
+                        // while no prose reached the user, otherwise the retry
+                        // would append a second copy of it.
+                        if malformed_argument_replays < MAX_MALFORMED_ARGUMENT_REPLAYS
+                            && assistant_text.is_empty()
+                            && tool_calls.is_empty()
+                            && nomi_providers::is_malformed_tool_arguments_text(&e)
+                        {
+                            malformed_argument_replays += 1;
+                            tracing::warn!(
+                                target: "nomi_agent",
+                                model = %self.model,
+                                replay = malformed_argument_replays,
+                                max_replays = MAX_MALFORMED_ARGUMENT_REPLAYS,
+                                error = %e,
+                                "provider returned malformed tool arguments; replaying the model request"
+                            );
+                            stream_malformed_arguments = true;
+                            break;
+                        }
                         efficiency.observe_calls(&self.tools, &tool_calls);
                         return Err(AgentError::ApiError(e));
                     }
@@ -2612,6 +2680,10 @@ impl AgentEngine {
                 overflow_retried = true;
                 self.run_compaction(CompactReason::EmergencyRecovery)
                     .await?;
+                continue 'provider_attempt;
+            }
+
+            if stream_malformed_arguments {
                 continue 'provider_attempt;
             }
 
@@ -2677,8 +2749,9 @@ impl AgentEngine {
                     else {
                         return None;
                     };
-                    (!tool_authority.is_deferred(name)
-                        && self.tools.validate_input(name, input).is_err())
+                    (tool_authority.malformed_call_error(id).is_some()
+                        || (!tool_authority.is_deferred(name)
+                            && self.tools.validate_input(name, input).is_err()))
                     .then(|| id.clone())
                 })
                 .collect();
@@ -2694,7 +2767,8 @@ impl AgentEngine {
                 else {
                     continue;
                 };
-                if tool_authority.is_deferred(name)
+                if tool_authority.malformed_call_error(id).is_some()
+                    || tool_authority.is_deferred(name)
                     || self.tools.validate_input(name, input).is_err()
                 {
                     continue;

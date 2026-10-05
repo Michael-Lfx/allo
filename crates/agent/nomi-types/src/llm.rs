@@ -26,6 +26,13 @@ pub struct LlmRequest {
     /// must still require their own explicit compatibility opt-in; this bit is
     /// the per-request lifecycle half of that two-key decision.
     pub retain_provider_round: bool,
+    /// Opt in to per-call settlement of tool calls whose arguments the provider
+    /// layer rejected. When set, a provider that supports it emits
+    /// [`LlmEvent::ToolUseMalformed`] for the offending call and still delivers
+    /// its valid siblings; otherwise the whole turn fails with
+    /// [`LlmEvent::Error`]. Only the agent engine, which settles the call as a
+    /// tool error, sets this.
+    pub isolate_malformed_tool_calls: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +52,19 @@ pub enum LlmEvent {
         name: String,
         input: Value,
         /// Opaque provider metadata (e.g. Gemini thought_signature) to round-trip.
+        extra: Option<Value>,
+    },
+    /// A complete tool call whose arguments were rejected by the provider
+    /// layer (unparseable JSON, or not a JSON object). NEVER executable: the
+    /// consumer must answer it with an error tool result and must not invent
+    /// arguments for it. Emitted only for requests with
+    /// `isolate_malformed_tool_calls` set.
+    ToolUseMalformed {
+        id: ToolUseId,
+        name: String,
+        /// Provider-layer diagnostic, safe to show to the model.
+        error: String,
+        /// Opaque provider metadata to round-trip, as on `ToolUse`.
         extra: Option<Value>,
     },
     /// Partial tool call progress while the provider is still streaming tool arguments.

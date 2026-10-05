@@ -65,7 +65,7 @@ const CORRUPT_FEEDBACK_LIMIT: usize = 5;
 /// stream failures stay fatal — replaying those is deliberately outside the
 /// contract (`ProviderError::StreamTruncated`).
 fn is_round_retryable_stream_error(message: &str) -> bool {
-    message.contains("malformed JSON arguments")
+    nomi_providers::is_malformed_tool_arguments_text(message)
 }
 
 /// One open-phase retry for transient provider faults — the loop sibling of
@@ -233,6 +233,7 @@ pub(crate) async fn run_agent_loop(
             reasoning_effort: reasoning_effort.map(str::to_owned),
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
         let mut rx = open_stream_with_retry(provider.as_ref(), &request, sink).await?;
 

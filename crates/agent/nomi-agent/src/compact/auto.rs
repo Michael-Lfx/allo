@@ -621,6 +621,7 @@ async fn summarize_with_retry(
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
 
         // Wrap the stream + collection in a timeout so a stalled stream
@@ -736,7 +737,8 @@ async fn collect_stream_text(
             }
             LlmEvent::ToolUse { .. }
             | LlmEvent::ToolUseDelta { .. }
-            | LlmEvent::ToolUseTruncated { .. } => {
+            | LlmEvent::ToolUseTruncated { .. }
+            | LlmEvent::ToolUseMalformed { .. } => {
                 return Err(CompactError::StreamError(
                     "provider emitted a tool call for a tool-less autocompaction request"
                         .to_owned(),

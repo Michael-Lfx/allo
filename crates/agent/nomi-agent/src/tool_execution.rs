@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -213,6 +213,9 @@ fn record_timing(
 pub struct ProviderToolAuthority {
     advertised: BTreeSet<String>,
     deferred: BTreeSet<String>,
+    /// Calls of this provider turn whose arguments the provider layer rejected,
+    /// keyed by tool-use id. They carry no usable input and must never run.
+    malformed_calls: BTreeMap<String, String>,
     pub(crate) plan_mode_read_only: bool,
 }
 
@@ -225,8 +228,21 @@ impl ProviderToolAuthority {
                 .filter(|tool| tool.deferred)
                 .map(|tool| tool.name.clone())
                 .collect(),
+            malformed_calls: BTreeMap::new(),
             plan_mode_read_only: false,
         }
+    }
+
+    pub(crate) fn record_malformed_call(&mut self, id: String, error: String) {
+        self.malformed_calls.insert(id, error);
+    }
+
+    pub(crate) fn clear_malformed_calls(&mut self) {
+        self.malformed_calls.clear();
+    }
+
+    pub(crate) fn malformed_call_error(&self, id: &str) -> Option<&str> {
+        self.malformed_calls.get(id).map(String::as_str)
     }
 
     pub(crate) fn advertises(&self, name: &str) -> bool {
@@ -626,6 +642,16 @@ fn invocation_gate_result(
     let ContentBlock::ToolUse { id, name, .. } = call else {
         return None;
     };
+    if let Some(error) = authority.malformed_call_error(id) {
+        return Some(ContentBlock::ToolResult {
+            tool_use_id: id.clone(),
+            content: format!(
+                "Invalid arguments for tool '{name}': {error}. The tool was not executed. Resend the call with its arguments as one valid JSON object."
+            ),
+            is_error: true,
+            images: Vec::new(),
+        });
+    }
     if !authority.advertises(name) {
         let content = if registry.get(name).is_none() {
             format!("Unknown tool: {name}. The tool was not executed.")

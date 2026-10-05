@@ -738,6 +738,8 @@ fn drop_prior_turn_reasoning(messages: &mut [Value], require_reasoning_content: 
     }
 }
 
+const MALFORMED_ARGUMENT_EXCERPT_CHARS: usize = 300;
+
 /// State for accumulating tool call deltas by index
 struct ToolCallAccumulator {
     id: String,
@@ -775,6 +777,12 @@ struct StreamState {
     /// resurrect accumulated calls or commit a terminal Done.
     fatal_error: bool,
     fatal_reason: Option<String>,
+    /// Settle a call with rejected arguments as `ToolUseMalformed` instead of
+    /// failing the whole turn. Set from the request, never by the parser.
+    isolate_malformed: bool,
+    /// Reasons for calls settled as `ToolUseMalformed`, kept so the raw SSE
+    /// is still persisted for diagnosis although the turn did not fail.
+    isolated_reasons: Vec<String>,
 }
 
 impl StreamState {
@@ -791,7 +799,16 @@ impl StreamState {
             auto_tool_id: false,
             fatal_error: false,
             fatal_reason: None,
+            isolate_malformed: false,
+            isolated_reasons: Vec::new(),
         }
+    }
+
+    fn diagnostic_reason(&self) -> Option<String> {
+        if let Some(reason) = self.fatal_reason() {
+            return Some(reason.to_owned());
+        }
+        (!self.isolated_reasons.is_empty()).then(|| self.isolated_reasons.join("; "))
     }
 
     fn poison(&mut self, message: impl Into<String>) -> Vec<LlmEvent> {
@@ -1082,6 +1099,7 @@ impl LlmProvider for OpenAIProvider {
 
         let (tx, rx) = mpsc::channel(64);
         let auto_tool_id = self.compat.auto_tool_id();
+        let isolate_malformed = request.isolate_malformed_tool_calls;
         let client = client.clone();
         let url_clone = url.clone();
         let failure_capture = FailedSseCaptureContext::for_openai_compatible(
@@ -1094,6 +1112,7 @@ impl LlmProvider for OpenAIProvider {
                 response,
                 &tx,
                 auto_tool_id,
+                isolate_malformed,
                 Some(failure_capture.clone()),
             )
             .await;
@@ -1106,6 +1125,7 @@ impl LlmProvider for OpenAIProvider {
                         resp,
                         &tx,
                         auto_tool_id,
+                        isolate_malformed,
                         Some(failure_capture.clone()),
                     )
                 },
@@ -1123,18 +1143,20 @@ async fn process_sse_stream(
     tx: &mpsc::Sender<LlmEvent>,
     auto_tool_id: bool,
 ) -> StreamOutcome {
-    process_sse_stream_with_capture(response, tx, auto_tool_id, None).await
+    process_sse_stream_with_capture(response, tx, auto_tool_id, false, None).await
 }
 
 async fn process_sse_stream_with_capture(
     response: reqwest::Response,
     tx: &mpsc::Sender<LlmEvent>,
     auto_tool_id: bool,
+    isolate_malformed: bool,
     failure_capture_context: Option<FailedSseCaptureContext>,
 ) -> StreamOutcome {
     use futures::StreamExt;
 
     let mut state = StreamState::new();
+    state.isolate_malformed = isolate_malformed;
     let mut failure_capture = failure_capture_context.map(FailedSseCapture::new);
     // Keep raw bytes until a complete SSE line is available. HTTP chunks may
     // split a multi-byte UTF-8 scalar; decoding each chunk independently would
@@ -1192,8 +1214,8 @@ async fn process_sse_stream_with_capture(
                     // Atomically release staged calls and Done now that the
                     // legal usage-only tail has updated token counts.
                     let terminal_events = state.drain_terminal_events();
-                    if state.fatal_error() {
-                        persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
+                    if let Some(reason) = state.diagnostic_reason() {
+                        persist_failed_sse_capture(failure_capture.as_ref(), Some(&reason));
                     }
                     for event in terminal_events {
                         if tx.send(event).await.is_err() {
@@ -1211,6 +1233,7 @@ async fn process_sse_stream_with_capture(
                             | LlmEvent::ThinkingDelta(_)
                             | LlmEvent::ToolUseDelta { .. }
                             | LlmEvent::ToolUse { .. }
+                            | LlmEvent::ToolUseMalformed { .. }
                     ) {
                         emitted_content = true;
                     }
@@ -1258,8 +1281,8 @@ async fn process_sse_stream_with_capture(
         if data == "[DONE]" {
             state.infer_terminal_from_done();
             let terminal_events = state.drain_terminal_events();
-            if state.fatal_error() {
-                persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
+            if let Some(reason) = state.diagnostic_reason() {
+                persist_failed_sse_capture(failure_capture.as_ref(), Some(&reason));
             }
             for event in terminal_events {
                 if tx.send(event).await.is_err() {
@@ -1276,6 +1299,7 @@ async fn process_sse_stream_with_capture(
                     | LlmEvent::ThinkingDelta(_)
                     | LlmEvent::ToolUseDelta { .. }
                     | LlmEvent::ToolUse { .. }
+                    | LlmEvent::ToolUseMalformed { .. }
             ) {
                 emitted_content = true;
             }
@@ -1295,8 +1319,8 @@ async fn process_sse_stream_with_capture(
     // tool calls can be validated and committed just like a `[DONE]` stream.
     if state.finish_seen {
         let terminal_events = state.drain_terminal_events();
-        if state.fatal_error() {
-            persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
+        if let Some(reason) = state.diagnostic_reason() {
+            persist_failed_sse_capture(failure_capture.as_ref(), Some(&reason));
         }
         for event in terminal_events {
             if tx.send(event).await.is_err() {
@@ -1454,9 +1478,12 @@ fn extract_json_string_field(arguments: &str, key: &str) -> Option<String> {
 /// Atomically finalize structured OpenAI tool calls.
 ///
 /// If any call has malformed arguments, return an error and emit none of the
-/// calls. This prevents a valid parallel call from being executed alongside a
-/// malformed sibling and, critically, prevents malformed JSON from becoming
-/// an executable `{}` payload.
+/// calls, so malformed JSON can never become an executable `{}` payload.
+///
+/// With `state.isolate_malformed` the offending call is instead emitted as the
+/// non-executable `ToolUseMalformed` in its original position; the consumer
+/// settles it as an error result and its error-cascade policy decides whether
+/// later siblings may still run.
 fn finalize_structured_tool_calls(
     state: &mut StreamState,
     auto_tool_id: bool,
@@ -1470,12 +1497,33 @@ fn finalize_structured_tool_calls(
         } else {
             tc.id
         };
-        let input = crate::parse_tool_call_arguments(
+        let input = match crate::parse_tool_call_arguments(
             "OpenAI-compatible provider",
             &tc.name,
             &id,
             &tc.arguments,
-        )?;
+        ) {
+            Ok(input) => input,
+            Err(error)
+                if state.isolate_malformed && crate::is_malformed_tool_arguments_text(&error) =>
+            {
+                state.isolated_reasons.push(error.clone());
+                events.push(LlmEvent::ToolUseMalformed {
+                    id,
+                    name: tc.name,
+                    error: format!(
+                        "{error}. Received arguments (first {MALFORMED_ARGUMENT_EXCERPT_CHARS} chars): {}",
+                        tc.arguments
+                            .chars()
+                            .take(MALFORMED_ARGUMENT_EXCERPT_CHARS)
+                            .collect::<String>()
+                    ),
+                    extra: tc.extra,
+                });
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         events.push(LlmEvent::ToolUse {
             id,
             name: tc.name,
@@ -2657,6 +2705,76 @@ mod tests {
         ));
     }
 
+    fn incident_parallel_read_chunk() -> String {
+        json!({
+            "choices": [{
+                "delta": { "tool_calls": [
+                    {"index":0,"id":"call_bad","type":"function","function":{"name":"Read",
+                        "arguments":"{\"file_paths\": C:/Users/a/updateAutoDownload.ts}"}},
+                    {"index":1,"id":"call_ok1","type":"function","function":{"name":"Read",
+                        "arguments":"{\"file_path\": \"C:/Users/a/taskProfileStore.ts\"}"}},
+                    {"index":2,"id":"call_ok2","type":"function","function":{"name":"Read",
+                        "arguments":"{\"file_path\": \"C:/Users/a/composerDraftStore.ts\"}"}}
+                ]},
+                "finish_reason": "tool_calls",
+                "index": 0
+            }]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn malformed_call_fails_the_whole_turn_without_isolation() {
+        let mut state = StreamState::new();
+        parse_sse_chunk(&incident_parallel_read_chunk(), &mut state, false);
+
+        let events = state.drain_terminal_events();
+
+        assert!(matches!(
+            events.as_slice(),
+            [LlmEvent::Error(message)] if crate::is_malformed_tool_arguments_text(message)
+        ));
+    }
+
+    #[test]
+    fn isolated_malformed_call_keeps_valid_siblings_in_order() {
+        let mut state = StreamState::new();
+        state.isolate_malformed = true;
+        parse_sse_chunk(&incident_parallel_read_chunk(), &mut state, false);
+
+        let events = state.drain_terminal_events();
+
+        let [
+            LlmEvent::ToolUseMalformed { id, name, error, .. },
+            LlmEvent::ToolUse { id: ok1, input: input1, .. },
+            LlmEvent::ToolUse { id: ok2, .. },
+            LlmEvent::Done { stop_reason: StopReason::ToolUse, .. },
+        ] = events.as_slice()
+        else {
+            panic!("unexpected events: {events:?}");
+        };
+        assert_eq!((id.as_str(), name.as_str()), ("call_bad", "Read"));
+        assert!(error.contains("expected value at line 1 column 16"), "{error}");
+        assert!(error.contains("file_paths"), "{error}");
+        assert_eq!(ok1, "call_ok1");
+        assert_eq!(input1["file_path"], "C:/Users/a/taskProfileStore.ts");
+        assert_eq!(ok2, "call_ok2");
+        assert!(state.diagnostic_reason().is_some());
+        assert!(!state.fatal_error());
+    }
+
+    #[test]
+    fn isolation_never_covers_a_call_without_identity() {
+        let mut state = StreamState::new();
+        state.isolate_malformed = true;
+        let chunk = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"","arguments":"{"}}]},"finish_reason":"tool_calls","index":0}]}"#;
+        parse_sse_chunk(chunk, &mut state, false);
+
+        let events = state.drain_terminal_events();
+
+        assert!(matches!(events.as_slice(), [LlmEvent::Error(_)]), "{events:?}");
+    }
+
     #[test]
     fn post_finish_content_poison_clears_staged_structured_calls() {
         let mut state = StreamState::new();
@@ -3334,6 +3452,7 @@ mod tests {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         }
     }
 
@@ -3958,6 +4077,7 @@ mod tests {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
         let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["max_tokens"], 1024);
@@ -3981,6 +4101,7 @@ mod tests {
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
+            isolate_malformed_tool_calls: false,
         };
         let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["max_completion_tokens"], 2048);
@@ -4572,7 +4693,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
         assert!(matches!(
-            process_sse_stream_with_capture(response, &tx, false, Some(capture)).await,
+            process_sse_stream_with_capture(response, &tx, false, false, Some(capture)).await,
             StreamOutcome::Ok
         ));
         drop(tx);
@@ -4625,7 +4746,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
         assert!(matches!(
-            process_sse_stream_with_capture(response, &tx, false, Some(capture)).await,
+            process_sse_stream_with_capture(response, &tx, false, false, Some(capture)).await,
             StreamOutcome::Ok
         ));
         drop(tx);
@@ -4676,7 +4797,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
         assert!(matches!(
-            process_sse_stream_with_capture(response, &tx, false, Some(capture)).await,
+            process_sse_stream_with_capture(response, &tx, false, false, Some(capture)).await,
             StreamOutcome::FailedPartial(_)
         ));
         assert!(matches!(rx.recv().await, Some(LlmEvent::TextDelta(text)) if text == "partial"));

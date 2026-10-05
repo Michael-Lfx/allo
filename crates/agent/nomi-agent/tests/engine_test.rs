@@ -1531,6 +1531,156 @@ async fn test_engine_api_error_handling() {
     }
 }
 
+const MALFORMED_ARGUMENTS_ERROR: &str = "OpenAI-compatible provider returned malformed JSON arguments for tool `Read` (call `call_1`): expected value at line 1 column 16";
+
+fn malformed_arguments_engine(
+    responses: Vec<Vec<LlmEvent>>,
+) -> (AgentEngine, Arc<Mutex<Vec<LlmRequest>>>) {
+    let provider = Arc::new(FullRequestRecordingProvider::new(responses));
+    let requests = provider.requests();
+    let engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    (engine, requests)
+}
+
+#[tokio::test]
+async fn malformed_tool_arguments_replay_the_identical_request() {
+    let (mut engine, requests) = malformed_arguments_engine(vec![
+        vec![
+            LlmEvent::ThinkingDelta("planning".to_string()),
+            LlmEvent::Error(MALFORMED_ARGUMENTS_ERROR.to_string()),
+        ],
+        vec![
+            LlmEvent::TextDelta("recovered".to_string()),
+            done(StopReason::EndTurn),
+        ],
+    ]);
+
+    let result = engine
+        .execute_turn("hello", "")
+        .await
+        .expect("a malformed argument pass must be replayed, not fail the turn");
+
+    assert_eq!(result.stop_reason, StopReason::EndTurn);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        serde_json::to_value(&requests[0].messages).unwrap(),
+        serde_json::to_value(&requests[1].messages).unwrap(),
+        "the replay must not add or drop transcript messages"
+    );
+}
+
+#[tokio::test]
+async fn isolated_malformed_call_is_answered_with_an_error_and_never_executed() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingTool {
+        calls: Arc::clone(&calls),
+    }));
+    let provider = Arc::new(FullRequestRecordingProvider::new(vec![
+        vec![
+            LlmEvent::ToolUse {
+                id: "call_ok".to_string(),
+                name: "counted_tool".to_string(),
+                input: json!({}),
+                extra: None,
+            },
+            LlmEvent::ToolUseMalformed {
+                id: "call_bad".to_string(),
+                name: "counted_tool".to_string(),
+                error: "malformed JSON arguments: expected value at line 1 column 16".to_string(),
+                extra: None,
+            },
+            done(StopReason::ToolUse),
+        ],
+        vec![
+            LlmEvent::TextDelta("fixed".to_string()),
+            done(StopReason::EndTurn),
+        ],
+    ]));
+    let requests = provider.requests();
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        registry,
+        silent_output(),
+        std::env::temp_dir(),
+    );
+
+    let result = engine
+        .execute_turn("read both files", "")
+        .await
+        .expect("one malformed call must not fail the turn");
+
+    assert_eq!(result.stop_reason, StopReason::EndTurn);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "only the valid call may run");
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let results: Vec<(String, String, bool)> = requests[1]
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } => Some((tool_use_id.clone(), content.clone(), *is_error)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2, "{results:?}");
+    assert_eq!(results[0], ("call_ok".to_string(), "executed".to_string(), false));
+    let (bad_id, bad_content, bad_is_error) = &results[1];
+    assert_eq!(bad_id, "call_bad");
+    assert!(*bad_is_error);
+    assert!(bad_content.contains("Invalid arguments"), "{bad_content}");
+    assert!(bad_content.contains("column 16"), "{bad_content}");
+}
+
+#[tokio::test]
+async fn malformed_tool_arguments_replays_are_bounded() {
+    let failing = || vec![LlmEvent::Error(MALFORMED_ARGUMENTS_ERROR.to_string())];
+    let (mut engine, requests) =
+        malformed_arguments_engine(vec![failing(), failing(), failing(), failing()]);
+
+    let err = engine
+        .execute_turn("hello", "")
+        .await
+        .map(|_| panic!("expected error after the replay budget is spent"))
+        .unwrap_err();
+
+    match err {
+        AgentError::ApiError(msg) => assert_eq!(msg, MALFORMED_ARGUMENTS_ERROR),
+        other => panic!("expected ApiError, got: {other:?}"),
+    }
+    assert_eq!(requests.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn malformed_tool_arguments_after_visible_text_is_not_replayed() {
+    let (mut engine, requests) = malformed_arguments_engine(vec![vec![
+        LlmEvent::TextDelta("Let me read that file.".to_string()),
+        LlmEvent::Error(MALFORMED_ARGUMENTS_ERROR.to_string()),
+    ]]);
+
+    let err = engine
+        .execute_turn("hello", "")
+        .await
+        .map(|_| panic!("expected error, got Ok"))
+        .unwrap_err();
+
+    assert!(matches!(err, AgentError::ApiError(_)));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Prefix-cache regression guards (feat/cache-hit-optimization)
 //
