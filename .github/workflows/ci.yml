@@ -170,6 +170,14 @@ jobs:
           bun run check:release-sync
           bun run help --check
 
+      # Full `ui/` typecheck is still red on main (see README). Auth login is the
+      # activation funnel entry point, so keep a green narrow gate that would have
+      # caught the missing `isEmail` ReferenceError shipped in v1.5.5.
+      - name: Auth login typecheck + smoke
+        run: |
+          bun run typecheck:auth
+          bun run test:auth
+
       # Present only once the Agent Store frontend is on the branch that runs
       # this workflow; the guard keeps the job valid on `main` before that.
       - name: Agent Store frontend (web/)

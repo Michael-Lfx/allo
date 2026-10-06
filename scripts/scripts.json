@@ -127,6 +127,8 @@
     "test:ui":       { "group": "test",  "desc": "运行前端单元测试（bun test，收集 ui/src 下全部 *.test.ts/tsx）" },
     "check":         { "group": "check", "desc": "聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 协议指纹 + 跨仓发布同步 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑）" },
     "typecheck":     { "group": "check", "desc": "前端 TypeScript 类型检查（tsc --noEmit）" },
+    "typecheck:auth": { "group": "check", "desc": "登录/认证相关前端类型检查（窄范围，CI 必过）" },
+    "test:auth":     { "group": "test", "desc": "登录/认证前端冒烟与契约测试" },
     "check:i18n":    { "group": "check", "desc": "校验 i18n 类型与 locale 键是否一致" },
     "check:theme":   { "group": "check", "desc": "校验预设 CSS 主题契约" },
     "check:motion":  { "group": "check", "desc": "校验动效 token、侧栏宽度过渡、减弱动效兜底与市场卡片 hover" },

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/renderer/hooks/auth/**/*.ts",
+    "src/renderer/hooks/auth/**/*.tsx",
+    "src/renderer/components/auth/**/*.ts",
+    "src/renderer/components/auth/**/*.tsx",
+    "src/common/adapter/ipcBridge.ts",
+    "src/common/index.ts"
+  ],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

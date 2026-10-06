@@ -172,7 +172,59 @@ export const isTerminalLoginFailureResponse = (
   response: ICloudLoginContinueResponse
 ): response is Extract<ICloudLoginContinueResponse, { status: 'failed' }> => response.status === 'failed';
 
-const isEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+export const isEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+export type EmailOtpSendTransport = {
+  loginStart: () => Promise<{ pendingId: string }>;
+  loginContinue: (args: {
+    pendingId: string;
+    input: { type: 'email'; address: string };
+  }) => Promise<ICloudLoginContinueResponse>;
+};
+
+export type EmailOtpSendResult =
+  | { ok: true; pendingId: string; status: 'pending' | 'success' }
+  | { ok: false; kind: 'invalid-email' | 'terminal' | 'unexpected' | OtpFailureKind };
+
+/** Pure send-code request used by the hook and by the smoke test. */
+export async function sendEmailOtpCode(
+  email: string,
+  pendingId: string | null,
+  transport: EmailOtpSendTransport,
+): Promise<EmailOtpSendResult> {
+  const trimmed = email.trim();
+  if (!trimmed || !isEmail(trimmed)) {
+    return { ok: false, kind: 'invalid-email' };
+  }
+
+  let sessionId = pendingId;
+  if (!sessionId) {
+    try {
+      sessionId = (await transport.loginStart()).pendingId;
+    } catch (error) {
+      return { ok: false, kind: classifyOtpVerificationError(error) };
+    }
+  }
+
+  try {
+    const response = await transport.loginContinue({
+      pendingId: sessionId,
+      input: { type: 'email', address: trimmed },
+    });
+    if (response.status === 'pending') {
+      return { ok: true, pendingId: response.pendingId, status: 'pending' };
+    }
+    if (isTerminalLoginFailureResponse(response)) {
+      return { ok: false, kind: 'terminal' };
+    }
+    if (response.status === 'success') {
+      return { ok: true, pendingId: sessionId, status: 'success' };
+    }
+    return { ok: false, kind: 'unexpected' };
+  } catch (error) {
+    return { ok: false, kind: classifyOtpVerificationError(error) };
+  }
+}
 
 const recoverIfAlreadyLoggedIn = async () => {
   try {
@@ -252,10 +304,6 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
 
   const sendCode = useCallback(async () => {
     const email = state.email.trim();
-    if (!email || !isEmail(email)) {
-      setState((previous) => ({ ...previous, message: t('cloudLogin.login.emailInvalid') }));
-      return false;
-    }
     if (state.cooldown > 0 || state.phase === 'sending' || state.phase === 'verifying') return false;
 
     const generation = nextGeneration();
@@ -268,19 +316,20 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
       requestGeneration: generation,
     }));
 
-    const pendingId = state.pendingId ?? await requestSession(generation);
-    if (!pendingId || !isCurrent(generation)) return false;
+    const result = await sendEmailOtpCode(email, state.pendingId, {
+      loginStart: async () => {
+        const response = await ipcBridge.cloud.loginStart.invoke({ method: 'email_otp' });
+        return { pendingId: response.pendingId };
+      },
+      loginContinue: (args) => ipcBridge.cloud.loginContinue.invoke(args),
+    });
+    if (!isCurrent(generation)) return false;
 
-    try {
-      const response = await ipcBridge.cloud.loginContinue.invoke({
-        pendingId,
-        input: { type: 'email', address: email },
-      });
-      if (!isCurrent(generation)) return false;
-      if (response.status === 'pending') {
+    if (result.ok) {
+      if (result.status === 'pending') {
         setState((previous) => ({
           ...previous,
-          pendingId: response.pendingId,
+          pendingId: result.pendingId,
           step: 'otp',
           phase: 'otp',
           failureKind: null,
@@ -290,7 +339,26 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
         }));
         return true;
       }
-      if (isTerminalLoginFailureResponse(response)) {
+      setState((previous) => ({
+        ...previous,
+        pendingId: result.pendingId,
+        phase: 'success',
+        failureKind: null,
+        message: t('cloudLogin.login.successRedirect'),
+      }));
+      await onSuccessRef.current?.();
+      return true;
+    }
+
+    switch (result.kind) {
+      case 'invalid-email':
+        setState((previous) => ({
+          ...previous,
+          phase: 'email',
+          message: t('cloudLogin.login.emailInvalid'),
+        }));
+        return false;
+      case 'terminal':
         setState((previous) => ({
           ...previous,
           pendingId: null,
@@ -302,25 +370,26 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
           message: t('cloudLogin.errors.unknown'),
         }));
         return false;
+      case 'unexpected':
+        setState((previous) => ({
+          ...previous,
+          phase: 'email',
+          failureKind: 'unknown',
+          message: t('cloudLogin.errors.unknown'),
+        }));
+        return false;
+      default: {
+        const failureKind: OtpFailureKind = result.kind;
+        updateState(generation, (previous) => ({
+          ...previous,
+          phase: 'email',
+          failureKind,
+          message: getSendFailureMessage(failureKind, t),
+        }));
+        return false;
       }
-      if (response.status === 'success') {
-        setState((previous) => ({ ...previous, phase: 'success', failureKind: null, message: t('cloudLogin.login.successRedirect') }));
-        await onSuccessRef.current?.();
-        return true;
-      }
-      setState((previous) => ({ ...previous, phase: 'email', failureKind: 'unknown', message: t('cloudLogin.errors.unknown') }));
-      return false;
-    } catch (error) {
-      const failureKind = classifyOtpVerificationError(error);
-      updateState(generation, (previous) => ({
-        ...previous,
-        phase: 'email',
-        failureKind,
-        message: getSendFailureMessage(failureKind, t),
-      }));
-      return false;
     }
-  }, [isCurrent, nextGeneration, requestSession, state.cooldown, state.email, state.pendingId, state.phase, t, updateState]);
+  }, [isCurrent, nextGeneration, state.cooldown, state.email, state.pendingId, state.phase, t, updateState]);
 
   const verifyCode = useCallback(async (codeOverride?: string) => {
     const code = normalizeOtpCode(codeOverride ?? state.code);

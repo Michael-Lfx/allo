@@ -74,7 +74,8 @@ describe('Flowy auth surface contract', () => {
   });
 
   test('keeps the email validator defined for send and resend paths', () => {
-    expect(otpHookSource).toMatch(/^const isEmail = /m);
+    expect(otpHookSource).toMatch(/^export const isEmail = /m);
+    expect(otpHookSource).toContain('sendEmailOtpCode(');
     expect(otpHookSource.match(/isEmail\(/g)?.length).toBeGreaterThanOrEqual(2);
   });
 

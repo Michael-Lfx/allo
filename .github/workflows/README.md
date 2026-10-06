@@ -100,7 +100,8 @@ Four `bun run check` gates are **red on this repository today**; running them he
 would only make every pull request red without fixing anything. Add each one to
 `repo-gates` in the same pull request that makes it pass:
 
-- `typecheck` (`ui/`)
+- `typecheck` (`ui/`) — full SPA. A narrow green subset is already gated as
+  `typecheck:auth` + `test:auth` (email OTP login path).
 - `check:button-layout-contract`
 - `check:dead-css`
 - `check:agent-vocabulary`
