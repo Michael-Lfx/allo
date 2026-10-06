@@ -463,4 +463,20 @@ mod tests {
         assert!(build_flowy_client(false).is_ok());
         assert!(build_flowy_client(true).is_ok());
     }
+
+    #[tokio::test]
+    #[ignore = "requires network access to the Flowy server"]
+    async fn bundled_roots_trust_flowy_server_without_os_root_store() {
+        let client = Client::builder()
+            .tls_built_in_native_certs(false)
+            .build()
+            .unwrap();
+        let resp = client
+            .get(format!("{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/health"))
+            .send()
+            .await
+            .map_err(|err| describe_transport_error(&err))
+            .unwrap();
+        assert!(resp.status().is_success(), "{}", resp.status());
+    }
 }
