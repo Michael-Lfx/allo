@@ -17,8 +17,6 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 const CLIENT_VERSION_HEADER: &str = "x-client-version";
 const LEGACY_TOKEN_HEADER: &str = "token";
 const FLOWY_TURN_ID_HEADER: &str = "x-flowy-turn-id";
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const HTTP2_KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 /// Process-wide `reqwest::Client` so every transport shares one connection pool.
 /// `HttpTransport` instances are rebuilt per request by callers, and a fresh
@@ -27,21 +25,13 @@ static SHARED_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 static HTTP1_FALLBACK_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 
 fn build_flowy_client(http1_only: bool) -> Result<Client, String> {
-    let mut builder = Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .tcp_nodelay(true)
-        .pool_idle_timeout(Duration::from_secs(30));
-    if http1_only {
-        builder = builder.http1_only();
+    let builder = Client::builder();
+    let builder = if http1_only {
+        builder.http1_only()
     } else {
-        builder = builder
-            .http2_keep_alive_interval(HTTP2_KEEP_ALIVE)
-            .http2_keep_alive_timeout(Duration::from_secs(10))
-            .http2_keep_alive_while_idle(true);
-    }
-    nomifun_net::proxy::apply_detected_proxy(builder)
-        .build()
-        .map_err(|e| e.to_string())
+        builder
+    };
+    builder.build().map_err(|e| e.to_string())
 }
 
 fn shared_client() -> Result<Client, ServerClientError> {
@@ -94,14 +84,12 @@ static OSS_PUT_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 fn oss_put_client() -> Result<Client, ServerClientError> {
     OSS_PUT_CLIENT
         .get_or_init(|| {
-            nomifun_net::proxy::apply_detected_proxy(
-                Client::builder()
-                    .connect_timeout(Duration::from_secs(20))
-                    .tcp_nodelay(true)
-                    .pool_max_idle_per_host(0),
-            )
-            .build()
-            .map_err(|e| e.to_string())
+            Client::builder()
+                .connect_timeout(Duration::from_secs(20))
+                .tcp_nodelay(true)
+                .pool_max_idle_per_host(0)
+                .build()
+                .map_err(|e| e.to_string())
         })
         .clone()
         .map_err(|e| ServerClientError::Http(format!("build OSS client: {e}")))
@@ -471,11 +459,8 @@ mod tests {
     }
 
     #[test]
-    fn flowy_clients_honor_system_proxy_and_http1_fallback() {
-        let source = include_str!("transport.rs");
-        assert!(source.contains("apply_detected_proxy"));
-        assert!(source.contains("http1_only"));
-        assert!(source.contains("CONNECT_TIMEOUT"));
-        assert!(source.contains("fallback_http1"));
+    fn flowy_clients_build_for_default_and_http1_fallback() {
+        assert!(build_flowy_client(false).is_ok());
+        assert!(build_flowy_client(true).is_ok());
     }
 }

@@ -7336,7 +7336,6 @@ dependencies = [
  "nomifun-auth",
  "nomifun-common",
  "nomifun-db",
- "nomifun-net",
  "regex",
  "reqwest 0.12.28",
  "rqrr",
