@@ -189,6 +189,52 @@
   color: var(--flowy-warning);
 }
 
+.cloud-login-diagnose {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.cloud-login-diagnose__trigger {
+  align-self: flex-start;
+}
+
+.cloud-login-diagnose__result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cloud-login-diagnose__ok {
+  margin: 0;
+  color: var(--text-success, var(--color-success-6, #00b42a));
+  font-size: 13px;
+}
+
+.cloud-login-diagnose__fail,
+.cloud-login-diagnose__error {
+  margin: 0;
+  color: var(--flowy-warning);
+  font-size: 13px;
+}
+
+.cloud-login-diagnose__pre {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-base, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  background: var(--bg-fill-1, rgba(0, 0, 0, 0.03));
+  color: var(--text-t-secondary, inherit);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
+
 .flowy-auth-cooldown .flowy-auth-status__mark {
   width: 6px;
   height: 6px;

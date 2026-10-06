@@ -14,6 +14,7 @@ pub mod http_routes;
 pub mod http_service;
 pub mod insights_config;
 pub mod llm;
+pub mod network_diagnose;
 pub mod paths;
 pub mod platform;
 pub mod profile;

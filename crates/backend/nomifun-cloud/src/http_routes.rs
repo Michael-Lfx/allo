@@ -52,6 +52,9 @@ const TELEMETRY_EVENT_NAMES: &[&str] = &[
     "app_launch_failed",
     "app_launch_completed",
     "auth_completed",
+    "otp_send_started",
+    "otp_send_succeeded",
+    "otp_send_failed",
     "home_interactive",
     "home_viewed",
     "task_drafted",
@@ -194,6 +197,7 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
         .route("/api/cloud/device/activate", post(retry_device_activation))
         .route("/api/cloud/login/start", post(login_start))
         .route("/api/cloud/login/continue", post(login_continue))
+        .route("/api/cloud/network-diagnose", post(network_diagnose))
         .route("/api/cloud/logout", post(logout))
         .route("/api/cloud/sync-models", post(sync_models))
         .route(
@@ -249,6 +253,9 @@ fn expected_growth_module(name: &str, feature: Option<&str>) -> &'static str {
             | "app_launch_failed"
             | "app_launch_completed"
             | "auth_completed"
+            | "otp_send_started"
+            | "otp_send_succeeded"
+            | "otp_send_failed"
             | "home_interactive"
             | "expert_package_install_failed"
             | "d1_retained"
@@ -489,6 +496,9 @@ mod growth_tests {
             "app_launch_failed",
             "app_launch_completed",
             "auth_completed",
+            "otp_send_started",
+            "otp_send_succeeded",
+            "otp_send_failed",
             "home_interactive",
         ] {
             assert!(TELEMETRY_EVENT_NAMES.contains(&name), "{name}");
@@ -500,6 +510,12 @@ mod growth_tests {
             event
                 .properties
                 .insert("cold_start".into(), serde_json::json!(true));
+            event
+                .properties
+                .insert("app_version".into(), serde_json::json!("1.5.8"));
+            event
+                .properties
+                .insert("method".into(), serde_json::json!("email_otp"));
             assert!(validate_video_growth_event(&event).is_ok(), "{name}");
 
             event.module = Some("video_generation".into());
@@ -891,6 +907,15 @@ async fn login_continue(
         .await?;
 
     Ok(Json(ApiResponse::ok(result)))
+}
+
+async fn network_diagnose(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<crate::network_diagnose::NetworkDiagnoseReport>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.network_diagnose().await?,
+    )))
 }
 
 async fn logout(

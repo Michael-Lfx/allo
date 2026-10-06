@@ -172,6 +172,16 @@ const notesArg = flag('notes');
 const notesFile = flag('notes-file');
 const notesFromFile = typeof notesFile === 'string' && existsSync(notesFile) ? readFileSync(notesFile, 'utf8').trim() : null;
 let notes = typeof notesArg === 'string' ? notesArg : notesFromFile;
+const rolloutArg = flag('rollout');
+let rolloutPercent = null;
+if (rolloutArg != null) {
+  const parsed = Number(rolloutArg);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+    console.error('✗ --rollout 必须是 0–100 的整数（百分比灰度）。');
+    process.exit(1);
+  }
+  rolloutPercent = parsed;
+}
 const distDir = join(ROOT, 'dist/desktop');
 
 // 单一真源版本号：根 Cargo.toml 的 [workspace.package].version。
@@ -434,6 +444,10 @@ if (existsSync(out)) {
 manifest.notes = notes || readChangelogNotes(version) || `Flowy v${version}`;
 for (const key of foundKeys) {
   manifest.platforms[key] = { signature: collected[key].signature, url: collected[key].url };
+}
+if (rolloutPercent != null && rolloutPercent < 100) {
+  manifest.rollout = rolloutPercent;
+  console.log(`  · 灰度 rollout=${rolloutPercent}%（客户端按 install_id 稳定分桶）`);
 }
 
 mkdirSync(dirname(out), { recursive: true });

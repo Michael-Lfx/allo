@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
     "typecheck:auth": "bun node_modules/typescript/bin/tsc --noEmit -p tsconfig.auth.json",
-    "test:auth": "bun test src/renderer/hooks/auth src/renderer/components/auth/authSurface.test.ts"
+    "test:auth": "bun test src/renderer/hooks/auth src/renderer/components/auth/authSurface.test.ts src/renderer/utils/analytics/authTelemetry.test.ts"
   },
   "dependencies": {
     "@airwallex/components-sdk": "1.28.3",

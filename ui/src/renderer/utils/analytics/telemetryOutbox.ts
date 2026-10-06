@@ -25,6 +25,7 @@ const MAX_QUEUE_SIZE = 500;
 const BATCH_SIZE = 50;
 const ALLOWED_PROPERTIES = new Set([
   'accept_ms',
+  'app_version',
   'balance',
   'already_ready',
   'amount',
@@ -45,6 +46,7 @@ const ALLOWED_PROPERTIES = new Set([
   'error_code',
   'error_message',
   'failure_channel',
+  'failure_kind',
   'trigger',
   'feature',
   'finalization_gap_ms',
@@ -56,6 +58,7 @@ const ALLOWED_PROPERTIES = new Set([
   'launchpad_variant',
   'llm_model',
   'locale',
+  'method',
   'mode',
   'network_class',
   'order_no',
@@ -105,6 +108,9 @@ const PLATFORM_EVENT_NAMES = new Set([
   'app_launch_failed',
   'app_launch_completed',
   'auth_completed',
+  'otp_send_started',
+  'otp_send_succeeded',
+  'otp_send_failed',
   'home_interactive',
   'expert_package_install_failed',
   'd1_retained',

@@ -1,12 +1,16 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "src/vite-env.d.ts",
     "src/renderer/hooks/auth/**/*.ts",
     "src/renderer/hooks/auth/**/*.tsx",
     "src/renderer/components/auth/**/*.ts",
     "src/renderer/components/auth/**/*.tsx",
+    "src/renderer/utils/analytics/**/*.ts",
     "src/common/adapter/ipcBridge.ts",
-    "src/common/index.ts"
+    "src/common/adapter/tauriUpdater.ts",
+    "src/common/index.ts",
+    "src/renderer/utils/platform.ts"
   ],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

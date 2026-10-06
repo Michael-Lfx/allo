@@ -8,6 +8,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import type { ICloudLoginContinueResponse } from '@/common/adapter/ipcBridge';
+import {
+  trackOtpSendFailed,
+  trackOtpSendStarted,
+  trackOtpSendSucceeded,
+} from '@renderer/utils/analytics/authTelemetry';
 
 export const EMAIL_OTP_LENGTH = 6;
 export const EMAIL_OTP_COOLDOWN_SECONDS = 60;
@@ -315,6 +320,7 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
       code: '',
       requestGeneration: generation,
     }));
+    void trackOtpSendStarted();
 
     const result = await sendEmailOtpCode(email, state.pendingId, {
       loginStart: async () => {
@@ -326,6 +332,7 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
     if (!isCurrent(generation)) return false;
 
     if (result.ok) {
+      void trackOtpSendSucceeded();
       if (result.status === 'pending') {
         setState((previous) => ({
           ...previous,
@@ -352,6 +359,7 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
 
     switch (result.kind) {
       case 'invalid-email':
+        void trackOtpSendFailed('invalid-email');
         setState((previous) => ({
           ...previous,
           phase: 'email',
@@ -359,6 +367,7 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
         }));
         return false;
       case 'terminal':
+        void trackOtpSendFailed('terminal');
         setState((previous) => ({
           ...previous,
           pendingId: null,
@@ -371,6 +380,7 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
         }));
         return false;
       case 'unexpected':
+        void trackOtpSendFailed('unexpected');
         setState((previous) => ({
           ...previous,
           phase: 'email',
@@ -380,6 +390,7 @@ export const useEmailOtpLogin = ({ autoStart = false, onSuccess }: UseEmailOtpLo
         return false;
       default: {
         const failureKind: OtpFailureKind = result.kind;
+        void trackOtpSendFailed(failureKind);
         updateState(generation, (previous) => ({
           ...previous,
           phase: 'email',

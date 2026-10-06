@@ -7877,6 +7877,21 @@ export type ICloudLoginContinueResponse =
       error: string;
     };
 
+export type ICloudNetworkDiagnoseStep = {
+  name: string;
+  ok: boolean;
+  detail: string;
+  durationMs: number;
+};
+
+export type ICloudNetworkDiagnoseReport = {
+  target: string;
+  host: string;
+  steps: ICloudNetworkDiagnoseStep[];
+  ok: boolean;
+  summary: string;
+};
+
 export const cloud = {
   getSettings: httpGet<ICloudServerSettings, void>('/api/cloud/settings'),
   updateSettings: httpPatch<ICloudServerSettings, IUpdateCloudServerSettings>('/api/cloud/settings'),
@@ -7893,6 +7908,7 @@ export const cloud = {
     '/api/cloud/login/continue',
     (p) => ({ pendingId: p.pendingId, input: p.input })
   ),
+  networkDiagnose: httpPost<ICloudNetworkDiagnoseReport, void>('/api/cloud/network-diagnose'),
   logout: httpPost<boolean, void>('/api/cloud/logout'),
   /** Official website URL with `?token=` auto-login (FlowyClaw client contract). */
   getWebsiteEntry: httpGet<ICloudWebsiteEntry, { language?: string; landing?: 'credits' }>(

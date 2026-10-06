@@ -61,6 +61,14 @@
     "sessionExpired": "This code has expired. Request a new one to continue.",
     "verificationUnavailable": "Unable to verify right now. Try again shortly."
   },
+  "diagnose": {
+    "run": "Network diagnostics",
+    "running": "Checking…",
+    "ok": "Network OK",
+    "failed": "Network issue",
+    "copy": "Copy report",
+    "copied": "Copied"
+  },
   "settings": {
     "title": "Server connection",
     "enabled": "Enable Flowy server",

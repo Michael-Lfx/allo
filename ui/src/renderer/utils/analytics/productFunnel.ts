@@ -5,6 +5,9 @@ import { enqueueTelemetryEvent } from './telemetryOutbox';
 
 export type FunnelEventName =
   | 'auth_completed'
+  | 'otp_send_started'
+  | 'otp_send_succeeded'
+  | 'otp_send_failed'
   | 'home_interactive'
   | 'home_viewed'
   | 'task_drafted'

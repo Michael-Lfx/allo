@@ -97,6 +97,13 @@ impl CloudService {
         }
     }
 
+    pub async fn network_diagnose(
+        &self,
+    ) -> Result<crate::network_diagnose::NetworkDiagnoseReport, AppError> {
+        let cfg = self.gateway_config();
+        Ok(crate::network_diagnose::diagnose_cloud_network(&cfg.server).await)
+    }
+
     pub fn update_server_settings(
         &self,
         req: nomifun_api_types::UpdateCloudServerSettingsRequest,

@@ -102,6 +102,7 @@ mod taskbar_badge;
 #[cfg(windows)]
 mod windows_aumid;
 mod updater_install_context;
+mod update_rollout;
 mod ota_mirrors;
 
 /// Build the webview initialization script. Injects the loopback backend port
@@ -790,19 +791,58 @@ struct CheckUpdateInfo {
     release_date: Option<String>,
 }
 
+async fn fetch_manifest_rollout_percent(endpoints: &[url::Url]) -> u8 {
+    let Ok(client) = nomifun_net::proxy::apply_detected_proxy(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .user_agent("flowy-ota-rollout"),
+    )
+    .build() else {
+        return 100;
+    };
+    for endpoint in endpoints {
+        let Ok(response) = client.get(endpoint.clone()).send().await else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(manifest) = response.json::<serde_json::Value>().await else {
+            continue;
+        };
+        return update_rollout::parse_rollout_percent(&manifest);
+    }
+    100
+}
+
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<CheckUpdateInfo>, String> {
     use tauri_plugin_updater::UpdaterExt;
 
+    let endpoints = parse_ota_endpoints()?;
     let updater = app
         .updater_builder()
-        .endpoints(parse_ota_endpoints()?)
+        .endpoints(endpoints.clone())
         .map_err(|error| error.to_string())?
         .build()
         .map_err(|error| error.to_string())?;
     let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
         return Ok(None);
     };
+
+    let rollout = fetch_manifest_rollout_percent(&endpoints).await;
+    if rollout < 100 {
+        let install_id = update_rollout::load_or_create_install_id(&default_data_dir());
+        if !update_rollout::device_in_rollout(&install_id, &update.version, rollout) {
+            tracing::info!(
+                version = %update.version,
+                rollout,
+                "update available but install is outside rollout cohort"
+            );
+            return Ok(None);
+        }
+    }
+
     Ok(Some(CheckUpdateInfo {
         version: update.version,
         current_version: update.current_version,

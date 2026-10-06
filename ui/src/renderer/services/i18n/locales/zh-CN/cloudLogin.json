@@ -61,6 +61,14 @@
     "sessionExpired": "验证码已过期，请重新获取",
     "verificationUnavailable": "暂时无法确认，请稍后重试"
   },
+  "diagnose": {
+    "run": "网络诊断",
+    "running": "诊断中…",
+    "ok": "网络正常",
+    "failed": "网络异常",
+    "copy": "复制诊断结果",
+    "copied": "已复制"
+  },
   "settings": {
     "title": "服务器连接",
     "enabled": "启用 Flowy 服务器",

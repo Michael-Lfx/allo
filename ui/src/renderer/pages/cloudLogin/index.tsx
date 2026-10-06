@@ -9,6 +9,7 @@ import AuthField from '@renderer/components/auth/AuthField';
 import AuthPrimaryButton from '@renderer/components/auth/AuthPrimaryButton';
 import AuthShell from '@renderer/components/auth/AuthShell';
 import AuthStatusBar from '@renderer/components/auth/AuthStatusBar';
+import NetworkDiagnosePanel from '@renderer/components/auth/NetworkDiagnosePanel';
 import OtpCodeInput from '@renderer/components/auth/OtpCodeInput';
 import { getOtpBlueprintCheckpoint } from '@renderer/components/auth/blueprintScene';
 import type {
@@ -424,6 +425,7 @@ const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout,
               )}
             </div>
           </form>
+          {!showOtp && <NetworkDiagnosePanel />}
         </div>
       )}
     </AuthShell>
