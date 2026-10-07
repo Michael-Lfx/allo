@@ -1,9 +1,10 @@
 //! HTTP transport with auth injection, tracing headers, and retry policy.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use nomi_config::ServerConfig;
+use nomi_config::{FLOWY_SERVER_HOST, ServerConfig};
 use reqwest::header::{
     AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
@@ -23,6 +24,11 @@ const FLOWY_TURN_ID_HEADER: &str = "x-flowy-turn-id";
 /// `Client` would force a new TCP+TLS handshake every time.
 static SHARED_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 static HTTP1_FALLBACK_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+/// Mainland networks reset TLS handshakes whose SNI names the Flowy server,
+/// while the same IP answers when SNI is omitted. The server's default
+/// certificate is still verified against the request host.
+static NO_SNI_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+static PREFER_NO_SNI: AtomicBool = AtomicBool::new(false);
 
 fn build_flowy_client(http1_only: bool) -> Result<Client, String> {
     let builder = Client::builder();
@@ -32,6 +38,43 @@ fn build_flowy_client(http1_only: bool) -> Result<Client, String> {
         builder
     };
     builder.build().map_err(|e| e.to_string())
+}
+
+fn shared_no_sni_client() -> Result<Client, ServerClientError> {
+    NO_SNI_CLIENT
+        .get_or_init(|| Client::builder().tls_sni(false).build().map_err(|e| e.to_string()))
+        .clone()
+        .map_err(|e| ServerClientError::Http(format!("build SNI-less client: {e}")))
+}
+
+fn is_flowy_server_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|h| h.eq_ignore_ascii_case(FLOWY_SERVER_HOST)))
+        .unwrap_or(false)
+}
+
+fn is_connection_reset(err: &reqwest::Error) -> bool {
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        if io_error_is_reset(cause) {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
+}
+
+fn io_error_is_reset(err: &(dyn std::error::Error + 'static)) -> bool {
+    let Some(io) = err.downcast_ref::<std::io::Error>() else {
+        return false;
+    };
+    if io.kind() == std::io::ErrorKind::ConnectionReset {
+        return true;
+    }
+    // `io::Error::source` skips a wrapped custom error, so descend via `get_ref`.
+    io.get_ref()
+        .is_some_and(|inner| io_error_is_reset(inner as &(dyn std::error::Error + 'static)))
 }
 
 fn shared_client() -> Result<Client, ServerClientError> {
@@ -229,12 +272,16 @@ impl HttpTransport {
 
         let mut attempt = 0u32;
         let mut fallback_http1 = false;
+        let flowy_server = is_flowy_server_url(&url);
+        let mut no_sni = flowy_server && PREFER_NO_SNI.load(Ordering::Relaxed);
         loop {
             attempt += 1;
             // First try the pooled client (HTTP/2 when the peer offers it). A
             // transport error retries over HTTP/1.1: mainland middleboxes and
             // some local proxies stall or reset h2 after ALPN.
-            let client = if fallback_http1 {
+            let client = if no_sni {
+                shared_no_sni_client()?
+            } else if fallback_http1 {
                 shared_http1_client()?
             } else {
                 self.client.clone()
@@ -249,6 +296,12 @@ impl HttpTransport {
 
             match builder.send().await {
                 Ok(resp) => {
+                    if no_sni && !PREFER_NO_SNI.swap(true, Ordering::Relaxed) {
+                        info!(
+                            host = %request_host(&url),
+                            "TLS without SNI succeeded after handshake reset; preferring it for this session"
+                        );
+                    }
                     let status = resp.status();
                     if (status.as_u16() == 429 || status.as_u16() == 502 || status.as_u16() == 503)
                         && attempt < 3
@@ -265,10 +318,17 @@ impl HttpTransport {
                         host = %request_host(&url),
                         attempt,
                         http1_fallback = fallback_http1,
+                        no_sni,
                         error = %detail,
                         "server http transport failure"
                     );
                     if attempt < 3 {
+                        if no_sni {
+                            no_sni = false;
+                            PREFER_NO_SNI.store(false, Ordering::Relaxed);
+                        } else if flowy_server && is_connection_reset(&err) {
+                            no_sni = true;
+                        }
                         fallback_http1 = true;
                         let delay = Duration::from_millis(250 * 2u64.pow(attempt - 1));
                         tokio::time::sleep(delay).await;
@@ -331,8 +391,12 @@ impl HttpTransport {
 
         debug!(method = "POST", %url, request_id = %request_id, "server http multipart request");
 
-        let response = self
-            .client
+        let client = if is_flowy_server_url(&url) && PREFER_NO_SNI.load(Ordering::Relaxed) {
+            shared_no_sni_client()?
+        } else {
+            self.client.clone()
+        };
+        let response = client
             .post(&url)
             .timeout(self.timeout)
             .headers(headers.clone())
@@ -462,6 +526,51 @@ mod tests {
     fn flowy_clients_build_for_default_and_http1_fallback() {
         assert!(build_flowy_client(false).is_ok());
         assert!(build_flowy_client(true).is_ok());
+    }
+
+    #[test]
+    fn no_sni_fallback_is_scoped_to_flowy_server_host() {
+        assert!(is_flowy_server_url(&format!("{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/user/me")));
+        assert!(is_flowy_server_url("https://SERVER.FLOWYAIPC.COM/claw"));
+        assert!(!is_flowy_server_url("https://oss.example.com/upload"));
+        assert!(!is_flowy_server_url("not a url"));
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_reset_is_classified_as_connection_reset() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 512];
+            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+            #[allow(deprecated)]
+            stream.set_linger(Some(Duration::ZERO)).unwrap();
+            drop(stream);
+        });
+        let err = Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("https://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(is_connection_reset(&err), "{}", describe_transport_error(&err));
+        assert!(is_retryable_transport(&err));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access to the Flowy server"]
+    async fn no_sni_client_verifies_flowy_server_certificate() {
+        let resp = shared_no_sni_client()
+            .unwrap()
+            .get(format!("{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/health"))
+            .send()
+            .await
+            .map_err(|err| describe_transport_error(&err))
+            .unwrap();
+        assert!(resp.status().is_success(), "{}", resp.status());
     }
 
     #[tokio::test]
