@@ -450,11 +450,7 @@ pub(crate) async fn send_initial(
     retry::with_initial_request_retry(
         retry::InitialRequestContext::from_json_body(body),
         || async {
-            let response = client
-                .post(url)
-                .headers(headers.clone())
-                .json(body)
-                .send()
+            let response = post_json(client, url, headers, body)
                 .await
                 // Connection reset / broken pipe after TCP is up is a request
                 // error, not `is_connect()`. Mapping it here matches
@@ -672,6 +668,64 @@ pub(crate) fn http_client() -> reqwest::Client {
                 .unwrap_or_else(|_| reqwest::Client::new())
         })
         .clone()
+}
+
+/// SNI-less twin of [`http_client`], used only for the Flowy server when the
+/// network resets handshakes naming it (see `nomifun_net::sni`).
+fn no_sni_http_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            let builder = reqwest::Client::builder()
+                .connect_timeout(HTTP_CONNECT_TIMEOUT)
+                .read_timeout(HTTP_READ_TIMEOUT)
+                .tls_sni(false);
+            nomifun_net::proxy::apply_detected_proxy(builder)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
+        .clone()
+}
+
+/// POST a JSON body. Requests to the Flowy server retry once without SNI when
+/// the TLS handshake is reset, and skip SNI up front once that has worked.
+pub(crate) async fn post_json(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &HeaderMap,
+    body: &Value,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let send = |client: &reqwest::Client| {
+        client
+            .post(url)
+            .headers(headers.clone())
+            .json(body)
+            .send()
+    };
+    if !nomifun_net::sni::url_host_is(url, nomi_config::FLOWY_SERVER_HOST) {
+        return send(client).await;
+    }
+    if nomifun_net::sni::prefers_no_sni(url) {
+        match send(&no_sni_http_client()).await {
+            Err(err) if err.is_connect() => {
+                nomifun_net::sni::set_prefers_no_sni(url, false);
+            }
+            other => return other,
+        }
+    }
+    match send(client).await {
+        Err(err) if nomifun_net::sni::is_connection_reset(&err) => {
+            tracing::warn!(
+                target: "nomi_providers",
+                error = %err,
+                "Flowy server TLS handshake reset; retrying without SNI"
+            );
+            let response = send(&no_sni_http_client()).await?;
+            nomifun_net::sni::set_prefers_no_sni(url, true);
+            Ok(response)
+        }
+        other => other,
+    }
 }
 
 pub(crate) fn non_empty_rate_limit_message(body: String) -> String {
@@ -1263,6 +1317,7 @@ mod preconnect_tests {
     use std::time::{Duration, Instant};
 
     use nomi_config::config::ProviderType;
+    use reqwest::header::HeaderMap;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -1321,6 +1376,19 @@ mod preconnect_tests {
         assert!(!claim_preconnect_slot(origin, now + Duration::from_secs(1)));
         assert!(claim_preconnect_slot("https://other-throttle-test.example", now));
         assert!(claim_preconnect_slot(origin, now + PRECONNECT_MIN_INTERVAL));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access to the Flowy server"]
+    async fn post_json_reaches_flowy_server_without_sni_when_preferred() {
+        let url = format!("{}/v1/chat/completions", nomi_config::DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+        nomifun_net::sni::set_prefers_no_sni(&url, true);
+        let response = super::post_json(&http_client(), &url, &HeaderMap::new(), &serde_json::json!({}))
+            .await
+            .expect("TLS without SNI must verify the Flowy server certificate");
+        assert!(response.status().is_client_error() || response.status().is_success());
+        assert!(nomifun_net::sni::prefers_no_sni(&url));
+        nomifun_net::sni::set_prefers_no_sni(&url, false);
     }
 
     #[tokio::test]

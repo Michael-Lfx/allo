@@ -1,5 +1,6 @@
 pub mod proxy;
 pub mod secret_redaction;
+pub mod sni;
 pub mod ssrf;
 
 pub fn http_client() -> reqwest::Client {

@@ -1,10 +1,10 @@
 //! HTTP transport with auth injection, tracing headers, and retry policy.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nomi_config::{FLOWY_SERVER_HOST, ServerConfig};
+use nomifun_net::sni;
 use reqwest::header::{
     AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
@@ -28,7 +28,6 @@ static HTTP1_FALLBACK_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new()
 /// while the same IP answers when SNI is omitted. The server's default
 /// certificate is still verified against the request host.
 static NO_SNI_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
-static PREFER_NO_SNI: AtomicBool = AtomicBool::new(false);
 
 fn build_flowy_client(http1_only: bool) -> Result<Client, String> {
     let builder = Client::builder();
@@ -48,33 +47,7 @@ fn shared_no_sni_client() -> Result<Client, ServerClientError> {
 }
 
 fn is_flowy_server_url(url: &str) -> bool {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|h| h.eq_ignore_ascii_case(FLOWY_SERVER_HOST)))
-        .unwrap_or(false)
-}
-
-fn is_connection_reset(err: &reqwest::Error) -> bool {
-    let mut source = std::error::Error::source(err);
-    while let Some(cause) = source {
-        if io_error_is_reset(cause) {
-            return true;
-        }
-        source = cause.source();
-    }
-    false
-}
-
-fn io_error_is_reset(err: &(dyn std::error::Error + 'static)) -> bool {
-    let Some(io) = err.downcast_ref::<std::io::Error>() else {
-        return false;
-    };
-    if io.kind() == std::io::ErrorKind::ConnectionReset {
-        return true;
-    }
-    // `io::Error::source` skips a wrapped custom error, so descend via `get_ref`.
-    io.get_ref()
-        .is_some_and(|inner| io_error_is_reset(inner as &(dyn std::error::Error + 'static)))
+    sni::url_host_is(url, FLOWY_SERVER_HOST)
 }
 
 fn shared_client() -> Result<Client, ServerClientError> {
@@ -273,7 +246,7 @@ impl HttpTransport {
         let mut attempt = 0u32;
         let mut fallback_http1 = false;
         let flowy_server = is_flowy_server_url(&url);
-        let mut no_sni = flowy_server && PREFER_NO_SNI.load(Ordering::Relaxed);
+        let mut no_sni = flowy_server && sni::prefers_no_sni(&url);
         loop {
             attempt += 1;
             // First try the pooled client (HTTP/2 when the peer offers it). A
@@ -296,7 +269,7 @@ impl HttpTransport {
 
             match builder.send().await {
                 Ok(resp) => {
-                    if no_sni && !PREFER_NO_SNI.swap(true, Ordering::Relaxed) {
+                    if no_sni && sni::set_prefers_no_sni(&url, true) {
                         info!(
                             host = %request_host(&url),
                             "TLS without SNI succeeded after handshake reset; preferring it for this session"
@@ -325,8 +298,8 @@ impl HttpTransport {
                     if attempt < 3 {
                         if no_sni {
                             no_sni = false;
-                            PREFER_NO_SNI.store(false, Ordering::Relaxed);
-                        } else if flowy_server && is_connection_reset(&err) {
+                            sni::set_prefers_no_sni(&url, false);
+                        } else if flowy_server && sni::is_connection_reset(&err) {
                             no_sni = true;
                         }
                         fallback_http1 = true;
@@ -391,7 +364,7 @@ impl HttpTransport {
 
         debug!(method = "POST", %url, request_id = %request_id, "server http multipart request");
 
-        let client = if is_flowy_server_url(&url) && PREFER_NO_SNI.load(Ordering::Relaxed) {
+        let client = if is_flowy_server_url(&url) && sni::prefers_no_sni(&url) {
             shared_no_sni_client()?
         } else {
             self.client.clone()
@@ -556,7 +529,7 @@ mod tests {
             .send()
             .await
             .unwrap_err();
-        assert!(is_connection_reset(&err), "{}", describe_transport_error(&err));
+        assert!(sni::is_connection_reset(&err), "{}", describe_transport_error(&err));
         assert!(is_retryable_transport(&err));
     }
 

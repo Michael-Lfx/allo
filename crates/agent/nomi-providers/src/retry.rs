@@ -137,11 +137,7 @@ pub async fn send_and_check(
     headers: &HeaderMap,
     body: &Value,
 ) -> Result<reqwest::Response, ProviderError> {
-    let response = client
-        .post(url)
-        .headers(headers.clone())
-        .json(body)
-        .send()
+    let response = crate::post_json(client, url, headers, body)
         .await
         .map_err(|e| ProviderError::Connection(e.to_string()))?;
 
