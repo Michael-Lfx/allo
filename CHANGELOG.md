@@ -5,7 +5,7 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-## v2.0.0 - 2026-10-08
+## v1.6.0 - 2026-10-08
 
 - Appearance adds full-window custom wallpaper scenes.
 - The compact update card wraps its description, and Flowy LLM requests stamp the conversation session.
