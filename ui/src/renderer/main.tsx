@@ -32,6 +32,7 @@ import { MotionConfig } from 'motion/react';
 import 'uno.css';
 import './styles/arco-override.css';
 import './styles/canvas-utility-shield.css';
+import './styles/wallpaperScene.css';
 import '@/renderer/components/chat/SendBox/sendbox.css';
 import './styles/themes/index.css';
 

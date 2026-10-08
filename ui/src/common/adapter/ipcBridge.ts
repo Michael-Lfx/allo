@@ -202,6 +202,7 @@ import {
   parseExecutionTemplateId,
   parseExecutionTemplateParticipantId,
   parseFigureId,
+  parseWallpaperId,
   parseIdmmInterventionId,
   parseKnowledgeBaseId,
   parseMessageId,
@@ -232,6 +233,7 @@ import {
   type CompanionSkillId,
   type CompanionSuggestionId,
   type FigureId,
+  type WallpaperId,
   type IdmmInterventionId,
   type ExecutionAttemptId,
   type ExecutionId,
@@ -6130,6 +6132,45 @@ const fromApiFigure = (raw: unknown): IFigureMeta => {
   return { ...(value as unknown as IFigureMeta), figure_id: parseFigureId(value.figure_id) };
 };
 
+const asRgbTriplet = (value: unknown): [number, number, number] => {
+  if (!Array.isArray(value) || value.length < 3) return [0, 0, 0];
+  return [Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0];
+};
+
+const fromApiWallpaperAnalysis = (raw: unknown): import('@/common/types/appearance').WallpaperAnalysis => {
+  const value = asWireObject(raw, 'wallpaper analysis');
+  const scaleRaw = Array.isArray(value.primaryScale) ? value.primaryScale : [];
+  return {
+    version: Number(value.version) || 1,
+    seedHex: String(value.seedHex || '#808080'),
+    meanLstar: Number(value.meanLstar) || 0,
+    luminanceVariance: Number(value.luminanceVariance) || 0,
+    recommendedScheme: String(value.recommendedScheme || 'dark'),
+    recommendedDim: Number(value.recommendedDim) || 0.32,
+    recommendedBlurPx: Number(value.recommendedBlurPx) || 0,
+    recommendedPlateAlpha: Number(value.recommendedPlateAlpha) || 0.72,
+    primaryRgb: asRgbTriplet(value.primaryRgb),
+    primaryScale: scaleRaw.map((entry) => asRgbTriplet(entry)),
+    busy: Boolean(value.busy),
+    animated: Boolean(value.animated),
+  };
+};
+
+const fromApiWallpaper = (raw: unknown): import('@/common/types/appearance').WallpaperMeta => {
+  const value = asWireObject(raw, 'wallpaper');
+  const mediaKind = value.mediaKind === 'video' || value.mediaKind === 'animated' ? value.mediaKind : 'still';
+  return {
+    wallpaperId: parseWallpaperId(value.wallpaperId),
+    name: String(value.name || ''),
+    mediaKind,
+    originalExt: String(value.originalExt || 'jpg'),
+    width: Number(value.width) || 0,
+    height: Number(value.height) || 0,
+    createdAt: Number(value.createdAt) || 0,
+    analysis: fromApiWallpaperAnalysis(value.analysis),
+  };
+};
+
 const fromApiCompanionThread = (raw: unknown): ICompanionThread => {
   const value = asWireObject(raw, 'companion thread');
   return {
@@ -6615,6 +6656,34 @@ export const companion = {
     const value = asWireObject(raw, 'companion deleted event');
     return { companion_id: parseCompanionId(value.companion_id) };
   }),
+};
+
+export const appearance = {
+  listWallpapers: withResponseMap(
+    httpGet<unknown[], void>('/api/appearance/wallpapers'),
+    (raw): import('@/common/types/appearance').WallpaperMeta[] => raw.map(fromApiWallpaper)
+  ),
+  createWallpaper: withResponseMap(
+    httpPost<unknown, { source_path: string; name?: string }>('/api/appearance/wallpapers', (p) => ({
+      source_path: p.source_path,
+      name: p.name ?? '',
+    })),
+    fromApiWallpaper
+  ),
+  getWallpaper: withResponseMap(
+    httpGet<unknown, { wallpaper_id: WallpaperId }>((p) => `/api/appearance/wallpapers/${p.wallpaper_id}`),
+    fromApiWallpaper
+  ),
+  renameWallpaper: withResponseMap(
+    httpPatch<unknown, { wallpaper_id: WallpaperId; name: string }>(
+      (p) => `/api/appearance/wallpapers/${p.wallpaper_id}`,
+      (p) => ({ name: p.name })
+    ),
+    fromApiWallpaper
+  ),
+  deleteWallpaper: httpDelete<void, { wallpaper_id: WallpaperId }>(
+    (p) => `/api/appearance/wallpapers/${p.wallpaper_id}`
+  ),
 };
 
 // ==================== Browser-use credential secrets (P3-X2) ====================

@@ -279,6 +279,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         className='sider-soft-popover sider-user-skin-popover'
         trigger='click'
         position='rt'
+        blurToHide={false}
         popupVisible={skinVisible}
         onVisibleChange={(visible) => {
           setSkinVisible(visible);

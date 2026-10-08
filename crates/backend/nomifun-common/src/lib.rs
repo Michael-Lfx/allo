@@ -69,7 +69,7 @@ pub use id::{
     CompanionSuggestionId,
     ConversationArtifactId, ConversationId, CreationTaskId, CronJobId, CronJobRunId,
     CsAgentId, CsNoteId,
-    EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID,
+    EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID, WallpaperId,
     IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId,
     LearningActivityId, LearningAttemptId, LearningGraphId, LearningConceptId,
     LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,

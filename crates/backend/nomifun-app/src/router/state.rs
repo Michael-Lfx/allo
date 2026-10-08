@@ -57,6 +57,7 @@ use nomifun_office::{
 };
 use nomifun_agent_execution::{AgentExecutionEngine, AgentExecutionEngineConfig};
 use nomifun_companion::CompanionRouterState;
+use nomifun_appearance::AppearanceRouterState;
 use nomifun_workshop::WorkshopRouterState;
 use nomifun_creation::CreationRouterState;
 use nomifun_realtime::WsHandlerState;
@@ -105,6 +106,7 @@ pub struct ModuleStates {
     pub video_canvas: CanvasRouterState,
     pub cloud: CloudRouterState,
     pub companion: CompanionRouterState,
+    pub appearance: AppearanceRouterState,
     /// 客服独立域 (customer-service domain).
     pub customer_service: nomifun_customer_service::CustomerServiceRouterState,
     /// 创意工坊 (Creative Workshop) canvas/asset domain.
@@ -678,6 +680,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             services.encryption_key,
         ),
         companion: companion_state,
+        appearance: AppearanceRouterState::new(services.appearance_service.clone()),
         customer_service: nomifun_customer_service::CustomerServiceRouterState {
             service: services.customer_service_service.clone(),
             channel_repo: Arc::new(nomifun_db::SqliteChannelRepository::new(

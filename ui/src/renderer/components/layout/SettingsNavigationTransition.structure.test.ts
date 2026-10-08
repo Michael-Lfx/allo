@@ -24,6 +24,8 @@ describe('settings navigation loading contract', () => {
     expect(transitionSource).toContain("variant='drive'");
     expect(layoutSource).toContain('<SettingsNavigationLoadingOverlay />');
     expect(layoutSource).toContain("className={'relative bg-base layout-content flex flex-col min-h-0'}");
+    expect(layoutSource).toContain('<WallpaperProvider>');
+    expect(layoutSource).toContain('<WallpaperScene />');
   });
 
   test('uses the shared settings fallback for route chunks and marks committed routes ready', () => {

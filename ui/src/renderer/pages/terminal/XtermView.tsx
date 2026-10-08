@@ -10,7 +10,7 @@ import { ipcBridge } from '@/common';
 import type { TerminalId } from '@/common/types/ids';
 import { createStreamingDecoder, encodeStringToBase64 } from './terminalEncoding';
 import { bumpCtrlC, createCtrlCState, isCtrlC, type CtrlCState } from './ctrlCEscalation';
-import { resolveTerminalTheme, TERMINAL_TYPOGRAPHY } from './terminalTheme';
+import { isWallpaperTerminalTheme, resolveTerminalTheme, TERMINAL_TYPOGRAPHY } from './terminalTheme';
 import styles from './XtermView.module.css';
 
 /**
@@ -108,6 +108,7 @@ const XtermView: React.FC<XtermViewProps> = ({
       convertEol: false,
       scrollback: 10000,
       allowProposedApi: true,
+      allowTransparency: true,
       smoothScrollDuration: 0,
       theme: resolveTerminalTheme(),
     });
@@ -121,14 +122,32 @@ const XtermView: React.FC<XtermViewProps> = ({
     // WebGL renders the grid via a texture atlas in one draw call. If the
     // browser drops the WebGL context (OOM, GPU reset, sleep), dispose the addon
     // and let xterm fall back to the DOM renderer automatically. Must attach
-    // AFTER term.open().
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      // WebGL2 unavailable — silently keep the DOM renderer.
-    }
+    // AFTER term.open(). WebGL cannot paint a transparent cell background, so
+    // wallpaper mode stays on the DOM renderer.
+    let webglAddon: WebglAddon | null = null;
+    const loadWebglRenderer = () => {
+      if (webglAddon || isWallpaperTerminalTheme()) return;
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          webglAddon = null;
+        });
+        term.loadAddon(webgl);
+        webglAddon = webgl;
+      } catch {
+        // WebGL2 unavailable — silently keep the DOM renderer.
+      }
+    };
+    const syncWallpaperRenderer = () => {
+      if (isWallpaperTerminalTheme()) {
+        webglAddon?.dispose();
+        webglAddon = null;
+      } else {
+        loadWebglRenderer();
+      }
+    };
+    loadWebglRenderer();
 
     let disposed = false;
     let lastCols = 0;
@@ -458,12 +477,13 @@ const XtermView: React.FC<XtermViewProps> = ({
 
     const applyTheme = () => {
       if (disposed) return;
+      syncWallpaperRenderer();
       term.options.theme = resolveTerminalTheme();
     };
     const themeObserver = new MutationObserver(applyTheme);
     themeObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme', 'data-color-scheme'],
+      attributeFilter: ['data-theme', 'data-color-scheme', 'data-wallpaper'],
     });
 
     return () => {
@@ -484,6 +504,8 @@ const XtermView: React.FC<XtermViewProps> = ({
       unsubscribeReconnected();
       unsubscribeExit();
       resizeObserver.disconnect();
+      webglAddon?.dispose();
+      webglAddon = null;
       term.dispose();
       if (apiRef) apiRef.current = null;
     };

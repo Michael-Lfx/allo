@@ -3,7 +3,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 
 export function CanvasRefreshShell() {
     return (
-        <main className="relative h-full min-h-0 overflow-hidden bg-background text-foreground" role="status" aria-live="polite" aria-busy="true">
+        <main data-canvas-refresh-shell="" className="relative h-full min-h-0 overflow-hidden bg-background text-foreground" role="status" aria-live="polite" aria-busy="true">
             <div
                 className="absolute inset-0 opacity-60"
                 style={{

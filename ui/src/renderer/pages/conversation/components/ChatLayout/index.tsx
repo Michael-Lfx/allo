@@ -451,7 +451,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
             inert={columnView !== 'dialogue' ? true : undefined}
             aria-hidden={columnView !== 'dialogue'}
           >
-            <ArcoLayout.Content className='flex flex-col flex-1 bg-1 overflow-hidden h-full'>
+            <ArcoLayout.Content className='flex flex-col flex-1 overflow-hidden h-full'>
               {props.children}
             </ArcoLayout.Content>
           </div>
@@ -466,7 +466,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
       </div>
     </div>
   ) : (
-    <ArcoLayout.Content className='flex flex-col flex-1 bg-1 overflow-hidden'>
+    <ArcoLayout.Content className='flex flex-col flex-1 overflow-hidden'>
       {props.children}
     </ArcoLayout.Content>
   );
@@ -499,7 +499,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
               minWidth: isDesktop ? '240px' : undefined,
             }}
           >
-            <div className='shrink-0 !bg-1'>{headerBlock}</div>
+            <div className='shrink-0 chat-layout-chrome'>{headerBlock}</div>
             {/* Chat area - always mounted, never unmounted on preview toggle */}
             <div
               className='flex flex-col relative min-h-0 flex-1'

@@ -2,7 +2,7 @@
 
 > **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6`
 
-The 44 `nomifun-*` crates under [`crates/backend/`](../../crates/backend/) form
+The 45 `nomifun-*` crates under [`crates/backend/`](../../crates/backend/) form
 the HTTP/WS server. Together they compile into the `nomifun-app` library crate
 and, via `nomifun-app/src/main.rs`, the **`nomicore`** binary. The two app hosts
 (the desktop shell package `Flowy` under `apps/desktop`, and `nomifun-web`)
@@ -104,6 +104,7 @@ identifiers remain opaque.
 | [`nomifun-webhook`](../../crates/backend/nomifun-webhook/) | Outbound Lark sender and `CompletionNotifier` for completed Agent work. |
 | [`nomifun-preset`](../../crates/backend/nomifun-preset/) | Reusable launch configurations for Conversations, Execution participants, companions, and cron: merged builtin/user/extension catalog, relational CRUD, target-aware resolution, immutable snapshots, and import. |
 | [`nomifun-companion`](../../crates/backend/nomifun-companion/) | Desktop companion state, figure/image assets, memory/persona data, companion public image serving, and companion-bound token integration. |
+| [`nomifun-appearance`](../../crates/backend/nomifun-appearance/) | Wallpaper scene library: two-phase ingest, luminance/variance analysis, JPEG display/thumb, and public `/api/appearance/wallpapers/{id}/display|thumb|original` serving. |
 | [`nomifun-knowledge`](../../crates/backend/nomifun-knowledge/) | Knowledge bases, source ingestion, bound-base mount state, and scoped read-only knowledge MCP server. |
 | [`nomifun-workshop`](../../crates/backend/nomifun-workshop/) | Creative Workshop domain: the infinite-canvas visual-creation workspace. Owns canvases + assets (index rows in `nomifun-db`, canvas bodies and asset binaries on disk) and serves the `/api/workshop/*` surface. |
 | [`nomifun-creation`](../../crates/backend/nomifun-creation/) | Media generation engine behind the Workshop canvas's generation nodes: provider-agnostic async task queue (`queued → running → succeeded/failed/canceled`) with per-provider concurrency plus a global cap, cancellation, and boot reconciliation. Delegates model execution to `nomifun-model-invoke` and hands produced bytes to an `AssetSink`. |

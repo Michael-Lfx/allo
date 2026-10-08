@@ -5,6 +5,11 @@
     var(--color-bg-1);
 }
 
+:global(html[data-wallpaper='on']) .page,
+:global(html[data-wallpaper='on']) .studioPage {
+  background: transparent;
+}
+
 /* Refined Arco buttons across the video-generation surface */
 .page :global(.arco-btn),
 .studioPage :global(.arco-btn) {
@@ -369,6 +374,12 @@
   background:
     radial-gradient(circle at 50% -12rem, rgba(var(--primary-6), 0.09), transparent 38rem),
     var(--color-bg-1);
+}
+
+:global(html[data-wallpaper='on']) .studioHeader,
+:global(html[data-wallpaper='on']) .shotInfiniteCanvas {
+  background: transparent;
+  backdrop-filter: none;
 }
 
 .studioShell {

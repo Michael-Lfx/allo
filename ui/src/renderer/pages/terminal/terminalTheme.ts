@@ -50,20 +50,28 @@ export function isDarkTerminalTheme(): boolean {
   return document.documentElement.getAttribute('data-theme') === 'dark';
 }
 
+export function isWallpaperTerminalTheme(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.documentElement.getAttribute('data-wallpaper') === 'on';
+}
+
 /**
  * xterm canvas theme that follows the app light/dark (and color-scheme) tokens.
- * Background matches `--terminal-surface-bg` → `--bg-1`.
+ * Background matches `--terminal-surface-bg` → `--bg-1`, except under wallpaper
+ * where the grid is transparent so the 换肤 scene shows through.
  */
 export function resolveTerminalTheme(): ITheme {
   const dark = isDarkTerminalTheme();
-  const background = readCssColor('--terminal-surface-bg', readCssColor('--bg-1', dark ? '#1a1a1a' : '#f9fafb'));
+  const wallpaperOn = isWallpaperTerminalTheme();
+  const opaqueBackground = readCssColor('--terminal-surface-bg', readCssColor('--bg-1', dark ? '#1a1a1a' : '#f9fafb'));
+  const background = wallpaperOn ? 'rgba(0,0,0,0)' : opaqueBackground;
   const foreground = readCssColor('--text-primary', dark ? '#ffffff' : '#000000');
   return {
     ...(dark ? DARK_ANSI : LIGHT_ANSI),
     background,
     foreground,
     cursor: foreground,
-    cursorAccent: background,
+    cursorAccent: wallpaperOn ? (dark ? '#111111' : '#ffffff') : opaqueBackground,
     selectionBackground: dark ? 'rgba(122,131,178,0.40)' : 'rgba(22,93,255,0.28)',
     selectionForeground: dark ? '#ffffff' : '#000000',
   };

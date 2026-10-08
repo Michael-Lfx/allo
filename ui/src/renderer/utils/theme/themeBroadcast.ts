@@ -22,6 +22,9 @@ export interface ThemeSyncPayload {
   theme?: Theme;
   /** Active ambiance preset CSS — present on a customCss change, absent on a light/dark-only sync. */
   customCss?: string;
+  /** Wallpaper token sheet (variables only — never the bitmap). */
+  wallpaperTokens?: string;
+  wallpaperEnabled?: boolean;
 }
 
 /** Broadcast a light/dark theme change to every window (incl. the companion). */
@@ -46,5 +49,15 @@ export function broadcastCustomCssSync(customCss: string): void {
     .then(({ emit }) => emit(THEME_SYNC_EVENT, { customCss } satisfies ThemeSyncPayload))
     .catch(() => {
       /* best-effort; the companion re-reads customCss from config on its next load */
+    });
+}
+
+/** Broadcast wallpaper tokens (not bytes) so the companion can plate chrome. */
+export function broadcastWallpaperSync(payload: Pick<ThemeSyncPayload, 'wallpaperTokens' | 'wallpaperEnabled'>): void {
+  if (!isTauriRuntime()) return;
+  void import('@tauri-apps/api/event')
+    .then(({ emit }) => emit(THEME_SYNC_EVENT, payload satisfies ThemeSyncPayload))
+    .catch(() => {
+      /* best-effort */
     });
 }

@@ -133,7 +133,7 @@ const PanelHeader: React.FC<{
   count: number;
   actions?: React.ReactNode;
 }> = ({ title, count, actions }) => (
-  <div className='flex items-center justify-between px-8px py-4px bg-fill-2 border-b border-b-base select-none flex-shrink-0'>
+  <div className='file-change-group-header flex items-center justify-between px-8px py-4px bg-fill-2 border-b border-b-base select-none flex-shrink-0'>
     <span className='text-12px font-medium text-t-secondary'>
       {title} ({count})
     </span>
@@ -378,7 +378,7 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
           // `border-base` resolved to var(--bg-base) — the page background, not a border.
           <div
             key={group.key}
-            className='flex-shrink-0 border border-solid border-[var(--border-base)] rounded-10px overflow-hidden bg-1'
+            className='file-change-group flex-shrink-0 border border-solid border-[var(--border-base)] rounded-10px overflow-hidden bg-1'
           >
             <PanelHeader title={group.title} count={group.count} actions={group.headerAction} />
             {group.items.length === 0 ? (

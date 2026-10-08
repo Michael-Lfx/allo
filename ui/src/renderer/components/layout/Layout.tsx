@@ -25,6 +25,7 @@ import {
 } from '@renderer/hooks/system/useUpdateAvailability';
 import { useDirectorySelection } from '@renderer/hooks/file/useDirectorySelection';
 import { processCustomCss } from '@renderer/utils/theme/customCssProcessor';
+import { stripBackgroundCssBlock } from '@renderer/pages/settings/DisplaySettings/backgroundUtils';
 import { SEND_BUTTON_GUARD_CSS, SEND_BUTTON_GUARD_STYLE_ID } from '@renderer/utils/theme/sendButtonGuardCss';
 import {
   ensureThemeControlContract,
@@ -44,6 +45,9 @@ import { scheduleDeferred } from '@/renderer/utils/scheduleDeferred';
 import { maybeAutoDownloadUpdate } from '@/renderer/utils/update/updateAutoDownload';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
+import WallpaperScene from '@renderer/components/layout/WallpaperScene';
+import { WallpaperProvider } from '@renderer/hooks/ui/useWallpaper';
+import { WALLPAPER_TOKENS_STYLE_ID } from '@renderer/utils/theme/wallpaperTokens';
 import SidebarToggleIcon from '@renderer/components/layout/Sider/SidebarToggleIcon';
 import {
   SettingsNavigationLoadingOverlay,
@@ -305,7 +309,7 @@ const Layout: React.FC<{
 
     broadcastCustomCssSync(customCss);
 
-    const wrappedCss = customCss ? processCustomCss(customCss) : '';
+    const wrappedCss = customCss ? processCustomCss(stripBackgroundCssBlock(customCss)) : '';
 
     const upsertStyle = (id: string, content: string): HTMLStyleElement => {
       let styleEl = document.getElementById(id) as HTMLStyleElement | null;
@@ -331,17 +335,19 @@ const Layout: React.FC<{
 
       ensureThemeControlContract();
       const controlEl = document.getElementById(THEME_CONTROL_CONTRACT_STYLE_ID);
+      const wallpaperEl = document.getElementById(WALLPAPER_TOKENS_STYLE_ID);
       const guardEl = upsertStyle(SEND_BUTTON_GUARD_STYLE_ID, SEND_BUTTON_GUARD_CSS);
 
-      // Order: customCss → theme control → send-button guard (last wins for send button).
-      if (customEl && controlEl && customEl.nextElementSibling !== controlEl) {
-        controlEl.before(customEl);
-      }
-      if (controlEl && controlEl.nextElementSibling !== guardEl) {
-        guardEl.before(controlEl);
-      }
-      if (guardEl !== document.head.lastElementChild) {
-        document.head.appendChild(guardEl);
+      // Order: customCss → theme control → wallpaper tokens → send-button guard.
+      const chain = [customEl, controlEl, wallpaperEl, guardEl].filter((el): el is HTMLElement => Boolean(el));
+      const alreadyOrdered =
+        chain.length > 0 &&
+        chain.every((el, index) => index === 0 || chain[index - 1]?.nextElementSibling === el) &&
+        chain[chain.length - 1] === document.head.lastElementChild;
+      if (!alreadyOrdered) {
+        for (const el of chain) {
+          document.head.appendChild(el);
+        }
       }
     };
 
@@ -357,7 +363,8 @@ const Layout: React.FC<{
           return (
             el.id !== customStyleId &&
             el.id !== SEND_BUTTON_GUARD_STYLE_ID &&
-            el.id !== THEME_CONTROL_CONTRACT_STYLE_ID
+            el.id !== THEME_CONTROL_CONTRACT_STYLE_ID &&
+            el.id !== WALLPAPER_TOKENS_STYLE_ID
           );
         })
       );
@@ -369,12 +376,16 @@ const Layout: React.FC<{
       const guardEl = document.getElementById(SEND_BUTTON_GUARD_STYLE_ID);
       const controlEl = document.getElementById(THEME_CONTROL_CONTRACT_STYLE_ID);
       const customEl = document.getElementById(customStyleId);
+      const wallpaperEl = document.getElementById(WALLPAPER_TOKENS_STYLE_ID);
+      const chain = [customCss ? customEl : null, controlEl, wallpaperEl, guardEl].filter((el): el is HTMLElement =>
+        Boolean(el)
+      );
       const orderWrong =
         !guardEl ||
         !controlEl ||
+        (customCss && !customEl) ||
         guardEl !== document.head.lastElementChild ||
-        controlEl.nextElementSibling !== guardEl ||
-        (customCss && (!customEl || customEl.nextElementSibling !== controlEl));
+        chain.some((el, index) => index > 0 && chain[index - 1]?.nextElementSibling !== el);
 
       if (orderWrong) {
         ensureInjectedStyles();
@@ -678,7 +689,9 @@ const Layout: React.FC<{
       <SettingsNavigationTransitionProvider>
         <NavigationHistoryProvider>
           <WebuiServerProvider>
-            <div className='app-shell flex flex-col size-full min-h-0'>
+            <WallpaperProvider>
+              <WallpaperScene />
+              <div className='app-shell flex flex-col size-full min-h-0'>
               <Titlebar workspaceAvailable={workspaceAvailable} />
               {/* 移动端左侧边栏蒙板 / Mobile left sider backdrop */}
               {isMobile && !collapsed && (
@@ -784,8 +797,9 @@ const Layout: React.FC<{
                 </ArcoLayout.Content>
               </ArcoLayout>
             </div>
-            <NotificationHost />
-            <AppChromeShortcutsHost />
+              <NotificationHost />
+              <AppChromeShortcutsHost />
+            </WallpaperProvider>
           </WebuiServerProvider>
         </NavigationHistoryProvider>
       </SettingsNavigationTransitionProvider>

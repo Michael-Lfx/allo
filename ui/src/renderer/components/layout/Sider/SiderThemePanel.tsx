@@ -9,6 +9,7 @@ import classNames from 'classnames';
 import { ThemeSwitcher } from '@renderer/components/settings/ThemeSwitcher';
 import FontSizeControl from '@renderer/components/settings/FontSizeControl';
 import CssThemeModal from '@renderer/pages/settings/DisplaySettings/CssThemeModal';
+import WallpaperSection from '@renderer/components/layout/Sider/WallpaperSection';
 import { getCssThemeDisplayName } from '@renderer/pages/settings/DisplaySettings/presets';
 import { useCssTheme } from '@renderer/hooks/ui/useCssTheme';
 import type { ICssTheme } from '@/common/config/storage';
@@ -83,6 +84,8 @@ const SiderThemePanel: React.FC<SiderThemePanelProps> = ({ className, onBeforeOp
           <div className='text-11px font-500 text-t-tertiary'>{t('settings.fontSize')}</div>
           <FontSizeControl />
         </div>
+
+        <WallpaperSection />
 
         <div className='flex flex-col gap-4px min-w-0'>
           <div className='text-11px font-500 text-t-tertiary'>{t('settings.cssTheme.selectOrCustomize')}</div>

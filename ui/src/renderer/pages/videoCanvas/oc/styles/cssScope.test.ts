@@ -44,6 +44,7 @@ describe('oc css scope containment', () => {
         expect(shield.includes('translate: none;')).toBe(true);
         expect(shield.includes('--un-translate-x: 0 !important;')).toBe(true);
         expect(shield.includes('--un-scale-x: 1 !important;')).toBe(true);
+        expect(shield.includes('data-wallpaper')).toBe(false);
     });
 
     test('canvas route keeps the scope class and portals through the shared host', () => {

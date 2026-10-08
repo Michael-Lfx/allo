@@ -11,7 +11,7 @@ custom protocol.
 
 This document is the map. The sibling documents drill into the parts:
 
-- [`backend-crates.md`](backend-crates.md) — the 44 `nomifun-*` backend crates.
+- [`backend-crates.md`](backend-crates.md) — the 45 `nomifun-*` backend crates.
 - [`agent-engine.md`](agent-engine.md) — the `nomi-*` agent crates (including `nomi-agent-trace` for Session Logs).
 - [`agent-execution.zh.md`](agent-execution.zh.md) — the unified persistent AgentExecution model.
 - [`frontend.md`](frontend.md) — the React SPA, adapter layer, routing.
@@ -65,7 +65,7 @@ This document is the map. The sibling documents drill into the parts:
                           │                       │
                           ▼                       ▼
               ┌─────────────────────┐   ┌─────────────────────┐
-              │  nomifun-* (44)     │◀─▶│  nomi-* (23)         │
+              │  nomifun-* (45)     │◀─▶│  nomi-* (23)         │
               │  backend crates     │   │  + flowy-web         │
               │  data, auth, MCP,   │   │  agent engine crates │
               │  conversation, etc. │   │  via the SEAM:       │
@@ -122,7 +122,7 @@ on disk, not just in package names:
 | Folder | Purpose | Crate prefix | Count |
 | --- | --- | --- | --- |
 | `crates/agent/` | AI engine — providers, tools, sessions, MCP, skills, computer/browser use | `nomi-*` (+ `flowy-web`) | 24 |
-| `crates/backend/` | The HTTP/WS server, data, auth, features, public capability gateway | `nomifun-*` | 44 |
+| `crates/backend/` | The HTTP/WS server, data, auth, features, public capability gateway | `nomifun-*` | 45 |
 | `crates/shared/` | Cross-layer utilities used by both groups | mixed | 5 |
 
 The agent group is **largely self-contained** — most `nomi-*` crates reference
@@ -146,7 +146,7 @@ nomifun-tauri/
 │   └─ web/       nomifun-web      (standalone server: /api + SPA on one port)
 ├─ crates/
 │   ├─ agent/     24 crates (23 nomi-* + flowy-web) → see agent-engine.md
-│   ├─ backend/   44 nomifun-* crates → see backend-crates.md
+│   ├─ backend/   45 nomifun-* crates → see backend-crates.md
 │   └─ shared/    5 shared crates
 ├─ ui/            React 19 + Vite 6 + Arco + UnoCSS  → see frontend.md
 └─ docs/

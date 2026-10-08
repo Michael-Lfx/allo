@@ -2,6 +2,7 @@ import type { AcpInitializeResult, AcpSessionConfigOption, AcpSessionModes } fro
 import type { SpeechToTextConfig, TextToSpeechConfig } from '@/common/types/provider/speech';
 import type { ICssTheme } from '@/common/config/storage';
 import type { CompanionId, ProviderId } from '@/common/types/ids';
+import type { WallpaperPrefs } from '@/common/types/appearance';
 
 // `headless` (default) and `external` are the two supported user policies;
 // `embedded` remains in the read type only so installations can migrate the
@@ -188,6 +189,8 @@ export type ConfigKeyMap = {
   // MoaSettings JSON string (snake_case wire shape). Read by the backend agent
   // factory as the fallback when a conversation carries no explicit extra.moa.
   moa_settings: string | undefined;
+  // Fourth appearance axis: wallpaper scene. Ids + knobs only — never bitmaps.
+  'appearance.wallpaper': WallpaperPrefs | undefined;
 };
 
 export type ConfigKey = keyof ConfigKeyMap;

@@ -1252,6 +1252,8 @@ pub struct AppServices {
     /// factory so the factory can register the companion memory tools for
     /// companion_session conversations; the router reuses this same instance.
     pub companion_service: Arc<nomifun_companion::CompanionService>,
+    /// Wallpaper scene library (disk + HTTP). Independent of CSS skins.
+    pub appearance_service: Arc<nomifun_appearance::AppearanceService>,
     /// 客服独立域 CRUD service (agents / notes / bindings).
     pub customer_service_service: Arc<nomifun_customer_service::CustomerServiceService>,
     /// 客服无状态并发回合执行器 (channel seam target).
@@ -3055,6 +3057,9 @@ impl AppServices {
         .await
         .map_err(|e| anyhow::anyhow!("companion service start failed: {e}"))?;
 
+        let appearance_service = nomifun_appearance::AppearanceService::open(&data_dir)
+            .map_err(|e| anyhow::anyhow!("appearance service start failed: {e}"))?;
+
         // 客服独立域 (customer-service domain): agents/notes/bindings CRUD
         // service + the stateless concurrent dialogue engine. The engine's
         // LLM turns go through the generic one-shot entry whose tool table is
@@ -3802,6 +3807,7 @@ impl AppServices {
             _gateway_mcp_server: gateway_mcp_server,
             _knowledge_mcp_server: knowledge_mcp_server,
             companion_service,
+            appearance_service,
             customer_service_service,
             cs_dialogue_engine,
             workshop_service,

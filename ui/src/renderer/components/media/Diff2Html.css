@@ -123,3 +123,53 @@
     }
   }
 }
+
+/* Wallpaper: punch opaque diff plates so the 换肤 scene shows through.
+   Keep insert/delete tints — they are already translucent rgba overlays.
+   Line-level rules live here (not the late wallpaper token sheet) so ins/del
+   restores below still win. */
+html[data-wallpaper='on'] .d2h-code-linenumber,
+html[data-wallpaper='on'] .d2h-code-side-linenumber,
+html[data-wallpaper='on'] .d2h-info,
+html[data-wallpaper='on'] .d2h-emptyplaceholder,
+html[data-wallpaper='on'] .d2h-cntx,
+html[data-wallpaper='on'] .d2h-code-line,
+html[data-wallpaper='on'] .d2h-code-side-line,
+html[data-wallpaper='on'] .d2h-cntx .d2h-code-line,
+html[data-wallpaper='on'] .d2h-cntx .d2h-code-side-line {
+  background-color: transparent !important;
+}
+
+html[data-wallpaper='on'] .d2h-ins,
+html[data-wallpaper='on'] .d2h-ins .d2h-code-line,
+html[data-wallpaper='on'] .d2h-ins .d2h-code-side-line {
+  background-color: rgba(35, 195, 67, 0.15) !important;
+}
+
+html[data-wallpaper='on'] .d2h-ins .d2h-code-linenumber,
+html[data-wallpaper='on'] .d2h-ins .d2h-code-side-linenumber {
+  background-color: rgba(35, 195, 67, 0.25) !important;
+}
+
+html[data-wallpaper='on'] .d2h-ins.d2h-change,
+html[data-wallpaper='on'] .d2h-ins.d2h-change .d2h-code-line,
+html[data-wallpaper='on'] .d2h-ins.d2h-change .d2h-code-side-line {
+  background-color: rgba(35, 195, 67, 0.25) !important;
+}
+
+html[data-wallpaper='on'] .d2h-del,
+html[data-wallpaper='on'] .d2h-del .d2h-code-line,
+html[data-wallpaper='on'] .d2h-del .d2h-code-side-line {
+  background-color: rgba(245, 63, 63, 0.15) !important;
+}
+
+html[data-wallpaper='on'] .d2h-del .d2h-code-linenumber,
+html[data-wallpaper='on'] .d2h-del .d2h-code-side-linenumber {
+  background-color: rgba(245, 63, 63, 0.25) !important;
+}
+
+html[data-wallpaper='on'] .d2h-del.d2h-change,
+html[data-wallpaper='on'] .d2h-del.d2h-change .d2h-code-line,
+html[data-wallpaper='on'] .d2h-del.d2h-change .d2h-code-side-line {
+  background-color: rgba(245, 63, 63, 0.25) !important;
+}

@@ -20,7 +20,11 @@ describe('terminal canvas theme', () => {
     expect(source.includes("readCssColor('--terminal-surface-bg'")).toBe(true);
     expect(source.includes("document.documentElement.getAttribute('data-theme') === 'dark'")).toBe(true);
     expect(xtermSource.includes('resolveTerminalTheme()')).toBe(true);
-    expect(xtermSource.includes("attributeFilter: ['data-theme', 'data-color-scheme']")).toBe(true);
+    expect(xtermSource.includes("attributeFilter: ['data-theme', 'data-color-scheme', 'data-wallpaper']")).toBe(true);
+    expect(xtermSource.includes('allowTransparency: true')).toBe(true);
+    expect(xtermSource.includes('isWallpaperTerminalTheme()')).toBe(true);
+    expect(source.includes("getAttribute('data-wallpaper') === 'on'")).toBe(true);
+    expect(source.includes("'rgba(0,0,0,0)'")).toBe(true);
   });
 
   test('default scheme maps the terminal card to the page background in both modes', () => {

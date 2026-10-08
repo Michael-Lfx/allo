@@ -183,6 +183,8 @@
     "diaryEmpty": "还没有日记，等 {{companionName}} 完成第一次学习后再来看看吧～",
     "appearanceSection": "伙伴形象",
     "appearanceSectionHint": "名字、桌面上的样子，以及它陪你走到了哪一步",
+    "wallpaperRoom": "房间预览",
+    "wallpaperRoomHint": "主窗口壁纸只铺在客户端里；桌面伙伴窗口始终透明。",
     "figureCurrent": "当前：{{look}}",
     "changeFigure": "更换形象",
     "deskVisible": "桌面显示",

@@ -352,4 +352,51 @@ for (const file of files) {
 if (!files.length) {
   console.log('（presets 目录下没有非 default 主题）');
 }
+
+const wallpaperCssPath = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'ui/src/renderer/styles/wallpaperScene.css'
+);
+const wallpaperCss = stripComments(readFileSync(wallpaperCssPath, 'utf8'));
+const wallpaperProblems = [];
+if (/--text-primary\s*:/.test(wallpaperCss) || /--color-text-[1-4]\s*:/.test(wallpaperCss)) {
+  wallpaperProblems.push('wallpaper scene must not rewrite text color tokens');
+}
+if (
+  /\bhtml[^{.\n]*\{[^}]*background-image\s*:\s*(?!none\b)/.test(wallpaperCss) ||
+  /\bbody[^{.\n]*\{[^}]*background-image\s*:\s*(?!none\b)/.test(wallpaperCss)
+) {
+  wallpaperProblems.push('wallpaper scene must not paint html/body with background-image');
+}
+for (const selector of CONTENT_POPOVER_SELECTORS) {
+  const re = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^{]*\\{([^}]+)\\}`);
+  const match = wallpaperCss.match(re);
+  if (!match) {
+    wallpaperProblems.push(`wallpaper mode missing popover plate for ${selector}`);
+    continue;
+  }
+  const alphas = rgbaAlphaValues(match[1]);
+  const mix = match[1].match(/color-mix\([^)]*?(\d+(?:\.\d+)?)%/);
+  if (mix && Number(mix[1]) < MIN_CONTENT_SURFACE_ALPHA * 100) {
+    wallpaperProblems.push(`${selector} wallpaper plate alpha ${mix[1]}% < ${MIN_CONTENT_SURFACE_ALPHA * 100}%`);
+  }
+  if (alphas.some((alpha) => alpha < MIN_CONTENT_SURFACE_ALPHA)) {
+    wallpaperProblems.push(`${selector} wallpaper rgba alpha below ${MIN_CONTENT_SURFACE_ALPHA}`);
+  }
+}
+if (!wallpaperCss.includes("html[data-wallpaper='on'] .oc-root") && !wallpaperCss.includes("html[data-wallpaper='on'] .oc-canvas")) {
+  wallpaperProblems.push('wallpaper scene must mention .oc-root / .oc-canvas');
+}
+if (!wallpaperCss.includes('.oc-portal-host')) {
+  wallpaperProblems.push('wallpaper scene must keep .oc-portal-host transparent');
+}
+if (wallpaperProblems.length) {
+  failed = true;
+  console.log('✗ wallpaperScene.css');
+  for (const problem of wallpaperProblems) console.log(`   - ${problem}`);
+} else {
+  console.log('✓ wallpaperScene.css');
+}
+
 process.exit(failed ? 1 : 0);

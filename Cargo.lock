@@ -7039,6 +7039,7 @@ dependencies = [
  "nomifun-ai-agent",
  "nomifun-api-types",
  "nomifun-app-server",
+ "nomifun-appearance",
  "nomifun-assets",
  "nomifun-audio",
  "nomifun-auth",
@@ -7138,6 +7139,24 @@ dependencies = [
  "tokio",
  "toml 0.8.2",
  "toml_edit 0.20.2",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "nomifun-appearance"
+version = "1.5.9"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "image",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-common",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "tower",
  "tracing",
 ]

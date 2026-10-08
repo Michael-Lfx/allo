@@ -35,6 +35,19 @@
           if (colorScheme) {
             document.documentElement.setAttribute('data-color-scheme', colorScheme);
           }
+          var wallpaper = localStorage.getItem('__nomifun_wallpaper');
+          if (wallpaper) {
+            var parsed = JSON.parse(wallpaper);
+            if (parsed && parsed.enabled) {
+              document.documentElement.setAttribute('data-wallpaper', 'on');
+              var overlay = /#\/(companion|nomi-memory-panel|completion-toast|meeting-captions)(\?|$)/.test(
+                location.hash || ''
+              );
+              if (parsed.seed && !overlay) {
+                document.documentElement.style.backgroundColor = parsed.seed;
+              }
+            }
+          }
         } catch (e) {}
       })();
     </script>

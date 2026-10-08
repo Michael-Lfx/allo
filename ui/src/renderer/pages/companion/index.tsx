@@ -20,6 +20,7 @@ import { THEME_SYNC_EVENT, type ThemeSyncPayload } from '@/renderer/utils/theme/
 import { companionErrorKey, streamErrorCode } from './companionError';
 import { isForCompanion } from './eventScope';
 import { injectCompanionCustomCss } from '@/renderer/utils/theme/applyCustomCss';
+import { injectWallpaperTokenSheet, restoreWallpaperTokensFromCache } from '@/renderer/utils/theme/applyWallpaperTokens';
 import { configService } from '@/common/config/configService';
 import ChannelDingTalkLogo from '@/renderer/assets/channel-logos/dingtalk.svg';
 import ChannelDiscordLogo from '@/renderer/assets/channel-logos/discord.svg';
@@ -1120,7 +1121,10 @@ const CompanionPage: React.FC = () => {
     void configService
       .whenReady()
       .then(() => {
-        if (!disposed) injectCompanionCustomCss((configService.get('customCss') as string) || '');
+        if (!disposed) {
+          injectCompanionCustomCss((configService.get('customCss') as string) || '');
+          restoreWallpaperTokensFromCache();
+        }
       })
       .catch(() => {});
     void import('@tauri-apps/api/event')
@@ -1133,6 +1137,9 @@ const CompanionPage: React.FC = () => {
             document.body.setAttribute('arco-theme', next);
           }
           if (payload?.customCss !== undefined) injectCompanionCustomCss(payload.customCss);
+          if (payload?.wallpaperTokens !== undefined) {
+            injectWallpaperTokenSheet(payload.wallpaperTokens, Boolean(payload.wallpaperEnabled));
+          }
         })
       )
       .then((un) => {
