@@ -37,6 +37,9 @@ describe('video generation session video credits', () => {
     const board = source('./components/StoryboardBoard.tsx');
     const modal = source('./components/StoryboardShotEditorModal.tsx');
     expect(inspector.includes('putShotPacket')).toBe(true);
+    expect(inspector.includes('planning = false')).toBe(true);
+    expect(inspector.includes('cannot edit a shot packet while planning')).toBe(true);
+    expect(board.includes('planning={planning}')).toBe(true);
     expect(inspector.includes('compiledPrompt') || inspector.includes('compiled_prompt')).toBe(true);
     expect(inspector.includes('takes')).toBe(true);
     expect(inspector.includes('shot-graph')).toBe(true);

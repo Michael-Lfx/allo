@@ -238,6 +238,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     () => activeVideoGenerationTarget(runStatus),
     [runStatus]
   );
+  const planning = runStatus?.status === 'planning';
   const rendering =
     runStatus?.status === 'rendering' || runStatus?.status === 'awaiting_review';
   const awaitingReview = runStatus?.status === 'awaiting_review';
@@ -550,6 +551,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           scene={activeScene}
           artifacts={artifacts}
           generating={shotGenerating}
+          planning={planning}
           reviewLocked={reviewLocked}
           shotNumber={sceneNumber}
           shotTotal={scenes.length}

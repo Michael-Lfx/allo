@@ -1019,25 +1019,27 @@ impl VimaxService {
         shot_idx: i32,
     ) -> VimaxResult<()> {
         let record = self.index.get(id)?;
-        if record.status == RunStatus::Planning {
+        // Live run status is the in-flight source of truth. The session index
+        // can lag a completed plan (`stage=planned` is written before Idle),
+        // and a stale Planning row must not block the director desk.
+        let (status, pending) = {
+            let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
+            match map.get(id) {
+                Some(st) => (st.status, st.pending_review.clone()),
+                None => (record.status, None),
+            }
+        };
+        if status == RunStatus::Planning {
             return Err(VimaxError::InvalidParams(
                 "cannot edit a shot packet while planning".into(),
             ));
         }
-        let status = {
-            let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
-            map.get(id).map(|s| s.status)
-        };
-        let pending = {
-            let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
-            map.get(id).and_then(|s| s.pending_review.clone())
-        };
-        if status == Some(RunStatus::Rendering) {
+        if status == RunStatus::Rendering {
             return Err(VimaxError::InvalidParams(
                 "cannot edit a shot packet while it is generating".into(),
             ));
         }
-        if status == Some(RunStatus::AwaitingReview) {
+        if status == RunStatus::AwaitingReview {
             let Some(pending) = pending else {
                 return Err(VimaxError::InvalidParams(
                     "shot review gate is active but no pending shot is recorded".into(),
