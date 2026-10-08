@@ -53,6 +53,19 @@ import styles from '../index.module.css';
 const SAVE_DEBOUNCE_MS = 500;
 const LAYOUT_DEBOUNCE_MS = 450;
 const EMPTY_REFS: ShotRefSlot[] = [];
+const PLANNING_PACKET_ERROR = /cannot edit a shot packet while planning/i;
+
+function isPlanningPacketError(err: unknown): boolean {
+  const detail = err instanceof Error ? err.message : String(err);
+  return PLANNING_PACKET_ERROR.test(detail);
+}
+
+function sameShotLayout(
+  current: ShotGraphLayout | null | undefined,
+  next: ShotGraphLayout
+): boolean {
+  return JSON.stringify(current ?? null) === JSON.stringify(next);
+}
 
 export interface ShotPacketInspectorProps {
   sessionId: string;
@@ -63,6 +76,8 @@ export interface ShotPacketInspectorProps {
   posterPath?: string | null;
   videoStatus?: StoryboardVideoSlotStatus;
   generating: boolean;
+  /** Session-level planning job — packets exist but must not be PUT yet. */
+  planning?: boolean;
   reviewLocked: boolean;
   shotNumber?: number;
   shotTotal?: number;
@@ -124,6 +139,7 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   posterPath,
   videoStatus,
   generating,
+  planning = false,
   reviewLocked,
   shotNumber,
   shotTotal,
@@ -158,9 +174,18 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   const fittedKey = useRef('');
   const [canvasExpanded, setCanvasExpanded] = useState(false);
 
-  const editable = Boolean(packet) && !generating && !reviewLocked && packet?.run_state !== 'generating';
+  const editable =
+    Boolean(packet) &&
+    !planning &&
+    !generating &&
+    !reviewLocked &&
+    packet?.run_state !== 'generating';
   const canGenerate =
-    Boolean(packet) && !generating && !reviewLocked && packet?.run_state !== 'generating';
+    Boolean(packet) &&
+    !planning &&
+    !generating &&
+    !reviewLocked &&
+    packet?.run_state !== 'generating';
 
   const applyLayoutFromPacket = useCallback((next: ShotPacketView) => {
     const defaults = defaultNodePositions(
@@ -210,7 +235,7 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
 
   useEffect(() => {
     void loadPacket();
-  }, [loadPacket, scene.id, generating]);
+  }, [loadPacket, scene.id, generating, planning]);
 
   useLayoutEffect(() => {
     setSelectedNodeId(VIDEO_NODE_ID);
@@ -245,6 +270,7 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
         });
         setSavedAt(Date.now());
       } catch (err) {
+        if (isPlanningPacketError(err)) return;
         message.error(
           t('videoGeneration.studio.storyboard.packetSaveFailed', {
             defaultValue: '镜头包保存失败',
@@ -275,9 +301,12 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   const persistLayout = useCallback(
     (nextPositions = positionsRef.current, nextViewport = viewportRef.current) => {
       if (!editable) return;
+      const next = layoutPayload(nextPositions, nextViewport);
+      if (sameShotLayout(packetRef.current?.layout, next)) return;
       if (layoutTimer.current) window.clearTimeout(layoutTimer.current);
       layoutTimer.current = window.setTimeout(() => {
-        void persist({ layout: layoutPayload(nextPositions, nextViewport), recompile: false });
+        if (sameShotLayout(packetRef.current?.layout, next)) return;
+        void persist({ layout: next, recompile: false });
       }, LAYOUT_DEBOUNCE_MS);
     },
     [editable, layoutPayload, persist]
@@ -320,6 +349,18 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
     },
     []
   );
+
+  useEffect(() => {
+    if (editable) return;
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (layoutTimer.current) {
+      window.clearTimeout(layoutTimer.current);
+      layoutTimer.current = null;
+    }
+  }, [editable]);
 
   const imageRefs = packet?.image_refs ?? EMPTY_REFS;
   const audioRefs = (packet?.audio_refs ?? EMPTY_REFS).slice(0, MAX_SHOT_AUDIO_REFS);
@@ -626,7 +667,7 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
     }
     if (nodeId === VIDEO_NODE_ID && patch.seconds != null) {
       const parsed = Number(patch.seconds);
-      if (Number.isFinite(parsed) && parsed > 0) {
+      if (Number.isFinite(parsed) && parsed > 0 && packetRef.current?.duration_secs !== parsed) {
         void persist({ duration_secs: parsed, recompile: false });
       }
     }
