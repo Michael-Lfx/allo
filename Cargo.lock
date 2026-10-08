@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Flowy"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "agent-store"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3628,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "flowy-ssh"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "regex",
@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "flowy-web"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6327,7 +6327,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-a11y"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "atspi",
  "core-foundation 0.10.1",
@@ -6349,7 +6349,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-agent"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6395,7 +6395,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-agent-eval"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6416,7 +6416,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-agent-trace"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6431,7 +6431,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-auxiliary"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "nomi-types",
@@ -6442,7 +6442,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-briefing"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6464,7 +6464,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-browser"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6486,7 +6486,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-browser-engine"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6522,7 +6522,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-cli"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6540,7 +6540,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-coding"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6548,7 +6548,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-compact"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "regex",
  "serde",
@@ -6557,7 +6557,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-computer"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6581,7 +6581,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-config"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -6615,7 +6615,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-insights-core"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "hex",
@@ -6639,7 +6639,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-mcp"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6665,7 +6665,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-media"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6692,7 +6692,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-memory"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "nomi-config",
@@ -6708,7 +6708,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-poi"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "hex",
@@ -6727,7 +6727,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-process-runtime"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -6747,7 +6747,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-protocol"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "rstest",
  "serde",
@@ -6758,7 +6758,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-providers"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -6787,14 +6787,14 @@ dependencies = [
 
 [[package]]
 name = "nomi-redact"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "nomi-skills"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "dirs 6.0.0",
@@ -6817,7 +6817,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-tools"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6849,7 +6849,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-types"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6862,7 +6862,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-vimax"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6891,7 +6891,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-agent-execution"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -6919,7 +6919,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-ai-agent"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -7001,7 +7001,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-api-types"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "nomifun-common",
  "serde",
@@ -7013,7 +7013,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-app"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7112,7 +7112,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-app-server"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7145,7 +7145,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-appearance"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "http-body-util",
@@ -7163,7 +7163,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-assets"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "http 1.5.0",
@@ -7178,7 +7178,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-audio"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7203,7 +7203,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-auth"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7227,7 +7227,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-briefing"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "chrono",
@@ -7250,7 +7250,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-browser-platform"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -7264,7 +7264,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-canvas"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7291,7 +7291,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-channel"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "aes 0.8.4",
  "async-trait",
@@ -7330,7 +7330,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cloud"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-trait",
@@ -7377,7 +7377,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-common"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-trait",
@@ -7404,7 +7404,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-companion"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7438,7 +7438,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-conversation"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7470,7 +7470,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-creation"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7493,7 +7493,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cron"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7520,7 +7520,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-customer-service"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7541,7 +7541,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-db"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "fs2",
@@ -7562,7 +7562,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-extension"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7596,7 +7596,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-file"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7626,7 +7626,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-gateway"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7669,7 +7669,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-idmm"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7693,7 +7693,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-importer"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "hex",
@@ -7714,7 +7714,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-insights"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "nomi-config",
@@ -7730,7 +7730,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-knowledge"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anydoc",
  "async-trait",
@@ -7774,7 +7774,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-learning"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7799,7 +7799,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-mcp"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7824,7 +7824,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-media"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "nomi-config",
@@ -7841,7 +7841,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-model-invoke"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -7859,7 +7859,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-models-dev"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "dirs 6.0.0",
  "nomifun-net",
@@ -7875,7 +7875,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-net"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "nomi-process-runtime",
  "reqwest 0.12.28",
@@ -7885,7 +7885,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-notify"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "nomifun-db",
@@ -7896,7 +7896,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-office"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7921,7 +7921,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-poi"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "nomi-config",
@@ -7940,7 +7940,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-preset"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7961,7 +7961,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-public"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "futures",
@@ -7981,7 +7981,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-realtime"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "dashmap",
@@ -7996,7 +7996,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-requirement"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -8021,7 +8021,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-robot"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8057,7 +8057,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-runtime"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "dirs 6.0.0",
  "fs2",
@@ -8078,7 +8078,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-secret"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "getrandom 0.2.17",
@@ -8098,7 +8098,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-shell"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -8130,7 +8130,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-ssh"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -8156,7 +8156,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-system"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -8190,7 +8190,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-terminal"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -8218,7 +8218,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-vimax"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -8244,7 +8244,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-web"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -8262,7 +8262,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-webhook"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -8285,7 +8285,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-workshop"
-version = "1.5.9"
+version = "2.0.0"
 dependencies = [
  "axum",
  "image",

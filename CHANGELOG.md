@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v2.0.0 - 2026-10-08
+
+- Appearance adds full-window custom wallpaper scenes.
+- The compact update card wraps its description, and Flowy LLM requests stamp the conversation session.
 - Short-drama workshop portraits are a standard character design sheet (full-body hero plus face close-up) instead of an equal three-view turnaround.
 - Video canvas no longer treats WAV clips as images, keeps reference audio on Seedance/Wan, and opens audio settings above the prompt overlay.
 - Buy credits from the sidebar cart, conversation errors, and video failures opens the official website credits tab with the same cloud login token.
