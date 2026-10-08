@@ -780,8 +780,11 @@ impl VimaxService {
         let id = id.to_string();
         tokio::spawn(async move {
             // Attribute every Flowy LLM / image / video call in this plan run to the
-            // session id so GET /credits/usageByTurn can aggregate the full flow.
-            let result = nomi_providers::with_flowy_billing_turn_id(id.clone(), async {
+            // session id so GET /credits/usageByTurn and ops session tracing
+            // can aggregate the full flow.
+            let result = nomi_providers::with_flowy_chat_session_id(
+                id.clone(),
+                nomi_providers::with_flowy_billing_turn_id(id.clone(), async {
                 match std::panic::AssertUnwindSafe(
                     svc.run_plan(
                         &id,
@@ -807,7 +810,8 @@ impl VimaxService {
                     Ok(r) => r,
                     Err(payload) => Err(VimaxError::from_panic_payload("planning task", payload)),
                 }
-            })
+            }),
+            )
             .await;
             svc.finish_job(&id, result, &token, JobKind::Plan).await;
         });
@@ -899,16 +903,19 @@ impl VimaxService {
         let svc = Arc::clone(self);
         let id = id.to_string();
         tokio::spawn(async move {
-            // Same billing turn as plan: session UUID aggregates plan + render spend.
-            let result = nomi_providers::with_flowy_billing_turn_id(id.clone(), async {
-                match std::panic::AssertUnwindSafe(svc.run_render(&id, token.clone()))
-                    .catch_unwind()
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(payload) => Err(VimaxError::from_panic_payload("render task", payload)),
-                }
-            })
+            // Same session + billing turn as plan: UUID aggregates plan + render spend.
+            let result = nomi_providers::with_flowy_chat_session_id(
+                id.clone(),
+                nomi_providers::with_flowy_billing_turn_id(id.clone(), async {
+                    match std::panic::AssertUnwindSafe(svc.run_render(&id, token.clone()))
+                        .catch_unwind()
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(payload) => Err(VimaxError::from_panic_payload("render task", payload)),
+                    }
+                }),
+            )
             .await;
             svc.finish_job(&id, result, &token, JobKind::Render).await;
         });
@@ -925,11 +932,17 @@ impl VimaxService {
         let working = self.index.working_dir(id)?;
         let record = self.index.get(id)?;
         let backends = self.backends_for(&record, None).await?;
-        let result = crate::revise::revise_artifact(
-            &backends.chat,
-            &working,
-            &revision_target,
-            &revision_instruction,
+        let result = nomi_providers::with_flowy_chat_session_id(
+            id.to_string(),
+            nomi_providers::with_flowy_billing_turn_id(
+                id.to_string(),
+                crate::revise::revise_artifact(
+                    &backends.chat,
+                    &working,
+                    &revision_target,
+                    &revision_instruction,
+                ),
+            ),
         )
         .await?;
         self.apply_revise_result(id, &result, "revised")?;

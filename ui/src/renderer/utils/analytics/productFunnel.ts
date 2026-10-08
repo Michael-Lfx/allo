@@ -369,6 +369,10 @@ export type TurnTimingProps = {
   conversation_type?: string;
   cold_start?: boolean;
   error_code?: string | null;
+  /** Local conversation UUID; lifted to tb_telemetry_events.session_id on ingest. */
+  session_id?: string;
+  /** Wire/billing turn id (X-Flowy-Turn-Id); joins tb_user_chat.turn_id. */
+  turn_id?: string;
 };
 
 type TurnTimingSession = {
@@ -383,12 +387,41 @@ type TurnTimingSession = {
 
 const turnTimingSessions = new Map<string, TurnTimingSession>();
 
+function compactTurnJoinProps(session: TurnTimingSession): FunnelEvent['props'] {
+  const props: FunnelEvent['props'] = {
+    request_key: session.requestKey,
+    conversation_type: session.props.conversation_type ?? null,
+  };
+  const sessionId = session.props.session_id?.trim();
+  if (sessionId) props.session_id = sessionId;
+  const turnId = session.props.turn_id?.trim();
+  if (turnId) props.turn_id = turnId;
+  return props;
+}
+
+/** Attach conversation/turn join keys once the server identity is known. */
+export function bindTurnTimingIds(
+  requestKey: string,
+  ids: { session_id?: string | null; turn_id?: string | null }
+): void {
+  const session = turnTimingSessions.get(requestKey);
+  if (!session) return;
+  const sessionId = typeof ids.session_id === 'string' ? ids.session_id.trim() : '';
+  const turnId = typeof ids.turn_id === 'string' ? ids.turn_id.trim() : '';
+  if (sessionId) session.props.session_id = sessionId;
+  if (turnId) session.props.turn_id = turnId;
+}
+
 export function beginTurnTiming(requestKey: string, props: TurnTimingProps = {}): void {
   const submittedAt = Date.now();
-  turnTimingSessions.set(requestKey, { requestKey, submittedAt, props });
+  const session: TurnTimingSession = { requestKey, submittedAt, props: { ...props } };
+  const sessionId = session.props.session_id?.trim();
+  session.props.session_id = sessionId || undefined;
+  const turnId = session.props.turn_id?.trim();
+  session.props.turn_id = turnId || undefined;
+  turnTimingSessions.set(requestKey, session);
   trackFunnelEvent('message_submitted', {
-    request_key: requestKey,
-    conversation_type: props.conversation_type ?? null,
+    ...compactTurnJoinProps(session),
     cold_start: props.cold_start ?? null,
   });
 }
@@ -400,9 +433,8 @@ export function markTurnAccepted(requestKey: string, extra?: TurnTimingProps): n
   Object.assign(session.props, extra);
   const acceptMs = session.acceptedAt - session.submittedAt;
   trackFunnelEvent('message_accepted', {
-    request_key: requestKey,
+    ...compactTurnJoinProps(session),
     accept_ms: acceptMs,
-    conversation_type: session.props.conversation_type ?? null,
     cold_start: session.props.cold_start ?? null,
   });
   return acceptMs;
@@ -414,10 +446,9 @@ export function markTurnFirstStatus(requestKey: string, phase?: string): number 
   session.firstStatusAt = Date.now();
   const statusMs = session.firstStatusAt - session.submittedAt;
   trackFunnelEvent('first_status', {
-    request_key: requestKey,
+    ...compactTurnJoinProps(session),
     status_ms: statusMs,
     phase: phase ?? null,
-    conversation_type: session.props.conversation_type ?? null,
   });
   return statusMs;
 }
@@ -428,9 +459,8 @@ export function markTurnFirstToken(requestKey: string): number | null {
   session.firstTokenAt = Date.now();
   const ttftMs = session.firstTokenAt - session.submittedAt;
   trackFunnelEvent('first_token', {
-    request_key: requestKey,
+    ...compactTurnJoinProps(session),
     ttft_ms: ttftMs,
-    conversation_type: session.props.conversation_type ?? null,
     cold_start: session.props.cold_start ?? null,
   });
   return ttftMs;
@@ -442,9 +472,8 @@ export function markTurnStreamFinished(requestKey: string): number | null {
   session.streamFinishedAt = Date.now();
   const streamMs = session.streamFinishedAt - session.submittedAt;
   trackFunnelEvent('stream_finished', {
-    request_key: requestKey,
+    ...compactTurnJoinProps(session),
     stream_ms: streamMs,
-    conversation_type: session.props.conversation_type ?? null,
   });
   return streamMs;
 }
@@ -457,12 +486,11 @@ export function markTurnIdle(requestKey: string, outcome: 'completed' | 'failed'
     session.streamFinishedAt != null ? idleAt - session.streamFinishedAt : null;
   const totalMs = idleAt - session.submittedAt;
   trackFunnelEvent('turn_idle', {
-    request_key: requestKey,
+    ...compactTurnJoinProps(session),
     total_ms: totalMs,
     finalization_gap_ms: finalizationGapMs,
     outcome,
     feature: 'conversation',
-    conversation_type: session.props.conversation_type ?? null,
     cold_start: session.props.cold_start ?? null,
     error_code: session.props.error_code ?? null,
   });
@@ -489,9 +517,8 @@ export function markTurnAbandonedBeforeFirstToken(requestKey: string): void {
   const session = turnTimingSessions.get(requestKey);
   if (!session || session.firstTokenAt != null) return;
   trackFunnelEvent('abandoned_before_first_token', {
-    request_key: requestKey,
+    ...compactTurnJoinProps(session),
     wait_ms: Date.now() - session.submittedAt,
-    conversation_type: session.props.conversation_type ?? null,
   });
   turnTimingSessions.delete(requestKey);
 }

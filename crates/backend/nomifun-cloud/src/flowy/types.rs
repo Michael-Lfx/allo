@@ -684,16 +684,6 @@ impl ClawModelEntry {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatSessionReportRequest {
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ChatSessionReportResponse {
-    pub stored: bool,
-}
 
 #[cfg(test)]
 mod plan_label_tests {

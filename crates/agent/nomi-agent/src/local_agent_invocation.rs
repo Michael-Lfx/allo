@@ -557,12 +557,12 @@ where
     let n = tasks.len();
     let mut set = tokio::task::JoinSet::new();
     // JoinSet tasks are `tokio::spawn`ed and do not inherit task-locals.
-    // Capture the Flowy billing turn id here so nested model calls still
-    // send `X-Flowy-Turn-Id` (otherwise the account is billed, usageByTurn is not).
-    let billing_turn_id = nomi_providers::current_flowy_billing_turn_id();
+    // Capture session + turn here so nested model calls still send
+    // `X-Flowy-Session-Id` / `X-Flowy-Turn-Id`.
+    let attribution = nomi_providers::current_flowy_proxy_attribution();
     for (idx, task) in tasks.into_iter().enumerate() {
         let sem = semaphore.clone();
-        let billing_turn_id = billing_turn_id.clone();
+        let attribution = attribution.clone();
         set.spawn(async move {
             // Held for the task's whole lifetime; dropped on completion to free
             // the slot for a queued task. A closed semaphore is a bug (nothing
@@ -574,7 +574,7 @@ where
                     Err(_) => Err(BoundedTaskError::SemaphoreClosed),
                 }
             };
-            nomi_providers::with_optional_flowy_billing_turn_id(billing_turn_id, run).await
+            nomi_providers::with_flowy_proxy_attribution(attribution, run).await
         });
     }
 
@@ -1878,18 +1878,26 @@ mod phase7_tests {
     async fn execute_bounded_inherits_flowy_billing_turn_id() {
         use tokio::sync::Semaphore;
 
-        let observed = nomi_providers::with_flowy_billing_turn_id("turn-parent", async {
-            super::execute_bounded(
-                Arc::new(Semaphore::new(2)),
-                vec![async { nomi_providers::current_flowy_billing_turn_id() }],
-            )
+        let observed = nomi_providers::with_flowy_chat_session_id("sess-parent", async {
+            nomi_providers::with_flowy_billing_turn_id("turn-parent", async {
+                super::execute_bounded(
+                    Arc::new(Semaphore::new(2)),
+                    vec![async {
+                        (
+                            nomi_providers::current_flowy_chat_session_id(),
+                            nomi_providers::current_flowy_billing_turn_id(),
+                        )
+                    }],
+                )
+                .await
+            })
             .await
         })
         .await;
         assert_eq!(
-            observed[0].as_ref().expect("join").as_deref(),
-            Some("turn-parent"),
-            "JoinSet fan-out must re-scope X-Flowy-Turn-Id so nested model calls bill the parent turn"
+            observed[0].as_ref().expect("join"),
+            &(Some("sess-parent".into()), Some("turn-parent".into())),
+            "JoinSet fan-out must re-scope session and turn so nested model calls stay attributed"
         );
     }
 

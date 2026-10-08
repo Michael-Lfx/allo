@@ -84,22 +84,27 @@ impl NovelCompressor {
 
         let mut set = tokio::task::JoinSet::new();
         let sem = Arc::new(tokio::sync::Semaphore::new(5));
+        let attribution = nomi_providers::current_flowy_proxy_attribution();
         for (i, chunk) in chunks.iter().enumerate() {
             let chat = Arc::clone(&self.chat);
             let chunk = chunk.clone();
             let permit = Arc::clone(&sem);
+            let attribution = attribution.clone();
             set.spawn(async move {
-                let _permit = permit
-                    .acquire()
-                    .await
-                    .map_err(|_| crate::error::VimaxError::msg("semaphore closed"))?;
-                let compressor = NovelCompressor {
-                    chat,
-                    chunk_size: 4000,
-                    chunk_overlap: 400,
-                };
-                let out = compressor.compress_chunk(&chunk).await?;
-                Ok::<_, crate::error::VimaxError>((i, out))
+                nomi_providers::with_flowy_proxy_attribution(attribution, async move {
+                    let _permit = permit
+                        .acquire()
+                        .await
+                        .map_err(|_| crate::error::VimaxError::msg("semaphore closed"))?;
+                    let compressor = NovelCompressor {
+                        chat,
+                        chunk_size: 4000,
+                        chunk_overlap: 400,
+                    };
+                    let out = compressor.compress_chunk(&chunk).await?;
+                    Ok::<_, crate::error::VimaxError>((i, out))
+                })
+                .await
             });
         }
 

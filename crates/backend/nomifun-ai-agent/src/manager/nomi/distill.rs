@@ -109,6 +109,7 @@ fn distill_max_tokens(cfg: &Config) -> u32 {
 /// and the caller's cancel branch owns the terminal event.
 pub(super) fn spawn_distill_exact_turn(
     billing_turn_id: String,
+    session_id: String,
     cancel: tokio_util::sync::CancellationToken,
     cfg: Arc<Config>,
     dir: PathBuf,
@@ -124,15 +125,18 @@ pub(super) fn spawn_distill_exact_turn(
         spawn_exact_turn_child(cancel, child);
         return true;
     }
-    // The billing turn id is a tokio task-local, so it does not cross
-    // `tokio::spawn`; re-scope it *inside* the child so this extra provider call
-    // is still attributed to the owning turn's credit aggregation
-    // (`X-Flowy-Turn-Id`) without making that turn's terminal event wait for it.
+    // Billing turn + chat session ids are tokio task-locals and do not cross
+    // `tokio::spawn`. Re-scope both *inside* the child so this extra provider
+    // call still sends `X-Flowy-Turn-Id` / `X-Flowy-Session-Id` without making
+    // the owning turn's terminal event wait for it.
     spawn_exact_turn_child(
         cancel,
-        nomi_providers::with_optional_flowy_billing_turn_id(
-            Some(billing_turn_id),
-            run_distill(cfg, dir, transcript),
+        nomi_providers::with_flowy_chat_session_id(
+            session_id,
+            nomi_providers::with_optional_flowy_billing_turn_id(
+                Some(billing_turn_id),
+                run_distill(cfg, dir, transcript),
+            ),
         ),
     );
     true
@@ -372,6 +376,7 @@ mod tests {
         cancel.cancel();
         let spawned = spawn_distill_exact_turn(
             "test-turn".to_owned(),
+            "test-session".to_owned(),
             cancel,
             Arc::new(test_distill_config("http://127.0.0.1:1")),
             dir.path().to_path_buf(),

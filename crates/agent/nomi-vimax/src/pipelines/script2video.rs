@@ -814,14 +814,18 @@ impl Script2VideoPipeline {
             let style = style.to_string();
             let theme = theme.clone();
             let permit = Arc::clone(&sem);
+            let attribution = nomi_providers::current_flowy_proxy_attribution();
             set.spawn(async move {
-                let _permit = permit
-                    .acquire()
-                    .await
-                    .map_err(|_| VimaxError::msg("semaphore closed"))?;
-                portraits
-                    .generate_all_views(&character, &style, &theme, &dir)
-                    .await
+                nomi_providers::with_flowy_proxy_attribution(attribution, async move {
+                    let _permit = permit
+                        .acquire()
+                        .await
+                        .map_err(|_| VimaxError::msg("semaphore closed"))?;
+                    portraits
+                        .generate_all_views(&character, &style, &theme, &dir)
+                        .await
+                })
+                .await
             });
         }
         while let Some(joined) = set.join_next().await {

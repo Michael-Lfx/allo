@@ -3,6 +3,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   beginTurnTiming,
+  bindTurnTimingIds,
   confirmFirstValue,
   getFunnelCohort,
   hasFunnelEvent,
@@ -65,10 +66,41 @@ describe('product funnel', () => {
     expect(queued.find((event) => event.name === 'first_token')?.module).toBe('conversation');
     expect(queued.find((event) => event.name === 'first_token')?.properties.ttft_ms).toEqual(expect.any(Number));
     expect(queued.find((event) => event.name === 'first_token')?.properties.request_key).toBe('req-1');
+    expect(queued.find((event) => event.name === 'first_token')?.properties.session_id).toBeUndefined();
+    expect(queued.find((event) => event.name === 'first_token')?.properties.turn_id).toBeUndefined();
     expect(queued.find((event) => event.name === 'turn_idle')?.properties.outcome).toBe('completed');
     expect(queued.find((event) => event.name === 'turn_idle')?.properties.feature).toBe('conversation');
     expect(queued.find((event) => event.name === 'first_value_confirmed')?.module).toBe('conversation');
     expect(queued.find((event) => event.name === 'value_confirmed')?.module).toBe('conversation');
+  });
+
+  test('stamps session_id and turn_id on conversation turn telemetry for ops join', () => {
+    resetFunnelForTests();
+    resetTurnTimingForTests();
+    resetTelemetryOutboxForTests();
+    beginTurnTiming('req-join', {
+      conversation_type: 'nomi',
+      session_id: '550e8400-e29b-41d4-a716-446655440000',
+    });
+    bindTurnTimingIds('req-join', {
+      turn_id: '0193f0a0-0000-7000-8000-000000000001',
+    });
+    expect(markTurnAccepted('req-join')).not.toBeNull();
+    expect(markTurnFirstToken('req-join')).not.toBeNull();
+    expect(markTurnIdle('req-join', 'completed')).not.toBeNull();
+    const queued = listQueuedTelemetryEventsForTests();
+    const submitted = queued.find((event) => event.name === 'message_submitted');
+    const accepted = queued.find((event) => event.name === 'message_accepted');
+    const firstToken = queued.find((event) => event.name === 'first_token');
+    const idle = queued.find((event) => event.name === 'turn_idle');
+    expect(submitted?.properties.session_id).toBe('550e8400-e29b-41d4-a716-446655440000');
+    expect(submitted?.properties.turn_id).toBeUndefined();
+    expect(accepted?.properties.turn_id).toBe('0193f0a0-0000-7000-8000-000000000001');
+    expect(firstToken?.properties.session_id).toBe('550e8400-e29b-41d4-a716-446655440000');
+    expect(firstToken?.properties.turn_id).toBe('0193f0a0-0000-7000-8000-000000000001');
+    expect(firstToken?.properties.request_key).toBe('req-join');
+    expect(idle?.properties.turn_id).toBe('0193f0a0-0000-7000-8000-000000000001');
+    expect(idle?.properties.session_id).toBe('550e8400-e29b-41d4-a716-446655440000');
   });
 
   test('emits app_opened once per session instead of fake d1/d7 flags', () => {

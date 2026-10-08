@@ -33,6 +33,7 @@ import {
 } from '../authoritativeTurnLifecyclePolicy';
 import {
   beginTurnTiming,
+  bindTurnTimingIds,
   confirmFirstValue,
   markTurnAbandonedBeforeFirstToken,
   markTurnAccepted as markFunnelTurnAccepted,
@@ -289,6 +290,7 @@ export const useNomiMessage = (
       beginTurnTiming(localRequestId, {
         conversation_type: 'nomi',
         cold_start: coldStart,
+        session_id: conversation_id,
       });
       if (!coldStart) {
         confirmFirstValue({ source: 'follow_up', conversation_type: 'nomi' });
@@ -304,16 +306,13 @@ export const useNomiMessage = (
         requestMessageId,
       });
     },
-    [bindTimingKey, hasHydratedRunningState]
+    [bindTimingKey, conversation_id, hasHydratedRunningState]
   );
 
   const notifyAccepted = useCallback(
     (requestMessageId: MessageId, turnId?: MessageId) => {
       const timingKey = resolveTimingKey() ?? requestMessageId;
       bindTimingKey(timingKey);
-      markFunnelTurnAccepted(timingKey, { conversation_type: 'nomi' });
-      setActiveRequestMessageId(requestMessageId);
-      activeMsgIdRef.current = requestMessageId;
       // Prefer an explicit wire turn id when the caller has one. Otherwise keep
       // an already-established backend root: Guid first-turn often lands
       // turn.started (wire id) before the HTTP accept returns, and overwriting
@@ -325,6 +324,13 @@ export const useNomiMessage = (
           : existingRoot && existingRoot !== requestMessageId
             ? existingRoot
             : (turnId ?? requestMessageId);
+      bindTurnTimingIds(timingKey, {
+        session_id: conversation_id,
+        turn_id: resolvedTurnId,
+      });
+      markFunnelTurnAccepted(timingKey, { conversation_type: 'nomi' });
+      setActiveRequestMessageId(requestMessageId);
+      activeMsgIdRef.current = requestMessageId;
       setActiveTurnId(resolvedTurnId);
       rootTurnIdRef.current = resolvedTurnId;
       dispatchPresentation({
@@ -333,7 +339,7 @@ export const useNomiMessage = (
         turnId: resolvedTurnId,
       });
     },
-    [bindTimingKey, resolveTimingKey]
+    [bindTimingKey, conversation_id, resolveTimingKey]
   );
 
   const notifyFailed = useCallback(

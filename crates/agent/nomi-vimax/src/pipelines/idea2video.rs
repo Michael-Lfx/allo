@@ -419,30 +419,34 @@ impl Idea2VideoPipeline {
             let permit = Arc::clone(&sem);
             let progress = progress.clone();
             let done = Arc::clone(&done);
+            let attribution = nomi_providers::current_flowy_proxy_attribution();
             set.spawn(async move {
-                let _permit = permit
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| crate::error::VimaxError::msg("semaphore closed"))?;
-                if let Some(budget) = budget {
-                    write_text_artifact(
-                        &scene_dir.join("target_duration_secs.txt"),
-                        &budget.to_string(),
-                    )
-                    .await?;
-                }
-                let s2v = Script2VideoPipeline::new(backends, scene_dir);
-                s2v.plan_text_artifacts(&scene_script, &scene_req, &style, None)
-                    .await?;
-                let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                let pct = 55.0 + 40.0 * (finished as f32 / scene_count as f32);
-                emit_pct(
-                    &progress,
-                    "plan_scene",
-                    &format!("正在规划场景文本产物（{finished}/{scene_count}）"),
-                    pct,
-                );
-                Ok::<_, crate::error::VimaxError>(())
+                nomi_providers::with_flowy_proxy_attribution(attribution, async move {
+                    let _permit = permit
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| crate::error::VimaxError::msg("semaphore closed"))?;
+                    if let Some(budget) = budget {
+                        write_text_artifact(
+                            &scene_dir.join("target_duration_secs.txt"),
+                            &budget.to_string(),
+                        )
+                        .await?;
+                    }
+                    let s2v = Script2VideoPipeline::new(backends, scene_dir);
+                    s2v.plan_text_artifacts(&scene_script, &scene_req, &style, None)
+                        .await?;
+                    let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let pct = 55.0 + 40.0 * (finished as f32 / scene_count as f32);
+                    emit_pct(
+                        &progress,
+                        "plan_scene",
+                        &format!("正在规划场景文本产物（{finished}/{scene_count}）"),
+                        pct,
+                    );
+                    Ok::<_, crate::error::VimaxError>(())
+                })
+                .await
             });
         }
         while let Some(joined) = set.join_next().await {

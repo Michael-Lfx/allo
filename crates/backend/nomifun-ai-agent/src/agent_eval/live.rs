@@ -250,9 +250,12 @@ impl LiveNomiHarness {
         let started = Instant::now();
         let exec = tokio::time::timeout(
             timeout,
-            nomi_providers::with_flowy_billing_turn_id(
-                root_turn_id.clone(),
-                built.engine.execute_turn(&case.prompt, &root_turn_id),
+            nomi_providers::with_optional_flowy_chat_session_id(
+                conversation_id.clone(),
+                nomi_providers::with_flowy_billing_turn_id(
+                    root_turn_id.clone(),
+                    built.engine.execute_turn(&case.prompt, &root_turn_id),
+                ),
             ),
         )
         .await;

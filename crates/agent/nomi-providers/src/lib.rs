@@ -9,8 +9,11 @@ pub mod retry;
 pub mod vertex;
 
 pub use billing_turn::{
-    FLOWY_TURN_ID_HEADER, apply_flowy_proxy_headers, current_flowy_billing_turn_id,
-    with_flowy_billing_turn_id, with_optional_flowy_billing_turn_id,
+    FLOWY_SESSION_ID_HEADER, FLOWY_TURN_ID_HEADER, FlowyProxyAttribution,
+    apply_flowy_proxy_headers, current_flowy_billing_turn_id, current_flowy_chat_session_id,
+    current_flowy_proxy_attribution, with_flowy_billing_turn_id, with_flowy_chat_session_id,
+    with_flowy_proxy_attribution, with_optional_flowy_billing_turn_id,
+    with_optional_flowy_chat_session_id,
 };
 
 use std::collections::HashMap;
