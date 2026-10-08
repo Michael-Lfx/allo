@@ -444,6 +444,13 @@ define_entity_id!(
     FigureId
 );
 define_entity_id!(
+    /// Globally unique wallpaper-library entry identifier.
+    ///
+    /// Wallpaper bytes live on disk under `{data_dir}/wallpapers/{id}/`; the ID
+    /// is the directory name and is not a SQLite row key.
+    WallpaperId
+);
+define_entity_id!(
     /// Globally unique companion evolution-feedback identifier.
     CompanionEvolutionFeedbackId
 );

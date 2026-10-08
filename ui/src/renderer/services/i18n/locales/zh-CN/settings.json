@@ -426,6 +426,20 @@
     "cleared": "已恢复默认样式",
     "deleteConfirm": "确定要删除该主题吗？此操作不可恢复。"
   },
+  "wallpaper": {
+    "title": "壁纸",
+    "upload": "上传壁纸",
+    "uploaded": "壁纸已添加",
+    "uploadFailed": "壁纸上传失败",
+    "dim": "压暗",
+    "blur": "模糊",
+    "auto": "自动",
+    "harmonize": "随壁纸微调强调色",
+    "motion": "动态壁纸",
+    "busyHint": "这张图比较花，已加厚气泡底板。",
+    "contrastHint": "文字对比偏低，建议再压暗一点。",
+    "empty": "上传一张图片作为壁纸，以后可以在这里切换。"
+  },
   "geminiBaseUrl": "Gemini API Base URL",
   "cacheDir": "缓存目录",
   "workDir": "工作目录",

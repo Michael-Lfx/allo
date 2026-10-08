@@ -36,6 +36,7 @@ nomifun-knowledge = { path = "crates/backend/nomifun-knowledge" }
 nomifun-learning = { path = "crates/backend/nomifun-learning" }
 nomifun-poi = { path = "crates/backend/nomifun-poi" }
 nomifun-companion = { path = "crates/backend/nomifun-companion" }
+nomifun-appearance = { path = "crates/backend/nomifun-appearance" }
 nomifun-gateway = { path = "crates/backend/nomifun-gateway" }
 nomifun-public = { path = "crates/backend/nomifun-public" }
 nomifun-webhook = { path = "crates/backend/nomifun-webhook" }

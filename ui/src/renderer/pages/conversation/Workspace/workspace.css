@@ -370,3 +370,9 @@
     animation: none;
   }
 }
+
+html[data-wallpaper='on'] .file-change-group,
+html[data-wallpaper='on'] .file-change-group-header {
+  background: transparent !important;
+  background-color: transparent !important;
+}

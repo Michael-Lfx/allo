@@ -426,6 +426,20 @@
     "cleared": "Restored to default style",
     "deleteConfirm": "Are you sure you want to delete this theme? This action cannot be undone."
   },
+  "wallpaper": {
+    "title": "Wallpaper",
+    "upload": "Upload wallpaper",
+    "uploaded": "Wallpaper added",
+    "uploadFailed": "Failed to upload wallpaper",
+    "dim": "Dim",
+    "blur": "Blur",
+    "auto": "Auto",
+    "harmonize": "Tint accent from wallpaper",
+    "motion": "Motion wallpaper",
+    "busyHint": "Busy photo — bubble plates were thickened.",
+    "contrastHint": "Text contrast is low. Try a stronger dim.",
+    "empty": "Upload a photo to use as wallpaper. You can switch among uploads here."
+  },
   "geminiBaseUrl": "Gemini API Base URL",
   "cacheDir": "Cache Directory",
   "workDir": "Work Directory",

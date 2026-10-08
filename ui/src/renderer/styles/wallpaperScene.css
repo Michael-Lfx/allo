@@ -1,0 +1,185 @@
+/**
+ * Wallpaper scene layer. Inert until html[data-wallpaper='on'].
+ * Atmosphere only: never paints glyphs on the photo. Type stays on plates.
+ * Blur/dim come only from 换肤 knobs on the photo + scrim — chrome must not
+ * add a second frosted layer. Sider, titlebar, content, and canvas board all
+ * punch through to the same scene so 通透度 stays consistent.
+ */
+
+#wallpaper-scene,
+#wallpaper-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+#wallpaper-scene {
+  background-color: var(--wallpaper-seed, transparent);
+}
+
+#wallpaper-scene img,
+#wallpaper-scene video {
+  width: 100%;
+  height: 100%;
+  object-fit: var(--wallpaper-fit, cover);
+  object-position: var(--wallpaper-position, center);
+  filter: blur(var(--wallpaper-blur, 0px));
+  transform: scale(1.04);
+  transform-origin: center;
+}
+
+#wallpaper-scrim {
+  background: color-mix(
+    in srgb,
+    var(--wallpaper-scrim-color, rgb(0, 0, 0)) calc(var(--wallpaper-dim, 0.32) * 100%),
+    transparent
+  );
+}
+
+html[data-wallpaper='on'] .app-shell,
+html[data-wallpaper='on'] .arco-layout,
+html[data-wallpaper='on'] .layout {
+  position: relative;
+  z-index: 1;
+  background-color: transparent !important;
+}
+
+html[data-wallpaper='on'] .layout-content,
+html[data-wallpaper='on'] .layout-content.bg-base,
+html[data-wallpaper='on'] .layout-content .arco-layout,
+html[data-wallpaper='on'] .layout-content .arco-layout-content,
+html[data-wallpaper='on'] .layout-content > *,
+html[data-wallpaper='on'] .oc-root:not(.oc-portal-host),
+html[data-wallpaper='on'] .oc-shell,
+html[data-wallpaper='on'] .oc-canvas:not(.oc-portal-host),
+html[data-wallpaper='on'] #canvas-main,
+html[data-wallpaper='on'] [data-infinite-canvas],
+html[data-wallpaper='on'] [data-canvas-refresh-shell],
+html[data-wallpaper='on'] .oc-canvas:not(.oc-portal-host) > main,
+html[data-wallpaper='on'] .app-page-shell,
+html[data-wallpaper='on'] .conversation-column-slide,
+html[data-wallpaper='on'] .conversation-column-viewport,
+html[data-wallpaper='on'] .conversation-column-pane,
+html[data-wallpaper='on'] .chat-layout-chrome,
+html[data-wallpaper='on'] .chat-layout-right-sider,
+html[data-wallpaper='on'] .content-sider,
+html[data-wallpaper='on'] .workspace-tool-rail,
+html[data-wallpaper='on'] .workspace-panel-header,
+html[data-wallpaper='on'] .preview-panel,
+html[data-wallpaper='on'] .preview-panel-shell,
+html[data-wallpaper='on'] .preview-tabs,
+html[data-wallpaper='on'] .chat-workspace,
+html[data-wallpaper='on'] .chat-workspace .arco-tree,
+html[data-wallpaper='on'] .chat-workspace .arco-tree-list,
+html[data-wallpaper='on'] .file-change-group,
+html[data-wallpaper='on'] .file-change-group-header,
+html[data-wallpaper='on'] .d2h-wrapper,
+html[data-wallpaper='on'] .d2h-file-wrapper,
+html[data-wallpaper='on'] .d2h-file-header,
+html[data-wallpaper='on'] .d2h-file-diff,
+html[data-wallpaper='on'] .d2h-files-diff,
+html[data-wallpaper='on'] .d2h-diff-table,
+html[data-wallpaper='on'] .d2h-diff-tbody,
+html[data-wallpaper='on'] .collapsible-content__mask,
+html[data-wallpaper='on'] .xterm,
+html[data-wallpaper='on'] .xterm-viewport,
+html[data-wallpaper='on'] .xterm-screen,
+html[data-wallpaper='on'] .xterm-rows,
+html[data-wallpaper='on'] .layout-sider,
+html[data-wallpaper='on'] .layout-sider.arco-layout-sider,
+html[data-wallpaper='on'] .layout-sider-header,
+html[data-wallpaper='on'] .layout-sider-content,
+html[data-wallpaper='on'] .layout-sider .arco-layout-sider-children,
+html[data-wallpaper='on'] .layout-sider .sider-section-label {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+html[data-wallpaper='on'] .layout-sider,
+html[data-wallpaper='on'] .layout-sider.arco-layout-sider,
+html[data-wallpaper='on'] .app-titlebar,
+html[data-wallpaper='on'] .app-titlebar--mobile-conversation,
+html[data-wallpaper='on'] .chat-layout-header,
+html[data-wallpaper='on'] .chat-layout-header--glass,
+html[data-wallpaper='on'] .workspace-tool-rail,
+html[data-wallpaper='on'] .preview-panel,
+html[data-wallpaper='on'] .preview-panel-shell,
+html[data-wallpaper='on'] .content-sider {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+
+html[data-wallpaper='on'] .layout-sider .flowy-workpath-drawer-header {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-wallpaper='on'] .layout-sider .flowy-workpath-drawer-header:hover,
+html[data-wallpaper='on'] .layout-sider .flowy-workpath-drawer-header-active,
+html[data-wallpaper='on'] .layout-sider .flowy-workpath-drawer-header-active:hover {
+  background: color-mix(in srgb, var(--color-fill-2) 42%, transparent) !important;
+}
+
+html[data-wallpaper='on'] .chat-layout-header--glass::after {
+  display: none;
+}
+
+html[data-wallpaper='on'] .message-bubble--user {
+  background: color-mix(
+    in srgb,
+    var(--message-user-bg, rgb(var(--primary-6))) calc(var(--wallpaper-bubble-alpha, 0.72) * 100%),
+    transparent
+  ) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: var(--text-primary) !important;
+}
+
+html[data-wallpaper='on'] .message-bubble--agent {
+  background: color-mix(
+    in srgb,
+    var(--wallpaper-assistant-plate, var(--color-bg-3)) calc(var(--wallpaper-bubble-alpha, 0.72) * 100%),
+    transparent
+  ) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: var(--text-primary) !important;
+}
+
+html[data-wallpaper='on'] .arco-popover-content,
+html[data-wallpaper='on'] .arco-dropdown-menu,
+html[data-wallpaper='on'] .arco-select-popup,
+html[data-wallpaper='on'] .arco-modal-content,
+html[data-wallpaper='on'] .arco-drawer-content,
+html[data-wallpaper='on'] .ant-modal-content,
+html[data-wallpaper='on'] .ant-drawer-content {
+  background-color: color-mix(in srgb, var(--color-bg-popup, var(--color-bg-1)) 92%, transparent) !important;
+}
+
+html[data-wallpaper='on'] .arco-modal-mask,
+html[data-wallpaper='on'] .arco-drawer-mask,
+html[data-wallpaper='on'] .ant-modal-mask,
+html[data-wallpaper='on'] .ant-drawer-mask {
+  background-color: color-mix(
+    in srgb,
+    var(--wallpaper-scrim-color, rgb(0, 0, 0)) 38%,
+    transparent
+  ) !important;
+}
+
+/* Portal host is a fullscreen overlay used only to scope Ant popovers.
+   It must never paint a fill — that was covering the canvas as a white sheet. */
+html[data-wallpaper='on'] .oc-portal-host {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  isolation: auto;
+}

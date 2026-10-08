@@ -1,6 +1,7 @@
 
 
 import { processCustomCss } from '@renderer/utils/theme/customCssProcessor';
+import { stripBackgroundCssBlock } from '@renderer/pages/settings/DisplaySettings/backgroundUtils';
 import { ensureThemeControlContract } from '@renderer/utils/theme/themeControlContract';
 
 /**
@@ -28,7 +29,8 @@ const STYLE_ID = 'user-defined-custom-css';
 const TRANSPARENCY_GUARD =
   '\nhtml, body, #root,' +
   '\n[data-theme] html, [data-theme] body, [data-theme] #root,' +
-  '\nhtml[data-theme] body, html[data-theme] #root' +
+  '\nhtml[data-theme] body, html[data-theme] #root,' +
+  '\nhtml[data-wallpaper], html[data-wallpaper] body, html[data-wallpaper] #root' +
   '\n{ background: transparent !important; background-image: none !important; background-color: transparent !important; }';
 
 export function injectCompanionCustomCss(css: string): void {
@@ -41,7 +43,7 @@ export function injectCompanionCustomCss(css: string): void {
     return;
   }
 
-  const content = processCustomCss(css) + TRANSPARENCY_GUARD;
+  const content = processCustomCss(stripBackgroundCssBlock(css)) + TRANSPARENCY_GUARD;
 
   // Idempotent + keep-last: if our style is already the final <head> child with
   // identical content, leave it; otherwise (re)append so it outranks the base

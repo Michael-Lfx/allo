@@ -183,6 +183,8 @@
     "diaryEmpty": "No diary entries yet — come back after {{companionName}}'s first learning run!",
     "appearanceSection": "Companion figure",
     "appearanceSectionHint": "Its name, how it looks on your desktop, and how far it has come with you",
+    "wallpaperRoom": "Room preview",
+    "wallpaperRoomHint": "The wallpaper fills the main window only. The desktop companion stays transparent.",
     "figureCurrent": "Current: {{look}}",
     "changeFigure": "Change figure",
     "deskVisible": "Show on desktop",

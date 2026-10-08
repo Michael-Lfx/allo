@@ -25,6 +25,7 @@ pub const INSTALLATION_PREFERENCE_KEYS: &[&str] = &[
     "customCss",
     "css.themes",
     "css.activeThemeId",
+    "appearance.wallpaper",
 ];
 
 const MAX_INSTALLATION_PREFERENCES_BYTES: u64 = 4 * 1024 * 1024;
@@ -341,7 +342,7 @@ fn validate_preference_value(key: &str, value: &Value) -> Result<(), AppError> {
     let valid = match key {
         "language" | "theme" | "colorScheme" | "customCss" | "css.activeThemeId" => value.is_string(),
         "ui.zoomFactor" => value.as_f64().is_some_and(f64::is_finite),
-        "window.bounds" => value.is_object(),
+        "window.bounds" | "appearance.wallpaper" => value.is_object(),
         "css.themes" => value.is_array(),
         _ => false,
     };
@@ -454,9 +455,12 @@ mod tests {
     #[test]
     fn validates_the_closed_installation_key_set() {
         assert!(is_installation_preference_key("language"));
+        assert!(is_installation_preference_key("appearance.wallpaper"));
         assert!(!is_installation_preference_key("nomi.defaultModel"));
         assert!(validate_preference_value("ui.zoomFactor", &json!(1.1)).is_ok());
         assert!(validate_preference_value("ui.zoomFactor", &json!("1.1")).is_err());
+        assert!(validate_preference_value("appearance.wallpaper", &json!({"enabled": false})).is_ok());
+        assert!(validate_preference_value("appearance.wallpaper", &json!("no")).is_err());
     }
 
     #[tokio::test]

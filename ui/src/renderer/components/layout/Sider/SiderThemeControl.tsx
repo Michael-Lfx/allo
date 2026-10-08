@@ -33,9 +33,10 @@ const SiderThemeControl: React.FC<SiderThemeControlProps> = ({ isMobile, collaps
       position={collapsed ? 'rt' : 'top'}
       popupVisible={popupVisible}
       onVisibleChange={setPopupVisible}
+      blurToHide={false}
       getPopupContainer={() => document.body}
       content={<SiderThemePanel className='w-280px' onBeforeOpenModal={() => setPopupVisible(false)} />}
-      unmountOnExit
+      unmountOnExit={false}
     >
       <Tooltip {...siderTooltipProps} content={t('settings.theme')} position='right'>
         <div className={footerButtonClass(collapsed, isMobile, popupVisible)} aria-label={t('settings.theme')}>

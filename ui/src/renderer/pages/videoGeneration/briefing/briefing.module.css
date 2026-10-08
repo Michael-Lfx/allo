@@ -7,6 +7,10 @@
     var(--color-bg-1);
 }
 
+:global(html[data-wallpaper='on']) .page {
+  background: transparent;
+}
+
 .shell {
   display: flex;
   flex-direction: column;

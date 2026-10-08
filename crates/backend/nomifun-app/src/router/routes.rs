@@ -20,6 +20,7 @@ use nomifun_auth::{
 };
 use nomifun_channel::channel_routes;
 use nomifun_companion::{companion_public_routes, companion_routes};
+use nomifun_appearance::{appearance_public_routes, appearance_routes};
 use nomifun_customer_service::customer_service_routes;
 use nomifun_workshop::{workshop_public_routes, workshop_routes};
 use nomifun_creation::creation_routes;
@@ -900,6 +901,12 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    let appearance_authenticated = protect_instance_owner(
+        appearance_routes(states.appearance.clone()),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
     // 客服独立域 (customer-service domain) — roster/bindings/notes/dialogues
     // REST surface. Protected by auth middleware.
     let customer_service_authenticated = protect_instance_owner(
@@ -1340,6 +1347,7 @@ pub fn create_router_with_all_state(
     // thumbnail and the desktop companion would render blank. GET-only, opaque
     // unguessable ids; listing/creation stay authenticated. See `companion_public_routes`.
     let companion_public = companion_public_routes(states.companion);
+    let appearance_public = appearance_public_routes(states.appearance);
 
     // 创意工坊 asset/thumbnail serving — exempt from auth for the same reason as
     // companion figure images: `<img>`/`<video>` subresource loads can't carry
@@ -1444,6 +1452,7 @@ pub fn create_router_with_all_state(
         .merge(requirement_authenticated)
         .merge(idmm_authenticated)
         .merge(companion_authenticated)
+        .merge(appearance_authenticated)
         .merge(customer_service_authenticated)
         .merge(workshop_authenticated)
         .merge(creation_authenticated)
@@ -1501,6 +1510,7 @@ pub fn create_router_with_all_state(
     .merge(office_proxy)
     .merge(public_assets)
     .merge(companion_public)
+    .merge(appearance_public)
     .merge(workshop_public)
     .merge(video_canvas_public)
     .merge(app_server_public);

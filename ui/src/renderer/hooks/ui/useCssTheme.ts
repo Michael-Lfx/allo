@@ -4,11 +4,7 @@ import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
 import type { ICssTheme } from '@/common/config/storage';
 import { uuid } from '@/common/utils';
-import {
-  BACKGROUND_BLOCK_START,
-  backgroundCssBlockNeedsUpgrade,
-  injectBackgroundCssBlock,
-} from '@renderer/pages/settings/DisplaySettings/backgroundUtils';
+import { stripBackgroundCssBlock } from '@renderer/pages/settings/DisplaySettings/backgroundUtils';
 import { DEFAULT_THEME_ID, getCssThemeDisplayName, PRESET_THEMES } from '@renderer/pages/settings/DisplaySettings/presets';
 import { resolveExtensionAssetUrl } from '@renderer/utils/platform';
 import { resolveCssByActiveTheme, setExtensionThemesCache } from '@renderer/utils/theme/themeCssSync';
@@ -29,15 +25,10 @@ import { useTranslation } from 'react-i18next';
  * can never interleave against the same config keys.
  */
 
-/** A theme that carries a `cover` image gets a background-image CSS block appended. */
+/** Cover thumbnails must not paint the desktop. Strip any leftover wallpaper CSS block. */
 export const ensureBackgroundCss = <T extends { cover?: string; css: string }>(theme: T): T => {
-  if (
-    theme.cover &&
-    (!theme.css || !theme.css.includes(BACKGROUND_BLOCK_START) || backgroundCssBlockNeedsUpgrade(theme.css))
-  ) {
-    return { ...theme, css: injectBackgroundCssBlock(theme.css || '', theme.cover) };
-  }
-  return theme;
+  const css = stripBackgroundCssBlock(theme.css || '');
+  return css === theme.css ? theme : { ...theme, css };
 };
 
 export const normalizeUserThemes = (themes: ICssTheme[]): { normalized: ICssTheme[]; updated: boolean } => {

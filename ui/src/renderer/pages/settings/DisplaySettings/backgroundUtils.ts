@@ -77,8 +77,16 @@ ${BACKGROUND_BLOCK_END}`;
 export const backgroundCssBlockNeedsUpgrade = (css: string): boolean =>
   Boolean(css && css.includes(BACKGROUND_BLOCK_START) && !css.includes(BACKGROUND_MASK_VERSION));
 
+/** Remove the legacy cover-as-desktop-wallpaper CSS block. Cover stays a card thumbnail. */
+export const stripBackgroundCssBlock = (css: string): string => {
+  if (!css) return '';
+  BACKGROUND_BLOCK_PATTERN.lastIndex = 0;
+  return css.replace(BACKGROUND_BLOCK_PATTERN, '').trim();
+};
+
 /**
- * Inject (or replace) the standard background CSS block using the provided image.
+ * Legacy helper kept for tests and one-time stripping of stored CSS.
+ * New wallpaper scenes must not go through this path.
  */
 export const injectBackgroundCssBlock = (css: string, imageDataUrl: string): string => {
   if (!css) {

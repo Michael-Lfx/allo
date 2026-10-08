@@ -2,7 +2,7 @@
 
 > **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6`
 
-[`crates/backend/`](../../crates/backend/) 下的 44 个 `nomifun-*` crate 共同构成 HTTP/WS 服务器。它们一起编译进 `nomifun-app` 库 crate，并通过 `nomifun-app/src/main.rs` 生成 **`nomicore`** 二进制。两个宿主应用（`apps/desktop` 下包名为 `Flowy` 的桌面外壳，与 `nomifun-web`）直接链接 `nomifun-app`，并自行调用 `run_embedded_server` 或组合 `create_router`。
+[`crates/backend/`](../../crates/backend/) 下的 45 个 `nomifun-*` crate 共同构成 HTTP/WS 服务器。它们一起编译进 `nomifun-app` 库 crate，并通过 `nomifun-app/src/main.rs` 生成 **`nomicore`** 二进制。两个宿主应用（`apps/desktop` 下包名为 `Flowy` 的桌面外壳，与 `nomifun-web`）直接链接 `nomifun-app`，并自行调用 `run_embedded_server` 或组合 `create_router`。
 
 下方分组反映了 crate 在工作区清单（[`Cargo.toml`](../../Cargo.toml)）中相互依赖的方式。这并非严格的分层 DAG —— 部分功能 crate 之间存在依赖 —— 但它提供了一张与请求穿越服务器的路径相吻合的认知地图。
 
@@ -78,6 +78,7 @@
 | [`nomifun-webhook`](../../crates/backend/nomifun-webhook/) | 外发飞书消息发送器，以及 Agent 工作完成时的 `CompletionNotifier`。 |
 | [`nomifun-preset`](../../crates/backend/nomifun-preset/) | 面向 Conversation、Execution 参与者、伙伴和定时任务的可复用启动配置：合并 builtin/user/extension 目录、关系化 CRUD、按目标解析、不可变快照与导入。 |
 | [`nomifun-companion`](../../crates/backend/nomifun-companion/) | 桌面伙伴状态、形象 / 图片资源、记忆 / 人格数据、伙伴公开图片服务，以及伙伴绑定令牌集成。 |
+| [`nomifun-appearance`](../../crates/backend/nomifun-appearance/) | 壁纸场景库：两阶段摄取、亮度/方差分析、JPEG 显示图/缩略图，以及公开 `/api/appearance/wallpapers/{id}/display|thumb|original` 服务。 |
 | [`nomifun-knowledge`](../../crates/backend/nomifun-knowledge/) | 知识库、来源摄取、绑定库挂载状态，以及作用域只读的知识 MCP 服务器。 |
 | [`nomifun-workshop`](../../crates/backend/nomifun-workshop/) | 创意工坊域：无限画布的 AI 视觉创作工作区。持有画布 + 资产（索引行在 `nomifun-db`，画布正文与资产二进制落盘），提供 `/api/workshop/*` 路由面。 |
 | [`nomifun-creation`](../../crates/backend/nomifun-creation/) | 生成引擎：工坊画布生成节点背后的异步任务队列。供应商无关的状态机（`queued → running → succeeded/failed/canceled`），按供应商并发上限 + 全局上限、取消与启动对账；模型执行委托 `nomifun-model-invoke`，产物字节交给 `AssetSink`。 |

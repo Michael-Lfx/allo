@@ -16,6 +16,8 @@ import CompanionAvatar from '@renderer/pages/companion/CompanionAvatar';
 import { CUSTOM_CHARACTER_ID, getCharacter } from '@renderer/pages/companion/characters';
 import type { CompanionMood, CustomFigureMeta } from '@renderer/pages/companion/characters';
 import { useFigures } from '@renderer/pages/nomi/useFigures';
+import { useWallpaper } from '@renderer/hooks/ui/useWallpaper';
+import { resolveWallpaperDim } from '@renderer/utils/theme/wallpaperTokens';
 import type { CompanionHandle } from '../../types';
 import RowAction from './RowAction';
 import { useDebouncedText } from './useDebouncedText';
@@ -51,6 +53,7 @@ const AppearanceSection: React.FC<AppearanceSectionProps> = ({
 }) => {
   const { t } = useTranslation();
   const { figures } = useFigures();
+  const { prefs: wallpaperPrefs, analysis: wallpaperAnalysis, scene: wallpaperScene } = useWallpaper();
 
   const [nameDraft, onNameChange] = useDebouncedText(profile.name, (value) => {
     const name = value.trim();
@@ -78,6 +81,46 @@ const AppearanceSection: React.FC<AppearanceSectionProps> = ({
       description={t('nomi.overview.appearanceSectionHint', { defaultValue: '名字、桌面上的样子，以及它陪你走到了哪一步' })}
     >
       <NomiSettingList>
+        {wallpaperPrefs.enabled && wallpaperAnalysis ? (
+          <NomiSettingRow
+            title={t('nomi.overview.wallpaperRoom')}
+            description={t('nomi.overview.wallpaperRoomHint')}
+            footer={
+              <div
+                className='relative h-88px rd-10px overflow-hidden border border-solid border-border-2'
+                style={{ background: wallpaperAnalysis.seedHex }}
+              >
+                {wallpaperScene.url ? (
+                  <img
+                    src={
+                      wallpaperScene.kind === 'video'
+                        ? wallpaperScene.posterUrl || wallpaperScene.url
+                        : wallpaperScene.url
+                    }
+                    alt=''
+                    className='absolute inset-0 w-full h-full object-cover'
+                  />
+                ) : null}
+                <div
+                  className='absolute inset-0'
+                  style={{
+                    background: `rgba(0,0,0,${resolveWallpaperDim(wallpaperPrefs, wallpaperAnalysis)})`,
+                  }}
+                />
+                <div className='absolute left-10px bottom-8px rd-8px overflow-hidden bg-fill-2'>
+                  <CompanionAvatar
+                    character={profile.character}
+                    companionId={profile.companion_id}
+                    customFigure={figure}
+                    mood={(status.mood as CompanionMood) || 'content'}
+                    activity='idle'
+                    size={48}
+                  />
+                </div>
+              </div>
+            }
+          />
+        ) : null}
         <NomiSettingRow
           title={t('nomi.settings.name', { defaultValue: '名字' })}
           description={t('nomi.settings.nameHint', { defaultValue: '伙伴的称呼，会出现在聊天与桌面伙伴里' })}

@@ -821,14 +821,14 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
   if (!isOpen || !activeTab) {
     return (
       <PreviewToolbarExtrasProvider value={toolbarExtrasContextValue}>
-        <div className='h-full flex flex-col bg-1'>{workspaceHost}</div>
+        <div className='preview-panel-shell h-full flex flex-col bg-1'>{workspaceHost}</div>
       </PreviewToolbarExtrasProvider>
     );
   }
 
   return (
     <PreviewToolbarExtrasProvider value={toolbarExtrasContextValue}>
-      <div className='h-full flex flex-col bg-1'>
+      <div className='preview-panel-shell h-full flex flex-col bg-1'>
         {messageContextHolder}
 
         {/* 确认对话框 / Confirmation modals */}

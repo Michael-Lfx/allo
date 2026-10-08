@@ -1,8 +1,5 @@
 import { type ICssTheme } from '@/common/config/storage';
-import {
-  BACKGROUND_BLOCK_START,
-  injectBackgroundCssBlock,
-} from '@renderer/pages/settings/DisplaySettings/backgroundUtils';
+import { stripBackgroundCssBlock } from '@renderer/pages/settings/DisplaySettings/backgroundUtils';
 import { DEFAULT_THEME_ID, PRESET_THEMES } from '@renderer/pages/settings/DisplaySettings/presets';
 
 export const CSS_SYNC_RECENT_UPDATE_WINDOW_MS = 2000;
@@ -35,27 +32,17 @@ type ComputeCssSyncDecisionResult = {
 };
 
 export const resolveCssByActiveTheme = (activeThemeId: string, userThemes: ICssTheme[]): string => {
-  const ensureBackgroundCss = (theme: ICssTheme): ICssTheme => {
-    if (theme.cover && theme.css && !theme.css.includes(BACKGROUND_BLOCK_START)) {
-      return {
-        ...theme,
-        css: injectBackgroundCssBlock(theme.css, theme.cover),
-      };
-    }
-    return theme;
-  };
-
   const allThemes = [
-    ...PRESET_THEMES.map(ensureBackgroundCss),
-    ...extensionThemesCache.map(ensureBackgroundCss),
-    ...(userThemes || []).map(ensureBackgroundCss),
+    ...PRESET_THEMES,
+    ...extensionThemesCache,
+    ...(userThemes || []),
   ];
   const resolvedId = activeThemeId || DEFAULT_THEME_ID;
   const match = allThemes.find((theme) => theme.id === resolvedId);
-  if (match) return match.css || '';
+  if (match) return stripBackgroundCssBlock(match.css || '');
   // Theme not found (e.g., extension removed) → fall back to default theme
   if (resolvedId !== DEFAULT_THEME_ID) {
-    return allThemes.find((theme) => theme.id === DEFAULT_THEME_ID)?.css || '';
+    return stripBackgroundCssBlock(allThemes.find((theme) => theme.id === DEFAULT_THEME_ID)?.css || '');
   }
   return '';
 };

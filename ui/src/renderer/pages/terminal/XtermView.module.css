@@ -8,6 +8,21 @@
   border: 1px solid var(--terminal-border);
 }
 
+:global(html[data-wallpaper='on']) .card {
+  background-color: transparent;
+  border-color: color-mix(in srgb, var(--terminal-border, var(--color-border-2)) 55%, transparent);
+}
+
+:global(html[data-wallpaper='on']) .header {
+  background-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:global(html[data-wallpaper='on']) .header::after {
+  display: none;
+}
+
 /* Flush fill when the host (preview column) already draws the outer chrome. */
 .embedded {
   border: none;
@@ -26,6 +41,12 @@
 /* The viewport/screen should fill the padded area, not paint their own bg. */
 .card :global(.xterm-viewport),
 .card :global(.xterm-screen) {
+  background-color: transparent !important;
+}
+
+:global(html[data-wallpaper='on']) .card :global(.xterm),
+:global(html[data-wallpaper='on']) .card :global(.xterm-viewport),
+:global(html[data-wallpaper='on']) .card :global(.xterm-screen) {
   background-color: transparent !important;
 }
 
@@ -65,5 +86,9 @@
 
   .header::after {
     display: none;
+  }
+
+  :global(html[data-wallpaper='on']) .header {
+    background-color: transparent;
   }
 }

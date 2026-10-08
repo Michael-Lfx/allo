@@ -19,7 +19,7 @@ web) and one React 19 SPA.
 | `apps/web/` | Standalone `nomifun-web` server (API + SPA). |
 | `apps/desktop/` | Tauri desktop shell with embedded backend. |
 | `crates/agent/` | Independent AI agent engine (24 crates: 23 `nomi-*` + `flowy-web`; includes `nomi-agent-trace` for Session Logs). Largely self-contained; a few documented deps on backend utility crates. |
-| `crates/backend/` | 44 `nomifun-*` crates: HTTP/WS server, data, auth, features. |
+| `crates/backend/` | 45 `nomifun-*` crates: HTTP/WS server, data, auth, features. |
 | `crates/shared/` | 5 cross-layer utility crates (`flowy-ssh`, `nomi-process-runtime`, `nomi-redact`, `nomifun-models-dev`, `nomifun-net`). Keep new shared crates rare. |
 | `ui/src/common/` | Cross-host code: API clients, types, adapters, utils. |
 | `ui/src/platform/` | Host bridge: runtime bridge + theme tokens. Never import Tauri directly in renderer. |

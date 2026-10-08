@@ -51,6 +51,7 @@ export type EntityKind =
   | 'companion-session-window'
   | 'skill-pattern'
   | 'figure'
+  | 'wallpaper'
   | 'companion-evolution-feedback'
   | 'cs-agent'
   | 'cs-dialogue'
@@ -107,6 +108,7 @@ export type CompanionLearnRunId = EntityId<'companion-learn-run'>;
 export type CompanionSessionWindowId = EntityId<'companion-session-window'>;
 export type SkillPatternId = EntityId<'skill-pattern'>;
 export type FigureId = EntityId<'figure'>;
+export type WallpaperId = EntityId<'wallpaper'>;
 export type CompanionEvolutionFeedbackId = EntityId<'companion-evolution-feedback'>;
 export type CsAgentId = EntityId<'cs-agent'>;
 export type CsDialogueId = EntityId<'cs-dialogue'>;
@@ -257,6 +259,7 @@ export const parseCompanionSessionWindowId = (value: unknown): CompanionSessionW
 export const parseSkillPatternId = (value: unknown): SkillPatternId =>
   parseEntityId('skill-pattern', value);
 export const parseFigureId = (value: unknown): FigureId => parseEntityId('figure', value);
+export const parseWallpaperId = (value: unknown): WallpaperId => parseEntityId('wallpaper', value);
 export const parseCompanionEvolutionFeedbackId = (
   value: unknown
 ): CompanionEvolutionFeedbackId => parseEntityId('companion-evolution-feedback', value);

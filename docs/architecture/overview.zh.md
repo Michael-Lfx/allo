@@ -6,7 +6,7 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
 
 本文档是这张地图的总图。配套文档分别深入介绍各个部分：
 
-- [`backend-crates.md`](backend-crates.zh.md) —— 44 个 `nomifun-*` crate。
+- [`backend-crates.md`](backend-crates.zh.md) —— 45 个 `nomifun-*` crate。
 - [`agent-engine.md`](agent-engine.zh.md) —— `nomi-*` crate（AI 引擎，含会话日志用的 `nomi-agent-trace`）。
 - [`agent-execution.zh.md`](agent-execution.zh.md) —— 统一的持久化 AgentExecution 模型。
 - [`frontend.md`](frontend.zh.md) —— React SPA、适配层、路由。
@@ -45,12 +45,12 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
                         │  nomifun-app  (binary nomicore)     │
                         │  composition root · axum router     │
                         │  bootstrap → data layer → services  │
-                         │ /api · /ws · Routes from 44 crates │
+                         │ /api · /ws · Routes from 45 crates │
                          └─────────────────────────────────────┘
                            │                       │
                            ▼                       ▼
                ┌─────────────────────┐   ┌─────────────────────┐
-               │  nomifun-* (44)     │◀─▶│  nomi-* (23)         │
+               │  nomifun-* (45)     │◀─▶│  nomi-* (23)         │
                │  backend crates     │   │  + flowy-web         │
                │  data, auth, MCP,   │   │  agent engine crates │
                │  conversation, etc. │   │  via the SEAM:       │
@@ -103,7 +103,7 @@ Cargo 工作区（根 [`Cargo.toml`](../../Cargo.toml)，`resolver = "3"`，`edi
 | 目录 | 用途 | Crate 前缀 | 数量 |
 | --- | --- | --- | --- |
 | `crates/agent/` | AI 引擎 —— providers、tools、sessions、MCP、skills、browser/computer-use | `nomi-*`（+ `flowy-web`） | 24 |
-| `crates/backend/` | HTTP/WS 服务器、数据、认证、各项功能 | `nomifun-*` | 44 |
+| `crates/backend/` | HTTP/WS 服务器、数据、认证、各项功能 | `nomifun-*` | 45 |
 | `crates/shared/` | 真正跨层共享工具 | mixed | 5 |
 
 agent 分组**大体自包含** —— 绝大多数 `nomi-*` crate 不引用 `nomifun-*` crate、工作区根目录或 Tauri / sqlx / axum 等后端框架。存在一小撮明确的例外：`nomi-agent` 与 `nomi-config` 依赖 `nomifun-common`；`nomi-media` 与 `nomi-vimax` 依赖 `nomifun-cloud`；浏览器栈（`nomi-browser`、`nomi-browser-engine`）依赖 `nomifun-browser-platform` / `nomifun-secret`。反向依赖默认通过 `nomifun-ai-agent` 这条接缝汇集，它再导出 `nomi_config`、`nomi_types` 和 `RequirementSink`。当前 `nomifun-app` 与 `nomifun-gateway` 为 browser/computer-use bridge 存在 feature-gated 直接依赖例外，个别功能型 crate（如 `nomifun-robot`）也直接绑定 `nomi-*`；新增例外必须有明确 feature gate 和文档说明。
@@ -117,7 +117,7 @@ nomifun-tauri/
 │   └─ web/       nomifun-web      (standalone server: /api + SPA on one port)
 ├─ crates/
 │   ├─ agent/     24 crates (23 nomi-* + flowy-web) → see agent-engine.md
-│   ├─ backend/   44 nomifun-* crates → see backend-crates.md
+│   ├─ backend/   45 nomifun-* crates → see backend-crates.md
 │   └─ shared/    5 shared crates
 ├─ ui/            React 19 + Vite 6 + Arco + UnoCSS  → see frontend.md
 └─ docs/

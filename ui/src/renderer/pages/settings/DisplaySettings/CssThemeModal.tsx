@@ -11,7 +11,7 @@ import CodeMirror from '@renderer/components/editors/CodeMirrorEditor';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CSSProperties } from 'react';
-import { injectBackgroundCssBlock } from './backgroundUtils.ts';
+import { stripBackgroundCssBlock } from './backgroundUtils.ts';
 import { getCssThemeDisplayName } from './presets';
 
 /** CodeMirror 编辑器样式 / CodeMirror editor styles */
@@ -49,11 +49,6 @@ const CssThemeModal: React.FC<CssThemeModalProps> = ({ visible, theme, onClose, 
   const [cover, setCover] = useState<string>('');
   const [css, setCss] = useState('');
 
-  const applyBackgroundImageToCss = useCallback((imageDataUrl: string) => {
-    if (!imageDataUrl) return;
-    setCss((prevCss) => injectBackgroundCssBlock(prevCss, imageDataUrl));
-  }, []);
-
   // 编辑模式时加载主题数据 / Load theme data in edit mode
   useEffect(() => {
     if (theme) {
@@ -82,13 +77,12 @@ const CssThemeModal: React.FC<CssThemeModalProps> = ({ visible, theme, onClose, 
         const base64 = await ipcBridge.fs.getImageBase64.invoke({ path: files[0] });
         if (base64) {
           setCover(base64);
-          applyBackgroundImageToCss(base64);
         }
       }
     } catch (error) {
       console.error('Failed to upload cover:', error);
     }
-  }, [applyBackgroundImageToCss]);
+  }, []);
 
   /**
    * 处理保存 / Handle save
@@ -100,7 +94,7 @@ const CssThemeModal: React.FC<CssThemeModalProps> = ({ visible, theme, onClose, 
     onSave({
       name: name.trim(),
       cover: cover || undefined,
-      css,
+      css: stripBackgroundCssBlock(css),
     });
   }, [name, cover, css, onSave]);
 
