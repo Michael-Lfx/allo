@@ -871,7 +871,7 @@ const UpdateModal: React.FC = () => {
             <span className='inline-flex h-24px w-24px shrink-0 items-center justify-center rounded-full bg-[rgb(var(--success-6))]/12 text-[rgb(var(--success-6))]'>
               <CheckOne theme='filled' size='15' />
             </span>
-            <div>
+            <div className='min-w-0 flex-1'>
               <div className='text-13px font-550 leading-19px text-t-primary'>{t('update.upToDateTitle')}</div>
               <div className='overflow-hidden text-ellipsis whitespace-nowrap text-12px leading-18px text-t-tertiary'>
                 {t('update.currentVersion', { version: formatVersion(currentVersion) })}
@@ -945,9 +945,9 @@ const UpdateModal: React.FC = () => {
                   fill={['currentColor', 'currentColor', 'var(--flowy-accent-fg,#fff)', 'var(--flowy-accent-fg,#fff)']}
                 />
               </span>
-              <div>
+              <div className='min-w-0 flex-1'>
                 <div className='text-13px font-550 leading-19px text-t-primary'>{t('update.readyToInstall')}</div>
-                <div className='overflow-hidden text-ellipsis whitespace-nowrap text-12px leading-18px text-t-tertiary'>
+                <div className='break-words text-12px leading-18px text-t-tertiary'>
                   {t('update.readyToInstallDesc')}
                 </div>
               </div>
@@ -969,11 +969,11 @@ const UpdateModal: React.FC = () => {
               className='mt-1px h-16px w-16px shrink-0 animate-spin rounded-full border-2px border-solid border-[rgba(var(--primary-6),0.2)] border-t-[rgb(var(--primary-6))]'
               aria-hidden='true'
             />
-            <div>
+            <div className='min-w-0 flex-1'>
               <div className='text-13px font-550 leading-19px text-t-primary'>
                 {installPhase === 'installing' ? t('update.installingTitle') : t('update.preparingInstallTitle')}
               </div>
-              <div className='overflow-hidden text-ellipsis whitespace-nowrap text-12px leading-18px text-t-tertiary'>
+              <div className='break-words text-12px leading-18px text-t-tertiary'>
                 {installPhase === 'installing' ? t('update.installingDesc') : t('update.preparingInstallDesc')}
               </div>
             </div>
@@ -986,7 +986,7 @@ const UpdateModal: React.FC = () => {
               <span className='inline-flex h-24px w-24px shrink-0 items-center justify-center rounded-full bg-[rgb(var(--success-6))]/12 text-[rgb(var(--success-6))]'>
                 <CheckOne theme='filled' size='15' />
               </span>
-              <div className='text-13px font-550 leading-19px text-t-primary'>{t('update.downloadCompleteTitle')}</div>
+              <div className='min-w-0 flex-1 text-13px font-550 leading-19px text-t-primary'>{t('update.downloadCompleteTitle')}</div>
             </div>
             <div className='mt-10px grid grid-cols-2 gap-8px'>
               <Button size='mini' onClick={showInFolder} className={COMPACT_ACTION_CLASS}>

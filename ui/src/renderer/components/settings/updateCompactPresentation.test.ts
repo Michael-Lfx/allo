@@ -87,4 +87,29 @@ describe('compact update presentation', () => {
     // Mike retains native + web auto-update download fallbacks.
     expect((handler.match(/ipcBridge\.autoUpdate\.download\.invoke\(\)/g) ?? []).length).toBeGreaterThanOrEqual(1);
   });
+
+  test('compact card descriptions wrap naturally and bound their flex text columns', () => {
+    const compactStart = modalSource.indexOf('const renderCompactContent = () =>');
+    const detailStart = modalSource.indexOf('const renderDetailContent = () =>', compactStart);
+    const compact = modalSource.slice(compactStart, detailStart);
+
+    const downloadedSection = compact.slice(
+      compact.indexOf("{status === 'downloaded' && ("),
+      compact.indexOf("{status === 'installing' && (")
+    );
+    // Bounded flex column prevents child content from expanding beyond the compact card.
+    expect(downloadedSection.includes("<div className='min-w-0 flex-1'>")).toBe(true);
+    // Long description texts must wrap with break-words and must not force single-line whitespace-nowrap.
+    expect(downloadedSection.includes('break-words')).toBe(true);
+    expect(downloadedSection.includes('whitespace-nowrap')).toBe(false);
+
+    const installingSection = compact.slice(
+      compact.indexOf("{status === 'installing' && ("),
+      compact.indexOf("{status === 'success' && (")
+    );
+    expect(installingSection.includes("<div className='min-w-0 flex-1'>")).toBe(true);
+    expect(installingSection.includes('break-words')).toBe(true);
+    expect(installingSection.includes('whitespace-nowrap')).toBe(false);
+  });
 });
+
