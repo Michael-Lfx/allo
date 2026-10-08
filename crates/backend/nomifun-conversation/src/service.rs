@@ -11049,15 +11049,17 @@ impl ConversationService {
             let title_billing_turn_id = first_turn_msg_id.clone();
             tokio::spawn(async move {
                 let task = AssertUnwindSafe(
-                    nomifun_ai_agent::with_flowy_billing_turn_id(
-                        title_billing_turn_id,
-                        title_service
-                            .maybe_autotitle(
-                                &title_conversation_id,
-                                &title_user_message_id,
-                                title_user_content,
-                                title_session_model,
-                            )
+                    nomifun_ai_agent::with_flowy_chat_session_id(
+                        title_conversation_id.clone(),
+                        nomifun_ai_agent::with_flowy_billing_turn_id(
+                            title_billing_turn_id,
+                            title_service
+                                .maybe_autotitle(
+                                    &title_conversation_id,
+                                    &title_user_message_id,
+                                    title_user_content,
+                                    title_session_model,
+                                )
                             .instrument(info_span!(
                                 "conversation_auto_title",
                                 conversation_id = %title_conversation_id,
@@ -11068,6 +11070,7 @@ impl ConversationService {
                                 ),
                                 attempt = 1,
                             )),
+                        ),
                     ),
                 );
                 if task.catch_unwind().await.is_err() {
@@ -11631,9 +11634,12 @@ impl ConversationService {
                         let _ = send_error_tx.send(Ok(()));
                         return;
                     }
-                    let send_result = nomifun_ai_agent::with_flowy_billing_turn_id(
-                        send_billing_turn_id,
-                        send_agent.send_message(current_send),
+                    let send_result = nomifun_ai_agent::with_flowy_chat_session_id(
+                        conv_id_send.clone(),
+                        nomifun_ai_agent::with_flowy_billing_turn_id(
+                            send_billing_turn_id,
+                            send_agent.send_message(current_send),
+                        ),
                     )
                     .await;
                     if let Err(e) = send_result.as_ref() {

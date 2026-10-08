@@ -56,6 +56,7 @@ import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
 import {
   beginTurnTiming,
+  bindTurnTimingIds,
   markTurnAccepted as markFunnelTurnAccepted,
   markTurnIdle,
 } from '@/renderer/utils/analytics/productFunnel';
@@ -301,6 +302,7 @@ const AcpSendBox: React.FC<{
       beginTurnTiming(conversation_id, {
         conversation_type: 'acp',
         cold_start: !hasHydratedRunningState,
+        session_id: conversation_id,
       });
 
       try {
@@ -323,6 +325,10 @@ const AcpSendBox: React.FC<{
             setAiProcessing(true);
           }
           markTurnAccepted(msg_id);
+          bindTurnTimingIds(conversation_id, {
+            session_id: conversation_id,
+            turn_id: delivery.turn_id ?? msg_id,
+          });
           markFunnelTurnAccepted(conversation_id, { conversation_type: 'acp' });
           // A Skill-only send persists visible skill_load history but has no
           // user text projection, so do not create an empty optimistic bubble.

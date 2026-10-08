@@ -338,18 +338,6 @@ impl FlowyApiClient {
         self.get_data(&path, Some(session)).await
     }
 
-    pub async fn report_chat_session(
-        &self,
-        session: &ServerSession,
-        session_id: &str,
-    ) -> Result<ChatSessionReportResponse, ServerClientError> {
-        let body = ChatSessionReportRequest {
-            session_id: session_id.trim().to_string(),
-        };
-        self.post_data_on(&self.llm_transport, "/chat/session", Some(session), &body)
-            .await
-    }
-
     pub fn llm_transport(&self) -> &HttpTransport {
         &self.llm_transport
     }

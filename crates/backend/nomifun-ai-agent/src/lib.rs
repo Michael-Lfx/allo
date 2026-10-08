@@ -84,7 +84,10 @@ pub enum ManagedExtractMode {
 }
 pub use nomi_config;
 pub use nomi_types;
-pub use nomi_providers::{current_flowy_billing_turn_id, with_flowy_billing_turn_id};
+pub use nomi_providers::{
+    FlowyProxyAttribution, current_flowy_billing_turn_id, current_flowy_chat_session_id,
+    with_flowy_billing_turn_id, with_flowy_chat_session_id, with_flowy_proxy_attribution,
+};
 
 pub use agent_eval::{
     eval_run_workspace_label, suite_business_label, EvalCaseTurnUsage, EvalLab, EvalQualityCase,

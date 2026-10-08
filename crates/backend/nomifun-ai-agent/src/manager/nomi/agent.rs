@@ -1810,9 +1810,12 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             let preparation = tokio::select! {
                 biased;
                 _ = turn_cancel.cancelled() => break 'accepted None,
-                prepared = nomi_providers::with_flowy_billing_turn_id(
-                    billing_turn_id.clone(),
-                    prepare_turn,
+                prepared = nomi_providers::with_flowy_chat_session_id(
+                    self.runtime.conversation_id().to_owned(),
+                    nomi_providers::with_flowy_billing_turn_id(
+                        billing_turn_id.clone(),
+                        prepare_turn,
+                    ),
                 ) => prepared,
             };
 
@@ -1928,15 +1931,18 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                         engine.set_system_resource_inbox(None);
                         break 'accepted None;
                     }
-                    res = nomi_providers::with_flowy_billing_turn_id(
-                        // Wire/billing root (`X-Flowy-Turn-Id`), not a continuation
-                        // segment id, so every model/media call in this Agent Run
-                        // aggregates under the same GET /credits/usageByTurn key.
-                        billing_turn_id.clone(),
-                        engine.execute_turn_with_content_for_source(
-                            current_content,
-                            &data.msg_id,
-                            &source_message_id,
+                    res = nomi_providers::with_flowy_chat_session_id(
+                        self.runtime.conversation_id().to_owned(),
+                        nomi_providers::with_flowy_billing_turn_id(
+                            // Wire/billing root (`X-Flowy-Turn-Id`), not a continuation
+                            // segment id, so every model/media call in this Agent Run
+                            // aggregates under the same GET /credits/usageByTurn key.
+                            billing_turn_id.clone(),
+                            engine.execute_turn_with_content_for_source(
+                                current_content,
+                                &data.msg_id,
+                                &source_message_id,
+                            ),
                         ),
                     ) => res,
                 };
@@ -2197,6 +2203,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     // branch below is then the terminal owner.
                     let _spawned = super::distill::spawn_distill_exact_turn(
                         billing_turn_id.clone(),
+                        self.runtime.conversation_id().to_owned(),
                         turn_cancel.clone(),
                         cfg,
                         dir,
@@ -2252,18 +2259,21 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                             let transcript = transcript.clone();
                             let review_billing_turn_id = review_billing_turn_id.clone();
                             tokio::spawn(async move {
-                                nomi_providers::with_flowy_billing_turn_id(
-                                    review_billing_turn_id,
-                                    async {
-                                        let ctx = TurnContext {
-                                            conversation_id: &conv_id,
-                                            session_id: &conv_id,
-                                            user_prompt: &user_prompt,
-                                            origin_is_human: true,
-                                        };
-                                        hook.on_post_turn_review(&ctx, &transcript, &[])
-                                            .await;
-                                    },
+                                nomi_providers::with_flowy_chat_session_id(
+                                    conv_id.clone(),
+                                    nomi_providers::with_flowy_billing_turn_id(
+                                        review_billing_turn_id,
+                                        async {
+                                            let ctx = TurnContext {
+                                                conversation_id: &conv_id,
+                                                session_id: &conv_id,
+                                                user_prompt: &user_prompt,
+                                                origin_is_human: true,
+                                            };
+                                            hook.on_post_turn_review(&ctx, &transcript, &[])
+                                                .await;
+                                        },
+                                    ),
                                 )
                                 .await;
                             });
@@ -3148,7 +3158,9 @@ impl NomiAgentManager {
         let session_id = self.runtime.conversation_id().to_string();
         let billing_turn_id = nomi_providers::current_flowy_billing_turn_id();
         tokio::spawn(async move {
-            nomi_providers::with_optional_flowy_billing_turn_id(billing_turn_id, async move {
+            nomi_providers::with_flowy_chat_session_id(
+                session_id.clone(),
+                nomi_providers::with_optional_flowy_billing_turn_id(billing_turn_id, async move {
                 // Same resolved provider/model the engine runs on, WITHOUT the
                 // engine mutex (mirrors the explicit "draft" action).
                 let provider = nomi_providers::create_provider(&cfg);
@@ -3188,7 +3200,8 @@ impl NomiAgentManager {
                         );
                     }
                 }
-            })
+            }),
+            )
             .await;
         });
     }

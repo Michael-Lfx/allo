@@ -1,10 +1,12 @@
-//! Flowy cloud billing turn attribution (`X-Flowy-Turn-Id`).
+//! Flowy cloud request attribution (`X-Flowy-Turn-Id`, `X-Flowy-Session-Id`).
 //!
 //! The conversation layer mints one UUID per user send / Agent Run and scopes
-//! it with [`with_flowy_billing_turn_id`] around the engine turn. Flowy-proxied
-//! provider HTTP (OpenAI-compatible, Anthropic, Responses) and Flowy
-//! `HttpTransport` side calls read the value and attach it as a header so the
-//! server can aggregate multi-call credit usage.
+//! it with [`with_flowy_billing_turn_id`] around the engine turn. The same
+//! turn's local conversation (or ViMax/eval session) id is scoped with
+//! [`with_flowy_chat_session_id`]. Flowy-proxied provider HTTP
+//! (OpenAI-compatible, Anthropic, Responses) and Flowy `HttpTransport` side
+//! calls attach both values as headers so the server can aggregate credit
+//! usage and stamp `tb_user_chat.session_id` for ops session tracing.
 
 use std::future::Future;
 
@@ -16,8 +18,22 @@ use crate::ProviderError;
 /// Header name expected by Flowy model proxy / credits aggregation.
 pub const FLOWY_TURN_ID_HEADER: &str = "x-flowy-turn-id";
 
+/// Header name expected by Flowy model proxy / ops session tracing.
+pub const FLOWY_SESSION_ID_HEADER: &str = "x-flowy-session-id";
+
+const MAX_FLOWY_TURN_ID_LEN: usize = 64;
+const MAX_FLOWY_SESSION_ID_LEN: usize = 128;
+
 tokio::task_local! {
     static FLOWY_BILLING_TURN_ID: Option<String>;
+    static FLOWY_CHAT_SESSION_ID: Option<String>;
+}
+
+/// Captured Flowy attribution to restore after `tokio::spawn`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FlowyProxyAttribution {
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
 }
 
 /// Current turn id for Flowy billing, if this task is inside a scoped agent run.
@@ -28,8 +44,39 @@ pub fn current_flowy_billing_turn_id() -> Option<String> {
         .flatten()
         .filter(|id| {
             let trimmed = id.trim();
-            !trimmed.is_empty() && trimmed.len() <= 64
+            !trimmed.is_empty() && trimmed.len() <= MAX_FLOWY_TURN_ID_LEN
         })
+}
+
+/// Current local session id for Flowy ops tracing, if this task is inside a
+/// scoped conversation / ViMax / eval run.
+pub fn current_flowy_chat_session_id() -> Option<String> {
+    FLOWY_CHAT_SESSION_ID
+        .try_with(|value| value.clone())
+        .ok()
+        .flatten()
+        .filter(|id| {
+            let trimmed = id.trim();
+            !trimmed.is_empty() && trimmed.len() <= MAX_FLOWY_SESSION_ID_LEN
+        })
+}
+
+/// Snapshot of session + turn ids for restoring after `tokio::spawn`.
+pub fn current_flowy_proxy_attribution() -> FlowyProxyAttribution {
+    FlowyProxyAttribution {
+        session_id: current_flowy_chat_session_id(),
+        turn_id: current_flowy_billing_turn_id(),
+    }
+}
+
+fn normalize_flowy_id(id: impl Into<String>, max_len: usize) -> Option<String> {
+    let id = id.into();
+    let trimmed = id.trim();
+    if trimmed.is_empty() || trimmed.len() > max_len {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Run `fut` with `turn_id` visible to [`current_flowy_billing_turn_id`].
@@ -37,16 +84,19 @@ pub async fn with_flowy_billing_turn_id<F, T>(turn_id: impl Into<String>, fut: F
 where
     F: Future<Output = T>,
 {
-    let turn_id = turn_id.into();
-    let value = {
-        let trimmed = turn_id.trim();
-        if trimmed.is_empty() || trimmed.len() > 64 {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    };
-    FLOWY_BILLING_TURN_ID.scope(value, fut).await
+    FLOWY_BILLING_TURN_ID
+        .scope(normalize_flowy_id(turn_id, MAX_FLOWY_TURN_ID_LEN), fut)
+        .await
+}
+
+/// Run `fut` with `session_id` visible to [`current_flowy_chat_session_id`].
+pub async fn with_flowy_chat_session_id<F, T>(session_id: impl Into<String>, fut: F) -> T
+where
+    F: Future<Output = T>,
+{
+    FLOWY_CHAT_SESSION_ID
+        .scope(normalize_flowy_id(session_id, MAX_FLOWY_SESSION_ID_LEN), fut)
+        .await
 }
 
 /// Re-scope `fut` after `tokio::spawn`. Task-locals do not cross spawn
@@ -61,8 +111,31 @@ where
     }
 }
 
+/// Re-scope `fut` after `tokio::spawn` for the chat session id.
+pub async fn with_optional_flowy_chat_session_id<F, T>(session_id: Option<String>, fut: F) -> T
+where
+    F: Future<Output = T>,
+{
+    match session_id {
+        Some(id) => with_flowy_chat_session_id(id, fut).await,
+        None => fut.await,
+    }
+}
+
+/// Restore session + turn attribution after `tokio::spawn`.
+pub async fn with_flowy_proxy_attribution<F, T>(attribution: FlowyProxyAttribution, fut: F) -> T
+where
+    F: Future<Output = T>,
+{
+    with_optional_flowy_chat_session_id(
+        attribution.session_id,
+        with_optional_flowy_billing_turn_id(attribution.turn_id, fut),
+    )
+    .await
+}
+
 /// Attach Flowy proxy headers: the configured bearer mirror (legacy `token`)
-/// plus `X-Flowy-Turn-Id` when a billing turn is scoped.
+/// plus `X-Flowy-Turn-Id` / `X-Flowy-Session-Id` when those ids are scoped.
 ///
 /// No-op when `compat.mirror_bearer_header` is unset. That field is the signal
 /// that this request goes to a Flowy-proxied endpoint; local / third-party
@@ -93,6 +166,12 @@ pub fn apply_flowy_proxy_headers(
             ProviderError::Connection(format!("Invalid X-Flowy-Turn-Id header: {e}"))
         })?;
         headers.insert(HeaderName::from_static(FLOWY_TURN_ID_HEADER), value);
+    }
+    if let Some(session_id) = current_flowy_chat_session_id() {
+        let value = HeaderValue::from_str(&session_id).map_err(|e| {
+            ProviderError::Connection(format!("Invalid X-Flowy-Session-Id header: {e}"))
+        })?;
+        headers.insert(HeaderName::from_static(FLOWY_SESSION_ID_HEADER), value);
     }
     Ok(())
 }
@@ -152,18 +231,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_headers_attaches_turn_id_only_on_flowy_proxy() {
+    async fn apply_headers_attaches_turn_and_session_only_on_flowy_proxy() {
         let mut local = HeaderMap::new();
         apply_flowy_proxy_headers(&mut local, &ProviderCompat::default(), "sk-test")
             .expect("local compat");
         assert!(local.get(FLOWY_TURN_ID_HEADER).is_none());
+        assert!(local.get(FLOWY_SESSION_ID_HEADER).is_none());
 
         let mut compat = ProviderCompat::default();
         compat.mirror_bearer_header = Some("token".into());
-        let headers = with_flowy_billing_turn_id("turn-parent", async {
-            let mut headers = HeaderMap::new();
-            apply_flowy_proxy_headers(&mut headers, &compat, "sk-test").expect("flowy compat");
-            headers
+        let headers = with_flowy_chat_session_id("sess-parent", async {
+            with_flowy_billing_turn_id("turn-parent", async {
+                let mut headers = HeaderMap::new();
+                apply_flowy_proxy_headers(&mut headers, &compat, "sk-test").expect("flowy compat");
+                headers
+            })
+            .await
         })
         .await;
         assert_eq!(
@@ -175,6 +258,56 @@ mod tests {
                 .get(FLOWY_TURN_ID_HEADER)
                 .and_then(|v| v.to_str().ok()),
             Some("turn-parent")
+        );
+        assert_eq!(
+            headers
+                .get(FLOWY_SESSION_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("sess-parent")
+        );
+    }
+
+    #[tokio::test]
+    async fn scope_exposes_session_id() {
+        assert!(current_flowy_chat_session_id().is_none());
+        let observed = with_flowy_chat_session_id("conv-1", async {
+            current_flowy_chat_session_id()
+        })
+        .await;
+        assert_eq!(observed.as_deref(), Some("conv-1"));
+        assert!(current_flowy_chat_session_id().is_none());
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_session_id() {
+        let long = "a".repeat(MAX_FLOWY_SESSION_ID_LEN + 1);
+        let observed = with_flowy_chat_session_id(long, async { current_flowy_chat_session_id() }).await;
+        assert!(observed.is_none());
+    }
+
+    #[tokio::test]
+    async fn proxy_attribution_restores_after_spawn() {
+        let observed = with_flowy_chat_session_id("sess-parent", async {
+            with_flowy_billing_turn_id("turn-parent", async {
+                let attr = current_flowy_proxy_attribution();
+                tokio::spawn(async move {
+                    with_flowy_proxy_attribution(attr, async {
+                        (
+                            current_flowy_chat_session_id(),
+                            current_flowy_billing_turn_id(),
+                        )
+                    })
+                    .await
+                })
+                .await
+                .expect("join spawned attribution restore")
+            })
+            .await
+        })
+        .await;
+        assert_eq!(
+            observed,
+            (Some("sess-parent".into()), Some("turn-parent".into()))
         );
     }
 }

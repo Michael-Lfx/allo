@@ -17,7 +17,6 @@ use crate::session::ServerSession;
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const CLIENT_VERSION_HEADER: &str = "x-client-version";
 const LEGACY_TOKEN_HEADER: &str = "token";
-const FLOWY_TURN_ID_HEADER: &str = "x-flowy-turn-id";
 
 /// Process-wide `reqwest::Client` so every transport shares one connection pool.
 /// `HttpTransport` instances are rebuilt per request by callers, and a fresh
@@ -204,13 +203,21 @@ impl HttpTransport {
             );
         }
 
-        // Propagate the current agent-run turn id when media/embeddings/etc.
-        // run inside a scoped Flowy billing turn (same task-local as LLM).
+        // Propagate the current agent-run turn / session ids when
+        // media/embeddings/etc. run inside a scoped Flowy attribution
+        // (same task-local as LLM provider HTTP).
         if let Some(turn_id) = nomi_providers::current_flowy_billing_turn_id() {
             headers.insert(
-                HeaderName::from_static(FLOWY_TURN_ID_HEADER),
+                HeaderName::from_static(nomi_providers::FLOWY_TURN_ID_HEADER),
                 HeaderValue::from_str(&turn_id)
                     .map_err(|e| ServerClientError::Http(format!("turn-id header: {e}")))?,
+            );
+        }
+        if let Some(session_id) = nomi_providers::current_flowy_chat_session_id() {
+            headers.insert(
+                HeaderName::from_static(nomi_providers::FLOWY_SESSION_ID_HEADER),
+                HeaderValue::from_str(&session_id)
+                    .map_err(|e| ServerClientError::Http(format!("session-id header: {e}")))?,
             );
         }
 

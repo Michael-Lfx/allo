@@ -422,7 +422,9 @@ impl WorldAssetsPlanner {
                 };
                 let out = plate.out.clone();
                 let permit = Arc::clone(&sem);
+                let attribution = nomi_providers::current_flowy_proxy_attribution();
                 set.spawn(async move {
+                    nomi_providers::with_flowy_proxy_attribution(attribution, async move {
                     let _permit = permit.acquire_owned().await.map_err(|_| {
                         VimaxError::msg("world plate semaphore closed")
                     })?;
@@ -451,6 +453,8 @@ impl WorldAssetsPlanner {
                         }
                         Err(err) => Err(err),
                     }
+                    })
+                    .await
                 });
             }
             let gen_result = async {

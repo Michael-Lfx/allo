@@ -1618,9 +1618,13 @@ async fn run_turn_writeback_report_inner(
     attempt: TurnWritebackAttempt,
 ) -> Result<(), DbError> {
     let billing_turn_id = attempt.billing_turn_id.clone();
-    nomifun_ai_agent::with_flowy_billing_turn_id(billing_turn_id, async move {
-        run_turn_writeback_report_inner_unscoped(service, request, final_text, attempt).await
-    })
+    let session_id = attempt.conversation_id.clone();
+    nomifun_ai_agent::with_flowy_chat_session_id(
+        session_id,
+        nomifun_ai_agent::with_flowy_billing_turn_id(billing_turn_id, async move {
+            run_turn_writeback_report_inner_unscoped(service, request, final_text, attempt).await
+        }),
+    )
     .await
 }
 

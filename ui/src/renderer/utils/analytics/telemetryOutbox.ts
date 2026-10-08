@@ -80,6 +80,7 @@ const ALLOWED_PROPERTIES = new Set([
   'threshold',
   'to_version',
   'total_ms',
+  'turn_id',
   'ttft_ms',
   'ready_age_ms',
   'surface',

@@ -12,7 +12,7 @@ use std::time::Duration;
 use nomi_agent_trace::ObservationScope;
 use nomi_config::config::Config;
 use nomi_providers::{
-    LlmProvider, create_provider, current_flowy_billing_turn_id, with_optional_flowy_billing_turn_id,
+    LlmProvider, create_provider, current_flowy_proxy_attribution, with_flowy_proxy_attribution,
 };
 use nomi_types::llm::{LlmEvent, LlmRequest};
 use nomi_types::message::{ContentBlock, Message, Role, TokenUsage};
@@ -155,9 +155,9 @@ impl MoaRunner {
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REFERENCES));
         let mut join_set: JoinSet<(usize, Result<(String, TokenUsage), String>)> = JoinSet::new();
         // JoinSet tasks are `tokio::spawn`ed and do not inherit task-locals.
-        // Re-scope the Flowy billing turn so advisor calls still send
-        // `X-Flowy-Turn-Id` (otherwise the account is billed, usageByTurn is not).
-        let billing_turn_id = current_flowy_billing_turn_id();
+        // Re-scope session + turn so advisor calls still send
+        // `X-Flowy-Session-Id` / `X-Flowy-Turn-Id`.
+        let attribution = current_flowy_proxy_attribution();
 
         for (idx, slot) in state.slots.iter().enumerate() {
             let provider = (self.provider_factory)(&slot.config);
@@ -174,9 +174,9 @@ impl MoaRunner {
                 isolate_malformed_tool_calls: false,
             };
             let semaphore = Arc::clone(&semaphore);
-            let billing_turn_id = billing_turn_id.clone();
+            let attribution = attribution.clone();
             join_set.spawn(async move {
-                with_optional_flowy_billing_turn_id(billing_turn_id, async {
+                with_flowy_proxy_attribution(attribution, async {
                     let _permit = semaphore.acquire_owned().await;
                     let result = match tokio::time::timeout(
                         timeout,
@@ -771,7 +771,8 @@ mod tests {
             &self,
             _request: &LlmRequest,
         ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-            *self.observed.lock().expect("turn-id probe") = current_flowy_billing_turn_id();
+            *self.observed.lock().expect("turn-id probe") =
+                nomi_providers::current_flowy_billing_turn_id();
             let (tx, rx) = mpsc::channel(8);
             let events = advice_events("probe", 1);
             tokio::spawn(async move {
