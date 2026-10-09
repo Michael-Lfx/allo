@@ -3,9 +3,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path as AxumPath, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
@@ -222,6 +223,38 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
         .with_state(state)
 }
 
+/// AUTH-EXEMPT display-asset routes. Native `<img>` tags cannot send
+/// Authorization or trust headers, matching `companion_public_routes`
+/// and `app_server_public_routes`.
+pub fn skill_icon_routes(state: SkillRouterState) -> Router {
+    Router::new()
+        .route("/api/skills/{name}/icon", get(get_skill_icon))
+        .with_state(state)
+}
+
+fn icon_content_type(ext: &str) -> HeaderValue {
+    HeaderValue::from_static(match ext {
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    })
+}
+
+async fn get_skill_icon(
+    State(state): State<SkillRouterState>,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Response, AppError> {
+    let (bytes, ext) = skill_service::read_skill_icon(&state.skill_paths, &name).await?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, icon_content_type(ext))
+        .header(header::CACHE_CONTROL, "public, max-age=86400")
+        .body(Body::from(bytes))
+        .map_err(|e| AppError::Internal(e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Skill listing & info
 // ---------------------------------------------------------------------------
@@ -257,6 +290,8 @@ async fn list_skills(
                 .cloned()
                 .or_else(|| state.builtin_skill_tags.get(&s.name).cloned())
                 .unwrap_or_default();
+            let avatar = skill_service::find_skill_icon(&skill_service::skill_dir_from_list_location(&s.location))
+                .map(|_| skill_service::skill_icon_api_path(&s.name));
             SkillListItemResponse {
                 name: s.name,
                 description: s.description,
@@ -269,6 +304,7 @@ async fn list_skills(
                 audience_tags,
                 scenario_tags,
                 market_id,
+                avatar,
             }
         })
         .collect();
@@ -296,6 +332,7 @@ async fn list_catalog_skills(
                 source: item.source,
                 source_key: item.source_key,
                 market_id,
+                avatar: item.avatar,
             }
         })
         .collect();
@@ -789,6 +826,7 @@ async fn install_skill_market_skill(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
 
     #[test]
     fn imported_user_skill_ids_are_source_qualified_and_escaped() {
@@ -933,5 +971,34 @@ mod tests {
     async fn skill_routes_builds_router() {
         let state = make_state().await;
         let _router = skill_routes(state);
+    }
+
+    #[tokio::test]
+    async fn skill_icon_route_serves_png_without_auth() {
+        let state = make_state().await;
+        let skill_dir = state.skill_paths.builtin_skills_dir.join("demo-icon");
+        std::fs::create_dir_all(skill_dir.join("assets")).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo-icon\ndescription: d\n---\n",
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("assets").join("icon.png"), b"\x89PNG").unwrap();
+
+        let response = skill_icon_routes(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/skills/demo-icon/icon")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"\x89PNG");
     }
 }

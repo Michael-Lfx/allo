@@ -164,6 +164,70 @@ fn nomifun_skills_guide_is_bundled_and_does_not_require_remote_fetch() {
     );
 }
 
+#[test]
+fn every_packaged_skill_has_an_icon() {
+    let root = builtin_skills_root();
+    let mut missing = Vec::new();
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let path = entry.unwrap().path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.file_name().and_then(|name| name.to_str()) == Some("auto-inject") {
+            for child in std::fs::read_dir(&path).unwrap() {
+                let child = child.unwrap().path();
+                if child.join("SKILL.md").is_file() && !child.join("assets/icon.png").is_file() {
+                    missing.push(child.file_name().unwrap().to_string_lossy().into_owned());
+                }
+            }
+        } else if path.join("SKILL.md").is_file() && !path.join("assets/icon.png").is_file() {
+            missing.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "every packaged builtin Skill must ship assets/icon.png; missing: {missing:?}"
+    );
+}
+
+#[test]
+fn huashu_art_motion_is_a_license_safe_engine_subset() {
+    let skill = builtin_skills_root().join("huashu-art-motion");
+    assert!(skill.join("SKILL.md").is_file());
+    assert!(skill.join("LICENSE").is_file());
+    assert!(skill.join("NOTICE.md").is_file());
+    assert!(skill.join("scripts/engine/render.py").is_file());
+    assert!(skill.join("scripts/engine/scenes/01_cave.js").is_file());
+    assert!(skill.join("references/风格配方/INDEX.md").is_file());
+    assert!(
+        !skill.join("scripts/engine/demos").exists(),
+        "demos (character likeness) must not ship in the builtin subset"
+    );
+    assert!(
+        !skill.join("scripts/engine/reference_films").exists(),
+        "reference_films (Arphic strokes) must not ship in the builtin subset"
+    );
+    let woff = walkdir_woff_count(&skill.join("scripts/engine/lib/fonts"));
+    assert_eq!(woff, 0, "OFL woff binaries must stay out of the builtin subset");
+}
+
+fn walkdir_woff_count(dir: &Path) -> usize {
+    if !dir.exists() {
+        return 0;
+    }
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("woff") || ext.eq_ignore_ascii_case("woff2"))
+        })
+        .count()
+}
+
 #[tokio::test]
 async fn ui_ux_pro_max_skill_materializes_from_embedded_builtin_corpus() {
     let tmp = TempDir::new().unwrap();

@@ -41,6 +41,12 @@ async fn fixture() -> Fixture {
     let user_skills_dir = root.join("skills");
 
     write_skill(&builtin_skills_dir, "core-pdf", "pdf", "Built-in PDF workflow");
+    std::fs::create_dir_all(builtin_skills_dir.join("core-pdf").join("assets")).unwrap();
+    std::fs::write(
+        builtin_skills_dir.join("core-pdf").join("assets").join("icon.png"),
+        b"\x89PNG\r\n\x1a\n",
+    )
+    .unwrap();
     write_skill(
         &builtin_skills_dir.join("auto-inject"),
         "cron",
@@ -106,6 +112,7 @@ async fn catalog_keeps_same_named_skills_from_distinct_sources_and_hides_system_
             && skill["name"] == "pdf"
             && skill["description"] == "Built-in PDF workflow"
             && skill["source"] == "builtin"
+            && skill["avatar"] == "/api/skills/pdf/icon"
     }));
     assert!(skills.iter().any(|skill| {
         skill["skill_id"] == "user:local-pdf"

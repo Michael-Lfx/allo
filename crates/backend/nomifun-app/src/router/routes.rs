@@ -27,7 +27,7 @@ use nomifun_creation::creation_routes;
 use nomifun_canvas::{video_canvas_public_routes, video_canvas_routes};
 use nomifun_conversation::{conversation_ops_routes, conversation_routes};
 use nomifun_cron::cron_routes;
-use nomifun_extension::{extension_routes, hub_routes, skill_routes};
+use nomifun_extension::{extension_routes, hub_routes, skill_icon_routes, skill_routes};
 use nomifun_file::file_routes;
 use nomifun_idmm::idmm_routes;
 use nomifun_knowledge::knowledge_routes;
@@ -868,6 +868,9 @@ pub fn create_router_with_all_state(
         &auth_mw_state,
         &instance_owner_state,
     );
+    // Skill avatars are referenced by plain `<img>` tags and must not sit
+    // behind the owner auth middleware.
+    let skill_icon_public = skill_icon_routes(states.skill.clone());
 
     // Channel routes protected by auth middleware
     let channel_authenticated = protect_instance_owner(
@@ -1513,7 +1516,8 @@ pub fn create_router_with_all_state(
     .merge(appearance_public)
     .merge(workshop_public)
     .merge(video_canvas_public)
-    .merge(app_server_public);
+    .merge(app_server_public)
+    .merge(skill_icon_public);
 
     // Robot device face. `nest` (not `merge`) scopes it to `/robot`, and it sits
     // in this post-CSRF group on purpose: a robot presents a bearer token minted

@@ -24,7 +24,7 @@ describe('skill localization integration', () => {
     const drawer = readSource(new URL('../../guid/components/PresetPickerDrawer.tsx', import.meta.url));
 
     expect(page.includes('conversation.skills.sources.${skill.source}')).toBe(true);
-    expect(page.includes('skillId: skill.skillId')).toBe(true);
+    expect(page.includes('composerChipFromCatalog(')).toBe(true);
     expect(drawer.includes('filterSkillsByTags')).toBe(false);
     expect(drawer.includes('DrawerSkillCard')).toBe(true);
     expect(drawer.includes('localeKey={localeKey}')).toBe(true);

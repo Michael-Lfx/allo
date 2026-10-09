@@ -57,7 +57,10 @@ import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { resolveCreditsBubbleState } from '@/renderer/utils/credits/creditsBubbleModel';
 import classNames from 'classnames';
 import ComposerSurface from '@/renderer/components/chat/ComposerSurface';
-import type { ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
+import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
+import ComposerEntryStrip from '@/renderer/pages/guid/components/ComposerEntryStrip';
+import PresetPickerDrawer from '@/renderer/pages/guid/components/PresetPickerDrawer';
+import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import ComposerSkillTokenInput, {
   type ComposerSkillTokenInputHandle,
   type ComposerTokenInputState,
@@ -367,6 +370,7 @@ const SendBox: React.FC<{
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
   const [addMenuActiveIndex, setAddMenuActiveIndex] = useState(0);
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const isInputActive = isInputFocused;
   const { activeBorderColor, inactiveBorderColor } = useInputFocusRing();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -916,7 +920,23 @@ const SendBox: React.FC<{
     return commands;
   }, [conversationContext?.conversation_id, enableBtw, onClearContext, onSlashBuiltinCommand, t]);
 
-  const { skills: catalogSkills } = useSkillCatalog(Boolean(onSendWithSkills && onSkillChipsChange));
+  const canPickSkills = Boolean(onSendWithSkills && onSkillChipsChange);
+  const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(canPickSkills);
+  const handleToggleCatalogSkill = useCallback(
+    (skillId: string) => {
+      const skill = catalogSkills.find((candidate) => candidate.skillId === skillId);
+      if (!skill || !onSkillChipsChange) {
+        return;
+      }
+      const chip = composerChipFromCatalog(skill, getSkillSourceLabel(skill.source, t));
+      onSkillChipsChange(
+        skillChips.some((candidate) => candidate.skillId === skillId)
+          ? skillChips.filter((candidate) => candidate.skillId !== skillId)
+          : [...skillChips, chip]
+      );
+    },
+    [catalogSkills, onSkillChipsChange, skillChips, t]
+  );
   const launcherItems = useMemo<SlashLauncherItem[]>(
     () => [
       ...builtinSlashCommands.map((command) => ({
@@ -937,6 +957,7 @@ const SendBox: React.FC<{
         name: skill.name,
         description: skill.description,
         source: getSkillSourceLabel(skill.source, t),
+        avatar: skill.avatar ?? undefined,
       })),
     ],
     [builtinSlashCommands, catalogSkills, slash_commands, t],
@@ -1029,11 +1050,9 @@ const SendBox: React.FC<{
       if (!skill || !onSkillChipsChange) {
         return;
       }
-      tokenInputRef.current?.insertSkillAtActiveSlash({
-        skillId: skill.skillId,
-        name: skill.name,
-        source: getSkillSourceLabel(skill.source, t),
-      });
+      tokenInputRef.current?.insertSkillAtActiveSlash(
+        composerChipFromCatalog(skill, getSkillSourceLabel(skill.source, t))
+      );
     },
     onSelectAgent: (item, context) => {
       if (context.manual) {
@@ -1053,6 +1072,15 @@ const SendBox: React.FC<{
         label: item.kind === 'skill' ? item.name : `/${item.name}`,
         description: item.description,
         badge: item.source,
+        icon:
+          item.kind === 'skill' ? (
+            <SkillAvatar
+              skill={{ name: item.name, avatar: item.avatar }}
+              size={18}
+              radiusClassName='rounded-5px'
+              showShadow={false}
+            />
+          ) : undefined,
         section:
           item.kind === 'system'
             ? t('conversation.slashLauncher.system', { defaultValue: 'System commands' })
@@ -2230,6 +2258,7 @@ const SendBox: React.FC<{
   const renderedRightTools = isMobileCompact ? null : rightTools;
 
   return (
+    <>
     <ComposerSurface
       registerNotificationBlocker
       outerRef={dropzoneRef}
@@ -2357,6 +2386,18 @@ const SendBox: React.FC<{
           </div>
         )}
         <div style={{ width: '100%' }}>
+          {canPickSkills ? (
+            <ComposerEntryStrip
+              isPresetAgent={false}
+              hidePreset
+              forceOpaque
+              skillsButtonTestId='sendbox-adjust-skills'
+              onChoosePreset={() => undefined}
+              onFree={() => undefined}
+              onAdjustSkills={() => setSkillPickerOpen(true)}
+              activeSkillCount={skillChips.length}
+            />
+          ) : null}
           {prefix}
           {context}
           {/* 编辑消息提示条 / Editing message banner */}
@@ -2555,6 +2596,25 @@ const SendBox: React.FC<{
           </div>
         )}
     </ComposerSurface>
+    {canPickSkills ? (
+      <PresetPickerDrawer
+        visible={skillPickerOpen}
+        onClose={() => setSkillPickerOpen(false)}
+        presets={[]}
+        localeKey={i18n.language || 'en-US'}
+        mode='skills'
+        onModeChange={() => undefined}
+        skillsOnly
+        skills={catalogSkills}
+        selectedSkillIds={skillChips.map((skill) => skill.skillId)}
+        onToggleSkill={handleToggleCatalogSkill}
+        skillsLoading={catalogSkillsLoading}
+        skillsError={catalogSkillsError}
+        onSelectPreset={() => undefined}
+        onFree={() => undefined}
+      />
+    ) : null}
+    </>
   );
 };
 

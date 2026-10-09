@@ -9,6 +9,8 @@ export interface SlashLauncherItem {
   description: string;
   /** Present for Skills so same-name entries remain distinguishable. */
   source?: string;
+  /** Public skill avatar URL when the catalog entry ships one. */
+  avatar?: string;
   tags?: string[];
 }
 

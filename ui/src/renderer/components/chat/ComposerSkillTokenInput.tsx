@@ -1,5 +1,6 @@
 import { getActiveSlashTokenRange } from '@/common/chat/slash/launcher';
 import { Cube } from '@icon-park/react';
+import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import React, {
   forwardRef,
   useCallback,
@@ -794,7 +795,16 @@ const ComposerSkillTokenInput = forwardRef<ComposerSkillTokenInputHandle, Compos
               title={node.skill.name}
             >
               <span className={styles.skillIcon} aria-hidden='true'>
-                <Cube theme='outline' size={16} fill='currentColor' />
+                {node.skill.avatar ? (
+                  <SkillAvatar
+                    skill={{ name: node.skill.name, avatar: node.skill.avatar }}
+                    size={16}
+                    radiusClassName='rounded-4px'
+                    showShadow={false}
+                  />
+                ) : (
+                  <Cube theme='outline' size={16} fill='currentColor' />
+                )}
               </span>
               <span className={styles.skillName}>{node.skill.name}</span>
             </span>

@@ -1,7 +1,8 @@
-import { CheckSmall, Puzzle } from '@icon-park/react';
+import { CheckSmall } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { SkillCatalogEntry } from '@/renderer/hooks/skills/useSkillCatalog';
+import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import styles from '../index.module.css';
 
 export type DrawerSkillCardProps = {
@@ -22,7 +23,12 @@ const DrawerSkillCard: React.FC<DrawerSkillCardProps> = ({ skill, selected, onTo
       onClick={() => onToggle(skill.skillId)}
     >
       <span className={styles.drawerSkillIcon} aria-hidden='true'>
-        <Puzzle theme='outline' size={16} fill='currentColor' />
+        <SkillAvatar
+          skill={{ name: skill.name, avatar: skill.avatar }}
+          size={32}
+          radiusClassName='rounded-9px'
+          showShadow={false}
+        />
       </span>
       <span className={styles.drawerSkillBody}>
         <span className={styles.drawerSkillTitleRow}>

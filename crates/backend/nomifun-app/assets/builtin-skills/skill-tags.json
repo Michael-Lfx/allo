@@ -135,6 +135,33 @@
       },
       "audience_tags": ["general"],
       "scenario_tags": ["research"]
+    },
+    {
+      "name": "star-office-helper",
+      "name_i18n": { "zh-CN": "Star Office 助手" },
+      "description_i18n": {
+        "zh-CN": "安装、连接和排查 Nomi/OpenClaw 可视化伴生项目，默认推荐 Star-Office-UI，覆盖端口、鉴权和 Python 环境问题。"
+      },
+      "audience_tags": ["developer"],
+      "scenario_tags": ["setup"]
+    },
+    {
+      "name": "nomifun-webui-setup",
+      "name_i18n": { "zh-CN": "WebUI 远程访问" },
+      "description_i18n": {
+        "zh-CN": "配置 Flowy WebUI 远程访问，支持局域网、Tailscale 和服务器部署，并排查端口与防火墙问题。"
+      },
+      "audience_tags": ["developer"],
+      "scenario_tags": ["setup"]
+    },
+    {
+      "name": "huashu-art-motion",
+      "name_i18n": { "zh-CN": "花叔艺术动画" },
+      "description_i18n": {
+        "zh-CN": "用代码绘制并渲染艺术动画：复刻运动机制、35 种风格活画，以及 Kurzgesagt/Vox/3b1b 等解说语法片段。"
+      },
+      "audience_tags": ["designer"],
+      "scenario_tags": ["design"]
     }
   ]
 }

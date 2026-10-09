@@ -1597,6 +1597,7 @@ export const fs = {
       audience_tags?: string[];
       scenario_tags?: string[];
       market_id?: string;
+      avatar?: string | null;
     }>,
     void
   >('/api/skills'),
@@ -1609,6 +1610,7 @@ export const fs = {
         source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
         source_key?: string;
         market_id?: string;
+        avatar?: string | null;
       }>;
     },
     void

@@ -27,7 +27,8 @@ import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
-import type { ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
+import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
+import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import type {
   ComposerSkillTokenInputHandle,
   ComposerTokenInputState,
@@ -316,11 +317,10 @@ const GuidPage: React.FC = () => {
     (skillId: string) => {
       const skill = catalogSkills.find((candidate) => candidate.skillId === skillId);
       if (!skill) return;
-      const chip: ComposerSkillChip = {
-        skillId: skill.skillId,
-        name: skill.name,
-        source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
-      };
+      const chip = composerChipFromCatalog(
+        skill,
+        t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+      );
       setHomeSkillChips((current) => {
         if (current.some((candidate) => candidate.skillId === skillId)) {
           return current.filter((candidate) => candidate.skillId !== skillId);
@@ -359,6 +359,7 @@ const GuidPage: React.FC = () => {
               name: skill.name,
               description: skill.description,
               source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+              avatar: skill.avatar ?? undefined,
             }))
           : []),
       ],
@@ -400,11 +401,12 @@ const GuidPage: React.FC = () => {
       if (!skill) {
         return;
       }
-      homeTokenInputRef.current?.insertSkillAtActiveSlash({
-          skillId: skill.skillId,
-          name: skill.name,
-          source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
-      });
+      homeTokenInputRef.current?.insertSkillAtActiveSlash(
+        composerChipFromCatalog(
+          skill,
+          t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+        ),
+      );
     },
     onSelectAgent: (item) => {
       if (!homeTokenInputRef.current?.replaceActiveSlashToken(`/${item.name} `)) {
@@ -425,6 +427,15 @@ const GuidPage: React.FC = () => {
         label: item.kind === 'skill' ? item.name : `/${item.name}`,
         description: item.description,
         badge: item.source,
+        icon:
+          item.kind === 'skill' ? (
+            <SkillAvatar
+              skill={{ name: item.name, avatar: item.avatar }}
+              size={18}
+              radiusClassName='rounded-5px'
+              showShadow={false}
+            />
+          ) : undefined,
         section:
           item.kind === 'system'
             ? t('conversation.slashLauncher.system')

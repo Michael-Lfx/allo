@@ -195,6 +195,10 @@ pub struct SkillCatalogItemResponse {
     pub source_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market_id: Option<String>,
+    /// Public `<img>` URL (`/api/skills/{name}/icon`) when the skill directory
+    /// contains `assets/icon.{png,webp,svg,jpg,jpeg}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 /// Response payload for the user-facing Skill catalog.
@@ -242,6 +246,10 @@ pub struct SkillListItemResponse {
     pub scenario_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market_id: Option<String>,
+    /// Public `<img>` URL for a skill avatar (`/api/skills/{name}/icon`) when
+    /// the skill directory contains `assets/icon.{png,webp,svg,jpg,jpeg}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 /// Request body for `PUT /api/skills/{name}/tags`.
@@ -818,6 +826,7 @@ mod tests {
             audience_tags: vec![],
             scenario_tags: vec![],
             market_id: None,
+            avatar: None,
         };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(json["name"], "my-skill");
@@ -844,6 +853,7 @@ mod tests {
             audience_tags: vec![],
             scenario_tags: vec![],
             market_id: None,
+            avatar: None,
         };
         let json = serde_json::to_value(&item).unwrap();
         // Project-wide wire contract: relative_location stays snake_case.
@@ -883,10 +893,12 @@ mod tests {
             audience_tags: vec![],
             scenario_tags: vec!["document".into()],
             market_id: None,
+            avatar: Some("/api/skills/x/icon".into()),
         };
         let j = serde_json::to_value(&item).unwrap();
         assert!(j.get("audience_tags").is_none()); // empty skipped
         assert_eq!(j["scenario_tags"], serde_json::json!(["document"]));
+        assert_eq!(j["avatar"], "/api/skills/x/icon");
     }
 
     #[test]
