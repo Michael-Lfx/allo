@@ -1610,6 +1610,8 @@ export const fs = {
         source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
         source_key?: string;
         market_id?: string;
+        name_i18n?: Record<string, string>;
+        description_i18n?: Record<string, string>;
         avatar?: string | null;
       }>;
     },

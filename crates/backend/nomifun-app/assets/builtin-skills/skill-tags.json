@@ -155,8 +155,8 @@
       "scenario_tags": ["setup"]
     },
     {
-      "name": "huashu-art-motion",
-      "name_i18n": { "zh-CN": "花叔艺术动画" },
+      "name": "art-motion",
+      "name_i18n": { "zh-CN": "艺术动画" },
       "description_i18n": {
         "zh-CN": "用代码绘制并渲染艺术动画：复刻运动机制、35 种风格活画，以及 Kurzgesagt/Vox/3b1b 等解说语法片段。"
       },

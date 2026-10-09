@@ -362,11 +362,11 @@ async fn list_skills_builtin_entries_include_avatar_when_icon_exists() {
         .find(|item| item["name"] == "officecli")
         .expect("officecli builtin skill listed");
     assert_eq!(officecli["avatar"], "/api/skills/officecli/icon");
-    let huashu = arr
+    let art_motion = arr
         .iter()
-        .find(|item| item["name"] == "huashu-art-motion")
-        .expect("huashu-art-motion builtin skill listed");
-    assert_eq!(huashu["avatar"], "/api/skills/huashu-art-motion/icon");
+        .find(|item| item["name"] == "art-motion")
+        .expect("art-motion builtin skill listed");
+    assert_eq!(art_motion["avatar"], "/api/skills/art-motion/icon");
 }
 
 #[tokio::test]

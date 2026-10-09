@@ -195,6 +195,10 @@ pub struct SkillCatalogItemResponse {
     pub source_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market_id: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub name_i18n: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub description_i18n: HashMap<String, String>,
     /// Public `<img>` URL (`/api/skills/{name}/icon`) when the skill directory
     /// contains `assets/icon.{png,webp,svg,jpg,jpeg}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

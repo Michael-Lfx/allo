@@ -3,6 +3,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { SkillCatalogEntry } from '@/renderer/hooks/skills/useSkillCatalog';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
+import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
 import styles from '../index.module.css';
 
 export type DrawerSkillCardProps = {
@@ -12,7 +13,16 @@ export type DrawerSkillCardProps = {
 };
 
 const DrawerSkillCard: React.FC<DrawerSkillCardProps> = ({ skill, selected, onToggle }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const display = resolveSkillDisplay(
+    {
+      name: skill.name,
+      description: skill.description,
+      name_i18n: skill.nameI18n,
+      description_i18n: skill.descriptionI18n,
+    },
+    i18n.language || 'en-US'
+  );
 
   return (
     <button
@@ -32,13 +42,13 @@ const DrawerSkillCard: React.FC<DrawerSkillCardProps> = ({ skill, selected, onTo
       </span>
       <span className={styles.drawerSkillBody}>
         <span className={styles.drawerSkillTitleRow}>
-          <span className={styles.drawerSkillTitle}>{skill.name}</span>
+          <span className={styles.drawerSkillTitle}>{display.name}</span>
           <span className={styles.drawerSkillSource}>
             {t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source })}
           </span>
         </span>
         <span className={styles.drawerSkillDescription}>
-          {skill.description || t('guid.drawer.skillNoDescription', { defaultValue: '暂无描述。' })}
+          {display.description || t('guid.drawer.skillNoDescription', { defaultValue: '暂无描述。' })}
         </span>
       </span>
       <span className={[styles.drawerSkillStatus, selected ? styles.drawerSkillStatusSelected : ''].filter(Boolean).join(' ')} aria-hidden='true'>

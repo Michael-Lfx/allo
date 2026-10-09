@@ -1,6 +1,6 @@
-# huashu-art-motion — Flowy builtin subset
+# art-motion — Flowy builtin subset
 
-This skill vendors a **license-safe, size-safe subset** of
+Flowy ships this skill as **art-motion**. It vendors a **license-safe, size-safe subset** of
 [alchaincyf/huashu-art-motion](https://github.com/alchaincyf/huashu-art-motion)
 (MIT). The original `LICENSE` is copied beside this file.
 

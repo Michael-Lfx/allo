@@ -1,5 +1,5 @@
 ---
-name: huashu-art-motion
+name: art-motion
 description: "Art and motion graphics in code: recreate an animation; paint 35 art styles and make the painting move; 9 explainer grammars (Kurzgesagt/Vox/3b1b/whiteboard/keynote/finance charts); people via AI frames. Use when the user wants art-history motion, explainer clips, or a narration-driven art film. 艺术与视频动画：拆解复刻；代码画风格并让画活；解说动画语法。"
 ---
 
@@ -14,7 +14,7 @@ description: "Art and motion graphics in code: recreate an animation; paint 35 a
 本技能只读。开新片时把引擎复制到用户项目，再改副本：
 
 ```text
-SKILL=.nomi/skills/huashu-art-motion          # 或对话工作区里物化后的同名目录
+SKILL=.nomi/skills/art-motion          # 或对话工作区里物化后的同名目录
 E=<项目>/代码工程
 ```
 
@@ -98,4 +98,4 @@ py -3 scripts\engine\render.py --spec scripts\engine\examples\t3_finance_chart.j
 
 ## 回流
 
-每做完一支：新风格写进**项目**里的 `风格配方/` 并更新 INDEX；做对了的事写进项目的 `07-正面经验.md`。不要修改 `{data_dir}/builtin-skills/huashu-art-motion/`。
+每做完一支：新风格写进**项目**里的 `风格配方/` 并更新 INDEX；做对了的事写进项目的 `07-正面经验.md`。不要修改 `{data_dir}/builtin-skills/art-motion/`。
