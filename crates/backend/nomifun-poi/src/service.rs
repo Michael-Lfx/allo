@@ -30,6 +30,9 @@ impl PoiService {
         // Boot path: an unreadable `config.yaml` must not take the host down with
         // it (`load_gateway_for_boot` moves the bad file aside and defaults).
         let gateway = load_gateway_for_boot(&data_dir);
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|e| AppError::Internal(format!("create data dir: {e}")))?;
+        let gateway = apply_interest_default_off(&data_dir, gateway);
         Self::from_gateway(data_dir, gateway)
     }
 
@@ -263,6 +266,81 @@ impl PoiService {
     }
 }
 
+/// Written next to `interest.db` after the one-shot product freeze.
+/// Presence means this install already received "POI off by default", so a
+/// later explicit re-enable in Settings must be left alone.
+const DEFAULT_OFF_STAMP_NAME: &str = "poi-default-off-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultOffAction {
+    /// Stamp already present — leave `enabled` as the user's current choice.
+    Skip,
+    /// First boot after the freeze; already off — only write the stamp.
+    StampOnly,
+    /// First boot and still on — persist `enabled: false`, then stamp.
+    DisableAndStamp,
+}
+
+fn default_off_action(stamp_exists: bool, currently_enabled: bool) -> DefaultOffAction {
+    if stamp_exists {
+        DefaultOffAction::Skip
+    } else if currently_enabled {
+        DefaultOffAction::DisableAndStamp
+    } else {
+        DefaultOffAction::StampOnly
+    }
+}
+
+fn default_off_stamp_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(DEFAULT_OFF_STAMP_NAME)
+}
+
+/// One-shot boot rewrite: POI used to default ON. New installs default OFF,
+/// and existing installs that still have `enabled: true` are turned off the
+/// first time the app opens after this change. Best-effort — never fails boot.
+fn apply_interest_default_off(data_dir: &Path, mut gateway: GatewayConfig) -> GatewayConfig {
+    let stamp = default_off_stamp_path(data_dir);
+    match default_off_action(stamp.exists(), gateway.interest.enabled) {
+        DefaultOffAction::Skip => gateway,
+        DefaultOffAction::StampOnly => {
+            write_default_off_stamp(&stamp);
+            gateway
+        }
+        DefaultOffAction::DisableAndStamp => {
+            gateway.interest.enabled = false;
+            let path = config_root_for_data_dir(data_dir).join("config.yaml");
+            match save_config_yaml(&path, &gateway) {
+                Ok(()) => {
+                    info!(
+                        path = %path.display(),
+                        "poi: interest.enabled was on; wrote product default-off (one-shot)"
+                    );
+                    write_default_off_stamp(&stamp);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "poi: failed to persist default-off; in-memory switch is off for this boot, \
+                         will retry next launch"
+                    );
+                }
+            }
+            gateway
+        }
+    }
+}
+
+fn write_default_off_stamp(path: &Path) {
+    if let Err(error) = std::fs::write(path, "poi-default-off-v1\n") {
+        tracing::warn!(
+            path = %path.display(),
+            error = %error,
+            "poi: failed to write default-off stamp; boot continues"
+        );
+    }
+}
+
 fn config_root_for_data_dir(data_dir: &Path) -> PathBuf {
     data_dir
         .parent()
@@ -474,6 +552,7 @@ mod tests {
 
         let updated = service
             .update_settings(UpdatePoiSettingsRequest {
+                enabled: Some(true),
                 auto_extract_min_turns: Some(2),
                 auto_extract_enabled: Some(true),
                 ..Default::default()
@@ -487,6 +566,106 @@ mod tests {
         let service2 = PoiService::new(poi_dir).unwrap();
         assert_eq!(service2.interest_config().auto_extract_min_turns, 2);
         assert!(service2.interest_config().proactive_extraction_enabled());
+    }
+
+    #[test]
+    fn default_off_action_is_idempotent_and_preserves_later_opt_in() {
+        assert_eq!(
+            default_off_action(true, true),
+            DefaultOffAction::Skip,
+            "stamp present + enabled must not be rewritten (user re-enabled)"
+        );
+        assert_eq!(default_off_action(true, false), DefaultOffAction::Skip);
+        assert_eq!(
+            default_off_action(false, true),
+            DefaultOffAction::DisableAndStamp
+        );
+        assert_eq!(default_off_action(false, false), DefaultOffAction::StampOnly);
+    }
+
+    #[test]
+    fn boot_turns_off_persisted_enabled_once() {
+        let root = tempfile::tempdir().unwrap();
+        let poi_dir = root.path().join("poi");
+        let config_path = root.path().join("config.yaml");
+
+        let mut gateway = GatewayConfig::default();
+        gateway.interest.enabled = true;
+        save_config_yaml(&config_path, &gateway).unwrap();
+
+        let service = PoiService::new(poi_dir.clone()).unwrap();
+        assert!(
+            !service.interest_config().enabled,
+            "first boot after the freeze must close interest for existing installs"
+        );
+        let reloaded = load_user_config_file(&config_path).unwrap();
+        assert!(!reloaded.interest.enabled);
+        assert!(
+            poi_dir.join(DEFAULT_OFF_STAMP_NAME).is_file(),
+            "stamp must be written so a later re-enable is respected"
+        );
+    }
+
+    #[test]
+    fn boot_respects_explicit_reenable_after_default_off() {
+        let root = tempfile::tempdir().unwrap();
+        let poi_dir = root.path().join("poi");
+        let config_path = root.path().join("config.yaml");
+
+        let mut gateway = GatewayConfig::default();
+        gateway.interest.enabled = true;
+        save_config_yaml(&config_path, &gateway).unwrap();
+
+        let first = PoiService::new(poi_dir.clone()).unwrap();
+        assert!(!first.interest_config().enabled);
+        first
+            .update_settings(UpdatePoiSettingsRequest {
+                enabled: Some(true),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let second = PoiService::new(poi_dir).unwrap();
+        assert!(
+            second.interest_config().enabled,
+            "an explicit Settings re-enable after the one-shot freeze must survive the next boot"
+        );
+    }
+
+    #[test]
+    fn boot_does_not_create_config_yaml_when_interest_is_already_off() {
+        let root = tempfile::tempdir().unwrap();
+        let poi_dir = root.path().join("poi");
+        let config_path = root.path().join("config.yaml");
+
+        let service = PoiService::new(poi_dir.clone()).unwrap();
+        assert!(!service.interest_config().enabled);
+        assert!(
+            !config_path.exists(),
+            "a fresh install must not materialize config.yaml just to record default-off"
+        );
+        assert!(poi_dir.join(DEFAULT_OFF_STAMP_NAME).is_file());
+    }
+
+    #[test]
+    fn boot_does_not_rewrite_yaml_when_interest_is_already_off() {
+        let root = tempfile::tempdir().unwrap();
+        let poi_dir = root.path().join("poi");
+        let config_path = root.path().join("config.yaml");
+
+        let mut gateway = GatewayConfig::default();
+        gateway.interest.enabled = false;
+        gateway.insights.contribution.min_work_turns = 9;
+        save_config_yaml(&config_path, &gateway).unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+
+        let service = PoiService::new(poi_dir).unwrap();
+        assert!(!service.interest_config().enabled);
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            before,
+            "already-off installs must not be rewritten on boot"
+        );
     }
 
     #[test]

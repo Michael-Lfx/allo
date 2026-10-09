@@ -53,6 +53,7 @@ const PoiSettings: React.FC = () => {
       ]);
       const normalizedSettings = {
         ...s,
+        enabled: s.enabled ?? false,
         extractMode: s.extractMode || 'llm',
         autoExtractEnabled: s.autoExtractEnabled ?? true,
         autoExtractMinTurns: s.autoExtractMinTurns ?? 3,

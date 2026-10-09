@@ -430,6 +430,7 @@ mod tests {
     #[test]
     fn turn_threshold_respects_poi_and_insights_minimums() {
         let interest = InterestConfig {
+            enabled: true,
             auto_extract_min_turns: 4,
             ..InterestConfig::default()
         };
@@ -444,7 +445,10 @@ mod tests {
 
     #[test]
     fn turn_threshold_met_after_enough_turns() {
-        let interest = InterestConfig::default();
+        let interest = InterestConfig {
+            enabled: true,
+            ..InterestConfig::default()
+        };
         let insights = InsightsContributionConfig::default();
         let state = ActiveSessionState {
             user_turns_since_flush: 4,

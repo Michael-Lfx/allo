@@ -59,6 +59,7 @@ describe('settings detail-page visual contracts', () => {
     expect(computer).toContain('SettingsRow');
     expect(computer).not.toContain("defaultValue: 'Yes'");
     expect(poi).toContain("sectionAutomatic");
+    expect(poi).toContain('enabled: s.enabled ?? false');
     expect(poi).toContain('disabled={!settings.autoExtractEnabled}');
     expect(learning).toContain('SettingsControlGroup');
     expect(insights).toContain("t('common.yes')");
