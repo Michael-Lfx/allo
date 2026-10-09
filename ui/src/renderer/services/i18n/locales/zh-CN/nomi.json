@@ -613,6 +613,103 @@
     "bolt": {
       "name": "波特 Bolt",
       "style": "软萌科技 · 悬浮机器人"
+    },
+    "puff": {
+      "name": "噗噗 Puff",
+      "style": "奶油团子 · 会变形的桌面精灵"
+    }
+  },
+  "petMessage": {
+    "dismiss": "忽略这条状态",
+    "sources": {
+      "conversation": "对话",
+      "cron": "定时任务",
+      "learning": "学习",
+      "execution": "执行",
+      "ssh": "SSH",
+      "robot": "机器人",
+      "requirement": "需求",
+      "autowork": "自动推进",
+      "app": "应用"
+    },
+    "conversation": {
+      "preparing": "正在准备…",
+      "thinking": "正在思考…",
+      "thinkingOn": "思考：{{topic}}",
+      "streaming": "正在撰写…",
+      "tooling": "正在执行工具…",
+      "calling": "正在调用 {{tool}}",
+      "callingOn": "{{tool}} · {{target}}",
+      "waiting": "等待你确认",
+      "waitingOn": "请确认 {{action}}",
+      "moa": "混合推理 {{done}}/{{total}}",
+      "finalizing": "正在收尾…",
+      "running": "对话进行中",
+      "completed": "对话已完成",
+      "failed": "对话出错了",
+      "cancelled": "对话已中断"
+    },
+    "cron": {
+      "completed": "定时任务「{{name}}」已完成",
+      "failed": "定时任务「{{name}}」失败",
+      "skipped": "定时任务「{{name}}」已跳过"
+    },
+    "learning": {
+      "course": {
+        "started": "开始生成课程",
+        "scope": "正在规划课程大纲",
+        "round": "正在撰写课程 {{title}}（{{round}}/{{max}}）",
+        "audit": "正在审校课程",
+        "publishing": "正在发布课程",
+        "completed": "课程已生成",
+        "failed": "课程生成失败"
+      },
+      "lesson": {
+        "started": "开始生成课时",
+        "round": "正在撰写课时 {{title}}（{{round}}/{{max}}）",
+        "audit": "正在审校课时",
+        "completed": "课时已生成",
+        "failed": "课时生成失败"
+      }
+    },
+    "execution": {
+      "created": "已创建执行任务",
+      "status_changed": "执行状态已更新",
+      "plan_changed": "执行计划已更新",
+      "step_changed": "执行步骤进行中",
+      "attempt_changed": "执行正在重试",
+      "decision_requested": "执行需要你决策",
+      "decision_answered": "执行决策已提交",
+      "deleted": "执行任务已删除",
+      "planning": "正在规划执行",
+      "adjust": "正在调整执行计划"
+    },
+    "ssh": {
+      "connecting": "正在连接 SSH…",
+      "connected": "SSH 已连接",
+      "degraded": "SSH 会话正在回收",
+      "reconnecting": "SSH 正在重连…",
+      "dropped": "SSH 连接已断开",
+      "closed": "SSH 会话已关闭",
+      "idle": "SSH 已空闲"
+    },
+    "robot": {
+      "listening": "机器人正在听",
+      "speaking": "机器人正在说",
+      "idle": "机器人已待命"
+    },
+    "requirement": {
+      "pending": "需求 #{{no}} {{title}} 已入队",
+      "in_progress": "正在做 #{{no}} {{title}}",
+      "done": "需求 #{{no}} {{title}} 已完成",
+      "failed": "需求 #{{no}} {{title}} 失败",
+      "cancelled": "需求 #{{no}} {{title}} 已取消",
+      "needs_review": "需求 #{{no}} {{title}} 待审阅"
+    },
+    "autowork": {
+      "running": "自动推进进行中",
+      "runningTagged": "正在推进「{{tag}}」",
+      "completed": "自动推进已结束"
     }
   },
   "customFigure": {

@@ -41,6 +41,9 @@ import {
 } from './memoryPanelGeometry';
 import { useDetachedMemoryPanel } from './useDetachedMemoryPanel';
 import { placeResizedWindow, type GeomRect } from './windowGeometry';
+import { clampSavedCompanionPosition, snapCompanionWindow, workAreasFromMonitors } from './companionScreenClamp';
+import { useCompanionPetFeed } from './messages/useCompanionPetFeed';
+import PetStatusToast from './messages/PetStatusToast';
 import { buildCompanionMenuEntries, type CompanionMenuAction } from './companionNativeMenu';
 import { useCompanionClickThrough } from './useCompanionClickThrough';
 import { createCompanionBarRevealController, type CompanionBarRevealController } from './companionBarReveal';
@@ -158,6 +161,9 @@ const CompanionPage: React.FC = () => {
   const [dragOver, setDragOver] = useState(false);
   /** 正在拖动伙伴 / 刚拖完：冻结点击穿透轮询以根除拖动闪动。 */
   const [dragging, setDragging] = useState(false);
+  const draggingRef = useRef(false);
+  const quiet = Boolean(profile && inQuietHours(profile.appearance.quiet_start, profile.appearance.quiet_end));
+  const petFeed = useCompanionPetFeed({ companionId, mood, activity, quiet });
   /** 立绘命中元素 ref：传给 CompanionAvatar→CustomFigure 挂 alpha 掩码。 */
   const figureHitRef = useRef<HTMLDivElement | null>(null);
   const unreadBadgeRef = useRef<HTMLButtonElement | null>(null);
@@ -288,7 +294,7 @@ const CompanionPage: React.FC = () => {
   const applyWindowState = useCallback(async (cfg: ICompanionProfile, opts?: { skipPosition?: boolean }) => {
     if (!isTauriRuntime()) return;
     try {
-      const { getCurrentWindow, PhysicalPosition, availableMonitors, primaryMonitor } = await import('@tauri-apps/api/window');
+      const { getCurrentWindow, PhysicalPosition, availableMonitors } = await import('@tauri-apps/api/window');
       const win = getCurrentWindow();
       if (!cfg.appearance.companion_enabled) {
         await win.hide();
@@ -308,26 +314,14 @@ const CompanionPage: React.FC = () => {
         // A saved position can point at no connected monitor: configs written
         // by older builds (launch-time scale bug doubled the coords every
         // start on Retina) or a since-unplugged external display. Restoring
-        // it verbatim parks the companion off-screen forever, so fall back to the
-        // primary monitor's bottom-right; the onMoved echo then persists the
-        // healed coords. Validation is best-effort — on failure keep the raw
-        // saved position rather than blocking show().
+        // it verbatim parks the companion off-screen forever, so clamp fully
+        // into the work area it overlaps most (else the nearest). The onMoved
+        // echo then persists the healed coords. Validation is best-effort —
+        // on failure keep the raw saved position rather than blocking show().
         try {
           const [monitors, size] = await Promise.all([availableMonitors(), win.outerSize()]);
           if (monitors.length > 0) {
-            const MIN_REACHABLE = 24; // px of the window that must stay grabbable
-            const onScreen = monitors.some((m) => {
-              const overlapX = Math.min(target!.x + size.width, m.position.x + m.size.width) - Math.max(target!.x, m.position.x);
-              const overlapY = Math.min(target!.y + size.height, m.position.y + m.size.height) - Math.max(target!.y, m.position.y);
-              return overlapX >= MIN_REACHABLE && overlapY >= MIN_REACHABLE;
-            });
-            if (!onScreen) {
-              const p = (await primaryMonitor()) ?? monitors[0];
-              target = {
-                x: p.position.x + p.size.width - size.width - 24,
-                y: p.position.y + p.size.height - size.height - 96,
-              };
-            }
+            target = clampSavedCompanionPosition(target, size, monitors);
           }
         } catch {
           // keep raw saved position
@@ -353,11 +347,10 @@ const CompanionPage: React.FC = () => {
 
   // Match the native window to the character's desk spec (full-figure
   // characters use a taller window; the other five keep the classic 240x320).
-  // Bottom-anchored and monitor-clamped — and only at actual size changes, so
-  // a user's deliberate half-off-screen placement is never disturbed by
-  // ordinary restores. Must run AFTER applyWindowState's show(): before the
-  // first orderFront macOS reports scaleFactor 1.0 and every physical-px
-  // computation here would be wrong.
+  // Bottom-anchored and work-area-clamped — only at actual size changes, so
+  // ordinary restores do not fight a live drag. Must run AFTER
+  // applyWindowState's show(): before the first orderFront macOS reports
+  // scaleFactor 1.0 and every physical-px computation here would be wrong.
   const applyDeskSize = useCallback(async (cfg: ICompanionProfile, opts?: { anchor?: 'bottom' | 'top-left' }) => {
     if (!isTauriRuntime() || !cfg.appearance.companion_enabled) return;
     // An expanded surface owns the native rectangle until it closes. Config
@@ -373,12 +366,7 @@ const CompanionPage: React.FC = () => {
       if (size.width === target.width && size.height === target.height) return;
       let monitors: { x: number; y: number; width: number; height: number }[] = [];
       try {
-        monitors = (await availableMonitors()).map((m) => ({
-          x: m.position.x,
-          y: m.position.y,
-          width: m.size.width,
-          height: m.size.height,
-        }));
+        monitors = workAreasFromMonitors(await availableMonitors());
       } catch {
         // place unclamped
       }
@@ -1051,17 +1039,25 @@ const CompanionPage: React.FC = () => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     void (async () => {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      unlisten = await getCurrentWindow().onMoved(({ payload }) => {
+      unlisten = await getCurrentWindow().onMoved(() => {
         if (internalWindowLayoutRef.current || expandedWindowSessionRef.current) return;
         lastLocalMoveAt.current = Date.now();
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
+          if (draggingRef.current || internalWindowLayoutRef.current || expandedWindowSessionRef.current) return;
           lastLocalMoveAt.current = Date.now();
-          // Merge-patch only this companion's position: never clobbers concurrent
-          // edits (settings toggles in the main window) the way a full PUT does.
-          void ipcBridge.companion.patchCompanion
-            .invoke({ companion_id: companionId, patch: { appearance: { companion_x: payload.x, companion_y: payload.y } } })
+          // Snap first so we never persist a coordinate the operator cannot
+          // reach (gap between monitors, unplugged display, past the work area).
+          void snapCompanionWindow({ force: true })
+            .then((pos) => {
+              if (!pos) return;
+              return ipcBridge.companion.patchCompanion.invoke({
+                companion_id: companionId,
+                patch: { appearance: { companion_x: pos.x, companion_y: pos.y } },
+              });
+            })
             .then((saved) => {
+              if (!saved) return;
               profileRef.current = saved;
               setProfile(saved);
             })
@@ -1074,6 +1070,41 @@ const CompanionPage: React.FC = () => {
       if (timer) clearTimeout(timer);
     };
   }, [companionId]);
+
+  // Unplug / DPI change / refocus: pull the pet back onto a live work area.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const snapIfIdle = () => {
+      if (draggingRef.current || expandedWindowSessionRef.current || internalWindowLayoutRef.current) return;
+      void snapCompanionWindow({ force: true });
+    };
+    let unFocus: (() => void) | undefined;
+    let unScale: (() => void) | undefined;
+    let disposed = false;
+    void import('@tauri-apps/api/window')
+      .then(async ({ getCurrentWindow }) => {
+        if (disposed) return;
+        const win = getCurrentWindow();
+        unFocus = await win.onFocusChanged((event) => {
+          if (event.payload) snapIfIdle();
+        });
+        unScale = await win.onScaleChanged(() => snapIfIdle());
+      })
+      .catch(() => {});
+    const onVis = () => {
+      if (document.visibilityState === 'visible') snapIfIdle();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', snapIfIdle);
+    snapIfIdle();
+    return () => {
+      disposed = true;
+      unFocus?.();
+      unScale?.();
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', snapIfIdle);
+    };
+  }, []);
 
   // Reply and composer continue to share one expanded companion rectangle.
   // Memory uses its own native window and never participates here.
@@ -1210,6 +1241,7 @@ const CompanionPage: React.FC = () => {
 
   const startDrag = useCallback(async (e: React.MouseEvent) => {
     if (e.button !== 0 || !isTauriRuntime()) return;
+    draggingRef.current = true;
     setDragging(true); // 冻结点击穿透轮询，根除拖动闪动
     let ended = false;
     let unlistenMoved: (() => void) | undefined;
@@ -1223,7 +1255,11 @@ const CompanionPage: React.FC = () => {
       if (silence) clearTimeout(silence);
       if (safety) clearTimeout(safety);
       unlistenMoved?.();
+      draggingRef.current = false;
       setDragging(false);
+      if (!expandedWindowSessionRef.current && !internalWindowLayoutRef.current) {
+        void snapCompanionWindow({ force: true });
+      }
     };
     // 多信号界定拖动结束：松手(pointerup/mouseup) 为主；onMoved 停止 220ms 兜底
     // （模态移动循环下 mouseup 可能不达 webview）；6s 安全超时防全漏导致永久冻结。
@@ -1829,6 +1865,7 @@ const CompanionPage: React.FC = () => {
           character={profile?.character}
           mood={mood}
           activity={activity}
+          motion={petFeed.motion}
           size={120}
           companionId={companionId ?? undefined}
           customFigure={customFigureMetaOf(profile)}
@@ -1915,6 +1952,7 @@ const CompanionPage: React.FC = () => {
               {unread > 99 ? '99+' : unread}
             </button>
           )}
+          <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />
           <div
             ref={figureHitRef}
             className='nomi-companion-figure-hit'
@@ -1925,6 +1963,7 @@ const CompanionPage: React.FC = () => {
               character={profile?.character}
               mood={mood}
               activity={activity}
+              motion={petFeed.motion}
               size={desk.figureHeight}
               companionId={companionId ?? undefined}
               customFigure={customFigureMetaOf(profile)}

@@ -66,6 +66,133 @@
   line-height: 0;
 }
 
+.nomi-puff {
+  filter: drop-shadow(0 8px 12px rgba(24, 20, 16, 0.32));
+}
+
+.nomi-puff svg {
+  display: block;
+  overflow: visible;
+}
+
+/* Status chips overlay the figure so the idle desk window does not grow. */
+.nomi-pet-feed {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 4px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: auto;
+}
+
+.nomi-pet-chip {
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 11px;
+  border: 1px solid var(--border-base);
+  background: color-mix(in srgb, var(--bg-base) 92%, transparent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(14px);
+}
+
+.nomi-pet-chip--running,
+.nomi-pet-chip--progress,
+.nomi-pet-chip--queued {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border-base));
+}
+
+.nomi-pet-chip--waiting {
+  border-color: color-mix(in srgb, #d4a017 55%, var(--border-base));
+}
+
+.nomi-pet-chip--completed {
+  border-color: color-mix(in srgb, #3ecf8e 50%, var(--border-base));
+}
+
+.nomi-pet-chip--failed {
+  border-color: color-mix(in srgb, #e8483f 55%, var(--border-base));
+}
+
+.nomi-pet-chip--cancelled {
+  border-color: color-mix(in srgb, var(--text-tertiary) 45%, var(--border-base));
+}
+
+.nomi-pet-chip__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 5px 8px 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nomi-pet-chip__source {
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--text-tertiary);
+}
+
+.nomi-pet-chip__title {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nomi-pet-chip__detail {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nomi-pet-chip__bar {
+  display: block;
+  height: 2px;
+  margin-top: 3px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.nomi-pet-chip__bar > span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+
+.nomi-pet-chip__x {
+  flex: none;
+  width: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--border-base);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nomi-pet-chip__x:hover {
+  color: var(--text-primary);
+}
+
 /* ---- forehead reply bubble ---- */
 
 .nomi-companion-bubble {

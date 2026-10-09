@@ -8,6 +8,14 @@ const capturePolicySource = readFileSync(new URL('./companionCapturePolicy.ts', 
 const memoryGeometrySource = readFileSync(new URL('./memoryPanelGeometry.ts', import.meta.url), 'utf8');
 
 describe('desktop companion chrome layout', () => {
+  test('snaps the companion onto a work area after drag and on restore', () => {
+    expect(companionSource.includes('snapCompanionWindow({ force: true })')).toBe(true);
+    expect(companionSource.includes('clampSavedCompanionPosition')).toBe(true);
+    expect(companionSource.includes('useCompanionPetFeed')).toBe(true);
+    expect(companionSource.includes('PetStatusToast')).toBe(true);
+    expect(companionSource.includes('motion={petFeed.motion}')).toBe(true);
+  });
+
   test('keeps the unread badge anchored to the figure stage', () => {
     const stageIndex = companionSource.indexOf("className='nomi-companion-stage'");
     const badgeIndex = companionSource.indexOf("className='nomi-companion-badge'");

@@ -613,6 +613,103 @@
     "bolt": {
       "name": "Bolt",
       "style": "Cozy tech · hovering robot"
+    },
+    "puff": {
+      "name": "Puff",
+      "style": "Cream blob · shapeshifting desk sprite"
+    }
+  },
+  "petMessage": {
+    "dismiss": "Dismiss this status",
+    "sources": {
+      "conversation": "Chat",
+      "cron": "Scheduled",
+      "learning": "Learn",
+      "execution": "Run",
+      "ssh": "SSH",
+      "robot": "Robot",
+      "requirement": "Requirement",
+      "autowork": "Auto-work",
+      "app": "App"
+    },
+    "conversation": {
+      "preparing": "Preparing…",
+      "thinking": "Thinking…",
+      "thinkingOn": "Thinking: {{topic}}",
+      "streaming": "Writing…",
+      "tooling": "Running tools…",
+      "calling": "Calling {{tool}}",
+      "callingOn": "{{tool}} · {{target}}",
+      "waiting": "Waiting for your OK",
+      "waitingOn": "Confirm {{action}}",
+      "moa": "MoA {{done}}/{{total}}",
+      "finalizing": "Wrapping up…",
+      "running": "Chat in progress",
+      "completed": "Chat finished",
+      "failed": "Chat hit an error",
+      "cancelled": "Chat stopped"
+    },
+    "cron": {
+      "completed": "Scheduled task \"{{name}}\" finished",
+      "failed": "Scheduled task \"{{name}}\" failed",
+      "skipped": "Scheduled task \"{{name}}\" skipped"
+    },
+    "learning": {
+      "course": {
+        "started": "Starting a course",
+        "scope": "Planning the course outline",
+        "round": "Writing course {{title}} ({{round}}/{{max}})",
+        "audit": "Reviewing the course",
+        "publishing": "Publishing the course",
+        "completed": "Course ready",
+        "failed": "Course generation failed"
+      },
+      "lesson": {
+        "started": "Starting a lesson",
+        "round": "Writing lesson {{title}} ({{round}}/{{max}})",
+        "audit": "Reviewing the lesson",
+        "completed": "Lesson ready",
+        "failed": "Lesson generation failed"
+      }
+    },
+    "execution": {
+      "created": "Run created",
+      "status_changed": "Run status updated",
+      "plan_changed": "Run plan updated",
+      "step_changed": "Run step in progress",
+      "attempt_changed": "Run retrying",
+      "decision_requested": "Run needs a decision",
+      "decision_answered": "Run decision sent",
+      "deleted": "Run deleted",
+      "planning": "Planning the run",
+      "adjust": "Adjusting the run plan"
+    },
+    "ssh": {
+      "connecting": "Connecting SSH…",
+      "connected": "SSH connected",
+      "degraded": "SSH session recycling",
+      "reconnecting": "SSH reconnecting…",
+      "dropped": "SSH dropped",
+      "closed": "SSH closed",
+      "idle": "SSH is idle"
+    },
+    "robot": {
+      "listening": "Robot is listening",
+      "speaking": "Robot is speaking",
+      "idle": "Robot is idle"
+    },
+    "requirement": {
+      "pending": "Requirement #{{no}} {{title}} queued",
+      "in_progress": "Working on #{{no}} {{title}}",
+      "done": "Requirement #{{no}} {{title}} done",
+      "failed": "Requirement #{{no}} {{title}} failed",
+      "cancelled": "Requirement #{{no}} {{title}} cancelled",
+      "needs_review": "Requirement #{{no}} {{title}} needs review"
+    },
+    "autowork": {
+      "running": "Auto-work in progress",
+      "runningTagged": "Advancing “{{tag}}”",
+      "completed": "Auto-work finished"
     }
   },
   "customFigure": {

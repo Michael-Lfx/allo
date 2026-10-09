@@ -5,6 +5,8 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- The desktop companion stays fully on a connected display (including multi-monitor gaps and unplugged screens), shows live module status on the pet, and adds the cream-colored Puff figure with richer motion.
+
 ## v1.6.0 - 2026-10-08
 
 - Appearance adds full-window custom wallpaper scenes.
