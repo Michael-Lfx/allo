@@ -29,6 +29,7 @@ import GuidInputCard from './components/GuidInputCard';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
 import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
+import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
 import type {
   ComposerSkillTokenInputHandle,
   ComposerTokenInputState,
@@ -320,6 +321,7 @@ const GuidPage: React.FC = () => {
       const chip = composerChipFromCatalog(
         skill,
         t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+        localeKey,
       );
       setHomeSkillChips((current) => {
         if (current.some((candidate) => candidate.skillId === skillId)) {
@@ -328,7 +330,7 @@ const GuidPage: React.FC = () => {
         return [...current, chip];
       });
     },
-    [catalogSkills, t],
+    [catalogSkills, localeKey, t],
   );
   useEffect(() => {
     if (!supportsHomeGoalCommand) {
@@ -353,17 +355,28 @@ const GuidPage: React.FC = () => {
             }]
           : []),
         ...(supportsHomeSkillLoading
-          ? catalogSkills.map((skill) => ({
-              id: skill.skillId,
-              kind: 'skill' as const,
-              name: skill.name,
-              description: skill.description,
-              source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
-              avatar: skill.avatar ?? undefined,
-            }))
+          ? catalogSkills.map((skill) => {
+              const display = resolveSkillDisplay(
+                {
+                  name: skill.name,
+                  description: skill.description,
+                  name_i18n: skill.nameI18n,
+                  description_i18n: skill.descriptionI18n,
+                },
+                localeKey,
+              );
+              return {
+                id: skill.skillId,
+                kind: 'skill' as const,
+                name: display.name,
+                description: display.description,
+                source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+                avatar: skill.avatar ?? undefined,
+              };
+            })
           : []),
       ],
-    [catalogSkills, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
+    [catalogSkills, localeKey, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
   );
   const homeSlashController = useSlashLauncherController({
     input: homeTokenInputState.projection,
@@ -405,6 +418,7 @@ const GuidPage: React.FC = () => {
         composerChipFromCatalog(
           skill,
           t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+          localeKey,
         ),
       );
     },

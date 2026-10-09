@@ -191,8 +191,8 @@ fn every_packaged_skill_has_an_icon() {
 }
 
 #[test]
-fn huashu_art_motion_is_a_license_safe_engine_subset() {
-    let skill = builtin_skills_root().join("huashu-art-motion");
+fn art_motion_is_a_license_safe_engine_subset() {
+    let skill = builtin_skills_root().join("art-motion");
     assert!(skill.join("SKILL.md").is_file());
     assert!(skill.join("LICENSE").is_file());
     assert!(skill.join("NOTICE.md").is_file());

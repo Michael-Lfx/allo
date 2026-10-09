@@ -12,6 +12,8 @@ export interface SkillCatalogEntry {
   source: SkillCatalogSource;
   sourceKey?: string;
   marketId?: string;
+  nameI18n?: Record<string, string>;
+  descriptionI18n?: Record<string, string>;
   avatar?: string | null;
 }
 
@@ -22,6 +24,8 @@ function mapCatalogEntry(entry: {
   source: SkillCatalogSource;
   source_key?: string;
   market_id?: string;
+  name_i18n?: Record<string, string>;
+  description_i18n?: Record<string, string>;
   avatar?: string | null;
 }): SkillCatalogEntry {
   return {
@@ -31,6 +35,8 @@ function mapCatalogEntry(entry: {
     source: entry.source,
     sourceKey: entry.source_key,
     marketId: entry.market_id,
+    nameI18n: entry.name_i18n,
+    descriptionI18n: entry.description_i18n,
     avatar: resolveCatalogSkillAvatar(entry.name, entry.avatar, entry.source),
   };
 }

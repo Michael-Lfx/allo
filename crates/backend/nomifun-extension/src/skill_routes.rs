@@ -318,12 +318,16 @@ async fn list_catalog_skills(
     State(state): State<SkillRouterState>,
 ) -> Result<Json<ApiResponse<SkillCatalogResponse>>, AppError> {
     let market_mappings = skill_service::load_market_skill_mappings(&state.skill_paths).await;
+    let builtin_display = skill_service::load_builtin_skill_display_metadata();
     let skills = skill_service::list_catalog_skills(&state.skill_paths)
         .await?
         .into_iter()
         .map(|item| {
             let market_id = (item.source == SkillCatalogSource::User && item.source_key.is_none())
                 .then(|| market_id_for_skill_name(&market_mappings, &item.name))
+                .flatten();
+            let display = (item.source == SkillCatalogSource::Builtin)
+                .then(|| builtin_display.get(&item.name))
                 .flatten();
             SkillCatalogItemResponse {
                 skill_id: SkillId::new(item.source, item.source_key.as_deref(), &item.local_key),
@@ -332,6 +336,12 @@ async fn list_catalog_skills(
                 source: item.source,
                 source_key: item.source_key,
                 market_id,
+                name_i18n: display
+                    .map(|meta| meta.name_i18n.clone())
+                    .unwrap_or_default(),
+                description_i18n: display
+                    .map(|meta| meta.description_i18n.clone())
+                    .unwrap_or_default(),
                 avatar: item.avatar,
             }
         })

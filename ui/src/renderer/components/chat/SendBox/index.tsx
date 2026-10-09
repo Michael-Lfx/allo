@@ -61,6 +61,7 @@ import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/comp
 import ComposerEntryStrip from '@/renderer/pages/guid/components/ComposerEntryStrip';
 import PresetPickerDrawer from '@/renderer/pages/guid/components/PresetPickerDrawer';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
+import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
 import ComposerSkillTokenInput, {
   type ComposerSkillTokenInputHandle,
   type ComposerTokenInputState,
@@ -928,14 +929,18 @@ const SendBox: React.FC<{
       if (!skill || !onSkillChipsChange) {
         return;
       }
-      const chip = composerChipFromCatalog(skill, getSkillSourceLabel(skill.source, t));
+      const chip = composerChipFromCatalog(
+        skill,
+        getSkillSourceLabel(skill.source, t),
+        i18n.language || 'en-US'
+      );
       onSkillChipsChange(
         skillChips.some((candidate) => candidate.skillId === skillId)
           ? skillChips.filter((candidate) => candidate.skillId !== skillId)
           : [...skillChips, chip]
       );
     },
-    [catalogSkills, onSkillChipsChange, skillChips, t]
+    [catalogSkills, i18n.language, onSkillChipsChange, skillChips, t]
   );
   const launcherItems = useMemo<SlashLauncherItem[]>(
     () => [
@@ -951,16 +956,27 @@ const SendBox: React.FC<{
         name: command.name,
         description: getSlashCommandDescription(command, t),
       })),
-      ...catalogSkills.map((skill) => ({
-        id: skill.skillId,
-        kind: 'skill' as const,
-        name: skill.name,
-        description: skill.description,
-        source: getSkillSourceLabel(skill.source, t),
-        avatar: skill.avatar ?? undefined,
-      })),
+      ...catalogSkills.map((skill) => {
+        const display = resolveSkillDisplay(
+          {
+            name: skill.name,
+            description: skill.description,
+            name_i18n: skill.nameI18n,
+            description_i18n: skill.descriptionI18n,
+          },
+          i18n.language || 'en-US'
+        );
+        return {
+          id: skill.skillId,
+          kind: 'skill' as const,
+          name: display.name,
+          description: display.description,
+          source: getSkillSourceLabel(skill.source, t),
+          avatar: skill.avatar ?? undefined,
+        };
+      }),
     ],
-    [builtinSlashCommands, catalogSkills, slash_commands, t],
+    [builtinSlashCommands, catalogSkills, i18n.language, slash_commands, t],
   );
 
   const orderedLauncherItems = useMemo(
@@ -1051,7 +1067,7 @@ const SendBox: React.FC<{
         return;
       }
       tokenInputRef.current?.insertSkillAtActiveSlash(
-        composerChipFromCatalog(skill, getSkillSourceLabel(skill.source, t))
+        composerChipFromCatalog(skill, getSkillSourceLabel(skill.source, t), i18n.language || 'en-US')
       );
     },
     onSelectAgent: (item, context) => {
