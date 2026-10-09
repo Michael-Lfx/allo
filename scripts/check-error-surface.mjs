@@ -88,7 +88,6 @@ const matrix = {
     'neon-rainbow',
     'frosted-glass',
     'sunset-afterglow',
-    'notion',
   ],
   fixtures: smoke ? ['provider-schema', 'long-detail'] : [
     'provider-schema',

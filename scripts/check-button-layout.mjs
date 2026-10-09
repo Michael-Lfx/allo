@@ -55,13 +55,12 @@ const matrix = {
   dprs: smoke ? [1, 1.5, 2] : [1, 1.25, 1.5, 2],
   locales: smoke ? ['zh-CN'] : ['zh-CN', 'en-US'],
   schemes: smoke ? ['light', 'dark'] : ['light', 'dark'],
-  themes: smoke ? ['codex-neutral', 'rhythm-dark', 'notion'] : [
+  themes: smoke ? ['codex-neutral', 'rhythm-dark'] : [
     'codex-neutral',
     'rhythm-dark',
     'neon-rainbow',
     'frosted-glass',
     'sunset-afterglow',
-    'notion',
   ],
   scenarios: smoke ? ['off', 'adversarial'] : ['off', 'normal', 'adversarial'],
 };

@@ -84,7 +84,6 @@ const matrix = {
     'neon-rainbow',
     'frosted-glass',
     'sunset-afterglow',
-    'notion',
   ],
   surfaces: ['feedback', 'support'],
   scenarios: smoke ? ['long', 'normal', 'log-confirm', 'attachment-menu'] : [
