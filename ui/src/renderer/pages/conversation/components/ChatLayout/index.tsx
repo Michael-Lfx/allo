@@ -9,6 +9,7 @@ import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGa
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import ChatTitleEditor from '@/renderer/pages/conversation/components/ChatTitleEditor';
+import ConversationTitleMinimap from '@/renderer/pages/conversation/components/ConversationTitleMinimap';
 import {
   AgentTraceTrigger,
   SessionLogWorkspace,
@@ -131,7 +132,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
     <span
       data-testid='conversation-workspace-subtitle'
       title={workspaceTitleSubtitle}
-      className='block min-w-0 overflow-hidden text-11px leading-14px text-t-secondary'
+      className='block min-w-0 overflow-hidden text-11px leading-14px text-current'
     >
       <PathText path={workspaceTitleSubtitle} className='min-w-0' marqueeOnHover />
     </span>
@@ -404,14 +405,16 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           titleAreaMaxWidth={titleAreaMaxWidth}
           title={props.title}
           subtitle={titleSubtitle}
-          conversation_id={conversation_id}
           leading={
             props.headerLeading ??
             (<img src={appLogo} alt='Flowy' className='block h-16px w-16px object-contain' />)
           }
         />
       </FlexFullContainer>
-      <div className='flex items-center gap-12px shrink-0'>
+      <div className='flex items-center gap-12px shrink-0' data-chat-header-actions>
+        {conversation_id != null && (
+          <ConversationTitleMinimap conversation_id={conversation_id} />
+        )}
         {!props.hideAdvancedControls && conversation_id != null && (
           <>
             {/* 召唤伙伴徽标（设计 B5）：仅已召唤会话渲染，被动展示伙伴名。 */}

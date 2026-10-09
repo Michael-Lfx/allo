@@ -1,0 +1,66 @@
+.surface {
+  border: 1px solid transparent;
+  background: transparent;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+
+.surface:hover,
+.surface:focus-within {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  border-color: color-mix(in srgb, var(--text-primary) 16%, transparent);
+}
+
+.title,
+.renameInput {
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 24px;
+  color: var(--text-primary);
+}
+
+.renameInput {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  appearance: none;
+}
+
+.renameInput:focus,
+.renameInput:focus-visible {
+  outline: none;
+  border: 0;
+  box-shadow: none;
+}
+
+.surface:hover .title,
+.surface:focus-within .title,
+.surface:hover .renameInput,
+.surface:focus-within .renameInput {
+  color: var(--text-primary);
+}
+
+.subtitle {
+  color: var(--text-secondary);
+}
+
+.surface:hover .subtitle,
+.surface:focus-within .subtitle {
+  color: var(--text-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .surface {
+    transition: none;
+  }
+}
