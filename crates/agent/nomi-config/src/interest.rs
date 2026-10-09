@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 /// Controls local topic-of-interest extraction and prompt injection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InterestConfig {
-    /// Master switch for interest store, prefetch, and session-end ingestion.
-    #[serde(default = "default_interest_enabled")]
+    /// Master switch — default off (opt-in). Extraction and prompt injection
+    /// stay quiet until Settings turns this on.
+    #[serde(default)]
     pub enabled: bool,
 
     /// Maximum topics retained after consolidation.
@@ -100,10 +101,6 @@ pub struct InterestConfig {
     pub starter_page_size: u32,
 }
 
-fn default_interest_enabled() -> bool {
-    true
-}
-
 fn default_interest_max_topics() -> u32 {
     40
 }
@@ -191,7 +188,7 @@ fn default_interest_starter_page_size() -> u32 {
 impl Default for InterestConfig {
     fn default() -> Self {
         Self {
-            enabled: default_interest_enabled(),
+            enabled: false,
             max_topics: default_interest_max_topics(),
             snapshot_top_k: default_interest_snapshot_top_k(),
             prefetch_top_k: default_interest_prefetch_top_k(),
@@ -266,12 +263,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_prefer_llm_semantic_extract() {
+    fn defaults_are_opt_in_off_with_llm_extract_ready() {
         let cfg = InterestConfig::default();
-        assert!(cfg.enabled);
+        assert!(!cfg.enabled);
+        assert!(!cfg.proactive_extraction_enabled());
+        assert!(!cfg.session_end_persist_enabled());
+        assert!(!cfg.session_end_llm_enabled());
         assert_eq!(cfg.extract_mode, "llm");
         assert!(cfg.llm_on_session_end);
-        assert!(cfg.session_end_llm_enabled());
         assert!(cfg.per_turn_buffer);
         assert!(!cfg.per_turn_persist);
         assert!(!cfg.uses_rules());
@@ -286,8 +285,30 @@ mod tests {
     }
 
     #[test]
+    fn enabling_the_master_switch_turns_on_session_end_llm() {
+        let mut cfg = InterestConfig::default();
+        cfg.enabled = true;
+        assert!(cfg.session_end_llm_enabled());
+        assert!(cfg.proactive_extraction_enabled());
+        assert!(cfg.session_end_persist_enabled());
+    }
+
+    #[test]
+    fn missing_enabled_key_deserializes_to_off() {
+        let cfg: InterestConfig = serde_yaml::from_str("extract_mode: llm\n").unwrap();
+        assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn explicit_enabled_true_is_preserved_on_deserialize() {
+        let cfg: InterestConfig = serde_yaml::from_str("enabled: true\n").unwrap();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
     fn hybrid_enables_rules_supplement_and_llm() {
         let mut cfg = InterestConfig::default();
+        cfg.enabled = true;
         cfg.extract_mode = "hybrid".to_string();
         assert!(cfg.uses_rules());
         assert!(cfg.session_end_llm_enabled());
@@ -296,6 +317,7 @@ mod tests {
     #[test]
     fn legacy_rules_mode_skips_llm_without_opt_in() {
         let mut cfg = InterestConfig::default();
+        cfg.enabled = true;
         cfg.extract_mode = "rules".to_string();
         cfg.llm_on_session_end = false;
         assert!(cfg.uses_rules());
