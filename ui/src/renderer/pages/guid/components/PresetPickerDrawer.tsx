@@ -36,6 +36,8 @@ export interface PresetPickerDrawerProps {
   onToggleSkill?: (skillId: string) => void;
   skillsLoading?: boolean;
   skillsError?: boolean;
+  /** Conversation composers open this drawer only to pick Skills. */
+  skillsOnly?: boolean;
   // Preset single-select
   onSelectPreset: (presetId: PresetReference) => void;
   onFree: () => void;
@@ -62,6 +64,7 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
   onToggleSkill,
   skillsLoading = false,
   skillsError = false,
+  skillsOnly = false,
   onSelectPreset,
   onFree,
 }) => {
@@ -105,7 +108,8 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
   );
 
   const selectedSkillIdSet = useMemo(() => new Set(selectedSkillIds), [selectedSkillIds]);
-  const visibleCount = mode === 'preset' ? filteredPresets.length : filteredSkills.length;
+  const activeMode: PresetPickerDrawerMode = skillsOnly ? 'skills' : mode;
+  const visibleCount = activeMode === 'preset' ? filteredPresets.length : filteredSkills.length;
 
   return (
     <Drawer
@@ -124,24 +128,32 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
       <div className={styles.drawerSurface} data-testid='guid-entry-drawer'>
         <div className={styles.drawerTopbar}>
           <div className={styles.drawerSegmented} role='tablist' aria-label={t('guid.drawer.modeLabel', { defaultValue: 'Entry type' })}>
-            <button
-              type='button'
-              role='tab'
-              aria-selected={mode === 'preset'}
-              className={[styles.drawerSegment, mode === 'preset' ? styles.drawerSegmentActive : ''].filter(Boolean).join(' ')}
-              onClick={() => onModeChange('preset')}
-            >
-              {t('guid.drawer.presetTab', { defaultValue: 'Presets' })}
-            </button>
-            <button
-              type='button'
-              role='tab'
-              aria-selected={mode === 'skills'}
-              className={[styles.drawerSegment, mode === 'skills' ? styles.drawerSegmentActive : ''].filter(Boolean).join(' ')}
-              onClick={() => onModeChange('skills')}
-            >
-              {t('guid.drawer.skillsTab', { defaultValue: 'Skills' })}
-            </button>
+            {skillsOnly ? (
+              <span className={[styles.drawerSegment, styles.drawerSegmentActive].join(' ')}>
+                {t('guid.drawer.skillsTab', { defaultValue: 'Skills' })}
+              </span>
+            ) : (
+              <>
+                <button
+                  type='button'
+                  role='tab'
+                  aria-selected={mode === 'preset'}
+                  className={[styles.drawerSegment, mode === 'preset' ? styles.drawerSegmentActive : ''].filter(Boolean).join(' ')}
+                  onClick={() => onModeChange('preset')}
+                >
+                  {t('guid.drawer.presetTab', { defaultValue: 'Presets' })}
+                </button>
+                <button
+                  type='button'
+                  role='tab'
+                  aria-selected={mode === 'skills'}
+                  className={[styles.drawerSegment, mode === 'skills' ? styles.drawerSegmentActive : ''].filter(Boolean).join(' ')}
+                  onClick={() => onModeChange('skills')}
+                >
+                  {t('guid.drawer.skillsTab', { defaultValue: 'Skills' })}
+                </button>
+              </>
+            )}
           </div>
           <button
             type='button'
@@ -157,8 +169,8 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
           <Input
             prefix={<Search theme='outline' size={15} />}
             placeholder={t(
-              mode === 'preset' ? 'guid.drawer.searchPreset' : 'guid.drawer.searchSkill',
-              { defaultValue: mode === 'preset' ? 'Search preset name or description...' : 'Search Skills...' },
+              activeMode === 'preset' ? 'guid.drawer.searchPreset' : 'guid.drawer.searchSkill',
+              { defaultValue: activeMode === 'preset' ? 'Search preset name or description...' : 'Search Skills...' },
             )}
             value={query}
             onChange={setQuery}
@@ -167,7 +179,7 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
           />
         </div>
 
-        {mode === 'preset' && (
+        {activeMode === 'preset' && (
           <div className={styles.drawerFilterPanel}>
             <PresetTagFilterBar
               audienceTags={audienceTags}
@@ -185,11 +197,11 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
         <div className={styles.drawerResultMeta}>
           <span>
             <strong>{visibleCount}</strong>{' '}
-            {t(mode === 'preset' ? 'guid.drawer.presetCount' : 'guid.drawer.skillCount', {
-              defaultValue: mode === 'preset' ? 'presets' : 'Skills',
+            {t(activeMode === 'preset' ? 'guid.drawer.presetCount' : 'guid.drawer.skillCount', {
+              defaultValue: activeMode === 'preset' ? 'presets' : 'Skills',
             })}
           </span>
-          {mode === 'skills' && selectedSkillIds.length > 0 && (
+          {activeMode === 'skills' && selectedSkillIds.length > 0 && (
             <span className={styles.entrySkillPopoverCount}>
               {t('guid.drawer.selectedSkillCount', { count: selectedSkillIds.length, defaultValue: '{{count}} selected' })}
             </span>
@@ -197,7 +209,7 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
         </div>
 
         <div className={styles.drawerList}>
-          {mode === 'preset' ? (
+          {activeMode === 'preset' ? (
             filteredPresets.length > 0 ? (
               filteredPresets.map((preset) => (
                 <DrawerPresetCard
@@ -248,7 +260,7 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
         </div>
 
         <div className={styles.drawerFooter}>
-          {mode === 'preset' ? (
+          {activeMode === 'preset' ? (
             <>
               <span className={styles.drawerFooterHint}>
                 {t('guid.drawer.presetHint', { defaultValue: 'Selecting a preset freezes its configuration for this conversation.' })}

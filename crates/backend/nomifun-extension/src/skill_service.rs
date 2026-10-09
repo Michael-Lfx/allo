@@ -828,6 +828,57 @@ pub struct SkillListItem {
     pub source: SkillSource,
 }
 
+const SKILL_ICON_CANDIDATES: &[(&str, &'static str)] = &[
+    ("assets/icon.png", "png"),
+    ("assets/icon.webp", "webp"),
+    ("assets/icon.svg", "svg"),
+    ("assets/icon.jpg", "jpg"),
+    ("assets/icon.jpeg", "jpeg"),
+];
+
+/// Public `<img>` path for a skill that has a local icon file.
+pub fn skill_icon_api_path(name: &str) -> String {
+    format!("/api/skills/{name}/icon")
+}
+
+/// Directory that owns `SKILL.md` for a listed skill.
+///
+/// Built-in list items point `location` at the manifest **file**; custom and
+/// extension items point it at the skill **directory**.
+pub fn skill_dir_from_list_location(location: &str) -> PathBuf {
+    skill_dir_from_manifest_path(Path::new(location))
+}
+
+pub fn skill_dir_from_manifest_path(path: &Path) -> PathBuf {
+    if path.file_name().and_then(|name| name.to_str()) == Some(SKILL_MANIFEST_FILE) {
+        path.parent().unwrap_or(path).to_path_buf()
+    } else {
+        path.to_path_buf()
+    }
+}
+
+pub fn find_skill_icon(dir: &Path) -> Option<(PathBuf, &'static str)> {
+    for (relative, ext) in SKILL_ICON_CANDIDATES {
+        let path = dir.join(relative);
+        if path.is_file() {
+            return Some((path, *ext));
+        }
+    }
+    None
+}
+
+/// Read a skill's avatar bytes. The skill name is validated against path
+/// traversal; missing skills or missing icons map to [`ExtensionError::SkillNotFound`].
+pub async fn read_skill_icon(paths: &SkillPaths, name: &str) -> Result<(Vec<u8>, &'static str), ExtensionError> {
+    validate_filename(name)?;
+    let dir = resolve_skill_source_path(paths, name)
+        .ok_or_else(|| ExtensionError::SkillNotFound(name.to_owned()))?;
+    let (path, ext) = find_skill_icon(&dir)
+        .ok_or_else(|| ExtensionError::SkillNotFound(format!("{name} icon")))?;
+    let bytes = tokio::fs::read(&path).await?;
+    Ok((bytes, ext))
+}
+
 /// Lightweight item used by the user-facing Skill catalog.
 ///
 /// Unlike [`SkillListItem`], this representation preserves two Skills with
@@ -845,6 +896,8 @@ pub struct SkillCatalogItem {
     /// frontmatter display name because two directories may declare the same
     /// name.
     pub local_key: String,
+    /// Public `<img>` path when the skill directory ships an icon file.
+    pub avatar: Option<String>,
 }
 
 /// Filesystem roots that contribute Skills to the user-facing catalog.
@@ -957,6 +1010,7 @@ async fn list_catalog_skills_with_roots(
         .await?
         .into_iter()
         .map(|candidate| SkillCatalogItem {
+            avatar: catalog_item_avatar(paths, &candidate),
             name: candidate.name,
             description: candidate.description,
             source: candidate.source,
@@ -1033,6 +1087,16 @@ struct CatalogSkillFile {
 enum CatalogSkillLocation {
     Builtin(String),
     File(PathBuf),
+}
+
+fn catalog_item_avatar(paths: &SkillPaths, candidate: &CatalogSkillFile) -> Option<String> {
+    let dir = match &candidate.location {
+        CatalogSkillLocation::Builtin(relative) => {
+            skill_dir_from_manifest_path(&paths.builtin_skills_dir.join(relative))
+        }
+        CatalogSkillLocation::File(path) => skill_dir_from_manifest_path(path),
+    };
+    find_skill_icon(&dir).map(|_| skill_icon_api_path(&candidate.name))
 }
 
 async fn catalog_skill_files(
@@ -3181,6 +3245,26 @@ mod tests {
                 .get("zh-CN")
                 .is_some_and(|desc| desc.contains("计划"))
         );
+    }
+
+    #[test]
+    fn find_skill_icon_prefers_png_over_jpeg() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let assets = tmp.path().join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("icon.jpg"), b"jpg").unwrap();
+        std::fs::write(assets.join("icon.png"), b"png").unwrap();
+        let found = super::find_skill_icon(tmp.path()).expect("icon");
+        assert_eq!(found.1, "png");
+        assert!(found.0.ends_with("icon.png"));
+    }
+
+    #[test]
+    fn skill_dir_from_list_location_strips_manifest_file() {
+        let dir = super::skill_dir_from_list_location("/tmp/planning-with-files/SKILL.md");
+        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some("planning-with-files"));
+        let custom = super::skill_dir_from_list_location("/tmp/skills/my-custom");
+        assert_eq!(custom.file_name().and_then(|n| n.to_str()), Some("my-custom"));
     }
 
     // -----------------------------------------------------------------------

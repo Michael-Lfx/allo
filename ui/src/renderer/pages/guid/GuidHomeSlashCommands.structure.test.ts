@@ -22,7 +22,7 @@ describe('Guid homepage slash launcher', () => {
     const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
     const cardSource = readSource(new URL('./components/GuidInputCard.tsx', import.meta.url));
 
-    expect(pageSource.includes('skillId: skill.skillId')).toBe(true);
+    expect(pageSource.includes('composerChipFromCatalog(')).toBe(true);
     expect(pageSource.includes('homeSkillChips.map((skill) => skill.skillId)')).toBe(true);
     expect(pageSource.includes('homeTokenInputRef.current?.insertSkillAtActiveSlash')).toBe(true);
     expect(pageSource.includes('shouldRemoveLastComposerSkill(')).toBe(false);

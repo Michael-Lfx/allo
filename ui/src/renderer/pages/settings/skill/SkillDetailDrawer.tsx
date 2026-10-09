@@ -9,9 +9,10 @@ import LazyMarkdownView from '@/renderer/components/Markdown/LazyMarkdownView';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { SkillInfo } from '@/renderer/pages/settings/PresetSettings/types';
 import { Button, Drawer, Spin } from '@arco-design/web-react';
-import { Code, FileText, FolderOpen, Lightning, Refresh, SettingOne } from '@icon-park/react';
+import { Code, FileText, FolderOpen, Refresh, SettingOne } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import SkillAvatar from './SkillAvatar';
 import { resolveSkillDisplay } from './skillDisplay';
 import { readSkillContent, stripSkillFrontmatter } from './skillDetail';
 
@@ -158,16 +159,7 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
         <div className='flex h-full min-h-0 flex-col' data-testid='skill-detail-content'>
           <div className='flex-shrink-0 border-b border-b-solid border-[var(--color-border-1)] px-24px py-20px'>
             <div className='flex items-start gap-14px'>
-              <div
-                className={[
-                  'flex h-44px w-44px flex-shrink-0 items-center justify-center rounded-12px text-17px font-700 uppercase shadow-sm',
-                  isAutoInjected
-                    ? 'bg-[rgba(var(--success-6),0.1)] text-[rgb(var(--success-6))]'
-                    : 'bg-primary-1 text-primary-6',
-                ].join(' ')}
-              >
-                {isAutoInjected ? <Lightning theme='filled' size={20} /> : skill.name.charAt(0)}
-              </div>
+              <SkillAvatar skill={skill} isAutoInjected={isAutoInjected} size={44} radiusClassName='rounded-12px' />
               <div className='min-w-0 flex-1'>
                 <div className='flex flex-wrap items-center gap-8px'>
                   <h2 className='m-0 break-words text-20px font-700 leading-28px text-t-primary'>{display.name}</h2>

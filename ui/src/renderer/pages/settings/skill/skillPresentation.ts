@@ -6,6 +6,38 @@
 /** Normalize a skill name for use in a stable data-testid. */
 export const normalizeTestId = (name: string): string => name.replace(/[:/\s<>"'|?*]/g, '-');
 
+/** Public `<img>` path served by `GET /api/skills/{name}/icon`. */
+export const skillIconPublicPath = (name: string): string =>
+  `/api/skills/${encodeURIComponent(name.trim())}/icon`;
+
+/**
+ * Prefer the catalog/list `avatar` field; for builtins, fall back to the
+ * public icon route so the session picker still shows packaged stills when
+ * an older catalog payload omits the field.
+ */
+export const resolveCatalogSkillAvatar = (
+  name: string,
+  avatar: string | null | undefined,
+  source?: string
+): string | undefined => {
+  const fromApi = avatar?.trim();
+  if (fromApi) return fromApi;
+  if (source === 'builtin' && name.trim()) return skillIconPublicPath(name);
+  return undefined;
+};
+
+/** Resolve a skill list `avatar` field into an `<img src>`. */
+export const resolveSkillAvatarSrc = (
+  avatar: string | null | undefined,
+  baseUrl: string
+): string | undefined => {
+  const value = avatar?.trim();
+  if (!value) return undefined;
+  if (/^(https?:|data:|blob:)/i.test(value)) return value;
+  if (value.startsWith('/')) return `${baseUrl}${value}`;
+  return value;
+};
+
 /**
  * Deterministic letter-avatar color class keyed off the skill name. These
  * fixed hexes are an intentional, pre-existing exception to the theme-variable

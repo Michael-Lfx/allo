@@ -13,6 +13,9 @@ describe('Nomi Skill load delivery', () => {
     expect(source.includes('onSendWithSkills={onSendWithSkillsHandler}')).toBe(true);
     expect(source.includes('skillChips={skillChips}')).toBe(true);
     expect(source.includes('onSkillChipsChange={setSkillChips}')).toBe(true);
+    expect(sendBoxSource.includes("skillsButtonTestId='sendbox-adjust-skills'")).toBe(true);
+    expect(sendBoxSource.includes('PresetPickerDrawer')).toBe(true);
+    expect(sendBoxSource.includes('hidePreset')).toBe(true);
   });
 
   test('keeps a failed explicit Skill load observable to the shared composer recovery path', () => {
@@ -30,7 +33,7 @@ describe('Nomi Skill load delivery', () => {
   });
 
   test('accepts pre-conversation Skill handoffs and does not render a blank user bubble for Skill-only sends', () => {
-    expect(source.includes('const { input, files, idempotency_key, inject_skills } = initialMessage;')).toBe(true);
+    expect(source.includes('idempotency_key, inject_skills } = initialMessage;')).toBe(true);
     expect(source.includes('injectSkills: inject_skills')).toBe(true);
     expect(source.includes('shouldRenderFreshUserMessage(res, displayMessage)')).toBe(true);
   });

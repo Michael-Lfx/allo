@@ -1308,9 +1308,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  padding: 0;
   border-radius: 9px;
   color: var(--drawer-selection-fg);
-  background: var(--drawer-accent-soft);
+  background: transparent;
 }
 
 .drawerSkillBody {

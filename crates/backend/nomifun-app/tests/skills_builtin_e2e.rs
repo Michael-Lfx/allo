@@ -9,7 +9,8 @@ mod common;
 
 use std::sync::Arc;
 
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use nomifun_app::{ModuleStates, build_module_states, create_router_with_states};
 use nomifun_db::init_database_memory;
 use nomifun_extension::{ExternalPathsManager, SkillPaths, SkillRouterState};
@@ -55,9 +56,19 @@ async fn fixture_embedded() -> Fixture {
         .expect("failed to materialize embedded builtin skills for test fixture");
 
     let db = init_database_memory().await.unwrap();
-    let services = nomifun_app::AppServices::from_config(db, &nomifun_app::AppConfig::default())
-        .await
-        .unwrap();
+    // Absolute `data_dir` / `work_dir`: a bare `AppConfig::default()` uses the
+    // relative `"data"`, which the App Server workspace resolver rejects at
+    // router startup (`configured workspace root must be absolute`).
+    let services = nomifun_app::AppServices::from_config(
+        db,
+        &nomifun_app::AppConfig {
+            data_dir: data_dir.clone(),
+            work_dir: data_dir.join("work"),
+            ..nomifun_app::AppConfig::default()
+        },
+    )
+    .await
+    .unwrap();
     let (mut states, _): (ModuleStates, _) = build_module_states(&services).await;
 
     // Replace the skill state with a deterministic one rooted at tmp.
@@ -332,6 +343,57 @@ async fn list_skills_builtin_entries_include_display_i18n_metadata() {
         planning.get("name_i18n").is_some(),
         "builtin skills should expose display name metadata, even when it preserves the canonical name"
     );
+}
+
+#[tokio::test]
+async fn list_skills_builtin_entries_include_avatar_when_icon_exists() {
+    let fx = fixture_embedded().await;
+    let resp = fx
+        .app
+        .clone()
+        .oneshot(get_with_token("/api/skills", &fx.token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let arr = json["data"].as_array().unwrap();
+    let officecli = arr
+        .iter()
+        .find(|item| item["name"] == "officecli")
+        .expect("officecli builtin skill listed");
+    assert_eq!(officecli["avatar"], "/api/skills/officecli/icon");
+    let huashu = arr
+        .iter()
+        .find(|item| item["name"] == "huashu-art-motion")
+        .expect("huashu-art-motion builtin skill listed");
+    assert_eq!(huashu["avatar"], "/api/skills/huashu-art-motion/icon");
+}
+
+#[tokio::test]
+async fn skill_icon_is_public_and_serves_png() {
+    let fx = fixture_embedded().await;
+    let resp = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/skills/officecli/icon")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(bytes.starts_with(b"\x89PNG"), "icon must be a PNG");
 }
 
 // ===========================================================================

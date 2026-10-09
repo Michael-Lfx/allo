@@ -12,6 +12,10 @@ export interface ComposerEntryStripProps {
   /** Opens the shared Skills selector for the current draft. */
   onAdjustSkills?: () => void;
   activeSkillCount?: number;
+  /** Conversation composers only need the Skills control. */
+  hidePreset?: boolean;
+  skillsButtonTestId?: string;
+  forceOpaque?: boolean;
 }
 
 /**
@@ -27,6 +31,9 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   onFree,
   onAdjustSkills,
   activeSkillCount = 0,
+  hidePreset = false,
+  skillsButtonTestId = 'guid-adjust-skills',
+  forceOpaque = false,
 }) => {
   const { t } = useTranslation();
 
@@ -46,7 +53,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   const skillButton = onAdjustSkills ? (
     <button
       type='button'
-      data-testid='guid-adjust-skills'
+      data-testid={skillsButtonTestId}
       className={`${styles.entryButton} ${styles.entryButtonInteractive} ${activeSkillCount > 0 ? styles.entryButtonActive : ''}`}
       onClick={onAdjustSkills}
       aria-label={t('guid.entry.adjustSkills', { defaultValue: 'Adjust Skills' })}
@@ -61,6 +68,15 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
       )}
     </button>
   ) : null;
+
+  if (hidePreset) {
+    if (!skillButton) return null;
+    return (
+      <div className={styles.entryStrip} style={forceOpaque ? { opacity: 1 } : undefined}>
+        {skillButton}
+      </div>
+    );
+  }
 
   if (isPresetAgent) {
     return (

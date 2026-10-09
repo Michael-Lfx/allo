@@ -1,5 +1,6 @@
 import { ipcBridge } from '@/common';
 import { useCallback, useEffect, useState } from 'react';
+import { resolveCatalogSkillAvatar } from '@/renderer/pages/settings/skill/skillPresentation';
 import { SKILL_CATALOG_CHANGED_EVENT } from './skillCatalogEvents';
 
 export type SkillCatalogSource = 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
@@ -11,6 +12,7 @@ export interface SkillCatalogEntry {
   source: SkillCatalogSource;
   sourceKey?: string;
   marketId?: string;
+  avatar?: string | null;
 }
 
 function mapCatalogEntry(entry: {
@@ -20,6 +22,7 @@ function mapCatalogEntry(entry: {
   source: SkillCatalogSource;
   source_key?: string;
   market_id?: string;
+  avatar?: string | null;
 }): SkillCatalogEntry {
   return {
     skillId: entry.skill_id,
@@ -28,6 +31,7 @@ function mapCatalogEntry(entry: {
     source: entry.source,
     sourceKey: entry.source_key,
     marketId: entry.market_id,
+    avatar: resolveCatalogSkillAvatar(entry.name, entry.avatar, entry.source),
   };
 }
 

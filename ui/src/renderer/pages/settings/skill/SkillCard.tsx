@@ -3,8 +3,8 @@
  * language (rounded-12px bordered surface on bg-2, quiet hover, fixed 2-line
  * description clamp, resolved tag-chip row capped at MAX_VISIBLE_TAGS + "+N", and
  * a hover-revealed action footer) but is tuned for skills:
- *   - a deterministic letter avatar (shared getAvatarColorClass), or a Lightning
- *     glyph for auto-injected skills
+ *   - a skill avatar image when the list API provides one, else a Lightning
+ *     glyph for auto-injected skills or a deterministic letter avatar
  *   - a source badge: Built-in / Custom / Extension / Auto-injected
  *   - NO enable switch (skills aren't toggled here)
  *   - hover footer: Edit Tags (every source) + Delete (custom only)
@@ -16,10 +16,11 @@
  */
 import type { PresetTag } from '@/common/types/agent/presetTypes';
 import type { SkillInfo } from '@/renderer/pages/settings/PresetSettings/types';
+import SkillAvatar from './SkillAvatar';
 import { resolveSkillDisplay } from './skillDisplay';
-import { getAvatarColorClass, normalizeTestId } from './skillPresentation';
+import { normalizeTestId } from './skillPresentation';
 import { Tag } from '@arco-design/web-react';
-import { Delete, Lightning, SettingOne } from '@icon-park/react';
+import { Delete, SettingOne } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -134,17 +135,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
     >
       {/* Header: avatar + name/badge */}
       <div className='grid grid-cols-[36px_minmax(0,1fr)] items-start gap-10px'>
-        {isAutoInjected ? (
-          <div className='flex-shrink-0 w-36px h-36px rounded-10px flex items-center justify-center bg-[rgba(var(--success-6),0.1)] shadow-sm'>
-            <Lightning theme='filled' size={18} fill='rgb(var(--success-6))' />
-          </div>
-        ) : (
-          <div
-            className={`flex-shrink-0 w-36px h-36px rounded-10px flex items-center justify-center font-bold text-15px shadow-sm uppercase ${getAvatarColorClass(skill.name)}`}
-          >
-            {skill.name.charAt(0).toUpperCase()}
-          </div>
-        )}
+        <SkillAvatar skill={skill} isAutoInjected={isAutoInjected} size={36} />
         <div className='min-w-0 flex-1 pt-2px'>
           <div className='min-w-0'>
             <span

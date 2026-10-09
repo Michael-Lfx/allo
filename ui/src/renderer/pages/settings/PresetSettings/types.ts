@@ -15,6 +15,7 @@ export type SkillInfo = {
   // Skill side-store tag keys. Preset wire bindings use preset_tag_id.
   audience_tags?: string[];
   scenario_tags?: string[];
+  avatar?: string | null;
 };
 
 /**
