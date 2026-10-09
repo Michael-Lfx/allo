@@ -15,6 +15,12 @@ applicable:
   Copyright iOfficeAI
   Licensed under the Apache License, Version 2.0.
 
+  bloub
+  https://github.com/jeremy-prt/bloub
+  Copyright (c) 2026 Jérémy Perret
+  Licensed under the MIT License. The vendored animation engine lives in
+  ui/src/renderer/pages/companion/bot/ (see that directory's LICENSE).
+
   anydoc
   https://github.com/firecrawl/anydoc
   Copyright (c) 2026 Sideguide Technologies Inc.

@@ -1,5 +1,6 @@
 
 
+import Puff from './Puff';
 import Mochi from './Mochi';
 import Ink from './Ink';
 import Bolt from './Bolt';
@@ -13,6 +14,7 @@ export type {
   CustomFigureMeta,
   CompanionActivity,
   CompanionMood,
+  CompanionMotion,
 } from './types';
 
 /**
@@ -20,15 +22,17 @@ export type {
  * `palette` feeds the little swatch chip on each picker card.
  */
 export const CHARACTERS: CharacterMeta[] = [
+  { id: 'puff', nameKey: 'puff', palette: ['#f4f1ea', '#1a1a1e'], Component: Puff },
   { id: 'mochi', nameKey: 'mochi', palette: ['#fff6f0', '#ffb7c9'], Component: Mochi },
   { id: 'ink', nameKey: 'ink', palette: ['#2b2b33', '#e8b04b'], Component: Ink },
   { id: 'bolt', nameKey: 'bolt', palette: ['#bfeee0', '#37e0ff'], Component: Bolt },
 ];
 
-export const DEFAULT_CHARACTER_ID = 'mochi';
+/** New companions pick Puff. Unknown persisted ids still fall back to Mochi. */
+export const DEFAULT_CHARACTER_ID = 'puff';
 
 export const getCharacter = (id?: string | null): CharacterMeta =>
-  CHARACTERS.find((c) => c.id === id) ?? CHARACTERS[0];
+  CHARACTERS.find((c) => c.id === id) ?? CHARACTERS.find((c) => c.id === 'mochi') ?? CHARACTERS[0];
 
 /**
  * The classic chibi window every character used before per-character desks.

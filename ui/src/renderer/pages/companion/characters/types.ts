@@ -9,10 +9,29 @@ export type CompanionMood = 'happy' | 'content' | 'sleepy' | 'worried' | 'excite
 /** Activities: idle breathing vs. a learn run in flight. */
 export type CompanionActivity = 'idle' | 'thinking';
 
+/**
+ * Richer motion for engine-driven figures (Puff). CSS characters ignore this
+ * and keep using mood + activity. Ids match the bloub catalogue states we drive.
+ */
+export type CompanionMotion =
+  | 'idle'
+  | 'thinking'
+  | 'wink'
+  | 'wide'
+  | 'alert'
+  | 'notify'
+  | 'exclaim'
+  | 'sleep'
+  | 'play'
+  | 'orbit'
+  | 'burst'
+  | 'comet';
+
 export interface CharacterProps {
   mood: CompanionMood;
   activity: CompanionActivity;
   size?: number;
+  motion?: CompanionMotion | null;
 }
 
 /** Per-character desktop window/render spec. Characters without one use DEFAULT_DESK. */

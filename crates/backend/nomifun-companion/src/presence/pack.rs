@@ -9,6 +9,7 @@ const ALLOWED_RUNTIME_FILES: &[&str] = &["runtime.json", "pack.manifest.json"];
 
 pub fn builtin_pack_for_character(character: &str) -> CompanionPackRuntime {
     match character {
+        "puff" => builtin_css_pack("puff", "Puff"),
         "ink" => builtin_css_pack("ink", "Ink"),
         "bolt" => builtin_css_pack("bolt", "Bolt"),
         "custom" => builtin_css_pack("custom", "Custom"),
@@ -98,7 +99,7 @@ mod tests {
 
     #[test]
     fn builtin_character_packs_validate() {
-        for character in ["mochi", "ink", "bolt", "custom"] {
+        for character in ["puff", "mochi", "ink", "bolt", "custom"] {
             builtin_pack_for_character(character).validate().unwrap();
         }
     }

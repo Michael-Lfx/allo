@@ -5,7 +5,7 @@ import { getBaseUrl } from '@/common/adapter/httpBridge';
 import CustomFigure from './characters/CustomFigure';
 import { CUSTOM_CHARACTER_ID, getCharacter } from './characters';
 import { customFigureUrlOf } from './characters/customMeta';
-import type { CustomFigureMeta, CompanionActivity, CompanionMood } from './characters';
+import type { CustomFigureMeta, CompanionActivity, CompanionMood, CompanionMotion } from './characters';
 import type { CompanionId } from '@/common/types/ids';
 
 interface CompanionAvatarProps {
@@ -13,6 +13,7 @@ interface CompanionAvatarProps {
   character?: string | null;
   mood: CompanionMood;
   activity: CompanionActivity;
+  motion?: CompanionMotion | null;
   size?: number;
   /** Required for character==='custom': which companion's figure to load. */
   companionId?: CompanionId;
@@ -23,7 +24,7 @@ interface CompanionAvatarProps {
 }
 
 /** Renders the configured companion character. The single entry point every page uses. */
-const CompanionAvatar: React.FC<CompanionAvatarProps> = ({ character, mood, activity, size, companionId, customFigure, figureHitRef }) => {
+const CompanionAvatar: React.FC<CompanionAvatarProps> = ({ character, mood, activity, motion, size, companionId, customFigure, figureHitRef }) => {
   if (character === CUSTOM_CHARACTER_ID && companionId && customFigure) {
     const src = customFigureUrlOf(getBaseUrl(), companionId, customFigure);
     return (
@@ -40,7 +41,7 @@ const CompanionAvatar: React.FC<CompanionAvatarProps> = ({ character, mood, acti
     );
   }
   const { Component } = getCharacter(character);
-  return <Component mood={mood} activity={activity} size={size} />;
+  return <Component mood={mood} activity={activity} motion={motion} size={size} />;
 };
 
 export default CompanionAvatar;
