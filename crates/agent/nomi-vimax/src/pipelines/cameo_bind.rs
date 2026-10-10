@@ -935,7 +935,7 @@ pub(crate) fn is_reference_plate_label(name: &str) -> bool {
             .trim_start_matches("参考图")
             .trim_start_matches("图片")
             .trim();
-        if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) {
+        if is_export_id_rest(rest) {
             return true;
         }
     }
@@ -943,7 +943,7 @@ pub(crate) fn is_reference_plate_label(name: &str) -> bool {
         let rest = lower
             .trim_start_matches("image")
             .trim_matches(|c: char| c.is_ascii_whitespace() || c == '_' || c == '-');
-        if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) {
+        if is_export_id_rest(rest) {
             return true;
         }
     }
@@ -971,6 +971,26 @@ pub(crate) fn is_reference_plate_label(name: &str) -> bool {
         return true;
     }
     looks_like_variant_board_label(t)
+}
+
+/// `1`, `1785378455675_345430`, `123-456` — camera / UI export stems, not 姓名.
+fn is_export_id_rest(rest: &str) -> bool {
+    let t = rest.trim();
+    if t.is_empty() {
+        return true;
+    }
+    let mut saw_digit = false;
+    for c in t.chars() {
+        if c.is_ascii_digit() {
+            saw_digit = true;
+            continue;
+        }
+        if c == '_' || c == '-' {
+            continue;
+        }
+        return false;
+    }
+    saw_digit
 }
 
 fn looks_like_variant_board_label(name: &str) -> bool {
@@ -1690,6 +1710,21 @@ mod tests {
     }
 
     #[test]
+    fn image_timestamp_filename_binds_to_story_lead() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("idea2video");
+        std::fs::create_dir_all(&film).unwrap();
+        cameo::upload_photo(session, &jpeg_bytes(), "image 1785378455675_345430", "").unwrap();
+        let characters = vec![char(0, "陈树生"), char(1, "林秀兰")];
+        let mut registry = HashMap::new();
+        let bindings = bind_all(session, &film, &characters, &mut registry).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].1, "陈树生");
+        assert!(has_usable_cameo(&registry, "陈树生"));
+    }
+
+    #[test]
     fn anonymous_cameos_bind_multi_cast_by_idx_order() {
         let dir = tempfile::tempdir().unwrap();
         let session = dir.path();
@@ -1725,6 +1760,8 @@ mod tests {
         assert!(!is_anonymous_cameo_name("Mary Jane Watson"));
         assert!(is_anonymous_cameo_name("参考图1"));
         assert!(is_anonymous_cameo_name("图片2"));
+        assert!(is_anonymous_cameo_name("image 1785378455675_345430"));
+        assert!(is_anonymous_cameo_name("image_1785378455675-345430"));
         assert!(is_anonymous_cameo_name("5种小猫"));
         assert!(is_anonymous_cameo_name("猫猫三视图"));
         assert!(is_body_part_character(&char(1, "顺毛的手")));
