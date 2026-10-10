@@ -256,7 +256,59 @@ pub enum CaptureReadResult {
    - 复用既有 `nomifun-audio` 的 `stt/sherpa.rs`，模型直接走 AI SSD 上的只读内存映射；
    - 全链路保持 f32 精度音频，转录结果直接固化为只读字段 `raw_asr_transcript` 存入本地审计表。
 
-### 3.4 极速单次决策路由与四路结构化契约 (Single-Pass Quad-Route)
+### 3.4 本地模型资产统一布局、多源自愈与强校验规范 (Unified Model Layout & Dual-Source Probing)
+
+为了兼顾“整机出厂预置”、“轻量在线包按需自愈下载”以及“纯内网/离线环境手动直接拷贝统一资源”的多重诉求，确立全平台统一的模型存储拓扑与多源降级校验体系：
+
+#### 1. 全平台统一目录拓扑规范 (Unified Storage Layout)
+无论是出厂镜像预刷、现场运维通过 U 盘直接拷贝（`cp -r` / 拖放），还是轻量在线包启动下载，所有本地模型资产**必须且只能存放于统一规范的根目录下**：
+- **Linux 伴侣主机 / 默认基准**：`/var/lib/ai-mate/models/`（可在 `/etc/ai-mate/config.toml` 中配置 `models_dir`）；
+- **Windows 服务 / 伴侣**：`%ProgramData%\Flowy\ai-mate\models\`；
+- **macOS 伴侣**：`/Library/Application Support/Flowy/ai-mate/models/`；
+- **开发与便携式覆盖**：通过环境变量 `AI_MATE_MODEL_DIR` 或项目根目录 `./assets/models/` 覆盖。
+
+统一内部目录树结构：
+```text
+<models_dir>/
+├── kws/
+│   ├── encoder.int8.onnx
+│   ├── decoder.int8.onnx
+│   ├── joiner.int8.onnx
+│   ├── tokens.txt
+│   └── keywords.txt
+├── vad/
+│   └── silero_vad.onnx
+├── asr/
+│   ├── model.int8.onnx
+│   └── tokens.txt
+└── checksums.sha256
+```
+- **离线直接拷贝兼容性**：不采用任何专有压缩格式或私有二进制打包，运维人员只需将准备好的标准 `models` 文件夹直接拷贝至对应路径，即可实现零外网依赖的离线交付。
+
+#### 2. 双重强校验与离线自检门禁 (Two-Tier Integrity Verification)
+设备开机初始化时，严格执行两级自检流程：
+1. **第一级：结构与文件存在性检测 (Layout Check)**：
+   - 检查 7 个关键模型文件是否存在且字节大小 $> 0$；
+2. **第二级：SHA256 密码学哈希校验 (Cryptographic Checksum)**：
+   - 读取目录下的 `checksums.sha256`（同时在 Rust 二进制中静态内嵌一份只读权威基准清单）；
+   - 逐个校验文件哈希。若全部匹配，标记模型池就绪（`Status: Ready`），进入只读 `mmap` 推理加载；
+   - **离线无网保护**：自检通过后**绝对不发起任何网络探测或上报**，完全支持纯内网脱网运行；
+   - 若任一文件哈希不匹配或损坏，标记为 `Status: Corrupted`，严禁盲目调用底层 ONNX Runtime（防止 C++ 层 Segmentation Fault 崩溃引发看门狗重启循环），触发自愈下载或错误报警。
+
+#### 3. 海内外双源智能探针与平滑降级链 (Dual-Source Smart Probing & Failover)
+在轻量在线包模式或检测到本地文件损坏时，`apps/ai-mate` 启动轻量自愈下载模块：
+- **多源加速资源池**：
+  - **国内极速源 (Primary Domestic)**：ModelScope (魔搭社区) 官方资产镜像，千兆高速 CDN，免翻墙，带宽充裕；
+  - **海外原生源 (Primary Global)**：GitHub Releases (`k2-fsa/sherpa-onnx`) 与 HuggingFace 官方仓库；
+  - **官方冗余 CDN (Fallback Mirror)**：Flowy 官方对象存储加速源。
+- **智能探针测速选源 (Probing Mechanism)**：
+  - 下载前发起并发轻量 `HTTP HEAD` 探针（超时 1500ms）；
+  - 优先探测 ModelScope 节点：若连通且首包响应 $< 800\text{ms}$，直接锁定国内极速源；
+  - 若处于海外环境或探测超时，无缝切换至 GitHub Releases / HuggingFace 源；
+  - 若下载过程中发生突发网络中断，自动回退到官方冗余 CDN，支持 `HTTP Range` 断点续传；
+  - 下载完成后重新执行 SHA256 校验，校验通过后再交付声学引擎。
+
+### 3.5 极速单次决策路由与四路结构化契约 (Single-Pass Quad-Route)
 麦克风切出 ASR 文本后，直接向 `qwen3.5-flash` 发起单次请求，输出严格遵循的 JSON Schema 契约：
 
 ```json
@@ -303,16 +355,16 @@ pub enum CaptureReadResult {
   ```
 - **四路分流严格行为**：
   1. `intent_type == "ignore"`：假唤醒或无意义环境杂音，播放 `sleep.wav` 静默退回休眠；
-  2. `intent_type == "chat"`：日常打招呼、常识问答，提取 `reply_tts` 直推播放流水线，**声学处理延迟 $\le 850\text{ms}$（口径锚点见 §3.8）**，完全不惊动 Agent 底座；
+  2. `intent_type == "chat"`：日常打招呼、常识问答，提取 `reply_tts` 直推播放流水线，**声学处理延迟 $\le 850\text{ms}$（口径锚点见 §3.9）**，完全不惊动 Agent 底座；
   3. `intent_type == "task_control"`：控制正在运行的后台任务：
      - 若 `task_control_action == "query_status"`：直接从 Task FSM 提取当前进度，合成口头播报（如：“*当前正在分析第二份日志，预计还需 20 秒*”）；
      - 若 `task_control_action == "cancel_task"`：向 Task FSM 发送中止信号强制杀死任务，播放 `error.wav` 并播报：“*已为您停止当前任务*”；
-  4. `intent_type == "agent_task"`：提交慢轨任务异步派发执行；执行期内每次工具调用均经工具调度层策略引擎结构化拦截（见 §3.6）。
+  4. `intent_type == "agent_task"`：提交慢轨任务异步派发执行；执行期内每次工具调用均经工具调度层策略引擎结构化拦截（见 §3.7）。
 - **上下文预算与质量指标**：
   - 滑动 3 轮（6 条消息）且总 Token $\le 600$；上下文中仅存口头摘要（Zero Log Contamination）；
   - **验收指标**：JSON Schema 解析成功率 $\ge 99.5\%$；**四分类意图准确率 $\ge 95.0\%$**（在 200 条标注基准测试集上验证）。
 
-### 3.5 双解耦状态机与追问免唤醒闭环 (Dual-FSM with Follow-up)
+### 3.6 双解耦状态机与追问免唤醒闭环 (Dual-FSM with Follow-up)
 为了提供行云流水的语音体验，声学交互状态机（Acoustic FSM）正式支持**4 秒温热追问免唤醒倾听窗（Follow-up Window）**与**8 秒安全确认倾听窗**：
 
 ```mermaid
@@ -353,7 +405,7 @@ stateDiagram-v2
   - 用户问完“*今天天气怎么样*”，设备回答后，用户可在 4 秒内直接追问“*那明天会下雨吗*”，**无需每次重复喊叫 "Hey Flowy"**；
   - 4 秒超时未开口，设备播放极柔和的休眠提示音后平稳关闭倾听，避免持续收录环境无关噪音。
 
-### 3.6 工具调度层不可越狱安全硬策略 (Tool-Level Sandboxing)
+### 3.7 工具调度层不可越狱安全硬策略 (Tool-Level Sandboxing)
 彻底纠正“在自然语言层用正则表达式赌用户句式”的缺陷。系统建立**双层立体安全防御体系**：
 
 ```mermaid
@@ -383,7 +435,7 @@ flowchart TD
    - **无论 LLM 返回的布尔值为何**，一旦触发规则，工具派发立即挂起，生成带 8 秒 TTL 的单次 `confirmation_token` 并向上冒泡，由声学 FSM 驱动口头确认；
 3. **声纹防御 (Post-MVP 演进预留)**：利用 `nomifun-audio` 既有的声纹识别能力，可在高危确认阶段校验发音人声纹是否匹配设备注册主人，防止房间内其他人代喊“确认”。
 
-### 3.7 播放流水线与 TtsProvider 抽象架构 (Playback Pipeline)
+### 3.8 播放流水线与 TtsProvider 抽象架构 (Playback Pipeline)
 彻底消除对 Edge-TTS 逆向接口的单点硬绑定，并补齐完整的音频解码与扬声器播放流：
 
 ```mermaid
@@ -430,7 +482,7 @@ flowchart LR
      - `sleep.wav`（60ms，下沉轻音）：超时或无意图休眠；
      - `error.wav`（80ms，低频警示）：网络脱网或操作取消。
 
-### 3.8 延迟预算分解公式与端到端口径 (Latency Benchmark)
+### 3.9 延迟预算分解公式与端到端口径 (Latency Benchmark)
 消除所有延迟口径歧义，建立严格可测的基准分解公式：
 
 $$T_{\text{Speaker_Output}} = T_{\text{VAD_Silence}} + T_{\text{SenseVoice}} + T_{\text{LLM_FirstChunk}} + T_{\text{TTS_FirstChunk}} + T_{\text{MP3_Decode}} + T_{\text{JitterBuffer}}$$
@@ -471,6 +523,7 @@ $$T_{\text{Speaker_Output}} = T_{\text{VAD_Silence}} + T_{\text{SenseVoice}} + T
 | **D10**| **打断与全双工** | **MVP 采用半双工语音控制，Phase 4 探索参考信号 AEC** | ❌ **MVP 强行做无硬件 AEC 的麦克风全双工**：扬声器声音回采自激死循环，Agent 自己跟自己疯狂对话。 |
 | **D11**| **追问免唤醒窗口** | **支持闲聊与任务完工后 4 秒温热追问倾听窗 (Follow-up Window)** | ❌ **每次对话必须喊叫唤醒词**：连续追问体验破碎，人机交互极度机械僵硬。 |
 | **D12**| **无屏 OOBE 安全配对**| **首次开机语音播报 6 位动态配对码，Web 端凭码配置** | ❌ **5 分钟局域网完全裸露开放**：同局域网任何人均可抢先劫持配对设备并注入恶意配置。 |
+| **D13**| **模型分发与校验策略**| **统一目录布局 + 双源智能降级探针 (ModelScope/GitHub) + 离线直接拷贝兼容 + 开机 SHA256 强校验自愈** | ❌ **单源死绑**：国内连不上 GitHub、海外连 ModelScope 慢；<br/>❌ **盲目加载不校验**：下载中断或损坏导致底层 ONNX Runtime Segfault 崩溃；<br/>❌ **私有打包与路径碎片化**：妨碍离线运维直接拷贝统一资源包。 |
 
 ---
 
@@ -493,6 +546,7 @@ $$T_{\text{Speaker_Output}} = T_{\text{VAD_Silence}} + T_{\text{SenseVoice}} + T
 | **TC-AM-011** | 麦克风拔插自愈 | 设备运行中拔出 USB 麦克风再重新插入 | 看门狗捕获断开并在 2 秒内重新绑定系统默认输入源，日志无 panic |
 | **TC-AM-012** | 三端服务常驻 | Linux `systemd`、Windows Service、macOS `launchd` | 开机自启，待机内存常驻 RSS $< 250\text{MB}$，CPU 待机占用 $< 1.5\%$ |
 | **TC-AM-013** | 完工播报与追问 | 后台任务执行完毕，声学端处于 IDLE | 自动播放 `done.wav` 并播报 `vocal_summary`，随后开启 4 秒追问窗，追问无需重喊唤醒词 |
+| **TC-AM-014** | 模型多源与离线拷贝 | 离线手动拷贝统一模型目录至设备，或在线轻量包开机自动探测双源下载 | 手动拷贝后脱网开机校验 100% 通过且 0 网络请求；轻量包开机根据网络测速自动选源，下载后 SHA256 校验通过方可就绪 |
 
 ### 5.2 渐进式阻断验证梯子 (Phase 0 ~ Phase 4 Blocking Gates)
 
@@ -512,7 +566,7 @@ flowchart LR
   2. 改造 `AudioCaptureSource` 导出显式枚举 `CaptureReadResult`，修复 `try_recv()` 语义混淆；
   3. 固定 Sherpa-ONNX 英文 BPE KWS 模型版本，确定 `text2token` 编译工具链；
   4. 扩充 `nomifun-model-invoke` 支持传入 JSON Schema 结构化约束。
-* **阻断验收门槛 (Gate 0)**：`cargo test -p nomifun-audio` 全部通过；模拟连续 10 分钟音频采集，SPSC 环形缓冲 0 阻塞、0 内存增长、0 xrun 报警。
+* **阻断验收门槛 (Gate 0)**：`cargo test -p nomifun-audio` 全部通过；模拟连续 10 分钟音频采集，SPSC 环形缓冲 0 阻塞、0 内存增长、0 xrun 报警；完成模型统一目录结构规范与权威 `checksums.sha256` 清单定义。
 
 #### Phase 1: 本地声学纵向切片 (Local Acoustic Slice CLI)
 * **核心动作**：
@@ -520,7 +574,7 @@ flowchart LR
   2. 以 `keywords_source.txt` 为源文件，借助 KWS 模型 `tokens.txt` 词表经 `text2token` 编译生成标准 `keywords.txt`（仅含单词 `HEY FLOWY`）；
   3. 构建包含中文口音（/floʊi/, /fləʊi/, /fə-lou-yi/）的发音样本集进行校准定标；
   4. 打通本地管线：`CPAL 麦克风 -> 无锁 RingBuffer -> Worker (16kHz f32) -> KWS ("Hey Flowy") -> Silero-VAD -> SenseVoice ASR`。
-* **阻断验收门槛 (Gate 1)**：在目标主机上本地 CLI 稳定运行，`Hey Flowy` 召回率 $\ge 95\%$；**标准背景噪音下连续 2 小时误唤醒严格为 0 次**；ASR 转录 RTF $< 0.25$；基线内存 RSS $< 180\text{MB}$。
+* **阻断验收门槛 (Gate 1)**：在目标主机上本地 CLI 稳定运行，`Hey Flowy` 召回率 $\ge 95\%$；**标准背景噪音下连续 2 小时误唤醒严格为 0 次**；ASR 转录 RTF $< 0.25$；基线内存 RSS $< 180\text{MB}$；手动拷贝统一模型目录后离线脱网开机 SHA256 校验 100% 通过且 0 报错；双源网络探测逻辑跑通。
 
 #### Phase 2: 决策与流式发声闭环 (Decision & FastChat Loop)
 * **核心动作**：
