@@ -4,11 +4,11 @@ import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { isFrameNode, isNodeHiddenByCollapsedFrame } from "@oc/lib/canvas/canvas-frame";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@oc/types/canvas";
 
 export function Minimap({ nodes, viewport, viewportSize, canvasContainerRef, onViewportPreviewChange, onViewportChange }: { nodes: CanvasNodeData[]; viewport: ViewportTransform; viewportSize: { width: number; height: number }; canvasContainerRef?: RefObject<HTMLDivElement | null>; onViewportPreviewChange?: (viewport: ViewportTransform) => void; onViewportChange: (viewport: ViewportTransform) => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const containerRef = useRef<HTMLDivElement>(null);
     const viewportRectRef = useRef<HTMLDivElement>(null);
     const liveViewportRef = useRef(viewport);

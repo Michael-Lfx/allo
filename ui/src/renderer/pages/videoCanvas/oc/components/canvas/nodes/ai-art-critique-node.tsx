@@ -4,7 +4,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { artCritiqueSourceFingerprint, artCritiqueStageLabel, createDefaultArtCritiqueState, isArtCritiqueImageInput, type ArtCritiqueNodeState } from "@oc/lib/art-critique/contracts";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
 import { useCanvasNodeActions } from "../canvas-node-action-context";
@@ -15,7 +15,7 @@ type ArtCritiqueNodeProps = {
 };
 
 export function ArtCritiqueNodeContent({ node }: ArtCritiqueNodeProps) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const { openArtCritique } = useCanvasNodeActions();
     const imageInputs = useUpstreamNodes(node.id).filter(isArtCritiqueImageInput);
     const input = imageInputs[0];

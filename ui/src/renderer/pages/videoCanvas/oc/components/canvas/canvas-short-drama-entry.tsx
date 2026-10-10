@@ -9,12 +9,12 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { CRAFT_GRAPHS, craftCover, craftText } from "@oc/lib/canvas/craft/catalog";
 import type { CanvasShortDramaProgress, CanvasShortDramaStepId } from "@oc/lib/canvas/canvas-short-drama";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasNodeData } from "@oc/types/canvas";
 
 export function CanvasLinkedProjectEmptyState({ projectName, hasChapter, onAddFirstChapter, onOpenAssets, onAddText }: { projectName: string; hasChapter: boolean; onAddFirstChapter: () => void; onOpenAssets: () => void; onAddText: () => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-16 pt-20">
             <div className="pointer-events-auto w-full max-w-[440px] rounded-lg border p-3 shadow-sm backdrop-blur" data-canvas-no-zoom style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}>
@@ -41,7 +41,7 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onSt
     onOpenTemplates?: () => void;
 }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const focusStyle = { "--tw-ring-color": theme.accent.primary } as CSSProperties;
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-20 pt-24">
@@ -116,7 +116,7 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onSt
 
 export function CanvasFreeformEmptyState({ onUpload, onAddText, onApplyGraph, onOpenLibrary, onOpenTemplates }: { onUpload: () => void; onAddText: () => void; onApplyGraph?: (graphId: string) => void; onOpenLibrary?: () => void; onOpenTemplates?: () => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-20 pt-24">
             <div className="pointer-events-auto max-h-full w-full max-w-[760px] overflow-y-auto" data-canvas-no-zoom>
@@ -137,7 +137,7 @@ export function CanvasFreeformEmptyState({ onUpload, onAddText, onApplyGraph, on
 }
 
 function CanvasGraphStarterGrid({ onApply, onOpenLibrary }: { onApply: (graphId: string) => void; onOpenLibrary?: () => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     return (
         <div className="mt-4">
             <div className="mb-2 flex items-center justify-between px-1">
@@ -191,7 +191,7 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
     onStepClick: (stepId: CanvasShortDramaStepId) => void;
 }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     if (!progress.active || collapsed) return null;
     return (
         <div data-canvas-no-zoom className="absolute left-1/2 top-[var(--canvas-topbar-offset)] z-[var(--z-toolbar)] flex max-w-[calc(100%_-_24px)] -translate-x-1/2 items-center gap-1 rounded-lg border p-1 shadow-sm backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}>
@@ -255,7 +255,7 @@ export function CanvasStylePlaceholderNodeContent({ onChoose }: { onChoose: () =
 
 export function CanvasStyleNodeContent({ node, onChoose }: { node?: CanvasNodeData; onChoose: () => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const preset = resolveCanvasStylePreset(node?.metadata?.stylePresetId);
     const hasStyle = Boolean(node?.metadata?.content);
     const title = preset?.title
@@ -297,7 +297,7 @@ export function CanvasStyleNodeContent({ node, onChoose }: { node?: CanvasNodeDa
 
 export function CanvasStoryInputNodeContent({ node, onEdit }: { node: CanvasNodeData; onEdit: () => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const content = (node.metadata?.content || "").replace(/\s+/g, " ").trim();
     return (
         <div className="flex h-full w-full flex-col overflow-hidden p-4" style={{ color: theme.node.text }}>

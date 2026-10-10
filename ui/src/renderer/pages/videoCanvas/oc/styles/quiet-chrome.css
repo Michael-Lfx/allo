@@ -164,7 +164,8 @@
     opacity: 0.4;
 }
 
-/* App dark mode is data-theme / arco-theme; canvas `--workspace-surface-strong` stays light without html.dark. */
+/* Studio home/workspace chrome follows the app theme. Independent canvas shells
+   (`oc-canvas`) keep their own light/dark chrome even when the app is dark. */
 [data-theme='dark'] .canvas-chrome-token,
 body[arco-theme='dark'] .canvas-chrome-token {
     background: color-mix(
@@ -187,6 +188,170 @@ body[arco-theme='dark'] .canvas-chrome-token[aria-pressed="true"] {
         var(--color-bg-2) 86%,
         var(--color-text-1) 14%
     );
+}
+
+.oc-canvas:not(.dark) {
+    color: #111827;
+}
+
+.oc-canvas.dark {
+    color: #ededed;
+}
+
+.canvas-title-label,
+.canvas-title-input {
+    max-width: min(280px, 42vw);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: normal;
+    line-height: 1.25;
+}
+
+/* Title color follows the canvas shell, not app theme / Uno `text-*`.
+   `data-canvas-theme` is the source of truth: `:not(.dark)` can still match a
+   visually dark canvas when an ancestor `.oc-canvas` lacks `.dark`, or when
+   the persist store lags appearance. Dark rules come last so white wins. */
+.oc-canvas[data-canvas-theme='light'] .canvas-title-label,
+.oc-canvas[data-canvas-theme='light'] .canvas-title-input,
+.oc-canvas:not(.dark) .canvas-title-label,
+.oc-canvas:not(.dark) .canvas-title-input {
+    color: #111827 !important;
+    -webkit-text-fill-color: #111827 !important;
+}
+
+.oc-canvas[data-canvas-theme='dark'] .canvas-title-label,
+.oc-canvas[data-canvas-theme='dark'] .canvas-title-input,
+.oc-canvas.dark .canvas-title-label,
+.oc-canvas.dark .canvas-title-input {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+.oc-canvas:not(.dark) .canvas-chrome-token {
+    color: #111827 !important;
+    background: color-mix(
+        in srgb,
+        var(--workspace-surface-strong, var(--color-fill-2, #f2f3f5)) 94%,
+        var(--workspace-accent, rgb(var(--primary-6, 22 93 255))) 6%
+    );
+}
+
+.oc-canvas:not(.dark) .canvas-chrome-token:hover,
+.oc-canvas:not(.dark) .canvas-chrome-token:focus-visible,
+.oc-canvas:not(.dark) .canvas-chrome-token[aria-expanded="true"],
+.oc-canvas:not(.dark) .canvas-chrome-token[aria-pressed="true"] {
+    background: color-mix(
+        in srgb,
+        var(--workspace-surface-strong, var(--color-fill-2, #f2f3f5)) 86%,
+        var(--workspace-accent, rgb(var(--primary-6, 22 93 255))) 14%
+    );
+}
+
+.oc-canvas.dark .canvas-chrome-token {
+    color: #ededed !important;
+    background: color-mix(
+        in srgb,
+        var(--workspace-surface-strong, #181818) 94%,
+        var(--workspace-accent, #f5f5f5) 6%
+    );
+}
+
+.oc-canvas.dark .canvas-chrome-token:hover,
+.oc-canvas.dark .canvas-chrome-token:focus-visible,
+.oc-canvas.dark .canvas-chrome-token[aria-expanded="true"],
+.oc-canvas.dark .canvas-chrome-token[aria-pressed="true"] {
+    background: color-mix(
+        in srgb,
+        var(--workspace-surface-strong, #181818) 86%,
+        var(--workspace-accent, #f5f5f5) 14%
+    );
+}
+
+/* Model pickers follow the canvas shell, not the outer studio/app theme.
+   Nested storyboard canvases sit inside a light `.oc-root` even when the
+   canvas itself is dark; portal menus must match `.oc-canvas` as well. */
+.oc-canvas:not(.dark) .canvas-composer-model-picker,
+.oc-canvas:not(.dark) .canvas-model-picker-label,
+.oc-canvas:not(.dark) .canvas-model-picker-option {
+    color: #111827 !important;
+}
+
+.oc-canvas:not(.dark) .canvas-composer-model-picker {
+    background: rgba(15, 23, 42, 0.045) !important;
+}
+
+.oc-canvas:not(.dark) .canvas-composer-model-picker:hover,
+.oc-canvas:not(.dark) .canvas-composer-model-picker[aria-expanded="true"] {
+    background: rgba(15, 23, 42, 0.075) !important;
+}
+
+.oc-canvas:not(.dark) .creation-model-picker.canvas-composer-model-picker {
+    border-color: rgba(32, 37, 45, 0.12) !important;
+    background: #f0f2f5 !important;
+    color: #20242a !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.oc-canvas:not(.dark) .creation-model-picker.canvas-composer-model-picker:hover,
+.oc-canvas:not(.dark) .creation-model-picker.canvas-composer-model-picker[aria-expanded="true"] {
+    background: #e7eaee !important;
+    border-color: rgba(32, 37, 45, 0.22) !important;
+}
+
+.oc-canvas:not(.dark) .creation-model-picker-heading,
+.oc-canvas:not(.dark) .creation-model-picker-menu,
+.oc-canvas:not(.dark) .canvas-model-picker-menu {
+    color: #727980 !important;
+}
+
+.oc-canvas:not(.dark) .creation-model-picker-heading strong {
+    color: #20242a !important;
+}
+
+.oc-canvas.dark .canvas-composer-model-picker,
+.oc-canvas.dark .canvas-model-picker-label,
+.oc-canvas.dark .canvas-model-picker-option {
+    color: #ededed !important;
+}
+
+.oc-canvas.dark .canvas-composer-model-picker {
+    background: color-mix(
+        in srgb,
+        var(--workspace-surface-strong, #181818) 94%,
+        var(--workspace-accent, #f5f5f5) 6%
+    ) !important;
+}
+
+.oc-canvas.dark .canvas-composer-model-picker:hover,
+.oc-canvas.dark .canvas-composer-model-picker[aria-expanded="true"] {
+    background: color-mix(
+        in srgb,
+        var(--workspace-surface-strong, #181818) 86%,
+        var(--workspace-accent, #f5f5f5) 14%
+    ) !important;
+}
+
+.oc-canvas.dark .creation-model-picker.canvas-composer-model-picker {
+    border: 1px solid rgba(255, 255, 255, 0.075) !important;
+    background: rgba(38, 41, 48, 0.64) !important;
+    color: #f1f3f5 !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.oc-canvas.dark .creation-model-picker.canvas-composer-model-picker:hover,
+.oc-canvas.dark .creation-model-picker.canvas-composer-model-picker[aria-expanded="true"] {
+    border-color: rgba(255, 255, 255, 0.13) !important;
+    background: rgba(48, 52, 61, 0.82) !important;
+}
+
+.oc-canvas.dark .creation-model-picker-heading,
+.oc-canvas.dark .creation-model-picker-menu,
+.oc-canvas.dark .canvas-model-picker-menu {
+    color: #a3a3a3 !important;
+}
+
+.oc-canvas.dark .creation-model-picker-heading strong {
+    color: #ededed !important;
 }
 
 .canvas-composer-shell {

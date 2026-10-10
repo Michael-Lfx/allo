@@ -20,7 +20,7 @@ import {
     type CanvasEmotionEditRegion,
     type CanvasFaceBox,
 } from "@oc/lib/canvas/canvas-emotion";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CANVAS_BASIS_TRANSCODER_PATH, CANVAS_FACECAP_MODEL_URL } from "@oc/lib/canvas/canvas-static-assets";
 
 export type CanvasImageEmotionPayload = CanvasEmotionParams & {
@@ -58,7 +58,7 @@ type CanvasNodeEmotionPanelProps = {
 
 export function CanvasNodeEmotionPanel({ dataUrl, imageWidth, imageHeight, characters, activeCharacterId, preset, generating, error, onSelectCharacter, onManualSelect, onPresetChange, onClose, onConfirm }: CanvasNodeEmotionPanelProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const reducedMotion = useReducedMotion();
     return (
         <motion.div
@@ -132,7 +132,7 @@ function FaceThumbnail({ dataUrl, imageWidth, imageHeight, box }: { dataUrl: str
 }
 
 function EmotionPad({ preset, onChange }: { preset: CanvasEmotionPreset; onChange: (preset: CanvasEmotionPreset) => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const reducedMotion = useReducedMotion();
     const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
     const [dragging, setDragging] = useState(false);
@@ -193,7 +193,7 @@ function EmotionPad({ preset, onChange }: { preset: CanvasEmotionPreset; onChang
 }
 
 function EmotionHeadPreview({ preset }: { preset: CanvasEmotionPreset }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     return (
         <div className="relative overflow-hidden rounded-[var(--r-lg)] border" style={{ background: "#26272a", borderColor: theme.toolbar.border }}>
             <EmotionPreviewBoundary fallback={<EmotionPreviewFallback preset={preset} />}>

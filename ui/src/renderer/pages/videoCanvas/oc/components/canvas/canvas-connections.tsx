@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { STORYBOARD_COMPOSER_MIN_HEIGHT, STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@oc/types/canvas";
 
@@ -29,7 +29,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     onSelect: () => void;
     onContextMenu?: (event: ReactMouseEvent<SVGPathElement>) => void;
 }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [hovered, setHovered] = useState(false);
     const { pathD, startX, startY, endX, endY } = canvasConnectionPath(connection, from, to, fromScrollTop, toScrollTop);
     const emphasized = active || hovered;

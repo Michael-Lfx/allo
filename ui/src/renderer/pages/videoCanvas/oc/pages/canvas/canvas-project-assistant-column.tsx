@@ -6,7 +6,7 @@ import { Bot, LoaderCircle } from "lucide-react";
 import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasNodeData, CanvasAssistantSession } from "@oc/types/canvas";
 import { loadCanvasAssistantPanel } from "@renderer/pages/videoCanvas/loadAssistantPanel";
 import { AssistantPanelColumn } from "./canvas-assistant-panel-column";
@@ -38,7 +38,7 @@ type CanvasProjectAssistantColumnProps = {
 
 function CanvasAssistantPanelFallback({ busy }: { busy?: boolean }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     return (
         <aside
             className="canvas-overlay pointer-events-auto relative flex h-full w-full flex-col overflow-hidden"

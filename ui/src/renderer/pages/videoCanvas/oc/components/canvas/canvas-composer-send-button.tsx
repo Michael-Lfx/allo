@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { cn } from "@oc/lib/utils";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 
 type CanvasComposerSendButtonProps = {
     disabled?: boolean;
@@ -26,7 +26,7 @@ export function CanvasComposerSendButton({
     className,
 }: CanvasComposerSendButtonProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const sendText = sendLabel ?? canvasT("videoCanvas.agent.send", "发送");
     const stopText = stopLabel ?? canvasT("videoCanvas.config.stop", "停止");
     const locked = !running && (disabled || sending);

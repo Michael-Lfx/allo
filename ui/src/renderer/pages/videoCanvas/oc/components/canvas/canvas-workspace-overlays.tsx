@@ -10,7 +10,7 @@ import { canvasThemes } from "@oc/lib/canvas-theme";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { getNodePanelPosition } from "@oc/lib/canvas/canvas-node-panel-position";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasNodeType, type CanvasNodeData, type ConnectionHandle, type Position, type ViewportTransform } from "@oc/types/canvas";
 
 export type PendingConnectionCreate = {
@@ -22,7 +22,7 @@ export type PendingConnectionCreate = {
 
 export function CanvasSelectionToolbar({ anchorRef, containerRef, count, children }: { anchorRef: RefObject<HTMLDivElement | null>; containerRef: RefObject<HTMLDivElement | null>; count: number; children: ReactNode }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const reducedMotion = useReducedMotion();
     const toolbarRef = useRef<HTMLDivElement>(null);
     const [anchor, setAnchor] = useState<{ left: number; top: number; placement: "above" | "below" } | null>(null);
@@ -131,7 +131,7 @@ export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidt
 
 export function CanvasConnectionCreateMenu({ pending, viewport, viewportSize, containerRef, canCreateDrawing, onCreate, onClose }: { pending: PendingConnectionCreate; viewport: ViewportTransform; viewportSize: { width: number; height: number }; containerRef: RefObject<HTMLDivElement | null>; canCreateDrawing: boolean; onCreate: (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Script | CanvasNodeType.Video | CanvasNodeType.Audio | CanvasNodeType.Drawing) => void; onClose: () => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const menuRef = useRef<HTMLDivElement>(null);
     const menuWidth = 248;
     const menuHeight = canCreateDrawing ? 280 : 248;

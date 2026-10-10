@@ -5,13 +5,13 @@ import { Box, Camera, Clapperboard, Lightbulb, Move3d } from "lucide-react";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { gateDirectorPreviewFailure, resolveDirectorActiveShot, resolveDirectorPreviewSource, type DirectorNodeContentReader } from "@oc/lib/canvas/director/director-preview";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasNodeData } from "@oc/types/canvas";
 import type { DirectorScene } from "@oc/types/director";
 
 export function CanvasDirectorNodePanel({ node, scene, readNodeContent, onOpen }: { node: CanvasNodeData; scene: DirectorScene | null; readNodeContent: DirectorNodeContentReader; onOpen: () => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const shot = resolveDirectorActiveShot(scene, node.metadata?.directorShotId);
     // 记录「失败的那个 URL」而非布尔量：同一个坏 URL 不再反复渲染，换成另一个 URL 时自动重试。
     const [failedUrl, setFailedUrl] = useState<string | null>(null);

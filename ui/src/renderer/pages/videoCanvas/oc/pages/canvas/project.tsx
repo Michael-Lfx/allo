@@ -10,6 +10,7 @@ import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
 import { refreshCanvasCharacterReferenceNodes } from "@oc/lib/canvas/canvas-character-reference";
 import { useAssetStore } from "@oc/stores/use-asset-store";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { CanvasColorThemeScope } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { App } from "antd";
 import { CanvasProjectSidebar } from "@oc/components/canvas/canvas-project-sidebar";
@@ -127,7 +128,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const assets = useAssetStore((state) => state.assets);
     const cleanupAssetImages = useAssetStore((state) => state.cleanupImages);
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const user = useUserStore((state) => state.user);
     const defaultDrawingEngine = useUserStore((state) => state.drawingEngine.defaultEngine);
     const shortDramaEnabled = useUserStore((state) => state.features.shortDramaEnabled);
@@ -266,6 +266,22 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
             writeCanvasAppearanceDefault({ appearance: next, backgroundMode });
         }
     }, [backgroundMode]);
+    const appearanceTheme = canvasAppearanceBaseTheme(canvasAppearance, DEFAULT_CANVAS_COLOR_THEME);
+    const theme = canvasThemes[appearanceTheme];
+    useLayoutEffect(() => {
+        const syncShell = () => {
+            const shell = document.querySelector<HTMLElement>(".oc-root.oc-canvas:not(.oc-portal-host)");
+            if (shell) {
+                shell.classList.toggle("dark", appearanceTheme === "dark");
+                shell.setAttribute("data-canvas-theme", appearanceTheme);
+            }
+            if (useThemeStore.getState().theme !== appearanceTheme) {
+                useThemeStore.getState().setTheme(appearanceTheme);
+            }
+        };
+        syncShell();
+        return useThemeStore.subscribe(syncShell);
+    }, [appearanceTheme]);
     const saveCanvasAppearanceDefault = useCallback((appearance: CanvasAppearance) => {
         writeCanvasAppearanceDefault({ appearance, backgroundMode });
     }, [backgroundMode]);
@@ -904,6 +920,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     if (!projectLoaded) return <CanvasRefreshShell />;
 
     return (
+        <CanvasColorThemeScope theme={appearanceTheme}>
         <>
             <a
                 href="#canvas-main"
@@ -1156,5 +1173,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                 </section>
             </main>
         </>
+        </CanvasColorThemeScope>
     );
 }

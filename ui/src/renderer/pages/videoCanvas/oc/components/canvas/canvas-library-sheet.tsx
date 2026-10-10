@@ -28,7 +28,7 @@ import { listCanvasHubPlaybooks } from "@oc/lib/canvas/craft/hub";
 import { fireGenerationTemplateEvent, getGenerationTemplateDetail, listGenerationTemplates } from "@oc/lib/canvas/generation-template/api";
 import { templateInputKind, type GenerationTemplateDetail, type GenerationTemplateListItem, type TemplateInputKind } from "@oc/lib/canvas/generation-template/types";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { VimaxCloudSkill } from "@renderer/pages/videoGeneration/types";
 
 export type { LibraryTab };
@@ -106,7 +106,7 @@ export function CanvasLibrarySheet({
     onPublishFromCanvas,
 }: CanvasLibrarySheetProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [tab, setTab] = useState<LibraryTab>(tabProp || "template");
     const [group, setGroup] = useState<RecipeGroup | "all">("all");
     const [media, setMedia] = useState<CraftMediaScope>("all");

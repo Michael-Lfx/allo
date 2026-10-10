@@ -10,7 +10,7 @@ import { CANVAS_IMAGE_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canva
 import { imageCapabilityConfigFor } from "@oc/lib/model-capabilities";
 import { anchoredOverlayStyle, type OverlayPlacement } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { AiConfig } from "@oc/stores/use-config-store";
 
 type ImageSettingKey = "quality" | "size" | "transparentBackground" | "count";
@@ -26,7 +26,7 @@ type CanvasImageSettingsPopoverProps = {
 
 export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft", showCount = true }: CanvasImageSettingsPopoverProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const buttonRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);

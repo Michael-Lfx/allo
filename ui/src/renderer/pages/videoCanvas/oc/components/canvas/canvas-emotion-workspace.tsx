@@ -13,7 +13,7 @@ import { buildEmotionImageArtifacts, buildEmotionPrompt, neutralEmotionPreset, t
 import { detectCanvasFaces } from "@oc/lib/canvas/canvas-face-detection";
 import { resolveCanvasNodeMediaBlob } from "@oc/lib/canvas/canvas-node-download";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasNodeData, ViewportTransform } from "@oc/types/canvas";
 
 type WorkspaceStatus = "detecting" | "selecting" | "manual" | "editing" | "generating" | "error";
@@ -209,7 +209,7 @@ function FaceSelectionOverlay({
     onManualComplete: (box: CanvasFaceBox) => void;
     onFaceSelect: (box: CanvasFaceBox) => void;
 }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const overlayRef = useRef<HTMLDivElement>(null);
     const dragStartRef = useRef<{ x: number; y: number } | null>(null);
     useScreenAnchor(overlayRef, node, viewport, containerRef, (next) => imageScreenRect(node, next, imageWidth, imageHeight));
@@ -368,7 +368,7 @@ function SelectionToolbar({
     onManualSelect: () => void;
     onClose: () => void;
 }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const reducedMotion = useReducedMotion();
     const toolbarRef = useRef<HTMLDivElement>(null);
     useScreenAnchor(toolbarRef, node, viewport, containerRef, (next, container) => toolbarScreenRect(node, next, container, toolbarRef.current));

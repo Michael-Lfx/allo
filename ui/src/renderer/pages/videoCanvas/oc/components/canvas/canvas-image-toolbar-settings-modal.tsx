@@ -6,7 +6,7 @@ import { FloatingDock, type FloatingDockEntry } from "@oc/components/ui/aceterni
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { ImageQuickToolId } from "./canvas-image-toolbar-tools";
 import { CanvasSheet, CanvasSheetButton, CanvasToggle } from "./canvas-overlay";
 
@@ -31,7 +31,7 @@ export function ImageToolSettingsModal({ open, tools, selectedIds, showLabels, o
 }) {
     useTranslation();
     const maxSelected = 7;
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
     const selectedTools = tools.filter((tool) => selected.has(tool.id));
     const previewItems: FloatingDockEntry[] = [

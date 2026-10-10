@@ -11,7 +11,7 @@ import { getNodeGenerationMode } from "@oc/lib/canvas/node-registry";
 import { canvasModelSpecPatch } from "@oc/lib/model-capabilities";
 import { buildGenerationConfig } from "@oc/lib/canvas/canvas-project-generation";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasCameraPicker } from "./canvas-camera-picker";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
@@ -53,7 +53,7 @@ type CanvasNodePromptPanelProps = {
 export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, onOpenLibrary, onOpenTemplates }: CanvasNodePromptPanelProps) {
     useTranslation();
     const globalConfig = useEffectiveConfig();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const mode = getNodeGenerationMode(node) ?? "image";
     const config = buildGenerationConfig(globalConfig, node, mode);
     const hasTextContent = node.type === CanvasNodeType.Text && Boolean(node.metadata?.content?.trim());

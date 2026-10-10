@@ -6,7 +6,7 @@ import { FileText, Image as ImageIcon, LayoutTemplate, Music2, Pencil, Video, X 
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { referenceImagePreviewUrl } from "@oc/lib/canvas/canvas-media-id";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import type { NodeGenerationInput } from "./canvas-node-generation";
@@ -59,7 +59,7 @@ export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
 export function CanvasConfigComposer({ value, inputs, skillReferences = [], generationMode, metadata, onChange, onMetadataChange, onClose, onOpenLibrary, onOpenTemplates }: CanvasConfigComposerProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
     const [mention, setMention] = useState<MentionState | null>(null);

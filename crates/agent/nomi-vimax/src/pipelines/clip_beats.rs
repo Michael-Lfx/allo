@@ -403,7 +403,7 @@ pub(crate) fn shots_from_packed_briefs(briefs: &[ShotBriefDescription]) -> Vec<S
     briefs.iter().map(shot_from_brief).collect()
 }
 
-fn shot_from_brief(brief: &ShotBriefDescription) -> ShotDescription {
+pub(crate) fn shot_from_brief(brief: &ShotBriefDescription) -> ShotDescription {
     let beats: Vec<ShotBeat> = brief
         .beats
         .iter()

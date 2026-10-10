@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { imageToDataUrl } from "@oc/services/image-storage";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasRange, CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
 type Point = { x: number; y: number };
@@ -20,7 +20,7 @@ export function CanvasNodeAnnotationDialog({ image, open, onClose, onConfirm }: 
     onConfirm: (dataUrl: string) => void;
 }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const sourceImageRef = useRef<HTMLImageElement | null>(null);
     const drawingRef = useRef<Stroke | null>(null);

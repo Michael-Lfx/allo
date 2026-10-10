@@ -13,7 +13,7 @@ import { anchoredOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { craftCover, craftText, recipesForMode, RECIPE_BY_ID, RECIPE_GROUPS, recipeMediaKind, type CraftRecipe } from "@oc/lib/canvas/craft/catalog";
 import { recipeToken } from "@oc/lib/canvas/craft/tokens";
 import { readCraftRecents, rememberCraftRecent } from "@oc/lib/canvas/craft/recents";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasGenerationMode } from "@oc/types/canvas";
 
 export type CanvasPromptPreset = {
@@ -39,7 +39,7 @@ export function CanvasPresetPicker({
     onOpenLibrary?: () => void;
 }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const buttonRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const [internalOpen, setInternalOpen] = useState(false);

@@ -96,6 +96,18 @@ function packetShotIdx(scene: StoryboardScene): number {
   return scene.shotIndex ?? 0;
 }
 
+function packetMatchesScene(
+  packet: ShotPacketView | null,
+  sceneRoot: string,
+  shotIdx: number
+): boolean {
+  if (!packet) return false;
+  return (
+    packet.shot_idx === shotIdx &&
+    packet.scene_root.replace(/\\/g, '/') === sceneRoot
+  );
+}
+
 function effectivePrompt(packet: ShotPacketView): string {
   return packet.prompt_override ?? packet.compiled_prompt ?? '';
 }
@@ -172,16 +184,18 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   const viewportRef = useRef(viewport);
   const canvasRef = useRef<HTMLDivElement>(null);
   const fittedKey = useRef('');
+  const loadSeq = useRef(0);
   const [canvasExpanded, setCanvasExpanded] = useState(false);
 
+  const packetForScene = packetMatchesScene(packet, sceneRoot, shotIdx);
   const editable =
-    Boolean(packet) &&
+    packetForScene &&
     !planning &&
     !generating &&
     !reviewLocked &&
     packet?.run_state !== 'generating';
   const canGenerate =
-    Boolean(packet) &&
+    packetForScene &&
     !planning &&
     !generating &&
     !reviewLocked &&
@@ -216,20 +230,25 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   );
 
   const loadPacket = useCallback(async () => {
+    const seq = ++loadSeq.current;
     if (!sceneRoot) {
       setPacket(null);
+      packetRef.current = null;
       onPacket?.(null);
       return;
     }
     setLoading(true);
     try {
       const next = await getShotPacket(sessionId, sceneRoot, shotIdx);
+      if (seq !== loadSeq.current) return;
       applyPacket(next, { keepLayout: fittedKey.current === `${sceneRoot}:${shotIdx}` });
     } catch {
+      if (seq !== loadSeq.current) return;
       setPacket(null);
+      packetRef.current = null;
       onPacket?.(null);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [applyPacket, onPacket, sceneRoot, sessionId, shotIdx]);
 
@@ -243,6 +262,16 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
     setMetaPatch({});
     setCanvasExpanded(false);
     fittedKey.current = '';
+    setPacket(null);
+    packetRef.current = null;
+    if (layoutTimer.current) {
+      window.clearTimeout(layoutTimer.current);
+      layoutTimer.current = null;
+    }
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
   }, [scene.id]);
 
   useLayoutEffect(() => {
@@ -261,6 +290,7 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   const persist = useCallback(
     async (patch: ShotPacketPatch) => {
       if (!sceneRoot || !editable) return;
+      if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) return;
       setSaving(true);
       try {
         const next = await putShotPacket(sessionId, sceneRoot, shotIdx, patch);
@@ -301,15 +331,17 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   const persistLayout = useCallback(
     (nextPositions = positionsRef.current, nextViewport = viewportRef.current) => {
       if (!editable) return;
+      if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) return;
       const next = layoutPayload(nextPositions, nextViewport);
       if (sameShotLayout(packetRef.current?.layout, next)) return;
       if (layoutTimer.current) window.clearTimeout(layoutTimer.current);
       layoutTimer.current = window.setTimeout(() => {
+        if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) return;
         if (sameShotLayout(packetRef.current?.layout, next)) return;
         void persist({ layout: next, recompile: false });
       }, LAYOUT_DEBOUNCE_MS);
     },
-    [editable, layoutPayload, persist]
+    [editable, layoutPayload, persist, sceneRoot, shotIdx]
   );
 
   const schedulePromptSave = useCallback(

@@ -26,7 +26,7 @@ import { resolveCanvasVisionModel } from "@oc/lib/canvas/canvas-vision-model";
 import { useCopyText } from "@oc/hooks/use-copy-text";
 import { imageToDataUrl, resolveImageUrl } from "@oc/services/image-storage";
 import { modelOptionLabel, useEffectiveConfig } from "@oc/stores/use-config-store";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasNodeData } from "@oc/types/canvas";
 
 type AiArtCritiqueModalProps = {
@@ -54,7 +54,7 @@ type AiArtCritiqueView = "overview" | "detail";
 type ArtCritiquePromptStatus = "ready" | "pending" | "unavailable";
 
 export function AiArtCritiqueModal({ node, upstreamNodes, open, onClose, onUpdateState }: AiArtCritiqueModalProps) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const effectiveConfig = useEffectiveConfig();
     const selectedCritiqueModel = resolveCanvasVisionModel(effectiveConfig);
     const configuredCritiqueModelLabel = selectedCritiqueModel ? modelOptionLabel(effectiveConfig, selectedCritiqueModel) : "未配置支持图片理解的文本模型";

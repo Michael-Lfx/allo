@@ -23,7 +23,7 @@ import {
 import { anchoredOverlayStyle, type OverlayPlacement } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { cn } from "@oc/lib/utils";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 
 type CanvasCameraPickerProps = {
     rig: CanvasCameraRig;
@@ -34,7 +34,7 @@ type CanvasCameraPickerProps = {
 
 export function CanvasCameraPicker({ rig, onChange, placement = "top", buttonClassName }: CanvasCameraPickerProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const buttonRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);

@@ -11,7 +11,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { ASSET_SPACE_DRAMA_CATEGORIES, ASSET_SPACE_SOURCES, type AssetSpaceDramaCategory, type AssetSpaceItem, type AssetSpaceKind, type AssetSpaceSource } from "@oc/lib/canvas/canvas-asset-space";
 import { useBriefingAssetPreview, useVimaxAssetPreview } from "@oc/lib/canvas/canvas-asset-space-media";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { AudioAsset, ImageAsset, VideoAsset } from "@oc/stores/use-asset-store";
 import type { CanvasNodeData } from "@oc/types/canvas";
 import { useAssetSpaceDramaCategoryCounts, useAssetSpaceKindCounts, useCanvasAssetSpace, useFilteredAssetSpace } from "@oc/pages/canvas/use-canvas-asset-space";
@@ -44,7 +44,7 @@ export function CanvasAssetTray({
     onFocusCanvasMedia,
 }: CanvasAssetTrayProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const reducedMotion = useReducedMotion();
     const rootRef = useRef<HTMLDivElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
@@ -273,7 +273,7 @@ function AssetSpaceCard({
     onSelect: () => void;
 }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const vimax = useVimaxAssetPreview(item.preview.type === "vimax" ? item.preview.sessionId : undefined, item.preview.type === "vimax" ? item.preview.path : undefined);
     const briefing = useBriefingAssetPreview(item.preview.type === "briefing" ? item.preview.sessionId : undefined, item.preview.type === "briefing" ? item.preview.path : undefined);
     const previewUrl = item.kind === "audio"

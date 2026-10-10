@@ -11,7 +11,7 @@ import { canvasResourceNodePreviewUrl, type CanvasResourceKind, type CanvasResou
 import { buildCanvasAgentAliasMap, canvasAgentShortId } from "@oc/lib/canvas/canvas-agent-ids";
 import { getNodeResourceKind } from "@oc/lib/canvas/node-registry";
 import { modelDisplayName, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { LocalUser } from "@oc/stores/use-user-store";
 import { CanvasNodeType, type CanvasAssistantMessage, type CanvasAssistantReference, type CanvasAssistantSession, type CanvasNodeData } from "@oc/types/canvas";
 import { AgentChatEmptyState } from "./canvas-agent-panel-chrome";
@@ -67,7 +67,7 @@ export function AssistantHistory({
     onOpen: (id: string) => void;
     onDelete: (id: string) => void;
 }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
 
     return (
         <div className="space-y-3">
@@ -193,7 +193,7 @@ function MessageReferences({ message }: { message: CanvasAssistantMessage }) {
 }
 
 export function AssistantReferenceChip({ item, label, onRemove }: { item: CanvasAssistantReference; label?: string; onRemove?: () => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const text = (item.text || item.title).replace(/\s+/g, " ").trim().slice(0, 1) || "文";
     return (
         <div className="group/chip relative inline-flex h-8 max-w-[150px] shrink-0 items-center gap-1.5 rounded-lg text-sm" style={{ color: theme.node.text }}>

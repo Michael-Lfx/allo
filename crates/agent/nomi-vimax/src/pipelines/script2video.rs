@@ -1898,10 +1898,24 @@ async fn load_shot_for_packet(scene_dir: &Path, shot_idx: i32) -> VimaxResult<Sh
     if per.is_file() {
         return read_json_artifact(&per).await;
     }
-    let all: Vec<ShotDescription> = read_json_artifact(&scene_dir.join("shot_descriptions.json")).await?;
-    all.into_iter()
-        .find(|s| s.idx == shot_idx)
-        .ok_or_else(|| VimaxError::InvalidParams(format!("shot {shot_idx} not found")))
+    if let Ok(all) =
+        read_json_artifact::<Vec<ShotDescription>>(&scene_dir.join("shot_descriptions.json")).await
+    {
+        if let Some(shot) = all.into_iter().find(|s| s.idx == shot_idx) {
+            return Ok(shot);
+        }
+    }
+    // Filmstrip cards come from storyboard.json. Packing / a partial plan can
+    // leave a row with no shot_description.json — still seed a packet so the
+    // director desk can save layout instead of 400 "has no packet".
+    if let Ok(board) =
+        read_json_artifact::<Vec<ShotBriefDescription>>(&scene_dir.join("storyboard.json")).await
+    {
+        if let Some(brief) = board.into_iter().find(|row| row.idx == shot_idx) {
+            return Ok(super::clip_beats::shot_from_brief(&brief));
+        }
+    }
+    Err(VimaxError::InvalidParams(format!("shot {shot_idx} not found")))
 }
 
 fn portrait_pairs(
@@ -5031,5 +5045,72 @@ mod storyboard_publish_tests {
             .await
             .unwrap();
         assert!(!again);
+    }
+}
+
+#[cfg(test)]
+mod packet_seed_tests {
+    use super::*;
+    use crate::domain::{ShotBriefBeat, ShotBriefDescription};
+
+    fn brief(idx: i32, last: bool) -> ShotBriefDescription {
+        ShotBriefDescription {
+            idx,
+            is_last: last,
+            cam_idx: 0,
+            visual_desc: format!("visual {idx}"),
+            audio_desc: None,
+            location_id: "INT. CAFE - NIGHT".into(),
+            beats: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_seeds_packet_from_storyboard_when_shot_files_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let scene = dir.path().join("idea2video").join("scene_0");
+        std::fs::create_dir_all(&scene).unwrap();
+        let mut packed = brief(2, true);
+        packed.visual_desc = "packed row".into();
+        packed.audio_desc = Some("line".into());
+        packed.beats = vec![
+            ShotBriefBeat {
+                visual_desc: "beat a".into(),
+                audio_desc: None,
+                cam_idx: 0,
+            },
+            ShotBriefBeat {
+                visual_desc: "beat b".into(),
+                audio_desc: None,
+                cam_idx: 1,
+            },
+        ];
+        write_json_artifact(&scene.join("storyboard.json"), &vec![brief(0, false), packed])
+            .await
+            .unwrap();
+
+        let packet = refresh_shot_packet_from_disk(&scene, 2, 3).await.unwrap();
+        assert_eq!(packet.shot_idx, 2);
+        assert_eq!(packet.visual_desc, "packed row");
+        assert!(packet.beats.len() >= 2);
+        assert!(scene.join("shots").join("2").join("shot_packet.json").is_file());
+        let loaded = load_packet(&scene, 2).await.unwrap().expect("seeded packet");
+        assert_eq!(loaded.shot_idx, 2);
+    }
+
+    #[tokio::test]
+    async fn refresh_missing_storyboard_row_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let scene = dir.path().join("idea2video").join("scene_0");
+        std::fs::create_dir_all(&scene).unwrap();
+        write_json_artifact(&scene.join("storyboard.json"), &vec![brief(0, true)])
+            .await
+            .unwrap();
+        let err = refresh_shot_packet_from_disk(&scene, 2, 3).await.unwrap_err();
+        assert!(
+            err.to_string().contains("shot 2 not found"),
+            "unexpected error: {err}"
+        );
+        assert!(!scene.join("shots").join("2").join("shot_packet.json").is_file());
     }
 }

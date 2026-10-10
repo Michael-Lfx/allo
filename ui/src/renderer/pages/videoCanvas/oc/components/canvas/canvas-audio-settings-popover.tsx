@@ -9,7 +9,7 @@ import { audioVoiceLabel } from "@oc/lib/audio-generation";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { anchoredOverlayStyle, type OverlayPlacement } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { AiConfig } from "@oc/stores/use-config-store";
 
 export type CanvasAudioSettingKey = "audioVoice" | "audioFormat" | "audioSpeed" | "audioInstructions";
@@ -23,7 +23,7 @@ type CanvasAudioSettingsPopoverProps = {
 
 export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClassName, placement = "bottomLeft" }: CanvasAudioSettingsPopoverProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const buttonRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);

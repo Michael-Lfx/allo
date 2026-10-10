@@ -6,7 +6,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { readImageMeta } from "@oc/lib/image-utils";
 import type { ImageSplitParams } from "@oc/lib/canvas/canvas-image-data";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasRange, CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
 export type CanvasImageSplitParams = ImageSplitParams;
@@ -16,7 +16,7 @@ const maxGridSize = 12;
 
 export function CanvasNodeSplitDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageSplitParams) => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [params, setParams] = useState(defaultParams);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
     const total = params.rows * params.columns;

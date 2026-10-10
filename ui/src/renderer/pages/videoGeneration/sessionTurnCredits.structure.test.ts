@@ -39,11 +39,17 @@ describe('video generation session video credits', () => {
     expect(inspector.includes('putShotPacket')).toBe(true);
     expect(inspector.includes('planning = false')).toBe(true);
     expect(inspector.includes('cannot edit a shot packet while planning')).toBe(true);
+    expect(inspector.includes('packetMatchesScene')).toBe(true);
+    expect(inspector.includes('packet.shot_idx === shotIdx')).toBe(true);
     expect(board.includes('planning={planning}')).toBe(true);
     expect(inspector.includes('compiledPrompt') || inspector.includes('compiled_prompt')).toBe(true);
     expect(inspector.includes('takes')).toBe(true);
     expect(inspector.includes('shot-graph')).toBe(true);
     const infinite = source('./shotInfiniteCanvas/ShotInfiniteCanvas.tsx');
+    expect(infinite.includes('CanvasColorThemeScope')).toBe(true);
+    expect(infinite.includes("from '@oc/stores/use-canvas-color-theme'")).toBe(true);
+    expect(infinite.includes('useThemeContext')).toBe(true);
+    expect(infinite.includes('data-canvas-theme')).toBe(true);
     expect(inspector.includes('shot-api-prompt') || infinite.includes('shot-api-prompt')).toBe(true);
     expect(inspector.includes('ShotInfiniteCanvas')).toBe(true);
     expect(inspector.includes('PanZoomViewport')).toBe(false);

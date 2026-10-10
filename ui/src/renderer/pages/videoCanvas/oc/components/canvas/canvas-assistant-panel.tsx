@@ -10,7 +10,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { nanoid } from "nanoid";
 import { useAssetStore } from "@oc/stores/use-asset-store";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
 import { AgentChatComposer, AgentPanelTabs, type CanvasAgentMode } from "./canvas-agent-chat-ui";
@@ -58,7 +58,7 @@ type CanvasAssistantPanelProps = {
 
 export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onApplyOps, canUndoOps, undoOpsCount, onUndoOps, onPasteImage, agentMode = "online", onAgentModeChange, autoConnectLocal, closing, onCollapse, onExtractFrames, resizing = false, autoStart, onAutoStartConsumed, appearImmediately = false, modelCatalogReady = true }: CanvasAssistantPanelProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const user = useUserStore((state) => state.user);
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);

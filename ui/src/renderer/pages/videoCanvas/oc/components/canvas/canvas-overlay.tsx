@@ -6,7 +6,7 @@ import { ChevronRight, X } from "lucide-react";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { cn } from "@oc/lib/utils";
 
 export function CanvasOverlay({
@@ -83,7 +83,7 @@ export function CanvasHoverHint({
     const wrapRef = useRef<HTMLSpanElement>(null);
     const [open, setOpen] = useState(false);
     const [pos, setPos] = useState({ left: 0, barTop: 0, barBottom: 0, below: false });
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const hint = label?.trim() || "";
 
     const sync = () => {
@@ -166,8 +166,8 @@ export function CanvasChromeButton({
             type="button"
             className={cn("canvas-chrome-token inline-flex", className)}
             aria-expanded={expanded}
-            style={style}
             {...props}
+            style={style}
         >
             {children}
         </button>
