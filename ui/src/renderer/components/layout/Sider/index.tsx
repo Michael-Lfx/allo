@@ -651,7 +651,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               />
 
               {/* 三段式会话分类切换器：区分项目、视频创作、桌宠 */}
-              <div className='w-full my-2px shrink-0'>
+              <div className={`w-full my-2px shrink-0 ${styles.historyTabsContainer}`}>
                 <div
                   role='tablist'
                   aria-label={t('common.titlebar.sections.workspaces', { defaultValue: '工作区' })}
@@ -677,7 +677,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     aria-selected={effectiveBar2Module === 'workspaces'}
                     onClick={() => handleTabClick('workspaces')}
                     className={classNames(
-                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
+                      'relative z-1 group flex-1 h-26px px-2px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
                       effectiveBar2Module === 'workspaces'
                         ? 'text-t-primary'
                         : 'text-t-tertiary hover:text-t-primary'
@@ -688,7 +688,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       size={15}
                       fill='currentColor'
                       className={classNames(
-                        'block leading-none shrink-0 transition-colors duration-180',
+                        'flowy-sider-tab-icon block leading-none shrink-0 transition-colors duration-180',
                         effectiveBar2Module === 'workspaces'
                           ? 'text-primary-6'
                           : 'text-t-tertiary group-hover:text-t-primary'
@@ -705,7 +705,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={() => handleTabClick('video')}
                     onPointerEnter={() => prefetchVideoGenerationHome()}
                     className={classNames(
-                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
+                      'relative z-1 group flex-1 h-26px px-2px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
                       effectiveBar2Module === 'video'
                         ? 'text-t-primary'
                         : 'text-t-tertiary hover:text-t-primary'
@@ -716,7 +716,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       size={15}
                       fill='currentColor'
                       className={classNames(
-                        'block leading-none shrink-0 transition-colors duration-180',
+                        'flowy-sider-tab-icon block leading-none shrink-0 transition-colors duration-180',
                         effectiveBar2Module === 'video'
                           ? 'text-primary-6'
                           : 'text-t-tertiary group-hover:text-t-primary'
@@ -733,7 +733,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={() => handleTabClick('companions')}
                     onPointerEnter={() => prefetchNomiPage()}
                     className={classNames(
-                      'relative z-1 group flex-1 h-26px px-4px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
+                      'relative z-1 group flex-1 h-26px px-2px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
                       effectiveBar2Module === 'companions'
                         ? 'text-t-primary'
                         : 'text-t-tertiary hover:text-t-primary'
@@ -744,7 +744,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                       size={15}
                       fill='currentColor'
                       className={classNames(
-                        'block leading-none shrink-0 transition-colors duration-180',
+                        'flowy-sider-tab-icon block leading-none shrink-0 transition-colors duration-180',
                         effectiveBar2Module === 'companions'
                           ? 'text-primary-6'
                           : 'text-t-tertiary group-hover:text-t-primary'

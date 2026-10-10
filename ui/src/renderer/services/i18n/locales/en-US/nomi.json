@@ -1,6 +1,6 @@
 {
   "title": "Desktop Companion",
-  "shortTitle": "Companion",
+  "shortTitle": "Pets",
   "subtitle": "Your desktop companion is quietly learning to understand you better. All data stays local and collection is fully opt-in.",
   "openChat": "Open chat",
   "tabs": {
@@ -143,6 +143,13 @@
     "reorder": "Drag to reorder"
   },
   "levels": {
+    "badge": {
+      "l1": "Just met",
+      "l2": "Remembers",
+      "l3": "Reminds",
+      "l4": "In rhythm",
+      "l5": "Anticipates"
+    },
     "l1": "Getting to know you",
     "l2": "Remembers you",
     "l3": "Reminds you",
@@ -171,7 +178,7 @@
     "goCollect": "Enable",
     "memories": "Memories",
     "newSuggestions": "Unread suggestions",
-    "skillsActive": "Skills mastered",
+    "skillsActive": "Skills",
     "weeklyTitle": "What I learned this week",
     "weeklySkills": "New skills",
     "weeklyMemories": "New memories",
