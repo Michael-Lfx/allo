@@ -403,6 +403,19 @@ async fn run_login(
     capture: &Arc<Mutex<Option<String>>>,
     server_url: &str,
 ) -> OAuthLoginResponse {
+    run_login_recording_page(oauth, capture, server_url).await.0
+}
+
+/// `run_login`, keeping the page the browser was left with.
+///
+/// The page is the *user's* channel for the outcome, and it must be written
+/// after the token exchange: a `slow_down` refusal reported as "Authorization
+/// successful!" is exactly the bug this records against.
+async fn run_login_recording_page(
+    oauth: &McpOAuthService,
+    capture: &Arc<Mutex<Option<String>>>,
+    server_url: &str,
+) -> (OAuthLoginResponse, String) {
     let oauth = oauth.clone();
     let server_url = server_url.to_owned();
     let task = tokio::spawn(async move { oauth.login(&server_url).await });
@@ -419,16 +432,21 @@ async fn run_login(
     });
 
     // Wait for the authorize URL, then use the browser. The lock is released
-// before any await (no guard held across await points).
+    // before any await (no guard held across await points).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    let mut browser_page = String::new();
     loop {
         let captured = capture.lock().unwrap().clone();
         if let Some(url) = captured {
-            let _browser = reqwest::Client::new()
+            // Blocks until the host has answered the redirect — i.e. until the
+            // token exchange has an outcome — because that is when the page is
+            // written.
+            let response = reqwest::Client::new()
                 .get(&url)
                 .send()
                 .await
                 .expect("browser GET");
+            browser_page = response.text().await.unwrap_or_default();
             break;
         }
         if let Some(error) = login_error.lock().unwrap().clone() {
@@ -442,9 +460,10 @@ async fn run_login(
     }
     let _ = &capture;
     let join_result = tokio::time::timeout(Duration::from_secs(60), handle).await;
-    join_result
+    let result = join_result
         .expect("login task join timed out — login is stuck")
-        .expect("login returns")
+        .expect("login returns");
+    (result, browser_page)
 }
 
 use std::time::Duration;
@@ -646,8 +665,8 @@ async fn a_post_browser_failure_stays_visible_until_the_next_success() {
     let oauth = service_with_hook(token_repo, registration_repo, capture.clone());
 
     // Phase 1 — the browser step happens, then the callback arrives with a state
-    // that is not the pending CSRF token. (The callback server rejects it and
-    // closes without a body, hence the short client timeout.)
+    // that is not the pending CSRF token. The refusal is answered as a page
+    // ("not completed"), which is what the user needs to see before retrying.
     let service = oauth.clone();
     let url = mcp_url.clone();
     let flow = tokio::spawn(async move {
@@ -664,14 +683,21 @@ async fn a_post_browser_failure_stays_visible_until_the_next_success() {
         "the captured URL must be a PKCE authorize URL: {authorize_url}"
     );
     let callback = callback_base_from_authorize(&capture);
-    let _ = reqwest::Client::builder()
+    let refused = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_millis(500))
         .build()
-        .expect("short-timeout client")
+        .expect("test client")
         .get(format!("{callback}?code=stolen&state=not-the-csrf-token"))
         .send()
-        .await;
+        .await
+        .expect("a refused callback is answered, not dropped")
+        .text()
+        .await
+        .unwrap_or_default();
+    assert!(
+        refused.contains("Authorization not completed"),
+        "the window must say the login did not finish: {refused}"
+    );
 
     let failed = flow.await.expect("flow task panicked");
     assert!(!failed.success, "a CSRF mismatch must not authenticate");
@@ -703,9 +729,13 @@ async fn dynamic_registration_persists_and_exchange_uses_registered_id() {
     let capture: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let oauth = service_with_hook(token_repo.clone(), registration_repo.clone(), capture.clone());
 
-    let result = run_login(&oauth, &capture, &mcp_url).await;
+    let (result, browser_page) = run_login_recording_page(&oauth, &capture, &mcp_url).await;
     assert!(result.success, "login failed: {:?}", result.error);
-
+    // The window is told the truth, and only once the exchange has landed.
+    assert!(
+        browser_page.contains("Authorization successful!"),
+        "a completed login must leave the success page: {browser_page}"
+    );
     // Snapshot all mock observations inside one guard scope — a `&` borrow
     // through the temporary guard would extend the guard's lifetime to the
     // end of this function and deadlock the next `log.lock()`.
@@ -948,11 +978,24 @@ async fn a_throttled_login_blocks_the_next_attempt_before_any_request() {
         let capture: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let oauth = service_with_hook(token_repo, registration_repo, capture.clone());
 
-        let first = run_login(&oauth, &capture, &mcp_url).await;
+        let (first, browser_page) =
+            run_login_recording_page(&oauth, &capture, &mcp_url).await;
         assert!(!first.success, "a slow_down must fail the login");
         let throttled = first.error.clone().unwrap_or_default();
         assert!(throttled.contains("slow_down"), "reason must reach the client: {throttled}");
         assert!(throttled.contains("retry in"), "the wait must be stated: {throttled}");
+        // The reported bug: the browser said "Authorization successful!" while
+        // the exchange was refused, so the user closed the window and never
+        // retried. The page is written after the exchange, so it must carry the
+        // refusal instead.
+        assert!(
+            !browser_page.contains("Authorization successful!"),
+            "a throttled exchange must not leave the success page: {browser_page}"
+        );
+        assert!(
+            browser_page.contains("Authorization not completed") && browser_page.contains("slow_down"),
+            "the page must say the login did not finish and why: {browser_page}"
+        );
 
         let (registers, authorizes, tokens) = {
             let guard = log.lock().unwrap();
@@ -1113,10 +1156,26 @@ async fn callback_state_mismatch_is_rejected() {
         assert!(tokio::time::Instant::now() < deadline, "no authorize URL");
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let _ = reqwest::Client::new()
+    // The flow is open while the browser holds the authorize URL: this is the
+    // window `connector/auth/status` reports as `authorization_pending`, and
+    // without it "waiting for the user" and "never started" read the same.
+    assert!(
+        oauth.login_pending(&mcp_url),
+        "the flow is in flight once the browser has the authorize URL"
+    );
+
+    let page = reqwest::Client::new()
         .get(format!("{callback}?code=forged&state=wrong-state"))
         .send()
-        .await; // 服务端拒收后直接断连（无响应），客户端可能报 IncompleteMessage
+        .await
+        .expect("a refused callback is answered, not dropped")
+        .text()
+        .await
+        .unwrap_or_default();
+    assert!(
+        page.contains("Authorization not completed"),
+        "a refused callback must not leave the user with a blank window: {page}"
+    );
 
     let result = task.await.expect("login task").expect("login returns");
     assert!(!result.success, "forged state must fail the login");
@@ -1124,6 +1183,10 @@ async fn callback_state_mismatch_is_rejected() {
         result.error.as_deref().is_some_and(|e| e.contains("state")),
         "error should mention the state mismatch: {:?}",
         result.error
+    );
+    assert!(
+        !oauth.login_pending(&mcp_url),
+        "the in-flight mark must be gone once the flow ends"
     );
 }
 
@@ -1150,10 +1213,18 @@ async fn callback_path_mismatch_is_rejected() {
         assert!(tokio::time::Instant::now() < deadline, "no authorize URL");
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let _ = reqwest::Client::new()
+    let page = reqwest::Client::new()
         .get(format!("{callback}/wrong/path?code=x&state=y"))
         .send()
-        .await; // 同上：拒收即断连
+        .await
+        .expect("a refused callback is answered, not dropped")
+        .text()
+        .await
+        .unwrap_or_default();
+    assert!(
+        page.contains("Authorization not completed"),
+        "a wrong callback path must not leave the user with a blank window: {page}"
+    );
 
     let result = task.await.expect("login task").expect("login returns");
     assert!(!result.success, "wrong callback path must fail the login");
@@ -1228,7 +1299,8 @@ async fn concurrent_logins_on_shared_service_both_succeed() {
         let urls = captures.lock().unwrap().clone();
         for url in urls {
             if driven.insert(url.clone()) {
-                // 服务端拒收时直接断连，客户端可能报 IncompleteMessage —— 忽略。
+                // Blocks until this flow's token exchange has an outcome — the
+                // page is written after the exchange, not when the code arrives.
                 let _ = reqwest::Client::new().get(&url).send().await;
             }
         }

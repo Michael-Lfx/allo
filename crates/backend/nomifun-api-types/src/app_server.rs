@@ -404,7 +404,15 @@ pub struct AppServerConnectorCallResult {
 /// OAuth state view. Never contains tokens, authorization codes or secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerOAuthStatusView {
-    /// `authenticated` | `not_authenticated` | `reauthorization_required`.
+    /// `authenticated` | `authorization_pending` | `not_authenticated` |
+    /// `reauthorization_required`.
+    ///
+    /// `authorization_pending` means the host is running a browser flow for this
+    /// connector **right now** (the user may still be in it); it outranks the
+    /// stored credential, because a client polling for progress is asking "is it
+    /// running?" rather than "is the previous credential still usable?". No
+    /// credential exists yet in the common case, so without it "a login is in
+    /// progress" and "no login was started" are the same answer.
     pub state: String,
     /// Last sanitized browser-flow failure: why an authorization this client
     /// started never finished. Set when the flow failed after the browser was

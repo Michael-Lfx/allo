@@ -61,12 +61,12 @@ import type {
   OAuthStatusView,
   SkillDetail,
   SkillSummary,
-  StoreInstallResult,
   StoreItem,
   StoreItemKind,
   TeamDetail,
   TeamSummary,
 } from "../lib/protocol";
+import type { StoreOperationOutcome } from "../lib/client";
 import { IconButton } from "./IconButton";
 import { DialogShell } from "./dialogs/DialogShell";
 import { McpManagerDialog } from "./dialogs/McpSettingsSection";
@@ -249,7 +249,7 @@ export function CatalogView() {
 
   // store drawer (winget-style item detail + install)
   const [storeDrawerItem, setStoreDrawerItem] = useState<StoreItem | null>(null);
-  const [storeInstallResult, setStoreInstallResult] = useState<StoreInstallResult | null>(null);
+  const [storeInstallResult, setStoreInstallResult] = useState<StoreOperationOutcome | null>(null);
 
   // connector auth state map (id -> oauth state + last failure reason)
   const [authMap, setAuthMap] = useState<Map<string, OAuthStatusView>>(new Map());
@@ -419,6 +419,33 @@ export function CatalogView() {
     }
   }, [client, setAuthStatus]);
 
+  /**
+   * Follow a started browser flow to its outcome.
+   *
+   * The host answers `authorization_pending` while the flow owns the connector
+   * (`connector/auth/status`), which is what lets the drawer say 「认证中」 instead
+   * of the 「需要授权」 a connector with no credential otherwise shows. The loop
+   * itself is the SDK's `waitForAuth`: it polls `authStatus`, and its `error`
+   * outcome carries the host's own reason for a flow that failed after the
+   * browser step (a refused token exchange, a throttling gateway).
+   */
+  const followAuth = useCallback(async (connectorId: string) => {
+    if (!client) return;
+    try {
+      const outcome = await client.connectors.waitForAuth(connectorId);
+      if (!activeRef.current) return;
+      if (outcome.state === "error") {
+        setAuthStatus(connectorId, { state: "not_authenticated", error: outcome.error });
+        return;
+      }
+      // `authenticated` or `timeout`: the host is the authority on which, and
+      // the untouched `error` channel is how a stuck flow explains itself.
+      await refreshAuth(connectorId);
+    } catch (caught) {
+      if (activeRef.current) reportError(caught);
+    }
+  }, [client, refreshAuth, reportError]);
+
   const startAuth = useCallback(async (connectorId: string) => {
     if (!client) return;
     setDetailBusy(connectorId);
@@ -430,14 +457,17 @@ export function CatalogView() {
         return;
       }
       setError(t("catalog.authStarted"));
-      await refreshAuth(connectorId);
+      // The browser is open, so the state is pending from here on — stated at
+      // once rather than waiting for the first poll to report it.
+      setAuthStatus(connectorId, { state: "authorization_pending", error: null });
+      void followAuth(connectorId);
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     } finally {
       if (activeRef.current) setDetailBusy(null);
     }
-  }, [client, refreshAuth, t]);
+  }, [client, followAuth, setAuthStatus, t]);
 
   const logoutConnector = useCallback(async (connectorId: string) => {
     if (!client) return;
@@ -600,7 +630,13 @@ export function CatalogView() {
     setStoreInstallBusy(item.id);
     setError(null);
     try {
-      const result = await client.installStoreEntry(item.marketplace_id, item.entry_name);
+      // `store.install`, not the raw `store/install-entry` verb: a connector is
+      // registered **disabled** by the installer, and switching it on (plus one
+      // readiness probe) is exactly what the SDK's state machine does and the
+      // bare verb does not. Installing through the verb alone is why a connector
+      // installed from this page stayed 「已禁用」 until someone found the drawer's
+      // component switch.
+      const result = await client.store.install(item);
       if (!activeRef.current) return;
       setStoreInstallResult(result);
       // Refresh the aggregated store so the installed state flips. `reload()`
@@ -620,7 +656,12 @@ export function CatalogView() {
         const refreshed = list.items.find(
           (candidate) => candidate.id === current.id,
         );
-        return refreshed ?? { ...current, installed: true, snapshot_id: result.snapshot_id, installed_version: result.version };
+        return refreshed ?? {
+          ...current,
+          installed: true,
+          snapshot_id: result.snapshotId,
+          installed_version: item.version,
+        };
       });
       // W8 余项: the install used to end silently unless the drawer stayed open.
       pushToast(
@@ -1472,7 +1513,7 @@ function StoreDrawer({
 }: {
   item: StoreItem;
   busy: boolean;
-  result: StoreInstallResult | null;
+  result: StoreOperationOutcome | null;
   onInstall: () => void;
   updateBusy: boolean;
   onUpdate: () => void;
@@ -1564,7 +1605,12 @@ function StoreDrawer({
         )}
         {result && (
           <span className="market-tag is-status is-success">
-            {t("catalog.storeSnapInstalled", { count: result.installed_count })}
+            {/* The host's own count when it reports one; otherwise the components
+                this call actually landed (`ok` outcomes), which is the same
+                question asked of the answer we do have. */}
+            {t("catalog.storeSnapInstalled", {
+              count: result.installedCount ?? result.components.filter((entry) => entry.ok).length,
+            })}
           </span>
         )}
       </div>
@@ -1634,6 +1680,10 @@ export function ConnectorDrawer({
   const { t } = useTranslation();
   const [filling, setFilling] = useState(false);
   const authenticated = auth?.state === "authenticated";
+  // The host reports this while a browser flow owns the connector
+  // (`connector/auth/status`): the user is in the window right now. Without it
+  // the drawer reads the same as a connector nobody has tried to authorize.
+  const pending = auth?.state === "authorization_pending";
   const credential = detail.credential ?? null;
   // `34` §6.1: the auth affordance follows `credential.mode`, never the
   // transport-derived `auth_mode`. The two disagreed on every url-shaped
@@ -1674,9 +1724,14 @@ export function ConnectorDrawer({
                 four-state when the host describes it, the connection status only
                 for a connector that has no credential face at all. */}
             {status ? (
-              <span className={`market-tag is-status ${credentialStateClass(status)}`}>
-                {credentialStatusLabel(t, status, mode)}
-                {status === "requires_input" && missing > 0
+              <span className={`market-tag is-status ${pending ? "is-warn" : credentialStateClass(status)}`}>
+                {/* A flow in flight replaces the credential's own state rather
+                    than sitting beside it: while the window is open, "需要授权"
+                    is what the user is already doing. */}
+                {pending
+                  ? t("catalog.authPending")
+                  : credentialStatusLabel(t, status, mode)}
+                {!pending && status === "requires_input" && missing > 0
                   ? ` · ${t("catalog.credentialMissingCount", { count: missing })}`
                   : ""}
               </span>
@@ -1716,7 +1771,7 @@ export function ConnectorDrawer({
         {mode === "oauth" ? (
           <>
             {!authenticated ? (
-              <button className="quiet-button" type="button" onClick={onAuthStart} disabled={busy}>{t("catalog.authAuthorize")}</button>
+              <button className="quiet-button" type="button" onClick={onAuthStart} disabled={busy || pending}>{t("catalog.authAuthorize")}</button>
             ) : (
               <button className="quiet-button" type="button" onClick={onLogout} disabled={busy}>{t("catalog.authRevoke")}</button>
             )}

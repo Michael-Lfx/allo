@@ -1814,6 +1814,23 @@ connector/test
 
 `connector/auth/start` 返回登录状态和一次性授权 URL/会话 ID；不返回 Token。OAuth 的浏览器回调和凭据存储由可信主进程/服务端完成，Renderer/SDK 只处理状态。
 
+`connector/auth/status` 的 `state`：
+
+```text
+authenticated              凭据已存储且可用
+authorization_pending      该连接器此刻**正在**跑浏览器流程（用户可能还在窗口里）
+not_authenticated          没有凭据，也没有在跑的流程
+reauthorization_required   凭据过期且无刷新路径
+```
+
+`authorization_pending` 的优先级**高于**已存凭据：轮询的调用方问的是「流程在跑
+吗」，而凭据回答的是「上一份还能用吗」——重新授权期间两者会给出不同答案，而只有
+前者能让界面显示「认证中」。它取自 host 的登录门闩（一次只跑一个流程），所以
+**别的**连接器在此时仍答 `not_authenticated`；流程一结束（回调被换掉、失败或超时）
+该状态立即消失。这是 `06` §8 早就列出的状态名，V1 的 App Server 一直没有上报过它
+——「正在等用户」与「从没发起过」在协议面上曾经是同一个答案。它**不新增字段、不新增
+方法、不新增事件**，是既有 `state` 字符串的既有取值域补全，因此不触发指纹升级。
+
 ## 10. 错误协议
 
 统一错误结构：

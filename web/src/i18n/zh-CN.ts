@@ -309,6 +309,7 @@ const zhCN = {
     authStartFailed: "授权启动失败：{{error}}",
     authFailed: "授权未完成：{{error}}",
     authStarted: "授权已在可信主机上启动，请在弹出的浏览器窗口中完成授权。",
+    authPending: "认证中…",
     // Credential form and its four-state vocabulary (doc `34` §6.3). The
     // connector's own copy — title, field labels, descriptions, the "where do I
     // get a key" link — arrives with the schema and is not here.

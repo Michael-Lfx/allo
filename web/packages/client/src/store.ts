@@ -112,6 +112,15 @@ export interface StoreOperationOutcome {
   /** The server reported there was nothing to do. */
   reused: boolean;
   /**
+   * The host's own count of components it installed, when the verb reports one.
+   *
+   * Absent means "this verb does not say", never "it installed nothing" — the
+   * same rule [`StoreOperationOutcome.warnings`] follows. `install()` /
+   * `update()` pass it through; the uninstall / enable / disable projections
+   * carry no such number.
+   */
+  installedCount?: number;
+  /**
    * The server's per-component detail, verbatim. Empty on a host that predates
    * `outcomes` — treat that as "no detail available", never as "nothing ran".
    */
@@ -268,6 +277,40 @@ export class StoreClient {
   }
 
   /**
+   * The installed item that owns a given connector, or `null` when none does.
+   *
+   * A store item carries no field for the connector it installed — its
+   * `entry_name` is the *market's* name (real example: the entry
+   * `fenbi-baokao-decision` installs a server called `fenbi_mcp`), so a caller
+   * holding an id from `connectors.list()` cannot reach the `StoreItem` that
+   * `setEnabled()` / `uninstall()` require. `search()` cannot bridge that
+   * either: it is a substring scan over catalogue text, and the runtime name is
+   * not in it. This is the link, walked through the snapshot each installed item
+   * already points at.
+   *
+   * Both identifiers a caller may hold are accepted: the connector's own `id`
+   * (`connector/get`) and its `name` (`fenbi_mcp` — the MCP row's name and the
+   * tool namespace's middle segment). Matching is exact; call `list()`/`search()`
+   * when the question is "which catalogue entries mention X".
+   */
+  async findByConnector(connectorId: string): Promise<StoreItem | null> {
+    const needle = connectorId.trim();
+    if (!needle) return null;
+    for (const item of await this.installed()) {
+      const snapshotId = item.snapshot_id;
+      if (!snapshotId) continue;
+      const status = await this.host.getInstallStatus(snapshotId);
+      const ownsConnector = status.components.some(
+        (component) =>
+          component.kind === "connector" &&
+          (component.name === needle || component.id === needle),
+      );
+      if (ownsConnector) return item;
+    }
+    return null;
+  }
+
+  /**
    * Installed items whose marketplace offers a different version.
    *
    * Both conditions matter: `update_available` is computed from the imported
@@ -316,6 +359,7 @@ export class StoreClient {
       ok: result.errors.length === 0 && components.every((component) => component.ok),
       errors: result.errors,
       warnings: result.warnings,
+      installedCount: result.installed_count,
       fromVersion: result.previous_version ?? undefined,
       toVersion: result.version,
       releasedCount: result.released_count ?? 0,
@@ -339,6 +383,7 @@ export class StoreClient {
       ok: result.errors.length === 0 && components.every((component) => component.ok),
       errors: result.errors,
       warnings: result.warnings,
+      installedCount: result.installed_count,
     };
     if (options.waitForReady === false) return outcome;
     return this.awaitReady(outcome, options);
