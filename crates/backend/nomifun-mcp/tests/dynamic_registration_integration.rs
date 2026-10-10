@@ -948,6 +948,44 @@ async fn a_second_login_reuses_the_persisted_registration() {
     result
 }
 
+/// The name a dynamic registration announces is the host's own brand when it
+/// configured one: `MCP_OAUTH_CLIENT_NAME` reaches the authorization server's
+/// consent page, and the built-in default is only the fallback (pinned by
+/// `dynamic_registration_persists_and_exchange_uses_registered_id`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_registration_announces_the_configured_client_name() {
+    let _env_guard = env_lock().lock().await;
+    let log: SharedLog = Arc::new(Mutex::new(MockLog::default()));
+    let mcp_url = serve_platform(MockConfig::default(), log.clone()).await;
+
+    unsafe {
+        std::env::set_var("MCP_OAUTH_CLIENT_NAME", "Acme Agent Store");
+    }
+    let result = async {
+        let (token_repo, registration_repo) = make_repos().await;
+        let capture: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let oauth = service_with_hook(token_repo, registration_repo, capture.clone());
+
+        let login = run_login(&oauth, &capture, &mcp_url).await;
+        assert!(login.success, "login failed: {:?}", login.error);
+
+        {
+            let guard = log.lock().unwrap();
+            assert_eq!(
+                guard.register_bodies[0]["client_name"],
+                "Acme Agent Store",
+                "the host's name must reach the registration body"
+            );
+        }
+    }
+    .await;
+
+    unsafe {
+        std::env::remove_var("MCP_OAUTH_CLIENT_NAME");
+    }
+    result
+}
+
 /// A throttled exchange (`slow_down`, RFC 8628's "you are asking too often")
 /// must make the *next* attempt cheap to refuse and expensive to perform: the
 /// follow-up `auth_start` is answered from the cool-down, without spending a

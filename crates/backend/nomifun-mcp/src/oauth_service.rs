@@ -69,6 +69,15 @@ const DEFAULT_CALLBACK_PORT: u16 = 41873;
 const SLOW_DOWN_COOLDOWN_MS: i64 = 60_000;
 const SLOW_DOWN_MAX_COOLDOWN_MS: i64 = 15 * 60_000;
 
+/// The `client_name` an RFC 7591 registration carries when
+/// `MCP_OAUTH_CLIENT_NAME` is unset.
+///
+/// The name is what an authorization server shows the user on its consent page
+/// ("<name> wants access to …"), so a host that ships under its own brand has to
+/// be able to say so without patching the binary — hence the environment
+/// variable, which wins over this default.
+const DEFAULT_OAUTH_CLIENT_NAME: &str = "Nomifun MCP Client";
+
 // ---------------------------------------------------------------------------
 // Discovery response
 // ---------------------------------------------------------------------------
@@ -1147,6 +1156,22 @@ impl McpOAuthService {
             .filter(|value| !value.is_empty())
     }
 
+    /// The `client_name` a dynamic registration announces.
+    ///
+    /// `MCP_OAUTH_CLIENT_NAME` wins over [`DEFAULT_OAUTH_CLIENT_NAME`]: an empty
+    /// or whitespace-only value counts as unset, the same rule every other
+    /// `MCP_OAUTH_*` channel follows. It is read at registration time, so a host
+    /// that sets it **before** a connector is authorized gets its own brand on
+    /// that provider's consent page; an already registered client keeps the name
+    /// it was registered with (the identity is reused, not re-registered).
+    fn registration_client_name() -> String {
+        std::env::var("MCP_OAUTH_CLIENT_NAME")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_OAUTH_CLIENT_NAME.to_owned())
+    }
+
     /// Resolve the client identity for a login flow (design doc §6.1).
     ///
     /// Priority:
@@ -1270,7 +1295,10 @@ impl McpOAuthService {
     ///
     /// Public client (no secret), PKCE-verified authorization code flow
     /// (design doc §6.2). Error classification keeps the UI readable without
-    /// leaking tokens, codes or the full authorization URL.
+    /// leaking tokens, codes or the full authorization URL. The announced
+    /// `client_name` is the host's own brand when it set one
+    /// ([`Self::registration_client_name`]) — it is the string the consent page
+    /// shows the user.
     async fn register_client(
         &self,
         server_url: &str,
@@ -1279,7 +1307,7 @@ impl McpOAuthService {
         resolved: &ResolvedOAuthServer,
     ) -> Result<ClientIdentity, McpError> {
         let payload = serde_json::json!({
-            "client_name": "Nomifun MCP Client",
+            "client_name": Self::registration_client_name(),
             "redirect_uris": [redirect_url],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
@@ -2247,6 +2275,35 @@ mod tests {
     }
 
     // -- Service behavior tests ----------------------------------------------
+
+    /// The registration name is the host's own brand when it set one, and the
+    /// built-in default otherwise. Only this variable is touched, so the other
+    /// `MCP_OAUTH_*` env tests cannot race with it.
+    #[test]
+    fn the_registration_client_name_prefers_the_environment() {
+        unsafe { std::env::remove_var("MCP_OAUTH_CLIENT_NAME") };
+        assert_eq!(
+            McpOAuthService::registration_client_name(),
+            DEFAULT_OAUTH_CLIENT_NAME
+        );
+
+        unsafe { std::env::set_var("MCP_OAUTH_CLIENT_NAME", "  Acme MCP Client  ") };
+        assert_eq!(
+            McpOAuthService::registration_client_name(),
+            "Acme MCP Client",
+            "the value is trimmed, not used verbatim"
+        );
+
+        // Empty and whitespace-only count as unset, like every other
+        // `MCP_OAUTH_*` channel.
+        unsafe { std::env::set_var("MCP_OAUTH_CLIENT_NAME", "   ") };
+        assert_eq!(
+            McpOAuthService::registration_client_name(),
+            DEFAULT_OAUTH_CLIENT_NAME
+        );
+
+        unsafe { std::env::remove_var("MCP_OAUTH_CLIENT_NAME") };
+    }
 
     /// The mark is what makes `auth/status` answer `authorization_pending`, so it
     /// must exist for exactly as long as a flow does.

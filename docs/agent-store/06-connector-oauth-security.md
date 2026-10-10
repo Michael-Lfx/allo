@@ -919,6 +919,7 @@ stdio → env：连接器 transport 的 env 原样透传（stdio 无 URL，OAuth
 | RFC 9728 Protected Resource Metadata 发现（GitHub 等现代服务器） | `nomifun-mcp/src/oauth_service.rs::discover_endpoints` / `discover_protected_resource_metadata` |
 | RFC 7591 动态客户端注册 | `register_client`（无注册端点/失败时回退内置 public client） |
 | 预注册 client 通道 | `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` / `MCP_OAUTH_REDIRECT_URI`（env，参考 `mcp-client-oauth` 模式）。默认 callback 固定为 `http://127.0.0.1:41873/callback`（§7.1），因此预注册 client 只把该 URI 登记到服务方即可，无需再设 `MCP_OAUTH_REDIRECT_URI` |
+| 动态注册的展示名 | `MCP_OAUTH_CLIENT_NAME`（env，**优先于**内置默认 `Nomifun MCP Client`）。用户看到的同意页上写的正是这个名字（「<名> 请求访问 …」），所以自建品牌/私有部署不必改二进制；空值或纯空白视为未设。它在**注册时**读取：已注册的 client 会继续沿用注册时的名字（identity 是复用而非重注册），因此要在授权之前设好 |
 | 测试接缝 | `McpOAuthService::new_with_browser_hook`（替代系统浏览器，驱动回调） |
 | 可观测性 | `app_server_catalog.rs::auth_start` 记录每次**请求**与结果（限流类故障要靠尝试次数才读得出来）；`oauth_service` 在 info 级记录 discovery 命中位置与探测次数、client identity（新建/复用 + registration id + redirect URI）、token 存入与刷新——「这次是复用还是重新注册」直接从日志读 |
 
@@ -1245,7 +1246,7 @@ ResolvedOAuthServer
 
 ```json
 {
-  "client_name": "Nomifun MCP Client",
+  "client_name": "<MCP_OAUTH_CLIENT_NAME，未设时为 Nomifun MCP Client>",
   "redirect_uris": ["<实际 callback URI>"],
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],
