@@ -14,6 +14,7 @@ import { useUserStore } from "@oc/stores/use-user-store";
 import { useConfigStore } from "@oc/stores/use-config-store";
 import { useCanvasAgentStore, type AgentChatItem, type AgentPendingToolCall, type AgentThreadSummary } from "@oc/stores/canvas/use-canvas-agent-store";
 import { canvasAgentPostconditionMessage, canvasAgentStateHashBlocksWrite, summarizeCanvasAgentOps, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { localCanvasAgentToolNeedsConfirm } from "@oc/lib/canvas/canvas-agent-policy";
 import { buildCanvasAgentPlan } from "@oc/lib/canvas/canvas-agent-plan";
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@oc/lib/canvas/canvas-agent-context";
 import { getAgentPlaybook, listAgentPlaybooks } from "@oc/lib/canvas/craft/agent-catalog";
@@ -238,7 +239,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
     };
 
     const handleToolCall = async (endpoint: string, token: string, payload: AgentPendingToolCall) => {
-        if (confirmToolsRef.current && (payload.name === "canvas_apply_ops" || payload.name === "canvas_apply_template" || (isProjectAgentToolName(payload.name) && !isProjectAgentReadTool(payload.name)))) {
+        if (localCanvasAgentToolNeedsConfirm(payload.name, (payload.input || {}) as Record<string, unknown>, confirmToolsRef.current)) {
             if (pendingToolRef.current) {
                 await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: canvasT(`${LA}.pendingToolBusy`, "仍有待确认的画布工具调用") });
                 return;
@@ -628,7 +629,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                         {chatMessages.map((item) => (
                             <AgentChatMessage key={item.id} item={item} theme={theme} user={user} />
                         ))}
-                        {pendingTool ? <AgentPendingToolCard summary={summarizeCanvasAgentOps(pendingTool.input?.ops || []) || toolName(pendingTool.name)} detail={{ requestId: pendingTool.requestId, name: pendingTool.name, input: pendingTool.input, impact: buildCanvasAgentPlan(pendingTool.input?.ops || [], snapshot) }} theme={theme} onReject={rejectPendingTool} onApprove={approvePendingTool} /> : null}
+                        {pendingTool ? <AgentPendingToolCard summary={summarizeCanvasAgentOps(pendingTool.input?.ops || []) || toolName(pendingTool.name)} detail={{ requestId: pendingTool.requestId, name: pendingTool.name, input: pendingTool.input, impact: buildCanvasAgentPlan(pendingTool.input?.ops || [], snapshot) }} theme={theme} onReject={rejectPendingTool} onApprove={approvePendingTool} onAlwaysAllow={confirmTools ? () => { setAgentState({ confirmTools: false }); void approvePendingTool(); } : undefined} /> : null}
                         {waiting && !pendingTool ? <AgentWorkingMessage theme={theme} /> : null}
                     </div>
                     <AgentChatComposer

@@ -201,7 +201,11 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
             const dx = current?.type === CanvasNodeType.Frame && nextPosition ? nextPosition.x - current.position.x : 0;
             const dy = current?.type === CanvasNodeType.Frame && nextPosition ? nextPosition.y - current.position.y : 0;
             nodes = nodes.map((node) => {
-                if (node.id === op.id) return { ...node, ...op.patch, metadata: { ...node.metadata, ...op.patch?.metadata, ...op.metadata } };
+                if (node.id === op.id) {
+                    const merged = { ...node.metadata, ...(typeof op.patch?.metadata === "object" ? op.patch.metadata : {}), ...op.metadata } as Record<string, unknown>;
+                    const { position: _position, x: _x, y: _y, ...metadata } = merged;
+                    return { ...node, ...op.patch, metadata };
+                }
                 if (node.parentId === op.id && (dx || dy)) return { ...node, position: { x: node.position.x + dx, y: node.position.y + dy } };
                 return node;
             });
@@ -275,7 +279,7 @@ export function verifyCanvasAgentOps(before: CanvasAgentSnapshot, after: CanvasA
     const missingConnectionIds = new Set<string>();
     const failedPostconditions = new Set<string>();
     const warnings: string[] = [];
-    const overlapWarnings = findCanvasNodeOverlaps(after.nodes, createdNodeIds);
+    const overlapWarnings = findCanvasNodeOverlaps(after.nodes);
     if (overlapWarnings.length) warnings.push(...overlapWarnings);
     const generation: CanvasAgentGenerationVerification[] = [];
     const addNodeCount = ops.filter((op) => op.type === "add_node").length;
@@ -421,6 +425,9 @@ export function canvasAgentPostconditionMessage(result: CanvasAgentPostcondition
     if (result.generation.some((item) => item.outcome === "queued" || item.outcome === "running")) return `${nodeSummary}，${connectionSummary}；已提交生成任务，当前仍在${result.generation.map((item) => item.message).join("、")}，尚未完成。`;
     if (result.generation.some((item) => item.outcome === "succeeded" && !item.resourceReady)) return `${nodeSummary}，${connectionSummary}；生成任务已成功，但资源尚未物化到画布，当前不能把它当作可复用素材。`;
     if (result.generation.some((item) => item.outcome === "succeeded" && item.resourceReady)) return `${nodeSummary}，${connectionSummary}；生成已完成，且资源已在画布节点上就绪。`;
+    if (result.overlapWarnings.length) {
+        return `${nodeSummary}，${connectionSummary}；仍有重叠：${result.overlapWarnings.slice(0, 2).join("；")}。请用 patches.position 移动现有节点，禁止删除后重建。`;
+    }
     return `${nodeSummary}，${connectionSummary}，布局无重叠，已复核最终状态。`;
 }
 

@@ -6,8 +6,8 @@ import { buildCanvasAgentAliasMap, resolveCanvasAgentNodeId } from "@oc/lib/canv
 import { buildCanvasAgentPlan, type CanvasAgentPlan } from "@oc/lib/canvas/canvas-agent-plan";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
-import { looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@oc/lib/canvas/canvas-agent-workflow";
-import { compileCanvasApplyOps, compileCanvasRepairOps } from "@oc/lib/canvas/canvas-agent-intent";
+import { looksLikeWorkflowRequest } from "@oc/lib/canvas/canvas-agent-workflow";
+import { compileCanvasApplyOps, compileCanvasRepairOps, type CanvasApplyInput } from "@oc/lib/canvas/canvas-agent-intent";
 import { compileSpecApplyOps, compileStoryboardApplyOps } from "@oc/lib/canvas/creation-agent-intent";
 import { normalizeModelOptionValue, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
 import { CANVAS_IMAGE_BATCH_MAX_COUNT, CANVAS_VIDEO_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
@@ -69,6 +69,11 @@ const PIPELINE_PATCH_SCHEMA = {
         content: { type: "string" },
         prompt: { type: "string" },
         seconds: { type: "string" },
+        position: POSITION_SCHEMA,
+        x: { type: "number" },
+        y: { type: "number" },
+        width: { type: "number" },
+        height: { type: "number" },
         metadata: JSON_RECORD_SCHEMA,
     },
     required: ["id"],
@@ -94,10 +99,12 @@ const STORYBOARD_APPLY_SHOT_SCHEMA = {
 const APPLY_PROPERTIES = {
     title: { type: "string" },
     description: { type: "string" },
+    layout: { type: "boolean" },
     nodes: { type: "array", items: PIPELINE_NODE_SCHEMA },
     edges: { type: "array", items: PIPELINE_EDGE_SCHEMA },
     patches: { type: "array", items: PIPELINE_PATCH_SCHEMA },
     deleteIds: { type: "array", items: { type: "string" } },
+    nodeIds: { type: "array", items: { type: "string" } },
     direction: { type: "string", enum: ["horizontal", "vertical"] },
     start: POSITION_SCHEMA,
     gap: { type: "number" },
@@ -110,7 +117,7 @@ function toolDefinition(name: string, description: string, properties: Record<st
 }
 
 export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
-    toolDefinition("canvas_list_skills", "列出画布手册：已放置的 Skill 节点 ∪ 16 本内置手册。只返回元数据。", {}),
+    toolDefinition("canvas_list_skills", "列出画布手册：已放置的 Skill 节点 ∪ 16 本内置手册。只返回元数据。空画布制作短剧不要调用，直接 canvas_apply（run=true）。", {}),
     toolDefinition("canvas_get_skill", "按 skillId（builtin:name / hub:id）或名称加载手册正文。Look 只是视觉槽。未放置的内置手册也可读。", { skillId: { type: "string" }, name: { type: "string" } }),
     toolDefinition("canvas_list_templates", "列出云端镜头生成模板（封面、任务、节点类型、预估积分）。套用前先选 id 再 canvas_apply_template。不是 Skill Hub 手册。", { keyword: { type: "string" }, nodeType: { type: "string", enum: ["image", "video"] } }),
     toolDefinition("storyboard_inspect", "读取现有 Script 分镜：镜头、缺口、主体引用。不要另起空分镜。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
@@ -126,12 +133,12 @@ export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     ),
     toolDefinition(
         "canvas_propose",
-        "只编译计划，不写画布。用语义节点和边描述你想搭的图，返回阶段、花费和将创建的节点数。同批新节点用 ref，互相引用写 referenceRefs 或 edges；画布已有节点用短 ID（n1）放进 referenceNodeIds。复杂创作可先 propose 再 apply。",
+        "只编译计划，不写画布。空画布制作短剧不要调用，直接 canvas_apply。整理布局用 layout=true 或 patches.position；新建图才用 nodes/edges。返回阶段、花费和将创建的节点数。同批新节点用 ref，互相引用写 referenceRefs 或 edges；画布已有节点用短 ID（n1）放进 referenceNodeIds。复杂创作可先 propose 再 apply。",
         APPLY_PROPERTIES,
     ),
     toolDefinition(
         "canvas_apply",
-        "按你设计的节点和连线更新画布。第一次调用就必须包含 nodes（kind/title/prompt）和 edges；只传 description 不会改画布。同批新节点互相引用用 ref/referenceRefs/edges，已有画布节点用短 ID。编译器会补 @ 引用、把 3 张及以上关键帧编成多图参考、拟合时长。patches 改已有节点，deleteIds 删除。run=true 时同时提交生成（仍建议随后 canvas_run 等待）。不要手写底层 ops，不要套固定流水线。",
+        "按你设计的节点和连线更新画布。新建图才传 nodes（kind/title/prompt）和 edges。制作短剧/成片：第一轮必须写出 text 简报、image 角色（prompt 写满）、script.shots 写满，且 run=true；不要先 propose/inspect。整理、去重叠、对齐：设 layout=true，或用 patches 写现有节点的 position/x/y，禁止 deleteIds 后再创建同一套节点。只传整理类 description 时会排列现有节点。同批新节点互相引用用 ref/referenceRefs/edges，已有画布节点用短 ID。patches 还可改 title/prompt；deleteIds 只用于真正删掉不要的节点。run=true 时同时提交生成（随后仍应用 canvas_run 等待）。不要手写底层 ops，不要套固定流水线。",
         APPLY_PROPERTIES,
     ),
     toolDefinition(
@@ -172,7 +179,7 @@ export function onlineToolToOps(name: string, input: Record<string, unknown>, sn
     if (name === "canvas_apply_ops") return requireOps(input.ops);
     if (name === "storyboard_apply") return compileStoryboardApplyOps(input, snapshot);
     if (name === "spec_apply") return compileSpecApplyOps(input, snapshot);
-    if (name === "canvas_apply" || name === "canvas_create_workflow") return compileCanvasApplyOps(input as unknown as CanvasWorkflowInput & { run?: boolean; patches?: never; deleteIds?: string[] }, snapshot, config);
+    if (name === "canvas_apply" || name === "canvas_create_workflow") return compileCanvasApplyOps(input as CanvasApplyInput, snapshot, config);
     if (name === "canvas_repair") return compileCanvasRepairOps(input, snapshot);
     if (name === "canvas_create_node") {
         const nodeType = requireNodeType(input.nodeType);

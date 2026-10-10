@@ -249,6 +249,7 @@ describe("ONLINE_AGENT_PROMPT", () => {
         expect(ONLINE_AGENT_PROMPT).toContain("canvas_apply");
         expect(ONLINE_AGENT_PROMPT).toContain("storyboard_apply");
         expect(ONLINE_AGENT_PROMPT).toContain("自己根据用户目标设计图");
+        expect(ONLINE_AGENT_PROMPT).toContain("patches.position");
         expect(ONLINE_AGENT_PROMPT).toContain("canvas_apply_template");
         expect(ONLINE_AGENT_PROMPT).not.toContain("首轮必须调用 canvas_get_context");
         expect(ONLINE_AGENT_PROMPT).not.toContain("必须使用 canvas_create_workflow");

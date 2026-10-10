@@ -116,10 +116,10 @@ export const BUILTIN_PLAYBOOKS: CraftPlaybook[] = [
         id: "character-bible",
         zh: "角色圣经",
         en: "Character bible",
-        jobZh: "先建角色资产再分镜，禁止中途换脸",
+        jobZh: "先建角色资产再分镜，外貌服装全程锁定",
         jobEn: "Lock character assets before boarding",
         category: "storyboard",
-        brief: `角色圣经。先设定图/三视图，再写分镜。中途禁止换脸换衣。\n${LOOP}`,
+        brief: `角色圣经。先设定图/三视图，再写分镜。外貌锁定写「同一张脸、同一套服装贯穿全片」，不要把「换脸」写进生图提示词。\n${LOOP}`,
     }),
     playbook({
         id: "scene-bible",

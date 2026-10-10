@@ -7,6 +7,7 @@ export type PendingOnlineToolContext = {
     toolCalls: ResponseToolCall[];
     assistantId: string;
     step: number;
+    userText?: string;
 };
 
 const pendingOnlineToolContexts = new Map<string, PendingOnlineToolContext>();
@@ -34,6 +35,7 @@ export function resolvePendingOnlineToolContext(
         toolCalls,
         assistantId,
         step,
+        userText: stashed?.userText,
     };
 }
 
