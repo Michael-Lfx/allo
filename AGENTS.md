@@ -1,5 +1,7 @@
 # AGENTS.md
 
+> 中文版请参阅 [AGENTS.zh-CN.md](AGENTS.zh-CN.md)。
+
 Flowy is a Rust + Tauri + React local-first automation platform. It drives
 shells, files, browsers, desktop apps, agents, MCP servers, and remote
 capability APIs from a single axum backend with two host modes (desktop and
@@ -72,8 +74,8 @@ Run the smallest check that covers your change. See
 Broad pre-PR pass: `cargo check --workspace && bun run check`
 
 > `bun run check` is the aggregate gate. It runs the `ui/` frontend checks
-> (typecheck · i18n · theme · button-layout · icons · dead-css · codemirror ·
-> agent-vocabulary), the repo-level gates (error-surface contract ·
+> (typecheck · i18n · theme · button-layout · icons · dead-css · codemirror),
+> the repo-level gates (error-surface contract ·
 > support-surface contract · process runtime boundary · browser platform
 > boundary · windows-console-hide) and the Agent Store gates (market manifest ·
 > protocol fingerprint · cross-repo release sync), then the script registry. The
@@ -93,8 +95,9 @@ Ask first before touching these:
 - **Process runtime boundary** — enforced by
   `scripts/check-process-runtime-boundary.mjs`. Do not bypass the hand-off
   allowlist.
-- **Agent vocabulary** — enforced by `scripts/check-agent-vocabulary.mjs`.
-  `AgentExecution` is the sole collaboration aggregation type.
+- **Agent vocabulary** — (Retired) previously checked by
+  `scripts/check-agent-vocabulary.mjs`. Collaboration models evolve with
+  Multi-Agent V2.
 - **Bundled assets and vendored code** — verify license compatibility before
   adding. See CONTRIBUTING.md § Dependencies, Assets, And Licenses.
 - **Release, signing, updater** — see [RELEASING.md](RELEASING.md) and
