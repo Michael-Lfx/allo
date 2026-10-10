@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/desktop", "apps/web"]
+members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/ai-mate", "apps/desktop", "apps/web"]
 
 [workspace.package]
 version = "1.6.1"
@@ -65,6 +65,8 @@ sherpa-onnx = { path = "crates/vendor/sherpa-onnx", default-features = false, fe
 sherpa-onnx-sys = { path = "crates/vendor/sherpa-onnx-sys", default-features = false, features = ["static"] }
 nomifun-ssh = { path = "crates/backend/nomifun-ssh" }
 nomifun-importer = { path = "crates/backend/nomifun-importer" }
+nomifun-voice-models = { path = "crates/backend/nomifun-voice-models" }
+nomifun-voice-terminal = { path = "crates/backend/nomifun-voice-terminal" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
