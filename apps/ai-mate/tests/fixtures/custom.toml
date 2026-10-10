@@ -1,0 +1,5 @@
+[models]
+models_dir = "/custom/storage/models"
+auto_download = false
+probe_timeout_ms = 3000
+prefer_mirror = "modelscope"

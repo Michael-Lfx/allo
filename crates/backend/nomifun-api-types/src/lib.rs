@@ -59,6 +59,7 @@ mod terminal;
 mod tool_policy;
 mod webhook;
 mod websocket;
+pub mod voice;
 
 pub use agent_eval::{
     AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
@@ -415,6 +416,11 @@ pub use webhook::{
     UpsertTagSettingRequest, Webhook, WebhookId, WebhookPlatform,
 };
 pub use websocket::WebSocketMessage;
+pub use voice::{
+    ModelInstallState, VoiceModelDeleteRequest, VoiceModelDeleteResponse, VoiceModelFileDetail,
+    VoiceModelInstallRequest, VoiceModelInstallResponse, VoiceModelProgressEvent,
+    VoiceModelStatusResponse,
+};
 
 #[cfg(test)]
 mod public_contract_tests {

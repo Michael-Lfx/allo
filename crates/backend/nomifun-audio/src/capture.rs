@@ -7,6 +7,19 @@
 
 use async_trait::async_trait;
 
+/// 采集源抽象状态枚举：彻底消除 `try_recv()` 歧义 (契约 C8)
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureReadResult {
+    /// 成功读取到 16kHz 单声道 f32 PCM 音频切片 (如 160 采样点 / 10ms)
+    Chunk(Vec<f32>),
+    /// 队列暂时无数据 (非阻塞微等待，可继续轮询)
+    TemporarilyEmpty,
+    /// 音频采集流已正常关闭
+    StreamClosed,
+    /// 底层音频硬件严重异常 (如 USB 麦克风拔出)
+    DeviceError(String),
+}
+
 /// A source of raw PCM audio frames.
 ///
 /// All implementations produce **mono, f32 normalized to [-1, 1]** samples at

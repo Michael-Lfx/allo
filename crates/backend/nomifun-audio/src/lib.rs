@@ -19,6 +19,7 @@
 pub mod capture;
 pub mod devices;
 pub mod diarization;
+pub mod earcon;
 pub mod encode;
 pub mod events;
 pub mod frame;
@@ -36,11 +37,14 @@ pub mod stt;
 pub mod vad;
 pub mod voiceprint;
 
-pub use capture::AudioCaptureSource;
+pub use capture::{AudioCaptureSource, CaptureReadResult};
 pub use devices::{AudioDeviceInfo, AudioDeviceManager, DeviceKind};
 pub use diarization::{
     Diarizer, EnergyClusterDiarizer, EnergyClusterDiarizerConfig, SpeakerAssigner, SpeakerIdentity,
     SpeakerSpan, create_diarizer, dominant_speaker_key,
+};
+pub use earcon::{
+    ALERT_WAV, DONE_WAV, ERROR_WAV, Earcon, EarconKind, GUIDE_WAV, SLEEP_WAV, WAKE_WAV,
 };
 pub use encode::{encode_track_default, pcm_to_m4a, pcm_to_wav, write_track_m4a};
 pub use events::spawn_meeting_event_bridge;

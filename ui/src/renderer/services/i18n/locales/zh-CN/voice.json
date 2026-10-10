@@ -1,0 +1,82 @@
+{
+  "title": "语音伴侣",
+  "description": "AI Mate 语音交互套件（约 249MB）",
+  "status": {
+    "notInstalled": "未安装",
+    "probingSource": "正在选择加速源",
+    "downloading": "正在下载",
+    "verifyingSha256": "正在校验完整性",
+    "ready": "已就绪",
+    "failed": "安装失败",
+    "removing": "正在释放空间",
+    "idle": "待机",
+    "listening": "倾听中",
+    "thinking": "处理中",
+    "speaking": "发声中",
+    "awaitingConfirmation": "等待确认",
+    "offline": "离线"
+  },
+  "phases": {
+    "notInstalled": "AI Mate 语音交互套件（约 249MB）",
+    "notInstalledDesc": "支持远场语音唤醒与离线语音识别",
+    "probingSource": "正在选择加速源",
+    "downloading": "正在下载语音模型 ({{current}}/{{total}})",
+    "downloadingFile": "正在下载 {{file}} ({{current}}/{{total}})",
+    "verifyingSha256": "正在校验完整性 ({{current}}/{{total}})",
+    "ready": "已就绪",
+    "readyDesc": "语音引擎准备就绪，请说 Hey Flowy 唤醒",
+    "removing": "正在释放磁盘空间",
+    "failed": "下载或校验遇到问题"
+  },
+  "progress": {
+    "speed": "{{speed}}/s",
+    "percent": "{{percent}}%",
+    "ratio": "{{current}}/{{total}}",
+    "bytesRatio": "{{downloaded}} / {{total}}",
+    "approxSize": "约 249MB"
+  },
+  "actions": {
+    "downloadAndEnable": "下载并启用",
+    "download": "下载",
+    "retry": "重试",
+    "releaseSpace": "释放空间",
+    "confirmRelease": "确认释放？",
+    "cancel": "取消",
+    "enableVoice": "启用语音伴侣",
+    "disableVoice": "停用语音伴侣",
+    "releasing": "正在释放..."
+  },
+  "errors": {
+    "downloadFailed": "语音模型下载失败，请检查网络连接",
+    "verificationFailed": "模型哈希校验不匹配，文件可能已损坏",
+    "diskSpaceError": "磁盘空间不足，无法完成下载",
+    "networkTimeout": "网络连接超时，请重试",
+    "pairingCodeInvalid": "配对码错误，请重新输入",
+    "pairingCodeLocked": "连续输错已锁定，请在 {{remaining}} 后重试",
+    "unknownError": "发生未知错误"
+  },
+  "pairing": {
+    "title": "AI Mate 设备配对",
+    "subtitle": "请输入设备播报的 6 位数字配对码",
+    "deviceStatus": "设备状态",
+    "codePlaceholder": "请输入 6 位配对码",
+    "verifying": "正在校验配对码...",
+    "lockNotice": "连续 5 次输入错误，设备已锁定 15 分钟",
+    "modelReadiness": "模型就绪状态",
+    "readyNotice": "AI Mate 语音引擎准备就绪，请说 Hey Flowy 唤醒",
+    "successTitle": "配对成功",
+    "successDesc": "AI Mate 语音伴侣已连接并就绪"
+  },
+  "settings": {
+    "sectionTitle": "语音能力",
+    "sectionDesc": "管理本地声学模型与语音交互功能",
+    "modelManagement": "模型管理",
+    "voiceEnable": "语音伴侣",
+    "voiceEnableDesc": "启用后可通过 \"Hey Flowy\" 远场语音唤醒"
+  },
+  "a11y": {
+    "progressBar": "模型下载进度",
+    "statusAnnouncement": "当前语音伴侣状态：{{status}}",
+    "inputDigit": "第 {{index}} 位配对码"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "title": "Voice Companion",
+  "description": "AI Mate Voice Interaction Suite (~249MB)",
+  "status": {
+    "notInstalled": "Not Installed",
+    "probingSource": "Selecting Source",
+    "downloading": "Downloading",
+    "verifyingSha256": "Verifying Integrity",
+    "ready": "Ready",
+    "failed": "Installation Failed",
+    "removing": "Releasing Space",
+    "idle": "Idle",
+    "listening": "Listening",
+    "thinking": "Processing",
+    "speaking": "Speaking",
+    "awaitingConfirmation": "Awaiting Confirmation",
+    "offline": "Offline"
+  },
+  "phases": {
+    "notInstalled": "AI Mate Voice Interaction Suite (~249MB)",
+    "notInstalledDesc": "Supports far-field voice wake-up and offline speech recognition",
+    "probingSource": "Selecting optimal mirror source",
+    "downloading": "Downloading voice models ({{current}}/{{total}})",
+    "downloadingFile": "Downloading {{file}} ({{current}}/{{total}})",
+    "verifyingSha256": "Verifying integrity ({{current}}/{{total}})",
+    "ready": "Ready",
+    "readyDesc": "Voice engine ready. Say \"Hey Flowy\" to wake up",
+    "removing": "Releasing disk space",
+    "failed": "Installation or verification encountered an issue"
+  },
+  "progress": {
+    "speed": "{{speed}}/s",
+    "percent": "{{percent}}%",
+    "ratio": "{{current}}/{{total}}",
+    "bytesRatio": "{{downloaded}} / {{total}}",
+    "approxSize": "approx. 249MB"
+  },
+  "actions": {
+    "downloadAndEnable": "Download & Enable",
+    "download": "Download",
+    "retry": "Retry",
+    "releaseSpace": "Release Space",
+    "confirmRelease": "Confirm Release?",
+    "cancel": "Cancel",
+    "enableVoice": "Enable Voice Companion",
+    "disableVoice": "Disable Voice Companion",
+    "releasing": "Releasing..."
+  },
+  "errors": {
+    "downloadFailed": "Voice model download failed. Please check network connection",
+    "verificationFailed": "Checksum verification failed. Files may be corrupted",
+    "diskSpaceError": "Insufficient disk space to complete download",
+    "networkTimeout": "Network request timed out. Please retry",
+    "pairingCodeInvalid": "Invalid pairing code. Please enter again",
+    "pairingCodeLocked": "Too many failed attempts. Locked, please retry in {{remaining}}",
+    "unknownError": "An unknown error occurred"
+  },
+  "pairing": {
+    "title": "AI Mate Device Pairing",
+    "subtitle": "Enter the 6-digit code spoken by the device",
+    "deviceStatus": "Device Status",
+    "codePlaceholder": "Enter 6-digit code",
+    "verifying": "Verifying pairing code...",
+    "lockNotice": "5 consecutive failed attempts. Device locked for 15 minutes",
+    "modelReadiness": "Model Readiness",
+    "readyNotice": "Voice engine ready. Say \"Hey Flowy\" to wake up",
+    "successTitle": "Pairing Successful",
+    "successDesc": "AI Mate Voice Companion is connected and ready"
+  },
+  "settings": {
+    "sectionTitle": "Voice Capability",
+    "sectionDesc": "Manage local acoustic models and voice interactions",
+    "modelManagement": "Model Management",
+    "voiceEnable": "Voice Companion",
+    "voiceEnableDesc": "Enable to wake up via \"Hey Flowy\" far-field voice commands"
+  },
+  "a11y": {
+    "progressBar": "Model download progress",
+    "statusAnnouncement": "Current voice companion status: {{status}}",
+    "inputDigit": "Pairing code digit {{index}}"
+  }
+}
