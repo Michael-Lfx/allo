@@ -5,7 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.6.1 - 2026-10-10
+
 - The desktop companion stays fully on a connected display (including multi-monitor gaps and unplugged screens), shows live module status on the pet, and adds the cream-colored Puff figure with richer motion.
+- Canvas chrome follows the app theme, missing shot packets are seeded, and Vimax restores the live film from `films/vN` while skipping shot-packet autosave during planning. Timestamp-named stills bind as anonymous cameo plates.
+- Exporting an expert team with `exportTeam()` brings the team's own package skills: a team pack's `skills` now comes from the skills that team's package installed, instead of always being empty.
+- Session titles stay distinct from search and rename. Interest topics default off. Skills ship themed avatars, and `huashu-art-motion` is renamed to `art-motion`.
 
 ## v1.6.0 - 2026-10-08
 
@@ -31,8 +36,6 @@ at a high level rather than a complete commit log.
 - The Agent Store host's market policy — how often the background sweep runs and which entry kinds it may upgrade — is readable and changeable while the host runs (`market/settings` / `market/settings-set`, written through to `config.toml`), so the interval no longer needs a restart.
 - The background sweep can now upgrade the entries installed from a market whose auto-update switch is on, together with the index refresh it already did. Connectors stay excluded unless that kind is opted in (an upgrade re-runs `upsert_server`, which disables a server whose configuration changed), and an entry you switched off by hand, one carrying a blocked reason, or one that was never installed is never touched; `entry_auto_update_kinds = []` restores the index-only behaviour.
 - Protocol fingerprint `fp-12` → `fp-13` (the App Server rejects a mismatched client outright, so SDK and host must be updated together).
-- Exporting an expert team with `exportTeam()` brings the team's own package skills: a team pack's `skills` now comes from the skills that team's package installed, instead of always being empty. A team that declares its skills once at the package level — most official teams, for example `stock-partner-team` — previously exported with no skills at all, while each member's own frontmatter declarations stay in `team.members[].skills` (an agent pack is unchanged, and `materializePack` unions the two sources). No wire change: `fp-13` and the method count are unchanged.
-
 
 ## v1.3.2 - 2026-09-11
 
