@@ -673,6 +673,19 @@ impl SessionIndex {
         record.session_id = new_id.clone();
         record.working_dir = final_rel;
         record.status = RunStatus::Idle;
+        // Director-desk archives copy the cut into `films/vN` and later retakes
+        // delete the live file. TV packages therefore often arrive with only the
+        // archive; restore the canonical `{artifact_root}/final_video.mp4` so
+        // publish / the film bubble still have a path that exists.
+        if let Some((video_rel, cover_rel)) = crate::shot_packet::restore_session_live_film(
+            &final_abs,
+            record.workflow.artifact_root(),
+        ) {
+            record.final_video = Some(video_rel);
+            if let Some(cover) = cover_rel {
+                record.cover = Some(cover);
+            }
+        }
         // Keep stage / final_video so UI can resume without regenerating.
         if record.stage.is_empty() {
             record.stage = if record.final_video.is_some() {
@@ -1199,6 +1212,56 @@ mod import_export_tests {
         // Original still listed.
         let list = index.list().unwrap();
         assert_eq!(list.len(), 2);
+    }
+
+    fn fake_mp4_bytes(len: usize) -> Vec<u8> {
+        let mut v = vec![0u8; len.max(12)];
+        v[0..4].copy_from_slice(&20u32.to_be_bytes());
+        v[4..8].copy_from_slice(b"ftyp");
+        v[8..12].copy_from_slice(b"isom");
+        v
+    }
+
+    #[test]
+    fn import_restores_live_film_from_films_archive() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let created = index
+            .create(WorkflowKind::Script2Video, Some("Archive Only".into()))
+            .unwrap();
+        let working = index.working_dir(&created.session_id).unwrap();
+        let film = working.join("script2video");
+        std::fs::create_dir_all(film.join("films/v1")).unwrap();
+        std::fs::write(film.join("script.txt"), b"scene").unwrap();
+        std::fs::write(
+            film.join("films/v1/final_video.mp4"),
+            fake_mp4_bytes(crate::media_local::MIN_USABLE_VIDEO_BYTES as usize),
+        )
+        .unwrap();
+        std::fs::write(film.join("films/current.json"), r#"{"take":1}"#).unwrap();
+        index
+            .update_fields(&created.session_id, |r| {
+                r.status = RunStatus::Succeeded;
+                r.stage = "succeeded".into();
+                r.final_video = Some("script2video/final_video.mp4".into());
+            })
+            .unwrap();
+
+        let archive = dir.path().join("archive-only.nomivimax");
+        index
+            .export_to_path(&created.session_id, &archive)
+            .unwrap();
+
+        let imported = index.import_from_path(&archive).unwrap();
+        let imported_root = index.working_dir(&imported.session_id).unwrap();
+        assert_eq!(
+            imported.final_video.as_deref(),
+            Some("script2video/final_video.mp4")
+        );
+        assert!(imported_root.join("script2video/final_video.mp4").is_file());
+        assert!(crate::media_local::is_usable_video_file(
+            &imported_root.join("script2video/final_video.mp4")
+        ));
     }
 
     #[test]

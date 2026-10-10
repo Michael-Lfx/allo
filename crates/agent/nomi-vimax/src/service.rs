@@ -476,6 +476,33 @@ impl VimaxService {
             .working_dir(id)
             .ok()
             .map(|p| p.to_string_lossy().replace('\\', "/"));
+        // Copy `films/vN` back to the live cut *before* taking the status lock —
+        // an 80MB restore must not stall other polls, and must not run while a
+        // retake/render is about to delete the live file.
+        if !record.status.is_active() {
+            if let Ok(root) = self.index.working_dir(id) {
+                let film_root = root.join(record.workflow.artifact_root());
+                let live = crate::shot_packet::live_final_video_path(&film_root);
+                let live_ok = media_local::is_usable_video_file(&live);
+                let has_archive =
+                    crate::shot_packet::archived_film_dir_sync(&film_root).is_some();
+                let needs_restore =
+                    (!live_ok && has_archive) || (live_ok && record.final_video.is_none());
+                if needs_restore {
+                    let busy = {
+                        let map = self
+                            .statuses
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        map.get(id).is_some_and(|s| s.status.is_active())
+                    };
+                    if !busy {
+                        let _ = self.restore_live_film_async(id).await;
+                    }
+                }
+            }
+        }
+        let record = self.index.get(id)?;
         let mut map = self
             .statuses
             .lock()
@@ -580,6 +607,91 @@ impl VimaxService {
         self.index.update_fields(id, |record| {
             record.final_video = final_video;
         })
+    }
+
+    /// Async wrapper so an 80MB `films/vN` copy does not block the Tokio worker.
+    pub async fn restore_live_film_async(&self, id: &str) -> Option<String> {
+        let record = self.index.get(id).ok()?;
+        if record.status.is_active() {
+            return None;
+        }
+        {
+            let map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if map.get(id).is_some_and(|s| s.status.is_active()) {
+                return None;
+            }
+        }
+        let session_root = self.index.working_dir(id).ok()?;
+        let artifact = record.workflow.artifact_root().to_string();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::shot_packet::restore_session_live_film(&session_root, &artifact)
+        })
+        .await;
+        self.restore_live_film(id)
+    }
+
+    /// Rehydrate `{artifact_root}/final_video.mp4` from `films/vN` when the live
+    /// cut is missing. No-op while a plan/render/review job is active (retake
+    /// deletes the live file so concat will rewrite it).
+    pub fn restore_live_film(&self, id: &str) -> Option<String> {
+        let record = self.index.get(id).ok()?;
+        if record.status.is_active() {
+            return None;
+        }
+        {
+            let map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if map.get(id).is_some_and(|s| s.status.is_active()) {
+                return None;
+            }
+        }
+        let session_root = self.index.working_dir(id).ok()?;
+        let (rel, cover_rel) = crate::shot_packet::restore_session_live_film(
+            &session_root,
+            record.workflow.artifact_root(),
+        )?;
+        let cover_rel = cover_rel.or_else(|| self.sync_cover_from_disk(id));
+        let video_changed = record.final_video.as_deref() != Some(rel.as_str());
+        let cover_changed = cover_rel
+            .as_deref()
+            .is_some_and(|c| record.cover.as_deref() != Some(c));
+        if video_changed || cover_changed {
+            let rel_for_index = rel.clone();
+            let cover_for_index = cover_rel.clone();
+            let _ = self.index.update_fields(id, |r| {
+                r.final_video = Some(rel_for_index);
+                if let Some(c) = cover_for_index {
+                    r.cover = Some(c);
+                }
+            });
+        }
+        {
+            let mut map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let st = live_status(&self.index, &mut map, id);
+            let mut persist = false;
+            if st.final_video.as_deref() != Some(rel.as_str()) {
+                st.final_video = Some(rel.clone());
+                persist = true;
+            }
+            if let Some(c) = &cover_rel {
+                if st.cover.as_deref() != Some(c.as_str()) {
+                    st.cover = Some(c.clone());
+                    persist = true;
+                }
+            }
+            if persist {
+                persist_run_status(&self.index, id, st);
+            }
+        }
+        Some(rel)
     }
 
     /// List Cameo photos for a session (scrubs orphan entries).
@@ -728,9 +840,11 @@ impl VimaxService {
     ) -> VimaxResult<SessionRecord> {
         let path = archive_path.as_ref().to_path_buf();
         let index = self.index.clone();
-        tokio::task::spawn_blocking(move || index.import_from_path(&path))
+        let record = tokio::task::spawn_blocking(move || index.import_from_path(&path))
             .await
-            .map_err(|e| VimaxError::msg(format!("import join error: {e}")))?
+            .map_err(|e| VimaxError::msg(format!("import join error: {e}")))??;
+        let _ = self.restore_live_film(&record.session_id);
+        self.index.get(&record.session_id).or(Ok(record))
     }
 
     async fn ensure_not_busy(&self, id: &str) -> VimaxResult<()> {

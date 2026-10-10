@@ -66,6 +66,12 @@ export interface ShotLocation {
   shotIndex: number;
 }
 
+/** Director-desk take / film archives — not the live shot or canonical cut. */
+export function isShotArchiveArtifactPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/');
+  return /\/shots\/\d+\/takes\//i.test(normalized) || /(?:^|\/)films\//i.test(normalized);
+}
+
 export function flattenArtifacts(nodes: ArtifactNode[]): ArtifactNode[] {
   const flattened: ArtifactNode[] = [];
   for (const node of nodes) {
@@ -296,7 +302,10 @@ export function findShotDescriptionPaths(nodes: ArtifactNode[]): string[] {
 export function findShotVideoPaths(nodes: ArtifactNode[]): string[] {
   const paths = flattenArtifacts(nodes)
     .map((file) => file.path.replace(/\\/g, '/'))
-    .filter((path) => /\/shots\/\d+\/video\.(mp4|webm|mov)$/i.test(path));
+    .filter(
+      (path) =>
+        !isShotArchiveArtifactPath(path) && /\/shots\/\d+\/video\.(mp4|webm|mov)$/i.test(path)
+    );
   return [...new Set(paths)].sort(compareSceneAwarePaths);
 }
 
@@ -492,6 +501,7 @@ function sceneRootFromStoryboardPath(path: string): string {
 
 export function shotLocationFromPath(path: string): ShotLocation | null {
   const normalized = path.replace(/\\/g, '/');
+  if (isShotArchiveArtifactPath(normalized)) return null;
   const match = normalized.match(/^(.*)\/shots\/(\d+)\//i);
   if (!match) return null;
   return {

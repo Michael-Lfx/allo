@@ -23,6 +23,8 @@ fn is_path_bearing_json(name: &str) -> bool {
             | "first_frame_selector.json"
             | "last_frame_selector.json"
             | "frame_selector.json"
+            | "shot_packet.json"
+            | "shot_description.json"
     ) || name.ends_with("_selector.json")
 }
 
@@ -304,5 +306,32 @@ mod tests {
         let path = fixed["environments"]["dock"]["path"].as_str().unwrap();
         assert_eq!(Path::new(path), plate.as_path());
         assert!(Path::new(path).is_file());
+    }
+
+    #[test]
+    fn remaps_shot_packet_absolute_refs() {
+        let dir = tempdir().unwrap();
+        let working = dir.path().join("session");
+        let film = working.join("script2video");
+        let frame = film.join("shots").join("0").join("video_last_frame.png");
+        fs::create_dir_all(frame.parent().unwrap()).unwrap();
+        fs::write(&frame, b"png").unwrap();
+
+        let foreign = r"C:\Users\zhang\AppData\Local\Flowy\Nomi\vimax\.working_dir\old\script2video\shots\0\video_last_frame.png";
+        let packet = film.join("shots").join("0").join("shot_packet.json");
+        fs::write(
+            &packet,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "image_refs": [{ "slot": 1, "path": foreign }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let n = remap_imported_working_paths(&working).unwrap();
+        assert!(n >= 1, "expected shot_packet path rewrite, got {n}");
+        let fixed: Value = serde_json::from_str(&fs::read_to_string(&packet).unwrap()).unwrap();
+        let path = fixed["image_refs"][0]["path"].as_str().unwrap();
+        assert_eq!(Path::new(path), frame.as_path());
     }
 }
