@@ -31,7 +31,7 @@
     },
     "check:agent-vocabulary": {
       "group": "check",
-      "desc": "Enforce AgentExecution as the only active collaboration aggregate and permit only exact migration fences."
+      "desc": "[Deprecated] Retired gate for legacy agent vocabulary."
     },
     "check:windows-console-hide": {
       "group": "check",

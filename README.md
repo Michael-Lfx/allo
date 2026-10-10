@@ -489,10 +489,11 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run test:desktop` | 运行桌面壳测试，不监听或打包 ui/dist 资源 |
 | `bun run test:browser` | 运行 browser-use 门控的 Rust 测试（browser-platform 全量 + gateway/ai-agent/nomi-agent/app 开启 --features browser-use；crate/core 车道会静默跳过这些） |
 | `bun run test:ui` | 运行前端单元测试（bun test，收集 ui/src 下全部 *.test.ts/tsx） |
+| `bun run test:auth` | 登录/认证前端冒烟与契约测试 |
 | **静态检查 / 门禁** | |
 | `bun run check:process-runtime-boundary` | Enforce the supervised process runtime boundary and exact hand-off allowlist. |
 | `bun run check:browser-platform-boundary` | Enforce the single BrowserSessionHub ownership boundary and reject private browser launch paths. |
-| `bun run check:agent-vocabulary` | Enforce AgentExecution as the only active collaboration aggregate and permit only exact migration fences. |
+| `bun run check:agent-vocabulary` | [Deprecated] Retired gate for legacy agent vocabulary. |
 | `bun run check:windows-console-hide` | Require nomi-process-runtime hide helpers for tool spawns and Windows Pipe-only shell transport. |
 | `bun run check:codemirror-runtime` | Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package. |
 | `bun run check:market` | Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject. |
@@ -510,8 +511,10 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run check:button-layout-contract` | 扫描所有 Arco 图标文字按钮并校验共享横向布局契约 |
 | `bun run check` | 聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 协议指纹 + 跨仓发布同步 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑） |
 | `bun run typecheck` | 前端 TypeScript 类型检查（tsc --noEmit） |
+| `bun run typecheck:auth` | 登录/认证相关前端类型检查（窄范围，CI 必过） |
 | `bun run check:i18n` | 校验 i18n 类型与 locale 键是否一致 |
 | `bun run check:theme` | 校验预设 CSS 主题契约 |
+| `bun run check:motion` | 校验动效 token、侧栏宽度过渡、减弱动效兜底与市场卡片 hover |
 | `bun run check:icons` | 校验 @icon-park/react 导入禁别名/禁命名空间（别名会被图标包装插件改写成非法代码，tsc 抓不到） |
 | `bun run check:css-scope` | 校验画布子系统 CSS 全部挂在 .oc-root 作用域（禁裸 :root/html/body/*、禁全量 tailwind 与全局 antd reset） |
 | **代码生成** | |
