@@ -226,6 +226,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-mate"
+version = "1.6.0"
+dependencies = [
+ "nomifun-common",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 0.8.2",
+ "tracing",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8242,6 +8255,34 @@ dependencies = [
  "tracing",
  "uuid",
  "zip 2.4.2",
+]
+
+[[package]]
+name = "nomifun-voice-models"
+version = "1.6.0"
+dependencies = [
+ "nomifun-api-types",
+ "nomifun-common",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nomifun-voice-terminal"
+version = "1.6.0"
+dependencies = [
+ "async-trait",
+ "jsonschema",
+ "nomifun-api-types",
+ "nomifun-common",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
