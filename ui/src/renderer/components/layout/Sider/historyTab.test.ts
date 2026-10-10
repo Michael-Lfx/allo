@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { historyTabAfterPathChange, type SiderHistoryTab } from './historyTab';
+import {
+  activeHistoryTabForRoute,
+  historyTabAfterPathChange,
+  isSessionRoutePath,
+  type SiderHistoryTab,
+} from './historyTab';
 
 describe('historyTabAfterPathChange', () => {
   test('follows a video-generation path onto the video tab', () => {
@@ -39,5 +44,41 @@ describe('historyTabAfterPathChange', () => {
     expect(historyTabAfterPathChange('/learn', 'companions')).toBe('companions');
     expect(historyTabAfterPathChange('/settings/system', 'workspaces')).toBe('workspaces');
     expect(historyTabAfterPathChange('/scheduled', 'companions')).toBe('companions');
+  });
+});
+
+describe('activeHistoryTabForRoute', () => {
+  test('keeps the companions highlight on a companion conversation', () => {
+    expect(activeHistoryTabForRoute('/conversation/conv-1', 'companions')).toBe('companions');
+  });
+
+  test('keeps the projects highlight on a work conversation', () => {
+    expect(activeHistoryTabForRoute('/conversation/conv-1', 'workspaces')).toBe('workspaces');
+    expect(activeHistoryTabForRoute('/conversation/conv-1', 'video')).toBe('workspaces');
+  });
+
+  test('keeps companions on guid and terminal routes like the list filter', () => {
+    expect(activeHistoryTabForRoute('/guid', 'companions')).toBe('companions');
+    expect(activeHistoryTabForRoute('/terminal-new', 'companions')).toBe('companions');
+    expect(activeHistoryTabForRoute('/terminal/sess-1', 'companions')).toBe('companions');
+  });
+
+  test('follows video and companion routes, and clears on dock routes', () => {
+    expect(activeHistoryTabForRoute('/video-generation/clip/abc', 'workspaces')).toBe('video');
+    expect(activeHistoryTabForRoute('/nomi?tab=overview', 'workspaces')).toBe('companions');
+    expect(activeHistoryTabForRoute('/knowledge', 'companions')).toBeNull();
+    expect(activeHistoryTabForRoute('/settings/system', 'video')).toBeNull();
+  });
+});
+
+describe('isSessionRoutePath', () => {
+  test('covers chat, guid, and terminal surfaces only', () => {
+    expect(isSessionRoutePath('/guid')).toBe(true);
+    expect(isSessionRoutePath('/conversation/conv-1')).toBe(true);
+    expect(isSessionRoutePath('/terminal-new')).toBe(true);
+    expect(isSessionRoutePath('/terminal/sess-1')).toBe(true);
+    expect(isSessionRoutePath('/nomi')).toBe(false);
+    expect(isSessionRoutePath('/video-generation')).toBe(false);
+    expect(isSessionRoutePath('/knowledge')).toBe(false);
   });
 });

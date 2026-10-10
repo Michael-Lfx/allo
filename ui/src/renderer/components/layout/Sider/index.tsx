@@ -36,7 +36,7 @@ import {
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
 import { formatSiderAccountLabel } from './accountLabel';
-import { historyTabAfterPathChange, type SiderHistoryTab } from './historyTab';
+import { activeHistoryTabForRoute, historyTabAfterPathChange, isSessionRoutePath, type SiderHistoryTab } from './historyTab';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
@@ -111,11 +111,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     }
   }, []);
 
-  const isSessionRoute =
-    pathname === '/guid' ||
-    pathname.startsWith('/conversation/') ||
-    pathname === '/terminal-new' ||
-    pathname.startsWith('/terminal/');
+  const isSessionRoute = isSessionRoutePath(pathname);
 
   const isExistingSessionRoute =
     pathname.startsWith('/conversation/') ||
@@ -262,12 +258,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const isVideoRoute = pathname.startsWith('/video-generation');
   const isCompanionRoute = pathname.startsWith('/nomi');
 
-  const activeBar2Module: SiderHistoryTab | null = useMemo(() => {
-    if (isSessionRoute) return 'workspaces';
-    if (isVideoRoute) return 'video';
-    if (isCompanionRoute) return 'companions';
-    return null;
-  }, [isCompanionRoute, isSessionRoute, isVideoRoute]);
+  const activeBar2Module: SiderHistoryTab | null = useMemo(
+    () => activeHistoryTabForRoute(pathname, activeHistoryTab),
+    [activeHistoryTab, pathname]
+  );
 
   const [optimisticBar2Module, setOptimisticBar2Module] = useState<SiderHistoryTab | null>(null);
   const lastPathnameRef = useRef(pathname);
