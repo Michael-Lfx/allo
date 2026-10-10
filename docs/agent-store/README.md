@@ -295,6 +295,41 @@ flowchart TD
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
+## 本轮（2026-10-10 发布 `0.1.0-beta.9`）
+
+按 `25-release-runbook.zh.md` 的 S0–S8 走完一次发版，三个出口全部就绪。本版相对 `beta.8` 的实质增量：
+`fp-12` → `fp-13`（`market/settings` / `market/settings-set`）、市场源下载与受控自动升级策略、
+`exportTeam()` 团队包级技能修复（后两项分别见本仓 PR #297 与 #316）。
+
+1. **权威二进制（S1）**：`bun run agent-store:build`（含 `static-webui`）⇒
+   `target/release/agent-store.exe` 208,851,968 字节，SHA-256
+   `D194CF7FF0C7753CC61D8FACD3E0BA816862049588FAEF6378EC3B7ADC5C0983`；vendored 副本同哈希，
+   `verify-published-sdk` 输出 `VERIFY-OK { protocol_version: "fp-13", version: "1.6.0", models: 6, storeItems: 0 }`。
+2. **版本锁步（S2，本仓 PR #317）**：四个 `package.json` + 8 处依赖/平台 pin 改到 `0.1.0-beta.9`（4 文件 12 行），
+   站点仓 `content/release.json` 同值 ⇒ `check:release-sync` 报「4 manifest + 8 pin + 站点 release.json」同版本。
+3. **门禁（S4，逐环跑）**：`check:fingerprint` 绿（`fp-13`，本仓 10 处 + 站点 2 处）、`check:release-sync` 绿、
+   `cd web && bun run typecheck` exit 0 且 `bun run test` **555 passed / 1 skipped**、
+   `cargo test -p nomifun-app-server` **186 passed**、站点半边 `release:check:site` exit 0。
+   **如实登记**：`bun run release:check` 的第 1 环（`ui/` typecheck）在 main 上仍红
+   （`renderer/pages/videoCanvas/oc`，CI 内已注明），`check:agent-vocabulary` 亦红
+   （`nomi-agent` / `nomifun-mcp` / `docs/architecture/agent-harness-modes-review.zh.md`）——两者与本次发布无关，
+   按 §7 缺口 8 逐环跑并登记，**不声称 `release:check` 通过**。
+4. **npm 四包（S5，tag=`beta`）**：protocol `04:34:23Z`、client `04:34:07Z`、runtime-win32-x64 `04:35:57Z`、
+   sdk `04:34:35Z`（均为 2026-10-10 UTC）；canonical packument 复核 `dist-tags.beta = 0.1.0-beta.9` 且
+   `versions` 含该版本（runtime 包体积大，转正最慢，约 2 分钟后可见）。
+   **dist-tag 决策：`latest` 未移动**，仍指 `0.1.0-beta.2`——预发布不移动它。
+5. **GitHub Release（S6）**：站点仓 `v0.1.0-beta.9`（prerelease，`04:40:05Z`，target `main`），
+   zip 80,500,825 字节；GitHub 服务端 `digest` 与本地打包产物 sha256 逐字一致（`eefd7370…6cd2`），
+   `SHA256SUMS.txt` 记录 zip 内 exe = `D194CF7F…C0983` ⇒ **同一份 exe 服务两个出口**（不变量 4）。
+   本次以**服务端 digest** 代替 76.8 MB 的下载回验（§3 S6 允许的备选判据），并在部署后独立验证直链可达。
+6. **站点上线（S7）**：站点仓 PR #4 合并为 `b36666b2`，手动触发 EdgeOne 部署 `dpss11z0i98f`
+   （`Success`、`UsedInProd: true`）。部署后自检五项全过：中英 SDK 页有正文（`导出助手函数` /
+   `Export helper utilities`）、构建日志无 `File count exceeds` / `File size limit` / `storage limit`、
+   退役路径 `/source/*/_files.txt` 均 **404**、目录页头像 `/source/skills/icons/FBS-BookWriter.png` **200**、
+   Release 直链 **200 且长度 80,500,825**；另 `publish:market --verify-only` 三个市场归档远端摘要一致。
+7. **台账（S8）**：站点 `changelog` §2.1 已按「已发布事实」写入、§4 未发布台账清零（随站点 PR #4）；本条目即本仓记录。
+8. **顺带**：站点 SDK 指南此前补写的「团队的技能怎么导出」（站点 PR #3）随本版首次对用户可见。
+
 ## 本轮（2026-10-10 修复 `35`：团的技能一个都导不出来）
 
 用户报「用新增的 `exportTeam()` 导出专家团，技能还是空的」。定位结论：**SDK 没错，是服务端的团 pack 只留了一条技能来源**。
