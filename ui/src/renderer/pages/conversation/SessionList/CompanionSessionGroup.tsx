@@ -420,13 +420,15 @@ const CompanionSessionGroup: React.FC<Props> = ({
                   Lv{statusLevel} {levelBadgeText}
                 </span>
               </div>
-              <div className='flex items-center gap-6px text-11px leading-14px text-t-tertiary'>
-                <span className='flex items-center gap-2px text-t-secondary'>
-                  <span>{moodEmoji}</span>
-                  <span>{moodText}</span>
+              <div className='flex items-center gap-6px text-11px leading-14px text-t-tertiary min-w-0'>
+                <span className='flex items-center gap-2px text-t-secondary min-w-0'>
+                  <span className='shrink-0'>{moodEmoji}</span>
+                  <span className='truncate' title={moodText}>
+                    {moodText}
+                  </span>
                 </span>
                 {isDesktopOn && (
-                  <span className='text-10px text-success-6 bg-success-1 px-4px py-0.5px rd-3px font-normal'>
+                  <span className='shrink-0 text-10px text-success-6 bg-success-1 px-4px py-0.5px rd-3px font-normal'>
                     {t('nomi.overview.companionOn', { defaultValue: '桌面已显示' })}
                   </span>
                 )}
