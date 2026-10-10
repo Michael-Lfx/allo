@@ -1828,6 +1828,7 @@ const CompanionPage: React.FC = () => {
       {(bubbleRunning || remoteRunning) && (
         <button
           type='button'
+          data-button-shape='circle'
           className='nomi-companion-reaction'
           title={t('nomi.companion.interrupt')}
           onClick={(e) => {
@@ -1843,6 +1844,7 @@ const CompanionPage: React.FC = () => {
       {bubble && (
         <button
           type='button'
+          data-button-shape='circle'
           className='nomi-companion-reaction'
           title={t('nomi.companion.dismiss')}
           onClick={(e) => {
@@ -1940,6 +1942,7 @@ const CompanionPage: React.FC = () => {
             <button
               ref={unreadBadgeRef}
               type='button'
+              data-button-shape='pill'
               className='nomi-companion-badge'
               data-companion-hit
               aria-label={t('nomi.tabs.suggestions')}
@@ -1984,6 +1987,7 @@ const CompanionPage: React.FC = () => {
                 <div key={`${path}-${i}`} className='nomi-companion-composer__thumb'>
                   <LocalImageView src={path} alt='' />
                   <button
+                    data-button-shape='circle'
                     className='nomi-companion-composer__thumb-x'
                     title={t('nomi.companion.collapse')}
                     onClick={() => setAttachedFiles((prev) => prev.filter((_, idx) => idx !== i))}
@@ -2012,6 +2016,7 @@ const CompanionPage: React.FC = () => {
           <div className='nomi-companion-composer__bar'>
             <button
               type='button'
+              data-button-shape='circle'
               className='nomi-companion-composer__attach'
               title={t('nomi.companion.attachImage')}
               disabled={sendboxUpload.isUploading}
@@ -2035,10 +2040,15 @@ const CompanionPage: React.FC = () => {
               )}
             </button>
             <div className='spacer' />
-            <button className='nomi-companion-composer__ghost' onClick={collapseComposer}>
+            <button
+              data-button-shape='pill'
+              className='nomi-companion-composer__ghost'
+              onClick={collapseComposer}
+            >
               {t('nomi.companion.collapse')}
             </button>
             <button
+              data-button-shape='pill'
               className='nomi-companion-composer__send'
               disabled={
                 (!composerText.trim() && attachedFiles.length === 0) ||
@@ -2085,6 +2095,7 @@ const CompanionPage: React.FC = () => {
             </svg>
           </div>
           <button
+            data-button-shape='pill'
             className='nomi-companion-send'
             disabled={!input.trim()}
             onClick={() => void sendChat()}
