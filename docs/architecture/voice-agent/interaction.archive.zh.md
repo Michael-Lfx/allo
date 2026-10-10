@@ -2,7 +2,7 @@
 
 > **归档说明与审计提示**：  
 > 本文件 100% 完整保留 Flowy 语音方案在演进与多轮技术审查过程中的原始技术底稿、跨项目调研分析及历次讨论记录（原第 1 节至第 28 节全文），专门供历史追溯、字段级接口对照与技术审计。  
-> ⚠️ **执行基准声明**：本底稿中包含早期探讨的过渡设计（如早期考虑的物理按键依赖、旧版实验性阈值参数、`qwen3.8-flash` 临时占位代号、本地 Piper TTS 试验性规划等）。**所有工程实现、代码评审、跨 Agent 协作与生产交付，必须严格以正文架构规范 [voice-agent-interaction.zh.md](voice-agent-interaction.zh.md) 为唯一生效标准**。
+> ⚠️ **执行基准声明**：本底稿中包含早期探讨的过渡设计（如早期考虑的物理按键依赖、旧版实验性阈值参数、`qwen3.8-flash` 临时占位代号、本地 Piper TTS 试验性规划等）。**所有工程实现、代码评审、跨 Agent 协作与生产交付，必须严格以正文架构规范 [interaction.zh.md](interaction.zh.md) 为唯一生效标准**。
 
 ---
 # 语音交互与无头 Agent 终端架构方案 (Voice Agent & Headless Interaction Architecture)
