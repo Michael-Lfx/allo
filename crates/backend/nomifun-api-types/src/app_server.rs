@@ -734,6 +734,14 @@ pub struct AppServerExpertPack {
     pub description: Option<String>,
     pub persona: AppServerExpertPersona,
     pub model: AppServerExpertModel,
+    /// The Definition's Skills, **by reference**: `id` and `name` are the same
+    /// string (`skill/list` publishes the Skill name as its id) and the bytes come
+    /// from `skill/files`.
+    ///
+    /// For an **agent** this is its own declared list. For a **team** it is what
+    /// the team's *own snapshot* installed — the members keep theirs separately in
+    /// `team.members[].skills`, so an empty list here means "this package ships no
+    /// Skills", not "look at the members" (`docs/agent-store/32` §4.2).
     #[serde(default)]
     pub skills: Vec<AppServerExpertSkillRef>,
     #[serde(default)]

@@ -1709,6 +1709,16 @@ export interface ExpertPack {
   description?: string | null;
   persona: ExpertPersona;
   model: ExpertModel;
+  /**
+   * The Definition's Skills, **by reference** — fetch the bytes with
+   * `skills.files()` / `skills.readFile()`.
+   *
+   * Two sources, deliberately not merged on the wire: an **agent** pack's list is
+   * that expert's own declaration, while a **team** pack's list is what the team's
+   * own package installed, and each member keeps its own declaration in
+   * `team.members[].skills`. An empty list means the package ships no skills, not
+   * that you should go look at the members. `materializePack` unions both.
+   */
   skills: ExpertSkillRef[];
   connectors: ExpertConnectorRef[];
   tool_policy: ExpertToolPolicy;

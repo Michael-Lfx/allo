@@ -65,8 +65,12 @@ result.danglingSkills;       // 声明了但本机取不到的技能：{ id, err
   expert-pack.json           # 线上 pack 逐字节
   persona.md                 # 仅 agent 形态（团没有自己的 persona）
   members/<id>/persona.md    # 仅 team 形态，每个成员一个
-  skills/<name>/…            # 成员声明去重后的技能字节
+  skills/<name>/…            # 团包级技能与成员声明合并去重后的技能字节
 ```
+
+团的技能有**两个来源**，`materializePack` 把两者合并后按 id 去重：顶层 `pack.skills`（该团**包级**声明、
+装机时已物化到托管技能根目录的技能）与 `team.members[].skills`（各成员 frontmatter 的 `skills:` 声明）。
+官方团大多**只在包级声明**技能（例如 `stock-partner-team`：包级 3 个、7 名成员零声明），所以两者都要算进来。
 
 错误语义：wire 导出失败（`agent_not_installed` / `agent_disabled` / `policy_denied` /
 `version_mismatch` / `response_too_large`…）**先于任何写盘**，不留半成品目录；`skill/files`

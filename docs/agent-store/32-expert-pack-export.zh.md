@@ -111,7 +111,7 @@ pub struct AppServerExpertPack {
     // 核心正文定义
     pub persona: AppServerExpertPersona,
     pub model: AppServerExpertModel,
-    pub skills: Vec<AppServerExpertSkillRef>,
+    pub skills: Vec<AppServerExpertSkillRef>,   // agent: 自身声明; team: 本包已安装的技能
     pub connectors: Vec<AppServerExpertConnectorRef>,
     pub tool_policy: AppServerExpertToolPolicy,
     
@@ -152,6 +152,7 @@ pub struct AppServerExpertTeamPack {
 - **排除呈现层元数据**：`avatar_url`（宿主本地相对路径在外部无效）、`quick_prompts`、`tags` 等纯 UI 标签不进包。
 - **排除内部 ID**：内部运行期实例 ID（如 `resolved_agent_id`）不导出，避免诱导外部产生依赖。
 - **连接器列表**：专家（Agent）的 `connectors` 恒为空数组（专家本身不声明连接器权限）；团队（Team）的 `connectors` 仅提取该团自身已安装且启用的连接器。
+- **技能列表**：专家（Agent）的 `skills` 就是它自己的声明（运行期 `include_skills` 只读这个）；团队（Team）的 `skills` 取自**该团自身快照已安装的 skill 组件**（`plugin.json.skills` ⇒ 装机时已物化到托管技能根目录），成员各自的声明另在 `team.members[].skills` 上。**两个来源不在服务端合并**：团很少逐成员声明技能，把包级技能摊给每个成员等于发明绑定；合并去重是客户端 `materializePack` 的事（`35` §3.3）。
 
 ---
 
@@ -272,6 +273,49 @@ my-agents/dev-lead/
 | **EX-006** | **团队缺成员拒绝** | 当团队成员之一被卸载后调用 `team/export`，请求返回 `agent_not_installed` 且指名该成员。 |
 | **EX-007** | **策略闸门拦截** | 配置 `[expert_export] enabled = false` 或将 ID 加入 `deny` 列表后，调用返回 `policy_denied`。 |
 | **EX-008** | **SDK 物理物化** | 使用 `materializePack` 成功在目标路径生成规范目录，包含完整的 JSON、Markdown 及 Skill 文件。 |
+| **EX-009** | **团包级技能继承** | 团队（Team）的顶层 `skills` 等于该团**自身快照已安装**的 skill 组件（`installed = 0` 不计，`disabled` 标记不减），成员声明另计；用一个「技能只在包级声明、成员零声明」的夹具（`package-skills-team`）证明技能确实落盘且逐字节相同。见 §7。 |
+
+---
+
+## 7. 订正记录（2026-10-10）：团包顶层 `skills` 曾恒为空
+
+**症状**：对任何专家团调 `team/export`（SDK 侧 `exportTeam`），返回的 `pack.skills` 与
+`team.members[].skills` **都是空数组**，落盘目录里没有 `skills/` —— 即「团的技能一个都没导出」。
+
+**根因（两处，缺一不可）**：
+
+1. `app_server_expert_export.rs` 的 `export_team` 把顶层 `skills` **硬编码**成 `Vec::new()`；同一结构体里
+   紧邻的 `connectors` 走的是「读该团自身快照的安装态」，技能这一行没有对应实现。
+2. 成员技能只从成员 Agent 的 frontmatter `skills:` 读（`frontmatter.rs:229`），而官方团普遍**只在包级声明**
+   （`plugin.json.skills`），成员一个都不写。
+
+**真机读数（2026-10-10；对官方市场源逐个 `import` → `install` → `exportTeam`）**：
+
+| 团 | 包级声明 | 修复前 `pack.skills` | 修复前 `members[].skills` | 修复前 `writtenSkills` |
+|---|---|---|---|---|
+| `stock-partner-team` 1.0.7 | 3 个（`westock-data` / `westock-tool` / `md-to-html`，装机后宿主确实有） | `[]` | 7 名成员全空 | `[]`（目录里没有 `skills/`） |
+| `software-company` 1.1.0 | 无 | `[]` | 5 名成员全空 | `[]` |
+| `edgeone-makers-experts` 1.0.2 | 10 个 | `[]` | **成员各自声明**，10 个都在 | 10 个 ✅ |
+
+即：唯一能工作的是「成员恰好各自声明」的团——顶层恒空这件事一直被成员声明掩盖着。
+
+**为什么此前没被发现**：仓库夹具 `software-company`（v1.2.0，手写）在成员 frontmatter 里塞了
+`skills: [planning|requirements|coding]`，而市场里的同名包是 1.1.0、一个都没有；live 脚本 EX-010 的判据还写着
+`teamExport.danglingSkills.length > 0` —— 把「技能解析不出来」当成了 PASS 条件，所以它从未验证过团的技能落盘。
+
+**订正口径**（本文 §3.1 第 2 条、§6 EX-009）：
+
+- 团的顶层 `skills` 改读**该团自身快照已安装的 skill 组件**（`list_installation_state`，与 `connectors` 同一读法）；
+  成员声明仍留在 `team.members[].skills`，合并去重由客户端 `materializePack` 完成。
+- **不按 `disabled` 过滤**：技能没有启用态，`install/disable` 只写一个目录标记（`skill_disable_flag_only`），
+  语料始终可用——这一点与连接器相反。
+- **`installed = 0` 不报**：manifest 里声明过不等于宿主装上了。
+- **agent 形态不变**：专家的 `skills` 就是它自己的声明，把包级技能摊给专家等于发明绑定。
+
+**边界**：没有新增字段、没有增删方法 ⇒ **`fp` 不动**（`fp-13` / 方法数 `55 / 80`）；`pack_format` 也不动
+（不是新增字段，而是把一个「恒空」的既成事实改正）。live 判据落在 `web/scripts/sdk-live-expert-export.ts`：
+EX-010（既有夹具：包级技能必须落盘且逐字节相同）与 EX-011（新增夹具 `package-skills-team`：镜像官方团形状，
+成员零声明 ⇒ 技能只可能来自包级）。
 
 ---
 
