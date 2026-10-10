@@ -8,6 +8,22 @@ export function pickHostMonitor(anchor: GeomRect, monitors: GeomRect[]): GeomRec
   return pickHost(anchor, monitors, (monitor) => monitor);
 }
 
+/**
+ * The expanded session froze its anchor before a possible user drag. When the
+ * window now rests on a different monitor than the session host, restoring that
+ * frozen anchor would teleport the pet across screens; the caller rebases the
+ * desk rect on the current rectangle instead. Empty monitor data keeps the
+ * existing restore path.
+ */
+export function shouldRebaseDeskRestore(
+  currentRect: GeomRect,
+  originalMonitorId: string | null,
+  monitors: MonitorLayout[]
+): boolean {
+  const host = pickHost(currentRect, monitors, (monitor) => monitor.bounds);
+  return host != null && host.id !== originalMonitorId;
+}
+
 export function resolveDeskRestoreLayout(input: DeskRestoreLayoutInput): DeskRestoreLayout {
   const original = input.originalMonitorId ? input.monitors.find((monitor) => monitor.id === input.originalMonitorId) : null;
   if (original) return { rect: input.anchor, monitorId: original.id, scaleFactor: original.scaleFactor };

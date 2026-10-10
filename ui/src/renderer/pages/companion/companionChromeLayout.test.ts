@@ -40,6 +40,14 @@ describe('desktop companion chrome layout', () => {
     expect(companionCss.match(/var\(--button-primary-disabled-text, var\(--text-secondary\)\)/g) ?? []).toHaveLength(2);
   });
 
+  test('hardens expanded restore against cross-monitor drags and IME submits', () => {
+    expect(memoryGeometrySource.includes('shouldRebaseDeskRestore')).toBe(true);
+    expect(companionSource.includes('shouldRebaseDeskRestore')).toBe(true);
+    expect(companionSource.includes('releasing expanded session after failed desk-size restoration')).toBe(true);
+    expect(companionSource.includes('useCompositionInput')).toBe(true);
+    expect(companionSource.match(/isImeActive\(e\)/g) ?? []).toHaveLength(2);
+  });
+
   test('uses a detached controller instead of shared memory expansion', () => {
     expect(companionSource.includes('useDetachedMemoryPanel')).toBe(true);
     expect(companionSource.includes("showSuggestions ? 'memory'")).toBe(false);
