@@ -300,9 +300,10 @@ PR.
 > `bun run check` runs **repo-level** gates only: error-surface contract, process
 > runtime boundary, browser platform boundary, market manifest, script registry.
 > The `ui/` frontend gates remain available as scripts (`check:dead-css`,
-> `check:button-layout-contract`, `check:codemirror-runtime`,
-> `check:agent-vocabulary`, …) but are deliberately outside that chain — run them
-> by hand when you work in `ui/`.
+> `check:button-layout-contract`, `check:codemirror-runtime`, …) but are
+> deliberately outside that chain — run them by hand when you work in `ui/`.
+> `check:agent-vocabulary` has been retired: the script remains as a no-op stub
+> and its invariants now live in crate-local tests.
 
 > Markdown/docs-only changes are recognised by CI and skip the two Rust jobs
 > (`Cargo check (workspace + tests)` and `Cargo test (agent + conversation)`);

@@ -8,7 +8,7 @@
 > 3. **权限单向收窄**：子 Agent 严格继承父级环境与沙箱配置，权限只减不增。
 > 4. **双轨独立并存**：V2 自主协作与 V1 / `AgentExecution` 宿主工作流互不干扰，词表与持久化完全解耦。
 >
-> *(写作约定：本文件位于 `docs/architecture/`，受 `scripts/check-agent-vocabulary.mjs` 扫描。文中历史退役词片段统一采用 `⟨S⟩` 与 `⟨O⟩` 占位符表达，避免文档本身触发门禁。)*
+> *(写作约定：`scripts/check-agent-vocabulary.mjs` 已随本方案退役（降为弃用桩、不再扫描源码），本文保留 `⟨S⟩` 与 `⟨O⟩` 占位符仅为沿用既有排版约定，不再受门禁约束。)*
 
 ---
 
@@ -80,8 +80,8 @@ V2 在 `collaboration` 命名空间下向模型提供 6 个开箱即用的轻量
 3. **P3：容量策略粗暴，且深度控制存在旁路**  
    - 内嵌运行仅靠固定信号量限流，无法让已完成的旧 Agent 腾出资源给新 Agent。  
    - 当任务深度达到硬上限（`MAX_AGENT_DELEGATION_DEPTH = 4`）时，系统仅在排除列表中移除了 `nomi_delegate`，但会话域原有的创建与发送工具仍然暴露，模型依然可以绕过深度限制继续派生。
-4. **P4：门禁债务需要合规化入库**  
-   代码库中的 `check:agent-vocabulary` 门禁历史上存在既有违规未清理，导致其尚未合流至主 CI。V2 方案需先肃清遗留项，确保门禁转绿并接入 CI 守护。
+4. **P4：门禁退役后，原有机械不变量失去守护**  
+   `check:agent-vocabulary` 门禁已随同一变更集退役（脚本降为弃用桩，不再扫描源码）。它原先逐字守护的四组不变量——执行域模型面恰好 3 个工具、执行域恰好 9 张表、事件事实恰好 8 个、五个共享硬上限数值——**不再有任何机械检查**。V2 方案必须把等价断言下沉为**就近的 crate 内测试**，否则“执行域语言冻结”只剩口头约定；V2 新增的 `collaboration` 六件套也必须在同一处补上并列断言。
 
 ---
 
@@ -311,21 +311,21 @@ CREATE UNIQUE INDEX idx_agent_spawn_edges_tree_path ON agent_spawn_edges(tree_id
 
 ```mermaid
 flowchart LR
-    P0["Phase 0<br/>前置债务清理与门禁入库"] --> P1["Phase 1<br/>基础类型与存储端口"]
+    P0["Phase 0<br/>不变量守卫迁移与旁路验证"] --> P1["Phase 1<br/>基础类型与存储端口"]
     P1 --> P2["Phase 2<br/>引擎运行时核心建设"]
-    P2 --> P3["Phase 3<br/>六件套工具与门禁更新"]
+    P2 --> P3["Phase 3<br/>六件套工具与不变量断言"]
     P3 --> P4["Phase 4<br/>三宿主适配与冷启动恢复"]
     P4 --> P5["Phase 5<br/>常驻淘汰与端到端闭环"]
 ```
 
 - **Phase 0（前置独立 PR）**：  
-  清理历史积累的 26 处词汇违规项，运行期复现并验证 P3 旁路，将 `check:agent-vocabulary` 门禁接入 CI `repo-gates`。
+  ① 运行期复现并验证 P3 旁路；② 把退役门禁原先守护的四组不变量迁移为**就近的 crate 内断言**（执行域模型面 3 个工具、执行域 9 张表、事件事实 8 个、五个共享硬上限），让 `cargo test` 而非已退役脚本继续守护执行域词表；③ 为 V2 的 `collaboration` 六件套补一条并列断言（恰好 6 个工具）。
 - **Phase 1**：  
   在 `nomi-types` 定义身份三件套数据结构与 `ChildThreadStore` 特征，提供纯内存实现及单元测试。
 - **Phase 2**：  
   在 `nomi-agent` 内实现 `AgentTreeRuntime`（含注册表、邮箱队列、容量追踪），此时暂不对模型暴露外部工具。
 - **Phase 3**：  
-  注册 `collaboration` 命名空间及六件套工具，实现会话级版本锁定机制（默认关闭：`features.multi_agent_v2 = false`），同步更新词汇门禁断言。
+  注册 `collaboration` 命名空间及六件套工具，实现会话级版本锁定机制（默认关闭：`features.multi_agent_v2 = false`），并在 crate 内测试补上“该域恰好 6 个工具”的并列断言。
 - **Phase 4**：  
   完成数据库表迁移及 `DbChildThreadStore` / `JsonlChildThreadStore` 落地，打通重启后的拓扑冷加载机制。
 - **Phase 5**：  
@@ -337,7 +337,7 @@ flowchart LR
 
 | 用例编号 | 验收项 | 验证方式 | 预期结果 |
 | --- | --- | --- | --- |
-| **TC-01** | 词汇门禁转绿 | 运行 `node scripts/check-agent-vocabulary.mjs` | 违规数为 0，门禁通过，CI 流程正常执行。 |
+| **TC-01** | 不变量守卫迁移 | 运行 `cargo test -p nomifun-gateway` 与 `cargo test -p nomifun-common` | 执行域 3 工具面、9 张表、8 个事件事实与五个硬上限全部由 crate 内断言守护；已退役脚本仅输出弃用提示、不再扫描源码。 |
 | **TC-02** | 协作工具集锁定 | 检查网关暴露的模型工具清单 | `collaboration` 命名空间下恰好提供 6 个标准工具。 |
 | **TC-03** | 树状路径解析 | 纯函数测试相对与绝对路径拼接 | 正确解析父子路径，拦截非法字符与同名冲突。 |
 | **TC-04** | 模型派生与寻址 | 桌面环境调用 `spawn_agent` | 成功返回分配的路径，并能通过 `list_agents` 检索到。 |
@@ -373,9 +373,9 @@ cargo test -p nomifun-agent-execution
 # 5. 全工作区编译检查
 cargo check --workspace
 
-# 6. 验证词汇门禁规范
-node scripts/check-agent-vocabulary.mjs
-bun run check:agent-vocabulary
+# 6. 验证不变量守卫（门禁已退役，断言下沉到 crate 内测试）
+cargo test -p nomifun-gateway    # 执行域模型面恰好 3 个工具
+cargo test -p nomifun-common     # 事件事实恰好 8 个 + 五个共享硬上限
 ```
 
 ---
@@ -388,11 +388,11 @@ bun run check:agent-vocabulary
 | --- | --- | --- | --- |
 | **D1** | 与既有执行域的关系 | **独立并存**，特性开关控制，每会话单向锁定 | 放弃“直接替换”。一次性替换破坏性过大且无法灰度回退；独立并存可实现平滑迁移。 |
 | **D2** | 多宿主支持策略 | **三宿主均支持**，通过 `ChildThreadStore` 接口适配 | 放弃“仅支持 DB 宿主”。若嵌入式（CLI/桌面）无法使用，将失去方案的一致性。 |
-| **D3** | 门禁规范维护 | **同 PR 显式演进断言规则**，补充 V2 不变量 | 放弃“临时绕过”或“改名规避”。合规门禁旨在收敛术语，应演进门禁而非规避规则。 |
+| **D3** | 门禁处置 | **退役该门禁**，把不变量下沉为 crate 内断言 | 放弃“继续演进该脚本”：它靠「路径 + 正则」扫描，与 V2 引入的多域词表天然冲突，维护成本高于收益（退役前已积累 26 处逾期违规且长期未接入 CI）；也放弃“改名规避”——规避会让不变量彻底失去守护。 |
 | **D4** | 树状拓扑存储模型 | **独立新增 `agent_spawn_edges` 表** | 放弃“复用 execution 关联表”。既有表语义为单一映射，承载树形递归会导致语义混乱。 |
 | **D5** | 存储表结构形态 | **单表模型**（一行对应一个子节点） | 放弃“拆分为线程表+关系表”。由于每个子节点至多一个父节点，单表更高效且逻辑严密。 |
 | **D6** | 存储接口层级归属 | 定义在最底层的 **`nomi-types`** | 放弃“定义在 backend 业务包”。避免造成引擎模块反向依赖业务模块的架构污染。 |
-| **D7** | 事件事实清单设计 | **完全不新增事件事实**，保持 8 个不变 | 放弃“新增事件事实”。新增事件事实将牵动多语言 DTO 且动摇门禁，通过边表审计足矣。 |
+| **D7** | 事件事实清单设计 | **完全不新增事件事实**，保持 8 个不变 | 放弃“新增事件事实”。新增事实需同步 Rust 枚举、SQL CHECK 与生成的 TS 绑定三方一致，成本高、收益仅为审计便利，通过边表审计足矣。 |
 | **D8** | 容量耗尽置换策略 | **优先淘汰空闲终态 Agent**，无可淘对象才拒绝 | 放弃“直接报错拒绝”。频繁的小任务流极易撞墙，终态对象占用开销极低应支持换出。 |
 | **D9** | 版本生命周期策略 | **会话初始化时单向锁定**，中途不可切换 | 放弃“动态切换版本”。中途变更工具集会破坏提示词前缀缓存并造成历史混淆。 |
 | **D10** | 嵌入式离线存储 | 采用会话目录下的 **JSONL 追加文件** | 放弃“在 CLI 引入 SQLite”。不破坏轻量级引擎架构，纯文件足以保证冷恢复。 |
@@ -414,7 +414,7 @@ bun run check:agent-vocabulary
 - **父子边数据表迁移**：`codex-rs/state/migrations/0021_thread_spawn_edges.sql:1-8`
 - **子线程访问边界保护**：`codex-rs/app-server/src/request_processors/thread_input.rs:8-21`
 
-#### 2. 当前代码库现状（nomi `origin/main` / commit `990122a`）
+#### 2. 当前代码库现状（nomi `origin/main` / commit `bb9d372a9`）
 - **网关能力分发判据**：`crates/backend/nomifun-ai-agent/src/factory/nomi.rs:382-388, 1639-1682`
 - **执行域现有模型工具面**：`crates/backend/nomifun-gateway/src/caps_agent_execution.rs:1354-1382`
 - **会话域派生调用入口**：`crates/backend/nomifun-gateway/src/caps_conversation.rs:310-389, 427-529`
@@ -422,14 +422,16 @@ bun run check:agent-vocabulary
 - **尝试会话只读审计保护**：`crates/backend/nomifun-conversation/src/service.rs:4099-4114`
 - **深度受限时的排除名单**：`crates/backend/nomifun-agent-execution/src/attempt_runner.rs:459-460, 614-628`
 - **能力租约排除语义机制**：`crates/backend/nomifun-api-types/src/mcp_bridge.rs:439-475, 630-652`
-- **词汇门禁机械断言规范**：`scripts/check-agent-vocabulary.mjs:14-43, 214-331, 333-358`
+- **词汇门禁机械断言规范（已退役，脚本降为弃用桩）**：`scripts/check-agent-vocabulary.mjs`（退役前为 14-43、214-331、333-358 行的四组不变量，现迁移为 crate 内断言）
 - **CI 门禁合流政策说明**：`.github/workflows/README.md:97-107`
 
 ---
 
-### 附录 C：Phase 0 门禁历史债务清理清单
+### 附录 C：门禁历史债务清单（已不适用，保留为历史记录）
 
-为确保 Phase 0 能够顺利将 `check:agent-vocabulary` 门禁并入 CI，需对以下 26 处既有违规项进行合规化处理（以下采用占位符书写）：
+> **状态更新**：`check:agent-vocabulary` 已在同一变更集中**退役**（脚本降为弃用桩、不再扫描源码），因此下列 26 处条目**不再作为 Phase 0 的前置条件**——退役后它们不再是门禁意义上的“违规”。本节按技术方案规范保留原文，用于追溯退役前的债务规模与当时的清理方案；若日后需要恢复同类机械断言，可据此重建。
+>
+> **以下为退役前的原文**：为确保 Phase 0 能够顺利将 `check:agent-vocabulary` 门禁并入 CI，需对以下 26 处既有违规项进行合规化处理（以下采用占位符书写）：
 
 | 目标文件（路径含占位符） | 违规处数 | 处理方案 |
 | --- | --- | --- |
