@@ -13,7 +13,7 @@ import {
     canvasLinesBackgroundImage,
     canvasSpatialGridCssVars,
 } from "@oc/lib/canvas/canvas-spatial-grid";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { ViewportTransform } from "@oc/types/canvas";
 
 type InfiniteCanvasProps = {
@@ -52,7 +52,7 @@ type PinchState = {
 };
 
 export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundMode = "lines", onViewportChange, onViewportPreviewChange, onCanvasMouseDown, boxSelectEnabled = false, onCanvasDoubleClick, onCanvasDeselect, onContextMenu, onDrop, onFileDragEnter, onFileDragLeave, onFileDragOver, graphicsLayer, children }: InfiniteCanvasProps) {
-    const colorTheme = useThemeStore((state) => state.theme);
+    const colorTheme = useCanvasColorTheme();
     const resolvedAppearance = resolveCanvasAppearance(appearance, colorTheme);
     const panState = useRef({
         isPanning: false,
@@ -428,7 +428,7 @@ export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundM
 }
 
 function CanvasGrid({ appearance, mode }: { appearance?: CanvasAppearance; mode: CanvasBackgroundMode }) {
-    const colorTheme = useThemeStore((state) => state.theme);
+    const colorTheme = useCanvasColorTheme();
     if (mode === "blank") return null;
     const palette = resolveCanvasGridPalette(appearance, colorTheme, mode);
     const backgroundImage = mode === "dots"

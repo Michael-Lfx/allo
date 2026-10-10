@@ -7,7 +7,7 @@ import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { ChoiceChip } from "@oc/components/generation-settings-chrome";
 import { CanvasRange } from "./canvas-overlay";
 
@@ -33,7 +33,7 @@ function anglePresets() {
 
 export function CanvasNodeAnglePanel({ dataUrl, onClose, onConfirm }: { dataUrl: string; onClose: () => void; onConfirm: (params: CanvasImageAngleParams) => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const reducedMotion = useReducedMotion();
     const [params, setParams] = useState(defaultParams);
     const dragRef = useRef<{ x: number; y: number; horizontal: number; pitch: number } | null>(null);

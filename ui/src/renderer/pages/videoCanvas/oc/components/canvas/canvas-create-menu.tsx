@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { cn } from "@oc/lib/utils";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 
 export type CanvasCreateCommand = {
     id: string;
@@ -18,7 +18,7 @@ export type CanvasCreateCommand = {
 
 export function CanvasCreateMenu({ commands, compactCreateMenu = false }: { commands: CanvasCreateCommand[]; compactCreateMenu?: boolean }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const projectCommands = commands.filter((command) => command.section === "project");
     const nodeCommands = commands.filter((command) => command.section === "node");
     const extensionCommands = commands.filter((command) => command.section === "extension");
@@ -61,7 +61,7 @@ export function CanvasCreateMenu({ commands, compactCreateMenu = false }: { comm
 }
 
 function CanvasCreateCommandGrid({ commands, variant }: { commands: CanvasCreateCommand[]; variant: "node" | "resource" }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
 
     return (
         <div className={cn("grid gap-0.5", variant === "node" ? "grid-cols-4" : "grid-cols-2")}>

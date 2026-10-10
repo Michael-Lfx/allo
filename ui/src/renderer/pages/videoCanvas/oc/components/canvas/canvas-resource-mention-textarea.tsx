@@ -6,7 +6,7 @@ import { FileText, Image as ImageIcon, Music2, Pencil, UserRound, Video } from "
 
 import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { canvasResourceMentionToken, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { craftCover, craftStillUrl, PLAYBOOK_BY_QUALIFIED, splitCraftTokenParts } from "@oc/lib/canvas/craft/catalog";
 import { CanvasNodeType } from "@oc/types/canvas";
@@ -52,7 +52,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     { value, references, onChange, onSubmit, onKeyDown, className, containerClassName, style, highlightLabels = true, mentionMenuWidth = 256, sendOnEnter = true, onContentSizeChange, ...props },
     forwardedRef,
 ) {
-    const rawTheme = useThemeStore((state) => state.theme);
+    const rawTheme = useCanvasColorTheme();
     const theme = canvasThemes[rawTheme as keyof typeof canvasThemes] ?? canvasThemes.light;
     const containerRef = useRef<HTMLDivElement | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);

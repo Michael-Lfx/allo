@@ -11,7 +11,7 @@ import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@oc/lib/model-capabilities";
 import { cn } from "@oc/lib/utils";
 import { modelDisplayName, modelIconUrl, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { isMonochromeLogo, resolveModelFallbackIcon } from "@renderer/utils/model/modelLogos";
 
@@ -34,7 +34,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const pickerId = useId();
     // 双保险：即使 store merge 写出非法 theme，这里也兜底到 dark，避免 "reading 'node'" 崩溃
-    const rawTheme = useThemeStore((state) => state.theme);
+    const rawTheme = useCanvasColorTheme();
     const theme = (canvasThemes[rawTheme as keyof typeof canvasThemes] ?? canvasThemes.light) as CanvasTheme;
     const [open, setOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
@@ -167,6 +167,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 ref={triggerRef}
                 type="button"
                 className={cn("canvas-composer-model-picker", fullWidth ? "w-full" : "min-w-36 max-w-full", className)}
+                style={{ color: theme.node.text }}
                 aria-haspopup="listbox"
                 aria-expanded={open}
                 aria-label={resolvedPlaceholder}
@@ -255,10 +256,11 @@ function modelMenuPrice(config: AiConfig, model: string): { value: number; unit:
 }
 
 function ModelPrice({ price, compact = false }: { price: { value: number; unit: string } | null | undefined; compact?: boolean }) {
+    const colorTheme = useCanvasColorTheme();
     if (price === undefined) return null;
-    if (price === null) return compact ? null : <span className="shrink-0 text-[var(--fs-tiny)] text-foreground/40">{canvasT("videoCanvas.model.unpriced", "未配置")}</span>;
+    if (price === null) return compact ? null : <span className="shrink-0 text-[var(--fs-tiny)]" style={{ color: colorTheme === "dark" ? "rgba(237,237,237,.4)" : "rgba(17,24,39,.4)" }}>{canvasT("videoCanvas.model.unpriced", "未配置")}</span>;
     return (
-        <span className="inline-flex shrink-0 items-center gap-0.5 text-[var(--fs-tiny)] font-bold tabular-nums text-amber-600 dark:text-amber-300" title={canvasT("videoCanvas.model.priceTitle", "每{{unit}}消耗 {{value}} 积分", { unit: price.unit, value: price.value.toLocaleString("zh-CN", { maximumFractionDigits: 6 }) })}>
+        <span className={cn("inline-flex shrink-0 items-center gap-0.5 text-[var(--fs-tiny)] font-bold tabular-nums", colorTheme === "dark" ? "text-amber-300" : "text-amber-600")} title={canvasT("videoCanvas.model.priceTitle", "每{{unit}}消耗 {{value}} 积分", { unit: price.unit, value: price.value.toLocaleString("zh-CN", { maximumFractionDigits: 6 }) })}>
             <Coins className="size-3" />
             {price.value.toLocaleString("zh-CN", { maximumFractionDigits: compact ? 3 : 6 })}/{price.unit}
         </span>
@@ -287,6 +289,7 @@ function modelMenuMeta(model: string, capability?: ModelCapability): { descripti
 }
 
 export function ModelIcon({ config, model }: { config?: AiConfig; model: string }) {
+    const colorTheme = useCanvasColorTheme();
     const catalogIcon = config ? modelIconUrl(config, model) : "";
     const fallbackIcon = resolveModelFallbackIcon(modelOptionName(model));
     const [src, setSrc] = useState(catalogIcon || fallbackIcon);
@@ -300,7 +303,7 @@ export function ModelIcon({ config, model }: { config?: AiConfig; model: string 
             src={src}
             alt=""
             referrerPolicy="no-referrer"
-            className={cn("size-3.5 shrink-0 object-contain", monochrome && "dark:invert")}
+            className={cn("size-3.5 shrink-0 object-contain", monochrome && colorTheme === "dark" && "invert")}
             onError={() => {
                 if (catalogIcon && src === catalogIcon && fallbackIcon && fallbackIcon !== catalogIcon) {
                     setSrc(fallbackIcon);

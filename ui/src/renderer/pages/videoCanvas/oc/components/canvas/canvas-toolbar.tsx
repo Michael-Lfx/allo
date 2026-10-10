@@ -14,7 +14,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes, type CanvasBackgroundMode, type CanvasTheme } from "@oc/lib/canvas-theme";
 import type { CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { defaultToolbarPrefs, readToolbarPrefs, resolveAddNodeMenuCommands, resolveToolbarEntries, type ResolvedAddNodeMenuCommand, type ToolContext, type ToolbarHandlers, type ToolbarPrefs } from "@oc/lib/canvas/tool-registry";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasNodeType, CanvasToolMode, CanvasWorkspaceMode } from "@oc/types/canvas";
 
 export function CanvasToolbar({
@@ -93,7 +93,7 @@ export function CanvasToolbar({
     useTranslation();
     const rootRef = useRef<HTMLDivElement>(null);
     const dockRef = useRef<HTMLDivElement>(null);
-    const colorTheme = useThemeStore((state) => state.theme);
+    const colorTheme = useCanvasColorTheme();
     const theme = canvasThemes[colorTheme];
     const [addOpen, setAddOpen] = useState(false);
     const [appearanceOpen, setAppearanceOpen] = useState(false);

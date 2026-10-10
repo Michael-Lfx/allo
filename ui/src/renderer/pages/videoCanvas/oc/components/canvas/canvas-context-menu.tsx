@@ -10,7 +10,7 @@ import { canvasNodeAssetCategory } from "@oc/lib/canvas/canvas-node-asset";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasAccel } from "@oc/lib/canvas/canvas-shortcuts";
 import { resolveAddNodeMenuCommands, type AddNodeMenuContext } from "@oc/lib/canvas/tool-registry";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ContextMenuState, type Position } from "@oc/types/canvas";
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
@@ -93,7 +93,7 @@ export function CanvasNodeContextMenu({
     onToggleFrame,
 }: CanvasNodeContextMenuProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [addOpen, setAddOpen] = useState(false);
     const [categoryOpen, setCategoryOpen] = useState(false);
 
@@ -243,7 +243,7 @@ export function CanvasNodeContextMenu({
 }
 
 function AddNodeContextMenu({ parentPosition, workspaceMode, compactCreateMenu, isProjectLinked, onAddNode, onAddFolder, onChooseStyle, onOpenLibrary, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number }; workspaceMode: CanvasWorkspaceMode; compactCreateMenu?: boolean; isProjectLinked: boolean; onAddNode: (type: CanvasNodeType) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenLibrary: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const left = getSubmenuLeft(parentPosition.left);
     const createContext: AddNodeMenuContext = {
         workspaceMode,

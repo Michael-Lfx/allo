@@ -10,7 +10,7 @@ import { canvasThemes } from "@oc/lib/canvas-theme";
 import { canvasModelSpecPatch, modelCapabilityConfigFor, videoDurationAllowed } from "@oc/lib/model-capabilities";
 import { buildGenerationConfig } from "@oc/lib/canvas/canvas-project-generation";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasCameraPicker } from "./canvas-camera-picker";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
@@ -48,7 +48,7 @@ function videoOperationOptions(): Array<{ label: string; value: CanvasVideoEditO
 export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
     useTranslation();
     const globalConfig = useEffectiveConfig();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const mode = node.metadata?.generationMode || "image";
     const config = buildGenerationConfig(globalConfig, node, mode);
     const videoProfile = mode === "video" ? modelCapabilityConfigFor(config, config.model).video! : undefined;

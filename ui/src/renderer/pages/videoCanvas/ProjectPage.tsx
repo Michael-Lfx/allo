@@ -21,7 +21,7 @@ import { syncOcConfigFromAlloMediaModels } from './lib/syncOcModels';
 import { videoCanvasQueryClient } from './lib/queryClient';
 import { getVideoCanvasAntTheme } from './lib/ocAntTheme';
 import { useCanvasStore } from '@oc/stores/canvas/use-canvas-store';
-import { useThemeStore } from '@oc/stores/use-theme-store';
+import { useCanvasColorTheme } from '@oc/stores/use-canvas-color-theme';
 import { useUserStore } from '@oc/stores/use-user-store';
 import { setActiveUserScope } from '@oc/lib/user-scope';
 import { getOcPortalHost, disposeOcPortalHost } from '@oc/lib/oc-scope';
@@ -35,7 +35,7 @@ import '@oc/styles/globals.css';
 import '@oc/components/video-player.css';
 
 function useVideoCanvasTheme() {
-  return useThemeStore((s) => s.theme);
+  return useCanvasColorTheme();
 }
 
 const VideoCanvasProjectPage: React.FC = () => {
@@ -211,7 +211,10 @@ const VideoCanvasProjectPage: React.FC = () => {
   }
 
   return (
-    <div className={`${styles.ocShell} oc-root oc-shell oc-canvas${colorTheme === 'dark' ? ' dark' : ''}`}>
+    <div
+      className={`${styles.ocShell} oc-root oc-shell oc-canvas${colorTheme === 'dark' ? ' dark' : ''}`}
+      data-canvas-theme={colorTheme}
+    >
       <QueryClientProvider client={videoCanvasQueryClient}>
         <ConfigProvider theme={getVideoCanvasAntTheme(colorTheme === 'dark')} getPopupContainer={getOcPortalHost}>
           <AntApp>

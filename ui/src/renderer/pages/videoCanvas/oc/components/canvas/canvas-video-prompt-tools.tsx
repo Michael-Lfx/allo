@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasNodeMetadata } from "@oc/types/canvas";
 
 type VideoFrameOption = {
@@ -36,7 +36,7 @@ const CONTROL_TEXT_STYLE: CSSProperties = { fontFamily: "inherit", fontSize: 11,
 
 export function CanvasVideoPromptTools({ metadata, frameOptions, onMetadataChange }: CanvasVideoPromptToolsProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const startFrame = metadata?.videoStartFrameNodeId || EMPTY_FRAME_VALUE;
     const endFrame = metadata?.videoEndFrameNodeId || EMPTY_FRAME_VALUE;
 

@@ -12,7 +12,7 @@ import { exportCanvasTimeline } from "@renderer/pages/videoCanvas/api";
 import type { TimelineClip, TimelineClipKind, TimelineProject, TimelineTrackKind } from "@oc/types/timeline";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 import type { CanvasMediaMeta } from "@renderer/pages/videoCanvas/api";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
 type CanvasTimelineDialogProps = {
@@ -31,7 +31,7 @@ const TRACK_KINDS: TimelineTrackKind[] = ["video", "audio", "subtitle"];
 export function CanvasTimelineDialog({ open, seedNode, nodes, timeline, onClose, onSave, onExportMedia }: CanvasTimelineDialogProps) {
     useTranslation();
     const { message } = App.useApp();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [draft, setDraft] = useState<TimelineProject>(() => timeline || createEmptyTimeline());
     const [exporting, setExporting] = useState(false);
 

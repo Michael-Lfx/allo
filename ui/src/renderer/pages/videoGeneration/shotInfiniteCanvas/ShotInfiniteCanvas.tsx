@@ -23,8 +23,9 @@ import { canvasT } from '@oc/lib/canvas/canvas-i18n';
 import { buildCanvasResourceReferences, getMentionResourceNodes } from '@oc/lib/canvas/canvas-resource-references';
 import { canvasActiveNodeId, canvasRelatedHighlight } from '@oc/lib/canvas/canvas-related-highlight';
 import { canvasNodeDisplayUrl } from '@oc/lib/canvas/canvas-media-id';
-import { getOcPortalHost } from '@oc/lib/oc-scope';
-import { useThemeStore } from '@oc/stores/use-theme-store';
+import { getOcPortalHost, disposeOcPortalHost } from '@oc/lib/oc-scope';
+import { CanvasColorThemeScope } from '@oc/stores/use-canvas-color-theme';
+import { useThemeContext } from '@renderer/hooks/context/ThemeContext';
 import {
   CanvasNodeType,
   type CanvasConnection,
@@ -140,7 +141,8 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
   containerRef: containerRefProp,
 }) => {
   const { t } = useTranslation();
-  const colorTheme = useThemeStore((state) => state.theme);
+  const { theme: appTheme } = useThemeContext();
+  const colorTheme = appTheme === 'dark' ? 'dark' : 'light';
   const theme = canvasThemes[colorTheme] ?? canvasThemes.light;
   const innerRef = useRef<HTMLDivElement>(null);
   const containerRef = containerRefProp ?? innerRef;
@@ -201,6 +203,11 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
       window.removeEventListener('scroll', update, true);
     };
   }, [expanded]);
+
+  useEffect(() => {
+    getOcPortalHost();
+    return () => disposeOcPortalHost();
+  }, []);
 
   useEffect(() => {
     if (!expanded) return;
@@ -444,9 +451,11 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
     : null;
 
   return (
+    <CanvasColorThemeScope theme={colorTheme}>
     <div
       className={`${styles.shotInfiniteCanvas} oc-root oc-canvas${colorTheme === 'dark' ? ' dark' : ''}`}
       data-testid='shot-infinite-canvas'
+      data-canvas-theme={colorTheme}
       data-expanded={expanded ? 'true' : undefined}
       style={
         expanded && fillBox
@@ -774,6 +783,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
         </AntApp>
       </ConfigProvider>
     </div>
+    </CanvasColorThemeScope>
   );
 };
 

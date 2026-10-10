@@ -10,7 +10,7 @@ import { anchoredOverlayStyle, type OverlayPlacement } from "@oc/lib/canvas/canv
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { CANVAS_VIDEO_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
 import { modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue } from "@oc/lib/model-capabilities";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { AiConfig } from "@oc/stores/use-config-store";
 
 export type CanvasVideoSettingKey = "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "count" | "promptOptimize";
@@ -25,7 +25,7 @@ type CanvasVideoSettingsPopoverProps = {
 
 export function CanvasVideoSettingsPopover({ config, promptOptimize = true, onConfigChange, buttonClassName, placement = "topLeft" }: CanvasVideoSettingsPopoverProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const buttonRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);

@@ -6,7 +6,7 @@ import type { CanvasDrawingEditorHandle } from "@oc/components/canvas/canvas-dra
 import { drawingEngineForNode, drawingEngineLabel, isDrawingEngineAvailable } from "@oc/lib/canvas/canvas-drawing-engine";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { loadCanvasDrawing, saveCanvasDrawing, type CanvasDrawingSnapshot } from "@oc/lib/canvas/canvas-drawing-storage";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
 import type { CanvasNodeData } from "@oc/types/canvas";
 
@@ -23,7 +23,7 @@ type CanvasDrawingEditorModalProps = {
 
 export function CanvasDrawingEditorModal({ open, projectId, node, onClose, onSaved }: CanvasDrawingEditorModalProps) {
     const { message } = App.useApp();
-    const colorScheme = useThemeStore((state) => state.theme);
+    const colorScheme = useCanvasColorTheme();
     const tldrawLicenseKey = useUserStore((state) => state.drawingEngine.tldrawLicenseKey);
     const engine = drawingEngineForNode(node);
     const currentRef = useRef<CanvasDrawingSnapshot | null>(null);

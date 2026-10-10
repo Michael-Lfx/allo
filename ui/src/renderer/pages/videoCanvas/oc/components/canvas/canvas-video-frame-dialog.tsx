@@ -10,7 +10,7 @@ import { formatVideoFrameTime, normalizeVideoFrameTimes } from "@oc/lib/canvas/c
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { resolveMediaUrl } from "@oc/services/file-storage";
 import { cacheResourceObjectUrl } from "@oc/services/resource-blob-cache";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasNodeData } from "@oc/types/canvas";
 import { CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
@@ -35,7 +35,7 @@ const MAX_SELECTED_FRAMES = 30;
 export function CanvasVideoFrameDialog({ node, open, onClose, onConfirm }: CanvasVideoFrameDialogProps) {
     useTranslation();
     const { message } = App.useApp();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const videoRef = useRef<HTMLVideoElement>(null);
     const [videoUrl, setVideoUrl] = useState("");
     const [videoError, setVideoError] = useState(false);

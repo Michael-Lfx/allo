@@ -18,7 +18,7 @@ import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@oc/lib
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { cacheResourceObjectUrl, getCachedResourceObjectUrl, type ResourceCacheHint } from "@oc/services/resource-blob-cache";
 import { hydrateCanvasVideoPreview } from "@oc/services/canvas-video-preview";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { storyboardMinNodeHeight } from "./canvas-script-node";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
@@ -165,7 +165,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onContextMenu,
 }: CanvasNodeProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [hovered, setHovered] = useState(false);
     const [isEditingContent, setIsEditingContent] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);

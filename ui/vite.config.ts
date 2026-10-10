@@ -167,7 +167,7 @@ export default defineConfig(({ mode }) => {
       // CodeMirror extension values are branded by their module instance.
       // Force every language package and the React wrapper through the same
       // state/view/language copies in dev and packaged builds.
-      dedupe: ['@codemirror/state', '@codemirror/view', '@codemirror/language', '@codemirror/commands', '@lezer/common'],
+      dedupe: ['react', 'react-dom', '@codemirror/state', '@codemirror/view', '@codemirror/language', '@codemirror/commands', '@lezer/common'],
       extensions: ['.ts', '.tsx', '.js', '.json'],
     },
     build: {

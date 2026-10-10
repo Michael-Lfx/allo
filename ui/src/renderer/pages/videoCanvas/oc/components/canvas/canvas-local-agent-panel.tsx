@@ -9,7 +9,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { createClientId } from "@oc/lib/client-id";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { useConfigStore } from "@oc/stores/use-config-store";
 import { useCanvasAgentStore, type AgentChatItem, type AgentPendingToolCall, type AgentThreadSummary } from "@oc/stores/canvas/use-canvas-agent-store";
@@ -38,7 +38,7 @@ const LA = "videoCanvas.agent.local";
 
 export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snapshot, canUndoOps, undoOpsCount = 0, collapsed, embedded, headless, autoConnect, onApplyOps, onUndoOps }: { snapshot: CanvasAgentSnapshot; canUndoOps: boolean; undoOpsCount?: number; collapsed?: boolean; embedded?: boolean; headless?: boolean; autoConnect?: boolean; onApplyOps: (ops: CanvasAgentOp[]) => unknown; onUndoOps: () => CanvasAgentSnapshot | null }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const user = useUserStore((state) => state.user);
     const { message, modal } = App.useApp();
     const [searchParams] = useSearchParams();

@@ -8,7 +8,7 @@ import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 
 type CanvasZoomControlsProps = {
     scale: number;
@@ -25,7 +25,7 @@ const QUICK_ZOOM_LEVELS = [0.25, 0.5, 1, 2] as const;
 
 export function CanvasZoomControls({ scale, onScaleChange, onReset, onAutoArrange, isMiniMapOpen, onToggleMiniMap, onOpenShortcuts, containerRef }: CanvasZoomControlsProps) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const rootRef = useRef<HTMLDivElement>(null);
     const liveScaleRef = useRef(scale);
     const rangeRef = useRef<HTMLInputElement>(null);

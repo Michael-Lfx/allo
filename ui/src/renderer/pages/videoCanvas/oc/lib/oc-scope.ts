@@ -1,10 +1,22 @@
 const PORTAL_HOST_CLASS = "oc-portal-host";
+const CANVAS_SHELL_SELECTOR = ".oc-root.oc-canvas:not(.oc-portal-host)";
 const SHELL_SELECTOR = ".oc-root:not(.oc-portal-host)";
 
 let themeObserver: MutationObserver | null = null;
 let observedShell: HTMLElement | null = null;
 
+function isDisplayed(el: HTMLElement): boolean {
+    return el.getClientRects().length > 0;
+}
+
 function findShell(): HTMLElement | null {
+    const canvases = Array.from(document.querySelectorAll<HTMLElement>(CANVAS_SHELL_SELECTOR));
+    for (let i = canvases.length - 1; i >= 0; i -= 1) {
+        const canvas = canvases[i];
+        if (canvas && isDisplayed(canvas)) return canvas;
+    }
+    const nestedCanvas = canvases[canvases.length - 1];
+    if (nestedCanvas) return nestedCanvas;
     return document.querySelector<HTMLElement>(SHELL_SELECTOR);
 }
 

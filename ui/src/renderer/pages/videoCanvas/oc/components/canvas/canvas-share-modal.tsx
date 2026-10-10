@@ -5,11 +5,11 @@ import { Copy, Link2, RefreshCw, Share2, Unlink } from "lucide-react";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { createCanvasShare, deleteCanvasShare, getCanvasShare, type CanvasShareStatus } from "@oc/services/api/canvas-share";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 
 export function CanvasShareModal({ projectId, open, onClose, beforeCreate }: { projectId: string; open: boolean; onClose: () => void; beforeCreate: () => Promise<void> }) {
     const { message, modal } = App.useApp();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [share, setShare] = useState<CanvasShareStatus>({ enabled: false });
     const [expiresDays, setExpiresDays] = useState(0);
     const [loading, setLoading] = useState(false);

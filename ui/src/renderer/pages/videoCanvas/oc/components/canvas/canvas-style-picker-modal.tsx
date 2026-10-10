@@ -21,7 +21,7 @@ import {
     type ProjectStyleMediumId,
     type ProjectStyleSelection,
 } from "@oc/lib/canvas/canvas-style-system";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CANVAS_LOOKS, lookToCanvasPreset } from "@renderer/pages/videoGeneration/styleCatalog/looks";
 import { VISUAL_STYLE_CATEGORIES, type VisualStyleCategory } from "@renderer/pages/videoGeneration/visualStylePresets";
 import { CanvasStyleCoverSwatch } from "./canvas-style-cover";
@@ -31,7 +31,7 @@ export { canvasStylePresets, lookbookCanvasStylePresets, resolveCanvasStylePrese
 
 export function CanvasStylePickerModal({ open, value, onClose, onSelect }: { open: boolean; value?: string; onClose: () => void; onSelect: (preset: CanvasStylePreset) => void }) {
     const { t } = useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [detailPreset, setDetailPreset] = useState<CanvasStylePreset | null>(null);
     const [mode, setMode] = useState<"recommended" | "custom">("recommended");
     const [lookFilter, setLookFilter] = useState<"all" | VisualStyleCategory>("all");
@@ -276,7 +276,7 @@ function StyleChipSelect<T extends string>({ kind, label, value, options, theme,
 
 export function CanvasStyleDetailModal({ open, preset, selected = false, onClose, onSelect }: { open: boolean; preset: CanvasStylePreset | null; selected?: boolean; onClose: () => void; onSelect?: (preset: CanvasStylePreset) => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const display = preset ? localizedStylePresetDisplay(preset) : null;
     const sections = preset ? parseStyleSections(preset.prompt) : [];
     return (

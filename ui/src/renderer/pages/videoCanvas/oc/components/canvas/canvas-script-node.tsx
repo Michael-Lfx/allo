@@ -15,7 +15,7 @@ import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useEffectiveConfig } from "@oc/stores/use-config-store";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchItemStatus, CanvasNodeData, CanvasNodeStatus, CanvasWorkspaceMode, StoryboardRow, StoryboardShotCount, StoryboardShotDuration, StoryboardVideoInputMode } from "@oc/types/canvas";
 
 export const STORYBOARD_ROW_HEIGHT = 48;
@@ -71,7 +71,7 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
     workspaceMode?: CanvasWorkspaceMode;
 }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const effectiveConfig = useEffectiveConfig();
     const generationConfig = buildGenerationConfig(effectiveConfig, node, "text");
     const rows = node.metadata?.storyboard?.rows || [];

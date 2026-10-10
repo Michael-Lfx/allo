@@ -9,7 +9,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { readCanvasScaleFromElement } from "@oc/lib/canvas/canvas-live-viewport";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -44,7 +44,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     onHoverEnd?: (nodeId: string) => void;
 }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const collapsed = Boolean(data.metadata?.frame?.collapsed);
     const [editing, setEditing] = useState(false);
     const [title, setTitle] = useState(data.title);

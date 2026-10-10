@@ -49,6 +49,7 @@ describe('oc css scope containment', () => {
 
     test('canvas route keeps the scope class and portals through the shared host', () => {
         expect(projectPage.includes('oc-root oc-shell oc-canvas')).toBe(true);
+        expect(projectPage.includes('data-canvas-theme={colorTheme}')).toBe(true);
         expect(projectPage.includes('getOcPortalHost')).toBe(true);
         expect(projectPage.includes('disposeOcPortalHost')).toBe(true);
         expect(projectPage.includes('antd/dist/reset.css')).toBe(false);
@@ -56,5 +57,29 @@ describe('oc css scope containment', () => {
         expect(projectPage.includes("import '@oc/styles/globals.css';")).toBe(true);
         expect(globals.includes('.oc-portal-host')).toBe(true);
         expect(globals.includes('z-index: var(--z-popover)')).toBe(true);
+    });
+
+    test('canvas persist theme store stays React-free; portal host follows the canvas shell', () => {
+        const themeStore = read('../stores/use-theme-store.ts');
+        const colorTheme = read('../stores/use-canvas-color-theme.ts');
+        const ocScope = read('../lib/oc-scope.ts');
+        expect(themeStore.includes('from "react"')).toBe(false);
+        expect(themeStore.includes('createContext')).toBe(false);
+        expect(colorTheme.includes('CanvasColorThemeScope')).toBe(true);
+        expect(colorTheme.includes('useCanvasColorTheme')).toBe(true);
+        expect(projectPage.includes("from '@oc/stores/use-canvas-color-theme'")).toBe(true);
+        expect(ocScope.includes('.oc-root.oc-canvas:not(.oc-portal-host)')).toBe(true);
+    });
+
+    test('canvas title control avoids Uno text-base color and uses canvas-scoped title classes', () => {
+        const topBar = read('../pages/canvas/canvas-project-top-bar.tsx');
+        expect(topBar.includes('canvas-title-label')).toBe(true);
+        expect(topBar.includes('canvas-title-input')).toBe(true);
+        expect(topBar.includes('text-base')).toBe(false);
+        expect(topBar.includes('titleColor')).toBe(true);
+        expect(topBar.includes('#ffffff')).toBe(true);
+        const project = read('../pages/canvas/project.tsx');
+        expect(project.includes('CanvasColorThemeScope')).toBe(true);
+        expect(project.includes('data-canvas-theme')).toBe(true);
     });
 });

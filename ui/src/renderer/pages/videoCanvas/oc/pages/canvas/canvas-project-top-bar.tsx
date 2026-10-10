@@ -13,7 +13,7 @@ import type { CanvasShortDramaProgress } from "@oc/lib/canvas/canvas-short-drama
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasAccel } from "@oc/lib/canvas/canvas-shortcuts";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
 import type { CanvasMediaPerformanceMode } from "@oc/types/canvas";
 import { CanvasShortcutsModal } from "./canvas-shortcuts-modal";
@@ -92,7 +92,9 @@ export function CanvasTopBar({
     publishing,
 }: CanvasTopBarProps) {
     const { i18n } = useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const colorTheme = useCanvasColorTheme();
+    const theme = canvasThemes[colorTheme];
+    const titleColor = colorTheme === "dark" ? "#ffffff" : theme.node.text;
     const navigate = useNavigate();
     const user = useUserStore((state) => state.user);
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
@@ -150,7 +152,7 @@ export function CanvasTopBar({
                         onRedo={onRedo}
                     />
 
-                    <div ref={titleRef} className="flex min-w-0 flex-col items-start" style={{ color: theme.node.text }}>
+                    <div ref={titleRef} className="flex min-w-0 flex-col items-start" style={{ color: titleColor }}>
                         {isTitleEditing ? (
                             <input
                                 autoFocus
@@ -162,16 +164,16 @@ export function CanvasTopBar({
                                     if (event.key === "Enter") onFinishTitleEditing();
                                     if (event.key === "Escape") onCancelTitleEditing();
                                 }}
-                                className="h-8 w-auto min-w-12 max-w-[min(280px,42vw)] appearance-none border-0 bg-transparent p-0 text-left text-base font-semibold tracking-normal outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
-                                style={{ color: theme.node.text, caretColor: theme.accent.primary, border: 0, boxShadow: "none", outline: "none" }}
+                                className="canvas-title-input h-8 w-auto min-w-12 appearance-none border-0 bg-transparent p-0 text-left outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
+                                style={{ color: titleColor, caretColor: theme.accent.primary, border: 0, boxShadow: "none", outline: "none", WebkitTextFillColor: titleColor }}
                                 aria-label={canvasT("videoCanvas.chrome.canvasName", "画布名称")}
                             />
                         ) : (
                             <div className="flex min-w-0 items-center gap-0.5">
                                 <button
                                     type="button"
-                                    className="max-w-[280px] truncate text-left text-base font-semibold tracking-normal transition-opacity hover:opacity-75"
-                                    style={{ color: theme.node.text }}
+                                    className="canvas-title-label truncate text-left transition-opacity hover:opacity-75"
+                                    style={{ color: titleColor, WebkitTextFillColor: titleColor }}
                                     onClick={onStartTitleEditing}
                                     title={canvasT("videoCanvas.chrome.renameHint", "点击修改画布名称")}
                                 >
@@ -179,7 +181,7 @@ export function CanvasTopBar({
                                 </button>
                                 <CanvasChromeButton
                                     className="is-icon !size-7 opacity-60 hover:opacity-100"
-                                    style={{ color: theme.node.text }}
+                                    style={{ color: titleColor }}
                                     onClick={onStartTitleEditing}
                                     title={canvasT("videoCanvas.chrome.rename", "重命名画布")}
                                     aria-label={canvasT("videoCanvas.chrome.rename", "重命名画布")}
@@ -368,7 +370,7 @@ function canvasTitleInputSize(value: string) {
 
 function CompactAgentStatus({ status, onClick }: { status: { connected: boolean; enabled: boolean; activity: string }; onClick: () => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const label = status.connected
         ? canvasT("videoCanvas.chrome.localCodexConnected", "已连接到本地 Codex")
         : status.enabled

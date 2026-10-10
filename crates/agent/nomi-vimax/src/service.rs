@@ -1222,6 +1222,20 @@ impl VimaxService {
         Ok(out)
     }
 
+    async fn load_or_seed_packet(
+        &self,
+        id: &str,
+        scene_dir: &Path,
+        shot_idx: i32,
+    ) -> VimaxResult<crate::shot_packet::ShotPacket> {
+        if let Some(existing) = crate::shot_packet::load_packet(scene_dir, shot_idx).await? {
+            return Ok(existing);
+        }
+        let record = self.index.get(id)?;
+        let max_audio = crate::video_quality::max_reference_audio(&record.video_model);
+        crate::pipelines::refresh_shot_packet_from_disk(scene_dir, shot_idx, max_audio).await
+    }
+
     pub async fn put_shot_packet(
         &self,
         id: &str,
@@ -1231,9 +1245,7 @@ impl VimaxService {
     ) -> VimaxResult<crate::shot_packet::ShotPacketView> {
         self.ensure_packet_mutable(id, scene_root, shot_idx).await?;
         let scene_dir = self.resolve_scene_dir(id, scene_root)?;
-        let mut packet = crate::shot_packet::load_packet(&scene_dir, shot_idx)
-            .await?
-            .ok_or_else(|| VimaxError::InvalidParams(format!("shot {shot_idx} has no packet")))?;
+        let mut packet = self.load_or_seed_packet(id, &scene_dir, shot_idx).await?;
         let had_video = crate::media_local::is_usable_video_file(
             &crate::shot_packet::shot_dir(&scene_dir, shot_idx).join("video.mp4"),
         );
@@ -1268,9 +1280,7 @@ impl VimaxService {
         self.ensure_packet_mutable(id, scene_root, shot_idx).await?;
         let scene_dir = self.resolve_scene_dir(id, scene_root)?;
         let session_root = self.index.working_dir(id)?;
-        let mut packet = crate::shot_packet::load_packet(&scene_dir, shot_idx)
-            .await?
-            .ok_or_else(|| VimaxError::InvalidParams(format!("shot {shot_idx} has no packet")))?;
+        let mut packet = self.load_or_seed_packet(id, &scene_dir, shot_idx).await?;
         let kind = kind.trim().to_ascii_lowercase();
         if remove {
             {

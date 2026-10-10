@@ -9,7 +9,7 @@ import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { defaultToolbarPrefs, getToolbarTools, persistToolbarPrefs, readToolbarPrefs, type ToolbarId, type ToolbarPrefs, type ToolCategory, type ToolContext, type ToolDefinition } from "@oc/lib/canvas/tool-registry";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 
 type ToolbarSettingsModalProps = {
     open: boolean;
@@ -59,7 +59,7 @@ const CATEGORY_LABEL: Record<ToolCategory, [string, string]> = {
 
 export function ToolbarSettingsModal({ open, onClose, toolbar }: ToolbarSettingsModalProps) {
     const { i18n } = useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const reducedMotion = useReducedMotion();
     const [items, setItems] = useState<SettingsItem[]>([]);
     const [toolbarId, setToolbarId] = useState<ToolbarId>(toolbar);

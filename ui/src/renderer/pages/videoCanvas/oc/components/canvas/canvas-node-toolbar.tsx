@@ -17,7 +17,7 @@ import { getNodeLabel } from "@oc/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@oc/lib/image-utils";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { useCopyText } from "@oc/hooks/use-copy-text";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode, type ViewportTransform } from "@oc/types/canvas";
 import { CanvasHoverHint, CanvasMenuRow, CanvasSheet, CanvasSheetButton, overlayPanelStyle, useAnchoredOverlay } from "./canvas-overlay";
 import { ChoiceChip } from "@oc/components/generation-settings-chrome";
@@ -135,7 +135,7 @@ export function CanvasNodeToolbar({
     const imageToolSettingsOpenRef = useRef(false);
     const { message } = App.useApp();
     const copyText = useCopyText();
-    const themeName = useThemeStore((state) => state.theme);
+    const themeName = useCanvasColorTheme();
     const theme = canvasThemes[themeName];
 
     useEffect(() => {
@@ -465,7 +465,7 @@ function NodeDockMenuButton({
     placement?: "top" | "topRight";
     showLabel?: boolean;
 }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const triggerRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const open = openMenuId === menuId;
@@ -533,7 +533,7 @@ function NodeDockMenuButton({
 
 export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, readOnly = false }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onMetadataChange?: (nodeId: string, metadata: Partial<CanvasNodeMetadata>) => void; readOnly?: boolean; onUnauthorized?: () => void }) {
     useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [view, setView] = useState<"info" | "json">("info");
     const [assetTags, setAssetTags] = useState<string[]>([]);
     const [assetTagInput, setAssetTagInput] = useState("");

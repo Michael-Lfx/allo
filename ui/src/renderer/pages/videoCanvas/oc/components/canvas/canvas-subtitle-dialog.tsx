@@ -13,7 +13,7 @@ import { transcriptToSrtEntries } from "@oc/lib/timeline/transcript-to-srt";
 import { transcribeCanvasMedia } from "@renderer/pages/videoCanvas/api";
 import { createDefaultSubtitleStyle, type SrtEntry, type SubtitlePosition, type SubtitleStyle } from "@oc/types/timeline";
 import type { CanvasNodeData, CanvasNodeMetadata } from "@oc/types/canvas";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { ChoiceChip } from "@oc/components/generation-settings-chrome";
 import { CanvasRange, CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
@@ -28,7 +28,7 @@ type CanvasSubtitleDialogProps = {
 export function CanvasSubtitleDialog({ node, open, onClose, onSave }: CanvasSubtitleDialogProps) {
     useTranslation();
     const { message } = App.useApp();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useCanvasColorTheme()];
     const [entries, setEntries] = useState<SrtEntry[]>([]);
     const [style, setStyle] = useState<SubtitleStyle>(createDefaultSubtitleStyle());
     const [styleOpen, setStyleOpen] = useState(false);
