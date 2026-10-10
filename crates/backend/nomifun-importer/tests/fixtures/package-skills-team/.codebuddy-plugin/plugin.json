@@ -1,0 +1,15 @@
+{
+  "name": "package-skills-team",
+  "version": "1.0.0",
+  "description": "Fixture: the shape the official team packages actually have — skills declared once at the package level and no member declaring any (mirrors stock-partner-team 1.0.7: 3 package-level skills, 7 members, zero member declarations)",
+  "expertType": "team",
+  "agentName": "team-lead",
+  "teamInfo": {
+    "leadAgent": "team-lead",
+    "memberAgents": ["backend-specialist"]
+  },
+  "agents": ["./agents/team-lead.md", "./agents/backend-specialist.md"],
+  "skills": ["./skills/alpha-playbook", "./skills/beta-playbook"],
+  "displayName": { "en": "Package Skills Team", "zh": "包级技能专家团" },
+  "plugin": "package-skills-team"
+}

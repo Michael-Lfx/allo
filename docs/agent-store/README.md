@@ -116,7 +116,7 @@ flowchart TD
 | [`22-webui-productionization.zh.md`](file:///c:/workspace/allo/docs/agent-store/22-webui-productionization.zh.md) | 四组生产化路线（安全/可观测/功能/协议对齐）、杜绝假保护红线 | 📋 已立项 |
 | [`28-webui-composer-connector-switch-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/28-webui-composer-connector-switch-plan.zh.md) | 连接器退出 `@` 提及、输入区抽屉式开关、行内 OAuth 发起 | ✅ 已落地 |
 | [`31-sdk-entry-shape.zh.md`](file:///c:/workspace/allo/docs/agent-store/31-sdk-entry-shape.zh.md) | SDK 入口命名重构（`launchHarness` / `Harness`）、零额外中转 | ✅ 已实现 |
-| [`35-sdk-expert-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/35-sdk-expert-export.zh.md) | SDK 目录导出 API（`exportAgent` / `exportTeam` / `materializePack`） | 🔧 实施中 |
+| [`35-sdk-expert-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/35-sdk-expert-export.zh.md) | SDK 目录导出 API（`exportAgent` / `exportTeam` / `materializePack`） | ✅ 已实施（2026-09-24；2026-10-10 订正「团的技能导不出来」见其 §6） |
 
 ### 2.4 研发计划与工程门禁（Engineering Gates & Runbooks）
 提供全生命周期的里程碑进度、实测证据、质量门禁与发布操作规范。
@@ -235,7 +235,7 @@ flowchart TD
 | `33-memory-master-switch.zh.md` | **内置记忆总开关 `[memory] enabled`**：`~/.agent-store/config.toml` 新增一个键，`false` 时**四面同时停**（提示词记忆段落 / `remember` / 轮后蒸馏 / 引用回写）；与同表 `distill_enabled` **独立**（后者只管蒸馏一半），`enabled = false` 使其失去意义。含**命名陷阱的排除**（口语「config.yaml」指的是 TOML 的 `config.toml`，与真叫 `config.yaml` 的 `GatewayConfig` 云登录面无关）、宿主采纳规则（照抄 `[tools]` 的宿主位）、fail-open 口径、跨 crate 的按值透传（**不用进程全局**）、四个门控点与反向验证读数 | ✅ **已实现**（2026-09-20，零 wire 变更故指纹不动；代码未提交） |
 | `34-connector-user-credentials.zh.md` | **连接器用户凭据（key / token 类）· 技术方案**：市场 283 个连接器中 61 个需要用户输入 key / token（索引 `auth_mode: token` 与同目录 `token-schema.json` 61/61 一对一）；本方案定义凭据的来源、存储、模板注入与协议读面——引用升级为模板替换（headers / env / url 三处）、`CredentialSchema` 扩展展示字段（i18n 回退在 host）、新增 `connector/credential get\|set\|clear`（值单向写入，回包只含键名与 `missing`）、per-principal 键控；含 D1–D6 与各自代价、两处实缺、包内脚本永不执行，以及两处源数据缺陷 | ✅ **第 1–7 步已实施**（2026-09-24；`fp-9` → `fp-10` → `fp-11`，第 7 步加 `connector/register`，方法计数 `52 / 77`；活体验收 42/42 见 §9.1） |
 | `36-store-update-entry.zh.md` | **商店条目的更新（update）能力 · 技术方案**：`store/update-entry` 新动词 + 三段顺序（**先导入 → 先装新的 → 成功后才释放旧的**，失败保留旧安装）；先修版本源（**技能与连接器条目的快照版本现被钉在 `1.0.0`**，`18` D9 的适用面因此扩到技能——导入请求带条目版本，D2=A）；专家升级**保 preset id 原地 `PresetService::update`**（不给 `preset_id` 就新铸 UUID 且不按名字去重，换快照=断引用+可能两条同名预设）；连接器按 `mcp_server_id` 判共享（`add_server` 同名即原地更新返回同一 id，盲删会删掉新装的那行）、并如实上报 `upsert_server` 的「配置变了即停用」；**还挖出一个必须先修的前置缺陷（D8）**：`clear_components_installed` 只按 `component_id`、不带快照条件，而 `component_id`（`wb-<plugin>-<slug>`）跨快照相同 ⇒ 释放旧快照会连**新快照那一行**的安装记录一起清掉（该缺陷在今天的 `install/uninstall` 上已经可达）；D1–D8 各带替代方案与代价、`fp-11`→`fp-12`（方法计数 `53 / 78`）、活体验收脚本覆盖三种 kind | ✅ **已实施**（2026-09-28；`fp-12`、计数 `53 / 78`；实施期 4 处差异与 1 处新增见 §12） |
-| `35-sdk-expert-export.zh.md` | **SDK 导出 agent / team 与其 skills（写到目录）**：`web/packages/sdk` 新增 `exportAgent` / `exportTeam` / `materializePack` 三个函数，把 `32` §6.5 的 11 行配方提升成带 semver 的 API（对 §6.5「不做 SDK 助手」的**二次推翻**，理由对账见 §2.2）；团包顶层 `skills` 恒空 ⇒ 技能从 `team.members[].skills` 收集并按 id 去重；team 布局新增 `members/<id>/persona.md`（团无自身 persona）；dangling 如实上报；**零 wire 变更**故指纹与方法计数不动 | 🔧 **实施中**（代码已落地，读数回写见 §8） |
+| `35-sdk-expert-export.zh.md` | **SDK 导出 agent / team 与其 skills（写到目录）**：`web/packages/sdk` 新增 `exportAgent` / `exportTeam` / `materializePack` 三个函数，把 `32` §6.5 的 11 行配方提升成带 semver 的 API（对 §6.5「不做 SDK 助手」的**二次推翻**，理由对账见 §2.2）；团的技能有**两个来源**——顶层 `skills`（该团包级声明、装机后已物化的技能）与 `team.members[].skills`（成员 frontmatter 声明），物化时合并按 id 去重；team 布局新增 `members/<id>/persona.md`（团无自身 persona）；dangling 如实上报；**零 wire 变更**故指纹与方法计数不动 | ✅ **已实施**（2026-09-24）；**2026-10-10 订正**：服务端曾把团顶层 `skills` 硬编码为空 ⇒ 官方团（包级声明、成员零声明，如 `stock-partner-team`）导出零技能；现改为读该团快照已安装的技能组件，SDK 代码零改动，见 `35` §6 与 `32` §7 |
 | `28-webui-composer-connector-switch-plan.zh.md` | **WebUI 输入区**：连接器退出 `@` 提及、`+` 菜单与连接器抽屉改为真正的启用开关（宿主级 `enabled`，走第一方 `POST /api/mcp/servers/:id/toggle`，零 wire 变更）；行内「连接」＝发起 OAuth；含语义边界、验收与偏差 | ✅ 已落地（2026-09-23；4 处实现期偏差见 §9.1，手测项待用户验证） |
 | `27-conversation-binding-plan.zh.md` | **会话绑定**：每轮技能（`conversation/send` 收 `mentions`）+ 会话级专家 / 专家团（`conversation/create` 收互斥的 `agent_id` / `team_id`）；含**不做每轮连接器**的理由与将来的两条路、验收口径、指纹与跨仓步骤 | ✅ 阶段 1 / 2a / 2b 均已落地（`fp-3`/`fp-4`/`fp-5`）；仅剩「Leader 首轮委派」真机实测 |
 | `30-market-zip-hosting.zh.md` | **市场 zip 单包托管**：`AppServerMarketplaceSourceKind` 新增 `zip`（一个归档、归档根即市场根），官方三个市场从本站逐文件托管迁到 ModelScope 归档；含站点打包/发布脚本口径、`X-Linked-Etag`＝内容 sha256 的新鲜度与完整性设计、老用户配置迁移（只写文档）、以及实现期发现的两个真缺陷 | ✅ 已落地（2026-09-17，`fp-7`）；三个归档已上传并通过远端摘要回验，客户端对真实归档的端到端见 §9.6；站点产物 22,706 → 742 |
@@ -294,6 +294,51 @@ flowchart TD
 4. **规划文档重叠**：✅ 已定（2026-09-11）——`开发计划.md`/`技术方案.md`/`roadmap` 均保留为历史追溯、正文不再更新，现行内容以 `16` §6／§7、`13`、`15` 为准（各文件头部已有指针/合并标注）。
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
+
+## 本轮（2026-10-10 修复 `35`：团的技能一个都导不出来）
+
+用户报「用新增的 `exportTeam()` 导出专家团，技能还是空的」。定位结论：**SDK 没错，是服务端的团 pack 只留了一条技能来源**。
+
+1. **根因**：`app_server_expert_export.rs` 的 `export_team` 把顶层 `skills` **硬编码**成 `Vec::new()`
+   （同一结构体里紧邻的 `connectors` 走的是「读该团自身快照的安装态」，技能这一行没有对应实现）；
+   成员技能只从成员 Agent 的 frontmatter `skills:` 读（`frontmatter.rs:229`），而官方团普遍**只在包级声明**。
+2. **真机读数（修复前 → 修复后）**：对官方市场源逐个 `import` → `install` → `exportTeam`
+   （`agent-store-site/market-source/experts/plugins`，临时数据目录，ad-hoc 探针脚本）：
+   - `stock-partner-team` 1.0.7（包级 3 个技能、7 名成员零声明）：`pack.skills` `[]` → **3 个**
+     （`westock-data` / `westock-tool` / `md-to-html`），`writtenSkills` `[]` → **3 个**，
+     导出目录从「只有 `members/` + `expert-pack.json`」变成 **26 个文件**且含 `skills/`；
+   - `software-company` 1.1.0（包本身不带技能）：仍是 `[]` —— 空得对；
+   - `edgeone-makers-experts` 1.0.2（成员各自声明 10 个）：**不变**（10 个，两个来源的并集）。
+3. **修法**（用户拍板方案 A）：新增 `team_skills(&snapshot_id)`，逐字镜像 `team_connectors`——
+   `list_installation_state` 取 `kind == "skill" && installed == 1`，`{id, name}` 同值，按行序去重。
+   成员声明仍留在 `team.members[].skills`，合并去重仍是客户端 `materializePack` 的事。
+   两条口径：**不按 `disabled` 过滤**（技能无启用态，`install/disable` 只写目录标记
+   `skill_disable_flag_only`）、**`installed = 0` 不报**（manifest 声明过 ≠ 宿主装上了）。
+4. **夹具与判据（这次的真正教训）**：仓库夹具 `software-company` 是手写的、成员 frontmatter 里带着
+   `skills:` 声明，而市场里的同名包 1.1.0 一个都没有 ⇒ **夹具比真实市场多了东西**，把 bug 遮住了；
+   live 脚本 EX-010 的判据还写着 `danglingSkills.length > 0`，**把「技能解析不出来」当成了 PASS 条件**。
+   现新增夹具 `package-skills-team`（镜像官方团形状：包级两个技能、成员零声明，其中一个技能还带
+   `references/`）；EX-010 判据改为「包级技能必须落盘且逐字节相同 + 每个声明恰好落在 written/dangling
+   一侧且两侧不相交」；新增 EX-011（成员零声明 ⇒ 技能只可能来自包级）。
+5. **文档**：`32` §3.1/§6/§7（订正记录 + EX-009）、`35` §1.3/§3.3/§5/§6（订正记录 + S6）、本文档索引两行、
+   `CHANGELOG.md`、`web/packages/sdk/README.md`。**站点仓未改**：全站 grep `恒空` / 顶层 `skills` 无相反表述，
+   `typescript-sdk.md` §4.4 的「顶层去重聚合」与新行为一致。
+6. **指纹与跨仓**：零 wire 形态变化 ⇒ `fp-13`、方法计数 `55 / 80`、`pack_format: 1` **全不动**。
+   `bun run check:fingerprint` 绿（本仓 10 处 + 站点 2 处）、`bun run check:release-sync` 绿（`55 / 80` 同值）。
+7. **自检读数**：`cargo test -p nomifun-app --lib` **390 passed / 1 failed / 1 ignored**——**那一条红的是
+   `main` 上的既有问题**，与本次改动无关：`router::state` 的
+   `every_production_conversation_service_uses_shared_private_event_and_execution_boundaries` 用
+   `split("#[cfg(test)]")` 截「生产源码」，而 `state.rs` 第 824 行现在有一个 `#[cfg(test)]` 块，截出来的片段里
+   `ConversationService::new(` 是 0 个（该文件与 `origin/main` **逐字节相同**）；本次新增的 3 条
+   `app_server_expert_export` 单测全绿（该模块 **13/13**）。`cd web && bun run typecheck` exit 0；
+   `bun run test` **555 passed / 1 skipped**。
+8. **活体读数（已跑）**：`cargo build --bin agent-store` 的 debug 二进制 + SDK `launchHarness`，
+   `bun scripts/sdk-live-expert-export.ts` **RESULT PASS**——EX-010
+   `packageSkills=["release-notes","review-checklist"]`、`written` 同值、`dangling=["planning","requirements","coding"]`
+   （修复前 `written` 恒为空）；EX-011 `memberDeclarations=[]`、`written=["alpha-playbook","beta-playbook"]`、
+   `alphaBytes=247`、`stepsBytes=54`、`dangling=0`（带 `references/` 的引用文件也与 `skill/file` 逐字节相同）。
+9. **尚未做（如实登记）**：`bun scripts/smoke.ts` 未跑（本次不碰 mock 端到端面）；`nomifun-importer` 的 crate
+   单测未跑（新夹具由 EX-011 端到端覆盖：`status=completed`、5 个组件、0 错误）。
 
 ## 本轮（2026-09-29 实施 `37`，尚未发版）
 

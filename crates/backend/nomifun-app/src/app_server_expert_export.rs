@@ -293,6 +293,51 @@ impl AppServerExpertExport {
         Ok(connectors)
     }
 
+    /// The Skills this Team's own snapshot installed.
+    ///
+    /// Read through `list_installation_state` for the same reason
+    /// [`Self::team_connectors`] is: the Skills a Definition actually brings are
+    /// the ones the installer materialized into the managed skills root, and a
+    /// manifest line is not that. Membership is **not** the source — the members'
+    /// own frontmatter `skills` lists are a separate, coarser declaration that
+    /// stays on `team.members[].skills`, because a Team rarely declares its
+    /// Skills member-by-member: the official `stock-partner-team` (1.0.7)
+    /// declares three at the package level and none on any of its seven members,
+    /// so an export that only walked the members carried **no** Skills at all.
+    ///
+    /// The row's `disabled` flag is deliberately **not** filtered, unlike a
+    /// Connector's: for a skill that flag is a catalogue marker only and the
+    /// corpus stays usable meanwhile (`app_server_installer.rs`,
+    /// `skill_disable_flag_only`).
+    async fn team_skills(
+        &self,
+        snapshot_id: &str,
+    ) -> Result<Vec<AppServerExpertSkillRef>, ExpertPackError> {
+        let rows = self
+            .repo
+            .list_installation_state(Some(snapshot_id))
+            .await
+            .map_err(|error| ExpertPackError::Internal(format!("installation state: {error}")))?;
+        let mut skills: Vec<AppServerExpertSkillRef> = Vec::new();
+        for row in rows {
+            if row.kind != "skill" || row.installed != 1 {
+                continue;
+            }
+            // The component's `name` is the `SKILL.md` name — the string
+            // `skill/list` publishes as its id and `skill/files` accepts
+            // (`24` §2). Dedup is by that same string; the read is ordered by row
+            // id, so two exports stay byte-identical (§4.4).
+            if skills.iter().any(|existing| existing.name == row.name) {
+                continue;
+            }
+            skills.push(AppServerExpertSkillRef {
+                id: row.name.clone(),
+                name: row.name,
+            });
+        }
+        Ok(skills)
+    }
+
     /// Refuse a pack that serializes past the cap, naming both numbers.
     fn enforce_size(pack: &AppServerExpertPack) -> Result<(), ExpertPackError> {
         let size = serde_json::to_vec(pack).map(|bytes| bytes.len() as u64).unwrap_or(0);
@@ -387,7 +432,7 @@ impl ExpertPackProvider for AppServerExpertExport {
                 effort: None,
                 max_turns: None,
             },
-            skills: Vec::new(),
+            skills: self.team_skills(&row.snapshot_id).await?,
             connectors: self.team_connectors(&row.snapshot_id).await?,
             // A team declares no tool surface of its own: its members' policies
             // are what the runtime applies, and each member pack carries its own.
@@ -478,6 +523,13 @@ mod tests {
     const TEAM_ID: &str = "wb-demo-team";
     const CONNECTOR_ID: &str = "wb-demo-github";
     const MCP_SERVER_ID: &str = "mcp-github-1";
+    /// A Skill the **package** brings (a `plugin.json` `skills` entry), as opposed
+    /// to `release-notes`, which the leader declares in its own frontmatter. The
+    /// two names differ on purpose: one assertion can then tell the two sources
+    /// apart.
+    const SKILL_ID: &str = "wb-demo-alpha-playbook";
+    const SKILL_NAME: &str = "alpha-playbook";
+    const SKILL_PATH: &str = "skills/alpha-playbook/SKILL.md";
     const LEAD_PRESET: &str = "preset-lead";
     const MEMBER_PRESET: &str = "preset-qa";
     /// Stands in for a connector's credential. The pack reports connector
@@ -598,6 +650,18 @@ mod tests {
             },
         })
         .to_string();
+        let skill = serde_json::json!({
+            "id": SKILL_ID,
+            "version": "1.0.0",
+            "name": SKILL_NAME,
+            "slug": SKILL_NAME,
+            "mode": "store-agent",
+            "invocation_policy": "model-auto",
+            "instructions_ref": SKILL_PATH,
+            "relative_path": SKILL_PATH,
+            "has_arguments_note": false,
+        })
+        .to_string();
 
         let components = vec![
             NewPluginSnapshotComponent {
@@ -623,6 +687,14 @@ mod tests {
                 relative_path: Some("plugin.json"),
                 compatibility_json: "{}",
                 payload_json: &team,
+            },
+            NewPluginSnapshotComponent {
+                component_id: SKILL_ID,
+                kind: "skill",
+                name: SKILL_NAME,
+                relative_path: Some(SKILL_PATH),
+                compatibility_json: "{}",
+                payload_json: &skill,
             },
             NewPluginSnapshotComponent {
                 component_id: CONNECTOR_ID,
@@ -682,9 +754,34 @@ mod tests {
         AppServerExpertExport::new(repo, Arc::new(presets), policy)
     }
 
+    /// The three Presets the standard fixture records: both Agents and the Team.
+    fn recorded_presets() -> FakePresets {
+        FakePresets::with(&[LEAD_PRESET, MEMBER_PRESET, "preset-team"])
+    }
+
     /// The standard fixture: everything installed and enabled.
     async fn ready(persona: &str) -> AppServerExpertExport {
         let repo = seeded_repo(persona).await;
+        install(
+            &repo,
+            &[
+                (AGENT_ID, "preset", LEAD_PRESET),
+                (MEMBER_ID, "preset", MEMBER_PRESET),
+                (TEAM_ID, "preset", "preset-team"),
+                (SKILL_ID, "skill", SKILL_PATH),
+                (CONNECTOR_ID, "connector", MCP_SERVER_ID),
+            ],
+        )
+        .await;
+        exporter(repo, recorded_presets(), ExpertExportPolicy::allow_all())
+    }
+
+    /// The standard fixture with the package's Skill component left
+    /// **un-materialized** (`installed = 0`) — what a component whose install
+    /// failed looks like, and what a Team whose package ships no Skills looks
+    /// like to this read.
+    async fn repo_without_the_installed_skill() -> Arc<dyn IPluginSnapshotRepository> {
+        let repo = seeded_repo("persona").await;
         install(
             &repo,
             &[
@@ -695,11 +792,7 @@ mod tests {
             ],
         )
         .await;
-        exporter(
-            repo,
-            FakePresets::with(&[LEAD_PRESET, MEMBER_PRESET, "preset-team"]),
-            ExpertExportPolicy::allow_all(),
-        )
+        repo
     }
 
     #[tokio::test]
@@ -773,8 +866,67 @@ mod tests {
         // and no model — the members carry theirs.
         assert_eq!(pack.provenance.preset_revision, None);
         assert!(pack.model.resolved.is_none());
-        assert!(pack.skills.is_empty());
+        // …but the Skills the package brought **are** part of the definition, and
+        // they come from the snapshot's install state rather than from the roster.
+        assert_eq!(pack.skills.len(), 1);
+        assert_eq!(pack.skills[0].id, SKILL_NAME);
+        assert_eq!(pack.skills[0].name, SKILL_NAME);
         assert_eq!(pack.provenance.preset_id.as_deref(), Some("preset-team"));
+    }
+
+    #[tokio::test]
+    async fn team_skills_and_member_skills_stay_two_sources() {
+        // The package's own Skill (`alpha-playbook`) and the leader's frontmatter
+        // declaration (`release-notes`) are different Skills from different
+        // sources. Merging them server-side would invent a per-member binding that
+        // `team_run` never had; the SDK's `materializePack` is what unions them.
+        let provider = ready("persona").await;
+        let pack = provider.export_team(TEAM_ID).await.expect("export team");
+        let leader = &pack.team.as_ref().expect("team section").members[0];
+        assert_eq!(pack.skills.len(), 1);
+        assert_eq!(pack.skills[0].name, SKILL_NAME);
+        assert_eq!(leader.skills.len(), 1);
+        assert_eq!(leader.skills[0].name, "release-notes");
+
+        // An **Agent** pack is untouched by the package-level Skill: an expert's
+        // Skills are its own declaration — `include_skills` reads exactly this at
+        // run time (`lib.rs`), so inheriting the package's would be a binding the
+        // runtime never makes.
+        let agent = provider.export_agent(AGENT_ID).await.expect("export agent");
+        assert_eq!(agent.skills.len(), 1);
+        assert_eq!(agent.skills[0].name, "release-notes");
+    }
+
+    #[tokio::test]
+    async fn a_team_skill_the_installer_never_materialized_is_not_reported() {
+        // "Declared in a manifest" is not what the host did: the Skill component
+        // exists in the snapshot but was never installed, so the definition does
+        // not claim to bring it (the member declarations are unaffected).
+        let repo = repo_without_the_installed_skill().await;
+        let provider = exporter(repo, recorded_presets(), ExpertExportPolicy::allow_all());
+        let pack = provider.export_team(TEAM_ID).await.expect("export team");
+        assert!(pack.skills.is_empty());
+        assert_eq!(
+            pack.team.as_ref().expect("team section").members[0].skills.len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_switched_off_skill_stays_in_the_pack() {
+        // Unlike a Connector, a Skill has no enable state: `install/disable` writes
+        // a catalogue marker only and the corpus stays usable
+        // (`app_server_installer.rs`, `skill_disable_flag_only`), so the row's
+        // `disabled` column must not subtract it from the definition.
+        let repo = repo_without_the_installed_skill().await;
+        install(&repo, &[(SKILL_ID, "skill", SKILL_PATH)]).await;
+        repo.set_components_disabled(SNAPSHOT, &[SKILL_ID], true)
+            .await
+            .expect("disable the skill row");
+        let provider = exporter(repo, recorded_presets(), ExpertExportPolicy::allow_all());
+        let pack = provider.export_team(TEAM_ID).await.expect("export team");
+        assert_eq!(pack.skills.len(), 1);
+        assert_eq!(pack.skills[0].name, SKILL_NAME);
     }
 
     #[tokio::test]

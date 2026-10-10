@@ -25,7 +25,7 @@
 | **协议层（Wire）** | **零变更** | 复用既有 `agent/export`、`team/export`、`skill/files`，不变更协议指纹 |
 | **代码落点** | **仅收敛于 `@flowy-agent-store/sdk`** | `packages/client` 严格保持纯净（支持浏览器与裸 Node），**绝不引入 `node:fs`** |
 | **公开 API** | `exportAgent` / `exportTeam` / `materializePack` | 导出定义与落盘物化双重能力 |
-| **团队技能处理** | **跨成员按 ID 严格去重** | 收集全部成员的技能依赖并全局去重，统一物化至根级 `skills/` |
+| **团队技能处理** | **两个来源，按 ID 全局去重** | 顶层 `pack.skills`（该团**包级**声明、装机后物化到托管技能根目录的技能）与各成员 `team.members[].skills` 的声明合并后全局去重，统一物化至根级 `skills/` |
 | **未安装技能** | **软容错收集（Dangling）** | 声明了但本地未安装的技能不中断整体流程，收集并返回警告列表 |
 
 ---
@@ -183,7 +183,13 @@ export async function materializePack(
 ### 3.3 模块三：关键边界与容错处理
 
 1. **团队技能提取与去重**  
-   团队根级定义中的 `pack.skills` 为空数组。物化逻辑自动深度扫描 `pack.team.members`，汇总每个成员的 `skills` 列表，使用 `Map<skillId, skillRef>` 严格去重后再进行批量下载。
+   团的技能有**两个来源**，物化时合并后按 `id` 严格去重（`Map<skillId, skillRef>`）再批量下载：
+   - **顶层 `pack.skills`**：该团**包级**声明、装机时已被物化到托管技能根目录的技能。官方团大多只在这里声明技能
+     （`plugin.json.skills`），成员 frontmatter 一个都不写——例如 `stock-partner-team` 1.0.7 包级 3 个、7 名成员零声明。
+   - **`pack.team.members[].skills`**：各成员 frontmatter 里的 `skills:` 声明（`id === name`）。
+
+   第二版方案曾断言「团队根级定义中的 `pack.skills` 恒为空数组」——那是对服务端当时实现的**描述**，不是契约；
+   2026-10-10 订正后顶层列表填的是该团自身快照已安装的技能，两个来源都必须在物化时算进来（§6）。
 2. **未安装技能（Dangling）软容错**  
    在实际场景中，专家包声明的某些技能可能未在本地宿主中安装：
    - 当调用 `skills.files(skillId)` 报错（如 `NotFound`）时，系统**坚决不中断整个导出任务**；
@@ -213,6 +219,39 @@ export async function materializePack(
 | **S3** | **Team 成员人设分存** | 团队成员按 ID 正确生成 `members/<id>/persona.md`，内容与各自声明严格吻合。 |
 | **S4** | **Dangling 技能软容错** | 构造包含不存在技能的专家包，导出顺利完成，`danglingSkills` 列表中正确收录缺失的技能 ID。 |
 | **S5** | **零 Wire 指纹影响** | `bun run check:fingerprint` 保持常绿，协议方法计数与接口定义无任何变更。 |
+| **S6** | **包级技能落盘** | 用官方团的真实形状（技能只在包级声明、成员零声明）导出：`pack.skills` 非空、每个技能整个目录（含 `references/`）落盘且与 `skill/file` 逐字节相同、`danglingSkills` 为空。见 §6。 |
+
+---
+
+## 6. 订正记录（2026-10-10）：团的技能曾经一个都导不出来
+
+本文第一版（含附录归档）的 §2.1 把「团包顶层 `skills` 恒为空数组」当成既定事实，并据此把「团的技能」
+定义成「从 `team.members[].skills` 收集」。**那个前提是错的**：它描述的是服务端 `export_team` 里一行
+**硬编码的 `Vec::new()`**，不是格式契约。后果就是本文承诺的能力在真实数据上不成立——
+
+**真机读数（2026-10-10，对官方市场源逐个 `import` → `install` → `exportTeam`）**：
+
+| 团 | 包级声明 | `pack.skills` | `members[].skills` | `writtenSkills` | 落盘目录 |
+|---|---|---|---|---|---|
+| `stock-partner-team` 1.0.7 | 3 个（装机后宿主确实有） | `[]` | 7 名全空 | `[]` | 只有 `members/` + `expert-pack.json` |
+| `software-company` 1.1.0 | 无 | `[]` | 5 名全空 | `[]` | 同上 |
+| `edgeone-makers-experts` 1.0.2 | 10 个 | `[]` | **成员各自声明**，10 个都在 | 10 个 ✅ | `skills/` 10 个目录 |
+
+即：只有「成员恰好各自声明技能」的团能用，官方团里最常见的形状（包级声明、成员不写）导出结果是**零技能**。
+`materializePack` 本身没错（它一直把顶层与成员两个来源合并），错的是喂给它的包。
+
+**订正落点**：
+
+- 服务端 `export_team` 的顶层 `skills` 改读**该团自身快照已安装的 skill 组件**（与 `connectors` 同一读法）；
+  成员声明仍在 `team.members[].skills`，合并去重由 `materializePack` 负责。口径与边界见 `32` §7。
+- SDK 侧**代码零改动**：`web/packages/sdk/src/export.ts` 的 `refs` 表达式本来就是两个来源的并集。
+- 夹具与判据：新增 `package-skills-team`（镜像官方团形状：包级两个技能、成员零声明）；live 脚本新增
+  EX-011，并把 EX-010 里那条**把失败当成功**的判据（`danglingSkills.length > 0`）换成了「包级技能必须落盘且
+  逐字节相同 + 每个声明恰好落在 written/dangling 一侧且两侧不相交」。
+- 归档部分（§2.1 证据表、§3.3 第 1 条、§6.5 与 §8.2 的旧口径）**按规约逐字保留**，其错误由本节覆盖。
+
+**为什么值得记一条**：这条 bug 躲过了一次「夹具 + live 脚本」的双重验收——夹具比真实市场**多了**成员声明，
+而 live 判据又把悬空当 PASS。**夹具必须抄真实市场的形状，判据不能把失败写进成功条件**。
 
 ---
 
