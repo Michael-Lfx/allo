@@ -584,6 +584,10 @@ impl VimaxApiService {
                 "only succeeded sessions can be published to TV Show".into(),
             ));
         }
+        // Live cut may only exist under `films/vN` after a director-desk retake
+        // or a TV import. Restore before reading cover / preview pointers.
+        let _ = self.inner.restore_live_film_async(id).await;
+        let session = self.get_session(id)?;
         let cover_rel = session
             .cover
             .as_deref()

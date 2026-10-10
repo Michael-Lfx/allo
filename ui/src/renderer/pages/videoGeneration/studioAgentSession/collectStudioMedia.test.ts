@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import type { ArtifactNode } from '../types';
 import {
   collectPortraitMedia,
+  collectShotFrameMedia,
+  collectShotVideoMedia,
   collectStoryDocuments,
   groupPortraitMedia,
   parseCastEntries,
@@ -116,6 +118,94 @@ describe('parseScriptScenes', () => {
 
   test('keeps a prose script as a single scene', () => {
     expect(parseScriptScenes('  只有一场独白。  ')).toEqual(['只有一场独白。']);
+  });
+});
+
+describe('collectShot media', () => {
+  const shotTree: ArtifactNode[] = [
+    {
+      name: 'script2video',
+      path: 'script2video',
+      is_dir: true,
+      children: [
+        {
+          name: 'shots',
+          path: 'script2video/shots',
+          is_dir: true,
+          children: [
+            {
+              name: '0',
+              path: 'script2video/shots/0',
+              is_dir: true,
+              children: [
+                {
+                  name: 'video.mp4',
+                  path: 'script2video/shots/0/video.mp4',
+                  is_dir: false,
+                },
+                {
+                  name: 'video_last_frame.png',
+                  path: 'script2video/shots/0/video_last_frame.png',
+                  is_dir: false,
+                },
+                {
+                  name: 'takes',
+                  path: 'script2video/shots/0/takes',
+                  is_dir: true,
+                  children: [
+                    {
+                      name: 'v1',
+                      path: 'script2video/shots/0/takes/v1',
+                      is_dir: true,
+                      children: [
+                        {
+                          name: 'video.mp4',
+                          path: 'script2video/shots/0/takes/v1/video.mp4',
+                          is_dir: false,
+                        },
+                        {
+                          name: 'video_last_frame.png',
+                          path: 'script2video/shots/0/takes/v1/video_last_frame.png',
+                          is_dir: false,
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          name: 'films',
+          path: 'script2video/films',
+          is_dir: true,
+          children: [
+            {
+              name: 'v1',
+              path: 'script2video/films/v1',
+              is_dir: true,
+              children: [
+                {
+                  name: 'final_video.mp4',
+                  path: 'script2video/films/v1/final_video.mp4',
+                  is_dir: false,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  test('skips director-desk take and film archives', () => {
+    expect(collectShotVideoMedia(shotTree).map((item) => item.path)).toEqual([
+      'script2video/shots/0/video.mp4',
+    ]);
+    expect(collectShotFrameMedia(shotTree).map((item) => item.path)).toEqual([
+      'script2video/shots/0/video_last_frame.png',
+    ]);
   });
 });
 

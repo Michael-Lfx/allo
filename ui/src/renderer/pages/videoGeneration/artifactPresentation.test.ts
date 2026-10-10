@@ -187,6 +187,84 @@ describe('video artifact presentation', () => {
     });
   });
 
+  test('prefers live shot media over takes/ archives', () => {
+    const withTakes: ArtifactNode[] = [
+      {
+        name: 'script2video',
+        path: 'script2video',
+        is_dir: true,
+        children: [
+          {
+            name: 'storyboard.json',
+            path: 'script2video/storyboard.json',
+            is_dir: false,
+          },
+          {
+            name: 'shots',
+            path: 'script2video/shots',
+            is_dir: true,
+            children: [
+              {
+                name: '0',
+                path: 'script2video/shots/0',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'takes',
+                    path: 'script2video/shots/0/takes',
+                    is_dir: true,
+                    children: [
+                      {
+                        name: 'v1',
+                        path: 'script2video/shots/0/takes/v1',
+                        is_dir: true,
+                        children: [
+                          {
+                            name: 'video.mp4',
+                            path: 'script2video/shots/0/takes/v1/video.mp4',
+                            is_dir: false,
+                          },
+                          {
+                            name: 'video_last_frame.png',
+                            path: 'script2video/shots/0/takes/v1/video_last_frame.png',
+                            is_dir: false,
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                  {
+                    name: 'video.mp4',
+                    path: 'script2video/shots/0/video.mp4',
+                    is_dir: false,
+                  },
+                  {
+                    name: 'video_last_frame.png',
+                    path: 'script2video/shots/0/video_last_frame.png',
+                    is_dir: false,
+                  },
+                  {
+                    name: 'shot_description.json',
+                    path: 'script2video/shots/0/shot_description.json',
+                    is_dir: false,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const scenes = buildStoryboardScenes(
+      withTakes,
+      [{ index: 0, visualDescription: 'Live take' }],
+      'script2video/storyboard.json'
+    );
+    expect(scenes[0]?.videoPath).toBe('script2video/shots/0/video.mp4');
+    expect(scenes[0]?.imagePath).toBe('script2video/shots/0/video_last_frame.png');
+    expect(findShotVideoPaths(withTakes)).toEqual(['script2video/shots/0/video.mp4']);
+  });
+
   test('does not invent a storyboard when backend JSON is invalid', () => {
     expect(parseStoryboard('{not-json')).toEqual([]);
     expect(buildStoryboardScenes([], [], undefined)).toEqual([]);

@@ -2,7 +2,7 @@ import {
   flattenArtifacts,
   isAudioArtifactPath,
   isImageArtifactPath,
-  isVideoArtifactPath,
+  isShotArchiveArtifactPath,
 } from '../artifactPresentation';
 import { loadArtifactMediaUrlCached, loadCameoPreviewUrl } from '../api';
 import type { ArtifactNode, CameoPhoto } from '../types';
@@ -152,6 +152,7 @@ export function collectWorldMedia(nodes: ArtifactNode[]): StudioSessionMedia[] {
     .filter((file) => {
       const path = normalize(file.path);
       if (!isImageArtifactPath(path) || SKIP_IMAGE_RE.test(path)) return false;
+      if (isShotArchiveArtifactPath(path)) return false;
       // Vacant look plate is an internal img2img bible for env/prop plates, not a
       // user-facing world asset (and never a character reference).
       if (/(^|\/)look_plate\.png$/i.test(path)) return false;
@@ -173,6 +174,7 @@ export function collectShotFrameMedia(nodes: ArtifactNode[]): StudioSessionMedia
   return flattenArtifacts(nodes)
     .filter((file) => {
       const path = normalize(file.path);
+      if (isShotArchiveArtifactPath(path)) return false;
       return /\/shots\/\d+\//i.test(path) && isPortraitImage(path);
     })
     .map((file) => ({
@@ -188,7 +190,8 @@ export function collectShotVideoMedia(nodes: ArtifactNode[]): StudioSessionMedia
   return flattenArtifacts(nodes)
     .filter((file) => {
       const path = normalize(file.path);
-      return /\/shots\/\d+\//i.test(path) && isVideoArtifactPath(path);
+      if (isShotArchiveArtifactPath(path)) return false;
+      return /\/shots\/\d+\/video\.(mp4|webm|mov)$/i.test(path);
     })
     .map((file) => ({
       id: `clip:${file.path}`,

@@ -23,6 +23,8 @@ pub const CURRENT_TAKE_FILENAME: &str = "current.json";
 pub const TAKE_PREFIX: &str = "v";
 pub const USER_REFS_DIR: &str = "user_refs";
 pub const FILMS_DIR: &str = "films";
+pub const FINAL_VIDEO_FILENAME: &str = "final_video.mp4";
+pub const FILM_COVER_FILENAME: &str = "cover.png";
 pub const MAX_SHOT_IMAGE_REFS: usize = 9;
 pub const MAX_SHOT_AUDIO_REFS: usize = 3;
 
@@ -1111,7 +1113,7 @@ pub async fn archive_current_film(
     film_root: &Path,
     shot_takes: Vec<FilmShotTake>,
 ) -> VimaxResult<u32> {
-    let video = film_root.join("final_video.mp4");
+    let video = live_final_video_path(film_root);
     if !media_local::is_usable_video_file(&video) {
         return Err(VimaxError::InvalidParams("no film to archive".into()));
     }
@@ -1132,10 +1134,10 @@ pub async fn archive_current_film(
     }
     let dest = films.join(format!("{TAKE_PREFIX}{k}"));
     tokio::fs::create_dir_all(&dest).await?;
-    tokio::fs::copy(&video, dest.join("final_video.mp4")).await?;
-    let cover = film_root.join("cover.png");
+    tokio::fs::copy(&video, dest.join(FINAL_VIDEO_FILENAME)).await?;
+    let cover = film_root.join(FILM_COVER_FILENAME);
     if cover.is_file() {
-        let _ = tokio::fs::copy(&cover, dest.join("cover.png")).await;
+        let _ = tokio::fs::copy(&cover, dest.join(FILM_COVER_FILENAME)).await;
     }
     write_json_artifact(
         &dest.join("manifest.json"),
@@ -1172,7 +1174,7 @@ pub async fn list_films(session_root: &Path, film_root: &Path) -> Vec<FilmInfo> 
         else {
             continue;
         };
-        let video = ent.path().join("final_video.mp4");
+        let video = ent.path().join(FINAL_VIDEO_FILENAME);
         if !media_local::is_usable_video_file(&video) {
             continue;
         }
@@ -1189,20 +1191,140 @@ pub async fn list_films(session_root: &Path, film_root: &Path) -> Vec<FilmInfo> 
 pub async fn promote_film(film_root: &Path, version: u32) -> VimaxResult<PathBuf> {
     let src = film_root_films_dir(film_root)
         .join(format!("{TAKE_PREFIX}{version}"))
-        .join("final_video.mp4");
+        .join(FINAL_VIDEO_FILENAME);
     if !media_local::is_usable_video_file(&src) {
         return Err(VimaxError::InvalidParams(format!(
             "film v{version} is missing"
         )));
     }
-    let dest = film_root.join("final_video.mp4");
+    let dest = live_final_video_path(film_root);
     tokio::fs::copy(&src, &dest).await?;
+    restore_film_cover_from(film_root, &src);
     write_json_artifact(
         &film_root_films_dir(film_root).join(CURRENT_TAKE_FILENAME),
         &TakePointer { take: version },
     )
     .await?;
     Ok(dest)
+}
+
+pub fn live_final_video_path(film_root: &Path) -> PathBuf {
+    film_root.join(FINAL_VIDEO_FILENAME)
+}
+
+fn take_version_from_name(name: &std::ffi::OsStr) -> Option<u32> {
+    name.to_str()?
+        .strip_prefix(TAKE_PREFIX)?
+        .parse::<u32>()
+        .ok()
+}
+
+fn current_film_version_sync(film_root: &Path) -> Option<u32> {
+    let path = film_root_films_dir(film_root).join(CURRENT_TAKE_FILENAME);
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<TakePointer>(&t).ok())
+        .map(|p| p.take)
+}
+
+/// Directory of the current (or latest usable) `films/vN` archive.
+pub fn archived_film_dir_sync(film_root: &Path) -> Option<PathBuf> {
+    let films = film_root_films_dir(film_root);
+    let preferred = current_film_version_sync(film_root);
+    if let Some(k) = preferred {
+        let dir = films.join(format!("{TAKE_PREFIX}{k}"));
+        if media_local::is_usable_video_file(&dir.join(FINAL_VIDEO_FILENAME)) {
+            return Some(dir);
+        }
+    }
+    let rd = std::fs::read_dir(&films).ok()?;
+    let mut best: Option<(u32, PathBuf)> = None;
+    for ent in rd.flatten() {
+        let Some(k) = take_version_from_name(&ent.file_name()) else {
+            continue;
+        };
+        let dir = ent.path();
+        if !media_local::is_usable_video_file(&dir.join(FINAL_VIDEO_FILENAME)) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(n, _)| k > *n) {
+            best = Some((k, dir));
+        }
+    }
+    best.map(|(_, dir)| dir)
+}
+
+fn restore_film_cover_from(film_root: &Path, archived_video: &Path) {
+    let live = film_root.join(FILM_COVER_FILENAME);
+    if media_local::is_usable_image_file(&live) {
+        return;
+    }
+    let src = archived_video
+        .parent()
+        .map(|dir| dir.join(FILM_COVER_FILENAME))
+        .filter(|p| p.is_file());
+    if let Some(src) = src {
+        let _ = std::fs::copy(&src, &live);
+    }
+}
+
+/// Copy `films/vN/final_video.mp4` back to `{film_root}/final_video.mp4` when the
+/// live cut is missing. Director-desk retakes archive then delete the live file;
+/// TV import used to keep only the archive, so publish / the agent film bubble
+/// looked at a path that no longer existed.
+pub fn ensure_live_film_sync(film_root: &Path) -> Option<PathBuf> {
+    let live = live_final_video_path(film_root);
+    if media_local::is_usable_video_file(&live) {
+        return Some(live);
+    }
+    let src_dir = archived_film_dir_sync(film_root)?;
+    let src = src_dir.join(FINAL_VIDEO_FILENAME);
+    if live.exists() {
+        let _ = std::fs::remove_file(&live);
+    }
+    if let Some(parent) = live.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::copy(&src, &live).ok()?;
+    restore_film_cover_from(film_root, &src);
+    media_local::is_usable_video_file(&live).then_some(live)
+}
+
+pub async fn ensure_live_film(film_root: &Path) -> Option<PathBuf> {
+    let live = live_final_video_path(film_root);
+    if media_local::is_usable_video_file(&live) {
+        return Some(live);
+    }
+    let src_dir = archived_film_dir_sync(film_root)?;
+    let src = src_dir.join(FINAL_VIDEO_FILENAME);
+    if live.exists() {
+        let _ = tokio::fs::remove_file(&live).await;
+    }
+    if let Some(parent) = live.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    tokio::fs::copy(&src, &live).await.ok()?;
+    restore_film_cover_from(film_root, &src);
+    media_local::is_usable_video_file(&live).then_some(live)
+}
+
+/// Restore `{artifact_root}/final_video.mp4` (and cover when missing) and return
+/// session-relative paths. Used after TV import and on idle status / publish.
+pub fn restore_session_live_film(
+    working_root: &Path,
+    artifact_root: &str,
+) -> Option<(String, Option<String>)> {
+    let film_root = working_root.join(artifact_root);
+    let live = ensure_live_film_sync(&film_root)?;
+    let video_rel = live
+        .strip_prefix(working_root)
+        .unwrap_or(&live)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let cover = film_root.join(FILM_COVER_FILENAME);
+    let cover_rel = media_local::is_usable_image_file(&cover)
+        .then(|| format!("{artifact_root}/{FILM_COVER_FILENAME}"));
+    Some((video_rel, cover_rel))
 }
 
 pub async fn collect_shot_take_manifest(film_root: &Path) -> Vec<FilmShotTake> {
@@ -1520,5 +1642,73 @@ mod tests {
         assert_eq!(slots.len(), MAX_SHOT_IMAGE_REFS);
         assert!(ensure_ref_slot(&mut slots, 99, false).is_err());
         assert_eq!(next_ref_slot(&slots), (MAX_SHOT_IMAGE_REFS as u32) + 1);
+    }
+
+    fn fake_mp4_bytes(len: usize) -> Vec<u8> {
+        let mut v = vec![0u8; len.max(12)];
+        v[0..4].copy_from_slice(&20u32.to_be_bytes());
+        v[4..8].copy_from_slice(b"ftyp");
+        v[8..12].copy_from_slice(b"isom");
+        v
+    }
+
+    fn write_fake_mp4(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, fake_mp4_bytes(media_local::MIN_USABLE_VIDEO_BYTES as usize)).unwrap();
+    }
+
+    #[test]
+    fn restore_live_film_copies_current_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let film = tmp.path().join("script2video");
+        let archived = film.join("films/v2/final_video.mp4");
+        write_fake_mp4(&archived);
+        std::fs::write(
+            film.join("films/current.json"),
+            r#"{"take":2}"#,
+        )
+        .unwrap();
+        let live = ensure_live_film_sync(&film).expect("restore");
+        assert_eq!(live, film.join(FINAL_VIDEO_FILENAME));
+        assert!(media_local::is_usable_video_file(&live));
+        assert_eq!(
+            restore_session_live_film(tmp.path(), "script2video")
+                .unwrap()
+                .0,
+            "script2video/final_video.mp4"
+        );
+    }
+
+    #[test]
+    fn restore_live_film_falls_back_to_latest_usable_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let film = tmp.path().join("script2video");
+        write_fake_mp4(&film.join("films/v1/final_video.mp4"));
+        std::fs::create_dir_all(film.join("films/v3")).unwrap();
+        std::fs::write(
+            film.join("films/current.json"),
+            r#"{"take":3}"#,
+        )
+        .unwrap();
+        let live = ensure_live_film_sync(&film).expect("v1 fallback");
+        assert!(media_local::is_usable_video_file(&live));
+    }
+
+    #[test]
+    fn restore_live_film_is_noop_when_canonical_cut_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let film = tmp.path().join("script2video");
+        let live_path = film.join(FINAL_VIDEO_FILENAME);
+        let mut live_bytes = fake_mp4_bytes(media_local::MIN_USABLE_VIDEO_BYTES as usize);
+        live_bytes[20] = 1;
+        let mut archive_bytes = fake_mp4_bytes(media_local::MIN_USABLE_VIDEO_BYTES as usize);
+        archive_bytes[20] = 2;
+        std::fs::create_dir_all(film.join("films/v1")).unwrap();
+        std::fs::write(&live_path, &live_bytes).unwrap();
+        std::fs::write(film.join("films/v1/final_video.mp4"), &archive_bytes).unwrap();
+        ensure_live_film_sync(&film).unwrap();
+        assert_eq!(std::fs::read(&live_path).unwrap()[20], 1);
     }
 }
