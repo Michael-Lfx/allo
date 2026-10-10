@@ -138,7 +138,8 @@ flowchart TD
      - 若 ASR 转录文本为空，或有效发音时长 $< 0.4\text{s}$；
      - 或 ASR 置信度分数 $< 0.35$；
      - 或文本仅由无意义助词/吞音构成（如“呃”、“啊”、“哎”）；
-   - 系统**在本地直接归为 `ignore` 丢弃并播放 `sleep.wav`**，0 字节网络上云、0 Token 消耗，杜绝背景杂音碎语泄漏。
+   - 系统**在本地直接归为 `ignore` 丢弃并播放 `sleep.wav`**，0 字节网络上云、0 Token 消耗，杜绝背景杂音碎语泄漏；
+   - 被预筛丢弃的杂音碎片**仅递增本地统计计数器**（供误唤醒/漏唤醒分析），不留存全文、不写入审计表，最小化隐私留存面。
 
 ### 2.4 核心目标 vs. 明确的非目标 (Scope & Non-Goals)
 
@@ -155,7 +156,7 @@ flowchart TD
 1. **纯语音闭环不变量**：AI Mate 是独立的无屏幕伴侣主机，所有正常控制路径均为纯语音与听觉闭环，绝不强行依赖物理按键。
 2. **音频实时线程不变量**：CPAL `data_callback` 线程内**严禁分配内存、严禁持有互斥锁（Mutex）、严禁调用阻塞通道或执行计算密集型重采样**。违者直接引发音频欠载卡顿。
 3. **工具层硬安全不变量**：破坏性操作（`rm`, `drop table`, `kill`, `reboot`, 沙箱逃逸）必须在 **nomifun-ai-agent 工具调度层结构化拦截**，绝不依赖大模型的判决布尔值，也绝不拿自然语言正则当安全防线。
-4. **单源真理不变量**：ASR 原始文本必须由 Rust 声学管线原生截获命名为 `raw_asr_transcript`，永久固化用于审计，绝不允许经过 LLM 润色后覆盖真值。
+4. **单源真理不变量**：经预筛判定为有效的语音指令，其 ASR 原始文本必须由 Rust 声学管线原生截获命名为 `raw_asr_transcript`，永久固化用于审计，绝不允许经过 LLM 润色后覆盖真值（预筛丢弃的杂音碎片仅计数、不留存全文，见 §2.3）。
 5. **接单回执因果性不变量**：口头接单反馈（`spoken_ack`）必须在底层任务队列返回 `Accepted` 后方可发声播报，若提交失败直接播报错误音效，杜绝“嘴上答应了却未进入队列”的虚假承诺。
 
 ---
@@ -167,7 +168,7 @@ flowchart TD
 - **Linux 部署基准 (开箱即用首发)**：
   - 作为 `systemd` 系统服务开机常驻：`/etc/systemd/system/ai-mate.service`；
   - 运行于专用非特权用户 `aimate`，工作目录固定于 `/var/lib/ai-mate/`；
-  - 接入 `systemd` 看门狗机制：每隔 15 秒通过 `libsystemd` / `sd_notify` 发送 `WATCHDOG=1` 心跳，主循环死锁或线程崩塌由系统级看门狗自动杀掉并重启恢复：
+  - 接入 `systemd` 看门狗机制：每隔 15 秒通过 `libsystemd` / `sd_notify` 发送 `WATCHDOG=1` 心跳（心跳周期须显著小于 `WatchdogSec`，取约 1/2 安全水位，防止调度抖动误杀），主循环死锁或线程崩塌由系统级看门狗自动杀掉并重启恢复：
     ```ini
     [Unit]
     Description=Flowy AI Mate Voice Companion Daemon
@@ -181,7 +182,7 @@ flowchart TD
     ExecStart=/usr/local/bin/ai-mate --config /etc/ai-mate/config.toml
     Restart=always
     RestartSec=5s
-    WatchdogSec=15s
+    WatchdogSec=30s
 
     [Install]
     WantedBy=multi-user.target
@@ -234,8 +235,9 @@ pub enum CaptureReadResult {
 
 ### 3.3 唤醒词 KWS 与 SenseVoice ASR 契约
 1. **KWS 模型选型与演进路线**：
-   - **Phase 0 锁定基准**：选用 Sherpa-ONNX 官方预训练的英文 BPE 模型（如 `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2023-12-05`，模型文件约 13MB，参数量 3.3M），专门用于英文标准唤醒词 **`Hey Flowy`**；
-   - **未来演进路径**：若后续版本需要支持中文唤醒词（如“小流同学”），在架构中**并行运行双 KWS 引擎实例**（1 个英文 BPE 实例 + 1 个中文 CJKChar 实例，各占用约 15MB 内存，多核 CPU 增量开销 $< 2\%$），无需推翻已有声学管线；
+   - **Phase 0 锁定基准**：选用 Sherpa-ONNX 官方预训练的英文 BPE 模型 **`sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01`**（发布包约 17MB，含 fp32 与 int8 量化变体，参数量 3.3M；下载自官方 GitHub `kws-models` Release 或 ModelScope 镜像），专门用于英文标准唤醒词 **`Hey Flowy`**；
+     - *合规备注*：该模型的上游训练工程（icefall）为 Apache-2.0，但 Release 模型资产尚无显式许可证声明（上游跟踪 issue：k2-fsa/sherpa-onnx#3802），商用发布前须完成许可证确认；
+   - **未来演进路径**：若后续版本需要支持中文唤醒词（如“小流同学”），首选在架构中**并行运行双 KWS 引擎实例**（1 个英文 BPE 实例 + 1 个中文 CJKChar 实例，各占用约 15MB 内存，多核 CPU 增量开销 $< 2\%$），无需推翻已有声学管线；亦可评估官方中英双语单模型 `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20` 作为双实例之外的备选，届时以唤醒召回率实测数据裁决；
    - **关键词源语法规范**：
      ```text
      # keywords_source.txt (由模型 text2token 工具编译生成 keywords.txt)
@@ -301,14 +303,14 @@ pub enum CaptureReadResult {
   ```
 - **四路分流严格行为**：
   1. `intent_type == "ignore"`：假唤醒或无意义环境杂音，播放 `sleep.wav` 静默退回休眠；
-  2. `intent_type == "chat"`：日常打招呼、常识问答，提取 `reply_tts` 直推播放流水线，**端到端延迟 $\le 850\text{ms}$**，完全不惊动 Agent 底座；
+  2. `intent_type == "chat"`：日常打招呼、常识问答，提取 `reply_tts` 直推播放流水线，**声学处理延迟 $\le 850\text{ms}$（口径锚点见 §3.8）**，完全不惊动 Agent 底座；
   3. `intent_type == "task_control"`：控制正在运行的后台任务：
      - 若 `task_control_action == "query_status"`：直接从 Task FSM 提取当前进度，合成口头播报（如：“*当前正在分析第二份日志，预计还需 20 秒*”）；
      - 若 `task_control_action == "cancel_task"`：向 Task FSM 发送中止信号强制杀死任务，播放 `error.wav` 并播报：“*已为您停止当前任务*”；
-  4. `intent_type == "agent_task"`：提交慢轨任务，先过工具调度层安全策略，再异步派发执行。
+  4. `intent_type == "agent_task"`：提交慢轨任务异步派发执行；执行期内每次工具调用均经工具调度层策略引擎结构化拦截（见 §3.6）。
 - **上下文预算与质量指标**：
   - 滑动 3 轮（6 条消息）且总 Token $\le 600$；上下文中仅存口头摘要（Zero Log Contamination）；
-  - **验收指标**：JSON Schema 解析成功率 $\ge 99.5\%$；**四分类意图准确率 $\ge 95.0%$**（在 200 条标注基准测试集上验证）。
+  - **验收指标**：JSON Schema 解析成功率 $\ge 99.5\%$；**四分类意图准确率 $\ge 95.0\%$**（在 200 条标注基准测试集上验证）。
 
 ### 3.5 双解耦状态机与追问免唤醒闭环 (Dual-FSM with Follow-up)
 为了提供行云流水的语音体验，声学交互状态机（Acoustic FSM）正式支持**4 秒温热追问免唤醒倾听窗（Follow-up Window）**与**8 秒安全确认倾听窗**：
@@ -325,14 +327,19 @@ stateDiagram-v2
     DECIDING --> SPEAKING_FAST: intent == chat (流式边合成边发声)
     DECIDING --> SPEAKING_CONTROL: intent == task_control (播报状态或取消回执)
     
-    DECIDING --> AWAITING_CONFIRMATION: 命中高危操作需确认 / 播放 alert.wav
+    DECIDING --> AWAITING_CONFIRMATION: 路由期 LLM 建议高危确认 / 播放 alert.wav
     DECIDING --> DISPATCHING_TASK: intent == agent_task (安全放行)
 
     AWAITING_CONFIRMATION --> LISTENING_CONFIRM: 播报审批提示语，开启 8 秒限时倾听窗
-    LISTENING_CONFIRM --> DISPATCHING_TASK: 识别到 "确认" / 校验单次 Token 成功
+    LISTENING_CONFIRM --> DISPATCHING_TASK: 识别到 "确认" / Token 校验通过 (路由期派发任务 / 执行期恢复挂起调用)
     LISTENING_CONFIRM --> IDLE: 识别到 "取消" 或 8 秒超时 / 播放 error.wav
 
     DISPATCHING_TASK --> IDLE: 任务队列 Accepted，播报 spoken_ack，声学端立即休眠
+
+    IDLE --> SPEAKING_SUMMARY: 后台任务完工事件 (Task FSM 异步通知) / 播放 done.wav
+    SPEAKING_SUMMARY --> FOLLOW_UP_LISTENING: 播报 vocal_summary 完毕，开启 4 秒追问倾听窗
+
+    IDLE --> AWAITING_CONFIRMATION: 执行期 Tool Policy 硬拦截冒泡 / 播放 alert.wav
     
     SPEAKING_FAST --> FOLLOW_UP_LISTENING: 闲聊播报完毕，开启 4 秒追问倾听窗
     SPEAKING_CONTROL --> FOLLOW_UP_LISTENING: 状态播报完毕，开启 4 秒追问倾听窗
@@ -341,6 +348,7 @@ stateDiagram-v2
     FOLLOW_UP_LISTENING --> IDLE: 4 秒内无人声 / 播放轻微 sleep.wav 休眠
 ```
 
+- **确认回路双触发源**：`AWAITING_CONFIRMATION` 有两个入口——路由期（`DECIDING`，LLM 建议 `requires_confirmation`）与执行期（`IDLE`，Tool Policy 硬拦截冒泡）。执行期场景下，用户说出“确认”且单次 Token 校验通过后，**恢复被挂起的工具调用继续执行**，而非重新派发任务；两种场景共享同一个 8 秒限时倾听窗与单次 Token 熔断机制。
 - **追问免唤醒设计价值**：
   - 用户问完“*今天天气怎么样*”，设备回答后，用户可在 4 秒内直接追问“*那明天会下雨吗*”，**无需每次重复喊叫 "Hey Flowy"**；
   - 4 秒超时未开口，设备播放极柔和的休眠提示音后平稳关闭倾听，避免持续收录环境无关噪音。
@@ -455,7 +463,7 @@ $$T_{\text{Speaker_Output}} = T_{\text{VAD_Silence}} + T_{\text{SenseVoice}} + T
 | **D2** | **物理触发方式** | **纯远场语音 "Hey Flowy" 驱动**，无任何物理按键 | ❌ **物理按键/全局热键强绑定**：与无屏幕独立主机硬件形态直接冲突；按键代码仅保留为桌面可选适配器。 |
 | **D3** | **AI SSD 存储定位** | **高速模型与 OS 虚拟内存 (zram/swap) 扩展层** | ❌ **宣传为“等同物理 RAM / 彻底杜绝 OOM / KV Cache 磁盘卸载”**：不符合现代操作系统内存分页原理，脱离硬件科学客观事实。 |
 | **D4** | **麦克风音频采集** | **预分配无锁 SPSC RingBuffer + 独立 Worker 线程** | ❌ **既有 CPAL 回调内加锁重采样**：实时音频回调内分配内存和持有 Mutex 会导致 xrun 杂音、严重卡顿甚至死锁。 |
-| **D5** | **KWS 语法与模型选型** | **Sherpa-ONNX 官方 text2token 规范**：`KEYWORD :boosting #threshold @id`。<br/>**选型与演进固化**：MVP 锁定 Gigaspeech 英文 BPE 模型（3.3M 参数）专跑 `Hey Flowy`；**架构演进明确：未来若增加中文唤醒词，无需推翻现有管线，而是并行拉起第二个独立中文 KWS 引擎实例**（各 ~3.3M 参数 / 15MB 内存，CPU 增量 <2%）。 | ❌ **手写伪格式 `@ 1.0 @ 0.25`**：不符合 Sherpa 词表编译逻辑，导致加载失败或参数无效；<br/>❌ **单模型强行兼容汉英混读**：破坏词表分离度，增加漏唤醒率；<br/>❌ **将双唤醒词误当架构重构**：提前明确双实例演进路径，杜绝未来将其当做推倒重来的新需求争议。 |
+| **D5** | **KWS 语法与模型选型** | **Sherpa-ONNX 官方 text2token 规范**：`KEYWORD :boosting #threshold @id`。<br/>**选型与演进固化**：MVP 锁定 Gigaspeech 英文 BPE 模型（3.3M 参数）专跑 `Hey Flowy`；**架构演进明确：未来若增加中文唤醒词，无需推翻现有管线，而是并行拉起第二个独立中文 KWS 引擎实例**（各 ~3.3M 参数 / 15MB 内存，CPU 增量 <2%）；备选为官方中英双语单模型 `zh-en-3M-2025-12-20`，以 Phase 1 实测裁决。 | ❌ **手写伪格式 `@ 1.0 @ 0.25`**：不符合 Sherpa 词表编译逻辑，导致加载失败或参数无效；<br/>❌ **单模型强行兼容汉英混读**：破坏词表分离度，增加漏唤醒率；<br/>❌ **将双唤醒词误当架构重构**：提前明确双实例演进路径，杜绝未来将其当做推倒重来的新需求争议。 |
 | **D6** | **意图路由调度** | **`qwen3.5-flash` 单次推理四路原子路由** (含 `task_control` 与实时状态注入) | ❌ **多轮逐步 LLM 调度**：首字延迟叠加到 2~4 秒以上；<br/>❌ **全量丢给底层 Agent**：日常打招呼也启动工具扫描，资源浪费且极慢。 |
 | **D7** | **TTS 架构与播放解耦** | **`TtsProvider` Trait 抽象 + Symphonia MP3 解码 + Edge-TTS 首发** | ❌ **单点死绑 Edge-TTS 逆向接口**：缺乏更换弹性与 SLA 保障；<br/>❌ **强制集成离线 Piper/VITS**：增大包体积 50MB+，跨平台 C++ 依赖复杂，中文机械感重。 |
 | **D8** | **安全拦截抽象层** | **nomifun-ai-agent 工具调度层结构化策略硬引擎** | ❌ **在自然语言层跑 Regex 黑名单**：无法识别语义变形（如“帮我清理上月文件”），且容易在常规对话中误伤。 |
@@ -484,6 +492,7 @@ $$T_{\text{Speaker_Output}} = T_{\text{VAD_Silence}} + T_{\text{SenseVoice}} + T
 | **TC-AM-010** | 脱网错误反馈 | 拔掉设备网线后进行语音唤醒与提问 | ASR 本地转录完成，TTS 连接失败立即播放内嵌 `error.wav`，状态机不卡死 |
 | **TC-AM-011** | 麦克风拔插自愈 | 设备运行中拔出 USB 麦克风再重新插入 | 看门狗捕获断开并在 2 秒内重新绑定系统默认输入源，日志无 panic |
 | **TC-AM-012** | 三端服务常驻 | Linux `systemd`、Windows Service、macOS `launchd` | 开机自启，待机内存常驻 RSS $< 250\text{MB}$，CPU 待机占用 $< 1.5\%$ |
+| **TC-AM-013** | 完工播报与追问 | 后台任务执行完毕，声学端处于 IDLE | 自动播放 `done.wav` 并播报 `vocal_summary`，随后开启 4 秒追问窗，追问无需重喊唤醒词 |
 
 ### 5.2 渐进式阻断验证梯子 (Phase 0 ~ Phase 4 Blocking Gates)
 
@@ -508,7 +517,7 @@ flowchart LR
 #### Phase 1: 本地声学纵向切片 (Local Acoustic Slice CLI)
 * **核心动作**：
   1. 编译运行本地声学测试 CLI；
-  2. 运行脚本由 `tokens.txt` 编译生成标准 `keywords.txt`（仅含单词 `HEY FLOWY`）；
+  2. 以 `keywords_source.txt` 为源文件，借助 KWS 模型 `tokens.txt` 词表经 `text2token` 编译生成标准 `keywords.txt`（仅含单词 `HEY FLOWY`）；
   3. 构建包含中文口音（/floʊi/, /fləʊi/, /fə-lou-yi/）的发音样本集进行校准定标；
   4. 打通本地管线：`CPAL 麦克风 -> 无锁 RingBuffer -> Worker (16kHz f32) -> KWS ("Hey Flowy") -> Silero-VAD -> SenseVoice ASR`。
 * **阻断验收门槛 (Gate 1)**：在目标主机上本地 CLI 稳定运行，`Hey Flowy` 召回率 $\ge 95\%$；**标准背景噪音下连续 2 小时误唤醒严格为 0 次**；ASR 转录 RTF $< 0.25$；基线内存 RSS $< 180\text{MB}$。
