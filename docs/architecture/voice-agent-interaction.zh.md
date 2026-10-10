@@ -25,36 +25,44 @@ Flowy / NomiFun 是一套生产级本地优先自动化与 AI Agent 协作平台
    - 设备首次开机若未检测到配置文件 `/etc/ai-mate/config.toml`，启动临时局域网 mDNS (`ai-mate.local`) 受信 Web 配对服务；
    - **安全防劫持设计**：由于无屏幕显示，AI Mate 开机自检完成后，**通过扬声器主动语音播报一次性 6 位动态配对码**（例如：“*AI Mate 已就绪，配对码为：8-3-9-2-0-1*”）；
    - 用户在手机/电脑浏览器打开配对页面，必须输入该 6 位配对码验证通过后，方可配置 Wi-Fi 凭据与云端 API Key；
-   - 配对码有效期为 10 分钟，连续输错 5 次强制锁定 15 分钟；配对完成后凭据加密存入系统 Keychain / 安全存储，严禁在日志中明文打印。
-
-### 1.2 现状痛点剖析与三大历史矛盾清算
-在方案的多轮演进中，结合对仓库源码与第三方审查报告的静态核验，必须彻底清算并解决以下痛点与历史设计冲突：
-
-1. **矛盾清算一：物理按键 vs. 纯语音无头交互（彻底去除按键依赖）**
-   - *历史冲突*：早期文档曾混杂“物理按键确立安全边界”、“Panic Button 双击急停”、“按键触发打断”等桌面/手持设备残留逻辑，与 AI Mate “无屏幕、无物理按键”的硬件事实产生严重自相矛盾。
-   - *终版裁决*：**AI Mate 为纯远场语音激活产品，无任何物理按键**。所有会话生命周期、任务打断、高危确认均由纯语音状态机（“Hey Flowy”、纯语音澄清、事件驱动声效）驱动；任何物理按键/全局热键代码仅作为未来桌面端 GUI 可选适配器，绝不作为 AI Mate 必备能力。
-2. **矛盾清算二：在线 TTS vs. 离线 TTS（终版收拢为纯在线流式 + 内嵌音效兜底）**
-   - *历史冲突*：既有文档部分章节宣称“彻底摒弃端侧 TTS”，另一些章节又将“离线 Piper/VITS 本地回退”列为必须实现的阶段任务。
-   - *终版裁决*：**AI Mate MVP 明确为“Microsoft Edge-TTS 纯在线流式”主干链路**；当网络断开或 TTS 失败时，降级播放编译期内嵌的 CC0 Earcon 音效（`alert.wav` / `error.wav`）提示网络故障，**暂不引入任何本地 TTS 模型**（消除 50MB+ 模型包袱、ONNX 跨平台编译复杂度与发音生硬问题）。Piper/VITS 仅作为未来可选扩展演进项，不阻塞生产发布。
-3. **矛盾清算三：KWS 关键词规范纠偏与旧模型名称统一**
-   - *历史冲突*：旧章节残留虚构的 `@ 1.0 @ 0.25` 伪语法以及旧模型代号 `qwen3.8-flash` 与脱离实际的 500ms 无条件低延迟承诺。
-   - *终版裁决*：统一模型名称为 **`qwen3.5-flash`**；Sherpa-ONNX KWS 语法严格遵循官方标准：`KEYWORD :boosting_score #threshold @keyword_id`，由官方 `text2token` 工具基于模型词表生成，默认启用唯一标准词 `HEY FLOWY`，并在 Phase 1 建立真实录音测试集实测定标；端到端延迟以真实硬件测试为准，区分 P50 (~850ms) 与 P95 (~1250ms)。
-4. **代码级致命痛点：CPAL 实时音频采集回调的线程安全重构**
-   - 现有 `nomifun-audio` 的 `mic.rs` 在实时音频回调线程中存在锁 Mutex、动态分配、重采样与 `blocking_send()` 调用，且 `read_chunk()` 的 `try_recv()` 导致“暂时无数据”与“通道关闭”语义混淆。必须重构为基于预分配无锁 SPSC 环形缓冲的三级无锁流水线。
-
-### 1.3 能力对比矩阵
-
-| 评估维度 | 传统录音插件 / 历史初稿 | 竞品玩具方案 (如小智等) | AI Mate 生产级终版标准 (本方案) |
-| :--- | :--- | :--- | :--- |
-| **产品形态** | 依赖桌面 GUI 聊天窗口手动操作 | 塑料玩具机器人 / 机械云台 / 小喇叭 | **严肃无屏幕伴侣主机**，开箱即用，Linux / Win / Mac 跨平台 |
-| **硬件触发** | 鼠标点击 / 依赖键盘全局热键 | 触摸唤醒 / 简易 KWS | **纯远场语音 "Hey Flowy"**，零物理按键，抗噪防误唤醒 |
-| **声学驱动底层** | CPAL 回调含锁与内存分配，易 xrun | 阻塞式音频线程，高延迟 | **预分配无锁 SPSC RingBuffer** + 独立 Worker 线程声道/采样率转换 |
-| **意图路由架构** | 全量推给重型 Agent 或多轮 LLM 预处理 | 依赖外部固化云端 SaaS 平台 | **`qwen3.5-flash` 单次推理四路原子路由** (`chat` / `agent_task` / `task_control` / `ignore`) |
-| **交互延迟感** | 录音停止后等 3~5 秒 | 机械式固定延迟，易中断 | **快轨秒回 (<850ms P50)** + 慢轨先行口头接单回执 (Spoken ACK) |
-| **连续对话体验** | 每次说话都要重新点击 | 机械固定等待，易误录杂音 | **4 秒温热追问倾听窗 (Follow-up Window)**，闲聊与完工后无需重喊唤醒词 |
-| **安全审计机制** | 自然语言正则赌用户句式 | 无安全审计，危险指令随意跑 | **nomifun-ai-agent 工具调度层结构化策略硬拦截** + 8秒单次 Token 确认 |
-| **TTS 与离线保障** | 臃肿离线 Piper 或昂贵商业 API | 仅支持公版云端声音 | **TtsProvider 抽象 + Edge-TTS 首发 (Symphonia MP3 解码)** + 内嵌 CC0 音效兜底 |
-| **系统守护可靠性** | 普通控制台前台运行，进程崩溃退出 | 简单 Shell 脚本死循环 | **Linux systemd + sd_notify 硬件看门狗** + Win/Mac 系统级服务 |
+28:    - 配对码有效期为 10 分钟，连续输错 5 次强制锁定 15 分钟；配对完成后凭据加密存入系统 Keychain / 安全存储，严禁在日志中明文打印。
+29: 5. **模型资产分发交付的场景分化：桌面客户端防膨胀 vs 无屏硬件开箱自愈**：
+30:    - **桌面端 (Flowy React 19 SPA)**：桌面用户主要使用代码、浏览器、文档等核心自动化能力，语音交互属于增量可选特性。若将 ~249MB 的声学模型硬编入安装包，将导致桌面客户端安装包体积从 ~100MB 飙升至 ~350MB+，造成沉重的下载网络门槛与非必要磁盘浪费。因此桌面端采用“核心轻量交付 + 设置/设备页面按需一键下载与可视化进度管理（支持实时百分比、速度、阶段显示与释放删除）”；
+31:    - **无屏伴侣硬件 (AI Mate Appliance)**：无屏无键鼠设备无法依赖人类用鼠标点击 UI 按钮，必须提供“零触控开箱通电即用”体验。系统支持代码/配置声明式开机自启（`/etc/ai-mate/config.toml` 中配置 `auto_download = true`），首次通电自检无模型时自动触发后台下载，并通过 mDNS 配对网页 (`ai-mate.local:8080`) 实时投影下载进度条，同时辅以柔和事件音效与完工语音播报；
+32:    - **底层同一性与离线兼容**：无论桌面端按需下载还是无屏端配置自启，均驱动同一个底层 `ModelManager` 状态机，统一落地于规范目录，并在加载前强制执行 SHA256 密码学校验，全面兼容内网/离线手动 `cp -r` 零网直接部署。
+33: 
+34: ### 1.2 现状痛点剖析与三大历史矛盾清算
+35: 在方案的多轮演进中，结合对仓库源码与第三方审查报告的静态核验，必须彻底清算并解决以下痛点与历史设计冲突：
+36: 
+37: 1. **矛盾清算一：物理按键 vs. 纯语音无头交互（彻底去除按键依赖）**
+38:    - *历史冲突*：早期文档曾混杂“物理按键确立安全边界”、“Panic Button 双击急停”、“按键触发打断”等桌面/手持设备残留逻辑，与 AI Mate “无屏幕、无物理按键”的硬件事实产生严重自相矛盾。
+39:    - *终版裁决*：**AI Mate 为纯远场语音激活产品，无任何物理按键**。所有会话生命周期、任务打断、高危确认均由纯语音状态机（“Hey Flowy”、纯语音澄清、事件驱动声效）驱动；任何物理按键/全局热键代码仅作为未来桌面端 GUI 可选适配器，绝不作为 AI Mate 必备能力。
+40: 2. **矛盾清算二：在线 TTS vs. 离线 TTS（终版收拢为纯在线流式 + 内嵌音效兜底）**
+41:    - *历史冲突*：既有文档部分章节宣称“彻底摒弃端侧 TTS”，另一些章节又将“离线 Piper/VITS 本地回退”列为必须实现的阶段任务。
+42:    - *终版裁决*：**AI Mate MVP 明确为“Microsoft Edge-TTS 纯在线流式”主干链路**；当网络断开或 TTS 失败时，降级播放编译期内嵌的 CC0 Earcon 音效（`alert.wav` / `error.wav`）提示网络故障，**暂不引入任何本地 TTS 模型**（消除 50MB+ 模型包袱、ONNX 跨平台编译复杂度与发音生硬问题）。Piper/VITS 仅作为未来可选扩展演进项，不阻塞生产发布。
+43: 3. **矛盾清算三：KWS 关键词规范纠偏与旧模型名称统一**
+44:    - *历史冲突*：旧章节残留虚构的 `@ 1.0 @ 0.25` 伪语法以及旧模型代号 `qwen3.8-flash` 与脱离实际的 500ms 无条件低延迟承诺。
+45:    - *终版裁决*：统一模型名称为 **`qwen3.5-flash`**；Sherpa-ONNX KWS 语法严格遵循官方标准：`KEYWORD :boosting_score #threshold @keyword_id`，由官方 `text2token` 工具基于模型词表生成，默认启用唯一标准词 `HEY FLOWY`，并在 Phase 1 建立真实录音测试集实测定标；端到端延迟以真实硬件测试为准，区分 P50 (~850ms) 与 P95 (~1250ms)。
+46: 4. **代码级致命痛点：CPAL 实时音频采集回调的线程安全重构**
+47:    - 现有 `nomifun-audio` 的 `mic.rs` 在实时音频回调线程中存在锁 Mutex、动态分配、重采样与 `blocking_send()` 调用，且 `read_chunk()` 的 `try_recv()` 导致“暂时无数据”与“通道关闭”语义混淆。必须重构为基于预分配无锁 SPSC 环形缓冲的三级无锁流水线。
+48: 5. **矛盾清算四：模型分发“一刀切”引发的桌面包体膨胀与无屏黑盒失联矛盾**
+49:    - *历史冲突*：若采用出厂全量死绑打包，桌面端安装包体积膨胀 250MB+ 极大伤害轻量用户体验；若完全依赖运行时静默下载，无屏幕无键盘的主机在断网或慢速网络下成为不可见、不可感知的黑盒死机状态，用户无法判断设备是否存活。
+50:    - *终版裁决*：解耦为“统一底座 + 双场景按需分发”：桌面端在“设置/设备”页面提供带细粒度 SSE 进度流的可视化管理面板；无屏主机通过配置自启并在 Web 配对页投影进度、配以阶段音效感知；两者均支持离线文件直接拷贝，开机 100% 校验哈希，兼顾极速开箱与零包袱交付。
+51: 
+52: ### 1.3 能力对比矩阵
+53: 
+54: | 评估维度 | 传统录音插件 / 历史初稿 | 竞品玩具方案 (如小智等) | AI Mate 生产级终版标准 (本方案) |
+55: | :--- | :--- | :--- | :--- |
+56: | **产品形态** | 依赖桌面 GUI 聊天窗口手动操作 | 塑料玩具机器人 / 机械云台 / 小喇叭 | **严肃无屏幕伴侣主机**，开箱即用，Linux / Win / Mac 跨平台 |
+57: | **硬件触发** | 鼠标点击 / 依赖键盘全局热键 | 触摸唤醒 / 简易 KWS | **纯远场语音 "Hey Flowy"**，零物理按键，抗噪防误唤醒 |
+58: | **声学驱动底层** | CPAL 回调含锁与内存分配，易 xrun | 阻塞式音频线程，高延迟 | **预分配无锁 SPSC RingBuffer** + 独立 Worker 线程声道/采样率转换 |
+59: | **意图路由架构** | 全量推给重型 Agent 或多轮 LLM 预处理 | 依赖外部固化云端 SaaS 平台 | **`qwen3.5-flash` 单次推理四路原子路由** (`chat` / `agent_task` / `task_control` / `ignore`) |
+60: | **交互延迟感** | 录音停止后等 3~5 秒 | 机械式固定延迟，易中断 | **快轨秒回 (<850ms P50)** + 慢轨先行口头接单回执 (Spoken ACK) |
+61: | **连续对话体验** | 每次说话都要重新点击 | 机械固定等待，易误录杂音 | **4 秒温热追问倾听窗 (Follow-up Window)**，闲聊与完工后无需重喊唤醒词 |
+62: | **安全审计机制** | 自然语言正则赌用户句式 | 无安全审计，危险指令随意跑 | **nomifun-ai-agent 工具调度层结构化策略硬拦截** + 8秒单次 Token 确认 |
+63: | **TTS 与离线保障** | 臃肿离线 Piper 或昂贵商业 API | 仅支持公版云端声音 | **TtsProvider 抽象 + Edge-TTS 首发 (Symphonia MP3 解码)** + 内嵌 CC0 音效兜底 |
+64: | **系统守护可靠性** | 普通控制台前台运行，进程崩溃退出 | 简单 Shell 脚本死循环 | **Linux systemd + sd_notify 硬件看门狗** + Win/Mac 系统级服务 |
+65: | **模型分发与运维** | 安装包硬绑几百兆模型膨胀，或静默黑盒下载无进度感知 | 依赖厂商私有云固件，脱网即瘫痪，无法自行替换模型 | **双场景分发架构**：桌面 GUI 设置页按需下载与可视化 SSE 进度；无屏伴侣配置自启 (`auto_download`) + Web/听觉双投影；全平台统一目录 + 离线 `cp -r` 拷贝兼容 + 开机 SHA256 强校验自愈 |
 
 ---
 
@@ -308,6 +316,100 @@ pub enum CaptureReadResult {
   - 若下载过程中发生突发网络中断，自动回退到官方冗余 CDN，支持 `HTTP Range` 断点续传；
   - 下载完成后重新执行 SHA256 校验，校验通过后再交付声学引擎。
 
+#### 4. 双场景触发机制与模型生命周期状态机 (Dual-Scenario Triggers & Lifecycle Management)
+
+为彻底解决“桌面 GUI 防安装包体积膨胀”与“无屏硬件主机通电即用”的场景矛盾，系统构建全平台统一的 `ModelManager` 生命周期状态机，上层驱动双场景分发交互：
+
+```mermaid
+stateDiagram-v2
+    [*] --> NotInstalled: 初始未下载 / 文件缺失
+    NotInstalled --> ProbingSource: 触发安装 (桌面 GUI 点击 / 无屏 auto_download)
+    ProbingSource --> Downloading: 锁定最优加速源 (ModelScope / GitHub)
+    Downloading --> VerifyingSha256: 7 个关键模型文件下载完毕
+    Downloading --> Failed: 网络中断 / 重试超限
+    VerifyingSha256 --> Ready: SHA256 校验 100% 匹配 (mmap 就绪)
+    VerifyingSha256 --> Failed: 哈希不匹配 / 文件损坏
+    Failed --> ProbingSource: 用户重试 / 守护进程重试
+    Ready --> Removing: 桌面端用户主动卸载释放磁盘
+    Removing --> NotInstalled: 目录清理完毕
+    NotInstalled --> VerifyingSha256: 离线直接 cp -r 拷贝后开机自检
+```
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", content = "detail")]
+pub enum ModelInstallState {
+    /// 未安装：本地模型文件缺失或不完整
+    NotInstalled,
+    /// 探针选源中：正在并发探测 ModelScope / GitHub 等镜像源
+    ProbingSource,
+    /// 下载中：包含正在下载文件、字节数进度、百分比、实时下载速度
+    Downloading {
+        current_file: String,
+        file_index: usize,
+        total_files: usize,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+        progress_percent: f32,
+        speed_bytes_per_sec: u64,
+    },
+    /// 密码学哈希自检中：7 个关键模型文件逐个 SHA256 校验
+    VerifyingSha256 {
+        current_file: String,
+        verified_files: usize,
+        total_files: usize,
+    },
+    /// 完全就绪：校验 100% 匹配，可供声学引擎 mmap 安全加载
+    Ready {
+        models_dir: PathBuf,
+        total_size_bytes: u64,
+    },
+    /// 安装或校验失败：包含错误原因与可重试标志
+    Failed {
+        reason: String,
+        recoverable: bool,
+    },
+    /// 正在卸载释放磁盘空间 (桌面端按需触发)
+    Removing,
+}
+```
+
+##### 场景 A：桌面端 GUI 可视化管理面板 (Desktop Settings / Device Page)
+- **设计背景与体验考量**：Flowy 桌面用户大多使用代码、浏览器与文档等核心自动化功能，语音交互属于增量高级特性。为避免让所有桌面用户强制背负 ~249MB 的模型网络流量与磁盘包袱，桌面端安装包保持轻量（~100MB）。
+- **REST API 契约**：
+  - `GET /api/voice/models/status`：获取当前状态（返回 `ModelInstallState`、各模型文件明细与磁盘总占用）；
+  - `POST /api/voice/models/install`：触发按需下载任务（异步启动并幂等防重）；
+  - `GET /api/voice/models/progress`：基于 Server-Sent Events (SSE) 的长连接进度流，向前端实时推送 `ModelInstallState::Downloading` / `VerifyingSha256` 细粒度 DTO（含当前文件名、已下载字节数、百分比 `progress_percent`、实时速度 `speed_bytes_per_sec`）；
+  - `DELETE /api/voice/models`：卸载模型文件并释放磁盘空间（安全删除并重置为 `NotInstalled`）。
+- **前端 Arco / React 19 交互闭环**：
+  - 在“设置 -> 伴侣设备 / 语音交互”专区，未安装时展示卡片：“AI Mate 语音交互套件 (约 249MB)”，附带主操作按钮【下载并启用】；
+  - 用户点击后，按钮进入只读加载态，界面展示实时进度条、下载速度（如 `4.8 MB/s`）与阶段提示文案（如“正在下载 ASR 声学模型 3/7...”、“正在进行 SHA256 完整性校验...”）；
+  - 安装就绪后，切换为“已就绪”绿灯徽标，显示“语音伴侣启用开关”与“释放空间 (卸载)”按钮；
+  - 若突发断网中断，展示重试按钮与明确的错误信息提示，杜绝用户在黑盒中盲目等待。
+
+##### 场景 B：无屏伴侣主机开箱自动触发与 Web/听觉双重投影 (Headless Auto-Provisioning & Dual Projection)
+- **设计背景与体验考量**：AI Mate 硬件盒子无显示屏、无鼠标键盘，无法由人类通过点击 UI 按钮来触发安装。系统必须具备“零触控开箱通电即用”的开箱全自动履约能力。
+- **代码/配置声明式驱动**：
+  - 在伴侣主机系统配置文件 `/etc/ai-mate/config.toml` 中支持声明式选项：
+    ```toml
+    [models]
+    models_dir = "/var/lib/ai-mate/models"
+    auto_download = true           # 首次开机检测无模型时自动触发后台下载
+    probe_timeout_ms = 1500        # 多源探测超时时间
+    prefer_mirror = "auto"         # "auto" | "modelscope" | "github"
+    ```
+  - 宿主服务 `apps/ai-mate` 开机自检：若本地模型缺失或损坏，且 `auto_download = true`，系统自动切入 `ProbingSource` 并进入下载流，无需任何人工干预。
+- **双重感知投影通道 (Web 投影 + 听觉反馈)**：
+  - **通道 1：Web 配对页面投影**：在首次开机 OOBE 局域网配对页面 (`http://ai-mate.local:8080`) 上挂载实时进度挂件。用户在手机浏览器输入 6 位配对码配网时，配对页面通过同一组 SSE 接口无缝投影显示模型下载与校验进度条；
+  - **通道 2：事件驱动听觉反馈**：
+    - 开机开始下载时：扬声器播放一次短促温和的引导音；
+    - 下载完成并通过 SHA256 校验时：扬声器播放 `done.wav`，紧接着**主动语音播报**：“*AI Mate 语音引擎准备就绪，请说 Hey Flowy 唤醒*”；
+    - 下载失败或重试超限时：扬声器播放 `error.wav`，并播报：“*语音模型下载失败，请检查网络连接*”，设备进入待机重试状态。
+
+##### 场景 C：纯内网/离线交付与直接拷贝兼容性 (Air-gapped Direct Copy)
+- 无论是桌面环境还是无屏硬件主机，在涉密局域网、机房离线环境或研发调优时，运维人员可直接将预置完整的 `models/` 目录通过 U 盘或 `scp` 直接复制到统一规范路径；
+- 系统检测到文件存在后，触发 SHA256 校验，校验 100% 通过后瞬间转为 `Ready`，**全过程 0 字节发起外部网络请求**，实现完全脱网即用的企业级离线交付。
+
 ### 3.5 极速单次决策路由与四路结构化契约 (Single-Pass Quad-Route)
 麦克风切出 ASR 文本后，直接向 `qwen3.5-flash` 发起单次请求，输出严格遵循的 JSON Schema 契约：
 
@@ -523,7 +625,7 @@ $$T_{\text{Speaker_Output}} = T_{\text{VAD_Silence}} + T_{\text{SenseVoice}} + T
 | **D10**| **打断与全双工** | **MVP 采用半双工语音控制，Phase 4 探索参考信号 AEC** | ❌ **MVP 强行做无硬件 AEC 的麦克风全双工**：扬声器声音回采自激死循环，Agent 自己跟自己疯狂对话。 |
 | **D11**| **追问免唤醒窗口** | **支持闲聊与任务完工后 4 秒温热追问倾听窗 (Follow-up Window)** | ❌ **每次对话必须喊叫唤醒词**：连续追问体验破碎，人机交互极度机械僵硬。 |
 | **D12**| **无屏 OOBE 安全配对**| **首次开机语音播报 6 位动态配对码，Web 端凭码配置** | ❌ **5 分钟局域网完全裸露开放**：同局域网任何人均可抢先劫持配对设备并注入恶意配置。 |
-| **D13**| **模型分发与校验策略**| **统一目录布局 + 双源智能降级探针 (ModelScope/GitHub) + 离线直接拷贝兼容 + 开机 SHA256 强校验自愈** | ❌ **单源死绑**：国内连不上 GitHub、海外连 ModelScope 慢；<br/>❌ **盲目加载不校验**：下载中断或损坏导致底层 ONNX Runtime Segfault 崩溃；<br/>❌ **私有打包与路径碎片化**：妨碍离线运维直接拷贝统一资源包。 |
+| **D13**| **模型分发与校验策略**| **统一目录布局 + 双场景分发治理 (桌面端 GUI 可视化按需下载 vs 无屏伴侣配置自启与 Web/听觉双投影) + 双源智能降级探针 (ModelScope/GitHub) + 离线直接拷贝兼容 + 开机 SHA256 强校验自愈** | ❌ **桌面端一刀切死绑打包**：强塞 250MB 模型导致轻量自动化用户安装包体积翻倍膨胀；<br/>❌ **无屏端强求图形界面**：无屏幕设备缺少鼠标点击入口导致无法初始化；<br/>❌ **黑盒静默下载**：无进度反馈导致用户在断网或慢速时误判为死机；<br/>❌ **单源死绑与不校验加载**：下载中断或损坏导致底层 ONNX Runtime Segfault 崩溃。 |
 
 ---
 
@@ -546,7 +648,9 @@ $$T_{\text{Speaker_Output}} = T_{\text{VAD_Silence}} + T_{\text{SenseVoice}} + T
 | **TC-AM-011** | 麦克风拔插自愈 | 设备运行中拔出 USB 麦克风再重新插入 | 看门狗捕获断开并在 2 秒内重新绑定系统默认输入源，日志无 panic |
 | **TC-AM-012** | 三端服务常驻 | Linux `systemd`、Windows Service、macOS `launchd` | 开机自启，待机内存常驻 RSS $< 250\text{MB}$，CPU 待机占用 $< 1.5\%$ |
 | **TC-AM-013** | 完工播报与追问 | 后台任务执行完毕，声学端处于 IDLE | 自动播放 `done.wav` 并播报 `vocal_summary`，随后开启 4 秒追问窗，追问无需重喊唤醒词 |
-| **TC-AM-014** | 模型多源与离线拷贝 | 离线手动拷贝统一模型目录至设备，或在线轻量包开机自动探测双源下载 | 手动拷贝后脱网开机校验 100% 通过且 0 网络请求；轻量包开机根据网络测速自动选源，下载后 SHA256 校验通过方可就绪 |
+| **TC-AM-014** | 桌面端可视化模型管理 | 打开设置/伴侣设备页面，点击“下载并启用”，监听 SSE 进度流，下载完成后点击删除释放空间 | SSE 实时返回百分比、实时下载速度与阶段提示；下载完成后 SHA256 校验 100% 通过，状态自动切换为 Ready 并显示绿灯；删除后安全清理模型文件并重置为 NotInstalled |
+| **TC-AM-015** | 无屏主机配置自启与投影 | 在 `/etc/ai-mate/config.toml` 配置 `auto_download = true`，开机启动 | 检测无模型后自动启动后台下载，Web 配对页 (`http://ai-mate.local:8080`) 实时投影进度条；下载完成校验通过播放 `done.wav` 并主动语音播报就绪；下载失败播放 `error.wav` 并口头告警 |
+| **TC-AM-016** | 模型多源与离线脱网直接拷贝 | 离线手动拷贝统一模型目录至设备，或在线轻量包开机自动探测双源下载 | 手动拷贝后脱网开机校验 100% 通过且 0 字节网络请求；在线轻量包开机根据网络测速自动选源 (ModelScope/GitHub)，下载后 SHA256 强校验通过方可交付声学引擎 |
 
 ### 5.2 渐进式阻断验证梯子 (Phase 0 ~ Phase 4 Blocking Gates)
 
@@ -565,16 +669,18 @@ flowchart LR
   1. 重构 `nomifun-audio` 的 `mic.rs`，引入基于 `ringbuf` 的 SPSC 无锁环形缓冲区，将重采样与声道折叠移入独立 Worker 线程；
   2. 改造 `AudioCaptureSource` 导出显式枚举 `CaptureReadResult`，修复 `try_recv()` 语义混淆；
   3. 固定 Sherpa-ONNX 英文 BPE KWS 模型版本，确定 `text2token` 编译工具链；
-  4. 扩充 `nomifun-model-invoke` 支持传入 JSON Schema 结构化约束。
-* **阻断验收门槛 (Gate 0)**：`cargo test -p nomifun-audio` 全部通过；模拟连续 10 分钟音频采集，SPSC 环形缓冲 0 阻塞、0 内存增长、0 xrun 报警；完成模型统一目录结构规范与权威 `checksums.sha256` 清单定义。
+  4. 扩充 `nomifun-model-invoke` 支持传入 JSON Schema 结构化约束；
+  5. 定义 `ModelInstallState` 状态枚举与统一模型存储路径，确定双源镜像地址与校验基准。
+* **阻断验收门槛 (Gate 0)**：`cargo test -p nomifun-audio` 全部通过；模拟连续 10 分钟音频采集，SPSC 环形缓冲 0 阻塞、0 内存增长、0 xrun 报警；完成模型统一目录结构规范与权威 `checksums.sha256` 清单定义，通过 `ModelInstallState` 单元测试。
 
 #### Phase 1: 本地声学纵向切片 (Local Acoustic Slice CLI)
 * **核心动作**：
   1. 编译运行本地声学测试 CLI；
   2. 以 `keywords_source.txt` 为源文件，借助 KWS 模型 `tokens.txt` 词表经 `text2token` 编译生成标准 `keywords.txt`（仅含单词 `HEY FLOWY`）；
   3. 构建包含中文口音（/floʊi/, /fləʊi/, /fə-lou-yi/）的发音样本集进行校准定标；
-  4. 打通本地管线：`CPAL 麦克风 -> 无锁 RingBuffer -> Worker (16kHz f32) -> KWS ("Hey Flowy") -> Silero-VAD -> SenseVoice ASR`。
-* **阻断验收门槛 (Gate 1)**：在目标主机上本地 CLI 稳定运行，`Hey Flowy` 召回率 $\ge 95\%$；**标准背景噪音下连续 2 小时误唤醒严格为 0 次**；ASR 转录 RTF $< 0.25$；基线内存 RSS $< 180\text{MB}$；手动拷贝统一模型目录后离线脱网开机 SHA256 校验 100% 通过且 0 报错；双源网络探测逻辑跑通。
+  4. 打通本地管线：`CPAL 麦克风 -> 无锁 RingBuffer -> Worker (16kHz f32) -> KWS ("Hey Flowy") -> Silero-VAD -> SenseVoice ASR`；
+  5. 验证双场景模型管理逻辑：桌面端 REST/SSE 进度流契约与无屏硬件主机 `auto_download = true` 开箱自愈下载链路。
+* **阻断验收门槛 (Gate 1)**：在目标主机上本地 CLI 稳定运行，`Hey Flowy` 召回率 $\ge 95\%$；**标准背景噪音下连续 2 小时误唤醒严格为 0 次**；ASR 转录 RTF $< 0.25$；基线内存 RSS $< 180\text{MB}$；手动拷贝统一模型目录后离线脱网开机 SHA256 校验 100% 通过且 0 报错；双源网络探测与断点续传逻辑跑通；SSE 进度事件流能正确计算并推送下载百分比与实时速度。
 
 #### Phase 2: 决策与流式发声闭环 (Decision & FastChat Loop)
 * **核心动作**：
@@ -599,5 +705,6 @@ flowchart LR
      - Windows / macOS 打包：集成 Windows Service 与 macOS `launchd` 服务描述符；
   2. 实现 OOBE 语音播报 6 位配对码与局域网 Web 配对服务；
   3. 实现 USB 麦克风拔出重插热插拔自愈看门狗；
-  4. 72 小时长周期真实环境挂机压测。
+  4. 72 小时长周期真实环境挂机压测；
+  5. 验证无屏伴侣开箱通电通过 Web 配对页投影模型下载进度，以及完工播放 `done.wav` 和语音就绪播报的端到端闭环。
 * **阻断验收门槛 (Gate 4)**：Linux / Windows / macOS 三端安装并开机自启验证通过；**72 小时挂机压测误唤醒率 $\le 1$ 次 / 24 小时**且无内存泄漏；USB 麦克风拔出后插回 2 秒内自动恢复唤醒监听。
