@@ -214,6 +214,74 @@ describe("StoreClient · catalog reads", () => {
     expect((await client.installed()).map((entry) => entry.entry_name)).toEqual(["notes", "mail"]);
   });
 
+  /**
+   * The catalogue name and the runtime name are two different things, and only
+   * the second one is what every other surface hands a caller. Real pair: the
+   * entry `fenbi-baokao-decision` installs a server called `fenbi_mcp`.
+   */
+  describe("findByConnector", () => {
+    const connectorItem = item({
+      id: "builtin/fenbi-baokao-decision",
+      entry_name: "fenbi-baokao-decision",
+      kind: "connector",
+      name: "粉笔",
+      installed: true,
+      snapshot_id: "snap-fenbi",
+    });
+    const noteItem = item({
+      id: "market-1/notes",
+      entry_name: "notes",
+      kind: "skill",
+      name: "Release Notes",
+      installed: true,
+      snapshot_id: "snap-notes",
+    });
+    const components = [
+      status([{ id: "comp-fenbi", kind: "connector", name: "fenbi_mcp", state: "disabled" }]),
+      status([{ id: "comp-notes", kind: "skill", name: "notes", state: "installed" }]),
+    ];
+
+    it("finds the owning item from the name the runtime and tool namespace use", async () => {
+      const { host } = fakeHost({ store: [connectorItem, noteItem], statuses: components });
+      const client = new StoreClient(host);
+
+      // The premise: the catalogue cannot answer this by text, because the
+      // connector's runtime name is in none of its fields.
+      expect(await client.search("fenbi_mcp")).toEqual([]);
+
+      const found = await client.findByConnector("fenbi_mcp");
+      expect(found?.entry_name).toBe("fenbi-baokao-decision");
+      // The item is the one `setEnabled` needs, snapshot and all.
+      expect(found?.snapshot_id).toBe("snap-fenbi");
+    });
+
+    it("also accepts the connector id, and never matches a non-connector component", async () => {
+      const { host } = fakeHost({ store: [connectorItem, noteItem], statuses: components });
+      const client = new StoreClient(host);
+      expect((await client.findByConnector("comp-fenbi"))?.entry_name).toBe("fenbi-baokao-decision");
+
+      // A skill component with the same name must not be mistaken for it.
+      const { host: skillHost } = fakeHost({
+        store: [noteItem],
+        statuses: [status([{ id: "comp-fenbi", kind: "skill", name: "fenbi_mcp", state: "installed" }])],
+      });
+      expect(await new StoreClient(skillHost).findByConnector("fenbi_mcp")).toBeNull();
+    });
+
+    it("returns null rather than guessing, and asks nothing for an empty id", async () => {
+      const { host, calls } = fakeHost({
+        store: [noteItem],
+        statuses: [status([{ id: "comp-notes", kind: "skill", name: "notes", state: "installed" }])],
+      });
+      const client = new StoreClient(host);
+      expect(await client.findByConnector("fenbi_mcp")).toBeNull();
+
+      calls.length = 0;
+      expect(await client.findByConnector("  ")).toBeNull();
+      expect(calls).toEqual([]);
+    });
+  });
+
   it("checkUpdates() requires installed AND update_available", async () => {
     const { host } = fakeHost({
       store: [

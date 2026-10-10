@@ -122,6 +122,19 @@ describe("ConnectorDrawer OAuth failure visibility", () => {
     expect(html).not.toContain("drawer-hint is-error");
     expect(html).not.toContain("授权未完成");
   });
+
+  it("states that a flow is running instead of asking for authorization again", () => {
+    // The host reports `authorization_pending` while the flow owns the browser
+    // (`connector/auth/status`). Without it the drawer reads exactly like a
+    // connector nobody has tried to authorize — which is what the user is
+    // already doing in the other window.
+    const html = render(DETAIL, { state: "authorization_pending", error: null });
+
+    expect(html).toContain("认证中");
+    expect(html).not.toContain("需要授权");
+    // The button stays, but not as a second invitation to start another flow.
+    expect(html).toMatch(/disabled="">授权</);
+  });
 });
 
 /** A `token` connector: url-shaped, so its transport-derived `auth_mode` is

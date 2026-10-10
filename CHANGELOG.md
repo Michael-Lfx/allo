@@ -5,6 +5,13 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- A connector authorization page no longer says "Authorization successful!" before the token exchange has happened: the browser is answered once the credential is stored, and a refused exchange (a throttling gateway answering `slow_down`, for example) now shows a "not completed" page with the sanitized reason. Previously a failed login looked finished in the window, so the user closed it and never retried.
+- `connector/auth/status` reports `authorization_pending` while a browser flow for that connector is running — a state the design doc already named but the App Server never reported, so "waiting for the user" and "never started" were the same answer. It outranks the stored credential, is scoped to the connector being authorized (one flow at a time), and disappears with the flow. No field, method, event or fingerprint change: it fills in the existing `state` vocabulary.
+- The Agent Store Web UI shows 「认证中」 on a connector while its authorization is in flight and follows the flow to its outcome, instead of leaving 「需要授权」 up and waiting for a manual refresh.
+- Installing a store entry from the Web UI goes through the SDK's `store.install()` rather than the bare `store/install-entry` verb, so a connector is switched on and probed the same way the SDK does it (the button therefore waits for readiness, up to the SDK's default budget, and a connector that needs authorization returns immediately with that verdict instead of burning it). A connector installed from the store page used to stay 「已禁用」 until someone found the drawer's component switch.
+- `store.findByConnector(connectorId)` finds the `StoreItem` that installed a given connector — by its `id` or its runtime `name` (the entry `fenbi-baokao-decision` installs a server called `fenbi_mcp`, which no catalogue field carries, so `search()` could not answer it), and `StoreOperationOutcome.installedCount` carries the host's own count for `install()` / `update()`.
+- An OAuth dynamic client registration announces the host's own name when `MCP_OAUTH_CLIENT_NAME` is set (it wins over the built-in `Nomifun MCP Client`, and an empty value counts as unset). That string is what the provider's consent page shows the user, so a private deployment no longer has to patch the binary to be named correctly; it applies to clients this host registers itself, and a registration that already exists keeps the name it was created with.
+
 ## v1.6.1 - 2026-10-10
 
 - The desktop companion stays fully on a connected display (including multi-monitor gaps and unplugged screens), shows live module status on the pet, and adds the cream-colored Puff figure with richer motion.

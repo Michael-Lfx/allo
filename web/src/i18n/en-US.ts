@@ -308,6 +308,7 @@ const enUS: Resources = {
     authStartFailed: "Authorization start failed: {{error}}",
     authFailed: "Authorization did not complete: {{error}}",
     authStarted: "Authorization started on the trusted host. Complete it in the browser window that opened.",
+    authPending: "Authorizing…",
     // Credential form and its four-state vocabulary (doc `34` §6.3). The
     // connector's own copy — title, field labels, descriptions, the "where do I
     // get a key" link — arrives with the schema and is not here.

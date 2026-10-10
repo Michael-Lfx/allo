@@ -634,12 +634,20 @@ installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstal
 client.store.list(): Promise<StoreItem[]>
 client.store.search(query, { kind? }): Promise<StoreItem[]>
 client.store.installed(): Promise<StoreItem[]>
+client.store.findByConnector(connectorId): Promise<StoreItem | null>
 client.store.checkUpdates(): Promise<StoreItem[]>        // installed && update_available
 client.store.updateHint(item): "none" | "uninstall_reinstall" | "unknown"
 client.store.install(item, { waitForReady?, timeoutMs?, signal? }): Promise<StoreOperationOutcome>
 client.store.uninstall(item, { componentIds? }): Promise<StoreOperationOutcome>
 client.store.setEnabled(item, enabled, { componentIds? }): Promise<StoreOperationOutcome>
 ```
+
+`findByConnector` 是**反向**那一跳：目录条目里没有任何字段承载它装出来的连接器
+名（真实例子：条目 `fenbi-baokao-decision` / 显示名「粉笔」装出来的 server 叫
+`fenbi_mcp`），所以 `search("fenbi_mcp")` 命中零条，而 `setEnabled` / `uninstall`
+要的恰是 `StoreItem`（要它的 `snapshot_id`）。它走 `installed()` 的每个快照组件
+做**精确**匹配，`id` 与 `name` 两种标识都收；找不到返回 `null`，不猜。`search`
+是**文本**检索，两者回答的不是同一个问题。
 
 两条它自我约束的规则（`store.ts` 模块注释原文）：
 
@@ -657,6 +665,7 @@ snapshotId: string | null;
 reused: boolean;
 components: InstallOutcome[];   // 服务端逐组件结果，逐字
 ok: boolean;                    // errors 为空 且 每个 component.ok
+installedCount?: number;        // 服务端自己的计数；缺席 = 该动词不上报，不是「装了 0 个」
 ready?: boolean;                // 未做就绪检查时 undefined
 readyIssue?: "ready_timeout" | "authorization_required";   // 客户端侧产生
 readyComponentId?: string;

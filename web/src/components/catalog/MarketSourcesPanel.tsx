@@ -360,13 +360,16 @@ export function MarketSourcesPanel() {
     }
   }, [client, pushToast]);
 
-  /** `store/install-entry` for one entry, then re-read both projections. */
+  /** `store.install` for one entry, then re-read both projections. */
   const runEntryInstall = useCallback(async (item: StoreItem) => {
     if (!client) return;
     setStoreInstallBusy(item.id);
     setError(null);
     try {
-      const result = await client.installStoreEntry(item.marketplace_id, item.entry_name);
+      // The SDK's state machine rather than the raw verb: the installer
+      // registers a connector **disabled**, and `store.install` is what switches
+      // it on and probes it once (same reason as the store page's button).
+      const result = await client.store.install(item);
       const [list, store] = await Promise.all([client.listMarketplaces(), client.listStore()]);
       const detail = await client.getMarketplace(item.marketplace_id).catch(() => null);
       if (!activeRef.current) return;

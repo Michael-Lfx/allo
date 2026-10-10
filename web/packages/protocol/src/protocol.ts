@@ -1028,7 +1028,18 @@ export interface ConnectorTool {
 }
 
 export interface OAuthStatusView {
-  state: "authenticated" | "not_authenticated" | "reauthorization_required" | string;
+  /**
+   * `authenticated` | `authorization_pending` | `not_authenticated` |
+   * `reauthorization_required` (the field stays open: a host may report a state
+   * this client predates, and every consumer here treats an unknown one as
+   * "keep waiting" rather than as an answer).
+   *
+   * `authorization_pending` means a browser flow for this connector is running
+   * **right now** — the user may still be in the window. It outranks the stored
+   * credential, because a caller polling for progress is asking "is it running?"
+   * and a credential answers "is the previous one still usable?".
+   */
+  state: "authenticated" | "authorization_pending" | "not_authenticated" | "reauthorization_required" | string;
   error?: string | null;
 }
 

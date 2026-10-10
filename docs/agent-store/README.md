@@ -295,6 +295,17 @@ flowchart TD
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
+## 本轮（2026-10-10 修复连接器 OAuth 的「可见性」与安装反查，尚未发版）
+
+用户一次报了四条连接器问题（安装后禁用查不到、认证页是 workbuddy 品牌、重启后认证页说成功但日志 `slow_down`、github/百度网盘认证 URL 请求失败）。定位后**四条是三个不同的根因**，本轮只做其中已定性的两条（③ 的残余 与 ①），另两条需要先定产品口径：
+
+1. **③ 回调页在说谎（本次修）**：回调的 code 一到就回 `Authorization successful!`，而 `exchange_code` 在它**之后**才跑。被网关按次限流（`slow_down`）的那次登录因此**在用户眼里是成功的**：他关掉窗口、不再重试，而 host 只在 `auth/status.error` 里记着失败。改法：`handle_callback_connection` 返回 `CallbackVisit { code, stream }`（不立即回包），`complete()` 在 token 交换有结果后才写页——成功页 / `Authorization not completed` + 经 `sanitize_oauth_error` 的句子；被拒的回调（CSRF、路径、缺 code/state、无待处理登录）也各回一页面向用户的话（不含期望路径），不再留下空白窗口。理由句由授权服务器响应拼出，故按 HTML 转义。
+2. **③ 的「限流」那一半其实早就修了**：报告针对 `0.1.0-beta.7`（2026-09-20），而「回调端口固定 + 复用已注册 client」是 `eaeebc815`、「`slow_down` 冷却退避」是 `19453ed70`，两者都是 **2026-09-23**（`v1.4.8`）——晚于 beta.7。beta.8 起已生效。本轮在 `06` §7.2 补记冷却的**边界**：冷却表与 `last_login_error` 都是进程内状态，**重启 host 会清空冷却**，所以重启后立刻重试仍可能撞上同一个热计数器。
+3. **③「认证中」状态（本次补）**：`connector/auth/status` 的 `state` 新增 `authorization_pending`——`06` §8 早就列过这个名字，App Server 一直没上报，于是「正在等用户」与「从没发起过」在协议面上是同一个答案。真源是**流程**不是凭据：取登录门闩时置位（冷启动 discovery 期间也算），`complete()` 结束时由 RAII guard 清除（成功/失败/超时/abort 都一样），并**优先于**已存凭据；一次只跑一个流程，所以别的连接器仍答 `not_authenticated`。
+4. **不换指纹的理由（需评审确认）**：`05` 的触发条件列举的是「方法增删改名 / DTO 字段增减 / **事件** Payload 的字段或枚举增减 / 新增服务端主动请求」。本次**不加字段、不加方法、不加事件**，只是既有 `state` 字符串的既有取值域补全（该取值同时在 `oauth_state::AUTHORIZATION_PENDING` 与 `mcp.rs` 的 legacy 状态表里），且所有既有消费者对未知取值都是「继续轮询」而非误判，所以按**不触发**处理并在 `05` §9 写明；若评审要求按「任何 wire 变更」从严，则升 `fp-14` 并把两仓 12 处落点一次改齐。
+5. **① 安装后禁用 + 查不到（本次修）**：两个独立缺陷。a) WebUI 的安装按钮走的是原始动词 `store/install-entry`，**绕过**了 SDK `store.install()` 里「连接器注册出来是 disabled，就绪检查先 enable 再探针」那一步——所以从商店页装出来的连接器停在「已禁用」，只有抽屉的组件开关能开；两个安装入口（商店页、市场管理）都改走 `store.install(item)`。b) 目录条目里**没有**任何字段承载它装出来的连接器名（真实例子：条目 `fenbi-baokao-decision` / 显示名「粉笔」→ server `fenbi_mcp`），于是 `search("fenbi_mcp")` 命中零条，而 `setEnabled`/`uninstall` 要的恰是带 `snapshot_id` 的 `StoreItem`；新增 `store.findByConnector(id)`（走 `installed()` 的每个快照组件做精确匹配，`id` 与 `name` 都收，找不到返回 `null`），并给 `StoreOperationOutcome` 补 `installedCount`（服务端自己的计数，缺席 = 该动词不上报）。
+6. **② 与 ④ 本轮不动（已定性，待口径）**：两者同一个结构缺口——「预注册 OAuth client」今天只有**进程级**环境变量一条路（`MCP_OAUTH_CLIENT_ID`/`SECRET`/`REDIRECT_URI`，全局一份），而 github 与百度网盘不可能共用一个 client。④ 还有一层：两个条目的市场索引都声明 `auth_mode: server-side`，但目录里显示的认证方式是从 transport 推导的（sse/http → `oauth`），于是「平台侧持凭据」的连接器在 UI 里长出一个**必然失败**的「授权」按钮（github 连 RFC 8414 元数据都不发布，流程死在 discovery，浏览器都打不开）。②的 workbuddy 品牌来自「借用了 WorkBuddy 的 client」——fenbi 的地址本身就是 `…/workbuddy/mcp`。我们**拥有**的只有自己那一页回调页与动态注册时上报的 `client_name`：回调页已改（第 1 条），`client_name` 也补上了 `MCP_OAUTH_CLIENT_NAME`（env 优先，默认 `Nomifun MCP Client`）——**但那只在「我们自己注册 client」的那些 provider 上生效**，走平台侧 client（WorkBuddy 那份）的同意页改不动。要真正换成自己的品牌，仍得按连接器声明 client（+ 对无元数据的服务连 authorize/token endpoint 一起声明），或者像 `cli` 连接器那样显式拒绝并给原因；两者都先要一个产品口径。
+
 ## 本轮（2026-10-10 发布 `0.1.0-beta.9`）
 
 按 `25-release-runbook.zh.md` 的 S0–S8 走完一次发版，三个出口全部就绪。本版相对 `beta.8` 的实质增量：

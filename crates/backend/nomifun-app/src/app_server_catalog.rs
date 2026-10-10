@@ -15,7 +15,7 @@ use nomifun_api_types::{
     AppServerConnectorTool, AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult, McpToolResponse,
-    McpTransport,
+    McpTransport, oauth_state,
 };
 use nomifun_app_server::{
     agent_store::AgentStoreConfig, ConnectorAuthProvider, ConnectorCatalogProvider,
@@ -331,6 +331,27 @@ impl AppServerConnectorCatalog {
             Err(_) => None,
         }
     }
+
+    /// The `authorization_pending` view for a connector whose browser flow is
+    /// in flight right now — `None` when none is open.
+    ///
+    /// An open flow outranks the stored credential at every site that reports
+    /// an auth state (`get` / `status` / `auth_status`): a caller watching the
+    /// browser window is asking "is it running?", while a stored credential
+    /// answers "is the previous one still usable?" — during a re-authorization
+    /// the two disagree, and the client polling for progress needs the first
+    /// answer. `06` §8 has named this state since the design; the App Server
+    /// never reported it, so "a login is in progress" and "no login was ever
+    /// started" were the same answer.
+    fn pending_auth_view(&self, transport: &McpTransport) -> Option<AppServerOAuthStatusView> {
+        let url = transport_url(transport)?;
+        self.oauth
+            .login_pending(&url)
+            .then(|| AppServerOAuthStatusView {
+                state: oauth_state::AUTHORIZATION_PENDING.to_owned(),
+                error: None,
+            })
+    }
 }
 
 #[async_trait]
@@ -385,10 +406,15 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
         );
         summary.credential = self.credential_block(&connector_id, &server, principal).await;
         let auth_status = if auth_mode == "oauth" {
-            self.oauth_authenticated(&transport).await.map(|authenticated| AppServerOAuthStatusView {
-                state: if authenticated { "authenticated".into() } else { "not_authenticated".into() },
-                error: None,
-            })
+            match self.pending_auth_view(&transport) {
+                Some(pending) => Some(pending),
+                None => self.oauth_authenticated(&transport).await.map(|authenticated| {
+                    AppServerOAuthStatusView {
+                        state: if authenticated { "authenticated".into() } else { "not_authenticated".into() },
+                        error: None,
+                    }
+                }),
+            }
         } else {
             None
         };
@@ -423,16 +449,19 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
             connector_id,
             status,
             auth_status: if auth_mode == "oauth" {
-                Some(AppServerOAuthStatusView {
-                    state: if authenticated { "authenticated".into() } else {
-                        if status == AppServerConnectorStatus::AuthorizationRequired {
-                            "not_authenticated".into()
-                        } else {
-                            "reauthorization_required".into()
-                        }
-                    },
-                    error: None,
-                })
+                match self.pending_auth_view(&transport) {
+                    Some(pending) => Some(pending),
+                    None => Some(AppServerOAuthStatusView {
+                        state: if authenticated { "authenticated".into() } else {
+                            if status == AppServerConnectorStatus::AuthorizationRequired {
+                                "not_authenticated".into()
+                            } else {
+                                "reauthorization_required".into()
+                            }
+                        },
+                        error: None,
+                    }),
+                }
             } else {
                 None
             },
@@ -598,6 +627,16 @@ impl AppServerConnectorAuth {
 impl ConnectorAuthProvider for AppServerConnectorAuth {
     async fn auth_status(&self, id: &str) -> Result<AppServerOAuthStatusView, AppError> {
         let url = self.remote_url(id).await?;
+        // An open flow outranks the stored credential — see
+        // [`AppServerConnectorCatalog::pending_auth_view`]. This is the method a
+        // client polls while the user is in the browser, so it is the one place
+        // the distinction has to survive.
+        if self.oauth.login_pending(&url) {
+            return Ok(AppServerOAuthStatusView {
+                state: oauth_state::AUTHORIZATION_PENDING.to_owned(),
+                error: None,
+            });
+        }
         let status = self.oauth.check_oauth_status(&url).await.map_err(AppError::from)?;
         if status.authenticated {
             return Ok(AppServerOAuthStatusView {
@@ -1058,5 +1097,103 @@ mod connector_tools_tests {
         assert_eq!(tools[0].input_schema.as_ref(), Some(&first));
         assert!(tools[1].input_schema.is_none());
         assert!(truncated);
+    }
+}
+
+/// The in-flight half of the connector auth surface.
+///
+/// `connector/auth/status` is what a client polls while the user is in the
+/// browser, so "a login is running" must be distinguishable from "no login was
+/// ever started" — and only for the connector that is actually running one.
+#[cfg(test)]
+mod connector_auth_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A bound socket nobody reads from: the flow parks inside discovery, which
+    /// is exactly the window a client polls from. Held by the caller so the port
+    /// stays bound.
+    async fn silent_endpoint() -> (tokio::net::TcpListener, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}/mcp", listener.local_addr().expect("addr"));
+        (listener, url)
+    }
+
+    /// One connector registered over an in-memory database, plus the auth
+    /// provider the App Server answers `connector/auth/*` from.
+    async fn connector(
+        name: &str,
+        url: &str,
+    ) -> (AppServerConnectorAuth, String, McpOAuthService) {
+        let db = nomifun_db::init_database_memory().await.unwrap();
+        let pool = db.pool().clone();
+        // The database handle owns the pool; leaking it keeps the connection
+        // alive for the duration of the test (same shape as the model tests).
+        std::mem::forget(db);
+        let config = McpConfigService::new(std::sync::Arc::new(
+            nomifun_db::SqliteMcpServerRepository::new(pool.clone()),
+        ));
+        let oauth = McpOAuthService::new(
+            std::sync::Arc::new(nomifun_db::SqliteOAuthTokenRepository::new(pool)),
+            reqwest::Client::builder().no_proxy().build().expect("client"),
+        );
+        let created = config
+            .add_server(
+                serde_json::from_value(serde_json::json!({
+                    "name": name,
+                    "transport": { "type": "http", "url": url },
+                }))
+                .expect("request"),
+            )
+            .await
+            .expect("add server");
+        let id = created.mcp_server_id.to_string();
+        (AppServerConnectorAuth::new(config, oauth.clone()), id, oauth)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn auth_status_answers_pending_for_the_connector_being_authorized() {
+        let (_endpoint, url) = silent_endpoint().await;
+        let (authorized, authorized_id, oauth) = connector("fenbi_mcp", &url).await;
+        let (_other, other_url) = silent_endpoint().await;
+        let (idle, idle_id, _other_oauth) = connector("other_mcp", &other_url).await;
+
+        // Nothing started yet: both are simply unauthenticated.
+        assert_eq!(
+            authorized.auth_status(&authorized_id).await.unwrap().state,
+            oauth_state::NOT_AUTHENTICATED
+        );
+
+        let flow = tokio::spawn({
+            let oauth = oauth.clone();
+            let url = url.clone();
+            async move { oauth.begin_login(&url).await }
+        });
+        // The mark is taken before discovery issues its first request, so it is
+        // observable without racing the (silent) endpoint.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !oauth.login_pending(&url) {
+            assert!(tokio::time::Instant::now() < deadline, "the flow never started");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert_eq!(
+            authorized.auth_status(&authorized_id).await.unwrap().state,
+            oauth_state::AUTHORIZATION_PENDING,
+            "the connector with an open browser flow reports that it is running"
+        );
+        assert_eq!(
+            idle.auth_status(&idle_id).await.unwrap().state,
+            oauth_state::NOT_AUTHENTICATED,
+            "another connector must not borrow that flow's state"
+        );
+
+        flow.abort();
+        let _ = flow.await;
+        assert_eq!(
+            authorized.auth_status(&authorized_id).await.unwrap().state,
+            oauth_state::NOT_AUTHENTICATED,
+            "the state is gone with the flow"
+        );
     }
 }

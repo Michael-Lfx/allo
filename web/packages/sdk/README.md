@@ -89,6 +89,13 @@ result.danglingSkills;       // 声明了但本机取不到的技能：{ id, err
 - 没有「更新」动词。`store.checkUpdates()` 只报告哪些条目有新版，`store.updateHint(item)` 告诉你该怎么做——当前是 `"uninstall_reinstall"`：卸载后重装，安装路径会按版本漂移重新导入，取到市场当前版本。
 - 卸载是**可重入**的：产物已不在算成功。部分失败时那些组件保持已安装、`ok: false` 且点名到组件，重试有意义。
 - `store.setEnabled(item, false)` 对技能只翻一个目录层标记，返回 `code: "skill_disable_flag_only"`——技能语料没有启用状态，要让技能离开运行时只能 `uninstall`。这个 code 会原样透出，不会被吞。
+- **手上只有连接器 id 时，用 `store.findByConnector(id)` 拿回那个 `StoreItem`**。目录条目里**没有**任何字段承载它装出来的连接器名：真实例子是条目 `fenbi-baokao-decision`（显示名「粉笔」）装出来的 server 叫 `fenbi_mcp`——`store.search("fenbi_mcp")` 命中零条，而 `setEnabled` / `uninstall` 要的正是 `StoreItem`（要它的 `snapshot_id`）。`findByConnector` 走 `installed()` 的每个快照组件做**精确**匹配，`id` 与 `name` 两种标识都收；找不到返回 `null`，不猜。
+
+  ```ts
+  // 已安装的连接器：`connectors.list()` 给的是 { id, name }，两者都能查。
+  const item = await harness.store.findByConnector("fenbi_mcp");
+  if (item) await harness.store.setEnabled(item, true);
+  ```
 
 规则（P0 实测结论）：
 

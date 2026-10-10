@@ -15,7 +15,7 @@ use oauth2::{
 };
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{debug, info, warn};
 
@@ -68,6 +68,15 @@ const DEFAULT_CALLBACK_PORT: u16 = 41873;
 /// against a counter that is already hot.
 const SLOW_DOWN_COOLDOWN_MS: i64 = 60_000;
 const SLOW_DOWN_MAX_COOLDOWN_MS: i64 = 15 * 60_000;
+
+/// The `client_name` an RFC 7591 registration carries when
+/// `MCP_OAUTH_CLIENT_NAME` is unset.
+///
+/// The name is what an authorization server shows the user on its consent page
+/// ("<name> wants access to …"), so a host that ships under its own brand has to
+/// be able to say so without patching the binary — hence the environment
+/// variable, which wins over this default.
+const DEFAULT_OAUTH_CLIENT_NAME: &str = "Nomifun MCP Client";
 
 // ---------------------------------------------------------------------------
 // Discovery response
@@ -162,6 +171,39 @@ struct PendingLogin {
     registration_id: Option<i64>,
 }
 
+/// The browser's still-open request, held until the flow has an outcome.
+///
+/// The page is answered when the flow **ends**, not when the redirect arrives:
+/// `exchange_code` runs after it and can still fail — a throttling gateway
+/// answering `slow_down` is the live case. Answering the redirect with
+/// "Authorization successful!" made exactly that failure look finished in the
+/// browser, so the user closed the window and never retried, while the host
+/// had a refusal only `auth/status` could show.
+struct CallbackVisit {
+    /// The authorization code the redirect carried.
+    code: String,
+    /// The connection to answer once the exchange has an outcome.
+    stream: TcpStream,
+}
+
+/// Clears the in-flight mark when the flow that set it ends.
+///
+/// A guard rather than explicit clears: `begin_login` has three failure exits
+/// and `complete()` two more, and a mark that outlives its flow would leave
+/// `auth/status` answering `authorization_pending` forever. `Drop` cannot
+/// await, which is why the slot is a `std::sync::Mutex`.
+struct InFlightGuard {
+    slot: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        // A poisoned lock means another thread panicked mid-update; the mark is
+        // still ours to clear, and leaving it set would strand every later read.
+        *self.slot.lock().unwrap_or_else(|error| error.into_inner()) = None;
+    }
+}
+
 /// Cool-down recorded when the token endpoint answered `slow_down`.
 struct Cooldown {
     /// Earliest moment (ms since epoch) at which a new login may be started.
@@ -182,6 +224,26 @@ fn slow_down_cooldown_ms(streak: u32) -> i64 {
 /// Milliseconds → whole seconds to quote in a user-facing message.
 fn seconds_from_ms(ms: i64) -> i64 {
     (ms.max(0) + 999) / 1000
+}
+
+/// Escape the five characters that could end a text node or an attribute.
+///
+/// The callback page embeds a sentence the host built from an authorization
+/// server's response, so the text is untrusted even though it is sanitized:
+/// `sanitize_oauth_error` removes credentials, not markup.
+fn escape_html(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +294,14 @@ pub struct McpOAuthService {
     /// authorization server must not be asked again immediately, and saying so
     /// is the server's own instruction, not a client-side heuristic.
     cooldowns: Arc<Mutex<HashMap<String, Cooldown>>>,
+    /// The server URL whose browser flow holds the login gate right now, if any.
+    ///
+    /// Without it `auth/status` cannot tell "nobody started" from "the user is
+    /// still in the browser": neither has a stored credential, so both answer
+    /// `not_authenticated`. Set as soon as a flow takes the gate — a cold
+    /// discovery is several network round trips the user is already waiting on
+    /// — and cleared by [`InFlightGuard`] when that flow ends, on every path.
+    in_flight: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// Browser-open hook signature (`Fn(&str) + Send + Sync`).
@@ -256,6 +326,9 @@ pub struct OAuthLoginStarted {
     listener: TcpListener,
     /// Held until the flow ends: the shared `pending` slot fits one login.
     gate: OwnedMutexGuard<()>,
+    /// Held until the flow ends: makes `auth/status` answer
+    /// `authorization_pending` for this server URL meanwhile.
+    in_flight: InFlightGuard,
 }
 
 impl OAuthLoginStarted {
@@ -264,27 +337,35 @@ impl OAuthLoginStarted {
     /// so a concurrent start queues behind it instead of stealing the shared
     /// `pending` slot.
     pub async fn complete(self) -> OAuthLoginResponse {
-        // `_gate` is bound (not `_`) so the guard lives until the end of the flow.
+        // `_gate` and `_in_flight` are bound (not `_`) so both live until the
+        // end of the flow: the gate reserves the pending slot, the in-flight
+        // mark is what `auth/status` reports as `authorization_pending`.
         let Self {
             service,
             server_url,
             listener,
             gate: _gate,
+            in_flight: _in_flight,
             ..
         } = self;
 
-        let code = match service.wait_for_callback(listener).await {
-            Ok(code) => code,
+        let visit = match service.wait_for_callback(listener).await {
+            Ok(visit) => visit,
             Err(error) => {
                 service.clear_pending().await;
                 service.remember_login_error(&server_url, &error).await;
+                // A rejection is answered to the browser where it happened (the
+                // only place that still owns the connection); a callback that
+                // never arrived has no window left to report to.
                 return McpOAuthService::failed_login(&error);
             }
         };
 
-        match service.exchange_code(&server_url, code).await {
+        let mut stream = visit.stream;
+        match service.exchange_code(&server_url, visit.code).await {
             Ok(()) => {
                 service.forget_login_error(&server_url).await;
+                McpOAuthService::answer_browser(&mut stream, Ok(())).await;
                 OAuthLoginResponse {
                     success: true,
                     error: None,
@@ -294,6 +375,8 @@ impl OAuthLoginStarted {
             Err(error) => {
                 service.clear_pending().await;
                 service.remember_login_error(&server_url, &error).await;
+                let message = sanitize_oauth_error(&error);
+                McpOAuthService::answer_browser(&mut stream, Err(&message)).await;
                 McpOAuthService::failed_login(&error)
             }
         }
@@ -337,6 +420,7 @@ impl McpOAuthService {
             browser_hook: hook,
             last_login_error: Arc::new(Mutex::new(HashMap::new())),
             cooldowns: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -492,6 +576,12 @@ impl McpOAuthService {
         // guard is *owned* because it outlives this call: it moves into the
         // background half, so the slot stays reserved until the flow ends.
         let gate = self.login_gate.clone().lock_owned().await;
+        // From here to the end of `complete()` this connector is the one being
+        // authorized, and that whole span is what `auth/status` reports as
+        // `authorization_pending` — including the discovery round trips below,
+        // which is the part a user staring at an empty browser is waiting on.
+        // Dropped on every early return, and by `complete()` when it ends.
+        let in_flight = self.begin_in_flight(server_url);
 
         let (authorize_url, listener) = match self.prepare_login_flow(server_url).await {
             Ok(value) => value,
@@ -525,7 +615,32 @@ impl McpOAuthService {
             server_url: server_url.to_owned(),
             listener,
             gate,
+            in_flight,
         })
+    }
+
+    /// Is a browser authorization flow for this server URL in flight right now?
+    ///
+    /// True from the moment the flow takes the login gate — so it covers a cold
+    /// discovery, before any credential or callback exists — until the token
+    /// exchange has an outcome. One flow runs at a time, so a *different*
+    /// connector answers `false` while another one is being authorized.
+    ///
+    /// Not `async` on purpose: the slot is a `std::sync::Mutex` (see
+    /// [`InFlightGuard`]) and the critical section is one comparison.
+    pub fn login_pending(&self, server_url: &str) -> bool {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_deref()
+            == Some(server_url)
+    }
+
+    /// Take the in-flight mark for `server_url`; the returned guard clears it.
+    fn begin_in_flight(&self, server_url: &str) -> InFlightGuard {
+        *self.in_flight.lock().unwrap_or_else(|error| error.into_inner()) =
+            Some(server_url.to_owned());
+        InFlightGuard { slot: self.in_flight.clone() }
     }
 
     /// Structured, UI-readable failure response without tokens, codes or the
@@ -1041,6 +1156,22 @@ impl McpOAuthService {
             .filter(|value| !value.is_empty())
     }
 
+    /// The `client_name` a dynamic registration announces.
+    ///
+    /// `MCP_OAUTH_CLIENT_NAME` wins over [`DEFAULT_OAUTH_CLIENT_NAME`]: an empty
+    /// or whitespace-only value counts as unset, the same rule every other
+    /// `MCP_OAUTH_*` channel follows. It is read at registration time, so a host
+    /// that sets it **before** a connector is authorized gets its own brand on
+    /// that provider's consent page; an already registered client keeps the name
+    /// it was registered with (the identity is reused, not re-registered).
+    fn registration_client_name() -> String {
+        std::env::var("MCP_OAUTH_CLIENT_NAME")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_OAUTH_CLIENT_NAME.to_owned())
+    }
+
     /// Resolve the client identity for a login flow (design doc §6.1).
     ///
     /// Priority:
@@ -1164,7 +1295,10 @@ impl McpOAuthService {
     ///
     /// Public client (no secret), PKCE-verified authorization code flow
     /// (design doc §6.2). Error classification keeps the UI readable without
-    /// leaking tokens, codes or the full authorization URL.
+    /// leaking tokens, codes or the full authorization URL. The announced
+    /// `client_name` is the host's own brand when it set one
+    /// ([`Self::registration_client_name`]) — it is the string the consent page
+    /// shows the user.
     async fn register_client(
         &self,
         server_url: &str,
@@ -1173,7 +1307,7 @@ impl McpOAuthService {
         resolved: &ResolvedOAuthServer,
     ) -> Result<ClientIdentity, McpError> {
         let payload = serde_json::json!({
-            "client_name": "Nomifun MCP Client",
+            "client_name": Self::registration_client_name(),
             "redirect_uris": [redirect_url],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
@@ -1263,7 +1397,7 @@ impl McpOAuthService {
     /// the port bound for the rest of the process's life, which turns the next
     /// flow into the fallback path: an ephemeral port, i.e. a fresh client
     /// registration for a user who merely left a browser window open.
-    async fn wait_for_callback(&self, listener: TcpListener) -> Result<String, McpError> {
+    async fn wait_for_callback(&self, listener: TcpListener) -> Result<CallbackVisit, McpError> {
         match tokio::time::timeout(
             CALLBACK_TIMEOUT,
             Self::handle_callback_connection(listener, self.pending.clone()),
@@ -1277,6 +1411,43 @@ impl McpOAuthService {
         }
     }
 
+    /// Answer the browser's redirect with the flow's outcome.
+    ///
+    /// The reason is the host's own sanitized sentence
+    /// ([`sanitize_oauth_error`]), HTML-escaped: part of that text is chosen by
+    /// the authorization server, and a loopback page must not let it inject
+    /// markup. The status line stays `200` for a report the browser already
+    /// fetched successfully; whether the *login* succeeded is what the body
+    /// says, and a code cannot carry the reason.
+    async fn answer_browser(stream: &mut TcpStream, outcome: Result<(), &str>) {
+        let (title, detail) = match outcome {
+            Ok(()) => (
+                "Authorization successful!",
+                "You can close this window and return to Nomi.".to_owned(),
+            ),
+            Err(reason) => (
+                "Authorization not completed",
+                format!(
+                    "{} You can close this window and start the authorization again.",
+                    escape_html(reason)
+                ),
+            ),
+        };
+        let body = format!("<html><body><h1>{title}</h1><p>{detail}</p></body></html>");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        );
+        // The window may already be gone (the user navigated away): a failed
+        // write is not a flow failure, and the outcome is reported through
+        // `auth/status` regardless.
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.flush().await;
+    }
+
     /// Handle a single HTTP connection on the callback server.
     ///
     /// Enforces the exact redirect path registered with the authorization
@@ -1284,10 +1455,16 @@ impl McpOAuthService {
     /// callback port), and validates the CSRF state before returning the code
     /// (design doc §7.1). Failed path/state checks do NOT consume the pending
     /// login state.
+    ///
+    /// Every refusal is *answered* on the connection it came in on: the window
+    /// is open in front of the user, and closing it with no body leaves them
+    /// with a browser error and no idea whether the login is still running. The
+    /// success page is not written here — the flow reports its outcome through
+    /// [`Self::answer_browser`] once the exchange has one.
     async fn handle_callback_connection(
         listener: TcpListener,
         pending: Arc<Mutex<Option<PendingLogin>>>,
-    ) -> Result<String, McpError> {
+    ) -> Result<CallbackVisit, McpError> {
         let (mut stream, _) = listener
             .accept()
             .await
@@ -1303,12 +1480,17 @@ impl McpOAuthService {
 
         // Path check against the registered redirect URI before touching the
         // pending state (wrong path → reject, keep state for the real one).
-        let expected_path = {
+        // Read, release the lock, *then* answer: nothing holds `pending` across
+        // the browser write.
+        let known_path = {
             let guard = pending.lock().await;
-            let pending_login = guard
+            guard
                 .as_ref()
-                .ok_or_else(|| McpError::OAuth("No pending login state".to_string()))?;
-            redirect_path(&pending_login.redirect_url)
+                .map(|pending_login| redirect_path(&pending_login.redirect_url))
+        };
+        let Some(expected_path) = known_path else {
+            Self::answer_browser(&mut stream, Err("This authorization is no longer active.")).await;
+            return Err(McpError::OAuth("No pending login state".to_string()));
         };
         let request_path = request
             .lines()
@@ -1320,34 +1502,54 @@ impl McpOAuthService {
             .unwrap_or_default()
             .to_owned();
         if request_path != expected_path {
-            return Err(McpError::UnsupportedAuth(format!(
+            let error = McpError::UnsupportedAuth(format!(
                 "callback path mismatch: expected '{expected_path}', got '{request_path}'"
-            )));
+            ));
+            // The browser-facing sentence names no path: what the redirect
+            // should have been is host configuration, not user information.
+            Self::answer_browser(
+                &mut stream,
+                Err("The authorization response did not come back to this login."),
+            )
+            .await;
+            return Err(error);
         }
 
-        let (code, state) = parse_callback_query(&request)?;
+        let (code, state) = match parse_callback_query(&request) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                Self::answer_browser(
+                    &mut stream,
+                    Err("The authorization response was missing its code or state."),
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
-        // Validate CSRF state.
-        let guard = pending.lock().await;
-        let pending_login = guard
-            .as_ref()
-            .ok_or_else(|| McpError::OAuth("No pending login state".to_string()))?;
-
-        if state != *pending_login.csrf_token.secret() {
-            return Err(McpError::OAuth("CSRF state mismatch".to_string()));
+        // Validate CSRF state. A refusal carries both sentences — the host's own
+        // error (unchanged, so `auth/status.error` reads as before) and the
+        // one the user is shown.
+        let verdict: Result<(), (&str, McpError)> = {
+            let guard = pending.lock().await;
+            match guard.as_ref() {
+                Some(pending_login) if state == *pending_login.csrf_token.secret() => Ok(()),
+                Some(_) => Err((
+                    "The authorization response did not match this login request.",
+                    McpError::OAuth("CSRF state mismatch".to_string()),
+                )),
+                None => Err((
+                    "This authorization is no longer active.",
+                    McpError::OAuth("No pending login state".to_string()),
+                )),
+            }
+        };
+        if let Err((browser_reason, error)) = verdict {
+            Self::answer_browser(&mut stream, Err(browser_reason)).await;
+            return Err(error);
         }
 
-        // Send a success response to the browser.
-        let response = "HTTP/1.1 200 OK\r\n\
-            Content-Type: text/html; charset=utf-8\r\n\
-            Connection: close\r\n\r\n\
-            <html><body><h1>Authorization successful!</h1>\
-            <p>You can close this window and return to Nomi.</p>\
-            </body></html>";
-
-        let _ = stream.write_all(response.as_bytes()).await;
-
-        Ok(code)
+        Ok(CallbackVisit { code, stream })
     }
 
     /// Build a no-redirect reqwest client for OAuth token exchange.
@@ -2073,6 +2275,76 @@ mod tests {
     }
 
     // -- Service behavior tests ----------------------------------------------
+
+    /// The registration name is the host's own brand when it set one, and the
+    /// built-in default otherwise. Only this variable is touched, so the other
+    /// `MCP_OAUTH_*` env tests cannot race with it.
+    #[test]
+    fn the_registration_client_name_prefers_the_environment() {
+        unsafe { std::env::remove_var("MCP_OAUTH_CLIENT_NAME") };
+        assert_eq!(
+            McpOAuthService::registration_client_name(),
+            DEFAULT_OAUTH_CLIENT_NAME
+        );
+
+        unsafe { std::env::set_var("MCP_OAUTH_CLIENT_NAME", "  Acme MCP Client  ") };
+        assert_eq!(
+            McpOAuthService::registration_client_name(),
+            "Acme MCP Client",
+            "the value is trimmed, not used verbatim"
+        );
+
+        // Empty and whitespace-only count as unset, like every other
+        // `MCP_OAUTH_*` channel.
+        unsafe { std::env::set_var("MCP_OAUTH_CLIENT_NAME", "   ") };
+        assert_eq!(
+            McpOAuthService::registration_client_name(),
+            DEFAULT_OAUTH_CLIENT_NAME
+        );
+
+        unsafe { std::env::remove_var("MCP_OAUTH_CLIENT_NAME") };
+    }
+
+    /// The mark is what makes `auth/status` answer `authorization_pending`, so it
+    /// must exist for exactly as long as a flow does.
+    #[tokio::test]
+    async fn the_in_flight_mark_lives_exactly_as_long_as_its_flow() {
+        let svc = McpOAuthService::new(Arc::new(MockTokenRepo), reqwest::Client::new());
+        let url = "https://example.com/mcp";
+        assert!(!svc.login_pending(url), "no flow has started");
+
+        let guard = svc.begin_in_flight(url);
+        assert!(svc.login_pending(url));
+        // One flow at a time: a different connector is not the one being
+        // authorized, and must not borrow this flow's pending state.
+        assert!(!svc.login_pending("https://other.example.com/mcp"));
+
+        drop(guard);
+        assert!(!svc.login_pending(url), "the mark must not outlive the flow");
+    }
+
+    /// `auth/status` reads a different clone than the background task that
+    /// started the flow, so the mark has to be shared rather than per-instance.
+    #[tokio::test]
+    async fn a_clone_reports_the_flow_another_clone_started() {
+        let svc = McpOAuthService::new(Arc::new(MockTokenRepo), reqwest::Client::new());
+        let reader = svc.clone();
+        let _guard = svc.begin_in_flight("https://example.com/mcp");
+        assert!(reader.login_pending("https://example.com/mcp"));
+    }
+
+    /// The callback page embeds a sentence built from an authorization server's
+    /// response: sanitized for credentials, not for markup.
+    #[test]
+    fn escape_html_neutralizes_markup_from_a_server_sentence() {
+        assert_eq!(escape_html("a & b"), "a &amp; b");
+        assert_eq!(escape_html("say \"hi\""), "say &quot;hi&quot;");
+        assert_eq!(
+            escape_html("<script>alert('x')</script>"),
+            "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
+        );
+        assert_eq!(escape_html("plain"), "plain");
+    }
 
     #[tokio::test]
     async fn check_status_no_token_returns_false() {

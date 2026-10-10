@@ -919,6 +919,7 @@ stdio → env：连接器 transport 的 env 原样透传（stdio 无 URL，OAuth
 | RFC 9728 Protected Resource Metadata 发现（GitHub 等现代服务器） | `nomifun-mcp/src/oauth_service.rs::discover_endpoints` / `discover_protected_resource_metadata` |
 | RFC 7591 动态客户端注册 | `register_client`（无注册端点/失败时回退内置 public client） |
 | 预注册 client 通道 | `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` / `MCP_OAUTH_REDIRECT_URI`（env，参考 `mcp-client-oauth` 模式）。默认 callback 固定为 `http://127.0.0.1:41873/callback`（§7.1），因此预注册 client 只把该 URI 登记到服务方即可，无需再设 `MCP_OAUTH_REDIRECT_URI` |
+| 动态注册的展示名 | `MCP_OAUTH_CLIENT_NAME`（env，**优先于**内置默认 `Nomifun MCP Client`）。用户看到的同意页上写的正是这个名字（「<名> 请求访问 …」），所以自建品牌/私有部署不必改二进制；空值或纯空白视为未设。它在**注册时**读取：已注册的 client 会继续沿用注册时的名字（identity 是复用而非重注册），因此要在授权之前设好 |
 | 测试接缝 | `McpOAuthService::new_with_browser_hook`（替代系统浏览器，驱动回调） |
 | 可观测性 | `app_server_catalog.rs::auth_start` 记录每次**请求**与结果（限流类故障要靠尝试次数才读得出来）；`oauth_service` 在 info 级记录 discovery 命中位置与探测次数、client identity（新建/复用 + registration id + redirect URI）、token 存入与刷新——「这次是复用还是重新注册」直接从日志读 |
 
@@ -1245,7 +1246,7 @@ ResolvedOAuthServer
 
 ```json
 {
-  "client_name": "Nomifun MCP Client",
+  "client_name": "<MCP_OAUTH_CLIENT_NAME，未设时为 Nomifun MCP Client>",
   "redirect_uris": ["<实际 callback URI>"],
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],
@@ -1304,7 +1305,7 @@ MCP_OAUTH_REDIRECT_URI=http://127.0.0.1:8989/oauth/callback
 - token 过期前按现有安全窗口刷新。
 - refresh token 无效、client 被撤销或 secret 到期时，清除失效 token 并返回 `reauthorization_required`；保留 registration 是否可复用由服务端错误和期限决定。
 - MCP transport 收到 401 时，调用后端 refresher、更新 Bearer header、重试一次；第二次 401 或 refresh 失败即结束请求。
-- **`slow_down` 是限流信号，不是普通失败**：token endpoint 回 `slow_down`（RFC 8628 的「问得太频繁」，网关常用它做按次限流）时，host 记一段冷却（60s 起、每次连续节流翻倍、上限 15 分钟；一次成功登录清空），冷却期内的 `connector/auth/start` **在任何请求之前**就被拒，错误里给出还要等多久。重试必须是「等一下再试」，不能是「立刻再试」——否则每次重试都在打同一个已经热掉的计数器（`connector/auth/status` 的 `error` 会同时带出这条原因，UI 因此能显示等待时间）。
+- **`slow_down` 是限流信号，不是普通失败**：token endpoint 回 `slow_down`（RFC 8628 的「问得太频繁」，网关常用它做按次限流）时，host 记一段冷却（60s 起、每次连续节流翻倍、上限 15 分钟；一次成功登录清空），冷却期内的 `connector/auth/start` **在任何请求之前**就被拒，错误里给出还要等多久。重试必须是「等一下再试」，不能是「立刻再试」——否则每次重试都在打同一个已经热掉的计数器（`connector/auth/status` 的 `error` 会同时带出这条原因，UI 因此能显示等待时间）。冷却表与 `last_login_error` 都是**进程内**状态（只有 registration 与 token 落库），所以**重启 host 会清空冷却**：重启后立刻重试仍可能撞上同一个还在热的计数器。冷却的边界由此是「同一个进程内」而不是「同一台机器上」。
 
 ### 8. API 与状态机
 
@@ -1338,6 +1339,28 @@ Connector OAuth API 不向 Renderer 返回 client secret、registration access t
 | **浏览器打开之后**（回调超时、CSRF/路径校验失败、token exchange 失败） | `connector/auth/status` 的 `error` | `auth/start` 早已回过 `started`，这是唯一能到达客户端的通道；成功后或 `logout` 后清除。 |
 
 两条通道的文案都经 `sanitize_oauth_error` 生成，不含 token、code 或完整授权 URL。
+
+**浏览器窗口里那一页**（2026-10-10 起）——回调页不再在**拿到 code 的瞬间**就说「授权成功」：
+
+| 时机 | 页面 |
+|---|---|
+| 回调的 code 到达 | **不回包**，连接保持打开（`CallbackVisit`），等 token 交换有结果 |
+| 交换成功、凭据已存储 | `Authorization successful!` + 「可以关掉这个窗口回到 Nomi」 |
+| 交换失败（换 token 被拒、被限流 `slow_down`、回调超时之外的各类失败） | `Authorization not completed` + `sanitize_oauth_error` 的那句话（HTML 转义后展示） |
+| 回调被拒（CSRF/路径不匹配、缺少 code/state、没有待处理的登录） | `Authorization not completed` + 一句面向用户的话（**不含**期望的路径，那是 host 配置） |
+
+之前是先回「Authorization successful!」再做 token 交换，于是被网关按次限流
+（`slow_down: too many OAuth requests`）的那次登录在用户眼里是**成功**的——他关掉
+窗口不再重试，而 host 只在 `auth/status.error` 里记着失败。判据从「code 到了」改成
+「凭据存下了」之后，浏览器这一页与 `auth/status` 说的是同一件事。页面里嵌入的句子
+由授权服务器的响应拼出来，所以按 HTML 转义（`escape_html`）：`sanitize_oauth_error`
+去掉的是凭据，不是标记。
+
+**「正在认证中」现在是可读的**（2026-10-10 起）：`connector/auth/status` 的 `state`
+会在流程持有登录门闩期间返回 `authorization_pending`（本文件 §8 早已列出的状态名，
+App Server 一直没上报）。它的来源是流程本身而非凭据：取门闩时置位（所以**冷启动的
+discovery 期间**也是 pending），`complete()` 结束时由 RAII guard 清除——成功、失败、
+超时、被 abort 都一样。它**优先于**已存凭据，因为轮询者问的是「流程在跑吗」。
 
 ### 9. 实现位置
 
