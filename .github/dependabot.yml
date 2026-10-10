@@ -1,0 +1,26 @@
+# Dependabot 配置（本文件此前不存在，依赖升级只由安全更新触发）。
+#
+# 背景：安全更新默认走 npm 生态，只改 package.json、不重写 bun.lock，
+# 结果 CI 的 `bun install --frozen-lockfile` 报 "lockfile had changes"
+# （见 PR #313）。显式声明 bun 生态后，Dependabot 使用 bun 更新器并同步锁文件。
+#
+# 参考：https://docs.github.com/en/code-security/dependabot/ecosystems-supported-by-dependabot/supported-ecosystems-and-repositories
+version: 2
+
+updates:
+  # 根工作区：bun.lock 覆盖根 package.json 与 ui/
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # 0 = 关闭例行版本升级 PR，只保留安全更新（安全更新不受此上限约束）。
+    # 需要例行升级时改成 3~5，并建议用 groups 合并 minor/patch 以控制噪音。
+    open-pull-requests-limit: 0
+
+  # Agent Store 前端：独立 workspace，自带 web/bun.lock，
+  # CI 同样在 web/ 下执行 `bun install --frozen-lockfile`。
+  - package-ecosystem: "bun"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
