@@ -61,7 +61,10 @@ function parseJsonValue(text: string): unknown {
 }
 
 function repairJsonText(source: string) {
-    let text = source.replace(/,\s*([}\]])/g, "$1").replace(/\bundefined\b/g, "null");
+    let text = source
+        .replace(/,\s*([}\]])/g, "$1")
+        .replace(/\bundefined\b/g, "null")
+        .replace(/""([A-Za-z_][\w]*)"\s*:/g, '"$1":');
     if (isInsideString(text)) text += '"';
     text = text.replace(/,\s*([}\]])/g, "$1");
     const stack: Array<"{" | "["> = [];

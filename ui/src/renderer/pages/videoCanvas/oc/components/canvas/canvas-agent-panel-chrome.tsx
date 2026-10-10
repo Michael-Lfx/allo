@@ -75,10 +75,15 @@ export function AgentPanelChrome({
                     </CanvasChromeButton>
                     <CanvasChromeButton
                         aria-pressed={confirmTools}
-                        style={{ color: theme.node.muted }}
+                        style={{ color: confirmTools ? "#d97706" : theme.node.muted, background: confirmTools ? "rgba(217,119,6,.1)" : undefined }}
+                        title={confirmTools
+                            ? canvasT("videoCanvas.agent.confirmBeforeHint", "每步改画布前都会停下等你批准")
+                            : canvasT("videoCanvas.agent.autoRunHint", "图操作自动执行，生成与大删除仍会确认")}
                         onClick={() => onConfirmToolsChange(!confirmTools)}
                     >
-                        {canvasT("videoCanvas.agent.confirmBefore", "Assist")}
+                        {confirmTools
+                            ? canvasT("videoCanvas.agent.confirmBefore", "确认后执行")
+                            : canvasT("videoCanvas.agent.autoRun", "自动执行")}
                     </CanvasChromeButton>
                 </div>
             </div>

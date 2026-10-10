@@ -29,7 +29,7 @@ const WORKING_TEXT_KEY = "videoCanvas.agent.working";
 const WORKING_TEXT_DEFAULT = "正在推演...";
 
 export const AgentChatMessage = memo(function AgentChatMessage({
-    item, theme, user, onRejectTool, onApproveTool }: { item: CanvasAgentChatMessage; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; user: LocalUser | null; onRejectTool?: (id: string) => void; onApproveTool?: (id: string) => void }) {
+    item, theme, user, onRejectTool, onApproveTool, onAlwaysAllowTool }: { item: CanvasAgentChatMessage; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; user: LocalUser | null; onRejectTool?: (id: string) => void; onApproveTool?: (id: string) => void; onAlwaysAllowTool?: (id: string) => void }) {
     useTranslation();
     const isUser = item.role === "user";
     const isSystem = item.role === "system";
@@ -45,7 +45,7 @@ export const AgentChatMessage = memo(function AgentChatMessage({
         );
     }
     if (item.role === "tool") {
-        if (objectField(item.detail, "status") === "pending") return <AgentPendingToolCard summary={item.text} detail={item.detail} theme={theme} onReject={() => onRejectTool?.(item.id)} onApprove={() => onApproveTool?.(item.id)} />;
+        if (objectField(item.detail, "status") === "pending") return <AgentPendingToolCard summary={item.text} detail={item.detail} theme={theme} onReject={() => onRejectTool?.(item.id)} onApprove={() => onApproveTool?.(item.id)} onAlwaysAllow={onAlwaysAllowTool ? () => onAlwaysAllowTool(item.id) : undefined} />;
         return (
             <div className="flex items-start gap-2.5">
                 <AgentAvatar theme={theme} />
@@ -66,7 +66,7 @@ export const AgentChatMessage = memo(function AgentChatMessage({
     );
 });
 
-export function AgentPendingToolCard({ summary, detail, theme, onReject, onApprove }: { summary: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onReject?: () => void; onApprove?: () => void }) {
+export function AgentPendingToolCard({ summary, detail, theme, onReject, onApprove, onAlwaysAllow }: { summary: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onReject?: () => void; onApprove?: () => void; onAlwaysAllow?: () => void }) {
     useTranslation();
     const plan = agentPlanFromDetail(detail);
     return (
@@ -114,14 +114,21 @@ export function AgentPendingToolCard({ summary, detail, theme, onReject, onAppro
                     </div>
                 ) : null}
                 {detail ? <details className="mt-3 pt-1"><summary className="cursor-pointer text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.agent.techDetails", "技术详情")}</summary><AgentDetailBlock detail={detail} theme={theme} /></details> : null}
-                {onReject || onApprove ? (
-                    <div className="mt-4 grid grid-cols-2 gap-2">
-                        <Button danger className="!h-9" icon={<XCircle className="size-4" />} onClick={() => onReject?.()}>
-                            {canvasT("videoCanvas.agent.reject", "拒绝执行")}
-                        </Button>
-                        <Button className="!h-9" icon={<CheckCircle2 className="size-4" />} style={{ borderColor: "rgba(22,163,74,.42)", color: "#16a34a", background: "transparent" }} onClick={() => onApprove?.()}>
-                            {canvasT("videoCanvas.agent.approve", "批准执行")}
-                        </Button>
+                {onReject || onApprove || onAlwaysAllow ? (
+                    <div className="mt-4 flex flex-col gap-2">
+                        <div className="grid grid-cols-2 gap-2">
+                            <Button danger className="!h-9" icon={<XCircle className="size-4" />} onClick={() => onReject?.()}>
+                                {canvasT("videoCanvas.agent.reject", "拒绝执行")}
+                            </Button>
+                            <Button className="!h-9" icon={<CheckCircle2 className="size-4" />} style={{ borderColor: "rgba(22,163,74,.42)", color: "#16a34a", background: "transparent" }} onClick={() => onApprove?.()}>
+                                {canvasT("videoCanvas.agent.approve", "批准执行")}
+                            </Button>
+                        </div>
+                        {onAlwaysAllow ? (
+                            <Button className="!h-9" onClick={() => onAlwaysAllow()}>
+                                {canvasT("videoCanvas.agent.approveAndAuto", "批准并自动执行后续")}
+                            </Button>
+                        ) : null}
                     </div>
                 ) : null}
             </div>
@@ -405,6 +412,7 @@ function toolCardState(title: string, text: string, detail?: unknown) {
     const lower = raw.toLowerCase();
     const tool = String(objectField(detail, "name") || objectField(detail, "tool") || "");
     if (objectField(detail, "status") === "running") return { label: canvasT("videoCanvas.agent.statusRunning", "执行中"), color: "#2563eb", softBg: "rgba(37,99,235,.08)", icon: <LoaderCircle className="size-4 animate-spin" />, isError: false };
+    if (objectField(detail, "status") === "superseded") return { label: canvasT("videoCanvas.agent.statusSuperseded", "已取代"), color: "#64748b", softBg: "rgba(100,116,139,.06)", icon: <Wrench className="size-4" />, isError: false };
     if (objectField(detail, "status") === "noop" || /未生效|无需|没有找到|没有.*可|已存在/.test(raw)) return { label: canvasT("videoCanvas.agent.statusNoop", "未生效"), color: "#d97706", softBg: "rgba(217,119,6,.04)", icon: <CircleAlert className="size-4" />, isError: false };
     if (/拒绝|取消/.test(raw) || lower.includes("rejected")) return { label: canvasT("videoCanvas.agent.statusRejected", "拒绝执行"), color: "#dc2626", softBg: "rgba(220,38,38,.04)", icon: <XCircle className="size-4" />, isError: true };
     if (objectField(detail, "status") === "failed" || /失败|错误/.test(raw) || lower.includes("failed") || lower.includes("error")) return { label: canvasT("videoCanvas.agent.statusFailed", "执行失败"), color: "#dc2626", softBg: "rgba(220,38,38,.04)", icon: <XCircle className="size-4" />, isError: true };

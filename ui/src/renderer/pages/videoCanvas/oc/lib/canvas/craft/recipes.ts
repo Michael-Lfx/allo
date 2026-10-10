@@ -112,10 +112,10 @@ const character: CraftRecipe[] = [
         group: "character",
         zh: "身份锁定",
         en: "Identity lock",
-        jobZh: "重绘光影构图，禁止换脸换衣",
+        jobZh: "重绘光影构图，外貌服装保持同一人",
         jobEn: "Relight and reframe, never recast",
         input: "current",
-        prompt: "基于当前画面重绘：只改构图、光影和镜头，禁止更换脸、发型、服装、年龄和场景身份。主体必须可被认成同一个人。",
+        prompt: "基于当前画面重绘：只改构图、光影和镜头，保持同一张脸、同一发型、同一套服装和同一年龄身份。主体必须可被认成同一个人。",
     }),
 ];
 

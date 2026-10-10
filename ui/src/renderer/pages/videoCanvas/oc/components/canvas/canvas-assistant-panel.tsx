@@ -75,6 +75,12 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     const applyingExternalSessionsRef = useRef(false);
     const chatListRef = useRef<HTMLDivElement>(null);
     const snapshotRef = useRef(snapshot);
+    const sessionsRef = useRef<CanvasAssistantSession[]>(localSessions.length ? localSessions : [createSession()]);
+    const commitSessions = (next: CanvasAssistantSession[] | ((prev: CanvasAssistantSession[]) => CanvasAssistantSession[])) => {
+        const resolved = typeof next === "function" ? next(sessionsRef.current) : next;
+        sessionsRef.current = resolved;
+        setLocalSessions(resolved);
+    };
     const safeSessions = localSessions.length ? localSessions : [createSession()];
     const activeSession = useMemo(() => safeSessions.find((session) => session.id === localActiveSessionId) || safeSessions[0] || null, [localActiveSessionId, safeSessions]);
     const historySessions = safeSessions.filter((session) => session.messages.length > 0);
@@ -89,7 +95,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     const iconButtonStyle = { color: theme.node.muted };
 
     const updateSession = (sessionId: string, updater: (session: CanvasAssistantSession) => CanvasAssistantSession) => {
-        setLocalSessions((prev) => prev.map((session) => (session.id === sessionId ? updater(session) : session)));
+        commitSessions((prev) => prev.map((session) => (session.id === sessionId ? updater(session) : session)));
     };
 
     const appendMessage = (sessionId: string, message: CanvasAssistantMessage) => {
@@ -123,10 +129,10 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
         onExtractFrames,
         appendMessage,
         upsertMessage,
-        getMessageById: (messageId) => safeSessions.flatMap((session) => session.messages).find((item) => item.id === messageId),
-        getSessionByMessageId: (messageId) => safeSessions.find((session) => session.messages.some((item) => item.id === messageId)),
+        getMessageById: (messageId) => sessionsRef.current.flatMap((session) => session.messages).find((item) => item.id === messageId),
+        getSessionByMessageId: (messageId) => sessionsRef.current.find((session) => session.messages.some((item) => item.id === messageId)),
         activateSession: (session) => {
-            setLocalSessions((prev) => (prev.some((item) => item.id === session.id) ? prev : [...prev, session]));
+            commitSessions((prev) => (prev.some((item) => item.id === session.id) ? prev : [...prev, session]));
             setLocalActiveSessionId(session.id);
         },
     });
@@ -143,7 +149,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     useEffect(() => {
         if (!shouldApplyExternalAssistantSessions(sessions, localSessions, activeSessionId, localActiveSessionId)) return;
         applyingExternalSessionsRef.current = true;
-        setLocalSessions(sessions);
+        commitSessions(sessions);
         setLocalActiveSessionId(activeSessionId);
         // 只响应父级会话变化：把 localSessions 放进 deps 会在用户发消息时把本地稿盖回旧父级。
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -210,6 +216,10 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     });
     const stableRejectOnlineTool = useCallback((id: string) => rejectOnlineToolRef.current(id), []);
     const stableApproveOnlineTool = useCallback((id: string) => approveOnlineToolRef.current(id), []);
+    const stableAlwaysAllowOnlineTool = useCallback((id: string) => {
+        setAgentState({ confirmTools: false });
+        approveOnlineToolRef.current(id, { autoFollowup: true });
+    }, [setAgentState]);
 
     const startChatSession = () => {
         if (agentBusy) return;
@@ -219,7 +229,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
             return;
         }
         const session = createSession();
-        setLocalSessions((prev) => [session, ...prev.filter((item) => item.messages.length > 0 || item.id === session.id)]);
+        commitSessions((prev) => [session, ...prev.filter((item) => item.messages.length > 0 || item.id === session.id)]);
         setLocalActiveSessionId(session.id);
         setPrompt("");
         setView("chat");
@@ -229,10 +239,10 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
         const next = safeSessions.filter((session) => !ids.includes(session.id));
         if (!next.length) {
             const session = createSession();
-            setLocalSessions([session]);
+            commitSessions([session]);
             setLocalActiveSessionId(session.id);
         } else {
-            setLocalSessions(next);
+            commitSessions(next);
             setLocalActiveSessionId(localActiveSessionId && ids.includes(localActiveSessionId) ? next[0].id : localActiveSessionId);
         }
         cleanupImages({ sessions: next });
@@ -240,7 +250,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
 
     const clearSessions = () => {
         const session = createSession();
-        setLocalSessions([session]);
+        commitSessions([session]);
         setLocalActiveSessionId(session.id);
         cleanupImages({ sessions: [session] });
     };
@@ -326,6 +336,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
                         onSelectPrompt={setPrompt}
                         onRejectTool={stableRejectOnlineTool}
                         onApproveTool={stableApproveOnlineTool}
+                        onAlwaysAllowTool={stableAlwaysAllowOnlineTool}
                     />
                 )}
             </div>

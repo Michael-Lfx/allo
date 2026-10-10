@@ -253,7 +253,7 @@ function layoutWorkflowNodes(
     });
 }
 
-function nodeTypeForWorkflowKind(kind: CanvasWorkflowNodeKind) {
+export function nodeTypeForWorkflowKind(kind: CanvasWorkflowNodeKind) {
     if (kind === "script") return CanvasNodeType.Script;
     if (kind === "image" || kind === "character_cards" || kind === "character_three_view") return CanvasNodeType.Image;
     if (kind === "video" || kind === "storyboard_video") return CanvasNodeType.Video;

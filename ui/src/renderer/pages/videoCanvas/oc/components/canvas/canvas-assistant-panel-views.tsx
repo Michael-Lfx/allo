@@ -148,6 +148,7 @@ export function AssistantChatMessages({
     onSelectPrompt,
     onRejectTool,
     onApproveTool,
+    onAlwaysAllowTool,
 }: {
     messages: CanvasAssistantMessage[];
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
@@ -158,6 +159,7 @@ export function AssistantChatMessages({
     onSelectPrompt: (text: string) => void;
     onRejectTool?: (id: string) => void;
     onApproveTool?: (id: string) => void;
+    onAlwaysAllowTool?: (id: string) => void;
 }) {
     // 映射结果按 messages 身份缓存；chat 项引用稳定后，流式只重渲变化的那条。
     const chatMessagePairs = useMemo(() => messages.map((message) => ({ chat: assistantMessageToChatMessage(message), message })), [messages]);
@@ -169,7 +171,7 @@ export function AssistantChatMessages({
         <>
             {chatMessagePairs.map(({ chat, message }) => (
                 <div key={chat.id} className="space-y-2">
-                    <AgentChatMessage item={chat} theme={theme} user={user} onRejectTool={onRejectTool} onApproveTool={onApproveTool} />
+                    <AgentChatMessage item={chat} theme={theme} user={user} onRejectTool={onRejectTool} onApproveTool={onApproveTool} onAlwaysAllowTool={onAlwaysAllowTool} />
                     {message.references?.length ? <MessageReferences message={message} /> : null}
                 </div>
             ))}

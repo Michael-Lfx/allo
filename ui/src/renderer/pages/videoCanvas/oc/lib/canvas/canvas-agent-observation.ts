@@ -1,5 +1,6 @@
 import { buildCanvasAgentAliasMap, canvasAgentNodeChangeKind, canvasAgentShortId } from "./canvas-agent-ids";
-import { hashCanvasAgentSnapshot, type CanvasAgentPostcondition, type CanvasAgentSnapshot } from "./canvas-agent-ops";
+import { findCanvasNodeOverlaps, hashCanvasAgentSnapshot, type CanvasAgentPostcondition, type CanvasAgentSnapshot } from "./canvas-agent-ops";
+import { canvasAgentGoalStillOpen, canvasAgentIdleMedia, canvasAgentMissingFilmNodes, canvasAgentModerationBlocked, type CanvasAgentGoalHint } from "./canvas-agent-policy";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
 export const CANVAS_AGENT_CODES = {
@@ -39,6 +40,7 @@ export type CanvasAgentObservation = {
     queue: CanvasAgentQueueItem[];
     ready: CanvasAgentQueueItem[];
     failed: CanvasAgentQueueItem[];
+    idle: CanvasAgentQueueItem[];
     diff: { new: string[]; modified: string[] };
     warnings: string[];
     incomplete: boolean;
@@ -47,20 +49,29 @@ export type CanvasAgentObservation = {
 const BUSY = new Set(["pending", "loading", "queued", "running", "processing"]);
 const FAILED = new Set(["error", "failed", "cancelled", "canceled"]);
 
-export function buildCanvasAgentObservation(snapshot: CanvasAgentSnapshot, previous?: CanvasAgentSnapshot | null): CanvasAgentObservation {
+export function buildCanvasAgentObservation(snapshot: CanvasAgentSnapshot, previous?: CanvasAgentSnapshot | null, goal?: CanvasAgentGoalHint): CanvasAgentObservation {
     const aliases = buildCanvasAgentAliasMap(snapshot.nodes);
     const previousById = new Map((previous?.nodes || []).map((node) => [node.id, node]));
     const items = snapshot.nodes.map((node) => toQueueItem(node, aliases));
     const queue = items.filter((item) => BUSY.has(item.status));
     const failed = items.filter((item) => FAILED.has(item.status));
     const ready = items.filter((item) => item.ready);
+    const idleNodes = canvasAgentIdleMedia(snapshot);
+    const idleIds = new Set(idleNodes.map((node) => node.id));
+    const idle = items.filter((item) => idleIds.has(item.id));
     const diff = {
         new: snapshot.nodes.filter((node) => canvasAgentNodeChangeKind(previousById.get(node.id), node) === "new").map((node) => `${canvasAgentShortId(node.id, aliases)}:${node.title || node.type}`),
         modified: snapshot.nodes.filter((node) => canvasAgentNodeChangeKind(previousById.get(node.id), node) === "modified").map((node) => `${canvasAgentShortId(node.id, aliases)}:${node.title || node.type}`),
     };
+    const overlapWarnings = findCanvasNodeOverlaps(snapshot.nodes);
+    const goalOpen = goal ? canvasAgentGoalStillOpen(snapshot, goal) : false;
     const warnings = [
         ...(failed.length ? [`${failed.length} 个节点生成失败，先 canvas_critique 再 canvas_repair，不要整图重来。`] : []),
         ...(queue.length ? [`${queue.length} 个生成任务仍在队列中，不要把未就绪资源当成完成。`] : []),
+        ...(idle.length && goalOpen ? [`${idle.length} 个媒体节点仍 idle。请 canvas_run，不要宣称完成。`] : []),
+        ...(goal && canvasAgentModerationBlocked(snapshot) ? ["内容审核未通过且提示词未改。禁止 canvas_run / repair rerun，不要再请求确认。"] : []),
+        ...(goal?.production && canvasAgentMissingFilmNodes(snapshot) && !canvasAgentModerationBlocked(snapshot) ? ["分镜已在但还没有镜头视频/成片节点。继续补镜头，不要停止。"] : []),
+        ...(overlapWarnings.length ? [`${overlapWarnings.length} 组节点重叠。用 patches.position 移动现有节点，禁止 deleteIds 后重建副本。`] : []),
         ...((snapshot.selectedNodeIds || []).length ? ["当前选区已在观察中，优先复用选中节点。"] : []),
     ];
     return {
@@ -76,9 +87,10 @@ export function buildCanvasAgentObservation(snapshot: CanvasAgentSnapshot, previ
         queue,
         ready,
         failed,
+        idle,
         diff,
         warnings,
-        incomplete: queue.length > 0,
+        incomplete: goalOpen && queue.length === 0,
     };
 }
 
@@ -118,12 +130,15 @@ export function observationPromptBlock(observation: CanvasAgentObservation) {
         observation.failed.length
             ? `失败：${observation.failed.map((item) => `${item.shortId} ${item.status}`).join("；")}`
             : "失败：无",
+        observation.idle.length
+            ? `idle：${observation.idle.map((item) => item.shortId).join(", ")}`
+            : "idle：无",
         ...observation.warnings,
-        observation.incomplete ? `code=${CANVAS_AGENT_CODES.GOAL_INCOMPLETE} 生成未结束，不要对用户宣称已完成。` : "",
+        observation.incomplete ? `code=${CANVAS_AGENT_CODES.GOAL_INCOMPLETE} 任务未完成，不要对用户宣称已完成。` : "",
     ].filter(Boolean).join("\n");
 }
 
-export function compactWriteToolData(verification: CanvasAgentPostcondition, snapshot: CanvasAgentSnapshot, previous?: CanvasAgentSnapshot | null) {
+export function compactWriteToolData(verification: CanvasAgentPostcondition, snapshot: CanvasAgentSnapshot, previous?: CanvasAgentSnapshot | null, goal?: CanvasAgentGoalHint) {
     const aliases = buildCanvasAgentAliasMap(snapshot.nodes);
     const code = writeResultCode(verification);
     return {
@@ -143,7 +158,7 @@ export function compactWriteToolData(verification: CanvasAgentPostcondition, sna
             message: item.message,
         })),
         warnings: verification.warnings.slice(0, 6),
-        observation: buildCanvasAgentObservation(snapshot, previous),
+        observation: buildCanvasAgentObservation(snapshot, previous, goal),
     };
 }
 

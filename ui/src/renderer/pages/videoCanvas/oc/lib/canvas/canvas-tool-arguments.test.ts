@@ -45,6 +45,13 @@ describe("parseToolArguments", () => {
         expect(parseToolArguments(null)).toEqual({});
     });
 
+    test("repairs doubled quotes on object keys", () => {
+        expect(parseToolArguments('{"kind":"image", ""prompt": "同一角色表情"}')).toEqual({
+            kind: "image",
+            prompt: "同一角色表情",
+        });
+    });
+
     test("rejects non-object JSON that cannot be repaired into an object", () => {
         expect(throws(() => parseToolArguments("[1,2]"))).toBe(true);
         expect(throws(() => parseToolArguments("not json"))).toBe(true);

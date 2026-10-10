@@ -1,6 +1,13 @@
 import { buildCanvasAgentPlan } from "./canvas-agent-plan";
 import { buildCanvasAgentAliasMap, canvasAgentShortId, resolveCanvasAgentNodeId, resolveCanvasAgentNodeIds } from "./canvas-agent-ids";
 import { videoEditOperationForKeyframeCount } from "@oc/services/api/video-reference-roles";
+import {
+    APPLY_ALREADY_SATISFIED_MESSAGE,
+    compileCanvasLayoutOps,
+    extractPatchGeometry,
+    looksLikeCanvasLayoutRequest,
+    shouldCompileCanvasApplyAsLayout,
+} from "./canvas-agent-layout";
 import { buildCanvasWorkflowOps, prefixCanvasNodeMentions, type CanvasWorkflowInput, type CanvasWorkflowNodeInput } from "./canvas-agent-workflow";
 import { findCanvasAgentNodes, getCanvasAgentNode, getCanvasAgentResources } from "./canvas-agent-context";
 import {
@@ -14,6 +21,10 @@ import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 import type { AiConfig } from "@oc/stores/use-config-store";
 import { resolveCreationIr, summarizeCreationForAgent } from "@renderer/pages/videoCanvas/lib/creation-ir";
 import { CREATION_INSPECT_FOCUS, summarizeCreationDomain } from "./creation-agent-intent";
+import { unchangedModeratedPrompt } from "@oc/lib/generation-error";
+
+export const CANVAS_AGENT_BUSY_RERUN_MESSAGE = "指定节点仍在生成中，不要再次 canvas_run / repair rerun。";
+export const CANVAS_AGENT_MODERATION_RERUN_MESSAGE = "内容审核未通过且提示词未改，不要 rerun。请先修改 prompt。";
 
 export type CanvasApplyPatch = {
     id: string;
@@ -21,6 +32,11 @@ export type CanvasApplyPatch = {
     content?: string;
     prompt?: string;
     seconds?: string;
+    position?: { x: number; y: number };
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
     metadata?: Record<string, unknown>;
 };
 
@@ -28,6 +44,8 @@ export type CanvasApplyInput = Omit<CanvasWorkflowInput, "nodes"> & {
     nodes?: CanvasWorkflowNodeInput[];
     patches?: CanvasApplyPatch[];
     deleteIds?: string[];
+    nodeIds?: string[];
+    layout?: boolean;
     run?: boolean;
 };
 
@@ -38,10 +56,13 @@ export type CanvasRepairInput = {
     edges?: Array<{ from: string; to: string }>;
 };
 
-export const APPLY_NEEDS_GRAPH_MESSAGE = "canvas_apply 必须带 nodes（以及 edges），或用 patches / deleteIds 改已有节点。只传 description 不会改画布；请按用户目标设计节点后一次性写入，不要先空跑。";
+export const APPLY_NEEDS_GRAPH_MESSAGE = "canvas_apply 必须带 nodes/edges 新建图，或用 patches.position / layout 移动已有节点，或用 deleteIds 删除。只传 description 且不是整理布局时不会改画布。";
 
-export function canvasApplyHasMutation(input: Pick<CanvasApplyInput, "nodes" | "patches" | "edges" | "deleteIds">) {
+export function canvasApplyHasMutation(input: Pick<CanvasApplyInput, "nodes" | "patches" | "edges" | "deleteIds" | "layout" | "nodeIds" | "description">) {
     return Boolean(
+        input.layout === true ||
+        looksLikeCanvasLayoutRequest(input.description || "") ||
+        (Array.isArray(input.nodeIds) && input.nodeIds.length) ||
         (Array.isArray(input.nodes) && input.nodes.length) ||
         (Array.isArray(input.patches) && input.patches.length) ||
         (Array.isArray(input.edges) && input.edges.length) ||
@@ -55,9 +76,15 @@ export function isCanvasApplyNeedsGraphError(error: unknown) {
 }
 
 export function compileCanvasApplyOps(input: CanvasApplyInput, snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentOp[] {
+    if (shouldCompileCanvasApplyAsLayout(input, snapshot)) {
+        return compileCanvasLayoutOps(input, snapshot);
+    }
     const ops: CanvasAgentOp[] = [];
-    const deleteIds = resolveCanvasAgentNodeIds(snapshot, input.deleteIds || []).ids;
-    if (deleteIds.length) ops.push({ type: "delete_node", ids: deleteIds });
+    const resolvedDeletes = resolveCanvasAgentNodeIds(snapshot, input.deleteIds || []);
+    if ((input.deleteIds || []).length && resolvedDeletes.ids.length === 0 && Array.isArray(input.nodes) && input.nodes.length) {
+        throw new Error("deleteIds 已不在画布上，拒绝再创建副本。请 inspect 后用 patches.position 移动现有节点。");
+    }
+    if (resolvedDeletes.ids.length) ops.push({ type: "delete_node", ids: resolvedDeletes.ids });
     for (const patch of input.patches || []) {
         ops.push(patchToOp(snapshot, patch));
     }
@@ -89,7 +116,9 @@ export function compileCanvasApplyOps(input: CanvasApplyInput, snapshot: CanvasA
         }
     }
     if (!ops.length) throw new Error(APPLY_NEEDS_GRAPH_MESSAGE);
-    return ops;
+    const meaningful = dropNoopCanvasUpdateOps(ops, snapshot);
+    if (!meaningful.length) throw new Error(APPLY_ALREADY_SATISFIED_MESSAGE);
+    return meaningful;
 }
 
 export function compileCanvasRunOps(snapshot: CanvasAgentSnapshot, nodeIds?: string[]): CanvasAgentOp[] {
@@ -246,20 +275,35 @@ export function critiqueCanvasOutputs(snapshot: CanvasAgentSnapshot, nodeIds?: s
     };
 }
 
+function canvasNodePrompt(node: CanvasNodeData) {
+    return String(node.metadata?.prompt || node.metadata?.composerContent || node.metadata?.content || "").trim();
+}
+
+function isBusyGeneratingCanvasNode(node: CanvasNodeData) {
+    return ["pending", "loading", "queued", "running", "processing"].includes(String(node.metadata?.status || "idle"));
+}
+
+function isRunnableCanvasTarget(node: CanvasNodeData) {
+    if (!generationModeForNode(node)) return false;
+    if (unchangedModeratedPrompt(node.metadata, canvasNodePrompt(node))) return false;
+    if (isBusyGeneratingCanvasNode(node)) return false;
+    const status = String(node.metadata?.status || "idle");
+    if (status === "success" && (node.metadata?.storageKey || node.metadata?.primaryImageId)) return false;
+    return Boolean(canvasNodePrompt(node));
+}
+
 export function resolveRunTargets(snapshot: CanvasAgentSnapshot, nodeIds?: string[]) {
     if (nodeIds?.length) {
         const resolved = resolveCanvasAgentNodeIds(snapshot, nodeIds);
         if (resolved.missing.length) throw new Error(`找不到节点：${resolved.missing.join(", ")}`);
-        return resolved.ids.map((id) => snapshot.nodes.find((node) => node.id === id)!).filter(Boolean);
+        const nodes = resolved.ids.map((id) => snapshot.nodes.find((node) => node.id === id)!).filter(Boolean);
+        const runnable = nodes.filter(isRunnableCanvasTarget);
+        if (runnable.length) return runnable;
+        if (nodes.some((node) => unchangedModeratedPrompt(node.metadata, canvasNodePrompt(node)))) throw new Error(CANVAS_AGENT_MODERATION_RERUN_MESSAGE);
+        if (nodes.some(isBusyGeneratingCanvasNode)) throw new Error(CANVAS_AGENT_BUSY_RERUN_MESSAGE);
+        throw new Error("没有可生成的节点。请指定 nodeIds，或先 apply 带 prompt 的图片/视频节点。");
     }
-    return snapshot.nodes.filter((node) => {
-        const mode = generationModeForNode(node);
-        if (!mode) return false;
-        const status = String(node.metadata?.status || "idle");
-        if (status === "success" && (node.metadata?.storageKey || node.metadata?.primaryImageId)) return false;
-        if (["pending", "loading", "queued", "running", "processing"].includes(status)) return false;
-        return Boolean(String(node.metadata?.prompt || node.metadata?.composerContent || node.metadata?.content || "").trim());
-    });
+    return snapshot.nodes.filter(isRunnableCanvasTarget);
 }
 
 function rewireReferenceOps(snapshot: CanvasAgentSnapshot, nodeIds?: string[]): CanvasAgentOp[] {
@@ -295,10 +339,16 @@ function rewireReferenceOps(snapshot: CanvasAgentSnapshot, nodeIds?: string[]): 
 
 function resolveRepairRerunTargets(snapshot: CanvasAgentSnapshot, nodeIds?: string[]) {
     if (nodeIds?.length) return resolveRunTargets(snapshot, nodeIds);
-    return snapshot.nodes.filter((node) => {
+    const candidates = snapshot.nodes.filter((node) => {
         const status = String(node.metadata?.status || "idle");
         return Boolean(generationModeForNode(node)) && (status === "error" || status === "failed" || status === "idle");
     });
+    const runnable = candidates.filter(isRunnableCanvasTarget);
+    if (runnable.length) return runnable;
+    if (candidates.some((node) => unchangedModeratedPrompt(node.metadata, canvasNodePrompt(node)))) {
+        throw new Error(CANVAS_AGENT_MODERATION_RERUN_MESSAGE);
+    }
+    return [];
 }
 
 function inferRepairAction(input: CanvasRepairInput) {
@@ -310,17 +360,42 @@ function inferRepairAction(input: CanvasRepairInput) {
 function patchToOp(snapshot: CanvasAgentSnapshot, patch: CanvasApplyPatch): CanvasAgentOp {
     const id = resolveCanvasAgentNodeId(snapshot, patch.id);
     if (!id) throw new Error(`找不到要修补的节点：${patch.id}`);
+    const geometry = extractPatchGeometry(patch);
+    const nodePatch: Partial<CanvasNodeData> = {
+        ...(patch.title ? { title: patch.title } : {}),
+        ...(geometry.position ? { position: geometry.position } : {}),
+        ...(geometry.width != null ? { width: geometry.width } : {}),
+        ...(geometry.height != null ? { height: geometry.height } : {}),
+    };
     return {
         type: "update_node",
         id,
-        patch: patch.title ? { title: patch.title } : undefined,
+        patch: Object.keys(nodePatch).length ? nodePatch : undefined,
         metadata: {
             ...(patch.content !== undefined ? { content: patch.content } : {}),
             ...(patch.prompt !== undefined ? { prompt: patch.prompt, composerContent: patch.prompt } : {}),
             ...(patch.seconds !== undefined ? { seconds: patch.seconds } : {}),
-            ...(patch.metadata || {}),
+            ...geometry.metadata,
         },
     };
+}
+
+function dropNoopCanvasUpdateOps(ops: CanvasAgentOp[], snapshot: CanvasAgentSnapshot) {
+    const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+    const filtered = ops.filter((op) => {
+        if (op.type !== "update_node") return true;
+        const node = nodeById.get(op.id);
+        if (!node) return true;
+        if (op.patch?.title && op.patch.title !== node.title) return true;
+        if (op.patch?.width != null && op.patch.width !== node.width) return true;
+        if (op.patch?.height != null && op.patch.height !== node.height) return true;
+        if (op.patch?.position && (Math.abs(op.patch.position.x - node.position.x) > 0.5 || Math.abs(op.patch.position.y - node.position.y) > 0.5)) return true;
+        if (op.patch?.parentId && op.patch.parentId !== node.parentId) return true;
+        const metadata = op.metadata && typeof op.metadata === "object" ? op.metadata as Record<string, unknown> : {};
+        return Object.entries(metadata).some(([key, value]) => value !== undefined && JSON.stringify((node.metadata as Record<string, unknown> | undefined)?.[key]) !== JSON.stringify(value));
+    });
+    if (filtered.some((op) => op.type !== "select_nodes" && op.type !== "set_viewport")) return filtered;
+    return [];
 }
 
 function summarizeGraph(snapshot: CanvasAgentSnapshot, observation: CanvasAgentObservation) {
@@ -331,6 +406,10 @@ function summarizeGraph(snapshot: CanvasAgentSnapshot, observation: CanvasAgentO
             shortId: canvasAgentShortId(node.id, aliases),
             type: node.type,
             title: node.title,
+            x: Math.round(node.position.x),
+            y: Math.round(node.position.y),
+            width: node.width,
+            height: node.height,
             status: node.metadata?.status || "idle",
             prompt: String(node.metadata?.prompt || node.metadata?.composerContent || "").slice(0, 180),
             appliedTemplateId: node.metadata?.appliedTemplate?.id,

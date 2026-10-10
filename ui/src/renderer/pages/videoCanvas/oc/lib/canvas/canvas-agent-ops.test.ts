@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 import {
+    applyCanvasAgentOps,
+    canvasAgentPostconditionMessage,
     canvasAgentStateHashBlocksWrite,
     isGenerationOnlyCanvasAgentOps,
     verifyCanvasAgentOps,
@@ -55,6 +57,21 @@ describe("verifyCanvasAgentOps generation", () => {
         ]);
         expect(result.ok).toBe(true);
         expect(result.overlapWarnings.length).toBeGreaterThan(0);
+        expect(canvasAgentPostconditionMessage(result)).toContain("仍有重叠");
+        expect(canvasAgentPostconditionMessage(result)).not.toContain("布局无重叠");
+    });
+
+    test("strips geometry leaked into metadata and reports overlap on existing nodes", () => {
+        const before = snapshot("idle");
+        const after = applyCanvasAgentOps(before, [{
+            type: "update_node",
+            id: "img-1",
+            patch: { position: { x: 12, y: 8 } },
+            metadata: { position: { x: 12, y: 8 }, prompt: "猫" } as CanvasNodeData["metadata"],
+        }]);
+        expect(after.nodes[0]?.position).toEqual({ x: 12, y: 8 });
+        expect(after.nodes[0]?.metadata?.position).toBeUndefined();
+        expect(after.nodes[0]?.metadata?.prompt).toBe("猫");
     });
 });
 

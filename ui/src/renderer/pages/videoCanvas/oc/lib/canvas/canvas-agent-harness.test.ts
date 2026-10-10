@@ -13,6 +13,8 @@ describe("CanvasHarness", () => {
   test("owns constitution and advertised intent tools", () => {
     expect(harness.constitution()).toBe(CANVAS_AGENT_CONSTITUTION);
     expect(harness.constitution()).toContain("感知—行动—观察");
+    expect(harness.constitution()).toContain("patches.position");
+    expect(harness.constitution()).toContain("禁止 deleteIds 后按同样标题再建一套");
     expect([...CANVAS_AGENT_ADVERTISED_TOOLS]).toEqual([
       "canvas_list_skills",
       "canvas_get_skill",
@@ -45,9 +47,30 @@ describe("CanvasHarness", () => {
     expect(harness.isReadTool("storyboard_apply")).toBe(false);
   });
 
-  test("first turn requires a tool call; later turns are auto", () => {
+  test("first turn requires a tool call; later turns are auto unless the write already satisfied the goal", () => {
     expect(harness.firstTurnToolChoice()).toBe("required");
     expect(harness.decideAfterTools(1)).toEqual({ action: "call_model", toolChoice: "auto" });
+    expect(harness.decideAfterTools(1, {
+      incomplete: false,
+      hadRead: false,
+      hadWrite: true,
+      writeFailed: false,
+      writeSatisfied: true,
+      wantsGeneration: false,
+      submittedGeneration: false,
+    })).toEqual({ action: "end" });
+    expect(harness.decideAfterTools(1, {
+      incomplete: true,
+      hadRead: true,
+      hadWrite: true,
+      writeFailed: false,
+      writeSatisfied: true,
+      wantsGeneration: false,
+      wantsProduction: true,
+      submittedGeneration: false,
+      idleMedia: true,
+      missingFilmNodes: true,
+    })).toEqual({ action: "call_model", toolChoice: "auto" });
   });
 
   test("hard-stops at max steps after tools", () => {

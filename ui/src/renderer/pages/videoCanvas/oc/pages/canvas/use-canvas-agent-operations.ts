@@ -121,7 +121,7 @@ export function useCanvasAgentOperations({
             setUndoOpsCount(nextUndoCount);
             setLastAgentChange({ ...change, undoCount: nextUndoCount });
         }
-        if (focusNodeIds.length) queueMicrotask(() => focusSelection());
+        if ((focusNodeIds.length ? focusNodeIds : affectedNodeIds).length) queueMicrotask(() => focusSelection());
         const ingestTargets = appliedNodes.filter((node) => {
             if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return false;
             if (addedNodeIdSet.has(node.id)) return true;

@@ -37,6 +37,13 @@ type CanvasAgentStore = {
     clearEventLogs: () => void;
 };
 
+const CONFIRM_TOOLS_KEY = "canvas-agent-confirm-tools";
+
+function readPersistedConfirmTools() {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(CONFIRM_TOOLS_KEY) === "1";
+}
+
 export const useCanvasAgentStore = create<CanvasAgentStore>((set) => ({
     width: typeof window === "undefined" ? 440 : Number(localStorage.getItem("canvas-agent-panel-width")) || 440,
     url: typeof window === "undefined" ? "http://127.0.0.1:17371" : localStorage.getItem("canvas-agent-url") || "http://127.0.0.1:17371",
@@ -54,11 +61,16 @@ export const useCanvasAgentStore = create<CanvasAgentStore>((set) => ({
     workspacePath: "",
     loadingThreads: false,
     activeTab: "setup",
-    confirmTools: true,
+    confirmTools: readPersistedConfirmTools(),
     activity: "就绪",
     connectError: "",
     pendingTool: null,
-    setAgentState: (patch) => set(patch),
+    setAgentState: (patch) => {
+        if (typeof patch.confirmTools === "boolean" && typeof window !== "undefined") {
+            localStorage.setItem(CONFIRM_TOOLS_KEY, patch.confirmTools ? "1" : "0");
+        }
+        set(patch);
+    },
     addMessage: (item) => set((state) => ({ messages: [...state.messages.slice(-120), item] })),
     addEventLog: (item) => set((state) => ({ eventLogs: [...state.eventLogs.slice(-160), item] })),
     clearEventLogs: () => set({ eventLogs: [] }),
