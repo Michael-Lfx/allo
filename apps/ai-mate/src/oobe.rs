@@ -73,6 +73,20 @@ impl OobeManager {
         }
     }
 
+    /// Creates a new `OobeManager` with pairing bypassed (paired by default for local/single-node usage).
+    pub fn new_bypassed() -> Self {
+        let code = generate_six_digit_code();
+        Self {
+            state: Arc::new(RwLock::new(OobeState {
+                code,
+                created_at: Instant::now(),
+                failed_attempts: 0,
+                locked_until: None,
+                is_paired: true,
+            })),
+        }
+    }
+
     /// Returns the current 6-digit pairing code.
     pub async fn current_code(&self) -> String {
         self.state.read().await.code.clone()
@@ -89,8 +103,12 @@ impl OobeManager {
 
     /// Complete vocal prompt string for speaker output.
     pub async fn vocal_announcement_text(&self) -> String {
-        let digits = self.vocal_digits().await;
-        format!("AI Mate 已开机，请在局域网网页输入配对码：{}", digits)
+        if self.is_paired().await {
+            "AI Mate 已就绪，请对设备说「Hey Flowy」唤醒体验".to_string()
+        } else {
+            let digits = self.vocal_digits().await;
+            format!("AI Mate 已开机，请在局域网网页输入配对码：{}", digits)
+        }
     }
 
     /// Whether the device has already been successfully paired.

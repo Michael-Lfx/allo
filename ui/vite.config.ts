@@ -97,7 +97,7 @@ export default defineConfig(({ mode }) => {
   // Gated on `mode === 'webdev'` so plain `ui:dev` and the Tauri desktop dev
   // server (mode 'development', which talks to the embedded backend via an
   // absolute `window.__backendPort` URL) are completely unaffected.
-  const webdev = mode === 'webdev';
+  const webdev = mode === 'webdev' || mode === 'development';
   const apiPort = process.env.NOMIFUN_WEB_PORT ?? '8787';
   const apiTarget = `http://127.0.0.1:${apiPort}`;
   const wsTarget = `ws://127.0.0.1:${apiPort}`;

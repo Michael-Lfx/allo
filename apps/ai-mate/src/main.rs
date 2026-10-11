@@ -33,13 +33,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Load configuration
     let config = Config::load().unwrap_or_default();
 
-    // 4. Initialize voice model manager & OOBE manager
+    // 4. Initialize voice model manager & OOBE manager (local single-node: bypass pairing)
     let model_manager = Arc::new(ModelManager::new(&config.models.models_dir));
-    let oobe_manager = OobeManager::new();
+    let require_pairing = std::env::var("AI_MATE_REQUIRE_PAIRING")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    let oobe_manager = if require_pairing {
+        OobeManager::new()
+    } else {
+        OobeManager::new_bypassed()
+    };
 
-    // Log & vocal announcement for 6-digit dynamic pairing code (T4-04)
+    // Log & vocal announcement
     let vocal_announcement = oobe_manager.vocal_announcement_text().await;
-    info!(vocal = %vocal_announcement, "OOBE dynamic pairing code generated");
+    info!(vocal = %vocal_announcement, "OOBE status initialized");
 
     // 5. Perform boot self-check and trigger auto-download if needed (T1-08)
     check_and_auto_download(&config, &model_manager).await;

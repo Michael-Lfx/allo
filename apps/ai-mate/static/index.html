@@ -484,6 +484,7 @@
         'zh-CN': {
           brand: 'Flowy AI Mate',
           statusOnline: '在线等待配对',
+          statusReady: '在线已就绪',
           pairingTitle: '输入配对码',
           pairingSubtitle: '请输入伴侣主机正在播报的 6 位数字配对码',
           modelsTitle: '语音引擎就绪状态',
@@ -498,6 +499,7 @@
         'en-US': {
           brand: 'Flowy AI Mate',
           statusOnline: 'Online, awaiting pairing',
+          statusReady: 'Online, ready',
           pairingTitle: 'Enter Pairing Code',
           pairingSubtitle: 'Please enter the 6-digit code announced by the companion host',
           modelsTitle: 'Voice Engine Readiness',
@@ -512,12 +514,13 @@
       };
 
       let currentLang = (navigator.language && navigator.language.startsWith('en')) ? 'en-US' : 'zh-CN';
+      let isPaired = false;
 
       function applyLanguage(lang) {
         currentLang = lang;
         const dict = i18n[lang] || i18n['zh-CN'];
         document.documentElement.lang = lang;
-        document.getElementById('deviceStatusText').textContent = dict.statusOnline;
+        document.getElementById('deviceStatusText').textContent = isPaired ? dict.statusReady : dict.statusOnline;
         document.getElementById('pairingTitle').textContent = dict.pairingTitle;
         document.getElementById('pairingSubtitle').textContent = dict.pairingSubtitle;
         document.getElementById('modelsTitle').textContent = dict.modelsTitle;
@@ -564,6 +567,25 @@
       realInput.addEventListener('focus', function() {
         updateBoxes(this.value);
       });
+
+      // Check OOBE paired status
+      function checkOobeStatus() {
+        fetch('/api/oobe/status')
+          .then(function(res) { return res.json(); })
+          .then(function(data) {
+            if (data && data.paired) {
+              isPaired = true;
+              var pairingSection = document.querySelector('.pairing-section');
+              if (pairingSection) pairingSection.style.display = 'none';
+              var completionSection = document.getElementById('completionSection');
+              if (completionSection) completionSection.style.display = 'flex';
+              var statusText = document.getElementById('deviceStatusText');
+              if (statusText) statusText.textContent = (currentLang === 'zh-CN') ? '在线已就绪' : 'Online, ready';
+            }
+          })
+          .catch(function() {});
+      }
+      checkOobeStatus();
     })();
   </script>
 </body>
