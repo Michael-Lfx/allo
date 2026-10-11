@@ -16,6 +16,7 @@ export type AppChromeShortcutId =
   | 'historyForward'
   | 'sidebar'
   | 'settings'
+  | 'modelStore'
   | 'newConversation'
   | 'search'
   | 'focusComposer'
@@ -92,6 +93,15 @@ const APP_CHROME_SHORTCUTS: readonly AppChromeShortcutDefinition[] = [
     titleKey: 'common.shortcuts.settings',
     parts: () => ['Mod', ','],
     matches: (event) => isPlainMod(event) && (event.key === ',' || event.code === 'Comma'),
+  },
+  {
+    id: 'modelStore',
+    group: 'navigation',
+    host: 'all',
+    surface: 'badge',
+    titleKey: 'common.shortcuts.modelStore',
+    parts: () => ['Mod', 'M'],
+    matches: (event) => isPlainMod(event) && keyOf(event) === 'm',
   },
   {
     id: 'newConversation',

@@ -1,0 +1,258 @@
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* The shared control contract paints every primary button with `--flowy-accent`
+   (a static brand teal that no skin overrides). Model store primary actions
+   must use the per-skin primary instead so they follow the active theme. */
+.arco-btn.model-store-themed-primary.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success) {
+  background-color: rgb(var(--primary-6)) !important;
+  border-color: rgb(var(--primary-6)) !important;
+  color: #ffffff !important;
+}
+
+.arco-btn.model-store-themed-primary.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success):hover {
+  background-color: rgb(var(--primary-5)) !important;
+  border-color: rgb(var(--primary-5)) !important;
+  color: #ffffff !important;
+}
+
+/* ── Launch configuration dialog ──────────────────────────────────────────
+   Header and footer stay on screen; the form scrolls between them.
+   Arco's align-center rule
+   (`.arco-modal-wrapper.arco-modal-wrapper-align-center .arco-modal`)
+   sets `display: inline-block`, which cancels a column layout and lets
+   `overflow: hidden` clip the footer. The selectors below outrank that
+   rule, and the dialog also passes `alignCenter={false}` so the wrapper
+   does not insert a full-viewport centering strut. */
+.arco-modal-wrapper.arco-modal-wrapper-align-center:has(.model-store-launch-modal) {
+  white-space: normal;
+  overflow: hidden;
+}
+
+.arco-modal-wrapper .arco-modal.model-store-launch-modal,
+.arco-modal-wrapper.arco-modal-wrapper-align-center .arco-modal.model-store-launch-modal {
+  display: flex;
+  flex-direction: column;
+  top: 24px;
+  height: auto;
+  max-height: calc(100dvh - 48px);
+  min-height: 0;
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+
+/* Focus-lock (or any other) wrapper between the shell and the body.
+   Header, content, and footer are excluded so they keep their own flex. */
+.arco-modal.model-store-launch-modal > div:not([data-focus-guard]):not(.arco-modal-header):not(.arco-modal-content):not(.arco-modal-footer) {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.arco-modal.model-store-launch-modal .arco-modal-header,
+.arco-modal.model-store-launch-modal .arco-modal-footer {
+  flex: 0 0 auto;
+}
+
+.arco-modal.model-store-launch-modal .arco-modal-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Footer action bar: taller, roomier buttons matching the reference form.
+   Opaque surface so a scrolling form cannot paint through the actions. */
+.arco-modal.model-store-launch-modal .arco-modal-footer {
+  position: relative;
+  z-index: 2;
+  padding: 20px 24px 22px !important;
+  background: var(--flowy-surface-1, var(--dialog-fill-0, var(--color-bg-3)));
+}
+
+body[arco-theme='dark'] .arco-modal.model-store-launch-modal .arco-modal-footer {
+  background: var(--flowy-surface-1, var(--dialog-fill-0)) !important;
+}
+
+.model-store-launch-modal .arco-modal-footer .arco-btn {
+  min-width: 96px;
+  height: 40px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Field labels and the question-mark hint affordance. */
+.model-store-launch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.model-store-launch-help {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  line-height: 0;
+  vertical-align: middle;
+  color: var(--color-text-3);
+  cursor: help;
+  transition: color 120ms ease-out;
+}
+
+.model-store-launch-help .i-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  cursor: inherit;
+}
+
+.model-store-launch-help:hover {
+  color: rgb(var(--primary-6));
+}
+
+/* Runtime variant chips: a wrapping single-select group. */
+.model-store-launch-variants {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-store-launch-variant-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  min-width: 0;
+  border: 1px solid var(--color-border-2);
+  border-radius: 8px;
+  background-color: var(--color-fill-2);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.model-store-launch-variant-chip:hover {
+  border-color: var(--color-border-3);
+  background-color: var(--color-fill-3);
+}
+
+.model-store-launch-variant-chip[aria-disabled='true'] {
+  cursor: default;
+}
+
+.model-store-launch-variant-chip.is-active {
+  border-color: rgb(var(--primary-6));
+  background-color: rgb(var(--primary-6));
+  color: #ffffff;
+}
+
+.model-store-launch-variant-chip.is-active .model-store-launch-help {
+  color: color-mix(in srgb, #ffffff 86%, transparent);
+}
+
+.model-store-launch-variant-chip.is-active:hover {
+  border-color: rgb(var(--primary-5));
+  background-color: rgb(var(--primary-5));
+}
+
+/* Context size value badge. */
+.model-store-launch-context-value {
+  color: var(--text-primary);
+}
+
+/* Collapse panel follows fill/border/text tokens. */
+.model-store-launch-modal .arco-collapse-item-header {
+  background-color: var(--color-fill-2);
+  border: 1px solid var(--color-border-2);
+  border-radius: 8px;
+  color: var(--text-primary);
+}
+
+.model-store-launch-modal .arco-collapse-item-header-title {
+  color: var(--text-primary);
+}
+
+/* ── Controls follow the skin primary ──────────────────────────────────── */
+
+/* Slider: thicker visible track + larger grab target for the context control. */
+.model-store-launch-modal .arco-slider-road {
+  height: 28px;
+}
+
+.model-store-launch-modal .arco-slider-road::before {
+  height: 6px;
+  border-radius: 6px;
+  background-color: var(--color-fill-3);
+}
+
+.model-store-launch-modal .arco-slider-bar {
+  height: 6px;
+  border-radius: 6px;
+  background-color: rgb(var(--primary-6));
+}
+
+.model-store-launch-modal .arco-slider-button {
+  width: 18px;
+  height: 18px;
+  top: 5px;
+}
+
+.model-store-launch-modal .arco-slider-button::after {
+  width: 18px;
+  height: 18px;
+  background-color: var(--color-bg-2);
+  border: 2px solid rgb(var(--primary-6));
+  box-shadow: 0 0 0 1px color-mix(in srgb, rgb(var(--primary-6)) 24%, transparent);
+}
+
+.model-store-launch-modal .arco-slider-button:hover::after,
+.model-store-launch-modal .arco-slider-button-active::after {
+  border-color: rgb(var(--primary-5));
+  box-shadow:
+    0 2px 6px color-mix(in srgb, var(--color-text-1) 18%, transparent),
+    0 0 0 4px color-mix(in srgb, rgb(var(--primary-6)) 16%, transparent);
+}
+
+/* Switch on-state follows the skin primary in both light and dark themes. */
+.model-store-launch-modal.arco-modal .arco-switch-checked {
+  background-color: rgb(var(--primary-6)) !important;
+  box-shadow: none !important;
+}
+
+.model-store-launch-modal.arco-modal .arco-switch-checked .arco-switch-dot {
+  background-color: var(--color-bg-white) !important;
+  color: rgb(var(--primary-6)) !important;
+}
+
+/* Input / select focus ring follows the skin primary. */
+.model-store-launch-modal .arco-input-wrapper:hover,
+.model-store-launch-modal .arco-select-view:hover {
+  border-color: rgb(var(--primary-5)) !important;
+}
+
+.model-store-launch-modal .arco-input-wrapper.arco-input-focus,
+.model-store-launch-modal .arco-select-view-focus,
+.model-store-launch-modal .arco-input-wrapper:focus-within {
+  border-color: rgb(var(--primary-6)) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, rgb(var(--primary-6)) 18%, transparent) !important;
+}

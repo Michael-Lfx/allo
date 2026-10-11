@@ -162,6 +162,7 @@
     "historyForward": "前进",
     "sidebar": "展开 / 收起侧栏",
     "settings": "打开 / 关闭设置",
+    "modelStore": "模型管理",
     "newConversation": "新建对话",
     "search": "搜索会话",
     "focusComposer": "聚焦输入框",

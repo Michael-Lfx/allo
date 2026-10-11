@@ -8,6 +8,7 @@ type UseAppChromeShortcutsParams = {
   onNewConversation: () => void;
   onToggleSidebar: () => void;
   onToggleSettings: () => void;
+  onOpenModelStore: () => void;
   onFocusComposer: () => void;
   onToggleCheatsheet: () => void;
 };
@@ -18,6 +19,7 @@ export const useAppChromeShortcuts = ({
   onNewConversation,
   onToggleSidebar,
   onToggleSettings,
+  onOpenModelStore,
   onFocusComposer,
   onToggleCheatsheet,
 }: UseAppChromeShortcutsParams): void => {
@@ -26,6 +28,7 @@ export const useAppChromeShortcuts = ({
     onNewConversation,
     onToggleSidebar,
     onToggleSettings,
+    onOpenModelStore,
     onFocusComposer,
     onToggleCheatsheet,
   });
@@ -54,6 +57,10 @@ export const useAppChromeShortcuts = ({
         case 'settings':
           event.preventDefault();
           handlers.onToggleSettings();
+          return;
+        case 'modelStore':
+          event.preventDefault();
+          handlers.onOpenModelStore();
           return;
         case 'focusComposer':
           event.preventDefault();

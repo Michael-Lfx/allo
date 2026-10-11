@@ -162,6 +162,7 @@
     "historyForward": "Go forward",
     "sidebar": "Show or hide the sidebar",
     "settings": "Open or close Settings",
+    "modelStore": "Model management",
     "newConversation": "New conversation",
     "search": "Search conversations",
     "focusComposer": "Focus the composer",

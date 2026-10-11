@@ -59,6 +59,7 @@ use nomifun_agent_execution::{AgentExecutionEngine, AgentExecutionEngineConfig};
 use nomifun_companion::CompanionRouterState;
 use nomifun_appearance::AppearanceRouterState;
 use nomifun_workshop::WorkshopRouterState;
+use nomifun_local_models::{LocalModelsRouterState, LocalModelsService};
 use nomifun_creation::CreationRouterState;
 use nomifun_realtime::WsHandlerState;
 use nomifun_requirement::RequirementRouterState;
@@ -73,6 +74,7 @@ use nomifun_webhook::WebhookRouterState;
 use nomifun_secret::SecretRouterState;
 
 use crate::services::AppServices;
+use crate::local_model_provider::AppLocalModelProviderPublisher;
 
 /// All module-level router states bundled into a single struct.
 ///
@@ -111,6 +113,8 @@ pub struct ModuleStates {
     pub customer_service: nomifun_customer_service::CustomerServiceRouterState,
     /// 创意工坊 (Creative Workshop) canvas/asset domain.
     pub workshop: WorkshopRouterState,
+    /// Local model runtime (download + `llama-server` supervision).
+    pub local_models: LocalModelsRouterState,
     /// 生成引擎 (creation) media task queue.
     pub creation: CreationRouterState,
     pub webhook: WebhookRouterState,
@@ -635,6 +639,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         crate::eval_quality_sink::CloudEvalQualitySink::new(services.cloud_service.clone()),
     ) as Arc<dyn EvalQualitySink>);
     let states = ModuleStates {
+        local_models: build_local_models_state(services, system.provider_service.clone()),
         system,
         conversation,
         remote_agent: build_remote_agent_state(services),
@@ -803,6 +808,17 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         conversation_repo: Some(services.conversation_repo.clone()),
         observation_reset: nomifun_system::idle_observation_reset(),
     }
+}
+
+/// Build the local model runtime state, bridging provider publishes through the
+/// system router's [`ProviderService`] (so it shares the deletion coordinator).
+pub fn build_local_models_state(
+    services: &AppServices,
+    provider_service: ProviderService,
+) -> LocalModelsRouterState {
+    let publisher = Arc::new(AppLocalModelProviderPublisher::new(provider_service));
+    let service = LocalModelsService::new(&services.data_dir, Some(publisher));
+    LocalModelsRouterState::new(service)
 }
 
 /// Build the default `ConversationRouterState` from application services.

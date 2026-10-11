@@ -10,6 +10,7 @@ export { default as SiderKnowledgeEntry } from './SiderKnowledgeEntry';
 export { default as SiderLearningEntry } from './SiderLearningEntry';
 export { default as SiderEvalEntry } from './SiderEvalEntry';
 export { default as SiderModelHubEntry } from './SiderModelHubEntry';
+export { default as SiderModelStoreEntry } from './SiderModelStoreEntry';
 export { default as SiderNewConversationEntry } from './SiderNewConversationEntry';
 export { default as SiderOpenCapabilitiesEntry } from './SiderOpenCapabilitiesEntry';
 export { default as SiderCustomerServiceEntry } from './SiderCustomerServiceEntry';

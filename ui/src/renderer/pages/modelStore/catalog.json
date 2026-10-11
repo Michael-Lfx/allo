@@ -1,0 +1,104 @@
+[
+  {
+    "id": "Qwen3.8-27B",
+    "displayName": {
+      "zh": "Qwen3.8-27B",
+      "en": "Qwen3.8-27B"
+    },
+    "description": {
+      "zh": "Qwen3.8-27B MTP 是 Qwen3.8 系列支持 MTP 的 GGUF 模型，支持视觉理解、智能体编程、多语言交互，以及思考和非思考模式。",
+      "en": "Qwen3.8-27B MTP is the MTP-enabled GGUF model from the Qwen3.8 series. It supports visual understanding, agentic coding, multilingual interaction, and thinking and non-thinking modes."
+    },
+    "type": "multimodal",
+    "capabilities": ["agent-work"],
+    "tags": ["text-generation", "qwen3.8", "llama", "open-source", "mtp"],
+    "scenarios": [
+      "multimodal-chat",
+      "image-understanding",
+      "vision-qa",
+      "document-ocr",
+      "visual-reasoning",
+      "long-context",
+      "summary",
+      "work",
+      "chinese",
+      "multilingual"
+    ],
+    "parameterCount": 27,
+    "sizeBytes": 17395856656,
+    "engines": ["llama.cpp"],
+    "npu": false,
+    "realtime": false,
+    "icon": "/model_logo/qwen.png",
+    "author": "Qwen",
+    "license": "Apache 2.0"
+  },
+  {
+    "id": "Qwen3.6-35B-A3B",
+    "displayName": {
+      "zh": "Qwen3.6-35B-A3B",
+      "en": "Qwen3.6-35B-A3B"
+    },
+    "description": {
+      "zh": "Qwen3.6-35B-A3B 是一个稀疏但能力出色的混合专家（MoE）模型，总参数量 350 亿，激活参数仅 30 亿，支持多模态思考与非思考模式。",
+      "en": "Qwen3.6-35B-A3B is a sparse yet capable mixture-of-experts (MoE) model with 35B total parameters and only 3B active parameters, supporting multimodal thinking and non-thinking modes."
+    },
+    "type": "multimodal",
+    "capabilities": ["agent-work"],
+    "tags": ["text-generation", "llama", "open-source"],
+    "scenarios": [
+      "multimodal-chat",
+      "image-understanding",
+      "vision-qa",
+      "document-ocr",
+      "visual-reasoning",
+      "long-context",
+      "summary",
+      "work",
+      "chinese",
+      "multilingual"
+    ],
+    "parameterCount": 35,
+    "sizeBytes": 23273043840,
+    "engines": ["llama.cpp"],
+    "npu": false,
+    "realtime": false,
+    "icon": "/model_logo/qwen.png",
+    "author": "Qwen",
+    "license": "Apache 2.0"
+  },
+  {
+    "id": "Qwen3.6-35B-A3B-MTP",
+    "displayName": {
+      "zh": "Qwen3.6-35B-A3B-MTP",
+      "en": "Qwen3.6-35B-A3B-MTP"
+    },
+    "description": {
+      "zh": "Qwen3.6-35B-A3B-MTP 是 Qwen3.6-35B-A3B 的 MTP GGUF 版本，需要支持 MTP 的 llama.cpp 运行时，并默认使用 draft-mtp 推测解码参数。",
+      "en": "Qwen3.6-35B-A3B-MTP is the MTP-enabled GGUF variant of Qwen3.6-35B-A3B. It requires a llama.cpp runtime with MTP support and is configured for draft-mtp speculative decoding."
+    },
+    "type": "multimodal",
+    "capabilities": ["agent-work"],
+    "tags": ["text-generation", "llama", "open-source", "mtp"],
+    "scenarios": [
+      "multimodal-chat",
+      "image-understanding",
+      "vision-qa",
+      "document-ocr",
+      "visual-reasoning",
+      "long-context",
+      "summary",
+      "work",
+      "chinese",
+      "multilingual"
+    ],
+    "parameterCount": 35,
+    "sizeBytes": 23566209952,
+    "engines": ["llama.cpp"],
+    "npu": false,
+    "realtime": false,
+    "icon": "/model_logo/qwen.png",
+    "author": "Qwen",
+    "license": "Apache 2.0"
+  }
+]

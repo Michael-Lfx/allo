@@ -471,6 +471,8 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run build:clean` | 显式清理构建缓存并提示下一次会冷编译 |
 | `bun run make:latest` | 扫描本机更新产物，生成/合并自动更新清单 latest.json |
 | `bun run upload:modelscope` | 上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN） |
+| `bun run upload:houmo-ota` | 生成并上传后摩版 OTA 到 ModelScope 的 allo/houmo 渠道（前缀写死，路径缺 houmo 即中止；需 MODELSCOPE_TOKEN） |
+| `bun run upload:houmo-runtime` | 上传 Houmo HLIELLama xh2 linux-aarch64 运行时包到 ModelScope（需 MODELSCOPE_TOKEN；-- --dry-run 只校验） |
 | `bun run release:mac` | 一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
 | `bun run release:win` | 一键 Windows 发版：自动判定追加/首发；指纹可用时自动 Authenticode；-Signed/-NoSigned；-DryRun 只预检 |
 | `bun run release:linux` | 一键 Linux 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
@@ -489,6 +491,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run test:desktop` | 运行桌面壳测试，不监听或打包 ui/dist 资源 |
 | `bun run test:browser` | 运行 browser-use 门控的 Rust 测试（browser-platform 全量 + gateway/ai-agent/nomi-agent/app 开启 --features browser-use；crate/core 车道会静默跳过这些） |
 | `bun run test:ui` | 运行前端单元测试（bun test，收集 ui/src 下全部 *.test.ts/tsx） |
+| `bun run test:auth` | 登录/认证前端冒烟与契约测试 |
 | **静态检查 / 门禁** | |
 | `bun run check:process-runtime-boundary` | Enforce the supervised process runtime boundary and exact hand-off allowlist. |
 | `bun run check:browser-platform-boundary` | Enforce the single BrowserSessionHub ownership boundary and reject private browser launch paths. |
@@ -510,8 +513,10 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run check:button-layout-contract` | 扫描所有 Arco 图标文字按钮并校验共享横向布局契约 |
 | `bun run check` | 聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 协议指纹 + 跨仓发布同步 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑） |
 | `bun run typecheck` | 前端 TypeScript 类型检查（tsc --noEmit） |
+| `bun run typecheck:auth` | 登录/认证相关前端类型检查（窄范围，CI 必过） |
 | `bun run check:i18n` | 校验 i18n 类型与 locale 键是否一致 |
 | `bun run check:theme` | 校验预设 CSS 主题契约 |
+| `bun run check:motion` | 校验动效 token、侧栏宽度过渡、减弱动效兜底与市场卡片 hover |
 | `bun run check:icons` | 校验 @icon-park/react 导入禁别名/禁命名空间（别名会被图标包装插件改写成非法代码，tsc 抓不到） |
 | `bun run check:css-scope` | 校验画布子系统 CSS 全部挂在 .oc-root 作用域（禁裸 :root/html/body/*、禁全量 tailwind 与全局 antd reset） |
 | **代码生成** | |

@@ -5,7 +5,38 @@ use std::time::Duration;
 pub const GITHUB_REPO: &str = "Michael-Lfx/allo";
 pub const MS_CN_REPO: &str = "flowy2025/flowyaipc";
 pub const MS_AI_REPO: &str = "flowy2025/flowy";
-pub const MS_PREFIX: &str = "allo";
+
+/// Compile-time ModelScope path prefix. The opt-in `houmo` feature locks every
+/// OTA path into the `allo/houmo` subtree; the public build keeps `allo`. This
+/// is compiled in, so a running binary cannot drift back to the public channel.
+pub fn ota_repo_prefix() -> &'static str {
+    if cfg!(feature = "houmo") {
+        "allo/houmo"
+    } else {
+        "allo"
+    }
+}
+
+/// GitHub Releases tag prefix. The public channel tags releases `v{version}`;
+/// the `houmo` channel tags them `houmo-v{version}`.
+fn github_release_tag(version: &str) -> String {
+    let tag = version_tag(version);
+    if cfg!(feature = "houmo") {
+        format!("houmo-{tag}")
+    } else {
+        tag
+    }
+}
+
+/// GitHub Releases manifest filename. Public: `latest-{channel}.json`; houmo:
+/// `latest-houmo-{channel}.json`.
+fn github_manifest_filename(channel: &str) -> String {
+    if cfg!(feature = "houmo") {
+        format!("latest-houmo-{channel}.json")
+    } else {
+        format!("latest-{channel}.json")
+    }
+}
 
 pub const PROBE_RANGE_END: u64 = 262_143;
 pub const PROBE_MIN_BYTES: u64 = 16 * 1024;
@@ -139,16 +170,17 @@ pub fn modelscope_manifest_url(api_host: &str, repo: &str, channel: &str) -> Str
     modelscope_file_url(
         api_host,
         repo,
-        &format!("{MS_PREFIX}/channels/{channel}/latest.json"),
+        &format!("{}/channels/{channel}/latest.json", ota_repo_prefix()),
     )
 }
 
 pub fn github_manifest_url(channel: &str) -> String {
-    format!("https://github.com/{GITHUB_REPO}/releases/latest/download/latest-{channel}.json")
+    let filename = github_manifest_filename(channel);
+    format!("https://github.com/{GITHUB_REPO}/releases/latest/download/{filename}")
 }
 
 pub fn github_artifact_url(version: &str, filename: &str) -> String {
-    let tag = version_tag(version);
+    let tag = github_release_tag(version);
     format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{filename}")
 }
 
@@ -222,18 +254,31 @@ pub fn channel_folder_from_url(download_url: &str) -> Option<&'static str> {
 
 pub fn artifact_url(host: OtaHost, version: &str, folder: &str, filename: &str) -> String {
     let tag = version_tag(version);
+    let prefix = ota_repo_prefix();
     match host {
         OtaHost::ModelscopeCn => modelscope_file_url(
             "modelscope.cn",
             MS_CN_REPO,
-            &format!("{MS_PREFIX}/{folder}/{tag}/{filename}"),
+            &format!("{prefix}/{folder}/{tag}/{filename}"),
         ),
         OtaHost::ModelscopeAi => modelscope_file_url(
             "modelscope.ai",
             MS_AI_REPO,
-            &format!("{MS_PREFIX}/{folder}/{tag}/{filename}"),
+            &format!("{prefix}/{folder}/{tag}/{filename}"),
         ),
         OtaHost::Github => github_artifact_url(version, filename),
+    }
+}
+
+/// Fallback artifact URL for when every mirror probe fails. The public build
+/// keeps the manifest URL supplied by the updater; the `houmo` build must never
+/// fall back to a path outside the `allo/houmo` subtree, so it returns the
+/// rewritten ModelScope candidate instead.
+pub fn fallback_artifact_url(version: &str, folder: &str, filename: &str) -> Option<String> {
+    if cfg!(feature = "houmo") {
+        Some(artifact_url(OtaHost::ModelscopeCn, version, folder, filename))
+    } else {
+        None
     }
 }
 
@@ -344,14 +389,61 @@ mod tests {
         assert!(urls[0].1.contains("flowyaipc"));
         assert!(urls[1].1.contains("modelscope.ai"));
         assert!(urls[1].1.contains("flowy2025/flowy"));
+        let tag = if cfg!(feature = "houmo") {
+            "houmo-v1.4.1"
+        } else {
+            "v1.4.1"
+        };
         assert_eq!(
             urls[2].1,
-            "https://github.com/Michael-Lfx/allo/releases/download/v1.4.1/Flowy_1.4.1_x64-setup.exe"
+            format!(
+                "https://github.com/Michael-Lfx/allo/releases/download/{tag}/Flowy_1.4.1_x64-setup.exe"
+            )
         );
         assert_eq!(
             artifact_filename(&urls[0].1).as_deref(),
             Some("Flowy_1.4.1_x64-setup.exe")
         );
+    }
+
+    #[test]
+    fn ota_paths_follow_compile_time_prefix() {
+        let houmo = cfg!(feature = "houmo");
+        let prefix = if houmo { "allo/houmo" } else { "allo" };
+
+        let endpoints = check_endpoints(RegionBucket::MainlandChina, "windows");
+        assert_eq!(endpoints.len(), 3, "expected three OTA check endpoints");
+        let (cn, ai, gh) = (&endpoints[0], &endpoints[1], &endpoints[2]);
+        let manifest_path = format!("{prefix}/channels/windows/latest.json");
+        assert!(cn.contains(&manifest_path), "cn endpoint: {cn}");
+        assert!(ai.contains(&manifest_path), "ai endpoint: {ai}");
+        if houmo {
+            assert!(gh.ends_with("latest-houmo-windows.json"), "gh: {gh}");
+        } else {
+            assert!(gh.ends_with("latest-windows.json"), "gh: {gh}");
+        }
+        for endpoint in &endpoints {
+            assert_eq!(endpoint.contains("houmo"), houmo, "endpoint: {endpoint}");
+        }
+
+        let urls = candidate_artifact_urls("1.4.1", "windows", "Flowy_1.4.1_x64-setup.exe");
+        let artifact_path = format!("{prefix}/windows/v1.4.1/Flowy_1.4.1_x64-setup.exe");
+        assert!(urls[0].1.contains(&artifact_path), "cn artifact: {}", urls[0].1);
+        assert!(urls[1].1.contains(&artifact_path), "ai artifact: {}", urls[1].1);
+        if houmo {
+            assert!(urls[2].1.contains("houmo-v1.4.1"), "gh artifact: {}", urls[2].1);
+        }
+        for (_, url) in &urls {
+            assert_eq!(url.contains("houmo"), houmo, "artifact: {url}");
+        }
+
+        assert_eq!(
+            fallback_artifact_url("1.4.1", "windows", "Flowy_1.4.1_x64-setup.exe").is_some(),
+            houmo
+        );
+        if let Some(url) = fallback_artifact_url("1.4.1", "windows", "Flowy_1.4.1_x64-setup.exe") {
+            assert!(url.contains("allo/houmo"), "fallback: {url}");
+        }
     }
 
     #[test]

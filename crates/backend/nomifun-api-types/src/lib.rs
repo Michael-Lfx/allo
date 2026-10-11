@@ -30,6 +30,7 @@ mod idmm;
 mod insights;
 mod knowledge;
 mod lifecycle;
+mod local_models;
 mod managed_model;
 mod mcp;
 mod mcp_declarations;
@@ -273,6 +274,12 @@ pub use lifecycle::{
     WorkDirRelocationCalculationMode, WorkDirRelocationErrorClass,
     WorkDirRelocationOperation, WorkDirRelocationOperationState,
     WorkDirRelocationResponse,
+};
+pub use local_models::{
+    LocalModelDownloadError, LocalModelDownloadErrorCode, LocalModelDownloadPhase, LocalModelFile,
+    LocalModelLaunchOptions, LocalModelResponse, LocalModelRunStatus, LocalModelSource,
+    LocalModelStatus,
+    LocalModelText, LocalModelsResponse,
 };
 pub use managed_model::{
     ManagedModel, ManagedModelHealthBatchResult, ManagedModelHealthErrorKind,

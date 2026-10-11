@@ -419,9 +419,9 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
 }
 
 .arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success) {
-  background-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
-  border-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
-  color: var(--flowy-accent-fg, var(--control-selected-fg, #fff)) !important;
+  background-color: var(--control-selected-bg, var(--flowy-accent, var(--color-primary))) !important;
+  border-color: var(--control-selected-bg, var(--flowy-accent, var(--color-primary))) !important;
+  color: var(--control-selected-fg, var(--flowy-accent-fg, #fff)) !important;
 }
 
 .arco-btn-primary.arco-btn-status-danger:not(.arco-btn-disabled):not(.arco-btn-loading) {
@@ -466,7 +466,7 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
 
 .arco-btn:focus-visible {
   outline: none !important;
-  box-shadow: 0 0 0 3px var(--flowy-focus-ring, var(--control-focus-ring, var(--color-primary-light-3))) !important;
+  box-shadow: 0 0 0 3px var(--control-focus-ring, var(--flowy-focus-ring, var(--color-primary-light-3))) !important;
 }
 
 .arco-input-wrapper,
@@ -491,8 +491,8 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
 .arco-textarea-wrapper.arco-textarea-focus,
 .arco-input-wrapper:focus-within,
 .arco-textarea-wrapper:focus-within {
-  border-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
-  box-shadow: 0 0 0 3px var(--flowy-focus-ring, var(--control-focus-ring)) !important;
+  border-color: var(--control-selected-bg, var(--flowy-accent, var(--color-primary))) !important;
+  box-shadow: 0 0 0 3px var(--control-focus-ring, var(--flowy-focus-ring)) !important;
 }
 
 .arco-input-wrapper.arco-input-error,

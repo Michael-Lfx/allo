@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Opt-in `houmo` build: locks every OTA path to the `allo/houmo` subtree
+# (manifest, installers, GitHub tags). Default-off so the public
+# `bun run build` can never drift onto the houmo channel.
+[features]
+houmo = []
+
 # The Tauri desktop shell: links the unified backend (nomifun-app) in-process.
 # It is a member of the root workspace and inherits the workspace version
 # (`version.workspace = true` above) — so `bun run bump` / the workspace version

@@ -28,6 +28,7 @@ import {
   SiderLearningEntry,
   SiderEvalEntry,
   SiderModelHubEntry,
+  SiderModelStoreEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
   SiderMeetingEntry,
@@ -537,6 +538,13 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 siderTooltipProps={siderTooltipProps}
                 onConversationSelect={handleConversationSelect}
                 onSessionClick={onSessionClick}
+              />
+              <SiderModelStoreEntry
+                isMobile={isMobile}
+                isActive={pathname.startsWith('/model-store')}
+                collapsed={collapsed}
+                siderTooltipProps={siderTooltipProps}
+                onClick={() => navTo('/model-store')}
               />
             </div>
 

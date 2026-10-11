@@ -747,11 +747,29 @@ async fn select_ota_artifact_url(
     download_url: &url::Url,
 ) -> (url::Url, Option<String>) {
     let url_str = download_url.as_str();
+    let original = || {
+        (
+            download_url.clone(),
+            ota_mirrors::OtaHost::from_url(url_str).map(|h| h.cdn_host().to_owned()),
+        )
+    };
     let Some(filename) = ota_mirrors::artifact_filename(url_str) else {
-        return (download_url.clone(), ota_mirrors::OtaHost::from_url(url_str).map(|h| h.cdn_host().to_owned()));
+        return original();
     };
     let folder = ota_mirrors::channel_folder_from_url(url_str).unwrap_or_else(ota_mirrors::host_channel);
     let candidates = ota_mirrors::candidate_artifact_urls(version, folder, &filename);
+    // Houmo builds must never fall back to a URL outside the `allo/houmo`
+    // subtree; they fall back to the rewritten candidate instead. Public builds
+    // keep the manifest's own download URL.
+    let fallback = || {
+        if let Some(rewritten) = ota_mirrors::fallback_artifact_url(version, folder, &filename) {
+            if let Ok(parsed) = rewritten.parse() {
+                let host = ota_mirrors::OtaHost::from_url(&rewritten);
+                return (parsed, host.map(|h| h.cdn_host().to_owned()));
+            }
+        }
+        original()
+    };
     let Ok(client) = nomifun_net::proxy::apply_detected_proxy(
         reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -759,7 +777,7 @@ async fn select_ota_artifact_url(
     )
     .build()
     else {
-        return (download_url.clone(), ota_mirrors::OtaHost::from_url(url_str).map(|h| h.cdn_host().to_owned()));
+        return fallback();
     };
     let (first, rest) = candidates.split_first().expect("three OTA mirrors");
     let (a, b, c) = tokio::join!(
@@ -776,10 +794,7 @@ async fn select_ota_artifact_url(
             }
         }
     }
-    (
-        download_url.clone(),
-        ota_mirrors::OtaHost::from_url(url_str).map(|h| h.cdn_host().to_owned()),
-    )
+    fallback()
 }
 
 #[derive(serde::Serialize)]

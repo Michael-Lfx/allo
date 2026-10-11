@@ -30,6 +30,7 @@ mod browser_lane_provider;
 pub mod browser_resource;
 mod browser_inventory_events;
 mod provider_deletion;
+mod local_model_provider;
 mod robot_wiring;
 mod meeting_notes_wiring;
 mod router;

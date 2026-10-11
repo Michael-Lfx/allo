@@ -865,7 +865,7 @@ const NOT_UTILITIES = new Set([
   'bg-animate', 'fill-box', 'stroke-dashoffset', 'stroke-dasharray', 'stroke-linecap', 'stroke-linejoin',
   'text-align', 'text-decoration', 'text-transform', 'text-overflow', 'text-shadow', 'text-indent',
   'outline-color', 'outline-style', 'outline-width', 'outline-offset',
-  'text-to-image',
+  'text-to-image', 'text-generation',
 ]);
 
 function looksLikeUtility(token) {

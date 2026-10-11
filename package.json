@@ -19,6 +19,8 @@
     "build:updater": "CI=true tauri build --config apps/desktop/tauri.conf.json --config '{\"bundle\":{\"createUpdaterArtifacts\":true}}' && bun scripts/prune-build.mjs --post",
     "make:latest": "bun scripts/make-latest-json.mjs",
     "upload:modelscope": "bun scripts/run-upload-modelscope.mjs --dist-dir dist/desktop/",
+    "upload:houmo-ota": "bun scripts/upload-houmo-ota.mjs",
+    "upload:houmo-runtime": "python scripts/runtimes/houmo/upload_modelscope.py",
     "release:check": "bun run check && bun run --cwd ./web typecheck && bun run --cwd ./web test && cargo test -p nomifun-app-server",
     "release:check:site": "bun run --cwd ../agent-store-site check:release",
     "rollback:modelscope": "python scripts/rollback-modelscope-release.py",

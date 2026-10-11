@@ -106,6 +106,11 @@ import {
   type UpdateProviderRequest,
 } from '../types/provider/providerApi';
 import type {
+  LocalModelLaunchOptions,
+  LocalModelResponse,
+  LocalModelsResponse,
+} from '../types/localModel';
+import type {
   CheckManagedModelHealthRequest,
   ManagedModel,
   ManagedModelHealthBatchResult,
@@ -1903,6 +1908,30 @@ export const managedModelService = {
       () => undefined
     ),
   },
+};
+
+// ---------------------------------------------------------------------------
+// Local model runtime — routed to /api/local-models/*
+// ---------------------------------------------------------------------------
+
+export const localModel = {
+  list: httpGet<LocalModelsResponse, void>('/api/local-models'),
+  install: httpPost<LocalModelResponse, { id: string }>(
+    (p) => `/api/local-models/${encodeURIComponent(p.id)}/install`
+  ),
+  cancel: httpPost<LocalModelResponse, { id: string }>(
+    (p) => `/api/local-models/${encodeURIComponent(p.id)}/cancel`
+  ),
+  start: httpPost<LocalModelResponse, { id: string; options: LocalModelLaunchOptions }>(
+    (p) => `/api/local-models/${encodeURIComponent(p.id)}/start`,
+    (p) => p.options
+  ),
+  stop: httpPost<LocalModelResponse, { id: string }>(
+    (p) => `/api/local-models/${encodeURIComponent(p.id)}/stop`
+  ),
+  uninstall: httpPost<LocalModelResponse, { id: string }>(
+    (p) => `/api/local-models/${encodeURIComponent(p.id)}/uninstall`
+  ),
 };
 
 // ---------------------------------------------------------------------------

@@ -108,6 +108,8 @@
     "build:clean": { "group": "build", "desc": "显式清理构建缓存并提示下一次会冷编译" },
     "make:latest":   { "group": "build", "desc": "扫描本机更新产物，生成/合并自动更新清单 latest.json" },
     "upload:modelscope": { "group": "build", "desc": "上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN）" },
+    "upload:houmo-ota": { "group": "build", "desc": "生成并上传后摩版 OTA 到 ModelScope 的 allo/houmo 渠道（前缀写死，路径缺 houmo 即中止；需 MODELSCOPE_TOKEN）" },
+    "upload:houmo-runtime": { "group": "build", "desc": "上传 Houmo HLIELLama xh2 linux-aarch64 运行时包到 ModelScope（需 MODELSCOPE_TOKEN；-- --dry-run 只校验）" },
     "rollback:modelscope": { "group": "maint", "desc": "回滚 ModelScope 上的桌面发布指针（需 MODELSCOPE_TOKEN）" },
     "verify:modelscope": { "group": "maint", "desc": "校验 ModelScope 桌面发布清单与制品（需 MODELSCOPE_TOKEN）" },
     "release:mac":   { "group": "build", "desc": "一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },

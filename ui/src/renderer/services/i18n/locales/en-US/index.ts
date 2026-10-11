@@ -57,6 +57,7 @@ import beautifulUiPreview from './beautifulUiPreview.json';
 import colorLab from './colorLab.json';
 import capabilityHubPreview from './capabilityHubPreview.json';
 import notifications from './notifications.json';
+import modelStore from './modelStore.json';
 
 export default {
   common,
@@ -113,4 +114,5 @@ export default {
   colorLab,
   capabilityHubPreview,
   notifications,
+  modelStore,
 };

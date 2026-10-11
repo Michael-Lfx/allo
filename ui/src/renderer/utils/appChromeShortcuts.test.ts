@@ -40,6 +40,7 @@ describe('app chrome shortcut catalog', () => {
       'historyForward',
       'sidebar',
       'settings',
+      'modelStore',
       'newConversation',
       'search',
       'focusComposer',
@@ -59,6 +60,8 @@ describe('app chrome shortcut catalog', () => {
     expect(isAppChromeShortcutAvailable('cycleConversation', desktopWindows)).toBe(true);
     expect(isAppChromeShortcutAvailable('sidebar', webWindows)).toBe(true);
     expect(isAppChromeShortcutAvailable('settings', webWindows)).toBe(true);
+    expect(isAppChromeShortcutAvailable('modelStore', webWindows)).toBe(true);
+    expect(isAppChromeShortcutAvailable('modelStore', mobileWindows)).toBe(false);
     expect(isAppChromeShortcutAvailable('sidebar', mobileWindows)).toBe(false);
     expect(listAppChromeShortcuts().find((item) => item.id === 'newConversation')?.surface).toBe('badge');
     expect(listAppChromeShortcuts().find((item) => item.id === 'focusComposer')?.surface).toBe('sheet-only');
@@ -72,6 +75,7 @@ describe('app chrome shortcut catalog', () => {
     );
     expect(matchAppChromeShortcut(chord({ key: 'b', ctrlKey: true }), webWindows)).toBe('sidebar');
     expect(matchAppChromeShortcut(chord({ key: ',', code: 'Comma', ctrlKey: true }), webWindows)).toBe('settings');
+    expect(matchAppChromeShortcut(chord({ key: 'm', ctrlKey: true }), webWindows)).toBe('modelStore');
     expect(matchAppChromeShortcut(chord({ key: '/', code: 'Slash', ctrlKey: true }), webWindows)).toBe('cheatsheet');
     expect(matchAppChromeShortcut(chord({ key: 'k', ctrlKey: true }), webWindows)).toBe('search');
     expect(matchAppChromeShortcut(chord({ key: 'Tab', ctrlKey: true }), desktopWindows)).toBe('cycleConversation');
@@ -82,6 +86,7 @@ describe('app chrome shortcut catalog', () => {
     expect(matchAppChromeShortcut(chord({ key: 't', ctrlKey: true }), webWindows)).toBeNull();
     expect(matchAppChromeShortcut(chord({ key: 'l', ctrlKey: true }), webWindows)).toBeNull();
     expect(matchAppChromeShortcut(chord({ key: 't', ctrlKey: true, shiftKey: true }), desktopWindows)).toBeNull();
+    expect(matchAppChromeShortcut(chord({ key: 'm', ctrlKey: true, shiftKey: true }), desktopWindows)).toBeNull();
     expect(matchAppChromeShortcut(chord({ key: 'b', ctrlKey: true }), mobileWindows)).toBeNull();
   });
 
@@ -93,6 +98,8 @@ describe('app chrome shortcut catalog', () => {
     expect(formatAppChromeShortcut('settings', 'windows')).toBe('Ctrl+,');
     expect(formatAppChromeShortcut('cheatsheet', 'windows')).toBe('Ctrl+/');
     expect(formatAppChromeShortcut('search', 'macos')).toBe('⌘K');
+    expect(formatAppChromeShortcut('modelStore', 'windows')).toBe('Ctrl+M');
+    expect(formatAppChromeShortcut('modelStore', 'macos')).toBe('⌘M');
     expect(formatAppChromeShortcut('historyBack', 'windows')).toBe('Alt+←');
     expect(formatAppChromeShortcut('historyForward', 'macos')).toBe('⌘]');
     expect(appChromeShortcutTooltip('设置', 'settings', 'windows')).toBe('设置 Ctrl+,');
@@ -108,13 +115,14 @@ describe('app chrome shortcut catalog', () => {
       'historyForward',
       'sidebar',
       'settings',
+      'modelStore',
       'newConversation',
       'search',
       'focusComposer',
       'cycleConversation',
       'cheatsheet',
     ]);
-    expect(webIds).toEqual(['historyBack', 'historyForward', 'sidebar', 'settings', 'search', 'cheatsheet']);
+    expect(webIds).toEqual(['historyBack', 'historyForward', 'sidebar', 'settings', 'modelStore', 'search', 'cheatsheet']);
     expect(desktopIds.join(' ')).not.toContain('logout');
   });
 });

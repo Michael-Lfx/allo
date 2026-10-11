@@ -41,6 +41,9 @@ const AppChromeShortcutsHost: React.FC = () => {
       }
       go();
     },
+    onOpenModelStore: () => {
+      void navigate('/model-store');
+    },
     onFocusComposer: () => {
       emitter.emit('composer.focus');
     },

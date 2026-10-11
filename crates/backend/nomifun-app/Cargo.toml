@@ -286,6 +286,7 @@ nomifun-appearance.workspace = true
 nomifun-robot.workspace = true
 nomifun-customer-service.workspace = true
 nomifun-workshop.workspace = true
+nomifun-local-models.workspace = true
 nomifun-creation.workspace = true
 nomifun-gateway.workspace = true
 nomifun-public.workspace = true

@@ -23,6 +23,7 @@ use nomifun_companion::{companion_public_routes, companion_routes};
 use nomifun_appearance::{appearance_public_routes, appearance_routes};
 use nomifun_customer_service::customer_service_routes;
 use nomifun_workshop::{workshop_public_routes, workshop_routes};
+use nomifun_local_models::local_models_routes;
 use nomifun_creation::creation_routes;
 use nomifun_canvas::{video_canvas_public_routes, video_canvas_routes};
 use nomifun_conversation::{conversation_ops_routes, conversation_routes};
@@ -1259,6 +1260,14 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    // Local model downloads and llama-server processes run in the backend OS
+    // account, same owner gate as the terminal surface.
+    let local_models_authenticated = protect_instance_owner(
+        local_models_routes(states.local_models.clone()),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
     // Office routes protected by auth middleware
     let office_authenticated = protect_instance_owner(
         office_routes(states.office.clone()),
@@ -1471,6 +1480,7 @@ pub fn create_router_with_all_state(
         .merge(app_server_authenticated)
         .merge(secret_authenticated)
         .merge(terminal_authenticated)
+        .merge(local_models_authenticated)
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(preset_authenticated);

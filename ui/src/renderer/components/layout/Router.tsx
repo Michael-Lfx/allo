@@ -16,6 +16,7 @@ const Guid = React.lazy(() => import('@renderer/pages/guid'));
 const PresetSettings = React.lazy(() => import('@renderer/pages/settings/PresetSettings'));
 const SkillsSettingsPage = React.lazy(() => import('@renderer/pages/settings/SkillsSettingsPage'));
 const ModelHubPage = React.lazy(() => import('@renderer/pages/modelHub'));
+const ModelStorePage = React.lazy(() => import('@renderer/pages/modelStore'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
 const BrowserPage = React.lazy(() => import('@renderer/pages/browser'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
@@ -327,6 +328,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route index element={<Navigate to='/guid' replace />} />
           {/* Models, presets, skills, and MCP are independent top-level capabilities. */}
           <Route path='/models' element={withRouteFallback(ModelHubPage)} />
+          <Route path='/model-store' element={withRouteFallback(ModelStorePage)} />
           <Route path='/extensions' element={<LegacyExtensionsRedirect />} />
           <Route path='/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/plugins/*' element={<DisabledPluginsRedirect />} />
