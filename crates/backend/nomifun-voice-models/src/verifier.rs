@@ -36,6 +36,8 @@ pub fn default_canonical_manifest() -> HashMap<String, String> {
     manifest
 }
 
+use tokio::io::AsyncReadExt;
+
 /// Computes the SHA256 hex digest of a byte slice.
 pub fn compute_sha256(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -43,10 +45,21 @@ pub fn compute_sha256(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Computes the SHA256 hex digest of a file on disk.
+/// Computes the SHA256 hex digest of a file on disk using constant-memory streaming buffers.
 pub async fn compute_file_sha256(path: &Path) -> Result<String, std::io::Error> {
-    let data = tokio::fs::read(path).await?;
-    Ok(compute_sha256(&data))
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let n = file.read(&mut buffer).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Parses a `checksums.sha256` string formatted as `<sha256>  <rel_path>`.

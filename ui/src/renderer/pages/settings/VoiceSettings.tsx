@@ -81,6 +81,8 @@ export interface VoiceModelProgressEvent {
 /** 200ms throttle window per ui-motion.zh.md §3 */
 const SSE_PROGRESS_THROTTLE_MS = 200;
 
+const VOICE_ENABLED_STORAGE_KEY = 'nomifun:voice:enabled';
+
 function formatSpeed(bytesPerSec: number): string {
   if (bytesPerSec <= 0) return '0 B/s';
   const k = 1024;
@@ -96,7 +98,10 @@ const VoiceSettings: React.FC = () => {
   const [downloadDetail, setDownloadDetail] = useState<DownloadingDetail | null>(null);
   const [verifyDetail, setVerifyDetail] = useState<VerifyingDetail | null>(null);
   const [failedDetail, setFailedDetail] = useState<FailedDetail | null>(null);
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    return window.localStorage.getItem(VOICE_ENABLED_STORAGE_KEY) === 'true';
+  });
   const [isStarting, setIsStarting] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -356,6 +361,13 @@ const VoiceSettings: React.FC = () => {
     }
   }, [isConfirmingRelease, handleDelete]);
 
+  const handleToggleVoiceEnabled = useCallback((checked: boolean) => {
+    setVoiceEnabled(checked);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(VOICE_ENABLED_STORAGE_KEY, String(checked));
+    }
+  }, []);
+
   // Hairline track scaleX computation per ui-motion.zh.md §3
   let progressRatio = 0;
   if (modelStatus === 'Downloading' && downloadDetail) {
@@ -496,7 +508,7 @@ const VoiceSettings: React.FC = () => {
 
                       {modelStatus === 'Ready' && (
                         <div className='flex items-center gap-12px'>
-                          <Switch checked={voiceEnabled} onChange={setVoiceEnabled} />
+                          <Switch checked={voiceEnabled} onChange={handleToggleVoiceEnabled} />
                           <Button
                             type={isConfirmingRelease ? 'secondary' : 'text'}
                             status={isConfirmingRelease ? 'danger' : 'default'}

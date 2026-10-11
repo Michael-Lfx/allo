@@ -270,7 +270,12 @@ impl AudioCaptureSource for UsbHotplugWatchdog {
 
             if should_probe {
                 inner.last_probe_time = Some(now);
-                match (self.factory)() {
+                let factory = self.factory.clone();
+                let probe_res = tokio::task::spawn_blocking(move || factory())
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+
+                match probe_res {
                     Ok(new_source) => {
                         let recovery_time = inner
                             .last_disconnect_time
@@ -336,7 +341,12 @@ impl AudioCaptureSource for UsbHotplugWatchdog {
                 self.sync_atomics(&inner);
 
                 // Immediate probe in case of transient bounce or fast re-enumeration
-                match (self.factory)() {
+                let factory = self.factory.clone();
+                let immediate_res = tokio::task::spawn_blocking(move || factory())
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+
+                match immediate_res {
                     Ok(new_source) => {
                         let recovery_time = disconnect_time.elapsed();
                         let recovery_ms = recovery_time.as_millis() as u64;

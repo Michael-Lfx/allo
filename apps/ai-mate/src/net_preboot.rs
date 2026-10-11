@@ -115,6 +115,7 @@ pub fn import_usb_setup(
         let zeroes = vec![0u8; len];
         let _ = file.write_all(&zeroes);
         let _ = file.flush();
+        let _ = file.sync_all();
     }
     let _ = fs::remove_file(&setup_path);
 

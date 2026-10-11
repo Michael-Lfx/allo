@@ -150,3 +150,24 @@ async fn test_vt_4_03_service_lifetime_decoupled_from_code_expiry() {
         "Service lifetime terminates once Ready terminal state is reached"
     );
 }
+
+#[tokio::test]
+async fn test_vt_4_03_code_regeneration_resets_counters() {
+    let oobe = OobeManager::new();
+    let old_code = oobe.current_code().await;
+
+    // Trigger some failed attempts
+    let _ = oobe.verify_code("000000").await;
+    let _ = oobe.verify_code("111111").await;
+
+    // Regenerate code
+    let new_code = oobe.regenerate_code().await;
+    assert_eq!(new_code.len(), 6);
+    assert_ne!(new_code, "000000");
+    assert_ne!(new_code, old_code);
+
+    // Fresh new code should succeed and reset failed attempts
+    let outcome = oobe.verify_code(&new_code).await;
+    assert_eq!(outcome, VerifyOutcome::Success);
+    assert!(oobe.is_paired().await);
+}

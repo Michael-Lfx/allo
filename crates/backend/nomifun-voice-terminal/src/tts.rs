@@ -3,6 +3,7 @@
 //! Authoritative baseline: docs/architecture/voice-agent/interaction.zh.md §3.8.
 
 use async_trait::async_trait;
+use futures_util::{SinkExt, StreamExt};
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::probe::Hint;
@@ -73,15 +74,69 @@ impl Default for EdgeTtsProvider {
 impl TtsProvider for EdgeTtsProvider {
     async fn synthesize_stream(
         &self,
-        _text: &str,
-        _voice: &str,
+        text: &str,
+        voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
         let (ws_stream, _) = tokio_tungstenite::connect_async(&self.endpoint)
             .await
             .map_err(|e| TtsError::Network(format!("Failed to connect to Edge-TTS: {e}")))?;
 
-        let (_tx, rx) = mpsc::channel(32);
-        drop(ws_stream);
+        let (mut write, mut read) = ws_stream.split();
+
+        let speech_config = "X-Timestamp: None\r\nContent-Type: application/json; charset=utf-8\r\nPath: speech.config\r\n\r\n{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}";
+        write
+            .send(tokio_tungstenite::tungstenite::Message::Text(speech_config.into()))
+            .await
+            .map_err(|e| TtsError::Network(format!("Failed to send config: {e}")))?;
+
+        let voice_name = if voice.is_empty() {
+            &self.default_voice
+        } else {
+            voice
+        };
+        let req_id = uuid::Uuid::now_v7().simple().to_string();
+        let ssml = format!(
+            "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>\
+            <voice name='{voice_name}'>\
+                {text}\
+            </voice>\
+            </speak>"
+        );
+        let ssml_message = format!(
+            "X-RequestId:{req_id}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n{ssml}"
+        );
+        write
+            .send(tokio_tungstenite::tungstenite::Message::Text(ssml_message.into()))
+            .await
+            .map_err(|e| TtsError::Network(format!("Failed to send SSML: {e}")))?;
+
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            while let Some(msg_res) = read.next().await {
+                match msg_res {
+                    Ok(tokio_tungstenite::tungstenite::Message::Binary(bin)) => {
+                        if bin.len() > 2 {
+                            let header_len = u16::from_be_bytes([bin[0], bin[1]]) as usize;
+                            if bin.len() > 2 + header_len {
+                                let audio_data = bin[2 + header_len..].to_vec();
+                                if !audio_data.is_empty() && tx.send(audio_data).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(tokio_tungstenite::tungstenite::Message::Text(txt)) => {
+                        if txt.contains("Path:turn.end") {
+                            break;
+                        }
+                    }
+                    Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
         Ok(rx)
     }
 }

@@ -485,6 +485,9 @@ impl ToolPolicyEngine {
 
     /// Evaluates a tool call request against the structured policy table and sandboxing rules.
     pub fn evaluate(&mut self, request: &ToolCallRequest) -> PolicyVerdict {
+        // 0. Periodic memory GC: prune expired tokens and orphaned suspended calls
+        self.prune_expired();
+
         // 1. Fail-safe default deny: unknown tool
         if !self.policy.allowed_tools.iter().any(|t| t == &request.tool_name) {
             let reason = InterceptReason::UnknownToolFailSafe {
@@ -685,6 +688,23 @@ impl ToolPolicyEngine {
 
     pub fn suspended_call(&self, token_id: &str) -> Option<&ToolCallRequest> {
         self.suspended_calls.get(token_id)
+    }
+
+    /// Prunes expired confirmation tokens and orphaned suspended calls to prevent memory leaks in daemon mode.
+    pub fn prune_expired(&mut self) {
+        let now = Instant::now();
+        self.tokens
+            .retain(|_, t| now.duration_since(t.created_at) <= Duration::from_secs(t.ttl_secs));
+        self.suspended_calls
+            .retain(|token_id, _| self.tokens.contains_key(token_id));
+    }
+
+    pub fn token_count(&self) -> usize {
+        self.tokens.len()
+    }
+
+    pub fn suspended_call_count(&self) -> usize {
+        self.suspended_calls.len()
     }
 }
 
@@ -899,5 +919,38 @@ mod tests {
             engine.consume_token(&token_id),
             Err(ConfirmationError::NotFound(token_id))
         );
+    }
+
+    #[test]
+    fn test_prune_expired_removes_dead_tokens_and_suspended_calls() {
+        let mut engine = ToolPolicyEngine::default_ai_mate();
+        let req = ToolCallRequest {
+            task_id: "task_gc".to_string(),
+            tool_call_id: "call_gc".to_string(),
+            tool_name: "bash_run".to_string(),
+            arguments: json!({ "command": "rm -rf /tmp/data" }),
+        };
+
+        let verdict = engine.evaluate(&req);
+        let token_id = match verdict {
+            PolicyVerdict::SuspendedAwaitingConfirmation { token, .. } => token.token_id,
+            _ => panic!("Expected SuspendedAwaitingConfirmation"),
+        };
+
+        assert_eq!(engine.token_count(), 1);
+        assert_eq!(engine.suspended_call_count(), 1);
+
+        // Manually adjust token timestamp back by 10s to simulate timeout
+        if let Some(token) = engine.tokens.get_mut(&token_id) {
+            token.created_at = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or(token.created_at);
+        }
+
+        // Run GC
+        engine.prune_expired();
+        assert_eq!(engine.token_count(), 0);
+        assert_eq!(engine.suspended_call_count(), 0);
+        assert!(engine.suspended_call(&token_id).is_none());
     }
 }

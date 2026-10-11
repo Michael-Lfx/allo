@@ -98,6 +98,19 @@ impl OobeManager {
         self.state.read().await.is_paired
     }
 
+    /// Regenerates a fresh 6-digit pairing code and resets expiry/attempt counters.
+    /// Returns the new 6-digit code.
+    pub async fn regenerate_code(&self) -> String {
+        let mut guard = self.state.write().await;
+        let new_code = generate_six_digit_code();
+        guard.code = new_code.clone();
+        guard.created_at = Instant::now();
+        guard.failed_attempts = 0;
+        guard.locked_until = None;
+        info!("Regenerated fresh OOBE pairing code.");
+        new_code
+    }
+
     /// Verifies an input pairing code against the current dynamic code.
     pub async fn verify_code(&self, candidate: &str) -> VerifyOutcome {
         let mut guard = self.state.write().await;
@@ -191,6 +204,7 @@ pub fn oobe_routes(oobe: OobeManager) -> Router {
     Router::new()
         .route("/api/oobe/verify", post(verify_handler))
         .route("/api/oobe/status", get(status_handler))
+        .route("/api/oobe/refresh", post(refresh_handler))
         .with_state(oobe)
 }
 
@@ -241,4 +255,16 @@ async fn status_handler(State(oobe): State<OobeManager>) -> impl IntoResponse {
     Json(serde_json::json!({
         "paired": paired
     }))
+}
+
+async fn refresh_handler(State(oobe): State<OobeManager>) -> impl IntoResponse {
+    let _ = oobe.regenerate_code().await;
+    let announcement = oobe.vocal_announcement_text().await;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "refreshed",
+            "announcement": announcement,
+        })),
+    )
 }

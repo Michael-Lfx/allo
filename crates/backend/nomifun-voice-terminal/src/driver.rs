@@ -13,6 +13,8 @@ pub enum RouteError {
     Generation(String),
     #[error("Validation failed: {0:?}")]
     Validation(Vec<String>),
+    #[error("Network request failed: {0}")]
+    Network(String),
 }
 
 #[async_trait]

@@ -23,14 +23,37 @@ pub trait AudioSink: Send + Sync {
     async fn flush(&self) -> Result<(), AudioSinkError>;
 }
 
+/// Channel-based audio sink forwarding playback frames to a consumer channel.
+pub struct ChannelAudioSink {
+    sender: mpsc::Sender<Vec<u8>>,
+}
+
+impl ChannelAudioSink {
+    pub fn new(sender: mpsc::Sender<Vec<u8>>) -> Self {
+        Self { sender }
+    }
+}
+
+#[async_trait]
+impl AudioSink for ChannelAudioSink {
+    async fn write_frame(&self, frame: Vec<u8>) -> Result<(), AudioSinkError> {
+        self.sender
+            .send(frame)
+            .await
+            .map_err(|e| AudioSinkError::Write(e.to_string()))
+    }
+
+    async fn flush(&self) -> Result<(), AudioSinkError> {
+        Ok(())
+    }
+}
+
 /// In-memory test sink for capturing playback frames during testing.
-#[cfg(any(test, feature = "voice-skeleton"))]
 #[derive(Default, Clone)]
 pub struct TestAudioSink {
     frames: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
 }
 
-#[cfg(any(test, feature = "voice-skeleton"))]
 impl TestAudioSink {
     pub fn new() -> Self {
         Self::default()
@@ -49,7 +72,6 @@ impl TestAudioSink {
     }
 }
 
-#[cfg(any(test, feature = "voice-skeleton"))]
 #[async_trait]
 impl AudioSink for TestAudioSink {
     async fn write_frame(&self, frame: Vec<u8>) -> Result<(), AudioSinkError> {
