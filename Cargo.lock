@@ -8293,14 +8293,17 @@ name = "nomifun-voice-terminal"
 version = "1.6.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "jsonschema",
  "nomifun-api-types",
  "nomifun-audio",
  "nomifun-common",
  "serde",
  "serde_json",
+ "symphonia",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
 ]
 

@@ -4,6 +4,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use async_trait::async_trait;
 use nomifun_audio::EarconKind;
 use tokio::sync::mpsc;
@@ -62,6 +63,53 @@ impl AudioSink for TestAudioSink {
     }
 }
 
+/// Jitter buffer resisting network packet jitter before playback emission.
+/// Defined in interaction.zh.md §3.8 (100ms jitter buffer threshold).
+#[derive(Debug, Clone)]
+pub struct JitterBuffer {
+    buffer: Vec<u8>,
+    target_duration: Duration,
+    sample_rate: u32,
+    threshold_bytes: usize,
+}
+
+impl JitterBuffer {
+    pub fn new(target_duration: Duration, sample_rate: u32) -> Self {
+        let bytes_per_sec = (sample_rate as f32 * 2.0) as usize;
+        let threshold_bytes = (target_duration.as_secs_f32() * bytes_per_sec as f32) as usize;
+        Self {
+            buffer: Vec::new(),
+            target_duration,
+            sample_rate,
+            threshold_bytes,
+        }
+    }
+
+    pub fn target_duration(&self) -> Duration {
+        self.target_duration
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    pub fn push(&mut self, chunk: Vec<u8>) {
+        self.buffer.extend_from_slice(&chunk);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.buffer.len() >= self.threshold_bytes
+    }
+
+    pub fn pop_all(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buffer)
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+}
+
 /// Playback pipeline driving earcon assets and TTS stream decoding.
 pub struct PlaybackPipeline {
     sink: Arc<dyn AudioSink>,
@@ -99,7 +147,6 @@ impl PlaybackPipeline {
     }
 
     /// Consumes incoming audio chunk stream and forwards frames to audio sink.
-    /// In Wave 0 skeleton: MP3 decode is an empty placeholder for Phase 2 symphonia decoder.
     pub async fn play_stream(&self, mut stream: mpsc::Receiver<Vec<u8>>) -> Result<(), AudioSinkError> {
         let expected_gen = self.generation_id();
 

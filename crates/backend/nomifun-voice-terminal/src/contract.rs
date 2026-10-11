@@ -46,7 +46,7 @@ pub const VOICE_DECISION_SCHEMA: &str = r#"{
 }"#;
 
 /// Intent category output by qwen3.5-flash single-pass atomic routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentType {
     Ignore,
@@ -56,7 +56,7 @@ pub enum IntentType {
 }
 
 /// Task control sub-action when intent_type is task_control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskControlAction {
     QueryStatus,

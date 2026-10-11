@@ -122,4 +122,58 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
     expect(bsk1Source).toContain('scaleX');
     expect(bsk1Source).toContain('tabular-nums');
   });
+
+  test('T2-07: Ready state micro-motion adheres to 240ms duration and cubic-bezier(0.16, 1, 0.3, 1)', () => {
+    const source = readFileSync(componentUrl, 'utf8');
+
+    // 240ms motion token per ui-motion.zh.md §2 & §3
+    expect(source).toMatch(/240/);
+    expect(source).toMatch(/cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
+    // Ready scale 0.9 -> 1
+    expect(source).toMatch(/0\.9/);
+    expect(source).toMatch(/scale\(1\)|scale-100/);
+  });
+
+  test('T2-07: Inline two-step release confirmation with 3-second auto-revert timer and DELETE call', () => {
+    const source = readFileSync(componentUrl, 'utf8');
+
+    // Inline confirmation state & 3s timer
+    expect(source).toContain('confirmRelease');
+    expect(source).toMatch(/3000/);
+    // Triggers DELETE /api/voice/models with DELETE auth headers
+    expect(source).toContain('/api/voice/models');
+    expect(source).toMatch(/DELETE/);
+    // Strictly NO Modal dialog
+    expect(source).not.toContain('<Modal');
+    expect(source).not.toContain('arco-modal');
+  });
+
+  test('T2-07: bsk-2-01 verification script is properly authored and archived', () => {
+    const bsk201Url = new URL('../../../../../docs/architecture/voice-agent/execution/bsk-2-01-full-lifecycle.md', import.meta.url);
+    expect(existsSync(bsk201Url)).toBe(true);
+    const bsk201Source = readFileSync(bsk201Url, 'utf8');
+    expect(bsk201Source).toContain('bsk-2-01');
+    expect(bsk201Source).toContain('Removing');
+    expect(bsk201Source).toContain('240ms');
+    expect(bsk201Source).toContain('3');
+  });
+
+  test('T2-08: prefers-reduced-motion disables transitions and scales instantaneously', () => {
+    const source = readFileSync(componentUrl, 'utf8');
+
+    // Evaluates prefers-reduced-motion media query
+    expect(source).toContain('prefers-reduced-motion');
+    // Disables motion (transition none / 0ms / transform none)
+    expect(source).toMatch(/reducedMotion|prefersReducedMotion/);
+  });
+
+  test('T2-08: bsk-2-02 verification script is properly authored and archived', () => {
+    const bsk202Url = new URL('../../../../../docs/architecture/voice-agent/execution/bsk-2-02-reduced-motion-theme.md', import.meta.url);
+    expect(existsSync(bsk202Url)).toBe(true);
+    const bsk202Source = readFileSync(bsk202Url, 'utf8');
+    expect(bsk202Source).toContain('bsk-2-02');
+    expect(bsk202Source).toContain('prefers-reduced-motion');
+    expect(bsk202Source).toMatch(/check:theme|check:i18n/);
+  });
 });
+

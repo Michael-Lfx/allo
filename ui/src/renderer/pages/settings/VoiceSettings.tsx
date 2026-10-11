@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Switch } from '@arco-design/web-react';
 import { CheckOne, CloseOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
+import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
 import {
   SettingsList,
   SettingsPageHeader,
@@ -99,8 +100,51 @@ const VoiceSettings: React.FC = () => {
   const [isStarting, setIsStarting] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // Motion reduction and ready micro-motion states per ui-motion.zh.md §2 & §3
+  const [reducedMotion, setReducedMotion] = useState(() => prefersReducedMotion());
+  const [readyIconScaled, setReadyIconScaled] = useState(false);
+
+  // Inline two-step release confirmation state per ui-motion.zh.md §3
+  const [isConfirmingRelease, setIsConfirmingRelease] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const lastProgressUpdateRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Listen for prefers-reduced-motion OS changes
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onChange = (e: MediaQueryListEvent) => {
+      setReducedMotion(e.matches);
+    };
+    mediaQuery.addEventListener('change', onChange);
+    return () => {
+      mediaQuery.removeEventListener('change', onChange);
+    };
+  }, []);
+
+  // Micro-motion for Ready state: icon scales 0.9 -> 1 over 240ms cubic-bezier(0.16, 1, 0.3, 1)
+  useEffect(() => {
+    if (modelStatus === 'Ready') {
+      setReadyIconScaled(false);
+      const frame = requestAnimationFrame(() => {
+        setReadyIconScaled(true);
+      });
+      return () => cancelAnimationFrame(frame);
+    } else {
+      setReadyIconScaled(false);
+    }
+  }, [modelStatus]);
+
+  // Clean up release confirmation timer on unmount
+  useEffect(() => {
+    return () => {
+      if (confirmTimerRef.current) {
+        clearTimeout(confirmTimerRef.current);
+      }
+    };
+  }, []);
 
   // Apply SSE state update with 200ms throttle for progress events
   const applyStateUpdate = useCallback((stateWire: ModelInstallStateWire, immediate = false) => {
@@ -259,6 +303,59 @@ const VoiceSettings: React.FC = () => {
     }
   }, [connectProgressStream, t]);
 
+  // Trigger DELETE /api/voice/models to free disk space
+  const handleDelete = useCallback(async () => {
+    setModelStatus('Removing');
+    try {
+      const response = await fetch(`${getBaseUrl()}/api/voice/models`, {
+        method: 'DELETE',
+        headers: buildBackendAuthHeaders('DELETE'),
+      });
+      if (response.ok || response.status === 204) {
+        setModelStatus('NotInstalled');
+        setDownloadDetail(null);
+        setVerifyDetail(null);
+        setFailedDetail(null);
+      } else {
+        const errJson = (await response.json().catch(() => ({}))) as { error?: string };
+        setFailedDetail({
+          reason: errJson.error || t('voice.errors.unknownError'),
+          recoverable: true,
+        });
+        setModelStatus('Failed');
+      }
+    } catch (e) {
+      setFailedDetail({
+        reason: e instanceof Error ? e.message : t('voice.errors.unknownError'),
+        recoverable: true,
+      });
+      setModelStatus('Failed');
+    }
+  }, [t]);
+
+  // Inline two-step confirmation per ui-motion.zh.md §3:
+  // First click shows "确认释放？" with a 3-second auto-revert timer.
+  // Second click within 3 seconds confirms deletion and calls DELETE.
+  const handleReleaseClick = useCallback(() => {
+    if (!isConfirmingRelease) {
+      setIsConfirmingRelease(true);
+      if (confirmTimerRef.current) {
+        clearTimeout(confirmTimerRef.current);
+      }
+      confirmTimerRef.current = setTimeout(() => {
+        setIsConfirmingRelease(false);
+        confirmTimerRef.current = null;
+      }, 3000);
+    } else {
+      if (confirmTimerRef.current) {
+        clearTimeout(confirmTimerRef.current);
+        confirmTimerRef.current = null;
+      }
+      setIsConfirmingRelease(false);
+      void handleDelete();
+    }
+  }, [isConfirmingRelease, handleDelete]);
+
   // Hairline track scaleX computation per ui-motion.zh.md §3
   let progressRatio = 0;
   if (modelStatus === 'Downloading' && downloadDetail) {
@@ -334,7 +431,15 @@ const VoiceSettings: React.FC = () => {
                         <CheckOne
                           theme='filled'
                           size='16'
-                          className='text-primary-6 transform transition-transform duration-240'
+                          className='text-primary-6'
+                          style={{
+                            transition: reducedMotion
+                              ? 'none'
+                              : 'transform 240ms cubic-bezier(0.16, 1, 0.3, 1)',
+                            transform: reducedMotion
+                              ? 'scale(1)'
+                              : (readyIconScaled ? 'scale(1)' : 'scale(0.9)'),
+                          }}
                         />
                       )}
                       {modelStatus === 'Failed' && (
@@ -392,8 +497,16 @@ const VoiceSettings: React.FC = () => {
                       {modelStatus === 'Ready' && (
                         <div className='flex items-center gap-12px'>
                           <Switch checked={voiceEnabled} onChange={setVoiceEnabled} />
-                          <Button type='text' size='small' className='text-t-secondary'>
-                            {t('voice.actions.releaseSpace')}
+                          <Button
+                            type={isConfirmingRelease ? 'secondary' : 'text'}
+                            status={isConfirmingRelease ? 'danger' : 'default'}
+                            size='small'
+                            className={isConfirmingRelease ? 'tabular-nums text-danger-6' : 'text-t-secondary'}
+                            onClick={handleReleaseClick}
+                          >
+                            {isConfirmingRelease
+                              ? t('voice.actions.confirmRelease')
+                              : t('voice.actions.releaseSpace')}
                           </Button>
                         </div>
                       )}
@@ -426,14 +539,18 @@ const VoiceSettings: React.FC = () => {
               */}
               <div
                 aria-hidden='true'
-                className='pointer-events-none absolute bottom-0 left-0 right-0 h-2px bg-fill-2 transition-opacity duration-180 ease-out'
-                style={{ opacity: isProgressVisible ? 1 : 0 }}
+                className='pointer-events-none absolute bottom-0 left-0 right-0 h-2px bg-fill-2'
+                style={{
+                  opacity: isProgressVisible ? 1 : 0,
+                  transition: reducedMotion ? 'none' : 'opacity 180ms ease-out',
+                }}
               >
                 <div
-                  className='h-full bg-primary-6 transition-transform duration-180 ease-out'
+                  className='h-full bg-primary-6'
                   style={{
                     transform: `scaleX(${progressRatio})`,
                     transformOrigin: 'left center',
+                    transition: reducedMotion ? 'none' : 'transform 180ms cubic-bezier(0.16, 1, 0.3, 1)',
                   }}
                 />
               </div>
